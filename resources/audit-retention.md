@@ -107,8 +107,9 @@ returns an upper bound on every key a tracked prune removed from the named logs.
   longer): a log with no entry at or past it is quiet, bounded by its largest key, and `quietAt` becomes
   now; a recorded log with no files left is quiet too. Only a cutoff in the past is observed, since
   anything appended after the probe then lands in a segment the prune cannot remove, and nothing is
-  observed while neither the cutoff nor the native horizon reaches past the epoch and the last pass is
-  within half the native retention. Any other prune
+  observed while neither the cutoff nor the native horizon reaches past `epoch` and the last pass is
+  within half the native retention. `trackedFrom` gives no such shortcut: a segment written after tracking
+  began can sit below it (a future-dated floor, a rolled-back clock), so a young node observes from its first pass. Any other prune
   (`deleteHistory`, `delete_transaction_logs_before`, a cutoff ahead of the clock) raises `epoch` to
   its cutoff.
 - **The boot purge reads no log** (`readLogs` false): a log query maps the files it reads, and a mapping
@@ -126,23 +127,24 @@ returns an upper bound on every key a tracked prune removed from the named logs.
   position whenever a log has just gone idle, re-forcing the copy this record exists to avoid.
 - **rocksdb-js also purges on its own** (`transactionLogRetention`, default 3 days, which core does not
   set) when a log opens, closes or rotates, including the file being appended to. That cannot reach past
-  `bound` while `quietAt` is within the native retention; once it is not, `exposedBound` adds the native
-  horizon, or the log's largest key at the last pass if lower (every segment last written before that
-  pass held keys up to it, in whatever order they arrived), in the read and in the next pass. `scheduleAuditCleanup` runs a pass at least every quarter of
+  `bound` while `quietAt` is within the native retention; once it is not, and a pass has run within it,
+  `exposedBound` adds the native horizon, or the log's largest key at that pass if lower (every segment last
+  written before that pass held keys up to it, in whatever order they arrived), in the read and in the next pass. `scheduleAuditCleanup` runs a pass at least every quarter of
   that retention and each pass that observes writes a later `quietAt`, so an idle log on a running node never
-  reaches the horizon. Passes skip observing while neither purge reaches past the epoch; a boot just after such a
-  window ends can take the reach for an idle log, which errs toward a copy. A node down longer than the native retention resyncs once.
+  reaches the horizon. Passes skip observing while neither purge reaches past `epoch`; a boot just after such a
+  window ends can take the reach for an idle log, which errs toward a copy.
 - **`trackedFrom` answers for what tracking never saw**: the floor, or the native horizon if later, when
-  the record was created, raised to the native horizon, and a log-free boot purge's cutoff, until a pass first
-  reads the logs. Below it any log may have lost anything. It is a position on this node, so a replication source
+  the record was created, raised to the native horizon whenever no pass has read the logs within the native
+  retention (a node down that long resyncs each follower once; a log created and emptied in that gap is neither
+  recorded nor necessarily listed), and to the cutoff of a boot purge that observed nothing. Below it any log may have lost anything. It is a position on this node, so a replication source
   compares it with the follower's own start here and never with a per-origin cursor: a relayed log's keys are its
   origin's and can predate this node, and a copy cannot raise such a cursor, so that comparison would force a copy
   on every reconnect with nothing pruned. A follower at or past it missed nothing a purge before it took: every
   such segment was last written before that position, so its entries were delivered, unless one landed behind the
   follower's scan (harper-pro#1251).
 - **`epoch` bounds every log, compared with each log's own start**: the cutoff of a prune that observes no
-  log, and the native horizon when a pass follows a gap longer than the native retention (a log created and emptied
-  in that gap is neither recorded nor necessarily listed).
+  log, which may have removed keys still committing near it. A copy cannot raise a cursor past the keys a log held, so
+  while a cursor's origin stays silent, that comparison forces a copy on every reconnect.
 - **Trusted only while `cutoff` ≥ the floor.** A floor raised without the record (an older binary's
   prune, a log-free copy's generation stamp) means a prune it did not see; the next tracked prune
   restarts it from the floor.
