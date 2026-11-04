@@ -38,26 +38,12 @@ export function watchFullTextTelemetryConfiguration(
 			report();
 		}
 	}
-	function unavailable() {
-		if (stopped) return;
-		try {
-			const root = structuredClone(overlayRootEnvConfig({}) ?? {});
-			applyPolicy(refreshConfigSubtree(PARAM, previousRoot, root, resolveFullTextTelemetryPolicy));
-			previousRoot = root;
-		} catch {
-			report();
-		}
-	}
 	function stop() {
 		stopped = true;
 		watcher.off('change', changed);
-		watcher.off('unavailable', unavailable);
-		watcher.off('available', changed);
 		watcher.off('close', stop);
 	}
 	watcher.on('change', changed);
-	watcher.on('unavailable', unavailable);
-	watcher.on('available', changed);
 	watcher.on('close', stop);
 	void watcher.ready.then(changed).catch(report);
 	return stop;

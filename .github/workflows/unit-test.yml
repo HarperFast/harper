@@ -305,6 +305,8 @@ jobs:
     name: Full-text native plane (${{ matrix.os }}, Node.js v26)
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
+    env:
+      HARPER_FULLTEXT_UPGRADE_ROOT: ${{ runner.temp }}/fulltext-upgrade
     strategy:
       fail-fast: false
       matrix:
@@ -322,6 +324,10 @@ jobs:
       - name: Install dependencies
         run: npm install --ignore-scripts
 
+      - name: Install isolated historical full-text engines
+        timeout-minutes: 3
+        run: npm run test:fulltext:install-previous -- "${{ runner.temp }}/fulltext-upgrade"
+
       - name: Build
         run: npm run build
 
@@ -334,6 +340,7 @@ jobs:
           unitTests/resources/nativeFullTextDerivedIndexLifecycle.test.js unitTests/resources/nativeFullTextTelemetry.test.js
           unitTests/resources/nativeFullTextTelemetryClose.test.js
           unitTests/resources/nativeFullTextTelemetryWorkers.test.js
+          unitTests/resources/nativeFullTextTelemetryShutdown.test.js
           unitTests/resources/nativeFullTextTableSearch.test.js
           unitTests/resources/nativeFullTextIndexSchemaUpgrade.test.js
           unitTests/resources/nativeFullTextIndexUpgradeWorkers.test.js

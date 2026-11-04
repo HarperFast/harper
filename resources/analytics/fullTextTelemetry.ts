@@ -82,7 +82,7 @@ type Consumer = {
 };
 
 const UINT64_MODULUS = 1n << 64n;
-export function fullTextNativeCounterDelta(current: bigint, previous: bigint): bigint {
+function fullTextNativeCounterDelta(current: bigint, previous: bigint): bigint {
 	return current >= previous ? current - previous : UINT64_MODULUS - previous + current;
 }
 
@@ -92,7 +92,7 @@ function isCounter(path: string[]): boolean {
 	return path[0] === 'native' && (path[1] === 'phases' || (path[1] === 'operations' && path[3] !== 'dispatched'));
 }
 
-export function flattenFullTextTelemetry(snapshot: FullTextTelemetrySnapshot): FlatSnapshot {
+function flattenFullTextTelemetry(snapshot: FullTextTelemetrySnapshot): FlatSnapshot {
 	const counters = new Map<string, bigint>();
 	const gauges: FullTextTelemetryRow = {};
 	const aggregateGauges = new Map<string, bigint | null>();
@@ -296,6 +296,17 @@ export class FullTextTelemetryCollector {
 		return rows;
 	}
 
+	collectFinalRows(): FullTextTelemetryRow[] {
+		const rows = this.takeRows();
+		if (this.collecting)
+			for (const entry of [...this.#entries]) {
+				if (entry.closing) continue;
+				this.#observe(entry);
+				rows.push(...this.takeRows());
+			}
+		return rows;
+	}
+
 	stop(): void {
 		if (this.#stopped) return;
 		this.#operator = { ...DEFAULT_FULL_TEXT_TELEMETRY_POLICY };
@@ -446,8 +457,14 @@ export class FullTextTelemetryCollector {
 				}
 				row[name] = observed ? total.toString() : null;
 			}
-			if (!this.#pending.has(entry.group) && this.#pending.size >= this.#maxPendingRows) {
-				const oldest = this.#pending.keys().next().value!;
+			if (this.#pending.has(entry.group)) this.#pending.delete(entry.group);
+			else if (this.#pending.size >= this.#maxPendingRows) {
+				let oldest = this.#pending.keys().next().value!;
+				for (const candidate of this.#pending.keys())
+					if (candidate.entries.size) {
+						oldest = candidate;
+						break;
+					}
 				this.#pending.delete(oldest);
 				this.#droppedRows++;
 				row.droppedRows = this.#droppedRows.toString();

@@ -299,21 +299,9 @@ This is the inverse of the entries below — a dependency we take deliberate ste
 - Can be deferred: Yes. The module is not loaded for tables without full-text indexes.
 - Eventual removal: Remove full-text declarations and their local derived-index files, then remove the optional dependency and Harper adapter. Source records remain authoritative and unaffected.
 
-## @harperfast/fulltext-previous (dev dependency)
+## Historical full-text upgrade engines (isolated test fixtures)
 
-- Need for usage: Exact npm alias for fulltext 0.5.0 (the version shipped in Harper 5.3.4), used only by the child-process upgrade fixture to write genuine old-engine indexes and verify downgrade refusal. Simulating an error or editing identity bytes would not exercise the actual compatibility boundary.
-- Size/memory cost: One additional root package and its supported platform prebuild in development/CI. The child exits before the current engine inspects its files; production installs with dev dependencies omitted do not include the alias.
-- Security/overlap: Same first-party package, exact-pinned to the prior release. Production code must not import this alias or relax its current native ABI validation to accommodate it.
-- Eventual removal: Remove the alias and its Renovate exclusion with the cross-version fixtures when migration from 0.5.x is no longer supported. Renovate leaves this historical fixture fixed; do not update it together with the current wrapper pin.
-
-## @harperfast/fulltext-v07 (dev dependency)
-
-- Need for usage: Exact npm alias for fulltext 0.7.0, used by the existing isolated upgrade fixture to write a real text-only checkpoint and verify 0.8 reuse and subsequent 0.7 reopen. The separate 0.5.0 alias retains coverage of the earlier incompatible engine.
-- Updates and removal: Renovate leaves this historical alias fixed. Remove it and its exclusion only when the 0.7 migration fixture is retired.
-- Cost and boundary: One additional root package and supported platform prebuild in development/CI only. No production runtime import; the previous-engine child exits before the current engine opens its files.
-
-## @harperfast/fulltext-v08 (dev dependency)
-
-- Need for usage: Exact npm alias for fulltext 0.8.0. The isolated migration fixture writes a genuine prior-release checkpoint, verifies current reuse without rebuilding, advances it and checks the prior release can reopen it.
-- Cost and boundary: One additional root package and supported platform prebuild in development/CI only; never imported by production code.
-- Updates and removal: Keep the historical alias exact-pinned and excluded from Renovate updates. Remove it with its fixture when migration from 0.8 is no longer supported.
+- Need for usage: Released fulltext 0.5.0, 0.7.0 and 0.8.0 write genuine old checkpoints; the current engine must rebuild incompatible indexes or reuse compatible ones, and prior engines verify safe reopen or downgrade refusal. Source-record IDs and checkpoints are generated during the tests, so static index files do not replace these checks.
+- Installation boundary: Harper's normal dependency tree contains only the current optional engine. Separate exact-pinned manifests and integrity-checked lockfiles live under `unitTests/resources/fixtures/fulltext-upgrade/`; the dedicated native CI job provisions their packages outside the checkout. The previous-engine child exits before the current engine accesses the same index. Production code never imports historical engines or relaxes current ABI validation.
+- Local qualification: Run `npm run test:fulltext:install-previous -- /absolute/scratch/fulltext-upgrade`, then set `HARPER_FULLTEXT_UPGRADE_ROOT` to that directory when running the native lifecycle, schema-upgrade and crash-recovery suites. Ordinary resource tests skip historical migration cases when the variable is absent; an explicit but invalid installation fails. CI supplies it and forbids pending tests.
+- Cost and removal: The dedicated job installs three root packages and their supported platform prebuilds. Other development and CI installs incur no historical-package cost. Renovate leaves fixture versions fixed; remove each manifest, lockfile and matching coverage when migration from that version is no longer supported.

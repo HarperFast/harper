@@ -1,6 +1,5 @@
 import { createHash } from 'node:crypto';
 import { onStartup } from '../../utility/lifecycle.ts';
-import { registerShutdownDrain } from '../../components/shutdownDrain.ts';
 import { loggerWithTag } from '../../utility/logging/logger.ts';
 import { watchFullTextTelemetryConfiguration } from '../../config/fullTextTelemetryConfiguration.ts';
 import { addAnalyticsListener, requestAnalyticsFlush, checkAnalyticsEnabled } from './write.ts';
@@ -52,7 +51,20 @@ export function acceptsFullTextTelemetryRow(row: Record<string, unknown>): boole
 
 export function initializeFullTextTelemetry(): void {
 	if (started) return;
-	const listener = addAnalyticsListener((metrics) => {
+	const listener = addAnalyticsListener((metrics, final = false) => {
+		if (final) {
+			try {
+				stopWatching?.();
+				if (fullTextTelemetryCollector.collecting || fullTextTelemetryCollector.hasPendingRows) {
+					const rows = fullTextTelemetryCollector.collectFinalRows();
+					if (persistenceActive && checkAnalyticsEnabled(false)) metrics.push(...rows);
+				}
+			} finally {
+				removeListener?.();
+				fullTextTelemetryCollector.stop();
+			}
+			return;
+		}
 		if (!persistenceActive || !checkAnalyticsEnabled(false) || !fullTextTelemetryCollector.hasPendingRows) return;
 		const rows = fullTextTelemetryCollector.takeRows();
 		metrics.push(...rows);
@@ -91,11 +103,3 @@ export function registerNativeFullTextTelemetry(handle: unknown, index: string, 
 }
 
 onStartup(initializeFullTextTelemetry);
-registerShutdownDrain({
-	hasWork: () => false,
-	drain: async () => {
-		stopWatching?.();
-		removeListener?.();
-		fullTextTelemetryCollector.stop();
-	},
-});

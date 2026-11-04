@@ -9,8 +9,6 @@ const { loadFullTextNativeBinding } = require('#src/resources/indexes/fullTextNa
 const {
 	FullTextTelemetryCollector,
 	resolveFullTextTelemetryPolicy,
-	fullTextNativeCounterDelta,
-	flattenFullTextTelemetry,
 	fullTextTelemetryIndexLabel,
 } = require('#src/resources/analytics/fullTextTelemetry');
 
@@ -335,27 +333,112 @@ describe('Published full-text telemetry collection', function () {
 		const recovered = collector.takeRows().find((value) => value.path === 'catalog.Product0/search');
 		assert.strictEqual(recovered.complete, true, 'dropping a pending observation does not lose cumulative counters');
 	});
-	it('uses exact uint64 deltas above safe integer range and across wrap', () => {
+	it('evicts the least recently refreshed pending group', async () => {
+		collector.stop();
+		collector = new FullTextTelemetryCollector({ maxPendingRows: 2 });
+		collector.setOperatorPolicy({ enabled: true });
+		const writers = [];
+		for (let i = 0; i < 3; i++) {
+			const { index } = await writer();
+			writers.push(index);
+			collector.register(index, `catalog.Recency${i}/search`, 'writer');
+		}
+		collector.collect(writers[0]);
+		collector.collect(writers[1]);
+		collector.collect(writers[0]);
+		collector.collect(writers[2]);
+		const rows = collector.takeRows();
+		assert.deepStrictEqual(
+			rows.map((entry) => entry.path),
+			['catalog.Recency0/search', 'catalog.Recency2/search']
+		);
+		assert.strictEqual(rows.at(-1).droppedRows, '1');
+	});
+	it('preserves a pending final row before evicting a replaceable live row', async () => {
+		collector.stop();
+		collector = new FullTextTelemetryCollector({ maxPendingRows: 2 });
+		collector.setOperatorPolicy({ enabled: true });
+		const writers = [];
+		for (let i = 0; i < 3; i++) {
+			const { index } = await writer();
+			writers.push(index);
+			collector.register(index, `catalog.Final${i}/search`, 'writer');
+		}
+		collector.beforeClose(writers[0]);
+		await writers[0].close({ mode: 'rollback' });
+		collector.afterClose(writers[0]);
+		collector.collect(writers[1]);
+		collector.collect(writers[2]);
+		const rows = collector.takeRows();
+		assert.deepStrictEqual(
+			rows.map((entry) => entry.path),
+			['catalog.Final0/search', 'catalog.Final2/search']
+		);
+		assert.strictEqual(rows[0].native_state, 'closed');
+		assert.strictEqual(rows.at(-1).droppedRows, '1');
+	});
+	it('samples all open handles at final flush without overflowing the pending-row budget', async () => {
+		collector.stop();
+		collector = new FullTextTelemetryCollector({ maxPendingRows: 2 });
+		collector.setOperatorPolicy({ enabled: true });
+		for (let i = 0; i < 3; i++) {
+			const { index } = await writer();
+			collector.register(index, `catalog.Open${i}/search`, 'writer');
+			await index.search({ text: 'widget' });
+		}
+		const rows = collector.collectFinalRows();
+		assert.deepStrictEqual(
+			rows.map((entry) => entry.path),
+			['catalog.Open0/search', 'catalog.Open1/search', 'catalog.Open2/search']
+		);
+		for (const entry of rows) {
+			assert.strictEqual(entry.native_operations_search_completed, '1');
+			assert.strictEqual(entry.droppedRows, '0');
+		}
+		assert.strictEqual(collector.hasPendingRows, false);
+	});
+	it('accumulates exact uint64 deltas above safe integer range and across wrap', async () => {
+		const { index } = await writer();
+		const snapshot = index.telemetry();
+		const handle = { telemetry: () => snapshot, configureTelemetry() {} };
+		collector.setOperatorPolicy({ enabled: true });
+		collector.register(handle, 'catalog.Counter/search', 'writer');
 		const previous = (1n << 63n) + 1n;
-		assert.strictEqual(fullTextNativeCounterDelta(previous + 3n, previous), 3n);
-		assert.strictEqual(fullTextNativeCounterDelta(2n, (1n << 64n) - 2n), 4n);
+		snapshot.native.operations.search.completed = previous;
+		collector.collect(handle);
+		assert.strictEqual(row('writer').native_operations_search_completed, previous.toString());
+		snapshot.native.operations.search.completed += 3n;
+		collector.collect(handle);
+		assert.strictEqual(row('writer').native_operations_search_completed, (previous + 3n).toString());
+		snapshot.native.operations.search.completed = (1n << 64n) - 2n;
+		collector.collect(handle);
+		assert.strictEqual(row('writer').native_operations_search_completed, ((1n << 64n) - 2n).toString());
+		snapshot.native.operations.search.completed = 2n;
+		collector.collect(handle);
+		assert.strictEqual(row('writer').native_operations_search_completed, ((1n << 64n) + 2n).toString());
 	});
 	it('preserves exact snapshot scalars and unavailable native observations without inventing zeros', async () => {
 		const { index } = await writer();
-		const snapshot = index.telemetry();
+		let snapshot = index.telemetry();
 		const huge = (1n << 63n) + 17n;
 		snapshot.native.operations.search.completed = huge;
 		snapshot.native.phases.commit.sumNanoseconds = huge;
-		const encoded = flattenFullTextTelemetry(snapshot);
-		assert.strictEqual(encoded.counters.get('native_operations_search_completed'), huge);
-		assert.strictEqual(encoded.counters.get('native_phases_commit_sumNanoseconds'), huge);
-		assert.strictEqual(encoded.gauges.native_reader_documents, '1');
-		assert.strictEqual(encoded.gauges.native_reader_snapshotBytes, null);
+		const handle = { telemetry: () => snapshot, configureTelemetry() {} };
+		collector.setOperatorPolicy({ enabled: true });
+		collector.register(handle, 'catalog.Scalars/search', 'writer');
+		collector.collect(handle);
+		const encoded = row('writer');
+		assert.strictEqual(encoded.native_operations_search_completed, huge.toString());
+		assert.strictEqual(encoded.native_phases_commit_sumNanoseconds, huge.toString());
+		assert.strictEqual(encoded.native_reader_documents, '1');
+		assert.strictEqual(encoded.native_reader_snapshotBytes, null);
 		const { native: _native, ...facade } = snapshot;
-		const unavailable = flattenFullTextTelemetry({ ...facade, available: false, reason: 'telemetry unavailable' });
-		assert.strictEqual(unavailable.gauges.available, false);
-		assert.strictEqual(unavailable.gauges.native_reader_documents, undefined);
-		assert.strictEqual(unavailable.counters.get('logicalBatches_completed'), 1n);
+		snapshot = { ...facade, available: false, reason: 'telemetry unavailable' };
+		collector.collect(handle);
+		const unavailable = row('writer');
+		assert.strictEqual(unavailable.available, false);
+		assert.strictEqual(unavailable.native_reader_documents, undefined);
+		assert.strictEqual(unavailable.logicalBatches_completed, '1');
 	});
 	it('preserves peer gauge sums, null ages, newest-key selection and closing exclusions', async () => {
 		const { index } = await writer();

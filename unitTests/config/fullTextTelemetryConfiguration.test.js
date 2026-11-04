@@ -2,6 +2,7 @@ const assert = require('node:assert');
 const { mkdtempSync, writeFileSync, rmSync } = require('node:fs');
 const { join } = require('node:path');
 const { stringify } = require('yaml');
+const { setTimeout: delay } = require('node:timers/promises');
 const { RootConfigWatcher } = require('#src/config/RootConfigWatcher');
 const { watchFullTextTelemetryConfiguration } = require('#src/config/fullTextTelemetryConfiguration');
 const { resolveFullTextTelemetryPolicy } = require('#src/resources/analytics/fullTextTelemetry');
@@ -101,28 +102,39 @@ describe('Live full-text telemetry configuration', function () {
 		await waitFor(() => watcher.config?.analytics.fullText.enabled === true);
 		assert.strictEqual(samples.length, count);
 	});
-	it('disables on file deletion and resumes on recreation', async () => {
+	it('retains the last valid policy and overrides through deletion and identical recreation', async () => {
 		const samples = [];
+		env.setProperty(PARAM + '_histograms', true);
 		observe({ enabled: true }, samples);
 		await waitFor(() => samples.at(-1)?.enabled === true);
+		const count = samples.length;
 		rmSync(file);
-		await waitFor(() => samples.at(-1)?.enabled === false);
+		await delay(250);
+		assert.strictEqual(samples.at(-1).enabled, true);
+		assert.strictEqual(samples.length, count);
+		assert.strictEqual(env.getConfigOverrides()[PARAM + '_histograms'], true);
+		const reads = watcher._readCountForTests;
 		writeFileSync(file, stringify(root({ enabled: true })));
-		await waitFor(() => samples.at(-1)?.enabled === true);
+		await waitFor(() => watcher._readCountForTests > reads);
+		assert.strictEqual(samples.length, count);
+		writeFileSync(file, stringify(root({ enabled: false, histograms: false })));
+		await waitFor(() => samples.at(-1)?.enabled === false);
+		assert.strictEqual(env.getConfigOverrides()?.[PARAM + '_histograms'], undefined);
 	});
 	it('applies a recreated changed file once and ignores invalid revival policy', async () => {
 		const samples = [];
 		observe({ enabled: true }, samples);
 		await waitFor(() => samples.at(-1)?.enabled === true);
 		rmSync(file);
-		await waitFor(() => samples.at(-1)?.enabled === false);
-		const disabledCount = samples.length;
+		await delay(250);
+		assert.strictEqual(samples.at(-1).enabled, true);
+		const retainedCount = samples.length;
 		writeFileSync(file, stringify(root({ enabled: 'invalid' })));
 		await waitFor(() => watcher.config?.analytics.fullText.enabled === 'invalid');
-		assert.strictEqual(samples.length, disabledCount);
+		assert.strictEqual(samples.length, retainedCount);
 		writeFileSync(file, stringify(root({ enabled: true, intervalMilliseconds: 2000 })));
-		await waitFor(() => samples.at(-1)?.enabled === true);
-		assert.strictEqual(samples.length, disabledCount + 1);
+		await waitFor(() => samples.at(-1)?.intervalMilliseconds === 2000);
+		assert.strictEqual(samples.length, retainedCount + 1);
 		assert.strictEqual(samples.at(-1).intervalMilliseconds, 2000);
 	});
 	it('honors reasserted environment policy over edits to the file', async () => {
@@ -134,10 +146,8 @@ describe('Live full-text telemetry configuration', function () {
 		writeFileSync(file, stringify(root({ enabled: false, intervalMilliseconds: 3000 })));
 		await waitFor(() => watcher.config?.analytics.fullText.intervalMilliseconds === 3000);
 		assert.strictEqual(samples.at(-1).intervalMilliseconds, 2000);
-		let unavailable = false;
-		watcher.once('unavailable', () => (unavailable = true));
 		rmSync(file);
-		await waitFor(() => unavailable);
+		await delay(250);
 		assert.strictEqual(samples.at(-1).enabled, true);
 		assert.strictEqual(samples.at(-1).intervalMilliseconds, 2000);
 	});

@@ -734,6 +734,7 @@ describe('published full-text 0.5.0, 0.7.0 and 0.8.0 to current migration', func
 	let rootPath;
 
 	before(async function () {
+		if (!process.env.HARPER_FULLTEXT_UPGRADE_ROOT) this.skip();
 		if (!(await supportsPublishedFullTextBinding())) this.skip();
 		rootPath = setupTestDBPath();
 		binding = await loadFullTextNativeBinding();

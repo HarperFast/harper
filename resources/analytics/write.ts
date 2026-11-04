@@ -49,6 +49,9 @@ let analyticsEnabled = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) > -1;
 let analyticsReadOnlyChecked = false;
 let sendAnalyticsTimeout: NodeJS.Timeout;
 let analyticsGeneration = 0;
+let analyticsExiting = false;
+let runningAnalyticsFlush: Promise<void> | undefined;
+let exitAnalyticsFlush: Promise<void> | undefined;
 
 onStartup(() => {
 	analyticsEnabled = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) > -1;
@@ -160,6 +163,7 @@ function actionKey(metric: string, path?: string, method?: string, type?: string
 }
 
 function recordKeyedAction(key: string, value: Value, metric: string, path?: string, method?: string, type?: string) {
+	if (analyticsExiting) return;
 	const action = activeActions.get(key);
 	if (action) {
 		recordExistingAction(value, action);
@@ -192,7 +196,23 @@ export function addAnalyticsListener(callback) {
 }
 
 export function requestAnalyticsFlush(): void {
-	if (checkAnalyticsEnabled() && !sendAnalyticsTimeout) contextStorage.exit(sendAnalytics);
+	if (!analyticsExiting && checkAnalyticsEnabled() && !sendAnalyticsTimeout) contextStorage.exit(sendAnalytics);
+}
+
+/** Deliver the last window after resource owners close, without starting new periodic work. */
+export function flushAnalyticsForExit(): Promise<void> {
+	if (exitAnalyticsFlush) return exitAnalyticsFlush;
+	analyticsExiting = true;
+	clearTimeout(sendAnalyticsTimeout);
+	sendAnalyticsTimeout = null;
+	return (exitAnalyticsFlush = contextStorage.exit(async () => {
+		try {
+			await runningAnalyticsFlush;
+		} finally {
+			if (checkAnalyticsEnabled(false)) await flushAnalytics(true);
+			else for (const listener of [...analyticsListeners]) listener([], true);
+		}
+	}));
 }
 
 const IDEAL_PERCENTILES = [0.01, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99, 0.999, 1];
@@ -218,14 +238,25 @@ function sendAnalytics() {
 	}, analyticsDelay).unref();
 }
 
-async function flushAnalytics() {
+function flushAnalytics(final = false): Promise<void> {
+	const run = () => collectAnalytics(final);
+	const result = runningAnalyticsFlush ? runningAnalyticsFlush.then(run, run) : run();
+	runningAnalyticsFlush = result;
+	const settled = () => {
+		if (runningAnalyticsFlush === result) runningAnalyticsFlush = undefined;
+	};
+	void result.then(settled, settled);
+	return result;
+}
+
+async function collectAnalytics(final: boolean) {
 	sendAnalyticsTimeout = null;
 	const generation = analyticsGeneration;
 	// Rotate before the first yield below: a sample recorded mid-flush would otherwise be added to
 	// an entry already reported, and dropped with it.
 	const reportingActions = activeActions;
 	activeActions = new Map();
-	const period = performance.now() - analyticsStart;
+	const period = analyticsStart ? performance.now() - analyticsStart : 0;
 	analyticsStart = 0;
 	// Read before the first yield too, so the event loop's samples from the rest of the flush belong
 	// to the next report.
@@ -319,7 +350,7 @@ async function flushAnalytics() {
 	});
 	for (const listener of [...analyticsListeners]) {
 		if (generation !== analyticsGeneration) return;
-		listener(metrics);
+		listener(metrics, final);
 	}
 	if (generation !== analyticsGeneration) return;
 	if (parentPort)
