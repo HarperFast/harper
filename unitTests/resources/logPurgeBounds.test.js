@@ -115,14 +115,97 @@ describe('per-log purge bounds', function () {
 		assert.strictEqual(getLogPurgeBound(auditStore, scope('local')), Math.max(epoch, ...localLogKeys(auditStore)));
 	});
 
-	it('bounds a log no retention pass has seen by the epoch and the native horizon', async function () {
+	it('starts tracking a new database at its floor, not as a bound on any log', function () {
+		if (isLMDB) return this.skip(); // one log, compared from the merged start
+		const { auditStore } = freshTable();
+		const { bounds, trackedFrom } = getLogPurgeBounds(auditStore, 'local');
+		assert.strictEqual(trackedFrom, getAuditFloor(auditStore));
+		assert.strictEqual(bounds.get('local'), 0);
+	});
+
+	it('answers for a log no pass has read with the native horizon, as a position on this node', async function () {
 		if (isLMDB) return this.skip(); // no native purge
 		const Table = backdatedTable(400 * DAY_MS);
 		await Table.put('unseen', { name: 'x' });
 		const horizon = Date.now() - nativeRetention(Table.auditStore);
-		const bound = getLogPurgeBound(Table.auditStore, ['local']);
-		assert.ok(bound >= getAuditFloor(Table.auditStore));
-		assert.ok(bound >= horizon);
+		assert.ok(getLogPurgeBounds(Table.auditStore, 'local').trackedFrom >= horizon);
+	});
+
+	describe('a relayed log whose keys predate this database', () => {
+		const relayedLog = async (name) => {
+			const Table = freshTable();
+			const origin = getIdOfRemoteNode(name, Table.auditStore);
+			const { trackedFrom } = getLogPurgeBounds(Table.auditStore, 'local');
+			const lastKey = trackedFrom - 3_600_000;
+			await applyAsOrigin(Table, 'relayed', { nodeId: origin, logKey: lastKey });
+			return { Table, lastKey, trackedFrom };
+		};
+
+		it('reads no bound before a pass has seen it', async function () {
+			if (isLMDB) return this.skip(); // one log
+			const { Table } = await relayedLog('young-relay-origin');
+			assert.strictEqual(getLogPurgeBound(Table.auditStore, ['young-relay-origin']), 0);
+		});
+
+		it('is bounded by its largest key after a pass, and keeps where tracking began', async function () {
+			if (isLMDB) return this.skip();
+			const { Table, lastKey, trackedFrom } = await relayedLog('passed-relay-origin');
+			await tick();
+			raiseAuditFloor(Table.auditStore, Date.now(), true);
+			const read = getLogPurgeBounds(Table.auditStore, ['passed-relay-origin']);
+			assert.strictEqual(read.bounds.get('passed-relay-origin'), lastKey);
+			assert.strictEqual(read.trackedFrom, trackedFrom);
+		});
+
+		it('takes no gap epoch on the first pass, for an origin idle past the native retention', async function () {
+			if (isLMDB) return this.skip();
+			const Table = freshTable();
+			const origin = getIdOfRemoteNode('long-idle-origin', Table.auditStore);
+			const lastKey = Date.now() - nativeRetention(Table.auditStore) - DAY_MS;
+			await applyAsOrigin(Table, 'long-idle', { nodeId: origin, logKey: lastKey });
+			raiseAuditFloor(Table.auditStore, Date.now() - 60_000, true);
+			assert.strictEqual(unpack(Table.auditStore.getBinary(LOG_PURGE_BOUNDS_KEY)).epoch, 0);
+			assert.strictEqual(getLogPurgeBound(Table.auditStore, ['long-idle-origin']), lastKey);
+		});
+
+		it('is bounded by a prune that observes no log, past its largest key', async function () {
+			if (isLMDB) return this.skip();
+			const { Table } = await relayedLog('unobserved-prune-origin');
+			const cutoff = Date.now() + 1000;
+			raiseAuditFloor(Table.auditStore, cutoff);
+			assert.strictEqual(getLogPurgeBound(Table.auditStore, ['unobserved-prune-origin']), cutoff);
+		});
+
+		it('is bounded by a later write a pass saw, past a follower that missed it', async function () {
+			if (isLMDB) return this.skip();
+			const { Table, lastKey } = await relayedLog('real-purge-origin');
+			await tick();
+			raiseAuditFloor(Table.auditStore, Date.now(), true);
+			const origin = getIdOfRemoteNode('real-purge-origin', Table.auditStore);
+			const missed = lastKey + 1000;
+			await applyAsOrigin(Table, 'missed', { nodeId: origin, logKey: missed });
+			await tick();
+			raiseAuditFloor(Table.auditStore, Date.now(), true);
+			assert.strictEqual(getLogPurgeBound(Table.auditStore, ['real-purge-origin']), missed);
+		});
+	});
+
+	it('keeps tracking from the floor when a record restarts', async () => {
+		const Table = freshTable();
+		const olderPrune = Date.now() + 120_000;
+		writeMetadata(Table.auditStore, AUDIT_FLOOR_KEY, floorBytes(olderPrune));
+		assert.strictEqual(getLogPurgeBounds(Table.auditStore, 'local'), undefined);
+		raiseAuditFloor(Table.auditStore, olderPrune + 1000);
+		assert.ok(getLogPurgeBounds(Table.auditStore, 'local').trackedFrom >= olderPrune);
+	});
+
+	it('reads a record written without trackedFrom as tracking from 0, keeping its epoch as a bound on every log', () => {
+		const { auditStore } = freshTable();
+		const floor = getAuditFloor(auditStore);
+		writeRecord(auditStore, { epoch: floor, cutoff: floor, observedAt: Date.now(), logs: {} });
+		const { bounds, trackedFrom } = getLogPurgeBounds(auditStore, 'local');
+		assert.strictEqual(trackedFrom, 0);
+		assert.strictEqual(bounds.get('local'), floor);
 	});
 
 	it('keeps an idle log at its exact newest key, not at the cutoff', async () => {
@@ -315,7 +398,7 @@ describe('per-log purge bounds', function () {
 		await Table.put('many', { name: 'x' });
 		await tick();
 		raiseAuditFloor(Table.auditStore, Date.now(), true);
-		const bounds = getLogPurgeBounds(Table.auditStore, ['local', 'absent-origin']);
+		const { bounds } = getLogPurgeBounds(Table.auditStore, ['local', 'absent-origin']);
 		assert.strictEqual(bounds.get('local'), getLogPurgeBound(Table.auditStore, ['local']));
 		assert.strictEqual(bounds.get('absent-origin'), getLogPurgeBound(Table.auditStore, ['absent-origin']));
 	});
@@ -357,7 +440,7 @@ describe('per-log purge bounds', function () {
 		raiseAuditFloor(Table.auditStore, Date.now(), true);
 		assert.strictEqual(getLogPurgeBound(Table.auditStore, 'local'), getLogPurgeBound(Table.auditStore, ['local']));
 		assert.strictEqual(
-			getLogPurgeBounds(Table.auditStore, 'local').get('local'),
+			getLogPurgeBounds(Table.auditStore, 'local').bounds.get('local'),
 			getLogPurgeBound(Table.auditStore, ['local'])
 		);
 	});
@@ -395,6 +478,20 @@ describe('per-log purge bounds', function () {
 		}
 		return queries;
 	}
+
+	it('answers a boot purge before any pass with where tracking began, recording nothing per log', async function () {
+		if (isLMDB) return this.skip(); // LMDB has no log purge
+		const Table = backdatedTable(400 * DAY_MS);
+		await Table.put('before-first-pass', { name: 'x' });
+		await tick();
+		const bootedAt = Date.now();
+		const { epoch } = unpack(Table.auditStore.getBinary(LOG_PURGE_BOUNDS_KEY));
+		assert.strictEqual(bootPurge(Table, 0), 0);
+		const { bounds, trackedFrom } = getLogPurgeBounds(Table.auditStore, 'local');
+		assert.ok(trackedFrom >= bootedAt, `${trackedFrom} >= ${bootedAt}`);
+		assert.strictEqual(bounds.get('local'), epoch);
+		assert.strictEqual(recordedLogs(Table.auditStore).local, undefined);
+	});
 
 	it('keeps a log a retention pass saw quiet at its bound through the boot purge, reading no log', async function () {
 		if (isLMDB) return this.skip(); // LMDB has no log purge
@@ -559,6 +656,15 @@ describe('per-log purge bounds', function () {
 		['a negative bound', pack({ epoch: 1, cutoff: Date.now() * 2, logs: { 'local': -5, '': -5 } })],
 		['a non-finite epoch', pack({ epoch: Infinity, cutoff: Date.now() * 2, logs: {} })],
 		['a logs array', pack({ epoch: 1, cutoff: Date.now() * 2, logs: [1] })],
+		[
+			'a non-finite trackedFrom',
+			pack({ epoch: 1, trackedFrom: Infinity, cutoff: Date.now() * 2, observedAt: 1, logs: {} }),
+		],
+		['a negative trackedFrom', pack({ epoch: 1, trackedFrom: -1, cutoff: Date.now() * 2, observedAt: 1, logs: {} })],
+		[
+			'a trackedFrom of the wrong type',
+			pack({ epoch: 1, trackedFrom: 'x', cutoff: Date.now() * 2, observedAt: 1, logs: {} }),
+		],
 	]) {
 		it(`reads ${label} as no bound`, () => {
 			const { auditStore } = freshTable();

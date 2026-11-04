@@ -98,8 +98,8 @@ Things that are easy to get wrong here:
 A replication source must tell a follower that missed purged entries from one whose source simply
 wrote nothing: an idle RocksDB log is purged empty, and an empty log cannot say whether its entries
 never existed or were removed. `Symbol.for('log-purge-bounds')` holds
-`{ epoch, cutoff, observedAt, logs: { name: [bound, quietAt, maxKey] } }`, and `getLogPurgeBound` returns an
-upper bound on every key any prune removed from the named logs.
+`{ epoch, trackedFrom, cutoff, observedAt, logs: { name: [bound, quietAt, maxKey] } }`, and `getLogPurgeBound`
+returns an upper bound on every key a tracked prune removed from the named logs.
 
 - **Raised inside `raiseAuditFloor`'s transaction**, so it shares the floor's write-ahead ordering on
   every prune path. A retention pass (`observeLogs`) probes each listed log with `readUncommitted`
@@ -132,9 +132,17 @@ upper bound on every key any prune removed from the named logs.
   that retention and each pass that observes writes a later `quietAt`, so an idle log on a running node never
   reaches the horizon. Passes skip observing while neither purge reaches past the epoch; a boot just after such a
   window ends can take the reach for an idle log, which errs toward a copy. A node down longer than the native retention resyncs once.
-- **`epoch` bounds what tracking never saw**: the floor, or the native horizon if later, when the
-  record was created, and the native horizon again when a pass follows a gap longer than the native
-  retention (a log created and emptied in that gap is neither recorded nor necessarily listed). A log emptied before that reads as purged through it, which forces one conservative resync.
+- **`trackedFrom` answers for what tracking never saw**: the floor, or the native horizon if later, when
+  the record was created, raised to the native horizon, and a log-free boot purge's cutoff, until a pass first
+  reads the logs. Below it any log may have lost anything. It is a position on this node, so a replication source
+  compares it with the follower's own start here and never with a per-origin cursor: a relayed log's keys are its
+  origin's and can predate this node, and a copy cannot raise such a cursor, so that comparison would force a copy
+  on every reconnect with nothing pruned. A follower at or past it missed nothing a purge before it took: every
+  such segment was last written before that position, so its entries were delivered, unless one landed behind the
+  follower's scan (harper-pro#1251).
+- **`epoch` bounds every log, compared with each log's own start**: the cutoff of a prune that observes no
+  log, and the native horizon when a pass follows a gap longer than the native retention (a log created and emptied
+  in that gap is neither recorded nor necessarily listed).
 - **Trusted only while `cutoff` ≥ the floor.** A floor raised without the record (an older binary's
   prune, a log-free copy's generation stamp) means a prune it did not see; the next tracked prune
   restarts it from the floor.
