@@ -377,7 +377,7 @@ describe('MCP persisted subscription state', function () {
 		assert.deepEqual((await loadSession(session.id)).subscriptions, []);
 	});
 
-	it('does not deliver custom resource updates after the scoped grant expires', async () => {
+	it('closes the GET and custom resource iterator when an expired grant receives an update', async () => {
 		const record = await open();
 		const stream = new IterableEventQueue();
 		stream.end = () => stream.close();
@@ -394,6 +394,9 @@ describe('MCP persisted subscription state', function () {
 		stream.send({ id: 'after-expiry' });
 		await new Promise(setImmediate);
 		assert.equal(updates, 1);
+		assert.equal(getRegisteredSession(session.id), undefined);
+		assert.equal(_liveSubscriptionCount(session.id), 0);
+		assert.equal(stream.closed, true);
 	});
 
 	it('fails closed when a persisted scoped-principal reference is missing', async () => {

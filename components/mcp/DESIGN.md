@@ -176,14 +176,12 @@ set. A transient failure during initial restore closes the GET and returns retry
 
 Ordinary principals are reauthorized through the GET principal. Only scoped-token principals persist
 their embedded role and expiry, once per distinct grant, with per-URI references. Unreferenced grants are pruned. Credentials and custom claims stay out of storage. Same-worker
-requests retain their full principal during installation. Reconnect rejects expired scoped entries and requires a scoped GET to present the same username and role permissions (a refreshed expiry is allowed without extending the stored grant); a different credential with the same attribution username cannot inherit it. The notification callback also checks expiry, including custom streams that do not enforce it themselves.
+requests retain their full principal during installation. Reconnect rejects expired scoped entries and requires a scoped GET to present the same username and role permissions (a refreshed expiry is allowed without extending the stored grant); a different credential with the same attribution username cannot inherit it. The notification callback closes the GET and its iterators on an update after either grant expires, including custom streams that do not enforce expiry themselves.
 
 Activity-only session writes do not trigger reconciliation: the watcher compares the token and revision.
 Native `Table.subscribe` enables auditing for a previously unaudited table, so opening a GET also makes
 subsequent session touches audited when `logging.auditLog` was disabled. This trades that opt-out cost
 for one authoritative row with the existing session TTL and non-replication rules.
-A local RocksDB smoke sample (2026-11-03, 100 sequential GET claims without resource subscriptions)
-measured claim latency at 0.332 ms median and 2.369 ms p95. This is not a production throughput or audit-retention benchmark.
 
 Verification: [`subscriptionState.test.js`](../../unitTests/components/mcp/subscriptionState.test.js)
 uses a real session table for installation, coalescing, timeout, ownership, and authorization cases.
