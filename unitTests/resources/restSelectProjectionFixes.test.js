@@ -1207,6 +1207,17 @@ describe('REST and operations API select projection fixes', function () {
 				}
 			);
 			mount(
+				'PlainStaticAsyncSelect',
+				class extends Plain {
+					static loadAsInstance = false;
+					async allowRead(_user, target) {
+						await new Promise((resolve) => setImmediate(resolve));
+						target.select = 'tags';
+						return true;
+					}
+				}
+			);
+			mount(
 				'PlainStatic',
 				class extends Plain {
 					static loadAsInstance = false;
@@ -1632,6 +1643,9 @@ describe('REST and operations API select projection fixes', function () {
 			assert.strictEqual(staticTuple.text, '"id","note"\n"z-1","n1"\n');
 			const staticArrayScalar = await restGet('/PlainStatic/z-1?select(tags)', { accept: 'text/csv' });
 			assert.strictEqual(staticArrayScalar.text, '"tags"\n"[""t1"",""t2""]"\n');
+
+			const asyncSelectArrayScalar = await restGet('/PlainStaticAsyncSelect/z-1', { accept: 'text/csv' });
+			assert.strictEqual(asyncSelectArrayScalar.text, '"tags"\n"[""t1"",""t2""]"\n');
 
 			const copiedArrayScalar = await restGet('/PlainCopiedTarget/z-1?select(tags)', { accept: 'text/csv' });
 			assert.strictEqual(copiedArrayScalar.text, '"tags"\n"[""t1"",""t2""]"\n');

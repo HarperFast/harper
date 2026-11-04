@@ -37,8 +37,13 @@ export function isTupleSelect(select: any): boolean {
 	return Array.isArray(select) && Boolean((select as any).asArray);
 }
 
+// A keyed projection names its own columns; only scalar and tuple projections need their select to be read back.
+export function isUnkeyedSelect(select: any): boolean {
+	return isScalarSelect(select) || isTupleSelect(select);
+}
+
 type AppliedSelect = { select: any; rows: boolean; value: any };
-// Keyed by the object that applied the projection; CSV trusts an entry only for its exact value.
+// Keyed by the projecting resource or the request target; CSV trusts an entry only for its exact value.
 const appliedSelects = new WeakMap<object, AppliedSelect>();
 
 export function recordAppliedSelect<T>(owner: any, select: any, rows: boolean, value: T): T {
@@ -617,8 +622,8 @@ export function serialize(responseData, request, responseObject, target?, resour
 					return row;
 				});
 				responseData.getColumns = getColumns;
-				const applied = appliedSelectFor(target, unwrapped);
-				if (applied) appliedSelects.set(target, { ...applied, value: responseData });
+				const applied = target?.select && appliedSelectFor(target, unwrapped);
+				if (applied) applied.value = responseData;
 			}
 			const serialized = serializer.serializer.serializeStream(responseData, responseObject, request, target, resource);
 			if (!canCompress) return serialized;

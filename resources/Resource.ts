@@ -31,7 +31,7 @@ import { makeSchemaClass, type Contract, type SchemaClass } from './defineResour
 import { markStaticResourceInstance } from './staticResourceDispatch.ts';
 import { isFormDataIterable, resolveBody } from './resolveBody.ts';
 import { compareKeys } from 'ordered-binary';
-import { recordAppliedSelect, publishAppliedSelect } from '../server/serverHelpers/contentTypes.ts';
+import { recordAppliedSelect, publishAppliedSelect, isUnkeyedSelect } from '../server/serverHelpers/contentTypes.ts';
 
 // Only table-backed classes are refused here: a custom resource's put/post/delete may be a non-storage call that a
 // read-only server must still answer. post, publish, copy and move are left to the transaction's write admission.
@@ -141,29 +141,34 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 			const result = resource.get?.(query);
 			// only false mode hands allowRead to the instance search; other modes settled it before dispatch
 			if (loadAsInstance === false) {
-				const authorized = result?.then
-					? result.then((result: any) => authorizeSearchResult(result, request?.user))
-					: authorizeSearchResult(result, request?.user);
-				return query?.select ? when(authorized, publishSelect) : authorized;
+				// an async allowRead may have set the select by the time the result settles
+				return result?.then
+					? result.then((result: any) =>
+							publishAppliedSelect(resource, query, authorizeSearchResult(result, request?.user))
+						)
+					: publishAppliedSelect(resource, query, authorizeSearchResult(result, request?.user));
 			}
 			// for the new API we always apply select in the instance method
-			if (!loadAsInstance) return query?.select ? when(result, publishSelect) : result;
+			if (!loadAsInstance)
+				return isUnkeyedSelect(query?.select)
+					? when(result, (value) => publishAppliedSelect(resource, query, value))
+					: result;
 			if (result?.then) return result.then(handleSelect);
 			return handleSelect(result);
-			function publishSelect(value) {
-				return publishAppliedSelect(resource, query, value);
-			}
 			function handleSelect(result) {
 				let select;
 				if ((select = query?.select) && result != null && !result.selectApplied) {
 					const transform = transformForSelect(select, resource.constructor);
-					const recordRows = (rows) => recordAppliedSelect(query, select, true, rows);
+					const unkeyed = isUnkeyedSelect(select);
 					if (Array.isArray(result)) {
-						return when(settleAll(result.map(transform)), recordRows);
+						const rows = settleAll(result.map(transform));
+						return unkeyed ? when(rows, (rows) => recordAppliedSelect(query, select, true, rows)) : rows;
 					} else if (typeof result?.map === 'function') {
-						return recordRows(result.map(transform));
+						const rows = result.map(transform);
+						return unkeyed ? recordAppliedSelect(query, select, true, rows) : rows;
 					} else {
-						return when(transform(result), (record) => recordAppliedSelect(query, select, false, record));
+						const record = transform(result);
+						return unkeyed ? when(record, (record) => recordAppliedSelect(query, select, false, record)) : record;
 					}
 				}
 				return result;
@@ -385,9 +390,10 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 					const select = (request as any).select;
 					if (select && request.hasOwnProperty('select') && result != null && !result.selectApplied) {
 						const transform = transformForSelect(select, resource.constructor);
-						return when(Array.isArray(result) ? settleAll(result.map(transform)) : result.map(transform), (rows) =>
-							recordAppliedSelect(query, select, true, rows)
-						);
+						const rows = Array.isArray(result) ? settleAll(result.map(transform)) : result.map(transform);
+						return isUnkeyedSelect(select)
+							? when(rows, (rows) => recordAppliedSelect(query, select, true, rows))
+							: rows;
 					}
 					return result;
 				})
