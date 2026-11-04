@@ -1240,6 +1240,16 @@ describe('REST and operations API select projection fixes', function () {
 				}
 			);
 			mount(
+				'TwoNestedReads',
+				class extends Resource {
+					async get(target) {
+						const first = await Plain.get({ id: 'z-1', select: target.select });
+						await Plain.get({ id: 'z-4', select: target.select });
+						return first;
+					}
+				}
+			);
+			mount(
 				'SharedTargetSummary',
 				class extends Resource {
 					static async get(target) {
@@ -1664,6 +1674,12 @@ describe('REST and operations API select projection fixes', function () {
 			assert.strictEqual(delegatedArrayScalar.text, '"tags"\n"[""t1"",""t2""]"\n');
 			const delegatedTuple = await restGet('/PlainDelegatingCopy/z-1?select([id,note])', { accept: 'text/csv' });
 			assert.strictEqual(delegatedTuple.text, '"id","note"\n"z-1","n1"\n');
+
+			const firstOfTwoReads = await restGet('/TwoNestedReads/x?select([id,note])', { accept: 'text/csv' });
+			assert.strictEqual(firstOfTwoReads.text, '"id","note"\n"z-1","n1"\n');
+
+			const sparseKeyed = await restGet('/Plain/z-3?select(id,note)', { accept: 'text/csv' });
+			assert.strictEqual(sparseKeyed.text, '"id","note"\n"z-3",\n');
 
 			const summaryJson = await restGet('/SharedTargetSummary/z-1?select(name)', { accept: 'application/json' });
 			assert.deepStrictEqual(summaryJson.body, { name: 'Zeta-1', inStock: true });

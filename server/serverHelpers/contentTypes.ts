@@ -10,7 +10,6 @@ import * as envMgr from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
 import * as YAML from 'yaml';
 import { logger } from '../../utility/logging/logger.ts';
-import { when } from '../../utility/when.ts';
 import {
 	errorToString as harperErrorToString,
 	errorForLog as harperErrorForLog,
@@ -38,22 +37,22 @@ export function isTupleSelect(select: any): boolean {
 	return Array.isArray(select) && Boolean((select as any).asArray);
 }
 
-type AppliedSelect = { select: any; rows: boolean; value: any };
-// Keyed by request context, which nested reads share; CSV trusts an entry only for its exact value.
+type AppliedSelect = { select: any; rows: boolean };
+// Keyed by the projected value. A primitive needs no entry: its one column is the target's select.
 const appliedSelects = new WeakMap<object, AppliedSelect>();
 
-export function recordAppliedSelect<T>(context: any, select: any, rows: boolean, value: T): T | Promise<T | void> {
-	// a keyed projection names its own columns; only scalar and tuple projections need their select read back
-	if (!(isScalarSelect(select) || isTupleSelect(select)) || !context || typeof context !== 'object') return value;
-	return when(value, (settled: T) => {
-		appliedSelects.set(context, { select, rows, value: settled });
-		return settled;
-	});
+export function recordAppliedSelect<T>(select: any, rows: boolean, value: T): T | Promise<T> {
+	// a keyed projection sets every selected key, so its rows name their own columns
+	if (!(isScalarSelect(select) || isTupleSelect(select))) return value;
+	if (typeof (value as any)?.then === 'function')
+		return (value as any).then((settled: T) => recordAppliedSelect(select, rows, settled));
+	if (value && typeof value === 'object') appliedSelects.set(value, { select, rows });
+	return value;
 }
 
-function appliedSelectFor(context: any, data: any): AppliedSelect | undefined {
-	const applied = context && typeof context === 'object' ? appliedSelects.get(context) : undefined;
-	return applied?.value === data ? applied : undefined;
+function appliedSelectFor(data: any, target: any): AppliedSelect | undefined {
+	const applied = data && typeof data === 'object' ? appliedSelects.get(data) : undefined;
+	return applied && applied.select === target?.select ? applied : undefined;
 }
 
 export function buildSelectColumns(currentSelect: any, attributes?: any[]): ColumnsList | undefined {
@@ -157,9 +156,9 @@ mediaTypes.set('application/x-msgpack', {
 	deserialize: unpack,
 	q: 0.9,
 });
-function csvColumns(data: any, request: any, target: any, resource: any) {
+function csvColumns(data: any, target: any, resource: any) {
 	if (typeof data?.getColumns === 'function') return { columns: data.getColumns() };
-	const applied = appliedSelectFor(request, data);
+	const applied = appliedSelectFor(data, target);
 	if (applied) {
 		return { columns: buildSelectColumns(applied.select, resource?.attributes), singleRecord: !applied.rows };
 	}
@@ -167,15 +166,15 @@ function csvColumns(data: any, request: any, target: any, resource: any) {
 }
 
 mediaTypes.set('text/csv', {
-	serializeStream(data: any, response: Response, request?: any, target?: any, resource?: any) {
+	serializeStream(data: any, response: Response, _request?: any, target?: any, resource?: any) {
 		response.headers.set('Content-Disposition', 'attachment; filename="data.csv"');
-		const { columns, fallbackColumns, singleRecord } = csvColumns(data, request, target, resource);
+		const { columns, fallbackColumns, singleRecord } = csvColumns(data, target, resource);
 		if (singleRecord && data != null) return toCsvStream([data.toJSON ? data.toJSON() : data], columns);
 		return toCsvStream(data, columns, fallbackColumns);
 	},
-	serialize(data: any, response: Response, request?: any, target?: any, resource?: any) {
+	serialize(data: any, response: Response, _request?: any, target?: any, resource?: any) {
 		response.headers.set('Content-Disposition', 'attachment; filename="data.csv"');
-		const { columns, fallbackColumns, singleRecord } = csvColumns(data, request, target, resource);
+		const { columns, fallbackColumns, singleRecord } = csvColumns(data, target, resource);
 		if (
 			data != null &&
 			(singleRecord ||
@@ -616,8 +615,8 @@ export function serialize(responseData, request, responseObject, target?, resour
 					return row;
 				});
 				responseData.getColumns = getColumns;
-				const applied = contentType === 'text/csv' && appliedSelectFor(request, unwrapped);
-				if (applied) applied.value = responseData;
+				const applied = contentType === 'text/csv' && appliedSelects.get(unwrapped);
+				if (applied) appliedSelects.set(responseData, applied);
 			}
 			const serialized = serializer.serializer.serializeStream(responseData, responseObject, request, target, resource);
 			if (!canCompress) return serialized;
