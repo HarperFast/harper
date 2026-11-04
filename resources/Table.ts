@@ -4452,7 +4452,7 @@ export function makeTable(options): TableResourceClass {
 		 * its model hooks and so absent from `writesByKey`.
 		 */
 		#hasStagedWriteFor(keyId: unknown): boolean {
-			return keyId === writeKeyId(this.getId()) && this.#stagedWrite() !== undefined;
+			return this.#stagedWrite() !== undefined && keyId === writeKeyId(this.getId());
 		}
 		#whenStaged(staging: any) {
 			const updated = when(staging, () => this);
@@ -5161,8 +5161,9 @@ export function makeTable(options): TableResourceClass {
 				const violation = scopeViolation(scoped, resolved, databaseName);
 				if (violation) return Promise.reject(violation);
 				// Only changes a write bound to this lock reads were made under it; others are discarded, as on a
-				// fresh acquisition.
+				// fresh acquisition, which also refuses an unbound staged write.
 				const joined = this.#stagedWrite()?.lockHandle === scoped;
+				if (!joined && this.#hasStagedWriteFor(keyId)) return Promise.reject(pendingWriteLockError());
 				if (resolved.hold && !scoped.hold) {
 					// Upgrade scoped → hold: flip the existing handle object to hold mode so every
 					// instance that already references this handle stays valid.  Retiring and creating a
@@ -5240,6 +5241,7 @@ export function makeTable(options): TableResourceClass {
 							);
 							if (violation) throw violation;
 							const joined = this.#stagedWrite()?.lockHandle === acquired;
+							if (!joined && this.#hasStagedWriteFor(keyId)) throw pendingWriteLockError();
 							if (resolved.hold && !acquired.hold) {
 								acquired.upgradeToHold(resolved.lease);
 								detachScopedUpgradeWrite(link, keyId, acquired);

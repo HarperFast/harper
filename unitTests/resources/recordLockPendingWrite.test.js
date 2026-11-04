@@ -293,6 +293,25 @@ describe('Record locks: lock() refuses a record its transaction has a pending wr
 		assert.strictEqual((await Embedded.get(recordId)).name, 'b');
 	});
 
+	it('an instance whose own update() is still in its model hook cannot join a lock another instance holds', async function () {
+		if (SKIP_ON_LMDB) return this.skip();
+		const recordId = makeId('hook-join');
+		await Embedded.put({ id: recordId, name: 'a' });
+		const ctx = {};
+		await transaction(ctx, async () => {
+			const rec = await Embedded.get(recordId, ctx);
+			const hookEntered = nextHook();
+			const pending = rec.update({ name: 'b' });
+			await hookEntered;
+			await Embedded.lock(recordId, undefined, ctx);
+			await assert.rejects(() => rec.lock(), isConflict);
+			releaseEmbed();
+			await pending;
+			await rec.save();
+		});
+		assert.strictEqual((await Embedded.get(recordId)).name, 'b');
+	});
+
 	it("unlock() keeps a write bound from another instance's lock, which then lands as an ordinary write and closes the instance", async function () {
 		if (SKIP_ON_LMDB) return this.skip();
 		const recordId = makeId('joined');
