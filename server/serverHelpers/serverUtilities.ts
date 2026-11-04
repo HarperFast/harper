@@ -197,7 +197,7 @@ export type OperationDefinition = {
 	execute: (operation: any) => any | Promise<any>;
 	httpMethod?: 'DELETE' | 'GET' | 'HEAD' | 'OPTIONS' | 'PATCH' | 'POST' | 'PUT' | 'TRACE'; // method to use for REST
 	isJob?: boolean;
-	/** JSON Schema (type: object) advertised to MCP; validated and cloned at registration. */
+	/** Advisory JSON Schema for MCP introspection. Metadata is validated; execute() must validate call arguments. */
 	inputSchema?: object;
 	parametersSchema?: any[];
 	// When set, the operation declares its authorization requirement to the central verifyPerms

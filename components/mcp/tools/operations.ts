@@ -320,8 +320,8 @@ function buildDescription(operationName: string, permissive: boolean, builtin: b
 		builtin && Object.hasOwn(OPERATION_DESCRIPTIONS, operationName) ? OPERATION_DESCRIPTIONS[operationName] : undefined;
 	if (curated) return curated;
 	return permissive
-		? `Harper operation '${operationName}'. Arguments are forwarded as-is; the server validates and returns a structured error on rejection.`
-		: `Harper operation '${operationName}'. Arguments are described by its registered schema and validated by the operation handler.`;
+		? `Harper operation '${operationName}'. Arguments are forwarded as-is; the operation handler is responsible for validation.`
+		: `Harper operation '${operationName}'. Arguments are described by its registered schema; the operation handler is responsible for validation.`;
 }
 
 /**
