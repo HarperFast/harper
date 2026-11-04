@@ -150,6 +150,7 @@ export class ModelCallAnalyticsWriter {
 		});
 	}
 
+	/** Returns a best-effort ID, including when overload or stop prevents admission. */
 	write(record: ModelCallRecord): number {
 		const id = getNextMonotonicTime();
 		if (this.#stopped) return id;
@@ -205,7 +206,6 @@ export class ModelCallAnalyticsWriter {
 					if (this.#buffer.length >= this.#maxBufferSize) this.#scheduleFlush();
 				});
 			this.#flushPromise = pending;
-			// Every failed batch is already logged; explicit joiners still receive the rejection.
 			pending.catch(() => {});
 			return pending;
 		});
