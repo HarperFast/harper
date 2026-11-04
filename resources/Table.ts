@@ -8508,9 +8508,10 @@ export function makeTable(options): TableResourceClass {
 						// chained children are shared with the caller (cloneConditions), so convert into locals
 						const primaryValue = condition[1] === undefined ? condition.value : condition[1];
 						const chainedRawValue = chained[1] === undefined ? chained.value : chained[1];
-						const chainedValue = leafAttribute
-							? coerceConditionValue(chainedRawValue, chained.comparator, leafAttribute)
-							: chainedRawValue;
+						const chainedValue =
+							leafAttribute && condition.target === undefined && chained.target === undefined
+								? coerceConditionValue(chainedRawValue, chained.comparator, leafAttribute)
+								: chainedRawValue;
 						condition.comparator = (lowerComparator + upperComparator) as any;
 						condition.value = chainedIsLower ? [chainedValue, primaryValue] : [primaryValue, chainedValue];
 						if (condition[1] !== undefined) condition[1] = condition.value;

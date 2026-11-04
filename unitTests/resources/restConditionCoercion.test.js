@@ -170,11 +170,19 @@ describe('REST condition value conversion', () => {
 		});
 		it('leaves custom-index distance thresholds (condition.target) unconverted', function () {
 			const prepared = Product._prepareQueryConditions(
-				[{ attribute: 'sizes', comparator: 'lt', value: 0.5, target: [1, 2] }],
+				[
+					{
+						attribute: 'sizes',
+						comparator: 'lt',
+						value: 0.5,
+						target: [1, 2],
+						chainedConditions: [{ comparator: 'gt', value: 0.2 }],
+					},
+				],
 				undefined,
 				{}
 			);
-			assert.strictEqual(prepared.conditions[0].value, 0.5);
+			assert.deepStrictEqual(prepared.conditions[0].value, [0.2, 0.5]);
 		});
 		it('an empty operand follows the element type (null for numeric elements, empty string for String/Any)', async function () {
 			assert.strictEqual(
