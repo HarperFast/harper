@@ -32,10 +32,11 @@ The `registerPrimitiveIdGet` getter shares `loadRecord()` with `_loadRecord`; it
 ## Request admission authorizes exactly what the dispatch runs
 
 - `transactional()` resolves QUERY bodies first, drops client `checkPermission`, and admits `select` through `allowRead`; search uses that projection (`permissions.test.js`).
-- False-mode `search`/`query`/`get` await `SEARCH_AUTHORIZATION`: denial rejects, derived transforms still run, and search starts before transaction settlement to preserve its snapshot. Default admission adds no promise; `allowRead` was awaited (`asyncAllowReadSearchResults.test.js`).
+- False-mode reads await `SEARCH_AUTHORIZATION`; denial rejects and derived transforms run. Search starts before transaction settlement, preserving its snapshot; default admission adds no promise (`asyncAllowReadSearchResults.test.js`).
 - False-mode array PUT, query DELETE and publish take one verdict each; DELETE scans a private cloned target (`staticResourceDispatch.ts`).
 - Materialized rows recheck `rowFilter` before `limit`.
-- `markDispatchTarget` brands transport roots for in-place narrowing; `dispatchTarget` copies other roots. Unowned narrowed roots fail closed; context arming persists (`delegatedQueryReuse.test.js`).
+- Transport roots narrow in place; `dispatchTarget` copies caller roots. Unowned narrowed roots fail closed; context arming persists.
+- Changed predicates require a fresh iterator; resetting a snapshotted cursor is unsupported (`delegatedQueryReuse.test.js`).
 
 ## Array PUT is a collection dispatch that settles every element before it fails
 
