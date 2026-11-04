@@ -449,6 +449,7 @@ export function configValidator(configJson, skipFsValidation = false) {
 				histograms: boolean.optional(),
 				snapshotBytes: boolean.optional(),
 			})
+				.unknown(false)
 				.strict()
 				.optional(),
 		}),

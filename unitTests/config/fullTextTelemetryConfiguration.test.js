@@ -72,6 +72,17 @@ describe('Live full-text telemetry configuration', function () {
 		assert.strictEqual(samples[0].enabled, true);
 		assert.strictEqual(samples[0].histograms, true);
 	});
+	it('rejects unknown telemetry keys consistently at boot and live application', () => {
+		for (const value of [
+			{ enable: true },
+			{ enabled: true, histogram: true },
+			{ intervalMilliseconds: 1000, extra: 1 },
+		]) {
+			const config = { ...readRootConfig(), analytics: { fullText: value } };
+			assert.match(configValidator(config, true).error?.message, /analytics\.fullText/);
+			assert.throws(() => resolveFullTextTelemetryPolicy(value), /Unknown analytics\.fullText option/);
+		}
+	});
 	it('rejects quoted telemetry values consistently at validation and live application', () => {
 		for (const value of [
 			{ enabled: 'true' },
