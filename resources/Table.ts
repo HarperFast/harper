@@ -1618,6 +1618,14 @@ function rescope(resolved: ResolvedRecordLockOptions, tableReplicates: boolean):
 	return scope === resolved.scope ? resolved : { ...resolved, scope };
 }
 
+/** A lock covers only writes staged while it was held, so one acquired over a pending write would not cover it. */
+function pendingWriteLockError(): ClientError {
+	return new ClientError(
+		'This transaction has an uncommitted write to this record; acquire the record lock before writing the record',
+		409
+	);
+}
+
 function transportUnavailable(databaseName: string): LockUnavailableError {
 	return new LockUnavailableError(
 		`Cluster-scoped record locks are not available on ${databaseName}: no record lock transport is registered`
@@ -2143,24 +2151,14 @@ export function makeTable(options): TableResourceClass {
 				condition.checked = true;
 			}
 		}
-		[ASSERT_TRACKED_WRITABLE](generation = this.#liveGeneration()): void {
+		[ASSERT_TRACKED_WRITABLE](generation = this.#writeGeneration): void {
 			if (!generation) return;
 			if (generation.internalWrites > 0) return;
-			if (generation !== this.#liveGeneration() || generation.closed)
+			if (generation !== this.#writeGeneration || generation.closed)
 				throw new ClientError('Can not modify an update instance after it has been saved; call update() again', 409);
 		}
 		[GET_TRACKED_WRITE_GENERATION](): WriteGeneration {
-			return this.#liveGeneration() ?? (this.#writeGeneration = { closed: false, internalWrites: 0 });
-		}
-		/**
-		 * A held lock keeps taking writes (save() restages them) after the write staged before lock() saved
-		 * and closed its generation, so it moves to a new one; nested objects captured in the closed one are
-		 * still refused. A scoped lock does not restage, so it keeps the 409 that asks for update().
-		 */
-		#liveGeneration(): WriteGeneration | undefined {
-			if (this.#lockWritable && this.#lockHandle?.hold && this.#writeGeneration?.closed)
-				this.#writeGeneration = undefined;
-			return this.#writeGeneration;
+			return (this.#writeGeneration ??= { closed: false, internalWrites: 0 });
 		}
 		/** Nested objects tracked in discarded changes are refused rather than edited into nothing. */
 		#discardChanges(): void {
@@ -4383,7 +4381,7 @@ export function makeTable(options): TableResourceClass {
 			} else {
 				id = requestTargetToId(target);
 			}
-			if (this.#liveGeneration()?.closed) {
+			if (this.#writeGeneration?.closed) {
 				this.#changes = undefined;
 				this.#writeGeneration = undefined;
 			}
@@ -5104,6 +5102,9 @@ export function makeTable(options): TableResourceClass {
 		 * in the same transaction), and the commit or abort releases it. `{ hold: true }`: the lock
 		 * outlives the transaction; write through the returned record and release with `unlock()`, or
 		 * let the lease expire.
+		 *
+		 * Lock first, then write: a transaction that already has an uncommitted write to the record is
+		 * refused with 409, since that write was not made under the lock.
 		 */
 		// async so option/id validation rejects rather than throwing past a caller's `.catch()`; the
 		// body still runs to completion synchronously, which is what keeps concurrent lock() calls
@@ -5164,6 +5165,7 @@ export function makeTable(options): TableResourceClass {
 				// Already held with the same type: re-entrant return. Preserve any staged changes.
 				return Promise.resolve(this.#reloadLocked(id, scoped, true));
 			}
+			if (link.hasPendingWriteTo(primaryStore, keyId)) return Promise.reject(pendingWriteLockError());
 			// Cluster scope needs a registered transport. An EXPLICIT { scope: 'cluster' } without one is
 			// a caller asking for a guarantee this node cannot make, so it fails closed rather than
 			// silently returning the node-local lock; the default keeps Phase 0 behavior, which is what
@@ -5356,6 +5358,14 @@ export function makeTable(options): TableResourceClass {
 						throw new ServerError('Transaction was closed while waiting for a record lock', 500);
 					}
 				}
+				// A self-committing link can leave the chain while this call waits; the handle belongs on the
+				// link that replaced it, or no later lookup through txnForContext finds it.
+				if (link.leftChain) lockLink = txnForContext(context);
+				// Nothing awaits from here to registerRecordLock, so a write staged during the wait is seen here.
+				if (lockLink.hasPendingWriteTo(primaryStore, keyId)) {
+					handle.release();
+					throw pendingWriteLockError();
+				}
 				let admitted: { floor: number; stamp: number; claimed: boolean } | undefined;
 				try {
 					admittedEntry = (primaryStore as any).getEntry(id);
@@ -5365,7 +5375,7 @@ export function makeTable(options): TableResourceClass {
 						const transactionCannotAdopt =
 							explicit &&
 							((link.transaction && reservedLocalKey(link.transaction) !== undefined) ||
-								link.hasUnlockedWrite(primaryStore, keyId) ||
+								link.hasUnlockedWrite() ||
 								(link.timestamp !== undefined && link.timestamp >= floor));
 						admitted = admissionStamp(tableRootStore, floor, handle.acquiredAt, !transactionCannotAdopt);
 					}
@@ -5375,9 +5385,6 @@ export function makeTable(options): TableResourceClass {
 				}
 				if (admitted)
 					handle.noteCandidateFloor(admitted.stamp, !admitted.claimed && admitted.floor > handle.acquiredAt);
-				// A self-committing link can leave the chain while this call waits; the handle belongs on the
-				// link that replaced it, or no later lookup through txnForContext finds it.
-				if (link.leftChain) lockLink = txnForContext(context);
 				lockLink.registerRecordLock(handle);
 				if (link.saveCommits && (context as any)?.timestamp) handle.noteCandidateFloor((context as any).timestamp);
 				if (link.open === TRANSACTION_STATE.OPEN && !link.saveCommits) {
@@ -5445,6 +5452,9 @@ export function makeTable(options): TableResourceClass {
 						throw error;
 					};
 					try {
+						// This instance's own write can still be awaiting async hooks, so it is not in writesByKey;
+						// the reload would discard the changes it reads.
+						if (keyId === writeKeyId(this.getId()) && this.#stagedWrite()) throw pendingWriteLockError();
 						const result = this.#reloadLocked(id, handle, false, { entry: admittedEntry });
 						return result?.then ? result.catch(releaseAfterReloadFailure) : result;
 					} catch (error) {
@@ -5517,9 +5527,8 @@ export function makeTable(options): TableResourceClass {
 				return this;
 			}
 			// Preserve staged changes when upgrading the same instance from scoped to hold so that
-			// set() calls made under the scoped lock survive the reload, and whenever a write this
-			// instance staged before lock() reads them.
-			if (!preserveChanges && !this.#stagedWrite()) this.#discardChanges();
+			// set() calls made under the scoped lock survive the reload.
+			if (!preserveChanges) this.#discardChanges();
 			this.#lockWritable = true;
 			// Scoped (not hold): stage now, same as update() would.  Skip if a write from an earlier
 			// lock() cycle on this instance is still pending (re-entrant call before its save()).
@@ -12327,11 +12336,12 @@ export function makeTable(options): TableResourceClass {
 	 * dangling scoped write would otherwise auto-commit at the transaction sweep and clobber
 	 * whatever the hold write lands. Marking it .dropped lets a later save() on the instance that
 	 * owns it (checked via #savingOperation === this write) fall through to the hold branch
-	 * instead of resolving a detached, dead reference. A joined write (a static verb's, or one staged
-	 * before lock()) is the caller's own: an upgrade keeps it, and a release within the lease (`releasing`)
-	 * returns it to an ordinary unlocked write, which is what it would be had it been staged after the
-	 * unlock. Past the lease it keeps the handle, so its save is refused like any lapsed lock write. A
-	 * `lockFailed` lock() was never handed to the caller, so its joined writes always revert.
+	 * instead of resolving a detached, dead reference. A joined write (a static verb's, or another
+	 * instance's, staged under the lock) is the caller's own: an upgrade keeps it, and a release within
+	 * the lease (`releasing`) returns it to an ordinary unlocked write, which is what it would be had it
+	 * been staged after the unlock. Past the lease it keeps the handle, so its save is refused like any
+	 * lapsed lock write. A `lockFailed` lock() was never handed to the caller, so its joined writes
+	 * always revert.
 	 */
 	function detachScopedUpgradeWrite(
 		link: any,

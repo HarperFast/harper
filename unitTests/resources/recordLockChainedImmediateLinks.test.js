@@ -389,7 +389,35 @@ describe('Record locks on a chained self-committing link survive the link being 
 		await fresh.unlock();
 	});
 
-	it('a hold lock on a second database keeps a same-instance pre-lock addTo() across commits and a third database', async function () {
+	it('a lock() that waits while its link leaves the chain is refused over a write staged on the replacement link', async function () {
+		if (isLMDB) return this.skip();
+		const idHead = id('replaced-head');
+		const idB = id('replaced-b');
+		await TableA.put(idHead, { id: idHead, n: 1 });
+		await TableBAudited.put(idB, { id: idB, n: 1 });
+		const contender = await TableBAudited.lock(idB, { hold: true, lease: 5000 }, {});
+		cleanups.push(() => contender.unlock());
+
+		const ctx = {};
+		await TableA.getResource({ id: idHead }, ctx, {});
+		const waiting = TableBAudited.lock(idB, { hold: true, lease: 5000, timeout: 5000 }, ctx);
+		const waitingLink = ctx.transaction.next;
+		await new TableA(idHead, ctx).put(idHead, { id: idHead, n: 2 });
+		assert.notStrictEqual(ctx.transaction.next, waitingLink);
+		const recB = await TableBAudited.getResource({ id: idB }, ctx, {});
+		await recB.update({ n: 7 });
+		assert.notStrictEqual(ctx.transaction.next, waitingLink);
+
+		assert.strictEqual(await contender.unlock(), true);
+		await assert.rejects(waiting, (err) => err?.statusCode === 409);
+		assert.strictEqual(registeredHandles(ctx, TableBAudited.primaryStore, writeKeyId(idB)).length, 0);
+		const other = await TableBAudited.lock(idB, { timeout: 500 }, {});
+		await other.unlock();
+		await recB.save();
+		assert.strictEqual((await TableBAudited.get(idB))?.n, 7);
+	});
+
+	it('a hold lock on a second database keeps its writes across commits and a third database', async function () {
 		if (isLMDB) return this.skip();
 		const idHead = id('combined-head');
 		const idB = id('combined-b');
@@ -403,9 +431,9 @@ describe('Record locks on a chained self-committing link survive the link being 
 		const ctx = {};
 		await TableA.getResource({ id: idHead }, ctx, {});
 		const recB = await TableBAudited.getResource({ id: idB }, ctx, {});
-		recB.addTo('n', 2);
 		await recB.lock({ hold: true, lease: 5000 });
 		cleanups.push(() => recB.unlock());
+		recB.addTo('n', 2);
 		await recB.save();
 		assert.strictEqual((await TableBAudited.get(idB))?.n, 3);
 

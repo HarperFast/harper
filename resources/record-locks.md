@@ -79,7 +79,7 @@ Consequences that shape the code:
   through `txnForContext` — re-entrant `lock()`, `unlock()`, `#bindWriteLock`'s holder stamp and the
   expired-lease 409 — still finds the handle (harper#3872). The closed link itself is never reused, so
   #2323 stays fixed. A `lock()` whose wait outlives its self-committing link registers on the link that
-  replaced it. `abort()` still drops the chain without handing anything over: it releases scoped handles
+  replaced it, and checks that link for a pending write to the key (below). `abort()` still drops the chain without handing anything over: it releases scoped handles
   link by link after the cut. Covered by `recordLockChainedImmediateLinks.test.js` and
   `recordLockChainedMidScopeCommit.test.js`.
 - **Release.** Every handle — scoped or hold — is registered in `link.recordLocks` and kept on the
@@ -108,35 +108,37 @@ Consequences that shape the code:
   applies lock rules (holder stamps, hold floor or 409, lease-expiry 409, `refuseLockWrites`,
   `hasUnlockedWrite`) by `write.lockHandle` alone. `#bindWriteLock` sets it at all four staging sites
   (`_writeUpdate`, `_writeDelete`, `_writeInvalidate`, `_writeRelocate`) from the instance's own handle,
-  else from `recordLocks` — so static verbs and other instances on the same context are covered — and
-  `registerRecordLock` binds unsaved writes already staged on the key, so admission's
-  `hasUnlockedWrite(store, keyId)` already discounts them and claims the stamp the clock may then adopt.
+  else from `recordLocks` — so static verbs and other instances on the same context are covered.
   Binding happens at staging (and again after `_writeUpdate`'s async model hooks), reading the registry
   without `recordLockFor`'s pruning: a lapsed lease still refuses the write, at save time it would have
   been pruned away. A handle that lapsed while bound stays bound across the hooks even if a re-lock
   replaced it; only one released by `unlock()` lets the write rebind or revert. Writes bound from the registry are `lockJoined`: they are the caller's writes, not
   the scoped lock's placeholder, so a scoped → hold upgrade keeps them and `unlock()` turns them back
   into ordinary unlocked writes rather than dropping them. Covered by `recordLockStaticVerbs.test.js`.
-  The same holds for the locked instance's own pre-lock write (harper#3896): that write reads the
-  instance's `#changes`, lazily or by identity, so `#reloadLocked` keeps them while `#stagedWrite()` exists,
-  and `unlock()` keeps a joined write as the instance's saving operation. Changes made under a lock that
-  `unlock()` abandons are cleared, unless a kept write reads them. The pre-lock write carries the
-  instance's write generation, so saving it closes that generation; a held instance then moves to a new
-  one (`#liveGeneration`), since `save()` restages its further writes, while nested tracked objects
-  captured in the closed generation still get 409. A scoped lock keeps the closed generation's 409, which
-  asks for `update()`. Discarding changes closes their generation too (`#discardChanges`).
-  Covered by `recordLockSameInstancePreLockStaging.test.js`.
+- **Lock first, then write (harper#3896).** A fresh `lock()` on a key this transaction has a pending write to
+  is refused with 409 (`hasPendingWriteTo`: owned, not dropped, and unsaved or saved into a transaction that
+  has not committed; an `ImmediateTransaction`'s saved write was submitted on its own). Such a write was
+  computed without the lock's exclusion, so it must not commit as a holder write. Re-entrant `lock()` and
+  scoped → hold upgrades are not refused. It is
+  checked at entry, before any wait, and again on the link that will own the handle once the key is
+  acquired, before admission (a write staged during the wait). The locked instance's own write can still be
+  in its model hooks, outside `writesByKey`, so a fresh acquisition also refuses one `#stagedWrite()`
+  shows, before `#reloadLocked` would discard the changes it reads. A call whose hooks finish after
+  registration stages under the lock. `unlock()` keeps a joined write as the instance's saving operation;
+  changes it abandons, and those a fresh `lock()` reloads over, are discarded with their write generation
+  closed (`#discardChanges`), so nested tracked objects in them 409. Covered by
+  `recordLockPendingWrite.test.js`.
 - **Read-your-writes in `#reloadLocked`.** Freshness always starts from the committed entry
   (`primaryStore.getEntry(id)`, snapshot-free) so a hold lock sees concurrent committed writes rather
-  than a stale snapshot. A write earlier in the _same_ explicit transaction has not reached that
-  committed entry yet, so `#reloadLocked` looks up the tail `TransactionWrite` for the key
+  than a stale snapshot. A write made under the lock earlier in the _same_ explicit transaction (seen by a
+  re-entrant `lock()`) has not reached that committed entry yet, so `#reloadLocked` looks up the tail `TransactionWrite` for the key
   (`link.writesByKey`) and, if it (or an ancestor found via `priorStagedWrite`) has a `stagedEntry`,
   takes the record from there — the same basis a chained write picks up (harper#1968): the record
   comes from the prior staged write, the rest of the entry (version, audit chain, blob metadata) stays
   the pre-transaction one.
 - **Scoped lock in an explicit `transaction()` scope.** After acquisition, when no writes have been
   staged yet (`link.writes.length === 0`), the transaction clock is pinned to `acquiredAt` so the
-  holder write wins over any pre-lock concurrent write. When prior staged writes already exist,
+  holder write wins over any pre-lock concurrent write. When writes to other records are already staged,
   ordering is best-effort — no 409 is thrown. In an `ImmediateTransaction` context (no explicit
   scope), a scoped lock's writes go through the same `update()`-style staging as above; each explicit
   `update()`+`save()` cycle is stamped with `holderVersionCandidate()` independently. A scoped lock acquired
@@ -211,7 +213,7 @@ off-key write through the locked instance, the next operation in a retry or repl
 the lock's acquisition time, which LWW then silently drops against a newer record version. In an
 explicit OPEN transaction, when the hold is the first write (no prior staged writes), the transaction
 clock is pinned to `handle.acquiredAt`; subsequent saves reuse that pinned clock. When non-hold writes
-were staged before the lock was acquired, the clock is left alone (best-effort ordering; no 409 is
+to other records were staged before the lock was acquired, the clock is left alone (best-effort ordering; no 409 is
 thrown for the mixed-write case). Either way the holder's writes commit at the transaction's version:
 `save()` stamps from the handle only a save that commits on its own handle (`saveCommits`, or
 `concurrentClosedWrite` — a write that reaches the transaction after it closed), so the conflict-retry

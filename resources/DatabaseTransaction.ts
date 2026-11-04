@@ -1485,21 +1485,17 @@ export class DatabaseTransaction implements Transaction {
 		let storeMap = this.recordLocks.get(handle.store);
 		if (!storeMap) this.recordLocks.set(handle.store, (storeMap = new Map()));
 		storeMap.set(handle.keyId, handle);
-		for (let write = this.writesByKey?.get(handle.store)?.get(handle.keyId); write; write = write.priorWrite) {
-			if (!this.joinsLockOnRegister(write)) continue;
-			write.lockHandle = handle;
-			write.lockJoined = true;
-			// The scan stops one past the first unlocked write; if that is this one, resume from it.
-			const scan = this.unlockedWriteScan;
-			if (scan?.found && scan.writes[scan.index - 1] === write) {
-				scan.found = false;
-				scan.index--;
-			}
-		}
 	}
 
-	private joinsLockOnRegister(write: TransactionWrite): boolean {
-		return !write.saved && !write.lockHandle && !write.dropped && Boolean(this.ownedWrites?.has(write));
+	/**
+	 * Whether this transaction owns a write to the key that has not committed: unsaved, or saved into a
+	 * transaction that has not committed yet. An ImmediateTransaction's saved write was submitted on its own.
+	 */
+	hasPendingWriteTo(store: any, keyId: unknown): boolean {
+		for (let write = this.writesByKey?.get(store)?.get(keyId); write; write = write.priorWrite) {
+			if (!write.dropped && (!write.saved || !this.saveCommits) && this.ownedWrites?.has(write)) return true;
+		}
+		return false;
 	}
 
 	recordLockFor(store: any, keyId: unknown): RecordLockHandle | undefined {
@@ -1908,9 +1904,8 @@ export class DatabaseTransaction implements Transaction {
 	/**
 	 * Whether an unlocked write is staged. Resumes where the last call stopped, so a transaction that
 	 * takes N locks scans its writes once in all; detaching an unlocked write resets the cached scan.
-	 * Given the key a lock() is admitting, its unsaved writes do not count: registerRecordLock binds them.
 	 */
-	hasUnlockedWrite(lockingStore?: any, lockingKeyId?: unknown): boolean {
+	hasUnlockedWrite(): boolean {
 		const writes = this.writes;
 		let scan = this.unlockedWriteScan;
 		if (scan?.writes !== writes) scan = this.unlockedWriteScan = { writes, index: 0, found: false };
@@ -1918,17 +1913,7 @@ export class DatabaseTransaction implements Transaction {
 			const write = writes[scan.index];
 			if (write && !write.lockHandle) scan.found = true;
 		}
-		if (!scan.found || lockingStore === undefined) return scan.found;
-		for (let index = scan.index - 1; index < writes.length; index++) {
-			const write = writes[index];
-			if (
-				write &&
-				!write.lockHandle &&
-				(write.store !== lockingStore || write.keyId !== lockingKeyId || !this.joinsLockOnRegister(write))
-			)
-				return true;
-		}
-		return false;
+		return scan.found;
 	}
 
 	private noteCommittedLockVersions(committedTransaction?: RocksTransaction): void {
