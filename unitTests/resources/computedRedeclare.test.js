@@ -384,6 +384,17 @@ describe('re-declaring a table reports and rebuilds only a real computed change 
 			fromOwn,
 			'an explicit registration of a dropped function was removed'
 		);
+
+		// another thread declared a different function; this one reads that declaration from the catalog
+		const fromNew = (record) => 'n-' + record.name;
+		const Replaced = declare('ComputedSharedFrom', { computed: { from: fromNew } });
+		const fromCatalog = { ...Replaced.dbisDB.getSync('ComputedSharedFrom/score'), computedFromHash: 'x'.repeat(22) };
+		const Refreshed = declare('ComputedSharedFrom', fromCatalog);
+		assert.strictEqual(
+			Refreshed.userResolvers.score,
+			undefined,
+			'a function the catalog no longer declares kept resolving'
+		);
 	});
 
 	it('rebuilds a function index another thread built without the function', async () => {

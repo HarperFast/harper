@@ -5812,6 +5812,7 @@ export function requestComputedIndexRepair(Table: any): void {
 	if (isReadOnlyMode() || !Table.attributes?.some((attribute) => needsResolvedRebuild(Table, attribute))) return;
 	const rootStore = Table.primaryStore.rootStore;
 	const claimed = [];
+	const certifiedEmpty = [];
 	const claim = () => {
 		if (isReadOnlyMode() || generationSuperseded(Table) || Table.dbisDB.getSync(Table.tableName + '/')?.dropping)
 			return;
@@ -5835,6 +5836,7 @@ export function requestComputedIndexRepair(Table: any): void {
 			if (!hasRecords) {
 				// nothing was indexed without the resolver; a build would only hold queries off
 				Table.dbisDB.putSync(key, { ...descriptor, checkpointAlgorithm: RESOLVED_CHECKPOINT_ALGORITHM });
+				certifiedEmpty.push([attribute, attribute.checkpointAlgorithm]);
 				attribute.checkpointAlgorithm = RESOLVED_CHECKPOINT_ALGORITHM;
 				continue;
 			}
@@ -5890,6 +5892,7 @@ export function requestComputedIndexRepair(Table: any): void {
 					delete attribute[field];
 				attribute.dbi.isIndexing = false;
 			}
+			for (const [attribute, algorithm] of certifiedEmpty.splice(0)) attribute.checkpointAlgorithm = algorithm;
 			reportFailure(error);
 		}
 		publish(launch());

@@ -1852,9 +1852,9 @@ export function makeTable(options): TableResourceClass {
 	let primaryKeyGranted = new WeakMap<object, any>();
 	let declaredAttributeNames: Set<string>;
 	let deferComputedIndexRepair = false;
-	// The resolver each declared function `from` installed; an attribute that keeps that function carries
-	// `computedFromHash` (databases.ts), even one read from the catalog.
-	const functionFromResolvers = new Map<string, Function>();
+	// The resolver each declared function `from` installed, with its source hash (databases.ts); an attribute,
+	// even one read from the catalog, that no longer carries that hash no longer has that function.
+	const functionFromResolvers = new Map<string, { resolver: Function; hash: string }>();
 	// Attribute names surfaced by the struct `toJSON` on the default (no-select) read: everything that is
 	// @enumerable, PLUS @computed attributes whose declared type is NOT a table type (scalars/objects/arrays
 	// that don't resolve to another entity — harper#1484). Table-typed computed attributes and non-enumerable
@@ -10941,12 +10941,13 @@ export function makeTable(options): TableResourceClass {
 			for (const a of this.attributes as any[]) if (a?.computed && !a.relationship) computedByName.set(a.name, a);
 			for (const name of Object.keys(this.userResolvers)) {
 				const attribute = computedByName.get(name);
+				const declared = functionFromResolvers.get(name);
 				if (
 					!attribute ||
 					(!attribute.computedFromExpression && schemaExpressionResolvers.has(this.userResolvers[name])) ||
-					(!attribute.computedFromHash &&
-						functionFromResolvers.has(name) &&
-						functionFromResolvers.get(name) === this.userResolvers[name])
+					(declared !== undefined &&
+						declared.resolver === this.userResolvers[name] &&
+						declared.hash !== attribute.computedFromHash)
 				) {
 					delete this.userResolvers[name];
 					functionFromResolvers.delete(name);
@@ -11203,7 +11204,7 @@ export function makeTable(options): TableResourceClass {
 						schemaExpressionResolvers.add(resolver);
 						this.userResolvers[attribute.name] = resolver;
 					} else {
-						functionFromResolvers.set(attribute.name, resolver);
+						functionFromResolvers.set(attribute.name, { resolver, hash: attribute.computedFromHash });
 						this.setComputedAttribute(attribute.name, resolver);
 					}
 				}
