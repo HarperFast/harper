@@ -22,6 +22,25 @@ const { randomUUID } = require('node:crypto');
 const { jobWorkerOptions } = require('#src/server/jobs/jobRunner');
 const { JOB_STATUS_ENUM, SYSTEM_TABLE_NAMES } = require('#src/utility/hdbTerms');
 
+it('logs a failing periodic analytics window without preventing the final flush', async function () {
+	this.timeout(60_000);
+	await ensureSystemTables();
+	const worker = startWorker(require.resolve('./fixtures/analyticsExitFlush.cjs'), {
+		name: 'http',
+		autoRestart: false,
+		workerData: { failPeriodic: true },
+	});
+	const messages = [];
+	worker.prependListener('message', (message) => messages.push(structuredClone(message)));
+	try {
+		const [code] = await once(worker, 'exit', { signal: AbortSignal.timeout(55_000) });
+		assert.strictEqual(code, 0);
+		assert.ok(messages.some((message) => message.type === 'periodic-error-logged'));
+	} finally {
+		if (worker.threadId !== -1) await worker.terminate();
+	}
+});
+
 it('waits for an in-flight analytics window before delivering exactly one final window', async function () {
 	this.timeout(60_000);
 	await ensureSystemTables();
@@ -32,7 +51,7 @@ it('waits for an in-flight analytics window before delivering exactly one final 
 	const messages = [];
 	worker.prependListener('message', (message) => messages.push(structuredClone(message)));
 	try {
-		const [code] = await once(worker, 'exit');
+		const [code] = await once(worker, 'exit', { signal: AbortSignal.timeout(55_000) });
 		assert.strictEqual(code, 0);
 		assert.deepStrictEqual(messages.find((message) => message.type === 'flush-completed')?.order, [
 			'ordinary-started',
@@ -91,7 +110,7 @@ it('flushes actual job-worker analytics before cleanup acknowledgement and persi
 		const messages = [];
 		worker.prependListener('message', (message) => messages.push(structuredClone(message)));
 		const workerId = worker.threadId;
-		const [code] = await once(worker, 'exit');
+		const [code] = await once(worker, 'exit', { signal: AbortSignal.timeout(55_000) });
 		assert.strictEqual(code, 0, JSON.stringify(messages));
 		assert.strictEqual((await jobs.get(id)).status, JOB_STATUS_ENUM.COMPLETE);
 		const finalIndex = messages.findIndex((message) => message.type === 'job-final-analytics');
@@ -167,7 +186,7 @@ it('delivers final native telemetry after deferred scope close and before worker
 		// Preserve the wire report independently of main's storage normalization.
 		worker.prependListener('message', (message) => messages.push(structuredClone(message)));
 		const workerId = worker.threadId;
-		const exited = once(worker, 'exit');
+		const exited = once(worker, 'exit', { signal: AbortSignal.timeout(55_000) });
 		async function waitForMessage(type, timeout = 15_000) {
 			while (!messages.some((message) => message.type === type))
 				await once(worker, 'message', { signal: AbortSignal.timeout(timeout) }).catch((error) => {

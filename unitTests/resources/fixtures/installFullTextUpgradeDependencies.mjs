@@ -4,7 +4,13 @@ import { copyFileSync, mkdirSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const [root] = process.argv.slice(2);
+const [root, ...requestedVersions] = process.argv.slice(2);
+const supportedVersions = ['0.5.0', '0.7.0', '0.8.0'];
+const versions = requestedVersions.length ? requestedVersions : supportedVersions;
+assert(
+	versions.every((version) => supportedVersions.includes(version)),
+	'Unsupported historical full-text version'
+);
 assert(root && isAbsolute(root), 'Pass an absolute scratch root for the historical full-text engines');
 const source = join(dirname(fileURLToPath(import.meta.url)), 'fulltext-upgrade');
 const destination = relative(resolve(source, '../../../..'), root);
@@ -14,7 +20,7 @@ assert(
 );
 assert(process.env.npm_execpath, 'Run through npm run test:fulltext:install-previous -- ROOT');
 
-for (const version of ['0.5.0', '0.7.0', '0.8.0']) {
+for (const version of versions) {
 	const prefix = join(root, version);
 	mkdirSync(prefix, { recursive: true });
 	for (const file of ['package.json', 'package-lock.json'])
@@ -31,6 +37,6 @@ for (const version of ['0.5.0', '0.7.0', '0.8.0']) {
 			'--prefix',
 			prefix,
 		],
-		{ stdio: 'inherit' }
+		{ stdio: 'inherit', timeout: 120_000 }
 	);
 }

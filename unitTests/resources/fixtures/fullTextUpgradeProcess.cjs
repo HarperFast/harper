@@ -11,6 +11,10 @@ const assert = require('node:assert');
 	const info = await binding.runtimeInfo();
 	assert.strictEqual(info.packageVersion, version);
 	assert.strictEqual(info.tantivyVersion, version !== '0.5.0' ? '0.27.0' : '0.26.2');
+	if (mode === 'probe') {
+		console.log(JSON.stringify({ runtimeInfo: info }));
+		return;
+	}
 	let index;
 	let ghostIds;
 	try {

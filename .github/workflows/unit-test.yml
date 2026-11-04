@@ -305,8 +305,6 @@ jobs:
     name: Full-text native plane (${{ matrix.os }}, Node.js v26)
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
-    env:
-      HARPER_FULLTEXT_UPGRADE_ROOT: ${{ runner.temp }}/fulltext-upgrade
     strategy:
       fail-fast: false
       matrix:
@@ -335,6 +333,8 @@ jobs:
         run: node --input-type=module --eval "const { validateFullTextNativeBinding } = await import('./dist/resources/indexes/fullTextNativeBinding.js'); await validateFullTextNativeBinding(await import('@harperfast/fulltext/native'));"
 
       - name: Native full-text lifecycle test
+        env:
+          HARPER_FULLTEXT_UPGRADE_ROOT: ${{ runner.temp }}/fulltext-upgrade
         run: >-
           npx mocha
           unitTests/resources/nativeFullTextDerivedIndexLifecycle.test.js unitTests/resources/nativeFullTextTelemetry.test.js

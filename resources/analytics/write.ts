@@ -234,7 +234,9 @@ function sendAnalytics() {
 		// One more timer turn: a stall that ran past the deadline is recorded by the event loop
 		// sampler's overdue firing, which libuv runs before a timer armed now, and the read below
 		// would otherwise reset that sample away.
-		sendAnalyticsTimeout = setTimeout(flushAnalytics, 0).unref();
+		sendAnalyticsTimeout = setTimeout(() => {
+			void flushAnalytics().catch((error) => harperLogger.warn('Analytics flush failed', error));
+		}, 0).unref();
 	}, analyticsDelay).unref();
 }
 

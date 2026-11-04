@@ -194,6 +194,10 @@ jobs:
           fi
           dpkg-query -W openssh-server
 
+      - name: Provision the historical full-text integration engine
+        timeout-minutes: 3
+        run: npm run test:fulltext:install-previous -- "${{ runner.temp }}/fulltext-upgrade" 0.5.0
+
       - name: Run Integration Test Shard ${{ matrix.shard }}
         timeout-minutes: 15
         env:
@@ -205,6 +209,7 @@ jobs:
           # package.json's minor advances.
           HARPER_PREVIOUS_MINOR_PATH: /tmp/harper-prev-minor-52/node_modules/harper:/tmp/harper-prev-minor-53/node_modules/harper
           HARPER_INTEGRATION_TEST_INSTALL_SCRIPT: dist/bin/harper.js
+          HARPER_FULLTEXT_UPGRADE_ROOT: ${{ runner.temp }}/fulltext-upgrade
           # Linux runners have working inotify, so the file-watch-dependent TLS regression
           # tests (cert-key-reload) must run rather than skip — this pipeline owns #2382.
           HARPER_TEST_REQUIRE_FILE_WATCHERS: '1'
@@ -288,12 +293,17 @@ jobs:
         timeout-minutes: 5
         run: npm install --ignore-scripts --prefix "${{ runner.temp }}/harperdb-legacy" harperdb@4
 
+      - name: Provision the historical full-text integration engine
+        timeout-minutes: 3
+        run: npm run test:fulltext:install-previous -- "${{ runner.temp }}/fulltext-upgrade" 0.5.0
+
       - name: Run Integration Test Shard ${{ matrix.shard }}
         timeout-minutes: 20
         env:
           HARPER_INTEGRATION_TEST_LOG_DIR: ${{ runner.temp }}/harper-integration-test-logs
           HARPER_LEGACY_VERSION_PATH: ${{ runner.temp }}/harperdb-legacy/node_modules/harperdb
           HARPER_INTEGRATION_TEST_INSTALL_SCRIPT: dist/bin/harper.js
+          HARPER_FULLTEXT_UPGRADE_ROOT: ${{ runner.temp }}/fulltext-upgrade
         run: npm run test:integration:all -- --shard=${{ matrix.shard }}/6
 
       - name: Upload Harper server logs
@@ -343,12 +353,17 @@ jobs:
         timeout-minutes: 5
         run: npm install --ignore-scripts
 
+      - name: Provision the historical full-text integration engine
+        timeout-minutes: 3
+        run: npm run test:fulltext:install-previous -- "${{ runner.temp }}/fulltext-upgrade" 0.5.0
+
       - name: Run Integration Test Shard ${{ matrix.shard }}
         timeout-minutes: 15
         env:
           HARPER_INTEGRATION_TEST_LOG_DIR: /tmp/harper-integration-test-logs
           HARPER_RUNTIME: bun
           HARPER_INTEGRATION_TEST_INSTALL_SCRIPT: dist/bin/harper.js
+          HARPER_FULLTEXT_UPGRADE_ROOT: ${{ runner.temp }}/fulltext-upgrade
         run: |
           npm run test:integration:all -- --shard=${{ matrix.shard }}/6
 
@@ -407,6 +422,10 @@ jobs:
       # (#914). Only non-secure, non-operations TCP ports are affected; secure/replication/ops paths
       # keep running on Node, so this exercises the uWS request/streaming/WS/GraphQL/Fastify-fallback
       # path against the full integration suite.
+      - name: Provision the historical full-text integration engine
+        timeout-minutes: 3
+        run: npm run test:fulltext:install-previous -- "${{ runner.temp }}/fulltext-upgrade" 0.5.0
+
       - name: Run Integration Test Shard ${{ matrix.shard }}
         timeout-minutes: 15
         env:
@@ -415,6 +434,7 @@ jobs:
           HARPER_LEGACY_51_PATH: /tmp/harper-legacy-51/node_modules/harper/dist/bin/harper.js
           HARPER_UWS_HTTP: 1
           HARPER_INTEGRATION_TEST_INSTALL_SCRIPT: dist/bin/harper.js
+          HARPER_FULLTEXT_UPGRADE_ROOT: ${{ runner.temp }}/fulltext-upgrade
         run: |
           npm run test:integration:all -- --shard=${{ matrix.shard }}/6
 
