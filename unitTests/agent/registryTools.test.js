@@ -19,6 +19,7 @@ const { addTool, setProfileToolProvider, _resetRegistryForTest } = require('#src
 const { composeRegistryTools, _resetRegistryToolsForTests } = require('#src/agent/registryTools');
 const { composeToolset } = require('#src/agent/toolset');
 const { buildHttpFetchTool } = require('#src/agent/tools/httpFetchTool');
+const { buildScheduleTool } = require('#src/agent/tools/scheduleTool');
 
 const SUPER_USER = { username: 'agent', role: { permission: { super_user: true } } };
 const RESTRICTED = { username: 'ro', role: { permission: { super_user: false } } };
@@ -35,7 +36,7 @@ function opTool(overrides = {}) {
 	};
 }
 
-const scheduleDeps = { onFollowup: async () => {} };
+const scheduleDeps = { scheduleTool: buildScheduleTool({ onFollowup: async () => {} }) };
 
 // composeRegistryTools takes (listingUser, resolveIdentity). Most tests use the same user for both.
 const identity = (user) => async () => user;
@@ -394,5 +395,140 @@ describe('agent/registryTools read_log masking (harper#3097)', () => {
 		assert.deepEqual(await tool('search_by_value').handler({}, { sessionId: 's1' }), {
 			results: [{ id: 1, apiKey: 'sk-row' }],
 		});
+	});
+});
+
+describe('agent/toolset composeToolset — agent.tools switches (harper#3993)', () => {
+	const { ALL_TOOL_SWITCHES_ON, OPERATOR_TOOL_NAMES } = require('#src/agent/toolset');
+	const { INSPECTOR_TOOL_NAMES, buildInspectorTools } = require('#src/agent/tools/inspectorTool');
+	const FS_NAMES = ['read_file', 'write_file', 'list_dir', 'grep_files', 'tail_file'];
+	const INSPECTOR_NAMES = Object.values(INSPECTOR_TOOL_NAMES);
+
+	function tool(name, extra = {}) {
+		return { def: { name, description: name, parameters: { type: 'object' } }, handler: async () => name, ...extra };
+	}
+	const inspectorTools = buildInspectorTools({ debugEnabled: false, getWorkerCount: () => 0 });
+	const bestPracticeTool = tool('harper_best_practice');
+	const httpFetchTool = buildHttpFetchTool(true);
+	const names = (composed) => composed.tools.map((t) => t.def.name);
+	const everything = () => ({ ...scheduleDeps, inspectorTools, bestPracticeTool, httpFetchTool });
+
+	it('composes every group, in the same order, with no switches and with every switch on', () => {
+		const withoutSwitches = composeToolset({
+			...everything(),
+			extraTools: [tool('custom')],
+			registryTools: [tool('search')],
+		});
+		const allOn = composeToolset({
+			...everything(),
+			tools: { ...ALL_TOOL_SWITCHES_ON },
+			extraTools: [tool('custom')],
+			registryTools: [tool('search')],
+		});
+		assert.deepStrictEqual(names(withoutSwitches), [
+			...FS_NAMES,
+			'http_fetch',
+			'schedule_followup',
+			...INSPECTOR_NAMES,
+			'harper_best_practice',
+			'custom',
+			'search',
+		]);
+		assert.deepStrictEqual(names(allOn), names(withoutSwitches));
+	});
+
+	it('reserves every operator-only tool name, on or off', () => {
+		assert.deepStrictEqual(
+			[...OPERATOR_TOOL_NAMES].sort(),
+			[...FS_NAMES, 'http_fetch', 'schedule_followup', ...INSPECTOR_NAMES, 'harper_best_practice'].sort()
+		);
+	});
+
+	for (const [group, removed] of [
+		['filesystem', FS_NAMES],
+		['schedule', ['schedule_followup']],
+		['inspector', INSPECTOR_NAMES],
+		['bestPractices', ['harper_best_practice']],
+	]) {
+		it(`tools.${group}: false removes exactly that group`, () => {
+			const all = names(composeToolset(everything()));
+			const composed = names(composeToolset({ ...everything(), tools: { ...ALL_TOOL_SWITCHES_ON, [group]: false } }));
+			assert.deepStrictEqual(
+				composed,
+				all.filter((name) => !removed.includes(name))
+			);
+		});
+
+		it(`tools.${group}: false keeps the group's names reserved against registry and extra tools`, () => {
+			const composed = names(
+				composeToolset({
+					...everything(),
+					tools: { ...ALL_TOOL_SWITCHES_ON, [group]: false },
+					registryTools: removed.map((name) => tool(name)),
+					extraTools: removed.map((name) => tool(name)),
+				})
+			);
+			for (const name of removed) assert.ok(!composed.includes(name), name);
+		});
+	}
+
+	it('with every switch off and no http_fetch, composes only registry tools and extras', () => {
+		const off = { filesystem: false, schedule: false, inspector: false, bestPractices: false };
+		const composed = composeToolset({
+			...scheduleDeps,
+			tools: off,
+			inspectorTools,
+			bestPracticeTool,
+			registryTools: [tool('search'), tool('describe_all')],
+		});
+		assert.deepStrictEqual(names(composed), ['search', 'describe_all']);
+		assert.ok(composed.scheduled instanceof Map);
+		assert.strictEqual(composed.scheduled.size, 0);
+		assert.deepStrictEqual(names(composeToolset({ ...scheduleDeps, tools: off })), []);
+	});
+
+	it('an extra keeps its name and precedence over a same-named registry tool, but never an operator-only name', () => {
+		const custom = tool('custom', { marker: 'extra' });
+		const composed = composeToolset({
+			...scheduleDeps,
+			tools: { filesystem: false, schedule: false, inspector: false, bestPractices: false },
+			extraTools: [custom, tool('read_file'), tool('harper_best_practice')],
+			registryTools: [tool('custom'), tool('read_file')],
+		});
+		assert.deepStrictEqual(names(composed), ['custom']);
+		assert.strictEqual(composed.tools[0], custom);
+	});
+
+	it('keeps the same pending map across a recomposition, so a cancel after an allowDestructive flip still clears a followup', async () => {
+		const scheduleTool = buildScheduleTool({ onFollowup: async () => {} });
+		const first = composeToolset({ ...everything(), scheduleTool, allowDestructive: true });
+		const schedule = first.tools.find((t) => t.def.name === 'schedule_followup');
+		const { id } = await schedule.handler({ delayMs: 60_000, prompt: 'later' }, { sessionId: 's1', scopes: {} });
+		try {
+			assert.strictEqual(first.scheduled.get(id)?.sessionId, 's1');
+			const second = composeToolset({ ...everything(), scheduleTool, allowDestructive: false });
+			assert.strictEqual(second.scheduled, first.scheduled);
+			assert.strictEqual(second.scheduled.get(id)?.sessionId, 's1');
+			const off = composeToolset({
+				...everything(),
+				scheduleTool,
+				tools: { ...ALL_TOOL_SWITCHES_ON, schedule: false },
+			});
+			assert.notStrictEqual(off.scheduled, first.scheduled);
+			assert.strictEqual(off.scheduled.size, 0);
+		} finally {
+			clearTimeout(first.scheduled.get(id)?.timer);
+		}
+	});
+
+	it('allowDestructive still filters the composed groups', () => {
+		const composed = names(
+			composeToolset({ ...everything(), allowDestructive: false, tools: { ...ALL_TOOL_SWITCHES_ON, schedule: false } })
+		);
+		assert.ok(!composed.includes('write_file'));
+		assert.ok(!composed.includes('inspector_evaluate'));
+		assert.ok(composed.includes('read_file'));
+		assert.ok(composed.includes('inspector_attach'));
+		assert.ok(!composed.includes('schedule_followup'));
 	});
 });

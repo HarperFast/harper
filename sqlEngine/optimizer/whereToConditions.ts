@@ -17,6 +17,7 @@
  */
 
 import type { ExprNode } from '../parser/ast.ts';
+import { tokenizeLike } from '../expressions/like.ts';
 
 export interface DirectCondition {
 	attribute?: string;
@@ -323,6 +324,9 @@ function leafToCondition(expr: ExprNode): ConditionNode | undefined {
 			if (!comparator) return undefined;
 			const colLit = pickColumnAndLiteral(expr.left, expr.right);
 			if (!colLit) return undefined;
+			// a range against NULL is UNKNOWN for every row, where a pushed null bound would open the range; the
+			// residual's three-valued logic answers it (a NULL literal normalizes to `undefined`)
+			if (colLit.value == null && comparator !== 'equals' && comparator !== 'ne') return undefined;
 			const attribute = colLit.column;
 			// `=` matches either form (OR); `!=` must NOT match either form, and (SQL
 			// three-valued logic / legacy AlaSQL) must also exclude NULLs, so it's an
@@ -377,7 +381,7 @@ function leafToCondition(expr: ExprNode): ConditionNode | undefined {
 		case 'between': {
 			if (expr.expr.kind !== 'column') return undefined;
 			if (expr.low.kind !== 'literal' || expr.high.kind !== 'literal') return undefined;
-			if (expr.negated) return undefined;
+			if (expr.negated || expr.low.value == null || expr.high.value == null) return undefined;
 			return {
 				attribute: expr.expr.name,
 				comparator: 'between',
@@ -388,11 +392,14 @@ function leafToCondition(expr: ExprNode): ConditionNode | undefined {
 			if (expr.expr.kind !== 'column') return undefined;
 			if (expr.pattern.kind !== 'literal' || typeof expr.pattern.value !== 'string') return undefined;
 			if (expr.negated) return undefined;
-			const pattern = expr.pattern.value;
-			const startsPct = pattern.startsWith('%');
-			const endsPct = pattern.endsWith('%');
-			const middle = pattern.slice(startsPct ? 1 : 0, endsPct ? pattern.length - 1 : undefined);
-			if (middle.includes('%') || middle.includes('_')) return undefined;
+			const tokens = tokenizeLike(expr.pattern.value, expr.escape);
+			const startsPct = tokens[0]?.kind === 'any';
+			const endsPct = tokens.at(-1)?.kind === 'any';
+			let middle = '';
+			for (const token of tokens.slice(startsPct ? 1 : 0, endsPct ? -1 : undefined)) {
+				if (token.kind !== 'literal') return undefined;
+				middle += token.char;
+			}
 			if (startsPct && endsPct) {
 				return { attribute: expr.expr.name, comparator: 'contains', value: middle };
 			}

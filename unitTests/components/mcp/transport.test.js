@@ -1,9 +1,14 @@
+const { processIncarnation } = require('#src/server/threads/processIncarnation');
 const assert = require('node:assert');
 const rewire = require('rewire');
 const { AccessViolation } = require('#src/utility/errors/hdbError');
 const transport_mod = rewire('#js/components/mcp/transport');
 const { handleMcpRequest } = transport_mod;
-const { _setSessionTableForTest, createSession, loadSession, saveSession } = require('#src/components/mcp/session');
+const sessionModule = require('#src/components/mcp/session');
+const { _setSessionTableForTest, ensureSessionTable, createSession, loadSession, patchSession } = sessionModule;
+const { waitFor } = require('../../waitFor');
+const { setupTestDBPath } = require('../../testUtils');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const {
 	getRegisteredSession,
 	pushSessionFrame,
@@ -23,6 +28,8 @@ const {
 	_setHttpUrlPrefixForTest,
 	_setSubscribeImplForTest,
 } = require('#src/components/mcp/resources');
+const subscriptionState = require('#src/components/mcp/subscriptionState');
+const { claimSubscriptionOwner, _setSubscriptionTimeoutForTest } = subscriptionState;
 
 function makeFakeResources(entries) {
 	const map = new Map();
@@ -39,23 +46,6 @@ function makeFakeResources(entries) {
 		return best;
 	};
 	return map;
-}
-
-function makeFakeTable() {
-	const store = new Map();
-	return {
-		store,
-		async put(record) {
-			store.set(record.id, { ...record });
-		},
-		async get(id) {
-			const r = store.get(id);
-			return r ? { ...r } : undefined;
-		},
-		async delete(id) {
-			store.delete(id);
-		},
-	};
 }
 
 const {
@@ -82,6 +72,13 @@ function jsonRpc(id, method, params) {
 }
 
 describe('mcp/transport', () => {
+	let sessionTable;
+	before(() => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		_setSessionTableForTest(undefined);
+		sessionTable = ensureSessionTable();
+	});
 	let envOverrides;
 	const envStub = {
 		get(key) {
@@ -93,7 +90,7 @@ describe('mcp/transport', () => {
 		envOverrides = {};
 		_resetRateLimitForTest();
 		transport_mod.__set__('env', envStub);
-		_setSessionTableForTest(makeFakeTable());
+		_setSessionTableForTest(sessionTable);
 		_resetRegistryForTest();
 		_resetPromptRegistryForTest();
 		_setResourcesForTest(makeFakeResources([]));
@@ -102,12 +99,13 @@ describe('mcp/transport', () => {
 	});
 
 	afterEach(() => {
-		_setSessionTableForTest(undefined);
+		_resetSessionRegistryForTest();
 		_resetRegistryForTest();
 		_resetPromptRegistryForTest();
 		_setResourcesForTest(undefined);
 		_setOpenApiGeneratorForTest(undefined);
 		_setHttpUrlPrefixForTest(undefined);
+		_setSubscriptionTimeoutForTest(undefined);
 	});
 
 	describe('POST initialize', () => {
@@ -251,6 +249,80 @@ describe('mcp/transport', () => {
 			assert.ok(res.sseIterable, 'SSE stream returned');
 		});
 
+		it('restores subscriptions with the full local principal', async () => {
+			const uri = 'https://app.test:9926/Product/restore';
+			await patchSession(sessionId, { subscriptions: [uri] });
+			let restoredUser;
+			_setSubscribeImplForTest(async (_path, user) => {
+				restoredUser = user;
+				return {
+					end() {},
+					[Symbol.asyncIterator]() {
+						return { next: () => new Promise(() => {}) };
+					},
+				};
+			});
+
+			const res = await handleMcpRequest(
+				makeReq({
+					method: 'GET',
+					userObject: {
+						username: 'alice',
+						password: 'do-not-forward',
+						customClaim: 'not-in-contract',
+						role: { permission: { super_user: true } },
+					},
+					headers: { 'mcp-session-id': sessionId, 'accept': 'text/event-stream' },
+				})
+			);
+			assert.equal(res.status, 200);
+			assert.equal(restoredUser.username, 'alice');
+			assert.equal(restoredUser.password, 'do-not-forward');
+			assert.equal(restoredUser.customClaim, 'not-in-contract');
+			res.sseIterable.emit('close');
+		});
+
+		it('keeps a valid session and its replacement GET when an earlier GET is superseded', async () => {
+			await patchSession(sessionId, { subscriptions: ['https://app.test/Product/restore'] });
+			let release;
+			let started;
+			const installing = new Promise((resolve) => (started = resolve));
+			const blocked = new Promise((resolve) => (release = resolve));
+			let attempts = 0;
+			const stream = () => ({
+				end() {},
+				[Symbol.asyncIterator]() {
+					return { next: () => new Promise(() => {}) };
+				},
+			});
+			_setSubscribeImplForTest(async () => {
+				if (++attempts === 1) {
+					started();
+					return blocked;
+				}
+				return stream();
+			});
+			try {
+				const get = () =>
+					handleMcpRequest(
+						makeReq({ method: 'GET', headers: { 'mcp-session-id': sessionId, 'accept': 'text/event-stream' } })
+					);
+				const first = get();
+				await installing;
+				const replacement = await get();
+				assert.equal(replacement.status, 200);
+				release(stream());
+				const superseded = await first;
+				assert.equal(superseded.status, 503);
+				assert.ok(await loadSession(sessionId));
+				assert.equal(getRegisteredSession(sessionId).queue, replacement.sseIterable);
+				replacement.sseIterable.emit('close');
+			} finally {
+				release(stream());
+				_setSubscribeImplForTest(undefined);
+			}
+		});
+
 		it('accepts a matching MCP-Protocol-Version and returns Method-not-found for unknown methods', async () => {
 			const res = await handleMcpRequest(
 				makeReq({
@@ -302,10 +374,9 @@ describe('mcp/transport', () => {
 
 		it('does not roll back lastActivity when persisting the level (touchSession adopted)', async () => {
 			// Force a known-old lastActivity, then setLevel: the request's touchSession
-			// must advance it, and the level-persisting saveSession must NOT write the
+			// must advance it, and the level patch must not write the
 			// stale load-time value back (root fix — handlePost adopts the touched copy).
-			const stale = await loadSession(sessionId);
-			await saveSession({ ...stale, lastActivity: 1 });
+			await patchSession(sessionId, { lastActivity: 1 });
 			await handleMcpRequest(
 				makeReq({
 					body: jsonRpc(2, 'logging/setLevel', { level: 'info' }),
@@ -1175,9 +1246,13 @@ describe('mcp/transport', () => {
 		});
 
 		describe('resources/subscribe + resources/unsubscribe', () => {
-			beforeEach(() => {
+			beforeEach(async () => {
 				// A live GET stream is required to subscribe — register one for the session.
-				registerSession(sessionId, 'application', { username: 'alice', role: { permission: { super_user: true } } });
+				const registered = registerSession(sessionId, 'application', {
+					username: 'alice',
+					role: { permission: { super_user: true } },
+				});
+				await claimSubscriptionOwner(sessionId, registered.streamToken);
 				// Inject a fake change stream so dispatch doesn't need the real audit log.
 				// `null` for the sentinel path makes the resource non-subscribable.
 				_setSubscribeImplForTest(async (path) =>
@@ -1255,6 +1330,21 @@ describe('mcp/transport', () => {
 					})
 				);
 				assert.equal(res.jsonBody.error.code, -32602);
+			});
+
+			it('returns a retryable internal error when the persisted owner never acknowledges', async () => {
+				_resetSessionRegistryForTest();
+				await waitFor(async () => !(await loadSession(sessionId)).streamToken);
+				await patchSession(sessionId, { streamToken: `${processIncarnation}:crashed-owner` });
+				_setSubscriptionTimeoutForTest(10);
+				const res = await handleMcpRequest(
+					makeReq({
+						body: jsonRpc(73, 'resources/subscribe', { uri: 'https://app.test:9926/Product/1' }),
+						headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
+					})
+				);
+				assert.equal(res.jsonBody.error.code, -32603);
+				assert.match(res.jsonBody.error.message, /timed out; retry/);
 			});
 
 			it('unsubscribe removes the URI from the durable record', async () => {

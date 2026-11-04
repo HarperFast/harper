@@ -245,6 +245,10 @@ interface TypedDirectCondition<Record extends object, Property extends keyof Rec
 }
 
 interface ConditionGroup<Record extends object = any> {
+	/**
+	 * With an `attribute` naming a relationship (REST `relationship[...]`), conditions on the related table that one
+	 * related record must meet; separate conditions on a relationship path may each be met by a different one.
+	 */
 	conditions?: Conditions<Record>;
 	operator?: Operator;
 }

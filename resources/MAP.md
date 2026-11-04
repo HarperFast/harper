@@ -11,7 +11,7 @@ Where things are in `resources/`. The rules live in [DESIGN.md](DESIGN.md): read
 - `databases.ts` — catalog loading, `table()`/`declareTable`, index backfill, database close and drop
 - `RecordEncoder.ts`, `asBinary.ts` — record metadata encoding, `entryMap`, `RecordObject`
 - `PrimaryRocksDatabase.ts`, `RocksIndexStore.ts` — RocksDB primary and index stores
-- `RocksTransactionLogStore.ts`, `auditStore.ts` — per-origin transaction logs; audit records, audit floor, database generation
+- `RocksTransactionLogStore.ts`, `auditStore.ts` — per-origin transaction logs; audit records, audit floor, per-log purge bounds, database generation
 - `replayLogs.ts`, `replayLogsGuards.ts` — crash replay of the transaction logs
 - `transactionBroadcast.ts`, `IterableEventQueue.ts` — commit notification fan-out; subscription queues
 - `subscriptionCheckpoint.ts`, `originClosedFloor.ts` — per-origin subscription checkpoints; the certified local log floor
@@ -38,12 +38,13 @@ Where things are in `resources/`. The rules live in [DESIGN.md](DESIGN.md): read
 ## Where is it
 
 - request authorization → `transactional()` in Resource.ts; `allowRead`/`allowUpdate`/`allowCreate`/`allowDelete` in Table.ts
+- restricted replacements and implicit key grants → `getTablePermissions`, `allowTableUpdate`, `restrictedReplacement` in Table.ts; see [permission invariants](../security/DESIGN.md#resource-attribute-permissions)
 - versioning, write conflicts, out-of-order merge → `_writeUpdate` in Table.ts
 - delete, invalidate, relocate, publish → `_writeDelete`, `_writeInvalidate`, `_writeRelocate`, `_writePublish` in Table.ts
 - index choice and condition order → `executeConditions`, `estimateCondition`, `searchByIndex` in search.ts
 - FIQL parsing → `parseBlock` in search.ts
 - response shape (select) → `transformEntryForSelect` in Table.ts; `transformForSelect` in Resource.ts
-- sorting → `transformToOrderedSelect` in Table.ts
+- sorting → `transformToOrderedSelect` in Table.ts; whether the lead already supplies the order → `scansInAttributeOrder` in search.ts
 - record TTL and eviction → `setTTLExpiration`, `evict`, `scheduleCleanup` in Table.ts
 - cache miss to source → `getFromSource` in Table.ts
 - subscriptions and replay → `subscribe`, `eventFromAudit` in Table.ts; `addSubscription` in transactionBroadcast.ts
@@ -54,6 +55,7 @@ Where things are in `resources/`. The rules live in [DESIGN.md](DESIGN.md): read
 - residency, stubs, replicas → `getResidency`, `_storeReplica` in Table.ts; residencyMaps.ts
 - table create, schema change, drop → `table()`, `runIndexing` in databases.ts; `dropTable`, `updatedAttributes` in Table.ts
 - relationships → the resolvers built in `updatedAttributes`; `_prepareRelationshipSelection` and `_readDenial` in Table.ts
+- relationship conditions and `rel[...]` groups → `filterByType`, `searchRelatedGroup` in search.ts; `_prepareQueryConditions` in Table.ts
 - URL path to resource → `getMatch`, `matchParamRoute` in Resources.ts
 - record flags → `INVALIDATED`, `REPLICA` in Table.ts; `VERSION_REUSED`, `FULL_WRITE_HEAD` in RecordEncoder.ts
 - audit floor and retention → auditStore.ts; see [audit-retention.md](audit-retention.md)
