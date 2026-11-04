@@ -353,6 +353,9 @@ describe('MCP persisted subscription state', function () {
 		_setSubscribeImplForTest(async () => changeStream());
 		const broad = { ...USER, _scopedToken: true, authExpiresAt: Date.now() / 1000 + 60 };
 		assert.equal(await subscribe(URI, broad), 'success');
+		const sameGrant = registerSession(session.id, 'application', broad);
+		assert.equal(await claimSubscriptionOwner(session.id, sameGrant.streamToken), true);
+		assert.equal(_liveSubscriptionCount(session.id), 1);
 		const narrow = { ...broad, role: { permission: {} } };
 		const replacement = registerSession(session.id, 'application', narrow);
 		assert.equal(await claimSubscriptionOwner(session.id, replacement.streamToken), true);
