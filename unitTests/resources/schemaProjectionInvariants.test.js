@@ -23,6 +23,16 @@ describe('programmatic schema projection invariants', () => {
 		assert.equal(first[0].properties[0].description, undefined);
 	});
 
+	it('keeps structural type inference in metadata projections', () => {
+		const attributes = resolveAttributes({ properties: { profile: { properties: { label: { type: 'string' } } } } });
+		assert.equal(attributes[0].type, 'object');
+		assert.equal(deriveCreateSchema(attributes).properties.profile.type, 'object');
+		assert.equal(
+			attributeToSchema(attributes[0], { dialect: 'openapi-3.0.3', mapPrimitive: (type) => ({ type }) }).type,
+			'object'
+		);
+	});
+
 	it('preserves undeclared required names while pruning explicitly hidden names', () => {
 		const source = {
 			properties: { secret: { type: 'string', hidden: true } },

@@ -24,6 +24,7 @@ const skipSuite = process.platform === 'win32';
 suite('OpenAPI — static properties emission', { skip: skipSuite }, (ctx) => {
 	let client;
 	let schema;
+	let contractRoute;
 	let mcpClient;
 	let mcpTransport;
 
@@ -35,6 +36,7 @@ suite('OpenAPI — static properties emission', { skip: skipSuite }, (ctx) => {
 		client = createApiClient(ctx.harper);
 		const r = await client.reqRest('/openapi').expect(200);
 		schema = r.body.components.schemas.OrderSummary;
+		contractRoute = r.body.paths['/ConditionalIntake'];
 		assert.ok(schema, `OrderSummary schema missing from the document: ${r.text.slice(0, 400)}`);
 		mcpTransport = new StreamableHTTPClientTransport(new URL('/mcp', ctx.harper.httpURL), {
 			requestInit: {
@@ -117,5 +119,21 @@ suite('OpenAPI — static properties emission', { skip: skipSuite }, (ctx) => {
 		assert.deepEqual(schema.properties.choice.enum, ['a', 1]);
 		assert.deepEqual(schema.properties.payload.enum, [{ a: 1, b: [true, null] }]);
 		assert.ok(schema.properties.choice.anyOf.some((arm) => arm.enum?.includes(null)));
+	});
+
+	test('preserves type-optional contract constraints in the served document', async () => {
+		const expected = { properties: { label: { type: 'string' } }, items: { type: 'string' } };
+		assert.deepEqual(contractRoute.post.requestBody.content['application/json'].schema, expected);
+		assert.deepEqual(
+			contractRoute.post.responses['200'].content['application/json'].schema.properties.result,
+			expected
+		);
+		const response = await fetch(new URL('/ConditionalIntake', ctx.harper.httpURL), {
+			method: 'POST',
+			headers: client.headers,
+			body: JSON.stringify(['one', 'two']),
+		});
+		assert.equal(response.status, 200);
+		assert.deepEqual(await response.json(), { result: ['one', 'two'] });
 	});
 });

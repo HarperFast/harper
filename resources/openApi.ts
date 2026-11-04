@@ -33,10 +33,15 @@ function warnInvalidResourceSchema(resource: unknown, path: string, error: unkno
  * OpenAPI-specific (`format` carries the Harper type name, which MCP has no equivalent for).
  * Returns `undefined` for a `@hidden` attribute — callers skip it.
  */
-function attributeToOpenApiSchema(attr: AttributeLike, valueConstraints = true): JsonSchemaFragment | undefined {
+function attributeToOpenApiSchema(
+	attr: AttributeLike,
+	valueConstraints = true,
+	preserveTypeOptionality = false
+): JsonSchemaFragment | undefined {
 	return attributeToSchema(attr, {
 		dialect: 'openapi-3.0.3',
 		valueConstraints,
+		preserveTypeOptionality,
 		mapPrimitive: (type, mapped) => openApiPrimitive(type, mapped.name || attr.name, !valueConstraints),
 	});
 }
@@ -633,8 +638,8 @@ function Parameter(name, i, type) {
 function fragmentToOpenApiSchema(fragment: any): any {
 	if (!fragment || typeof fragment !== 'object') return { type: 'object' };
 	try {
-		const [attribute] = projectPropertiesToAttributes({ value: fragment });
-		return attributeToOpenApiSchema(attribute) ?? {};
+		const [attribute] = projectPropertiesToAttributes({ value: fragment }, true);
+		return attributeToOpenApiSchema(attribute, true, true) ?? {};
 	} catch (error) {
 		warnInvalidResourceSchema(fragment, 'request contract', error);
 		return {};

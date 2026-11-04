@@ -2,6 +2,7 @@ const assert = require('node:assert');
 const { expect } = require('chai');
 const { generateJsonApi } = require('#src/resources/openApi');
 const { Resources } = require('#src/resources/Resources');
+const { defineResource, schemaOf } = require('#src/resources/defineResource');
 
 describe('test openApi module', () => {
 	let resources;
@@ -671,4 +672,38 @@ describe('openApi — declared dialect compliance (3.0.3)', () => {
 			expect(props, `fixture property ${key} missing — walk assertions would pass vacuously`).to.have.property(key);
 		}
 	});
+});
+
+describe('openApi — type-optional request contracts', () => {
+	for (const fragment of [
+		{ properties: { label: { type: 'string' } } },
+		{ items: { type: 'string' } },
+		{ properties: { label: { type: 'string' } }, required: ['label'], additionalProperties: false, nullable: true },
+		{ items: { items: { type: 'string' } } },
+		{ type: 'array', items: { type: 'string' }, properties: { label: { type: 'string' } } },
+		{ type: 'string', properties: { label: { type: 'string' } } },
+		{ properties: { labels: { items: { type: 'string' } } }, items: { properties: { label: { type: 'string' } } } },
+	]) {
+		it(`preserves conditional constraints in bodies, responses, and queries: ${JSON.stringify(fragment)}`, () => {
+			const Contract = defineResource(
+				{
+					post: { body: schemaOf(fragment), response: schemaOf(fragment) },
+					get: { query: { filter: schemaOf(fragment) } },
+				},
+				{
+					post(_target, data) {
+						return data;
+					},
+					get() {},
+				}
+			);
+			const resources = new Map([['Contract', { path: 'contract', Resource: Contract }]]);
+			resources.allTypes = new Map();
+			const route = JSON.parse(JSON.stringify(generateJsonApi(resources, 'https://harper.fast'))).paths['/contract'];
+			assert.equal(route.post.requestBody.required, fragment.type === undefined ? undefined : true);
+			assert.deepStrictEqual(route.post.requestBody.content['application/json'].schema, fragment);
+			assert.deepStrictEqual(route.post.responses['200'].content['application/json'].schema, fragment);
+			assert.deepStrictEqual(route.get.parameters.find((parameter) => parameter.name === 'filter').schema, fragment);
+		});
+	}
 });

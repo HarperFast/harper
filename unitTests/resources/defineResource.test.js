@@ -61,6 +61,75 @@ describe('defineResource / Resource.withSchema — runtime request contract', ()
 		);
 	});
 
+	it('reads object enum declarations once for a batch body', async () => {
+		let reads = 0;
+		const members = Array.from({ length: 75 }, (_, code) => ({ code }));
+		for (let i = 0; i < members.length; i++) {
+			const member = members[i];
+			Object.defineProperty(members, i, {
+				get() {
+					reads++;
+					return member;
+				},
+			});
+		}
+		const Api = defineResource(
+			{ post: { body: schemaOf({ type: 'array', items: { type: 'object', enum: members } }) } },
+			{
+				post(_target, data) {
+					return data;
+				},
+			}
+		);
+		const readCounts = [];
+		for (const length of [1, 100]) {
+			reads = 0;
+			const body = Array.from({ length }, () => ({ code: 74 }));
+			assert.deepEqual(await Api.post(targetWith('', null), body), body);
+			readCounts.push(reads);
+		}
+		assert.equal(readCounts[0], readCounts[1], `batch length changed declaration reads: ${readCounts}`);
+	});
+
+	it('bounds enum declaration reads for rejected batches too', async () => {
+		for (const invalidMember of [false, true]) {
+			let reads = 0;
+			const values = [{ code: 1 }, invalidMember ? { invalid: undefined } : { code: 2 }];
+			const members = values.map((value) => value);
+			for (let i = 0; i < values.length; i++) {
+				Object.defineProperty(members, i, {
+					get() {
+						reads++;
+						return values[i];
+					},
+				});
+			}
+			const Api = defineResource(
+				{ post: { body: schemaOf({ type: 'array', items: { type: 'object', enum: members } }) } },
+				{
+					post(_target, data) {
+						return data;
+					},
+				}
+			);
+			const readCounts = [];
+			for (const length of [1, 64]) {
+				reads = 0;
+				await assert.rejects(
+					Promise.resolve().then(() =>
+						Api.post(
+							targetWith('', null),
+							Array.from({ length }, () => ({ code: 3 }))
+						)
+					),
+					/must be one of/
+				);
+				readCounts.push(reads);
+			}
+			assert.equal(readCounts[0], readCounts[1], `batch length changed declaration reads: ${readCounts}`);
+		}
+	});
+
 	it('refreshes object enum keys between requests', async () => {
 		const members = [{ a: 1 }];
 		const Api = defineResource(

@@ -1,3 +1,5 @@
+import { schemaOf } from 'harper';
+
 export class OrderSummary extends Resource {
 	static description = 'Rolled-up order totals.';
 	static primaryKey = 'orderId';
@@ -27,5 +29,19 @@ export class OrderSummary extends Resource {
 
 	post() {
 		return { orderId: 'o1', status: 'open', note: null, extension: true };
+	}
+}
+
+export class ConditionalIntake extends Resource.withSchema({
+	post: {
+		body: schemaOf({ properties: { label: { type: 'string' } }, items: { type: 'string' } }),
+		response: schemaOf({
+			type: 'object',
+			properties: { result: { properties: { label: { type: 'string' } }, items: { type: 'string' } } },
+		}),
+	},
+}) {
+	post(_target, data) {
+		return { result: data };
 	}
 }

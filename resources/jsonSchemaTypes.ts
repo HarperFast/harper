@@ -219,7 +219,8 @@ function fragmentToAttribute(
 	name: string,
 	fragment: JsonSchemaFragment,
 	ancestors: WeakSet<object>,
-	depth: number
+	depth: number,
+	preserveTypeOptionality: boolean
 ): AttributeLike {
 	if (fragment === null || typeof fragment !== 'object' || Array.isArray(fragment)) {
 		throw new TypeError(`Schema property "${name}" must be an object`);
@@ -282,13 +283,16 @@ function fragmentToAttribute(
 				throw new TypeError(`Schema property "${name}.properties" must be an object`);
 			}
 			attr.properties = Object.entries(fragment.properties).map(([subName, sub]) =>
-				fragmentToAttribute(subName, sub, ancestors, depth + 1)
+				fragmentToAttribute(subName, sub, ancestors, depth + 1, preserveTypeOptionality)
 			);
-			attr.type ??= 'object';
+			if (!preserveTypeOptionality) attr.type ??= 'object';
 		}
 		const declaredTypes = Array.isArray(fragment.type) ? fragment.type : [fragment.type];
-		if (declaredTypes.includes('array') && fragment.items !== undefined) {
-			attr.elements = fragmentToAttribute('', fragment.items, ancestors, depth + 1);
+		if (
+			(declaredTypes.includes('array') || (preserveTypeOptionality && fragment.type == null)) &&
+			fragment.items !== undefined
+		) {
+			attr.elements = fragmentToAttribute('', fragment.items, ancestors, depth + 1, preserveTypeOptionality);
 		}
 		if (fragment.description) attr.description = fragment.description;
 		if (fragment.primaryKey) attr.isPrimaryKey = true;
@@ -308,13 +312,16 @@ function fragmentToAttribute(
  * Project a `Record<string, JsonSchemaFragment>` (the `static properties` form) back into the
  * `Attribute[]` Array the schema-derivation paths consume. Inverse of `projectAttributesToProperties`.
  */
-export function projectPropertiesToAttributes(properties: Record<string, JsonSchemaFragment>): AttributeLike[] {
+export function projectPropertiesToAttributes(
+	properties: Record<string, JsonSchemaFragment>,
+	preserveTypeOptionality = false
+): AttributeLike[] {
 	if (properties === null || typeof properties !== 'object' || Array.isArray(properties)) {
 		throw new TypeError('Resource properties must be an object');
 	}
 	const ancestors = new WeakSet<object>();
 	const attributes = Object.entries(properties).map(([name, fragment]) =>
-		fragmentToAttribute(name, fragment, ancestors, 1)
+		fragmentToAttribute(name, fragment, ancestors, 1, preserveTypeOptionality)
 	);
 	programmaticSchemas.add(attributes);
 	return attributes;
@@ -402,6 +409,8 @@ export interface SchemaEmitOptions {
 	 */
 	ignoreHidden?: boolean;
 	valueConstraints?: boolean;
+	/** Conditional properties/items in contracts do not imply an object/array type. */
+	preserveTypeOptionality?: boolean;
 }
 
 /**
@@ -533,7 +542,9 @@ function emitAttributeSchema(
 				}
 			}
 		} else if (attr.properties) {
-			fragment.type = 'object';
+			if (options.preserveTypeOptionality) {
+				if (attr.type !== undefined) Object.assign(fragment, options.mapPrimitive(attr.type, attr));
+			} else fragment.type = 'object';
 			fragment.properties = Object.create(null);
 			const suppressedNames = new Set<string>();
 			for (const sub of attr.properties) {
@@ -568,13 +579,27 @@ function emitAttributeSchema(
 			}
 		}
 
+		if (
+			options.preserveTypeOptionality &&
+			(!unionTypes || unionTypes.length <= 1) &&
+			attr.elements &&
+			!fragment.items
+		) {
+			const items = emitAttributeSchema(attr.elements, childOptions, ancestors, depth + 1);
+			if (items) fragment.items = items;
+		}
+
 		if (!attr.properties) {
 			if (attr.required?.length) fragment.required = attr.required;
 			if (attr.additionalProperties !== undefined) fragment.additionalProperties = attr.additionalProperties;
 		}
 
 		const nullOnly = attr.types?.every((member) => member === 'null');
-		if (attr.nullable && !nullOnly) applyNullability(fragment, options.dialect);
+		if (attr.nullable && !nullOnly) {
+			if (options.preserveTypeOptionality && attr.type === undefined && attr.types === undefined)
+				fragment.nullable = true;
+			else applyNullability(fragment, options.dialect);
+		}
 		// An explicitly declared `description`/`format` outranks whatever the primitive mapper supplied as a
 		// default — an author writing `{ type: 'Date', format: 'date-time' }` means `date-time`, not the
 		// Harper type name the mapper stamps on.

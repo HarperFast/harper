@@ -320,7 +320,7 @@ function formatEnumValue(value: JsonValue): string {
 }
 
 // Shared only within one body validation; declarations may change before the next request.
-type EnumKeyCache = Map<readonly JsonValue[], Set<string>>;
+type EnumKeyCache = Map<readonly JsonValue[], { keys?: Set<string> | null; description?: string }>;
 
 /** Validate a JSON value against a fragment (a subset of JSON Schema), pushing structured issues. Returns coerced value. */
 function validateValue(
@@ -358,26 +358,36 @@ function validateValue(
 		issues.push({ path, code: 'type', message: `${path} must be of type ${types.join(' | ')}` });
 		return value;
 	}
-	if (fragment.enum && !fragment.enum.includes(value)) {
+	if (fragment.enum) {
 		let matches = false;
+		let cached = enumKeys?.get(fragment.enum);
 		if (value && typeof value === 'object') {
 			try {
-				const key = jsonValueKey(value);
-				let keys = enumKeys?.get(fragment.enum);
-				if (!keys) {
-					keys = new Set(
+				if (!cached) {
+					cached = {};
+					enumKeys?.set(fragment.enum, cached);
+				}
+				if (cached.keys === undefined) {
+					cached.keys = null;
+					cached.keys = new Set(
 						fragment.enum.filter((member) => member && typeof member === 'object').map((member) => jsonValueKey(member))
 					);
-					enumKeys?.set(fragment.enum, keys);
 				}
-				matches = keys.has(key);
+				matches = cached.keys !== null && cached.keys.has(jsonValueKey(value));
 			} catch {}
+		} else {
+			matches = fragment.enum.includes(value);
 		}
 		if (!matches) {
+			if (!cached) {
+				cached = {};
+				enumKeys?.set(fragment.enum, cached);
+			}
+			cached.description ??= fragment.enum.map(formatEnumValue).join(', ');
 			issues.push({
 				path,
 				code: 'enum',
-				message: `${path} must be one of: ${fragment.enum.map(formatEnumValue).join(', ')}`,
+				message: `${path} must be one of: ${cached.description}`,
 			});
 			return value;
 		}
@@ -440,7 +450,7 @@ function validateBody(fragment: JsonSchemaFragment, bodyRequired: boolean, body:
 		return body;
 	}
 	// a `null` body is rejected unless the top-level body schema is nullable (validateValue handles it)
-	return validateValue(body, fragment, 'body', issues);
+	return validateValue(body, fragment, 'body', issues, body && typeof body === 'object' ? new Map() : undefined);
 }
 
 /**
