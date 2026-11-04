@@ -343,6 +343,8 @@ describe('re-declaring a table reports and rebuilds only a real computed change 
 		});
 		if (written?.then) await written;
 
+		// a new process has no resolver until the application registers one
+		delete Computed.userResolvers.score;
 		const Restarted = declare('ComputedLegacyStamp', { computed: true });
 		const declared = Restarted.indexingOperation;
 		__setReadOnlyModeForTest(true);

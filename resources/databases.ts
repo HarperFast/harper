@@ -5376,9 +5376,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 							attributesToIndex.push(attribute);
 						} else if (isApplicationComputed(attribute)) {
 							// nothing to cover; stamped here so the previous computation's stamp is not carried over below
-							attribute.checkpointAlgorithm = resolverRegistered(Table, attribute)
-								? RESOLVED_CHECKPOINT_ALGORITHM
-								: CHECKPOINT_ALGORITHM;
+							attribute.checkpointAlgorithm =
+								typeof attribute.computed.from === 'function' ? RESOLVED_CHECKPOINT_ALGORITHM : CHECKPOINT_ALGORITHM;
 						}
 					} else if (attributeDescriptor.indexingPID) {
 						// Metadata-only change (e.g. a search-only option like efConstructionSearch) while a
@@ -5404,6 +5403,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 						attribute.checkpointAlgorithm = attributeDescriptor.checkpointAlgorithm;
 					attributesDbi.put(dbiKey, attribute);
 				}
+				if (attribute.checkpointAlgorithm === undefined && attributeDescriptor?.checkpointAlgorithm !== undefined)
+					attribute.checkpointAlgorithm = attributeDescriptor.checkpointAlgorithm;
 				// If a migration is in progress (indexingPID set), any newly opened dbi must also
 				// reflect isIndexing = true. A resetDatabases() during an active runIndexing creates
 				// a new dbi object; without this, queries could use the new dbi (isIndexing = false)
@@ -5542,16 +5543,22 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		Table.fullTextIndexRetirements = fullTextIndexRetirementNames ?? [];
 	}
 	if (hasChanges || refreshRelationshipAttributes) Table.schemaVersion++;
+	const operationBeforeRefresh = Table.indexingOperation;
 	if (hasChanges || refreshRelationshipAttributes || refreshedLiveAttributes) Table.updatedAttributes();
 	logger.trace(`${tableName} table loading, running index`);
 	const branchPath = target.branch?.path;
 	if (attributesToIndex.length > 0 || indicesToRemove.length > 0) {
-		Table.indexingOperation = launchIndexing(Table, attributesToIndex, indicesToRemove, branchPath);
+		const build = launchIndexing(Table, attributesToIndex, indicesToRemove, branchPath);
+		// a function `from` registered by updatedAttributes can have started a repair
+		const repair = Table.indexingOperation !== operationBeforeRefresh ? Table.indexingOperation : undefined;
+		Table.indexingOperation = repair ? Promise.all([repair, build]).then(() => undefined) : build;
 	} else if (hasChanges)
 		signalling.signalSchemaChange(
 			new SchemaEventMsg(process.pid, 'schema-change', Table.databaseName, Table.tableName, undefined, branchPath)
 		);
 	refreshDerivedIndexes(Table);
+	// after updatedAttributes, so a resolver it removed does not count
+	if (!target.branch) requestComputedIndexRepair(Table);
 
 	if (typeof replicate === 'boolean' && origin !== 'cluster') Table.replicate = replicate;
 	Table.origin = origin;
@@ -5714,9 +5721,6 @@ function isApplicationComputed(attribute: any): boolean {
 function isRealResolver(resolver: any): boolean {
 	return typeof resolver === 'function' && !resolver.unresolved;
 }
-function resolverRegistered(Table: any, attribute: any): boolean {
-	return typeof attribute.computed?.from === 'function' || isRealResolver(Table.userResolvers?.[attribute.name]);
-}
 // The catalog cannot hold a function, so a function `from` is compared by its source. The catalog stores one as
 // `{from: undefined}`, so an attribute of that shape was read from the catalog and keeps the hash it carries.
 function stampComputedFromHash(attribute: any) {
@@ -5733,6 +5737,11 @@ function stampComputedFromHash(attribute: any) {
 		delete attribute.computedFromHash;
 }
 function claimIndexBuild(attribute: any, dbi: any, restartGeneration: number) {
+	stampIndexBuildClaim(attribute, restartGeneration);
+	dbi.isIndexing = true;
+	Object.defineProperty(attribute, 'dbi', { value: dbi, configurable: true, enumerable: false });
+}
+function stampIndexBuildClaim(attribute: any, restartGeneration: number) {
 	attribute.indexingPID = process.pid;
 	// Persist the owning restart generation so the trigger can re-detect an incomplete index after a worker
 	// restart even when the new process reuses the old PID. Cleared on clean completion; left in place on
@@ -5741,8 +5750,12 @@ function claimIndexBuild(attribute: any, dbi: any, restartGeneration: number) {
 	if (manageThreads.processIncarnation != null) attribute.indexingIncarnation = manageThreads.processIncarnation;
 	attribute.indexingBuildId = randomBytes(8).toString('hex');
 	delete attribute.indexingFailed;
-	dbi.isIndexing = true;
-	Object.defineProperty(attribute, 'dbi', { value: dbi, configurable: true, enumerable: false });
+}
+function generationSuperseded(Table: any): boolean {
+	return (
+		(workerData && workerData.restartNumber !== manageThreads.restartNumber) ||
+		Table.primaryStore.rootStore.status === 'closed'
+	);
 }
 function launchIndexing(Table: any, attributes: any[], indicesToRemove: any[], branchPath?: string) {
 	// captured before the backfill can rewrite the attributes
@@ -5791,7 +5804,8 @@ export function requestComputedIndexRepair(Table: any): void {
 	const rootStore = Table.primaryStore.rootStore;
 	const claimed = [];
 	const claim = () => {
-		if (isReadOnlyMode() || Table.dbisDB.getSync(Table.tableName + '/')?.dropping) return;
+		if (isReadOnlyMode() || generationSuperseded(Table) || Table.dbisDB.getSync(Table.tableName + '/')?.dropping)
+			return;
 		const restartGeneration = workerData?.restartNumber ?? manageThreads.restartNumber;
 		let hasRecords = false;
 		for (const _entry of Table.primaryStore.getRange({ start: true, limit: 1 })) hasRecords = true;
@@ -5811,43 +5825,65 @@ export function requestComputedIndexRepair(Table: any): void {
 				continue;
 			if (!hasRecords) {
 				// nothing was indexed without the resolver; a build would only hold queries off
-				attribute.checkpointAlgorithm = RESOLVED_CHECKPOINT_ALGORITHM;
 				Table.dbisDB.putSync(key, { ...descriptor, checkpointAlgorithm: RESOLVED_CHECKPOINT_ALGORITHM });
+				attribute.checkpointAlgorithm = RESOLVED_CHECKPOINT_ALGORITHM;
 				continue;
 			}
-			for (const field in descriptor) if (field !== 'computed') attribute[field] = descriptor[field];
-			delete attribute.lastIndexedKey;
-			delete attribute.checkpointCertified;
+			// runIndexing persists this attribute, so it takes exactly the catalog's fields
+			const build = { ...descriptor };
+			delete build.lastIndexedKey;
+			delete build.checkpointCertified;
+			stampIndexBuildClaim(build, restartGeneration);
+			Table.dbisDB.putSync(key, build);
+			for (const field of Object.keys(attribute)) if (!(field in build) && field !== 'resolve') delete attribute[field];
+			for (const field in build) if (field !== 'computed') attribute[field] = build[field];
 			Object.defineProperty(attribute, 'key', { value: key, configurable: true });
 			claimIndexBuild(attribute, Table.indices[attribute.name], restartGeneration);
-			Table.dbisDB.putSync(key, attribute);
 			logger.info(`reindex ${Table.databaseName}.${Table.tableName}.${attribute.name}: reason=resolver-registered`);
 			claimed.push(attribute);
 		}
 	};
-	const launch = () => {
-		if (claimed.length === 0) return;
+	// whatever was claimed before a failure is durable, so it is built
+	const launch = () => (claimed.length > 0 ? launchIndexing(Table, claimed, []) : undefined);
+	const publish = (operation: Promise<unknown> | undefined) => {
+		if (!operation) return;
 		const previous = Table.indexingOperation;
-		const repair = launchIndexing(Table, claimed, []);
-		Table.indexingOperation = previous ? Promise.all([previous, repair]).then(() => undefined) : repair;
+		Table.indexingOperation = previous ? Promise.all([previous, operation]).then(() => undefined) : operation;
 	};
 	const reportFailure = (error: unknown) =>
 		logger.error(`Could not start rebuilding the computed indexes of ${Table.databaseName}.${Table.tableName}`, error);
-	try {
-		if (rootStore instanceof RocksDatabase) {
-			const admitted = withUpdateAttributesLockNonBlocking(
+	if (rootStore instanceof RocksDatabase) {
+		let admitted;
+		try {
+			admitted = withUpdateAttributesLockNonBlocking(
 				rootStore,
 				`computed index repair '${Table.databaseName}.${Table.tableName}'`,
 				claim
 			);
-			if (admitted instanceof Promise) admitted.then(launch).catch(reportFailure);
-			else launch();
-		} else {
-			rootStore.transactionSync(claim);
-			launch();
+		} catch (error) {
+			reportFailure(error);
 		}
-	} catch (error) {
-		reportFailure(error);
+		if (admitted instanceof Promise)
+			publish(
+				admitted.then(launch, (error) => {
+					reportFailure(error);
+					return launch();
+				})
+			);
+		else publish(launch());
+	} else {
+		try {
+			rootStore.transactionSync(claim);
+		} catch (error) {
+			// the transaction rolled back every claim it wrote
+			for (const attribute of claimed.splice(0)) {
+				for (const field of ['indexingPID', 'restartNumber', 'indexingIncarnation', 'indexingBuildId'])
+					delete attribute[field];
+				attribute.dbi.isIndexing = false;
+			}
+			reportFailure(error);
+		}
+		publish(launch());
 	}
 }
 const MAX_OUTSTANDING_INDEXING = 1000;
@@ -6018,7 +6054,8 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 			let start = resumeStartKey(attributes);
 			for (let i = 0; i < attributesLength; i++)
 				resolvedThroughout[i] =
-					start === undefined || attributes[i].checkpointAlgorithm === RESOLVED_CHECKPOINT_ALGORITHM;
+					(start === undefined || attributes[i].checkpointAlgorithm === RESOLVED_CHECKPOINT_ALGORITHM) &&
+					(!applicationComputed[i] || isRealResolver(Table.userResolvers?.[attributes[i].name]));
 			// A resumed scan starts at the checkpoint, so it must only name a key whose every predecessor is
 			// durably indexed: persisted once the writes it covers have settled and flushed, frozen after any
 			// record fails so the retry re-covers it, and stamped with its own key (see the trigger in table()).
@@ -6140,32 +6177,29 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 					if (atInterval || didSynchronousIndexing || pendingMutations.size > MIN_OUTSTANDING_INDEXING)
 						await yieldEventTurn();
 				}
-				if (!restart && !resolverArrived()) break;
-				// The checkpoint goes before the clear, so a crash in between cannot resume past cleared entries.
 				await checkpointing;
+				// A mutation that rejects after completion is declared has no build left to park.
 				await drainMutations();
+				if (!restart && !resolverArrived()) break;
+				// a replacement generation owns the build now; it must not lose the entries it has written
+				if (generationSuperseded(Table)) return;
+				// The checkpoint goes before the clear, so a crash in between cannot resume past cleared entries.
 				const puts = [];
-				attributesToClear = [];
 				for (let i = 0; i < attributesLength; i++) {
 					const attribute = attributes[i];
 					delete attribute.lastIndexedKey;
 					delete attribute.checkpointCertified;
-					if (
-						applicationComputed[i] &&
-						!resolvedThroughout[i] &&
-						isRealResolver(Table.userResolvers?.[attribute.name])
-					) {
-						resolvedThroughout[i] = true;
-						attributesToClear.push(attribute);
-					}
+					resolvedThroughout[i] = !applicationComputed[i] || isRealResolver(Table.userResolvers?.[attribute.name]);
 					puts.push(Table.dbisDB.put(attribute.key, attribute));
 				}
 				await Promise.all(puts);
+				if (generationSuperseded(Table)) return;
+				// every index restarts, since a custom index is not known to accept a key indexed twice
+				attributesToClear = attributes;
 				start = undefined;
 			}
 		}
 		await checkpointing;
-		// A mutation that rejects after completion is declared has no build left to park.
 		await drainMutations();
 		// the tail since the last checkpoint is not durable until flushed; announcing the index complete
 		// before that would outlive a crash that loses it
@@ -6230,7 +6264,7 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 			);
 			logger.info(`Finished indexing ${Table.tableName} attributes`, attributes);
 			// a resolver registered while this build was finishing found it still claimed
-			if (tracksResolvers && !branchPath) requestComputedIndexRepair(Table);
+			if (tracksResolvers && !branchPath && !generationSuperseded(Table)) requestComputedIndexRepair(Table);
 		}
 	} catch (error) {
 		await checkpointing;
