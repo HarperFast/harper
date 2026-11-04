@@ -334,11 +334,12 @@ Replay reads bases with `uncachedRead`: cached WeakRefs outlived the replay and 
 
 ## Query-plan range estimation blends statistical estimates by confidence
 
-- **Capability is feature-detected per store** and answers are validated (`estimateRangeCondition`), so an odd store degrades to the heuristic rather than NaN-poisoning the order.
+- Store estimates are feature-detected and validated (`estimateRangeCondition`).
 - **The estimated range is the executed range**: `getRange` and `estimateCount` share `translateIndexBounds`.
 - Secondary-index scans open at `null` exclusive; primary scans at `true`, past symbol-keyed metadata (`searchBooleanFalseIndex.test.js`).
-- A negated condition estimates `Infinity`; an AND group's estimate ignores non-finite legs and is `Infinity` only when every leg is (`estimateConditionForTable`, `estimateFilterOnlySibling.test.js`; gap: `intersectionEstimate` still multiplies `Infinity` into the incoming-row hint). Non-driving filters drop null and omitted values, as ranges do (harper#3212; `estimateRangeCondition.test.js`).
-- **An AND leads with its narrowest condition that can drive an index scan** (`orderConditions`, `conditionDrivesIndex`), because `in`, an empty `starts_with` and unindexed ranges estimate finite counts (kept finite for `count: 'estimated'` and the lazy index switch) yet full-scan. A relationship condition drives when each hop's local join index and the leaf scan can run (`relationshipScanRuns`; an unindexed local FK never drives, even under `allowFullScan: true`), and a leading synthetic index-order `sort` keeps the lead to stream a sorted page.
+- A negated condition estimates `Infinity`; an AND's estimate ignores non-finite legs (`estimateConditionForTable`, `estimateFilterOnlySibling.test.js`; gap: `intersectionEstimate` multiplies `Infinity` into the incoming-row hint).
+- **Null and omitted values match alike on every path** (`nullOmittedScanFilterParity.test.js`): no range matches them; a `null` lower bound opens it; a non-null `ne` matches them (and an array with any differing element), so it reads the primary store (`bypassesSecondaryIndex`); SQL leaves a range against NULL residual.
+- **An AND leads with its narrowest condition that can drive an index scan** (`orderConditions`, `conditionDrivesIndex`), because `in`, an empty `starts_with` and unindexed ranges estimate finite counts (for `count: 'estimated'` and the lazy index switch) yet full-scan. A relationship drives only if each hop's join index and leaf scan can run (`relationshipScanRuns`). Only a lead reading the sort attribute's index (`scansInAttributeOrder`) streams the sort and keeps the lead.
 
 ## Chained query conditions scope one array element; FIQL tokens always advance
 

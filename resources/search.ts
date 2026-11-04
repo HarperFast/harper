@@ -609,13 +609,11 @@ function planCandidateKeyScan(condition, table, includePointProbe: boolean): Can
 	let exclusiveStart = false;
 	switch (comparator) {
 		case 'lt':
-			start = null;
-			exclusiveStart = true;
+			({ start, exclusiveStart } = SECONDARY_OPEN_START);
 			end = value;
 			break;
 		case 'le':
-			start = null;
-			exclusiveStart = true;
+			({ start, exclusiveStart } = SECONDARY_OPEN_START);
 			end = value;
 			inclusiveEnd = true;
 			break;
@@ -624,7 +622,8 @@ function planCandidateKeyScan(condition, table, includePointProbe: boolean): Can
 			exclusiveStart = true;
 			break;
 		case 'ge':
-			start = value;
+			if (value === null) ({ start, exclusiveStart } = SECONDARY_OPEN_START);
+			else start = value;
 			break;
 		case 'between':
 		case 'gele':
@@ -635,7 +634,8 @@ function planCandidateKeyScan(condition, table, includePointProbe: boolean): Can
 			start = value[0] instanceof Date ? value[0].getTime() : value[0];
 			end = value[1] instanceof Date ? value[1].getTime() : value[1];
 			inclusiveEnd = comparator === 'gele' || comparator === 'gtle' || comparator === 'between';
-			exclusiveStart = comparator === 'gtlt' || comparator === 'gtle';
+			if (start == null) ({ start, exclusiveStart } = SECONDARY_OPEN_START);
+			else exclusiveStart = comparator === 'gtlt' || comparator === 'gtle';
 			break;
 		default:
 			start = value;
@@ -1100,11 +1100,14 @@ export function searchByIndex(
 				inclusiveEnd = true;
 				break;
 			case 'gt':
-				start = value;
-				exclusiveStart = true;
-				break;
 			case 'ge':
-				start = value;
+				if (value === null) {
+					start = openStart;
+					exclusiveStart = openStartExclusive;
+				} else {
+					start = value;
+					exclusiveStart = resolvedComparator === 'gt';
+				}
 				break;
 			case 'prefix': // this is form finding multi-part keys that start with the provided prefix
 				// this search needs to be of the form:
@@ -1142,6 +1145,10 @@ export function searchByIndex(
 				inclusiveEnd =
 					resolvedComparator === 'gele' || resolvedComparator === 'gtle' || resolvedComparator === 'between';
 				exclusiveStart = resolvedComparator === 'gtlt' || resolvedComparator === 'gtle';
+				if (start == null) {
+					start = openStart;
+					exclusiveStart = openStartExclusive;
+				}
 				break;
 			}
 			case 'equals':
@@ -1199,10 +1206,7 @@ export function searchByIndex(
 		exclusiveStart = !inclusiveEnd;
 		inclusiveEnd = newEnd;
 	}
-	// For negated conditions we need to consider records whose attribute value is
-	// missing from the index (e.g. nulls when the index doesn't index nulls), so
-	// we bypass the secondary index and iterate over the primary store.
-	const skipIndex = searchCondition.negated && index && !isPrimaryKey;
+	const skipIndex = index && !isPrimaryKey && bypassesSecondaryIndex(searchCondition, resolvedComparator, value);
 	if (!index || index.isIndexing || needFullScan || (value === null && !index.indexNulls) || skipIndex) {
 		// no indexed searching available, need a full scan
 		if (allowFullScan === false && !index)
@@ -2245,7 +2249,7 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 			baseFilter = attributeComparator(
 				attribute,
 				(recordValue) => {
-					if (recordValue === undefined) return false;
+					if (recordValue == null) return false;
 					const cmpStart = compareKeys(recordValue, value[0]);
 					const cmpEnd = compareKeys(recordValue, value[1]);
 					return (startInclusive ? cmpStart >= 0 : cmpStart > 0) && (endInclusive ? cmpEnd <= 0 : cmpEnd < 0);
@@ -2269,17 +2273,16 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 			baseFilter = attributeComparator(attribute, (recordValue) => valueSet.has(recordValue), true);
 			break;
 		}
-		// no index holds an entry for an omitted (undefined) value
 		case 'gt':
 			baseFilter = attributeComparator(
 				attribute,
-				(recordValue) => recordValue !== undefined && compareKeys(recordValue, value) > 0
+				(recordValue) => recordValue != null && compareKeys(recordValue, value) > 0
 			);
 			break;
 		case 'ge':
 			baseFilter = attributeComparator(
 				attribute,
-				(recordValue) => recordValue !== undefined && compareKeys(recordValue, value) >= 0
+				(recordValue) => recordValue != null && compareKeys(recordValue, value) >= 0
 			);
 			break;
 		case 'lt':
@@ -2298,13 +2301,17 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 			if (isPrimaryKey) {
 				const equals = primaryKeyEquals(value);
 				baseFilter = attributeComparator(attribute, (primaryKey) => !equals(primaryKey));
-			} else
+			} else {
+				// whole values reach this predicate (allowObjectMatching), so it applies the per-element array rule itself
+				const differs = (element) =>
+					compareKeys((element instanceof Date ? element.getTime() : element) ?? null, value) !== 0;
 				baseFilter = attributeComparator(
 					attribute,
-					(recordValue) => compareKeys(recordValue ?? null, value) !== 0,
+					(recordValue) => (Array.isArray(recordValue) ? recordValue.some(differs) : differs(recordValue)),
 					false,
 					true
 				);
+			}
 			break;
 		}
 		case 'sort':
@@ -2342,13 +2349,15 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 		}
 		let misses = 0;
 		let filteredSoFar = 3; // what we use to calculate miss rate; we give some buffer so we don't jump to indexed retrieval too quickly
+		// an array's Date elements are indexed as epoch numbers, which is what the comparators and condition values hold
+		const elementFilter = (element) => filter(element instanceof Date ? element.getTime() : element);
 		function recordFilter(record: any) {
 			// `record` may be null/undefined when called via a nested-path filter
 			// where an intermediate property is missing.
 			const value = record == null ? undefined : record[attribute];
 			let matches: boolean;
 			if (typeof value !== 'object' || !value || allowObjectMatching) matches = filter(value);
-			else if (Array.isArray(value)) matches = value.some(filter);
+			else if (Array.isArray(value)) matches = value.some(elementFilter);
 			else if (value instanceof Date) matches = filter(value.getTime());
 			//else matches = false;
 			// As we are filtering, we can lazily/reactively switch to indexing if we are getting a low match rate, allowing use to load
@@ -2396,6 +2405,10 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 	}
 }
 
+// mirror searchByIndex's openStart: an indexNulls index's `[null, primaryKey]` entries are outside the executed range
+const PRIMARY_OPEN_START = Object.freeze({ start: true, exclusiveStart: false });
+const SECONDARY_OPEN_START = Object.freeze({ start: null, exclusiveStart: true });
+
 /**
  * Estimates a range comparator's entry count from the store's statistical estimate, blended with
  * the table-fraction heuristic by the estimate's confidence so low-confidence estimates degrade
@@ -2410,22 +2423,20 @@ function estimateRangeCondition(table, condition, searchType, fraction) {
 	if (typeof store?.estimateCount !== 'function') return undefined;
 	let value = condition[1] ?? condition.value;
 	if (value instanceof Date) value = value.getTime();
+	const openStart = isPrimaryKey ? PRIMARY_OPEN_START : SECONDARY_OPEN_START;
 	let range;
 	switch (searchType) {
 		case 'lt':
-			// mirrors searchByIndex: an indexNulls index's `[null, primaryKey]` entries are outside the executed range
-			range = isPrimaryKey ? { start: true, end: value } : { start: null, exclusiveStart: true, end: value };
+			range = { ...openStart, end: value };
 			break;
 		case 'le':
-			range = isPrimaryKey
-				? { start: true, end: value, inclusiveEnd: true }
-				: { start: null, exclusiveStart: true, end: value, inclusiveEnd: true };
+			range = { ...openStart, end: value, inclusiveEnd: true };
 			break;
 		case 'gt':
-			range = { start: value, exclusiveStart: true };
+			range = value === null ? { ...openStart } : { start: value, exclusiveStart: true };
 			break;
 		case 'ge':
-			range = { start: value };
+			range = value === null ? { ...openStart } : { start: value };
 			break;
 		case 'between':
 		case 'gele':
@@ -2442,6 +2453,7 @@ function estimateRangeCondition(table, condition, searchType, fraction) {
 				inclusiveEnd: searchType === 'between' || searchType === 'gele' || searchType === 'gtle',
 				exclusiveStart: searchType === 'gtlt' || searchType === 'gtle',
 			};
+			if (start == null) Object.assign(range, openStart);
 			break;
 		}
 		case 'starts_with': {
@@ -2569,6 +2581,44 @@ function relationshipScanRuns(table, path: any[], offset: number, comparator, va
 	const drives = (condition) => scansRelated(relatedTable, condition);
 	return group.operator === 'or' ? group.conditions.every(drives) : group.conditions.some(drives);
 }
+
+/**
+ * Conditions searchByIndex answers from the primary store even on an indexed attribute: their record predicate
+ * admits values no secondary-index range reaches, a null below its open start or an omitted one with no entry.
+ */
+function bypassesSecondaryIndex(condition, comparator: string, value): boolean {
+	return Boolean(condition.negated) || (comparator === 'ne' && value !== null);
+}
+
+/**
+ * Whether searchByIndex reads this condition's rows in the order of its attribute, which a leading condition must do to
+ * stand in for a sort on that attribute. A primary-store read of a secondary attribute is in primary-key order.
+ */
+export function scansInAttributeOrder(table, condition): boolean {
+	let attributeName = condition[0] ?? condition.attribute;
+	const value = condition[1] ?? condition.value;
+	if (Array.isArray(attributeName)) {
+		if (attributeName.length > 1) {
+			// a join keeps the order of its related-table scan; a plain JSON path is read from the primary store
+			const relationship = findAttribute(table.attributes, attributeName[0]);
+			const relatedTable = relationship?.definition?.tableClass || relationship?.elements?.definition?.tableClass;
+			if (!relationship?.relationship || !relatedTable) return false;
+			const path = attributeName.length > 2 ? attributeName.slice(1) : attributeName[1];
+			return scansInAttributeOrder(relatedTable, {
+				attribute: path,
+				value,
+				comparator: condition.comparator,
+				negated: condition.negated,
+			});
+		}
+		attributeName = attributeName[0];
+	}
+	if (attributeName == null || attributeName === table.primaryKey) return true;
+	if (!conditionIndex(table, attributeName)) return false;
+	const comparator = ALTERNATE_COMPARATOR_NAMES[condition.comparator] || condition.comparator;
+	return !bypassesSecondaryIndex(condition, comparator, value);
+}
+
 // must follow searchByIndex's `needFullScan` and missing-index decisions (resources/DESIGN.md)
 export function conditionDrivesIndex(table, condition): boolean {
 	if (condition.negated) return false;

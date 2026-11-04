@@ -63,11 +63,11 @@ describe('non-driving conditions exclude null and omitted attributes like a driv
 	}
 
 	for (const [comparator, value, expected] of [
-		['ge', null, ['v1', 'v5', 'vnull']],
+		['ge', null, ['v1', 'v5']],
 		['gt', null, ['v1', 'v5']],
-		['between', [null, 3], ['v1', 'vnull']],
+		['between', [null, 3], ['v1']],
 	]) {
-		it(`${comparator} ${String(value)} excludes omitted values whichever condition leads`, async () => {
+		it(`${comparator} ${String(value)} excludes null and omitted values whichever condition leads`, async () => {
 			const [equalsLeads, rangeLeads] = await idsInBothOrders({ attribute: 'b', comparator, value });
 			assert.deepStrictEqual(rangeLeads, expected);
 			assert.deepStrictEqual(equalsLeads, expected);

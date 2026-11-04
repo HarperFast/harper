@@ -324,6 +324,9 @@ function leafToCondition(expr: ExprNode): ConditionNode | undefined {
 			if (!comparator) return undefined;
 			const colLit = pickColumnAndLiteral(expr.left, expr.right);
 			if (!colLit) return undefined;
+			// a range against NULL is UNKNOWN for every row, where a pushed null bound would open the range; the
+			// residual's three-valued logic answers it (a NULL literal normalizes to `undefined`)
+			if (colLit.value == null && comparator !== 'equals' && comparator !== 'ne') return undefined;
 			const attribute = colLit.column;
 			// `=` matches either form (OR); `!=` must NOT match either form, and (SQL
 			// three-valued logic / legacy AlaSQL) must also exclude NULLs, so it's an
@@ -378,7 +381,7 @@ function leafToCondition(expr: ExprNode): ConditionNode | undefined {
 		case 'between': {
 			if (expr.expr.kind !== 'column') return undefined;
 			if (expr.low.kind !== 'literal' || expr.high.kind !== 'literal') return undefined;
-			if (expr.negated) return undefined;
+			if (expr.negated || expr.low.value == null || expr.high.value == null) return undefined;
 			return {
 				attribute: expr.expr.name,
 				comparator: 'between',

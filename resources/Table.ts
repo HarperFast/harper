@@ -176,6 +176,7 @@ import {
 	findAttribute,
 	estimateCondition,
 	conditionDrivesIndex,
+	scansInAttributeOrder,
 	estimatedEntryCount,
 	flattenKey,
 	COERCIBLE_OPERATORS,
@@ -7736,7 +7737,9 @@ export function makeTable(options): TableResourceClass {
 					// a leading sort streams a sorted page, so it keeps the lead (resources/DESIGN.md, estimator and lead rules)
 					const streamsSort =
 						ordered[0] === syntheticOrderCondition ||
-						(ordered[0] === orderAlignedCondition && target.allowFullScan !== false);
+						(ordered[0] === orderAlignedCondition &&
+							target.allowFullScan !== false &&
+							scansInAttributeOrder(TableResource, orderAlignedCondition));
 					if (!streamsSort) {
 						let lead = 0;
 						while (lead < ordered.length && !conditionDrivesIndex(TableResource, ordered[lead])) lead++;
@@ -7818,7 +7821,11 @@ export function makeTable(options): TableResourceClass {
 			}
 			conditions = orderConditions(conditions, operator);
 			if (sort) {
-				if (orderAlignedCondition && conditions[0] === orderAlignedCondition) {
+				if (
+					orderAlignedCondition &&
+					conditions[0] === orderAlignedCondition &&
+					scansInAttributeOrder(TableResource, orderAlignedCondition)
+				) {
 					// The db index is providing the order for the first sort, may need post ordering next sort order
 					if (sort.next) {
 						postOrdering = {
