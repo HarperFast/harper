@@ -243,6 +243,15 @@ suite('Attribute permissions on the resource path (harper#3284)', (ctx: ContextW
 			const res = await fetch(`${restURL}/Doc/then-1`, { method, headers: adminHeaders, body: JSON.stringify(body) });
 			ok(res.ok, `${method}: ${res.status} ${await res.text()}`);
 		}
+		const stored = await apiClient.reqAs(adminHeaders).send({
+			operation: 'search_by_id',
+			database: 'data',
+			table: 'Doc',
+			ids: ['then-1'],
+			get_attributes: ['*'],
+		});
+		strictEqual(stored.status, 200, stored.text);
+		deepStrictEqual(stored.body, [{ id: 'then-1', title: 'then put', then: 'patched' }]);
 	});
 
 	test('operations API behavior is unchanged', async () => {

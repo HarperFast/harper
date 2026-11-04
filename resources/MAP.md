@@ -38,7 +38,7 @@ Where things are in `resources/`. The rules live in [DESIGN.md](DESIGN.md): read
 ## Where is it
 
 - request authorization → `transactional()` in Resource.ts; `allowRead`/`allowUpdate`/`allowCreate`/`allowDelete` in Table.ts
-- restricted replacements and implicit key grants → `getTablePermissions`, `allowTableUpdate`, `restrictedReplacement` in Table.ts; see [permission invariants](../security/DESIGN.md#attribute-permissions-on-the-resource-path-key-grant-and-restricted-full-puts-tablets-gettablepermissions-put-harper3284)
+- restricted replacements and implicit key grants → `getTablePermissions`, `allowTableUpdate`, `restrictedReplacement` in Table.ts; see [permission invariants](../security/DESIGN.md#resource-attribute-permissions)
 - versioning, write conflicts, out-of-order merge → `_writeUpdate` in Table.ts
 - delete, invalidate, relocate, publish → `_writeDelete`, `_writeInvalidate`, `_writeRelocate`, `_writePublish` in Table.ts
 - index choice and condition order → `executeConditions`, `estimateCondition`, `searchByIndex` in search.ts

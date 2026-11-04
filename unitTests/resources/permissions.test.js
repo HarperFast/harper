@@ -1261,16 +1261,22 @@ describe('Attribute permissions that omit the primary key (harper#3284)', () => 
 		});
 	});
 
-	it('a restricted full put whose id is only in the body keeps protected attributes', async function () {
-		await seed('body-id-1');
-		await DocTable.put({ id: 'body-id-1', title: 'by body id' }, asUser());
-		assert.deepEqual(JSON.parse(JSON.stringify(await DocTable.get('body-id-1'))), {
-			id: 'body-id-1',
-			title: 'by body id',
-			secret: 'body-id-1 secret',
-			extra: 'undeclared',
+	for (const loadAsInstance of [true, false]) {
+		it(`a body-only id keeps protected attributes (loadAsInstance=${loadAsInstance})`, async function () {
+			class BodyDoc extends DocTable {
+				static loadAsInstance = loadAsInstance;
+			}
+			const id = `body-id-${loadAsInstance}`;
+			await seed(id);
+			await BodyDoc.put({ id, title: 'by body id' }, asUser());
+			assert.deepEqual(JSON.parse(JSON.stringify(await DocTable.get(id))), {
+				id,
+				title: 'by body id',
+				secret: `${id} secret`,
+				extra: 'undeclared',
+			});
 		});
-	});
+	}
 
 	it('a restricted full put of a tracked object stores its values', async function () {
 		await seed('tracked-1');
@@ -1468,6 +1474,31 @@ describe('Primary key grant edge cases (harper#3284)', () => {
 			/Unauthorized/
 		);
 	});
+
+	for (const loadAsInstance of [true, false]) {
+		it(`legacy full update preserves an omitted required field (loadAsInstance=${loadAsInstance})`, async function () {
+			class LegacyKey extends KeyTable {
+				static loadAsInstance = loadAsInstance;
+			}
+			const id = `legacy-required-${loadAsInstance}`;
+			await KeyTable.put(id, { id, title: 'seed', secret: 'kept' });
+			const before = JSON.parse(JSON.stringify(await KeyTable.get(id)));
+			const user = roleWith([{ attribute_name: 'title', read: true, insert: true, update: true }]);
+			const context = { user };
+			const payload = { title: 'legacy' };
+			await transaction(context, async () => {
+				const target = new RequestTarget(`/${id}`);
+				target.id = id;
+				const resource = await LegacyKey.getResource(target, context);
+				assert.strictEqual(resource.getId(), id);
+				assert.strictEqual(resource.allowUpdate(user, payload, context), true);
+				await resource.update(payload, true);
+				await resource.save();
+			});
+			assert.deepEqual(JSON.parse(JSON.stringify(await KeyTable.get(id))), { ...before, title: 'legacy' });
+			assert.deepEqual(payload, { title: 'legacy' });
+		});
+	}
 
 	it('a timestamp-only update grant does not grant primary key update', async function () {
 		const user = roleWith([
