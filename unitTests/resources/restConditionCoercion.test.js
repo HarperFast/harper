@@ -50,7 +50,7 @@ describe('REST condition value conversion', () => {
 				code: '007',
 				matrix: [[176, 0]],
 				extra: 'abc',
-				tags: ['abc'],
+				tags: ['123', 'abc'],
 			},
 			{
 				id: 2,
@@ -63,7 +63,7 @@ describe('REST condition value conversion', () => {
 			},
 			{ id: 3, brandId: 2, price: 30, weight: 3.5, sizes: [17, 107], code: '30', extra: 123, tags: [123] },
 			{ id: 4, brandId: 2, price: 31, weight: 10.25, sizes: [31, 17], code: '31' },
-			{ id: 5, brandId: 3, price: 100, weight: 20, sizes: [100, 200], code: '100' },
+			{ id: 5, brandId: 3, price: 100, weight: 20, sizes: [100, 200], code: '100', extra: '123' },
 		];
 		for (const product of products)
 			await Product.put({ ...product, pricePlain: product.price, sizesPlain: product.sizes });
@@ -107,6 +107,11 @@ describe('REST condition value conversion', () => {
 			assert.strictEqual(chained.value, '30');
 			const onString = { attribute: 'code', comparator: 'ge', value: '25', chainedConditions: [chained] };
 			assert.deepStrictEqual(await collectIds(Product.search({ conditions: [onString] })), [2, 3]);
+			const tupleCondition = Object.assign(['price', '25'], {
+				comparator: 'ge',
+				chainedConditions: [chained],
+			});
+			assert.deepStrictEqual(await collectIds(Product.search({ conditions: [tupleCondition] })), [2, 3]);
 		});
 	});
 
@@ -149,8 +154,17 @@ describe('REST condition value conversion', () => {
 		it('[Any] auto-casts value operands like a scalar Any attribute', async function () {
 			assert.deepStrictEqual(await rest(Product, 'tags=123'), [3]);
 			assert.deepStrictEqual(await rest(Product, 'tags==123'), [3]);
+			assert.deepStrictEqual(await rest(Product, 'tags==string:123'), [3]);
 			assert.deepStrictEqual(await rest(Product, 'tags=ge=100&=le=200'), [3]);
 			assert.deepStrictEqual(await rest(Product, 'tags=abc'), [1]);
+		});
+		it('leaves custom-index distance thresholds (condition.target) unconverted', function () {
+			const prepared = Product._prepareQueryConditions(
+				[{ attribute: 'sizes', comparator: 'lt', value: 0.5, target: [1, 2] }],
+				undefined,
+				{}
+			);
+			assert.strictEqual(prepared.conditions[0].value, 0.5);
 		});
 	});
 
@@ -182,7 +196,9 @@ describe('REST condition value conversion', () => {
 		});
 		it('an Any path leaf auto-casts value operands like top-level Any and relationship[...] groups', async function () {
 			assert.deepStrictEqual(await rest(Product, 'extra=123'), [3]);
+			assert.deepStrictEqual(await rest(Product, 'extra==string:123'), [3]);
 			assert.deepStrictEqual(await rest(Brand, 'products.extra=123'), [2]);
+			assert.deepStrictEqual(await rest(Brand, 'products.extra==string:123'), [2]);
 			assert.deepStrictEqual(await rest(Brand, 'products.extra=ge=100&=le=200'), [2]);
 			assert.deepStrictEqual(await rest(Brand, 'products[extra=123]'), [2]);
 			assert.deepStrictEqual(await rest(Brand, 'products.extra=abc'), [1]);

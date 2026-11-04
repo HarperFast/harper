@@ -8479,7 +8479,7 @@ export function makeTable(options): TableResourceClass {
 					if (!attribute) {
 						if (attribute_name != null && !target.allowConditionsOnDynamicAttributes)
 							throw handleHDBError(new Error(), `${attribute_name} is not a defined attribute`, 404);
-					} else if (leafAttribute) {
+					} else if (leafAttribute && condition.target === undefined) {
 						if (condition[1] === undefined)
 							condition.value = coerceConditionValue(condition.value, condition.comparator, leafAttribute);
 						else condition[1] = coerceConditionValue(condition[1], condition.comparator, leafAttribute);
@@ -8506,11 +8506,14 @@ export function makeTable(options): TableResourceClass {
 							);
 						}
 						// chained children are shared with the caller (cloneConditions), so convert into locals
+						const primaryValue = condition[1] === undefined ? condition.value : condition[1];
+						const chainedRawValue = chained[1] === undefined ? chained.value : chained[1];
 						const chainedValue = leafAttribute
-							? coerceConditionValue(chained.value, chained.comparator, leafAttribute)
-							: chained.value;
+							? coerceConditionValue(chainedRawValue, chained.comparator, leafAttribute)
+							: chainedRawValue;
 						condition.comparator = (lowerComparator + upperComparator) as any;
-						condition.value = chainedIsLower ? [chainedValue, condition.value] : [condition.value, chainedValue];
+						condition.value = chainedIsLower ? [chainedValue, primaryValue] : [primaryValue, chainedValue];
+						if (condition[1] !== undefined) condition[1] = condition.value;
 					}
 				}
 				return conditions;
@@ -14699,12 +14702,10 @@ const ELEMENT_VALUE_COMPARATORS = new Set<string | undefined>([
 	'gtle',
 ]);
 function coerceConditionValue(value: any, comparator: string, attribute: Attribute) {
+	const canonical = ALTERNATE_COMPARATOR_NAMES[comparator] || comparator;
 	const compared =
-		attribute.elements?.type &&
-		ELEMENT_VALUE_COMPARATORS.has(ALTERNATE_COMPARATOR_NAMES[comparator] || comparator)
-			? attribute.elements
-			: attribute;
-	if (!compared.type && !COERCIBLE_OPERATORS[comparator]) return value;
+		attribute.elements?.type && ELEMENT_VALUE_COMPARATORS.has(canonical) ? attribute.elements : attribute;
+	if (!compared.type && !COERCIBLE_OPERATORS[canonical]) return value;
 	if (Array.isArray(value)) return value.map((value) => coerceType(value, compared, attribute.name));
 	return coerceType(value, compared, attribute.name);
 }
