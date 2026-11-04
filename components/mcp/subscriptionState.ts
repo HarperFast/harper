@@ -174,10 +174,9 @@ export async function claimSubscriptionOwner(sessionId: string, streamToken: str
 					const differentScopedGrant =
 						initializing &&
 						record.user._scopedToken &&
-						principalId !==
-							createHash('sha256')
-								.update(JSON.stringify(subscriptionUser(record.user)))
-								.digest('hex');
+						user &&
+						JSON.stringify({ ...subscriptionUser(record.user), authExpiresAt: undefined }) !==
+							JSON.stringify({ ...subscriptionUser(user), authExpiresAt: undefined });
 					if (
 						!user ||
 						differentScopedGrant ||

@@ -29,7 +29,7 @@ export async function addResourceSubscription(sessionId: string, uri: string, us
 	const owner = getRegisteredSession(sessionId);
 	if (!owner) return false;
 	const subscription = await subscribeToResource(uri, user, () => {
-		if (user.authExpiresAt !== undefined && Date.now() >= user.authExpiresAt * 1000) return;
+		if (Date.now() >= Math.min(user.authExpiresAt ?? Infinity, owner.user.authExpiresAt ?? Infinity) * 1000) return;
 		const record = getRegisteredSession(sessionId);
 		if (record === owner) {
 			pushSessionFrame(record, {

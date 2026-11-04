@@ -176,7 +176,7 @@ set. A transient failure during initial restore closes the GET and returns retry
 
 Ordinary principals are reauthorized through the GET principal. Only scoped-token principals persist
 their embedded role and expiry, once per distinct grant, with per-URI references. Unreferenced grants are pruned. Credentials and custom claims stay out of storage. Same-worker
-requests retain their full principal during installation. Reconnect rejects expired scoped entries and requires a scoped GET to present the same sanitized grant; a different credential with the same attribution username cannot inherit it. The notification callback also checks expiry, including custom streams that do not enforce it themselves.
+requests retain their full principal during installation. Reconnect rejects expired scoped entries and requires a scoped GET to present the same username and role permissions (a refreshed expiry is allowed without extending the stored grant); a different credential with the same attribution username cannot inherit it. The notification callback also checks expiry, including custom streams that do not enforce it themselves.
 
 Activity-only session writes do not trigger reconciliation: the watcher compares the token and revision.
 Native `Table.subscribe` enables auditing for a previously unaudited table, so opening a GET also makes
