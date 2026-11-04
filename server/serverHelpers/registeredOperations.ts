@@ -93,9 +93,6 @@ export function announceRegisteredOperation(name: string, grantable = false, inp
 	}
 }
 
-/**
- * Main-thread ITC handler for direct worker registration announcements.
- */
 export function operationRegisteredHandler(event: {
 	message?: { name?: string; grantable?: boolean; inputSchema?: object; originator?: number };
 }) {

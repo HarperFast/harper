@@ -1174,6 +1174,7 @@ describe('Test serverUtilities.js module ', () => {
 			server.registerOperation({ name, execute: async () => ({}) });
 
 			assert.equal(serverUtilities.OPERATION_FUNCTION_MAP.get(name).inputSchema, undefined);
+			assert.equal(serverUtilities.OPERATION_FUNCTION_MAP.get(name).builtin, false);
 			serverUtilities.OPERATION_FUNCTION_MAP.set(name, original);
 		});
 

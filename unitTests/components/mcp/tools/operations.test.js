@@ -22,8 +22,9 @@ const { waitFor } = require('../../../waitFor.js');
 
 function makeOpMap(entries) {
 	const m = new Map();
-	for (const [name, fn, inputSchema = { type: 'object' }] of entries) {
+	for (const [name, fn, inputSchema = { type: 'object' }, builtin = true] of entries) {
 		m.set(name, {
+			builtin,
 			operation_function: fn ?? (async () => ({ ok: true })),
 			inputSchema: inputSchema === null ? undefined : inputSchema,
 		});
@@ -256,6 +257,17 @@ describe('mcp/tools/operations — registration', () => {
 		assert.equal(dropTable.annotations?.readOnlyHint, undefined);
 	});
 
+	it('does not infer safety or curated help for component names or builtin replacements', () => {
+		_setOperationFunctionMapForTest(makeOpMap([['search_by_value', null, { type: 'object' }, false]]));
+		_setRemoteOperationInputSchemasForTest([['search_and_reindex', { inputSchema: { type: 'object' } }]]);
+		registerOperationsTools();
+		for (const name of ['search_by_value', 'search_and_reindex']) {
+			const tool = getTool(name);
+			assert.equal(tool.annotations?.readOnlyHint, undefined);
+			assert.match(tool.description, /registered schema/);
+		}
+	});
+
 	it('does not expose a glob-allowed operation without registered schema metadata', () => {
 		envOverrides.mcp_operations_allow = ['nonstandard_*'];
 		_setOperationFunctionMapForTest(makeOpMap([['nonstandard_op', null, null]]));
@@ -467,7 +479,14 @@ describe('mcp/tools/operations — catalog coverage lint', () => {
 	const { OPERATION_DESCRIPTIONS } = require('#src/components/mcp/tools/schemas/operationDescriptions');
 	const { OPERATION_FUNCTION_MAP } = require('#src/server/serverHelpers/serverUtilities');
 
-	const allOpNames = [...new Set([...OPERATION_FUNCTION_MAP.keys(), ...Object.keys(AGENT_OPERATION_INPUT_SCHEMAS)])];
+	const { OPERATIONS_ENUM } = require('#src/utility/hdbTerms');
+	const allOpNames = [
+		...new Set([
+			...Object.values(OPERATIONS_ENUM),
+			...OPERATION_FUNCTION_MAP.keys(),
+			...Object.keys(AGENT_OPERATION_INPUT_SCHEMAS),
+		]),
+	];
 
 	function globToRegex(pattern) {
 		const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');

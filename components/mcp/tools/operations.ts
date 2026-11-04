@@ -56,7 +56,7 @@ import { OPERATION_DESCRIPTIONS } from './schemas/operationDescriptions.ts';
 // `startOnMainThread` — the provider below re-reads it per request rather than
 // snapshotting (#1562).
 type OperationFunction = (json: object) => unknown | Promise<unknown>;
-type OperationFunctionEntry = { inputSchema?: object };
+type OperationFunctionEntry = { inputSchema?: object; builtin?: boolean };
 type OperationFunctionMap = Map<string, OperationFunctionEntry>;
 
 type ChooseOperation = (body: object) => OperationFunction;
@@ -315,10 +315,9 @@ function getOperationsConfig(): OperationsConfig {
 	};
 }
 
-function buildDescription(operationName: string, permissive: boolean): string {
-	const curated = Object.hasOwn(OPERATION_DESCRIPTIONS, operationName)
-		? OPERATION_DESCRIPTIONS[operationName]
-		: undefined;
+function buildDescription(operationName: string, permissive: boolean, builtin: boolean): string {
+	const curated =
+		builtin && Object.hasOwn(OPERATION_DESCRIPTIONS, operationName) ? OPERATION_DESCRIPTIONS[operationName] : undefined;
 	if (curated) return curated;
 	return permissive
 		? `Harper operation '${operationName}'. Arguments are forwarded as-is; the server validates and returns a structured error on rejection.`
@@ -477,14 +476,19 @@ export function makeOperationToolHandler(operationName: string) {
  * decides *whether* the op is exposed, checked per request in the provider).
  * `tools/list` isn't a hot path, so the provider rebuilds defs per call.
  */
-function buildOperationToolDef(operationName: string, inputSchema: object, permissive = false): ToolDef {
+function buildOperationToolDef(
+	operationName: string,
+	inputSchema: object,
+	builtin: boolean,
+	permissive = false
+): ToolDef {
 	const annotations: { readOnlyHint?: boolean; destructiveHint?: boolean; idempotentHint?: boolean } = {};
-	if (isReadOnly(operationName)) annotations.readOnlyHint = true;
-	if (isDestructive(operationName)) annotations.destructiveHint = true;
-	if (isIdempotent(operationName)) annotations.idempotentHint = true;
+	if (builtin && isReadOnly(operationName)) annotations.readOnlyHint = true;
+	if (builtin && isDestructive(operationName)) annotations.destructiveHint = true;
+	if (builtin && isIdempotent(operationName)) annotations.idempotentHint = true;
 	return {
 		name: operationName,
-		description: buildDescription(operationName, permissive),
+		description: buildDescription(operationName, permissive, builtin),
 		inputSchema,
 		profile: 'operations',
 		...(Object.keys(annotations).length > 0 ? { annotations } : {}),
@@ -504,7 +508,7 @@ function buildRegisteredOperationToolDef(
 			issue !== 'inconsistent' &&
 			config.allow?.some((pattern) => !pattern.includes('*') && pattern === operationName)
 		) {
-			return buildOperationToolDef(operationName, { type: 'object' }, true);
+			return buildOperationToolDef(operationName, { type: 'object' }, operation.builtin === true, true);
 		}
 		const warningKey = `${operationName}:${issue}`;
 		if (!warnedMissingSchemas.has(warningKey)) {
@@ -520,7 +524,7 @@ function buildRegisteredOperationToolDef(
 	}
 	warnedMissingSchemas.delete(`${operationName}:missing`);
 	warnedMissingSchemas.delete(`${operationName}:inconsistent`);
-	return buildOperationToolDef(operationName, operation.inputSchema);
+	return buildOperationToolDef(operationName, operation.inputSchema, operation.builtin === true);
 }
 
 /**

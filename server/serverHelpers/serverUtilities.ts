@@ -874,6 +874,7 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 	opFuncMap.set(terms.OPERATIONS_ENUM.CLEAR_STATUS, new OperationFunctionObject(status.clear));
 
 	for (const [name, operation] of opFuncMap) {
+		operation.builtin = true;
 		operation.inputSchema = Object.hasOwn(OPERATION_INPUT_SCHEMAS, name) ? OPERATION_INPUT_SCHEMAS[name] : undefined;
 	}
 
