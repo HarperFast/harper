@@ -5333,6 +5333,9 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 							if (attribute.lastIndexedKey !== undefined) {
 								attribute.checkpointCertified = attribute.lastIndexedKey;
 								attribute.checkpointAlgorithm = attributeDescriptor.checkpointAlgorithm;
+							} else if (isApplicationComputed(attribute)) {
+								// certifies nothing until this build stamps it; the previous build's stamp must not carry over
+								attribute.checkpointAlgorithm = CHECKPOINT_ALGORITHM;
 							}
 							// Explicit reindex is the upgrade path from a legacy (un-versioned) custom-index
 							// object store to the versioned, VT-cacheable format. A full rebuild from scratch

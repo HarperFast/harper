@@ -447,6 +447,23 @@ describe('re-declaring a table reports and rebuilds only a real computed change 
 		await assertScores(Computed, (name) => 'j-' + name);
 	});
 
+	it("does not carry a finished build's resolver certification onto a rebuild claim", async () => {
+		const Computed = declare('ComputedRebuildClaim', { computed: true, version: 1 });
+		Computed.setComputedAttribute('score', (record) => 'v-' + record.name);
+		await populate(Computed);
+		await settled(Computed);
+		const key = 'ComputedRebuildClaim/score';
+		assert.strictEqual(Computed.dbisDB.getSync(key).checkpointAlgorithm, RESOLVED_CHECKPOINT_ALGORITHM);
+		const Rebuilt = declare('ComputedRebuildClaim', { computed: true, version: 2 });
+		await catalogFlushed(Rebuilt);
+		assert.notStrictEqual(
+			Rebuilt.dbisDB.getSync(key).checkpointAlgorithm,
+			RESOLVED_CHECKPOINT_ALGORITHM,
+			'a rebuild in progress is certified by the build it replaces'
+		);
+		await settled(Rebuilt);
+	});
+
 	it('holds no index for a repair claim that failed part way', async () => {
 		const Computed = await uncertified('ComputedClaimFails', [
 			{ name: 'first', type: 'String', indexed: true, computed: true },
