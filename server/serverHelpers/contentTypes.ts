@@ -43,22 +43,16 @@ export function isUnkeyedSelect(select: any): boolean {
 }
 
 type AppliedSelect = { select: any; rows: boolean; value: any };
-// Keyed by the projecting resource or the request target; CSV trusts an entry only for its exact value.
+// Keyed by request context, which nested reads share; CSV trusts an entry only for its exact value.
 const appliedSelects = new WeakMap<object, AppliedSelect>();
 
-export function recordAppliedSelect<T>(owner: any, select: any, rows: boolean, value: T): T {
-	if (owner && typeof owner === 'object') appliedSelects.set(owner, { select, rows, value });
+export function recordAppliedSelect<T>(context: any, select: any, rows: boolean, value: T): T {
+	if (context && typeof context === 'object') appliedSelects.set(context, { select, rows, value });
 	return value;
 }
 
-export function publishAppliedSelect<T>(from: any, to: any, value: T): T {
-	const applied = from && typeof from === 'object' ? appliedSelects.get(from) : undefined;
-	if (applied?.value === value && to && typeof to === 'object') appliedSelects.set(to, applied);
-	return value;
-}
-
-function appliedSelectFor(target: any, data: any): AppliedSelect | undefined {
-	const applied = target && typeof target === 'object' ? appliedSelects.get(target) : undefined;
+function appliedSelectFor(context: any, data: any): AppliedSelect | undefined {
+	const applied = context && typeof context === 'object' ? appliedSelects.get(context) : undefined;
 	return applied?.value === data ? applied : undefined;
 }
 
@@ -163,9 +157,9 @@ mediaTypes.set('application/x-msgpack', {
 	deserialize: unpack,
 	q: 0.9,
 });
-function csvColumns(data: any, target: any, resource: any) {
+function csvColumns(data: any, request: any, target: any, resource: any) {
 	if (typeof data?.getColumns === 'function') return { columns: data.getColumns() };
-	const applied = appliedSelectFor(target, data);
+	const applied = appliedSelectFor(request, data);
 	if (applied) {
 		return { columns: buildSelectColumns(applied.select, resource?.attributes), singleRecord: !applied.rows };
 	}
@@ -173,15 +167,15 @@ function csvColumns(data: any, target: any, resource: any) {
 }
 
 mediaTypes.set('text/csv', {
-	serializeStream(data: any, response: Response, _request?: any, target?: any, resource?: any) {
+	serializeStream(data: any, response: Response, request?: any, target?: any, resource?: any) {
 		response.headers.set('Content-Disposition', 'attachment; filename="data.csv"');
-		const { columns, fallbackColumns, singleRecord } = csvColumns(data, target, resource);
+		const { columns, fallbackColumns, singleRecord } = csvColumns(data, request, target, resource);
 		if (singleRecord && data != null) return toCsvStream([data.toJSON ? data.toJSON() : data], columns);
 		return toCsvStream(data, columns, fallbackColumns);
 	},
-	serialize(data: any, response: Response, _request?: any, target?: any, resource?: any) {
+	serialize(data: any, response: Response, request?: any, target?: any, resource?: any) {
 		response.headers.set('Content-Disposition', 'attachment; filename="data.csv"');
-		const { columns, fallbackColumns, singleRecord } = csvColumns(data, target, resource);
+		const { columns, fallbackColumns, singleRecord } = csvColumns(data, request, target, resource);
 		if (
 			data != null &&
 			(singleRecord ||
@@ -622,7 +616,7 @@ export function serialize(responseData, request, responseObject, target?, resour
 					return row;
 				});
 				responseData.getColumns = getColumns;
-				const applied = target?.select && appliedSelectFor(target, unwrapped);
+				const applied = contentType === 'text/csv' && appliedSelectFor(request, unwrapped);
 				if (applied) applied.value = responseData;
 			}
 			const serialized = serializer.serializer.serializeStream(responseData, responseObject, request, target, resource);

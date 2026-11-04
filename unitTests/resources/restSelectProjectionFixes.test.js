@@ -1232,6 +1232,14 @@ describe('REST and operations API select projection fixes', function () {
 				}
 			);
 			mount(
+				'PlainDelegatingCopy',
+				class extends Plain {
+					get(target) {
+						return Plain.get({ ...target });
+					}
+				}
+			);
+			mount(
 				'SharedTargetSummary',
 				class extends Resource {
 					static async get(target) {
@@ -1651,6 +1659,11 @@ describe('REST and operations API select projection fixes', function () {
 			assert.strictEqual(copiedArrayScalar.text, '"tags"\n"[""t1"",""t2""]"\n');
 			const copiedTuple = await restGet('/PlainCopiedTarget/z-1?select([id,note])', { accept: 'text/csv' });
 			assert.strictEqual(copiedTuple.text, '"id","note"\n"z-1","n1"\n');
+
+			const delegatedArrayScalar = await restGet('/PlainDelegatingCopy/z-1?select(tags)', { accept: 'text/csv' });
+			assert.strictEqual(delegatedArrayScalar.text, '"tags"\n"[""t1"",""t2""]"\n');
+			const delegatedTuple = await restGet('/PlainDelegatingCopy/z-1?select([id,note])', { accept: 'text/csv' });
+			assert.strictEqual(delegatedTuple.text, '"id","note"\n"z-1","n1"\n');
 
 			const summaryJson = await restGet('/SharedTargetSummary/z-1?select(name)', { accept: 'application/json' });
 			assert.deepStrictEqual(summaryJson.body, { name: 'Zeta-1', inStock: true });

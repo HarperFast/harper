@@ -4368,7 +4368,7 @@ export function makeTable(options): TableResourceClass {
 							if (select && record != null) {
 								const projected = transformForSelect(select, this.constructor)(record);
 								return isUnkeyedSelect(select)
-									? when(projected, (projected) => recordAppliedSelect(this, select, false, projected))
+									? when(projected, (projected) => recordAppliedSelect(this.getContext(), select, false, projected))
 									: projected;
 							}
 							if (target?.property) {
@@ -4389,7 +4389,7 @@ export function makeTable(options): TableResourceClass {
 					const projected = transformForSelect(select, this.constructor)(record);
 					return promiseNormalize(
 						isUnkeyedSelect(select)
-							? when(projected, (projected) => recordAppliedSelect(this, select, false, projected))
+							? when(projected, (projected) => recordAppliedSelect(this.getContext(), select, false, projected))
 							: projected,
 						target
 					);

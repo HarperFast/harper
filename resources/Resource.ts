@@ -31,7 +31,7 @@ import { makeSchemaClass, type Contract, type SchemaClass } from './defineResour
 import { markStaticResourceInstance } from './staticResourceDispatch.ts';
 import { isFormDataIterable, resolveBody } from './resolveBody.ts';
 import { compareKeys } from 'ordered-binary';
-import { recordAppliedSelect, publishAppliedSelect, isUnkeyedSelect } from '../server/serverHelpers/contentTypes.ts';
+import { recordAppliedSelect, isUnkeyedSelect } from '../server/serverHelpers/contentTypes.ts';
 
 // Only table-backed classes are refused here: a custom resource's put/post/delete may be a non-storage call that a
 // read-only server must still answer. post, publish, copy and move are left to the transaction's write admission.
@@ -141,18 +141,12 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 			const result = resource.get?.(query);
 			// only false mode hands allowRead to the instance search; other modes settled it before dispatch
 			if (loadAsInstance === false) {
-				// an async allowRead may have set the select by the time the result settles
 				return result?.then
-					? result.then((result: any) =>
-							publishAppliedSelect(resource, query, authorizeSearchResult(result, request?.user))
-						)
-					: publishAppliedSelect(resource, query, authorizeSearchResult(result, request?.user));
+					? result.then((result: any) => authorizeSearchResult(result, request?.user))
+					: authorizeSearchResult(result, request?.user);
 			}
 			// for the new API we always apply select in the instance method
-			if (!loadAsInstance)
-				return isUnkeyedSelect(query?.select)
-					? when(result, (value) => publishAppliedSelect(resource, query, value))
-					: result;
+			if (!loadAsInstance) return result;
 			if (result?.then) return result.then(handleSelect);
 			return handleSelect(result);
 			function handleSelect(result) {
@@ -162,13 +156,13 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 					const unkeyed = isUnkeyedSelect(select);
 					if (Array.isArray(result)) {
 						const rows = settleAll(result.map(transform));
-						return unkeyed ? when(rows, (rows) => recordAppliedSelect(query, select, true, rows)) : rows;
+						return unkeyed ? when(rows, (rows) => recordAppliedSelect(request, select, true, rows)) : rows;
 					} else if (typeof result?.map === 'function') {
 						const rows = result.map(transform);
-						return unkeyed ? recordAppliedSelect(query, select, true, rows) : rows;
+						return unkeyed ? recordAppliedSelect(request, select, true, rows) : rows;
 					} else {
 						const record = transform(result);
-						return unkeyed ? when(record, (record) => recordAppliedSelect(query, select, false, record)) : record;
+						return unkeyed ? when(record, (record) => recordAppliedSelect(request, select, false, record)) : record;
 					}
 				}
 				return result;
@@ -392,7 +386,7 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 						const transform = transformForSelect(select, resource.constructor);
 						const rows = Array.isArray(result) ? settleAll(result.map(transform)) : result.map(transform);
 						return isUnkeyedSelect(select)
-							? when(rows, (rows) => recordAppliedSelect(query, select, true, rows))
+							? when(rows, (rows) => recordAppliedSelect(request, select, true, rows))
 							: rows;
 					}
 					return result;
