@@ -169,7 +169,7 @@ describe('per-log purge bounds', function () {
 			const lastKey = Date.now() - nativeRetention(Table.auditStore) - DAY_MS;
 			await applyAsOrigin(Table, 'long-idle', { nodeId: origin, logKey: lastKey });
 			raiseAuditFloor(Table.auditStore, Date.now() - 60_000, true);
-			assert.strictEqual(unpack(Table.auditStore.getBinary(LOG_PURGE_BOUNDS_KEY)).epoch, 0);
+			assert.strictEqual(unpack(Table.auditStore.getBinary(LOG_PURGE_BOUNDS_KEY)).unobserved, 0);
 			assert.strictEqual(getLogPurgeBounds(Table.auditStore, 'long-idle-origin').get('long-idle-origin'), lastKey);
 		});
 
@@ -186,7 +186,7 @@ describe('per-log purge bounds', function () {
 			raiseAuditFloor(Table.auditStore, Date.now() - 60_000, true);
 			const horizon = Date.now() - retention - 1000;
 			const after = unpack(Table.auditStore.getBinary(LOG_PURGE_BOUNDS_KEY));
-			assert.strictEqual(after.epoch, 0);
+			assert.strictEqual(after.unobserved, 0);
 			assert.ok(after.trackedFrom >= horizon);
 			assert.strictEqual(getLogPurgeBounds(Table.auditStore, 'gap-origin').get('gap-origin'), lastKey);
 		});
@@ -238,12 +238,48 @@ describe('per-log purge bounds', function () {
 		assert.ok(getLogPurgeTrackedFrom(Table.auditStore) >= olderPrune);
 	});
 
-	it('reads a record written without trackedFrom as tracking from 0, keeping its epoch as a bound on every log', () => {
+	it('reads a record from before trackedFrom as tracking from its epoch, with each folded bound unfolded', function () {
+		if (isLMDB) return this.skip();
 		const { auditStore } = freshTable();
 		const floor = getAuditFloor(auditStore);
-		writeRecord(auditStore, { epoch: floor, cutoff: floor, observedAt: Date.now(), logs: {} });
-		assert.strictEqual(getLogPurgeTrackedFrom(auditStore), 0);
-		assert.strictEqual(getLogPurgeBounds(auditStore, 'local').get('local'), floor);
+		const real = floor + 1000;
+		writeRecord(auditStore, {
+			epoch: floor,
+			cutoff: floor,
+			observedAt: Date.now(),
+			logs: { 'folded-origin': [floor, Date.now(), floor], 'pruned-origin': [real, Date.now(), real] },
+		});
+		assert.strictEqual(getLogPurgeTrackedFrom(auditStore), floor);
+		const bounds = getLogPurgeBounds(auditStore, ['folded-origin', 'pruned-origin', 'new-origin']);
+		assert.strictEqual(bounds.get('folded-origin'), 0);
+		assert.strictEqual(bounds.get('pruned-origin'), real);
+		assert.strictEqual(bounds.get('new-origin'), 0);
+	});
+
+	it('stores an epoch a build that reads only epoch can rely on', async function () {
+		if (isLMDB) return this.skip();
+		const Table = freshTable();
+		const trackedFrom = getLogPurgeTrackedFrom(Table.auditStore);
+		const stored = () => unpack(Table.auditStore.getBinary(LOG_PURGE_BOUNDS_KEY));
+		assert.strictEqual(stored().epoch, trackedFrom);
+		assert.strictEqual(stored().unobserved, 0);
+		await tick();
+		raiseAuditFloor(Table.auditStore, Date.now() - 1000, true);
+		assert.ok(stored().epoch >= trackedFrom);
+		assert.strictEqual(stored().unobserved, 0);
+	});
+
+	it('answers a boot purge whose last pass is stamped ahead of the clock with where tracking began', async function () {
+		if (isLMDB) return this.skip();
+		const Table = backdatedTable(400 * DAY_MS);
+		await Table.put('rollback', { name: 'x' });
+		const record = unpack(Table.auditStore.getBinary(LOG_PURGE_BOUNDS_KEY));
+		record.observedAt = Date.now() + DAY_MS;
+		writeRecord(Table.auditStore, record);
+		await tick();
+		const bootedAt = Date.now();
+		assert.strictEqual(bootPurge(Table, 0), 0);
+		assert.ok(getLogPurgeTrackedFrom(Table.auditStore) >= bootedAt);
 	});
 
 	it('keeps an idle log at its exact newest key, not at the cutoff', async () => {
@@ -437,8 +473,12 @@ describe('per-log purge bounds', function () {
 		await tick();
 		raiseAuditFloor(Table.auditStore, Date.now(), true);
 		const bounds = getLogPurgeBounds(Table.auditStore, ['local', 'absent-origin']);
-		assert.strictEqual(bounds.get('local'), getLogPurgeBound(Table.auditStore, ['local']));
-		assert.strictEqual(bounds.get('absent-origin'), getLogPurgeBound(Table.auditStore, ['absent-origin']));
+		const withTracking = (bound) => Math.max(bound, getLogPurgeTrackedFrom(Table.auditStore));
+		assert.strictEqual(withTracking(bounds.get('local')), getLogPurgeBound(Table.auditStore, ['local']));
+		assert.strictEqual(
+			withTracking(bounds.get('absent-origin')),
+			getLogPurgeBound(Table.auditStore, ['absent-origin'])
+		);
 	});
 
 	it('finishes a pass over a log whose maximum is not finite', async function () {
@@ -523,11 +563,10 @@ describe('per-log purge bounds', function () {
 		await Table.put('before-first-pass', { name: 'x' });
 		await tick();
 		const bootedAt = Date.now();
-		const { epoch } = unpack(Table.auditStore.getBinary(LOG_PURGE_BOUNDS_KEY));
 		assert.strictEqual(bootPurge(Table, 0), 0);
 		const trackedFrom = getLogPurgeTrackedFrom(Table.auditStore);
 		assert.ok(trackedFrom >= bootedAt, `${trackedFrom} >= ${bootedAt}`);
-		assert.strictEqual(getLogPurgeBounds(Table.auditStore, 'local').get('local'), epoch);
+		assert.strictEqual(getLogPurgeBounds(Table.auditStore, 'local').get('local'), 0);
 		assert.strictEqual(recordedLogs(Table.auditStore).local, undefined);
 	});
 
@@ -606,13 +645,14 @@ describe('per-log purge bounds', function () {
 		const Table = backdatedTable();
 		const record = unpack(Table.auditStore.getBinary(LOG_PURGE_BOUNDS_KEY));
 		const aging = Date.now() - nativeRetention(Table.auditStore) * 0.6;
-		record.logs['gone-origin'] = [record.epoch, aging, record.epoch];
+		const goneBound = record.epoch + 1;
+		record.logs['gone-origin'] = [goneBound, aging, goneBound];
 		record.observedAt = Date.now();
 		writeRecord(Table.auditStore, record);
 		await tick();
 		raiseAuditFloor(Table.auditStore, Date.now(), true);
 		const [bound, quietAt] = recordedLogs(Table.auditStore)['gone-origin'];
-		assert.strictEqual(bound, record.epoch);
+		assert.strictEqual(bound, goneBound);
 		assert.ok(quietAt > aging + 1000);
 	});
 
@@ -714,6 +754,10 @@ describe('per-log purge bounds', function () {
 		['a negative bound', pack({ epoch: 1, cutoff: Date.now() * 2, logs: { 'local': -5, '': -5 } })],
 		['a non-finite epoch', pack({ epoch: Infinity, cutoff: Date.now() * 2, logs: {} })],
 		['a logs array', pack({ epoch: 1, cutoff: Date.now() * 2, logs: [1] })],
+		[
+			'a negative unobserved',
+			pack({ epoch: 1, unobserved: -1, trackedFrom: 1, cutoff: Date.now() * 2, observedAt: 1, logs: {} }),
+		],
 		[
 			'a non-finite trackedFrom',
 			pack({ epoch: 1, trackedFrom: Infinity, cutoff: Date.now() * 2, observedAt: 1, logs: {} }),

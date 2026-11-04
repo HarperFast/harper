@@ -98,7 +98,7 @@ Things that are easy to get wrong here:
 A replication source must tell a follower that missed purged entries from one whose source simply
 wrote nothing: an idle RocksDB log is purged empty, and an empty log cannot say whether its entries
 never existed or were removed. `Symbol.for('log-purge-bounds')` holds
-`{ epoch, trackedFrom, cutoff, observedAt, logs: { name: [bound, quietAt, maxKey] } }`. `getLogPurgeBounds` returns
+`{ epoch, unobserved, trackedFrom, cutoff, observedAt, logs: { name: [bound, quietAt, maxKey] } }`. `getLogPurgeBounds` returns
 each named log's bound on what tracked prunes removed, and `getLogPurgeTrackedFrom` where tracking began.
 
 - **Raised inside `raiseAuditFloor`'s transaction**, so it shares the floor's write-ahead ordering on
@@ -107,7 +107,7 @@ each named log's bound on what tracked prunes removed, and `getLogPurgeTrackedFr
   longer): a log with no entry at or past it is quiet, bounded by its largest key, and `quietAt` becomes
   now; a recorded log with no files left is quiet too. Only a cutoff in the past is observed, since
   anything appended after the probe then lands in a segment the prune cannot remove, and nothing is
-  observed while neither the cutoff nor the native horizon reaches past `epoch` and the last pass is
+  observed while neither the cutoff nor the native horizon reaches past `unobserved` and the last pass is
   within half the native retention. `trackedFrom` gives no such shortcut: a segment written after tracking
   began can sit below it (a future-dated floor, a rolled-back clock), so a young node observes from its first pass. Any other prune
   (`deleteHistory`, `delete_transaction_logs_before`, a cutoff ahead of the clock) raises `epoch` to
@@ -131,7 +131,7 @@ each named log's bound on what tracked prunes removed, and `getLogPurgeTrackedFr
   horizon, or the log's largest key at the last pass if lower (every segment last written before that
   pass held keys up to it, in whatever order they arrived), in the read and in the next pass. `scheduleAuditCleanup` runs a pass at least every quarter of
   that retention and each pass that observes writes a later `quietAt`, so an idle log on a running node never
-  reaches the horizon. Passes skip observing while neither purge reaches past `epoch`; a boot just after such a
+  reaches the horizon. Passes skip observing while neither purge reaches past `unobserved`; a boot just after such a
   window ends can take the reach for an idle log, which errs toward a copy.
 - **`trackedFrom` answers for what tracking never saw**: the floor, or the native horizon if later, when
   the record was created, raised to the native horizon whenever no pass has read the logs within the native
@@ -142,8 +142,8 @@ each named log's bound on what tracked prunes removed, and `getLogPurgeTrackedFr
   on every reconnect with nothing pruned. A follower at or past it missed nothing a purge before it took: every
   such segment was last written before that position, so its entries were delivered, unless one landed behind the
   follower's scan (harper-pro#1251).
-- **`epoch` bounds every log, compared with each log's own start**: the cutoff of a prune that observes no
-  log, which may have removed keys still committing near it. A copy cannot raise a cursor past the keys a log held, so
+- **`unobserved` bounds every log, compared with each log's own start**: the cutoff of a prune that observes no
+  log, which may have removed keys still committing near it. The stored `epoch` is the higher of this and `trackedFrom`, so a build that reads only `epoch` stays conservative after a rollback; a record from before the split reads its `epoch` as `trackedFrom`, the only way its builds compared it. A copy cannot raise a cursor past the keys a log held, so
   while a cursor's origin stays silent, that comparison forces a copy on every reconnect.
 - **Trusted only while `cutoff` ≥ the floor.** A floor raised without the record (an older binary's
   prune, a log-free copy's generation stamp) means a prune it did not see; the next tracked prune

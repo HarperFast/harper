@@ -875,7 +875,7 @@ export function raiseAuditFloor(auditStore: any, cutoff: number, observeLogs = f
 			const floorBefore = stored === undefined ? AUDIT_FLOOR_UNKNOWN : decodeAuditFloor(stored);
 			const bounds = raisedLogPurgeBounds(
 				auditStore,
-				decodeLogPurgeBounds(read(LOG_PURGE_BOUNDS_KEY)),
+				decodeLogPurgeBounds(auditStore, read(LOG_PURGE_BOUNDS_KEY)),
 				floorBefore,
 				cutoff,
 				observedBounds,
@@ -932,7 +932,13 @@ function isPurgeBoundValue(value: unknown): value is number {
 	return typeof value === 'number' && Number.isFinite(value) && value >= 0 && !Object.is(value, -0);
 }
 
-function decodeLogPurgeBounds(stored: any): LogPurgeBounds | undefined {
+/**
+ * The stored `epoch` also covers `trackedFrom`, so a build that reads only `epoch` stays conservative after a
+ * rollback; `unobserved` holds what bounds every log. A record with neither `unobserved` nor `trackedFrom` predates
+ * the split: its epoch was the tracking start, folded into each log's bound, and its builds compared it only with a
+ * follower's merged start, so it reads as a tracking start here too.
+ */
+function decodeLogPurgeBounds(auditStore: any, stored: any): LogPurgeBounds | undefined {
 	if (stored === undefined) return undefined;
 	let value: any;
 	try {
@@ -946,7 +952,8 @@ function decodeLogPurgeBounds(stored: any): LogPurgeBounds | undefined {
 		!isPurgeBoundValue(value.epoch) ||
 		!isPurgeBoundValue(value.cutoff) ||
 		!isPurgeBoundValue(value.observedAt) ||
-		(value.trackedFrom !== undefined && !isPurgeBoundValue(value.trackedFrom))
+		(value.trackedFrom !== undefined && !isPurgeBoundValue(value.trackedFrom)) ||
+		(value.unobserved !== undefined && !isPurgeBoundValue(value.unobserved))
 	)
 		return undefined;
 	const logs = value.logs;
@@ -955,9 +962,11 @@ function decodeLogPurgeBounds(stored: any): LogPurgeBounds | undefined {
 		const entry = logs[name];
 		if (!Array.isArray(entry) || entry.length !== 3 || !entry.every(isPurgeBoundValue)) return undefined;
 	}
+	const predatesSplit = value.trackedFrom === undefined && isRocksStore(auditStore);
+	if (predatesSplit) for (const name in logs) if (logs[name][0] === value.epoch) logs[name][0] = 0;
 	return {
-		epoch: value.epoch,
-		trackedFrom: value.trackedFrom ?? 0,
+		epoch: value.unobserved ?? (predatesSplit ? 0 : value.epoch),
+		trackedFrom: value.trackedFrom ?? value.epoch,
 		cutoff: value.cutoff,
 		observedAt: value.observedAt,
 		logs,
@@ -983,7 +992,7 @@ function freshLogPurgeBounds(auditStore: any, floor: number, nativeHorizon = 0):
  */
 function trustedLogPurgeBounds(auditStore: any, floor: number): LogPurgeBounds | undefined {
 	if (!Number.isFinite(floor)) return undefined;
-	const recorded = decodeLogPurgeBounds(auditStore.getBinary(LOG_PURGE_BOUNDS_KEY));
+	const recorded = decodeLogPurgeBounds(auditStore, auditStore.getBinary(LOG_PURGE_BOUNDS_KEY));
 	return recorded && recorded.cutoff >= floor ? recorded : undefined;
 }
 
@@ -1077,7 +1086,9 @@ function observeLogPurgeBounds(
 		observed.set(LMDB_PURGE_LOG, [bound, now, bound]);
 		return observed;
 	}
-	if (!readLogs && (recorded.observedAt === 0 || recorded.observedAt < nativeHorizon)) return observed;
+	// a pass stamped ahead of the clock says nothing about what a cutoff now reaches
+	if (!readLogs && (recorded.observedAt === 0 || recorded.observedAt < nativeHorizon || recorded.observedAt > now))
+		return observed;
 	// the furthest either purge reaches: this prune's cutoff, or rocksdb-js's own retention when it reaches further
 	const reach = Math.max(cutoff, nativeHorizon);
 	const rootStore = auditStore.rootStore;
@@ -1183,7 +1194,14 @@ function raisedLogPurgeBounds(
 	}
 	// each maxKey is a log's largest key at observedAt, which only a pass that read the logs advances
 	const observedAt = observed && logsRead ? now : base.observedAt;
-	return pack({ epoch, trackedFrom, cutoff: Math.max(base.cutoff, cutoff), observedAt, logs });
+	return pack({
+		epoch: Math.max(epoch, trackedFrom),
+		unobserved: epoch,
+		trackedFrom,
+		cutoff: Math.max(base.cutoff, cutoff),
+		observedAt,
+		logs,
+	});
 }
 
 /** rocksdb-js's own transaction-log retention in ms: 0 on LMDB or when it has none, undefined when unreadable. */
@@ -1220,7 +1238,8 @@ function establishLogPurgeBounds(auditStore: any): void {
 			(read) => {
 				const recordedFloor = decodeAuditFloor(read(AUDIT_FLOOR_KEY));
 				if (read(LOG_PURGE_BOUNDS_KEY) !== undefined || !Number.isFinite(recordedFloor)) return undefined;
-				return [[LOG_PURGE_BOUNDS_KEY, pack(freshLogPurgeBounds(auditStore, recordedFloor, nativeHorizon))]];
+				const fresh = freshLogPurgeBounds(auditStore, recordedFloor, nativeHorizon);
+				return [[LOG_PURGE_BOUNDS_KEY, pack({ ...fresh, epoch: fresh.trackedFrom, unobserved: fresh.epoch })]];
 			},
 			'transaction-log purge bounds'
 		);
