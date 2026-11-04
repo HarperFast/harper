@@ -31,7 +31,7 @@ import { makeSchemaClass, type Contract, type SchemaClass } from './defineResour
 import { markStaticResourceInstance } from './staticResourceDispatch.ts';
 import { isFormDataIterable, resolveBody } from './resolveBody.ts';
 import { compareKeys } from 'ordered-binary';
-import { recordAppliedSelect, isUnkeyedSelect } from '../server/serverHelpers/contentTypes.ts';
+import { recordAppliedSelect } from '../server/serverHelpers/contentTypes.ts';
 
 // Only table-backed classes are refused here: a custom resource's put/post/delete may be a non-storage call that a
 // read-only server must still answer. post, publish, copy and move are left to the transaction's write admission.
@@ -153,16 +153,12 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 				let select;
 				if ((select = query?.select) && result != null && !result.selectApplied) {
 					const transform = transformForSelect(select, resource.constructor);
-					const unkeyed = isUnkeyedSelect(select);
 					if (Array.isArray(result)) {
-						const rows = settleAll(result.map(transform));
-						return unkeyed ? when(rows, (rows) => recordAppliedSelect(request, select, true, rows)) : rows;
+						return recordAppliedSelect(request, select, true, settleAll(result.map(transform)));
 					} else if (typeof result?.map === 'function') {
-						const rows = result.map(transform);
-						return unkeyed ? recordAppliedSelect(request, select, true, rows) : rows;
+						return recordAppliedSelect(request, select, true, result.map(transform));
 					} else {
-						const record = transform(result);
-						return unkeyed ? when(record, (record) => recordAppliedSelect(request, select, false, record)) : record;
+						return recordAppliedSelect(request, select, false, transform(result));
 					}
 				}
 				return result;
@@ -384,10 +380,12 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 					const select = (request as any).select;
 					if (select && request.hasOwnProperty('select') && result != null && !result.selectApplied) {
 						const transform = transformForSelect(select, resource.constructor);
-						const rows = Array.isArray(result) ? settleAll(result.map(transform)) : result.map(transform);
-						return isUnkeyedSelect(select)
-							? when(rows, (rows) => recordAppliedSelect(request, select, true, rows))
-							: rows;
+						return recordAppliedSelect(
+							request,
+							select,
+							true,
+							Array.isArray(result) ? settleAll(result.map(transform)) : result.map(transform)
+						);
 					}
 					return result;
 				})

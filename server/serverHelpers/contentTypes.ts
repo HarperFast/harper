@@ -10,6 +10,7 @@ import * as envMgr from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
 import * as YAML from 'yaml';
 import { logger } from '../../utility/logging/logger.ts';
+import { when } from '../../utility/when.ts';
 import {
 	errorToString as harperErrorToString,
 	errorForLog as harperErrorForLog,
@@ -37,18 +38,17 @@ export function isTupleSelect(select: any): boolean {
 	return Array.isArray(select) && Boolean((select as any).asArray);
 }
 
-// A keyed projection names its own columns; only scalar and tuple projections need their select to be read back.
-export function isUnkeyedSelect(select: any): boolean {
-	return isScalarSelect(select) || isTupleSelect(select);
-}
-
 type AppliedSelect = { select: any; rows: boolean; value: any };
 // Keyed by request context, which nested reads share; CSV trusts an entry only for its exact value.
 const appliedSelects = new WeakMap<object, AppliedSelect>();
 
-export function recordAppliedSelect<T>(context: any, select: any, rows: boolean, value: T): T {
-	if (context && typeof context === 'object') appliedSelects.set(context, { select, rows, value });
-	return value;
+export function recordAppliedSelect<T>(context: any, select: any, rows: boolean, value: T): T | Promise<T | void> {
+	// a keyed projection names its own columns; only scalar and tuple projections need their select read back
+	if (!(isScalarSelect(select) || isTupleSelect(select)) || !context || typeof context !== 'object') return value;
+	return when(value, (settled: T) => {
+		appliedSelects.set(context, { select, rows, value: settled });
+		return settled;
+	});
 }
 
 function appliedSelectFor(context: any, data: any): AppliedSelect | undefined {

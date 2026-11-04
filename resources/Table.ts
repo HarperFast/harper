@@ -312,7 +312,6 @@ import {
 	isTupleSelect,
 	buildSelectColumns,
 	recordAppliedSelect,
-	isUnkeyedSelect,
 	type ColumnsList,
 } from '../server/serverHelpers/contentTypes.ts';
 import { type JsonSchemaFragment, projectAttributesToProperties } from './jsonSchemaTypes.ts';
@@ -4366,10 +4365,8 @@ export function makeTable(options): TableResourceClass {
 						(record) => {
 							const select = target?.select;
 							if (select && record != null) {
-								const projected = transformForSelect(select, this.constructor)(record);
-								return isUnkeyedSelect(select)
-									? when(projected, (projected) => recordAppliedSelect(this.getContext(), select, false, projected))
-									: projected;
+								const transform = transformForSelect(select, this.constructor);
+								return recordAppliedSelect(this.getContext(), select, false, transform(record));
 							}
 							if (target?.property) {
 								return record?.[target.property];
@@ -4386,13 +4383,8 @@ export function makeTable(options): TableResourceClass {
 				const record = this.#record;
 				const select = target?.select;
 				if (select && record != null && constructor.loadAsInstance !== true) {
-					const projected = transformForSelect(select, this.constructor)(record);
-					return promiseNormalize(
-						isUnkeyedSelect(select)
-							? when(projected, (projected) => recordAppliedSelect(this.getContext(), select, false, projected))
-							: projected,
-						target
-					);
+					const transform = transformForSelect(select, this.constructor);
+					return promiseNormalize(recordAppliedSelect(this.getContext(), select, false, transform(record)), target);
 				}
 				return promiseNormalize(record, target);
 			}
