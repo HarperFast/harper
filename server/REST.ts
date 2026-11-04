@@ -1,28 +1,48 @@
 import { stat } from 'node:fs/promises';
 import { join } from 'node:path';
-import { serialize, serializeMessage, getDeserializer } from '../server/serverHelpers/contentTypes.ts';
+import {
+	serialize,
+	serializeMessage,
+	getDeserializer,
+	findBestSerializer,
+	isHttpPassThroughEnvelope,
+	waitForStreamStartup,
+	discardSerializedStream,
+	closesSourceOnDiscard,
+} from '../server/serverHelpers/contentTypes.ts';
 import { addAnalyticsListener, recordAction, recordActionBinary } from '../resources/analytics/write.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 import { ServerError, ClientError } from '../utility/errors/hdbError.ts';
 import { Resources } from '../resources/Resources.ts';
-import { Resource, missingMethod, allowedMethods } from '../resources/Resource.ts';
+import { Resource, WRITE_CONDITION, missingMethod, allowedMethods } from '../resources/Resource.ts';
 import { IterableEventQueue } from '../resources/IterableEventQueue.ts';
 import { transaction } from '../resources/transaction.ts';
-import { Headers, mergeHeaders } from '../server/serverHelpers/Headers.ts';
+import { Headers, mergeHeaders, addVaryHeader } from '../server/serverHelpers/Headers.ts';
 import { generateJsonApi } from '../resources/openApi.ts';
 import { getConfigPath } from '../config/configUtils.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import { ASIDE_STAGING_DIR } from '../components/Application.ts';
 import { COMPONENT_PREPARATION_LOCK_DIR } from '../components/componentPreparationLock.ts';
 import { restartNeeded } from '../components/requestRestart.ts';
+import {
+	assertNoDeferredCredentialRejection,
+	settleDeferredCredentialRejection,
+} from '../security/deferredAuthentication.ts';
+import { toCloseReason } from './serverHelpers/webSocketCloseReason.ts';
+import { completeMultipartBody, cancelMultipartBody } from './serverHelpers/multipartForm.ts';
 
 import { Request } from '../server/serverHelpers/Request.ts';
-import { RequestTarget } from '../resources/RequestTarget';
+import { RequestTarget } from '../resources/RequestTarget.ts';
 import { entryMap } from '../resources/RecordEncoder.ts';
+import {
+	evaluatePreconditions,
+	hasPreconditions,
+	hasWritePreconditions,
+	parseHttpDate,
+	versionToEtag,
+} from './serverHelpers/preconditions.ts';
 
 const { errorToString, errorForLog } = harperLogger;
-const etagBytes = new Uint8Array(8);
-const etagFloat = new Float64Array(etagBytes.buffer, 0, 1);
 
 const OPENAPI_DOMAIN = 'openapi';
 
@@ -32,7 +52,14 @@ const OPENAPI_DOMAIN = 'openapi';
  * itself when one isn't already present, and default the status. Shared by the normal return path and the
  * thrown-Response short-circuit so both honor status, headers, and body identically.
  */
-function finalizeResponse(responseData, headers, status, request) {
+function finalizeResponse(
+	responseData,
+	headers,
+	status,
+	request,
+	method = request.method,
+	preconditionsEnabled = true
+) {
 	if (Object.isFrozen(responseData)) {
 		// make a copy if it is a frozen record
 		responseData = Object.assign({}, responseData);
@@ -58,6 +85,16 @@ function finalizeResponse(responseData, headers, status, request) {
 		// if we rebuilt the headers, reassign it, but we don't want to assign to a Response object (which should already
 		// have a valid Headers object) or it will throw an error
 		responseData.headers = responseHeaders;
+	if (preconditionsEnabled && (method === 'GET' || method === 'HEAD') && hasPreconditions(request.headers.asObject)) {
+		const conditional = applyReadPreconditions(
+			{ status: responseData.status ?? status ?? 200, headers: responseHeaders, body: responseData.body },
+			request,
+			method,
+			request.lastModified,
+			responseData.body === undefined ? ('data' in responseData ? responseData.data : responseData) : undefined
+		);
+		if (conditional.status === 304) return conditional;
+	}
 	// if no body, look for provided data to serialize
 	if (!responseData.body) {
 		let body: any;
@@ -117,11 +154,184 @@ async function findInactiveComponent(url: string): Promise<string | undefined> {
 	}
 }
 
+/**
+ * Emit RFC 7233-style pagination headers for a `Prefer: count=` request. Table.search returns the page
+ * with a `recordCount` (total matching records, or null when an exact scan hit its guardrail or an
+ * estimate was suppressed by an opaque filter). `Content-Range: items <start>-<end>/<total>` lets a
+ * client paginate — `<total>` is `*` when unavailable. `Preference-Applied` echoes the count mode the
+ * server actually applied (`exact` or `estimated`, after any per-mount downgrade), so a `.../*` total
+ * reads as "that mode was applied but the total is unavailable" rather than "no count was requested".
+ * All three headers are added to `Access-Control-Expose-Headers` so a browser can read them cross-origin
+ * (they aren't safelisted).
+ */
+function setCountHeaders(headers: Headers, offset: number, mode: string, page: any) {
+	const total = page.recordCount;
+	const len = Array.isArray(page) ? page.length : 0;
+	const range = len > 0 ? `${offset}-${offset + len - 1}` : '*';
+	const totalStr = typeof total === 'number' ? String(total) : '*';
+	headers.set('Range-Unit', 'items');
+	headers.set('Content-Range', `items ${range}/${totalStr}`);
+	headers.set('Preference-Applied', `count=${mode}`);
+	// Append (don't overwrite) so a resource that already exposed its own headers keeps them. Compare
+	// case-insensitive comma tokens, not substrings, so an unrelated existing token (e.g.
+	// `X-Content-Range-Metadata`) doesn't suppress the real `Content-Range` token.
+	const exposed = headers.get('Access-Control-Expose-Headers');
+	const existing = new Set(
+		(Array.isArray(exposed) ? exposed.join(',') : exposed || '')
+			.split(',')
+			.map((token) => token.trim().toLowerCase())
+			.filter(Boolean)
+	);
+	for (const name of ['Content-Range', 'Range-Unit', 'Preference-Applied']) {
+		if (!existing.has(name.toLowerCase())) headers.append('Access-Control-Expose-Headers', name, true);
+	}
+}
+
+function definesOwnVerb(resource, method: string): boolean {
+	return resource[method.toLowerCase()] !== Resource[method.toLowerCase()];
+}
+
+function evaluatesWritePreconditions(resource, method: string): boolean {
+	return (
+		Boolean(resource?.prototype?.getMetadata) &&
+		resource.preconditions !== false &&
+		(['PUT', 'PATCH', 'DELETE'].includes(method) || !definesOwnVerb(resource, method))
+	);
+}
+
+// The record an own verb's optional condition guards, parsed as Resource parses a target: the verb may pass that record
+// on by id rather than by the target object. A target the parse rejects leaves the condition unbound, so the verb
+// still runs and sees the headers.
+function conditionRecordId(resource, target: RequestTarget, request) {
+	if (target.isCollection || target.select || target.id == null) return;
+	if (resource.directURLMapping) return target.toString().slice(1);
+	if (typeof target.id !== 'string') return target.id;
+	// parsePath may read request state, and sets the content type from a `.json` id only for the verb's own parse
+	const { requestedContentType } = request;
+	try {
+		const parsed = resource.parsePath(target.id, request);
+		if (parsed?.property !== undefined || !parsed) return;
+		return resource.coerceId(parsed);
+	} catch {
+		return;
+	} finally {
+		request.requestedContentType = requestedContentType;
+	}
+}
+
+function unapplied(writeCondition): boolean {
+	return Boolean(writeCondition && !writeCondition.consumed && !writeCondition.optional);
+}
+
+function isDeferredRead(data): boolean {
+	return Boolean(
+		data &&
+		typeof data === 'object' &&
+		!Array.isArray(data) &&
+		!(data instanceof Uint8Array) &&
+		!(data instanceof Blob) &&
+		(data[Symbol.iterator] || data[Symbol.asyncIterator])
+	);
+}
+
+function discardReadResponse(response, sourceData) {
+	try {
+		if (typeof sourceData?.onDone === 'function') ownDiscard(sourceData.onDone());
+		else if (!closesSourceOnDiscard(response.body) && isDeferredRead(sourceData)) {
+			// A serializer that never started never opened the source; return() on a fresh iterator is how one
+			// without onDone (a transform of search results) releases what it holds.
+			const iterator = sourceData[Symbol.asyncIterator]
+				? sourceData[Symbol.asyncIterator]()
+				: sourceData[Symbol.iterator]();
+			ownDiscard(iterator?.return?.());
+		}
+	} catch (error) {
+		logDiscardError(error);
+	} finally {
+		discardSerializedStream(response.body);
+	}
+}
+
+function ownDiscard(result) {
+	if (typeof result?.then === 'function') result.then(null, logDiscardError);
+}
+
+function logDiscardError(error) {
+	harperLogger.warn('Error closing a discarded read source', error);
+}
+
+const VALIDATOR_HEADERS = ['ETag', 'Last-Modified'];
+
+// An event-stream HEAD (CONNECT) is not started: a subscription's first event can be indefinitely far off.
+function readStreamStartup(body, requestMethod: string, method: string) {
+	if (requestMethod === 'GET' || method === 'HEAD') return waitForStreamStartup(body);
+}
+
+function setReadValidators(headers, lastModification: number, httpOptions) {
+	if (!isFinite(lastModification)) return;
+	if (!headers.has('ETag')) headers.set('ETag', versionToEtag(lastModification));
+	if (httpOptions.lastModified && !headers.has('Last-Modified'))
+		headers.set('Last-Modified', new Date(lastModification).toUTCString());
+}
+
+// the 304s applyReadPreconditions answers after discarding the read, unlike one a resource returns itself
+const discardedByPreconditions = new WeakSet<object>();
+
+function applyReadPreconditions(response, request, method: string, lastModified?: number, sourceData?) {
+	if ((method !== 'GET' && method !== 'HEAD') || response.status < 200 || response.status >= 300) return response;
+	const incoming = request.headers.asObject;
+	if (!hasPreconditions(incoming)) return response;
+	const checkDate =
+		(incoming['if-match'] === undefined && incoming['if-unmodified-since'] !== undefined) ||
+		(incoming['if-none-match'] === undefined && incoming['if-modified-since'] !== undefined);
+	let result;
+	try {
+		result = evaluatePreconditions(
+			incoming,
+			method,
+			true,
+			response.headers.get('ETag'),
+			checkDate ? (parseHttpDate(response.headers.get('Last-Modified')) ?? lastModified) : undefined
+		);
+	} catch (error) {
+		discardReadResponse(response, sourceData);
+		throw error;
+	}
+	if (result) {
+		try {
+			if (sourceData !== undefined) {
+				const binary =
+					sourceData instanceof Uint8Array || sourceData instanceof Blob || isHttpPassThroughEnvelope(sourceData);
+				if (!binary) {
+					findBestSerializer(request);
+					addVaryHeader(response.headers, 'Accept');
+				}
+				addVaryHeader(response.headers, 'Accept-Encoding');
+			}
+		} finally {
+			discardReadResponse(response, sourceData);
+		}
+		if (result === 412) throw new ClientError('Request precondition failed', 412);
+		// Only foreign (possibly immutable) Response headers need a copy.
+		const headers =
+			response.headers === request.responseHeaders ? response.headers : mergeHeaders(new Headers(), response.headers);
+		for (const header of ['Content-Length', 'Content-Type', 'Content-Encoding']) headers.delete(header);
+		const notModified = { status: 304, headers, body: undefined };
+		discardedByPreconditions.add(notModified);
+		return notModified;
+	}
+	return response;
+}
+
 async function http(request: Request, nextHandler, resources: Resources, httpOptions: any) {
 	const headersObject = request.headers.asObject;
 	const isSse = headersObject.accept === 'text/event-stream';
 	const method = isSse ? 'CONNECT' : request.method;
 	const headers = new Headers();
+	const preconditionsEnabled = httpOptions.preconditions !== false && httpOptions.preconditions !== 'false';
+	const conditionalRead =
+		preconditionsEnabled && (method === 'GET' || method === 'HEAD') && hasPreconditions(headersObject);
+	let writeCondition;
 	try {
 		request.responseHeaders = headers;
 		request.response = {
@@ -165,7 +375,32 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 
 			(target as any).async = true;
 			resource = entry.Resource;
+			// Pagination total-count opt-in (no default): `Prefer: count=exact|estimated`. Table.search
+			// reads target.count to compute the total emitted as Content-Range below. Only honored on
+			// GET/HEAD reads: setting it for other methods would hand their `search()` a materialized array
+			// instead of the AsyncIterable they iterate (e.g. a collection DELETE at Table.ts).
+			const prefer = headersObject['prefer'];
+			if (prefer && (method === 'GET' || method === 'HEAD')) {
+				// Exact counting scans the full matched set, so it is opt-in per mount via
+				// `rest: { exactCount: true }` (default off); count=exact is otherwise served as a cheap
+				// estimate. Estimated is always available. Accept a string `"true"` too, since not every
+				// config source coerces to a boolean.
+				const exactEnabled = (httpOptions as any)?.exactCount === true || (httpOptions as any)?.exactCount === 'true';
+				for (const pref of parseHeaderValue(prefer as any)) {
+					// The header parser can hand back a non-string value (e.g. a bare `Prefer: count` with no
+					// `=`), so coerce before lower-casing rather than calling `.toLowerCase()` on a boolean.
+					const mode = String(pref?.value ?? '').toLowerCase();
+					if (pref?.name === 'count' && (mode === 'exact' || mode === 'estimated')) {
+						// A count=exact request on a mount that hasn't opted in is downgraded to estimated,
+						// signaled back to the client via Preference-Applied.
+						(target as any).count = mode === 'exact' && !exactEnabled ? 'estimated' : mode;
+						break;
+					}
+				}
+			}
 		}
+		const settledCredentialRejection = settleDeferredCredentialRejection(request);
+		if (settledCredentialRejection) return settledCredentialRejection;
 		if ((resource as any)?.isCaching) {
 			const cacheControl = headersObject['cache-control'];
 			if (cacheControl) {
@@ -196,6 +431,8 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 		}
 		const replicateTo = headersObject['x-replicate-to'];
 		if (replicateTo) {
+			if (!request.user?.role?.permission?.super_user)
+				throw new ClientError('Can not specify replication parameters without super user permissions', 403);
 			const parsed = parseHeaderValue(replicateTo as any).map((node: any) => {
 				// we can use a component argument to indicate that number that should be confirmed
 				// for example, to replicate to three nodes and wait for confirmation from two: X-Replicate-To: 3;confirm=2
@@ -212,14 +449,55 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 		if (replicateFrom === 'none') {
 			request.replicateFrom = false;
 		}
-		let responseData = await transaction(request, () => {
+		if (
+			preconditionsEnabled &&
+			method !== 'GET' &&
+			method !== 'HEAD' &&
+			method !== 'OPTIONS' &&
+			method !== 'TRACE' &&
+			method !== 'CONNECT' &&
+			method !== 'QUERY' &&
+			hasWritePreconditions(headersObject) &&
+			evaluatesWritePreconditions(resource, method)
+		) {
+			if (!['PUT', 'PATCH', 'DELETE'].includes(method))
+				throw new ClientError('Conditional writes require a table PUT, PATCH or DELETE', 501);
+			const optional = definesOwnVerb(resource, method);
+			writeCondition = {
+				Resource: resource,
+				lock: httpOptions.preconditionLocks !== false && httpOptions.preconditionLocks !== 'false',
+				optional,
+				recordId: optional ? conditionRecordId(resource, target, request) : undefined,
+				consumed: false,
+				release: undefined,
+				check(entry) {
+					const exists = entry?.value != null && (entry.expiresAt === undefined || entry.expiresAt >= Date.now());
+					const version = exists ? entry.version : undefined;
+					if (
+						evaluatePreconditions(
+							headersObject,
+							method,
+							exists,
+							Number.isFinite(version) ? versionToEtag(version) : undefined,
+							version
+						)
+					)
+						throw new ClientError('Request precondition failed', 412);
+				},
+			};
+			request[WRITE_CONDITION] = writeCondition;
+		}
+		const dispatch = () => {
 			if (headersObject['content-length'] || headersObject['transfer-encoding']) {
-				// TODO: Support cancellation (if the request otherwise fails or takes too many bytes)
+				// TODO: Support cancellation for buffered request bodies.
 				try {
-					request.data = (getDeserializer(headersObject['content-type'] as any, true) as any)(
-						request.body,
-						request.headers
-					);
+					request.data = getDeserializer(
+						headersObject['content-type'] as any,
+						true,
+						true
+					)(request.body, request.signal);
+					// Resource loading can outlive body parsing; preserve the rejection until it is awaited.
+					if (writeCondition && typeof request.data?.then === 'function') request.data.then(undefined, () => {});
 				} catch (error) {
 					throw new ClientError(error, 400);
 				}
@@ -229,7 +507,10 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 			if (url === OPENAPI_DOMAIN && method === 'GET') {
 				target = {} as any;
 				if (request?.user?.role?.permission?.super_user) {
-					return generateJsonApi(resources, `${request.protocol}://${request.hostname}`);
+					return completeMultipartBody(
+						request.data,
+						generateJsonApi(resources, `${request.protocol}://${request.hostname}`)
+					);
 				} else {
 					throw new ServerError(`Forbidden`, 403);
 				}
@@ -239,15 +520,30 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 			switch (method) {
 				case 'GET':
 				case 'HEAD':
-					return resource.get ? resource.get(target, request) : missingMethod(resource, 'get');
+					return completeMultipartBody(
+						request.data,
+						resource.get ? resource.get(target, request) : missingMethod(resource, 'get')
+					);
 				case 'POST':
-					return resource.post ? resource.post(target, request.data, request) : missingMethod(resource, 'post');
+					return completeMultipartBody(
+						request.data,
+						resource.post ? resource.post(target, request.data, request) : missingMethod(resource, 'post')
+					);
 				case 'PUT':
-					return resource.put ? resource.put(target, request.data, request) : missingMethod(resource, 'put');
+					return completeMultipartBody(
+						request.data,
+						resource.put ? resource.put(target, request.data, request) : missingMethod(resource, 'put')
+					);
 				case 'DELETE':
-					return resource.delete ? resource.delete(target, request) : missingMethod(resource, 'delete');
+					return completeMultipartBody(
+						request.data,
+						resource.delete ? resource.delete(target, request) : missingMethod(resource, 'delete')
+					);
 				case 'PATCH':
-					return resource.patch ? resource.patch(target, request.data, request) : missingMethod(resource, 'patch');
+					return completeMultipartBody(
+						request.data,
+						resource.patch ? resource.patch(target, request.data, request) : missingMethod(resource, 'patch')
+					);
 				case 'OPTIONS': // used primarily for CORS
 					headers.setIfNone(
 						'Allow',
@@ -255,30 +551,66 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 							.map((method) => method.toUpperCase())
 							.join(', ')
 					);
-					return;
+					return completeMultipartBody(request.data, undefined);
 				case 'CONNECT':
 					// websockets? and event-stream
-					return resource.connect ? resource.connect(target, null, request) : missingMethod(resource, 'connect');
+					return completeMultipartBody(
+						request.data,
+						resource.connect ? resource.connect(target, null, request) : missingMethod(resource, 'connect')
+					);
 				case 'TRACE':
-					return 'Harper is the terminating server';
+					return completeMultipartBody(request.data, 'Harper is the terminating server');
 				case 'QUERY':
-					return resource.query ? resource.query(target, request.data, request) : missingMethod(resource, 'query');
+					return completeMultipartBody(
+						request.data,
+						resource.query ? resource.query(target, request.data, request) : missingMethod(resource, 'query')
+					);
 				case 'COPY': // methods suggested from webdav RFC 4918
-					return resource.copy
-						? resource.copy(target, headersObject.destination, request)
-						: missingMethod(resource, 'copy');
+					return completeMultipartBody(
+						request.data,
+						resource.copy ? resource.copy(target, headersObject.destination, request) : missingMethod(resource, 'copy')
+					);
 				case 'MOVE':
-					return resource.move
-						? resource.move(target, headersObject.destination, request)
-						: missingMethod(resource, 'move');
+					return completeMultipartBody(
+						request.data,
+						resource.move ? resource.move(target, headersObject.destination, request) : missingMethod(resource, 'move')
+					);
 				case 'BREW': // RFC 2324
 					throw new ClientError("Harper is short and stout and can't brew coffee", 418);
 				default:
 					throw new ServerError(`Method ${method} is not recognized`, 501);
 			}
-		});
+		};
+		let responseData = await transaction(
+			request,
+			writeCondition
+				? async () => {
+						try {
+							const result = await dispatch();
+							// The status finalizeResponse will send.
+							const replyStatus = result?.headers
+								? (result.status ?? request.response.status)
+								: request.response.status;
+							if (unapplied(writeCondition) && !(replyStatus >= 400)) {
+								if (result?.headers) discardSerializedStream(result.body);
+								throw new ClientError('The resource did not apply the write precondition', 501);
+							}
+							return result;
+						} finally {
+							// Seal admission before the commit await: a deferred call holding this context must not
+							// reuse the already-checked condition.
+							writeCondition.finished = true;
+						}
+					}
+				: dispatch
+		);
+		if (writeCondition?.release) {
+			await writeCondition.release();
+			writeCondition.release = undefined;
+		}
 		let status = request.response.status;
 		let lastModification = request.lastModified;
+		let deferredRead = false;
 		if (responseData == undefined) {
 			status ??= method === 'GET' || method === 'HEAD' ? 404 : 204;
 			// deleted entries can have a timestamp of when they were deleted
@@ -286,39 +618,44 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				headers.setIfNone('Last-Modified', new Date(lastModification).toUTCString());
 		} else if (responseData.headers) {
 			// if response is a Response object (or response-like envelope with headers), use it as the response
-			return finalizeResponse(responseData, headers, status, request);
-		} else if (isFinite(lastModification)) {
-			etagFloat[0] = lastModification;
-			// base64 encoding of the 64-bit float encoding of the date in ms (with quotes)
-			// very fast and efficient
-			const etag = String.fromCharCode(
-				34,
-				(etagBytes[0] & 0x3f) + 62,
-				(etagBytes[0] >> 6) + ((etagBytes[1] << 2) & 0x3f) + 62,
-				(etagBytes[1] >> 4) + ((etagBytes[2] << 4) & 0x3f) + 62,
-				(etagBytes[2] >> 2) + 62,
-				(etagBytes[3] & 0x3f) + 62,
-				(etagBytes[3] >> 6) + ((etagBytes[4] << 2) & 0x3f) + 62,
-				(etagBytes[4] >> 4) + ((etagBytes[5] << 4) & 0x3f) + 62,
-				(etagBytes[5] >> 2) + 62,
-				(etagBytes[6] & 0x3f) + 62,
-				(etagBytes[6] >> 6) + ((etagBytes[7] << 2) & 0x3f) + 62,
-				34
+			const data = 'data' in responseData ? responseData.data : responseData;
+			const deferred =
+				(method === 'GET' || method === 'HEAD') && responseData.body === undefined && isDeferredRead(data);
+			const response = finalizeResponse(
+				responseData,
+				headers,
+				status,
+				request,
+				method,
+				preconditionsEnabled && !deferred
 			);
-			const lastEtag = headersObject['if-none-match'];
-			if (lastEtag && etag == lastEtag) {
-				if (responseData?.onDone) responseData.onDone();
-				status = 304;
-				responseData = undefined;
-			} else {
-				headers.setIfNone('ETag', etag);
+			const startup = readStreamStartup(response.body, request.method, method);
+			if (startup) await startup;
+			if (deferred) {
+				// finalizeResponse copied the context headers before startup, which can set validators of its own
+				for (const name of VALIDATOR_HEADERS) {
+					if (!response.headers.has(name) && headers.has(name)) response.headers.set(name, headers.get(name));
+				}
+				lastModification = request.lastModified;
+				setReadValidators(response.headers, lastModification, httpOptions);
 			}
-			if ((httpOptions as any).lastModified)
-				headers.setIfNone('Last-Modified', new Date(lastModification).toUTCString());
+			const conditional =
+				deferred && conditionalRead
+					? applyReadPreconditions(response, request, method, lastModification, data)
+					: response;
+			if (request.method === 'HEAD' && !discardedByPreconditions.has(conditional)) {
+				discardReadResponse(conditional, data);
+				if (!(conditional instanceof Response)) conditional.body = undefined;
+			}
+			return conditional;
+		} else {
+			deferredRead = (method === 'GET' || method === 'HEAD') && isDeferredRead(responseData);
+			if (!deferredRead) setReadValidators(headers, lastModification, httpOptions);
 		}
 		if (request.createdResource) status = 201;
 		if (request.newLocation) headers.setIfNone('Location', request.newLocation);
 
+		let deferredReadConditions = false;
 		const responseObject = {
 			status: status ?? 200,
 			headers,
@@ -348,16 +685,74 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 		}
 		// TODO: Handle 201 Created
 		if (responseData !== undefined) {
-			responseObject.body = serialize(responseData, request, responseObject);
-			if (method === 'HEAD') responseObject.body = undefined; // we want everything else to be the same as GET, but then omit the body
+			if (
+				(target as any)?.count &&
+				(method === 'GET' || method === 'HEAD') &&
+				Array.isArray(responseData) &&
+				(responseData as any).recordCount !== undefined
+			) {
+				// Array.isArray guards the single-record path: a record that happens to carry a
+				// `recordCount` attribute must not be mistaken for a count page (Table.search only ever
+				// returns the count as an array).
+				setCountHeaders(headers, (target as any).offset || 0, (target as any).count, responseData);
+			}
+			deferredReadConditions = conditionalRead && deferredRead;
+			const conditional =
+				conditionalRead && !deferredReadConditions
+					? applyReadPreconditions(responseObject, request, method, lastModification, responseData)
+					: responseObject;
+			if (conditional.status === 304) {
+				if ((target as any)?.isCollection) addVaryHeader(conditional.headers, 'Prefer');
+				return conditional;
+			}
+			responseObject.body = serialize(
+				responseData,
+				request,
+				responseObject,
+				method === 'GET' || method === 'HEAD' ? target : undefined,
+				resource
+			);
+			const startup = readStreamStartup(responseObject.body, request.method, method);
+			if (startup) await startup;
+			if (deferredRead) {
+				lastModification = request.lastModified;
+				setReadValidators(headers, lastModification, httpOptions);
+			}
 		}
-		return responseObject;
+		// A collection read's count headers vary by the request's `Prefer` value; serialize() just reset
+		// `Vary`, so declare it here (after serialization) — otherwise a shared cache could serve count
+		// headers to a request that didn't ask, or a cached non-count response to one that did.
+		if ((method === 'GET' || method === 'HEAD') && (target as any)?.isCollection) addVaryHeader(headers, 'Prefer');
+		const response = deferredReadConditions
+			? applyReadPreconditions(responseObject, request, method, lastModification, responseData)
+			: responseObject;
+		if (request.method === 'HEAD' && responseData !== undefined && !discardedByPreconditions.has(response)) {
+			discardReadResponse(response, responseData);
+			response.body = undefined; // we want everything else to be the same as GET, but then omit the body
+		}
+		return response;
 	} catch (error) {
+		cancelMultipartBody(request.data);
 		error ??= new Error('Unknown error occurred');
 		// a thrown Response short-circuits as the response, the same as returning one
-		if (error instanceof Response) return finalizeResponse(error, headers, request.response.status, request);
+		if (error instanceof Response) {
+			if (unapplied(writeCondition) && error.status < 400) {
+				discardSerializedStream(error.body);
+				error = new ClientError('The resource did not apply the write precondition', 501);
+			} else {
+				try {
+					return finalizeResponse(error, headers, request.response.status, request, method, preconditionsEnabled);
+				} catch (preconditionError) {
+					error = preconditionError;
+				}
+			}
+		}
 		// the HTTP status may be carried as `statusCode` (our error classes) or `status` (e.g. a thrown plain object)
 		let statusCode = error.statusCode ?? error.status ?? request.response.status;
+		if (unapplied(writeCondition) && (statusCode || 500) < 400) {
+			error = new ClientError('The resource did not apply the write precondition', 501);
+			statusCode = 501;
+		}
 		if (statusCode) {
 			if (statusCode === 500) harperLogger.warn(errorForLog(error));
 			else harperLogger.info(errorForLog(error));
@@ -375,6 +770,15 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 		// we prefer to use error classes for error codes (constructor.name), but if there is a code, it is probably a node.js
 		// error that denotes error codes with a separate property
 		const code = error.code ?? error.constructor.name;
+		let outcomeExtensions;
+		try {
+			outcomeExtensions =
+				error.replicationUnconfirmed === true
+					? { replicationUnconfirmed: true, retryable: false }
+					: error.retryable === false
+						? { retryable: false }
+						: undefined;
+		} catch {}
 		const problemDetail = {
 			type: `error:${code}`, // eventually we want this to be a resolvable URI to our docs
 			code,
@@ -382,6 +786,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 			status,
 			detail: error.detail,
 			instance: request.url,
+			...outcomeExtensions,
 		};
 
 		const responseObject = {
@@ -389,8 +794,26 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 			headers,
 			body: undefined,
 		};
+		// The error body is a different representation, so success representation and caching headers
+		// accumulated before the startup failure must not survive its serialization.
+		for (const header of [
+			'Content-Encoding',
+			'Cache-Control',
+			'ETag',
+			'Last-Modified',
+			'Content-Range',
+			'Range-Unit',
+			'Preference-Applied',
+			'Age',
+		])
+			headers.delete(header);
 		responseObject.body = serialize(problemDetail, request, responseObject);
 		return responseObject;
+	} finally {
+		if (writeCondition) {
+			writeCondition.finished = true;
+			if (writeCondition.release) await writeCondition.release();
+		}
 	}
 }
 
@@ -402,12 +825,6 @@ let addedMetrics;
 let connectionCount = 0;
 
 export function handleApplication(scope: import('../components/Scope.ts').Scope) {
-	// A deploy pre-flight validation scope exists only to validate config, and may share a live
-	// component's identity — registering real HTTP/WS handlers from it would splice a validation
-	// run into the live request path, and permanently marking its mount as started below would
-	// leave the REAL scope's later registration silently skipped (review finding).
-	if (scope.isTransientValidation) return;
-
 	const httpOptions = scope.options.getAll();
 	if ((httpOptions as any).includeExpensiveRecordCountEstimates) {
 		// If they really want to enable expensive record count estimates
@@ -426,10 +843,8 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 	if (startedMounts.has(mountKey)) return;
 	startedMounts.add(mountKey);
 	scope.server.http(
-		async (request: any, nextHandler) => {
-			if (request.isWebSocket) return;
-			return http(request, nextHandler, resources, httpOptions);
-		},
+		(request: any, nextHandler) =>
+			request.isWebSocket ? undefined : http(request, nextHandler, resources, httpOptions),
 		{ after: 'authentication', ...(httpOptions as any) }
 	);
 	if ((httpOptions as any).webSocket === false) return;
@@ -466,21 +881,36 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 				incomingMessages.push(data);
 			});
 			let iterator;
+			const socket = (ws as any)._socket;
+			let closed = false;
+			let resolveDrain: (() => void) | undefined;
+			const onDrain = () => {
+				const resolve = resolveDrain;
+				resolveDrain = undefined;
+				socket?.off('drain', onDrain);
+				resolve?.();
+			};
 			(ws as any).on('close', () => {
+				closed = true;
+				onDrain();
 				connectionCount--;
 				recordActionBinary(!hasError, 'connection', 'ws', 'disconnect');
 				incomingMessages.emit('close');
-				if (iterator) iterator.return();
+				iterator?.return?.();
 				request._abort?.();
 			});
 			try {
 				await chainCompletion;
+				if (closed) return;
+				// before the route lookup: the same credential is a 401 over HTTP, so a rejected client
+				// must not learn from the close code whether the resource exists
+				assertNoDeferredCredentialRejection(request);
 				const url = request.url.slice(1);
 				const entry = resources.getMatch(url, 'ws');
 				recordActionBinary(Boolean(entry), 'connection', 'ws', 'connect');
 				if (!entry) {
 					// TODO: Ideally we would like to have a 404 response before upgrading to WebSocket protocol, probably
-					return ws.close(1011, `No resource was found to handle ${request.pathname}`);
+					return ws.close(1011, toCloseReason(`No resource was found to handle ${request.pathname}`));
 				} else {
 					request.handlerPath = entry.path;
 					recordAction(
@@ -502,14 +932,22 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 						return resource.connect(resourceRequest, incomingMessages, request);
 					});
 					iterator = responseStream[Symbol.asyncIterator]();
+					if (closed) {
+						await iterator.return?.();
+						return;
+					}
 
 					let result;
-					while (!(result = await iterator.next()).done) {
+					while (!closed && !(result = await iterator.next()).done) {
 						const messageBinary = await serializeMessage(result.value, request);
-						ws.send(messageBinary);
+						if (closed) break;
+						ws.send(messageBinary as string | Buffer<ArrayBuffer>);
 						recordAction(messageBinary.length, 'bytes-sent', request.handlerPath, 'message', 'ws');
-						if ((ws as any)._socket.writableNeedDrain) {
-							await new Promise((resolve) => (ws as any)._socket.once('drain', resolve));
+						if (socket?.writableNeedDrain && !closed) {
+							await new Promise<void>((resolve) => {
+								resolveDrain = resolve;
+								socket.once('drain', onDrain);
+							});
 						}
 					}
 				}
@@ -521,7 +959,7 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 				ws.close(
 					HTTP_TO_WEBSOCKET_CLOSE_CODES[error.statusCode] || // try to return a helpful code
 						1011, // otherwise generic internal error
-					errorToString(error)
+					toCloseReason(errorToString(error))
 				);
 			}
 			ws.close();

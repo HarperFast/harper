@@ -1,13 +1,25 @@
-import { dirname } from 'path';
+import { dirname } from 'node:path';
 import { Script } from 'node:vm';
-import { table } from './databases.ts';
-import { getWorkerIndex } from '../server/threads/manageThreads.js';
+import { scopedTableFactory, table, databaseResidencyBlockReason, databases as loadedDatabases } from './databases.ts';
+import {
+	prepareResidencyDeclaration,
+	readResidencyMap,
+	assertResidencyEngine,
+	ResidencyPlacementError,
+} from './residencyMaps.ts';
+import { normalizeResidencyPolicy, sameResidencyPolicy, unsupportedResidencyPolicy } from './residencyPolicy.ts';
+import { getWorkerIndex } from '../server/threads/manageThreads.ts';
+import { thisThreadOwnsApplication } from '../server/threads/isolatedApplications.ts';
 import { Resources } from './Resources.ts';
-import type { NamedTypeNode, StringValueNode, ValueNode } from 'graphql';
-import { once } from 'node:events';
+import type { DirectiveNode, NamedTypeNode, StringValueNode, ValueNode } from 'graphql';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import { attributeToFragment, type JsonSchemaFragment } from './jsonSchemaTypes.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
+import { compileFullTextDefinitions, compileFullTextFields } from './fullTextSchema.ts';
+import { validateDecisionSchema } from './models/decision.ts';
+import { assertDerivedFieldOwnership } from './models/embedHook.ts';
+import type { DecideConfig } from './models/decideHook.ts';
+import type { DecisionLeaf } from './models/types.ts';
 
 const PRIMITIVE_TYPES = ['ID', 'Int', 'Float', 'Long', 'String', 'Boolean', 'Date', 'Bytes', 'Any', 'BigInt', 'Blob'];
 
@@ -26,9 +38,113 @@ function coerceDirectiveValue(node: ValueNode): any {
 			return null;
 		case 'ListValue':
 			return node.values.map(coerceDirectiveValue);
+		case 'ObjectValue': {
+			const value: Record<string, unknown> = Object.create(null);
+			for (const field of node.fields) {
+				if (Object.hasOwn(value, field.name.value))
+					throw new ClientError(`Directive object declares "${field.name.value}" more than once`, 400);
+				value[field.name.value] = coerceDirectiveValue(field.value);
+			}
+			return value;
+		}
 		default:
 			return (node as { value?: unknown }).value;
 	}
+}
+
+const DECIDE_STRING_ARGS = new Set(['source', 'model', 'confidence', 'decision', 'instructions']);
+const DECIDE_INT_ARGS = new Set(['minimum', 'maximum']);
+
+/**
+ * `@decide(source, values | minimum/maximum, model?, confidence?, decision?, instructions?)`: the attribute
+ * type selects the decision leaf (String → the `values` enum, Boolean, Int → a bounded range),
+ * and the leaf is validated here so a bad closed set fails the schema load, not the first write.
+ * Field references (source, confidence, decision) are checked once every field of the type is known.
+ */
+function parseDecideDirective(directive: DirectiveNode, property: any): DecideConfig {
+	const target = `@decide on "${property.name}"`;
+	const args: {
+		source?: string;
+		model?: string;
+		confidence?: string;
+		decision?: string;
+		instructions?: string;
+		values?: string[];
+		minimum?: number;
+		maximum?: number;
+	} = {};
+	for (const arg of directive.arguments || []) {
+		const name = arg.name.value;
+		if (Object.hasOwn(args, name)) throw new ClientError(`${target} declares "${name}" more than once`, 400);
+		const value = arg.value;
+		if (DECIDE_STRING_ARGS.has(name)) {
+			if (value.kind !== 'StringValue')
+				throw new ClientError(`@decide(${name}: ...) on "${property.name}" expects a string literal`, 400);
+			args[name] = value.value;
+		} else if (DECIDE_INT_ARGS.has(name)) {
+			if (value.kind !== 'IntValue')
+				throw new ClientError(`@decide(${name}: ...) on "${property.name}" expects an integer literal`, 400);
+			args[name] = Number(value.value);
+		} else if (name === 'values') {
+			if (value.kind !== 'ListValue' || value.values.some((item) => item.kind !== 'StringValue'))
+				throw new ClientError(`@decide(values: ...) on "${property.name}" expects a list of string literals`, 400);
+			args.values = value.values.map((item) => (item as StringValueNode).value);
+		} else throw new ClientError(`${target} has an unknown argument "${name}"`, 400);
+	}
+	if (!args.source) throw new ClientError(`${target} requires a "source" argument`, 400);
+	for (const name of ['confidence', 'decision'] as const)
+		if (args[name] === '') throw new ClientError(`${target}: "${name}" must name a field`, 400);
+	const hasRange = args.minimum !== undefined || args.maximum !== undefined;
+	let schema: DecisionLeaf;
+	switch (property.type) {
+		case 'String':
+			if (!args.values)
+				throw new ClientError(`${target} requires "values" (the allowed strings) on a String attribute`, 400);
+			if (hasRange) throw new ClientError(`${target} takes "minimum" and "maximum" only on an Int attribute`, 400);
+			schema = { enum: args.values };
+			break;
+		case 'Boolean':
+			if (args.values || hasRange)
+				throw new ClientError(`${target} takes no "values", "minimum" or "maximum" on a Boolean attribute`, 400);
+			schema = { type: 'boolean' };
+			break;
+		case 'Int':
+			if (args.values)
+				throw new ClientError(`${target} takes "minimum" and "maximum", not "values", on an Int attribute`, 400);
+			if (args.minimum === undefined || args.maximum === undefined)
+				throw new ClientError(`${target} requires both "minimum" and "maximum" on an Int attribute`, 400);
+			// Table validation holds an Int to 32 bits; a wider bound would load and then fail every write.
+			for (const [name, bound] of Object.entries({ minimum: args.minimum, maximum: args.maximum }))
+				if (bound >> 0 !== bound)
+					throw new ClientError(`${target}: "${name}" must be an integer from -2147483648 to 2147483647`, 400);
+			schema = { type: 'integer', minimum: args.minimum, maximum: args.maximum };
+			break;
+		default:
+			throw new ClientError(
+				`${target} requires a String, Boolean or Int attribute type; got "${property.type === 'array' ? '[...]' : property.type}"`,
+				400
+			);
+	}
+	try {
+		validateDecisionSchema(schema);
+	} catch (err) {
+		throw new ClientError(`${target}: ${(err as Error).message}`, 400);
+	}
+	if (property.nullable === false)
+		throw new ClientError(`${target} cannot be declared non-null: a null source clears the attribute`, 400);
+	if (property.isPrimaryKey || property.computed)
+		throw new ClientError(`${target} cannot combine with @primaryKey or @computed`, 400);
+	const fields = new Set([property.name, args.source, args.confidence, args.decision].filter(Boolean));
+	if (fields.size !== 2 + (args.confidence ? 1 : 0) + (args.decision ? 1 : 0))
+		throw new ClientError(
+			`${target}: the attribute, "source", "confidence" and "decision" must be different fields`,
+			400
+		);
+	const config: DecideConfig = { source: args.source, model: args.model ?? 'default', schema };
+	if (args.confidence) config.confidence = args.confidence;
+	if (args.decision) config.decision = args.decision;
+	if (args.instructions) config.instructions = args.instructions;
+	return config;
 }
 
 if (!server.knownGraphQLDirectives) {
@@ -36,12 +152,15 @@ if (!server.knownGraphQLDirectives) {
 }
 server.knownGraphQLDirectives.push(
 	'table',
+	'sharded',
 	'sealed',
 	'export',
 	'primaryKey',
 	'indexed',
 	'computed',
 	'embed',
+	'decide',
+	'fullText',
 	'relationship',
 	'createdTime',
 	'updatedTime',
@@ -63,7 +182,7 @@ server.knownGraphQLDirectives.push(
  */
 export function handleApplication(scope: import('../components/Scope.ts').Scope) {
 	let initialLoadComplete = false;
-	const entryHandler = scope.handleEntry(async (entry) => {
+	scope.handleEntry(async (entry) => {
 		if (initialLoadComplete) {
 			scope.requestRestart();
 			return;
@@ -75,21 +194,61 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 			return;
 		}
 
-		await processGraphQLSchema((entry as any).contents, entry.urlPath, entry.absolutePath, scope.resources);
+		await processGraphQLSchema(
+			(entry as any).contents,
+			entry.urlPath,
+			entry.absolutePath,
+			scope.resources,
+			scopedTableFactory(scope.applicationScope?.branches, thisThreadOwnsApplication(scope.applicationScope?.name)),
+			scope.logger,
+			scope.applicationScope?.branches
+		);
 	});
-	const initialLoadPromise = once(entryHandler, 'initialLoadComplete');
-	initialLoadPromise.then(() => {
+	// Settles with the load's real outcome, so a diagnosed failure is not left for the loader's watchdog
+	// to report while it holds the plugin-wide load lock (#1917). The flag advances either way: a schema
+	// corrected afterwards belongs on the restart path.
+	return scope.waitForInitialLoads().finally(() => {
 		initialLoadComplete = true;
 	});
-	return initialLoadPromise;
 }
 
-async function processGraphQLSchema(gqlContent, urlPath, filePath, resources) {
+function describeLocation(loc: { startToken?: { line: number; column: number } } | undefined) {
+	const token = loc?.startToken;
+	return token ? `line ${token.line}, column ${token.column}` : 'an unknown location';
+}
+
+async function processGraphQLSchema(
+	gqlContent,
+	urlPath,
+	filePath,
+	resources,
+	declareTable: typeof table = table,
+	logger: { warn?: (...args: any[]) => void; error?: (...args: any[]) => void } = harperLogger,
+	branches?: Map<string, unknown>
+) {
 	// lazy load the graphql package so we don't load it for users that don't use graphql
-	const { parse, Source, Kind } = await import('graphql');
-	const ast = parse(new Source(gqlContent.toString(), filePath));
+	const { parse, Source, Kind, specifiedDirectives } = await import('graphql');
+	let ast;
+	try {
+		ast = parse(new Source(gqlContent.toString(), filePath));
+	} catch (error) {
+		// GraphQLError.toString() is the only rendering carrying the source excerpt and caret; `.stack`,
+		// which the logger prefers, points at Harper internals. It stays out of the thrown message: a
+		// failed component's ErrorResource message becomes the REST problem title.
+		logger.error?.(`Invalid GraphQL schema in ${filePath}:\n${error}`);
+		throw new Error(`Invalid GraphQL schema${urlPath ? ` at ${urlPath}` : ''}`);
+	}
+	// Spec-defined and schema-declared directives are not unknown just because Harper ignores them.
+	const recognizedDirectives = new Set([
+		...server.knownGraphQLDirectives,
+		...specifiedDirectives.map((directive) => directive.name),
+	]);
+	for (const definition of ast.definitions) {
+		if (definition.kind === Kind.DIRECTIVE_DEFINITION) recognizedDirectives.add(definition.name.value);
+	}
 	const types = new Map();
 	const tables = [];
+	const shardedDeclarations = new Map<any, any>();
 	// we begin by iterating through the definitions in the AST to get the types and convert them
 	// to a friendly format for table attributes
 	for (const definition of ast.definitions) {
@@ -99,7 +258,15 @@ async function processGraphQLSchema(gqlContent, urlPath, filePath, resources) {
 				// use type name as the default table
 				const attributes: any[] = [];
 				const typeProperties: Record<string, JsonSchemaFragment> = {};
-				const typeDef: any = { table: null, database: null, attributes, properties: typeProperties };
+				const typeDef: any = {
+					table: null,
+					database: null,
+					attributes,
+					properties: typeProperties,
+					fullTextIndexes: [],
+					fullTextFields: [],
+					residency: null,
+				};
 				if (definition.description?.value) typeDef.description = definition.description.value;
 				types.set(typeName, typeDef);
 				resources.allTypes.set(typeName, typeDef);
@@ -107,11 +274,14 @@ async function processGraphQLSchema(gqlContent, urlPath, filePath, resources) {
 					const directiveName = directive.name.value;
 					if (directiveName === 'table') {
 						for (const arg of directive.arguments) {
+							if (arg.name.value === 'residency' || arg.name.value === 'sharded')
+								throw new ClientError('Use the @sharded directive', 400);
 							typeDef[arg.name.value] = coerceDirectiveValue(arg.value);
 						}
 						// @table is the canonical schema-defined declaration; pass the flag explicitly so
 						// the existing-Table re-assert in databases.ts::table() fires on every reload.
 						typeDef.schemaDefined = true;
+						typeDef.schemaRelationshipsDefined = true;
 						if (typeDef.schema) typeDef.database = typeDef.schema;
 						if (!typeDef.table) typeDef.table = typeName;
 						if (typeDef.audit) typeDef.audit = typeDef.audit !== 'false';
@@ -128,10 +298,25 @@ async function processGraphQLSchema(gqlContent, urlPath, filePath, resources) {
 										.trim();
 						tables.push(typeDef);
 					}
+					if (directiveName === 'residency') throw new ClientError('Unknown directive @residency; use @sharded', 400);
+					if (directiveName === 'sharded') {
+						if (shardedDeclarations.has(typeDef)) throw new ClientError('A table may declare @sharded only once', 400);
+						const policy = {};
+						for (const arg of directive.arguments ?? []) {
+							if (!['slots', 'by', 'slotFrom'].includes(arg.name.value))
+								throw new ClientError(`Unknown @sharded argument ${arg.name.value}`, 400);
+							if (Object.hasOwn(policy, arg.name.value))
+								throw new ClientError(`Duplicate @sharded argument ${arg.name.value}`, 400);
+							policy[arg.name.value] = coerceDirectiveValue(arg.value);
+						}
+						shardedDeclarations.set(typeDef, policy);
+					}
 					if (directive.name.value === 'sealed') typeDef.sealed = true;
 					if (directive.name.value === 'splitSegments') typeDef.splitSegments = true;
 					if (directive.name.value === 'replicate') typeDef.replicate = true;
 					if (directive.name.value === 'hidden') typeDef.hidden = true;
+					if (directive.name.value === 'fullText')
+						throw new ClientError('@fullText must be declared on a FullText field', 400);
 					if (directive.name.value === 'export') {
 						typeDef.export = true;
 						for (const arg of directive.arguments) {
@@ -154,12 +339,40 @@ async function processGraphQLSchema(gqlContent, urlPath, filePath, resources) {
 						};
 					}
 					const typeName = (type as NamedTypeNode).name?.value;
+					if (typeName === 'FullText') throw new ClientError('FullText fields require @fullText', 400);
 					const property = { type: typeName };
 					Object.defineProperty(property, 'location', { value: type.loc.startToken });
 					return property;
 				}
 				const attributesObject = {};
 				for (const field of definition.fields) {
+					const name = field.name.value;
+					const fullTextDirectives = field.directives.filter(({ name }) => name.value === 'fullText');
+					if (fullTextDirectives.length > 0) {
+						if (fullTextDirectives.length !== 1)
+							throw new ClientError(`Full-text field "${name}" requires exactly one @fullText directive`, 400);
+						if (field.type.kind !== 'NamedType' || field.type.name.value !== 'FullText')
+							throw new ClientError(`@fullText field "${name}" requires the nullable FullText type`, 400);
+						for (const directive of field.directives) {
+							if (directive.name.value !== 'fullText')
+								throw new ClientError(
+									`Full-text field "${name}" cannot use @${directive.name.value}; configure permissions and record values on its source fields`,
+									400
+								);
+						}
+						const index: Record<string, unknown> = Object.create(null);
+						index.name = name;
+						for (const arg of fullTextDirectives[0].arguments || []) {
+							if (arg.name.value === 'name')
+								throw new ClientError(`@fullText uses the field name "${name}"; remove its name argument`, 400);
+							if (Object.hasOwn(index, arg.name.value))
+								throw new ClientError(`@fullText declares "${arg.name.value}" more than once`, 400);
+							index[arg.name.value] = coerceDirectiveValue(arg.value);
+						}
+						typeDef.fullTextIndexes.push(index);
+						typeDef.fullTextFields.push(name);
+						continue;
+					}
 					const property = getProperty(field.type);
 					property.name = field.name.value;
 					if (field.description?.value) property.description = field.description.value;
@@ -168,7 +381,10 @@ async function processGraphQLSchema(gqlContent, urlPath, filePath, resources) {
 					for (const directive of field.directives) {
 						const directiveName = directive.name.value;
 						if (directiveName === 'primaryKey') {
-							if (hasPrimaryKey) console.warn('Can not define two attributes as a primary key at', directive.loc);
+							if (hasPrimaryKey)
+								logger.warn?.(
+									`Can not define two attributes as a primary key, at ${describeLocation(directive.loc)} in ${filePath}`
+								);
 							else {
 								property.isPrimaryKey = true;
 								hasPrimaryKey = true;
@@ -177,7 +393,7 @@ async function processGraphQLSchema(gqlContent, urlPath, filePath, resources) {
 							const indexedDefinition = {};
 							// store indexed arguments for configurable indexes.
 							for (const arg of directive.arguments || []) {
-								indexedDefinition[arg.name.value] = (arg.value as StringValueNode).value;
+								indexedDefinition[arg.name.value] = coerceDirectiveValue(arg.value);
 							}
 							property.indexed = indexedDefinition;
 						} else if (directiveName === 'computed') {
@@ -221,6 +437,10 @@ async function processGraphQLSchema(gqlContent, urlPath, filePath, resources) {
 									property.version = `embed:${embedDefinition.model}`;
 								}
 							}
+						} else if (directiveName === 'decide') {
+							// Resolved after the field's other directives so @primaryKey / @computed in any
+							// order are seen; the ownership checks below need every field of the type.
+							property.decide = directive;
 						} else if (directiveName === 'relationship') {
 							const relationshipDefinition = {};
 							for (const arg of directive.arguments) {
@@ -244,8 +464,10 @@ async function processGraphQLSchema(gqlContent, urlPath, filePath, resources) {
 									authorizedRoles.push((arg.value as StringValueNode).value);
 								}
 							}
-						} else if (server.knownGraphQLDirectives.includes(directiveName)) {
-							console.warn(`@${directiveName} is an unknown directive, at`, directive.loc);
+						} else if (!recognizedDirectives.has(directiveName)) {
+							logger.warn?.(
+								`@${directiveName} is an unknown field directive, at ${describeLocation(directive.loc)} in ${filePath}`
+							);
 						}
 					}
 					// @embed targets a vector column and auto-indexes it with HNSW; resolved after all
@@ -266,18 +488,23 @@ async function processGraphQLSchema(gqlContent, urlPath, filePath, resources) {
 								400
 							);
 					}
+					if (property.decide) property.decide = parseDecideDirective(property.decide, property);
 				}
-				// @embed source must reference a declared field; a typo would silently leave
-				// the vector column unpopulated (the source key never appears in write payloads).
-				for (const prop of attributes as any[]) {
-					// Object.hasOwn (not `in`): `attributesObject` is a plain object, so `in` would
-					// match inherited prototype keys (toString, constructor) and pass a bad source.
-					if (prop.embed && !Object.hasOwn(attributesObject, prop.embed.source))
-						throw new ClientError(
-							`@embed on "${prop.name}" references unknown source field "${prop.embed.source}"`,
-							400
-						);
-				}
+				assertDerivedFieldOwnership(attributes as any[]);
+				if (shardedDeclarations.has(typeDef) && !typeDef.table)
+					throw new ClientError('@sharded is only supported on a @table type', 400);
+				if (
+					shardedDeclarations.get(typeDef)?.by !== undefined &&
+					!attributes.some((attribute) => attribute.indexed && !attribute.isPrimaryKey)
+				)
+					throw new ClientError(
+						'@sharded by requires a secondary index until slot-bearing id-only stubs are supported',
+						400
+					);
+				if (typeDef.fullTextIndexes.length > 0 && !typeDef.table)
+					throw new ClientError('@fullText is only supported on a @table type', 400);
+				typeDef.fullTextIndexes = compileFullTextDefinitions(typeDef.fullTextIndexes, attributes);
+				typeDef.fullTextFields = compileFullTextFields(typeDef.fullTextFields, typeDef.fullTextIndexes, attributes);
 				// Project the array form into the canonical `properties` Record (JSON-Schema-shaped,
 				// keyed by attribute name). Both shapes are co-populated in this single pass;
 				// downstream consumers (MCP, OpenAPI) read whichever form they prefer.
@@ -302,19 +529,82 @@ async function processGraphQLSchema(gqlContent, urlPath, filePath, resources) {
 		} else if (property.type === 'array') connectPropertyType(property.elements);
 		else if (!PRIMITIVE_TYPES.includes(property.type)) {
 			if (getWorkerIndex() === 0)
-				console.error(
+				logger.error?.(
 					`The type ${property.type} is unknown at line ${property.location.line}, column ${property.location.column}, in ${filePath}`
 				);
 		}
 	}
 	for (const typeDef of types.values()) {
-		for (const property of typeDef.attributes) connectPropertyType(property);
+		for (const property of typeDef.attributes) {
+			connectPropertyType(property);
+			const relationshipType = property.definition || property.elements?.definition;
+			if (property.relationship && relationshipType?.table) {
+				Object.defineProperty(property, 'relationshipReference', {
+					value: {
+						database: relationshipType.database || 'data',
+						table: relationshipType.table,
+					},
+					configurable: true,
+				});
+			}
+		}
 	}
 	// any tables that are defined in the schema can now be registered
 	for (const typeDef of tables) {
+		const declaration = shardedDeclarations.get(typeDef);
+		if (declaration) {
+			const unsupported = unsupportedResidencyPolicy(declaration, `${typeDef.database || 'data'}.${typeDef.table}`);
+			if (unsupported) throw new ClientError(unsupported, 400);
+		}
+		if (declaration?.by !== undefined) {
+			const attribute = typeDef.attributes.find((attribute) => attribute.name === declaration.by);
+			if (!attribute || attribute.computed || attribute.relationship)
+				throw new ClientError('@sharded by must name a declared stored attribute', 400);
+			if (!declaration.slotFrom && !['ID', 'String', 'Int', 'Float', 'Long', 'Any'].includes(attribute.type))
+				throw new ClientError('@sharded by must name a string or number attribute unless slotFrom is provided', 400);
+		}
+		if (declaration && branches?.has(typeDef.database || 'data'))
+			throw new ClientError('Cannot use sharding in application database branches', 400);
 		// with graphql database definitions, this is a declaration that the table should exist and that it
 		// should be created if it does not exist
-		typeDef.tableClass = table(typeDef);
+		const quarantined = databaseResidencyBlockReason(typeDef.database || 'data');
+		if (quarantined) {
+			typeDef.tableClass = loadedDatabases[typeDef.database || 'data']?.[typeDef.table];
+			// Defer new tables in this database until a repaired restart; healthy declarations still load.
+			if (!typeDef.tableClass) continue;
+		}
+		const residencyDeadline = Date.now() + 5000;
+		for (; !quarantined;) {
+			try {
+				if (declaration) {
+					const database = typeDef.database || 'data';
+					const previous = loadedDatabases[database]?.[typeDef.table]?.residency;
+					if (previous) assertResidencyEngine(database);
+					const resolved = normalizeResidencyPolicy({
+						...declaration,
+						slots: declaration.slots ?? readResidencyMap(database)?.slots ?? 1024,
+					});
+					typeDef.residency =
+						previous && sameResidencyPolicy(previous, resolved)
+							? previous
+							: await prepareResidencyDeclaration(database, typeDef.table, declaration);
+				}
+				typeDef.tableClass = declareTable(typeDef);
+				break;
+			} catch (error) {
+				if (error instanceof ResidencyPlacementError && error.statusCode === 503 && !(error as any).residencyMapBusy) {
+					typeDef.tableClass = loadedDatabases[typeDef.database || 'data']?.[typeDef.table];
+					if (declaration && !typeDef.tableClass?.residency)
+						harperLogger.warn?.(
+							`Sharding declaration for ${typeDef.database || 'data'}.${typeDef.table} could not activate: ${error.message}`
+						);
+					break;
+				}
+				if (!declaration || !error.residencyMapBusy || Date.now() >= residencyDeadline) throw error;
+				await new Promise((resolve) => setTimeout(resolve, 10));
+			}
+		}
+		if (!typeDef.tableClass) continue;
 		if (getWorkerIndex() === 0) {
 			// Post-Phase-2: typeDef.properties is the canonical Record (no .find); read the Array form.
 			const pk = (typeDef.attributes as any[])?.find((p) => p.isPrimaryKey)?.name ?? 'id';
@@ -351,4 +641,4 @@ async function processGraphQLSchema(gqlContent, urlPath, filePath, resources) {
 }
 
 // useful for testing
-export const loadGQLSchema = (content) => processGraphQLSchema(content, null, null, new Resources());
+export const loadGQLSchema = (content) => processGraphQLSchema(content, null, '<inline-schema>', new Resources());

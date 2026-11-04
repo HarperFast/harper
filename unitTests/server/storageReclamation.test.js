@@ -17,6 +17,7 @@ describe('storageReclamation module', function () {
 	let storageReclamation;
 	let getWorkerIndexStub;
 	let getWorkerCountStub;
+	let ownsStoreMaintenanceStub;
 
 	before(() => {
 		env.initTestEnvironment();
@@ -33,6 +34,8 @@ describe('storageReclamation module', function () {
 		const manageThreads = require('#js/server/threads/manageThreads');
 		getWorkerIndexStub = sandbox.stub(manageThreads, 'getWorkerIndex').returns(0);
 		getWorkerCountStub = sandbox.stub(manageThreads, 'getWorkerCount').returns(1);
+		// the module gates on the per-store predicate, which reads the raw getters internally (unstubbable)
+		ownsStoreMaintenanceStub = sandbox.stub(manageThreads, 'ownsStoreMaintenance').returns(true);
 
 		storageReclamation = rewire(STORAGE_RECLAMATION_PATH);
 	});
@@ -71,6 +74,7 @@ describe('storageReclamation module', function () {
 			// Worker index 0, worker count 1 means this is the last worker (0 === 1-1)
 			getWorkerIndexStub.returns(0);
 			getWorkerCountStub.returns(1);
+			ownsStoreMaintenanceStub.returns(true);
 
 			const handler = sandbox.stub();
 			storageReclamation.onStorageReclamation('/test/path', handler);
@@ -83,6 +87,7 @@ describe('storageReclamation module', function () {
 			// Worker index 0, worker count 2 means this is NOT the last worker
 			getWorkerIndexStub.returns(0);
 			getWorkerCountStub.returns(2);
+			ownsStoreMaintenanceStub.returns(false);
 
 			// Need to reload module with new stub values
 			delete require.cache[require.resolve(STORAGE_RECLAMATION_PATH)];

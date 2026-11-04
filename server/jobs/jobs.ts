@@ -1,4 +1,5 @@
-'use strict';
+import { loadNativePackage } from '../../utility/packageUtils.js';
+import { loadRuntimeModule } from '../../utility/packageUtils.js';
 
 /**
  * The jobs class is used to enable operations on the jobs system table.  The jobHandler function is the only
@@ -11,20 +12,21 @@ import * as search from '../../dataLayer/search.ts';
 import Search_Object from '../../dataLayer/SearchObject.ts';
 import searchByHashObj from '../../dataLayer/SearchByHashObject.ts';
 import SQL_Search_Object from '../../dataLayer/SqlSearchObject.ts';
+import { runWithOperationAuthorizationBypass } from '../serverHelpers/operationAuthorizationState.ts';
 import * as hdbTerms from '../../utility/hdbTerms.ts';
 import JobObject from './JobObject.ts';
 import UpdateObject from '../../dataLayer/UpdateObject.ts';
 import log from '../../utility/logging/harper_logger.ts';
 import Insert_Object from '../../dataLayer/InsertObject.ts';
 import * as hdbUtil from '../../utility/common_utils.ts';
-import { promisify } from 'util';
-import moment from 'moment';
+import { promisify } from 'node:util';
 import * as fileLoadValidator from '../../validation/fileLoadValidator.ts';
 import * as rocksdbBackup from '../../dataLayer/rocksdbBackup.ts';
 import bulkDeleteValidator from '../../validation/bulkDeleteValidator.ts';
 import { deleteTransactionLogsBeforeValidator } from '../../validation/transactionLogValidator.ts';
 import { handleHDBError, ClientError } from '../../utility/errors/hdbError.ts';
 import { HTTP_STATUS_CODES } from '../../utility/errors/commonErrors.ts';
+import { JOB_OWNER_ATTRIBUTES, stampJobOwner } from './jobOwnership.ts';
 
 //Promisified functions
 const pSearchByValue = search.searchByValue;
@@ -37,10 +39,16 @@ export async function handleGetJob(jsonBody: any) {
 	if (jsonBody.id === undefined) throw new ClientError("'id' is required");
 	let result = await getJobById(jsonBody.id);
 	if (!hdbUtil.isEmptyOrZeroLength(result)) {
-		result[0] = { ...result[0] };
-		if (result[0].request !== undefined) delete result[0].request;
-		delete result[0]['__createdtime__'];
-		delete result[0]['__updatedtime__'];
+		// Every row, not just the first: a lookup by id should yield at most one, but the owner
+		// attributes are internal bookkeeping and a leak here exposes process identity.
+		const rows = result as any[];
+		for (let index = 0; index < rows.length; index++) {
+			const job = (rows[index] = { ...rows[index] });
+			if (job.request !== undefined) delete job.request;
+			delete job['__createdtime__'];
+			delete job['__updatedtime__'];
+			for (const attribute of JOB_OWNER_ATTRIBUTES) delete job[attribute];
+		}
 	}
 
 	return result;
@@ -51,6 +59,7 @@ export async function handleGetJobsByStartDate(jsonBody: any) {
 		let result = await getJobsInDateRange(jsonBody);
 		log.trace(`Searching for jobs from ${jsonBody.from_date} to ${jsonBody.to_date}`);
 		if (result && result.length > 0) {
+			const moment = loadNativePackage('moment') as typeof import('moment');
 			for (let currRes of result) {
 				if (currRes.start_datetime) {
 					currRes.start_datetime_converted = moment(currRes.start_datetime);
@@ -62,6 +71,7 @@ export async function handleGetJobsByStartDate(jsonBody: any) {
 				if (currRes.request !== undefined) delete currRes.request;
 				delete currRes['__createdtime__'];
 				delete currRes['__updatedtime__'];
+				for (const attribute of JOB_OWNER_ATTRIBUTES) delete currRes[attribute];
 			}
 		}
 		return result;
@@ -163,14 +173,7 @@ export async function addJob(jsonBody: any) {
 		['id']
 	);
 
-	let foundJob;
-	try {
-		foundJob = Array.from(await pSearchByValue(searchObj));
-	} catch (e) {
-		let message = `There was an error inserting a new job: ${e}`;
-		log.error(message);
-		return result;
-	}
+	let foundJob: any = Array.from(await pSearchByValue(searchObj));
 	//TODO: Once https://harperdb.atlassian.net/browse/HDB-501 is resolved, this check is no longer needed.
 	let foundValues = Array.isArray(foundJob) ? foundJob : Object.keys(foundJob);
 
@@ -179,13 +182,7 @@ export async function addJob(jsonBody: any) {
 	// that we will just throw an error assuming there is bad input causing the issue.
 	if (foundValues && foundValues.length > 0) {
 		newJob.id = uuidV4();
-		try {
-			foundJob = await pSearchByValue(searchObj);
-		} catch (e) {
-			let message = `There was an error inserting a new job: ${e}`;
-			log.error(message);
-			return result;
-		}
+		foundJob = await pSearchByValue(searchObj);
 		//TODO: Once https://harperdb.atlassian.net/browse/HDB-501 is resolved, this check is no longer needed.
 		foundValues = Array.isArray(foundJob) ? foundJob : Object.keys(foundJob);
 		if (foundValues && foundValues.length > 0) {
@@ -197,6 +194,9 @@ export async function addJob(jsonBody: any) {
 	// We save the request so that the job process can get it and run the operation.
 	// Sending the request via IPC to the job process was causing some messages to be lost under load.
 	newJob.request = jsonBody;
+	// Stamped at creation, not at IN_PROGRESS: a row that never reaches its worker is stuck in exactly
+	// the same way as one whose worker died, and only an owner makes either recoverable at boot.
+	stampJobOwner(newJob);
 
 	let insertObject = new (Insert_Object as any)(
 		hdbTerms.SYSTEM_SCHEMA_NAME,
@@ -204,14 +204,7 @@ export async function addJob(jsonBody: any) {
 		'id',
 		[newJob]
 	);
-	let insertResult;
-	try {
-		insertResult = await pInsert(insertObject);
-	} catch (e) {
-		log.error(`There was an error inserting a job for job type: ${jsonBody.operation} -- ${e}`);
-		result.success = false;
-		return result;
-	}
+	const insertResult = await pInsert(insertObject);
 
 	if (insertResult.inserted_hashes.length === 0) {
 		result.message = `Had a problem creating a job with type ${newJob.operation} and id ${newJob.id}`;
@@ -231,6 +224,7 @@ export async function addJob(jsonBody: any) {
  * @returns {Promise<*>}
  */
 export async function getJobsInDateRange(jsonBody: any) {
+	const moment = loadNativePackage('moment') as typeof import('moment');
 	let parsedFromDate = moment(jsonBody.from_date, moment.ISO_8601);
 	let parsedToDate = moment(jsonBody.to_date, moment.ISO_8601);
 
@@ -246,10 +240,12 @@ export async function getJobsInDateRange(jsonBody: any) {
 
 	try {
 		if (!pSqlEvaluate) {
-			const hdbSql = require('../../sqlTranslator/index');
+			const hdbSql = loadRuntimeModule('sqlTranslator/index');
 			pSqlEvaluate = promisify(hdbSql.evaluateSQL);
 		}
-		return await pSqlEvaluate(sqlSearchObj);
+		// Harper's own statement, not the caller's. A carrier is not equivalent here — see DESIGN.md.
+		// Wraps only this statement: a later caller-dependent one must not inherit the bypass.
+		return await runWithOperationAuthorizationBypass(true, () => pSqlEvaluate(sqlSearchObj));
 	} catch (e) {
 		log.error(
 			`there was a problem searching for jobs from date ${jsonBody.from_date} to date ${jsonBody.to_date} ${e}`
@@ -298,7 +294,7 @@ export async function updateJob(jobObject: any) {
 	}
 
 	if (jobObject.status === hdbTerms.JOB_STATUS_ENUM.COMPLETE || jobObject.status === hdbTerms.JOB_STATUS_ENUM.ERROR) {
-		jobObject.end_datetime = moment().valueOf();
+		jobObject.end_datetime = Date.now();
 	}
 
 	let updateObject = new (UpdateObject as any)(

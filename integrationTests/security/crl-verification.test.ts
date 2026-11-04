@@ -135,6 +135,76 @@ suite(
 			});
 		});
 
+		test('should accept valid certificate on a resumed TLS session with CRL check', async () => {
+			// Discriminates a working issuer resolver from a broken one: without the issuer, fail-closed
+			// would turn this valid resumed session into a 401 exactly like the revoked case below.
+			const agent = new https.Agent({ keepAlive: false, maxCachedSessions: 10 });
+			const request = () =>
+				new Promise<{ status: number; reused: boolean }>((resolve, reject) => {
+					const req = https.request(
+						`https://${ctx.harper.hostname}:${HTTPS_PORT}/`,
+						{
+							agent,
+							cert: readFileSync(crlServer!.certs.valid.cert),
+							key: readFileSync(crlServer!.certs.valid.key),
+							ca: readFileSync(crlServer!.certs.ca),
+							rejectUnauthorized: false,
+						},
+						(res) => {
+							const reused = (res.socket as import('node:tls').TLSSocket).isSessionReused();
+							res.resume();
+							res.on('end', () => resolve({ status: res.statusCode!, reused }));
+						}
+					);
+					req.on('error', (err: any) => reject(new Error(`Request failed: ${err.code || err.message}`)));
+					req.end();
+				});
+			try {
+				const first = await request();
+				ok(first.status !== 401, `Expected valid cert to be accepted on the full handshake, got: ${first.status}`);
+				const second = await request();
+				ok(second.reused, 'Second connection should have resumed the TLS session');
+				ok(second.status !== 401, `Expected valid cert to be accepted on the resumed session, got: ${second.status}`);
+			} finally {
+				agent.destroy();
+			}
+		});
+
+		test('should reject revoked certificate on a resumed TLS session with CRL check', async () => {
+			// A resumed session carries no client chain, so the issuer must come from Harper's own CA set
+			// (nodejs/node#65579 has the same effect on every connection on Node 26.8.0/26.8.1).
+			const agent = new https.Agent({ keepAlive: false, maxCachedSessions: 10 });
+			const request = () =>
+				new Promise<{ status: number; reused: boolean }>((resolve, reject) => {
+					const req = https.request(
+						`https://${ctx.harper.hostname}:${HTTPS_PORT}/`,
+						{
+							agent,
+							cert: readFileSync(crlServer!.certs.revoked.cert),
+							key: readFileSync(crlServer!.certs.revoked.key),
+							ca: readFileSync(crlServer!.certs.ca),
+							rejectUnauthorized: false,
+						},
+						(res) => {
+							const reused = (res.socket as import('node:tls').TLSSocket).isSessionReused();
+							res.resume();
+							res.on('end', () => resolve({ status: res.statusCode!, reused }));
+						}
+					);
+					req.on('error', (err: any) => reject(new Error(`Request failed: ${err.code || err.message}`)));
+					req.end();
+				});
+			try {
+				const first = await request();
+				ok(first.status === 401, `Expected 401 for revoked cert on the full handshake, got: ${first.status}`);
+				const second = await request();
+				ok(second.reused, 'Second connection should have resumed the TLS session');
+				ok(second.status === 401, `Expected 401 for revoked cert on the resumed session, got: ${second.status}`);
+			} finally {
+				agent.destroy();
+			}
+		});
+
 		test('should cache CRL and serve valid certificate after CRL server stops', async () => {
 			const validCert = readFileSync(crlServer!.certs.valid.cert);
 			const validKey = readFileSync(crlServer!.certs.valid.key);
@@ -358,5 +428,74 @@ suite('CRL Certificate Verification - Fail-Closed with Timeout', (ctx: ContextWi
 			});
 			req.end();
 		});
+	});
+});
+
+function mtlsStatus(hostname: string, client: { cert: string; key: string }, ca: string): Promise<number> {
+	return new Promise<number>((resolve, reject) => {
+		const req = https.request(
+			`https://${hostname}:${HTTPS_PORT}/`,
+			{
+				cert: readFileSync(client.cert),
+				key: readFileSync(client.key),
+				ca: readFileSync(ca),
+				rejectUnauthorized: false,
+			},
+			(res) => {
+				res.resume();
+				res.on('end', () => resolve(res.statusCode!));
+			}
+		);
+		req.on('error', (err: any) => reject(new Error(`Request failed: ${err.code || err.message}`)));
+		req.end();
+	});
+}
+
+suite('CRL Certificate Verification - CRL past its nextUpdate, inside the grace period', (ctx: ContextWithHarper) => {
+	let crlServer: CrlServerContext | null = null;
+	let certsPath: string;
+	if (testsBun) return; // no Bun testing for now
+
+	before(async () => {
+		certsPath = await mkdtemp(join(tmpdir(), 'harper-crl-overdue-'));
+		// an hour overdue, well inside the default 24 hour grace period
+		const nextUpdate = new Date(Date.now() - 3_600_000);
+		crlServer = await setupCrlServerWithCerts(certsPath, '127.0.0.1', 5, {
+			thisUpdate: new Date(nextUpdate.getTime() - 86_400_000),
+			nextUpdate,
+		});
+		await setupHarperWithFixture(ctx, FIXTURE_PATH, {
+			config: {
+				http: {
+					mtls: {
+						user: 'admin',
+						certificateVerification: {
+							failureMode: 'fail-closed',
+							crl: { enabled: true, timeout: 30000 },
+							ocsp: { enabled: false },
+						},
+					},
+				},
+				tls: {
+					certificateAuthority: crlServer.certs.ca,
+				},
+			},
+		});
+	});
+
+	after(async () => {
+		if (crlServer) await stopCrlServer(crlServer);
+		await teardownHarper(ctx);
+		await rm(certsPath, { recursive: true, force: true, maxRetries: 3 });
+	});
+
+	test('should accept valid certificate', async () => {
+		const status = await mtlsStatus(ctx.harper.hostname, crlServer!.certs.valid, crlServer!.certs.ca);
+		ok(status !== 401, `Expected non-401 for a valid cert on a CRL inside its grace period. Got: ${status}`);
+	});
+
+	test('should reject revoked certificate', async () => {
+		const status = await mtlsStatus(ctx.harper.hostname, crlServer!.certs.revoked, crlServer!.certs.ca);
+		ok(status === 401, `Expected 401 for a revoked cert on a CRL inside its grace period, got: ${status}`);
 	});
 });

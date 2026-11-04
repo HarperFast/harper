@@ -1,39 +1,61 @@
-'use strict';
+import { loadNativePackage } from '../utility/packageUtils.js';
+('use strict');
 
-import * as path from 'path';
-import { watch } from 'chokidar';
-import * as fs from 'fs-extra';
-import * as forge from 'node-forge';
-import * as net from 'net';
+import * as path from 'node:path';
+import fs from 'fs-extra';
+import type * as Forge from 'node-forge';
+import * as net from 'node:net';
 import { generateKeyPair as generateKeyPairOrig, X509Certificate, createPrivateKey, randomBytes } from 'node:crypto';
 
-import * as util from 'util';
+import * as util from 'node:util';
 const generateKeyPair = util.promisify(generateKeyPairOrig);
 
-const pki = forge.pki;
+const loadForge = () => loadNativePackage('node-forge') as typeof Forge;
 import { v4 as uuidv4 } from 'uuid';
 import { forComponent } from '../utility/logging/harper_logger.ts';
 import * as envManager from '../utility/environment/environmentManager.ts';
 import * as hdbTerms from '../utility/hdbTerms.ts';
 
 import * as certificatesTerms from '../utility/terms/certificates.js';
-const tls = require('node:tls');
-import { relative, join } from 'node:path';
+import tls from 'node:tls';
+import { relative, join, dirname, resolve } from 'node:path';
+import { open } from 'node:fs/promises';
 
 import assignCmdenvVars from '../utility/assignCmdEnvVariables.ts';
 import * as configUtils from '../config/configUtils.ts';
+import { filterArgsAgainstRuntimeConfig } from '../config/harperConfigEnvVars.ts';
 import { table, getDatabases, databases } from '../resources/databases.ts';
-const logger = forComponent('tls').conditional;
+import { transaction, contextStorage } from '../resources/transaction.ts';
+import { ClientError } from '../utility/errors/hdbError.ts';
+let logger = forComponent('tls').conditional;
 const { CONFIG_PARAMS } = hdbTerms;
 const { CERTIFICATE_VALUES } = certificatesTerms;
 import { getThisNodeName, getThisNodeUrl, urlToNodeName, clearThisNodeName } from '../server/nodeName.ts';
 
-export const getPrivateKeys = () => privateKeys;
+export const getPrivateKeys = () => {
+	for (const name of configuredPrivateKeyPaths.keys()) {
+		try {
+			getPrivateKeyByName(name);
+		} catch (error) {
+			forComponent('tls').conditional.trace?.('Could not refresh configured private key:', name, error);
+		}
+	}
+	return privateKeys;
+};
 
-import { readFileSync, statSync } from 'node:fs';
-import { getTicketKeys, onMessageFromWorkers } from '../server/threads/manageThreads.js';
-import { isMainThread } from 'worker_threads';
+import { readFileSync, statSync, watchFile } from 'node:fs';
+import { getTicketKeys, onMessageFromWorkers } from '../server/threads/manageThreads.ts';
+import { isMainThread } from 'node:worker_threads';
+import {
+	POLLING_FALLBACK_OPTIONS,
+	claimLostNativeWatchError,
+	guardedWatch,
+	isWatcherExhaustionError,
+	warnWatcherFallback,
+} from '../utility/watcherFallback.ts';
+import { resolveWatchTarget } from '../utility/watchPath.ts';
 import { TLSSocket } from 'node:tls';
+import { publishTrustedAuthorities } from './certificateVerification/trustedIssuers.ts';
 
 const CERT_VALIDITY_DAYS = 3650;
 // Default interval (ms) for the periodic cert-file re-read safety net. The chokidar (inotify)
@@ -118,8 +140,8 @@ export function getCertTable() {
 	return certificateTable;
 }
 
-export async function getReplicationCert() {
-	const SNICallback = createTLSSelector('replication', undefined, false);
+export async function getReplicationCert(excludeSelfSigned = false) {
+	const SNICallback = createTLSSelector('replication', undefined, false, excludeSelfSigned);
 	const secureTarget = {
 		secureContexts: null,
 		setSecureContext: (_ctx) => {},
@@ -142,45 +164,52 @@ export async function getReplicationCertAuth() {
 	return certificateTable.get(caName);
 }
 
+const sameConfigValue = (recordValue, configValue) =>
+	JSON.stringify(recordValue ?? null) === JSON.stringify(configValue ?? null);
+
+/** Applies a config edit to ciphers/uses on a record whose file is unchanged; ownership rules are in security/DESIGN.md. */
+function reconcileConfiguredFields(certRecord, name, certificatePem, ciphers, uses, syncedNames: Set<string>) {
+	if (certRecord.certificate !== certificatePem || syncedNames.has(name)) return;
+	const owned = certRecord.from_config === true;
+	const adoptable = certRecord.from_config === undefined && certRecord.file_timestamp != null;
+	const matches = sameConfigValue(certRecord.ciphers, ciphers) && sameConfigValue(certRecord.uses, uses);
+	if (!owned && !(adoptable && matches)) {
+		if (adoptable)
+			logger.warn?.(
+				`TLS config for certificate ${name} differs from its record, which predates config tracking; leaving the record unchanged — touch the certificate file to apply the config`
+			);
+		else if (!matches)
+			logger.info?.(
+				`TLS config for certificate ${name} differs from its record, whose ciphers/uses were set outside the config; leaving the record unchanged`
+			);
+		return;
+	}
+	syncedNames.add(name);
+	if (owned && matches) return;
+	if (owned)
+		logger.info?.(
+			`TLS config for certificate ${name} changed (ciphers: ${certRecord.ciphers ?? 'unset'} -> ${ciphers ?? 'unset'}, uses: ${JSON.stringify(certRecord.uses)} -> ${JSON.stringify(uses)}); updating the certificate record`
+		);
+	const write = certificateTable.patch(owned ? { name, uses, ciphers: ciphers ?? null } : { name, from_config: true });
+	// a failed write must not stop the poll's retry from reconciling
+	Promise.resolve(write).catch(() => syncedNames.delete(name));
+	return write;
+}
+
 let configuredCertsLoaded;
 const privateKeys = new Map();
+const configuredPrivateKeyPaths = new Map<string, string>();
+const filePrivateKeys = new Map<string, string>();
 
-// Debounce window (ms) for rebuilding TLS secure contexts. Shared by the hdb_certificate
-// subscription and the private-key hot-reload trigger so both coalesce on the same cadence.
 const TLS_REBUILD_DEBOUNCE_MS = 1500;
+// Bounds the fingerprint re-checks that unrelated changes in a watched directory can cause.
+const TLS_WATCH_RECHECK_DELAY_MS = 1000;
 
-// Debounced rebuild triggers, one per live server TLS selector (registered in createTLSSelector's
-// initialize). When a private key is hot-reloaded on this thread, every live selector re-runs
-// updateTLS so a secure context built with a stale key — or built before this key arrived — is
-// regenerated. Transient selectors (getReplicationCert) opt out so they don't accumulate here.
-const liveTLSRebuilders = new Set<() => void>();
-
-/**
- * Trigger a debounced rebuild of every live server's TLS secure contexts on this thread.
- *
- * Workers load their private key directly from disk into the privateKeys map (there is no table
- * propagation for keys), so a key rotation must rebuild the secure contexts locally. The cert side
- * already propagates via the hdb_certificate subscription; without this, a worker that rebuilt for
- * the new cert before reloading the matching key would serve the new cert paired with the old key
- * until the next cert-table change.
- */
-function rebuildLiveTLSContexts() {
-	for (const scheduleRebuild of liveTLSRebuilders) scheduleRebuild();
-}
-
-/**
- * Handle a private-key (re)load: update the in-thread map and, on any content change, trigger a
- * local TLS context rebuild. The `previous !== private_key` guard skips identical-content reloads
- * (so neither chokidar nor the periodic poll thrashes) while still rebuilding when a key first
- * appears or is restored after boot — the recovery case we must not strand. During normal startup
- * this runs before any TLS selector is registered, so the rebuild is a harmless no-op on an empty
- * rebuilder set.
- */
-function handlePrivateKeyReload(private_key_name, private_key) {
-	const previous = privateKeys.get(private_key_name);
-	privateKeys.set(private_key_name, private_key);
-	if (previous !== private_key) rebuildLiveTLSContexts();
-}
+// Self-retry backoff cap: a permanently bad record must not cost every selector on every
+// thread a table scan + X509 parse per debounce interval, forever.
+const TLS_FAILURE_RETRY_MAX_DELAY_MS = 300_000;
+// While a failure signature is unchanged, repeat occurrences log a summary at most this often.
+const TLS_FAILURE_SUMMARY_INTERVAL_MS = 3_600_000;
 
 /**
  * This is responsible for loading any certificates that are in the harperdb-config.yaml file and putting them into the hdbCertificate table.
@@ -196,6 +225,7 @@ export function loadCertificates() {
 
 	const rootPath = path.dirname(configUtils.getConfigFilePath());
 	let promise;
+	const syncedNames = new Set<string>();
 	for (let { configKey } of CERTIFICATE_CONFIGS) {
 		let configs = configUtils.getConfigFromFile(configKey);
 		if (configs) {
@@ -208,18 +238,26 @@ export function loadCertificates() {
 				// need to relativize the paths so they aren't exposed
 				let private_key_name = privateKeyPath && relative(join(rootPath, 'keys'), privateKeyPath);
 				if (private_key_name) {
-					loadAndWatch(
-						privateKeyPath,
-						(private_key) => handlePrivateKeyReload(private_key_name, private_key),
-						'private key'
-					);
+					configuredPrivateKeyPaths.set(private_key_name, privateKeyPath);
+					try {
+						cacheFilePrivateKey(private_key_name, readPEM(privateKeyPath));
+					} catch (error) {
+						forComponent('tls').conditional.error?.('Error loading private key:', privateKeyPath, error);
+					}
 				}
 				for (let ca of [false, true]) {
 					let path = config[ca ? 'certificateAuthority' : 'certificate'];
 					if (path && isMainThread) {
+						let pendingPairTimer;
+						const reportPendingPair = () => {
+							forComponent('tls').conditional.error?.(
+								`TLS certificate at ${path} still has no matching private key at ${privateKeyPath}`
+							);
+							pendingPairTimer = setTimeout(reportPendingPair, TLS_FAILURE_SUMMARY_INTERVAL_MS).unref();
+						};
 						loadAndWatch(
 							path,
-							(certificate) => {
+							(certificate, fileStats) => {
 								if (CERTIFICATE_VALUES.cert === certificate) {
 									// this is the compromised Harper certificate authority, and we do not even want to bother to
 									// load it or tempted to use it anywhere
@@ -227,7 +265,7 @@ export function loadCertificates() {
 								}
 								let hostnames = config.hostname ?? config.hostnames ?? config.host ?? config.hosts;
 								if (hostnames && !Array.isArray(hostnames)) hostnames = [hostnames];
-								const certificatePem = readPEM(path);
+								const certificatePem = certificate;
 								const x509Cert = new X509Certificate(certificatePem);
 								let certCn;
 								try {
@@ -245,18 +283,30 @@ export function loadCertificates() {
 								// Check if cert issued by compromised Harper certificate authority, if it is, do not load it
 								if (x509Cert.checkIssued(new X509Certificate(CERTIFICATE_VALUES.cert))) return;
 
-								// If a record already exists for cert check to see who is newer, cert record or cert file.
-								// If cert file is newer, add it to table
-								// getSync (not get): this runs in a synchronous loadAndWatch callback. On RocksDB get()
-								// returns a Promise on a block-cache miss, which is truthy but has no timestamp fields,
-								// so the staleness guard below is bypassed and a stale on-disk cert can overwrite a
-								// newer replicated record (TLS churn / downgrade) once hdb_certificate evicts.
+								// The synchronous timestamp guard must not treat a cold RocksDB read Promise as a record.
 								const certRecord = certificateTable.primaryStore.getSync(certCn);
-								let fileTimestamp = statSync(path).mtimeMs;
+								if (!ca && privateKeyPath) {
+									const privateKey = readPEM(privateKeyPath);
+									if (!x509Cert.checkPrivateKey(createPrivateKey(privateKey))) {
+										if (!pendingPairTimer) {
+											forComponent('tls').conditional.warn?.(
+												`Waiting for matching TLS certificate and private key: ${path}, ${privateKeyPath}`
+											);
+											if (!certRecord || certRecord.is_self_signed) reportPendingPair();
+											else pendingPairTimer = setTimeout(reportPendingPair, 30_000).unref();
+										}
+										return false;
+									}
+									cacheFilePrivateKey(private_key_name, privateKey);
+									clearTimeout(pendingPairTimer);
+									pendingPairTimer = undefined;
+								}
+								let fileTimestamp = fileStats.mtimeMs;
 								let recordTimestamp =
 									!certRecord || certRecord.is_self_signed
 										? 1
 										: (certRecord.file_timestamp ?? certRecord.__updatedtime__);
+								const uses = config.uses ?? (configKey.includes('operations') ? ['operations-api'] : []);
 								if (certRecord && fileTimestamp <= recordTimestamp) {
 									if (fileTimestamp < recordTimestamp)
 										logger.info?.(
@@ -266,18 +316,30 @@ export function loadCertificates() {
 												recordTimestamp > 1 ? new Date(recordTimestamp) : 'only self signed certificate available'
 											})`
 										);
+									const reconciled = reconcileConfiguredFields(
+										certRecord,
+										certCn,
+										certificatePem,
+										config.ciphers,
+										uses,
+										syncedNames
+									);
+									if (reconciled) return (promise = reconciled);
 									return;
 								}
 
-								promise = certificateTable.put({
+								// Returned so loadAndWatch can roll back its fingerprint latch if the write fails —
+								// assigned as well to preserve loadCertificates()'s awaited-return contract.
+								return (promise = certificateTable.put({
 									name: certCn,
-									uses: config.uses ?? (configKey.includes('operations') ? ['operations-api'] : []),
+									uses,
 									ciphers: config.ciphers,
 									certificate: certificatePem,
 									private_key_name,
 									is_authority: ca,
 									hostnames,
 									file_timestamp: fileTimestamp,
+									from_config: true,
 									details: {
 										issuer: x509Cert.issuer.replace(/\n/g, ' '),
 										subject: x509Cert.subject?.replace(/\n/g, ' '),
@@ -286,9 +348,10 @@ export function loadCertificates() {
 										valid_from: x509Cert.validFrom,
 										valid_to: x509Cert.validTo,
 									},
-								});
+								}));
 							},
-							ca ? 'certificate authority' : 'certificate'
+							ca ? 'certificate authority' : 'certificate',
+							!ca && privateKeyPath ? [privateKeyPath] : []
 						);
 					}
 				}
@@ -324,61 +387,154 @@ const certificateWatchTimers = new Map<string, NodeJS.Timeout>();
 const certificateWatchPollers = new Map<string, () => void>();
 
 /**
- * Load the certificate file and watch for changes and reload with any changes.
- *
- * Two detection mechanisms feed the same reload path (and share the `lastModified` fingerprint,
- * so they never double-reload for the same change):
- *   1. chokidar inotify watcher — the fast path, reacts immediately to fs events.
- *   2. A periodic re-read (main thread only) — a safety net for filesystems where inotify is
- *      unreliable (overlayfs/containers/network mounts), where a real renewal can otherwise be
- *      silently missed. Interval is tls.certificateWatchInterval (default 5m); 0 disables it.
- * @param path
- * @param loadCert
- * @param type
+ * Watch the certificate and related files through filtered parent directories and the main-thread safety poll.
+ * A false loader result remains unapplied so an unchanged fingerprint can be retried.
  */
-function loadAndWatch(path, loadCert, type) {
+export function loadAndWatch(path, loadCert, type, relatedPaths: string[] = []) {
 	let lastModified;
-	const loadFile = (path, stats) => {
+	let lastAttempted;
+	// An unstattable related file still yields a fingerprint, so an attempt without it is not repeated until it changes.
+	const statRelated = (relatedPath: string) => {
 		try {
-			// chokidar's 'change' event omits stats unless alwaysStat is set (default off in v4), so
-			// stat the file here when it's missing — otherwise the inotify fast path would throw and
-			// silently never reload, leaving only the periodic poll to catch the change.
-			let modified = (stats ?? statSync(path)).mtimeMs;
-			if (modified && modified !== lastModified) {
-				if (lastModified && isMainThread) logger.warn?.(`Reloading ${type}:`, path);
+			return statSync(relatedPath);
+		} catch {
+			return null;
+		}
+	};
+	const loadFile = (path, stats?, retryUnapplied = true) => {
+		// The latch dedupes chokidar/poll but must mean "last successfully APPLIED", or a failed
+		// apply is deduplicated forever (#2382). Rollbacks are equality-guarded so an old failure
+		// can't unlatch a newer successful reload.
+		const previousModified = lastModified;
+		let modified;
+		try {
+			const fileStats = stats ?? statSync(path);
+			const fingerprints = [fileStats, ...relatedPaths.map(statRelated)];
+			modified = JSON.stringify(
+				fingerprints.map((fingerprint) => fingerprint && [fingerprint.mtimeMs, fingerprint.ino, fingerprint.size])
+			);
+			// Restoring an applied fingerprint after a failed attempt must clear the loader's pending state.
+			if (modified !== lastAttempted || (retryUnapplied && modified !== lastModified)) {
+				if (lastModified && modified !== lastAttempted && isMainThread) logger.warn?.(`Reloading ${type}:`, path);
+				lastAttempted = modified;
 				lastModified = modified;
-				loadCert(readPEM(path));
+				const rollback = () => {
+					if (lastModified === modified) lastModified = previousModified === modified ? undefined : previousModified;
+				};
+				const applied = loadCert(readPEM(path), fileStats);
+				if (applied === false) rollback();
+				else if (typeof (applied as any)?.then === 'function') {
+					(applied as Promise<unknown>)
+						.then((result) => {
+							if (result === false) rollback();
+						})
+						.catch((error) => {
+							logger.error?.(`Error applying ${type}:`, path, error);
+							rollback();
+						});
+				}
 			}
 		} catch (error) {
 			logger.error?.(`Error loading ${type}:`, path, error);
+			if (modified !== undefined && lastModified === modified)
+				lastModified = previousModified === modified ? undefined : previousModified;
 		}
 	};
 	if (fs.existsSync(path)) loadFile(path, statSync(path));
 	else logger.error?.(`${type} file not found:`, path);
-	watch(path, { persistent: false }).on('change', loadFile);
-
-	// Periodic re-read safety net. For certificates, this runs on the main thread only — workers
-	// receive cert updates via the hdb_certificate table subscription, so polling the cert file on
-	// every worker would be wasteful. Private keys are different: each worker loads its own key
-	// directly from disk into its privateKeys map (no table propagation), so a renewal missed by
-	// inotify on a worker would strand the stale key — therefore the key poll must run on all
-	// threads. mtime is checked first against the last-loaded fingerprint, so an unchanged file does
-	// no PEM read and no reload (and shares the fingerprint with the chokidar watcher, so the two
-	// detection paths never double-reload the same change).
-	const pollsOnThisThread = isMainThread || type === 'private key';
-	if (pollsOnThisThread) {
-		const poll = () => {
-			let stats;
-			try {
-				stats = statSync(path);
-			} catch (error) {
-				// File may be transiently absent (e.g. atomic-rename renewal in flight); the chokidar
-				// watcher and the next poll will pick up the replacement.
-				logger.trace?.(`Watch poll could not stat ${type}:`, path, error);
-				return;
-			}
-			loadFile(path, stats);
+	const poll = (retryUnapplied = true) => {
+		let stats;
+		try {
+			stats = statSync(path);
+		} catch (error) {
+			// File may be transiently absent (e.g. atomic-rename renewal in flight); the next watcher
+			// event or poll will pick up the replacement.
+			logger.trace?.(`Watch poll could not stat ${type}:`, path, error);
+			return;
+		}
+		loadFile(path, stats, retryUnapplied);
+	};
+	// chokidar's add/change can stop for good after a fast cancelled renewal; raw events still arrive (security/DESIGN.md).
+	let recheckTimer: NodeJS.Timeout | undefined;
+	const scheduleRecheck = () => {
+		recheckTimer ??= setTimeout(() => {
+			recheckTimer = undefined;
+			poll(false);
+		}, TLS_WATCH_RECHECK_DELAY_MS).unref();
+	};
+	const watchedDirectories = new Map<string, { mustPoll: boolean; files: Set<string> }>();
+	for (const filePath of [path, ...relatedPaths]) {
+		const target = resolveWatchTarget(filePath);
+		const directory = resolveWatchTarget(dirname(target.path));
+		let watched = watchedDirectories.get(directory.path);
+		if (!watched)
+			watchedDirectories.set(
+				directory.path,
+				(watched = { mustPoll: target.mustPoll || directory.mustPoll, files: new Set() })
+			);
+		watched.files.add(resolve(target.path));
+	}
+	for (const [directory, watched] of watchedDirectories) {
+		let usingPolling = watched.mustPoll;
+		let pollingFiles = false;
+		let liveWatcher;
+		const openWatcher = () => {
+			const opened = (liveWatcher = guardedWatch(directory, {
+				persistent: false,
+				depth: 0,
+				ignoreInitial: true,
+				ignored: (filePath) => {
+					const resolved = resolve(filePath);
+					return resolved !== resolve(directory) && !watched.files.has(resolved);
+				},
+				...(usingPolling ? POLLING_FALLBACK_OPTIONS : {}),
+			}));
+			const reload = () => loadFile(path);
+			const reopen = () =>
+				Promise.resolve()
+					.then(() => opened.close())
+					.catch(() => {})
+					.then(openWatcher)
+					.catch((error) => logger.error?.(`Could not reopen the ${type} watch on polling:`, directory, error));
+			opened
+				.on('add', reload)
+				.on('change', reload)
+				.on('raw', scheduleRecheck)
+				.on('error', (error) => {
+					if (claimLostNativeWatchError(error)) return;
+					if (pollingFiles || liveWatcher !== opened) return;
+					const errorCode = (error as NodeJS.ErrnoException).code;
+					if (errorCode === 'EACCES' || errorCode === 'EPERM') {
+						forComponent('tls').conditional.warn?.(
+							`Cannot watch TLS directory ${directory}; polling its configured files instead`,
+							error
+						);
+						pollingFiles = true;
+						Promise.resolve()
+							.then(() => opened.close())
+							.catch(() => {});
+						// watchFile stays armed across ENOENT without needing to list the unreadable parent.
+						for (const file of watched.files)
+							watchFile(file, { persistent: false, interval: POLLING_FALLBACK_OPTIONS.interval }, (stats) => {
+								if (stats.nlink) reload();
+							});
+						reload();
+						return;
+					}
+					if (isWatcherExhaustionError(error)) {
+						if (usingPolling || liveWatcher !== opened) return;
+						warnWatcherFallback(directory);
+						usingPolling = true;
+						reopen();
+						return;
+					}
+					logger.error?.(`Error watching ${type}:`, path, error);
+				});
 		};
+		openWatcher();
+	}
+
+	if (isMainThread) {
 		certificateWatchPollers.set(path, poll);
 		const interval = getCertificateWatchInterval();
 		if (interval > 0) {
@@ -392,13 +548,15 @@ function loadAndWatch(path, loadCert, type) {
 }
 
 function getHost() {
-	let url = getThisNodeUrl();
-	if (url == null) {
+	// urlToNodeName returns undefined for a missing or malformed node/replication URL, so a bad
+	// replication.url falls back to the default host here rather than throwing during cert review.
+	const name = urlToNodeName(getThisNodeUrl());
+	if (name == null) {
 		const host = CERT_DOMAINS[0];
 		logger.info?.('node url is missing from harperdb-config.yaml, using default host' + host);
 		return host;
 	}
-	return urlToNodeName(url);
+	return name;
 }
 
 export function getCommonName() {
@@ -462,7 +620,7 @@ async function createCertificateTable(cert, caCert) {
 	await setCertTable({
 		name: caCert.subject.getField('CN').value,
 		uses: [],
-		certificate: pki.certificateToPem(caCert),
+		certificate: loadForge().pki.certificateToPem(caCert),
 		private_key_name: 'privateKey.pem',
 		is_authority: true,
 		is_self_signed: true,
@@ -499,7 +657,8 @@ export async function setCertTable(certRecord) {
 	};
 
 	getCertTable();
-	await certificateTable.patch(certRecord);
+	const setsConfigurableFields = certRecord.ciphers !== undefined || certRecord.uses !== undefined;
+	await certificateTable.patch(setsConfigurableFields ? { ...certRecord, from_config: null } : certRecord);
 }
 
 export async function generateKeys() {
@@ -516,19 +675,19 @@ export async function generateKeys() {
 	});
 
 	return {
-		publicKey: pki.publicKeyFromPem(keys.publicKey),
-		privateKey: pki.privateKeyFromPem(keys.privateKey),
+		publicKey: loadForge().pki.publicKeyFromPem(keys.publicKey),
+		privateKey: loadForge().pki.privateKeyFromPem(keys.privateKey),
 	};
 }
 
 //https://www.openssl.org/docs/manmaster/man5/x509v3Config.html
 
 async function generateCertificates(caPrivateKey, publicKey, caCert) {
-	const publicCert = pki.createCertificate();
+	const publicCert = loadForge().pki.createCertificate();
 
 	if (!publicKey) {
 		const repCert = await getReplicationCert();
-		const opsCert = pki.certificateFromPem(repCert.options.cert);
+		const opsCert = loadForge().pki.certificateFromPem(repCert.options.cert);
 		publicKey = opsCert.publicKey;
 	}
 
@@ -550,17 +709,23 @@ async function generateCertificates(caPrivateKey, publicKey, caCert) {
 	publicCert.setSubject(subject);
 	publicCert.setIssuer(caCert.subject.attributes);
 	publicCert.setExtensions(certExtensions());
-	publicCert.sign(caPrivateKey, forge.md.sha256.create());
+	publicCert.sign(caPrivateKey, loadForge().md.sha256.create());
 
-	return pki.certificateToPem(publicCert);
+	return loadForge().pki.certificateToPem(publicCert);
 }
 
-export async function getCertAuthority() {
+export async function getCertAuthority(excludeSelfSigned = false) {
 	const allCerts = await listCertificates();
 	let match;
 	for (let cert of allCerts) {
-		if (!cert.is_authority) continue;
-		const matchingPrivateKey = getPrivateKeyByName(cert.private_key_name);
+		if (!cert.is_authority || (excludeSelfSigned && cert.is_self_signed)) continue;
+		let matchingPrivateKey;
+		try {
+			matchingPrivateKey = getPrivateKeyByName(cert.private_key_name);
+		} catch (error) {
+			if (error.code !== 'ENOENT') throw error;
+			continue;
+		}
 		if (cert.private_key_name && matchingPrivateKey) {
 			const keyCheck = new X509Certificate(cert.certificate).checkPrivateKey(createPrivateKey(matchingPrivateKey));
 			if (keyCheck) {
@@ -576,7 +741,7 @@ export async function getCertAuthority() {
 }
 
 async function generateCertAuthority(private_key, publicKey, writeKey = true) {
-	const caCert = pki.createCertificate();
+	const caCert = loadForge().pki.createCertificate();
 
 	caCert.publicKey = publicKey;
 	caCert.serialNumber = generateSerialNumber();
@@ -602,12 +767,12 @@ async function generateCertAuthority(private_key, publicKey, writeKey = true) {
 		{ name: 'subjectKeyIdentifier' },
 	]);
 
-	caCert.sign(private_key, forge.md.sha256.create());
+	caCert.sign(private_key, loadForge().md.sha256.create());
 
 	const keysPath = path.join(envManager.getHdbBasePath(), hdbTerms.LICENSE_KEY_DIR_NAME);
 	const privatePath = path.join(keysPath, certificatesTerms.PRIVATEKEY_PEM_NAME);
 	if (writeKey) {
-		await fs.writeFile(privatePath, pki.privateKeyToPem(private_key));
+		await fs.writeFile(privatePath, loadForge().pki.privateKeyToPem(private_key));
 	}
 
 	return caCert;
@@ -622,16 +787,17 @@ export async function generateCertsKeys() {
 }
 
 /**
- * Delete any existing self-signed certs (including CA) and create new ones
- * @returns {Promise<void>}
+ * Replace the self-signed CA and replication certificate. A failed renewal leaves the previous pair in place.
  */
 export async function renewSelfSigned() {
+	clearThisNodeName();
+	await loadCertificates();
 	getCertTable();
+	const retiring = [];
 	for await (const cert of certificateTable.search([{ attribute: 'is_self_signed', value: true }])) {
-		await certificateTable.delete(cert.name);
+		retiring.push(cert.name);
 	}
-
-	await reviewSelfSignedCert();
+	await publishSelfSignedCerts(await prepareSelfSignedCerts(true), { retiring });
 }
 
 export async function reviewSelfSignedCert() {
@@ -639,8 +805,58 @@ export async function reviewSelfSignedCert() {
 	clearThisNodeName();
 	await loadCertificates();
 	getCertTable();
+	await publishSelfSignedCerts(await prepareSelfSignedCerts(false));
+}
 
-	let caAndKey = await getCertAuthority();
+/**
+ * Write the prepared records and, when renewing, delete the retiring names they do not reuse. Rows are
+ * re-read in the transaction because an external certificate may have been installed since they were
+ * selected; one that is not self-signed is not replaced. Renewal then fails, and boot review only warns.
+ */
+async function publishSelfSignedCerts(
+	{ records, generatedKeyPath }: { records: any[]; generatedKeyPath?: string },
+	{ retiring }: { retiring?: string[] } = {}
+) {
+	const replaced = new Set(records.map((record) => record.name));
+	let keyUnused = false;
+	try {
+		await transaction({}, async () => {
+			for (const name of retiring ?? []) {
+				if (!replaced.has(name) && (await certificateTable.get(name))?.is_self_signed)
+					await certificateTable.delete(name);
+			}
+			for (const record of records) {
+				const current = await certificateTable.get(record.name);
+				if (current && !current.is_self_signed) {
+					const message = `Certificate ${record.name} is not self-signed, so it is not replaced with a self-signed certificate`;
+					if (retiring) throw new ClientError(message, 409);
+					logger.warn?.(message);
+					// the leaf is signed by this CA, and would have no issuer in the table
+					if (record.is_authority) {
+						keyUnused = true;
+						break;
+					}
+					continue;
+				}
+				await setCertTable(record);
+			}
+		});
+	} catch (error) {
+		keyUnused = true;
+		throw error;
+	} finally {
+		if (keyUnused && generatedKeyPath) await fs.remove(generatedKeyPath);
+	}
+}
+
+/**
+ * @param replacing ignore existing self-signed rows, as renewal is about to retire them
+ */
+async function prepareSelfSignedCerts(replacing: boolean) {
+	const records = [];
+	const keysPath = path.join(envManager.getHdbBasePath(), hdbTerms.LICENSE_KEY_DIR_NAME);
+	let generatedKeyPem: string;
+	let caAndKey = await getCertAuthority(replacing);
 	if (!caAndKey) {
 		logger.notify?.(
 			"A matching Certificate Authority and key was not found. A new CA will be created in advance, so it's available if needed."
@@ -648,79 +864,70 @@ export async function reviewSelfSignedCert() {
 
 		const tryToParseKey = (keyPath) => {
 			try {
-				const key = pki.privateKeyFromPem(fs.readFileSync(keyPath));
-				return { key, keyPath };
+				return loadForge().pki.privateKeyFromPem(fs.readFileSync(keyPath));
 			} catch (err) {
 				logger.warn?.(`Failed to parse private key from ${keyPath}:`, err.message);
-				return { key: null, keyPath };
 			}
 		};
 
 		// TLS config can be an array of cert, so we need to check each one
 		const tlsConfig = envManager.get(CONFIG_PARAMS.TLS);
+		const configuredKeyPaths = Array.isArray(tlsConfig)
+			? tlsConfig.map((config) => config.privateKey)
+			: [envManager.get(CONFIG_PARAMS.TLS_PRIVATEKEY)];
 		let privateKey;
-		let tlsPrivateKeyPath;
-		if (Array.isArray(tlsConfig)) {
-			for (const config of tlsConfig) {
-				if (config.privateKey) {
-					const result = tryToParseKey(config.privateKey);
-					privateKey = result.key;
-					tlsPrivateKeyPath = result.keyPath;
-					if (result.key) {
-						break; // Found a working key
-					}
-				}
+		let keyName;
+		for (const keyPath of configuredKeyPaths) {
+			if (!keyPath) continue;
+			privateKey = tryToParseKey(keyPath);
+			if (privateKey) {
+				keyName = relative(keysPath, keyPath);
+				break;
 			}
-		} else {
-			const keyPath = envManager.get(CONFIG_PARAMS.TLS_PRIVATEKEY);
-			const result = tryToParseKey(keyPath);
-			privateKey = result.key;
-			tlsPrivateKeyPath = result.keyPath;
 		}
-
-		const keysPath = path.join(envManager.getHdbBasePath(), hdbTerms.LICENSE_KEY_DIR_NAME);
-		let keyName = relative(keysPath, tlsPrivateKeyPath);
 		if (!privateKey) {
 			logger.warn?.(
-				'Unable to parse the TLS key',
-				tlsPrivateKeyPath,
-				'A new key will be generated and used to create Certificate Authority'
+				'No usable TLS private key is configured; a new key will be generated for the Certificate Authority'
 			);
 			// Currently we can only parse RSA keys, so if it's not an RSA key, we need to generate a new one
 			// There is a ticket to add support for other key types CORE-2457
 			({ privateKey } = await generateKeys());
-
-			// If there is an existing private key, we will save the new one with a unique name
-			if (fs.existsSync(path.join(keysPath, certificatesTerms.PRIVATEKEY_PEM_NAME)))
-				keyName = `privateKey${uuidv4().split('-')[0]}.pem`;
-
-			await fs.writeFile(path.join(keysPath, keyName), pki.privateKeyToPem(privateKey));
+			generatedKeyPem = loadForge().pki.privateKeyToPem(privateKey);
 		}
 
-		const hdbCa = await generateCertAuthority(privateKey, pki.setRsaPublicKey(privateKey.n, privateKey.e), false);
-
-		await setCertTable({
+		const hdbCa = await generateCertAuthority(
+			privateKey,
+			loadForge().pki.setRsaPublicKey(privateKey.n, privateKey.e),
+			false
+		);
+		const caRecord = {
 			name: hdbCa.subject.getField('CN').value,
 			uses: [],
-			certificate: pki.certificateToPem(hdbCa),
+			certificate: loadForge().pki.certificateToPem(hdbCa),
 			private_key_name: keyName,
 			is_authority: true,
 			is_self_signed: true,
-		});
+		};
+		records.push(caRecord);
+		caAndKey = { ca: caRecord, private_key: generatedKeyPem ?? loadForge().pki.privateKeyToPem(privateKey) };
 	}
 
-	const existingCert = await getReplicationCert();
-	if (!existingCert) {
-		const certName = getThisNodeName();
+	if (!(await getReplicationCert(replacing))) {
+		let certName = getThisNodeName();
+		const existing = await certificateTable.get(certName);
+		// an external certificate that cannot serve this node already holds its name
+		if (existing && !existing.is_self_signed) certName += '-self-signed';
 		logger.notify?.(
-			`A suitable replication certificate was not found, creating new self singed cert named: ${certName}`
+			`A suitable replication certificate was not found, creating new self signed cert named: ${certName}`
 		);
 
-		caAndKey = caAndKey ?? (await getCertAuthority());
-		const hdbCa = pki.certificateFromPem(caAndKey.ca.certificate);
-		const publicKey = hdbCa.publicKey;
-		const newPublicCert = await generateCertificates(pki.privateKeyFromPem(caAndKey.private_key), publicKey, hdbCa);
-		await setCertTable({
+		const hdbCa = loadForge().pki.certificateFromPem(caAndKey.ca.certificate);
+		const newPublicCert = await generateCertificates(
+			loadForge().pki.privateKeyFromPem(caAndKey.private_key),
+			hdbCa.publicKey,
+			hdbCa
+		);
+		records.push({
 			name: certName,
 			uses: ['replication'],
 			certificate: newPublicCert,
@@ -729,10 +936,39 @@ export async function reviewSelfSignedCert() {
 			is_self_signed: true,
 		});
 	}
+	if (!generatedKeyPem) return { records };
+	// written last, so a failure in building the records leaves no key file behind
+	const keyName = await writeGeneratedKey(keysPath, generatedKeyPem);
+	for (const record of records) record.private_key_name = keyName;
+	return { records, generatedKeyPath: path.join(keysPath, keyName) };
 }
 
-// Update the cert config in harperdb-config.yaml
-// If CLI or Env values are present it will use those values, else it will use default private key.
+async function writeGeneratedKey(keysPath: string, pem: string): Promise<string> {
+	let keyName = certificatesTerms.PRIVATEKEY_PEM_NAME;
+	let file;
+	for (;;) {
+		try {
+			file = await open(path.join(keysPath, keyName), 'wx', 0o600);
+			break;
+		} catch (error) {
+			if (error.code !== 'EEXIST') throw error;
+			keyName = `privateKey${uuidv4().split('-')[0]}.pem`;
+		}
+	}
+	try {
+		await file.writeFile(pem);
+	} catch (error) {
+		await file.close();
+		await fs.remove(path.join(keysPath, keyName));
+		throw error;
+	}
+	await file.close();
+	return keyName;
+}
+
+// Update the cert config in harperdb-config.yaml.
+// Uses CLI or Env values when present (or the default private key for tls),
+// except when the target section (`tls` or `operationsApi.tls`) is configured as an array.
 export function updateConfigCert() {
 	const cliEnvArgs = assignCmdenvVars(Object.keys(hdbTerms.CONFIG_PARAM_MAP), true);
 	const keysPath = path.join(envManager.getHdbBasePath(), hdbTerms.LICENSE_KEY_DIR_NAME);
@@ -741,35 +977,55 @@ export function updateConfigCert() {
 	// This object is what will be added to the harperdb-config.yaml file.
 	// We check for any CLI of Env args and if they are present we use them instead of default values.
 	const conf = hdbTerms.CONFIG_PARAMS;
-	const newCerts = {
-		[conf.TLS_PRIVATEKEY]: cliEnvArgs[conf.TLS_PRIVATEKEY.toLowerCase()]
-			? cliEnvArgs[conf.TLS_PRIVATEKEY.toLowerCase()]
-			: private_key,
+	const newCerts: Record<string, any> = {};
+	const isArraySection = (key: string) => Array.isArray(configUtils.getConfigFromFile(key));
+	const warnIgnoredFlatArgs = (section: string, paramNames: string[]) => {
+		const ignored = paramNames.filter((name) => Boolean(cliEnvArgs[name.toLowerCase()]));
+		if (ignored.length > 0) {
+			logger.warn?.(
+				`Ignoring flat ${section} CLI/env parameter(s) (${ignored.join(', ')}) because ${section} is configured as an array.`
+			);
+		}
 	};
 
-	if (cliEnvArgs[conf.TLS_CERTIFICATE.toLowerCase()]) {
-		newCerts[conf.TLS_CERTIFICATE] = cliEnvArgs[conf.TLS_CERTIFICATE.toLowerCase()];
+	if (!isArraySection(conf.TLS)) {
+		newCerts[conf.TLS_PRIVATEKEY] = cliEnvArgs[conf.TLS_PRIVATEKEY.toLowerCase()]
+			? cliEnvArgs[conf.TLS_PRIVATEKEY.toLowerCase()]
+			: private_key;
+
+		if (cliEnvArgs[conf.TLS_CERTIFICATE.toLowerCase()]) {
+			newCerts[conf.TLS_CERTIFICATE] = cliEnvArgs[conf.TLS_CERTIFICATE.toLowerCase()];
+		}
+
+		if (cliEnvArgs[conf.TLS_CERTIFICATEAUTHORITY.toLowerCase()]) {
+			newCerts[conf.TLS_CERTIFICATEAUTHORITY] = cliEnvArgs[conf.TLS_CERTIFICATEAUTHORITY.toLowerCase()];
+		}
+	} else {
+		warnIgnoredFlatArgs(conf.TLS, [conf.TLS_PRIVATEKEY, conf.TLS_CERTIFICATE, conf.TLS_CERTIFICATEAUTHORITY]);
 	}
 
-	if (cliEnvArgs[conf.TLS_CERTIFICATEAUTHORITY.toLowerCase()]) {
-		newCerts[conf.TLS_CERTIFICATEAUTHORITY] = cliEnvArgs[conf.TLS_CERTIFICATEAUTHORITY.toLowerCase()];
+	if (!isArraySection(conf.OPERATIONSAPI_TLS)) {
+		if (cliEnvArgs[conf.OPERATIONSAPI_TLS_CERTIFICATE.toLowerCase()]) {
+			newCerts[conf.OPERATIONSAPI_TLS_CERTIFICATE] = cliEnvArgs[conf.OPERATIONSAPI_TLS_CERTIFICATE.toLowerCase()];
+		}
+		if (cliEnvArgs[conf.OPERATIONSAPI_TLS_PRIVATEKEY.toLowerCase()]) {
+			newCerts[conf.OPERATIONSAPI_TLS_PRIVATEKEY] = cliEnvArgs[conf.OPERATIONSAPI_TLS_PRIVATEKEY.toLowerCase()];
+		}
+		if (cliEnvArgs[conf.OPERATIONSAPI_TLS_CERTIFICATEAUTHORITY.toLowerCase()]) {
+			newCerts[conf.OPERATIONSAPI_TLS_CERTIFICATEAUTHORITY] =
+				cliEnvArgs[conf.OPERATIONSAPI_TLS_CERTIFICATEAUTHORITY.toLowerCase()];
+		}
+	} else {
+		warnIgnoredFlatArgs(conf.OPERATIONSAPI_TLS, [
+			conf.OPERATIONSAPI_TLS_CERTIFICATE,
+			conf.OPERATIONSAPI_TLS_PRIVATEKEY,
+			conf.OPERATIONSAPI_TLS_CERTIFICATEAUTHORITY,
+		]);
 	}
 
-	if (cliEnvArgs[conf.OPERATIONSAPI_TLS_CERTIFICATE.toLowerCase()]) {
-		newCerts[conf.OPERATIONSAPI_TLS_CERTIFICATE] = cliEnvArgs[conf.OPERATIONSAPI_TLS_CERTIFICATE.toLowerCase()];
-	}
-	if (cliEnvArgs[conf.OPERATIONSAPI_TLS_PRIVATEKEY.toLowerCase()]) {
-		newCerts[conf.OPERATIONSAPI_TLS_PRIVATEKEY] = cliEnvArgs[conf.OPERATIONSAPI_TLS_PRIVATEKEY.toLowerCase()];
-	}
-	if (cliEnvArgs[conf.OPERATIONSAPI_TLS_CERTIFICATEAUTHORITY.toLowerCase()]) {
-		newCerts[conf.OPERATIONSAPI_TLS_CERTIFICATEAUTHORITY] =
-			cliEnvArgs[conf.OPERATIONSAPI_TLS_CERTIFICATEAUTHORITY.toLowerCase()];
-	}
-
-	// Filter out any cert config keys already set by HARPER_SET_CONFIG so we don't overwrite them
-	// with defaults. On first boot, HARPER_SET_CONFIG values are written to the config file during
-	// createConfigFile(), but updateConfigCert() runs afterward without re-applying HARPER_SET_CONFIG.
-	const { filterArgsAgainstRuntimeConfig } = require('../config/harperConfigEnvVars');
+	// Filter out any cert config keys already set by HARPER_CONFIG or HARPER_SET_CONFIG so we don't
+	// overwrite them with defaults. On first boot, those env-layer values are written to the config file
+	// during createConfigFile(), and updateConfigCert() runs afterward without re-applying the env layers.
 	const filteredCerts = filterArgsAgainstRuntimeConfig(newCerts);
 
 	configUtils.updateConfigValue(undefined, undefined, filteredCerts, false, true);
@@ -973,27 +1229,117 @@ export function getEffectiveTlsCiphers(type, mtlsOptions?): string | undefined {
  * Create a TLS selector that will choose the best TLS configuration/context for a given hostname
  * @param type
  * @param mtlsOptions
- * @param liveReload when true (default) the selector registers for private-key hot-reload rebuilds.
+ * @param liveReload when true (default) the selector subscribes to certificate-table updates.
  *   Pass false for transient, single-use selectors (e.g. getReplicationCert) so they don't accumulate.
  * @return {(function(*, *): (*|undefined))|*}
  */
-export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
+export function createTLSSelector(type, mtlsOptions?, liveReload = true, excludeSelfSigned = false): any {
 	let secureContexts = new Map();
 	let defaultContext;
 	let hasWildcards = false;
+	let lastAttemptRejected = false;
+	let retireRejectedAttempt: (() => void) | undefined;
 	(SNICallback as any).initialize = (server: any) => {
-		if ((SNICallback as any).ready) return (SNICallback as any).ready;
+		if ((SNICallback as any).ready && !lastAttemptRejected) return (SNICallback as any).ready;
+		lastAttemptRejected = false;
+		retireRejectedAttempt?.();
+		retireRejectedAttempt = undefined;
 		if (server) {
 			server.secureContexts = secureContexts;
-			server.secureContextsListeners = [];
+			server.secureContextsListeners ??= [];
 		}
 		let subscribedTable = null;
 		let activeSubscription: Promise<any> | null = null;
 		return ((SNICallback as any).ready = new Promise<void>((resolve, reject) => {
+			// Pass-level failure before `.ready` settles still rejects (boot surfaces it); after,
+			// the only safe response is to keep serving live state and retry.
+			let readySettled = false;
+			let rejectedReady = false;
+			const settle = (value?) => {
+				readySettled = true;
+				if (rejectedReady) {
+					rejectedReady = lastAttemptRejected = false;
+					retireRejectedAttempt = undefined;
+					(SNICallback as any).ready = Promise.resolve(value);
+				}
+				resolve(value);
+			};
+			// Self-retry state for passes with per-record failures: the signature identifies the
+			// failure set, the delay backs off while it is unchanged, and summaries are rate-limited.
+			let failureSignature = '';
+			let failureRetryDelay = TLS_REBUILD_DEBOUNCE_MS;
+			let failureRetryTimer;
+			let failureRetryCount = 0;
+			let failureLastSummaryAt = 0;
+			const scheduleFailureRetry = () => {
+				// An armed external rebuild (or an armed retry) will run a pass that re-arms if needed.
+				if (failureRetryTimer || rebuildTimer) return;
+				failureRetryTimer = setTimeout(() => {
+					failureRetryTimer = undefined;
+					updateTLS();
+				}, failureRetryDelay).unref();
+				failureRetryDelay = Math.min(failureRetryDelay * 2, TLS_FAILURE_RETRY_MAX_DELAY_MS);
+			};
+			// Log each failure on a new/changed failure set; while unchanged, stay silent apart from a
+			// rate-limited summary — an un-throttled 1.5s retry would emit ~57k lines/day per selector.
+			const reportFailures = (failures: { cert: any; error: any }[]) => {
+				const signature = failures
+					.map(({ cert, error }) => `${cert.name}: ${error?.message}`)
+					.sort()
+					.join('; ');
+				if (signature !== failureSignature) {
+					failureSignature = signature;
+					failureRetryDelay = TLS_REBUILD_DEBOUNCE_MS;
+					failureRetryCount = 0;
+					failureLastSummaryAt = Date.now();
+					// A timer armed for the previous signature would run the next pass on its stale
+					// (possibly maxed-out) delay; re-arm fresh for the new failure set.
+					if (failureRetryTimer) {
+						clearTimeout(failureRetryTimer);
+						failureRetryTimer = undefined;
+					}
+					for (const { cert, error } of failures)
+						logger.error?.('Error applying TLS for', cert.name, `on the '${type}' listener`, error);
+				} else {
+					failureRetryCount++;
+					// Stays at error: a stuck rotation must keep an alertable signal — the retained cert
+					// is aging toward its notAfter the whole time.
+					if (Date.now() - failureLastSummaryAt >= TLS_FAILURE_SUMMARY_INTERVAL_MS) {
+						failureLastSummaryAt = Date.now();
+						logger.error?.(
+							`TLS rebuild for the '${type}' listener is still failing for [${failures
+								.map(({ cert }) => cert.name)
+								.join(', ')}] after ${failureRetryCount} retries; serving the last good state`
+						);
+					}
+				}
+			};
+			const clearFailureState = () => {
+				if (failureSignature) {
+					logger.warn?.(`TLS rebuild for the '${type}' listener recovered; all certificates applied`);
+				}
+				failureSignature = '';
+				failureRetryDelay = TLS_REBUILD_DEBOUNCE_MS;
+				failureRetryCount = 0;
+				if (failureRetryTimer) {
+					clearTimeout(failureRetryTimer);
+					failureRetryTimer = undefined;
+				}
+			};
+			let retired = false;
+			const retire = () => {
+				retired = true;
+				clearTimeout(rebuildTimer);
+				clearTimeout(failureRetryTimer);
+				activeSubscription?.then((subscription: any) => subscription?.end?.()).catch(() => {});
+			};
 			function updateTLS() {
+				if (retired) return;
+				// the pass is the selector's own work, never the triggering request's (security/DESIGN.md)
+				if (contextStorage.getStore() !== undefined) return contextStorage.exit(updateTLS);
 				try {
 					if (databases === undefined) {
-						resolve();
+						settle();
 						return;
 					}
 					if (databases.system?.hdb_certificate === undefined) {
@@ -1023,19 +1369,19 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 						scheduleRebuild();
 						return;
 					}
-					// Guards above have returned before touching secureContexts/caCerts, so the retry
-					// path never wipes a previously-published (non-empty) state before failing to
-					// replace it.
-					secureContexts.clear();
-					caCerts.clear();
+					// Transactional publication (#2382): build the whole replacement state off to the
+					// side and reconcile the live maps only after the pass completes, so a failure of
+					// any shape leaves the currently-served state intact.
+					const candidateContexts = new Map();
+					const candidateCAs = new Map();
+					let candidateHasWildcards = false;
 					let bestQuality = 0;
-					// Whether THIS pass produced a default context. The `defaultContext` closure variable
-					// is deliberately never reset (a transient zero-cert pass must keep serving the prior
-					// default while the retry below waits for certs to come back), so it can't be used to
-					// ask "did this pass find anything?" — after the first successful pass it is truthy
-					// forever, which would let a later transient zero-cert rebuild skip the retry and
-					// publish an empty certificates list (the #1998 symptom) on the post-boot path.
+					let candidateDefault;
+					// Whether THIS pass produced a default. The `defaultContext` closure variable is never
+					// reset (a transient zero-cert pass keeps serving the prior default), so keying the
+					// zero-cert retry off it would republish empty post-boot — the #1998 symptom.
 					let defaultContextSetThisPass = false;
+					const failedThisPass: { cert: any; error: any }[] = [];
 					// Track the actual table instance, not just whether we've ever subscribed: resetDatabases()
 					// (copy_db, ITC restart handling) replaces databases.system.hdb_certificate with a new
 					// table object, and a boolean flag would never re-subscribe to it, permanently losing
@@ -1049,11 +1395,12 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 						// resets accumulates one dead Subscription (and its scheduleRebuild closure) per
 						// reset instead of holding just the current one.
 						const previousSubscription = activeSubscription;
-						subscribedTable = databases.system.hdb_certificate;
 						activeSubscription = databases.system.hdb_certificate.subscribe({
 							listener: scheduleRebuild,
 							omitCurrent: true,
 						} as any);
+						// only once subscribe() returned: a synchronous throw must leave the next pass to retry it
+						subscribedTable = databases.system.hdb_certificate;
 						activeSubscription.catch((error) => {
 							// Don't leave subscribedTable pointing at a table we failed to subscribe to —
 							// otherwise this selector never retries the subscription and silently loses live
@@ -1065,26 +1412,30 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 							previousSubscription.then((subscription: any) => subscription?.end?.()).catch(() => {});
 						}
 					}
-					for (const cert of databases.system.hdb_certificate.search([])) {
+					// One snapshot drives both loops: separate search() calls own separate read
+					// snapshots, and a write committing between them could publish a renewed leaf
+					// against the previous CA set.
+					const certRecords = Array.from(databases.system.hdb_certificate.search([])) as any[];
+					for (const cert of certRecords) {
 						const certificate = cert.certificate;
 						let certParsed;
 						try {
 							certParsed = new X509Certificate(certificate);
 						} catch (error) {
-							// One unparseable record shouldn't abort the whole pass before any context is
-							// built — the second loop's per-cert try/catch doesn't cover this loop.
-							logger.error?.('Skipping unparseable certificate record', cert.name, error);
+							// A pass failure like any other (throttle + retry). Its caCerts entry can't be
+							// retained — the subject is unrecoverable from a PEM that won't parse.
+							failedThisPass.push({ cert, error });
 							continue;
 						}
 						if (cert.is_authority) {
 							(certParsed as any).asString = certificate;
-							caCerts.set(certParsed.subject, certificate);
+							candidateCAs.set(certParsed.subject, certificate);
 						}
 					}
 
-					for (const cert of databases.system.hdb_certificate.search([])) {
+					for (const cert of certRecords) {
 						try {
-							if (cert.is_authority) {
+							if (cert.is_authority || (excludeSelfSigned && cert.is_self_signed)) {
 								continue;
 							}
 							let quality = cert.is_self_signed ? 1 : 3;
@@ -1100,8 +1451,8 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 
 							let certificate = cert.certificate;
 							const certParsed = new X509Certificate(certificate);
-							if (caCerts.has(certParsed.issuer)) {
-								certificate += '\n' + caCerts.get(certParsed.issuer);
+							if (candidateCAs.has(certParsed.issuer)) {
+								certificate += '\n' + candidateCAs.get(certParsed.issuer);
 							}
 							if (!private_key || !certificate) {
 								throw new Error('Missing private key or certificate for secure server');
@@ -1109,8 +1460,10 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 							const secureOptions = {
 								ciphers: cert.ciphers,
 								ticketKeys: getTicketKeys(),
-								availableCAs: caCerts, // preserve the record of caCerts even if not used for mTLS here
-								ca: mtlsOptions && Array.from(caCerts.values()),
+								// the live map, not the candidate: its identity survives publication, so contexts
+								// keep seeing the current CA set after later rebuilds
+								availableCAs: caCerts,
+								ca: mtlsOptions && Array.from(candidateCAs.values()),
 								cert: certificate,
 								key: private_key,
 								key_file: cert.private_key_name,
@@ -1126,7 +1479,7 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 							(secureContext as any).name = cert.name;
 							(secureContext as any).options = secureOptions;
 							(secureContext as any).quality = quality;
-							(secureContext as any).certificateAuthorities = Array.from(caCerts);
+							(secureContext as any).certificateAuthorities = Array.from(candidateCAs);
 							// we store the first 100 bytes of the certificate just for debug logging
 							(secureContext as any).certStart = certificate.toString().slice(0, 100);
 							// we want to configure SNI handling to pick the right certificate based on all the registered SANs
@@ -1134,14 +1487,14 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 							for (let hostname of hostnames) {
 								if (hostname) {
 									if (hostname[0] === '*') {
-										hasWildcards = true;
+										candidateHasWildcards = true;
 										hostname = hostname.slice(1);
 									}
 									// we use this certificate if it has a higher quality than the existing one for this hostname
-									let existingCertQuality = secureContexts.get(hostname)?.quality ?? 0;
+									let existingCertQuality = candidateContexts.get(hostname)?.quality ?? 0;
 									logger.trace?.('Assigning TLS for hostname', hostname, 'if', quality, '>', existingCertQuality);
 									if (quality > existingCertQuality) {
-										secureContexts.set(hostname, secureContext);
+										candidateContexts.set(hostname, secureContext);
 									}
 								} else {
 									logger.error?.('No hostname found for certificate at', (tls as any).certificate);
@@ -1163,55 +1516,141 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 							);
 							if (quality > bestQuality /* && hasIpAddress*/) {
 								// we use this certificate as the default if it has a higher quality than the existing one
-								(SNICallback as any).defaultContext = defaultContext = secureContext;
+								candidateDefault = secureContext;
 								defaultContextSetThisPass = true;
 								bestQuality = quality;
-								if (server) {
-									server.defaultContext = secureContext;
-									// note that we can not set the secure context on the server here, because this creates an
-									// indeterminate situation of whether openssl will use this certificate or the one from the SNI
-									// callback
-									//server.setSecureContext?.(server, secureOptions);
-								}
 							}
 						} catch (error) {
-							logger.error?.('Error applying TLS for', cert.name, error);
+							failedThisPass.push({ cert, error });
 						}
 					}
-					if (liveReload && secureContexts.size === 0 && !defaultContextSetThisPass) {
-						// The not-loaded-yet guard above only covers the table object being absent, not the
-						// table being present but every row failing to apply (e.g. a private key not yet
-						// available on this thread, caught above per-cert). Resolving here would still write
-						// an empty `certificates:` list — the exact customer-visible symptom this PR exists to
-						// fix. Retry on the same debounce instead of publishing that state; a rebuild trigger
-						// (cert-table change or private-key reload, both already wired to scheduleRebuild) is
-						// almost certainly still coming on a normal boot, and this just avoids a window where
-						// we'd otherwise publish empty in the meantime.
-						//
-						// `!defaultContextSetThisPass` because an empty hostname map is not the same as "no TLS
-						// available": a cert whose hostnames resolve to [] (no usable SANs and no CN) builds no
-						// per-hostname entry but still sets a serviceable default context — that listener must
-						// resolve and serve via the default rather than retry forever for hostname entries that
-						// can't exist. It must be the per-pass flag, not the persistent `defaultContext` (see its
-						// declaration note): keying off the closure variable would disarm this retry for every
-						// pass after the first success, reopening the publish-empty window on live rebuilds.
-						//
-						// Gated on liveReload: transient, single-use selectors (getReplicationCert) legitimately
-						// resolve empty — e.g. the bootstrap check `if (!(await getReplicationCert())) { create
-						// one }` in generateCertAuthority's caller depends on an empty resolution meaning "no
-						// cert yet," and must not hang waiting for a cert that this exact call is about to create.
-						//
-						// Latched like the system-db wait above: this retries indefinitely on the debounce, and
-						// an unlatched warn would emit ~57k lines/day from a listener stuck this way.
+
+					// Retain-last-good: a record still in the table whose build failed keeps its live
+					// hostname entries and its default candidacy; deletion remains the way to drop them.
+					// On an mTLS listener whose CA set changed, the retained pair is rebuilt against the
+					// current trust material — new handshakes never see stale trust (established sessions
+					// and outstanding tickets are unaffected, as on any build); if the rebuild fails the entries drop
+					// unless nothing else is servable (the zero-cert guard below then keeps the old
+					// state). Full contract in DESIGN.md "TLS hot-reload".
+					const caSetUnchanged = (previous) => {
+						const builtWith = (previous as any).certificateAuthorities;
+						if (!Array.isArray(builtWith)) return candidateCAs.size === 0;
+						return (
+							builtWith.length === candidateCAs.size &&
+							builtWith.every(([subject, pem]) => candidateCAs.get(subject) === pem)
+						);
+					};
+					const rebuiltRetentions = new Map();
+					const retentionFailures: { cert: any; error: any }[] = [];
+					const retainable = (previous) => {
+						// Without mTLS nothing consulted depends on the CA set — skip the rebuild, but
+						// refresh the CA bookkeeping mirrored into socket metadata for fronting proxies.
+						if (!mtlsOptions || caSetUnchanged(previous)) {
+							(previous as any).certificateAuthorities = Array.from(candidateCAs);
+							return previous;
+						}
+						if (rebuiltRetentions.has(previous)) return rebuiltRetentions.get(previous);
+						try {
+							const secureOptions = {
+								...(previous as any).options,
+								ticketKeys: getTicketKeys(),
+								availableCAs: caCerts,
+								ca: mtlsOptions && Array.from(candidateCAs.values()),
+							};
+							const rebuilt = tls.createSecureContext(secureOptions);
+							(rebuilt as any).name = (previous as any).name;
+							(rebuilt as any).options = secureOptions;
+							(rebuilt as any).quality = (previous as any).quality;
+							(rebuilt as any).certificateAuthorities = Array.from(candidateCAs);
+							(rebuilt as any).certStart = (previous as any).certStart;
+							rebuiltRetentions.set(previous, rebuilt);
+							return rebuilt;
+						} catch (error) {
+							retentionFailures.push({
+								cert: { name: `${(previous as any).name} (retained-context rebuild)` },
+								error,
+							});
+							rebuiltRetentions.set(previous, undefined);
+							return undefined;
+						}
+					};
+					for (const { cert } of failedThisPass) {
+						// Ties go to the incumbent: a hostname the retained context already owned, and the
+						// live default when it is the retained record, must not flip to an equal-quality
+						// sibling because of a transient failure. A context retained only for a hostname
+						// still needs strict > to become the default.
+						const retain = (previous, hostname?) => {
+							const retained = retainable(previous);
+							if (!retained) return;
+							const previousQuality = (retained as any).quality ?? 0;
+							if (hostname !== undefined) {
+								if (previousQuality >= ((candidateContexts.get(hostname) as any)?.quality ?? 0)) {
+									candidateContexts.set(hostname, retained);
+								}
+								if (hostname[0] === '.') candidateHasWildcards = true;
+							}
+							const winsDefault =
+								previous === defaultContext ? previousQuality >= bestQuality : previousQuality > bestQuality;
+							if (winsDefault) {
+								candidateDefault = retained;
+								defaultContextSetThisPass = true;
+								bestQuality = previousQuality;
+							}
+						};
+						for (const [hostname, previous] of secureContexts) {
+							if ((previous as any).name === cert.name) retain(previous, hostname);
+						}
+						if ((defaultContext as any)?.name === cert.name) retain(defaultContext);
+					}
+					if (liveReload && candidateContexts.size === 0 && !defaultContextSetThisPass) {
+						// Every row failed to apply (e.g. keys not yet on this thread). Publishing or
+						// resolving would write an empty `certificates:` list (the #1998 symptom), so keep
+						// live state and retry. `!defaultContextSetThisPass`, not the persistent
+						// `defaultContext`: a cert with no usable hostnames still sets a serviceable
+						// default (must resolve, not retry forever), while the closure variable is truthy
+						// forever after the first success. Gated on liveReload: transient selectors
+						// (getReplicationCert) legitimately resolve empty — bootstrap depends on that
+						// meaning "no cert yet". Warn is latched: unlatched would emit ~57k lines/day.
 						if (server && !server.tlsSelectorWarnedZeroCerts) {
 							server.tlsSelectorWarnedZeroCerts = true;
 							logger.warn?.(
 								`TLS selector for the '${type}' listener resolved zero certificates; retrying every ${TLS_REBUILD_DEBOUNCE_MS}ms`
 							);
 						}
-						scheduleRebuild();
+						if (failedThisPass.length > 0) {
+							// Surface WHY the pass came up empty and put the retry on the backoff.
+							reportFailures(failedThisPass.concat(retentionFailures));
+							scheduleFailureRetry();
+						} else {
+							scheduleRebuild();
+						}
 						return;
 					}
+					// Publish: reconcile the live maps in place (their identity is aliased by
+					// server.secureContexts and every context's availableCAs) and advance all default
+					// references together so SNI and non-SNI traffic can't diverge.
+					secureContexts.clear();
+					for (const [hostname, context] of candidateContexts) secureContexts.set(hostname, context);
+					caCerts.clear();
+					for (const [subject, certificate] of candidateCAs) caCerts.set(subject, certificate);
+					// only listener selectors publish: a one-shot client selector's pass may see no authority rows
+					if (liveReload) publishTrustedAuthorities(caCerts.values());
+					hasWildcards = candidateHasWildcards;
+					if (candidateDefault) {
+						(SNICallback as any).defaultContext = defaultContext = candidateDefault;
+						// note that we can not set the secure context on the server here, because this creates an
+						// indeterminate situation of whether openssl will use this certificate or the one from the SNI
+						// callback
+						if (server) server.defaultContext = candidateDefault;
+					}
+
+					if (failedThisPass.length > 0) {
+						reportFailures(failedThisPass.concat(retentionFailures));
+						scheduleFailureRetry();
+					} else {
+						clearFailureState();
+					}
+
 					// A successful pass ends any warn latches so a later recurrence logs again.
 					if (server) {
 						server.tlsSelectorWaitedForSystemDb = false;
@@ -1227,7 +1666,7 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 						// derive it from more than the selector's mtlsOptions) so this compares like with like
 						const effectiveCiphers =
 							getEffectiveTlsCiphers(type, server.verifiesClientCerts ?? Boolean(mtlsOptions)) ?? null;
-						// latch per distinct value: rebuilds recur (cert-table changes, key reloads) and the
+						// latch per distinct value: rebuilds recur (cert-table changes, failure retries) and the
 						// pending change shouldn't re-warn on every cycle until the restart happens
 						if (effectiveCiphers !== server.appliedCiphers && server.lastWarnedCiphers !== effectiveCiphers) {
 							server.lastWarnedCiphers = effectiveCiphers;
@@ -1237,9 +1676,22 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 						}
 					}
 					server?.secureContextsListeners.forEach((listener) => listener());
-					resolve(defaultContext);
+					settle(defaultContext);
 				} catch (error) {
+					if (readySettled || rejectedReady) {
+						// Live state is untouched (candidates are pass-local): keep serving it and retry.
+						reportFailures([{ cert: { name: `(${type} rebuild pass)` }, error }]);
+						scheduleFailureRetry();
+						return;
+					}
+					rejectedReady = lastAttemptRejected = true;
 					reject(error);
+					// A listener calls initialize() once, so a live attempt keeps retrying until a later initialize()
+					// replaces it; a one-shot attempt has nothing to keep.
+					if (liveReload) {
+						retireRejectedAttempt = retire;
+						scheduleFailureRetry();
+					} else retire();
 				}
 			}
 			let rebuildTimer;
@@ -1250,10 +1702,7 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 					updateTLS();
 				}, TLS_REBUILD_DEBOUNCE_MS).unref();
 			};
-			// Register the private-key hot-reload rebuild path unconditionally, before the first
-			// updateTLS() pass: that pass may find the system database not yet loaded and retry
-			// (see above) rather than subscribe, so this must not depend on it succeeding.
-			if (liveReload) liveTLSRebuilders.add(scheduleRebuild);
+
 			updateTLS();
 		}));
 	};
@@ -1287,8 +1736,24 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 	}
 }
 
+function cacheFilePrivateKey(name: string, key: string) {
+	if (!privateKeys.has(name) || privateKeys.get(name) === filePrivateKeys.get(name)) privateKeys.set(name, key);
+	filePrivateKeys.set(name, key);
+	return privateKeys.get(name);
+}
+
 function getPrivateKeyByName(private_key_name) {
 	const private_key = privateKeys.get(private_key_name);
+	const configuredPath = configuredPrivateKeyPaths.get(private_key_name);
+	if (configuredPath && (!private_key || private_key === filePrivateKeys.get(private_key_name))) {
+		try {
+			return cacheFilePrivateKey(private_key_name, readPEM(configuredPath));
+		} catch (error) {
+			if (!private_key) throw error;
+			forComponent('tls').conditional.trace?.('Could not refresh configured private key:', private_key_name, error);
+			return private_key;
+		}
+	}
 	if (!private_key && private_key_name) {
 		return fs.readFileSync(
 			path.join(envManager.get(CONFIG_PARAMS.ROOTPATH), hdbTerms.LICENSE_KEY_DIR_NAME, private_key_name),

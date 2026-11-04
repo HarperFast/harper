@@ -23,17 +23,9 @@
  *
  *     So instead, this suite covers the SIBLING encoder any Harper Resource client actually sees:
  *     contentTypes.ts's `text/event-stream` media-type `serialize()`, invoked via
- *     `resource.connect()`. It has a DIFFERENT, pre-existing falsy-data guard
- *     (`if (message.data) { ...emit data: line... }`) that silently OMITS the `data:` field
- *     entirely for any falsy value (undefined/null/''/0/false) rather than crashing OR emitting
- *     an explicit empty/`null` line the way the fixed writeSSE() does — a KNOWN DEFECT on this code
- *     path (harper#2026: `EventSource` never dispatches a frame with an empty data buffer, so a
- *     legitimate falsy payload like `data: false` is silently never seen by the client), not a
- *     #1863 regression check and not an intended contract. Pinned deliberately so the fix in
- *     harper#2026 shows up here as an expected assertion update, not a surprise regression. Flagged
- *     rather than fixed in THIS PR since changing the encoder is a production-code, cross-encoder
- *     decision (see above), not a test fix. See
- *     integrationTests/qa-scratch/qa702-sse-event-data/resources.js for the full writeup.
+ *     `resource.connect()`. Its falsy-data/id guards are asserted here against absence
+ *     (undefined/null), not truthiness — see integrationTests/qa-scratch/qa702-sse-event-data/
+ *     resources.js for the full writeup.
  *
  * (b) F-133 re-characterization: does a resource.connect() async generator that throws mid-stream
  *     still hang the response? Git archaeology first: commits 06f5fcff8/8930b1ef2 ("Fix SSE hang +
@@ -43,7 +35,8 @@
  *     'error' event / uncaughtException + hung connection). 8930b1ef2 IS an ancestor of this SHA
  *     (2615b092b) -- so the expectation is FIXED. ThrowGen below empirically confirms that,
  *     bounded by an AbortController + timeout so a regression surfaces as a caught timeout, never
- *     an infinite hang eating the whole test run.
+ *     an infinite hang eating the whole test run. The throw emits a terminal `harper-error` frame
+ *     before a clean close (#2614), which is the shape this leg pins.
  *
  * After the stream cases, a liveness probe: HealthGen (a second clean SSE stream) plus Probe
  * (plain GET on a normal route, and open/close lifecycle counters) confirm the worker survived
@@ -64,6 +57,7 @@ import http from 'node:http';
 import https from 'node:https';
 import { URL } from 'node:url';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
+import { parseSseBlocks } from '../utils/sseStream.ts';
 // @ts-expect-error utils/client.mjs has no type declarations; runtime resolves fine
 import { createApiClient } from '../apiTests/utils/client.mjs';
 
@@ -179,28 +173,6 @@ function consumeSse(urlStr: string, authHeaders: Record<string, string>, timeout
 	});
 }
 
-// Groups raw SSE bytes into blank-line-delimited { event, data } records (mirrors the
-// unitTests/server/serverHelpers/progressEmitter.test.js parseSSEBlocks helper). Assumes no
-// record's `data` value contains an embedded newline (true for every case in this suite).
-function parseSseBlocks(raw: string): Array<Record<string, string>> {
-	return raw
-		.split('\n\n')
-		.filter((block) => block.trim().length > 0)
-		.map((block) => {
-			const out: Record<string, string> = {};
-			for (const line of block.split('\n')) {
-				const colon = line.indexOf(':');
-				if (colon === -1) continue;
-				const field = line.slice(0, colon);
-				let value = line.slice(colon + 1);
-				if (value.startsWith(' ')) value = value.slice(1);
-				out[field] = value;
-			}
-			return out;
-		})
-		.filter((rec) => 'event' in rec || 'data' in rec);
-}
-
 function readLogSafe(logPath: string): string {
 	try {
 		return readFileSync(logPath, 'utf8');
@@ -277,18 +249,23 @@ suite(
 		//        itself (unreachable from here -- see file header for why, and for the actual #1863
 		//        anchor at unitTests/server/serverHelpers/progressEmitter.test.js) ────────────────────
 		//
-		// `hasData: false` cases exercise this encoder's OWN (pre-existing, different) falsy guard
-		// -- `if (message.data) {...}` -- which OMITS the `data:` field entirely for a falsy value,
-		// rather than crashing (the #1863 bug, on the other encoder) or emitting an explicit
-		// empty/`null` line (writeSSE()'s fixed behavior). That's the actual, current wire contract
-		// on THIS encoder; asserted here, not assumed.
+		// Only undefined/null omit the `data:` field entirely; `''`/`0`/`false` now emit their
+		// (string-coerced) line. Note `''` still won't dispatch on a real EventSource client --
+		// the HTML spec discards an empty data buffer regardless of whether the field was present
+		// or omitted -- but the wire byte-for-byte representation is what's asserted here.
 
 		const cases: Array<{ name: string; path: string; hasData: boolean; expectedData?: string }> = [
 			{ name: 'undefined', path: 'UndefinedPayload', hasData: false },
 			{ name: 'null', path: 'NullPayload', hasData: false },
-			{ name: 'empty string', path: 'EmptyStringPayload', hasData: false },
-			{ name: '0', path: 'ZeroPayload', hasData: false },
-			{ name: 'false', path: 'FalsePayload', hasData: false },
+			{ name: 'empty string', path: 'EmptyStringPayload', hasData: true, expectedData: '' },
+			{ name: '0', path: 'ZeroPayload', hasData: true, expectedData: '0' },
+			{ name: 'false', path: 'FalsePayload', hasData: true, expectedData: 'false' },
+			{
+				name: 'multiline string',
+				path: 'MultilineStringPayload',
+				hasData: true,
+				expectedData: 'first line\nsecond line',
+			},
 			{
 				name: 'plain object (no "data" key)',
 				path: 'PlainObjectPayload',
@@ -345,7 +322,7 @@ suite(
 						strictEqual(
 							'data' in payloadBlock!,
 							false,
-							`expected NO data: field for falsy value ${c.name} -- pinning a KNOWN DEFECT (harper#2026: EventSource never dispatches an empty-data frame, so a client silently never sees a legitimate falsy payload), not an intended contract; got: ${JSON.stringify(payloadBlock)}`
+							`expected NO data: field for ${c.name} -- absence (undefined/null), not falsiness, is what omits the data: line; got: ${JSON.stringify(payloadBlock)}`
 						);
 					}
 
@@ -368,26 +345,75 @@ suite(
 			);
 		}
 
-		// harper#2026 has an `id: 0` half too (contentTypes.ts:152's `if (message.id)` drops the
-		// reconnect cursor `id: 0` by the identical mechanism), otherwise unpinned by the `hasData`
-		// matrix above -- pin it explicitly so #2026's eventual fix updates this assertion too.
-		test('a: event.id = 0 (with real data) -- id: 0 silently omitted, KNOWN DEFECT harper#2026', async () => {
+		test('a: event.id = 0 (with real data) -- id: 0 is emitted', async () => {
 			const r = await consumeSse(`${restBase}/IdZeroPayload/`, authHeaders, 15_000);
 			ok(!r.aborted && r.ended && r.status >= 200 && r.status < 300, `expected a clean SSE response. raw:\n${r.raw}`);
 			const payloadBlock = parseSseBlocks(r.raw).find((b) => b.event === 'payload');
 			ok(payloadBlock, `expected a 'payload' event block. raw:\n${r.raw}`);
 			strictEqual(payloadBlock!.data, 'id-zero-probe', 'data field should be unaffected by the id value');
+			strictEqual(payloadBlock!.id, '0', `expected id: 0 to be emitted; got: ${JSON.stringify(payloadBlock)}`);
+		});
+
+		test('a: event.retry = 0 (with real data) -- retry: 0 is emitted', async () => {
+			const r = await consumeSse(`${restBase}/RetryZeroPayload/`, authHeaders, 15_000);
+			ok(!r.aborted && r.ended && r.status >= 200 && r.status < 300, `expected a clean SSE response. raw:\n${r.raw}`);
+			const payloadBlock = parseSseBlocks(r.raw).find((b) => b.event === 'payload');
+			ok(payloadBlock, `expected a 'payload' event block. raw:\n${r.raw}`);
+			strictEqual(payloadBlock!.retry, '0', `expected retry: 0 to be emitted; got: ${JSON.stringify(payloadBlock)}`);
+		});
+
+		test('a: event-less message with data = 0 -- envelope gate must not treat this as absent', async () => {
+			const r = await consumeSse(`${restBase}/ZeroPayloadNoEvent/`, authHeaders, 15_000);
+			ok(!r.aborted && r.ended && r.status >= 200 && r.status < 300, `expected a clean SSE response. raw:\n${r.raw}`);
+			const blocks = parseSseBlocks(r.raw);
+			ok(blocks.length >= 1, `expected at least one SSE block. raw:\n${r.raw}`);
 			strictEqual(
-				'id' in payloadBlock!,
-				false,
-				`expected NO id: field for id=0 -- pinning KNOWN DEFECT harper#2026, not an intended contract; got: ${JSON.stringify(payloadBlock)}`
+				blocks[0].data,
+				'0',
+				`expected a bare "data: 0" line, not the whole message JSON-wrapped; got: ${JSON.stringify(blocks[0])}`
+			);
+		});
+
+		test('a: top-level data key with siblings -- data envelope takes precedence', async () => {
+			const r = await consumeSse(`${restBase}/DataKeyEnvelopePayload/`, authHeaders, 15_000);
+			ok(!r.aborted && r.ended && r.status >= 200 && r.status < 300, `expected a clean SSE response. raw:\n${r.raw}`);
+			const blocks = parseSseBlocks(r.raw);
+			ok(blocks.length >= 1, `expected at least one SSE block. raw:\n${r.raw}`);
+			deepStrictEqual(
+				blocks[0],
+				{ data: '0' },
+				`expected only the top-level data value, got: ${JSON.stringify(blocks[0])}`
+			);
+		});
+
+		test('a: plain object with an "id" key (no data/event) -- must be JSON-wrapped, not misread as an SSE id', async () => {
+			const r = await consumeSse(`${restBase}/IdKeyPlainObjectPayload/`, authHeaders, 15_000);
+			ok(!r.aborted && r.ended && r.status >= 200 && r.status < 300, `expected a clean SSE response. raw:\n${r.raw}`);
+			const blocks = parseSseBlocks(r.raw);
+			ok(blocks.length >= 1, `expected at least one SSE block. raw:\n${r.raw}`);
+			strictEqual(
+				blocks[0].data,
+				JSON.stringify({ id: 42, name: 'Alice' }),
+				`expected the whole object JSON-wrapped, not "name" dropped; got: ${JSON.stringify(blocks[0])}`
+			);
+		});
+
+		test('a: event/id/retry carrying CR/LF -- no forged field or event reaches the wire', async () => {
+			const r = await consumeSse(`${restBase}/LineBreakFieldsPayload/`, authHeaders, 15_000);
+			ok(!r.aborted && r.ended && r.status >= 200 && r.status < 300, `expected a clean SSE response. raw:\n${r.raw}`);
+			// Exact bytes rather than parseSseBlocks, which splits on LF only and would miss a bare-CR field.
+			// The uWS transport opens the stream with a `:` comment to flush headers.
+			strictEqual(
+				r.raw.replace(/^:[^\r\n]*\n\n/, ''),
+				'event: payloadevent: forged\ndata: line-break-probe\nid: 7data: forged\n\n' +
+					'event: payload\ndata: after-line-break-probe\n\n'
 			);
 		});
 
 		// ── (b) F-133 re-characterization: generator throws mid-stream ─────────────────────────
 
 		test(
-			'b: ThrowGen (throws after 2 of 5) over SSE -- F-133 re-check: hang, fixed, or changed shape?',
+			'b: ThrowGen (throws after 2 of 5) over SSE -- F-133: pre-throw events, then a terminal harper-error frame',
 			{ timeout: 20_000 },
 			async () => {
 				const logBefore = readLogSafe(logPath);
@@ -432,49 +458,24 @@ suite(
 					200,
 					`expected streaming to have started (status 200) before the mid-stream throw, got ${r.status}. raw:\n${r.raw}`
 				);
-				// The events actually yielded before the throw (0, 1) must be exactly what arrived, nothing
-				// from after the throw point. Assert the actual values, not just a count in range -- a
-				// count alone would also accept a duplicated {"n":0}, a corrupted {"n":1}, or (if the
-				// throw's timing ever shifts) a frame from after the throw silently replacing one before it.
-				const blocks = parseSseBlocks(r.raw);
-				const dataBlocks = blocks.filter((b) => 'data' in b);
-				const expectedPrefix = ['{"n":0}', '{"n":1}'];
-				ok(
-					dataBlocks.length >= 1 && dataBlocks.length <= 2,
-					`expected 1-2 events yielded before the throw, got ${dataBlocks.length}. raw:\n${r.raw}`
-				);
+				// A named control frame is not an application event: an error delivered unnamed, or under
+				// another name, is invisible to an EventSource listening for `harper-error`.
 				deepStrictEqual(
-					dataBlocks.map((b) => b.data),
-					expectedPrefix.slice(0, dataBlocks.length),
-					`expected the exact pre-throw sequence (a prefix of ${JSON.stringify(expectedPrefix)}), got: ${JSON.stringify(dataBlocks.map((b) => b.data))}`
+					parseSseBlocks(r.raw),
+					[
+						{ data: '{"n":0}' },
+						{ data: '{"n":1}' },
+						{ event: 'harper-error', data: '{"error":"Error","message":"QA702-intentional-throw-partway"}' },
+					],
+					`unexpected SSE frame sequence. verdict=${verdict} raw:\n${r.raw}`
 				);
-				// Pin the actual shipped shape, not just "didn't hang". The two HTTP servers genuinely
-				// differ here, so pin BOTH shapes rather than asserting one and skipping the other --
-				// the divergence is the point, and a silent skip would let it drift unnoticed.
-				//
-				// Node (`server/http.ts` pipeBodyToResponse): closes the socket abruptly WITHOUT the
-				// terminal `0\r\n\r\n` chunk, deliberately -- its own comment notes this "correctly
-				// signals a failed/truncated transfer... instead of implying it completed". That is the
-				// contract, and it is what a spec-compliant client uses to detect the truncation.
-				//
-				// uWS (`server/serverHelpers/uwsServer.ts` streamResponse): routes the source's 'error'
-				// and 'end' through the SAME finish(true) -> res.end() path, so it DOES write the
-				// terminal chunk. The wire response is then byte-indistinguishable from a generator that
-				// legitimately finished -- a mid-stream failure is silently presented as success. That is
-				// a real uWS-path defect (QA-886/F-272), not an alternative contract; the fix is to close
-				// the connection instead of ending it. Pinned here so it cannot regress further or get
-				// quietly "fixed" in the wrong direction.
-				if (process.env.HARPER_UWS_HTTP) {
-					ok(
-						r.ended,
-						`uWS path: expected the (defective) graceful end for the mid-stream throw, got closed=${r.closed} ended=${r.ended}. verdict=${verdict}`
-					);
-				} else {
-					ok(
-						r.closed && !r.ended,
-						`expected an abrupt close (closed=true, ended=false) for the mid-stream throw, got closed=${r.closed} ended=${r.ended}. verdict=${verdict}`
-					);
-				}
+				// The failure is now carried in-band by the frame above, so a clean close is no longer
+				// evidence of a complete result set -- and the Node/uWS termination divergence this case
+				// used to pin (QA-886/F-272) is gone. stream-error-contract.test.ts owns the byte level.
+				ok(
+					r.ended,
+					`expected a clean end after the terminal error frame on both transports, got closed=${r.closed} ended=${r.ended}. verdict=${verdict}`
+				);
 			}
 		);
 

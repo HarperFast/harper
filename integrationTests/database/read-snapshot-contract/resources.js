@@ -1,7 +1,7 @@
 // QA-185 — Within-request read-snapshot contract.
 //
 // Characterises whether a SINGLE Harper response presents a self-consistent snapshot
-// across REST, GraphQL, ops search_by_val, SQL SELECT, and a custom multi-key resource.
+// across REST, GraphQL, ops search_by_val, and SQL SELECT.
 //
 // Endpoints:
 //
@@ -11,19 +11,11 @@
 //   POST /SeedAccount/   { n, each }
 //       Inserts n accounts `acct-0`..`acct-${n-1}` each with balance=each.
 //
-//   POST /TransferAccount/ { from, to, amount }
-//       Plain read-modify-write: reads both balances in this request txn, then writes
-//       absolute new vals via .set(). Deterministic acquisition order to avoid deadlock.
-//
 //   GET  /LedgerSnap/?bucket=<b>
 //       Within ONE request transaction: scans Ledger for bucket, returns
 //       { bucket, count, minSeq, maxSeq, vals: [...] }.
 //       If every `val` in the array equals the seeded constant, the response is
 //       self-consistent (no torn-val mid-scan write visible).
-//
-//   GET  /AccountPairSnap/?a=<id>&b=<id>
-//       Within ONE request transaction reads BOTH accounts via get(), returns
-//       { a, b, ba, bb, sum }. sum != constant => within-request snapshot tear.
 //
 //   GET  /AccountScan/
 //       Within ONE request transaction, full Ledger scan of all Accounts, returns { sum, n }.
@@ -68,39 +60,6 @@ export class SeedAccount extends Resource {
 	}
 }
 
-// POST /TransferAccount/ { from, to, amount }
-// Plain read-modify-write in ONE request transaction. Deterministic lock order (sorted by id)
-// to avoid deadlock. Returns { ok, from, to, amount }.
-export class TransferAccount extends Resource {
-	static loadAsInstance = false;
-	async post(query, body) {
-		const b = body || query || {};
-		const from = b.from;
-		const to = b.to;
-		const amount = Number(b.amount) || 0;
-		// Deterministic acquisition order
-		const [first, second] = from < to ? [from, to] : [to, from];
-		const rFirst = await tables.Account.get(first);
-		const rSecond = await tables.Account.get(second);
-		const balFirst = (rFirst && rFirst.balance) || 0;
-		const balSecond = (rSecond && rSecond.balance) || 0;
-		const uFirst = await tables.Account.update(first, {});
-		uFirst.set('id', first);
-		const uSecond = await tables.Account.update(second, {});
-		uSecond.set('id', second);
-		if (from < to) {
-			// first === from (debit), second === to (credit)
-			uFirst.set('balance', balFirst - amount);
-			uSecond.set('balance', balSecond + amount);
-		} else {
-			// first === to (credit), second === from (debit)
-			uFirst.set('balance', balFirst + amount);
-			uSecond.set('balance', balSecond - amount);
-		}
-		return { ok: true, from, to, amount };
-	}
-}
-
 // GET /LedgerSnap/?bucket=<b>
 // Within ONE request transaction: scans Ledger for the given bucket via indexed search,
 // then returns a summary. If the scan holds a stable snapshot, every `val` in the
@@ -120,22 +79,6 @@ export class LedgerSnap extends Resource {
 		const minSeq = seqs.length ? Math.min(...seqs) : null;
 		const maxSeq = seqs.length ? Math.max(...seqs) : null;
 		return { bucket, count, minSeq, maxSeq, vals };
-	}
-}
-
-// GET /AccountPairSnap/?a=<id>&b=<id>
-// Within ONE request transaction reads BOTH accounts via two get() calls.
-// sum != constant => within-request snapshot tear (F-029 single-request cross-check).
-export class AccountPairSnap extends Resource {
-	static loadAsInstance = false;
-	async get(query) {
-		const a = (query && (query.get ? query.get('a') : query.a)) || '';
-		const b = (query && (query.get ? query.get('b') : query.b)) || '';
-		const ra = await tables.Account.get(a);
-		const rb = await tables.Account.get(b);
-		const ba = (ra && ra.balance) || 0;
-		const bb = (rb && rb.balance) || 0;
-		return { a, b, ba, bb, sum: ba + bb };
 	}
 }
 

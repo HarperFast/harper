@@ -49,13 +49,6 @@ function setupSandbox() {
 	sandbox.stub(logger, 'info').callsFake(() => {});
 }
 
-function testCallBack(err, data) {
-	if (err) {
-		throw err;
-	}
-	return data;
-}
-
 describe('Test serverHandlers.js module ', () => {
 	before(() => {
 		setupSandbox();
@@ -173,112 +166,6 @@ describe('Test serverHandlers.js module ', () => {
 		});
 	});
 
-	describe('reqBodyValidationHandler()', () => {
-		it('Should not reject if request is valid', () => {
-			const test_req = { body: { operation: 'create_schema' } };
-			let test_result;
-
-			try {
-				test_result = serverHandlers_rw.reqBodyValidationHandler(test_req, {}, testCallBack);
-			} catch (err) {
-				test_result = err;
-			}
-
-			assert.ok(test_result === undefined, 'Method should return null value for passing scenario');
-		});
-
-		it('Should throw error if request has no body', () => {
-			const test_req = {};
-			let test_result;
-
-			try {
-				test_result = serverHandlers_rw.reqBodyValidationHandler(test_req, {}, testCallBack);
-			} catch (err) {
-				test_result = err;
-			}
-
-			assert.ok(
-				test_result.statusCode === HTTP_STATUS_CODES.BAD_REQUEST,
-				'Method should throw error w/ BAD_REQUEST code'
-			);
-			assert.ok(test_result.http_resp_msg === 'Invalid JSON.', 'Method should throw error for invalid JSON');
-		});
-
-		it('Should throw error if request includes an empty body object', () => {
-			const test_req = { body: {} };
-			let test_result;
-
-			try {
-				test_result = serverHandlers_rw.reqBodyValidationHandler(test_req, {}, testCallBack);
-			} catch (err) {
-				test_result = err;
-			}
-
-			assert.ok(
-				test_result.statusCode === HTTP_STATUS_CODES.BAD_REQUEST,
-				'Method should throw error w/ BAD_REQUEST code'
-			);
-			assert.ok(test_result.http_resp_msg === 'Invalid JSON.', 'Method should throw error for invalid JSON');
-		});
-
-		it('Should throw error if request body is a string/not valid JSON', () => {
-			const test_req = { body: 'Operation: create_schema' };
-			let test_result;
-
-			try {
-				test_result = serverHandlers_rw.reqBodyValidationHandler(test_req, {}, testCallBack);
-			} catch (err) {
-				test_result = err;
-			}
-
-			assert.ok(
-				test_result.statusCode === HTTP_STATUS_CODES.BAD_REQUEST,
-				'Method should throw error w/ BAD_REQUEST code'
-			);
-			assert.ok(test_result.http_resp_msg === 'Invalid JSON.', 'Method should throw error for invalid JSON');
-		});
-
-		it('Should throw error if request body does not include an `operation` property', () => {
-			const test_req = { body: { schema: 'new schema value' } };
-			let test_result;
-
-			try {
-				test_result = serverHandlers_rw.reqBodyValidationHandler(test_req, {}, testCallBack);
-			} catch (err) {
-				test_result = err;
-			}
-
-			assert.ok(
-				test_result.statusCode === HTTP_STATUS_CODES.BAD_REQUEST,
-				'Method should throw error w/ BAD_REQUEST code'
-			);
-			assert.ok(
-				test_result.http_resp_msg === "Request body must include an 'operation' property.",
-				'Method should throw error for JSON body without operation property'
-			);
-		});
-
-		it('Should throw error if request body does not include an value in its `operation` property', () => {
-			const test_req = { body: { operation: null } };
-			let test_result;
-
-			try {
-				test_result = serverHandlers_rw.reqBodyValidationHandler(test_req, {}, testCallBack);
-			} catch (err) {
-				test_result = err;
-			}
-
-			assert.ok(
-				test_result.statusCode === HTTP_STATUS_CODES.BAD_REQUEST,
-				'Method should throw error w/ BAD_REQUEST code'
-			);
-			assert.ok(
-				test_result.http_resp_msg === "Request body must include an 'operation' property.",
-				'Method should throw error for JSON body without operation property'
-			);
-		});
-	});
-
 	describe('authHandler()', () => {
 		const TEST_AUTH_REQ = {
 			headers: {
@@ -323,6 +210,18 @@ describe('Test serverHandlers.js module ', () => {
 				assert.ok(data === undefined, 'Should not return anything for valid auth');
 				assert.ok(test_req.body.hdb_user === null, 'Method should assign null for hdb_user on request body');
 			});
+		});
+
+		it('Should require auth for create auth tokens with an inline role object', async () => {
+			auth_stub.resolves(TEST_USER);
+			const test_req = testUtils.deepClone(TEST_AUTH_REQ);
+			test_req.body.username = 'attribution-only';
+			test_req.body.role = { permission: { operations: ['read_only'] } };
+
+			await new Promise((resolve, reject) =>
+				serverHandlers_rw.authHandler(test_req, {}, (err) => (err ? reject(err) : resolve()))
+			);
+			assert.ok(test_req.body.hdb_user === TEST_USER, 'Scoped-token mint must carry the authenticated requester');
 		});
 
 		it('Should throw error if thrown from auth', () => {

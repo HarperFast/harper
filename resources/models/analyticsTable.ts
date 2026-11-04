@@ -1,4 +1,5 @@
 import { table, isReadOnlyMode } from '../databases.ts';
+import { transaction } from '../transaction.ts';
 import { getNextMonotonicTime } from '../../utility/lmdb/commonUtility.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
 
@@ -20,7 +21,7 @@ export interface ModelCallRecord {
 	app?: string;
 	model?: string;
 	backend: string;
-	method: 'embed' | 'generate' | 'generateStream';
+	method: 'embed' | 'generate' | 'generateStream' | 'decide' | 'scoreChoices';
 	adapter?: string;
 	conversation_id?: string;
 	prompt_tokens?: number;
@@ -44,10 +45,8 @@ let _table: any;
  * the structural shape (e.g. no spurious `indexed: true`) without parsing
  * TypeScript source.
  *
- * flush() writes via tbl.primaryStore.put and cleanup() removes via
- * primaryStore.remove — both bypass updateIndices, so secondary indexes
- * would stay permanently empty. Match hdb_raw_analytics (write.ts) which
- * intentionally omits `indexed` from all non-PK attributes for the same reason.
+ * Retention cleanup removes primary rows directly, so secondary indexes would retain stale entries.
+ * Match hdb_raw_analytics by keeping this local telemetry table unindexed and unaudited.
  */
 export const MODEL_CALL_ATTRIBUTES = [
 	{ name: 'id', isPrimaryKey: true },
@@ -78,7 +77,7 @@ export function getModelCallsTable(): any {
 	_table = table({
 		table: 'hdb_model_calls',
 		database: 'system',
-		audit: true,
+		audit: false,
 		trackDeletes: false,
 		attributes: MODEL_CALL_ATTRIBUTES,
 	});
@@ -134,15 +133,17 @@ export class ModelCallAnalyticsWriter {
 		this.#cleanupTimer.unref?.();
 	}
 
-	write(record: ModelCallRecord): void {
-		if (this.#stopped) return;
+	write(record: ModelCallRecord): number {
+		const id = getNextMonotonicTime();
+		if (this.#stopped) return id;
 		// id last so a record that accidentally carries an `id` field can't override
 		// the monotonic primary key.
-		this.#buffer.push({ ...record, id: getNextMonotonicTime() });
+		this.#buffer.push({ ...record, id });
 		if (this.#buffer.length >= this.#maxBufferSize) {
 			// Out-of-cadence flush; swallow errors so a failing flush doesn't escape into the caller.
 			this.flush().catch((err) => log.warn?.(`Model-call analytics flush failed: ${err?.message ?? err}`));
 		}
+		return id;
 	}
 
 	async flush(): Promise<void> {
@@ -156,27 +157,30 @@ export class ModelCallAnalyticsWriter {
 		const batch = this.#buffer;
 		this.#buffer = [];
 		const tbl = this.#getTable();
-		const puts: Array<{ id: number; promise: Promise<unknown> }> = [];
-		for (const record of batch) {
-			try {
-				const result = tbl.primaryStore.put(record.id, record);
-				if (result && typeof (result as { then?: unknown }).then === 'function') {
-					puts.push({ id: record.id, promise: result as Promise<unknown> });
-				}
-			} catch (err) {
-				log.warn?.(`Model-call analytics put failed for id=${record.id}: ${(err as Error)?.message ?? err}`);
-			}
-		}
-		if (puts.length > 0) {
-			const results = await Promise.allSettled(puts.map((p) => p.promise));
-			for (let i = 0; i < results.length; i++) {
-				const r = results[i];
-				if (r.status === 'rejected') {
-					const reason = r.reason as { message?: string } | undefined;
-					log.warn?.(`Model-call analytics async put failed for id=${puts[i].id}: ${reason?.message ?? r.reason}`);
+		// A flush must not join the request that filled the buffer or created the timer.
+		await transaction({}, async (context) => {
+			const puts: Array<{ id: number; promise: Promise<unknown> }> = [];
+			for (const record of batch) {
+				try {
+					const result = tbl.put(record, context);
+					if (result && typeof (result as { then?: unknown }).then === 'function') {
+						puts.push({ id: record.id, promise: result as Promise<unknown> });
+					}
+				} catch (err) {
+					log.warn?.(`Model-call analytics put failed for id=${record.id}: ${(err as Error)?.message ?? err}`);
 				}
 			}
-		}
+			if (puts.length > 0) {
+				const results = await Promise.allSettled(puts.map((p) => p.promise));
+				for (let i = 0; i < results.length; i++) {
+					const r = results[i];
+					if (r.status === 'rejected') {
+						const reason = r.reason as { message?: string } | undefined;
+						log.warn?.(`Model-call analytics async put failed for id=${puts[i].id}: ${reason?.message ?? r.reason}`);
+					}
+				}
+			}
+		});
 	}
 
 	async cleanup(): Promise<void> {

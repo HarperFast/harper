@@ -1,25 +1,30 @@
-'use strict';
-import * as path from 'path';
-import * as fs from 'fs-extra';
+import { loadNativePackage } from './packageUtils.js';
+('use strict');
+import * as path from 'node:path';
+import fs from 'fs-extra';
 import log from './logging/harper_logger.ts';
-import * as fsExtra from 'fs-extra';
-import * as os from 'os';
-import * as net from 'net';
+import fsExtra from 'fs-extra';
+import * as os from 'node:os';
+import * as net from 'node:net';
 import RecursiveIterator from 'recursive-iterator';
 import * as terms from './hdbTerms.ts';
 import { PACKAGE_ROOT } from './packageUtils.js';
 export { PACKAGE_ROOT };
-import * as papaParse from 'papaparse';
-import moment from 'moment';
+import papaParse from 'papaparse';
 import isNumber from 'is-number';
 import minimist from 'minimist';
-import * as https from 'https';
-import * as http from 'http';
+import * as https from 'node:https';
+import * as http from 'node:http';
+// Lazy getDatabases accessor: importing databases.ts here creates circular deps
+// (databases.ts → Table.ts/auditStore.ts/etc → common_utils.ts). Instead we use a
+// shared registry module that has no deps of its own; databases.ts registers its
+// getter there at load time, and we read it here at call time.
+import { getDatabases } from './databasesRef.ts';
 
 const ISO_DATE =
 	/^((\d{4}-[01]\d-[0-3]\dT[0-2]\d:[0-5]\d:[0-5]\d\.\d+([+-][0-2]\d:[0-5]\d|Z))|(\d{4}-[01]\d-[0-3]\dT[0-2]\d:[0-5]\d:[0-5]\d([+-][0-2]\d:[0-5]\d|Z))|(\d{4}-[01]\d-[0-3]\dT[0-2]\d:[0-5]\d([+-][0-2]\d:[0-5]\d|Z)))$/;
 
-import * as util from 'util';
+import * as util from 'node:util';
 export const asyncSetTimeout = util.promisify(setTimeout);
 
 const EMPTY_STRING = '';
@@ -457,7 +462,7 @@ export async function isPortTaken(port: number) {
  * @returns string returns a thrown message if schema and or table does not exist
  */
 export function checkGlobalSchemaTable(schemaName: string, tableName: string) {
-	let databases = require('../resources/databases').getDatabases();
+	let databases = getDatabases();
 	if (!databases[schemaName]) {
 		return hdbErrors.HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(schemaName);
 	}
@@ -541,7 +546,6 @@ export function checkSchemaTableExist(schema: string, table: string) {
  * @returns {string}
  */
 export function checkSchemaExists(schema: string) {
-	const { getDatabases } = require('../resources/databases');
 	if (!getDatabases()[schema]) {
 		return hdbErrors.HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(schema);
 	}
@@ -554,7 +558,6 @@ export function checkSchemaExists(schema: string) {
  * @returns {string}
  */
 export function checkTableExists(schema: string, table: string) {
-	const { getDatabases } = require('../resources/databases');
 	if (!getDatabases()[schema][table]) {
 		return hdbErrors.HDB_ERROR_MSGS.TABLE_NOT_FOUND(schema, table);
 	}
@@ -565,6 +568,7 @@ export function checkTableExists(schema: string, table: string) {
  * @returns {number}
  */
 export function getStartOfTomorrowInSeconds() {
+	const moment = loadNativePackage('moment') as typeof import('moment');
 	let tomorowSeconds = moment().utc().add(1, 'd').startOf('d').unix();
 	let nowSeconds = moment().utc().unix();
 	return tomorowSeconds - nowSeconds;
@@ -575,6 +579,7 @@ export function getStartOfTomorrowInSeconds() {
  * @returns {string}
  */
 export function getLimitKey() {
+	const moment = loadNativePackage('moment') as typeof import('moment');
 	return moment().utc().format('DD-MM-YYYY');
 }
 
@@ -658,8 +663,7 @@ export function autoCastBooleanStrict(value: any) {
  * Gets a tables hash attribute from the global schema
  */
 export function getTableHashAttribute(schema: string, table: string) {
-	const { getDatabases } = require('../resources/databases');
-	let tableObj = getDatabases()[schema]?.[table];
+	let tableObj = getDatabases()[schema]?.[table] as any;
 	return tableObj?.primaryKey || tableObj?.hash_attribute;
 }
 
@@ -669,7 +673,6 @@ export function getTableHashAttribute(schema: string, table: string) {
  * @returns {boolean} - returns true if schema exists
  */
 export function doesSchemaExist(schema: string) {
-	const { getDatabases } = require('../resources/databases');
 	return getDatabases()[schema] !== undefined;
 }
 
@@ -680,7 +683,6 @@ export function doesSchemaExist(schema: string) {
  * @returns {boolean} - returns true if table exists
  */
 export function doesTableExist(schema: string, table: string) {
-	const { getDatabases } = require('../resources/databases');
 	return getDatabases()[schema]?.[table] !== undefined;
 }
 
@@ -703,6 +705,7 @@ export function stringifyObj(value: any) {
  * @returns {*}
  */
 export function ms_to_time(ms: number) {
+	const moment = loadNativePackage('moment') as typeof import('moment');
 	const duration = moment.duration(ms);
 	const sec = duration.seconds() > 0 ? duration.seconds() + 's' : '';
 	const min = duration.minutes() > 0 ? duration.minutes() + 'm ' : '';
@@ -739,6 +742,11 @@ export function getEnvCliRootPath() {
  * This is used for running HDB without a boot file
  */
 let noBootFileChecked;
+// test support: the memoized result is derived from the ROOTPATH env var, so a test that
+// clears that variable for its own scope must also drop a value cached while it was set
+export function resetNoBootFileCache() {
+	noBootFileChecked = undefined;
+}
 export function noBootFile() {
 	if (noBootFileChecked) return noBootFileChecked;
 	const cliEnvRoot = getEnvCliRootPath();
@@ -829,15 +837,35 @@ export function httpRequest(options: any, data: any): Promise<http.IncomingMessa
 }
 
 /**
+ * Which database an operation request targets: `database` wins over the legacy `schema`, and a
+ * request that names neither targets the default database.
+ *
+ * The single source of truth for that question. Authorization has to answer it identically to the
+ * handlers — it runs first, and if the two disagree then the permissions checked are not the
+ * permissions for the write that happens. Two divergences between this and the copy that used to
+ * live in `verifyPerms` (`schema ?? database`) were each exploitable on their own: nullish
+ * coalescing let a falsy-but-present `database: 0` through where this defaults, and the reversed
+ * precedence let a request authorize against `schema` while the handler wrote `database`.
+ *
+ * Deliberately falsy rather than nullish: a `database` of `0` or `''` is not a database, and
+ * `Joi.number()` is an accepted type for the field, so `0` reaches here validated.
+ */
+export function resolveTargetDatabase(req: any): string {
+	return req.database || req.schema || terms.DEFAULT_DATABASE_NAME;
+}
+
+/**
  * Will set default schema/database or set database to schema
  * @param req
  */
 export function transformReq(req: any) {
-	if (!req.schema && !req.database) {
-		req.schema = terms.DEFAULT_DATABASE_NAME;
-		return;
-	}
-	if (req.database) req.schema = req.database;
+	const database = resolveTargetDatabase(req);
+	// Only write when it would change something. The previous implementation left `req.schema` alone
+	// whenever it was already the resolved value, and an unconditional assignment is not equivalent:
+	// re-assigning an identical value still throws on a frozen or sealed object under strict mode,
+	// which every module here is. Nothing is known to pass one, but a write that cannot change the
+	// outcome is not worth the failure mode.
+	if (req.schema !== database) req.schema = database;
 }
 
 export function convertToMS(interval: any) {
@@ -868,5 +896,43 @@ export function convertToMS(interval: any) {
 		}
 	}
 	return seconds * 1000;
+}
+
+/** Parse lock/config duration syntax without changing legacy convertToMS behavior. */
+export function parseDurationMs(interval: unknown): number {
+	if (typeof interval === 'number') return interval < 0 ? NaN : interval * 1000;
+	if (typeof interval !== 'string' || !/^\d+(?:\.\d+)?(?:ms|[smhd])?$/.test(interval)) return NaN;
+	if (interval.endsWith('ms')) return Number(interval.slice(0, -2));
+	return convertToMS(interval);
+}
+
+/**
+ * Render a millisecond duration as a compact human-readable string, e.g. `1d 3h 8m 22s`. Drops only
+ * the leading zero units (`5000` → `5s`, `90000` → `1m 30s`) and floors sub-second, negative, and
+ * non-finite values (`NaN`/`Infinity`, e.g. from `convertToMS('abc')`) to `0s`. Roughly the inverse
+ * of {@link convertToMS}, but caps at days — years/months are ambiguous spans (leap years, 30-day
+ * months) and not meaningful for the elapsed-time readouts this serves.
+ */
+export function prettyDuration(ms: number): string {
+	if (!Number.isFinite(ms)) return '0s';
+	let seconds = Math.max(0, Math.floor(ms / 1000));
+	const days = Math.floor(seconds / 86400);
+	seconds %= 86400;
+	const hours = Math.floor(seconds / 3600);
+	seconds %= 3600;
+	const minutes = Math.floor(seconds / 60);
+	seconds %= 60;
+	const units: [number, string][] = [
+		[days, 'd'],
+		[hours, 'h'],
+		[minutes, 'm'],
+		[seconds, 's'],
+	];
+	const firstIdx = units.findIndex(([value]) => value > 0);
+	const start = firstIdx === -1 ? units.length - 1 : firstIdx;
+	return units
+		.slice(start)
+		.map(([value, unit]) => `${value}${unit}`)
+		.join(' ');
 }
 import * as hdbErrors from './errors/commonErrors.ts';

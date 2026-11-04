@@ -1,7 +1,7 @@
 'use strict';
 
 const assert = require('node:assert');
-const validator = require('#js/components/operationsValidation');
+const validator = require('#src/components/operationsValidation');
 
 // validateBySchema returns undefined when valid and an Error when invalid.
 const valid = (res) => res === undefined;

@@ -1,40 +1,17 @@
 /**
- * TLS Certificate + Private-Key Hot-Reload — multi-worker propagation.
- *
- * Companion to cert-reload.test.ts (#586), which deliberately rotates ONLY the
- * certificate (same key) to isolate the cert-propagation path. This test rotates
- * BOTH the certificate and the private key at once — the case that exposes the
- * worker key-rotation race in security/keys.ts:
- *
- *   - The main thread watches the cert file and writes the new cert into the
- *     system.hdb_certificate table; each worker is subscribed and rebuilds its TLS
- *     secure context (updateTLS) on that notification.
- *   - Each worker independently reloads its private key from disk into its in-thread
- *     privateKeys map (no table propagation for keys).
- *
- * The race: a worker can receive the new cert (table subscription -> updateTLS) and
- * build a secure context BEFORE it has reloaded the matching new key, pairing the
- * new cert with the OLD key. Because getPrivateKeyByName reads the in-thread map
- * first, that context stays mismatched — every handshake against that worker fails —
- * until the next cert-table change. The fix makes a private-key reload (via chokidar
- * OR the periodic poll) trigger a local TLS context rebuild, so the worker converges
- * on the new cert + new key on its own.
- *
- * The bug signature is per-worker: a stuck worker fails handshakes (cert/key
- * mismatch) rather than serving a stale serial, so it only surfaces with >= 2 HTTP
- * workers each terminating TLS.
- *
- * Reproduction:
- *   npm run test:integration -- "integrationTests/security/cert-key-reload.test.ts"
+ * TLS renewal (#2978): rename-install both files in either order with polling disabled.
+ * Incomplete pairs must stay unpublished; every worker must serve complete generations
+ * without a self-signed fallback or a logged key mismatch.
  */
 
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual as equal } from 'node:assert';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile, rename, readFile, unlink, symlink, chmod } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import * as tls from 'node:tls';
-
+import { request } from 'node:https';
+import type { TLSSocket } from 'node:tls';
+import { setTimeout as delay } from 'node:timers/promises';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 import {
 	generateEd25519KeyPair,
@@ -44,229 +21,280 @@ import {
 	type Ed25519KeyPair,
 } from '../utils/security/certGenUtils.ts';
 
-const HTTPS_PORT = 9927; // fixed by the integration-testing harness
-const FIXTURE_PATH = join(import.meta.dirname, 'fixture');
-const WORKERS = 2; // >= 2 HTTP workers is the whole point — see file header
+const HTTPS_PORT = 9927;
+const FIXTURE_PATH = join(import.meta.dirname, 'cert-key-reload-fixture');
+const WORKERS = 2;
 const CERT_CN = 'cert-key-reload-test.harper.local';
 const SERVER_AUTH_OID = '1.3.6.1.5.5.7.3.1';
-const testsBun = process.env.HARPER_RUNTIME === 'bun';
-const skipSuite = process.platform === 'win32' || testsBun;
+const skipSuite = process.platform === 'win32' || process.env.HARPER_RUNTIME === 'bun';
 
-/** Build a self-signed Ed25519 server certificate (PEM) for the given key pair and serial. */
 async function makeServerCertPem(keyPair: Ed25519KeyPair, serialNumber: number): Promise<string> {
-	const cert = await createCertificate({
-		serialNumber,
-		subject: { CN: CERT_CN, O: 'Harper Cert+Key Reload Test' },
-		issuer: { CN: CERT_CN, O: 'Harper Cert+Key Reload Test' },
-		validDays: 365,
-		issuerKey: keyPair.privateKey,
-		subjectPublicKey: keyPair.publicKey,
-		extensions: [makeExtKeyUsageExt([SERVER_AUTH_OID])],
-	});
-	return certToPem(cert);
+	return certToPem(
+		await createCertificate({
+			serialNumber,
+			subject: { CN: CERT_CN, O: 'Harper Cert+Key Reload Test' },
+			issuer: { CN: CERT_CN, O: 'Harper Cert+Key Reload Test' },
+			validDays: 365,
+			issuerKey: keyPair.privateKey,
+			subjectPublicKey: keyPair.publicKey,
+			extensions: [makeExtKeyUsageExt([SERVER_AUTH_OID])],
+		})
+	);
 }
 
-/**
- * Open one fresh TLS connection (no session reuse) and return the served cert serial.
- * A cert/key mismatch on the chosen worker fails the handshake, surfacing as a rejection.
- */
-function servedSerial(hostname: string): Promise<string> {
+function servedGeneration(hostname: string): Promise<{ serial: number; threadId: number }> {
 	return new Promise((resolve, reject) => {
-		const socket = tls.connect(
+		const req = request(
 			{
 				host: hostname,
 				port: HTTPS_PORT,
-				servername: CERT_CN, // SNI -> our context specifically, independent of the default cert
-				rejectUnauthorized: false, // self-signed; we only want to read the served cert
-				session: undefined, // force a full handshake so the kernel can spread us across workers
+				path: '/Worker',
+				servername: CERT_CN,
+				rejectUnauthorized: false,
+				agent: false,
 			},
-			() => {
-				const peer = socket.getPeerCertificate();
-				socket.destroy();
-				if (!peer || !peer.serialNumber) {
-					reject(new Error('no peer certificate returned'));
-					return;
-				}
-				resolve(peer.serialNumber);
+			(response) => {
+				const serial = parseInt((response.socket as TLSSocket).getPeerCertificate().serialNumber, 16);
+				let body = '';
+				response.on('data', (chunk) => {
+					body += chunk;
+				});
+				response.on('error', reject);
+				response.on('end', () => {
+					try {
+						equal(response.statusCode, 200, body);
+						resolve({ serial, threadId: JSON.parse(body).threadId });
+					} catch (error) {
+						reject(error);
+					}
+				});
 			}
 		);
-		socket.setTimeout(5000, () => {
-			socket.destroy();
-			reject(new Error('TLS connection timed out'));
-		});
-		socket.on('error', reject);
+		req.setTimeout(5000, () => req.destroy(new Error('TLS request timed out')));
+		req.on('error', reject);
+		req.end();
 	});
 }
 
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms).unref());
+async function renameInstall(filePath: string, pem: string) {
+	const stagingPath = filePath + '.next';
+	await writeFile(stagingPath, pem);
+	await rename(stagingPath, filePath);
+}
 
-suite(
-	'TLS certificate + private-key hot-reload propagates to all workers',
-	{ skip: skipSuite },
-	(ctx: ContextWithHarper) => {
-		let certsDir: string;
-		let certPath: string;
-		let keyPath: string;
-		let keyPairA: Ed25519KeyPair;
-		let keyPairB: Ed25519KeyPair;
+for (const readableKeyDirectory of [true, false])
+	suite(
+		`TLS certificate + private-key hot-reload propagates to all workers (${readableKeyDirectory ? 'readable' : 'traverse-only'} key directory)`,
+		{ skip: skipSuite || (!readableKeyDirectory && process.getuid?.() === 0) },
+		(ctx: ContextWithHarper) => {
+			let certsDir: string;
+			let certPath: string;
+			let keyPath: string;
+			let currentSerial = 3001;
+			let currentKeyPair: Ed25519KeyPair;
 
-		before(async () => {
-			certsDir = await mkdtemp(join(tmpdir(), 'harper-cert-key-reload-'));
-			certPath = join(certsDir, 'certificate.pem');
-			keyPath = join(certsDir, 'privateKey.pem');
-
-			// Two independent key pairs: the rotation swaps BOTH the cert and the key, so the new
-			// cert is signed by (and pairs with) keyPairB — a worker that rebuilds with the new cert
-			// but the old key (keyPairA) cannot complete a handshake.
-			keyPairA = await generateEd25519KeyPair();
-			keyPairB = await generateEd25519KeyPair();
-			await writeFile(keyPath, keyPairA.privateKeyPem);
-			await writeFile(certPath, await makeServerCertPem(keyPairA, 3001));
-
-			await setupHarperWithFixture(ctx, FIXTURE_PATH, {
-				config: {
-					threads: { count: WORKERS },
-					tls: {
-						certificate: certPath,
-						privateKey: keyPath,
+			before(async () => {
+				certsDir = await mkdtemp(join(tmpdir(), 'harper-cert-key-reload-'));
+				await mkdir(join(certsDir, 'keys'));
+				certPath = join(certsDir, 'certificate.pem');
+				keyPath = join(certsDir, 'keys', 'privateKey.pem');
+				const initialKeyPair = (currentKeyPair = await generateEd25519KeyPair());
+				await writeFile(keyPath, initialKeyPair.privateKeyPem);
+				await writeFile(certPath, await makeServerCertPem(initialKeyPair, currentSerial));
+				// The renewal writer needs write/execute access; the directory remains unreadable to the watcher.
+				if (!readableKeyDirectory) await chmod(join(certsDir, 'keys'), 0o300);
+				await setupHarperWithFixture(ctx, FIXTURE_PATH, {
+					config: {
+						threads: { count: WORKERS },
+						logging: { file: true },
+						tls: { certificate: certPath, privateKey: keyPath, certificateWatchInterval: 0 },
 					},
-				},
+				});
+				equal(await observedWorkerCount(ctx), WORKERS);
+				equal((await servedGeneration(ctx.harper.hostname)).serial, currentSerial);
+				if (!readableKeyDirectory)
+					ok(
+						(await readFile(logPath(), 'utf8')).includes(`Cannot watch TLS directory ${join(certsDir, 'keys')}`),
+						'the restricted-directory suite did not exercise the file polling fallback'
+					);
 			});
-		});
 
-		after(async () => {
-			await teardownHarper(ctx);
-			await rm(certsDir, { recursive: true, force: true, maxRetries: 3 });
-		});
+			after(async () => {
+				await teardownHarper(ctx);
+				await chmod(join(certsDir, 'keys'), 0o700);
+				await rm(certsDir, { recursive: true, force: true, maxRetries: 3 });
+			});
 
-		test('every worker converges on the renewed cert + key after an on-disk swap of both', async (t) => {
-			// Guard: confirm we really booted multiple workers — otherwise the test is
-			// vacuous (a single worker can never diverge from itself).
-			const workerCount = await observedWorkerCount(ctx);
-			ok(workerCount >= 2, `expected >= 2 HTTP workers, observed ${workerCount} — test would be vacuous`);
-
-			// Baseline: the serial currently being served (cert 3001, key A).
-			const initialSerial = await servedSerial(ctx.harper.hostname);
-			equal(parseInt(initialSerial, 16), 3001, `expected the initial cert serial 3001, got 0x${initialSerial}`);
-
-			// Reused for re-arming watch events below. File-watch delivery (chokidar/inotify) is
-			// unreliable on some CI filesystems (overlayfs/containers/network mounts) — the very reason
-			// Harper added a polling fallback — so each rotation step re-writes its file periodically to
-			// give a dropped watch event another chance. The re-write bumps mtime, which is what the
-			// watcher keys on; the content stays fixed so the served serial assertions stay exact.
-			const certBPem = await makeServerCertPem(keyPairB, 3002);
-			const NUDGE_MS = 5_000;
-
-			// Force the worst-case interleaving the fix targets: the new CERT reaches the workers
-			// BEFORE the matching new key. We write only the cert first (still signed by key B, so it
-			// does NOT match the key A still on disk). The main thread writes it into hdb_certificate,
-			// each worker's subscription fires updateTLS, and the worker rebuilds its context pairing
-			// the new cert with the OLD key — a mismatch. We wait until that disruption is observable
-			// (the worker can no longer cleanly serve 3001: either the handshake fails on the mismatch,
-			// or the context is dropped and a different default cert is served) before touching the key.
-			//
-			// In a real rotation the two files change near-simultaneously and the ordering is a race;
-			// here we pin the losing order so the regression is deterministic rather than timing-luck.
-			await writeFile(certPath, certBPem);
-
-			const certDeadline = Date.now() + 30_000;
-			let certPropagatedWithStaleKey = false;
-			let lastNudge = Date.now();
-			while (Date.now() < certDeadline) {
-				try {
-					if (parseInt(await servedSerial(ctx.harper.hostname), 16) !== 3001) {
-						certPropagatedWithStaleKey = true; // serving a fallback default — the old cert context is gone
-						break;
-					}
-				} catch {
-					certPropagatedWithStaleKey = true; // handshake now fails — new cert built against the old key
-					break;
-				}
-				if (Date.now() - lastNudge > NUDGE_MS) {
-					await writeFile(certPath, certBPem); // re-arm a possibly-missed watch event
-					lastNudge = Date.now();
-				}
-				await sleep(250);
+			function logPath() {
+				return join(ctx.harper.logDir ?? join(ctx.harper.dataRootDir, 'log'), 'hdb.log');
 			}
-			if (!certPropagatedWithStaleKey) {
-				// The cert file change never reached the workers in this environment, so we can't set up
-				// the cert-before-key ordering. That's a file-watch/inotify limitation of the runner, not
-				// a regression in the fix — skip rather than fail. (The unit tests cover the rebuild
-				// trigger deterministically; this test adds end-to-end coverage where watching works.)
-				t.skip(
-					'cert file change was not picked up by the watcher in this environment (file-watch/inotify ' +
-						'limitation) — cannot establish the cert-before-key ordering this test exercises'
+
+			async function expectRenewal(nextSerial: number) {
+				const deadline = Date.now() + 20000;
+				const renewedWorkers = new Set<number>();
+				while (Date.now() < deadline) {
+					const generations = await Promise.all(
+						Array.from({ length: 20 }, () => servedGeneration(ctx.harper.hostname))
+					);
+					for (const generation of generations) {
+						ok([currentSerial, nextSerial].includes(generation.serial), `unexpected certificate ${generation.serial}`);
+						ok(Number.isInteger(generation.threadId), 'missing worker identity');
+						if (generation.serial === nextSerial) renewedWorkers.add(generation.threadId);
+					}
+					if (renewedWorkers.size === WORKERS && generations.every(({ serial }) => serial === nextSerial)) break;
+					await delay(100);
+				}
+				equal(renewedWorkers.size, WORKERS, 'the renewed pair did not reach every worker');
+				const finalGenerations = await Promise.all(
+					Array.from({ length: 40 }, () => servedGeneration(ctx.harper.hostname))
 				);
-				return;
+				ok(
+					finalGenerations.every(({ serial }) => serial === nextSerial),
+					'a worker still serves the old certificate'
+				);
+				ok(await tableHasSerial(ctx, nextSerial), 'the matching certificate was never published');
+				const log = await readFile(logPath(), 'utf8');
+				ok(!/key values mismatch|ERR_OSSL_X509_KEY_VALUES_MISMATCH/i.test(log), 'renewal logged a key values mismatch');
+				currentSerial = nextSerial;
 			}
 
-			// Now deliver the matching key. Each worker reloads key B into its in-thread map. WITHOUT
-			// the fix that is a dead end: the map updates but nothing rebuilds the TLS context, so the
-			// worker stays on the mismatched/dropped context until the next cert-table change. WITH the
-			// fix, the key reload triggers a debounced rebuild and the worker converges on cert+key B.
-			await writeFile(keyPath, keyPairB.privateKeyPem);
+			for (const first of ['certificate', 'private key']) {
+				test(`rename-install ${first} first publishes only a matching pair and reaches every worker`, async () => {
+					const logOffset = (await readFile(logPath(), 'utf8')).length;
+					const nextSerial = currentSerial + 1;
+					const keyPair = await generateEd25519KeyPair();
+					const certPem = await makeServerCertPem(keyPair, nextSerial);
+					const certFirst = first === 'certificate';
+					await renameInstall(certFirst ? certPath : keyPath, certFirst ? certPem : keyPair.privateKeyPem);
 
-			// Wait for convergence on at least one connection: a SUCCESSFUL handshake serving the new
-			// serial proves the new cert is paired with the new key. serialNumber is hex. We re-arm the
-			// key watch event on the same cadence, since the worker key reload is also inotify-driven.
-			const deadline = Date.now() + 30_000;
-			let newSerial = initialSerial;
-			lastNudge = Date.now();
-			while (Date.now() < deadline) {
-				try {
-					const s = await servedSerial(ctx.harper.hostname);
-					if (parseInt(s, 16) === 3002) {
-						newSerial = s;
-						break;
+					// Hold an incomplete pair across two rebuild windows to expose premature publication.
+					const incompleteDeadline = Date.now() + 4500;
+					while (Date.now() < incompleteDeadline) {
+						equal(await tableHasSerial(ctx, nextSerial), false, 'an unmatched certificate was published');
+						equal((await servedGeneration(ctx.harper.hostname)).serial, currentSerial);
+						await delay(100);
 					}
-				} catch {
-					// still mismatched on this worker — keep polling
-				}
-				if (Date.now() - lastNudge > NUDGE_MS) {
-					await writeFile(keyPath, keyPairB.privateKeyPem); // re-arm a possibly-missed key watch event
-					lastNudge = Date.now();
-				}
-				await sleep(500);
+
+					const pendingLog = (await readFile(logPath(), 'utf8')).slice(logOffset);
+					ok(
+						pendingLog.includes('Waiting for matching TLS certificate and private key'),
+						'the publisher never observed the incomplete pair'
+					);
+					await renameInstall(certFirst ? keyPath : certPath, certFirst ? keyPair.privateKeyPem : certPem);
+					await expectRenewal(nextSerial);
+					currentKeyPair = keyPair;
+				});
 			}
-			equal(
-				parseInt(newSerial, 16),
-				3002,
-				`cert+key never converged — no worker served the renewed cert 3002 within 30s after the key ` +
-					`arrived (a worker rebuilt for the new cert with the old key and never rebuilt again)`
-			);
 
-			// Settling grace: each worker debounces its rebuild independently. The poll above exits as
-			// soon as ONE worker has converged; sleep so every other worker's debounce has also fired.
-			await sleep(3000);
+			for (const removed of ['certificate', 'private key']) {
+				test(`renewal survives deleting and recreating the ${removed} with polling disabled`, async () => {
+					const nextSerial = currentSerial + 1;
+					const keyPair = removed === 'certificate' ? currentKeyPair : await generateEd25519KeyPair();
+					await unlink(removed === 'certificate' ? certPath : keyPath);
+					// Cross the atomic-write window, or a fallback poll tick, so the detector observes the absence.
+					await delay(readableKeyDirectory ? 250 : 1500);
+					await writeFile(certPath, await makeServerCertPem(keyPair, nextSerial));
+					if (removed === 'private key') await writeFile(keyPath, keyPair.privateKeyPem);
+					await expectRenewal(nextSerial);
+					currentKeyPair = keyPair;
+				});
+			}
 
-			// The regression assertion: hammer the port with many fresh handshakes so the kernel
-			// (SO_REUSEPORT) spreads us across every worker. Require that ALL succeed (no worker left on
-			// new-cert + old-key, which fails the handshake) and ALL serve the new serial. Before the
-			// fix, a worker that rebuilt for the new cert before reloading the key stays mismatched —
-			// it never rebuilds again until the next cert-table change — so this fails.
-			const ATTEMPTS = 40;
-			const results = await Promise.allSettled(
-				Array.from({ length: ATTEMPTS }, () => servedSerial(ctx.harper.hostname))
-			);
-			const serials = results
-				.filter((r): r is PromiseFulfilledResult<string> => r.status === 'fulfilled')
-				.map((r) => r.value);
-			ok(
-				serials.length >= 38,
-				`too many handshakes failed: ${ATTEMPTS - serials.length}/${ATTEMPTS} errors — ` +
-					`a worker is likely stuck on the new cert paired with the old key`
-			);
+			if (!readableKeyDirectory) return;
+			test('aborting an unmatched renewal restores the original inode and clears the pending alarm', async (t) => {
+				const logOffset = (await readFile(logPath(), 'utf8')).length;
+				const savedPath = certPath + '.saved';
+				const unmatchedCertPem = await makeServerCertPem(await generateEd25519KeyPair(), currentSerial + 1);
+				const abortStart = performance.now();
+				await rename(certPath, savedPath);
+				await writeFile(certPath, unmatchedCertPem);
+				const noticeDeadline = Date.now() + 10000;
+				let pendingNotice = false;
+				while (Date.now() < noticeDeadline) {
+					pendingNotice = (await readFile(logPath(), 'utf8'))
+						.slice(logOffset)
+						.includes('Waiting for matching TLS certificate and private key');
+					if (pendingNotice) break;
+					// Polling briskly usually restores within chokidar's 100 ms removal throttle, where it can lose track of the file.
+					await delay(10);
+				}
+				ok(pendingNotice, 'the publisher never observed the aborted pair');
+				await unlink(certPath);
+				const abortElapsed = performance.now() - abortStart;
+				await rename(savedPath, certPath);
+				// This asserts a non-event after the publisher's 30-second pending-pair alarm window.
+				await delay(31000);
+				equal((await servedGeneration(ctx.harper.hostname)).serial, currentSerial);
+				const log = (await readFile(logPath(), 'utf8')).slice(logOffset);
+				ok(!log.includes('still has no matching private key'), 'an aborted renewal left the pending alarm armed');
+				ok(!/key values mismatch|ERR_OSSL_X509_KEY_VALUES_MISMATCH/i.test(log));
 
-			const stale = serials.filter((s) => s !== newSerial);
-			equal(
-				stale.length,
-				0,
-				`${stale.length}/${serials.length} connections did not serve the new serial ${newSerial} ` +
-					`(saw ${[...new Set(stale)].join(', ')}) — cert+key reload did not reach every worker`
-			);
+				// Key first, so the pair completes only once the replaced certificate is read.
+				const nextSerial = currentSerial + 2;
+				const keyPair = await generateEd25519KeyPair();
+				const certPem = await makeServerCertPem(keyPair, nextSerial);
+				await renameInstall(keyPath, keyPair.privateKeyPem);
+				await renameInstall(certPath, certPem);
+				await expectRenewal(nextSerial);
+				currentKeyPair = keyPair;
+				// Only after every assertion: node:test counts a failure in a skipped test as a skip.
+				if (abortElapsed >= 100)
+					t.skip(`restore ${Math.round(abortElapsed)} ms after the first removal missed chokidar's 100 ms throttle`);
+			});
+
+			test('renewal follows an atomically replaced Secret-volume data symlink', async () => {
+				const firstDir = join(certsDir, 'generation-a');
+				const secondDir = join(certsDir, 'generation-b');
+				await mkdir(firstDir);
+				await mkdir(secondDir);
+				const firstSerial = currentSerial + 1;
+				await writeFile(join(firstDir, 'certificate.pem'), await makeServerCertPem(currentKeyPair, firstSerial));
+				await writeFile(join(firstDir, 'privateKey.pem'), currentKeyPair.privateKeyPem);
+				await symlink(firstDir, join(certsDir, '..data'));
+				await unlink(certPath);
+				await unlink(keyPath);
+				await symlink('..data/certificate.pem', certPath);
+				await symlink('../..data/privateKey.pem', keyPath);
+				await expectRenewal(firstSerial);
+
+				const nextSerial = currentSerial + 1;
+				const keyPair = await generateEd25519KeyPair();
+				await writeFile(join(secondDir, 'certificate.pem'), await makeServerCertPem(keyPair, nextSerial));
+				await writeFile(join(secondDir, 'privateKey.pem'), keyPair.privateKeyPem);
+				await symlink(secondDir, join(certsDir, '..data.next'));
+				await rename(join(certsDir, '..data.next'), join(certsDir, '..data'));
+				await rm(firstDir, { recursive: true });
+				await expectRenewal(nextSerial);
+			});
+		}
+	);
+
+/** Whether hdb_certificate holds a server cert with this serial, via the operations API. */
+async function tableHasSerial(ctx: ContextWithHarper, serialNumber: number): Promise<boolean> {
+	try {
+		const res = await fetch(ctx.harper.operationsAPIURL, {
+			method: 'POST',
+			headers: {
+				'Authorization': `Basic ${Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64')}`,
+				'Content-Type': 'application/json',
+			},
+			body: JSON.stringify({
+				operation: 'search_by_value',
+				schema: 'system',
+				table: 'hdb_certificate',
+				search_attribute: 'name',
+				search_value: '*',
+				get_attributes: ['name', 'details'],
+			}),
 		});
+		const certs = (await res.json()) as { details?: { serial_number?: string } }[];
+		return (
+			Array.isArray(certs) && certs.some((cert) => parseInt(cert.details?.serial_number ?? '', 16) === serialNumber)
+		);
+	} catch {
+		return false;
 	}
-);
+}
 
 /** Observed live HTTP worker count via the operations API (best-effort, returns 0 on failure). */
 async function observedWorkerCount(ctx: ContextWithHarper): Promise<number> {

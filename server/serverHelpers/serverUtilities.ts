@@ -1,3 +1,4 @@
+import { loadRuntimeModule } from '../../utility/packageUtils.js';
 import * as search from '../../dataLayer/search.ts';
 import * as bulkLoad from '../../dataLayer/bulkLoad.ts';
 import * as schema from '../../dataLayer/schema.ts';
@@ -6,9 +7,8 @@ import * as delete_ from '../../dataLayer/delete.ts';
 import readAuditLog from '../../dataLayer/readAuditLog.ts';
 import * as user from '../../security/user.ts';
 import * as role from '../../security/role.ts';
-import customFunctionOperations from '../../components/operations.js';
+import * as customFunctionOperations from '../../components/operations.ts';
 import { setMcpQuotaHandler } from '../../components/mcp/quota.ts';
-import { isDeployValidating } from './deployValidationState.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
 import readLog from '../../utility/logging/readLog.ts';
 import * as export_ from '../../dataLayer/export.ts';
@@ -19,7 +19,7 @@ import * as terms from '../../utility/hdbTerms.ts';
 import { hdbErrors, handleHDBError } from '../../utility/errors/hdbError.ts';
 const { HTTP_STATUS_CODES } = hdbErrors;
 import * as restart from '../../bin/restart.ts';
-import * as util from 'util';
+import * as util from 'node:util';
 import * as insert from '../../dataLayer/insert.ts';
 import * as globalSchema from '../../utility/globalSchema.ts';
 import { systemInformation } from '../../utility/environment/systemInformation.ts';
@@ -40,7 +40,11 @@ import type { Context } from '../../resources/ResourceInterface.ts';
 import * as status from '../status/index.ts';
 import * as regDeprecated from '../../resources/registrationDeprecated.ts';
 import * as deploymentOperations from '../../components/deploymentOperations.ts';
+import * as releaseOperations from '../../components/releaseOperations.ts';
 import * as secretOperations from '../../components/secretOperations.ts';
+import * as trustPolicyOperations from '../../security/authn/oidc/trustPolicyOperations.ts';
+import * as tokenExchange from '../../security/authn/oidc/tokenExchange.ts';
+import * as previewOperations from '../../components/previewOperations.ts';
 import { contextStorage } from '../../resources/transaction.ts';
 import { isMainThread } from 'node:worker_threads';
 import {
@@ -49,12 +53,17 @@ import {
 	setLocalOperationDispatch,
 } from './registeredOperations.ts';
 import { runWithOperationAuthorizationBypass } from './operationAuthorizationState.ts';
+import { stripSuppliedParsedSqlObject } from './requestSanitization.ts';
 
 const pSearchSearch = util.promisify(search.search);
+let sqlModule;
+function getSqlModule() {
+	return (sqlModule ??= loadRuntimeModule('sqlTranslator/index'));
+}
 let pEvaluateSql: (sql: string) => Promise<any>;
 function evaluateSQL(command) {
 	if (!pEvaluateSql) {
-		const sql = require('../../sqlTranslator/index');
+		const sql = getSqlModule();
 		pEvaluateSql = util.promisify(sql.evaluateSQL);
 	}
 	return pEvaluateSql(command);
@@ -79,6 +88,54 @@ export type OperationFunctionName = ValueOf<typeof terms.OPERATIONS_ENUM>;
  * handles the response to the sender.
  */
 // TODO: Replace Function type with an actual function type (e.g. (): Thingy)
+/**
+ * Fields stripped from an operation body before it reaches the operations log.
+ *
+ * `credentials` carries a transient token on deploy_component (`registryAuth` is its pre-rename
+ * name — still stripped, since this runs ahead of the validation that now rejects it). `value` /
+ * `values` carry .env secrets from set_env_value; `value` / `envelope` carry secrets from
+ * set_secret. `token` is the login-purpose token (login) and the CI identity token
+ * (exchange_oidc_token), and is also stripped defensively — no operation declares a top-level
+ * `token`, but validation allows unknown keys, so a mistyped `harper deploy setup token=…` must not
+ * log a live credential. `refresh_token` is the 30-day credential (refresh_operation_token).
+ *
+ * Redaction runs *before* the handler, so a rejected request logs a still-spendable credential —
+ * which is why a new secret-bearing field belongs here rather than left to the default (harper#1527
+ * was this same miss for set_env_value).
+ */
+export const UNLOGGABLE_OPERATION_FIELDS = [
+	'hdb_user',
+	'hdbAuthHeader',
+	'password',
+	'payload',
+	'credentials',
+	'registryAuth',
+	'value',
+	'values',
+	'envelope',
+	'token',
+	'refresh_token',
+];
+
+const UNLOGGABLE_FIELDS_BY_OPERATION = new Map<string, ReadonlySet<string>>([
+	['set_configuration', new Set(['models'])],
+	['add_ssh_key', new Set(['key'])],
+	['update_ssh_key', new Set(['key'])],
+]);
+
+/** Callers gate this on log level: it allocates, and the operations log is often off. */
+export function redactForOperationLog(body: Record<string, any>): Record<string, any> {
+	const clean = { ...body };
+	for (const field of UNLOGGABLE_OPERATION_FIELDS) delete clean[field];
+	const operationFields = UNLOGGABLE_FIELDS_BY_OPERATION.get(body.operation);
+	if (operationFields) {
+		for (const field of Object.keys(clean)) {
+			if (operationFields.has(field.toLowerCase())) delete clean[field];
+		}
+	}
+	return clean;
+}
+
 export async function processLocalTransaction(req: OperationRequest, operationFunction: Function) {
 	try {
 		if (
@@ -87,28 +144,7 @@ export async function processLocalTransaction(req: OperationRequest, operationFu
 				harperLogger.logLevel === terms.LOG_LEVELS.DEBUG ||
 				harperLogger.logLevel === terms.LOG_LEVELS.TRACE)
 		) {
-			// Need to remove auth variables and secret-bearing fields, but we don't want to create
-			// an object unless the logging is actually going to happen. credentials carries a
-			// transient token on deploy_component (registryAuth is its pre-rename name — still
-			// stripped, since this runs ahead of the validation that now rejects it, and a stale
-			// caller's token must not reach the log); value/values carry .env secrets from
-			// set_env_value; value/envelope carry secrets from set_secret — none may reach the
-			// operations log.
-			/* eslint-disable no-unused-vars, @typescript-eslint/no-unused-vars */
-			const {
-				hdb_user,
-				hdbAuthHeader,
-				password,
-				payload,
-				credentials,
-				registryAuth,
-				value,
-				values,
-				envelope,
-				...cleanBody
-			} = req.body;
-			/* eslint-enable no-unused-vars, @typescript-eslint/no-unused-vars */
-			operationLog.info(cleanBody);
+			operationLog.info(redactForOperationLog(req.body));
 		}
 	} catch (e) {
 		operationLog.error(e);
@@ -151,7 +187,6 @@ export async function processLocalTransaction(req: OperationRequest, operationFu
 
 export const OPERATION_FUNCTION_MAP = initializeOperationFunctionMap();
 
-server.operation = operation;
 export type OperationDefinition = {
 	name: string;
 	execute: (operation: any) => any | Promise<any>;
@@ -169,16 +204,25 @@ export type OperationDefinition = {
 	requiresSuperUser?: boolean;
 };
 
+// Operation names this API installed a permission entry for, so a later registration that drops
+// `requiresSuperUser` can retract exactly that entry and nothing else.
+const declaredPermissionNames = new Set<string>();
+
 /**
  * Register an operation function with the server.
  * @param operationDefinition
  */
-server.registerOperation = (operationDefinition: OperationDefinition) => {
-	// A throwaway deploy-validation load must not register (or announce) operations onto the live worker.
-	if (isDeployValidating()) return;
+function registerOperation(operationDefinition: OperationDefinition) {
 	const { name, execute, requiresSuperUser } = operationDefinition;
 	let handler = execute;
-	if (requiresSuperUser !== undefined) {
+	if (requiresSuperUser === undefined) {
+		// A re-registration that drops the flag must also drop the entry the earlier one installed, or
+		// declaration and enforcement disagree: main retracts the grantable mark while this worker keeps
+		// honouring an already-persisted role grant. Scoped to names declared through this API, so one it
+		// never declared is untouched — a component that declared a built-in's name already overwrote
+		// that entry by declaring it, and this only follows.
+		if (declaredPermissionNames.delete(name)) opAuth.unregisterOperationPermission(name);
+	} else {
 		// verifyPerms keys requiredPermissions by the handler's function `.name`, but registered ops
 		// are typically anonymous arrows (all named "execute") which collide and can't be keyed. Wrap
 		// in a FRESH function named after the op so the lookup resolves the right entry. Wrap rather
@@ -188,21 +232,32 @@ server.registerOperation = (operationDefinition: OperationDefinition) => {
 		handler = (...args: any[]) => (execute as any)(...args);
 		Object.defineProperty(handler, 'name', { value: name, configurable: true });
 		opAuth.registerOperationPermission(name, { requiresSu: requiresSuperUser });
+		declaredPermissionNames.add(name);
 	}
 	OPERATION_FUNCTION_MAP.set(name as any, new OperationFunctionObject(handler));
 	// Components load per-worker, so a registration made there is invisible to the main-thread
 	// ops-API dispatcher (each thread has its own OPERATION_FUNCTION_MAP instance). Announce it
-	// so the main thread can forward calls to this worker (#1736).
-	if (!isMainThread) announceRegisteredOperation(name);
-};
+	// so the main thread can forward calls here (#1736), and can mirror the role-allowlist mark that
+	// registerOperationPermission above made only in this thread's scope.
+	if (!isMainThread) announceRegisteredOperation(name, requiresSuperUser !== undefined);
+}
 
 // Register the durable MCP quota policy as a function (see components/mcp/quota.ts). Worker-local,
-// like the tool dispatch that consults it, so no cross-thread announcement is needed. Skipped during
-// deploy validation so a throwaway candidate load can't replace the live worker's policy.
+// like the tool dispatch that consults it, so no cross-thread announcement is needed.
 server.setMcpQuotaHandler = (handler) => {
-	if (isDeployValidating()) return;
 	setMcpQuotaHandler(handler);
 };
+
+// The nested `search_operation` operations dataLayer/export.ts's getRecords can actually run (its
+// VALID_SEARCH_OPERATIONS). Validated at dispatch so an unsupported or missing nested operation is a
+// request-time 400 rather than an async job failure, and so the nested authorization below always
+// resolves a real handler.
+const EXPORT_SEARCH_OPERATIONS = new Set<string>([
+	terms.OPERATIONS_ENUM.SEARCH_BY_VALUE,
+	terms.OPERATIONS_ENUM.SEARCH_BY_HASH,
+	terms.OPERATIONS_ENUM.SEARCH_BY_CONDITIONS,
+	terms.OPERATIONS_ENUM.SQL,
+]);
 
 export function chooseOperation(json: OperationRequestBody, bypassAuth = false) {
 	let getOpResult: OperationFunctionObject;
@@ -224,16 +279,116 @@ export function chooseOperation(json: OperationRequestBody, bypassAuth = false) 
 
 	const { operation_function, job_operation_function } = getOpResult;
 
-	// Here there is a SQL statement in either the operation or the searchOperation (from jobs like export_local).  Need to check the perms
-	// on all affected tables/attributes.
+	const isSqlOperation = json.operation === terms.OPERATIONS_ENUM.SQL;
+	// `verifyPerms` derives the tables it checks from the object it is handed, so the caller-supplied
+	// `search_operation` may only stand in as the permission subject for the operations that actually
+	// run it (dataLayer/export.ts is its only consumer). For anything else it would check the nested
+	// tables while the handler runs against the top-level ones.
+	const nestedSearch =
+		json.operation === terms.OPERATIONS_ENUM.EXPORT_LOCAL || json.operation === terms.OPERATIONS_ENUM.EXPORT_TO_S3
+			? json.search_operation
+			: undefined;
+	if (nestedSearch !== undefined) {
+		// It becomes the permission subject below, and a primitive would throw on the principal
+		// assignment — a 400 rather than a wrapped 500.
+		if (nestedSearch === null || typeof nestedSearch !== 'object' || Array.isArray(nestedSearch)) {
+			throw handleHDBError(
+				new Error(),
+				`'search_operation' must be an object`,
+				hdbErrors.HTTP_STATUS_CODES.BAD_REQUEST,
+				undefined,
+				undefined,
+				true
+			);
+		}
+		// The object check alone lets `{}` and unsupported operations through — they would then fail
+		// asynchronously in the export worker (or dereference `search_operation.operation`). Require a
+		// supported operation at request time; the nested authorization below relies on it resolving.
+		if (typeof nestedSearch.operation !== 'string' || !EXPORT_SEARCH_OPERATIONS.has(nestedSearch.operation)) {
+			throw handleHDBError(
+				new Error(),
+				`'search_operation.operation' must be one of: ${[...EXPORT_SEARCH_OPERATIONS].join(', ')}`,
+				hdbErrors.HTTP_STATUS_CODES.BAD_REQUEST,
+				undefined,
+				undefined,
+				true
+			);
+		}
+		// Dispatch state, never client input: the export worker re-reads `parsed_sql_object` off this
+		// same object (evaluateSQL), and it carries `permissions_checked`, so a body-supplied one would
+		// execute an AST no check ever saw. Deleting it rather than replacing it with the authorized
+		// parse is deliberate — the worker then re-parses and re-runs the check itself.
+		delete nestedSearch.parsed_sql_object;
+	}
+	// The AST check below covers only the statement's tables, never the caller's right to invoke the
+	// job operation, so it is additive to verifyPerms rather than an alternative to it.
+	const hasNestedSqlSearch = nestedSearch?.operation === terms.OPERATIONS_ENUM.SQL;
+
 	try {
-		if (json.operation === 'sql' || (json.search_operation && json.search_operation.operation === 'sql')) {
-			const sql = require('../../sqlTranslator/index');
-			const sqlStatement = json.operation === 'sql' ? json.sql : json.search_operation.sql;
+		if (isSqlOperation || hasNestedSqlSearch) {
+			const sql = getSqlModule();
+			const sqlStatement = isSqlOperation ? json.sql : nestedSearch.sql;
+			// Before this dispatch's own parse is assigned, so a body-supplied object cannot survive it.
+			stripSuppliedParsedSqlObject(json);
 			const parsedSqlObject = sql.convertSQLToAST(sqlStatement);
-			json.parsed_sql_object = parsedSqlObject;
+			if (hasNestedSqlSearch && parsedSqlObject.variant !== terms.VALID_SQL_OPS_ENUM.SELECT) {
+				throw handleHDBError(
+					new Error(),
+					`'search_operation.sql' must be a SELECT statement`,
+					hdbErrors.HTTP_STATUS_CODES.BAD_REQUEST,
+					undefined,
+					undefined,
+					true
+				);
+			}
+			// Only the direct-SQL path consumes `json.parsed_sql_object` (evaluateSQL). A nested export
+			// re-parses off `search_operation` — whose `parsed_sql_object` was deleted above — so setting
+			// it here for a job would be inert.
+			if (isSqlOperation) {
+				json.parsed_sql_object = parsedSqlObject;
+			}
 			if (!bypassAuth) {
-				const astPermCheck = sql.checkASTPermissions(json, parsedSqlObject);
+				if (hasNestedSqlSearch) {
+					// A nested-SQL export's outer op (export_local/export_to_s3) is `requires_su`, which the
+					// AST table check below does not enforce. Authorize invoking it through verifyPerms
+					// exactly as the non-SQL job path does — otherwise SQL is a way around the requires_su
+					// gate that path enforces. The nested table reads are then covered additively by the AST
+					// check. verifyPerms also runs the allowlist (gate 1) and the export token scope.
+					const functionToCheck = job_operation_function === undefined ? operation_function : job_operation_function;
+					const outerDenial = opAuth.verifyPerms(json, functionToCheck, { apiOperation: json.operation });
+					if (outerDenial) {
+						operationLog.error(`${HTTP_STATUS_CODES.FORBIDDEN} from operation ${json.operation}`);
+						operationLog.warn(`User '${json.hdb_user?.username}' is not permitted to ${json.operation}`);
+						throw handleHDBError(
+							new Error(),
+							outerDenial,
+							hdbErrors.HTTP_STATUS_CODES.FORBIDDEN,
+							undefined,
+							false,
+							true
+						);
+					}
+				} else {
+					// Direct SQL: the invoked operation IS `sql`, so the role `operations` allowlist is the
+					// operation-invocation check — otherwise an allowlisted role reaches unlisted operations
+					// via `sql`. json.operation is already the API name.
+					const allowlistDenial = opAuth.verifyOperationsAllowlist(json, json.operation);
+					if (allowlistDenial) {
+						operationLog.error(`${HTTP_STATUS_CODES.FORBIDDEN} from operation ${json.operation}`);
+						operationLog.warn(`User '${json.hdb_user?.username}' is not permitted to ${json.operation}`);
+						throw handleHDBError(
+							new Error(),
+							allowlistDenial,
+							hdbErrors.HTTP_STATUS_CODES.FORBIDDEN,
+							undefined,
+							undefined,
+							true
+						);
+					}
+				}
+				// `json.operation` explicitly — the operation this dispatch already resolved, not a
+				// field read back off the request body.
+				const astPermCheck = sql.checkASTPermissions(json, parsedSqlObject, json.operation);
 				if (astPermCheck) {
 					operationLog.error(`${HTTP_STATUS_CODES.FORBIDDEN} from operation ${json.operation}`);
 					operationLog.warn(`User '${json.hdb_user?.username}' is not permitted to ${json.operation}`);
@@ -252,15 +407,22 @@ export function chooseOperation(json: OperationRequestBody, bypassAuth = false) 
 			!bypassAuth &&
 			json.operation !== terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS &&
 			json.operation !== terms.OPERATIONS_ENUM.LOGIN &&
-			json.operation !== terms.OPERATIONS_ENUM.LOGOUT
+			json.operation !== terms.OPERATIONS_ENUM.LOGOUT &&
+			// Same rationale: the OIDC exchange authenticates its own caller (#2171), so there is no
+			// hdb_user for verifyPerms to check against.
+			json.operation !== terms.OPERATIONS_ENUM.EXCHANGE_OIDC_TOKEN
 		) {
 			const functionToCheck = job_operation_function === undefined ? operation_function : job_operation_function;
-			const operation_json = json.search_operation ? json.search_operation : json;
-			if (!operation_json.hdb_user) {
-				operation_json.hdb_user = json.hdb_user;
-			}
+			const operation_json = nestedSearch ?? json;
+			// Authentication is the only source of the principal; a nested one is overwritten, not honored.
+			operation_json.hdb_user = json.hdb_user;
 
-			const verifyPermsResult = opAuth.verifyPerms(operation_json, functionToCheck);
+			// Pass the top-level operation for the token-scope check: for an export job, operation_json
+			// is the nested search_operation, so json.operation (export_local/export_to_s3) is the op the
+			// scope must gate — not the inner search.
+			const verifyPermsResult = opAuth.verifyPerms(operation_json, functionToCheck, {
+				apiOperation: json.operation,
+			});
 
 			if (verifyPermsResult) {
 				operationLog.error(`${HTTP_STATUS_CODES.FORBIDDEN} from operation ${json.operation}`);
@@ -275,6 +437,62 @@ export function chooseOperation(json: OperationRequestBody, bypassAuth = false) 
 					false,
 					true
 				);
+			}
+
+			// The check above authorizes invoking the operation, but for a non-SQL export it returns
+			// before any table check — a requires_su export is granted the moment its `operations`
+			// allowlist lists it (verifyPerms gate 2) — and the job worker then runs `search_operation`
+			// through searchByValue/Hash/Conditions, none of which check permissions. So the nested read
+			// is only enforceable here: authorize it additively against its real search handler and the
+			// authenticated principal (assigned above via operation_json), so a role that may invoke the
+			// export but lacks read on the table is denied. A nested SQL search is covered by the AST
+			// branch above instead.
+			if (nestedSearch) {
+				const nestedFunction = getOperationFunction(nestedSearch).operation_function;
+				const nestedPermsResult = opAuth.verifyPerms(nestedSearch, nestedFunction, {
+					apiOperation: json.operation,
+				});
+				if (nestedPermsResult) {
+					operationLog.error(`${HTTP_STATUS_CODES.FORBIDDEN} from operation ${json.operation}`);
+					operationLog.warn(
+						`User '${operation_json.hdb_user?.username}' is not permitted to ${nestedSearch.operation} within ${json.operation}`
+					);
+					throw handleHDBError(
+						new Error(),
+						nestedPermsResult,
+						hdbErrors.HTTP_STATUS_CODES.FORBIDDEN,
+						undefined,
+						false,
+						true
+					);
+				}
+			}
+			// A rolling deploy's per-peer activation rides restart_service, but what it does is deploy: a caller
+			// asking for one must be allowed to deploy, not only to restart.
+			if (json.operation === terms.OPERATIONS_ENUM.RESTART_SERVICE && json.activate_deployment !== undefined) {
+				const deployRequest = {
+					...json,
+					operation: terms.OPERATIONS_ENUM.DEPLOY_COMPONENT,
+					project: (json.activate_deployment as { project?: unknown } | undefined)?.project,
+				};
+				const deployPermsResult = opAuth.verifyPerms(
+					deployRequest,
+					getOperationFunction(deployRequest).operation_function,
+					{ apiOperation: terms.OPERATIONS_ENUM.DEPLOY_COMPONENT }
+				);
+				if (deployPermsResult) {
+					operationLog.warn(
+						`User '${json.hdb_user?.username}' is not permitted to activate a deployment through ${json.operation}`
+					);
+					throw handleHDBError(
+						new Error(),
+						deployPermsResult,
+						hdbErrors.HTTP_STATUS_CODES.FORBIDDEN,
+						undefined,
+						false,
+						true
+					);
+				}
 			}
 		}
 	} catch (err) {
@@ -309,8 +527,13 @@ _assignPackageExport('operation', operation);
 /**
  * Standalone function to execute an operation
  */
-export function operation(operation: OperationRequestBody, context: Context, authorize: boolean) {
+export function operation(
+	operation: OperationRequestBody,
+	context: Context & { replicatedFrom?: string },
+	authorize: boolean
+) {
 	operation.hdb_user = context?.user;
+	if (context?.replicatedFrom) (operation as any)[terms.REPLICATED_FROM] = context.replicatedFrom;
 	const bypassAuth = !authorize;
 	return runWithOperationAuthorizationBypass(bypassAuth, () => {
 		const operation_function = chooseOperation(operation, bypassAuth);
@@ -354,6 +577,9 @@ async function catchup(req: CatchupOperationRequest) {
 				case terms.OPERATIONS_ENUM.UPSERT:
 					await insert.upsert(transaction);
 					break;
+				case terms.OPERATIONS_ENUM.PUT:
+					await insert.put(transaction);
+					break;
 				case terms.OPERATIONS_ENUM.DELETE:
 					await delete_.deleteRecord(transaction);
 					break;
@@ -376,21 +602,18 @@ interface JobResult {
 export async function executeJob(json: OperationRequestBody): Promise<JobResult> {
 	transformReq(json);
 
-	let newJobObject;
-	let result;
 	try {
-		result = await jobs.addJob(json);
-		if (result) {
-			newJobObject = result.createdJob;
-			operationLog.info('addJob result', result);
-			const jobRunnerMessage = new jobRunner.RunnerMessage(newJobObject, json);
-			const returnMessage = await jobRunner.parseMessage(jobRunnerMessage);
+		const result = await jobs.addJob(json);
+		const newJobObject = result.createdJob;
+		if (!newJobObject) throw new Error(result.error || result.message || `Unable to create a ${json.operation} job`);
+		operationLog.info('addJob result', result);
+		const jobRunnerMessage = new jobRunner.RunnerMessage(newJobObject, json);
+		const returnMessage = await jobRunner.parseMessage(jobRunnerMessage);
 
-			return {
-				message: returnMessage ?? `Starting job with id ${newJobObject.id}`,
-				job_id: newJobObject.id,
-			};
-		}
+		return {
+			message: returnMessage ?? `Starting job with id ${newJobObject.id}`,
+			job_id: newJobObject.id,
+		};
 	} catch (err) {
 		// errors that already carry a statusCode (e.g. ClientError from job validation) are
 		// client-facing as-is; wrapping them here would turn a 400/404/409 into a 500
@@ -408,6 +631,7 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 	opFuncMap.set(terms.OPERATIONS_ENUM.INSERT, new OperationFunctionObject(insert.insert));
 	opFuncMap.set(terms.OPERATIONS_ENUM.UPDATE, new OperationFunctionObject(insert.update));
 	opFuncMap.set(terms.OPERATIONS_ENUM.UPSERT, new OperationFunctionObject(insert.upsert));
+	opFuncMap.set(terms.OPERATIONS_ENUM.PUT, new OperationFunctionObject(insert.put));
 	opFuncMap.set(terms.OPERATIONS_ENUM.SEARCH_BY_CONDITIONS, new OperationFunctionObject(search.searchByConditions));
 	opFuncMap.set(terms.OPERATIONS_ENUM.SEARCH_BY_HASH, new OperationFunctionObject(search.searchByHash));
 	opFuncMap.set(terms.OPERATIONS_ENUM.SEARCH_BY_ID, new OperationFunctionObject(search.searchByHash));
@@ -561,6 +785,7 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 		terms.OPERATIONS_ENUM.GET_DEPLOYMENT,
 		new OperationFunctionObject(deploymentOperations.handleGetDeployment)
 	);
+	opFuncMap.set(terms.OPERATIONS_ENUM.LIST_RELEASES, new OperationFunctionObject(releaseOperations.handleListReleases));
 	opFuncMap.set(
 		terms.OPERATIONS_ENUM.GET_DEPLOYMENT_PAYLOAD,
 		new OperationFunctionObject(deploymentOperations.handleGetDeploymentPayload)
@@ -577,6 +802,29 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 	opFuncMap.set(
 		terms.OPERATIONS_ENUM.GET_SECRETS_PUBLIC_KEY,
 		new OperationFunctionObject(secretOperations.getSecretsPublicKey)
+	);
+	opFuncMap.set(terms.OPERATIONS_ENUM.ADD_OIDC_TRUST, new OperationFunctionObject(trustPolicyOperations.addOidcTrust));
+	opFuncMap.set(
+		terms.OPERATIONS_ENUM.LIST_OIDC_TRUST,
+		new OperationFunctionObject(trustPolicyOperations.listOidcTrust)
+	);
+	opFuncMap.set(
+		terms.OPERATIONS_ENUM.DROP_OIDC_TRUST,
+		new OperationFunctionObject(trustPolicyOperations.dropOidcTrust)
+	);
+	opFuncMap.set(
+		terms.OPERATIONS_ENUM.EXCHANGE_OIDC_TOKEN,
+		new OperationFunctionObject(tokenExchange.exchangeOidcToken)
+	);
+	opFuncMap.set(terms.OPERATIONS_ENUM.ENABLE_PREVIEWS, new OperationFunctionObject(previewOperations.enablePreviews));
+	opFuncMap.set(terms.OPERATIONS_ENUM.DISABLE_PREVIEWS, new OperationFunctionObject(previewOperations.disablePreviews));
+	opFuncMap.set(
+		terms.OPERATIONS_ENUM.FENCE_PREVIEW_RELEASES,
+		new OperationFunctionObject(previewOperations.fencePreviewReleases)
+	);
+	opFuncMap.set(
+		terms.OPERATIONS_ENUM.GET_PREVIEW_POLICY,
+		new OperationFunctionObject(previewOperations.getPreviewPolicy)
 	);
 	opFuncMap.set(
 		terms.OPERATIONS_ENUM.READ_TRANSACTION_LOG,
@@ -616,3 +864,6 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 
 	return opFuncMap;
 }
+
+server.operation = operation;
+server.registerOperation = registerOperation;

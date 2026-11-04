@@ -1,0 +1,252 @@
+/**
+ * harper#2335: after `deploy_component { restart: true }`, the deployed component's MQTT topic must
+ * be usable on every worker — and a worker that is going away must tell its clients so.
+ *
+ * The regression: the deploy fired the worker restart without awaiting it and reported success
+ * immediately. Where the OS lets replacements share a port, the not-yet-replaced workers keep
+ * accepting connections for the whole rolling restart, so a client publishing as soon as the deploy
+ * succeeds lands (per connection, at random) on a worker still running the pre-deploy component set
+ * and its publish is refused. Measured on Linux against the pre-fix build: 38 of 870 publishes
+ * refused over the first ~3s, mixed with successes in the same round.
+ *
+ * Also asserted: a publish to a topic no resource handles is refused with 0x90 "Topic Name invalid"
+ * and a reason string rather than a bare 0x80, and a worker restart sends v5 clients DISCONNECT
+ * 0x8B "Server shutting down" rather than dropping the socket unannounced.
+ */
+import { suite, test, before, after } from 'node:test';
+import { strictEqual, ok } from 'node:assert';
+import { join } from 'node:path';
+import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+
+import mqtt, { type MqttClient } from 'mqtt';
+import {
+	startHarper,
+	teardownHarper,
+	sendOperation,
+	targz,
+	type ContextWithHarper,
+} from '@harperfast/integration-testing';
+
+const PROJECT = 'mqtt-deploy-restart-app';
+const TABLE = 'DeployRestartMsg';
+const THREADS = 4;
+/** Fresh connections per round; each is accepted by whichever worker wins it. */
+const FANOUT = 8;
+const ROUNDS = 4;
+
+/** MQTT v5 reason codes. */
+const TOPIC_NAME_INVALID = 0x90;
+const SERVER_SHUTTING_DOWN = 0x8b;
+
+// mqtt.js's WebSocket transport doesn't complete CONNACK on Bun, and `restart_service http` crashes
+// the instance on Windows (harper#549) — the same skips the sibling MQTT and restart suites carry.
+const skipSuite = process.env.HARPER_RUNTIME === 'bun' || process.platform === 'win32';
+
+async function buildPayload(): Promise<string> {
+	const dir = await mkdtemp(join(tmpdir(), 'mqtt-deploy-restart-'));
+	try {
+		await writeFile(join(dir, 'config.yaml'), 'graphqlSchema:\n  files: "*.graphql"\n');
+		await writeFile(
+			join(dir, 'schema.graphql'),
+			`type ${TABLE} @table @export {\n\tid: ID @primaryKey\n\tvalue: String\n}\n`
+		);
+		return await targz(dir);
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+}
+
+function connect(
+	url: string,
+	clientId: string,
+	admin: { username: string; password: string },
+	options: Partial<mqtt.IClientOptions> = {}
+): Promise<MqttClient> {
+	return new Promise((resolve, reject) => {
+		const client = mqtt.connect(url, {
+			clientId,
+			username: admin.username,
+			password: admin.password,
+			protocolVersion: 5,
+			clean: true,
+			reconnectPeriod: 0,
+			connectTimeout: 10_000,
+			...options,
+		});
+		const timer = setTimeout(() => {
+			client.end(true);
+			reject(new Error('MQTT connect timed out'));
+		}, 15_000);
+		client.on('connect', () => {
+			clearTimeout(timer);
+			resolve(client);
+		});
+		client.on('error', (error) => {
+			clearTimeout(timer);
+			client.end(true);
+			reject(error);
+		});
+	});
+}
+
+/**
+ * Connect, retrying a refused connection for up to `timeoutMs`. Only the first test asserts on
+ * connection availability; the others are about what the server answers once connected, so they
+ * wait out any restart still in progress rather than failing for the wrong reason.
+ */
+async function connectWhenAvailable(
+	url: string,
+	clientId: string,
+	admin: { username: string; password: string },
+	options: Partial<mqtt.IClientOptions> = {},
+	timeoutMs = 30_000
+): Promise<MqttClient> {
+	const deadline = Date.now() + timeoutMs;
+	for (;;) {
+		try {
+			return await connect(url, clientId, admin, options);
+		} catch (error) {
+			if (Date.now() >= deadline) throw error;
+			await new Promise((resolve) => setTimeout(resolve, 250));
+		}
+	}
+}
+
+/**
+ * Resolves with the publish error (which carries the v5 reason code) and the PUBACK itself —
+ * mqtt.js builds the error message from the reason code alone, so the server's reason string is
+ * only visible on the packet.
+ */
+function publish(client: MqttClient, topic: string): Promise<{ error: any; ack: any }> {
+	return new Promise((resolve, reject) => {
+		const timer = setTimeout(() => reject(new Error(`publish to ${topic} never settled`)), 15_000);
+		client.publish(topic, JSON.stringify({ value: 'x' }), { qos: 1 }, (error, ack) => {
+			clearTimeout(timer);
+			resolve({ error: error ?? null, ack });
+		});
+	});
+}
+
+suite(
+	'MQTT topic availability across a deploy restart (harper#2335)',
+	{ skip: skipSuite },
+	(ctx: ContextWithHarper) => {
+		let url: string;
+
+		before(async () => {
+			await startHarper(ctx, { config: { threads: { count: THREADS } } });
+			url = ctx.harper.httpURL.replace(/^http/, 'ws') + '/mqtt';
+		});
+
+		after(async () => {
+			await teardownHarper(ctx);
+		});
+
+		test('the deployed topic is live on every worker as soon as the deploy returns', async () => {
+			const response = await sendOperation(ctx.harper, {
+				operation: 'deploy_component',
+				project: PROJECT,
+				payload: await buildPayload(),
+				restart: true,
+			});
+			ok(
+				response.message?.includes(`Successfully deployed: ${PROJECT}`),
+				`unexpected deploy message: ${response.message}`
+			);
+
+			const failures: string[] = [];
+			for (let round = 0; round < ROUNDS; round++) {
+				await Promise.all(
+					Array.from({ length: FANOUT }, async (_, i) => {
+						const tag = `${round}-${i}`;
+						let client: MqttClient;
+						try {
+							client = await connect(url, `deploy-restart-${tag}`, ctx.harper.admin);
+						} catch (error: any) {
+							failures.push(`connect ${tag}: ${error.message}`);
+							return;
+						}
+						try {
+							const { error } = await publish(client, `${TABLE}/probe-${tag}`);
+							if (error) failures.push(`publish ${tag}: ${error.message} (reason ${error.code})`);
+						} catch (error: any) {
+							failures.push(`publish ${tag}: ${error.message}`);
+						} finally {
+							client.end(true);
+						}
+					})
+				);
+			}
+			strictEqual(failures.length, 0, `publishes failed after the deploy returned:\n  ${failures.join('\n  ')}`);
+		});
+
+		test('a publish to an unhandled topic is refused as "Topic Name invalid", not "Unspecified error"', async () => {
+			const client = await connectWhenAvailable(url, 'deploy-restart-unknown-topic', ctx.harper.admin);
+			try {
+				const { error, ack } = await publish(client, 'NoSuchTopicResource/anything');
+				ok(error, 'expected the publish to an unhandled topic to be refused');
+				strictEqual(error.code, TOPIC_NAME_INVALID, `expected reason code 0x90, got ${error.code}: ${error.message}`);
+				ok(
+					/no resource has been defined/.test(ack?.properties?.reasonString ?? ''),
+					`expected the refusal to carry a reason string, got: ${ack?.properties?.reasonString}`
+				);
+			} finally {
+				client.end(true);
+			}
+		});
+
+		test('a client that asks for no problem information is not sent a reason string', async () => {
+			// [MQTT-3.1.2-29]: the code still has to come back, only the string is withheld.
+			const client = await connectWhenAvailable(url, 'deploy-restart-no-problem-info', ctx.harper.admin, {
+				// mqtt-packet serializes this byte from a boolean and refuses a raw 0.
+				properties: { requestProblemInformation: false },
+			});
+			try {
+				const { error, ack } = await publish(client, 'NoSuchTopicResource/anything');
+				strictEqual(error?.code, TOPIC_NAME_INVALID, `expected reason code 0x90, got ${error?.code}`);
+				strictEqual(
+					ack?.properties?.reasonString,
+					undefined,
+					`expected no reason string, got: ${ack?.properties?.reasonString}`
+				);
+			} finally {
+				client.end(true);
+			}
+		});
+
+		test('a worker restart disconnects MQTT clients with "Server shutting down"', async () => {
+			const client = await connectWhenAvailable(url, 'deploy-restart-shutdown-notice', ctx.harper.admin);
+			// v3.1.1 has no server-to-client DISCONNECT, so that client must only be closed.
+			const legacyClient = await connectWhenAvailable(url, 'deploy-restart-legacy-notice', ctx.harper.admin, {
+				protocolVersion: 4,
+			});
+			let legacyDisconnects = 0;
+			legacyClient.on('disconnect', () => legacyDisconnects++);
+			const legacyClosed = new Promise<void>((resolve, reject) => {
+				const timer = setTimeout(() => reject(new Error('the v3.1.1 client was never closed')), 60_000);
+				legacyClient.on('close', () => {
+					clearTimeout(timer);
+					resolve();
+				});
+			});
+			try {
+				const disconnected = new Promise<any>((resolve, reject) => {
+					const timer = setTimeout(() => reject(new Error('no DISCONNECT received before the socket closed')), 60_000);
+					client.on('disconnect', (packet) => {
+						clearTimeout(timer);
+						resolve(packet);
+					});
+				});
+				await sendOperation(ctx.harper, { operation: 'restart_service', service: 'http' });
+				const packet = await disconnected;
+				strictEqual(packet.reasonCode, SERVER_SHUTTING_DOWN, `unexpected DISCONNECT reason ${packet.reasonCode}`);
+				await legacyClosed;
+				strictEqual(legacyDisconnects, 0, 'a v3.1.1 client must not be sent a DISCONNECT packet');
+			} finally {
+				client.end(true);
+				legacyClient.end(true);
+			}
+		});
+	}
+);

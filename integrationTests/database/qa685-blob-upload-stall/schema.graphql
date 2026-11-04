@@ -1,0 +1,13 @@
+type MediaAsset @table @export {
+	id: ID! @primaryKey
+	data: Blob
+	contentType: String
+	filename: String
+}
+
+type ControlWrite @table @export {
+	id: ID! @primaryKey
+	seq: Long
+	writer: Long
+	ts: Float
+}

@@ -1,10 +1,11 @@
-const { isHdbInstalled } = require('#src/utility/installation');
+const { isHdbInstalled } = require('#js/utility/installation');
 const sinon = require('sinon');
 const { expect } = require('chai');
 const fs = require('node:fs');
 const path = require('path');
 const envMangr = require('#src/utility/environment/environmentManager');
 const testUtils = require('../testUtils.js');
+const { clearRootPath } = require('../bootPropsFixture.js');
 const terms = require('#src/utility/hdbTerms');
 
 describe('Test isHdbInstalled function', () => {
@@ -14,6 +15,9 @@ describe('Test isHdbInstalled function', () => {
 	let logErrorStub;
 	let sandbox;
 	const TEST_ERROR = 'I am a unit test error test';
+
+	// exercises the boot-props install check, which mocha.init.js's ROOTPATH export shadows
+	clearRootPath();
 
 	before(() => {
 		sandbox = sinon.createSandbox();

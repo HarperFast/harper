@@ -2,11 +2,24 @@ require('../testUtils');
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
-const { RocksDatabase } = require('@harperfast/rocksdb-js');
+const { VERSION_REUSED } = require('#src/resources/RecordEncoder');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
+const { RocksDatabase, Transaction } = require('../rocksdbBindings.mts').rocksdbBindings();
 const { PrimaryRocksDatabase } = require('#src/resources/PrimaryRocksDatabase');
+const { transaction } = require('#src/resources/transaction');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
+
+// Mirrors rocksdb-js's VerificationTable::valueVersionIsNotUnique, which reads this header from the
+// stored value itself:
+// https://github.com/HarperFast/rocksdb-js/blob/v2.11.0/src/binding/core/verification_table.h#L59-L74
+// Literals, not imported constants: records already on disk carry these exact bits.
+const VERSION_HEADER_TAG = 0x0e;
+const VERSION_NOT_UNIQUE_FLAG = 0x10000;
+function nativeReadsVersionNotUnique(value) {
+	if (value.length < 12 || value[8] !== VERSION_HEADER_TAG) return false;
+	return (((value[9] << 16) | (value[10] << 8) | value[11]) & VERSION_NOT_UNIQUE_FLAG) !== 0;
+}
 
 describe('PrimaryRocksDatabase', function () {
 	let TestTable;
@@ -18,7 +31,12 @@ describe('PrimaryRocksDatabase', function () {
 		TestTable = table({
 			table: 'PrimaryRocksTest',
 			database: 'test',
-			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'name' },
+				{ name: 'count' },
+				{ name: 'expiresAt', expiresAt: true, indexed: true },
+			],
 		});
 	});
 
@@ -108,5 +126,198 @@ describe('PrimaryRocksDatabase', function () {
 		await TestTable.put(8, { name: 'eight updated' }); // clears cache entry
 		const result = await TestTable.get(8);
 		assert.equal(result.name, 'eight updated');
+	});
+
+	it('marks a record whose version was reused by a resequenced write in the stored header the VT reads, preserving its expiresAt', async function () {
+		const store = TestTable.primaryStore;
+		// Raw stored bytes: Harper's own decoder would follow a layout change it made itself.
+		await TestTable.put(13, { name: 'base', count: 0 });
+		const baseVersion = store.getBinarySync(13).readDoubleBE(0);
+		const expiresAt = baseVersion + 60_000;
+		await TestTable.patch(13, { count: { __op__: 'add', value: 1 } }, { timestamp: baseVersion + 100, expiresAt });
+		const inOrder = store.getBinarySync(13);
+		const inOrderVersion = inOrder.readDoubleBE(0);
+		assert(inOrderVersion > baseVersion, 'the in-order write advances the big-endian version at offset 0');
+		assert.equal(inOrder[8], VERSION_HEADER_TAG, 'the metadata word starts at offset 8 with its tag byte');
+		assert.equal(nativeReadsVersionNotUnique(inOrder), false, 'an advancing write is not flagged');
+
+		await TestTable.patch(13, { count: { __op__: 'add', value: 1 } }, { timestamp: baseVersion + 50 });
+		const resequencedBytes = store.getBinarySync(13);
+		assert.equal(resequencedBytes.readDoubleBE(0), inOrderVersion, 'the resequenced write keeps the existing version');
+		assert.equal(resequencedBytes[8], VERSION_HEADER_TAG, 'the metadata word starts at offset 8 with its tag byte');
+		assert.equal(
+			nativeReadsVersionNotUnique(resequencedBytes),
+			true,
+			'the reused version is flagged where the VT reads it'
+		);
+		assert.equal(VERSION_REUSED, VERSION_NOT_UNIQUE_FLAG, 'VERSION_REUSED is the bit records already on disk carry');
+
+		const resequenced = store.getEntry(13);
+		assert.equal(resequenced.version, inOrderVersion);
+		assert.equal(resequenced.value.count, 2);
+		assert.equal(resequenced.expiresAt, expiresAt);
+		assert(resequenced.metadataFlags & VERSION_REUSED);
+	});
+
+	it('VT does not vouch for a version a resequenced write reused', async function () {
+		const store = TestTable.primaryStore;
+		const now = Date.now();
+		await TestTable.put(9, { name: 'base', count: 0 });
+		await TestTable.patch(9, { name: 'newer', count: { __op__: 'add', value: 1 } }, { timestamp: now + 100 });
+		await TestTable.get(9);
+		const inOrder = store.getEntry(9);
+		assert(store.verifyVersion(9, inOrder.version), 'VT should vouch for an in-order version');
+
+		// out-of-order: merges onto the newer record and stores under its (reused) version
+		await TestTable.patch(9, { count: { __op__: 'add', value: 1 } }, { timestamp: now + 50 });
+		const resequenced = store.getEntry(9);
+		assert.equal(resequenced.version, inOrder.version, 'resequenced write keeps the existing version');
+		assert.equal(resequenced.value.count, 2, 'both increments are applied');
+		assert(resequenced.metadataFlags & VERSION_REUSED, 'the stored record is marked non-unique for the native layer');
+		assert(!store.verifyVersion(9, resequenced.version), 'VT must not vouch for a version shared by two stored values');
+		assert.notEqual(store.getEntry(9).value, resequenced.value, 'a flagged record is never served from cache');
+		assert(!store.verifyVersion(9, resequenced.version), 'reading a flagged record must not publish its version');
+		const client = await TestTable.get(9);
+		assert.equal(client.count, 2, 'a client-level read sees the merged value, not a stale cache vouch');
+	});
+
+	it('an uncachedRead bypasses the cache vouch and returns the stored record', async function () {
+		const store = TestTable.primaryStore;
+		await TestTable.put(12, { name: 'stored', count: 5 });
+		await TestTable.get(12); // warm the cache and seed the VT slot
+		const cached = store.getEntry(12);
+		assert(store.verifyVersion(12, cached.version), 'VT vouches for the in-order version');
+		// the vouch fast path returns the cached object itself, so identity is what distinguishes them
+		assert.equal(store.getEntry(12).value, cached.value, 'the vouch path serves the cached object');
+		const direct = store.getEntry(12, { uncachedRead: true });
+		assert.notEqual(direct.value, cached.value, 'uncachedRead must decode from the store, not serve the cache');
+		assert.equal(direct.value.name, 'stored');
+		assert.equal(direct.value.count, 5);
+		assert.equal(direct.version, cached.version, 'the decoded entry carries the stored version');
+	});
+
+	it('an in-order write after a resequenced one restores vouching', async function () {
+		const store = TestTable.primaryStore;
+		const now = Date.now();
+		await TestTable.put(11, { name: 'base', count: 0 });
+		await TestTable.patch(11, { name: 'newer', count: { __op__: 'add', value: 1 } }, { timestamp: now + 100 });
+		await TestTable.patch(11, { count: { __op__: 'add', value: 1 } }, { timestamp: now + 50 });
+		const reused = store.getEntry(11);
+		assert(reused.metadataFlags & VERSION_REUSED, 'the reused version is marked');
+		assert(!store.verifyVersion(11, reused.version), 'the reused version is not vouched for');
+
+		// the next in-order write gives the record a version of its own; vouching resumes with the
+		// same one-read lag as any cold key
+		await TestTable.patch(11, { name: 'later' }, { timestamp: now + 200 });
+		const advanced = store.getEntry(11);
+		assert(advanced.version > reused.version, 'the in-order write advances the version');
+		assert.equal(advanced.value.count, 2, 'the merged count survives the in-order write');
+		store.getEntry(11);
+		assert(store.verifyVersion(11, advanced.version), 'vouching resumes for a version of its own');
+	});
+
+	it('a caching read hands rocksdb-js the transaction and version keys, not a copy of the caller options', async function () {
+		const store = TestTable.primaryStore;
+		await TestTable.put(30, { name: 'thirty' });
+		const passed = [];
+		const originalGetSync = RocksDatabase.prototype.getSync;
+		RocksDatabase.prototype.getSync = function (id, options) {
+			if (this === store) passed.push(options);
+			return originalGetSync.call(this, id, options);
+		};
+		const transaction = new Transaction(store.store);
+		try {
+			// shaped like the DatabaseTransaction HNSW passes as its read options
+			const options = { transaction, writes: [], completions: [], readTxnRefCount: 1, timeout: 60_000 };
+			const cold = store.getEntry(30, options);
+			const warm = store.getEntry(30, options);
+			assert.equal(cold.value.name, 'thirty');
+			assert.equal(warm.value.name, 'thirty');
+			assert.deepStrictEqual(passed, [
+				{ transaction, populateVersion: true },
+				{ transaction, expectedVersion: cold.version },
+			]);
+			assert.strictEqual(passed[1].transaction, transaction);
+
+			store.putSync(31, { name: 'uncommitted' }, { transaction });
+			assert.equal(
+				store.getEntry(31, options)?.value?.name,
+				'uncommitted',
+				'the read sees its transaction’s own uncommitted write'
+			);
+			assert.equal(store.getEntry(31), undefined);
+		} finally {
+			RocksDatabase.prototype.getSync = originalGetSync;
+			transaction.abort();
+		}
+	});
+
+	describe('record cache exposure', function () {
+		let syncGets;
+		let originalGetSync;
+		beforeEach(function () {
+			syncGets = 0;
+			originalGetSync = RocksDatabase.prototype.getSync;
+			RocksDatabase.prototype.getSync = function (...args) {
+				if (this === TestTable.primaryStore) syncGets++;
+				return originalGetSync.apply(this, args);
+			};
+		});
+		afterEach(function () {
+			RocksDatabase.prototype.getSync = originalGetSync;
+		});
+
+		async function warm(id, name) {
+			await TestTable.put(id, { name });
+			await TestTable.get(id);
+			await TestTable.get(id);
+		}
+
+		it('primaryStore.cache is the record cache of a caching table', async function () {
+			const cache = TestTable.primaryStore.cache;
+			assert(cache, 'a cache:true table exposes its record cache');
+			await warm(20, 'twenty');
+			assert(cache.get(20), 'a read record is in the exposed cache');
+		});
+
+		it('a warm Table.get completes synchronously from the cache, without getSync', async function () {
+			await warm(21, 'twenty-one');
+			const cachedValue = TestTable.primaryStore.cache.getValue(21);
+			syncGets = 0;
+			await transaction({}, (txn) => {
+				const result = TestTable.get({ id: 21, syncAllowed: true, ensureLoaded: true }, { transaction: txn });
+				assert.equal(typeof result?.then, 'undefined', 'a warm hit is not a promise');
+				assert.equal(result, cachedValue, 'served from the record cache');
+			});
+			assert.equal(syncGets, 0, 'a cached record must not route RocksDB reads to a blocking getSync');
+		});
+
+		it('a VT hit returns the cached entry without a promise, even when async is requested', async function () {
+			await warm(22, 'twenty-two');
+			const store = TestTable.primaryStore;
+			const entry = store.getEntry(22, { async: true });
+			assert.equal(typeof entry?.then, 'undefined');
+			assert.equal(entry.value, store.cache.getValue(22), 'served from the record cache');
+		});
+
+		it('a save invalidates the cached value', async function () {
+			await warm(23, 'twenty-three');
+			const store = TestTable.primaryStore;
+			assert(store.cache.get(23));
+			await TestTable.put(23, { name: 'twenty-three updated' });
+			assert.equal(store.cache.get(23), undefined, 'the write dropped the cached value');
+			assert.equal((await TestTable.get(23)).name, 'twenty-three updated');
+		});
+
+		it('primaryStore.cache.clear() drops cached values, so the next read decodes from the store', async function () {
+			await warm(24, 'twenty-four');
+			const store = TestTable.primaryStore;
+			const cachedValue = store.cache.getValue(24);
+			store.cache.clear();
+			assert.equal(store.cache.get(24), undefined);
+			const record = await TestTable.get(24);
+			assert.notEqual(record, cachedValue, 'the record was decoded again, not served from the cache');
+			assert.equal(record.name, 'twenty-four');
+		});
 	});
 });

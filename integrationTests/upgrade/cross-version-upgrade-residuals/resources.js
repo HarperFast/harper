@@ -17,8 +17,6 @@
 //     single-id /PointGet/ used, so the read semantics under test are unchanged.
 //   GET  /PointGet/?id=X                                         — single-id cached point-GET
 //     (kept for parity/spot checks).
-//   POST /Touch/ <row>                                           — write-then-read heal probe;
-//     accepts any row shape (width-heterogeneous rows carry different field sets).
 //
 // Widget is a component-defined table (schema.graphql) with a FIXED declared field set (id/sku/
 // batch/name) but rows carry additional UNDECLARED fields to build a non-trivial typed-struct
@@ -146,17 +144,5 @@ export class ScanAll extends Resource {
 		}
 		rows.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 		return { count: rows.length, rows };
-	}
-}
-
-export class Touch extends Resource {
-	static loadAsInstance = false;
-	async post(query, body) {
-		const row = body || query || {};
-		if (!row.id) throw new Error('Touch requires id');
-		const table = getTable();
-		await table.put({ ...row, touched: Date.now() });
-		const after = await table.get(row.id);
-		return { ok: true, id: row.id, foundAfterTouch: after != null };
 	}
 }

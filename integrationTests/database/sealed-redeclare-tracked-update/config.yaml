@@ -1,0 +1,4 @@
+rest: true
+
+jsResource:
+  files: resources.js

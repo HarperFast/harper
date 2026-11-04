@@ -1,7 +1,6 @@
 'use strict';
 
 import * as hdbTerm from '../../utility/hdbTerms.ts';
-import moment from 'moment';
 import { v4 as uuidV4 } from 'uuid';
 
 /**
@@ -20,8 +19,8 @@ export default class JobObject {
 	constructor() {
 		this.id = uuidV4();
 		this.type = undefined;
-		this.start_datetime = moment().valueOf();
-		this.created_datetime = moment().valueOf();
+		this.start_datetime = Date.now();
+		this.created_datetime = Date.now();
 		this.end_datetime = undefined;
 		this.status = hdbTerm.JOB_STATUS_ENUM.CREATED;
 		this.message = undefined;

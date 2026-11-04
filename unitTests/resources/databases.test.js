@@ -3,10 +3,27 @@ const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { existsSync, mkdirSync, writeFileSync } = require('node:fs');
 const { dirname, join } = require('node:path');
-const { table, flushDatabases, dropDatabase, getDatabases, resetDatabases } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
-const { RocksDatabase } = require('@harperfast/rocksdb-js');
-const { beginRestore, completeRestore, RESTORE_META_DIR } = require('#src/dataLayer/restoreMarker');
+const {
+	table,
+	database,
+	flushDatabases,
+	closeDatabase,
+	dropDatabase,
+	getDatabases,
+	resetDatabases,
+} = require('#src/resources/databases');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
+const { RocksDatabase } = require('../rocksdbBindings.mts').rocksdbBindings();
+const { databaseCommitsSuspended, getSuspendedDatabaseRootCount } = require('#src/resources/DatabaseTransaction');
+const {
+	beginRestore,
+	completeRestore,
+	abandonRestore,
+	acquireRestoreLock,
+	releaseRestoreLock,
+	restoringMarkerPath,
+	RESTORE_META_DIR,
+} = require('#src/dataLayer/restoreMarker');
 
 describe('flushDatabases', () => {
 	before(async function () {
@@ -21,6 +38,40 @@ describe('flushDatabases', () => {
 
 	it('flushes all databases without error', async function () {
 		await assert.doesNotReject(() => flushDatabases());
+	});
+
+	it('unregisters a tableless database before closing its root store', async function () {
+		const rootStore = database({ database: 'flush_tableless_drop' });
+		if (!(rootStore instanceof RocksDatabase)) return this.skip();
+
+		await dropDatabase('flush_tableless_drop');
+
+		await assert.doesNotReject(() => flushDatabases());
+		const reopened = database({ database: 'flush_tableless_drop' });
+		assert.notStrictEqual(reopened, rootStore);
+		assert.strictEqual(reopened.status, 'open');
+		await closeDatabase('flush_tableless_drop');
+	});
+
+	it('keeps a failed destructive drop root-local without taxing unrelated commits', async function () {
+		const Probe = table({
+			table: 'pkg',
+			database: 'failed_destructive_drop',
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		const rootStore = Probe.primaryStore.rootStore;
+		if (!(rootStore instanceof RocksDatabase)) return this.skip();
+		const suspendedBefore = getSuspendedDatabaseRootCount();
+		const stopAuditCleanup = rootStore.auditStore.stopAuditCleanup;
+		rootStore.auditStore.stopAuditCleanup = () => Promise.reject(new Error('audit cleanup failed'));
+
+		await assert.rejects(dropDatabase('failed_destructive_drop'), /audit cleanup failed/);
+
+		assert.strictEqual(databaseCommitsSuspended(rootStore), true);
+		assert.strictEqual(getSuspendedDatabaseRootCount(), suspendedBefore);
+		rootStore.auditStore.stopAuditCleanup = stopAuditCleanup;
+		rootStore.close();
+		rootStore.destroy();
 	});
 });
 
@@ -152,6 +203,47 @@ describe('dropDatabase restore serialization', () => {
 		await assert.doesNotReject(dropDatabase(MULTI));
 	});
 
+	it('refuses an open while the restore lock is held, with no marker to fall back on', async function () {
+		this.timeout(30000);
+		// An anchor gives us the databases root and tells us which engine's path shape to build, so this
+		// runs on both. There is deliberately NO marker: before the exclusion, throwIfBlockedByRestore
+		// read 'clear' without probing the lock and the open went straight through, so the lock alone
+		// has to be what stops it. Reverting either open site to a bare open fails this.
+		const anchor = table({
+			table: 'Anchor',
+			database: 'exclusion-anchor-test',
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		const rootStore = anchor.primaryStore.rootStore;
+		const BLOCKED = 'exclusion-blocked-test';
+		const blockedPath = join(dirname(rootStore.path), rootStore instanceof RocksDatabase ? BLOCKED : `${BLOCKED}.mdb`);
+
+		const lock = acquireRestoreLock(blockedPath);
+		try {
+			assert.throws(
+				() =>
+					table({
+						table: 'Blocked',
+						database: BLOCKED,
+						attributes: [{ name: 'id', isPrimaryKey: true }],
+					}),
+				(error) => error.statusCode === 409
+			);
+		} finally {
+			releaseRestoreLock(lock);
+		}
+
+		// and the exclusion is the lock dropDatabase takes, so a held lock refuses the drop too
+		const held = acquireRestoreLock(rootStore.path);
+		try {
+			await assert.rejects(dropDatabase('exclusion-anchor-test'), (error) => error.statusCode === 409);
+		} finally {
+			releaseRestoreLock(held);
+		}
+		table({ table: 'Anchor', database: 'exclusion-anchor-test', attributes: [{ name: 'id', isPrimaryKey: true }] });
+		await assert.doesNotReject(dropDatabase('exclusion-anchor-test'));
+	});
+
 	it('never loads the reserved restore-metadata directory as a database', function () {
 		// the API can't create a database with this name (schemaRegex rejects the backtick), but the
 		// scan opens any CURRENT+MANIFEST directory regardless of name, so it must skip the reserved dir
@@ -173,5 +265,574 @@ describe('dropDatabase restore serialization', () => {
 		const loaded = getDatabases();
 		assert.strictEqual(loaded[RESTORE_META_DIR], undefined, 'reserved dir must not be loaded as a database');
 		assert.ok(existsSync(reservedDir), 'the reserved dir itself is left in place (used for lifecycle metadata)');
+	});
+
+	it('never loads a database whose pre-atomic restoring marker is empty', function () {
+		const databaseName = 'corrupt-marker-startup-test';
+		const Table = table({
+			table: 'CorruptMarker',
+			database: databaseName,
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		const rootStore = Table.primaryStore.rootStore;
+		if (!(rootStore instanceof RocksDatabase)) return this.skip();
+
+		abandonRestore(beginRestore(rootStore.path));
+		writeFileSync(restoringMarkerPath(rootStore.path), '');
+		try {
+			resetDatabases();
+			assert.strictEqual(
+				getDatabases()[databaseName],
+				undefined,
+				'a database with a corrupt restoring marker must remain blocked during startup'
+			);
+		} finally {
+			completeRestore(beginRestore(rootStore.path));
+		}
+	});
+});
+
+describe('openBranchDatabase (scope-private graph, harper#643)', () => {
+	const { openBranchDatabase, closeBranchDatabases, databases } = require('#src/resources/databases');
+	const { cpSync, mkdtempSync, rmSync } = require('node:fs');
+	const { tmpdir } = require('node:os');
+	const { getRegistryStatus } = require('../rocksdbBindings.mts').rocksdbBindings();
+
+	// the real observable for a released handle: rocksdb-js's registry is process-global and its
+	// refCount only drops to zero once every column family opened under a path has been closed
+	const refCountFor = (dbPath) => getRegistryStatus().find((entry) => entry.path === dbPath)?.refCount ?? 0;
+
+	let checkpointDir;
+	let scratchRoot;
+	let databasesDir;
+	before(async function () {
+		this.timeout(30000);
+		databasesDir = setupTestDBPath();
+		setMainIsWorker(true);
+		const BranchSource = table({
+			table: 'BranchSource',
+			database: 'branchbase',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'note' }],
+		});
+		if (!(BranchSource.primaryStore.rootStore instanceof RocksDatabase)) return this.skip();
+		await BranchSource.put({ id: 'a', note: 'base' });
+		scratchRoot = mkdtempSync(join(tmpdir(), 'harper.unit-test.branch-'));
+		checkpointDir = join(scratchRoot, 'checkpoint');
+		await BranchSource.primaryStore.rootStore.createCheckpoint(checkpointDir);
+	});
+
+	afterEach(async function () {
+		await closeBranchDatabases();
+	});
+
+	after(function () {
+		if (scratchRoot) rmSync(scratchRoot, { recursive: true, force: true });
+	});
+
+	it('serves the base rows under the logical table name', async function () {
+		const branch = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
+
+		assert.ok(branch.tables.BranchSource);
+		const row = await branch.tables.BranchSource.get('a');
+		assert.strictEqual(row?.note, 'base', 'the branch reads the rows the checkpoint captured');
+	});
+
+	it('is invisible to every enumerator of the global databases map', function () {
+		const baseTableClass = databases.branchbase.BranchSource;
+		const globalKeysBefore = Object.keys(databases).length;
+
+		const branch = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
+
+		for (const [name, dbTables] of Object.entries(databases)) {
+			assert.notStrictEqual(dbTables, branch.tables, `branch graph reachable as databases.${name}`);
+		}
+		assert.strictEqual(databases.branchbase.BranchSource, baseTableClass);
+		assert.strictEqual(Object.keys(databases).length, globalKeysBefore);
+	});
+
+	it('stamps the branch identity on the store so blob roots do not resolve to the base', function () {
+		const branch = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
+
+		assert.strictEqual(branch.rootStore.databaseName, 'appA__branchbase');
+		assert.notStrictEqual(
+			branch.rootStore.databaseName,
+			'branchbase',
+			'sharing the base name would resolve the branch blob roots onto the base directory'
+		);
+	});
+
+	it('refuses a second open of the same directory rather than handing out a rival graph', function () {
+		openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
+		assert.throws(() => openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase'), /already open/);
+	});
+
+	it('closes what nothing else can: the store is gone from the env map after close', async function () {
+		const branch = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
+		await branch.close();
+
+		assert.doesNotThrow(
+			() => openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase'),
+			'after close the directory can be opened again'
+		);
+	});
+
+	it('refuses to adopt a directory that is already open as a real database', function () {
+		const basePath = databases.branchbase.BranchSource.primaryStore.rootStore.path;
+		assert.throws(() => openBranchDatabase(basePath, 'branchbase', 'appB__branchbase'), /already open as a database/);
+	});
+
+	it('refuses a store identity that names a real database, which would steal its blob roots', function () {
+		assert.throws(() => openBranchDatabase(checkpointDir, 'branchbase', 'branchbase'), /already in use/);
+	});
+
+	it('refuses a store identity another open branch already holds', async function () {
+		this.timeout(30000);
+		const secondDir = join(scratchRoot, 'checkpoint2');
+		await databases.branchbase.BranchSource.primaryStore.rootStore.createCheckpoint(secondDir);
+		openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
+
+		assert.throws(() => openBranchDatabase(secondDir, 'branchbase', 'appA__branchbase'), /already in use/);
+	});
+
+	it('writes through the branch without touching the base table', async function () {
+		const branch = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
+
+		await branch.tables.BranchSource.put({ id: 'branch-only', note: 'written through the branch' });
+
+		assert.strictEqual((await branch.tables.BranchSource.get('branch-only'))?.note, 'written through the branch');
+		assert.ok(
+			!(await databases.branchbase.BranchSource.get('branch-only')),
+			'a branch write must not reach the base table it shares a logical name with'
+		);
+	});
+
+	it('refuses an on-demand database() open of a directory a branch owns', async function () {
+		const { database } = require('#src/resources/databases');
+		// database() resolves an unconfigured name against the same root the base database sits in
+		const probeDir = join(dirname(databases.branchbase.BranchSource.primaryStore.rootStore.path), 'branchdbprobe');
+		rmSync(probeDir, { recursive: true, force: true });
+		let branch;
+		try {
+			// the scan guards are not the only route to the directory: database() looks the resolved
+			// path up in the shared env map, where a branch leaves its store for its whole lifetime
+			cpSync(checkpointDir, probeDir, { recursive: true });
+			branch = openBranchDatabase(probeDir, 'branchbase', 'appA__dbprobe');
+
+			assert.throws(() => database({ database: 'branchdbprobe' }), /scope-private branch/);
+			assert.strictEqual(branch.rootStore.status, 'open', 'the branch store must survive the refused open');
+		} finally {
+			await branch?.close();
+			rmSync(probeDir, { recursive: true, force: true });
+		}
+	});
+
+	it('releases every native handle it opened, not just the root', async function () {
+		const branch = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
+		const branchPath = branch.rootStore.path;
+		assert.ok(refCountFor(branchPath) > 0, 'the branch should hold native handles while open');
+
+		await branch.close();
+
+		assert.strictEqual(refCountFor(branchPath), 0, 'close() must release every column family it opened');
+	});
+
+	it('settles branch derived indexes before releasing their stores', async function () {
+		const branch = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
+		const branchPath = branch.rootStore.path;
+		let finishClose;
+		const stopped = new Promise((resolve) => (finishClose = resolve));
+		branch.tables.BranchSource.derivedIndexRuntime = { close: () => stopped };
+
+		const closing = branch.close();
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.strictEqual(databaseCommitsSuspended(branch.rootStore), true);
+		assert.throws(
+			() => branch.tables.BranchSource.put('closing-write', { note: 'late' }),
+			(error) => {
+				assert.strictEqual(error.code, 'DATABASE_CLOSING');
+				return true;
+			}
+		);
+		assert.ok(refCountFor(branchPath) > 0, 'the branch stores stay open while a native writer is settling');
+		assert.throws(
+			() => openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase'),
+			/already open/,
+			'a replacement cannot open until the old writer and stores are closed'
+		);
+		finishClose();
+		await closing;
+
+		assert.strictEqual(refCountFor(branchPath), 0);
+		assert.strictEqual(branch.rootStore.status, 'closed');
+		assert.strictEqual(databaseCommitsSuspended(branch.rootStore), true);
+	});
+
+	it('keeps a branch registered and retryable when its derived writer cannot settle', async function () {
+		const branch = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
+		const branchPath = branch.rootStore.path;
+		let attempts = 0;
+		branch.tables.BranchSource.derivedIndexRuntime = {
+			close: () => (++attempts === 1 ? Promise.reject(new Error('writer still active')) : Promise.resolve()),
+		};
+
+		await assert.rejects(branch.close(), /writer still active/);
+		assert.strictEqual(databaseCommitsSuspended(branch.rootStore), false);
+		assert.ok(refCountFor(branchPath) > 0, 'a failed settle must leave the stores open');
+		assert.throws(() => openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase'), /already open/);
+
+		await branch.close();
+		assert.strictEqual(refCountFor(branchPath), 0);
+	});
+
+	it('restores a branch when audit cleanup cannot settle before handle teardown', async function () {
+		const branch = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
+		const stopAuditCleanup = branch.rootStore.auditStore.stopAuditCleanup;
+		branch.rootStore.auditStore.stopAuditCleanup = () => Promise.reject(new Error('audit cleanup failed'));
+
+		await assert.rejects(branch.close(), /audit cleanup failed/);
+
+		assert.strictEqual(branch.rootStore.status, 'open');
+		assert.strictEqual(databaseCommitsSuspended(branch.rootStore), false);
+		assert.throws(() => openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase'), /already open/);
+		branch.rootStore.auditStore.stopAuditCleanup = stopAuditCleanup;
+		await branch.close();
+		assert.strictEqual(branch.rootStore.status, 'closed');
+	});
+
+	it('keeps a stale branch fenced when its native root close fails', async function () {
+		const branch = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
+		const suspendedBefore = getSuspendedDatabaseRootCount();
+		const close = branch.rootStore.close.bind(branch.rootStore);
+		let failClose = true;
+		branch.rootStore.close = () => {
+			if (failClose) throw new Error('branch root close failed');
+			return close();
+		};
+
+		await assert.rejects(branch.close(), /Could not close branch database/);
+
+		assert.strictEqual(branch.rootStore.status, 'open');
+		assert.strictEqual(databaseCommitsSuspended(branch.rootStore), true);
+		assert.strictEqual(getSuspendedDatabaseRootCount(), suspendedBefore);
+		assert.throws(
+			() => openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase'),
+			/already open/,
+			'a replacement must wait until the failed native root close is retried'
+		);
+		failClose = false;
+		await branch.close();
+		assert.strictEqual(branch.rootStore.status, 'closed');
+	});
+
+	it('tolerates a repeated close', async function () {
+		const branch = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
+		await branch.close();
+		await branch.close();
+		assert.strictEqual(refCountFor(branch.rootStore.path), 0, 'a second close must not double-release');
+	});
+
+	it('a stale handle closed twice does not tear down a later open of the same directory', async function () {
+		const stale = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
+		await stale.close();
+		const live = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
+
+		await stale.close();
+
+		assert.throws(
+			() => openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase'),
+			/already open/,
+			'the live branch must still own the directory'
+		);
+		assert.ok(refCountFor(live.rootStore.path) > 0, 'the live branch must still hold its handles');
+	});
+
+	it('drops the memoized blob roots pinning the store', async function () {
+		const { databasePaths, getRootBlobPathsForDB } = require('#src/resources/blob');
+		const branch = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
+		getRootBlobPathsForDB(branch.rootStore);
+		assert.ok(databasePaths.has(branch.rootStore), 'resolving blob roots memoizes them against the store');
+
+		await branch.close();
+
+		assert.ok(!databasePaths.has(branch.rootStore), 'close() must drop the memoized blob roots');
+	});
+
+	it('is not adopted back into the global map when the database scan reruns', async function () {
+		this.timeout(30000);
+		// harper#643 puts a branch directory inside the directory getDatabases() walks, so the first
+		// resetDatabases() after a branch opens is the case that would rebuild it globally
+		const probeDir = join(databasesDir, 'branchscanprobe');
+		rmSync(probeDir, { recursive: true, force: true });
+		let branch;
+		try {
+			await databases.branchbase.BranchSource.primaryStore.rootStore.createCheckpoint(probeDir);
+			branch = openBranchDatabase(probeDir, 'branchbase', 'appA__scanprobe');
+
+			resetDatabases();
+
+			for (const [name, dbTables] of Object.entries(databases)) {
+				for (const tableName in dbTables) {
+					assert.notStrictEqual(
+						dbTables[tableName]?.primaryStore?.rootStore,
+						branch.rootStore,
+						`the rescan adopted the branch store as databases.${name}.${tableName}`
+					);
+				}
+			}
+			assert.strictEqual(
+				branch.rootStore.databaseName,
+				'appA__scanprobe',
+				'adoption would overwrite the store identity the branch blob roots resolve from'
+			);
+		} finally {
+			await branch?.close();
+			rmSync(probeDir, { recursive: true, force: true });
+		}
+	});
+
+	it('deregisters the storage-reclamation handler its stores registered', async function () {
+		const { runReclamationHandlers, setAvailableSpaceRatioGetter } = require('#src/server/storageReclamation');
+		const queried = [];
+		setAvailableSpaceRatioGetter(async (path) => {
+			queried.push(path);
+			return 1;
+		});
+		try {
+			const branch = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
+			const branchPath = branch.rootStore.path;
+			await runReclamationHandlers();
+			assert.ok(queried.includes(branchPath), 'opening a branch registers a reclamation handler for its path');
+
+			await branch.close();
+			queried.length = 0;
+			await runReclamationHandlers();
+
+			assert.ok(!queried.includes(branchPath), 'close() must drop the handler pinning the closed store');
+		} finally {
+			setAvailableSpaceRatioGetter();
+		}
+	});
+
+	it('deregisters the storage-reclamation handler when an ordinary database is closed', async function () {
+		const { runReclamationHandlers, setAvailableSpaceRatioGetter } = require('#src/server/storageReclamation');
+		const { closeDatabase } = require('#src/resources/databases');
+		const queried = [];
+		setAvailableSpaceRatioGetter(async (path) => {
+			queried.push(path);
+			return 1; // no pressure, so no handler runs and only the path registry is observed
+		});
+		try {
+			const ReclaimProbe = table({
+				table: 'ReclaimProbe',
+				database: 'reclaimprobe',
+				attributes: [{ name: 'id', isPrimaryKey: true }],
+			});
+			const rootPath = ReclaimProbe.primaryStore.rootStore.path;
+			await runReclamationHandlers();
+			assert.ok(queried.includes(rootPath), 'opening a database registers a reclamation handler for its root path');
+
+			await closeDatabase('reclaimprobe');
+			queried.length = 0;
+			await runReclamationHandlers();
+
+			assert.ok(!queried.includes(rootPath), 'closeDatabase must drop the handler pinning the closed store');
+		} finally {
+			setAvailableSpaceRatioGetter();
+		}
+	});
+
+	it('deregisters the storage-reclamation handler when a database is dropped', async function () {
+		const { runReclamationHandlers, setAvailableSpaceRatioGetter } = require('#src/server/storageReclamation');
+		const queried = [];
+		setAvailableSpaceRatioGetter(async (path) => {
+			queried.push(path);
+			return 1;
+		});
+		try {
+			const DropProbe = table({
+				table: 'DropProbe',
+				database: 'dropprobe',
+				attributes: [{ name: 'id', isPrimaryKey: true }],
+			});
+			const rootPath = DropProbe.primaryStore.rootStore.path;
+			await runReclamationHandlers();
+			assert.ok(queried.includes(rootPath), 'opening a database registers a reclamation handler for its root path');
+
+			await dropDatabase('dropprobe');
+			queried.length = 0;
+			await runReclamationHandlers();
+
+			assert.ok(!queried.includes(rootPath), 'dropDatabase must drop the handler pinning the dropped store');
+		} finally {
+			setAvailableSpaceRatioGetter();
+		}
+	});
+
+	it('rejects a store identity that would resolve blob roots outside the blobs directory', function () {
+		assert.throws(() => openBranchDatabase(checkpointDir, 'branchbase', '..'), /not a legal database name/);
+		assert.throws(() => openBranchDatabase(checkpointDir, 'branchbase', 'a/b'), /not a legal database name/);
+		assert.throws(() => openBranchDatabase(checkpointDir, 'branchbase', ''), /not a legal database name/);
+		// otherwise this surfaces as ENAMETOOLONG from a blob write, far from the call that caused it
+		assert.throws(() => openBranchDatabase(checkpointDir, 'branchbase', 'x'.repeat(251)), /not a legal database name/);
+	});
+
+	it('rejects a path that is not there rather than registering an empty database', function () {
+		const before = Object.keys(databases).length;
+		assert.throws(() => openBranchDatabase(join(checkpointDir, 'nope'), 'branchbase', 'x'), /no directory at/);
+		assert.strictEqual(Object.keys(databases).length, before);
+	});
+});
+
+describe('audit cleanup retirement on teardown', () => {
+	const { readMetaDb, databases } = require('#src/resources/databases');
+	const { mkdtempSync, rmSync } = require('node:fs');
+	const { tmpdir } = require('node:os');
+	const { open } = require('lmdb');
+	const { setTimeout: delay } = require('node:timers/promises');
+	const { waitFor } = require('../waitFor');
+	const scratchDirs = [];
+
+	before(function () {
+		setupTestDBPath();
+		setMainIsWorker(true);
+	});
+	after(function () {
+		for (const directory of scratchDirs) rmSync(directory, { recursive: true, force: true });
+	});
+
+	/** Suspends the store's next cleanup pass inside its removal, where teardown lands on it. */
+	function gateCleanupPass(auditStore) {
+		const state = { removals: 0, released: false };
+		auditStore.getRange = () => ({
+			[Symbol.iterator]: () => ({
+				next: () => ({ done: false, value: { key: 1000 + state.removals, type: 'put' } }),
+				return: () => ({ done: true, value: undefined }),
+			}),
+		});
+		const gate = new Promise((resolve) => {
+			state.release = () => {
+				state.released = true;
+				resolve();
+			};
+		});
+		auditStore.remove = () => {
+			state.removals++;
+			return gate;
+		};
+		return state;
+	}
+
+	it('makes dropDatabase wait for an in-flight cleanup pass before it closes the stores', async function () {
+		const Probe = table({
+			table: 'AuditDrainProbe',
+			database: 'auditdrain',
+			audit: true,
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		const rootStore = Probe.primaryStore.rootStore;
+		// the Rocks pass is a single synchronous purgeLogs() call, so it has nothing to suspend
+		if (rootStore instanceof RocksDatabase) return this.skip();
+		const auditStore = rootStore.auditStore;
+		const pass = gateCleanupPass(auditStore);
+		let closedBeforeRelease = false;
+		const realClose = rootStore.close.bind(rootStore);
+		rootStore.close = (...args) => {
+			if (!pass.released) closedBeforeRelease = true;
+			return realClose(...args);
+		};
+
+		auditStore.scheduleAuditCleanup(1);
+		await waitFor(() => pass.removals === 1, { timeout: 1000, message: 'the gated cleanup pass never started' });
+
+		let dropped = false;
+		const drop = dropDatabase('auditdrain').then(() => (dropped = true));
+		await delay(50);
+		assert.equal(dropped, false, 'dropDatabase must not finish while a cleanup pass still holds the stores');
+		assert.equal(closedBeforeRelease, false, 'dropDatabase must not close the root store under a suspended pass');
+
+		pass.release();
+		await drop;
+		assert.equal(closedBeforeRelease, false, 'dropDatabase must not close the root store under a suspended pass');
+	});
+
+	// The legacy per-table drop has no sibling coverage, and the store it retires is the one makeTable()
+	// was handed - not `primaryStore.auditStore`, which nothing assigns.
+	it('retires the legacy per-table drop against the table its own audit store, before closing it', async function () {
+		const base = mkdtempSync(join(tmpdir(), 'harper-legacy-drop-'));
+		scratchDirs.push(base);
+		const tablePath = join(base, 'schema', 'legacydrop', 'dog.mdb');
+		const auditPath = join(base, 'audit', 'legacydrop', 'dog.mdb');
+		mkdirSync(dirname(tablePath), { recursive: true });
+		mkdirSync(dirname(auditPath), { recursive: true });
+		// initStores only adopts an audit path that already exists, so seed a real (empty) environment there
+		await open({ path: auditPath }).close();
+		let legacyAuditEnv;
+
+		try {
+			// the first load has no attributes to build a table from; it is what creates the catalog store
+			// with the encoding initStores expects, so the attribute below is written the way production does
+			const rootStore = readMetaDb(tablePath, 'dog', 'legacydrop', auditPath, true);
+			// audit:false because a legacy audit store has no addDeleteRemovalCallback, so makeTable()
+			// throws while loading an audited legacy table - a separate, pre-existing defect
+			rootStore.dbisDb.putSync('id', { isPrimaryKey: true, name: 'id', tableId: 91, audit: false });
+			readMetaDb(tablePath, 'dog', 'legacydrop', auditPath, true);
+
+			const Dog = databases.legacydrop?.dog;
+			assert.ok(Dog, 'the legacy fixture did not load a table');
+			assert.notEqual(Dog.databasePath, Dog.databaseName, 'the fixture must take the legacy drop branch');
+			legacyAuditEnv = Dog.auditStore;
+			assert.equal(legacyAuditEnv?.isLegacy, true, 'the table should hold the legacy audit environment');
+			assert.equal(
+				Dog.primaryStore.auditStore,
+				undefined,
+				'nothing assigns primaryStore.auditStore, so a drop reading it retires nothing'
+			);
+
+			const { runReclamationHandlers, setAvailableSpaceRatioGetter } = require('#src/server/storageReclamation');
+			const queried = [];
+			setAvailableSpaceRatioGetter(async (path) => {
+				queried.push(path);
+				return 1;
+			});
+			const events = [];
+			let releaseRetirement;
+			const retired = new Promise((resolve) => (releaseRetirement = resolve));
+			// legacy audit stores are opened with a plain open() rather than openAuditStore(), so they arm no
+			// loop today; the spy is what an openAuditStore()-armed store on this branch would look like
+			Dog.auditStore.stopAuditCleanup = () => {
+				events.push('retired');
+				return retired;
+			};
+			const realClose = Dog.primaryStore.close.bind(Dog.primaryStore);
+			Dog.primaryStore.close = (...args) => {
+				events.push('closed');
+				return realClose(...args);
+			};
+			const primaryPath = Dog.primaryStore.path;
+
+			try {
+				await runReclamationHandlers();
+				assert.ok(queried.includes(primaryPath), 'a loaded table registers a reclamation handler for its path');
+
+				let dropped = false;
+				const drop = Dog.dropTable().then(() => (dropped = true));
+				await delay(50);
+				assert.deepEqual(events, ['retired'], 'the drop must retire the audit store and wait, before closing');
+				assert.equal(dropped, false);
+
+				releaseRetirement();
+				await drop;
+				assert.deepEqual(events, ['retired', 'closed']);
+				assert.ok(!existsSync(primaryPath), 'the legacy store file should be unlinked');
+
+				queried.length = 0;
+				await runReclamationHandlers();
+				assert.ok(!queried.includes(primaryPath), 'the drop must drop the handler pinning the dropped store');
+			} finally {
+				setAvailableSpaceRatioGetter();
+			}
+		} finally {
+			if (legacyAuditEnv && legacyAuditEnv.status !== 'closed') await legacyAuditEnv.close();
+		}
 	});
 });

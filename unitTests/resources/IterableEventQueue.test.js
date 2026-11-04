@@ -82,4 +82,95 @@ describe('IterableEventQueue', () => {
 		assert.deepEqual(await iterator.next(), { value: error, done: false });
 		assert.deepEqual(await iterator.next(), { value: undefined, done: true });
 	});
+
+	describe('close with a final message whose listeners misbehave', () => {
+		const settled = (promise) =>
+			Promise.race([promise, new Promise((resolve) => setTimeout(() => resolve('still pending'), 1000))]);
+		function watchCloses(q) {
+			const counter = { closes: 0 };
+			q.on('close', () => counter.closes++);
+			return counter;
+		}
+
+		it('hands a waiting iterator the final message before completing it', async () => {
+			const q = new IterableEventQueue();
+			const iterator = q[Symbol.asyncIterator]();
+			const waiting = iterator.next();
+			const error = new Error('policy failed');
+			q.close(error);
+			assert.deepEqual(await settled(waiting), { value: error, done: false });
+			assert.deepEqual(await settled(iterator.next()), { value: undefined, done: true });
+		});
+
+		it('finishes closing when a data listener throws on it, then rethrows that error', async () => {
+			const q = new IterableEventQueue();
+			const counter = watchCloses(q);
+			const listenerError = new Error('listener failed');
+			q.on('data', () => {
+				throw listenerError;
+			});
+			assert.throws(
+				() => q.close(new Error('policy failed')),
+				(error) => error === listenerError
+			);
+			assert.equal(q.closed, true, 'the queue stayed open');
+			assert.equal(counter.closes, 1);
+			assert.equal(q.send({ late: true }), false, 'an event was accepted after close');
+			assert.deepEqual(await settled(q[Symbol.asyncIterator]().next()), { value: undefined, done: true });
+			q.close();
+			assert.equal(counter.closes, 1, 'a second close emitted close again');
+		});
+
+		it('completes an iteration a data listener starts before it throws', async () => {
+			const q = new IterableEventQueue();
+			let started;
+			q.on('data', () => {
+				started = q[Symbol.asyncIterator]().next();
+				throw new Error('listener failed');
+			});
+			assert.throws(() => q.close(new Error('policy failed')));
+			assert.deepEqual(await settled(started), { value: undefined, done: true });
+		});
+
+		it('emits close once when a data listener closes the queue while handling it', () => {
+			const q = new IterableEventQueue();
+			const counter = watchCloses(q);
+			q.on('data', () => q.close());
+			q.close(new Error('policy failed'));
+			assert.equal(q.closed, true);
+			assert.equal(counter.closes, 1, 'close was emitted more than once');
+		});
+
+		it('emits close once when a data listener closes the queue and then throws', () => {
+			const q = new IterableEventQueue();
+			const counter = watchCloses(q);
+			const listenerError = new Error('listener failed');
+			q.on('data', () => {
+				q.close();
+				throw listenerError;
+			});
+			assert.throws(
+				() => q.close(new Error('policy failed')),
+				(error) => error === listenerError
+			);
+			assert.equal(q.closed, true);
+			assert.equal(counter.closes, 1, 'close was emitted more than once');
+		});
+
+		it("surfaces a close listener's error over a data listener's when both throw", () => {
+			const q = new IterableEventQueue();
+			const closeError = new Error('close listener failed');
+			q.on('data', () => {
+				throw new Error('data listener failed');
+			});
+			q.on('close', () => {
+				throw closeError;
+			});
+			assert.throws(
+				() => q.close(new Error('policy failed')),
+				(error) => error === closeError
+			);
+			assert.equal(q.closed, true);
+		});
+	});
 });

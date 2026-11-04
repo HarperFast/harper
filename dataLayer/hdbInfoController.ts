@@ -16,7 +16,7 @@ import * as BinObjects from '../bin/BinObjects.ts';
 import * as DataLayerObjects from './DataLayerObjects.ts';
 import { UpgradeObject } from '../upgrade/UpgradeObjects.ts';
 import { forceDowngradePrompt } from '../upgrade/upgradePrompt.ts';
-import { packageJson } from '../utility/packageUtils.js';
+import { packageJson, PRODUCT_NAME } from '../utility/packageUtils.js';
 import log from '../utility/logging/harper_logger.ts';
 import * as hdbUtils from '../utility/common_utils.ts';
 import * as globalSchema from '../utility/globalSchema.ts';
@@ -36,6 +36,37 @@ const HDB_INFO_SEARCH_ATTRIBUTE = 'info_id';
 const DEFAULT_DATA_VERSION_NUM = '2.9.9';
 // This value should change as supported versions change.
 const MINIMUM_SUPPORTED_VERSION_NUM = '3.0.0';
+
+export class VersionStampNotRecordedError extends Error {
+	statusCode: number;
+	constructor(message: string) {
+		super(message);
+		this.name = 'VersionStampNotRecordedError';
+		this.statusCode = 500;
+	}
+}
+
+/**
+ * `insert.insert` reports a key that already exists as skipped, not as a failure, so a resolved
+ * insert is not evidence that the version was recorded. Ids compare as strings: the guard is
+ * against a write that did not happen, not against a hash returned in a different type.
+ */
+export function assertVersionRecorded(insertResult: any, expectedId: number, newVersionString: string) {
+	const insertedHashes = insertResult?.inserted_hashes;
+	if (
+		Array.isArray(insertedHashes) &&
+		insertedHashes.length === 1 &&
+		String(insertedHashes[0]) === String(expectedId)
+	) {
+		return;
+	}
+
+	throw new VersionStampNotRecordedError(
+		`Could not record data version ${newVersionString} in '${hdbTerms.SYSTEM_SCHEMA_NAME}.${hdbTerms.SYSTEM_TABLE_NAMES.INFO_TABLE_NAME}': ` +
+			`the insert of ${HDB_INFO_SEARCH_ATTRIBUTE} ${expectedId} reported inserted ${JSON.stringify(insertedHashes ?? null)} ` +
+			`and skipped ${JSON.stringify(insertResult?.skipped_hashes ?? null)}`
+	);
+}
 
 /**
  * * Insert a row into hdbInfo with the initial version data at install.
@@ -91,7 +122,9 @@ export async function insertHdbUpgradeInfo(newVersionString: string) {
 	);
 
 	await pSetSchemaDataToGlobal();
-	return insert.insert(insertObject);
+	const insertResult = await insert.insert(insertObject);
+	assertVersionRecorded(insertResult, newId, newVersionString);
+	return insertResult;
 }
 
 /**
@@ -198,8 +231,8 @@ export async function getVersionUpdateInfo() {
 						await insertHdbUpgradeInfo(upgradeVersion.toString());
 						log.notify(`Downgrade confirmed; data version recorded as ${upgradeVersion}.`);
 					} else {
-						console.log('Cancelled downgrade, closing Harper');
-						log.notify('Cancelled downgrade, closing Harper');
+						console.log(`Cancelled downgrade, closing ${PRODUCT_NAME}`);
+						log.notify(`Cancelled downgrade, closing ${PRODUCT_NAME}`);
 						process.exit(0);
 					}
 				}
@@ -225,7 +258,7 @@ export async function getVersionUpdateInfo() {
 		// If we get here they are running on an upgraded version that doesn't require any upgrade directives
 		if (hdbUtils.compareVersions(newUpgradeObj.data_version.toString(), newUpgradeObj.upgrade_version.toString()) < 0) {
 			await insertHdbUpgradeInfo(newUpgradeObj.upgrade_version);
-			log.notify(`Harper running on upgraded version: ${newUpgradeObj.upgrade_version}`);
+			log.notify(`${PRODUCT_NAME} running on upgraded version: ${newUpgradeObj.upgrade_version}`);
 		}
 	} catch (err) {
 		log.fatal('Error while trying to evaluate the state of hdb data and the installed hdb version');
@@ -246,7 +279,7 @@ function checkIfInstallIsSupported(dataVNum) {
 		`please contact ${hdbTerms.HDB_SUPPORT_ADDRESS}`;
 
 	if (!tableLoader.databases.system) {
-		const loadErrMsg = 'The system database failed to load. Harper cannot start.';
+		const loadErrMsg = `The system database failed to load. ${PRODUCT_NAME} cannot start.`;
 		console.log(loadErrMsg);
 		throw new Error(loadErrMsg);
 	}

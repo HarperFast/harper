@@ -3,7 +3,7 @@
 /**
  * End-to-end pipeline tests for the new SQL engine, phase 2: aggregates.
  *
- * Sets globalThis.harperConfig.sql.allowFullScan = true so the mock table
+ * Sets sql.allowFullScan = true (via configUtils) so the mock table
  * does not require an indexed WHERE condition (aggregate queries legitimately
  * scan all rows).
  */
@@ -13,6 +13,8 @@ const alasql = require('alasql');
 
 const router = require('#src/sqlEngine/router');
 const binder = require('#src/sqlEngine/binder/bind');
+const configUtils = require('#src/config/configUtils');
+const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 
 function makeMockTable({ primaryKey = 'id', attributes = [], rows = [] } = {}) {
 	const table = {
@@ -81,7 +83,7 @@ const ORDERS = [
 
 describe('sqlEngine phase 2: aggregates', () => {
 	let originalEngine;
-	let savedHarperConfig;
+	let originalAllowFullScan;
 	let mockTable;
 
 	beforeEach(() => {
@@ -89,8 +91,8 @@ describe('sqlEngine phase 2: aggregates', () => {
 		process.env.HARPER_SQL_ENGINE = 'new';
 
 		// Allow full scans — aggregate queries legitimately read all rows.
-		savedHarperConfig = globalThis.harperConfig;
-		globalThis.harperConfig = { sql: { allowFullScan: true } };
+		originalAllowFullScan = configUtils.getConfigValue(CONFIG_PARAMS.SQL_ALLOWFULLSCAN);
+		configUtils.updateConfigObject(CONFIG_PARAMS.SQL_ALLOWFULLSCAN, true);
 
 		mockTable = makeMockTable({
 			primaryKey: 'id',
@@ -108,7 +110,7 @@ describe('sqlEngine phase 2: aggregates', () => {
 	afterEach(() => {
 		if (originalEngine === undefined) delete process.env.HARPER_SQL_ENGINE;
 		else process.env.HARPER_SQL_ENGINE = originalEngine;
-		globalThis.harperConfig = savedHarperConfig;
+		configUtils.updateConfigObject(CONFIG_PARAMS.SQL_ALLOWFULLSCAN, originalAllowFullScan);
 		binder._setDatabasesLoader(null);
 	});
 

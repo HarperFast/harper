@@ -4,12 +4,27 @@ testUtils.preTestPrep();
 const assert = require('assert');
 const rewire = require('rewire');
 const sinon = require('sinon');
-const auth = rewire('#src/security/fastifyAuth');
-const token_auth = rewire('#src/security/tokenAuthentication');
+const auth = rewire('#js/security/fastifyAuth');
+const token_auth = rewire('#js/security/tokenAuthentication');
 const password_function = require('#src/utility/password');
 const user = require('#src/security/user');
 const insert = require('#src/dataLayer/insert');
-const signalling = require('#src/utility/signalling');
+const env = require('#src/utility/environment/environmentManager');
+const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
+
+const serverModule = require('#src/server/Server');
+const {
+	credentialRejectionError,
+	authenticationChallengeForError,
+	deferCredentialRejection,
+	isCredentialRejection,
+} = require('#src/security/deferredAuthentication');
+
+function setTokenTimeout(param, value) {
+	const original = env.get(param);
+	env.setProperty(param, value);
+	return () => env.setProperty(param, original);
+}
 
 const PASSPHRASE_VALUE = '6340b357-55b2-4fc8-b359-cae7d90c8c01';
 const PRIVATE_KEY_VALUE =
@@ -166,8 +181,10 @@ let invalid_other_user = {
 
 describe('Test authorize function', function () {
 	before(async () => {
-		await user.setUsersWithRolesCache(hdb_users_map);
+		await testUtils.seedUsers(hdb_users_map);
 	});
+
+	after(() => testUtils.seedUsers());
 
 	it('Cannot complete request Basic authorization: User not found ', function (done) {
 		auth.authorize(invalid_basic_user, null, function (err) {
@@ -196,9 +213,81 @@ describe('Test authorize function', function () {
 
 	it('Can authorize with correct username and password Basic authorization', function (done) {
 		auth.authorize(active_basic_request, null, function (err, user) {
-			let role_temp = testUtils.deepClone(VALID_ROLE);
-			assert.deepEqual(user, { username: 'nook', active: true, role: role_temp }, 'equal object');
 			assert.equal(err, null, 'no error');
+			assert.equal(user.username, 'nook');
+			assert.equal(user.active, true);
+			assert.equal(user.role.id, VALID_ROLE.id);
+			assert.equal(user.role.role, VALID_ROLE.role);
+			assert.equal(user.role.permission.super_user, true);
+			done();
+		});
+	});
+
+	it('settles a credential the middleware deferred instead of authenticating it again', function (done) {
+		// a request passport would accept, carrying a rejection the middleware already recorded; the base
+		// request has no headers, so re-running authentication() on it would fail differently, and a user
+		// application middleware set afterwards does not outrank the recorded rejection
+		const baseRequest = {};
+		deferCredentialRejection(baseRequest, credentialRejectionError('Account blocked', 401), 'mTLS');
+		const request = { ...active_basic_request, raw: { baseRequest, user: { username: 'set-by-app-middleware' } } };
+
+		auth.authorize(request, null, function (err, user) {
+			assert.strictEqual(user, undefined);
+			assert.strictEqual(err.message, 'Account blocked');
+			assert.strictEqual(err.statusCode, 401);
+			assert.strictEqual(isCredentialRejection(err), true);
+			assert.strictEqual(authenticationChallengeForError(err, 'Bearer'), 'Basic realm="Harper"');
+			done();
+		});
+	});
+
+	it('settles a rejection that its own authentication run deferred instead of falling to passport', function (done) {
+		const originalGetUser = serverModule.server.getUser;
+		serverModule.server.getUser = async () => {
+			throw credentialRejectionError('Account blocked', 401);
+		};
+		const headerObject = { authorization: active_basic_request.headers.authorization };
+		const baseRequest = {
+			method: 'POST',
+			url: '/legacy-auth',
+			pathname: '/legacy-auth',
+			ip: '203.0.113.7',
+			headers: { asObject: headerObject, get: (name) => headerObject[name.toLowerCase()] },
+			peerCertificate: { subject: null },
+		};
+		const request = { ...active_basic_request, raw: { baseRequest } };
+
+		auth.authorize(request, null, function (err, user) {
+			serverModule.server.getUser = originalGetUser;
+			assert.strictEqual(user, undefined);
+			assert.strictEqual(err?.message, 'Account blocked', 'passport must not accept a credential getUser refused');
+			assert.strictEqual(authenticationChallengeForError(err, 'Bearer'), 'Basic realm="Harper"');
+			done();
+		});
+	});
+
+	it('fails closed when its own authentication run faults instead of falling to passport', function (done) {
+		const originalGetUser = serverModule.server.getUser;
+		serverModule.server.getUser = async () => {
+			throw new Error('user store unavailable');
+		};
+		const headerObject = { authorization: active_basic_request.headers.authorization, accept: 'application/cbor' };
+		const baseRequest = {
+			method: 'POST',
+			url: '/legacy-auth',
+			pathname: '/legacy-auth',
+			ip: '203.0.113.7',
+			headers: { asObject: headerObject, get: (name) => headerObject[name.toLowerCase()] },
+			peerCertificate: { subject: null },
+		};
+		const request = { ...active_basic_request, raw: { baseRequest } };
+
+		auth.authorize(request, null, function (err, user) {
+			serverModule.server.getUser = originalGetUser;
+			assert.strictEqual(user, undefined);
+			assert.strictEqual(err?.message, 'Login failed');
+			assert.strictEqual(isCredentialRejection(err), false);
+			assert.strictEqual(authenticationChallengeForError(err, 'Bearer'), 'Bearer realm="Harper"');
 			done();
 		});
 	});
@@ -231,9 +320,12 @@ describe('Test authorize function', function () {
 
 	it('Can authorize with correct username and password Other authorization', function (done) {
 		auth.authorize(active_other_request, null, function (err, user) {
-			let role_temp = testUtils.deepClone(VALID_ROLE);
-			assert.deepEqual(user, { username: 'nook', active: true, role: role_temp }, 'equal object');
 			assert.equal(err, null, 'no error');
+			assert.equal(user.username, 'nook');
+			assert.equal(user.active, true);
+			assert.equal(user.role.id, VALID_ROLE.id);
+			assert.equal(user.role.role, VALID_ROLE.role);
+			assert.equal(user.role.permission.super_user, true);
 			done();
 		});
 	});
@@ -260,10 +352,9 @@ describe('test authorize function for JWT', () => {
 		sandbox.stub(insert, 'update').callsFake(async (_update_object) => {
 			return { message: 'updated 1 of 1', update_hashes: ['1'], skipped_hashes: [] };
 		});
-		sandbox.stub(signalling, 'signalUserChange').callsFake((_obj) => {});
 
-		op_token_timeout = token_auth.__set__('OPERATION_TOKEN_TIMEOUT', '-1');
-		r_token_timeout = token_auth.__set__('REFRESH_TOKEN_TIMEOUT', '-1');
+		op_token_timeout = setTokenTimeout(CONFIG_PARAMS.AUTHENTICATION_OPERATIONTOKENTIMEOUT, '-1');
+		r_token_timeout = setTokenTimeout(CONFIG_PARAMS.AUTHENTICATION_REFRESHTOKENTIMEOUT, '-1');
 		expired_user_tokens = await token_auth.createTokens({ username: 'EXPIRED', password: 'cool' });
 		op_token_timeout();
 		r_token_timeout();
@@ -284,16 +375,17 @@ describe('test authorize function for JWT', () => {
 			],
 			['old_user', { username: 'old_user', active: false }],
 		]);
-		await user.setUsersWithRolesCache(user_map);
+		await testUtils.seedUsers(user_map);
 
 		sandbox.restore();
 	});
 
-	after(() => {
+	after(async () => {
 		rw_get_tokens();
 		rw_token_auth();
 		global.hdb_users = orig_hdb_users;
 		sandbox.restore();
+		await testUtils.seedUsers();
 	});
 
 	it('test hdb_admin operation token', (done) => {
@@ -334,7 +426,7 @@ describe('test authorize function for JWT', () => {
 		};
 
 		auth.authorize(request, null, function (err, user) {
-			assert.deepStrictEqual(user, { username: 'non_user' });
+			assert.deepStrictEqual(Object.fromEntries(Object.entries(user)), { username: 'non_user' });
 			done();
 		});
 	});

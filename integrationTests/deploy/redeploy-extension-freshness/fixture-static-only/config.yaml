@@ -1,0 +1,3 @@
+static:
+  files: 'public/**'
+  urlPath: '/qa786-static'

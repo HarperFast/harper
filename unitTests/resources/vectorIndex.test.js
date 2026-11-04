@@ -4,9 +4,21 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { RequestTarget } = require('#src/resources/RequestTarget');
 const { HierarchicalNavigableSmallWorld } = require('#src/resources/indexes/HierarchicalNavigableSmallWorld');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { CandidateKeySet } = require('#src/resources/search');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const { waitFor } = require('../waitFor');
+
+/** mulberry32: pins a graph's level assignment so its shape is a fact rather than a draw. */
+function mulberry32(seed) {
+	let state = seed;
+	return () => {
+		state = (state + 0x6d2b79f5) | 0;
+		let t = Math.imul(state ^ (state >>> 15), 1 | state);
+		t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+		return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+	};
+}
 
 describe('HierarchicalNavigableSmallWorld indexing', () => {
 	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return; // don't try to test lmdb
@@ -88,6 +100,52 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 		}
 		await verifySearch(all[55]);
 		verifyIntegrity();
+	});
+	// Inversions are a property of graph shape, and shape comes from level assignment —
+	// `Math.random()` in production — so a bound on them holds in distribution, not per run.
+	// Pinning the level stream, as the ROUTING_EF block below does, makes it a fact about named
+	// graphs; the tests above keep checking symmetry and orphans, which must hold at any shape.
+	it('keeps cross-level distance inversions bounded on graphs with a pinned level assignment', async function () {
+		this.timeout(30000);
+		for (const seed of [0x9e3779b9, 0x85ebca6b, 0xc2b2ae35]) {
+			const name = (seed >>> 0).toString(16);
+			const pinned = table({
+				table: 'HNSWInversionTest' + name,
+				database: 'test',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'vector', indexed: { type: 'HNSW', optimizeRouting: 0.6 }, type: 'Array' },
+				],
+			});
+			const level = mulberry32(seed);
+			let draws = 0;
+			pinned.indices.vector.customIndex.random = () => {
+				draws++;
+				return level();
+			};
+			const vectorFor = (i) => [i % 2, i % 3, i % 4, i % 5, i % 6, i % 7, i % 8, i % 9, i % 10, i % 11];
+			for (let i = 0; i < 200; i++) await pinned.put(i, { vector: vectorFor(i) });
+			// A seed names a graph only while each node takes exactly one draw.
+			assert.strictEqual(draws, 200, `seed ${name} no longer names the graph it was measured on`);
+			let inversions = verifyIntegrity(pinned.indices.vector);
+			assert(
+				inversions <= 3,
+				`expected at most 3 distance inversions for seed ${name} after inserts, got ${inversions}`
+			);
+
+			// Re-puts of both a removed key (a fresh insert) and a surviving one (the update path,
+			// which carries the old level forward and rewrites reverse edges).
+			for (let i = 0; i < 200; i += 4) await pinned.delete(i);
+			for (let i = 0; i < 200; i += 8) await pinned.put(i, { vector: vectorFor(i * i + 1) });
+			for (let i = 2; i < 200; i += 8) await pinned.put(i, { vector: vectorFor(i * i + 1) });
+			// A surviving node's re-put carries its old level forward, so only the 25 re-inserts draw.
+			assert.strictEqual(draws, 225, `the mutation phase for seed ${name} no longer draws as measured`);
+			inversions = verifyIntegrity(pinned.indices.vector);
+			assert(
+				inversions <= 3,
+				`expected at most 3 distance inversions for seed ${name} after deletes and re-puts, got ${inversions}`
+			);
+		}
 	});
 	it('bad queries throw some errors', async () => {
 		assert.throws(
@@ -323,10 +381,11 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 		for (let i = 0; i < i8.length; i++) out[i] = i8[i] * scale;
 		return out;
 	}
-	function verifyIntegrity() {
+	/** Asserts the shape-independent graph properties and returns the cross-level inversion count. */
+	function verifyIntegrity(indexed = HNSWTest.indices.vector) {
 		// now verify integrity and proper distance/distancing across levels
 		let invertedSimiliarities = 0;
-		for (let { key, value } of HNSWTest.indices.vector.getRange({})) {
+		for (let { key, value } of indexed.getRange({})) {
 			let lastDistance = 0;
 			let l = 0;
 			let connections;
@@ -341,7 +400,7 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 				let totalDistance = 0;
 				let asymmetries = 0;
 				for (let { id: neighborId } of connections) {
-					let neighborNode = HNSWTest.indices.vector.get(neighborId);
+					let neighborNode = indexed.get(neighborId);
 					// verify that the connection is symmetrical
 					let symmetrical = neighborNode?.[l].find(({ id }) => id === key);
 					if (!symmetrical) {
@@ -364,9 +423,7 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 				l++;
 			}
 		}
-		if (invertedSimiliarities > 6)
-			console.log('found', invertedSimiliarities, 'inversions of distance, which is more than desirable');
-		assert(invertedSimiliarities <= 6, `expected at most 6 distance inversions, got ${invertedSimiliarities}`);
+		return invertedSimiliarities;
 	}
 });
 describe('HNSW concurrent PUT race condition (issue #386)', () => {
@@ -596,85 +653,520 @@ describe('HNSW graph-size resolution (drives the ef auto-scale)', () => {
 	});
 });
 
-describe('HNSW greedy routing above layer 0 (ROUTING_EF)', () => {
+describe('HNSW construction ef auto-scale (#2180)', () => {
 	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
 	let T;
-	const N = 600;
+	let Pinned;
+	let SearchPinned;
 
-	before(async () => {
+	before(() => {
 		setupTestDBPath();
 		setMainIsWorker(true);
 		T = table({
-			table: 'HNSWRoutingTest',
+			table: 'HNSWEfcAutoScaleTest',
 			database: 'test',
 			attributes: [
 				{ name: 'id', isPrimaryKey: true },
 				{ name: 'vector', indexed: { type: 'HNSW', distance: 'cosine' }, type: 'Array' },
 			],
 		});
+		Pinned = table({
+			table: 'HNSWEfcPinnedTest',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'cosine', efConstruction: 64 }, type: 'Array' },
+			],
+		});
+		SearchPinned = table({
+			table: 'HNSWSearchEfPinnedTest',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{
+					name: 'vector',
+					indexed: { type: 'HNSW', distance: 'cosine', efConstructionSearch: 1500 },
+					type: 'Array',
+				},
+			],
+		});
+	});
+
+	after(() => {
+		T.dropTable();
+		Pinned.dropTable();
+		SearchPinned.dropTable();
+	});
+
+	// The efs the connection pass actually searched with during one put. The routing descent runs at
+	// ROUTING_EF (1), so every ef > 1 seen during index() is the resolved efConstruction.
+	async function connectionEfsDuringPut(Table, id) {
+		const customIndex = Table.indices.vector.customIndex;
+		const original = Object.getPrototypeOf(customIndex).searchLayer;
+		const efs = new Set();
+		customIndex.searchLayer = function (queryVector, entryPointId, entryPoint, ef, level, ...rest) {
+			if (ef > 1) efs.add(ef);
+			return original.call(this, queryVector, entryPointId, entryPoint, ef, level, ...rest);
+		};
+		try {
+			const a = (id / 100) * Math.PI * 2;
+			await Table.put(id, { vector: [Math.cos(a), Math.sin(a), (id % 5) / 5] });
+		} finally {
+			delete customIndex.searchLayer;
+		}
+		return efs;
+	}
+
+	// Force the resolved node count (the write path reads it directly, not through the memo) so the
+	// scale point is exercised without building a 1M-node graph. Instance-level shadow; the count
+	// source itself is covered by the graph-size describe above.
+	async function withNodeCount(Table, count, run) {
+		const customIndex = Table.indices.vector.customIndex;
+		customIndex.resolveNodeCount = () => count;
+		try {
+			return await run();
+		} finally {
+			delete customIndex.resolveNodeCount;
+		}
+	}
+
+	async function captureFilteredSearch(Table, count, searchCondition = {}) {
+		const customIndex = Table.indices.vector.customIndex;
+		const originalSearchLayer = Object.getPrototypeOf(customIndex).searchLayer;
+		let layer0Ef = 0;
+		const budgets = [];
+		customIndex.searchLayer = function (v, epId, ep, ef, level, options, distanceFn, filter, filterState) {
+			if (level === 0) layer0Ef = ef;
+			if (filterState) budgets.push(filterState.maxVisits);
+			return originalSearchLayer.call(this, v, epId, ep, ef, level, options, distanceFn, filter, filterState);
+		};
+		try {
+			await withNodeCount(Table, count, () => {
+				customIndex.nodeCountAt = 0;
+				customIndex.search(
+					{ target: [1, 0, 0], comparator: 'sort', ...searchCondition },
+					{ transaction: undefined },
+					{ filter: () => true }
+				);
+			});
+		} finally {
+			delete customIndex.searchLayer;
+		}
+		return { layer0Ef, budgets: [...new Set(budgets)] };
+	}
+
+	function captureLimitDerivedLayer0Ef(Table, minResults) {
+		const customIndex = Table.indices.vector.customIndex;
+		const originalSearchLayer = customIndex.searchLayer;
+		let layer0Ef = 0;
+		customIndex.searchLayer = function (v, epId, ep, ef, level, ...rest) {
+			if (level === 0) layer0Ef = ef;
+			return originalSearchLayer.call(this, v, epId, ep, ef, level, ...rest);
+		};
+		try {
+			customIndex.search({ target: [1, 0, 0], comparator: 'sort' }, { transaction: undefined }, { minResults });
+		} finally {
+			customIndex.searchLayer = originalSearchLayer;
+		}
+		return layer0Ef;
+	}
+
+	it('builds small graphs at the base efConstruction, unchanged', async () => {
+		for (let i = 0; i < 20; i++) {
+			const a = (i / 20) * Math.PI * 2;
+			await T.put(i, { vector: [Math.cos(a), Math.sin(a), (i % 5) / 5] });
+		}
+		const efs = await connectionEfsDuringPut(T, 20);
+		assert.deepStrictEqual([...efs], [100], `expected the base efConstruction below the scale point, got ${[...efs]}`);
+	});
+
+	it('scales the connection candidate list once the graph passes the reference size', async () => {
+		// base 100 * sqrt(1M / 250K) = 200 — the point measured in #2180 (recall 0.935 -> 0.985)
+		const efs = await withNodeCount(T, 1_000_000, () => connectionEfsDuringPut(T, 21));
+		assert.deepStrictEqual([...efs], [200], `expected the auto-scaled efConstruction at 1M nodes, got ${[...efs]}`);
+	});
+
+	it('caps the auto-scale at AUTO_EFC_MAX', async () => {
+		// 100 * sqrt(100M / 250K) = 2000, capped at 1024
+		const efs = await withNodeCount(T, 100_000_000, () => connectionEfsDuringPut(T, 22));
+		assert.deepStrictEqual([...efs], [1024], `expected the capped efConstruction, got ${[...efs]}`);
+	});
+
+	// The search-side scale resumes past AUTO_EF_LARGE_REF (the 512 plateau was measured sufficient
+	// through 1M nodes and short from 2M up — set-recall 0.997 -> 0.955 -> 0.935 across 1M/2M/5M).
+	// The second regime is anchored to pass through (1M, 512); the 5M point resolves 1,145, bracketed
+	// by the measured ef-1024 sweep there (0.985 set-recall).
+	for (const [nodes, expected] of [
+		[1_000_000, 512],
+		[2_000_000, 724],
+		[5_000_000, 1145],
+		[100_000_000, 2048],
+	]) {
+		it(`resolves search ef ${expected} at ${nodes.toLocaleString('en-US')} nodes`, async () => {
+			const efs = await withNodeCount(T, nodes, async () => {
+				const customIndex = T.indices.vector.customIndex;
+				customIndex.nodeCountAt = 0; // expire the memo so the search re-resolves through the shadow
+				const layer0Ef = await captureLayer0Ef(T, { limit: 10 });
+				return layer0Ef;
+			});
+			assert.strictEqual(efs, expected, `expected the auto-scaled search ef at ${nodes} nodes, got ${efs}`);
+		});
+	}
+
+	it('caps the filtered visit budget when the auto-scaled search ef exceeds AUTO_EF_MAX', async () => {
+		const customIndex = T.indices.vector.customIndex;
+		const { layer0Ef, budgets } = await captureFilteredSearch(T, 5_000_000);
+		assert.strictEqual(layer0Ef, 1145, 'the test must reach the second search-ef regime');
+		assert.deepStrictEqual(
+			budgets,
+			[512 * customIndex.filterExpansion],
+			'the automatic filtered budget must stay capped at AUTO_EF_MAX'
+		);
+	});
+
+	it('lets an explicit query ef raise the filtered visit budget', async () => {
+		const customIndex = T.indices.vector.customIndex;
+		const { layer0Ef, budgets } = await captureFilteredSearch(T, 5_000_000, { ef: 3000 });
+		assert.strictEqual(layer0Ef, 3000);
+		assert.deepStrictEqual(budgets, [3000 * customIndex.filterExpansion]);
+	});
+
+	it('lets an explicit schema ef raise the filtered visit budget', async () => {
+		for (let i = 0; i < 3; i++) await SearchPinned.put(i, { vector: [1, i / 10, 0] });
+		const customIndex = SearchPinned.indices.vector.customIndex;
+		const { layer0Ef, budgets } = await captureFilteredSearch(SearchPinned, 5_000_000);
+		assert.strictEqual(layer0Ef, 1500);
+		assert.deepStrictEqual(budgets, [1500 * customIndex.filterExpansion]);
+	});
+
+	it('leaves an explicit schema ef authoritative over the limit-derived floor', async () => {
+		for (const [Table, expectedEf] of [
+			[Pinned, 64],
+			[SearchPinned, 1500],
+		]) {
+			for (let i = 0; i < 3; i++) await Table.put(i, { vector: [1, i / 10, 0] });
+			const layer0Ef = captureLimitDerivedLayer0Ef(Table, 3000);
+			assert.strictEqual(layer0Ef, expectedEf, 'a schema search-ef pin must cap limit-derived widening');
+		}
+	});
+
+	// The refactor's stated mechanism, not just the formula: an update-only worker (counter absent,
+	// as after a restart with no new inserts) must ensure the shared counter with ONE seek, then read
+	// it atomically — never a reverse seek per write, and never a failed write if the seek throws.
+	it('an update-only path ensures the shared counter once instead of seeking per write', async () => {
+		const customIndex = T.indices.vector.customIndex;
+		const saved = customIndex.idIncrementer;
+		customIndex.idIncrementer = undefined;
+		const store = customIndex.indexStore;
+		const originalGetKeys = store.getKeys;
+		let seeks = 0;
+		store.getKeys = function (opts, ...rest) {
+			if (opts?.reverse) seeks++;
+			return originalGetKeys.call(this, opts, ...rest);
+		};
+		try {
+			// ids 0 and 1 already exist in T, so both puts take the update path and never allocate an id
+			await T.put(0, { vector: [1, 0, 0.2] });
+			await T.put(1, { vector: [0.9, 0.1, 0.2] });
+			assert(customIndex.idIncrementer, 'the update path must ensure the shared counter');
+			assert.strictEqual(seeks, 1, `the counter seed should be the only reverse seek, got ${seeks}`);
+		} finally {
+			store.getKeys = originalGetKeys;
+			if (!customIndex.idIncrementer) customIndex.idIncrementer = saved;
+		}
+	});
+
+	it('falls back to a memoized count and backs off after a shared-counter attach failure', async () => {
+		const customIndex = T.indices.vector.customIndex;
+		const saved = customIndex.idIncrementer;
+		const savedNodeCount = customIndex.nodeCount;
+		const savedNodeCountAt = customIndex.nodeCountAt;
+		const savedRetryAt = customIndex.idIncrementerRetryAt;
+		const savedFailureLogged = customIndex.idIncrementerFailureLogged;
+		customIndex.idIncrementer = undefined;
+		customIndex.nodeCountAt = 0;
+		const store = customIndex.indexStore;
+		const originalGetUserSharedBuffer = store.getUserSharedBuffer;
+		const originalGetKeys = store.getKeys;
+		let attachAttempts = 0;
+		const seekTransactions = [];
+		store.getKeys = function* (options) {
+			if (options?.reverse) {
+				seekTransactions.push(options.transaction);
+				yield 999_999;
+				return;
+			}
+			yield* originalGetKeys.call(this, options);
+		};
+		store.getUserSharedBuffer = () => {
+			attachAttempts++;
+			throw new Error('simulated shared-buffer attach failure');
+		};
+		try {
+			const firstEfs = await connectionEfsDuringPut(T, 0);
+			const secondEfs = await connectionEfsDuringPut(T, 1);
+			assert.strictEqual(customIndex.idIncrementer, undefined, 'a failed attach must not install a counter');
+			assert.deepStrictEqual([...firstEfs], [200], 'the fallback count must preserve the construction scale');
+			assert.deepStrictEqual([...secondEfs], [200], 'the memoized fallback must preserve the scale');
+			assert.strictEqual(attachAttempts, 1, 'the attach must not be retried on every update');
+			assert.strictEqual(seekTransactions.length, 1, 'the attach seed seek must also supply the fallback count');
+			assert(seekTransactions[0], 'the counter seed seek must use the write transaction');
+			store.getUserSharedBuffer = originalGetUserSharedBuffer;
+			store.getKeys = originalGetKeys;
+			customIndex.idIncrementerRetryAt = 0;
+			await T.put(1, { vector: [0.7, 0.3, 0.1] });
+			assert(customIndex.idIncrementer, 'the attach must be retryable once the backoff expires');
+			assert.strictEqual(customIndex.idIncrementerFailureLogged, false, 'recovery must re-arm the warning');
+		} finally {
+			store.getUserSharedBuffer = originalGetUserSharedBuffer;
+			store.getKeys = originalGetKeys;
+			customIndex.idIncrementer = saved;
+			customIndex.nodeCount = savedNodeCount;
+			customIndex.nodeCountAt = savedNodeCountAt;
+			customIndex.idIncrementerRetryAt = savedRetryAt;
+			customIndex.idIncrementerFailureLogged = savedFailureLogged;
+		}
+	});
+
+	it('keeps construction count resolution best-effort on the write path', async () => {
+		const customIndex = T.indices.vector.customIndex;
+		customIndex.resolveConstructionNodeCount = () => {
+			throw new RangeError('simulated unusable counter');
+		};
+		try {
+			const efs = await connectionEfsDuringPut(T, 2);
+			assert.deepStrictEqual([...efs], [100], 'count resolution failure must retain the base efConstruction');
+		} finally {
+			delete customIndex.resolveConstructionNodeCount;
+		}
+	});
+
+	it('does not cache an unusable shared-counter buffer', async () => {
+		const customIndex = T.indices.vector.customIndex;
+		const saved = customIndex.idIncrementer;
+		const savedNodeCount = customIndex.nodeCount;
+		const savedNodeCountAt = customIndex.nodeCountAt;
+		const savedRetryAt = customIndex.idIncrementerRetryAt;
+		const savedFailureLogged = customIndex.idIncrementerFailureLogged;
+		customIndex.idIncrementer = undefined;
+		customIndex.nodeCountAt = 0;
+		const store = customIndex.indexStore;
+		const originalGetUserSharedBuffer = store.getUserSharedBuffer;
+		const originalGetKeys = store.getKeys;
+		let seekCount = 0;
+		store.getKeys = function* (options) {
+			if (options?.reverse) {
+				seekCount++;
+				yield 999_999;
+				return;
+			}
+			yield* originalGetKeys.call(this, options);
+		};
+		store.getUserSharedBuffer = () => new ArrayBuffer(0);
+		try {
+			const efs = await connectionEfsDuringPut(T, 0);
+			assert.strictEqual(customIndex.idIncrementer, undefined);
+			assert.deepStrictEqual([...efs], [200]);
+			assert.strictEqual(seekCount, 1, 'the unusable buffer fallback must reuse the attach seed seek');
+		} finally {
+			store.getUserSharedBuffer = originalGetUserSharedBuffer;
+			store.getKeys = originalGetKeys;
+			customIndex.idIncrementer = saved;
+			customIndex.nodeCount = savedNodeCount;
+			customIndex.nodeCountAt = savedNodeCountAt;
+			customIndex.idIncrementerRetryAt = savedRetryAt;
+			customIndex.idIncrementerFailureLogged = savedFailureLogged;
+		}
+	});
+
+	it('leaves an explicitly configured efConstruction authoritative at any graph size', async () => {
+		for (let i = 0; i < 5; i++) {
+			const a = (i / 5) * Math.PI * 2;
+			await Pinned.put(i, { vector: [Math.cos(a), Math.sin(a), (i % 5) / 5] });
+		}
+		const efs = await withNodeCount(Pinned, 1_000_000, () => connectionEfsDuringPut(Pinned, 5));
+		assert.deepStrictEqual([...efs], [64], `expected the schema-configured efConstruction, got ${[...efs]}`);
+	});
+});
+
+describe('HNSW greedy routing above layer 0 (ROUTING_EF)', () => {
+	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
+	const N = 600;
+	const ROUTING_EF = 1; // must track ROUTING_EF in resources/indexes/HierarchicalNavigableSmallWorld.ts
+	// Each graph's level assignment is pinned with a seeded PRNG (mulberry32) so a run is
+	// reproducible: greedy-vs-full equality is only statistically true over random graphs — ~2-3%
+	// of random 600-node graphs legitimately route to a different entry point and change the
+	// top-10 tail, which is what flaked on CI. One pinned graph samples that property once, so the
+	// assertion sweeps several: all of these are non-divergent at this head (measured over 40
+	// arbitrary seeds, 4 diverged, so a divergent seed here after an intentional index change is a
+	// re-pin rather than necessarily a regression — see DESIGN.md).
+	const SEEDS = [0x9e3779b9, 0x85ebca6b, 0xc2b2ae35, 0x27d4eb2f, 0x165667b1, 0x7feb352d, 0x846ca68b, 0xff51afd7];
+	const targets = [
+		[1, 0, 0, 0],
+		[0, 1, 0.5, 0.2],
+		[-0.6, 0.3, 0.9, 0.4],
+		[0.2, -0.8, 0.1, 0.7],
+	];
+
+	before(() => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+	});
+
+	async function buildGraph(seed) {
+		const T = table({
+			table: 'HNSWRoutingTest' + (seed >>> 0).toString(16),
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'cosine' }, type: 'Array' },
+			],
+		});
+		const level = mulberry32(seed);
+		let draws = 0;
+		T.indices.vector.customIndex.random = () => {
+			draws++;
+			return level();
+		};
 		for (let i = 0; i < N; i++) {
 			const a = (i / N) * Math.PI * 2;
 			const b = ((i * 7) % N) / N;
 			await T.put(i, { vector: [Math.cos(a), Math.sin(a), b, (i % 11) / 11] });
 		}
-	});
+		// A seed only names a graph while each node takes exactly one draw: a second consumer of the
+		// stream shifts every level after it and silently re-pins all eight graphs to something the
+		// measurements below were never taken on.
+		assert.strictEqual(draws, N, 'the pinned stream must serve one level draw per node and nothing else');
+		return T;
+	}
 
-	after(() => {
-		T.dropTable();
-	});
+	async function topTenIds(T, target) {
+		return (
+			await fromAsync(
+				T.search({ sort: { attribute: 'vector', target, distance: 'cosine' }, select: ['id'], limit: 10 })
+			)
+		)
+			.map((r) => r.id)
+			.join(',');
+	}
 
 	// Layers above 0 only supply the next layer's entry point, so descending greedily must not cost
 	// accuracy. Compare against the same graph searched with the full ef at every layer — the
 	// pre-change behaviour — rather than against a fixed expectation.
 	it('returns the same neighbours as searching every layer at the full ef', async () => {
-		const customIndex = T.indices.vector.customIndex;
-		const originalSearchLayer = customIndex.searchLayer;
-		const targets = [
-			[1, 0, 0, 0],
-			[0, 1, 0.5, 0.2],
-			[-0.6, 0.3, 0.9, 0.4],
-			[0.2, -0.8, 0.1, 0.7],
-		];
+		const descentSensitive = [];
+		for (const seed of SEEDS) {
+			const label = '0x' + (seed >>> 0).toString(16);
+			const T = await buildGraph(seed);
+			try {
+				const customIndex = T.indices.vector.customIndex;
+				const originalSearchLayer = customIndex.searchLayer;
+				const greedy = [];
+				const routingEfs = new Set();
+				customIndex.searchLayer = function (v, epId, ep, ef, level, ...rest) {
+					if (level > 0) routingEfs.add(ef);
+					return originalSearchLayer.call(this, v, epId, ep, ef, level, ...rest);
+				};
+				try {
+					for (const target of targets) {
+						greedy.push(await topTenIds(T, target));
+					}
+				} finally {
+					customIndex.searchLayer = originalSearchLayer;
+				}
+				// Hand the upper layers the full ef and both sides of the greedy-vs-full comparison
+				// below search identically, so only this assertion notices the optimization going away.
+				assert.deepStrictEqual(
+					[...routingEfs],
+					[ROUTING_EF],
+					`the layers above 0 must route at ROUTING_EF (seed ${label})`
+				);
 
-		const greedy = [];
-		for (const target of targets) {
-			greedy.push(
-				(
-					await fromAsync(
-						T.search({ sort: { attribute: 'vector', target, distance: 'cosine' }, select: ['id'], limit: 10 })
-					)
-				)
-					.map((r) => r.id)
-					.join(',')
-			);
-		}
+				// Every layer at the ef layer 0 actually resolves to — what search() passed down before
+				// greedy descent. Read it from a real query rather than efConstructionSearch, which is
+				// only the pre-change value when a schema configures one; this index takes the
+				// auto-scaled path.
+				const resolvedLayer0Ef = await captureLayer0Ef(T, { limit: 10 });
+				assert(resolvedLayer0Ef > 1, `expected an auto-scaled layer-0 ef, got ${resolvedLayer0Ef} (seed ${label})`);
+				customIndex.searchLayer = function (v, epId, ep, ef, level, ...rest) {
+					return originalSearchLayer.call(this, v, epId, ep, level > 0 ? resolvedLayer0Ef : ef, level, ...rest);
+				};
+				try {
+					for (let i = 0; i < targets.length; i++) {
+						assert.strictEqual(
+							greedy[i],
+							await topTenIds(T, targets[i]),
+							`greedy descent changed the result set for target ${i} (seed ${label})`
+						);
+					}
+				} finally {
+					customIndex.searchLayer = originalSearchLayer;
+				}
 
-		// Every layer at the ef layer 0 actually resolves to — what search() passed down before greedy
-		// descent. Read it from a real query rather than efConstructionSearch, which is only the
-		// pre-change value when a schema configures one; this index takes the auto-scaled path.
-		const resolvedLayer0Ef = await captureLayer0Ef(T, { limit: 10 });
-		assert(resolvedLayer0Ef > 1, `expected an auto-scaled layer-0 ef, got ${resolvedLayer0Ef}`);
-		customIndex.searchLayer = function (v, epId, ep, ef, level, ...rest) {
-			return originalSearchLayer.call(this, v, epId, ep, level > 0 ? resolvedLayer0Ef : ef, level, ...rest);
-		};
-		try {
-			for (let i = 0; i < targets.length; i++) {
-				const full = (
-					await fromAsync(
-						T.search({
-							sort: { attribute: 'vector', target: targets[i], distance: 'cosine' },
-							select: ['id'],
-							limit: 10,
-						})
-					)
-				)
-					.map((r) => r.id)
-					.join(',');
-				assert.strictEqual(greedy[i], full, `greedy descent changed the result set for target ${i}`);
+				// On many graphs layer 0 alone reaches the true neighbours from wherever it starts, and
+				// there the comparison above passes with the descent deleted outright. That is a
+				// property of the graph, not of this seed list, so the sweep as a whole has to contain
+				// at least one graph the descent decides — otherwise nothing here tests the descent.
+				customIndex.searchLayer = function (v, epId, ep, ef, level, ...rest) {
+					return level > 0 ? [] : originalSearchLayer.call(this, v, epId, ep, ef, level, ...rest);
+				};
+				try {
+					for (let i = 0; i < targets.length; i++) {
+						if ((await topTenIds(T, targets[i])) !== greedy[i]) {
+							descentSensitive.push(label);
+							break;
+						}
+					}
+				} finally {
+					customIndex.searchLayer = originalSearchLayer;
+				}
+			} finally {
+				await T.dropTable();
 			}
-		} finally {
-			customIndex.searchLayer = originalSearchLayer;
 		}
+		assert(
+			descentSensitive.length > 0,
+			'no seed routes differently without the descent: check whether the graph still has a hierarchy worth descending (mL, MAX_LEVEL) before re-picking SEEDS against this control'
+		);
+	});
+});
+
+describe('HNSW entry-point level clamp', () => {
+	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
+	let T;
+	before(() => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		T = table({
+			table: 'HNSWClampTest',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'cosine' }, type: 'Array' },
+			],
+		});
+	});
+	after(() => {
+		T.dropTable();
+	});
+
+	it('caps the first node of an empty index at MAX_LEVEL', async () => {
+		const customIndex = T.indices.vector.customIndex;
+		// Number.MIN_VALUE draws an unclamped level of ~268 (-ln(5e-324) * mL). A finite draw keeps
+		// a clamp regression a fast assertion failure — random() === 0 (Infinity) would instead wedge
+		// the runner in the synchronous per-level init loop, which is worse than the flake this
+		// branch removes.
+		customIndex.random = () => Number.MIN_VALUE;
+		try {
+			await T.put(1, { vector: [1, 0, 0] });
+		} finally {
+			customIndex.random = Math.random;
+		}
+		let entryLevel;
+		for (const { value } of customIndex.indexStore.getRange({ start: 0, end: Infinity })) {
+			if (value?.level !== undefined) entryLevel = value.level;
+		}
+		assert.strictEqual(entryLevel, 10, `expected the entry point level to be clamped to MAX_LEVEL, got ${entryLevel}`);
 	});
 });
 
@@ -757,7 +1249,7 @@ describe('HNSW limit above the resolved search ef', () => {
 	]) {
 		it(`bounds the limit-derived ef at LIMIT_EF_MAX under ${label}`, async () => {
 			const layer0Ef = await captureLayer0Ef(T, query);
-			assert.strictEqual(layer0Ef, 4 * 512, `layer-0 ef should be LIMIT_EF_MAX (${4 * 512}), got ${layer0Ef}`);
+			assert.strictEqual(layer0Ef, 2 * 2048, `layer-0 ef should be LIMIT_EF_MAX (${2 * 2048}), got ${layer0Ef}`);
 		});
 	}
 
@@ -809,8 +1301,7 @@ describe('HNSW limit above the resolved search ef', () => {
 			customIndex.search(
 				{ target: [1, 0, 0], comparator: 'sort' },
 				{ transaction: undefined },
-				() => true,
-				100_000 // a limit far above anything the index would choose for itself
+				{ filter: () => true, minResults: 100_000 } // a limit far above anything the index would choose for itself
 			);
 		} finally {
 			customIndex.searchLayer = originalSearchLayer;
@@ -1959,7 +2450,7 @@ describeUnlessLmdbFilter('HNSW predicate-aware traversal (#1241)', () => {
 		const results = hnsw.search(
 			{ target: [0], comparator: 'sort', descending: false },
 			{ transaction: undefined },
-			even
+			{ filter: even }
 		);
 		assert(results.length > 0, 'expected matching results');
 		assert(
@@ -1978,7 +2469,7 @@ describeUnlessLmdbFilter('HNSW predicate-aware traversal (#1241)', () => {
 		const results = hnsw.search(
 			{ target: [0], comparator: 'sort', descending: false },
 			{ transaction: undefined },
-			everyTenth
+			{ filter: everyTenth }
 		);
 		assert(
 			results.every((r) => Number(r.key) % 10 === 0),
@@ -1998,7 +2489,7 @@ describeUnlessLmdbFilter('HNSW predicate-aware traversal (#1241)', () => {
 		const results = hnsw.search(
 			{ target: [0], comparator: 'sort', descending: false, ef: 10, filterExpansion: 2 },
 			{ transaction: undefined },
-			matchesNothing
+			{ filter: matchesNothing }
 		);
 		assert.strictEqual(results.length, 0, 'no matches yields an empty result, not an error');
 		assert(results.nodesVisited > 0, 'some nodes were visited');
@@ -2011,7 +2502,7 @@ describeUnlessLmdbFilter('HNSW predicate-aware traversal (#1241)', () => {
 		const results = hnsw.search(
 			{ target: [0], comparator: 'sort', descending: false },
 			{ transaction: undefined },
-			even
+			{ filter: even }
 		);
 		assert.strictEqual(typeof results.nodesVisited, 'number');
 		assert.strictEqual(typeof results.filterEvaluations, 'number');
@@ -2027,7 +2518,7 @@ describeUnlessLmdbFilter('HNSW predicate-aware traversal (#1241)', () => {
 		const results = hnsw.search(
 			{ target: [0], comparator: 'sort', descending: false },
 			{ transaction: undefined },
-			even
+			{ filter: even }
 		);
 		assert(!results.some((r) => r.key === 10 || r.key === 20), 'deleted nodes must not be returned');
 		assert(
@@ -2042,7 +2533,7 @@ describeUnlessLmdbFilter('HNSW predicate-aware traversal (#1241)', () => {
 		const results = hnsw.search(
 			{ target: [0], comparator: 'sort', descending: false },
 			{ transaction: undefined },
-			even
+			{ filter: even }
 		);
 		assert(
 			results.every((r) => Number(r.key) % 2 === 0),
@@ -2814,6 +3305,801 @@ describeUnlessLmdbFilter('HNSW filtered search via Table.search (#1241)', () => 
 			const exact = (r.vector[0] - 0) ** 2 + (r.vector[1] - 0.5) ** 2;
 			assert(Math.abs(r.$distance - exact) < 1e-9, `$distance ${r.$distance} should equal exact ${exact}`);
 		}
+	});
+});
+
+describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
+	// The vector condition is supplied explicitly and `enforceExecutionOrder` keeps it first, so every
+	// test here reaches the filterable-pushdown branch regardless of what the planner estimates. The
+	// companion conditions stay under half the graph, which is where an allow-set beats loading a
+	// record per visited node.
+	let A;
+	before(async () => {
+		A = table({
+			table: 'HNSWAllow',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'tenant', indexed: true },
+				{ name: 'rank', indexed: true, type: 'Int' },
+				{ name: 'shard', indexed: true },
+				{ name: 'mixedNumber', indexed: true, type: 'Any' },
+				{ name: 'note' },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'euclidean', quantization: 'none' }, type: 'Array' },
+			],
+		});
+		for (let i = 0; i < 300; i++) {
+			const record = {
+				tenant: i % 3 === 0 ? 'a' : 'b',
+				shard: i < 290 ? 'wide' : 'narrow',
+				mixedNumber: i === 0 ? 1n : i === 1 ? 1 : i,
+				note: i % 2 === 0 ? 'keep' : 'drop',
+				vector: [i, 0],
+			};
+			// id 0 has no rank and id 1 a null one. The record predicate's compareKeys ranks both below
+			// every number, so `rank < n` admits them, and the index holds only the null.
+			if (i > 0) record.rank = i === 1 ? null : i;
+			await A.put(i, record);
+		}
+	});
+	after(() => A.dropTable());
+
+	/**
+	 * Capture what search.ts hands the index, and the traversal counters it hands back. The plan is
+	 * also run directly — that has to happen inside the spy, since its scans read the query's
+	 * transaction, which is released once the results are consumed.
+	 */
+	async function searchWithSpy(target, conditions, extra = {}, probe = (plan) => plan.collect(100_000)) {
+		const customIndex = A.indices.vector.customIndex;
+		const original = customIndex.search;
+		const calls = [];
+		customIndex.search = function (condition, context, options) {
+			const probed = options.candidateKeys ? probe(options.candidateKeys) : undefined;
+			const entries = original.call(this, condition, context, options);
+			calls.push({ options, entries, probed });
+			return entries;
+		};
+		const sort = { attribute: 'vector', target, distance: 'euclidean' };
+		try {
+			const results = await fromAsync(
+				A.search(
+					{
+						conditions: [{ attribute: 'vector', comparator: 'sort', ...sort }, ...conditions],
+						sort,
+						enforceExecutionOrder: true,
+						select: ['id'],
+						...extra,
+					},
+					{}
+				)
+			);
+			assert.strictEqual(calls.length, 1, 'the vector condition must be the query lead');
+			return { results, options: calls[0].options, stats: calls[0].entries, probed: calls[0].probed };
+		} finally {
+			customIndex.search = original;
+		}
+	}
+
+	it('answers an indexed equality from the allow-set, with no record loaded to admit', async () => {
+		const { results, probed, stats } = await searchWithSpy(
+			[0, 0],
+			[{ attribute: 'tenant', comparator: 'equals', value: 'a' }],
+			{ limit: 5 }
+		);
+		assert.strictEqual(probed.complete, true, 'no residual predicate is needed');
+		assert.strictEqual(probed.keys.size, 100, 'the allow-set is every tenant-a record');
+		assert.strictEqual(stats.candidateKeys, 100);
+		assert.strictEqual(stats.filterEvaluations, 0, 'admission never loads a record');
+		assert.deepStrictEqual(
+			results.map((record) => record.id),
+			[0, 3, 6, 9, 12]
+		);
+	});
+
+	it('keeps strict equality behind an Any numeric candidate set', async () => {
+		const { results, probed, stats } = await searchWithSpy(
+			[0, 0],
+			[{ attribute: 'mixedNumber', comparator: 'equals', value: 1 }],
+			{ limit: 5 }
+		);
+		assert.strictEqual(probed.complete, false);
+		assert(probed.keys.has(0), 'the storage range includes the BigInt value');
+		assert(probed.keys.has(1), 'the storage range includes the Number value');
+		assert(stats.filterEvaluations > 0, 'the strict record predicate decides admission');
+		assert.deepStrictEqual(
+			results.map((record) => record.id),
+			[1]
+		);
+	});
+
+	it('does not inspect point-probe capabilities unless the lead index opts in', async () => {
+		const tenantIndex = A.indices.tenant;
+		const ownDescriptor = Object.getOwnPropertyDescriptor(tenantIndex, 'hasIndexEntry');
+		Object.defineProperty(tenantIndex, 'hasIndexEntry', {
+			configurable: true,
+			get() {
+				throw new Error('the HNSW planner must not inspect point-probe capabilities');
+			},
+		});
+		try {
+			const { results, options } = await searchWithSpy(
+				[0, 0],
+				[{ attribute: 'tenant', comparator: 'equals', value: 'a' }],
+				{ limit: 1 }
+			);
+			assert.strictEqual(options.candidateKeys.probe, undefined);
+			assert.strictEqual(results[0].id, 0);
+		} finally {
+			if (ownDescriptor) Object.defineProperty(tenantIndex, 'hasIndexEntry', ownDescriptor);
+			else delete tenantIndex.hasIndexEntry;
+		}
+	});
+
+	it('composes equality point probes across AND, OR, and residual conditions', async () => {
+		const customIndex = A.indices.vector.customIndex;
+		customIndex.candidateKeyProbe = true;
+		const inspect = (keys) => (plan) => ({
+			complete: plan.probe?.complete,
+			estimatedCount: plan.probe?.estimatedCount,
+			maxReadsPerCandidate: plan.probe?.maxReadsPerCandidate,
+			matches: keys.map((key) => plan.probe?.has(key)),
+		});
+		try {
+			const and = await searchWithSpy(
+				[0, 0],
+				[
+					{ attribute: 'tenant', comparator: 'equals', value: 'a' },
+					{ attribute: 'shard', comparator: 'equals', value: 'wide' },
+				],
+				{ limit: 1 },
+				inspect([0, 1, 291])
+			);
+			assert.deepStrictEqual(and.probed, {
+				complete: true,
+				estimatedCount: 100,
+				maxReadsPerCandidate: 2,
+				matches: [true, false, false],
+			});
+
+			const or = await searchWithSpy(
+				[0, 0],
+				[
+					{
+						operator: 'or',
+						conditions: [
+							{ attribute: 'tenant', comparator: 'equals', value: 'a' },
+							{ attribute: 'rank', comparator: 'equals', value: 7 },
+						],
+					},
+				],
+				{ limit: 1 },
+				inspect([3, 7, 8])
+			);
+			assert.deepStrictEqual(or.probed, {
+				complete: true,
+				estimatedCount: 101,
+				maxReadsPerCandidate: 2,
+				matches: [true, true, false],
+			});
+
+			const residual = await searchWithSpy(
+				[0, 0],
+				[
+					{ attribute: 'tenant', comparator: 'equals', value: 'a' },
+					{ attribute: 'note', comparator: 'equals', value: 'keep' },
+				],
+				{ limit: 1 },
+				inspect([0, 1])
+			);
+			assert.deepStrictEqual(residual.probed, {
+				complete: false,
+				estimatedCount: 100,
+				maxReadsPerCandidate: 1,
+				matches: [true, false],
+			});
+		} finally {
+			delete customIndex.candidateKeyProbe;
+		}
+	});
+
+	it('builds the allow-set from each range comparator a missing value cannot satisfy', async () => {
+		for (const [comparator, value, target, expected] of [
+			['ge', 200, [200, 0], [200, 201, 202, 203, 204]],
+			['gt', 199, [200, 0], [200, 201, 202, 203, 204]],
+			['between', [100, 199], [150.3, 0], [150, 151, 149, 152, 148]],
+		]) {
+			// The allow-set gate reads this estimate, and a memtable range estimate is a skip-list sample
+			// that can land past the 150-key budget.
+			const { results, stats } = await searchWithSpy(
+				target,
+				[{ attribute: 'rank', comparator, value, estimated_count: 100 }],
+				{ limit: 5 }
+			);
+			assert.strictEqual(stats.filterEvaluations, 0, `${comparator} must be answered by the allow-set`);
+			assert.strictEqual(stats.candidateKeys, 100, `${comparator} selects 100 records`);
+			assert.deepStrictEqual(
+				results.map((record) => record.id),
+				expected,
+				`unexpected results for ${comparator}`
+			);
+		}
+	});
+
+	it('clears the allow-set gate with an unpinned planner estimate on a narrow range', async () => {
+		const { results, stats } = await searchWithSpy(
+			[104.3, 0],
+			[{ attribute: 'rank', comparator: 'between', value: [100, 109] }],
+			{ limit: 5 }
+		);
+		assert.strictEqual(stats.filterEvaluations, 0, 'the estimate must not decline the allow-set');
+		assert.strictEqual(stats.candidateKeys, 10);
+		assert.deepStrictEqual(
+			results.map((record) => record.id),
+			[104, 105, 103, 106, 102]
+		);
+	});
+
+	it('returns what the predicate path returns when a condition admits a record the index does not hold', async () => {
+		const customIndex = A.indices.vector.customIndex;
+		for (const [condition, planned] of [
+			// Satisfied by a rank of 0, which a record written as -0 holds and its index entry cannot supply.
+			[{ attribute: 'rank', comparator: 'between', value: [null, 60] }, false],
+			[{ attribute: 'rank', comparator: 'lt', value: 100 }, false],
+			[{ attribute: 'rank', comparator: 'le', value: 99 }, false],
+			[{ attribute: 'rank', comparator: 'equals', value: 0 }, false],
+			[{ attribute: 'rank', comparator: 'between', value: [-0, 60] }, false],
+			// -0 encodes above every number, so an unnormalized lower bound would scan an empty range.
+			[{ attribute: 'rank', comparator: 'gtlt', value: [-0, 60] }, true],
+		]) {
+			const label = `${condition.comparator} ${JSON.stringify(condition.value)}`;
+			const { results, probed } = await searchWithSpy([0, 0], [condition], { limit: 5 });
+			assert.strictEqual(Boolean(probed), planned, `${label}: planned`);
+			customIndex.candidateKeyFilter = false;
+			let unplanned;
+			try {
+				unplanned = await searchWithSpy([0, 0], [condition], { limit: 5 });
+			} finally {
+				customIndex.candidateKeyFilter = true;
+			}
+			assert.deepStrictEqual(
+				results.map((record) => record.id),
+				unplanned.results.map((record) => record.id),
+				`${label}: the allow-set must not change the results`
+			);
+		}
+	});
+
+	it('leaves a range admitting 0 to the predicate, since a -0 written there is indexed unreadably', async () => {
+		const Z = table({
+			table: 'HNSWAllowNegativeZero',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'rank', indexed: true, type: 'Int' },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'euclidean', quantization: 'none' }, type: 'Array' },
+			],
+		});
+		try {
+			for (let i = 1; i <= 40; i++) await Z.put(i, { rank: i, vector: [i, 0] });
+			// Math.round(-0.3) is -0. The record reads back as 0, but its index entry sorts past every
+			// number and decodes to a different primary key.
+			await Z.put(100, { rank: Math.round(-0.3), vector: [0, 0] });
+			const customIndex = Z.indices.vector.customIndex;
+			const sort = { attribute: 'vector', target: [0, 0], distance: 'euclidean' };
+			const run = async (planned) => {
+				customIndex.candidateKeyFilter = planned;
+				try {
+					const results = await fromAsync(
+						Z.search(
+							{
+								conditions: [
+									{ attribute: 'vector', comparator: 'sort', ...sort },
+									{ attribute: 'rank', comparator: 'between', value: [-5, 5] },
+								],
+								sort,
+								enforceExecutionOrder: true,
+								select: ['id'],
+								limit: 3,
+							},
+							{}
+						)
+					);
+					return results.map((record) => record.id);
+				} finally {
+					customIndex.candidateKeyFilter = true;
+				}
+			};
+			assert.deepStrictEqual(await run(true), [100, 1, 2]);
+			assert.deepStrictEqual(await run(false), [100, 1, 2]);
+		} finally {
+			Z.dropTable();
+		}
+	});
+
+	it('skips the null block a lt/le range cannot match, so null ranks neither fill the allow-set nor the limit', async () => {
+		const N = table({
+			table: 'HNSWAllowNulls',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'rank', indexed: true, type: 'BigInt' },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'euclidean', quantization: 'none' }, type: 'Array' },
+			],
+		});
+		try {
+			for (let i = 0; i < 300; i++) await N.put(i, { rank: i < 200 ? null : BigInt(i), vector: [i, 0] });
+			const customIndex = N.indices.vector.customIndex;
+			const original = customIndex.search;
+			let plan;
+			customIndex.search = function (condition, context, options) {
+				plan = options.candidateKeys && options.candidateKeys.collect(100_000);
+				return original.call(this, condition, context, options);
+			};
+			const sort = { attribute: 'vector', target: [0, 0], distance: 'euclidean' };
+			let results;
+			try {
+				results = await fromAsync(
+					N.search(
+						{
+							conditions: [
+								{ attribute: 'vector', comparator: 'sort', ...sort },
+								{ attribute: 'rank', comparator: 'lt', value: 250n },
+							],
+							sort,
+							enforceExecutionOrder: true,
+							select: ['id'],
+							limit: 1,
+						},
+						{}
+					)
+				);
+			} finally {
+				customIndex.search = original;
+			}
+			assert.strictEqual(plan.keys.size, 50, 'ranks 200-249, and none of the 200 nulls');
+			assert.strictEqual(plan.complete, true);
+			assert.deepStrictEqual(
+				results.map((record) => record.id),
+				[200]
+			);
+		} finally {
+			N.dropTable();
+		}
+	});
+
+	it('leaves a range on an untyped attribute to the predicate, which nested arrays and BigInts can defeat', async () => {
+		const M = table({
+			table: 'HNSWAllowUntypedRange',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'rank', indexed: true },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'euclidean', quantization: 'none' }, type: 'Array' },
+			],
+		});
+		try {
+			// -2n has the index key of -2 but fails `< -1`; [[-2]] passes it but has no index entry
+			await M.put(1, { rank: -2n, vector: [0, 0] });
+			await M.put(2, { rank: [[-2]], vector: [0.25, 0] });
+			await M.put(3, { rank: 5, vector: [0.5, 0] });
+			await M.put(4, { rank: -2, vector: [1, 0] });
+			for (let i = 10; i < 60; i++) await M.put(i, { rank: i, vector: [i, 0] });
+			const customIndex = M.indices.vector.customIndex;
+			const original = customIndex.search;
+			const sort = { attribute: 'vector', target: [0, 0], distance: 'euclidean' };
+			try {
+				for (const [comparator, value, expected] of [
+					['lt', -1, [2, 4]],
+					['le', -1, [2, 4]],
+					['between', [null, -1], [2, 4]],
+					// the zero probe does not decline this one
+					['gt', 1],
+				]) {
+					let candidateKeys;
+					customIndex.search = function (condition, context, options) {
+						candidateKeys = options.candidateKeys;
+						return original.call(this, condition, context, options);
+					};
+					const results = await fromAsync(
+						M.search(
+							{
+								conditions: [
+									{ attribute: 'vector', comparator: 'sort', ...sort },
+									{ attribute: 'rank', comparator, value },
+								],
+								sort,
+								enforceExecutionOrder: true,
+								select: ['id'],
+								limit: 2,
+							},
+							{}
+						)
+					);
+					assert.strictEqual(candidateKeys, undefined, `${comparator}: no allow-set`);
+					if (expected)
+						assert.deepStrictEqual(
+							results.map((record) => record.id),
+							expected,
+							comparator
+						);
+				}
+			} finally {
+				customIndex.search = original;
+			}
+		} finally {
+			M.dropTable();
+		}
+	});
+
+	it('unions a nested OR group into one allow-set', async () => {
+		const { results, stats } = await searchWithSpy(
+			[0, 0],
+			[
+				{
+					operator: 'or',
+					conditions: [
+						{ attribute: 'tenant', comparator: 'equals', value: 'a' },
+						{ attribute: 'rank', comparator: 'equals', value: 7 },
+					],
+				},
+			],
+			{ limit: 6 }
+		);
+		assert.strictEqual(stats.filterEvaluations, 0);
+		assert.strictEqual(stats.candidateKeys, 101, 'rank 7 joins the 100 tenant-a records');
+		assert.deepStrictEqual(
+			results.map((record) => record.id),
+			[0, 3, 6, 7, 9, 12]
+		);
+	});
+
+	it('keeps a non-indexed sibling residual and gates it behind the allow-set', async () => {
+		const { results, probed, stats } = await searchWithSpy(
+			[0, 0],
+			[
+				{ attribute: 'tenant', comparator: 'equals', value: 'a' },
+				{ attribute: 'note', comparator: 'equals', value: 'keep' },
+			],
+			{ limit: 4, select: ['id', 'note'] }
+		);
+		assert.strictEqual(probed.complete, false, 'an unindexed sibling stays residual');
+		assert(stats.filterEvaluations > 0, 'the residual predicate still runs');
+		assert(
+			stats.filterEvaluations <= stats.candidateKeys,
+			`the allow-set gates the residual (${stats.filterEvaluations} loads for ${stats.candidateKeys} keys)`
+		);
+		// note 'keep' is even, tenant 'a' is a multiple of 3 — so the multiples of 6.
+		assert.deepStrictEqual(
+			results.map((record) => record.id),
+			[0, 6, 12, 18]
+		);
+	});
+
+	it('drops a term too wide for the scan budget instead of abandoning the whole set', async () => {
+		// `shard = 'wide'` matches 290 of 300, past what is left of a 150-entry budget once the tenant
+		// term is scanned. Abandoning the set there would spend the scan AND run the full predicate.
+		const { results, probed, stats } = await searchWithSpy(
+			[0, 0],
+			[
+				{ attribute: 'tenant', comparator: 'equals', value: 'a' },
+				{ attribute: 'shard', comparator: 'equals', value: 'wide' },
+			],
+			{ limit: 3, select: ['id', 'shard'] },
+			(plan) => ({ capped: plan.collect(150), full: plan.collect(100_000) })
+		);
+		assert.strictEqual(probed.capped.complete, false, 'a dropped term leaves the set incomplete');
+		assert.strictEqual(probed.capped.keys.size, 100, 'only the tenant term was scanned');
+		assert.strictEqual(probed.full.complete, true, 'given the whole budget both terms are scanned');
+		assert.strictEqual(probed.full.keys.size, 97, 'tenant a minus the three narrow-shard multiples of 3');
+		assert(
+			stats.filterEvaluations > 0 && stats.filterEvaluations <= stats.candidateKeys,
+			'the dropped shard term is evaluated only behind the allow-set'
+		);
+		assert.deepStrictEqual(
+			results.map((record) => record.id),
+			[0, 3, 6]
+		);
+	});
+
+	it('a record guard forces the residual path and still fills the limit', async () => {
+		const { results, probed } = await searchWithSpy(
+			[0, 0],
+			[{ attribute: 'tenant', comparator: 'equals', value: 'a' }],
+			{ limit: 3, rowFilter: (record) => record.rank % 30 === 21 }
+		);
+		assert.strictEqual(probed.complete, false, 'an opaque guard can never be covered');
+		assert.deepStrictEqual(
+			results.map((record) => record.id),
+			[21, 51, 81]
+		);
+	});
+
+	it('collect() aborts rather than overrunning the budget it was given', async () => {
+		const { probed } = await searchWithSpy(
+			[0, 0],
+			[{ attribute: 'tenant', comparator: 'equals', value: 'a' }],
+			{ limit: 1 },
+			(plan) => ({ capped: plan.collect(1), full: plan.collect(100_000) })
+		);
+		assert.strictEqual(probed.capped, null, 'the narrowest term overrunning gives up instead of reading on');
+		assert.strictEqual(probed.full.keys.size, 100);
+		assert.strictEqual(probed.full.complete, true);
+	});
+
+	it('leaves a comparator no index range answers exactly unplanned', async () => {
+		const { probed } = await searchWithSpy(
+			[0, 0],
+			[
+				{ attribute: 'tenant', comparator: 'equals', value: 'a' },
+				{ attribute: 'rank', comparator: 'ne', value: 3 },
+			],
+			{ limit: 1 }
+		);
+		assert.strictEqual(probed.complete, false, 'ne is answered by a scan plus a filter, so it stays residual');
+		assert.strictEqual(probed.keys.size, 100, 'only the equality became a scan');
+	});
+
+	it('composite primary keys that flatten alike are both admitted', async () => {
+		const C = table({
+			table: 'HNSWAllowComposite',
+			database: 'test',
+			attributes: [
+				{ name: 'left', isPrimaryKey: true },
+				{ name: 'right', isPrimaryKey: true },
+				{ name: 'name' },
+				{ name: 'tenant', indexed: true },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'euclidean', quantization: 'none' }, type: 'Array' },
+			],
+		});
+		try {
+			// ['a', 'b\0c'] and ['a\0b', 'c'] join to the same string under flattenKey; only storage key
+			// identity keeps them apart, and collapsing them would lose one real match.
+			await C.put(['a', 'b\0c'], { name: 'first', tenant: 'a', vector: [1, 0] });
+			await C.put(['a\0b', 'c'], { name: 'second', tenant: 'a', vector: [2, 0] });
+			await C.put(['z', 'z'], { name: 'other', tenant: 'b', vector: [3, 0] });
+			const sort = { attribute: 'vector', target: [0, 0], distance: 'euclidean' };
+			const results = await fromAsync(
+				C.search(
+					{
+						conditions: [
+							{ attribute: 'vector', comparator: 'sort', ...sort },
+							{ attribute: 'tenant', comparator: 'equals', value: 'a' },
+						],
+						sort,
+						enforceExecutionOrder: true,
+						select: ['name'],
+						limit: 5,
+					},
+					{}
+				)
+			);
+			assert.deepStrictEqual(
+				results.map((record) => record.name),
+				['first', 'second']
+			);
+		} finally {
+			C.dropTable();
+		}
+	});
+
+	it('a string key and a composite key encoding to that string are both admitted', async () => {
+		const M = table({
+			table: 'HNSWAllowMixedKeys',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'tenant', indexed: true },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'euclidean', quantization: 'none' }, type: 'Array' },
+			],
+		});
+		try {
+			// A string key is matched by value and ['a', 'b'] by writeKeyId, which is the string 'a\0b':
+			// one identity map for both would keep only one of the two.
+			await M.put('a\0b', { tenant: 'a', vector: [1, 0] });
+			await M.put(['a', 'b'], { tenant: 'a', vector: [2, 0] });
+			await M.put('other', { tenant: 'b', vector: [3, 0] });
+			const sort = { attribute: 'vector', target: [0, 0], distance: 'euclidean' };
+			const results = await fromAsync(
+				M.search(
+					{
+						conditions: [
+							{ attribute: 'vector', comparator: 'sort', ...sort },
+							{ attribute: 'tenant', comparator: 'equals', value: 'a' },
+						],
+						sort,
+						enforceExecutionOrder: true,
+						select: ['id'],
+						limit: 5,
+					},
+					{}
+				)
+			);
+			assert.deepStrictEqual(
+				results.map((record) => record.id),
+				['a\0b', ['a', 'b']]
+			);
+		} finally {
+			M.dropTable();
+		}
+	});
+});
+
+describeUnlessLmdbFilter('HNSW allow-set admission (#2688)', () => {
+	function buildLine(count) {
+		const hnsw = new HierarchicalNavigableSmallWorld(newMockIndexStore(), {
+			distance: 'euclidean',
+			quantization: 'none',
+			optimizeRouting: 0,
+		});
+		for (let i = 0; i < count; i++) hnsw.index(i, [i], null, {});
+		return hnsw;
+	}
+	function keySet(keys) {
+		const set = new CandidateKeySet();
+		for (const key of keys) set.add(key);
+		return set;
+	}
+	function plan(keys, complete = true, collect) {
+		return {
+			estimatedCount: keys.length,
+			collect: collect ?? (() => ({ keys: keySet(keys), complete })),
+		};
+	}
+	const even = (primaryKey) => Number(primaryKey) % 2 === 0;
+	function search(hnsw, options) {
+		return hnsw.search({ target: [0], comparator: 'sort', descending: false }, { transaction: undefined }, options);
+	}
+
+	it('a complete plan replaces the predicate entirely', () => {
+		const hnsw = buildLine(200);
+		const allowed = [];
+		for (let i = 0; i < 200; i += 2) allowed.push(i);
+		let predicateCalls = 0;
+		const results = search(hnsw, {
+			filter: (primaryKey) => {
+				predicateCalls++;
+				return even(primaryKey);
+			},
+			candidateKeys: plan(allowed),
+		});
+		assert.strictEqual(predicateCalls, 0, "the caller's predicate is never reached");
+		assert.strictEqual(results.filterEvaluations, 0, 'no record is loaded to admit');
+		assert.strictEqual(results.candidateKeys, 100);
+		assert.deepStrictEqual(
+			results.slice(0, 5).map((entry) => Number(entry.key)),
+			[0, 2, 4, 6, 8]
+		);
+	});
+
+	it('an empty allow-set returns nothing under the unwidened visit budget', () => {
+		const hnsw = buildLine(200);
+		let predicateCalls = 0;
+		const results = search(hnsw, {
+			filter: () => {
+				predicateCalls++;
+				return true;
+			},
+			candidateKeys: plan([]),
+		});
+		assert.strictEqual(results.length, 0, 'a zero-match filter admits nothing');
+		assert.strictEqual(predicateCalls, 0);
+		assert.strictEqual(results.candidateKeys, 0);
+		assert.strictEqual(results.filterEvaluations, 0);
+	});
+
+	it('declines a plan too broad to pay for itself', () => {
+		const hnsw = buildLine(200);
+		let collected = false;
+		const results = search(hnsw, {
+			filter: even,
+			candidateKeys: {
+				estimatedCount: 150,
+				collect() {
+					collected = true;
+					return { keys: keySet([]), complete: true };
+				},
+			},
+		});
+		assert.strictEqual(collected, false, 'a plan over half the graph is not worth scanning');
+		assert(results.filterEvaluations > 0, 'the predicate path ran instead');
+		assert(results.every((entry) => even(entry.key)));
+	});
+
+	it('takes the predicate path when the candidate scan overruns or fails', () => {
+		for (const collect of [
+			() => null,
+			() => {
+				throw new Error('the sibling index started rebuilding');
+			},
+		]) {
+			const hnsw = buildLine(200);
+			const results = search(hnsw, { filter: even, candidateKeys: plan([0, 2, 4], true, collect) });
+			assert(results.length > 0, 'a failed allow-set build must not fail the query');
+			assert(
+				results.every((entry) => even(entry.key)),
+				'the predicate still decides admission'
+			);
+			assert(results.filterEvaluations > 0, 'the predicate path ran');
+		}
+	});
+
+	it('admits a key the two sides of the query decode differently', () => {
+		// The index scan decodes an int64 as the number ordered-binary encodes it as, while the
+		// traversal reports the BigInt its own decoder produced. Only storage identity matches the
+		// two, so a by-value allow-set has to fall through to it rather than rejecting the node.
+		const nodes = new Map();
+		let entryPoint;
+		const bigIntSafeStore = {
+			encoder: { useFloat32: false },
+			getSync(key) {
+				if (key === Symbol.for('entryPoint')) return entryPoint;
+				return nodes.get(typeof key === 'number' ? key : `k${String(key)}`);
+			},
+			put(key, value) {
+				if (key === Symbol.for('entryPoint')) return void (entryPoint = value);
+				nodes.set(typeof key === 'number' ? key : `k${String(key)}`, value);
+			},
+			remove(key) {
+				if (key === Symbol.for('entryPoint')) return void (entryPoint = undefined);
+				nodes.delete(typeof key === 'number' ? key : `k${String(key)}`);
+			},
+			*getRange({ start = 0, end = Infinity } = {}) {
+				for (const [k, v] of nodes) if (typeof k === 'number' && k >= start && k <= end) yield { key: k, value: v };
+			},
+			getKeys: () => [],
+			getUserSharedBuffer: (_name, buffer) => buffer,
+		};
+		const hnsw = new HierarchicalNavigableSmallWorld(bigIntSafeStore, {
+			distance: 'euclidean',
+			quantization: 'none',
+			optimizeRouting: 0,
+		});
+		for (let i = 0; i < 60; i++) hnsw.index(BigInt(i), [i], null, {});
+		const results = hnsw.search(
+			{ target: [0], comparator: 'sort', descending: false },
+			{ transaction: undefined },
+			{ filter: () => true, candidateKeys: plan([2, 4, 6, 8, 10]) }
+		);
+		assert.deepStrictEqual(
+			results.slice(0, 5).map((entry) => Number(entry.key)),
+			[2, 4, 6, 8, 10],
+			'a number allow-set must match the BigInt keys the graph reports'
+		);
+	});
+
+	it('CandidateKeySet matches keys by storage identity', () => {
+		const keys = keySet([4n, 7, 0, ['a', 'b'], 'x']);
+		assert(keys.has(4), 'a number matches the BigInt it encodes as');
+		assert(keys.has(7n), 'a BigInt matches the number it encodes as');
+		assert(keySet([2 ** 60]).has(2n ** 60n));
+		assert(!keySet([2 ** 53]).has(2n ** 53n + 1n), 'a BigInt does not match the number it rounds to');
+		assert(keys.has(0));
+		assert(!keys.has(-0), '-0 and 0 are different stored keys');
+		assert(keys.has(['a', 'b']));
+		assert(!keys.has('a\0b'), 'a string is not the composite key whose encoding it spells');
+		assert(!keySet(['a\0b']).has(['a', 'b']));
+		assert(keys.has('x'));
+		assert.strictEqual(keys.size, 5);
+	});
+
+	it('an incomplete plan keeps the predicate behind the allow-set', () => {
+		const hnsw = buildLine(200);
+		const allowed = [];
+		for (let i = 0; i < 40; i++) allowed.push(i);
+		let evaluated = 0;
+		const results = search(hnsw, {
+			filter: (primaryKey) => {
+				evaluated++;
+				return even(primaryKey);
+			},
+			candidateKeys: plan(allowed, false),
+		});
+		assert(evaluated > 0 && evaluated <= 40, `the predicate saw only allow-set members, got ${evaluated}`);
+		assert.strictEqual(results.filterEvaluations, evaluated);
+		assert.deepStrictEqual(
+			results.slice(0, 5).map((entry) => Number(entry.key)),
+			[0, 2, 4, 6, 8]
+		);
 	});
 });
 

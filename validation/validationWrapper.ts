@@ -11,7 +11,8 @@
  * These are rare enough for it not to be worth creating wrapper functions for those as well.
  */
 
-const validate = require('validate.js');
+import _validate from 'validate.js';
+const validate = _validate;
 
 //This validator is added here b/c we are still on version 0.11.1 that does not include this build in functionality.  When
 // we do update, we can remove.  The reason we have not is related to a breaking change on the "presence" validator rule
@@ -74,7 +75,7 @@ export async function validateObjectAsync(object, fileConstraints) {
 	}
 
 	try {
-		await validate.async(object, fileConstraints, { format: 'flat' });
+		await validate.async(object, fileConstraints, { format: 'flat' } as any);
 	} catch (err) {
 		// unroll the array and make a full error message.
 		let msg = err.join(`,`);
@@ -84,6 +85,8 @@ export async function validateObjectAsync(object, fileConstraints) {
 	return null;
 }
 
+const SCHEMA_VALIDATION_OPTIONS = { allowUnknown: true, abortEarly: false, errors: { wrap: { label: "'" } } };
+
 /**
  *
  * @param {{}} object
@@ -91,9 +94,21 @@ export async function validateObjectAsync(object, fileConstraints) {
  * @returns {*}
  */
 export function validateBySchema(object, schema) {
-	let result = schema.validate(object, { allowUnknown: true, abortEarly: false, errors: { wrap: { label: "'" } } });
-
-	if (result.error) {
-		return new Error(result.error.message);
+	const { error } = schema.validate(object, SCHEMA_VALIDATION_OPTIONS);
+	if (error) {
+		return new Error(error.message);
 	}
+}
+
+/**
+ * Validates like `validateBySchema` and additionally hands back Joi's converted value (coerced
+ * types and schema defaults). `value` is Joi's best-effort conversion, so it is only meaningful
+ * when `error` is undefined.
+ * @param {{}} object
+ * @param {Joi.ObjectSchema} schema
+ */
+export function validateAndConvertBySchema(object, schema): { error: Error | undefined; value: any } {
+	const { error, value } = schema.validate(object, SCHEMA_VALIDATION_OPTIONS);
+
+	return { error: error ? new Error(error.message) : undefined, value };
 }

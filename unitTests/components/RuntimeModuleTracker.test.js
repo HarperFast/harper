@@ -44,6 +44,133 @@ describe('RuntimeModuleTracker', () => {
 		assert.equal(await this.tracker.finishDeploy(), false);
 	});
 
+	it('compares package metadata semantically', async () => {
+		const packagePath = join(this.directory, 'package.json');
+		writeFileSync(packagePath, '{"name":"example","version":"1.0.0"}');
+		this.tracker.recordModule(pathToFileURL(packagePath).href, '{"name":"example","version":"1.0.0"}');
+
+		this.tracker.beginDeploy();
+		writeFileSync(packagePath, '{\n  "version": "1.0.0",\n  "name": "example"\n}\n');
+		assert.equal(await this.tracker.finishDeploy(), false);
+
+		this.tracker.beginDeploy();
+		writeFileSync(packagePath, '{"name":"example","version":"2.0.0"}');
+		assert.equal(await this.tracker.finishDeploy(), true);
+	});
+
+	const EXPORTS_IMPORTS_MANIFEST = {
+		name: 'example',
+		version: '1.0.0',
+		exports: {
+			'.': { node: './node.js', default: './default.js' },
+			'./sub': { import: { types: './sub.d.ts', default: './sub.js' }, require: './sub.cjs' },
+		},
+		imports: { '#dep': { node: './dep-node.js', default: './dep-default.js' } },
+	};
+
+	async function digestChanged(directory, rewrittenContent) {
+		const packagePath = join(directory, 'package.json');
+		const original = JSON.stringify(EXPORTS_IMPORTS_MANIFEST);
+		writeFileSync(packagePath, original);
+		const tracker = new RuntimeModuleTracker(() => directory);
+		tracker.recordModule(pathToFileURL(packagePath).href, original);
+		tracker.beginDeploy();
+		writeFileSync(packagePath, rewrittenContent);
+		return tracker.finishDeploy();
+	}
+
+	it('ignores whitespace-only reformatting of exports/imports condition maps', async () => {
+		const reformatted = `${JSON.stringify(EXPORTS_IMPORTS_MANIFEST, null, 2)}\n`;
+		assert.equal(await digestChanged(this.directory, reformatted), false);
+	});
+
+	it('detects reordering of a top-level exports condition map', async () => {
+		const reordered = structuredClone(EXPORTS_IMPORTS_MANIFEST);
+		reordered.exports['.'] = { default: './default.js', node: './node.js' };
+		assert.equal(await digestChanged(this.directory, JSON.stringify(reordered)), true);
+	});
+
+	it('detects reordering of a nested exports condition map', async () => {
+		const reordered = structuredClone(EXPORTS_IMPORTS_MANIFEST);
+		reordered.exports['./sub'].import = { default: './sub.js', types: './sub.d.ts' };
+		assert.equal(await digestChanged(this.directory, JSON.stringify(reordered)), true);
+	});
+
+	it('detects reordering of an imports condition map', async () => {
+		const reordered = structuredClone(EXPORTS_IMPORTS_MANIFEST);
+		reordered.imports['#dep'] = { default: './dep-default.js', node: './dep-node.js' };
+		assert.equal(await digestChanged(this.directory, JSON.stringify(reordered)), true);
+	});
+
+	it('ignores reordering of ordinary package.json keys outside exports/imports', async () => {
+		const reordered = {
+			version: EXPORTS_IMPORTS_MANIFEST.version,
+			imports: EXPORTS_IMPORTS_MANIFEST.imports,
+			name: EXPORTS_IMPORTS_MANIFEST.name,
+			exports: EXPORTS_IMPORTS_MANIFEST.exports,
+		};
+		assert.equal(await digestChanged(this.directory, JSON.stringify(reordered)), false);
+	});
+
+	it('ignores reordering of subpath keys, which Node matches by pattern, not declaration order', async () => {
+		const reordered = structuredClone(EXPORTS_IMPORTS_MANIFEST);
+		reordered.exports = { './sub': reordered.exports['./sub'], '.': reordered.exports['.'] };
+		assert.equal(await digestChanged(this.directory, JSON.stringify(reordered)), false);
+	});
+
+	it('ignores an unrelated nested field merely named exports/imports', async () => {
+		const reordered = structuredClone(EXPORTS_IMPORTS_MANIFEST);
+		reordered.publishConfig = { exports: { z: 1, a: 2 } };
+		const original = JSON.parse(JSON.stringify(EXPORTS_IMPORTS_MANIFEST));
+		original.publishConfig = { exports: { a: 2, z: 1 } };
+		const packagePath = join(this.directory, 'package.json');
+		writeFileSync(packagePath, JSON.stringify(original));
+		this.tracker.recordModule(pathToFileURL(packagePath).href, JSON.stringify(original));
+		this.tracker.beginDeploy();
+		writeFileSync(packagePath, JSON.stringify(reordered));
+		assert.equal(await this.tracker.finishDeploy(), false);
+	});
+
+	it('treats a root exports condition map with a legal #-prefixed condition name as a condition map, not a subpath map', async () => {
+		const withHashCondition = {
+			name: 'example',
+			exports: { '#legacy': './legacy.js', 'node': './node.js', 'default': './default.js' },
+		};
+		const reordered = structuredClone(withHashCondition);
+		reordered.exports = { '#legacy': './legacy.js', 'default': './default.js', 'node': './node.js' };
+
+		const packagePath = join(this.directory, 'package.json');
+		const original = JSON.stringify(withHashCondition);
+		writeFileSync(packagePath, original);
+		const tracker = new RuntimeModuleTracker(() => this.directory);
+		tracker.recordModule(pathToFileURL(packagePath).href, original);
+		tracker.beginDeploy();
+		writeFileSync(packagePath, JSON.stringify(reordered));
+		assert.equal(
+			await tracker.finishDeploy(),
+			true,
+			'"#" only means subpath under imports; at the exports root it is a legal condition name'
+		);
+	});
+
+	it('detects reordering of a condition map nested inside an exports array fallback', async () => {
+		const withArrayFallback = {
+			name: 'example',
+			exports: { '.': [{ node: './node.js', default: './default.js' }, './legacy.js'] },
+		};
+		const reordered = structuredClone(withArrayFallback);
+		reordered.exports['.'][0] = { default: './default.js', node: './node.js' };
+
+		const packagePath = join(this.directory, 'package.json');
+		const original = JSON.stringify(withArrayFallback);
+		writeFileSync(packagePath, original);
+		const tracker = new RuntimeModuleTracker(() => this.directory);
+		tracker.recordModule(pathToFileURL(packagePath).href, original);
+		tracker.beginDeploy();
+		writeFileSync(packagePath, JSON.stringify(reordered));
+		assert.equal(await tracker.finishDeploy(), true);
+	});
+
 	it('detects a new higher-priority extensionless resolution candidate', async () => {
 		const referrerPath = join(this.directory, 'resources.js');
 		const jsonPath = join(this.directory, 'helper.json');
@@ -71,6 +198,39 @@ describe('RuntimeModuleTracker', () => {
 		this.tracker.beginDeploy();
 		mkdirSync(join(this.directory, 'helper.js'));
 		assert.equal(require.resolve('./helper'), jsonPath);
+		assert.equal(await this.tracker.finishDeploy(), true);
+	});
+
+	it('ignores new lower-priority extensionless resolution candidates', async () => {
+		const referrerPath = join(this.directory, 'resources.js');
+		const javascriptPath = join(this.directory, 'helper.js');
+		writeFileSync(referrerPath, 'import helper from "./helper";');
+		writeFileSync(javascriptPath, 'export default {};');
+		const initiallyResolved = createRequire(pathToFileURL(referrerPath)).resolve('./helper');
+		assert.equal(initiallyResolved, javascriptPath);
+		this.tracker.recordModule(pathToFileURL(javascriptPath).href, 'export default {};');
+		this.tracker.recordResolution('./helper', pathToFileURL(referrerPath).href, pathToFileURL(initiallyResolved).href);
+
+		this.tracker.beginDeploy();
+		writeFileSync(join(this.directory, 'helper.json'), '{}');
+		assert.equal(await this.tracker.finishDeploy(), false);
+	});
+
+	it('detects a new file candidate ahead of a directory package entry', async () => {
+		const referrerPath = join(this.directory, 'resources.js');
+		const helperDirectory = join(this.directory, 'helper');
+		const packageEntryPath = join(this.directory, 'package-entry.js');
+		mkdirSync(helperDirectory);
+		writeFileSync(referrerPath, 'import helper from "./helper";');
+		writeFileSync(join(helperDirectory, 'package.json'), '{"main":"../package-entry.js"}');
+		writeFileSync(packageEntryPath, 'export default {};');
+		const initiallyResolved = createRequire(pathToFileURL(referrerPath)).resolve('./helper');
+		assert.equal(initiallyResolved, packageEntryPath);
+		this.tracker.recordModule(pathToFileURL(packageEntryPath).href, 'export default {};');
+		this.tracker.recordResolution('./helper', pathToFileURL(referrerPath).href, pathToFileURL(initiallyResolved).href);
+
+		this.tracker.beginDeploy();
+		writeFileSync(join(this.directory, 'helper.js'), 'export default {};');
 		assert.equal(await this.tracker.finishDeploy(), true);
 	});
 

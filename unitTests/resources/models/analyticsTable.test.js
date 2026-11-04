@@ -4,24 +4,16 @@ const assert = require('node:assert');
 const { setTimeout: delay } = require('node:timers/promises');
 const { ModelCallAnalyticsWriter } = require('#src/resources/models/analyticsTable');
 
-/**
- * Mock primaryStore that records put/remove operations in an in-memory Map.
- * Mirrors only the API surface the writer uses (`put`, `remove`, `getKeys`).
- *
- * Database-touching coverage for hdb_model_calls is left to a separate
- * integration test — same posture as `resources/analytics/write.ts`'s
- * unit test (`unitTests/resources/analytics/write.test.js`), which only
- * exercises its pure helper functions and leaves the table interactions
- * for end-to-end coverage.
- */
+// In-memory table doubles cover buffering and error handling; analyticsPersistence.test.js covers storage.
 function makeMockTable() {
 	const store = new Map();
 	return {
 		store,
+		put(record) {
+			const id = record.id;
+			store.set(id, record);
+		},
 		primaryStore: {
-			put(id, record) {
-				store.set(id, record);
-			},
 			remove(id) {
 				store.delete(id);
 			},
@@ -68,6 +60,19 @@ describe('ModelCallAnalyticsWriter', () => {
 			writer.write(makeRecord());
 			assert.strictEqual(writer.bufferSize, 1);
 			assert.strictEqual(table.store.size, 0);
+		});
+
+		it('returns the monotonic id the row is written under, and still returns one after stop()', async () => {
+			const first = writer.write(makeRecord());
+			const second = writer.write(makeRecord());
+			assert.strictEqual(typeof first, 'number');
+			assert.ok(second > first);
+			await writer.flush();
+			assert.ok(table.store.has(first));
+			assert.ok(table.store.has(second));
+			writer.stop();
+			assert.strictEqual(typeof writer.write(makeRecord()), 'number');
+			assert.strictEqual(writer.bufferSize, 0);
 		});
 
 		it('multiple writes grow the buffer in order', () => {
@@ -142,24 +147,25 @@ describe('ModelCallAnalyticsWriter', () => {
 			const rejections = [];
 			const asyncTable = {
 				store: new Map(),
+				put(record) {
+					const id = record.id;
+					callCount++;
+					if (callCount === 2) {
+						const p = Promise.reject(new Error('async LMDB rejection'));
+						rejections.push(p);
+						// Avoid unhandled-rejection warnings if the writer doesn't await fast.
+						p.catch(() => {});
+						return p;
+					}
+					this.store.set(id, record);
+					return Promise.resolve();
+				},
 				primaryStore: {
-					put(id, record) {
-						callCount++;
-						if (callCount === 2) {
-							const p = Promise.reject(new Error('async LMDB rejection'));
-							rejections.push(p);
-							// Avoid unhandled-rejection warnings if the writer doesn't await fast.
-							p.catch(() => {});
-							return p;
-						}
-						this.store.set(id, record);
-						return Promise.resolve();
-					},
 					remove() {},
 					getKeys: () => [],
 				},
 			};
-			asyncTable.primaryStore.store = asyncTable.store;
+
 			const w = new ModelCallAnalyticsWriter({
 				flushIntervalMs: 60_000,
 				cleanupIntervalMs: 60_000,
@@ -179,17 +185,18 @@ describe('ModelCallAnalyticsWriter', () => {
 			let callCount = 0;
 			const throwingTable = {
 				store: new Map(),
+				put(record) {
+					const id = record.id;
+					callCount++;
+					if (callCount === 2) throw new Error('simulated put failure');
+					this.store.set(id, record);
+				},
 				primaryStore: {
-					put(id, record) {
-						callCount++;
-						if (callCount === 2) throw new Error('simulated put failure');
-						this.store.set(id, record);
-					},
 					remove() {},
 					getKeys: () => [],
 				},
 			};
-			throwingTable.primaryStore.store = throwingTable.store;
+
 			const w = new ModelCallAnalyticsWriter({
 				flushIntervalMs: 60_000,
 				cleanupIntervalMs: 60_000,
@@ -257,14 +264,13 @@ describe('ModelCallAnalyticsWriter', () => {
 });
 
 // ---- schema correctness (finding 1: phantom indexes) ----------------------------
-// flush() writes via primaryStore.put which bypasses updateIndices, so
-// `indexed: true` on any non-PK attribute produces a permanently-empty index.
+// Retention cleanup removes primary rows directly, so secondary indexes are intentionally absent.
 // Uses the exported MODEL_CALL_ATTRIBUTES const for a structural assertion that is
 // not fragile to source reformatting or minification.
 const { MODEL_CALL_ATTRIBUTES } = require('#src/resources/models/analyticsTable');
 
 describe('getModelCallsTable schema', () => {
-	it('hdb_model_calls attributes do not carry indexed:true (would produce phantom empty indexes)', () => {
+	it('hdb_model_calls attributes omit indexes that retention cleanup would leave stale', () => {
 		assert.ok(Array.isArray(MODEL_CALL_ATTRIBUTES), 'MODEL_CALL_ATTRIBUTES must be exported');
 		const nonPk = MODEL_CALL_ATTRIBUTES.filter((a) => !a.isPrimaryKey);
 		const offenders = nonPk.filter((a) => a.indexed);
@@ -272,7 +278,7 @@ describe('getModelCallsTable schema', () => {
 			offenders.length,
 			0,
 			'hdb_model_calls schema carries indexed: true on non-PK attributes — ' +
-				'flush() bypasses updateIndices so the index would be permanently empty. ' +
+				'retention cleanup bypasses index maintenance. ' +
 				'Offending: ' +
 				offenders.map((a) => a.name).join(', ')
 		);
@@ -288,10 +294,11 @@ describe('getModelCallsTable schema', () => {
 		const { ModelCallAnalyticsWriter: Writer } = require('#src/resources/models/analyticsTable');
 		const store = new Map();
 		const mockTbl = {
+			put(record) {
+				const id = record.id;
+				store.set(id, record);
+			},
 			primaryStore: {
-				put(id, record) {
-					store.set(id, record);
-				},
 				remove(id) {
 					store.delete(id);
 				},

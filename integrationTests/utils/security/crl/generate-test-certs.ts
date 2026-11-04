@@ -15,6 +15,7 @@ import {
 	crlToPem,
 	CLIENT_AUTH_OID,
 	makeExtKeyUsageExt,
+	type CrlValidity,
 } from '../certGenUtils.ts';
 
 export interface CrlCertificates {
@@ -49,7 +50,8 @@ export interface CrlCertificates {
 export async function generateCrlCertificates(
 	outputDir: string,
 	crlHost: string,
-	crlPort: number
+	crlPort: number,
+	crlValidity?: CrlValidity
 ): Promise<CrlCertificates> {
 	const crlUrl = `http://${crlHost}:${crlPort}/test.crl`;
 
@@ -113,7 +115,7 @@ export async function generateCrlCertificates(
 	fs.writeFileSync(revokedChainPath, certToPem(revokedCert) + certToPem(caCert));
 
 	// --- CRL (serial 3 = revoked) ---
-	const crl = await createCRL(caCert, caKey.privateKey, [3]);
+	const crl = await createCRL(caCert, caKey.privateKey, [3], crlValidity);
 	const crlPath = path.join(outputDir, 'test.crl');
 	fs.writeFileSync(crlPath, crlToPem(crl));
 

@@ -1,8 +1,8 @@
 import { streamAsJSON, stringify, parse } from './JSONStream.ts';
-import { pack, unpack, encodeIter } from 'msgpackr';
-import { decode, Encoder, EncoderStream } from 'cbor-x';
-import { createBrotliCompress, brotliCompress, constants } from 'zlib';
-import { ClientError } from '../../utility/errors/hdbError.ts';
+import { pack, unpack, Packr } from 'msgpackr';
+import { decode, Encoder } from 'cbor-x';
+import { createBrotliCompress, brotliCompress, constants } from 'node:zlib';
+import { ClientError, ReadSnapshotExpiredError } from '../../utility/errors/hdbError.ts';
 import stream, { Readable, Transform } from 'node:stream';
 import { server } from '../Server.ts';
 import { _assignPackageExport } from '../../globals.js';
@@ -10,20 +10,97 @@ import * as envMgr from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
 import * as YAML from 'yaml';
 import { logger } from '../../utility/logging/logger.ts';
+import {
+	errorToString as harperErrorToString,
+	errorForLog as harperErrorForLog,
+} from '../../utility/logging/harper_logger.ts';
 import { Blob } from '../../resources/blob.ts';
 // TODO: Only load this if fastify is loaded
 import fp from 'fastify-plugin';
-import { parseMultipartRequest } from './multipartParser.ts';
-const SERIALIZATION_BIGINT = envMgr.get(CONFIG_PARAMS.SERIALIZATION_BIGINT) !== false;
-const JSONStringify = SERIALIZATION_BIGINT ? stringify : JSON.stringify;
-const JSONParse = SERIALIZATION_BIGINT ? parse : JSON.parse;
+import { parseMultipartRequest, releaseUnreadUpload } from './multipartParser.ts';
+import { deserializeMultipartForm, deserializeMultipartStream } from './multipartForm.ts';
+import { onStartup } from '../../utility/lifecycle.ts';
+let JSONStringify: typeof JSON.stringify = stringify;
+let JSONParse: typeof JSON.parse = parse;
+let COMPRESSION_THRESHOLD: number | undefined;
+const streamStartup = Symbol('streamStartup');
+const serializedStreamError = Symbol('serializedStreamError');
+const RELATIONSHIPS_LISTED = Symbol.for('harper.relationshipsListed');
+
+export type ColumnsList = string[] & { scalar?: true; asArray?: true };
+
+export function isScalarSelect(select: any): boolean {
+	return (typeof select === 'string' && select !== '*') || (!Array.isArray(select) && select?.name !== undefined);
+}
+
+export function isTupleSelect(select: any): boolean {
+	return Array.isArray(select) && Boolean((select as any).asArray);
+}
+
+export function buildSelectColumns(currentSelect: any, attributes?: any[]): ColumnsList | undefined {
+	if (currentSelect) {
+		const columns: ColumnsList = [];
+		const asArray = isTupleSelect(currentSelect);
+		for (const column of Array.isArray(currentSelect) ? currentSelect : [currentSelect]) {
+			if (column === '*' && !asArray) {
+				if (!attributes?.length) return undefined;
+				for (const attribute of attributes)
+					if (!(currentSelect[RELATIONSHIPS_LISTED] && attribute.relationship)) columns.push(attribute.name);
+			} else columns.push((column as any).name || column);
+		}
+		if (isScalarSelect(currentSelect)) columns.scalar = true;
+		else if (asArray) columns.asArray = true;
+		return columns;
+	}
+	return (attributes || [])
+		.filter((attribute) => !attribute.computed && !attribute.relationship)
+		.map((attribute) => attribute.name);
+}
+
+type StreamStartup = {
+	result: Promise<{ failed?: true; error?: unknown }>;
+	abort: () => void;
+	start: () => void;
+	cancel?: () => void;
+};
+
+function streamErrorRecord(error: any) {
+	let name = 'Error';
+	let message;
+	try {
+		const code = error?.code;
+		if (typeof code === 'string' || typeof code === 'number') name = String(code);
+		else if (typeof error?.constructor?.name === 'string') name = error.constructor.name;
+		else if (typeof error?.name === 'string') name = error.name;
+	} catch {}
+	try {
+		if (typeof error?.message === 'string') message = error.message;
+	} catch {}
+	message ??= harperErrorToString(error);
+	const record: { error: string; message: string; status?: number; replicationUnconfirmed?: true; retryable?: false } =
+		{
+			error: name,
+			message,
+		};
+	try {
+		const status = error?.statusCode ?? error?.status;
+		if (typeof status === 'number') record.status = status;
+	} catch {}
+	try {
+		if (error?.replicationUnconfirmed === true) {
+			record.replicationUnconfirmed = true;
+			record.retryable = false;
+		} else if (error?.retryable === false) record.retryable = false;
+	} catch {}
+	return record;
+}
 
 const PUBLIC_ENCODE_OPTIONS = {
 	useRecords: false,
 	useToJSON: true,
 };
 
-type Deserialize = (data: Buffer) => { contentType?: string; data: unknown } | unknown;
+type Deserialize = (data: Buffer) => unknown;
 
 const mediaTypes = new Map<
 	string,
@@ -50,34 +127,56 @@ mediaTypes.set('application/json', {
 });
 const cborEncoder = new Encoder(PUBLIC_ENCODE_OPTIONS);
 mediaTypes.set('application/cbor', {
-	serializeStream(data) {
-		if (data[Symbol.asyncIterator]) data[Symbol.iterator] = null; // choose async iteration if possible
-		return new EncoderStream(PUBLIC_ENCODE_OPTIONS).end(data);
-	},
+	serializeStream: cborStream,
 	serialize: cborEncoder.encode,
 	deserialize: cborEncoder.decode,
 	q: 1,
 });
 mediaTypes.set('application/x-msgpack', {
-	serializeStream(data: any) {
-		if ((data?.[Symbol.iterator] || data?.[Symbol.asyncIterator]) && !Array.isArray(data)) {
-			return Readable.from(encodeIter(data, PUBLIC_ENCODE_OPTIONS) as any);
-		}
-		return pack(data);
-	},
+	serializeStream: msgpackStream,
 	serialize: pack,
 	deserialize: unpack,
 	q: 0.9,
 });
+function hasFrameworkSelect(resource: any): boolean {
+	return Boolean(resource?.attributes || resource?.loadAsInstance === true);
+}
+
 mediaTypes.set('text/csv', {
-	serializeStream(data: any, response: Response) {
+	serializeStream(data: any, response: Response, _request?: any, target?: any, resource?: any) {
 		response.headers.set('Content-Disposition', 'attachment; filename="data.csv"');
-		return toCsvStream(data, data?.getColumns?.());
+		const hasOwnColumns = typeof data?.getColumns === 'function';
+		const frameworkSelect = !hasOwnColumns && target?.select && hasFrameworkSelect(resource);
+		const selectColumns = frameworkSelect ? buildSelectColumns(target.select, resource?.attributes) : undefined;
+		const fallbackColumns =
+			!hasOwnColumns && !frameworkSelect && target?.select
+				? buildSelectColumns(target.select, resource?.attributes)
+				: undefined;
+		if (frameworkSelect && !target?.isCollection && data != null) {
+			return toCsvStream([data.toJSON ? data.toJSON() : data], selectColumns);
+		}
+		return toCsvStream(data, selectColumns, fallbackColumns);
 	},
-	serialize(data: any, response: Response) {
+	serialize(data: any, response: Response, _request?: any, target?: any, resource?: any) {
 		response.headers.set('Content-Disposition', 'attachment; filename="data.csv"');
-		if (data && !data[Symbol.iterator]) data = [data.toJSON ? data.toJSON() : data];
-		return toCsvStream(data, data?.getColumns?.());
+		const hasOwnColumns = typeof data?.getColumns === 'function';
+		const frameworkSelect = !hasOwnColumns && target?.select && hasFrameworkSelect(resource);
+		const selectColumns = frameworkSelect ? buildSelectColumns(target.select, resource?.attributes) : undefined;
+		const fallbackColumns =
+			!hasOwnColumns && !frameworkSelect && target?.select
+				? buildSelectColumns(target.select, resource?.attributes)
+				: undefined;
+		const columns = hasOwnColumns ? data.getColumns() : selectColumns;
+		if (
+			data != null &&
+			!hasOwnColumns &&
+			(typeof data !== 'object' ||
+				(!data[Symbol.iterator] && !data[Symbol.asyncIterator]) ||
+				(frameworkSelect && !target?.isCollection))
+		) {
+			data = [data.toJSON ? data.toJSON() : data];
+		}
+		return toCsvStream(data, columns, fallbackColumns);
 	},
 	q: 0.1,
 });
@@ -86,7 +185,9 @@ mediaTypes.set('text/plain', {
 		return data.toString();
 	},
 	serializeStream(data: any) {
-		return Readable.from(data.map ? data.map((d) => d.toString()) : data);
+		return Readable.from(
+			openOnFirstStep(() => (data.map ? data.map((d) => d.toString()) : data), Boolean(data[Symbol.asyncIterator]))
+		);
 	},
 	deserialize(data: Buffer) {
 		return data.toString();
@@ -103,9 +204,14 @@ mediaTypes.set('text/yaml', {
 });
 
 const ndjsonHandler = {
-	serializeStream(data: any) {
+	serializeStream(data: any, _response?: Response, request?: any) {
 		if (data?.[Symbol.iterator] || data?.[Symbol.asyncIterator]) {
-			return Readable.from(transformIterable(data, (msg: any) => JSONStringify(msg) + '\n'));
+			return errorFrameStream(
+				data,
+				(msg: any) => JSONStringify(msg) + '\n',
+				(error) => JSONStringify({ $harperStreamError: streamErrorRecord(error) }) + '\n',
+				request?.method === 'GET'
+			);
 		}
 		return JSONStringify(data) + '\n';
 	},
@@ -125,11 +231,32 @@ const ndjsonHandler = {
 mediaTypes.set('application/x-ndjson', ndjsonHandler);
 mediaTypes.set('application/ndjson', ndjsonHandler);
 
+function serializeSSEData(data: any) {
+	if (typeof data === 'object') return 'data: ' + JSONStringify(data) + '\n';
+	return 'data: ' + String(data).replace(/\r\n|\r|\n/g, '\ndata: ') + '\n';
+}
+
+const SSE_LINE_BREAK = /[\r\n]/;
+const SSE_LINE_BREAKS = /[\r\n]/g;
+const SSE_RETRY = /^\d+$/;
+
+// SSE has no escape for a field value: a CR or LF in one would start a new field or event
+function serializeSSEFieldValue(value: any) {
+	if (typeof value === 'number') return value;
+	const text = '' + value;
+	return SSE_LINE_BREAK.test(text) ? text.replace(SSE_LINE_BREAKS, '') : text;
+}
+
 mediaTypes.set('text/event-stream', {
 	// Server-Sent Events (SSE)
-	serializeStream: function (iterable) {
+	serializeStream: function (iterable, _response?: Response, request?: any) {
 		// create a readable stream that we use to stream out events from our subscription
-		return Readable.from(transformIterable(iterable, this.serialize));
+		return errorFrameStream(
+			iterable,
+			this.serialize,
+			(error) => this.serialize({ event: 'harper-error', data: streamErrorRecord(error) }),
+			request?.method === 'GET'
+		);
 	},
 	serialize: function (message) {
 		if (message.acknowledge) message.acknowledge();
@@ -141,37 +268,39 @@ mediaTypes.set('text/event-stream', {
 				id: message.timestamp,
 			};
 		}
-		if (message.data || message.event) {
+		// A non-null top-level `data` or truthy `event` is an SSE envelope, even with sibling fields.
+		// `id`/`retry` alone do not open it: `id` is too common a literal-payload field name (e.g. a
+		// database record) to safely treat as an SSE-envelope signal.
+		if (message.data != null || message.event) {
 			let serialized = '';
-			if (message.event) serialized += 'event: ' + message.event + '\n';
-			if (message.data) {
-				let data = message.data;
-				if (typeof data === 'object') data = JSONStringify(data);
-				serialized += 'data: ' + data + '\n';
+			if (message.event) serialized += 'event: ' + serializeSSEFieldValue(message.event) + '\n';
+			if (message.data != null) {
+				serialized += serializeSSEData(message.data);
 			}
-			if (message.id) serialized += 'id: ' + message.id + '\n';
-			if (message.retry) serialized += 'retry: ' + message.retry + '\n';
+			if (message.id != null) serialized += 'id: ' + serializeSSEFieldValue(message.id) + '\n';
+			if (message.retry != null) {
+				const retry = '' + message.retry;
+				// clients ignore a retry that is not all ASCII digits, so omitting it also keeps out line breaks
+				if (SSE_RETRY.test(retry)) serialized += 'retry: ' + retry + '\n';
+			}
 			return serialized + '\n';
 		} else {
-			if (typeof message === 'object') return `data: ${JSONStringify(message)}\n\n`;
-			return `data: ${message}\n\n`;
+			return serializeSSEData(message) + '\n';
 		}
 	},
 	compressible: false,
 	q: 0.8,
 });
-// TODO: Support this as well:
-//'multipart/form-data'
 mediaTypes.set('application/x-www-form-urlencoded', {
 	deserialize(data) {
 		const stringData = Buffer.isBuffer(data) ? data.toString('utf8') : data;
 		const object: Record<string, string | string[]> = {};
 		for (const [key, value] of new URLSearchParams(stringData)) {
-			if (object.hasOwnProperty(key)) {
+			if (Object.hasOwn(object, key)) {
 				// in case there are multiple query params with the same name, convert them to an array
 				const last = object[key];
 				if (Array.isArray(last)) last.push(value);
-				else object.key = [last, value];
+				else object[key] = [last, value];
 			} else object[key] = value;
 		}
 		return object;
@@ -179,7 +308,9 @@ mediaTypes.set('application/x-www-form-urlencoded', {
 	serialize(data) {
 		const usp = new URLSearchParams();
 		for (const key in data) {
-			usp.set(key, data);
+			const value = data[key];
+			if (Array.isArray(value)) for (const item of value) usp.append(key, item);
+			else usp.set(key, value);
 		}
 		return usp.toString();
 	},
@@ -193,6 +324,22 @@ const genericHandler = {
 };
 mediaTypes.set('*/*', genericHandler);
 mediaTypes.set('', genericHandler);
+function initializeSerialization() {
+	const previousStringify = JSONStringify;
+	const useBigInt = envMgr.get(CONFIG_PARAMS.SERIALIZATION_BIGINT) !== false;
+	JSONStringify = useBigInt ? stringify : JSON.stringify;
+	JSONParse = useBigInt ? parse : JSON.parse;
+	for (const codec of mediaTypes.values()) {
+		if (codec.serialize === previousStringify) codec.serialize = JSONStringify;
+	}
+	COMPRESSION_THRESHOLD = envMgr.get(CONFIG_PARAMS.HTTP_COMPRESSIONTHRESHOLD);
+}
+try {
+	initializeSerialization();
+} catch (error) {
+	if (!(error instanceof ReferenceError)) throw error;
+}
+onStartup(initializeSerialization);
 // try to JSON parse, but since we don't know for sure, this will return the body
 // otherwise
 function tryJSONParse(input) {
@@ -212,18 +359,11 @@ export function registerContentHandlers(app) {
 			},
 			{
 				regex: /^application\/cbor$/,
-				serializer: function (data) {
-					return new EncoderStream(PUBLIC_ENCODE_OPTIONS).end(data);
-				},
+				serializer: cborStream,
 			},
 			{
 				regex: /^application\/(x-)?msgpack$/,
-				serializer: function (data) {
-					if ((data?.[Symbol.iterator] || data?.[Symbol.asyncIterator]) && !Array.isArray(data)) {
-						return Readable.from(encodeIter(data, PUBLIC_ENCODE_OPTIONS) as any);
-					}
-					return pack(data);
-				},
+				serializer: msgpackStream,
 			},
 			{
 				regex: /^text\/csv$/,
@@ -258,6 +398,21 @@ export function registerContentHandlers(app) {
 	app.addContentTypeParser(/^multipart\/form-data/, (req, payload, done) => {
 		parseMultipartRequest(req, payload, done);
 	});
+	app.addHook('onResponse', releaseUnreadUpload);
+}
+
+function recoversRowErrors(contentType: string): boolean {
+	return (
+		contentType !== 'application/x-ndjson' &&
+		contentType !== 'application/ndjson' &&
+		contentType !== 'text/event-stream'
+	);
+}
+
+/** A row's own failure becomes a row value; a lost read snapshot ends the whole read, so it must fail the stream. */
+function recoverRowError(error: any) {
+	if (error instanceof ReadSnapshotExpiredError) throw error;
+	return { error: error?.name ?? 'Error', message: error?.message ?? String(error), ...error?.partialObject };
 }
 
 const registerFastifySerializers = fp(
@@ -265,7 +420,19 @@ const registerFastifySerializers = fp(
 		fastify.addHook('preSerialization', async (request, reply) => {
 			const contentType = reply.raw.getHeader('content-type');
 			if (contentType) return;
-			const { serializer, type } = findBestSerializer(request.raw);
+			let { serializer, type } = findBestSerializer(request.raw);
+			// An error that no route chose to stream is an ordinary response: written as an unnamed event,
+			// an SSE client reads it as a stream that ended without a result.
+			if (
+				type === 'text/event-stream' &&
+				reply.statusCode >= 400 &&
+				!String(reply.getHeader('content-type') ?? '')
+					.toLowerCase()
+					.startsWith('text/event-stream')
+			) {
+				serializer = mediaTypes.get('application/json');
+				type = 'application/json';
+			}
 			reply.type(type);
 			reply.serializer(function (data: any) {
 				let serialize: (data: any, context: any) => any;
@@ -275,14 +442,10 @@ const registerFastifySerializers = fp(
 					(data[Symbol.iterator] || data[Symbol.asyncIterator]) &&
 					serializer.serializeStream
 				) {
-					if (data.mapError) {
+					if (data.mapError && recoversRowErrors(type)) {
 						// indicate that we want iterator errors to be returned so we can serialize them in a meaningful way, if possible
 						const getColumns = data.getColumns;
-						data = data.mapError((error) => {
-							// make errors serializable in a descriptive way
-							error.toJSON = () => ({ error: error.name, message: error.message, ...error.partialObject });
-							return error;
-						});
+						data = data.mapError(recoverRowError);
 						data.getColumns = getColumns;
 					}
 					serialize = serializer.serializeStream;
@@ -326,7 +489,7 @@ export function findBestSerializer(incomingMessage) {
 		}
 		clientQuality = +parameters.q;
 		const serializer = mediaTypes.get(type);
-		if (serializer) {
+		if (serializer?.serialize || serializer?.serializeStream) {
 			const quality = (serializer.q || 1) * clientQuality;
 			if (quality > bestQuality) {
 				bestSerializer = serializer;
@@ -340,7 +503,10 @@ export function findBestSerializer(incomingMessage) {
 		if (acceptType) {
 			throw new ClientError(
 				'No supported content types found in Accept header, supported types include: ' +
-					Array.from(mediaTypes.keys()).join(', '),
+					Array.from(mediaTypes)
+						.filter(([, handler]) => handler?.serialize || handler?.serializeStream)
+						.map(([type]) => type)
+						.join(', '),
 				406
 			);
 		} else {
@@ -353,8 +519,46 @@ export function findBestSerializer(incomingMessage) {
 	return { serializer: bestSerializer, type: bestType, parameters: bestParameters };
 }
 
-// about an average TCP packet size (if headers included)
-const COMPRESSION_THRESHOLD = envMgr.get(CONFIG_PARAMS.HTTP_COMPRESSIONTHRESHOLD);
+const brotliParams = (mode: number) => ({
+	params: { [constants.BROTLI_PARAM_MODE]: mode, [constants.BROTLI_PARAM_QUALITY]: 2 },
+});
+const BROTLI_TEXT_OPTIONS = brotliParams(constants.BROTLI_MODE_TEXT);
+const BROTLI_GENERIC_OPTIONS = brotliParams(constants.BROTLI_MODE_GENERIC);
+export function brotliOptions(contentType: string) {
+	return contentType.includes('json') || contentType.includes('text') ? BROTLI_TEXT_OPTIONS : BROTLI_GENERIC_OPTIONS;
+}
+
+function isTextOrBytes(data: unknown): data is string | ArrayBufferView {
+	return typeof data === 'string' || ArrayBuffer.isView(data);
+}
+
+/**
+ * Whether a message is a `{ contentType, data }` envelope delivered as its `data`, verbatim. Stored
+ * non-JSON payloads have this shape, but so can a table's own records, so `data` must be something a
+ * protocol encoder accepts; any other shape is an ordinary record for the negotiated serializer.
+ */
+export function isPassThroughEnvelope(value: any): value is { contentType: string; data: string | ArrayBufferView } {
+	return typeof value?.contentType === 'string' && isTextOrBytes(value.data);
+}
+
+/**
+ * {@link isPassThroughEnvelope} for an HTTP response, whose body writer also sends a Blob, a stream or other
+ * async iterable, and a generator. A table record can hold none of the last three, and an array- or
+ * object-valued `data` attribute must stay a record.
+ */
+export function isHttpPassThroughEnvelope(value: any): boolean {
+	if (typeof value?.contentType !== 'string') return false;
+	const data = value.data;
+	if (typeof data === 'string') return true;
+	if (data === null || typeof data !== 'object') return false;
+	return (
+		ArrayBuffer.isView(data) ||
+		data instanceof Blob ||
+		typeof data[Symbol.asyncIterator] === 'function' ||
+		typeof data.next === 'function'
+	);
+}
+
 /**
  * Serialize a response
  * @param responseData
@@ -362,71 +566,68 @@ const COMPRESSION_THRESHOLD = envMgr.get(CONFIG_PARAMS.HTTP_COMPRESSIONTHRESHOLD
  * @param responseObject
  * @returns {Uint8Array|*}
  */
-export function serialize(responseData, request, responseObject) {
+export function serialize(responseData, request, responseObject, target?, resource?) {
 	// TODO: Maybe support other compression encodings; browsers basically universally support brotli, but Node's HTTP
 	//  client itself actually (just) supports gzip/deflate
 	let canCompress = COMPRESSION_THRESHOLD && request.headers.asObject?.['accept-encoding']?.includes('br');
 	let responseBody;
-	if (responseData?.contentType != null && responseData.data != null) {
+	let contentType: string;
+	if (isHttpPassThroughEnvelope(responseData)) {
 		// we use this as a special marker for blobs of data that are explicitly one content type
-		responseObject.headers.set('Content-Type', responseData.contentType);
+		contentType = responseData.contentType;
+		responseObject.headers.set('Content-Type', contentType);
 		responseObject.headers.set('Vary', 'Accept-Encoding');
 		responseBody = responseData.data;
 	} else if (responseData instanceof Uint8Array || responseData instanceof Blob) {
 		// If a user function or property returns a direct Buffer of binary data, this is the most appropriate content
 		// type for it.
-		responseObject.headers.set('Content-Type', 'application/octet-stream');
+		contentType = 'application/octet-stream';
+		responseObject.headers.set('Content-Type', contentType);
 		responseObject.headers.set('Vary', 'Accept-Encoding');
 		responseBody = responseData;
 	} else {
 		const serializer = findBestSerializer(request);
 		if (serializer.serializer.compressible === false) canCompress = false;
+		contentType = serializer.type;
 		// TODO: If a different content type is preferred, look through resources to see if there is one
 		// specifically for that content type (most useful for html).
 		responseObject.headers.set('Vary', 'Accept, Accept-Encoding');
-		responseObject.headers.set('Content-Type', serializer.type);
+		responseObject.headers.set('Content-Type', contentType);
 		if (
 			typeof responseData === 'object' &&
 			responseData &&
 			(responseData[Symbol.iterator] || responseData[Symbol.asyncIterator]) &&
 			serializer.serializer.serializeStream
 		) {
-			if (responseData.mapError) {
+			if (responseData.mapError && recoversRowErrors(contentType)) {
 				// indicate that we want iterator errors to be returned so we can serialize them in a meaningful way, if possible
 				const getColumns = responseData.getColumns;
 				responseData = responseData.mapError((error) => {
-					// make errors serializable in a descriptive way
-					error.toJSON = () => ({ error: error.name, message: error.message, ...error.partialObject });
+					const row = recoverRowError(error);
 					logger.warn?.(`Error serializing error ${request?.url || request}: ${error}`);
-					return error;
+					return row;
 				});
 				responseData.getColumns = getColumns;
 			}
-			let stream = serializer.serializer.serializeStream(responseData, responseObject);
-			if (canCompress) {
+			const serialized = serializer.serializer.serializeStream(responseData, responseObject, request, target, resource);
+			if (!canCompress) return serialized;
+			// a handler may return a complete body (msgpack does for arrays)
+			if (typeof serialized === 'string' || serialized instanceof Uint8Array) responseBody = serialized;
+			else {
 				responseObject.headers.set('Content-Encoding', 'br');
-				stream = stream.pipe(
-					createBrotliCompress({
-						params: {
-							[constants.BROTLI_PARAM_MODE]:
-								serializer.type.includes('json') || serializer.type.includes('text')
-									? constants.BROTLI_MODE_TEXT
-									: constants.BROTLI_MODE_GENERIC,
-							[constants.BROTLI_PARAM_QUALITY]: 2, // go fast
-						},
-					})
-				);
+				const source = typeof serialized.pipe === 'function' ? serialized : Readable.from(serialized);
+				const compressed = pipelineOnRead(source, createBrotliCompress(brotliOptions(contentType)));
+				if (source[streamStartup]) compressed[streamStartup] = source[streamStartup];
+				return compressed;
 			}
-			return stream;
-		}
-		responseBody = serializer.serializer.serialize(responseData, responseObject);
+		} else responseBody = serializer.serializer.serialize(responseData, responseObject, request, target, resource);
 	}
 	if (canCompress && responseBody?.length > COMPRESSION_THRESHOLD) {
 		// TODO: Only do this if the size is large and we can cache the result (otherwise use logic above)
 		responseObject.headers.set('Content-Encoding', 'br');
 		// if we have a single buffer (or string) we compress in a single async call
 		return new Promise((resolve, reject) =>
-			brotliCompress(responseBody, (err, data) => {
+			brotliCompress(responseBody, brotliOptions(contentType), (err, data) => {
 				if (err) reject(err);
 				else resolve(data);
 			})
@@ -436,6 +637,20 @@ export function serialize(responseData, request, responseObject) {
 }
 
 let asyncSerializations: Promise<void>[];
+/**
+ * Get the message serializer for a request's negotiated content type, memoized on the request.
+ * The returned function is the registered per-content-type serializer, so its identity keys the
+ * content type. Caching serialized output across requests under that key is only valid because the
+ * built-in serializers are pure functions of their argument — a component registering a serializer
+ * into `server.contentTypes` whose output depends on anything else would not be shareable.
+ * @param request
+ */
+export function getMessageSerializer(request?: Request): (message: any) => Buffer | string {
+	if (!request) return JSONStringify;
+	let serialize = (request as any).serialize;
+	if (!serialize) serialize = (request as any).serialize = findBestSerializer(request).serializer.serialize;
+	return serialize;
+}
 /**
  * Serialize a message, may be use multiple times (like with WebSockets)
  * @param message
@@ -447,21 +662,17 @@ export function serializeMessage(
 	request?: Request,
 	inAsyncContinuation?: boolean
 ): Buffer | string | Promise<Buffer | string> {
-	if (message?.contentType != null && message.data != null) return message.data;
+	if (isPassThroughEnvelope(message)) {
+		const data = message.data;
+		// a record read on another thread decodes binary as a plain Uint8Array view, which protocol
+		// encoders (mqtt-packet) reject; wrap the same bytes rather than copy them
+		return ArrayBuffer.isView(data) && !Buffer.isBuffer(data)
+			? Buffer.from(data.buffer, data.byteOffset, data.byteLength)
+			: data;
+	}
 	asyncSerializations = inAsyncContinuation ? undefined : [];
 	try {
-		let serialized: Buffer | string;
-		if (request) {
-			let serialize = (request as any).serialize;
-			if (serialize) serialized = serialize(message);
-			else {
-				const serializer = findBestSerializer(request);
-				serialize = (request as any).serialize = serializer.serializer.serialize;
-				serialized = serialize(message);
-			}
-		} else {
-			serialized = JSONStringify(message);
-		}
+		const serialized: Buffer | string = getMessageSerializer(request)(message);
 		if (asyncSerializations?.length > 0)
 			// if there were any serialization attempts that must wait for async work to be done, we wait now and then retry the serialization
 			return (asyncSerializations.length === 1 ? asyncSerializations[0] : Promise.all(asyncSerializations)).then(() =>
@@ -486,8 +697,16 @@ export function hasAsyncSerialization() {
 	return !!asyncSerializations;
 }
 
-function streamToBuffer(stream: Readable): Promise<Buffer> {
-	const MAX_REQUEST_BODY_SIZE = envMgr.get(CONFIG_PARAMS.HTTP_MAXREQUESTBODYSIZE) ?? 10_000_000;
+export function getMaxRequestBodySize(): number {
+	return envMgr.get(CONFIG_PARAMS.HTTP_MAXREQUESTBODYSIZE) ?? 10_000_000;
+}
+
+type RequestBodyStream = AsyncIterable<Uint8Array> & {
+	on(event: string, listener: (...args: any[]) => void): unknown;
+};
+
+function streamToBuffer(stream: RequestBodyStream): Promise<Buffer> {
+	const MAX_REQUEST_BODY_SIZE = getMaxRequestBodySize();
 	return new Promise((resolve, reject) => {
 		const buffers = [];
 		let size = 0;
@@ -516,6 +735,7 @@ function streamToBuffer(stream: Readable): Promise<Buffer> {
  */
 type ContentType = {
 	type: string;
+	rawType: string;
 	parameters?: { charset?: string; boundary?: string; [k: string]: string };
 };
 
@@ -559,27 +779,49 @@ function parseContentType(contentType: string): ContentType {
 		contentType = contentType.slice(0, parametersStart);
 	}
 
-	return { type: contentType, parameters };
+	return { type: contentType.trim().toLowerCase(), rawType: contentType, parameters };
 }
 
 /**
  * Given a content-type header string, get a deserializer function that can be used to parse the body.
  */
-export function getDeserializer(contentTypeString: string, streaming: false): Deserialize;
+export function getDeserializer(contentTypeString?: string, streaming?: false): Deserialize;
 export function getDeserializer(
-	contentTypeString: string,
-	streaming: true
-): (stream: Readable) => Promise<ReturnType<Deserialize>>;
+	contentTypeString: string | undefined,
+	streaming: true,
+	streamValues?: false
+): (stream: Readable) => Promise<unknown>;
+export function getDeserializer(
+	contentTypeString: string | undefined,
+	streaming: true,
+	streamValues: boolean
+): (stream: RequestBodyStream, signal?: AbortSignal) => Promise<unknown> | AsyncIterable<unknown>;
+export function getDeserializer(
+	contentTypeString: string | undefined,
+	streaming?: boolean,
+	streamValues?: boolean
+): Deserialize | ((stream: RequestBodyStream, signal?: AbortSignal) => Promise<unknown> | AsyncIterable<unknown>);
 export function getDeserializer(
 	contentTypeString: string = '',
-	streaming: boolean = false
-): Deserialize | ((stream: Readable) => Promise<ReturnType<Deserialize>>) {
+	streaming: boolean = false,
+	streamValues: boolean = false
+): Deserialize | ((stream: RequestBodyStream, signal?: AbortSignal) => Promise<unknown> | AsyncIterable<unknown>) {
 	const contentType = parseContentType(contentTypeString);
-
-	const deserialize =
-		(contentType.type && mediaTypes.get(contentType.type)?.deserialize) || deserializerUnknownType(contentType);
-
-	return streaming ? (stream: Readable) => streamToBuffer(stream).then(deserialize) : deserialize;
+	const handler = contentType.type
+		? mediaTypes.get(contentType.rawType) || mediaTypes.get(contentType.type)
+		: undefined;
+	const multipart = !handler?.deserialize && contentType.type === 'multipart/form-data';
+	const deserialize = handler?.deserialize || deserializerUnknownType(contentType);
+	if (streaming && streamValues && multipart)
+		return (stream, signal) => deserializeMultipartStream(stream, contentTypeString, signal);
+	if (!streaming) return deserialize;
+	return (stream: RequestBodyStream) => {
+		const body = streamToBuffer(stream).then(
+			multipart ? (data) => deserializeMultipartForm(data, contentTypeString) : deserialize
+		);
+		if (multipart) body.catch(() => {});
+		return body;
+	};
 }
 
 function deserializerUnknownType(contentType: ContentType): Deserialize {
@@ -615,28 +857,289 @@ function deserializerUnknownType(contentType: ContentType): Deserialize {
 	}
 }
 
-function transformIterable(iterable, transform) {
+const CBOR_STREAM_OPTIONS = { ...PUBLIC_ENCODE_OPTIONS, sequential: true };
+
+function cborStream(data) {
+	// an Encoder per stream: encodeAsAsyncIterable keeps its chunking state on the instance
+	return Readable.from(
+		openOnFirstStep(() => (new Encoder(CBOR_STREAM_OPTIONS) as any).encodeAsAsyncIterable(asyncPreferred(data)), true),
+		{ objectMode: false, highWaterMark: 16384 }
+	);
+}
+
+function msgpackStream(data) {
+	if ((data?.[Symbol.iterator] || data?.[Symbol.asyncIterator]) && !Array.isArray(data)) {
+		let packr: Packr;
+		return Readable.from(
+			openOnFirstStep(
+				() => {
+					packr = new Packr(PUBLIC_ENCODE_OPTIONS);
+					return data;
+				},
+				Boolean(data[Symbol.asyncIterator]),
+				(value) => packr.pack(value)
+			)
+		);
+	}
+	return pack(data);
+}
+
+class AsyncIterableView {
+	source: any;
+	constructor(source) {
+		this.source = source;
+	}
+	[Symbol.asyncIterator]() {
+		return this.source[Symbol.asyncIterator]();
+	}
+}
+
+// cbor-x prefers Symbol.iterator, whose iteration of search results yields Promises for rows not yet loaded, and
+// encodes a plain-object async iterable as a map.
+function asyncPreferred(data) {
+	return data?.[Symbol.asyncIterator] ? new AsyncIterableView(data) : data;
+}
+
+// Readable.from() takes its source's iterator at construction; this one opens the source on the first next(). A sync
+// source keeps the sync protocol, under which Readable.from() awaits a value that is a Promise. mapValue applies to each
+// step as it comes, so an async source's steps that are already settled are not wrapped in a Promise.
+function openOnFirstStep(
+	open: () => any,
+	async: boolean,
+	mapValue?: (value: any) => any
+): Iterable<any> | AsyncIterable<any> {
+	let iterator;
+	let closed = false;
+	const mapStep =
+		mapValue &&
+		((step) => {
+			if (closed) return { value: undefined, done: true };
+			if (step.done) return step;
+			const { value } = step;
+			if (!async && typeof value?.then === 'function') {
+				return {
+					value: value.then((settled) => (closed ? settled : mapValue(settled))),
+					done: false,
+				};
+			}
+			const mapped = mapValue(value);
+			return mapped === value ? step : { value: mapped, done: false };
+		});
+	const deferred: any = {
+		[async ? Symbol.asyncIterator : Symbol.iterator]() {
+			return this;
+		},
+		next() {
+			if (closed) return { value: undefined, done: true };
+			if (!iterator) {
+				const source = open();
+				iterator = async && source[Symbol.asyncIterator] ? source[Symbol.asyncIterator]() : source[Symbol.iterator]();
+				if (closed) {
+					const closing = iterator.return?.();
+					if (typeof closing?.then === 'function')
+						closing.then(null, (error) => logger.warn?.('Error closing a discarded stream source', error));
+					return { value: undefined, done: true };
+				}
+			}
+			const step = iterator.next();
+			if (!mapStep) return step;
+			return typeof step.then === 'function' ? step.then(mapStep) : mapStep(step);
+		},
+		return(value) {
+			closed = true;
+			return iterator?.return?.(value) ?? { value, done: true };
+		},
+	};
+	return deferred;
+}
+
+// pipe() reads the source on the next tick, past a discard in this one, and pipeline() destroys the source only on a
+// later tick. So connect on the first read, destroy the source synchronously with the transform, and until then
+// handle errors as pipeline() would: a source error fails the transform, which is what the HTTP layer reports.
+function pipelineOnRead(source: Readable, transform: Transform): Transform {
+	source.once('error', (error) => transform.destroy(error));
+	transform.on('error', () => {});
+	const read = transform._read;
+	transform._read = function (size) {
+		transform._read = read;
+		stream.pipeline(source, transform, () => {});
+		return read.call(this, size);
+	};
+	const destroy = transform._destroy;
+	transform._destroy = function (error, callback) {
+		source.destroy(error ?? undefined);
+		return destroy.call(this, error, callback);
+	};
+	return transform;
+}
+
+function errorFrameStream(iterable, transform, serializeError, eager: boolean) {
+	const transformed = transformIterable(iterable, transform, serializeError, eager);
+	const readable = Readable.from(transformed);
+	const startup: StreamStartup = transformed[streamStartup];
+	startup.cancel = () => readable.destroy();
+	readable[streamStartup] = startup;
+	return readable;
+}
+
+// transformIterable's return() opens and closes a source it never started, so destroying the stream closes it
+export function closesSourceOnDiscard(stream): boolean {
+	return Boolean(stream?.[streamStartup]);
+}
+
+export function discardSerializedStream(stream) {
+	if (typeof stream?.then === 'function') {
+		Promise.resolve(stream).then(discardSerializedStream, () => {});
+		return;
+	}
+	stream?.[streamStartup]?.cancel?.();
+	// Nothing else will ever listen to a discarded stream, so its teardown error must not go uncaught.
+	if (typeof stream?.on === 'function') stream.on('error', () => {});
+	stream?.destroy?.();
+	if (typeof stream?.cancel === 'function') Promise.resolve(stream.cancel()).catch(() => {});
+}
+
+export function waitForStreamStartup(stream) {
+	const startup: StreamStartup | undefined = stream?.[streamStartup];
+	if (!startup) return;
+	startup.start();
+	return startup.result.then((result) => {
+		if (result.failed) {
+			startup.abort();
+			discardSerializedStream(stream);
+			throw result.error;
+		}
+	});
+}
+
+function transformIterable(iterable, transform, serializeError, eager) {
+	let iterator;
+	let terminal = false;
+	let first = true;
+	let started = false;
+	let firstStep;
+	let startupSettled = false;
+	const startupResult = Promise.withResolvers<{ failed?: true; error?: unknown }>();
+	const errorDecision = Promise.withResolvers<boolean>();
+	let startupTimer;
+
+	const commit = () => {
+		if (startupTimer) clearImmediate(startupTimer);
+		if (!startupSettled) {
+			startupSettled = true;
+			startupResult.resolve({});
+		}
+		errorDecision.resolve(true);
+	};
+	const abort = () => {
+		if (startupTimer) clearImmediate(startupTimer);
+		errorDecision.resolve(false);
+	};
+	const handleError = async (error) => {
+		terminal = true;
+		try {
+			const returned = iterator.return?.();
+			returned?.catch?.(() => {});
+		} catch {}
+		if (!startupSettled) startupResult.resolve({ failed: true, error });
+		if (!startupSettled && !(await errorDecision.promise)) return { done: true };
+		logger.warn?.('Error serializing in stream', harperErrorForLog(error));
+		return { value: serializeError(error), done: false, [serializedStreamError]: true };
+	};
+	const transformStep = (step) => {
+		if (step?.[serializedStreamError]) return step;
+		if (terminal) return { done: true };
+		if (step.done) return step;
+		try {
+			return { value: transform(step.value), done: false };
+		} catch (error) {
+			return handleError(error);
+		}
+	};
+	const getRawNext = () => {
+		if (terminal) return { done: true };
+		let step;
+		try {
+			step = iterator.next();
+		} catch (error) {
+			return handleError(error);
+		}
+		if (step.then) return step.then(undefined, handleError);
+		return step;
+	};
+	const getNext = () => {
+		if (terminal) return { done: true };
+		let step;
+		try {
+			step = iterator.next();
+		} catch (error) {
+			return handleError(error);
+		}
+		if (step.then) return step.then(transformStep, handleError);
+		return transformStep(step);
+	};
+	const start = () => {
+		if (started) return;
+		started = true;
+		iterator = iterable[Symbol.asyncIterator] ? iterable[Symbol.asyncIterator]() : iterable[Symbol.iterator]();
+		firstStep = getRawNext();
+		Promise.resolve(firstStep).then(
+			() => {
+				if (!terminal) commit();
+			},
+			() => {}
+		);
+		// After this turn, the HTTP status can no longer wait for a first item without delaying long-lived streams.
+		startupTimer = setImmediate(commit);
+	};
+	if (eager) start();
+
 	return {
+		[streamStartup]: {
+			result: startupResult.promise,
+			abort,
+			start,
+		},
 		[Symbol.asyncIterator]() {
-			const iterator = iterable[Symbol.asyncIterator] ? iterable[Symbol.asyncIterator]() : iterable[Symbol.iterator]();
 			return {
 				next() {
-					const step = iterator.next();
-					if (step.then) {
-						// don't transform the terminal sentinel step, whose value is undefined
-						return step.then((result) => (result.done ? result : { value: transform(result.value), done: false }));
+					if (terminal) return { done: true };
+					if (first) {
+						first = false;
+						start();
+						const step = firstStep;
+						firstStep = undefined;
+						if (step.then) return step.then(transformStep);
+						return transformStep(step);
 					}
-					return step.done ? step : { value: transform(step.value), done: false };
+					return getNext();
 				},
 				return(value) {
-					return iterator.return(value);
+					terminal = true;
+					started = true;
+					if (!iterator)
+						iterator = iterable[Symbol.asyncIterator]
+							? iterable[Symbol.asyncIterator]()
+							: iterable[Symbol.iterator]?.();
+					return iterator?.return?.(value) ?? { value, done: true };
 				},
 				throw(error) {
-					return iterator.throw(error);
+					return iterator?.throw?.(error) ?? Promise.reject(error);
 				},
 			};
 		},
 	};
+}
+
+function formatCsvCell(value: any) {
+	if (value === null || value === undefined) {
+		return '';
+	}
+	// Serialize objects and arrays as JSON
+	if (typeof value === 'object') {
+		return value instanceof Date ? (value.toJSON() ?? '') : JSON.stringify(value);
+	}
+	return value;
 }
 
 /**
@@ -644,43 +1147,54 @@ function transformIterable(iterable, transform) {
  * @param data
  * @returns stream
  */
-export function toCsvStream(data, columns?) {
-	// ensure that we pass it an iterable
-	const readStream = stream.Readable.from(data?.[Symbol.iterator] || data?.[Symbol.asyncIterator] ? data : [data]);
+export function toCsvStream(data, columns?, fallbackColumns?) {
+	const isRowIterable =
+		typeof data === 'object' && data !== null && Boolean(data[Symbol.iterator] || data[Symbol.asyncIterator]);
+	const source = isRowIterable ? data : [data];
+	const hint = columns ?? data?.getColumns?.() ?? fallbackColumns;
+	const mapNullRow = Boolean(hint?.scalar || data == null || !hint || data?.pendingAuth);
+	// Readable.from() in object mode rejects null values with ERR_STREAM_NULL_VALUES.
+	const readStream = Readable.from(
+		openOnFirstStep(
+			() => source,
+			Boolean(source[Symbol.asyncIterator]),
+			mapNullRow ? (value) => value ?? '' : undefined
+		)
+	);
 
 	let headerWritten = false;
 	let fields = columns || null;
+	let rowToValues: ((chunk: any) => any[]) | undefined;
 
 	// Create a transform stream to convert objects to CSV
 	const csvTransform = new Transform({
 		objectMode: true,
 		transform(chunk, encoding, callback) {
 			try {
-				// Extract fields from first object if not provided
-				if (!fields && typeof chunk === 'object' && chunk !== null) {
-					fields = Object.keys(chunk);
+				if (!headerWritten) {
+					if (!fields) {
+						fields =
+							data?.getColumns?.() ||
+							(typeof chunk === 'object' && chunk !== null && !Array.isArray(chunk)
+								? Object.keys(chunk)
+								: fallbackColumns || (Array.isArray(chunk) ? Object.keys(chunk) : null));
+					}
+					if (fields) {
+						const scalar = Boolean(fields.scalar);
+						const asArray = Boolean(fields.asArray);
+						rowToValues = scalar
+							? (row) => [formatCsvCell(row)]
+							: asArray
+								? (row) =>
+										Array.isArray(row) ? fields.map((_, index) => formatCsvCell(row[index])) : [formatCsvCell(row)]
+								: (row) => fields.map((field) => formatCsvCell(row[field]));
+						this.push(escapeCsvRow(fields, true) + '\n');
+						headerWritten = true;
+					}
 				}
 
-				// Write header row on first chunk
-				if (!headerWritten && fields) {
-					this.push(escapeCsvRow(fields, true) + '\n');
-					headerWritten = true;
-				}
-
-				// Convert object to CSV row
-				if (fields) {
-					const values = fields.map((field) => {
-						const value = chunk[field];
-						if (value === null || value === undefined) {
-							return '';
-						}
-						// Serialize objects and arrays as JSON
-						if (typeof value === 'object') {
-							return JSON.stringify(value);
-						}
-						return value;
-					});
-					this.push(escapeCsvRow(values, false) + '\n');
+				if (rowToValues) {
+					this.push(escapeCsvRow(rowToValues(chunk), false) + '\n');
 				}
 
 				callback();
@@ -690,8 +1204,7 @@ export function toCsvStream(data, columns?) {
 		},
 	});
 
-	// Pipe the data read stream through our CSV transform
-	return readStream.pipe(csvTransform);
+	return pipelineOnRead(readStream, csvTransform);
 }
 
 /**
@@ -700,6 +1213,9 @@ export function toCsvStream(data, columns?) {
  * @param quoteAll - If true, quote all values. If false, only quote strings (not numbers)
  */
 function escapeCsvRow(values: any[], quoteAll: boolean = false): string {
+	if (values.length === 1 && (values[0] === '' || values[0] === null || values[0] === undefined)) {
+		return '""';
+	}
 	return values
 		.map((value) => {
 			// Handle empty/null values

@@ -4,9 +4,11 @@ import { loggerWithTag } from '../../utility/logging/logger.ts';
 import { validateStatus } from '../../validation/statusValidator.ts';
 import { type StatusId, type StatusValueMap, type StatusRecord, DEFAULT_STATUS_ID } from './definitions.ts';
 import { internal as statusInternal, type AggregatedComponentStatus } from '../../components/status/index.ts';
+import type { ComponentStatusAbnormality } from '../../components/status/types.ts';
+import { buildHierarchy, type StatusNode } from '../../components/status/hierarchy.ts';
 import { restartNeeded } from '../../components/requestRestart.ts';
-import { sendItcEvent } from '../threads/itc.js';
-import { onMessageByType, workers } from '../threads/manageThreads.js';
+import { sendItcEvent } from '../threads/itc.ts';
+import { onMessageByType, workers } from '../threads/manageThreads.ts';
 import { ITC_EVENT_TYPES, THREAD_TYPES } from '../../utility/hdbTerms.ts';
 
 export { clearStatus as clear, getStatus as get, setStatus as set };
@@ -17,10 +19,10 @@ export type { StatusId, StatusRecord, StatusValueMap } from './definitions.ts';
 export { STATUS_IDS, DEFAULT_STATUS_ID } from './definitions.ts';
 
 const { HTTP_STATUS_CODES } = hdbErrors;
-
 // For direct function calls, we don't need the operation fields
 type StatusRequestBody = {
 	id: StatusId;
+	components?: boolean;
 	// Opt in to the resolved HTTP/upgrade/WebSocket middleware chains in the aggregated (no-id)
 	// response (#1573). Off by default so routine polling avoids the cross-thread lookup.
 	middleware?: boolean;
@@ -74,13 +76,36 @@ function clearStatus({ id }: StatusRequestBody): Promise<boolean> {
 	return getStatusTable().delete(id);
 }
 
-interface AggregatedComponentStatusWithName extends AggregatedComponentStatus {
+type SerializedComponentStatusAbnormality = Omit<ComponentStatusAbnormality, 'error'> & {
+	error?: string;
+};
+
+interface AggregatedComponentStatusWithName extends Omit<AggregatedComponentStatus, 'error' | 'abnormalities'> {
 	name: string;
+	error?: string;
+	abnormalities?: Record<string, SerializedComponentStatusAbnormality>;
+}
+
+function serializeAbnormalities(
+	abnormalities: Map<string, ComponentStatusAbnormality> | Record<string, ComponentStatusAbnormality>
+): Record<string, SerializedComponentStatusAbnormality> {
+	const entries = abnormalities instanceof Map ? abnormalities.entries() : Object.entries(abnormalities);
+	const serialized: Record<string, SerializedComponentStatusAbnormality> = {};
+	for (const [threadKey, abnormality] of entries) {
+		serialized[threadKey] = {
+			...abnormality,
+			...(abnormality.error !== undefined && {
+				error: statusInternal.serializeStatusError(abnormality.error),
+			}),
+		};
+	}
+	return serialized;
 }
 
 interface AllStatusSummary {
 	systemStatus: Promise<AsyncIterable<StatusRecord>>;
 	componentStatus: AggregatedComponentStatusWithName[];
+	components?: Record<string, StatusNode>;
 	restartRequired: boolean;
 	// Only present when the request opts in with `middleware: true`.
 	middlewareChains?: MiddlewareChainsSummary | null;
@@ -144,7 +169,7 @@ async function getMiddlewareChains(): Promise<MiddlewareChainsSummary | null> {
 	}
 }
 
-async function getAllStatus(includeMiddleware = false): Promise<AllStatusSummary> {
+async function getAllStatus({ components, middleware }: Partial<StatusRequestBody>): Promise<AllStatusSummary> {
 	statusLogger.debug?.('getAllStatus');
 	const statusRecords = getStatusTable().search([]);
 
@@ -154,6 +179,10 @@ async function getAllStatus(includeMiddleware = false): Promise<AllStatusSummary
 		([name, status]) => ({
 			name,
 			...status,
+			...(status.error !== undefined && { error: statusInternal.serializeStatusError(status.error) }),
+			...(status.abnormalities !== undefined && {
+				abnormalities: serializeAbnormalities(status.abnormalities),
+			}),
 		})
 	);
 
@@ -165,14 +194,19 @@ async function getAllStatus(includeMiddleware = false): Promise<AllStatusSummary
 		componentStatus: componentStatusArray,
 		restartRequired,
 	};
-	if (includeMiddleware) summary.middlewareChains = await getMiddlewareChains();
+	if (components === true) summary.components = buildHierarchy(aggregatedStatuses);
+	if (middleware === true) summary.middlewareChains = await getMiddlewareChains();
 	return summary;
 }
 
-function getStatus({ id, middleware }: Partial<StatusRequestBody>): Promise<StatusRecord | AllStatusSummary> {
+function getStatus({
+	id,
+	components,
+	middleware,
+}: Partial<StatusRequestBody>): Promise<StatusRecord | AllStatusSummary> {
 	if (!id) {
 		statusLogger.debug?.('getStatus', 'all');
-		return getAllStatus(middleware === true);
+		return getAllStatus({ components, middleware });
 	}
 
 	statusLogger.debug?.('getStatus', id);

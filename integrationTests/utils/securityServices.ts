@@ -13,6 +13,7 @@ import { join } from 'node:path';
 import { readFileSync } from 'node:fs';
 import type { OcspCertificates } from './security/ocsp/generate-test-certs.ts';
 import type { CrlCertificates } from './security/crl/generate-test-certs.ts';
+import type { CrlValidity } from './security/certGenUtils.ts';
 import { startOcspServer, stopOcspServer } from './security/ocspServer.ts';
 
 export interface OcspResponderContext {
@@ -104,14 +105,15 @@ export { generateCrlCertificates, type CrlCertificates } from './security/crl/ge
 export async function setupCrlServerWithCerts(
 	certsPath: string,
 	hostname: string = '127.0.0.1',
-	maxRetries: number = 5
+	maxRetries: number = 5,
+	crlValidity?: CrlValidity
 ): Promise<CrlServerContext> {
 	for (let attempt = 0; attempt < maxRetries; attempt++) {
 		const port = 50000 + Math.floor(Math.random() * 10000);
 
 		try {
 			const { generateCrlCertificates } = await import('./security/crl/generate-test-certs.ts');
-			const certs = await generateCrlCertificates(certsPath, hostname, port);
+			const certs = await generateCrlCertificates(certsPath, hostname, port, crlValidity);
 			// await so EADDRINUSE from server.listen() lands in the catch and triggers retry
 			// (matches setupOcspResponderWithCerts pattern)
 			return await startCrlServer(certsPath, port, certs);

@@ -1,8 +1,8 @@
 'use strict';
 
 const rewire = require('rewire');
-const read_audit_log = require('#src/dataLayer/readAuditLog');
-const rw_read_audit_log = rewire('#src/dataLayer/readAuditLog');
+const read_audit_log = require('#js/dataLayer/readAuditLog');
+const rw_read_audit_log = rewire('#js/dataLayer/readAuditLog');
 const ReadAuditLogObject = require('#src/dataLayer/ReadAuditLogObject');
 const env_mgr = require('#src/utility/environment/environmentManager');
 const hdb_terms = require('#src/utility/hdbTerms');
@@ -69,8 +69,10 @@ describe.skip('test readAuditLog module', () => {
 
 	it('test happy path', async () => {
 		let stub = sandbox.stub().resolves([]);
-		let rw_stub = rw_read_audit_log.__set__('harperBridge', {
-			readAuditLog: stub,
+		let rw_stub = rw_read_audit_log.__set__('harperBridge_ts_1', {
+			default: {
+				readAuditLog: stub,
+			},
 		});
 
 		let obj = new ReadAuditLogObject('dev', 'test', 'timestamp');

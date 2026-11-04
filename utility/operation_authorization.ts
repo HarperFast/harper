@@ -1,4 +1,4 @@
-'use strict';
+import { loadRuntimeModule, loadNativePackage } from './packageUtils.js';
 /**
  * This module is used before a SQL or NoSQL operation is performed in order to ensure the user's assigned role
  * has the permissions and lack of restrictions needed to process the operation.  Only verifyPerms and verifyPermsAST
@@ -31,22 +31,36 @@ import {
 	registerGrantableOperation,
 	unregisterGrantableOperation,
 } from './operationPermissions.ts';
-import * as permsTranslator from '../security/permissionsTranslator.js';
+import * as permsTranslator from '../security/permissionsTranslator.ts';
 import { systemInformation } from '../utility/environment/systemInformation.ts';
 import * as tokenAuthentication from '../security/tokenAuthentication.ts';
 import * as auth from '../security/auth.ts';
 import * as configUtils from '../config/configUtils.ts';
-import * as functionsOperations from '../components/operations.js';
+import * as functionsOperations from '../components/operations.ts';
 import * as transactionLog from '../utility/logging/transactionLog.ts';
 import * as npmUtilities from './npmUtilities.ts';
 import * as analytics from '../resources/analytics/read.ts';
 import * as status from '../server/status/index.ts';
+import { FULL_TEXT_COMPARATORS } from '../resources/indexes/fullTextQueryProtocol.ts';
 import PermissionResponseObject from '../security/data_objects/PermissionResponseObject.ts';
+import {
+	COMPONENT_GRANT_OPERATIONS,
+	componentGrantOf,
+	grantCoversComponent,
+	type ComponentGrant,
+} from '../security/componentGrant.ts';
+import { canonicalProjectName, projectNameFromPackage } from './componentNames.ts';
+import { getDatabases } from '../resources/databases.ts';
+import type { ReadDenial } from '../resources/Table.ts';
 import { handleHDBError, hdbErrors } from '../utility/errors/hdbError.ts';
 
 import * as regDeprecated from '../resources/registrationDeprecated.ts';
 import * as deploymentOperations from '../components/deploymentOperations.ts';
+import * as releaseOperations from '../components/releaseOperations.ts';
 import * as secretOperations from '../components/secretOperations.ts';
+import * as trustPolicyOperations from '../security/authn/oidc/trustPolicyOperations.ts';
+import * as tokenExchange from '../security/authn/oidc/tokenExchange.ts';
+import * as previewOperations from '../components/previewOperations.ts';
 
 const requiredPermissions = new Map();
 const DELETE_PERM = 'delete';
@@ -88,6 +102,10 @@ const BULK_OPS = {
 	CSV_FILE_LOAD: 'csvFileLoad',
 	IMPORT_FROM_S3: 'importFromS3',
 };
+/** The same set, precomputed: `isBulkLoadOperation` runs on every operations authorization. */
+const BULK_OP_NAMES = new Set(Object.values(BULK_OPS));
+const FULL_TEXT_COMPARATOR_SET = new Set<string>(FULL_TEXT_COMPARATORS);
+const SEARCH_OPS = new Set([search.searchByConditions.name, search.searchByHash.name, search.searchByValue.name]);
 
 const STRUCTURE_USER_OPS = [
 	schema.createTable.name,
@@ -103,13 +121,16 @@ const DATA_EXPORT = {
 
 class permission {
 	requires_su: boolean;
-	perms: any;
-	api_name: string;
-	constructor(requiresSu, perms, apiName) {
+	perms: string[];
+	api_name: string | null;
+	/**
+	 * `apiName` is the snake_case API operation (from OPERATIONS_ENUM) a role's `operations` allowlist
+	 * grants this entry by, or `null` when no allowlist may grant it. Required, so no registration can
+	 * leave gate 1 checking a handler name, which no role can list.
+	 */
+	constructor(requiresSu: boolean, perms: string[], apiName: string | null) {
 		this.requires_su = requiresSu;
 		this.perms = perms;
-		// snake_case API operation name (from OPERATIONS_ENUM) for operations allowlist checks.
-		// Undefined for ops that aren't user-addressable (SQL sub-ops, internal-only ops).
 		this.api_name = apiName;
 	}
 }
@@ -125,7 +146,7 @@ export function registerOperationPermission(
 	apiName: string,
 	{ requiresSu = false, perms = [] }: { requiresSu?: boolean; perms?: string[] } = {}
 ) {
-	requiredPermissions.set(apiName, new (permission as any)(requiresSu, perms, apiName));
+	requiredPermissions.set(apiName, new permission(requiresSu, perms, apiName));
 	// Also make the op grantable in a role's `operations` allowlist (validateOperations), so a
 	// declared permission can be both enforced AND granted — not just enforced.
 	registerGrantableOperation(apiName);
@@ -141,183 +162,219 @@ export function unregisterOperationPermission(apiName: string) {
 	unregisterGrantableOperation(apiName);
 }
 
-requiredPermissions.set(write.insert.name, new (permission as any)(false, [INSERT_PERM], terms.OPERATIONS_ENUM.INSERT));
-requiredPermissions.set(write.update.name, new (permission as any)(false, [UPDATE_PERM], terms.OPERATIONS_ENUM.UPDATE));
+requiredPermissions.set(write.insert.name, new permission(false, [INSERT_PERM], terms.OPERATIONS_ENUM.INSERT));
+requiredPermissions.set(write.update.name, new permission(false, [UPDATE_PERM], terms.OPERATIONS_ENUM.UPDATE));
 requiredPermissions.set(
 	write.upsert.name,
-	new (permission as any)(false, [INSERT_PERM, UPDATE_PERM], terms.OPERATIONS_ENUM.UPSERT)
+	new permission(false, [INSERT_PERM, UPDATE_PERM], terms.OPERATIONS_ENUM.UPSERT)
 );
+// Same grants as `upsert`, and the same as REST `PUT` enforces: creating needs insert, replacing an
+// existing record needs update. A full replace can DROP attributes, which is why the
+// attribute-scoped denial below applies to it.
+requiredPermissions.set(write.put.name, new permission(false, [INSERT_PERM, UPDATE_PERM], terms.OPERATIONS_ENUM.PUT));
 requiredPermissions.set(
 	search.searchByConditions.name,
-	new (permission as any)(false, [READ_PERM], terms.OPERATIONS_ENUM.SEARCH_BY_CONDITIONS)
+	new permission(false, [READ_PERM], terms.OPERATIONS_ENUM.SEARCH_BY_CONDITIONS)
 );
 requiredPermissions.set(
 	search.searchByHash.name,
-	new (permission as any)(false, [READ_PERM], terms.OPERATIONS_ENUM.SEARCH_BY_HASH)
+	new permission(false, [READ_PERM], terms.OPERATIONS_ENUM.SEARCH_BY_HASH)
 );
 requiredPermissions.set(
 	search.searchByValue.name,
-	new (permission as any)(false, [READ_PERM], terms.OPERATIONS_ENUM.SEARCH_BY_VALUE)
+	new permission(false, [READ_PERM], terms.OPERATIONS_ENUM.SEARCH_BY_VALUE)
 );
-requiredPermissions.set(search.search.name, new (permission as any)(false, [READ_PERM], terms.OPERATIONS_ENUM.SEARCH));
-requiredPermissions.set(
-	schema.createSchema.name,
-	new (permission as any)(true, [], terms.OPERATIONS_ENUM.CREATE_DATABASE)
-);
-requiredPermissions.set(schema.createTable.name, new (permission as any)(true, [], terms.OPERATIONS_ENUM.CREATE_TABLE));
+requiredPermissions.set(search.search.name, new permission(false, [READ_PERM], terms.OPERATIONS_ENUM.SEARCH));
+requiredPermissions.set(schema.createSchema.name, new permission(true, [], terms.OPERATIONS_ENUM.CREATE_DATABASE));
+requiredPermissions.set(schema.createTable.name, new permission(true, [], terms.OPERATIONS_ENUM.CREATE_TABLE));
 requiredPermissions.set(
 	schema.createAttribute.name,
-	new (permission as any)(false, [INSERT_PERM], terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE)
+	new permission(false, [INSERT_PERM], terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE)
 );
-requiredPermissions.set(schema.dropSchema.name, new (permission as any)(true, [], terms.OPERATIONS_ENUM.DROP_DATABASE));
-requiredPermissions.set(schema.dropTable.name, new (permission as any)(true, [], terms.OPERATIONS_ENUM.DROP_TABLE));
-requiredPermissions.set(
-	schema.dropAttribute.name,
-	new (permission as any)(true, [], terms.OPERATIONS_ENUM.DROP_ATTRIBUTE)
-);
+requiredPermissions.set(schema.dropSchema.name, new permission(true, [], terms.OPERATIONS_ENUM.DROP_DATABASE));
+requiredPermissions.set(schema.dropTable.name, new permission(true, [], terms.OPERATIONS_ENUM.DROP_TABLE));
+requiredPermissions.set(schema.dropAttribute.name, new permission(true, [], terms.OPERATIONS_ENUM.DROP_ATTRIBUTE));
 requiredPermissions.set(
 	schemaDescribe.describeSchema.name,
-	new (permission as any)(false, [READ_PERM], terms.OPERATIONS_ENUM.DESCRIBE_SCHEMA)
+	new permission(false, [READ_PERM], terms.OPERATIONS_ENUM.DESCRIBE_SCHEMA)
 );
 requiredPermissions.set(
 	schemaDescribe.describeTable.name,
-	new (permission as any)(false, [READ_PERM], terms.OPERATIONS_ENUM.DESCRIBE_TABLE)
+	new permission(false, [READ_PERM], terms.OPERATIONS_ENUM.DESCRIBE_TABLE)
+);
+requiredPermissions.set(delete_.deleteRecord.name, new permission(false, [DELETE_PERM], terms.OPERATIONS_ENUM.DELETE));
+requiredPermissions.set(user.addUser.name, new permission(true, [], terms.OPERATIONS_ENUM.ADD_USER));
+requiredPermissions.set(user.alterUser.name, new permission(true, [], terms.OPERATIONS_ENUM.ALTER_USER));
+requiredPermissions.set(user.dropUser.name, new permission(true, [], terms.OPERATIONS_ENUM.DROP_USER));
+requiredPermissions.set(user.listUsersExternal.name, new permission(true, [], terms.OPERATIONS_ENUM.LIST_USERS));
+requiredPermissions.set(role.listRoles.name, new permission(true, [], terms.OPERATIONS_ENUM.LIST_ROLES));
+requiredPermissions.set(role.addRole.name, new permission(true, [], terms.OPERATIONS_ENUM.ADD_ROLE));
+requiredPermissions.set(role.alterRole.name, new permission(true, [], terms.OPERATIONS_ENUM.ALTER_ROLE));
+requiredPermissions.set(role.dropRole.name, new permission(true, [], terms.OPERATIONS_ENUM.DROP_ROLE));
+requiredPermissions.set(readLog.name, new permission(true, [], terms.OPERATIONS_ENUM.READ_LOG));
+requiredPermissions.set(
+	configUtils.setConfiguration.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.SET_CONFIGURATION)
 );
 requiredPermissions.set(
-	delete_.deleteRecord.name,
-	new (permission as any)(false, [DELETE_PERM], terms.OPERATIONS_ENUM.DELETE)
+	delete_.deleteFilesBefore.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.DELETE_FILES_BEFORE)
 );
-requiredPermissions.set(user.addUser.name, new (permission as any)(true, [], terms.OPERATIONS_ENUM.ADD_USER));
-requiredPermissions.set(user.alterUser.name, new (permission as any)(true, [], terms.OPERATIONS_ENUM.ALTER_USER));
-requiredPermissions.set(user.dropUser.name, new (permission as any)(true, [], terms.OPERATIONS_ENUM.DROP_USER));
 requiredPermissions.set(
-	user.listUsersExternal.name,
-	new (permission as any)(true, [], terms.OPERATIONS_ENUM.LIST_USERS)
+	delete_.deleteAuditLogsBefore.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.DELETE_AUDIT_LOGS_BEFORE)
 );
-requiredPermissions.set(role.listRoles.name, new (permission as any)(true, [], terms.OPERATIONS_ENUM.LIST_ROLES));
-requiredPermissions.set(role.addRole.name, new (permission as any)(true, [], terms.OPERATIONS_ENUM.ADD_ROLE));
-requiredPermissions.set(role.alterRole.name, new (permission as any)(true, [], terms.OPERATIONS_ENUM.ALTER_ROLE));
-requiredPermissions.set(role.dropRole.name, new (permission as any)(true, [], terms.OPERATIONS_ENUM.DROP_ROLE));
-requiredPermissions.set(readLog.name, new (permission as any)(true, [], terms.OPERATIONS_ENUM.READ_LOG));
-requiredPermissions.set(configUtils.setConfiguration.name, new (permission as any)(true, []));
-requiredPermissions.set(delete_.deleteFilesBefore.name, new (permission as any)(true, []));
-requiredPermissions.set(delete_.deleteAuditLogsBefore.name, new (permission as any)(true, []));
-requiredPermissions.set(restart.restart.name, new (permission as any)(true, [], terms.OPERATIONS_ENUM.RESTART));
-requiredPermissions.set(restart.restartService.name, new (permission as any)(true, []));
-requiredPermissions.set(readAuditLog.name, new (permission as any)(true, [], terms.OPERATIONS_ENUM.READ_AUDIT_LOG));
-requiredPermissions.set(getBackup.name, new (permission as any)(true, [READ_PERM]));
+requiredPermissions.set(restart.restart.name, new permission(true, [], terms.OPERATIONS_ENUM.RESTART));
+requiredPermissions.set(restart.restartService.name, new permission(true, [], terms.OPERATIONS_ENUM.RESTART_SERVICE));
+requiredPermissions.set(readAuditLog.name, new permission(true, [], terms.OPERATIONS_ENUM.READ_AUDIT_LOG));
+// No allowlist may grant it: gate 2 would return before this READ check, and the dispatched handler
+// copies a whole database, `system` included.
+requiredPermissions.set(getBackup.name, new permission(true, [READ_PERM], null));
 requiredPermissions.set(
 	rocksdbBackup.createBackup.name,
-	new (permission as any)(true, [READ_PERM], terms.OPERATIONS_ENUM.CREATE_BACKUP)
+	new permission(true, [READ_PERM], terms.OPERATIONS_ENUM.CREATE_BACKUP)
 );
 requiredPermissions.set(
 	rocksdbBackup.listBackups.name,
-	new (permission as any)(true, [READ_PERM], terms.OPERATIONS_ENUM.LIST_BACKUPS)
+	new permission(true, [READ_PERM], terms.OPERATIONS_ENUM.LIST_BACKUPS)
 );
 requiredPermissions.set(
 	rocksdbBackup.verifyBackup.name,
-	new (permission as any)(true, [READ_PERM], terms.OPERATIONS_ENUM.VERIFY_BACKUP)
+	new permission(true, [READ_PERM], terms.OPERATIONS_ENUM.VERIFY_BACKUP)
 );
 requiredPermissions.set(
 	rocksdbBackup.deleteBackup.name,
-	new (permission as any)(true, [READ_PERM], terms.OPERATIONS_ENUM.DELETE_BACKUP)
+	new permission(true, [READ_PERM], terms.OPERATIONS_ENUM.DELETE_BACKUP)
 );
 requiredPermissions.set(
 	rocksdbBackup.purgeBackups.name,
-	new (permission as any)(true, [READ_PERM], terms.OPERATIONS_ENUM.PURGE_BACKUPS)
+	new permission(true, [READ_PERM], terms.OPERATIONS_ENUM.PURGE_BACKUPS)
 );
 requiredPermissions.set(
 	rocksdbBackup.restoreBackup.name,
-	new (permission as any)(true, [READ_PERM], terms.OPERATIONS_ENUM.RESTORE_BACKUP)
+	new permission(true, [READ_PERM], terms.OPERATIONS_ENUM.RESTORE_BACKUP)
 );
-requiredPermissions.set(schema.cleanupOrphanBlobs.name, new (permission as any)(true, []));
 requiredPermissions.set(
-	systemInformation.name,
-	new (permission as any)(true, [], terms.OPERATIONS_ENUM.SYSTEM_INFORMATION)
+	schema.cleanupOrphanBlobs.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.CLEANUP_ORPHAN_BLOBS)
 );
+requiredPermissions.set(systemInformation.name, new permission(true, [], terms.OPERATIONS_ENUM.SYSTEM_INFORMATION));
 requiredPermissions.set(
 	configUtils.getConfiguration.name,
-	new (permission as any)(true, [], terms.OPERATIONS_ENUM.GET_CONFIGURATION)
+	new permission(true, [], terms.OPERATIONS_ENUM.GET_CONFIGURATION)
 );
-requiredPermissions.set(transactionLog.readTransactionLog.name, new (permission as any)(true, []));
-requiredPermissions.set(transactionLog.deleteTransactionLogsBefore.name, new (permission as any)(true, []));
-requiredPermissions.set(npmUtilities.installModules.name, new (permission as any)(true, []));
+// No allowlist may grant it: it reads the same records as read_audit_log without that operation's
+// system.hdb_secret guard, and those records carry secret envelopes.
+requiredPermissions.set(transactionLog.readTransactionLog.name, new permission(true, [], null));
 requiredPermissions.set(
-	analytics.getOp.name,
-	new (permission as any)(false, [READ_PERM], terms.OPERATIONS_ENUM.GET_ANALYTICS)
+	transactionLog.deleteTransactionLogsBefore.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.DELETE_TRANSACTION_LOGS_BEFORE)
 );
+requiredPermissions.set(
+	npmUtilities.installModules.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.INSTALL_NODE_MODULES)
+);
+requiredPermissions.set(analytics.getOp.name, new permission(false, [READ_PERM], terms.OPERATIONS_ENUM.GET_ANALYTICS));
 requiredPermissions.set(
 	analytics.listMetricsOp.name,
-	new (permission as any)(false, [READ_PERM], terms.OPERATIONS_ENUM.LIST_METRICS)
+	new permission(false, [READ_PERM], terms.OPERATIONS_ENUM.LIST_METRICS)
 );
 requiredPermissions.set(
 	analytics.describeMetricOp.name,
-	new (permission as any)(false, [READ_PERM], terms.OPERATIONS_ENUM.DESCRIBE_METRIC)
+	new permission(false, [READ_PERM], terms.OPERATIONS_ENUM.DESCRIBE_METRIC)
 );
-requiredPermissions.set(status.clear.name, new (permission as any)(true, []));
-requiredPermissions.set(status.get.name, new (permission as any)(true, []));
-requiredPermissions.set(status.set.name, new (permission as any)(true, []));
+requiredPermissions.set(status.clear.name, new permission(true, [], terms.OPERATIONS_ENUM.CLEAR_STATUS));
+requiredPermissions.set(status.get.name, new permission(true, [], terms.OPERATIONS_ENUM.GET_STATUS));
+requiredPermissions.set(status.set.name, new permission(true, [], terms.OPERATIONS_ENUM.SET_STATUS));
 
 //this operation must be available to all users so they can create authentication tokens and login
 requiredPermissions.set(
 	tokenAuthentication.createTokens.name,
-	new (permission as any)(false, [], terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS)
+	new permission(false, [], terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS)
 );
 requiredPermissions.set(
 	tokenAuthentication.refreshOperationToken.name,
-	new (permission as any)(false, [], terms.OPERATIONS_ENUM.REFRESH_OPERATION_TOKEN)
+	new permission(false, [], terms.OPERATIONS_ENUM.REFRESH_OPERATION_TOKEN)
 );
-requiredPermissions.set(auth.login.name, new (permission as any)(false, []));
-requiredPermissions.set(auth.logout.name, new (permission as any)(false, []));
+requiredPermissions.set(auth.login.name, new permission(false, [], terms.OPERATIONS_ENUM.LOGIN));
+requiredPermissions.set(auth.logout.name, new permission(false, [], terms.OPERATIONS_ENUM.LOGOUT));
 
 //Operations specific to HDB Functions
 requiredPermissions.set(
 	functionsOperations.customFunctionsStatus.name,
-	new (permission as any)(true, [], terms.OPERATIONS_ENUM.CUSTOM_FUNCTIONS_STATUS)
+	new permission(true, [], terms.OPERATIONS_ENUM.CUSTOM_FUNCTIONS_STATUS)
 );
 requiredPermissions.set(
 	functionsOperations.getCustomFunctions.name,
-	new (permission as any)(true, [], terms.OPERATIONS_ENUM.GET_CUSTOM_FUNCTIONS)
+	new permission(true, [], terms.OPERATIONS_ENUM.GET_CUSTOM_FUNCTIONS)
 );
 requiredPermissions.set(
 	functionsOperations.getComponents.name,
-	new (permission as any)(true, [], terms.OPERATIONS_ENUM.GET_COMPONENTS)
+	new permission(true, [], terms.OPERATIONS_ENUM.GET_COMPONENTS)
 );
 requiredPermissions.set(
 	functionsOperations.getComponentFile.name,
-	new (permission as any)(true, [], terms.OPERATIONS_ENUM.GET_COMPONENT_FILE)
+	new permission(true, [], terms.OPERATIONS_ENUM.GET_COMPONENT_FILE)
 );
-requiredPermissions.set(functionsOperations.setComponentFile.name, new (permission as any)(true, []));
+requiredPermissions.set(
+	functionsOperations.setComponentFile.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.SET_COMPONENT_FILE)
+);
 requiredPermissions.set(
 	functionsOperations.getEnvKeys.name,
-	new (permission as any)(true, [], terms.OPERATIONS_ENUM.GET_ENV_KEYS)
+	new permission(true, [], terms.OPERATIONS_ENUM.GET_ENV_KEYS)
 );
 requiredPermissions.set(
 	functionsOperations.setEnvValue.name,
-	new (permission as any)(true, [], terms.OPERATIONS_ENUM.SET_ENV_VALUE)
+	new permission(true, [], terms.OPERATIONS_ENUM.SET_ENV_VALUE)
 );
 requiredPermissions.set(
 	functionsOperations.deleteEnvValue.name,
-	new (permission as any)(true, [], terms.OPERATIONS_ENUM.DELETE_ENV_VALUE)
+	new permission(true, [], terms.OPERATIONS_ENUM.DELETE_ENV_VALUE)
 );
-requiredPermissions.set(functionsOperations.dropComponent.name, new (permission as any)(true, []));
+requiredPermissions.set(
+	functionsOperations.dropComponent.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.DROP_COMPONENT)
+);
 requiredPermissions.set(
 	functionsOperations.getCustomFunction.name,
-	new (permission as any)(true, [], terms.OPERATIONS_ENUM.GET_CUSTOM_FUNCTION)
+	new permission(true, [], terms.OPERATIONS_ENUM.GET_CUSTOM_FUNCTION)
 );
-requiredPermissions.set(functionsOperations.setCustomFunction.name, new (permission as any)(true, []));
-requiredPermissions.set(functionsOperations.dropCustomFunction.name, new (permission as any)(true, []));
-requiredPermissions.set(functionsOperations.addComponent.name, new (permission as any)(true, []));
-requiredPermissions.set(functionsOperations.dropCustomFunctionProject.name, new (permission as any)(true, []));
-requiredPermissions.set(functionsOperations.packageComponent.name, new (permission as any)(true, []));
-requiredPermissions.set(functionsOperations.deployComponent.name, new (permission as any)(true, []));
+requiredPermissions.set(
+	functionsOperations.setCustomFunction.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.SET_CUSTOM_FUNCTION)
+);
+requiredPermissions.set(
+	functionsOperations.dropCustomFunction.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.DROP_CUSTOM_FUNCTION)
+);
+requiredPermissions.set(
+	functionsOperations.addComponent.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.ADD_COMPONENT)
+);
+requiredPermissions.set(
+	functionsOperations.dropCustomFunctionProject.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.DROP_CUSTOM_FUNCTION_PROJECT)
+);
+requiredPermissions.set(
+	functionsOperations.packageComponent.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.PACKAGE_COMPONENT)
+);
+requiredPermissions.set(
+	functionsOperations.deployComponent.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.DEPLOY_COMPONENT)
+);
 requiredPermissions.set(
 	deploymentOperations.handleListDeployments.name,
-	new (permission as any)(true, [], terms.OPERATIONS_ENUM.LIST_DEPLOYMENTS)
+	new permission(true, [], terms.OPERATIONS_ENUM.LIST_DEPLOYMENTS)
 );
 requiredPermissions.set(
 	deploymentOperations.handleGetDeployment.name,
-	new (permission as any)(true, [], terms.OPERATIONS_ENUM.GET_DEPLOYMENT)
+	new permission(true, [], terms.OPERATIONS_ENUM.GET_DEPLOYMENT)
+);
+requiredPermissions.set(
+	releaseOperations.handleListReleases.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.LIST_RELEASES)
 );
 // get_deployment_payload streams the full tarball (which can embed secrets), unlike
 // get_deployment/list_deployments (metadata only), so it ALSO enforces super_user directly in
@@ -325,91 +382,120 @@ requiredPermissions.set(
 // below), matching the secrets-store ops.
 requiredPermissions.set(
 	deploymentOperations.handleGetDeploymentPayload.name,
-	new (permission as any)(true, [], terms.OPERATIONS_ENUM.GET_DEPLOYMENT_PAYLOAD)
+	new permission(true, [], terms.OPERATIONS_ENUM.GET_DEPLOYMENT_PAYLOAD)
 );
 requiredPermissions.set(
 	deploymentOperations.handleDeleteDeploymentPayload.name,
-	new (permission as any)(true, [], terms.OPERATIONS_ENUM.DELETE_DEPLOYMENT_PAYLOAD)
+	new permission(true, [], terms.OPERATIONS_ENUM.DELETE_DEPLOYMENT_PAYLOAD)
 );
 
 // Secrets-store operations. All SU-only; the handlers ALSO enforce super_user directly, so these
 // cannot be delegated through a role's `operations` allowlist (gate-2 bypass below).
-requiredPermissions.set(
-	secretOperations.setSecret.name,
-	new (permission as any)(true, [], terms.OPERATIONS_ENUM.SET_SECRET)
-);
+requiredPermissions.set(secretOperations.setSecret.name, new permission(true, [], terms.OPERATIONS_ENUM.SET_SECRET));
 requiredPermissions.set(
 	secretOperations.grantSecret.name,
-	new (permission as any)(true, [], terms.OPERATIONS_ENUM.GRANT_SECRET)
+	new permission(true, [], terms.OPERATIONS_ENUM.GRANT_SECRET)
 );
 requiredPermissions.set(
 	secretOperations.revokeSecret.name,
-	new (permission as any)(true, [], terms.OPERATIONS_ENUM.REVOKE_SECRET)
+	new permission(true, [], terms.OPERATIONS_ENUM.REVOKE_SECRET)
 );
 requiredPermissions.set(
 	secretOperations.listSecrets.name,
-	new (permission as any)(true, [], terms.OPERATIONS_ENUM.LIST_SECRETS)
+	new permission(true, [], terms.OPERATIONS_ENUM.LIST_SECRETS)
 );
 requiredPermissions.set(
 	secretOperations.deleteSecret.name,
-	new (permission as any)(true, [], terms.OPERATIONS_ENUM.DELETE_SECRET)
+	new permission(true, [], terms.OPERATIONS_ENUM.DELETE_SECRET)
 );
 requiredPermissions.set(
 	secretOperations.getSecretsPublicKey.name,
-	new (permission as any)(true, [], terms.OPERATIONS_ENUM.GET_SECRETS_PUBLIC_KEY)
+	new permission(true, [], terms.OPERATIONS_ENUM.GET_SECRETS_PUBLIC_KEY)
+);
+
+// OIDC trust policies (#2171). A policy lets an external CI run authenticate as a Harper user, so
+// these are SU-only; the handlers ALSO enforce super_user directly so they cannot be delegated
+// through a role's `operations` allowlist (gate-2 bypass below).
+requiredPermissions.set(
+	trustPolicyOperations.addOidcTrust.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.ADD_OIDC_TRUST)
+);
+requiredPermissions.set(
+	trustPolicyOperations.listOidcTrust.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.LIST_OIDC_TRUST)
+);
+requiredPermissions.set(
+	trustPolicyOperations.dropOidcTrust.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.DROP_OIDC_TRUST)
+);
+// An application's PR-preview identity is a role, a user and trust policies, so enabling or disabling it is SU-only,
+// and the handlers ALSO enforce super_user so a role's `operations` allowlist cannot delegate them.
+requiredPermissions.set(
+	previewOperations.enablePreviews.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.ENABLE_PREVIEWS)
+);
+requiredPermissions.set(
+	previewOperations.disablePreviews.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.DISABLE_PREVIEWS)
+);
+requiredPermissions.set(
+	previewOperations.fencePreviewReleases.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.FENCE_PREVIEW_RELEASES)
+);
+requiredPermissions.set(
+	previewOperations.getPreviewPolicy.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.GET_PREVIEW_POLICY)
+);
+// The exchange is unauthenticated by design — it authenticates its own caller against a trust
+// policy, the way create_authentication_tokens does against a password.
+requiredPermissions.set(
+	tokenExchange.exchangeOidcToken.name,
+	new permission(false, [], terms.OPERATIONS_ENUM.EXCHANGE_OIDC_TOKEN)
 );
 
 //Below are functions that are currently open to all roles
-requiredPermissions.set(regDeprecated.getRegistrationInfo.name, new (permission as any)(false, []));
-requiredPermissions.set(user.userInfo.name, new (permission as any)(false, [], terms.OPERATIONS_ENUM.USER_INFO));
-//DescribeAll will only return the schema values a user has permissions for
 requiredPermissions.set(
-	schemaDescribe.describeAll.name,
-	new (permission as any)(false, [], terms.OPERATIONS_ENUM.DESCRIBE_ALL)
+	regDeprecated.getRegistrationInfo.name,
+	new permission(false, [], terms.OPERATIONS_ENUM.REGISTRATION_INFO)
 );
+requiredPermissions.set(user.userInfo.name, new permission(false, [], terms.OPERATIONS_ENUM.USER_INFO));
+//DescribeAll will only return the schema values a user has permissions for
+requiredPermissions.set(schemaDescribe.describeAll.name, new permission(false, [], terms.OPERATIONS_ENUM.DESCRIBE_ALL));
 
 //Below function names are hardcoded b/c of circular dependency issues
-requiredPermissions.set(HANDLE_GET_JOB, new (permission as any)(false, [], terms.OPERATIONS_ENUM.GET_JOB));
-requiredPermissions.set(HANDLE_GET_JOB_BY_START_DATE, new (permission as any)(true, []));
-requiredPermissions.set(CATCHUP, new (permission as any)(true, []));
+requiredPermissions.set(HANDLE_GET_JOB, new permission(false, [], terms.OPERATIONS_ENUM.GET_JOB));
+requiredPermissions.set(
+	HANDLE_GET_JOB_BY_START_DATE,
+	new permission(true, [], terms.OPERATIONS_ENUM.SEARCH_JOBS_BY_START_DATE)
+);
+// No allowlist may grant it: this legacy clustering operation applies writes to any table with no
+// table permission check.
+requiredPermissions.set(CATCHUP, new permission(true, [], null));
 requiredPermissions.set(
 	BULK_OPS.CSV_DATA_LOAD,
-	new (permission as any)(false, [INSERT_PERM, UPDATE_PERM], terms.OPERATIONS_ENUM.CSV_DATA_LOAD)
+	new permission(false, [INSERT_PERM, UPDATE_PERM], terms.OPERATIONS_ENUM.CSV_DATA_LOAD)
 );
 requiredPermissions.set(
 	BULK_OPS.CSV_URL_LOAD,
-	new (permission as any)(false, [INSERT_PERM, UPDATE_PERM], terms.OPERATIONS_ENUM.CSV_URL_LOAD)
+	new permission(false, [INSERT_PERM, UPDATE_PERM], terms.OPERATIONS_ENUM.CSV_URL_LOAD)
 );
 requiredPermissions.set(
 	BULK_OPS.CSV_FILE_LOAD,
-	new (permission as any)(false, [INSERT_PERM, UPDATE_PERM], terms.OPERATIONS_ENUM.CSV_FILE_LOAD)
+	new permission(false, [INSERT_PERM, UPDATE_PERM], terms.OPERATIONS_ENUM.CSV_FILE_LOAD)
 );
 requiredPermissions.set(
 	BULK_OPS.IMPORT_FROM_S3,
-	new (permission as any)(false, [INSERT_PERM, UPDATE_PERM], terms.OPERATIONS_ENUM.IMPORT_FROM_S3)
+	new permission(false, [INSERT_PERM, UPDATE_PERM], terms.OPERATIONS_ENUM.IMPORT_FROM_S3)
 );
-requiredPermissions.set(
-	DATA_EXPORT.EXPORT_TO_S3,
-	new (permission as any)(true, [], terms.OPERATIONS_ENUM.EXPORT_TO_S3)
-);
-requiredPermissions.set(
-	DATA_EXPORT.EXPORT_LOCAL,
-	new (permission as any)(true, [], terms.OPERATIONS_ENUM.EXPORT_LOCAL)
-);
+requiredPermissions.set(DATA_EXPORT.EXPORT_TO_S3, new permission(true, [], terms.OPERATIONS_ENUM.EXPORT_TO_S3));
+requiredPermissions.set(DATA_EXPORT.EXPORT_LOCAL, new permission(true, [], terms.OPERATIONS_ENUM.EXPORT_LOCAL));
 
 // SQL operations are distinct from operations above, so we need to store required perms for both.
-requiredPermissions.set(terms.VALID_SQL_OPS_ENUM.DELETE, new (permission as any)(false, [DELETE_PERM]));
-requiredPermissions.set(terms.VALID_SQL_OPS_ENUM.SELECT, new (permission as any)(false, [READ_PERM]));
-requiredPermissions.set(terms.VALID_SQL_OPS_ENUM.INSERT, new (permission as any)(false, [INSERT_PERM]));
-requiredPermissions.set(terms.VALID_SQL_OPS_ENUM.UPDATE, new (permission as any)(false, [UPDATE_PERM]));
-
-module.exports = {
-	verifyPerms,
-	verifyPermsAST,
-	verifyBulkLoadAttributePerms,
-	registerOperationPermission,
-	unregisterOperationPermission,
-};
+// These are statement variants inside `sql`, which the allowlist gates by its own name.
+requiredPermissions.set(terms.VALID_SQL_OPS_ENUM.DELETE, new permission(false, [DELETE_PERM], null));
+requiredPermissions.set(terms.VALID_SQL_OPS_ENUM.SELECT, new permission(false, [READ_PERM], null));
+requiredPermissions.set(terms.VALID_SQL_OPS_ENUM.INSERT, new permission(false, [INSERT_PERM], null));
+requiredPermissions.set(terms.VALID_SQL_OPS_ENUM.UPDATE, new permission(false, [UPDATE_PERM], null));
 
 /**
  * Verifies permissions and restrictions for a SQL operation based on the user's assigned role.
@@ -418,7 +504,78 @@ module.exports = {
  * @param operation - The operation specified in the call.
  * @returns {null | PermissionResponseObject} - null if permissions match, errors returned in the PermissionResponseObject
  */
-export function verifyPermsAST(ast, userObject, operation) {
+/**
+ * Token-scoped narrowing: a minted operation token may carry a subset of what its user's role allows,
+ * so one credential can be handed out with less authority than the user has (an OIDC trust policy
+ * uses this to scope a single workflow). Returns a denial, or undefined when the scope permits — or
+ * when there is no scope, which is every token minted before this existed.
+ *
+ * Shared by verifyPerms AND verifyPermsAST, and called first in both. Four ways this gets bypassed
+ * if it moves or is incomplete:
+ *
+ * 1. `sql` dispatches to verifyPermsAST, in a branch mutually exclusive with the verifyPerms call
+ *    (server/serverHelpers/serverUtilities.ts). A gate in only one of them means a token scoped to
+ *    `get_status` can still run arbitrary SQL against whatever its role can reach.
+ * 2. Both functions `return null` early for a super_user — the identity that most needs constraining.
+ * 3. verifyPerms' `operations` gate 2 also returns null, treating an explicit listing of an SU-only
+ *    operation as a deliberate grant.
+ * 4. Operations that never reach verifyPerms at all: create_authentication_tokens (NO_AUTH),
+ *    refresh_operation_token, and impersonation each PRODUCE a new credential or principal, so the
+ *    scope has to be carried forward there too or a scoped token mints an unscoped one. That carry-
+ *    forward lives in tokenAuthentication.ts and impersonation.ts, not here.
+ *
+ * It can only subtract. The scope is deliberately NOT merged into `permission.operations`, because
+ * that field is not purely narrowing (see gate 2) — merging into it could widen instead.
+ *
+ * `apiOperation` MUST be the snake_case API operation the caller actually invoked (`deploy_component`,
+ * `sql`, `export_local`, ...) — i.e. `requestJson.operation`, the same namespace the policy's scope is
+ * written in. It is emphatically NOT the handler function name: some handlers are shared across
+ * operations (`search_by_id`/`search_by_hash`) and their `api_name` names only one of them, so resolving
+ * the scope name from the handler conflates aliases. Callers pass the real operation.
+ */
+function tokenScopeDenial(userObject: any, apiOperation: string) {
+	// `!= null`, not `!== undefined`: an unscoped policy stores `operations: null`, and expanding a
+	// null would throw rather than fall through to the role.
+	const tokenOperations = userObject?.tokenOperations;
+	if (tokenOperations == null) return undefined;
+
+	// `instanceof Set`, not just presence: this memo rides on hdb_user, and a job persists that user
+	// into hdb_job.request, where msgpackr round-trips a Set back as a plain Array. Trusting the
+	// memo's presence would then call .has() on an Array and throw a TypeError out of the auth gate
+	// — still fail-closed, but as a 500 rather than a denial, and only inside a job worker.
+	let scopedOps = userObject._expandedTokenOperations;
+	if (!(scopedOps instanceof Set)) {
+		scopedOps = userObject._expandedTokenOperations = expandOperationsPerms(tokenOperations);
+	}
+	if (scopedOps.has(apiOperation)) return undefined;
+
+	harperLogger.info(`Operation '${apiOperation}' is outside the scope of the presented token`);
+	return new PermissionResponseObject().handleUnauthorizedItem(HDB_ERROR_MSGS.OP_NOT_IN_OPERATIONS(apiOperation));
+}
+
+/**
+ * A scope naming `sql` grants the SQL interface, not unrestricted DML through it.
+ *
+ * `read_only` expands to include `sql` — the group defers DML enforcement to table CRUD permissions
+ * (see its note in operationPermissions.ts) — but verifyPermsAST returns null outright for a
+ * super_user before any table check runs. Without this, a token scoped to `read_only` could DELETE,
+ * which is the one thing that name promises it cannot do.
+ *
+ * So a write statement additionally requires its matching data operation in scope. That is exactly
+ * what separates `read_only` (no insert/update/delete) from `standard_user` (all three), with no
+ * need to track which group admitted `sql`. A bare `['sql']` therefore admits SELECT only; name the
+ * write operations alongside it to allow more. Anything that is not a recognized SELECT falls
+ * through to the same check and is denied unless named, so an unfamiliar statement type fails closed.
+ */
+function sqlWriteScopeDenial(userObject: any, sqlVariant: string) {
+	if (userObject?.tokenOperations == null) return undefined;
+	if (sqlVariant === terms.VALID_SQL_OPS_ENUM.SELECT) return undefined;
+	return tokenScopeDenial(userObject, sqlVariant);
+}
+
+let StatementBucket;
+let alasql;
+export function verifyPermsAST(ast, userObject, operation, apiOperation = terms.OPERATIONS_ENUM.SQL) {
 	//TODO - update these validation checks to use validate.js
 	if (commonUtils.isEmptyOrZeroLength(ast)) {
 		harperLogger.info('verify_perms_ast has an empty user parameter');
@@ -432,13 +589,21 @@ export function verifyPermsAST(ast, userObject, operation) {
 		harperLogger.info('verify_perms_ast has a null operation parameter');
 		throw handleHDBError(new Error());
 	}
+
+	// `operation` here is the SQL statement variant (select/insert/...), not the API operation. The
+	// scope is checked against `apiOperation` — the top-level operation the caller invoked, which is
+	// `sql` for a direct SQL call but `export_local`/`export_to_s3` for a job whose inner
+	// search_operation is SQL. Checking a hardcoded `sql` would let a token scoped only to `sql` start
+	// an export that its scope excludes. Ahead of the super_user bypass, as on the NoSQL path.
+	const scopeDenial = tokenScopeDenial(userObject, apiOperation) ?? sqlWriteScopeDenial(userObject, operation);
+	if (scopeDenial) return scopeDenial;
+
 	try {
-		const bucketModule = require('../sqlTranslator/sql_statement_bucket');
-		const bucket = bucketModule.default || bucketModule;
-		const alasql = require('alasql');
+		StatementBucket ??= loadRuntimeModule('sqlTranslator/sql_statement_bucket').default;
+		alasql ??= loadNativePackage('alasql');
 
 		const permsResponse = new PermissionResponseObject();
-		let parsedAst = new bucket(ast);
+		let parsedAst = new StatementBucket(ast);
 		let schemas = parsedAst.getSchemas();
 		let schemaTableMap = new Map();
 
@@ -476,13 +641,24 @@ export function verifyPermsAST(ast, userObject, operation) {
 			return permsResponse.handleUnauthorizedItem(HDB_ERROR_MSGS.UNRESOLVED_SQL_TABLE);
 		}
 
+		if (!isSuperUser) {
+			const unresolvedColumns = parsedAst.getUnresolvedColumnRefs();
+			if (unresolvedColumns.length > 0) {
+				return permsResponse.handleUnauthorizedItem(HDB_ERROR_MSGS.UNRESOLVED_SQL_COLUMN(unresolvedColumns));
+			}
+		}
+
 		const fullRolePerms = permsTranslator.getRolePermissions(userObject.role);
 		userObject.role.permission = fullRolePerms;
 
 		//If the AST is for a SELECT, we need to check for wildcards and, if they exist, update the AST to include the
 		// attributes that the user has READ perms for - we can skip this step for super users
-		if (!isSuperUser && ast instanceof alasql.yy.Select) {
+		if (!isSuperUser && ast instanceof (alasql.yy as any).Select) {
 			ast = parsedAst.updateAttributeWildcardsForRolePerms(fullRolePerms);
+		}
+		// After expansion, so a wildcard cannot expand into an attribute named `_`.
+		if (!isSuperUser && parsedAst.getRowAccessors().length > 0) {
+			return permsResponse.handleUnauthorizedItem(HDB_ERROR_MSGS.SQL_ROW_ACCESSOR);
 		}
 
 		for (let s = 0; s < schemas.length; s++) {
@@ -514,10 +690,92 @@ export function verifyPermsAST(ast, userObject, operation) {
 			}
 		});
 
+		const writeReads = isSuperUser ? undefined : parsedAst.getWriteStatementReads();
+		if (writeReads?.attributes.length) {
+			checkAttributePerms(
+				writeReads.attributes,
+				getAttributePermissions(userObject.role.permission, writeReads.schema, writeReads.table),
+				terms.VALID_SQL_OPS_ENUM.SELECT,
+				writeReads.table,
+				writeReads.schema,
+				permsResponse,
+				undefined
+			);
+		}
+
 		return permsResponse.getPermsResponse();
 	} catch (e) {
 		throw handleHDBError(e);
 	}
+}
+
+/**
+ * Checked ahead of gate 2, so an `operations` listing of one of the grant's operations, which would otherwise admit
+ * it for every component, still answers to the grant's names. A deploy or drop is checked here against the component it names, resolved as the handler resolves it. The reads
+ * name no component up front, so their handlers answer only for the components the grant covers.
+ */
+function componentGrantDenial(
+	grant: ComponentGrant,
+	apiName: string,
+	requestJson: any,
+	permsResponse: PermissionResponseObject
+) {
+	let component: unknown;
+	if (apiName === terms.OPERATIONS_ENUM.DEPLOY_COMPONENT && requestJson._deploymentId !== undefined) {
+		return permsResponse.handleUnauthorizedItem(
+			`'_deploymentId' is set by replication; a deploy under a component grant cannot carry it`
+		);
+	}
+	if (
+		apiName === terms.OPERATIONS_ENUM.DEPLOY_COMPONENT &&
+		Array.isArray(requestJson.credentials) &&
+		requestJson.credentials.some((entry: any) => entry?.token !== undefined)
+	) {
+		return permsResponse.handleUnauthorizedItem(
+			'A deploy under a component grant can only reference stored credentials; sealing a literal token needs super_user'
+		);
+	}
+	if (apiName === terms.OPERATIONS_ENUM.DEPLOY_COMPONENT) {
+		component =
+			typeof requestJson.project === 'string' && requestJson.project
+				? canonicalProjectName(requestJson.project)
+				: typeof requestJson.package === 'string'
+					? projectNameFromPackage(requestJson.package)
+					: undefined;
+	} else if (apiName === terms.OPERATIONS_ENUM.DROP_COMPONENT) {
+		component = requestJson.project;
+	} else {
+		return null;
+	}
+	if (grantCoversComponent(grant, component)) return null;
+	return permsResponse.handleUnauthorizedItem(
+		`Component '${String(component)}' is not covered by this role's component grant`
+	);
+}
+
+/**
+ * Gate 1 of the role `operations` allowlist, callable from every authorization path. The SQL path
+ * (chooseOperation → checkASTPermissions) never reaches verifyPerms, so it must call this
+ * directly — otherwise an allowlisted role could reach unlisted operations through `sql`.
+ * Returns null when allowed (or no allowlist present), a PermissionResponseObject denial otherwise.
+ */
+export function verifyOperationsAllowlist(requestJson: any, operationFunctionName: string) {
+	const rolePermission = requestJson.hdb_user?.role?.permission;
+	const allowedOperationsList = rolePermission?.operations;
+	if (allowedOperationsList == null) return null;
+	// _expandedOperations is pre-built at cache-load time (O(1) lookup).
+	// Fall back to on-demand expansion for inline-asserted roles (e.g. impersonation via hdb_user in body).
+	const allowedOps = rolePermission._expandedOperations ?? expandOperationsPerms(allowedOperationsList);
+	// operationFunctionName is the internal handler name and allowedOps holds API names, so a registered
+	// handler is checked under its entry's api_name — never under its own name, which would grant it
+	// whenever the two happened to match. Only a name with no entry (`sql`) is checked as given.
+	const permissionEntry = requiredPermissions.get(operationFunctionName);
+	const opApiName = permissionEntry ? permissionEntry.api_name : operationFunctionName;
+	if (opApiName == null || !allowedOps.has(opApiName)) {
+		const refused = opApiName ?? requestJson.operation ?? operationFunctionName;
+		return new PermissionResponseObject().handleUnauthorizedItem(HDB_ERROR_MSGS.OP_NOT_IN_OPERATIONS(refused));
+	}
+	return null;
 }
 
 /**
@@ -527,7 +785,7 @@ export function verifyPermsAST(ast, userObject, operation) {
  * @param operation - The name of the operation specified in the request.
  * @returns { null | PermissionResponseObject } - null if permissions match, errors are consolidated into PermissionResponseObj.
  */
-export function verifyPerms(requestJson: any, operation: any, _options?: any) {
+export function verifyPerms(requestJson: any, operation: any, options?: { apiOperation?: string }) {
 	if (
 		requestJson === null ||
 		operation === null ||
@@ -546,17 +804,52 @@ export function verifyPerms(requestJson: any, operation: any, _options?: any) {
 		op = operation;
 	}
 	//we need to use the action value, if present, to ensure the correct permission is checked below
-	let action = requestJson.action;
+	// `action` narrows the required permissions to just that one — `hasPermissions` does it for table
+	// permissions and `checkAttributePerms` for attribute permissions — because a bulk load carries
+	// `action: insert|update|upsert` and only needs the permission for what it will actually do.
+	//
+	// Honoured ONLY for a real bulk-load operation. `action` is an unknown-but-accepted key on the
+	// shared write validator, so taking it from any request let a caller pick which half of an
+	// operation's permissions to be checked against: `{operation:'put', action:'insert'}` from a role
+	// with `insert: true, update: false` replaced an existing record, and `action:'update'` created a
+	// missing one with no insert permission. `upsert` had the same shape before `put` existed.
+	//
+	// Both narrowing sites read this one variable, so gating it here covers both. The bulk path is
+	// unaffected: `verifyBulkLoadAttributePerms` receives the real action from
+	// `bulkLoad.validateChunk`, not from here.
+	let action = isBulkLoadOperation(op) ? requestJson.action : undefined;
 
-	let operationSchema = requestJson.schema ?? requestJson.database;
+	if (SEARCH_OPS.has(op)) normalizeSearchRequest(requestJson);
+
+	// Resolved through the same helper the handlers use (`transformReq` delegates to it), because
+	// authorization runs BEFORE `transformReq` and any disagreement about the target means the
+	// permissions checked are not the permissions for the write that happens. This used to be a
+	// local `schema ?? database`, which diverged from the handlers in two separately exploitable
+	// ways: it kept a falsy-but-present `database: 0` instead of defaulting, and it preferred
+	// `schema` where the handlers prefer `database` — so a request could be authorized against one
+	// database and written to another. With no target resolved at all, `schemaTableMap` stayed empty
+	// and `hasPermissions` iterated nothing, authorizing by vacuous truth.
+	let operationSchema = commonUtils.resolveTargetDatabase(requestJson);
 	let table = requestJson.table;
 
 	let schemaTableMap = new Map();
-	if (operationSchema && table) {
+	// `table != undefined`, not truthy: `hdbTable` is `Joi.alternatives(Joi.string(), Joi.number())`
+	// (validation/common_validators.ts), so a table named `0` validates and a truthy test drops it
+	// from the map — leaving `hasPermissions` nothing to iterate, which authorizes by vacuous truth.
+	// The same falsy-vs-nullish distinction the database resolution above turns on.
+	if (operationSchema != undefined && table != undefined) {
 		schemaTableMap.set(operationSchema, [table]);
 	}
 
 	const permsResponse = new PermissionResponseObject();
+
+	// The top-level API operation the caller invoked — the namespace the policy scope is written in.
+	// For a job (export_local/export_to_s3), the dispatcher passes the nested search_operation as
+	// requestJson, so requestJson.operation is the *inner* op (e.g. search_by_conditions); the caller
+	// threads the real top-level op through `options.apiOperation` so a read-scoped token cannot ride
+	// an export. Never `op` (the handler name), which would conflate aliases.
+	const scopeDenial = tokenScopeDenial(requestJson.hdb_user, options?.apiOperation ?? requestJson.operation);
+	if (scopeDenial) return scopeDenial;
 
 	if (
 		commonUtils.isEmptyOrZeroLength(requestJson.hdb_user?.role) ||
@@ -567,6 +860,15 @@ export function verifyPerms(requestJson: any, operation: any, _options?: any) {
 		);
 		return permsResponse.handleUnauthorizedItem(HDB_ERROR_MSGS.USER_HAS_NO_PERMS(requestJson.hdb_user?.username));
 	}
+
+	// Gate 1 of the optional `operations` allowlist: when present, only ops explicitly listed (or
+	// expanded from a group) are reachable. This must run before EVERY privilege early-return below
+	// (super_user, structure_user, system-table allowances) — otherwise a role combining one of
+	// those flags with a restrictive allowlist could reach ops outside its list. Gate 2 (the
+	// SU-only-op bypass for explicitly listed ops) stays below, after the ambient privilege checks.
+	const allowlistDenial = verifyOperationsAllowlist(requestJson, op);
+	if (allowlistDenial) return allowlistDenial;
+	const allowedOperationsList = requestJson.hdb_user?.role?.permission?.operations;
 
 	const isSuperUser = !!requestJson.hdb_user?.role?.permission?.super_user;
 	const structureUser = requestJson.hdb_user?.role?.permission?.structure_user;
@@ -595,6 +897,13 @@ export function verifyPerms(requestJson: any, operation: any, _options?: any) {
 		return null;
 	}
 
+	// Ahead of the structure-user and allowlist grants below, which would otherwise admit them.
+	if (!isSuperUser && (requestJson.replicateTo != undefined || requestJson.replicatedConfirmation != undefined)) {
+		return permsResponse.handleUnauthorizedItem(
+			'Can not specify replicateTo or replicatedConfirmation without super user permissions'
+		);
+	}
+
 	//structureUsers can create/drop schemas if they are not locked down to specific schemas.
 	if (structureUser === true && (op === schema.createSchema.name || op === schema.dropSchema.name)) {
 		return null;
@@ -618,36 +927,24 @@ export function verifyPerms(requestJson: any, operation: any, _options?: any) {
 		);
 	}
 
-	// operations is an optional allowlist on the role. When present, it acts as a two-gate check:
-	// Gate 1 — operation allowlist: only ops explicitly listed (or expanded from a group) are reachable.
-	//           Any unlisted op is denied here, before table CRUD checks even run.
-	// Gate 2 — SU bypass: if the op passed gate 1 and is normally restricted to super_user, the explicit
-	//           listing is treated as a deliberate admin grant and allowed immediately (return null).
-	//           Non-SU ops that pass gate 1 fall through to the normal table CRUD checks below.
-	const permission = requestJson.hdb_user?.role?.permission;
-	const operations = permission?.operations;
-	if (operations !== undefined) {
-		// _expandedOperations is pre-built at cache-load time (O(1) lookup).
-		// Fall back to on-demand expansion for inline-asserted roles (e.g. impersonation via hdb_user in body).
-		const allowedOps = permission._expandedOperations ?? expandOperationsPerms(operations);
-		// op is the internal camelCase function name; allowedOps contains snake_case API names.
-		// Resolve via the api_name stored on the permission entry (set at registration time).
-		const opApiName = requiredPermissions.get(op)?.api_name ?? op;
-		// Gate 1: op not in allowlist — deny regardless of table CRUD permissions.
-		if (!allowedOps.has(opApiName)) {
-			return permsResponse.handleUnauthorizedItem(HDB_ERROR_MSGS.OP_NOT_IN_OPERATIONS(opApiName));
-		}
-		// Gate 2: op is SU-only but was explicitly granted via operations — allow without super_user.
-		// Without this, the SU check further below would still deny it even though it passed gate 1.
-		// TODO: ops registered with both requires_su AND non-empty CRUD perms have their table-level
-		// CRUD check bypassed here. Should fall through for those instead of returning null
-		// unconditionally. The managed-backup ops share this shape but self-enforce super_user in their
-		// handlers/validators (dataLayer/rocksdbBackup.ts requireSuperUser), so they are not delegable
-		// regardless; get_backup remains the one that relies solely on this gate. Low risk today but
-		// worth tightening.
-		if (requiredPermissions.get(op)?.requires_su) {
-			return null;
-		}
+	// Gate 2 of the `operations` allowlist (gate 1 ran above, before the privilege early-returns):
+	// the op passed the allowlist, so if it is normally restricted to super_user, the explicit
+	// listing is treated as a deliberate admin grant and allowed immediately (return null).
+	// Non-SU ops that passed gate 1 fall through to the normal table CRUD checks below.
+	// TODO: ops registered with both requires_su AND non-empty CRUD perms have their table-level
+	// CRUD check bypassed here. Should fall through for those instead of returning null
+	// unconditionally. The managed-backup ops share this shape but self-enforce super_user in their
+	// handlers/validators (dataLayer/rocksdbBackup.ts requireSuperUser), so they are not delegable
+	// regardless; get_backup is kept out of reach by registering it without an api_name, which gate 1
+	// can never match.
+	const apiName = requiredPermissions.get(op)?.api_name;
+	if (COMPONENT_GRANT_OPERATIONS.has(apiName)) {
+		const componentGrant = componentGrantOf(requestJson.hdb_user);
+		if (componentGrant) return componentGrantDenial(componentGrant, apiName, requestJson, permsResponse);
+	}
+
+	if (allowedOperationsList !== undefined && requiredPermissions.get(op)?.requires_su) {
+		return null;
 	}
 
 	const fullRolePerms = permsTranslator.getRolePermissions(requestJson.hdb_user?.role);
@@ -676,6 +973,16 @@ export function verifyPerms(requestJson: any, operation: any, _options?: any) {
 		}
 	}
 
+	// Fail closed on an unresolved target. `hasPermissions` iterates `schemaTableMap`, so an empty map
+	// authorizes by vacuous truth — the shape of this whole bug class, and of the SQL path's
+	// GHSA-5c29-q62v-jrwf, whose fix carries the same backstop. `resolveTargetDatabase` always
+	// returns a database, so a named table always populates the map and this is unreachable today; it
+	// is here so that a future change to target resolution fails safe instead of silently authorizing
+	// everything. That also means no test can cover it, which is the point rather than an omission.
+	if (table != undefined && schemaTableMap.size === 0) {
+		return permsResponse.handleUnauthorizedItem(HDB_ERROR_MSGS.UNKNOWN_OP_AUTH_ERROR(op, operationSchema, table));
+	}
+
 	let failedPermissions = hasPermissions(requestJson.hdb_user, op, schemaTableMap, permsResponse, action);
 	//check if failedTablePerms are back and return them B/C it will be an op-level permission issue
 	if (failedPermissions) {
@@ -690,6 +997,10 @@ export function verifyPerms(requestJson: any, operation: any, _options?: any) {
 	//we will convert the * to the specific attributes the user has READ permissions for via their role.
 	if (!isSuperUser && requestJson.get_attributes && terms.SEARCH_WILDCARDS.includes(requestJson.get_attributes[0])) {
 		let finalGetAttrs = [];
+		const requestedMetadata =
+			requestJson.operation === terms.OPERATIONS_ENUM.SEARCH_BY_CONDITIONS
+				? requestJson.get_attributes.filter((attribute) => attribute === '$score' || attribute === '$highlights')
+				: [];
 		const table_perms = (fullRolePerms as any)[operationSchema].tables[table];
 
 		if (table_perms[terms.PERMS_CRUD_ENUM.READ]) {
@@ -701,17 +1012,225 @@ export function verifyPerms(requestJson: any, operation: any, _options?: any) {
 			} else {
 				finalGetAttrs = global.hdb_schema[operationSchema][table].attributes.map((obj) => obj.attribute);
 			}
+			const tableClass = getDatabases()[operationSchema]?.[table];
+			if (tableClass?.hasRelationships)
+				finalGetAttrs = finalGetAttrs.filter(
+					(name) =>
+						!tableClass.propertyResolvers[name]?.definition?.tableClass ||
+						!tableClass._readDenial([name], requestJson.hdb_user)
+				);
 
-			requestJson.get_attributes = finalGetAttrs;
+			requestJson.get_attributes = [...new Set([...finalGetAttrs, ...requestedMetadata])];
 		}
 	}
 
-	const recordAttrs = getRecordAttributes(requestJson);
+	const rootAttributesDenied =
+		!isSuperUser && table != undefined && SEARCH_OPS.has(op)
+			? checkRelationshipReads(requestJson, operationSchema, table, op === search.searchByValue.name, permsResponse)
+			: undefined;
+
+	const tableClass =
+		(requestJson.conditions || Array.isArray(requestJson.search_attribute ?? requestJson.attribute)) &&
+		SEARCH_OPS.has(op) &&
+		table != undefined
+			? getDatabases()[operationSchema]?.[table]
+			: undefined;
+	const recordAttrs = getRecordAttributes(requestJson, op, tableClass?.hasRelationships ? tableClass : undefined);
+	if (rootAttributesDenied) for (const attribute of rootAttributesDenied) recordAttrs.add(attribute);
 	const attrPermissions = getAttributePermissions(requestJson.hdb_user?.role?.permission, operationSchema, table);
+	// A `put` replaces the whole record, so it REMOVES every attribute the request omits — and
+	// `checkAttributePerms` below only sees the attributes a request SUPPLIES, so it cannot police
+	// those removals. An attribute-scoped role could otherwise erase an attribute it has no `update`
+	// permission for by leaving it out. REST closes the same gap in `Table.allowUpdate` by restoring
+	// such attributes from the stored record, which needs the stored record; this runs before anything
+	// is read, so it denies instead. Roles that scope no attribute are unaffected.
+	if (attrPermissions.size > 0 && op === write.put.name) {
+		return permsResponse.handleUnauthorizedItem(HDB_ERROR_MSGS.PUT_WITH_ATTRIBUTE_PERMS(operationSchema, table));
+	}
 	checkAttributePerms(recordAttrs, attrPermissions, op, table, operationSchema, permsResponse, action);
 
 	//This result value will be null if no perms issues were found in checkAttributePerms
 	return permsResponse.getPermsResponse();
+}
+
+function normalizeSearchRequest(requestJson: any) {
+	if (requestJson.select !== undefined) {
+		requestJson.get_attributes = requestJson.select;
+		delete requestJson.select;
+	}
+	normalizeConditionAttributes(requestJson.conditions);
+	stripPermissionControls(requestJson.get_attributes);
+}
+
+function normalizeConditionAttributes(conditions: any) {
+	if (!Array.isArray(conditions)) return;
+	for (const condition of conditions) {
+		if (!condition || typeof condition !== 'object') continue;
+		if (condition.conditions) normalizeConditionAttributes(condition.conditions);
+		else if (condition.search_attribute !== undefined) {
+			condition.attribute ??= condition.search_attribute;
+			delete condition.search_attribute;
+		}
+	}
+}
+
+function stripPermissionControls(select: any) {
+	if (select == null || typeof select !== 'object') return;
+	for (const property of Array.isArray(select) ? select : [select]) {
+		if (!property || typeof property !== 'object') continue;
+		delete property.checkPermission;
+		normalizeConditionAttributes(property.conditions);
+		stripPermissionControls(property.select);
+	}
+}
+
+interface RelationshipReadCheck {
+	tableClass: any;
+	user: any;
+	denials?: Map<string, { denial: ReadDenial; attributes: Set<string> }>;
+}
+
+function checkRelationshipReads(
+	requestJson: any,
+	operationSchema: string,
+	table: string,
+	valueSearch: boolean,
+	permsResponse
+): Set<string> | undefined {
+	const tableClass = getDatabases()[operationSchema]?.[table];
+	if (!tableClass?.hasRelationships) return;
+	let valueAttribute = valueSearch ? (requestJson.search_attribute ?? requestJson.attribute) : undefined;
+	if ((requestJson.search_value !== undefined ? requestJson.search_value : requestJson.value) === '*')
+		valueAttribute = undefined;
+	if (
+		requestJson.get_attributes == null &&
+		requestJson.conditions == null &&
+		requestJson.sort == null &&
+		valueAttribute === undefined
+	)
+		return;
+	const state: RelationshipReadCheck = { tableClass, user: requestJson.hdb_user };
+	checkSelectPaths(state, requestJson.get_attributes, undefined, tableClass);
+	checkConditionPaths(state, requestJson.conditions);
+	checkSortPaths(state, requestJson.sort, undefined);
+	if (valueAttribute !== undefined) checkRelationshipPath(state, valueAttribute);
+	if (state.denials)
+		return reportRelationshipDenials(
+			state.denials,
+			requestJson.hdb_user?.role?.permission,
+			operationSchema,
+			table,
+			permsResponse
+		);
+}
+
+// Reported like a root reference: what the role cannot describe does not exist for it. The root table's own denied
+// attributes are returned for the root attribute check to report.
+function reportRelationshipDenials(
+	denials: RelationshipReadCheck['denials'],
+	permission: any,
+	operationSchema: string,
+	table: string,
+	permsResponse
+): Set<string> | undefined {
+	let rootAttributes: Set<string> | undefined;
+	for (const { denial, attributes } of denials.values()) {
+		const { database, table: deniedTable } = denial;
+		if (database === operationSchema && deniedTable === table) {
+			rootAttributes = attributes;
+			continue;
+		}
+		const databasePermission = permission?.[database];
+		if (!databasePermission || databasePermission[DESCRIBE_PERM] === false) {
+			permsResponse.addInvalidItem(HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(database));
+			continue;
+		}
+		const tablePermission = databasePermission.tables?.[deniedTable];
+		if (!tablePermission || tablePermission[DESCRIBE_PERM] === false) {
+			permsResponse.addInvalidItem(HDB_ERROR_MSGS.TABLE_NOT_FOUND(database, deniedTable));
+			continue;
+		}
+		if (denial.attribute === undefined) {
+			permsResponse.addUnauthorizedTable(database, deniedTable, [READ_PERM]);
+			continue;
+		}
+		const required = Object.create(null);
+		for (const attribute of attributes) {
+			const attributePermission = tablePermission.attribute_permissions?.find(
+				(entry) => entry.attribute_name === attribute
+			);
+			if (!attributePermission || attributePermission[DESCRIBE_PERM] === false)
+				permsResponse.addInvalidItem(
+					HDB_ERROR_MSGS.ATTR_NOT_FOUND(database, deniedTable, attribute),
+					database,
+					deniedTable
+				);
+			else required[attribute] = [READ_PERM];
+		}
+		const unauthorized = Object.keys(required);
+		if (unauthorized.length > 0) permsResponse.addUnauthorizedAttributes(unauthorized, database, deniedTable, required);
+	}
+	return rootAttributes;
+}
+
+function relatedTableOf(currentTable: any, name: any) {
+	return currentTable?.propertyResolvers?.[name]?.definition?.tableClass;
+}
+
+function checkRelationshipPath(state: RelationshipReadCheck, attribute: any) {
+	const path = Array.isArray(attribute);
+	if (!relatedTableOf(state.tableClass, path ? attribute[0] : attribute)) return;
+	const denial = state.tableClass._readDenial(path ? attribute : [attribute], state.user);
+	if (!denial) return;
+	state.denials ??= new Map();
+	const key = `${denial.database}_${denial.table}`;
+	let entry = state.denials.get(key);
+	if (!entry) state.denials.set(key, (entry = { denial, attributes: new Set() }));
+	if (denial.attribute === undefined) entry.denial = denial;
+	else entry.attributes.add(denial.attribute);
+}
+
+function checkSortPaths(state: RelationshipReadCheck, sort: any, prefix: any[] | undefined) {
+	for (; sort && typeof sort === 'object'; sort = sort.next) {
+		if (sort.attribute !== undefined)
+			checkRelationshipPath(state, prefix ? prefix.concat(sort.attribute) : sort.attribute);
+	}
+}
+
+function checkSelectPaths(state: RelationshipReadCheck, select: any, prefix: any[] | undefined, currentTable: any) {
+	if (select == null) return;
+	for (const property of Array.isArray(select) ? select : [select]) {
+		const name = property?.name ?? property;
+		const relatedTable = relatedTableOf(currentTable, name);
+		if (relatedTable) {
+			const path = prefix ? [...prefix, name] : [name];
+			checkRelationshipPath(state, path);
+			checkSelectPaths(state, property?.select, path, relatedTable);
+			checkConditionPaths(state, property?.conditions, path, relatedTable);
+			checkSortPaths(state, property?.sort, path);
+			continue;
+		}
+		// a related '*' is narrowed to the readable attributes after admission, like a root '*'
+		if (prefix && name !== '*') checkRelationshipPath(state, [...prefix, name]);
+	}
+}
+
+function checkConditionPaths(
+	state: RelationshipReadCheck,
+	conditions: any,
+	prefix?: any[],
+	currentTable = state.tableClass
+) {
+	if (!Array.isArray(conditions)) return;
+	for (const condition of conditions) {
+		if (condition?.conditions) checkConditionPaths(state, condition.conditions, prefix, currentTable);
+		else {
+			const attribute = prefix
+				? (condition?.[0] ?? condition?.attribute ?? currentTable.primaryKey)
+				: condition?.attribute;
+			if (attribute !== undefined) checkRelationshipPath(state, prefix ? prefix.concat(attribute) : attribute);
+		}
+	}
 }
 
 /**
@@ -913,22 +1432,41 @@ export function checkAttributePerms(
  * @param json - json containing the request
  * @returns {Set} - all attributes affected by the request statement.
  */
-function getRecordAttributes(json) {
+/** Whether the operation checks attribute permissions per chunk rather than from this request. */
+function isBulkLoadOperation(operationName): boolean {
+	return BULK_OP_NAMES.has(operationName);
+}
+
+function getRecordAttributes(json, operationName?, relationshipTable?: any) {
 	let affectedAttributes = new Set();
 	try {
-		//Bulk load operations need to have attr-level permissions checked during the validateChunk step of the operation
-		// in the bulkLoad.js methods
-		if (json.action) {
+		// Bulk load operations have their attribute permissions checked per chunk instead, in
+		// `bulkLoad.validateChunk` — the records aren't in this request. That opt-out is keyed on the
+		// OPERATION, never on the caller-supplied `action` field: `action` is an unknown-but-accepted
+		// key on the insert/update/upsert validator, so inferring the opt-out from its presence let any
+		// direct request skip every attribute check by adding `action: "update"` to the body.
+		if (isBulkLoadOperation(operationName)) {
 			return affectedAttributes;
 		}
 		if (json.operation === terms.OPERATIONS_ENUM.SEARCH_BY_CONDITIONS) {
-			json.conditions.forEach((condition) => {
-				let attribute = condition.attribute;
-				if (condition.search_attribute !== undefined) {
-					attribute = condition.search_attribute;
+			const addConditionAttributes = (conditions) => {
+				for (const condition of conditions) {
+					if (condition.conditions) {
+						addConditionAttributes(condition.conditions);
+						continue;
+					}
+					const comparator = condition.comparator ?? condition.search_type;
+					if (FULL_TEXT_COMPARATOR_SET.has(comparator)) continue;
+					let attribute = condition.attribute;
+					if (condition.search_attribute !== undefined) {
+						attribute = condition.search_attribute;
+					}
+					if (Array.isArray(attribute)) {
+						if (!relatedTableOf(relationshipTable, attribute[0])) affectedAttributes.add(attribute[0]);
+					} else affectedAttributes.add(attribute);
 				}
-				affectedAttributes.add(attribute);
-			});
+			};
+			addConditionAttributes(json.conditions);
 		}
 
 		if (json && (json.attribute || json.search_attribute)) {
@@ -936,7 +1474,9 @@ function getRecordAttributes(json) {
 			if (json.search_attribute !== undefined) {
 				attribute = json.search_attribute;
 			}
-			affectedAttributes.add(attribute);
+			if (Array.isArray(attribute)) {
+				if (!relatedTableOf(relationshipTable, attribute[0])) affectedAttributes.add(attribute[0]);
+			} else affectedAttributes.add(attribute);
 		}
 
 		if (!json.records || json.records.length === 0) {
@@ -945,7 +1485,12 @@ function getRecordAttributes(json) {
 			}
 
 			for (const attr of json.get_attributes) {
-				affectedAttributes.add(attr);
+				if (
+					json.operation === terms.OPERATIONS_ENUM.SEARCH_BY_CONDITIONS &&
+					(attr === '$score' || attr === '$highlights')
+				)
+					continue;
+				affectedAttributes.add(attr?.name ?? attr);
 			}
 		} else {
 			// get unique affectedAttributes
@@ -980,7 +1525,10 @@ export function getAttributePermissions(rolePerms, operationSchema, table) {
 	}
 	//Some commands do not require a table to be specified.  If there is no table, there is likely not
 	// anything attribute permissions needs to check.
-	if (!operationSchema || !table) {
+	// Nullish rather than falsy for the same reason as the map guard in verifyPerms: a table named `0`
+	// validates (`hdbTable` accepts a number), and skipping it here means its attribute permissions
+	// go unchecked.
+	if (operationSchema == undefined || table == undefined) {
 		return roleAttributePermissions;
 	}
 	try {

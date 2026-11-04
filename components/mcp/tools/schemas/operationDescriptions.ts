@@ -60,6 +60,9 @@ export const OPERATION_DESCRIPTIONS: Record<string, string> = {
 	// list_deployments: components/deploymentOperations.ts:50 — Deployment history with filtering and pagination.
 	list_deployments:
 		'Lists deployments from system.hdb_deployment with optional filtering by project, status, and date range, plus pagination.',
+	// list_releases: components/releaseOperations.ts — What is live and kept on disk, per node.
+	list_releases:
+		"Lists, per component and per node, the deployment_id of the live release and the staged or kept releases deploy_component can activate by deployment_id (id, state, time, size). With replicated: true, returns every node's answer.",
 	// list_backups: dataLayer/rocksdbBackup.ts (listBackups) — Managed RocksDB backup metadata for a database.
 	list_backups:
 		'Lists the managed RocksDB directory backups for a database (id, timestamp, size, file count). Requires super_user; RocksDB databases only.',
@@ -87,9 +90,9 @@ export const OPERATION_DESCRIPTIONS: Record<string, string> = {
 	// get_job: server/jobs/jobs.ts:35 — One job's state + result by id.
 	get_job:
 		'Returns one background job by id, with status and result payload (export, backup, deploy, restart, csv loads).',
-	// get_status: server/status/index.ts:104 — Status KV entry; aggregated when id omitted.
+	// get_status: server/status/index.ts — Status KV entry; aggregated when id omitted.
 	get_status:
-		'Returns one entry from the in-memory status KV that components publish health and progress to. With no id, returns aggregated status across threads; pass middleware:true to also include the resolved HTTP/upgrade/WebSocket middleware chain order per port. Safe to poll. Use system_information for server-level health.',
+		'Returns one entry from the in-memory status KV that components publish health and progress to. With no id, returns aggregated status across threads; pass components:true to include the component status tree with parent status rollups, or middleware:true to include the resolved HTTP/upgrade/WebSocket middleware chain order per port. Safe to poll. Use system_information for server-level health.',
 	// get_analytics: resources/analytics/read.ts:44 — Metric series read with filtering + windowing.
 	get_analytics:
 		'Returns analytics metric values with optional attribute filtering, time windowing, and result coalescing. Pair with list_metrics to discover available metrics.',
@@ -195,9 +198,9 @@ export const OPERATION_DESCRIPTIONS: Record<string, string> = {
 	// drop_role: security/role.ts:126 — Delete a role; refuses if assigned.
 	drop_role:
 		'Deletes a role. Refused if any active user is still assigned to the role — drop or reassign those users first.',
-	// create_authentication_tokens: security/tokenAuthentication.ts:108 — Mint operation + refresh token pair, or (purpose: 'login') a login-exchange token.
+	// create_authentication_tokens: security/tokenAuthentication.ts:108 — Mint operation + refresh token pair, (purpose: 'login') a login-exchange token, or (role object) a scoped token.
 	create_authentication_tokens:
-		"Creates a JWT operation token and a refresh token after validating credentials. Stores the refresh token on the user record. With purpose: 'login', instead mints a single short-lived login-exchange token (not usable as a Bearer API credential) intended for the `login` operation.",
+		"Creates a JWT operation token and a refresh token after validating credentials. Stores the refresh token on the user record. With purpose: 'login', instead mints a single short-lived login-exchange token (not usable as a Bearer API credential) intended for the `login` operation. With `role` as an inline role object (e.g. { permission: { operations: ['read_only'] } }), instead mints a single scoped token whose bearer is limited to the embedded permissions — requires a super_user caller; `username` is attribution only and must NOT name an existing user (defaults to 'scoped:<minter>'); no refresh token is issued and the token cannot be revoked before expiry. The operations allowlist gates the operations API (including sql); application/REST endpoints are governed by the embedded table permissions, so make those restrictive too.",
 	// refresh_operation_token: security/tokenAuthentication.ts:171 — Mint new operation token from refresh.
 	refresh_operation_token:
 		'Issues a new operation token using a valid refresh token, without re-authenticating with username/password.',

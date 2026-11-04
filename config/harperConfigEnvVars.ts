@@ -5,12 +5,14 @@
  * to Harper's configuration system with source tracking and drift detection.
  *
  * The three variables form a precedence ladder (later wins):
- *   HARPER_DEFAULT_CONFIG  <  config file / user edits  <  HARPER_CONFIG  <  HARPER_SET_CONFIG
+ *   HARPER_DEFAULT_CONFIG  <  config file / user edits / individual env vars  <  HARPER_CONFIG  <  HARPER_SET_CONFIG
  *
  * - HARPER_CONFIG (recommended): merge — sets exactly the keys it names, reasserting
- *   them on every boot (a manual edit to a named key is overwritten on restart), and
- *   yields only to HARPER_SET_CONFIG. Individual HARPER_* env vars still win over it
- *   for the keys they name (arg filtering remains SET-only).
+ *   them on every boot (a manual edit or individual env var for a named key is
+ *   overwritten on restart), and yields only to HARPER_SET_CONFIG. Filtering named
+ *   keys in filterArgsAgainstRuntimeConfig() aligns the main thread (threads.count,
+ *   operationsApi.network.port, TLS cert paths, storage.*) with worker threads and
+ *   install-time resolution.
  * - HARPER_DEFAULT_CONFIG: defaults — yields to the config file, individual env vars,
  *   and user edits.
  * - HARPER_SET_CONFIG: force — overrides everything and locks against drift.
@@ -23,22 +25,31 @@
  */
 
 import type { Logger } from '../utility/logging/logger.ts';
-import * as fs from 'fs-extra';
+import fs from 'fs-extra';
 import * as path from 'node:path';
+import { isMainThread } from 'node:worker_threads';
 import * as crypto from 'node:crypto';
-import { cloneDeep } from 'lodash';
+import cloneDeep from 'lodash/cloneDeep.js';
 import { getBackupDirPath } from './configHelpers.ts';
-import { atomicWriteFile } from './configUtils.ts';
+import { atomicWriteFile, renameWithRetry } from './configUtils.ts';
 import * as hdbTerms from '../utility/hdbTerms.ts';
+import { loggerWithTag } from '../utility/logging/harper_logger.ts';
 
 const STATE_FILE_NAME = '.harper-config-state.json';
+// Staged beside the confirmed state while a config-file write is in flight, then renamed over it.
+// Per-process, because every CLI invocation and worker runs this and one shared name would let one
+// clear another's in-flight commit. See DESIGN.md, boot-path config persistence.
+const PENDING_STATE_PREFIX = '.harper-config-state.pending.';
+const PENDING_STATE_SUFFIX = '.json';
+const pendingStateFileName = () => `${PENDING_STATE_PREFIX}${process.pid}${PENDING_STATE_SUFFIX}`;
+// Recovery from a recycled pid only has to be eventual, and deleting a slow-but-live writer's
+// sidecar is the worse error - it strands that writer's config file against an unpromoted state. So
+// the age-out is far longer than a commit (three synchronous steps) could ever legitimately take:
+// long enough that a stalled writer or clock skew between containers sharing a volume cannot reach
+// it, short enough that leaked wreckage does not suspend drift detection indefinitely.
+const PENDING_STATE_STALE_MS = 60 * 60 * 1000;
 
-/**
- * Get logger instance with tag - lazy loaded to avoid circular dependencies
- * and ensure logger is initialized before use
- */
 function getLogger(): Logger {
-	const { loggerWithTag } = require('../utility/logging/harper_logger');
 	return loggerWithTag('env-config');
 }
 
@@ -239,45 +250,31 @@ function resolveLeafValue(currentValue: any, leafValue: any, path: string): any 
 }
 
 /**
- * Filters out arguments that are already set in HARPER_SET_CONFIG.
- * This prevents individual environment variables from overriding runtime configuration.
+ * The config env vars that reassert every key they name, at each start and at each runtime config refresh, over
+ * the file and over edits to it. HARPER_DEFAULT_CONFIG is not one: at runtime it only fills in what is missing.
+ */
+export const REASSERTING_CONFIG_ENV_VARS = ['HARPER_CONFIG', 'HARPER_SET_CONFIG'] as const;
+
+/**
+ * Filters arguments whose write paths overlap HARPER_CONFIG or HARPER_SET_CONFIG paths.
+ * This prevents individual environment variables from overriding reasserting runtime
+ * configuration layers on subsequent boots (where bin/run.ts calls updateConfigValue
+ * after initConfig()).
  *
- * Note: Only filters against HARPER_SET_CONFIG, not HARPER_DEFAULT_CONFIG, since
- * HARPER_DEFAULT_CONFIG sets defaults that can be overridden by individual env vars.
+ * Note: Only filters against HARPER_CONFIG and HARPER_SET_CONFIG, not HARPER_DEFAULT_CONFIG,
+ * since HARPER_DEFAULT_CONFIG sets defaults that can be overridden by individual env vars.
  *
  * @param args - Object containing individual env var arguments (e.g., from assignCMDENVVariables)
- * @returns Filtered args object with HARPER_SET_CONFIG keys removed
+ * @returns Filtered args object with HARPER_CONFIG and HARPER_SET_CONFIG keys removed
  *
  * @example
- * // If HARPER_SET_CONFIG sets operationsApi.network.port
+ * // If HARPER_CONFIG or HARPER_SET_CONFIG sets operationsApi.network.port
  * const args = { operationsapi_network_port: '9925', rootpath: '/var/hdb' };
  * const filtered = filterArgsAgainstRuntimeConfig(args);
  * // Returns: { rootpath: '/var/hdb' }
  */
 export function filterArgsAgainstRuntimeConfig(args: Record<string, any>): Record<string, any> {
-	// Only filter against HARPER_SET_CONFIG (not HARPER_DEFAULT_CONFIG)
-	if (!process.env.HARPER_SET_CONFIG) {
-		return args;
-	}
-
-	// Parse HARPER_SET_CONFIG
-	let setConfig: ConfigObject;
-	try {
-		setConfig = JSON.parse(process.env.HARPER_SET_CONFIG);
-	} catch (err) {
-		// If parsing fails, log warning and return args unchanged
-		const logger = getLogger();
-		logger.warn('Failed to parse HARPER_SET_CONFIG for arg filtering', err);
-		return args;
-	}
-
-	// If no valid config, return args unchanged
-	if (Object.keys(setConfig).length === 0) {
-		return args;
-	}
-
-	// Flatten HARPER_SET_CONFIG to get all keys
-	const flattenSetConfig = (obj: ConfigObject, prefix = ''): Set<string> => {
+	const flattenConfigKeys = (obj: ConfigObject, prefix = ''): Set<string> => {
 		const keys = new Set<string>();
 		for (const key in obj) {
 			const newKey = prefix ? `${prefix}_${key}` : key;
@@ -287,7 +284,7 @@ export function filterArgsAgainstRuntimeConfig(args: Record<string, any>): Recor
 				!Array.isArray(obj[key]) &&
 				!isDirectiveObject(obj[key])
 			) {
-				flattenSetConfig(obj[key], newKey).forEach((k) => keys.add(k));
+				flattenConfigKeys(obj[key], newKey).forEach((k) => keys.add(k));
 			} else {
 				keys.add(newKey.toLowerCase());
 			}
@@ -295,12 +292,45 @@ export function filterArgsAgainstRuntimeConfig(args: Record<string, any>): Recor
 		return keys;
 	};
 
-	const setConfigKeys = flattenSetConfig(setConfig);
+	const runtimeConfigKeys = new Set<string>();
+	for (const envVarName of REASSERTING_CONFIG_ENV_VARS) {
+		const raw = process.env[envVarName];
+		if (!raw) continue;
+		let parsed: ConfigObject;
+		try {
+			parsed = JSON.parse(raw);
+		} catch (err) {
+			const logger = getLogger();
+			logger.warn(`Failed to parse ${envVarName} for arg filtering`, err);
+			continue;
+		}
+		if (isPlainObject(parsed)) {
+			flattenConfigKeys(parsed).forEach((k) => runtimeConfigKeys.add(k));
+		}
+	}
 
-	// Filter out args that are in HARPER_SET_CONFIG
+	if (runtimeConfigKeys.size === 0) {
+		return args;
+	}
+
+	const runtimeConfigAncestors = new Set<string>();
+	for (const key of runtimeConfigKeys) {
+		for (let end = key.indexOf('_'); end !== -1; end = key.indexOf('_', end + 1)) {
+			runtimeConfigAncestors.add(key.slice(0, end));
+		}
+	}
+
 	const filteredArgs: Record<string, any> = {};
 	for (const key in args) {
-		if (!setConfigKeys.has(key.toLowerCase())) {
+		const lowerKey = key.toLowerCase();
+		const canonicalKey = (
+			Object.hasOwn(hdbTerms.CONFIG_PARAM_MAP, lowerKey) ? hdbTerms.CONFIG_PARAM_MAP[lowerKey] : lowerKey
+		).toLowerCase();
+		let overlaps = runtimeConfigKeys.has(lowerKey) || runtimeConfigAncestors.has(canonicalKey);
+		for (let end = canonicalKey.length; !overlaps && end > 0; end = canonicalKey.lastIndexOf('_', end - 1)) {
+			overlaps = runtimeConfigKeys.has(canonicalKey.slice(0, end));
+		}
+		if (!overlaps) {
 			filteredArgs[key] = args[key];
 		}
 	}
@@ -322,7 +352,7 @@ function warnEmptyObjectDropped(path: string): void {
 	);
 }
 
-function flattenObject(obj: ConfigObject, prefix = '', warnOnEmptyDrop = true): Record<string, any> {
+export function flattenObject(obj: ConfigObject, prefix = '', warnOnEmptyDrop = true): Record<string, any> {
 	const result: Record<string, any> = {};
 
 	for (const key in obj) {
@@ -546,15 +576,7 @@ function parseConfigEnvVar(envVarValue: string | undefined, envVarName: string):
 function loadConfigState(rootPath: string): ConfigState {
 	const statePath = path.join(getBackupDirPath(rootPath), STATE_FILE_NAME);
 
-	if (!fs.existsSync(statePath)) {
-		return {
-			version: '1.0',
-			sources: {},
-			originalValues: {},
-			emptyScopeOriginals: {},
-			snapshots: {},
-		};
-	}
+	if (!fs.existsSync(statePath)) return freshConfigState();
 
 	try {
 		const state = fs.readJsonSync(statePath) as ConfigState;
@@ -573,20 +595,89 @@ function loadConfigState(rootPath: string): ConfigState {
 		// If state file is corrupted, start fresh
 		const logger = getLogger();
 		logger.warn(`Failed to load config state file, starting fresh: ${(error as Error).message}`);
-		return {
-			version: '1.0',
-			sources: {},
-			originalValues: {},
-			emptyScopeOriginals: {},
-			snapshots: {},
-		};
+		return freshConfigState();
 	}
+}
+
+/**
+ * Detect an interrupted commit, clearing its sidecar only when requested. The caller skips drift
+ * detection because the interrupted write is not evidence of a manual user edit.
+ */
+function takeInterruptedCommit(rootPath: string, consume = true): boolean {
+	const backupDir = getBackupDirPath(rootPath);
+	let entries: string[];
+	try {
+		entries = fs.readdirSync(backupDir);
+	} catch {
+		return false;
+	}
+	let interrupted = false;
+	for (const entry of entries) {
+		if (!entry.startsWith(PENDING_STATE_PREFIX) || !entry.endsWith(PENDING_STATE_SUFFIX)) continue;
+		const pid = Number(entry.slice(PENDING_STATE_PREFIX.length, -PENDING_STATE_SUFFIX.length));
+		const entryPath = path.join(backupDir, entry);
+		if (pid !== process.pid && isProcessAlive(pid) && !isStale(entryPath)) {
+			// A live owner is mid-commit, so its sidecar is not wreckage to clear - but the pair it is
+			// halfway through is no more comparable than an interrupted one, so drift detection is off
+			// for this boot either way.
+			interrupted = true;
+			continue;
+		}
+		if (!consume) {
+			interrupted = true;
+			continue;
+		}
+		try {
+			fs.removeSync(entryPath);
+		} catch (error) {
+			// Keep drift detection on rather than disabling it every boot over a sidecar we cannot clear
+			getLogger().warn(`Could not remove an interrupted env config commit (${entry}): ${(error as Error).message}`);
+			continue;
+		}
+		interrupted = true;
+	}
+	if (interrupted && consume)
+		getLogger().warn('An env config commit was interrupted; skipping drift detection for this boot');
+	return interrupted;
+}
+
+function isStale(entryPath: string): boolean {
+	try {
+		return Date.now() - fs.statSync(entryPath).mtimeMs > PENDING_STATE_STALE_MS;
+	} catch {
+		return false;
+	}
+}
+
+function isProcessAlive(pid: number): boolean {
+	if (!Number.isInteger(pid) || pid <= 0) return false;
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === 'EPERM';
+	}
+}
+
+function freshConfigState(): ConfigState {
+	return {
+		version: '1.0',
+		sources: {},
+		originalValues: {},
+		emptyScopeOriginals: {},
+		snapshots: {},
+	};
 }
 
 /**
  * Save configuration state to file
  */
-function saveConfigState(rootPath: string, state: ConfigState): void {
+function serializeConfigState(state: ConfigState): string {
+	return JSON.stringify(state, null, 2) + '\n';
+}
+
+// Returns true when the file was rewritten, false when it already held this state.
+function saveConfigState(rootPath: string, state: ConfigState): boolean {
 	const backupDir = getBackupDirPath(rootPath);
 	const statePath = path.join(backupDir, STATE_FILE_NAME);
 
@@ -595,7 +686,49 @@ function saveConfigState(rootPath: string, state: ConfigState): void {
 
 	// Atomic write: a torn state file resets to fresh on the next load, losing every
 	// restoration record — the blast radius is user config-file content
-	atomicWriteFile(statePath, JSON.stringify(state, null, 2) + '\n');
+	return atomicWriteFile(statePath, serializeConfigState(state), { skipIfUnchanged: true });
+}
+
+function configStateMatchesDisk(rootPath: string, state: ConfigState): boolean {
+	try {
+		const statePath = path.join(getBackupDirPath(rootPath), STATE_FILE_NAME);
+		return fs.readFileSync(statePath, 'utf8') === serializeConfigState(state);
+	} catch {
+		return false;
+	}
+}
+
+function stageConfigState(rootPath: string, state: ConfigState): boolean {
+	const backupDir = getBackupDirPath(rootPath);
+	fs.ensureDirSync(backupDir);
+	return atomicWriteFile(path.join(backupDir, pendingStateFileName()), serializeConfigState(state));
+}
+
+// A rename, so an exhausted volume cannot refuse it and leave the config file described by nothing.
+
+export function commitStagedConfigState(rootPath: string): boolean {
+	const backupDir = getBackupDirPath(rootPath);
+	const pendingPath = path.join(backupDir, pendingStateFileName());
+	try {
+		renameWithRetry(pendingPath, path.join(backupDir, STATE_FILE_NAME));
+		return true;
+	} catch (error) {
+		// Loud: the config file is already on disk, so the confirmed state now describes values it no
+		// longer has, and the next boot reads that difference as a manual user edit.
+		getLogger().error(`Could not promote the staged env config state at ${pendingPath}: ${(error as Error).message}`);
+		return false;
+	}
+}
+
+// Drops the staged state for a config-file write that did not happen; the confirmed record stays.
+
+export function discardConfigState(rootPath: string): void {
+	const pendingPath = path.join(getBackupDirPath(rootPath), pendingStateFileName());
+	try {
+		fs.removeSync(pendingPath);
+	} catch (error) {
+		getLogger().warn(`Could not remove the staged env config state at ${pendingPath}: ${(error as Error).message}`);
+	}
 }
 
 /**
@@ -626,6 +759,27 @@ function detectConfigDrift(fileConfig: ConfigObject, state: ConfigState): string
 	return driftedPaths;
 }
 
+function hasRespectedSource(state: ConfigState, path: string, respectSources: ConfigSource[]): boolean {
+	if (respectSources.length === 0) return false;
+	const parts = path.split('.');
+	for (let i = 1; i <= parts.length; i++) {
+		const ancestorOrSelf = parts.slice(0, i).join('.');
+		const src = Object.prototype.hasOwnProperty.call(state.sources, ancestorOrSelf)
+			? state.sources[ancestorOrSelf]
+			: undefined;
+		if (src && respectSources.includes(src)) {
+			return true;
+		}
+	}
+	const prefix = `${path}.`;
+	for (const [trackedPath, src] of Object.entries(state.sources)) {
+		if (trackedPath.startsWith(prefix) && respectSources.includes(src)) {
+			return true;
+		}
+	}
+	return false;
+}
+
 /**
  * Apply a configuration layer (DEFAULT or SET)
  */
@@ -643,14 +797,13 @@ function applyConfigLayer(
 		const currentSource = Object.prototype.hasOwnProperty.call(state.sources, path) ? state.sources[path] : undefined;
 		const currentValue = getNestedValue(fileConfig, path);
 
-		// Skip if this path has a source we should respect
-		if (currentSource && respectSources.includes(currentSource)) {
+		if (hasRespectedSource(state, path, respectSources)) {
 			continue;
 		}
 
 		// Store original value if requested and this is first time overriding
 		if (storeOriginals) {
-			if (!currentSource && currentValue != null) {
+			if ((!currentSource || currentSource === 'user') && currentValue != null) {
 				if (!Object.prototype.hasOwnProperty.call(state.originalValues, path)) {
 					state.originalValues[path] = currentValue;
 				}
@@ -765,7 +918,7 @@ function processEnvVar(
 	} else if (sourceName === 'HARPER_CONFIG') {
 		// HARPER_CONFIG merges: it sets exactly the keys it names and reasserts them on
 		// every boot (winning over the config file, user edits, and DEFAULT), yielding
-		// only to HARPER_SET_CONFIG. Same behavior at install and runtime.
+		// only to HARPER_SET_CONFIG.
 		applyConfigLayer(fileConfig, state, parsedConfig, sourceName, {
 			respectSources: ['HARPER_SET_CONFIG'],
 			storeOriginals: true,
@@ -787,8 +940,8 @@ function processEnvVar(
 					: undefined;
 				const currentValue = getNestedValue(fileConfig, path);
 
-				// Skip if path has a tracked source that's not HARPER_DEFAULT_CONFIG
-				if (currentSource && currentSource !== 'HARPER_DEFAULT_CONFIG') {
+				// Skip if the path, an ancestor or a descendant has a tracked source that's not HARPER_DEFAULT_CONFIG
+				if (hasRespectedSource(state, path, ['user', 'default', 'HARPER_CONFIG', 'HARPER_SET_CONFIG'])) {
 					continue;
 				}
 
@@ -872,9 +1025,8 @@ function cleanupRemovedEnvVar(
  *
  * HARPER_DEFAULT_CONFIG provides scaffolding defaults, the base (e.g., the
  * user's existing config file) is layered on top, HARPER_CONFIG merges its
- * keys over that, and HARPER_SET_CONFIG force-overrides everything. This
- * matches the precedence applied by the runtime pipeline in
- * applyRuntimeEnvConfig.
+ * keys over that, and HARPER_SET_CONFIG force-overrides everything. This matches
+ * the precedence applied by prepareRuntimeEnvConfig.
  *
  * Unlike applyRuntimeEnvConfig, this does NOT read or write the config state
  * file and does NOT track sources — it returns a fresh object. Use when you
@@ -882,13 +1034,27 @@ function cleanupRemovedEnvVar(
  * place (e.g., during clone / pre-install).
  */
 export function composeConfigFromEnv(base: ConfigObject = {}): ConfigObject {
+	return composeEnvLayers(['HARPER_DEFAULT_CONFIG'], base, ['HARPER_CONFIG', 'HARPER_SET_CONFIG']);
+}
+
+/**
+ * `base` as the reasserting env vars leave it, or only the named ones: what the next start, or the next config
+ * refresh, makes of a document about to be written. Throws on malformed env-var JSON, as composeConfigFromEnv does.
+ */
+export function composeReassertedEnvConfig(
+	base: ConfigObject,
+	envVarNames: readonly (typeof REASSERTING_CONFIG_ENV_VARS)[number][] = REASSERTING_CONFIG_ENV_VARS
+): ConfigObject {
+	return composeEnvLayers([], base, envVarNames);
+}
+
+function composeEnvLayers(below: readonly string[], base: ConfigObject, above: readonly string[]): ConfigObject {
 	const result: ConfigObject = {};
 	const baseLayer = cloneDeep(base);
 	const layers: (ConfigObject | null)[] = [
-		parseConfigEnvVar(process.env.HARPER_DEFAULT_CONFIG, 'HARPER_DEFAULT_CONFIG'),
+		...below.map((name) => parseConfigEnvVar(process.env[name], name)),
 		baseLayer,
-		parseConfigEnvVar(process.env.HARPER_CONFIG, 'HARPER_CONFIG'),
-		parseConfigEnvVar(process.env.HARPER_SET_CONFIG, 'HARPER_SET_CONFIG'),
+		...above.map((name) => parseConfigEnvVar(process.env[name], name)),
 	];
 
 	for (const layer of layers) {
@@ -957,23 +1123,58 @@ export function applyRuntimeEnvConfig(
 	rootPath: string,
 	options: { isInstall?: boolean } = {}
 ): ConfigObject {
+	const { config, commitState } = prepareRuntimeEnvConfig(fileConfig, rootPath, options);
+	commitState();
+	return config;
+}
+
+/**
+ * Apply the env layers and hand the state writes back to the caller, so a caller that also persists
+ * the merged config file can commit the pair as a unit (#847): saveState() stages the new state
+ * beside the confirmed one, confirmConfigWritten() renames it over the confirmed one after the
+ * config file lands, and discardConfigState() drops the staged copy if that write never happens.
+ */
+export function prepareRuntimeEnvConfig(
+	fileConfig: ConfigObject,
+	rootPath: string,
+	options: { isInstall?: boolean; userPaths?: Iterable<string>; deferStateCommit?: boolean } = {}
+): {
+	config: ConfigObject;
+	saveState: () => boolean;
+	confirmConfigWritten: () => boolean;
+	commitState: () => boolean;
+} {
 	const defaultEnvValue = process.env.HARPER_DEFAULT_CONFIG;
 	const configEnvValue = process.env.HARPER_CONFIG;
 	const setEnvValue = process.env.HARPER_SET_CONFIG;
 
-	// Load existing state
+	// Load existing state. Only the main thread persists, so only the main thread has wreckage to
+	// clear - and a worker shares its pid, so letting one scan would delete the main thread's
+	// in-flight sidecar as if it were last boot's.
+	const interruptedCommit = isMainThread && takeInterruptedCommit(rootPath, !options.deferStateCommit);
 	const state = loadConfigState(rootPath);
 
 	// No env vars set and no previous state, nothing to do
 	if (!defaultEnvValue && !configEnvValue && !setEnvValue && Object.keys(state.snapshots).length === 0) {
-		return fileConfig;
+		return { config: fileConfig, saveState: () => false, confirmConfigWritten: () => false, commitState: () => false };
 	}
 
-	// Detect drift (user manual edits) - only at runtime, not install
+	// Detect drift (user manual edits) - only at runtime, not install, not on a boot that found an
+	// interrupted commit (where a difference could equally be the write that was in flight), and only
+	// on the main thread: a worker never owns the state, and one re-deriving inside the main thread's
+	// commit window would call its half-written config file a user edit and drop the env-supplied
+	// value for itself alone - serving different config than its siblings, with nothing on disk to
+	// show why.
 	if (!options.isInstall) {
-		const driftedPaths = detectConfigDrift(fileConfig, state);
-		for (const path of driftedPaths) {
-			state.sources[path] = 'user';
+		if (!interruptedCommit && isMainThread) {
+			const driftedPaths = detectConfigDrift(fileConfig, state);
+			for (const path of driftedPaths) {
+				state.sources[path] = 'user';
+			}
+		}
+	} else if (options.userPaths) {
+		for (const userPath of options.userPaths) {
+			state.sources[userPath] = 'user';
 		}
 	}
 
@@ -998,8 +1199,21 @@ export function applyRuntimeEnvConfig(
 	processEnvVar(fileConfig, state, 'HARPER_CONFIG', 'HARPER_CONFIG', options);
 	processEnvVar(fileConfig, state, 'HARPER_SET_CONFIG', 'HARPER_SET_CONFIG', options);
 
-	// Save updated state
-	saveConfigState(rootPath, state);
-
-	return fileConfig;
+	const retireInterruptedCommit = () => {
+		if (options.deferStateCommit && isMainThread) takeInterruptedCommit(rootPath);
+	};
+	return {
+		config: fileConfig,
+		saveState: () => (configStateMatchesDisk(rootPath, state) ? false : stageConfigState(rootPath, state)),
+		confirmConfigWritten: () => {
+			const committed = commitStagedConfigState(rootPath);
+			if (committed) retireInterruptedCommit();
+			return committed;
+		},
+		commitState: () => {
+			const changed = saveConfigState(rootPath, state);
+			retireInterruptedCommit();
+			return changed;
+		},
+	};
 }

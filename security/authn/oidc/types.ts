@@ -1,0 +1,41 @@
+/**
+ * Types for OIDC trusted publishing (#2171).
+ */
+
+/** One accepted value, or a set of them. */
+export type ClaimConstraint = string | string[];
+
+/**
+ * A stored trust policy. Matching one lets an external CI run act as `user` without holding any
+ * Harper credential, so `claims` is validated at write time rather than trusted as written — see
+ * validateClaimConstraintShape (claims.ts) and the profile's assertPolicyIsSpecific for the
+ * structural requirements, and addOidcTrust for the rest.
+ */
+export interface OidcTrustPolicy {
+	id: string;
+	/** Expected `iss`, and the base for OIDC discovery. */
+	issuer: string;
+	/** Expected `aud`. Must identify this instance — see SHARED_DEFAULT_AUDIENCE. */
+	audience: string;
+	claims: Record<string, ClaimConstraint>;
+	/** The exchanged token authenticates as this user, whose role is the least-privilege boundary. */
+	user: string;
+	/**
+	 * Optional narrowing of that boundary, enforced on the **operations API and SQL** paths (the
+	 * verifyPerms / verifyPermsAST gate): the minted token may invoke only these operations, even
+	 * where the role allows more. Never widens — an operation the role forbids stays forbidden.
+	 *
+	 * NOT enforced on the application REST/GraphQL resource path, which authorizes through the
+	 * table-level checkPermission and does not consult this scope — so a scoped operation token still
+	 * carries the role's full CRUD there. Extending the scope to the resource path is a follow-up on
+	 * the same surface as the GraphQL-bypasses-ops-allowlist gap (CORE-3061); until then, scope a
+	 * policy's `user` to a role that is itself least-privilege for the data the token can reach.
+	 */
+	operations?: string[];
+	/** Defaults to true; false keeps the policy for reference without honoring it. */
+	enabled?: boolean;
+	description?: string;
+}
+
+/** A verified token's payload, plus the entries the profile's normalizeClaims derives. */
+export type TokenClaims = Record<string, unknown>;

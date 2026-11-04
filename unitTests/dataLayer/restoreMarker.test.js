@@ -1,14 +1,31 @@
 'use strict';
 
 const assert = require('node:assert');
-const { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } = require('node:fs');
+const {
+	appendFileSync,
+	chmodSync,
+	existsSync,
+	mkdtempSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} = require('node:fs');
 const { basename, dirname, join } = require('node:path');
 const { tmpdir } = require('node:os');
-const { tryFileLock, fileLockRelease } = require('@harperfast/rocksdb-js');
+const { tryFileLock, fileLockRelease } = require('../rocksdbBindings.mts').rocksdbBindings();
 const {
 	beginRestore,
+	claimRestore,
+	markRestoreDestructive,
+	restoreLockHeldExclusively,
+	beginDatabaseDrop,
 	completeRestore,
+	completeDatabaseDrop,
 	abandonRestore,
+	abandonDatabaseDrop,
+	cancelDatabaseDrop,
 	acquireRestoreLock,
 	releaseRestoreLock,
 	clearRestoreMarker,
@@ -16,8 +33,11 @@ const {
 	restoreMarkerPresent,
 	restoreLockPath,
 	restoringMarkerPath,
+	droppingMarkerPath,
 	restoreMetaDir,
 	scanBlockedRestores,
+	withRestoreExclusion,
+	scanBlockedDatabaseDrops,
 	RESTORE_META_DIR,
 } = require('#src/dataLayer/restoreMarker');
 
@@ -141,6 +161,40 @@ describe('restoreMarker', function () {
 	});
 
 	describe('beginRestore', function () {
+		it('runs the claim callback under the lock before publishing a fresh marker', function () {
+			let called = false;
+			const lock = beginRestore(dbPath, () => {
+				called = true;
+				assert.ok(!restoreMarkerPresent(dbPath));
+				assert.throws(
+					() => acquireRestoreLock(dbPath),
+					(error) => error.statusCode === 409
+				);
+			});
+			try {
+				assert.ok(called);
+				assert.ok(restoreMarkerPresent(dbPath));
+			} finally {
+				completeRestore(lock);
+			}
+		});
+
+		for (const preexisting of [false, true]) {
+			it(`releases the lock and preserves marker state after a failed claim (preexisting=${preexisting})`, function () {
+				if (preexisting) abandonRestore(beginRestore(dbPath));
+				const failure = new Error('claim failed');
+				assert.throws(
+					() =>
+						beginRestore(dbPath, () => {
+							throw failure;
+						}),
+					(error) => error === failure
+				);
+				assert.strictEqual(restoreMarkerPresent(dbPath), preexisting);
+				completeRestore(beginRestore(dbPath));
+			});
+		}
+
 		it('writes the marker while holding the lock', function () {
 			const lock = beginRestore(dbPath);
 			try {
@@ -151,12 +205,14 @@ describe('restoreMarker', function () {
 			}
 		});
 
-		it('fails with 409 when a restore is already in progress', function () {
+		it('fails with 409, naming every holder the lock could have, when it is already held', function () {
 			const lock = beginRestore(dbPath);
 			try {
 				assert.throws(
 					() => beginRestore(dbPath),
-					(error) => error.statusCode === 409 && /already in progress/.test(error.message)
+					// an opener holds this lock shared too, so the 409 must not pin the blame on a restore
+					(error) =>
+						error.statusCode === 409 && /a restore, a drop, or a database open holds its lock/.test(error.message)
 				);
 			} finally {
 				completeRestore(lock);
@@ -180,6 +236,317 @@ describe('restoreMarker', function () {
 			const lock = beginRestore(dbPath);
 			completeRestore(lock);
 			assert.strictEqual(checkRestoreState(dbPath), 'clear');
+		});
+
+		it('leaves an intact marker byte-identical on a recovery attempt', function () {
+			// The marker a recovery attempt finds is the only thing keeping a possibly half-purged
+			// directory from loading as healthy. Rewriting it opens a window where a crash leaves it
+			// empty — which scanBlockedRestores reads as "no block".
+			abandonRestore(beginRestore(dbPath));
+			appendFileSync(restoringMarkerPath(dbPath), 'written by the interrupted restore\n');
+			const before = readFileSync(restoringMarkerPath(dbPath), 'utf8');
+
+			const rerun = beginRestore(dbPath);
+			try {
+				assert.strictEqual(rerun.preexisting, true);
+				assert.strictEqual(
+					readFileSync(restoringMarkerPath(dbPath), 'utf8'),
+					before,
+					'a recovery attempt must not rewrite the marker that is blocking the database'
+				);
+			} finally {
+				abandonRestore(rerun);
+			}
+			assert.strictEqual(checkRestoreState(dbPath), 'incomplete');
+		});
+
+		it('repairs a marker an interrupted write left empty, so the database stays blocked', function () {
+			// what a torn write under the pre-rename implementation left behind
+			mkdirSync(dbPath, { recursive: true });
+			mkdirSync(restoreMetaDir(dbPath), { recursive: true });
+			writeFileSync(restoringMarkerPath(dbPath), '');
+			assert.deepStrictEqual(
+				scanBlockedRestores(tempDir),
+				[[basename(dbPath), 'incomplete']],
+				'the startup scan must block the database without trusting the empty marker'
+			);
+
+			abandonRestore(beginRestore(dbPath));
+
+			assert.strictEqual(readFileSync(restoringMarkerPath(dbPath), 'utf8').split('\n', 1)[0], basename(dbPath));
+			assert.deepStrictEqual(scanBlockedRestores(tempDir), [[basename(dbPath), 'incomplete']]);
+		});
+
+		it('repairs a marker whose database name was torn mid-write', function () {
+			// Non-empty but truncated. The scan resolves the name it reads back to a *different* metadata
+			// key, so a torn name blocks nothing at all while the real database loads.
+			mkdirSync(dbPath, { recursive: true });
+			mkdirSync(restoreMetaDir(dbPath), { recursive: true });
+			writeFileSync(restoringMarkerPath(dbPath), `${basename(dbPath).slice(0, 3)}`);
+			assert.deepStrictEqual(
+				scanBlockedRestores(tempDir),
+				[[basename(dbPath), 'incomplete']],
+				'the startup scan must block the database without trusting the torn name'
+			);
+
+			abandonRestore(beginRestore(dbPath));
+
+			assert.deepStrictEqual(scanBlockedRestores(tempDir), [[basename(dbPath), 'incomplete']]);
+		});
+
+		it('publishes the marker by rename, leaving no temp file behind', function () {
+			const lock = beginRestore(dbPath);
+			try {
+				assert.deepStrictEqual(
+					readdirSync(restoreMetaDir(dbPath)).sort(),
+					[basename(restoreLockPath(dbPath)), basename(restoringMarkerPath(dbPath))].sort()
+				);
+			} finally {
+				completeRestore(lock);
+			}
+		});
+
+		it('overwrites a temp file a crashed write left behind, and the scan never sees it', function () {
+			const tempPath = restoringMarkerPath(dbPath).replace(/\.restoring$/, '.tmp');
+			mkdirSync(restoreMetaDir(dbPath), { recursive: true });
+			writeFileSync(tempPath, 'someotherdb\npartial write\n');
+			assert.deepStrictEqual(scanBlockedRestores(tempDir), [], 'a temp file must never read as a marker');
+
+			const lock = beginRestore(dbPath);
+			try {
+				assert.deepStrictEqual(scanBlockedRestores(tempDir), [[basename(dbPath), 'in-progress']]);
+				assert.ok(!existsSync(tempPath), 'the temp file is consumed by the rename');
+			} finally {
+				completeRestore(lock);
+			}
+		});
+	});
+
+	describe('claimRestore', function () {
+		const openOrBlocked = () =>
+			withRestoreExclusion(
+				dbPath,
+				() => 'opened',
+				(state) => state
+			);
+
+		it('holds every open off with the lock alone, publishing no marker before the destructive step', function () {
+			const lock = claimRestore(dbPath);
+			try {
+				assert.strictEqual(lock.preexisting, false);
+				assert.ok(!existsSync(restoringMarkerPath(dbPath)));
+				assert.strictEqual(restoreLockHeldExclusively(dbPath), true);
+				assert.strictEqual(openOrBlocked(), 'in-progress');
+			} finally {
+				completeRestore(lock);
+			}
+			assert.strictEqual(restoreLockHeldExclusively(dbPath), false);
+		});
+
+		it('leaves the database loadable when a claim ends before its destructive step', function () {
+			abandonRestore(claimRestore(dbPath));
+			assert.strictEqual(checkRestoreState(dbPath), 'clear');
+			assert.strictEqual(openOrBlocked(), 'opened');
+		});
+
+		it('blocks the database once the destructive step is marked', function () {
+			const lock = claimRestore(dbPath);
+			markRestoreDestructive(lock);
+			abandonRestore(lock);
+			assert.strictEqual(checkRestoreState(dbPath), 'incomplete');
+			assert.strictEqual(openOrBlocked(), 'incomplete');
+		});
+
+		it('keeps the marker of an interrupted restore from the moment it claims', function () {
+			abandonRestore(beginRestore(dbPath));
+			const before = readFileSync(restoringMarkerPath(dbPath));
+			const lock = claimRestore(dbPath);
+			try {
+				assert.strictEqual(lock.preexisting, true);
+				assert.deepStrictEqual(readFileSync(restoringMarkerPath(dbPath)), before);
+			} finally {
+				abandonRestore(lock);
+			}
+			assert.strictEqual(checkRestoreState(dbPath), 'incomplete');
+		});
+	});
+
+	describe('withRestoreExclusion', function () {
+		const opened = () => 'opened';
+		const blockedWith = (states) => (state) => {
+			states.push(state);
+			return 'blocked';
+		};
+
+		it('opens when no restore is in progress and no marker survives', function () {
+			assert.strictEqual(
+				withRestoreExclusion(dbPath, opened, () => 'blocked'),
+				'opened'
+			);
+		});
+
+		it('reports an incomplete restore rather than opening a half-purged directory', function () {
+			abandonRestore(beginRestore(dbPath));
+			const states = [];
+			assert.strictEqual(withRestoreExclusion(dbPath, opened, blockedWith(states)), 'blocked');
+			assert.deepStrictEqual(states, ['incomplete']);
+		});
+
+		it('reports a restore in progress while one holds the lock', function () {
+			const lock = beginRestore(dbPath);
+			try {
+				const states = [];
+				assert.strictEqual(withRestoreExclusion(dbPath, opened, blockedWith(states)), 'blocked');
+				assert.deepStrictEqual(states, ['in-progress']);
+			} finally {
+				completeRestore(lock);
+			}
+		});
+
+		it('keeps a restore from starting while the database is being opened', function () {
+			// the window the marker alone cannot close: check says clear, then a restore claims the
+			// directory, then the open lands on a directory that is being purged
+			const result = withRestoreExclusion(
+				dbPath,
+				() => {
+					assert.throws(
+						() => beginRestore(dbPath),
+						(error) => error.statusCode === 409,
+						'a restore must not be able to claim a database that is mid-open'
+					);
+					return 'opened';
+				},
+				() => 'blocked'
+			);
+			assert.strictEqual(result, 'opened');
+		});
+
+		it('lets concurrent opens proceed — readers do not exclude each other', function () {
+			const result = withRestoreExclusion(
+				dbPath,
+				() =>
+					withRestoreExclusion(
+						dbPath,
+						() => 'both opened',
+						() => 'blocked'
+					),
+				() => 'blocked'
+			);
+			assert.strictEqual(result, 'both opened');
+		});
+
+		it('releases the lock when the open throws', function () {
+			assert.throws(() => {
+				withRestoreExclusion(
+					dbPath,
+					() => {
+						throw new Error('open failed');
+					},
+					() => 'blocked'
+				);
+			}, /open failed/);
+			const lock = beginRestore(dbPath);
+			completeRestore(lock);
+		});
+
+		it('does not make a concurrent open look like a restore to checkRestoreState', function () {
+			// a reader holding the shared lock, exactly as withRestoreExclusion does mid-open
+			abandonRestore(beginRestore(dbPath)); // marker survives, so the state is actually probed
+			const readerToken = tryFileLock(restoreLockPath(dbPath), true);
+			assert.notStrictEqual(readerToken, 0, 'a reader must be able to take the lock shared');
+			try {
+				assert.strictEqual(
+					checkRestoreState(dbPath),
+					'incomplete',
+					'a reader holding the lock must not read as a restore in progress'
+				);
+			} finally {
+				fileLockRelease(readerToken);
+			}
+		});
+
+		it('propagates a lock failure that is not an unwritable root, rather than opening unguarded', function () {
+			// Degrading to the marker check is for a root Harper cannot write to. Any other failure means
+			// the exclusion is not in place for a reason nobody chose, and opening anyway would reopen
+			// the check-then-open window this guard exists to close — so it has to be loud.
+			const misconfigured = join(tempDir, 'misconfigured');
+			mkdirSync(misconfigured);
+			// a file where the metadata directory belongs: not a permissions problem, a broken root
+			writeFileSync(join(misconfigured, RESTORE_META_DIR), '');
+			assert.throws(
+				() =>
+					withRestoreExclusion(
+						join(misconfigured, 'somedb'),
+						() => 'opened',
+						() => 'blocked'
+					),
+				/failed to create parent directory/
+			);
+		});
+
+		it('still blocks on a marker when the lock cannot be created', function () {
+			// chmod does not deny these, so the root would be writable and nothing would degrade
+			if (process.platform === 'win32' || process.getuid?.() === 0) this.skip();
+			// an unwritable databases root: the exclusion degrades to the marker check rather than
+			// throwing out through the startup scan and taking every later database with it. The
+			// degraded check must still deny, or a root that went read-only under a half-purged
+			// database would quietly open it.
+			const unwritable = join(tempDir, 'readonly');
+			const marked = join(unwritable, 'marked');
+			mkdirSync(marked, { recursive: true });
+			abandonRestore(beginRestore(marked)); // the marker survives the abandon
+			// beginRestore leaves its lock file behind, and an existing file still opens under an
+			// unwritable directory; removing it is what leaves the fallback as the only path
+			rmSync(restoreLockPath(marked), { force: true });
+			chmodSync(restoreMetaDir(marked), 0o500);
+			chmodSync(unwritable, 0o500);
+			try {
+				const states = [];
+				const blocked = (state) => {
+					states.push(state);
+					return 'blocked';
+				};
+				assert.strictEqual(
+					withRestoreExclusion(join(unwritable, 'unmarked'), () => 'opened', blocked),
+					'opened',
+					'an unmarked database in an unwritable root still loads'
+				);
+				assert.deepStrictEqual(states, []);
+				assert.strictEqual(
+					withRestoreExclusion(marked, () => 'opened', blocked),
+					'blocked',
+					'a marked database must not open just because the lock could not be created'
+				);
+				assert.deepStrictEqual(states, ['incomplete']);
+			} finally {
+				chmodSync(unwritable, 0o700);
+				chmodSync(restoreMetaDir(marked), 0o700);
+			}
+		});
+	});
+
+	describe('restoreMarkerPresent', function () {
+		it('propagates an undetermined answer instead of reporting the marker absent', function () {
+			// A caller that reads a permission failure as "no marker" drops a database mid-restore and
+			// expires a backup pin whose restore still needs its source.
+			if (process.platform === 'win32' || process.getuid?.() === 0) this.skip();
+			const dbPath = join(tempDir, 'somedb');
+			const lock = beginRestore(dbPath);
+			const metaDir = restoreMetaDir(dbPath);
+			chmodSync(metaDir, 0o000);
+			try {
+				assert.throws(
+					() => restoreMarkerPresent(dbPath),
+					(error) => error.code === 'EACCES'
+				);
+			} finally {
+				chmodSync(metaDir, 0o700);
+				abandonRestore(lock);
+			}
+		});
+
+		it('reports a genuinely absent marker as absent', function () {
+			assert.ok(!restoreMarkerPresent(join(tempDir, 'never-restored')));
 		});
 	});
 
@@ -240,6 +607,104 @@ describe('restoreMarker', function () {
 
 		it('returns [] when there is no .restore directory', function () {
 			assert.deepStrictEqual(scanBlockedRestores(join(tempDir, 'no-such-root')), []);
+		});
+	});
+
+	describe('database drop markers', function () {
+		it('rejects control characters that would corrupt the line-delimited marker', function () {
+			assert.throws(
+				() => beginDatabaseDrop(join(tempDir, 'bad\nroot'), 'database'),
+				(error) => error.statusCode === 409
+			);
+			assert.throws(
+				() => beginDatabaseDrop(dbPath, 'bad\ndatabase'),
+				(error) => error.statusCode === 409
+			);
+			assert.throws(
+				() => beginDatabaseDrop(dbPath, 'database', 'bad\nblob'),
+				(error) => error.statusCode === 409
+			);
+		});
+
+		it('blocks each physical root until the whole drop completes', function () {
+			const a = join(tempDir, 'alpha');
+			const b = join(tempDir, 'beta');
+			const blobA = join(tempDir, 'blobs-a');
+			const blobB = join(tempDir, 'blobs-b');
+			mkdirSync(a);
+			mkdirSync(b);
+			const locks = [
+				beginDatabaseDrop(a, 'catalog', 'physical-a', [blobA]),
+				beginDatabaseDrop(b, 'catalog', 'physical-b', [blobB]),
+			];
+			assert.deepStrictEqual(
+				locks.map((lock) => lock.blobDatabaseName),
+				['physical-a', 'physical-b']
+			);
+			assert.deepStrictEqual(
+				locks.map((lock) => lock.blobPaths),
+				[[blobA], [blobB]]
+			);
+			try {
+				assert.deepStrictEqual(
+					scanBlockedDatabaseDrops(tempDir)
+						.map(({ rootPath, databaseName }) => [basename(rootPath), databaseName])
+						.sort(),
+					[
+						['alpha', 'catalog'],
+						['beta', 'catalog'],
+					]
+				);
+			} finally {
+				for (const lock of locks) completeDatabaseDrop(lock);
+			}
+			assert.deepStrictEqual(scanBlockedDatabaseDrops(tempDir), []);
+		});
+
+		it('retains an interrupted drop marker and rejects restore', function () {
+			const blobPath = join(tempDir, 'original-blobs');
+			abandonDatabaseDrop(beginDatabaseDrop(dbPath, 'catalog', 'catalog', [blobPath]));
+			assert.ok(existsSync(droppingMarkerPath(dbPath)));
+			assert.throws(
+				() => beginRestore(dbPath),
+				(error) => error.statusCode === 409 && /incomplete drop/.test(error.message)
+			);
+			const retry = beginDatabaseDrop(dbPath, 'catalog');
+			assert.strictEqual(retry.preexisting, true);
+			assert.deepStrictEqual(retry.blobPaths, [blobPath]);
+			completeDatabaseDrop(retry);
+		});
+
+		it('rejects a marker whose recorded blob identity was altered', function () {
+			abandonDatabaseDrop(beginDatabaseDrop(dbPath, 'catalog', 'physical'));
+			const markerPath = droppingMarkerPath(dbPath);
+			const marker = readFileSync(markerPath, 'utf8').split('\n');
+			marker[2] = 'unrelated';
+			writeFileSync(markerPath, marker.join('\n'));
+
+			assert.throws(() => beginDatabaseDrop(dbPath, 'catalog', 'physical'), /drop marker.*invalid/);
+			assert.ok(existsSync(markerPath));
+		});
+
+		it('cancels a new marker but preserves a marker owned by a retry', function () {
+			const first = beginDatabaseDrop(dbPath, 'catalog');
+			cancelDatabaseDrop(first);
+			assert.ok(!existsSync(droppingMarkerPath(dbPath)));
+
+			abandonDatabaseDrop(beginDatabaseDrop(dbPath, 'catalog'));
+			const retry = beginDatabaseDrop(dbPath, 'catalog');
+			cancelDatabaseDrop(retry);
+			assert.ok(existsSync(droppingMarkerPath(dbPath)));
+			completeDatabaseDrop(beginDatabaseDrop(dbPath, 'catalog'));
+		});
+
+		it('blocks an existing root without trusting corrupt marker contents', function () {
+			mkdirSync(dbPath);
+			mkdirSync(restoreMetaDir(dbPath));
+			writeFileSync(droppingMarkerPath(dbPath), `${basename(dbPath)}\nbad\ndatabase\ninvalid`);
+			assert.deepStrictEqual(scanBlockedDatabaseDrops(tempDir), [
+				{ rootPath: dbPath, databaseName: undefined, markerPath: droppingMarkerPath(dbPath) },
+			]);
 		});
 	});
 });

@@ -5,6 +5,7 @@
 import assert from 'node:assert';
 import { once } from 'node:events';
 import { decode } from 'cbor-x';
+import { waitFor } from '../waitFor.js';
 import { callOperation } from './utility.js';
 import { setupTestApp, baseUrl, wsBaseUrl, mqttUrl, mqttsUrl, testHost } from './setupTestApp.mjs';
 import environmentManager from '#src/utility/environment/environmentManager';
@@ -12,6 +13,7 @@ const { get: env_get, setProperty } = environmentManager;
 import { getThisNodeName } from '#src/server/nodeName';
 import { connect, connectAsync } from 'mqtt';
 import { readFileSync } from 'fs';
+import { join } from 'node:path';
 import { handleApplication as handleMQTTApplication } from '#src/server/mqtt';
 import { SERVERS, portServer } from '#src/server/serverRegistry';
 
@@ -59,21 +61,56 @@ async function subscribeAllowingSubackError(client, topic, options) {
 async function connectWithMessageListener(brokerUrl, options, listener) {
 	const client = connect(brokerUrl, options);
 	client.on('message', listener);
-	await once(client, 'connect');
-	return client;
+	const connectionAbort = new AbortController();
+	const connectionTimeout = setTimeout(
+		() => connectionAbort.abort(new Error(`Timed out connecting MQTT client ${options.clientId}`)),
+		8000
+	);
+	try {
+		await once(client, 'connect', { signal: connectionAbort.signal });
+		return client;
+	} catch (error) {
+		client.off('message', listener);
+		client.end(true);
+		throw error;
+	} finally {
+		clearTimeout(connectionTimeout);
+	}
 }
 
 // Waits for a server-side MQTT session event (see `server/mqtt.ts` `emitEvent`) for a specific
 // clientId, rather than guessing with a fixed delay for the broker to finish some async step.
-function waitForMqttSessionEvent(eventName, clientId) {
-	return new Promise((resolve) => {
-		function onEvent(session) {
-			if (session?.sessionId === clientId) {
-				global.server.mqtt.events.off(eventName, onEvent);
-				resolve();
+function waitForMqttSessionEvent(eventName, clientId, matches = () => true, timeoutMs = 8000, signal) {
+	return new Promise((resolve, reject) => {
+		let timeout;
+		function cleanup() {
+			clearTimeout(timeout);
+			global.server.mqtt.events.off(eventName, onEvent);
+			signal?.removeEventListener('abort', onAbort);
+		}
+		function onAbort() {
+			cleanup();
+			reject(signal.reason ?? new DOMException('The operation was aborted.', 'AbortError'));
+		}
+		function onEvent(session, ...args) {
+			if (session?.sessionId !== clientId) return;
+			try {
+				if (matches(...args)) {
+					cleanup();
+					resolve();
+				}
+			} catch (error) {
+				cleanup();
+				reject(error);
 			}
 		}
 		global.server.mqtt.events.on(eventName, onEvent);
+		if (signal?.aborted) return onAbort();
+		signal?.addEventListener('abort', onAbort, { once: true });
+		timeout = setTimeout(() => {
+			cleanup();
+			reject(new Error(`Timed out waiting for MQTT ${eventName} event for client ${clientId}`));
+		}, timeoutMs);
 	});
 }
 
@@ -81,20 +118,16 @@ function waitForMqttSessionEvent(eventName, clientId) {
 // broker to process the disconnect and tear down the session — so callers that immediately
 // reconnect with the same clientId can otherwise race the broker's teardown.
 async function endDurableSession(client, clientId) {
-	let onDisconnected;
-	const torn_down = new Promise((resolve) => {
-		onDisconnected = (session) => {
-			if (session?.sessionId === clientId) resolve();
-		};
-		global.server.mqtt.events.on('disconnected', onDisconnected);
-	});
-	try {
+	if (!client.connected) {
 		await client.endAsync();
-		await torn_down;
+		return;
+	}
+	const abortController = new AbortController();
+	const tornDown = waitForMqttSessionEvent('disconnected', clientId, undefined, undefined, abortController.signal);
+	try {
+		await Promise.all([client.endAsync(), tornDown]);
 	} finally {
-		// Always clean up the listener, even if endAsync() rejects or the event never fires,
-		// so a failed disconnect doesn't leak a listener on the shared event emitter.
-		global.server.mqtt.events.off('disconnected', onDisconnected);
+		abortController.abort();
 	}
 }
 
@@ -195,28 +228,33 @@ describe('test MQTT connections and commands', function () {
 		});
 	});
 
-	it('can repeatedly publish', async () => {
+	it('can repeatedly publish', async function () {
+		// Captured before the five serial connects, so the delivery wait below is budgeted from what is
+		// LEFT of this test's own mocha timeout.
+		const deadline = Date.now() + this.timeout();
 		const vus = 5;
 		const tableName = 'SimpleRecord';
 		let intervals = [];
 		let clients = [];
 		let received = [];
 		let subscriptions = [];
-		for (let x = 1; x < vus + 1; x++) {
-			const topic = `${tableName}/1`;
+		// The whole setup is inside the try: a connect that throws part-way would otherwise leave the
+		// clients it did create publishing every 1 ms into every test that follows.
+		try {
+			for (let x = 1; x < vus + 1; x++) {
+				const topic = `${tableName}/1`;
 
-			/** @type {MqttClient} */
-			const client = await connectAsync({
-				clientId: `vu${x}`,
-				host: testHost,
-				clean: true,
-				connectTimeout: 2000,
-				protocol: 'mqtt',
-				protocolVersion: 4,
-			});
-			clients.push(client);
-			subscriptions.push(
-				(async () => {
+				/** @type {MqttClient} */
+				const client = await connectAsync({
+					clientId: `vu${x}`,
+					host: testHost,
+					clean: true,
+					connectTimeout: 2000,
+					protocol: 'mqtt',
+					protocolVersion: 4,
+				});
+				clients.push(client);
+				const subscription = (async () => {
 					await client.subscribeAsync(topic);
 					intervals.push(
 						setInterval(() => {
@@ -226,25 +264,40 @@ describe('test MQTT connections and commands', function () {
 							});
 						}, 1)
 					);
-				})()
-			);
+				})();
+				// Marks it handled now; the await below is the real handler. Without this, a subscribe that
+				// rejects while the loop is still connecting the next client is an unhandled rejection, which
+				// takes the runner down instead of failing this test.
+				subscription.catch(() => {});
+				subscriptions.push(subscription);
 
-			client.on('message', function (topic, message) {
-				// message is Buffer
-				let obj = JSON.parse(message.toString());
-				received.push(obj);
-			});
+				client.on('message', function (topic, message) {
+					// message is Buffer
+					let obj = JSON.parse(message.toString());
+					received.push(obj);
+				});
 
-			client.on('error', function (error) {
-				// message is Buffer
-				console.error(error);
-			});
+				client.on('error', function (error) {
+					// message is Buffer
+					console.error(error);
+				});
+			}
+			await Promise.all(subscriptions);
+			// The publishers stay running until the eleventh delivery lands. Never past the deadline: an
+			// overrunning wait would be abandoned by mocha with the publishers still going.
+			const waitBudget = Math.max(0, deadline - Date.now() - 2000);
+			try {
+				await waitFor(() => received.length > 10, { timeout: waitBudget });
+			} catch (error) {
+				assert.fail(
+					`only ${received.length} repeated MQTT publishes arrived within ${waitBudget}ms (${error.message})`
+				);
+			}
+		} finally {
+			for (let interval of intervals) clearInterval(interval);
+			// Forced: a graceful end waits on every still-unacked QoS 1 publish.
+			for (let client of clients) client.end(true);
 		}
-		await Promise.all(subscriptions);
-		await new Promise((resolve) => setTimeout(resolve, 200));
-		for (let interval of intervals) clearInterval(interval);
-		await new Promise((resolve) => setTimeout(resolve, 20));
-		for (let client of clients) client.end();
 		assert(received.length > 10);
 		assert.equal(received[0].name, 'radbot 9000');
 	});
@@ -435,6 +488,7 @@ describe('test MQTT connections and commands', function () {
 		client.end();
 	});
 	it('subscribe to retained record with patch operations', async function () {
+		this.timeout(60000);
 		let path = 'SimpleRecord/78';
 		let client = await connectAsync(mqttUrl, {
 			clean: false,
@@ -445,37 +499,70 @@ describe('test MQTT connections and commands', function () {
 			'Content-Type': 'application/json',
 		};
 
-		await new Promise(async (resolve) => {
-			let messages = [];
-			const onMessage = (topic, payload) => {
-				let record = JSON.parse(payload);
-				messages.push(record);
-				if (messages.length === 2) {
-					assert.equal(messages[0].name, 'a starting point');
-					assert.equal(messages[0].count, 2);
-					assert.equal(messages[1].count, 3);
-					assert.equal(messages[1].name, 'an updated name');
-					assert.equal(messages[1].newProperty, 'new value');
-					resolve();
-					client.off('message', onMessage);
+		let lastOnlineMessageId;
+		const onlinePhaseAbort = new AbortController();
+		let onMessage;
+		const onlineMessagesReceived = new Promise((resolve, reject) => {
+			const messages = [];
+			onMessage = (topic, payload, packet) => {
+				try {
+					const record = JSON.parse(payload);
+					messages.push(record);
+					if (messages.length === 2) {
+						assert.equal(messages[0].name, 'a starting point');
+						assert.equal(messages[0].count, 2);
+						assert.equal(messages[1].count, 3);
+						assert.equal(messages[1].name, 'an updated name');
+						assert.equal(messages[1].newProperty, 'new value');
+						lastOnlineMessageId = packet.messageId;
+						resolve();
+					}
+				} catch (error) {
+					reject(error);
 				}
 			};
-			client.on('message', onMessage);
-			await client.subscribeAsync(path, { qos: 1 });
-			await axios.put(`${baseUrl}/SimpleRecord/78`, { name: 'a starting point', count: 2 }, { headers });
-			// Small delay so the PUT notification is delivered before the PATCH; without this the
-			// two messages can arrive out of order on a loaded CI runner.
-			await delay(20);
-			await axios.patch(
-				`${baseUrl}/SimpleRecord/78`,
-				{ name: 'an updated name', newProperty: 'new value', count: { __op__: 'add', value: 1 } },
-				{ headers }
-			);
 		});
-		await client.endAsync();
-		// Give the broker time to fully process the disconnect before we make more patches,
-		// so those patches are queued for the offline client rather than delivered live.
-		await delay(50);
+		client.on('message', onMessage);
+		let onlinePhaseComplete = false;
+		try {
+			await Promise.all([
+				(async () => {
+					await client.subscribeAsync(path, { qos: 1 });
+					const lastOnlineMessageAcknowledged = waitForMqttSessionEvent(
+						'acknowledged',
+						'with-patches',
+						(acknowledgement) => acknowledgement?.messageId === lastOnlineMessageId,
+						15000,
+						onlinePhaseAbort.signal
+					);
+					await Promise.all([
+						(async () => {
+							await axios.put(`${baseUrl}/SimpleRecord/78`, { name: 'a starting point', count: 2 }, { headers });
+							// Small delay so the PUT notification is delivered before the PATCH; without this the
+							// two messages can arrive out of order on a loaded CI runner.
+							await delay(20);
+							await axios.patch(
+								`${baseUrl}/SimpleRecord/78`,
+								{
+									name: 'an updated name',
+									newProperty: 'new value',
+									count: { __op__: 'add', value: 1 },
+								},
+								{ headers }
+							);
+						})(),
+						lastOnlineMessageAcknowledged,
+					]);
+				})(),
+				onlineMessagesReceived,
+			]);
+			onlinePhaseComplete = true;
+		} finally {
+			onlinePhaseAbort.abort();
+			client.off('message', onMessage);
+			if (!onlinePhaseComplete) await endDurableSession(client, 'with-patches').catch(() => undefined);
+		}
+		await endDurableSession(client, 'with-patches');
 		await axios.patch(
 			`${baseUrl}/SimpleRecord/78`,
 			{ name: 'update 2', newProperty: 'newer value', count: { __op__: 'add', value: 1 } },
@@ -486,8 +573,43 @@ describe('test MQTT connections and commands', function () {
 			{ name: 'update 3', count: { __op__: 'add', value: 1 } },
 			{ headers }
 		);
-		await new Promise(async (resolve, reject) => {
-			let messages = [];
+		const reconnectMessages = [];
+		let reconnectTimeout;
+		let reconnectSettled = false;
+		let rejectReconnectMessages;
+		let onReconnectError;
+		let onReconnectMessage;
+		const reconnectMessagesReceived = new Promise((resolve, reject) => {
+			rejectReconnectMessages = reject;
+			onReconnectError = (error) => {
+				reconnectSettled = true;
+				reject(error);
+			};
+			onReconnectMessage = (topic, payload) => {
+				try {
+					const record = JSON.parse(payload);
+					reconnectMessages.push(record);
+					if (reconnectMessages.length == 3) {
+						assert.equal(reconnectMessages[0].name, 'update 2');
+						assert.equal(reconnectMessages[0].count, 4);
+						assert.equal(reconnectMessages[1].newProperty, 'newer value');
+						assert.equal(reconnectMessages[1].name, 'update 3');
+						assert.equal(reconnectMessages[1].count, 5);
+						assert.equal(reconnectMessages[2].name, 'update 4');
+						assert.equal(reconnectMessages[2].count, 6);
+						reconnectSettled = true;
+						resolve();
+					}
+				} catch (error) {
+					reconnectSettled = true;
+					reject(error);
+				}
+			};
+		});
+		reconnectMessagesReceived.catch(() => undefined);
+		client = undefined;
+		let reconnectPhaseComplete = false;
+		try {
 			client = await connectWithMessageListener(
 				mqttUrl,
 				{
@@ -495,30 +617,32 @@ describe('test MQTT connections and commands', function () {
 					clientId: 'with-patches',
 					protocolVersion: 4,
 				},
-				(topic, payload, _packet) => {
-					let record = JSON.parse(payload);
-					messages.push(record);
-					if (messages.length == 3) {
-						assert.equal(messages[0].name, 'update 2');
-						assert.equal(messages[0].count, 4);
-						assert.equal(messages[1].newProperty, 'newer value');
-						assert.equal(messages[1].name, 'update 3');
-						assert.equal(messages[1].count, 5);
-						assert.equal(messages[2].name, 'update 4');
-						assert.equal(messages[2].count, 6);
-						resolve();
-					}
-				}
+				onReconnectMessage
 			);
-			client.on('error', reject);
+			if (!reconnectSettled) {
+				reconnectTimeout = setTimeout(
+					() => rejectReconnectMessages(new Error('Timed out waiting for retained patch messages after reconnect')),
+					8000
+				);
+			}
+			client.on('error', onReconnectError);
 			await axios.patch(
 				`${baseUrl}/SimpleRecord/78`,
 				{ name: 'update 4', count: { __op__: 'add', value: 1 } },
 				{ headers }
 			);
-		});
-
-		client.end();
+			await reconnectMessagesReceived;
+			reconnectPhaseComplete = true;
+		} finally {
+			clearTimeout(reconnectTimeout);
+			if (client) {
+				client.off('error', onReconnectError);
+				client.off('message', onReconnectMessage);
+				const teardown = endDurableSession(client, 'with-patches');
+				if (reconnectPhaseComplete) await teardown;
+				else await teardown.catch(() => undefined);
+			}
+		}
 	});
 	it('subscribe twice', async function () {
 		let client = await connectAsync(mqttUrl, {
@@ -595,21 +719,23 @@ describe('test MQTT connections and commands', function () {
 			reconnectPeriod: 0,
 		}).catch(() => null);
 
-		const private_key_path = env_get('tls_privateKey');
 		let cert, fallbackCert, ca;
 		for await (const certificate of databases.system.hdb_certificate.search([])) {
 			if (certificate.is_authority) ca = certificate.certificate;
 			else {
 				// See the WSS mTLS test below for why a name mismatch can happen and why the fallback
 				// is needed.
-				fallbackCert ??= certificate.certificate;
-				if (certificate.name === getThisNodeName()) cert = certificate.certificate;
+				fallbackCert ??= certificate;
+				if (certificate.name === getThisNodeName()) cert = certificate;
 			}
 		}
 		cert ??= fallbackCert;
+		assert.ok(cert, 'expected a non-authority certificate record in system.hdb_certificate');
+		assert.ok(cert.private_key_name, 'expected the certificate record to name its private key file');
+		const private_key_path = join(env_get('rootPath'), 'keys', cert.private_key_name);
 		let client = await connectAsync(`mqtts://${testHost}:8884`, {
 			key: readFileSync(private_key_path),
-			cert,
+			cert: cert.certificate,
 			ca,
 			// Self-signed CA in test environment; mTLS is server-side (server rejects clients without
 			// a cert), so we skip client-side server-cert verification to avoid intermittent
@@ -661,7 +787,6 @@ describe('test MQTT connections and commands', function () {
 				server.on('error', reject);
 			});
 
-			const private_key_path = env_get('tls_privateKey');
 			let cert, fallbackCert, ca;
 			for await (const certificate of databases.system.hdb_certificate.search([])) {
 				if (certificate.is_authority) ca = certificate.certificate;
@@ -673,11 +798,14 @@ describe('test MQTT connections and commands', function () {
 					// this test process's fallback resolves through the harness's overridden, per-run
 					// loopback address instead. Fall back to any non-authority cert (there's exactly one
 					// in a simple, non-replicated install) rather than leaving the client with none.
-					fallbackCert ??= certificate.certificate;
-					if (certificate.name === getThisNodeName()) cert = certificate.certificate;
+					fallbackCert ??= certificate;
+					if (certificate.name === getThisNodeName()) cert = certificate;
 				}
 			}
 			cert ??= fallbackCert;
+			assert.ok(cert, 'expected a non-authority certificate record in system.hdb_certificate');
+			assert.ok(cert.private_key_name, 'expected the certificate record to name its private key file');
+			const private_key_path = join(env_get('rootPath'), 'keys', cert.private_key_name);
 			let bad_client = await connectAsync(`wss://${testHost}:8885`, {
 				reconnectPeriod: 0,
 				clientId: 'test-bad-mtls',
@@ -685,7 +813,7 @@ describe('test MQTT connections and commands', function () {
 			}).catch(() => null);
 			let client = await connectAsync(`wss://${testHost}:8885`, {
 				key: readFileSync(private_key_path),
-				cert,
+				cert: cert.certificate,
 				ca,
 				// Same rationale as the TCP mTLS test: skip client-side server-cert check.
 				rejectUnauthorized: false,
@@ -890,108 +1018,141 @@ describe('test MQTT connections and commands', function () {
 		const granted = await subscribeAllowingSubackError(clientV5, '+/SimpleRecord/test');
 		assert.equal(granted[0].qos, 0x8f); // assert that the subscription was rejected
 	});
-	it('subscribe with QoS=1 and reconnect with non-clean session', async function () {
-		this.timeout(20000); // needs more than the suite-level 10 s on loaded runners
-		// this first connection is a tear down to remove any previous durable session with this id
-		let client = await connectAsync(mqttUrl, {
-			clean: true,
-			clientId: 'test-client1',
-			protocolVersion: 4,
-		});
-		await endDurableSession(client, 'test-client1');
-		client = await connectAsync(mqttUrl, {
-			clean: false,
-			clientId: 'test-client1',
-			protocolVersion: 4,
-		});
-		await client.subscribeAsync(['SimpleRecord/41', 'SimpleRecord/42'], { qos: 1 });
-		await endDurableSession(client, 'test-client1');
-		client = await connectAsync(mqttUrl, {
-			clean: false,
-			clientId: 'test-client1',
-			protocolVersion: 4,
-		});
-		await new Promise((resolve) => {
-			// Wait for the broker to finish processing (and durably persisting) our ack of this
-			// message, not just for the client to have sent it — see `session.acknowledge()`.
-			const acknowledged = waitForMqttSessionEvent('acknowledged', 'test-client1');
-			client.on('message', (topic, payload) => {
-				JSON.parse(payload);
-				resolve(acknowledged);
+	// Quarantined on lmdb only: hung silently to its 20s timeout on CI main (lmdb pass, Node 26)
+	// with no server-side log output; not reproduced in 30 contended local runs. The rocksdb pass
+	// keeps this durable-session coverage. Evidence, hypotheses, and the reinstatement path
+	// (bounded per-step waits) are in https://github.com/HarperFast/harper/issues/2274.
+	(process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? it.skip : it)(
+		'subscribe with QoS=1 and reconnect with non-clean session',
+		async function () {
+			this.timeout(60000);
+			// this first connection is a tear down to remove any previous durable session with this id
+			let client = await connectAsync(mqttUrl, {
+				clean: true,
+				clientId: 'test-client1',
+				protocolVersion: 4,
 			});
-
-			client.publish(
+			await endDurableSession(client, 'test-client1');
+			client = await connectAsync(mqttUrl, {
+				clean: false,
+				clientId: 'test-client1',
+				protocolVersion: 4,
+			});
+			await client.subscribeAsync(['SimpleRecord/41', 'SimpleRecord/42'], { qos: 1 });
+			await endDurableSession(client, 'test-client1');
+			client = await connectAsync(mqttUrl, {
+				clean: false,
+				clientId: 'test-client1',
+				protocolVersion: 4,
+			});
+			let onMessage;
+			const messageReceived = new Promise((resolve, reject) => {
+				onMessage = (topic, payload) => {
+					try {
+						JSON.parse(payload);
+						resolve();
+					} catch (error) {
+						reject(error);
+					}
+				};
+				client.once('message', onMessage);
+			});
+			const acknowledgementAbort = new AbortController();
+			const acknowledged = waitForMqttSessionEvent(
+				'acknowledged',
+				'test-client1',
+				undefined,
+				undefined,
+				acknowledgementAbort.signal
+			);
+			const deliverySettled = Promise.all([messageReceived, acknowledged]);
+			deliverySettled.catch(() => undefined);
+			let deliveryComplete = false;
+			try {
+				// Wait for the broker to finish processing (and durably persisting) our ack of this
+				// message, not just for the client to have sent it — see `session.acknowledge()`.
+				client.publish(
+					'SimpleRecord/41',
+					JSON.stringify({
+						name: 'This is a test of durable session with subscriptions restarting',
+					}),
+					{
+						qos: 1,
+					}
+				);
+				await deliverySettled;
+				deliveryComplete = true;
+			} finally {
+				acknowledgementAbort.abort();
+				client.off('message', onMessage);
+				const teardown = endDurableSession(client, 'test-client1');
+				if (deliveryComplete) await teardown;
+				else await teardown.catch(() => undefined);
+			}
+			await clientV5.publishAsync(
 				'SimpleRecord/41',
 				JSON.stringify({
-					name: 'This is a test of durable session with subscriptions restarting',
+					name: 'This is a test of publishing to a disconnected durable session',
 				}),
 				{
 					qos: 1,
 				}
 			);
-		});
-		await endDurableSession(client, 'test-client1');
-		await clientV5.publishAsync(
-			'SimpleRecord/41',
-			JSON.stringify({
-				name: 'This is a test of publishing to a disconnected durable session',
-			}),
-			{
-				qos: 1,
-			}
-		);
-		await clientV5.publishAsync(
-			'SimpleRecord/42',
-			JSON.stringify({
-				name: 'This is a test of publishing to a disconnected durable session 2',
-			}),
-			{
-				qos: 1,
-			}
-		);
-		await clientV5.publishAsync(
-			'SimpleRecord/42',
-			JSON.stringify({
-				name: 'This is a test of publishing to a disconnected durable session 3',
-			}),
-			{
-				qos: 1,
-			}
-		);
-		let messages = [];
-		client = await connectWithMessageListener(
-			mqttUrl,
-			{
-				clean: false,
-				clientId: 'test-client1',
-				protocolVersion: 5,
-				properties: {
-					sessionExpiryInterval: 3600,
-				},
-			},
-			(topic, message) => {
-				messages.push(message.toString());
-			}
-		);
-		await new Promise((resolve, reject) => {
-			const interval = setInterval(() => {
-				if (messages.length === 3) {
-					clearInterval(interval);
-					resolve();
+			await clientV5.publishAsync(
+				'SimpleRecord/42',
+				JSON.stringify({
+					name: 'This is a test of publishing to a disconnected durable session 2',
+				}),
+				{
+					qos: 1,
 				}
-			}, 1);
-			setTimeout(() => {
-				clearInterval(interval);
-				reject(
-					new Error(`Expected 3 queued messages to be delivered to reconnected durable session, got ${messages.length}`)
-				);
-			}, 15000);
-		});
-		await delay(50);
-		await client.endAsync();
-		if (messages.length !== 3) console.error('Incorrect messages', { messages });
-		assert(messages.length === 3);
-	});
+			);
+			await clientV5.publishAsync(
+				'SimpleRecord/42',
+				JSON.stringify({
+					name: 'This is a test of publishing to a disconnected durable session 3',
+				}),
+				{
+					qos: 1,
+				}
+			);
+			let messages = [];
+			client = await connectWithMessageListener(
+				mqttUrl,
+				{
+					clean: false,
+					clientId: 'test-client1',
+					protocolVersion: 5,
+					properties: {
+						sessionExpiryInterval: 3600,
+					},
+				},
+				(topic, message) => {
+					messages.push(message.toString());
+				}
+			);
+			await new Promise((resolve, reject) => {
+				const interval = setInterval(() => {
+					if (messages.length === 3) {
+						clearInterval(interval);
+						resolve();
+					}
+				}, 1);
+				setTimeout(() => {
+					clearInterval(interval);
+					reject(
+						new Error(
+							`Expected 3 queued messages to be delivered to reconnected durable session, got ${messages.length}`
+						)
+					);
+				}, 15000);
+			});
+			await delay(50);
+			await client.endAsync();
+			if (messages.length !== 3) console.error('Incorrect messages', { messages });
+			assert(messages.length === 3);
+		}
+	);
 	it('subscribe with QoS=2', async function () {
 		// this first connection is a tear down to remove any previous durable session with this id
 		let client = await connectAsync(mqttUrl, {

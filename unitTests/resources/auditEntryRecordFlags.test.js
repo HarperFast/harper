@@ -3,7 +3,7 @@ const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { createAuditEntry, readAuditEntry } = require('#src/resources/auditStore');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
@@ -128,10 +128,10 @@ describe('Audit entry record flags match the body (#2153)', () => {
 
 			let loser;
 			for (const entry of T.auditStore.getRange({ start: 1 })) {
-				if (entry.version === loserVersion) loser = entry;
+				if (entry.recordId === id && entry.version === loserVersion) loser = entry;
 				// every minted entry must be internally consistent: record flags imply a body
 				if (entry.extendedType & (HAS_RECORD | HAS_PARTIAL_RECORD)) {
-					assert(entry.getBinaryValue().length > 0, `entry ${entry.version} advertises a record but has no body`);
+					assert(entry.getBinaryValue().length > 0, `entry ${entry.txnLogKey} advertises a record but has no body`);
 				}
 			}
 			assert(loser, 'audit entry for the superseded write should exist');

@@ -1,0 +1,6 @@
+# Record-lock concurrency fixture (harper#483): a plain counter row that every worker contends for.
+type Counter @table @export {
+	id: ID @primaryKey
+	n: Int
+	holders: Int
+}

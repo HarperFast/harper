@@ -1,5 +1,6 @@
 const chai = require('chai');
 const expect = chai.expect;
+const assert = require('node:assert');
 const {
 	diffResourceUsage,
 	calculateCPUUtilization,
@@ -12,10 +13,34 @@ const {
 	buildRocksDBTableMetric,
 	buildRocksDBTxnLogMetric,
 	findLastAggregationTime,
+	storeDBSizeMetrics,
+	storeVolumeMetrics,
+	storeRocksDBStatsMetrics,
 } = require('#src/resources/analytics/write');
+const { RocksDatabase } = require('../../rocksdbBindings.mts').rocksdbBindings();
 const { writeFile, mkdtemp, rm, mkdir } = require('node:fs/promises');
 const { join } = require('node:path');
 const { tmpdir } = require('node:os');
+
+function collectingAnalyticsTable() {
+	const puts = [];
+	return {
+		puts,
+		put(_id, value) {
+			puts.push(value);
+		},
+	};
+}
+
+// A primaryStore double that satisfies the `instanceof RocksDatabase` check the writers branch on,
+// without touching the native binding. `path` is a native getter with no setter on the prototype,
+// so a plain assignment silently no-ops; defineProperty creates an own property that shadows it.
+function fakeRocksStore({ path, ...rest } = {}) {
+	const store = Object.create(RocksDatabase.prototype);
+	if (path !== undefined) Object.defineProperty(store, 'path', { value: path, enumerable: true, configurable: true });
+	Object.assign(store, rest);
+	return store;
+}
 
 describe('diffResourceUsage', () => {
 	it('diffs all counters', () => {
@@ -112,6 +137,59 @@ describe('getDirectorySizeAsync', () => {
 	it('returns 0 for a nonexistent path', async () => {
 		const size = await getDirectorySizeAsync(join(tmpDir, 'nope'));
 		expect(size).to.equal(0);
+	});
+
+	// harper#2240: the walk used to fan out over every entry in the tree with an unbounded
+	// Promise.all, so it held a path string, a dirent and a pending stat for EVERY file at once. On a
+	// node whose root carries a large blob store that grew the main thread's heap ~72 MB/s until V8
+	// aborted — on every boot, since the metric runs on the first analytics cycle. It measures about
+	// every ten minutes, so the footprint matters and the wall clock does not.
+	it('stats one file at a time', async () => {
+		const FILES = 300;
+		await Promise.all(
+			Array.from({ length: FILES }, (unused, i) => writeFile(join(tmpDir, `f${i}.txt`), 'x'.repeat(10)))
+		);
+		let outstanding = 0;
+		let peak = 0;
+		const statFile = async (_path) => {
+			outstanding++;
+			if (outstanding > peak) peak = outstanding;
+			await new Promise((resolve) => setImmediate(resolve));
+			outstanding--;
+			return { size: 10 };
+		};
+		const size = await getDirectorySizeAsync(tmpDir, { statFile });
+		expect(size).to.equal(FILES * 10);
+		expect(peak).to.equal(1);
+	});
+
+	it('sums a directory far wider than any plausible batch', async () => {
+		const FILES = 2000;
+		await Promise.all(Array.from({ length: FILES }, (unused, i) => writeFile(join(tmpDir, `w${i}.bin`), 'ab')));
+		expect(await getDirectorySizeAsync(tmpDir)).to.equal(FILES * 2);
+	});
+
+	it('descends through many nested levels', async () => {
+		let dir = tmpDir;
+		for (let i = 0; i < 60; i++) {
+			dir = join(dir, `d${i}`);
+			await mkdir(dir);
+		}
+		await writeFile(join(dir, 'deep.txt'), 'abcd');
+		expect(await getDirectorySizeAsync(tmpDir)).to.equal(4);
+	});
+
+	it('skips a file whose stat fails instead of zeroing the whole tree', async () => {
+		// The old Promise.all rejected on one bad stat and the outer catch returned 0 for everything
+		// under dirPath — a file removed mid-walk erased the entire measurement.
+		await writeFile(join(tmpDir, 'good1.txt'), 'aaaa');
+		await writeFile(join(tmpDir, 'gone.txt'), 'bbbbbb');
+		await writeFile(join(tmpDir, 'good2.txt'), 'cc');
+		const statFile = async (path) => {
+			if (path.endsWith('gone.txt')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+			return { size: path.endsWith('good1.txt') ? 4 : 2 };
+		};
+		expect(await getDirectorySizeAsync(tmpDir, { statFile })).to.equal(6);
 	});
 });
 
@@ -500,5 +578,225 @@ describe('findLastAggregationTime (#1538)', () => {
 		const store = mockStore([]);
 		expect(findLastAggregationTime(store, NODE)).to.equal(undefined);
 		expect(store.pulled).to.equal(0);
+	});
+});
+
+describe('storeDBSizeMetrics', () => {
+	let tmpDir;
+
+	beforeEach(async () => {
+		tmpDir = await mkdtemp(join(tmpdir(), 'harper-dbsize-test-'));
+	});
+
+	afterEach(async () => {
+		if (tmpDir) await rm(tmpDir, { recursive: true, force: true });
+	});
+
+	it('RocksDB branch: sums .sst file bytes and reports transactionLog, with no used/free', async () => {
+		await writeFile(join(tmpDir, 'a.sst'), 'x'.repeat(100));
+		await writeFile(join(tmpDir, 'b.sst'), 'y'.repeat(150));
+		await writeFile(join(tmpDir, 'c.log'), 'z'.repeat(41));
+		const firstTable = { getAuditSize: () => 999, primaryStore: fakeRocksStore({ path: tmpDir }) };
+		const analyticsTable = collectingAnalyticsTable();
+
+		storeDBSizeMetrics(analyticsTable, { mydb: { t1: firstTable } });
+
+		assert.strictEqual(analyticsTable.puts.length, 1);
+		const [metric] = analyticsTable.puts;
+		assert.strictEqual(metric.metric, 'database-size');
+		assert.strictEqual(metric.database, 'mydb');
+		assert.strictEqual(metric.size, 250);
+		assert.strictEqual(metric.transactionLog, 999);
+		assert.ok(!('used' in metric));
+		assert.ok(!('free' in metric));
+	});
+
+	it('LMDB branch: reports total/used/free/audit from a file stat plus per-table sizes', async () => {
+		const dbPath = join(tmpDir, 'db.mdb');
+		await writeFile(dbPath, 'x'.repeat(500));
+		const lmdbPrimaryStore = { path: dbPath };
+		const t1 = { getSize: () => 40, getAuditSize: () => 77, primaryStore: lmdbPrimaryStore };
+		const t2 = { getSize: () => 60, primaryStore: lmdbPrimaryStore };
+		const analyticsTable = collectingAnalyticsTable();
+
+		storeDBSizeMetrics(analyticsTable, { mydb: { t1, t2 } });
+
+		assert.strictEqual(analyticsTable.puts.length, 3);
+		const tableSizes = analyticsTable.puts
+			.filter((m) => m.metric === 'table-size')
+			.map((m) => [m.table, m.size])
+			.sort((a, b) => a[0].localeCompare(b[0]));
+		assert.deepStrictEqual(tableSizes, [
+			['t1', 40],
+			['t2', 60],
+		]);
+		const [dbMetric] = analyticsTable.puts.filter((m) => m.metric === 'database-size');
+		assert.strictEqual(dbMetric.database, 'mydb');
+		assert.strictEqual(dbMetric.size, 500);
+		assert.strictEqual(dbMetric.used, 100);
+		assert.strictEqual(dbMetric.free, 400);
+		assert.strictEqual(dbMetric.audit, 77);
+	});
+
+	it('skips a database whose audit size is unavailable (e.g. deleted mid-collection)', () => {
+		const firstTable = { getAuditSize: () => null, primaryStore: fakeRocksStore({ path: tmpDir }) };
+		const analyticsTable = collectingAnalyticsTable();
+
+		storeDBSizeMetrics(analyticsTable, { mydb: { t1: firstTable } });
+
+		assert.strictEqual(analyticsTable.puts.length, 0);
+	});
+
+	it('a database that throws mid-collection does not stop metrics for the next database', async () => {
+		const brokenTable = {
+			getAuditSize: () => {
+				throw new Error('db dropped');
+			},
+		};
+		await writeFile(join(tmpDir, 'a.sst'), 'x'.repeat(60));
+		const healthyTable = { getAuditSize: () => 5, primaryStore: fakeRocksStore({ path: tmpDir }) };
+		const analyticsTable = collectingAnalyticsTable();
+
+		storeDBSizeMetrics(analyticsTable, { broken: { t1: brokenTable }, healthy: { t1: healthyTable } });
+
+		assert.strictEqual(analyticsTable.puts.length, 1);
+		assert.strictEqual(analyticsTable.puts[0].database, 'healthy');
+		assert.strictEqual(analyticsTable.puts[0].size, 60);
+	});
+});
+
+describe('storeVolumeMetrics', () => {
+	it('stores a storage-volume metric per database, keyed by database name', async () => {
+		// Table.getStorageStats() forwards getStorageSpaceStats() (server/storageReclamation.ts),
+		// whose return shape is { available, free, size, basis }.
+		const analyticsTable = collectingAnalyticsTable();
+		const databases = {
+			dbA: { t1: { getStorageStats: async () => ({ available: 111, free: 111, size: 222, basis: 'filesystem' }) } },
+			dbB: { t1: { getStorageStats: async () => ({ available: 333, free: 333, size: 444, basis: 'quota' }) } },
+		};
+
+		await storeVolumeMetrics(analyticsTable, databases);
+
+		assert.strictEqual(analyticsTable.puts.length, 2);
+		const byDb = new Map(analyticsTable.puts.map((m) => [m.database, m]));
+		assert.strictEqual(byDb.get('dbA').metric, 'storage-volume');
+		assert.strictEqual(byDb.get('dbA').available, 111);
+		assert.strictEqual(byDb.get('dbA').size, 222);
+		assert.strictEqual(byDb.get('dbA').basis, 'filesystem');
+		assert.strictEqual(byDb.get('dbB').available, 333);
+		assert.strictEqual(byDb.get('dbB').size, 444);
+		assert.strictEqual(byDb.get('dbB').basis, 'quota');
+	});
+
+	it('skips a database with no storage stats', async () => {
+		const analyticsTable = collectingAnalyticsTable();
+
+		await storeVolumeMetrics(analyticsTable, { empty: { t1: { getStorageStats: async () => undefined } } });
+
+		assert.strictEqual(analyticsTable.puts.length, 0);
+	});
+
+	it('a database whose stats call rejects does not stop metrics for its sibling', async () => {
+		const analyticsTable = collectingAnalyticsTable();
+		const databases = {
+			broken: {
+				t1: {
+					getStorageStats: async () => {
+						throw new Error('boom');
+					},
+				},
+			},
+			healthy: { t1: { getStorageStats: async () => ({ available: 1, free: 1, size: 2, basis: 'filesystem' }) } },
+		};
+
+		await storeVolumeMetrics(analyticsTable, databases);
+
+		assert.strictEqual(analyticsTable.puts.length, 1);
+		assert.strictEqual(analyticsTable.puts[0].database, 'healthy');
+	});
+});
+
+describe('storeRocksDBStatsMetrics', () => {
+	// `lastRocksDBDbStats`/`lastRocksDBLogStats` are module-level maps keyed by database name, so
+	// every test here uses its own unique db name to avoid picking up another test's baseline.
+	function fakeRocksStoreWithStats(statsOverrides = {}, logs = {}) {
+		const store = fakeRocksStore();
+		store.getStats = () => Object.assign({ 'rocksdb.bytes-read': 100, 'rocksdb.bytes-written': 50 }, statsOverrides);
+		store.listLogs = () => Object.keys(logs);
+		store.useLog = (name) => ({ getStats: () => logs[name] });
+		return store;
+	}
+
+	it('skips a non-RocksDB database entirely', () => {
+		const analyticsTable = collectingAnalyticsTable();
+
+		storeRocksDBStatsMetrics(analyticsTable, { 'rdb-skip-lmdb': { t1: { primaryStore: {} } } }, 1000, undefined);
+
+		assert.strictEqual(analyticsTable.puts.length, 0);
+	});
+
+	it('stores only the per-table gauge metric on the first sample (db counters need a baseline)', () => {
+		const analyticsTable = collectingAnalyticsTable();
+		const primaryStore = fakeRocksStoreWithStats();
+
+		storeRocksDBStatsMetrics(analyticsTable, { 'rdb-first-sample': { t1: { primaryStore } } }, 1000, undefined);
+
+		assert.strictEqual(analyticsTable.puts.length, 1);
+		assert.strictEqual(analyticsTable.puts[0].metric, 'rocksdb-stats');
+		assert.strictEqual(analyticsTable.puts[0].table, 't1');
+	});
+
+	it('diffs db-level counters against the prior sample and passes log gauges through absolute', () => {
+		const dbName = 'rdb-diffed-sample';
+		const databases = {
+			[dbName]: {
+				t1: {
+					primaryStore: fakeRocksStoreWithStats(
+						{},
+						{ audit: { fileCount: 1, totalSizeBytes: 10, totals: { transactionsWritten: 5 } } }
+					),
+				},
+			},
+		};
+		const baselineAnalyticsTable = collectingAnalyticsTable();
+		storeRocksDBStatsMetrics(baselineAnalyticsTable, databases, 1000, undefined);
+
+		databases[dbName].t1.primaryStore = fakeRocksStoreWithStats(
+			{ 'rocksdb.bytes-read': 250, 'rocksdb.bytes-written': 130 },
+			{ audit: { fileCount: 1, totalSizeBytes: 20, totals: { transactionsWritten: 9 } } }
+		);
+		const analyticsTable = collectingAnalyticsTable();
+
+		storeRocksDBStatsMetrics(analyticsTable, databases, 2000, 1000);
+
+		const dbMetric = analyticsTable.puts.find((m) => m.metric === 'rocksdb-stats' && !m.table);
+		assert.strictEqual(dbMetric.bytesRead, 150);
+		assert.strictEqual(dbMetric.bytesWritten, 80);
+		assert.strictEqual(dbMetric.period, 1000);
+
+		const logMetric = analyticsTable.puts.find((m) => m.metric === 'rocksdb-txnlog-stats');
+		assert.strictEqual(logMetric.log, 'audit');
+		assert.strictEqual(logMetric.totalsTransactionsWritten, 4);
+		assert.strictEqual(logMetric.totalSizeBytes, 20);
+	});
+
+	it('a table whose stats call throws does not stop metrics for its sibling table', () => {
+		const dbName = 'rdb-table-throws';
+		const brokenStore = fakeRocksStoreWithStats();
+		brokenStore.getStats = () => {
+			throw new Error('table dropped');
+		};
+		const okStore = fakeRocksStoreWithStats();
+		const analyticsTable = collectingAnalyticsTable();
+
+		storeRocksDBStatsMetrics(
+			analyticsTable,
+			{ [dbName]: { broken: { primaryStore: brokenStore }, ok: { primaryStore: okStore } } },
+			1000,
+			undefined
+		);
+
+		assert.strictEqual(analyticsTable.puts.length, 1);
+		assert.strictEqual(analyticsTable.puts[0].table, 'ok');
 	});
 });

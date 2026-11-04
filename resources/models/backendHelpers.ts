@@ -10,11 +10,48 @@
  * in via a constructor type so the thrown errors carry the backend's name
  * for `instanceof` matching in tests.
  */
+import { ServerError } from '../../utility/errors/hdbError.ts';
 import { isUnresolvedEnvVarPlaceholder } from '../../utility/expandEnvVar.ts';
 import type { TokenUsage } from './types.ts';
 
 /** Constructor signature for backend-specific error classes. */
 export type BackendErrorCtor = new (message: string) => Error;
+
+/**
+ * Thrown by a backend's `scoreChoices` for a call it cannot score (#2838), as distinct from a call
+ * that failed: the decision adapter votes instead in `auto` mode, and the facade records the
+ * attempt as `scoring_unsupported`. `usage` carries the tokens the attempt did consume (a
+ * completion that came back without log-probabilities is still billed), so the failure row
+ * accounts for them.
+ */
+export class ChoiceScoringUnsupportedError extends ServerError {
+	declare usage?: TokenUsage;
+	constructor(message: string, usage?: TokenUsage) {
+		super(message);
+		this.name = 'ChoiceScoringUnsupportedError';
+		if (usage) this.usage = usage;
+	}
+}
+
+// Provider wording for an input that does not fit the model's context window: OpenAI and compatible
+// servers (vLLM, Mistral, Gemini's OpenAI endpoint), Anthropic, and Bedrock's ValidationException.
+const CONTEXT_WINDOW_REJECTION =
+	/context[ _](?:length|window|limit)|maximum context length|prompt is too long|input is too long|too many (?:input )?tokens|exceeds the maximum number of tokens/i;
+
+/**
+ * Whether a provider rejected a request because its input does not fit the model's context window.
+ * A backend sets `contextWindowExceeded` on the error it throws when this holds, so callers branch
+ * on {@link isContextWindowExceeded} instead of parsing provider wording.
+ */
+export function isContextWindowRejection(status: number | undefined, message: unknown, code?: unknown): boolean {
+	if (code === 'context_length_exceeded') return true;
+	if (status !== 400 && status !== 413) return false;
+	return typeof message === 'string' && CONTEXT_WINDOW_REJECTION.test(message);
+}
+
+export function isContextWindowExceeded(err: unknown): boolean {
+	return (err as { contextWindowExceeded?: unknown } | null | undefined)?.contextWindowExceeded === true;
+}
 
 /**
  * Combine a caller-supplied AbortSignal with a per-call timeout via
@@ -41,9 +78,11 @@ export function assignFiniteTokenCount(
 	key: 'promptTokens' | 'completionTokens' | 'embeddingTokens',
 	value: unknown
 ): void {
-	if (typeof value !== 'number') return;
-	if (!Number.isFinite(value) || value < 0 || !Number.isInteger(value)) return;
-	usage[key] = value;
+	if (isTokenCount(value)) usage[key] = value;
+}
+
+export function isTokenCount(value: unknown): value is number {
+	return typeof value === 'number' && Number.isFinite(value) && value >= 0 && Number.isInteger(value);
 }
 
 // Body-read caps. A hostile or buggy upstream that returns a multi-GiB body
