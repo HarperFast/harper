@@ -147,6 +147,31 @@ describe('Published full-text telemetry collection', function () {
 			(histogramCount + 1n).toString()
 		);
 	});
+	it('preserves released cumulative histogram fields across real observations', async () => {
+		const { options } = await writer();
+		const handle = await reader(options);
+		collector.register(handle, 'catalog.Histograms/search', 'reader');
+		collector.setOperatorPolicy({ enabled: true, histograms: true });
+		for (let observation = 1; observation <= 2; observation++) {
+			await handle.search({ text: 'widget' });
+			collector.collect(handle);
+			const sample = row();
+			const native = handle.telemetry().native;
+			const latency = native.operations.search.execution;
+			assert.strictEqual(sample.native_operations_search_completed, String(observation));
+			assert.strictEqual(sample.native_operations_search_dispatched, '0');
+			assert.strictEqual(sample.native_operations_search_execution_count, latency.count.toString());
+			assert.strictEqual(sample.native_operations_search_execution_sumNanoseconds, latency.sumNanoseconds.toString());
+			for (let bucket = 0; bucket < latency.histogram.buckets.length; bucket++)
+				assert.strictEqual(
+					sample[`native_operations_search_execution_histogram_buckets_${bucket}`],
+					latency.histogram.buckets[bucket].toString()
+				);
+			for (const [name, value] of Object.entries(sample))
+				if (name.startsWith('native_operations_') && typeof value === 'string' && /^\d+$/.test(value))
+					assert.ok(BigInt(value) < 1n << 63n, name);
+		}
+	});
 	it('unions removable consumer options without persisting consumer-only observations', async () => {
 		const { index } = await writer();
 		collector.register(index, 'catalog.Product/search', 'writer');

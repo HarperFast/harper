@@ -90,7 +90,7 @@ Weight and highlighting changes preserve the physical index and refresh query re
 
 Harper pins `@harperfast/fulltext` to **0.9.0**, embedding **Tantivy 0.27.0**, and validates the native runtime capabilities before activation. Full-text activation requires RocksDB and an audited table. Declare new schema tables with `@table(audit: true)` and keep audit logging enabled while an index is declared. LMDB is rejected. A missing or incompatible native package prevents activation.
 
-### Upgrading from fulltext 0.7.0
+### Upgrading from fulltext 0.7.0 or 0.8.0
 
 On nodes that already ran v5.4 prereleases with fulltext 0.7.0, existing indexes contain text fields only and remain reusable with 0.9.0. Compatible checkpoints from v5.4 prereleases with fulltext 0.8.0 are also reused without rebuilding; the regression advances them with 0.9.0 and reopens them with 0.8.0. This binary-level check is not a supported older-Harper operator downgrade procedure. This upgrade does not add native filter metadata or change their storage identity. Query limits and fuzzy controls do not require rebuilding. Stop all processes sharing a local index before switching package versions; never mix facade/native binaries or engine versions against a live directory. New installations omit `storage.fullText.query`; defaults apply automatically. An explicitly configured query block must be removed before returning to Harper 5.4.0-alpha.1 or alpha.2, whose validators reject it. Existing configuration is not rewritten. Returning to fulltext 0.7.0 after 0.8.0 has written to an index is not a qualified operator rollback procedure.
 

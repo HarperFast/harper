@@ -219,7 +219,13 @@ describe('analytics aggregation cycle', () => {
 		assert.strictEqual(rows[1].completed, '7');
 		assert.strictEqual(rows[0].mean, undefined);
 		assert.strictEqual(rows[0].ratio, undefined);
+		assert.strictEqual(rows[1].error, null);
 		const reader = require('#src/resources/analytics/read');
+		const description = await reader.describeMetric(metric);
+		assert.ok(
+			description.attributes.some((attribute) => attribute.name === 'completed' && attribute.type === 'string')
+		);
+		assert.ok(!description.attributes.some((attribute) => attribute.name === 'error' && attribute.type === 'object'));
 		await waitFor(async () => {
 			for await (const value of await reader.get(metric, { startTime: first, endTime: Date.now() + 1000 }))
 				if (value.completed === '9007199254740997') return true;

@@ -209,6 +209,7 @@ export function flushAnalyticsForExit(): Promise<void> {
 		await runningAnalyticsFlush?.catch(() => {});
 		if (checkAnalyticsEnabled(false)) await flushAnalytics(true);
 		else for (const listener of [...analyticsListeners]) listener([], true);
+		if (!parentPort) await RawAnalyticsTable?.primaryStore.committed;
 	}));
 }
 
@@ -359,7 +360,7 @@ async function collectAnalytics(final: boolean) {
 			type: ANALYTICS_REPORT_TYPE,
 			report,
 		});
-	else recordAnalytics({ report });
+	else await recordAnalytics({ report });
 }
 
 export async function recordHostname() {
@@ -1440,9 +1441,10 @@ function recordAnalytics(message, worker?) {
 		lastUtilizations.set(worker, worker.performance.eventLoopUtilization());
 	}
 	report.id = getNextMonotonicTime();
-	getRawAnalyticsTable().primaryStore.put(report.id, report);
+	const written = getRawAnalyticsTable().primaryStore.put(report.id, report);
 	if (!scheduledTasksRunning) startScheduledTasks();
 	if (LOG_ANALYTICS) lastAppend = logAnalytics(report);
+	return written;
 }
 let lastAppend;
 let analyticsLog;

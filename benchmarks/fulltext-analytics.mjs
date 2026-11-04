@@ -37,10 +37,23 @@ const git = (...args) => execFileSync('git', args, { cwd: repository, encoding: 
 const source = {
 	head: git('rev-parse', 'HEAD'),
 	dirty: Boolean(git('status', '--porcelain')),
-	trackedDiffSha256: createHash('sha256')
-		.update(git('diff', 'HEAD', '--', '.'))
-		.digest('hex'),
+	trackedDiffSha256: await trackedDiffFingerprint(),
 };
+async function trackedDiffFingerprint() {
+	const hash = createHash('sha256');
+	const child = spawn('git', ['diff', 'HEAD', '--', '.'], { cwd: repository, stdio: ['ignore', 'pipe', 'inherit'] });
+	const completed = new Promise((resolve, reject) => {
+		child.once('error', reject);
+		child.once('close', (code, signal) => {
+			if (code === 0) resolve();
+			else reject(new Error(`Git fingerprint failed: ${signal ?? code}`));
+		});
+	});
+	child.stdout.pipe(hash);
+	await completed;
+	return hash.digest('hex');
+}
+
 const fingerprintFiles = [
 	'benchmarks/fulltext-analytics.mjs',
 	'benchmarks/fulltext-analytics.bench.js',

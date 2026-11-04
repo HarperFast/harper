@@ -24,7 +24,7 @@ export function watchFullTextTelemetryConfiguration(
 	}
 	function report() {
 		try {
-			logger.warn('Could not apply full-text telemetry configuration; retaining the previous valid policy');
+			logger.warn?.('Could not apply full-text telemetry configuration; retaining the previous valid policy');
 		} catch {}
 	}
 	function changed() {

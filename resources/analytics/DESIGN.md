@@ -19,7 +19,7 @@ it stops at `firstForPeriod + toPeriod` so one cycle's main-thread msgpackr deco
   a backlog longer than one window and every report written while the cycle ran, because nothing
   reads below the cursor again.
 - **A cycle that reads nothing leaves it where it is.** An empty scan is not proof that nothing is
-  there: `recordAnalytics` does not await its `primaryStore.put`, so a report can be uncommitted and
+  there: worker report delivery does not await its `primaryStore.put`, so a report can be uncommitted and
   invisible to the scan while carrying a key older than anything the cycle could compare against. No
   wall-clock reading is safe to put in the cursor for the same reason.
 
@@ -78,3 +78,5 @@ always a caller's measure.
 `fullTextTelemetryRuntime.ts` joins removable internal consumer demand with live operator policy. The consumer hook is an internal diagnostic/test seam with no production caller yet. Only operator demand enables persistence; persisted optional fields reflect the union of recording requests. No demand means no timer; no cold handles open. Exact counters are decimal strings; `cumulative` retains the newest worker row instead of averaging. Lost final counts force a new series on the next live observation. Overflow prefers replaceable live rows, ordered by last refresh, before final rows; dropped live totals remain recoverable. Main also filters worker rows by its receive-time policy; transition losses, including final rows, do not increment `droppedRows`. Failed writer closes resume collection while the engine remains installed. `aggregationCycle.test.js` verifies counters above 2^53 survive storage and `get_analytics`.
 
 `watchFullTextTelemetryConfiguration` initializes and reloads through the shared watcher's nested root, environment overlay and transactional `refreshConfigSubtree`; it never reads the missing camel-case flat aggregate. Invalid edits retain valid policy. Missing files retain valid policy and overrides, matching the root watcher; valid edits retire only changed overrides. `fullTextTelemetryConfiguration.test.js` pins initialization, override retirement and deletion/recreation. Native runtime/query policy remains frozen separately. Binding telemetry types are structural: `buildDist.test.mjs` checks compilation and emitted declarations without the optional package.
+
+Final main-thread analytics flush awaits its own raw write and the raw store’s existing commit barrier for worker reports. This is commit completion, not a new disk-sync guarantee; the process shutdown deadline still bounds it. `describe_metric` omits null-valued attributes from inferred metadata rather than describing unavailable scalar observations as objects; stored rows and `get_analytics` retain their null values.
