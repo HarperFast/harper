@@ -201,6 +201,27 @@ describe('MCP persisted subscription state', function () {
 		assert.deepEqual((await loadSession(session.id)).subscriptions, []);
 	});
 
+	it('distinguishes deletion from a missing GET while installation is pending', async () => {
+		await open();
+		const started = deferred();
+		const install = deferred();
+		const stream = changeStream();
+		_setSubscribeImplForTest(async () => {
+			started.resolve();
+			return install.promise;
+		});
+		const result = subscribe();
+		await started.promise;
+		try {
+			await deleteSession(session.id);
+			assert.equal(await result, 'session-gone');
+		} finally {
+			install.resolve(stream);
+			await result;
+		}
+		await waitFor(() => stream.stops === 1);
+	});
+
 	it('does not let a superseded incarnation overwrite the new owner acknowledgement', async () => {
 		const first = await open();
 		const started = deferred();

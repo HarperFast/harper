@@ -932,6 +932,7 @@ async function dispatchResourcesSubscribe(
 		uri,
 		user: effectiveUser(request),
 	});
+	if (result === 'session-gone') return { status: 404, headers: {} };
 	if (result === 'no-live-stream') {
 		return jsonResponse(
 			200,
@@ -976,6 +977,7 @@ async function dispatchResourcesUnsubscribe(
 		);
 	}
 	const result = await updateResourceSubscription({ session, operation: 'unsubscribe', uri });
+	if (result === 'session-gone') return { status: 404, headers: {} };
 	if (result === 'timeout') {
 		return jsonResponse(
 			200,

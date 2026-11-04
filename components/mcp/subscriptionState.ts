@@ -23,7 +23,13 @@ let pending = 0;
 const localPrincipals = new Map<string, AuthedUser>();
 
 type SubscriptionRouteResult =
-	'success' | 'not-subscribable' | 'permission-denied' | 'no-live-stream' | 'timeout' | 'internal-error';
+	| 'success'
+	| 'not-subscribable'
+	| 'permission-denied'
+	| 'no-live-stream'
+	| 'session-gone'
+	| 'timeout'
+	| 'internal-error';
 type Rejected = NonNullable<McpSessionRecord['subscriptionAck']>['rejected'];
 type Watcher = { end(): void; on?: (event: string, listener: () => void) => void };
 
@@ -276,7 +282,7 @@ async function waitForApplied(
 		resolveResult(value);
 	};
 	const inspect = (session: McpSessionRecord | null) => {
-		if (!session) return finish('no-live-stream');
+		if (!session) return finish('session-gone');
 		if (!session.streamToken) return;
 		const ack = session.subscriptionAck;
 		// A coalesced reconcile may apply several revisions at once; only the current token can acknowledge them.
@@ -316,7 +322,7 @@ export async function updateResourceSubscription(args: {
 	if (generation && user) localPrincipals.set(generation, user);
 	try {
 		const changed = await withSessionSubscriptionLock(session.id, async (latest) => {
-			if (!latest) return { result: 'no-live-stream' as const };
+			if (!latest) return { result: 'session-gone' as const };
 			const live = !!processIncarnation && latest.streamToken?.startsWith(`${processIncarnation}:`) === true;
 			if (operation === 'subscribe' && (!live || !user)) return { result: 'no-live-stream' as const };
 			if (operation === 'subscribe' && !URL.canParse(uri)) return { result: 'not-subscribable' as const };
