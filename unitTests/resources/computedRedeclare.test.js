@@ -366,6 +366,15 @@ describe('re-declaring a table reports and rebuilds only a real computed change 
 		assert.strictEqual(Restarted.dbisDB.getSync(key).checkpointAlgorithm, RESOLVED_CHECKPOINT_ALGORITHM);
 	});
 
+	it("keeps an application resolver that is also another table's function `from`", async () => {
+		const shared = (record) => 's-' + record.name;
+		declare('ComputedSharedFrom', { computed: { from: shared } });
+		const Bare = declare('ComputedSharedBare', { computed: true });
+		Bare.setComputedAttribute('score', shared);
+		const Again = declare('ComputedSharedBare', { computed: true });
+		assert.strictEqual(Again.userResolvers.score, shared, "the other table's declaration removed this resolver");
+	});
+
 	it('rebuilds a function index another thread built without the function', async () => {
 		const from = (record) => 'f-' + record.name;
 		const Computed = declare('ComputedRecoveredFunction', { computed: { from } });
