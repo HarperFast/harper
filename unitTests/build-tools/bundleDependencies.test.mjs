@@ -14,7 +14,7 @@ describe('portable production dependency bundle', function () {
 	let lock;
 
 	beforeEach(() => {
-		directory = mkdtempSync(join(tmpdir(), 'harper-bundle-'));
+		directory = mkdtempSync(join(realpathSync(tmpdir()), 'harper-bundle-'));
 		source = join(directory, 'source');
 		mkdirSync(source);
 		lock = {
