@@ -310,6 +310,46 @@ describe('MCP persisted subscription state', function () {
 		assert.equal(_liveSubscriptionCount(session.id), 0);
 	});
 
+	for (const denied of [false, true]) {
+		it(`stops the prior iterator when its replacement is ${denied ? 'denied' : 'unsubscribable'}`, async () => {
+			const record = await open();
+			const original = new IterableEventQueue();
+			original.end = () => original.close();
+			_setSubscribeImplForTest(async () => original);
+			assert.equal(await subscribe(), 'success');
+			_setSubscribeImplForTest(async () => {
+				if (denied) throw new AccessViolation(USER);
+				return null;
+			});
+			assert.equal(await subscribe(), denied ? 'permission-denied' : 'not-subscribable');
+			assert.deepEqual((await loadSession(session.id)).subscriptions, []);
+			assert.equal(_liveSubscriptionCount(session.id), 0);
+			assert.equal(original.closed, true);
+			assert.equal(getRegisteredSession(session.id), record);
+		});
+	}
+
+	it('bounds a stalled restore and stops an iterator that arrives after its owner timed out', async () => {
+		_setSubscriptionTimeoutForTest(30);
+		await patchSession(session.id, { subscriptions: [URI] });
+		const install = deferred();
+		const late = changeStream();
+		_setSubscribeImplForTest(async () => install.promise);
+		const record = registerSession(session.id, 'application', USER);
+		const claiming = claimSubscriptionOwner(session.id, record.streamToken);
+		try {
+			await waitFor(() => !getRegisteredSession(session.id), 500);
+			assert.equal(await claiming, false);
+		} finally {
+			install.resolve(late);
+			await claiming;
+		}
+		await waitFor(() => late.stops === 1);
+		_setSubscribeImplForTest(async () => changeStream());
+		await open();
+		assert.equal(await subscribe(`${URI}/other`), 'success');
+	});
+
 	it('returns a terminal permission denial and removes the rejected desired entry', async () => {
 		await open();
 		_setSubscribeImplForTest(async () => {

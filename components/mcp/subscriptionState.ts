@@ -90,6 +90,10 @@ function subscriptionUser(user: AuthedUser): AuthedUser {
 	};
 }
 
+function subscriptionScope(user: AuthedUser): string {
+	return JSON.stringify({ ...subscriptionUser(user), authExpiresAt: undefined });
+}
+
 export async function claimSubscriptionOwner(sessionId: string, streamToken: string): Promise<boolean> {
 	const record = getRegisteredSession(sessionId);
 	if (!record || record.streamToken !== streamToken) return false;
@@ -102,6 +106,8 @@ export async function claimSubscriptionOwner(sessionId: string, streamToken: str
 	let watcher: Watcher | undefined;
 	const installed = new Map<string, string>();
 	const rejected: Rejected = Object.create(null);
+	const reconnectScope = record.user._scopedToken ? subscriptionScope(record.user) : undefined;
+	const restoredScopes = new Map<string, string>();
 	const close = () => {
 		if (stopped) return;
 		stopped = true;
@@ -112,8 +118,22 @@ export async function claimSubscriptionOwner(sessionId: string, streamToken: str
 		}).catch((error) => harperLogger.trace('MCP stream close could not clear its token', error));
 	};
 	record.queue.once('close', close);
-	const fail = () => record.queue.emit('close');
+	const fail = () => record.queue.close();
 	const current = () => !stopped && getRegisteredSession(sessionId) === record;
+	async function install(uri: string, user: AuthedUser): Promise<boolean> {
+		let onClose!: () => void;
+		const closed = new Promise<boolean>((resolve) => {
+			onClose = () => resolve(false);
+			record.queue.once('close', onClose);
+		});
+		const timer = setTimeout(fail, responseTimeoutMs);
+		try {
+			return await Promise.race([addResourceSubscription(sessionId, uri, user), closed]);
+		} finally {
+			clearTimeout(timer);
+			record.queue.off('close', onClose);
+		}
+	}
 	const schedule = () => {
 		if (!current()) return;
 		dirty = true;
@@ -171,19 +191,23 @@ export async function claimSubscriptionOwner(sessionId: string, streamToken: str
 					localPrincipals.get(generation) ??
 					(principalId ? session.subscriptionPrincipals?.[principalId] : record.user);
 				try {
-					const differentScopedGrant =
-						initializing &&
-						record.user._scopedToken &&
-						user &&
-						JSON.stringify({ ...subscriptionUser(record.user), authExpiresAt: undefined }) !==
-							JSON.stringify({ ...subscriptionUser(user), authExpiresAt: undefined });
+					let differentScopedGrant = false;
+					if (initializing && reconnectScope !== undefined && user) {
+						let scope =
+							user === record.user ? reconnectScope : principalId ? restoredScopes.get(principalId) : undefined;
+						if (scope === undefined) {
+							scope = subscriptionScope(user);
+							if (principalId) restoredScopes.set(principalId, scope);
+						}
+						differentScopedGrant = scope !== reconnectScope;
+					}
 					if (
 						!user ||
 						differentScopedGrant ||
 						(user.authExpiresAt !== undefined && Date.now() >= user.authExpiresAt * 1000)
 					) {
 						rejected[uri] = { generation, result: 'permission-denied' };
-					} else if (await addResourceSubscription(sessionId, uri, user)) installed.set(uri, generation);
+					} else if (await install(uri, user)) installed.set(uri, generation);
 					else rejected[uri] = { generation, result: 'not-subscribable' };
 				} catch (error) {
 					rejected[uri] = {
@@ -221,6 +245,8 @@ export async function claimSubscriptionOwner(sessionId: string, streamToken: str
 					latest.subscriptionPrincipalIds
 				);
 				for (const uri of terminal) {
+					removeResourceSubscription(sessionId, uri);
+					installed.delete(uri);
 					delete generations[uri];
 					delete principalIds[uri];
 				}
@@ -268,6 +294,7 @@ export async function claimSubscriptionOwner(sessionId: string, streamToken: str
 		schedule();
 		await running;
 		initializing = false;
+		restoredScopes.clear();
 		return current();
 	} catch (error) {
 		fail();

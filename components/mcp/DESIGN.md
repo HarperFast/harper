@@ -172,10 +172,10 @@ Tokens include Harper's existing process incarnation, so a token from an earlier
 A replacement iterator is installed before the previous one stops, so re-subscribe has no registration gap.
 `addResourceSubscription` discards
 an installation that finishes after its GET closes. Terminal rejections are removed from the durable
-set. A transient failure during initial restore closes the GET and returns retryable 503, retaining the URI for reconnect. Failed watchers close the GET so a client can reconnect rather than keep an inert stream.
+set, and a rejected replacement stops its prior iterator before acknowledgment. Each installation is bounded by the acknowledgment timeout; closing or timing out the GET releases reconciliation, and an iterator returned late is stopped by its original owner fence. A transient failure during initial restore closes the GET and returns retryable 503, retaining the URI for reconnect. Failed watchers close the GET so a client can reconnect rather than keep an inert stream.
 
 Ordinary principals are reauthorized through the GET principal. Only scoped-token principals persist
-their embedded role and expiry, once per distinct grant, with per-URI references. Unreferenced grants are pruned. Credentials and custom claims stay out of storage. Same-worker
+their embedded role and expiry, once per distinct grant, with per-URI references. Reconnect compares the GET scope once and caches each distinct stored grant comparison only for the initial restore. Unreferenced grants are pruned. Credentials and custom claims stay out of storage. Same-worker
 requests retain their full principal during installation. Reconnect rejects expired scoped entries and requires a scoped GET to present the same username and role permissions (a refreshed expiry is allowed without extending the stored grant); a different credential with the same attribution username cannot inherit it. The notification callback closes the GET and its iterators on an update after either grant expires, including custom streams that do not enforce expiry themselves.
 
 Activity-only session writes do not trigger reconciliation: the watcher compares the token and revision.
