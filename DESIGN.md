@@ -96,6 +96,7 @@ A note lives in the `DESIGN.md` of the directory that owns the code it describes
 - [A `@decide` decision is recorded only when the record can reach it](resources/models/DESIGN.md#a-decide-decision-is-recorded-only-when-the-record-can-reach-it) — A directive records its decision only with a `decision` attribute, which is server-owned; association is bounded, and read-only nodes run no model hook and stage no cache fill.
 - [A generative call is priced by the entry that served it](resources/models/DESIGN.md#a-generative-call-is-priced-by-the-entry-that-served-it) — `costUsd` comes from the serving backend's `pricing`, needs both token counts, is computed outside the fallback catch, and never changes calibration identity.
 - [A fitted calibration never crosses a score source, and never waits on storage or fails a call](resources/models/DESIGN.md#a-fitted-calibration-never-crosses-a-score-source-and-never-waits-on-storage-or-fails-a-call) — Populations are keyed by served-entry fingerprints and signatures; the decide path reads a cache only and fails open; immutable versions are ranked by the evidence they saw; the job is internal to the scheduler.
+- [Telemetry table writes and legacy prefixless rows](resources/models/DESIGN.md#telemetry-writes-use-the-table-path).
 
 ## server/ — HTTP stacks, threads, operation dispatch
 
@@ -220,5 +221,3 @@ A note lives in the `DESIGN.md` of the directory that owns the code it describes
 - [`build.sh` packages only a clean, error-free build (`build.sh`)](build-tools/DESIGN.md#buildsh-packages-only-a-clean-error-free-build-buildsh) — Packaging clears `dist/` and fails on `tsc` errors, so a failed or partial build is never shipped.
 - [Emitted `dist/` JS is comment-free and Latin-1 (`build-tools/build-dist.mjs`)](build-tools/DESIGN.md#emitted-dist-js-is-comment-free-and-latin-1-build-toolsbuild-distmjs) — V8 keeps every loaded module's source on each thread's heap and stores a file as UTF-16 when one char is above `0xFF`, so the build strips comments and escapes non-Latin-1 literals in the emitter.
 - [Integration tests never assert the literal `true` (`build-tools/oxlint-plugin-harper.mjs`)](build-tools/DESIGN.md#integration-tests-never-assert-the-literal-true-build-toolsoxlint-plugin-harpermjs) — A lint rule rejects literal-true assertions under `integrationTests/`; a fixture test catches an oxlint bump that silently stops it reporting.
-
-- [Telemetry table writes and legacy prefixless rows](resources/models/DESIGN.md#telemetry-writes-use-the-table-path).

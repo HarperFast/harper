@@ -24,8 +24,8 @@ describe('Model-call analytics persistence', () => {
 	});
 
 	afterEach(async () => {
-		writer.stop();
-		await writer.flush();
+		writer?.stop();
+		await writer?.flush();
 		for (const id of ids.splice(0)) await modelTable.primaryStore.remove(id);
 	});
 
