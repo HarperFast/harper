@@ -476,6 +476,20 @@ describe('re-declaring a table reports and rebuilds only a real computed change 
 		assert.strictEqual(live.elements.definition, definition, 'the claim replaced a runtime declaration object');
 	});
 
+	it('certifies an empty table without touching the live attribute', async () => {
+		const Empty = declare('ComputedEmptyLive', { computed: true });
+		const live = Empty.attributes.find((attribute) => attribute.name === 'score');
+		const runtime = { note: 'runtime only' };
+		live.runtimeOnly = runtime;
+		Empty.setComputedAttribute('score', (record) => 'e-' + record.name);
+		await settled(Empty);
+		assert.strictEqual(live.runtimeOnly, runtime, 'certifying an empty table rewrote the live attribute');
+		assert.strictEqual(
+			Empty.dbisDB.getSync('ComputedEmptyLive/score').checkpointAlgorithm,
+			RESOLVED_CHECKPOINT_ALGORITHM
+		);
+	});
+
 	it('holds no index for a repair claim that failed part way', async () => {
 		const Computed = await uncertified('ComputedClaimFails', [
 			{ name: 'first', type: 'String', indexed: true, computed: true },
