@@ -55,6 +55,7 @@ Where things are in `resources/`. The rules live in [DESIGN.md](DESIGN.md): read
 - conflict retry cap, deadline, aborting a logged commit → `noteRetryBoundary`, `mustRetryLoggedCommit` in DatabaseTransaction.ts
 - residency, stubs, replicas → `getResidency`, `_storeReplica` in Table.ts; residencyMaps.ts
 - table create, schema change, drop → `table()`, `runIndexing` in databases.ts; `dropTable`, `updatedAttributes` in Table.ts
+- when a `@computed` index rebuilds (re-declare, late resolver) → `declareTable`, `requestComputedIndexRepair` in databases.ts
 - relationships → the resolvers built in `updatedAttributes`; `_prepareRelationshipSelection` and `_readDenial` in Table.ts
 - relationship conditions and `rel[...]` groups → `filterByType`, `searchRelatedGroup` in search.ts; `_prepareQueryConditions` in Table.ts
 - URL path to resource → `getMatch`, `matchParamRoute` in Resources.ts
