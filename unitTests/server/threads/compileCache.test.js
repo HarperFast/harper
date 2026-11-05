@@ -35,7 +35,11 @@ async function runHarness(rootPath, scenario, env = {}) {
 	});
 	const started = performance.now();
 	const elapsed = () => `${Math.round(performance.now() - started)}ms`;
-	const deadline = setTimeout(() => harness.kill('SIGKILL'), HARNESS_TIMEOUT_MS);
+	const deadline = setTimeout(() => {
+		harness.kill('SIGKILL');
+		// 'close' waits for the pipe, which a surviving descendant could still hold
+		harness.stdout.destroy();
+	}, HARNESS_TIMEOUT_MS);
 	try {
 		let output = '';
 		let lastOutput = 'none';
