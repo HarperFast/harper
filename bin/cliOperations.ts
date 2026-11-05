@@ -1,18 +1,13 @@
 'use strict';
 
-import {
-	loadCliDotenv,
-	loadCredentials,
-	saveCredentials,
-	normalizeTarget,
-	extractTargetCredentials,
-} from './cliCredentials.ts';
+import { loadCredentials, saveCredentials, normalizeTarget, extractTargetCredentials } from './cliCredentials.ts';
 import { isJWTExpired } from '../security/tokenAuthentication.ts';
 import * as envMgr from '../utility/environment/environmentManager.ts';
 import * as terms from '../utility/hdbTerms.ts';
 import { httpRequest } from '../utility/common_utils.ts';
 import { workloadIdentityAvailable, exchangeWorkloadIdentityForToken } from './workloadIdentity.ts';
 import fs from 'fs-extra';
+import dotenv from 'dotenv';
 import * as YAML from 'yaml';
 import { Readable } from 'node:stream';
 import { execFileSync } from 'node:child_process';
@@ -950,7 +945,7 @@ async function followRollout(options: any, response: any, waitTimeout: unknown):
 }
 
 async function cliOperations(req: any, skipResponseLog = false) {
-	loadCliDotenv();
+	dotenv.config();
 
 	// Resolve target/auth inside the try so a credential or connection error (e.g. an incomplete
 	// `auth_username=`/`auth_password=` pair, which resolveRequestOptions throws on) is mapped to the

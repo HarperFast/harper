@@ -1,5 +1,6 @@
 require('../testUtils');
 const assert = require('node:assert');
+const { waitFor } = require('../waitFor');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
@@ -588,8 +589,8 @@ describe('Queries read related records asynchronously', () => {
 			];
 			const iterator = results[Symbol.asyncIterator]();
 			const next = iterator.next();
-			for (let turns = 0; !release && turns < 100; turns++) await new Promise(setImmediate);
-			assert(release, 'premise: the first joined filter is pending');
+			// the filter starts only after the store's background read settles
+			await waitFor(() => release, { message: 'premise: the first joined filter is pending' });
 			iterator.return();
 			release(true);
 			assert.deepEqual(await next, { done: true, value: undefined });

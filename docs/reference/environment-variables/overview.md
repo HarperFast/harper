@@ -62,12 +62,6 @@ Harper's own instance-wide configuration is composed once at startup, **before**
 To change Harper's configuration, set it in the [configuration file](../configuration/overview.md) or export the variable in the real process/container environment **before** Harper starts — not through `loadEnv`.
 :::
 
-:::note
-<VersionBadge type="changed" version="v5.4.0" />
-
-The `harper` CLI reads a `.env` file in the current directory separately from `loadEnv`. It stops with an error if the file sets the CLI's target, credentials, or a TLS or proxy name such as `HTTPS_PROXY`, unless the environment already sets that name. `loadEnv` still loads those names at runtime, but commands such as `harper deploy` fail from that directory. Set them in the process environment, or keep them in a differently named file listed under `files`. See [Project `.env` files](../cli/authentication.md#project-env-files).
-:::
-
 ## Managing `.env` Files Remotely
 
 <VersionBadge version="v5.2.0" />
