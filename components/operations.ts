@@ -45,6 +45,7 @@ import {
 	liveDeploymentIdOf,
 } from './Application.ts';
 import { deploymentOfLiveRelease, deploymentRecord } from './deploymentOperations.ts';
+import { redactUrlCredentials } from '../utility/urlCredentials.ts';
 const prepareApplication = _prepareApplication;
 import {
 	COMPONENT_PREPARATION_LOCK_DIR,
@@ -621,6 +622,15 @@ async function deployComponent(req?: any) {
 				HTTP_STATUS_CODES.FORBIDDEN
 			);
 		}
+		// Only an enable mints a generation, so a staged build stamped with another, or with none, is one a disable revoked
+		// or a role from before generations built, which no fence can name.
+		const generation = componentGrant.constraints?.generation;
+		if (generation !== undefined && preview.generation !== generation) {
+			throw new ClientError(
+				`'${req.project}' was not activated: it was built before previews of ${preview.app} were last enabled`,
+				HTTP_STATUS_CODES.FORBIDDEN
+			);
+		}
 	};
 	const previewCap = previewCapOf(componentGrant);
 	const previewCapName = previewCap === undefined ? undefined : "this role's component grant's maxPreviews";
@@ -633,6 +643,11 @@ async function deployComponent(req?: any) {
 		if (bound !== undefined && req.preview && !(previewExpiresAtMs(req.preview) <= bound)) {
 			req.preview = { ...req.preview, expiresAt: new Date(bound).toISOString() };
 			previewExpiryClamped = req.preview.expiresAt;
+		}
+		const { generation } = componentGrant.constraints ?? {};
+		if (req.preview) {
+			const { generation: _claimed, ...preview } = req.preview;
+			req.preview = generation === undefined ? preview : { ...preview, generation };
 		}
 	}
 	// An activation names a build the grant may never have admitted, live here or dormant on a peer, so its recorded
@@ -895,19 +910,21 @@ async function deployComponent(req?: any) {
 				routing: declaredRouting,
 				isolated: Boolean(nowIsolated),
 			}),
-			// The cap is the origin's: a peer makes live what the origin admitted.
+			// The cap is the origin's: a peer makes live what the origin admitted. A revoked identity's preview is refused
+			// on every node, a peer included, since only that node's fence orders its swap against disabling.
 			aroundActivation:
-				isReplicatedExecution && !componentGrant
+				isReplicatedExecution && !componentGrant && !req.preview && !isActivation
 					? undefined
 					: (candidateDirPath, activate) =>
 							admitPreviewActivation(
 								req.project,
 								candidateDirPath,
 								activate,
-								previewCap,
+								isReplicatedExecution && !componentGrant ? null : previewCap,
 								undefined,
 								componentGrant?.constraints?.preview === 'required' ? admitGrantPreview : undefined,
-								previewCapName
+								previewCapName,
+								Boolean(req.preview) || isActivation
 							),
 			admitIsolation: async (descriptor) => {
 				env.initSync(true);
@@ -1578,7 +1595,12 @@ async function getComponents(req) {
 		if (unsatisfiedEnv.length > 0) entry.unsatisfiedEnv = unsatisfiedEnv;
 		const componentConfig = rootConfig?.[entry.name];
 		if (!componentConfig || typeof componentConfig !== 'object') continue;
-		if (componentConfig.package) entry.package = componentConfig.package;
+		if (componentConfig.package) {
+			entry.package =
+				req?.hdb_user?.role?.permission?.super_user || typeof componentConfig.package !== 'string'
+					? componentConfig.package
+					: redactUrlCredentials(componentConfig.package);
+		}
 		if (componentConfig.urlPath) entry.urlPath = componentConfig.urlPath;
 		if (componentConfig.host) entry.host = componentConfig.host;
 		if (componentConfig.loadComponent) entry.loadComponent = componentConfig.loadComponent;

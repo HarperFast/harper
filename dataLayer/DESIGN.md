@@ -97,9 +97,9 @@ What keeps that safe:
 - **A component-held database cannot be restored online.** rocksdb-js counts handles per path with no
   owner, so Harper cannot identify or close a component's handle. `verifyDatabaseClosed` waits
   `DATABASE_CLOSE_WAIT_MS` for a finished job worker's close, then 409s naming `on_restart=true` and
-  the offline CLI; `system` is refused online up front. The CLI falls back offline only when the local server is
-  stopped. A saved loopback `last_target` proves this install only on this install's own operations
-  API port; on any other port destructive operations refuse rather than fall back (harper#2032).
+  the offline CLI; `system` is refused online up front. The CLI falls back offline only when the local
+  server is stopped, and a saved loopback `last_target` does not prove this install, so destructive
+  operations refuse rather than fall back (harper#2032).
 - **Job workers close their handles on exit** (`closeLoadedDatabases` in `jobProcess`): an exiting
   thread otherwise leaks its refcount, and since `create_backup` is a job, every restore would fail its
   closure check.

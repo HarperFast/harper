@@ -705,7 +705,13 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				if ((target as any)?.isCollection) addVaryHeader(conditional.headers, 'Prefer');
 				return conditional;
 			}
-			responseObject.body = serialize(responseData, request, responseObject);
+			responseObject.body = serialize(
+				responseData,
+				request,
+				responseObject,
+				method === 'GET' || method === 'HEAD' ? target : undefined,
+				resource
+			);
 			const startup = readStreamStartup(responseObject.body, request.method, method);
 			if (startup) await startup;
 			if (deferredRead) {

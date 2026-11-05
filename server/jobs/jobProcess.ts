@@ -24,6 +24,7 @@ import { getEnvBuiltInComponents } from './../../components/Application.ts';
 import { PACKAGE_ROOT } from '../../utility/packageUtils.js';
 import * as env from '../../utility/environment/environmentManager.ts';
 import { runStartup } from '../../utility/lifecycle.ts';
+import { flushAnalyticsForExit } from '../../resources/analytics/write.ts';
 const JOB_NAME = process.env[(hdbTerms as any).PROCESS_NAME_ENV_PROP] as string;
 const JOB_ID = JOB_NAME.substring(4);
 
@@ -120,6 +121,11 @@ const JOB_ID = JOB_NAME.substring(4);
 			databaseHandlesReleased = true;
 		} catch (closeErr) {
 			harperLogger.warn('Error releasing database handles on job worker exit:', closeErr);
+		}
+		try {
+			await flushAnalyticsForExit();
+		} catch (analyticsErr) {
+			harperLogger.warn('Error flushing analytics on job worker exit:', analyticsErr);
 		}
 		if (databaseHandlesReleased) notifyJobCleanupComplete();
 		// On Bun 1.3.13, calling process.exit() in a worker thread with lmdb-js loaded

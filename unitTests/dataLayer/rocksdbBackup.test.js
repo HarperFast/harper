@@ -81,7 +81,7 @@ const {
 	withBackupRepositoryLock,
 } = require('#src/dataLayer/backupRepository');
 const { backups } = require('../rocksdbBindings.mts').rocksdbBindings();
-const { closeLoadedDatabases, table } = require('#src/resources/databases');
+const { closeLoadedDatabases, resolveDatabasePath, table } = require('#src/resources/databases');
 const harperDatabase = require('./fixtures/harperDatabase.js');
 const { clearRestoreDebris, declareIndexWithoutFamily, readRecord, restoreDebris, writeBlobRecord } = harperDatabase;
 const { newRestoreReceipt, readRestoreReceipt, writeRestoreReceipt } = require('#src/dataLayer/restoreReceipt');
@@ -1160,6 +1160,27 @@ describe('rocksdbBackup', function () {
 			assert.deepStrictEqual(await readRecord(ADMITTED, 'after-backup'), { kept: true }, 'nothing was restored');
 		});
 
+		it('refuses while the system database is blocked by an unfinished restore, and changes nothing', async function () {
+			this.timeout(30000);
+			const backupId = await seed();
+			const systemPath = resolveDatabasePath('system');
+			abandonRestore(beginRestore(systemPath));
+			try {
+				await assert.rejects(
+					restoreBackup({ ...SU, database: ADMITTED, backup_id: backupId }),
+					(error) =>
+						error.statusCode === 409 &&
+						/replication peers: .* blocked by a restore that did not finish/.test(error.message)
+				);
+			} finally {
+				restoreMarkerModule.clearRestoreMarker(acquireRestoreLock(systemPath));
+			}
+			assert.strictEqual(checkRestoreState(admittedDir()), 'clear');
+			assertNoRestoreDebris(admittedDir(), admittedBackups());
+			await closeLoadedDatabases();
+			assert.deepStrictEqual(await readRecord(ADMITTED, 'after-backup'), { kept: true }, 'nothing was restored');
+		});
+
 		// What a restore that crashed between committing its receipt and finishing leaves: the restored
 		// generation, still behind its marker, with its source pinned and a committed receipt.
 		async function plantCommittedRestore(backupId) {
@@ -1360,6 +1381,35 @@ describe('rocksdbBackup', function () {
 			assert.deepStrictEqual(readFileSync(blobPath), payload, 'a blob deleted after the backup must be restored');
 			assert.strictEqual(restored.blob_integrity, 'verified', 'the restore proved the record finds its blob');
 			assertNoRestoreDebris(blobDbDir(), backupDir);
+		});
+
+		it('refuses a backup missing a referenced blob as a 409 past the purge, and publishes it once waived', async function () {
+			this.timeout(30000);
+			const blobPath = await writeBlobDbBlob('blob-payload');
+			const created = await createBackupOffline(BLOB_DB);
+			const backupDir = backupDirForDatabase(BLOB_DB);
+			rmSync(
+				join(
+					blobSnapshotDir(backupDir, created.backup_id),
+					'0',
+					relative(getBlobPathsForDatabaseName(BLOB_DB)[0], blobPath)
+				)
+			);
+
+			await assert.rejects(
+				restoreBackupOffline(BLOB_DB, created.backup_id),
+				(error) =>
+					error.statusCode === 409 &&
+					error.phase === 'prove' &&
+					/rerun restore_backup to recover/.test(error.message) &&
+					/references blob files the backup does not contain/.test(error.message)
+			);
+			assert.strictEqual(checkRestoreState(blobDbDir()), 'incomplete');
+
+			const restored = await restoreBackupOffline(BLOB_DB, created.backup_id, undefined, false, false, false, true);
+			assert.strictEqual(restored.blob_integrity, 'unverified');
+			assert.strictEqual(restored.accept_unverified_blobs, true);
+			assert.strictEqual(checkRestoreState(blobDbDir()), 'clear');
 		});
 
 		it('exclude_blobs produces an engine-only backup with no blob snapshot', async function () {

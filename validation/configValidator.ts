@@ -35,6 +35,20 @@ const VALID_ROTATION_DURATION_UNITS = ['D', 'd', 'H', 'h', 'M', 'm'];
 const UNDEFINED_OPS_API = 'rootPath config parameter is undefined';
 
 /**
+ * Root config keys configSchema marks `.required()`. An install template that omits one of these gets it
+ * from defaultConfig.yaml; any other omitted root key stays omitted, since a root key's presence is what
+ * turns its component or capability on (componentLoader iterates the root keys).
+ */
+export const REQUIRED_ROOT_CONFIG_KEYS = new Set([
+	'http',
+	'localStudio',
+	'logging',
+	'operationsApi',
+	'rootPath',
+	'storage',
+]);
+
+/**
  * What `deploy_component` writes into a root-config entry, plus the deployment-level keys
  * componentLoader reads off it — the shape of a `sql` application deployed before the name was
  * reserved. Closed to new keys: nothing new may take this shape.
@@ -365,6 +379,8 @@ export function configValidator(configJson, skipFsValidation = false) {
 		perToolBurst: number.min(0).optional(),
 		sessionConcurrency: number.min(0).optional(),
 		sessionPerSecond: number.min(0).optional(),
+		initializePerSecond: number.min(0).optional(),
+		initializeBurst: number.min(1).optional(),
 	});
 	const mcpOperationsSchema = Joi.object({
 		// `convert: false` — validateConfig() doesn't write coerced mcp values back, so a quoted
@@ -443,6 +459,15 @@ export function configValidator(configJson, skipFsValidation = false) {
 		analytics: Joi.object({
 			aggregatePeriod: number,
 			replicate: boolean.optional(),
+			fullText: Joi.object({
+				enabled: boolean.optional(),
+				intervalMilliseconds: number.integer().min(1000).max(2147483647).optional(),
+				histograms: boolean.optional(),
+				snapshotBytes: boolean.optional(),
+			})
+				.unknown(false)
+				.strict()
+				.optional(),
 		}),
 		replication: Joi.object({
 			hostname: bareHostConstraints,

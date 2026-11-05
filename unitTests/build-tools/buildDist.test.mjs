@@ -3,6 +3,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { SourceMap } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { build, escapeNonLatin1Literals, findNonLatin1 } from '../../build-tools/build-dist.mjs';
 
@@ -109,4 +110,54 @@ describe('build-dist non-Latin-1 literal escaping', function () {
 			await rm(directory, { recursive: true, force: true });
 		}
 	});
+});
+
+it('builds native telemetry declarations without the optional fulltext package', function () {
+	this.timeout(30_000);
+	const root = fileURLToPath(new URL('../../', import.meta.url));
+	const configPath = join(root, 'tsconfig.build.json');
+	const configFile = ts.readConfigFile(configPath, ts.sys.readFile);
+	const config = ts.parseJsonConfigFileContent(configFile.config, ts.sys, root);
+	const optionalImports = config.fileNames.flatMap((file) =>
+		ts
+			.preProcessFile(ts.sys.readFile(file), true, true)
+			.importedFiles.filter(
+				({ fileName }) => fileName === '@harperfast/fulltext' || fileName.startsWith('@harperfast/fulltext/')
+			)
+			.map(({ fileName }) => `${file}: ${fileName}`)
+	);
+	assert.deepStrictEqual(optionalImports, []);
+	const options = { ...config.options, noEmit: false, declaration: true, emitDeclarationOnly: true };
+	const host = ts.createCompilerHost(options);
+	const optionalPackage = /[/\\]node_modules[/\\]@harperfast[/\\]fulltext(?:[/\\]|$)/;
+	for (const method of ['fileExists', 'directoryExists', 'readFile']) {
+		const original = host[method].bind(host);
+		host[method] = (file) =>
+			optionalPackage.test(file) ? (method === 'readFile' ? undefined : false) : original(file);
+	}
+	const files = ['resources/indexes/fullTextNativeBinding.ts', 'resources/analytics/fullTextTelemetry.ts'].map((file) =>
+		join(root, file)
+	);
+	const program = ts.createProgram(files, options, host);
+	for (const file of files) {
+		const source = program.getSourceFile(file);
+		assert.deepStrictEqual(
+			program
+				.getSemanticDiagnostics(source)
+				.map((diagnostic) => ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n')),
+			[]
+		);
+		const declarations = [];
+		const emitted = program.emit(
+			source,
+			(name, text) => {
+				if (name.endsWith('.d.ts')) declarations.push(text);
+			},
+			undefined,
+			true
+		);
+		assert.strictEqual(emitted.emitSkipped, false);
+		assert.strictEqual(declarations.length, 1);
+		assert.doesNotMatch(declarations[0], /@harperfast\/fulltext/);
+	}
 });

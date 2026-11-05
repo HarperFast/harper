@@ -13,6 +13,7 @@ import { getThisNodeName } from './nodeName.ts';
 import { getHdbBasePath, get as envGet } from '../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS, SYSTEM_SCHEMA_NAME, SYSTEM_TABLE_NAMES } from '../utility/hdbTerms.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
+import { checkRestoreState, withRestoreExclusion, type BlockedRestoreState } from '../dataLayer/restoreMarker.ts';
 
 const MEMBERSHIP_LOCK_FILE = '.replication-membership.lock';
 const MEMBERSHIP_DRAIN_TIMEOUT_MS = 30_000;
@@ -110,15 +111,19 @@ function listReplicationPeers({ routesOnly = false }: { routesOnly?: boolean } =
 /**
  * Reads `hdb_nodes` from the loaded `system` when this thread has one. The offline CLI has none, and a
  * scan would open every database — the restore target included, whose RocksDB lock the restore child
- * must find free — so it opens `system` alone, privately, and closes it again.
+ * must find free — so it opens `system` alone, privately, and closes it again. A `system` a restore
+ * has blocked is excluded from the loaded set and may be partial on disk, so it refuses rather than
+ * read either as "no peers".
  */
 function forEachNodeRow(visit: (key: unknown, value: unknown) => void): void {
+	const systemPath = resolveDatabasePath(SYSTEM_SCHEMA_NAME);
+	const state = checkRestoreState(systemPath);
+	if (state !== 'clear') throw unknownPeersWhileBlocked(systemPath, state);
 	if (databasesLoaded()) {
 		const nodes = getDatabases()[SYSTEM_SCHEMA_NAME]?.[SYSTEM_TABLE_NAMES.NODE_TABLE_NAME] as any;
 		for (const { key, value } of nodes?.primaryStore?.getRange({}) ?? []) visit(key, value);
 		return;
 	}
-	const systemPath = resolveDatabasePath(SYSTEM_SCHEMA_NAME);
 	if (!existsSync(join(systemPath, 'CURRENT'))) {
 		// no system database at all means no node rows; one this cannot read must not pass for that
 		if (existsSync(`${systemPath}.mdb`)) {
@@ -129,13 +134,28 @@ function forEachNodeRow(visit: (key: unknown, value: unknown) => void): void {
 		}
 		return;
 	}
-	const generation = openRestoredGeneration(systemPath, SYSTEM_SCHEMA_NAME);
-	try {
-		const nodes = generation.tables[SYSTEM_TABLE_NAMES.NODE_TABLE_NAME] as any;
-		for (const { key, value } of nodes?.primaryStore?.getRange({}) ?? []) visit(key, value);
-	} finally {
-		closeRestoredGeneration(systemPath, generation);
-	}
+	withRestoreExclusion(
+		systemPath,
+		() => {
+			const generation = openRestoredGeneration(systemPath, SYSTEM_SCHEMA_NAME);
+			try {
+				const nodes = generation.tables[SYSTEM_TABLE_NAMES.NODE_TABLE_NAME] as any;
+				for (const { key, value } of nodes?.primaryStore?.getRange({}) ?? []) visit(key, value);
+			} finally {
+				closeRestoredGeneration(systemPath, generation);
+			}
+		},
+		(blocked) => {
+			throw unknownPeersWhileBlocked(systemPath, blocked);
+		}
+	);
+}
+
+function unknownPeersWhileBlocked(systemPath: string, state: BlockedRestoreState): ClientError {
+	return new ClientError(
+		`Cannot tell whether this node has replication peers: its system database at ${systemPath} is ${state === 'in-progress' ? 'being restored' : 'blocked by a restore that did not finish'}. Restore the system database first.`,
+		409
+	);
 }
 
 export function assertNoReplicationPeers(databaseName: string, routesOnly = false): void {

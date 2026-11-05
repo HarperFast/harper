@@ -97,7 +97,7 @@ describe('cross-database relationship search', function () {
 		Vault.attributes.push({ name: 'deptId', indexed: true });
 		await Dept.put({ id: 'dA' });
 		await Dept.put({ id: 'dB' });
-		await Vault.put({ id: 'vDept', name: 'dept-vault', deptId: 'dA' });
+		await Vault.put({ id: 'vDept', name: 'dept-vault', deptId: 'dA', orgId: 'oAlpha' });
 	});
 
 	after(function () {
@@ -213,6 +213,32 @@ describe('cross-database relationship search', function () {
 			}
 		}
 		assert.ok(badgeLinks > 0, 'the resolver read must have joined the request');
+
+		const groupContext = {};
+		let vaultLink;
+		const groupResults = await transaction(groupContext, () => {
+			const matched = Dept.search(
+				{
+					conditions: [
+						{
+							attribute: 'vaults',
+							conditions: [
+								{ attribute: 'name', value: 'dept-vault' },
+								{ attribute: ['org', 'name'], comparator: 'contains', value: 'Alpha' },
+							],
+						},
+					],
+				},
+				groupContext
+			);
+			vaultLink = Vault._txnForContext(groupContext);
+			return matched;
+		});
+		assert.strictEqual(vaultLink.readTxnsUsed, 1);
+		const deptIds = [];
+		for await (const dept of groupResults) deptIds.push(dept.id);
+		assert.deepStrictEqual(deptIds, ['dA']);
+		assert.strictEqual(vaultLink.readTxnsUsed, 0);
 	});
 
 	it('reaps two abandoned leases held in opposite directions', async function () {

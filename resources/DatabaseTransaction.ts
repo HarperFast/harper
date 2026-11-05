@@ -763,6 +763,12 @@ export type TransactionWrite = {
 	appendedAuditEntry?: boolean;
 	// sticky: such a staging ran with abort markers off, so an aborted attempt can leave its entry readable
 	appendedUnmarkedAuditEntry?: boolean;
+	// what the key held when this handle's retained log batch was staged: a retry appends none and restages from it
+	loggedBase?: {
+		version?: number;
+		nodeId?: number;
+		additionalAuditRefs?: Array<{ version: number; nodeId: number }>;
+	} | null;
 	// the audit entry recordUpdater appended for this write in its current staging (handlers pass the
 	// write as its `write` option): 'none' until it appends, 'local' for a LOCAL_ONLY entry, which the
 	// sender never replicates. Reset per fresh staging so an earlier staging's append does not carry onto
@@ -1080,6 +1086,10 @@ export class DatabaseTransaction implements Transaction {
 	declare commitChainHead?: DatabaseTransaction;
 	// O(1) lookup in recordLockFor; only lock() handles are registered here (no gate handles).
 	declare recordLocks?: Map<any, Map<unknown, RecordLockHandle>>;
+	// On the chain root: the recordLocks of committed links that left the chain, by database path,
+	// until txnForContext links that database again. Hold handles outlive the commit that drops a link.
+	declare detachedRecordLocks?: Map<string, Map<any, Map<unknown, RecordLockHandle>>>;
+	declare leftChain?: boolean;
 	/**
 	 * Whether any staged write was made through a record lock handle. The commit-time lease fence
 	 * below is skipped entirely when this is false, which is every transaction in a core-only
@@ -1521,21 +1531,17 @@ export class DatabaseTransaction implements Transaction {
 		let storeMap = this.recordLocks.get(handle.store);
 		if (!storeMap) this.recordLocks.set(handle.store, (storeMap = new Map()));
 		storeMap.set(handle.keyId, handle);
-		for (let write = this.writesByKey?.get(handle.store)?.get(handle.keyId); write; write = write.priorWrite) {
-			if (!this.joinsLockOnRegister(write)) continue;
-			write.lockHandle = handle;
-			write.lockJoined = true;
-			// The scan stops one past the first unlocked write; if that is this one, resume from it.
-			const scan = this.unlockedWriteScan;
-			if (scan?.found && scan.writes[scan.index - 1] === write) {
-				scan.found = false;
-				scan.index--;
-			}
-		}
 	}
 
-	private joinsLockOnRegister(write: TransactionWrite): boolean {
-		return !write.saved && !write.lockHandle && !write.dropped && Boolean(this.ownedWrites?.has(write));
+	/**
+	 * Whether this transaction owns a write to the key that has not committed: unsaved, or saved into a
+	 * transaction that has not committed yet. An ImmediateTransaction's saved write was submitted on its own.
+	 */
+	hasPendingWriteTo(store: any, keyId: unknown): boolean {
+		for (let write = this.writesByKey?.get(store)?.get(keyId); write; write = write.priorWrite) {
+			if (!write.dropped && (!write.saved || !this.saveCommits) && this.ownedWrites?.has(write)) return true;
+		}
+		return false;
 	}
 
 	recordLockFor(store: any, keyId: unknown): RecordLockHandle | undefined {
@@ -1561,6 +1567,27 @@ export class DatabaseTransaction implements Transaction {
 		if (storeMap.size > 0) return;
 		this.recordLocks!.delete(store);
 		if (this.recordLocks!.size === 0) this.recordLocks = undefined;
+	}
+
+	/** Called on the chain root for a link leaving its chain. */
+	retainRecordLocksOf(link: DatabaseTransaction): void {
+		const recordLocks = link.recordLocks;
+		// Only a lock() waiting on the link reads leftChain; a lock-free link is left untouched.
+		if (!recordLocks && !link.pendingLocks) return;
+		link.leftChain = true;
+		if (!recordLocks) return;
+		link.recordLocks = undefined;
+		(this.detachedRecordLocks ??= new Map()).set(link.db.path, recordLocks);
+	}
+
+	/** Called on the chain root for a link just created for `link.db`. */
+	adoptDetachedRecordLocks(link: DatabaseTransaction): void {
+		const detached = this.detachedRecordLocks;
+		const recordLocks = detached?.get(link.db.path);
+		if (!recordLocks) return;
+		detached.delete(link.db.path);
+		if (detached.size === 0) this.detachedRecordLocks = undefined;
+		link.recordLocks = recordLocks;
 	}
 
 	registerPendingLock(store: any, keyId: unknown, pending: Promise<RecordLockHandle>): void {
@@ -1630,17 +1657,36 @@ export class DatabaseTransaction implements Transaction {
 	 */
 	private noteRetryBoundary(transaction: RocksTransaction, error?: { hasLog?: boolean }): number {
 		const txnWithRetry = transaction as RocksTransactionWithRetry;
-		if (!abortMarkersEnabled()) return txnWithRetry.retries ?? 0;
+		const markersEnabled = abortMarkersEnabled();
+		const logWritten = error?.hasLog === true || transaction.logWritten();
+		if (txnWithRetry.hasStagedLog && (logWritten || !markersEnabled)) {
+			for (const write of this.writes)
+				if (write?.appendedTo === transaction && write.loggedBase === undefined) {
+					const entry = write.entry;
+					write.loggedBase = entry
+						? {
+								version: entry.version,
+								nodeId: entry.nodeId,
+								additionalAuditRefs: entry.additionalAuditRefs?.slice(),
+							}
+						: null;
+				}
+		}
+		if (!markersEnabled) return txnWithRetry.retries ?? 0;
 		if (transaction.lastConflictKind() === ConflictKind.atCommit)
 			txnWithRetry.commitConflicts = (txnWithRetry.commitConflicts ?? 0) + 1;
 		if (txnWithRetry.hasStagedLog) {
-			const relog = error?.hasLog !== true && !transaction.logWritten();
+			const relog = !logWritten;
 			txnWithRetry.relogOnRetry = relog;
 			if (relog) {
 				(transaction as any).logEntries = undefined;
 				(transaction as any).pendingStructureWatermarks = undefined;
 				// the batch was discarded; a re-staged entry claims the write again in save()
-				for (const write of this.writes) if (write?.appendedTo === transaction) write.appendedTo = undefined;
+				for (const write of this.writes)
+					if (write?.appendedTo === transaction) {
+						write.appendedTo = undefined;
+						write.loggedBase = undefined;
+					}
 				this.rekeyRefusedRetry(transaction);
 			}
 		}
@@ -1973,9 +2019,8 @@ export class DatabaseTransaction implements Transaction {
 	/**
 	 * Whether an unlocked write is staged. Resumes where the last call stopped, so a transaction that
 	 * takes N locks scans its writes once in all; detaching an unlocked write resets the cached scan.
-	 * Given the key a lock() is admitting, its unsaved writes do not count: registerRecordLock binds them.
 	 */
-	hasUnlockedWrite(lockingStore?: any, lockingKeyId?: unknown): boolean {
+	hasUnlockedWrite(): boolean {
 		const writes = this.writes;
 		let scan = this.unlockedWriteScan;
 		if (scan?.writes !== writes) scan = this.unlockedWriteScan = { writes, index: 0, found: false };
@@ -1983,17 +2028,7 @@ export class DatabaseTransaction implements Transaction {
 			const write = writes[scan.index];
 			if (write && !write.lockHandle) scan.found = true;
 		}
-		if (!scan.found || lockingStore === undefined) return scan.found;
-		for (let index = scan.index - 1; index < writes.length; index++) {
-			const write = writes[index];
-			if (
-				write &&
-				!write.lockHandle &&
-				(write.store !== lockingStore || write.keyId !== lockingKeyId || !this.joinsLockOnRegister(write))
-			)
-				return true;
-		}
-		return false;
+		return scan.found;
 	}
 
 	private noteCommittedLockVersions(committedTransaction?: RocksTransaction): void {
@@ -2684,7 +2719,10 @@ export class DatabaseTransaction implements Transaction {
 			if (lockHandle || this.recordLocks) operation.trackRecordVersion = true;
 			appliedByPriorAttempt = operation.appliedRecordVersion;
 			if (operation.trackRecordVersion) operation.recordVersionApplied = false;
-			if (stagesLog(transaction)) operation.stagedAudit = 'none';
+			if (stagesLog(transaction)) {
+				operation.stagedAudit = 'none';
+				if (wasSaved && operation.loggedBase !== undefined) operation.loggedBase = undefined;
+			}
 			try {
 				completion = operation.commit(
 					writeVersion,
@@ -3807,7 +3845,8 @@ export class DatabaseTransaction implements Transaction {
 	 * Finish a commit: the chain goes with it, then the scope may rotate. A link left attached and CLOSED
 	 * would be reused by txnForContext for the next write to that database and commit itself, surviving a
 	 * rollback of the rotated head — the cross-store leftover this rotation exists to prevent. Every
-	 * commit path must run this, and none may do one half without the other.
+	 * commit path must run this, and none may do one half without the other. The links' record locks
+	 * stay with the root (retainRecordLocksOf).
 	 */
 	/** Both scope flags leave together, so no exit can clear one and keep the other. */
 	protected endScopeOwnership(): void {
@@ -3817,6 +3856,8 @@ export class DatabaseTransaction implements Transaction {
 
 	private completeMidScopeCommit(options: CommitOptions, committedTransaction?: RocksTransaction | null): void {
 		if ((committedTransaction as RocksTransactionWithRetry | null | undefined)?.immediateCommit) return;
+		const root = this.root ?? this;
+		for (let link = this.next; link; link = link.next) root.retainRecordLocksOf(link);
 		this.next = null;
 		if (this.saveCommits && this.hasActiveCommitHandle()) return;
 		this.rotateAfterMidScopeCommit(options);

@@ -25,11 +25,12 @@
 		// Type checking only by default; use `tsconfig.build.json` for emitting
 		"noEmit": true,
 
-		// Preserve the ES2022 type surface while declaring Node 22's Promise.withResolvers()
+		// Preserve the ES2022 type surface while declaring Node 22's Promise.withResolvers() and String.toWellFormed()
 		"target": "ES2022",
 		"lib": [
 			"ES2022",
 			"ES2024.Promise",
+			"ES2024.String",
 			"DOM",
 			"WebWorker.ImportScripts",
 			"ScriptHost",

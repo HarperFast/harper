@@ -59,6 +59,7 @@ import * as deploymentOperations from '../components/deploymentOperations.ts';
 import * as releaseOperations from '../components/releaseOperations.ts';
 import * as secretOperations from '../components/secretOperations.ts';
 import * as trustPolicyOperations from '../security/authn/oidc/trustPolicyOperations.ts';
+import * as networkAccess from '../security/networkAccess.ts';
 import * as tokenExchange from '../security/authn/oidc/tokenExchange.ts';
 import * as previewOperations from '../components/previewOperations.ts';
 
@@ -439,6 +440,10 @@ requiredPermissions.set(
 	new permission(true, [], terms.OPERATIONS_ENUM.DISABLE_PREVIEWS)
 );
 requiredPermissions.set(
+	previewOperations.fencePreviewReleases.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.FENCE_PREVIEW_RELEASES)
+);
+requiredPermissions.set(
 	previewOperations.getPreviewPolicy.name,
 	new permission(true, [], terms.OPERATIONS_ENUM.GET_PREVIEW_POLICY)
 );
@@ -447,6 +452,15 @@ requiredPermissions.set(
 requiredPermissions.set(
 	tokenExchange.exchangeOidcToken.name,
 	new permission(false, [], terms.OPERATIONS_ENUM.EXCHANGE_OIDC_TOKEN)
+);
+// SU-only, enforced in the handlers too (gate-2 bypass below).
+requiredPermissions.set(
+	networkAccess.setNetworkAccess.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.SET_NETWORK_ACCESS)
+);
+requiredPermissions.set(
+	networkAccess.getNetworkAccess.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.GET_NETWORK_ACCESS)
 );
 
 //Below are functions that are currently open to all roles
@@ -637,6 +651,13 @@ export function verifyPermsAST(ast, userObject, operation, apiOperation = terms.
 			return permsResponse.handleUnauthorizedItem(HDB_ERROR_MSGS.UNRESOLVED_SQL_TABLE);
 		}
 
+		if (!isSuperUser) {
+			const unresolvedColumns = parsedAst.getUnresolvedColumnRefs();
+			if (unresolvedColumns.length > 0) {
+				return permsResponse.handleUnauthorizedItem(HDB_ERROR_MSGS.UNRESOLVED_SQL_COLUMN(unresolvedColumns));
+			}
+		}
+
 		const fullRolePerms = permsTranslator.getRolePermissions(userObject.role);
 		userObject.role.permission = fullRolePerms;
 
@@ -644,6 +665,10 @@ export function verifyPermsAST(ast, userObject, operation, apiOperation = terms.
 		// attributes that the user has READ perms for - we can skip this step for super users
 		if (!isSuperUser && ast instanceof (alasql.yy as any).Select) {
 			ast = parsedAst.updateAttributeWildcardsForRolePerms(fullRolePerms);
+		}
+		// After expansion, so a wildcard cannot expand into an attribute named `_`.
+		if (!isSuperUser && parsedAst.getRowAccessors().length > 0) {
+			return permsResponse.handleUnauthorizedItem(HDB_ERROR_MSGS.SQL_ROW_ACCESSOR);
 		}
 
 		for (let s = 0; s < schemas.length; s++) {
@@ -674,6 +699,19 @@ export function verifyPermsAST(ast, userObject, operation, apiOperation = terms.
 				);
 			}
 		});
+
+		const writeReads = isSuperUser ? undefined : parsedAst.getWriteStatementReads();
+		if (writeReads?.attributes.length) {
+			checkAttributePerms(
+				writeReads.attributes,
+				getAttributePermissions(userObject.role.permission, writeReads.schema, writeReads.table),
+				terms.VALID_SQL_OPS_ENUM.SELECT,
+				writeReads.table,
+				writeReads.schema,
+				permsResponse,
+				undefined
+			);
+		}
 
 		return permsResponse.getPermsResponse();
 	} catch (e) {
@@ -1051,6 +1089,7 @@ function stripPermissionControls(select: any) {
 	for (const property of Array.isArray(select) ? select : [select]) {
 		if (!property || typeof property !== 'object') continue;
 		delete property.checkPermission;
+		normalizeConditionAttributes(property.conditions);
 		stripPermissionControls(property.select);
 	}
 }
@@ -1177,6 +1216,7 @@ function checkSelectPaths(state: RelationshipReadCheck, select: any, prefix: any
 			const path = prefix ? [...prefix, name] : [name];
 			checkRelationshipPath(state, path);
 			checkSelectPaths(state, property?.select, path, relatedTable);
+			checkConditionPaths(state, property?.conditions, path, true);
 			checkSortPaths(state, property?.sort, path);
 			continue;
 		}
@@ -1185,12 +1225,26 @@ function checkSelectPaths(state: RelationshipReadCheck, select: any, prefix: any
 	}
 }
 
-function checkConditionPaths(state: RelationshipReadCheck, conditions: any) {
+// a same-record group (`{ attribute: relationship, conditions }`) holds conditions relative to its relationship path
+function checkConditionPaths(state: RelationshipReadCheck, conditions: any, prefix?: any[], inSelect = false) {
 	if (!Array.isArray(conditions)) return;
 	for (const condition of conditions) {
-		if (condition?.conditions) checkConditionPaths(state, condition.conditions);
-		else if (condition?.attribute !== undefined) checkRelationshipPath(state, condition.attribute);
+		const attribute = condition?.attribute;
+		if (condition?.conditions) {
+			const path = attribute == null ? prefix : (prefix ?? []).concat(attribute);
+			if (attribute != null) checkRelationshipPath(state, path);
+			checkConditionPaths(state, condition.conditions, path, inSelect);
+		} else {
+			const leaf = (inSelect ? condition?.[0] : undefined) ?? attribute;
+			if (prefix) checkRelationshipPath(state, prefix.concat(leaf ?? relatedKeyOf(state.tableClass, prefix)));
+			else if (leaf !== undefined) checkRelationshipPath(state, leaf);
+		}
 	}
+}
+function relatedKeyOf(tableClass: any, path: any[]) {
+	let related = tableClass;
+	for (const name of path) related = relatedTableOf(related, name);
+	return related?.primaryKey;
 }
 
 /**
@@ -1412,7 +1466,11 @@ function getRecordAttributes(json, operationName?, relationshipTable?: any) {
 			const addConditionAttributes = (conditions) => {
 				for (const condition of conditions) {
 					if (condition.conditions) {
-						addConditionAttributes(condition.conditions);
+						// a same-record group's conditions are on the related table, which the relationship read check covers
+						if (condition.attribute != null) {
+							const first = Array.isArray(condition.attribute) ? condition.attribute[0] : condition.attribute;
+							if (!relatedTableOf(relationshipTable, first)) affectedAttributes.add(first);
+						} else addConditionAttributes(condition.conditions);
 						continue;
 					}
 					const comparator = condition.comparator ?? condition.search_type;
