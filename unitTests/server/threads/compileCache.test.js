@@ -46,7 +46,6 @@ async function runHarness(rootPath, scenario, env = {}) {
 		});
 		harness.once('exit', () => (exited = elapsed()));
 		const [code, signal] = await once(harness, 'close');
-		// Tells a slow start, a stalled exit after the report (harness.cjs writes it last) and a pipe held open apart
 		assert.equal(
 			code,
 			0,

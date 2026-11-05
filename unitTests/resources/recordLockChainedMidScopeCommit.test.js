@@ -271,8 +271,8 @@ describe('Record locks on chained links survive a commit that drops the chain', 
 				expHandle,
 				'the head commit and the dbB writes must hand the idExp hold lock on'
 			);
-			// Lapsed on demand: each per-write commit above prunes a lapsed handle (ImmediateTransaction's
-			// releaseRecordLocks), so a lease short enough to wait out races them.
+			// Lapsed on demand: a per-write commit after a lapse drops the handle (ImmediateTransaction's
+			// releaseRecordLocks), and the write to idExp then lands, so a lease short enough to wait out races them.
 			expHandle.revokeLease();
 			await assert.rejects(
 				async () => await new TableBAudited(idExp, immCtx).put(idExp, { id: idExp, n: 999 }),
