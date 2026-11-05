@@ -464,21 +464,20 @@ describe('Record locks (QA-5082): static table verbs on locked keys must resolve
 			assert.strictEqual((await Audited.get(recordId)).n, 2);
 		});
 
-		it('a deferred update staged before lock({ hold: true }) on the same key adopts the lock floor at commit', async function () {
+		it('a deferred update staged before lock({ hold: true }) on the same key refuses the lock and stays an ordinary write', async function () {
 			if (SKIP_ON_LMDB) return this.skip();
 			const recordId = id();
-			const futureStamp = Date.now() + 2500;
-			await transaction({ timestamp: futureStamp }, () => Audited.put({ id: recordId, n: 1 }));
+			await Audited.put({ id: recordId, n: 1 });
 			const context = {};
 			await transaction(context, async () => {
 				await Audited.update(recordId, { n: 2 });
+				await assert.rejects(
+					() => Audited.lock(recordId, { hold: true, lease: 5000 }),
+					(err) => err?.statusCode === 409
+				);
 				assert.strictEqual(context.transaction.hasUnlockedWrite(), true);
-				const holder = await Audited.lock(recordId, { hold: true, lease: 5000 });
-				cleanups.push(() => holder.unlock());
-				assert.strictEqual(context.transaction.hasUnlockedWrite(), false);
 			});
 			assert.strictEqual((await Audited.get(recordId)).n, 2);
-			assert.ok(Audited.primaryStore.getEntry(recordId).version > futureStamp);
 		});
 
 		it('a static update staged under a held lock whose lease lapses before commit is refused with 409', async function () {
@@ -674,23 +673,6 @@ describe('Record locks (QA-5082): static table verbs on locked keys must resolve
 				});
 				assert.strictEqual((await Embedded.get(recordId)).name, 'b');
 			});
-		});
-
-		it('a deferred update staged before a scoped lock on a future-stamped record lands above it', async function () {
-			if (SKIP_ON_LMDB) return this.skip();
-			const recordId = id();
-			const futureStamp = Date.now() + 2500;
-			await transaction({ timestamp: futureStamp }, () => Audited.put({ id: recordId, n: 1 }));
-			await transaction({}, async () => {
-				await Audited.update(recordId, { n: 2 });
-				await Audited.lock(recordId);
-			});
-			assert.strictEqual((await Audited.get(recordId)).n, 2);
-			const version = Audited.primaryStore.getEntry(recordId).version;
-			assert.ok(version > futureStamp);
-			// the adopted stamp was claimed, so the next local write stamps above it
-			await Audited.put({ id: recordId, n: 3 });
-			assert.strictEqual((await Audited.get(recordId)).n, 3);
 		});
 
 		it('a static update under a held lock unlocked after its deadline, before the lease timer ran, is refused', async function () {
