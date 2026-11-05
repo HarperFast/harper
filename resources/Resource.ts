@@ -1038,9 +1038,35 @@ function hasPermissionControl(value: any, seen = new WeakSet<object>()): boolean
 function registerLiveSubscriptionForContext(subscription: any, resource: any, admittedTarget: any, context: Context) {
 	const user: any = context?.user;
 	const username = user?.username;
+<<<<<<< HEAD
 	// Internal watchers, replication and local-bypass have no user principal — nothing to re-authorize.
 	if (!username) return;
 	registerLiveSubscription({
+=======
+	securityUser ??= userRuntimeModule;
+	// Internal watchers and replication have no user principal, and no record backs the local
+	// principal — nothing to re-authorize.
+	if (!username || securityUser!.isLocalPrincipal(user)) return subscription;
+	// no subscription, or one already closed (a refused resume): nothing will be delivered to revoke
+	if (!subscription || typeof subscription !== 'object' || subscription.closed) return subscription;
+	const { cloneUserView, hasRecordProvenance, isCurrentUser, isRecordBacked } = securityUser!;
+	// A principal built from an hdb_user record needs a role to keep a subscription (#1414). One with no record
+	// (an mTLS CN that names no hdb_user) was admitted by allowRead alone, so allowRead alone rechecks it.
+	const roleRequired = isRecordBacked(user) ?? Boolean(user.role);
+	// Without a caller's select or a condition or sort through a relationship, the default allowRead only
+	// narrows what it returns, so its verdict depends on the role's permission for this table alone.
+	const sharedDecision =
+		!selectedByCaller &&
+		defaultAllowReads.has(resource.allowRead) &&
+		!resource.constructor._referencesRelationship?.(admittedTarget);
+	const evaluate = (principal: any) => {
+		const reTarget: any = cloneRequestTarget(admittedTarget);
+		// an object, as MQTT admission passes, even for a principal with no role
+		reTarget.checkPermission = principal.role?.permission ?? {};
+		return resource.allowRead(principal, reTarget, context);
+	};
+	const handle = registerLiveSubscription({
+>>>>>>> 459616308 (Require a role only of record-backed principals, and give rechecks an object checkPermission)
 		subscription,
 		username,
 		// JWT exp of the bearer credential (set by the auth layer); undefined for password/mTLS/session.
@@ -1063,10 +1089,14 @@ function registerLiveSubscriptionForContext(subscription: any, resource: any, ad
 				// Re-read current user state from hdb_user/hdb_role, once per username per pass, so a dropped
 				// or role-stripped user no longer authorizes.
 				fresh = await pass.memo(resolveUser, username, resolveUser);
+<<<<<<< HEAD
 				// Losing a role revokes only a principal admitted with one. A principal admitted without one (an
 				// mTLS CN with no hdb_user) was granted by allowRead alone, so allowRead alone rechecks it.
 				if (!fresh || (!fresh.role && user.role)) return false;
 >>>>>>> 295f19697 (Keep live subscriptions of mTLS clients with no hdb_user that allowRead admitted)
+=======
+				if (!fresh?.role && roleRequired) return false;
+>>>>>>> 459616308 (Require a role only of record-backed principals, and give rechecks an object checkPermission)
 				// Advance the subscription's context to the fresh user so downstream checks — context.user
 				// and getCurrentUser() (which reads the resource's context) — evaluate against current state,
 				// not the stale user captured at subscribe time.

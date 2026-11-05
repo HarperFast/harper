@@ -18,6 +18,11 @@ export {
 	findAndValidateUser,
 	getUserWithRole,
 	isCurrentUser,
+<<<<<<< HEAD
+=======
+	hasRecordProvenance,
+	isRecordBacked,
+>>>>>>> 459616308 (Require a role only of record-backed principals, and give rechecks an object checkPermission)
 	userRecordVersions,
 	trackUserRecords,
 	onUserChange,
@@ -567,6 +572,15 @@ function cloneUserView(user: User): User {
 function hasRecordProvenance(user: User): boolean {
 	return Boolean((user as any)[PROVENANCE] ?? trackedProvenance.has(user));
 >>>>>>> 295f19697 (Keep live subscriptions of mTLS clients with no hdb_user that allowRead admitted)
+}
+
+/**
+ * Whether `user` was built from an hdb_user record; undefined when it has no record provenance (a scoped token,
+ * or a user resolved outside this module and not tracked).
+ */
+function isRecordBacked(user: User): boolean | undefined {
+	const provenance: UserProvenance | undefined = (user as any)[PROVENANCE] ?? trackedProvenance.get(user);
+	return provenance && provenance.userStamp !== null;
 }
 
 /**

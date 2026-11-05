@@ -1197,6 +1197,38 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 			assert.strictEqual(gate.end.calls.length, 1, 'losing the role it was admitted with revokes it');
 		});
 
+		it('still requires a role of a principal built from an hdb_user record', async () => {
+			// a user record naming a role that has no record resolves with no role
+			await testUtils.seedUsers([{ username: 'roleless_record', active: true, role: 'missing_role' }]);
+			const user = await resolve('roleless_record');
+			assert.strictEqual(user.role, undefined);
+			const gate = grantingByUsername('roleless_record');
+			await subscribe(gate.Resource, user);
+
+			await _sweepNow();
+
+			assert.strictEqual(gate.end.calls.length, 1, 'only a principal with no hdb_user is rechecked by allowRead alone');
+		});
+
+		it('rechecks a principal with no role against an object checkPermission, as MQTT admission passes', async () => {
+			const user = await resolve('cert_permission_cn');
+			const seen = [];
+			const Recorded = class extends Docs {
+				allowRead(principal, target) {
+					seen.push(target?.checkPermission);
+					return principal?.username === 'cert_permission_cn';
+				}
+			};
+			await subscribe(Recorded, user);
+			seen.length = 0;
+
+			await _sweepNow();
+
+			assert.strictEqual(_liveSubscriptionCount(), 1);
+			assert.ok(seen.length > 0, 'the sweep rechecked it');
+			for (const permission of seen) assert.ok(permission && typeof permission === 'object');
+		});
+
 		it('rejects a subscription admitted by a user whose records changed before it registered', async () => {
 			await testUtils.seedUsers([{ username: 'stale_user', active: true, role: readRole('stale_role') }]);
 			const user = await resolve('stale_user');
