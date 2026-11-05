@@ -246,7 +246,7 @@ The contract:
 - **Release.** Harper releases the stream on `resources/unsubscribe`, when the session's GET stream closes, on `DELETE /mcp`, and when the stream ends or throws: it calls the stream's `end()` if it has one, otherwise its iterator's `return()`. Return a stream with `end()` — a Harper subscription such as `Table.subscribe(...)`, or your own queue. Without `end()`, the iterator must have a `return()` that releases its source at once. A stream with neither, or an async generator with no `end()`, fails the subscribe with `-32603`: there is nothing to call, or `return()` cannot interrupt the generator while it waits for its next value.
 - **Access after subscribe.** Harper stops updates when either the subscribing POST's or the receiving GET's bearer credential expires, whichever comes first, or when the user is dropped or no longer has a role. See [Subscription lifetime and credential rotation](./subscriptions.md#subscription-lifetime-and-credential-rotation). A [scoped token](/reference/v5/security/jwt-authentication#scoped-tokens-inline-role) belongs to no stored user, so user deletion and role removal do not apply; the earlier POST/GET expiry still bounds delivery, and an anonymous session has no identity to lapse, so only the release paths above end its stream. Changes to resource-specific access after subscribe are yours to enforce, for example by checking each change before yielding it.
 - **Workers.** A subscription runs on the worker holding the session's GET stream. If changes can originate on other workers, your stream must deliver them; Harper table subscriptions do.
-- **Errors.** An `AccessViolation`, which Harper's own permission checks throw (for example, a table read with `target.checkPermission` that the user's role does not allow), answers `-32602 permission denied: <uri>`. Other installation failures, including an error your own gate throws, answer `-32603 resource subscription failed; retry the request`. See [subscription error responses](./subscriptions.md#which-uris-are-subscribable). The response does not expose the underlying installation error.
+- **Errors.** An `AccessViolation`, which Harper's own permission checks throw (for example, a table read with `target.checkPermission` that the user's role does not allow), answers `-32602 permission denied: <uri>`. Other installation failures, including an error your own gate throws, answer `-32603 resource subscription failed; retry the request`. See [Which URIs are subscribable](./subscriptions.md#which-uris-are-subscribable) for the error table. The response does not expose the underlying installation error.
 
 #### Template parameters are client-controlled
 
@@ -340,7 +340,7 @@ This is independent of the `http` exportType — the only switch that operators 
 
 Both profiles serve `resources/list`, `resources/read`, and `resources/templates/list`. Row-backed application resources, and custom resources that declare `subscribe`, can additionally be watched with `resources/subscribe` — see [MCP Resource Subscriptions](./subscriptions.md).
 
-For the GET-stream prerequisite, credential expiry, and renewal steps, see [Subscription lifetime and credential rotation](./subscriptions.md#subscription-lifetime-and-credential-rotation).
+See [Prerequisites](./subscriptions.md#prerequisites) for the GET-stream requirement and [Subscription lifetime and credential rotation](./subscriptions.md#subscription-lifetime-and-credential-rotation) for credential expiry and renewal.
 
 ### `harper://` URIs
 
