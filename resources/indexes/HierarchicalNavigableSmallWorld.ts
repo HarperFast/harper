@@ -2241,8 +2241,7 @@ export class HierarchicalNavigableSmallWorld {
 	}
 	/**
 	 * A threshold's predicate on a record's vector, for when another condition leads (search.ts filterByType):
-	 * exact distance, after the checks search() makes. None for a sort, or for a condition with no target that
-	 * is not a threshold, such as `ne null`.
+	 * exact distance, after the checks search() makes.
 	 */
 	thresholdFilter(
 		searchCondition: { attribute?: any; target: number[]; distance?: string; comparator?: string },
@@ -2260,6 +2259,8 @@ export class HierarchicalNavigableSmallWorld {
 		if (this.filePrimary) {
 			if (fn !== this.distance)
 				throw new ClientError('A nativePlane index only supports its configured cosine distance');
+			// attached first, as search() does, so a cold worker checks the target's dimensions too
+			this.getPlane(target.length, false);
 			this.assertPlaneVector(target, 'Search target');
 		}
 		const inclusive = comparator === 'le';

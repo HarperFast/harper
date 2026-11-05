@@ -2582,7 +2582,9 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 					(++misses / filteredSoFar) * estimatedIncomingCount > thresholdRemainingMisses
 				) {
 					// if we have missed too many times, we need to switch to indexed retrieval
-					const searchResults = searchByIndex(searchCondition, Table._readTxnForContext(context), false, Table);
+					const searchResults = searchByIndex(searchCondition, Table._readTxnForContext(context), false, Table, {
+						context,
+					});
 					let matchingIds: Iterable<Id>;
 					if ((recordFilter as any).to) {
 						// the values could be an array of keys, so we flatten the mapping

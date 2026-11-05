@@ -357,5 +357,6 @@ describe('native-plane HNSW conditions through a relationship', function () {
 			() => ids(Review, behind(close({ target: [1, Number.NaN, 0, 0] }))),
 			/not a finite 32-bit float/
 		);
+		await assert.rejects(() => ids(Review, behind(close({ target: [1, 0] }))), /has 2 components/);
 	});
 });
