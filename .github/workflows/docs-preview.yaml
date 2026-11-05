@@ -1,8 +1,6 @@
 name: Docs Preview
 
-# Asks HarperFast/documentation to deploy a preview of its site built from this PR when the PR
-# changes docs/, and to remove it when the PR closes. That repo's source-pr-preview.yaml re-reads
-# the PR, builds, deploys and keeps the link in a comment here.
+# HarperFast/documentation's source-pr-preview.yaml builds, deploys and comments the preview.
 #
 # pull_request_target, so a fork's PR can dispatch as well: never check out or run anything from the
 # PR here, and never put PR text (title, branch, body) into a run: step.
@@ -28,6 +26,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           NUMBER: ${{ github.event.pull_request.number }}
+        shell: bash
         run: |
           count=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$NUMBER/files" \
             --jq '[.[] | select((.filename | startswith("docs/")) or ((.previous_filename // "") | startswith("docs/")))] | length' |
@@ -39,7 +38,7 @@ jobs:
         if: github.event.action == 'closed' || steps.scope.outputs.docs == 'true'
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
-          app-id: ${{ secrets.HARPERFAST_AI_CLIENT_ID }}
+          client-id: ${{ secrets.HARPERFAST_AI_CLIENT_ID }}
           private-key: ${{ secrets.HARPERFAST_AI_APP_PRIVATE_KEY }}
           owner: HarperFast
           repositories: documentation
