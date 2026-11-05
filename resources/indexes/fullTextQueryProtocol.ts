@@ -2,7 +2,6 @@ import { getFullTextQueryPolicy } from './fullTextRuntimeConfiguration.ts';
 import { ClientError, ServerError } from '../../utility/errors/hdbError.ts';
 import type { NativeFullTextFuzzyOptions, NativeFullTextSearchMode } from './fullTextNativeBinding.ts';
 
-export const FULLTEXT_SCORING_NATIVE_ABI_VERSION = 14;
 export const FULLTEXT_SCORING_QUERY_API_VERSION = 8;
 
 export const FULL_TEXT_QUERY_PAUSE_OPERATION = 'pause-full-text-query-readers';

@@ -9037,6 +9037,7 @@ export function makeTable(options): TableResourceClass {
 				return conditions;
 			}
 			function prepareRelationshipGroup(group: any) {
+				validateFullTextScoringOptions(group);
 				const attributeName = group.attribute;
 				const path = Array.isArray(attributeName) ? attributeName : [attributeName];
 				const label = path.join('.');

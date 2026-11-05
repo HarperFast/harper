@@ -446,6 +446,15 @@ describe('published native full-text Table.search integration', () => {
 				/positive full-text/
 			);
 			await assert.rejects(
+				async () =>
+					collect(
+						Product.search({
+							conditions: [{ attribute: 'brand', conditions: [{ attribute: 'id', value: 'a' }], ...controls }],
+						})
+					),
+				(error) => error.statusCode === 400 && /positive full-text/.test(error.message)
+			);
+			await assert.rejects(
 				async () => collect(Product.search({ conditions: [condition], ...controls })),
 				/positive full-text/
 			);
