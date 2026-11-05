@@ -31,6 +31,7 @@ import { makeSchemaClass, type Contract, type SchemaClass } from './defineResour
 import { markStaticResourceInstance } from './staticResourceDispatch.ts';
 import { isFormDataIterable, resolveBody } from './resolveBody.ts';
 import { compareKeys } from 'ordered-binary';
+import { recordAppliedSelect } from '../server/serverHelpers/contentTypes.ts';
 
 // Only table-backed classes are refused here: a custom resource's put/post/delete may be a non-storage call that a
 // read-only server must still answer. post, publish, copy and move are left to the transaction's write admission.
@@ -153,11 +154,11 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 				if ((select = query?.select) && result != null && !result.selectApplied) {
 					const transform = transformForSelect(select, resource.constructor);
 					if (Array.isArray(result)) {
-						return settleAll(result.map(transform));
+						return recordAppliedSelect(request, select, true, settleAll(result.map(transform)));
 					} else if (typeof result?.map === 'function') {
-						return result.map(transform);
+						return recordAppliedSelect(request, select, true, result.map(transform));
 					} else {
-						return transform(result);
+						return recordAppliedSelect(request, select, false, transform(result));
 					}
 				}
 				return result;
@@ -379,7 +380,12 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 					const select = (request as any).select;
 					if (select && request.hasOwnProperty('select') && result != null && !result.selectApplied) {
 						const transform = transformForSelect(select, resource.constructor);
-						return Array.isArray(result) ? settleAll(result.map(transform)) : result.map(transform);
+						return recordAppliedSelect(
+							request,
+							select,
+							true,
+							Array.isArray(result) ? settleAll(result.map(transform)) : result.map(transform)
+						);
 					}
 					return result;
 				})

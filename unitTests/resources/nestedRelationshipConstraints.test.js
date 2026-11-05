@@ -914,8 +914,18 @@ describe('nested relationship constraints', function () {
 		assert.deepStrictEqual(rows[0].children, [{ id: 'a', score: 100 }]);
 		await C.put('a', { id: 'a', score: 0 }, { expiresAt: 1 });
 		await C.put('b', { id: 'b', score: 10 }, { expiresAt: 1 });
-		const direct = [];
+		const covered = [];
 		for await (const row of C.search({ sort: { attribute: 'score' }, limit: 1, select: ['id', 'score'] }))
+			covered.push(row);
+		assert.deepStrictEqual(covered, [{ id: 'a', score: 0 }]);
+		assert.strictEqual(loads, 1);
+		const direct = [];
+		for await (const row of C.search({
+			sort: { attribute: 'score' },
+			limit: 1,
+			select: ['id', 'score'],
+			rowFilter: () => true,
+		}))
 			direct.push(row);
 		assert.deepStrictEqual(rows[0].children, direct);
 	});

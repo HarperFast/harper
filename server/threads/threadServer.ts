@@ -62,6 +62,7 @@ import * as globals from '../../globals.js';
 import { whenScopesClosed, startDeferredScopeCloses } from '../../components/scopeShutdown.ts';
 import { getComponentName } from '../../components/componentLoader.ts';
 import { onStartup } from '../../utility/lifecycle.ts';
+import { flushAnalyticsForExit } from '../../resources/analytics/write.ts';
 
 let debugThreads = env.get(terms.CONFIG_PARAMS.THREADS_DEBUG);
 let inspectorInitialized = false;
@@ -261,6 +262,7 @@ function shutdownServers(exitDeadline: number | undefined = getProcessExitDeadli
 				}
 			})
 		)
+		.then(phase('flushing analytics', flushAnalyticsForExit))
 		.then(() => {
 			if (!isMainThread) realExit(0);
 		});

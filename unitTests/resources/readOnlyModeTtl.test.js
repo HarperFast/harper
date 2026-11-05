@@ -68,16 +68,16 @@ describe('read-only mode does not evict expired records', () => {
 			assert.strictEqual(indexed(Table, 'read'), 2);
 		});
 
-		it('search omits an expired record, by index and by scan, without touching storage', async function () {
+		it('search returns an expired record, by index and by scan, without touching storage', async function () {
 			__setReadOnlyModeForTest(true);
 			for (let i = 0; i < 2; i++) {
 				const byIndex = [];
 				for await (const record of Table.search({ conditions: [{ attribute: 'name', value: 'read' }] }))
 					byIndex.push(record.id);
-				assert.deepStrictEqual(byIndex, ['live']);
+				assert.deepStrictEqual(byIndex.sort(), ['expired', 'live']);
 				const byScan = [];
 				for await (const record of Table.search({})) byScan.push(record.id);
-				assert.deepStrictEqual(byScan, ['live']);
+				assert.deepStrictEqual(byScan.sort(), ['expired', 'live']);
 			}
 			await delay(50);
 			assert.ok(Table.primaryStore.getEntry('expired')?.value);

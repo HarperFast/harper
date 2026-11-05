@@ -459,6 +459,15 @@ export function configValidator(configJson, skipFsValidation = false) {
 		analytics: Joi.object({
 			aggregatePeriod: number,
 			replicate: boolean.optional(),
+			fullText: Joi.object({
+				enabled: boolean.optional(),
+				intervalMilliseconds: number.integer().min(1000).max(2147483647).optional(),
+				histograms: boolean.optional(),
+				snapshotBytes: boolean.optional(),
+			})
+				.unknown(false)
+				.strict()
+				.optional(),
 		}),
 		replication: Joi.object({
 			hostname: bareHostConstraints,

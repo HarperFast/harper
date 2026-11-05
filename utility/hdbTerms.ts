@@ -533,6 +533,11 @@ export const LEGACY_CONFIG_PARAMS = {
  */
 export const CONFIG_PARAMS = {
 	ANALYTICS_AGGREGATEPERIOD: 'analytics_aggregatePeriod',
+	ANALYTICS_FULL_TEXT: 'analytics_fullText',
+	ANALYTICS_FULL_TEXT_ENABLED: 'analytics_fullText_enabled',
+	ANALYTICS_FULL_TEXT_INTERVAL_MILLISECONDS: 'analytics_fullText_intervalMilliseconds',
+	ANALYTICS_FULL_TEXT_HISTOGRAMS: 'analytics_fullText_histograms',
+	ANALYTICS_FULL_TEXT_SNAPSHOT_BYTES: 'analytics_fullText_snapshotBytes',
 	ANALYTICS_AGGREGATERETENTIONMS: 'analytics_aggregateRetentionMs',
 	ANALYTICS_RAWRETENTIONMS: 'analytics_rawRetentionMs',
 	ANALYTICS_REPLICATE: 'analytics_replicate',

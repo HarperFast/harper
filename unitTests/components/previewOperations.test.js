@@ -338,6 +338,108 @@ describe('enable_previews / disable_previews / get_preview_policy (harper#3042)'
 		]);
 	});
 
+	it('reports trust policies whose environment, repository/workflow pins, or cleanup target drifted', async () => {
+		const driftAudience = 'https://opsdrift.example.com:9925/';
+		await enablePreviews(enableRequest('opsdrift', { audience: driftAudience }));
+		const basePolicies = await policiesOf('opsdrift');
+		const baseDeploy = basePolicies.find((p) => p.id === 'github-actions-opsdrift-preview');
+		const baseCleanup = basePolicies.find((p) => p.id === 'github-actions-opsdrift-preview-cleanup');
+		const replacePolicy = async (base, overrides = {}) => {
+			await dropOidcTrust({ operation: 'drop_oidc_trust', id: base.id, hdb_user: SU });
+			await addOidcTrust({
+				operation: 'add_oidc_trust',
+				hdb_user: SU,
+				id: base.id,
+				issuer: base.issuer,
+				audience: base.audience,
+				user: base.user,
+				claims: base.claims,
+				operations: base.operations,
+				description: base.description,
+				...overrides,
+			});
+		};
+		try {
+			await replacePolicy(baseDeploy, {
+				claims: { ...baseDeploy.claims, environment: 'preview-cleanup' },
+				operations: ['drop_component'],
+			});
+			await replacePolicy(baseCleanup, { claims: { ...baseCleanup.claims, environment: 'staging' } });
+			const envDrifted = await getPreviewPolicy({ operation: 'get_preview_policy', app: 'opsdrift', hdb_user: SU });
+			assert.strictEqual(envDrifted.enabled, false);
+			assert.deepStrictEqual(envDrifted.problems, [
+				'trust policy "github-actions-opsdrift-preview" pins environment "preview-cleanup", which is for cleanup',
+				'trust policy "github-actions-opsdrift-preview" allows ["drop_component"], not deploy_component, drop_component, get_components, get_deployment, registration_info',
+				'trust policy "github-actions-opsdrift-preview-cleanup" pins environment "staging", not "preview-cleanup"',
+			]);
+
+			await replacePolicy(baseDeploy, {
+				claims: {
+					repository: 'acme/opsdrift',
+					workflow_path: 'acme/opsdrift/.github/workflows/preview.yaml',
+					event_name: 'pull_request_target',
+					environment: 'preview',
+				},
+			});
+			await replacePolicy(baseCleanup, {
+				claims: {
+					repository_id: '67890',
+					workflow_path: 'acme/opsdrift/.github/workflows/preview.yaml',
+					event_name: 'pull_request_target',
+					environment: 'preview-cleanup',
+				},
+			});
+			const unpinned = await getPreviewPolicy({ operation: 'get_preview_policy', app: 'opsdrift', hdb_user: SU });
+			assert.strictEqual(unpinned.enabled, false);
+			assert.strictEqual(unpinned.repository, undefined);
+			assert.strictEqual(unpinned.workflow, undefined);
+			assert.strictEqual(unpinned.branch, undefined);
+			assert.strictEqual(unpinned.repository_id, undefined);
+			assert.deepStrictEqual(unpinned.problems, [
+				'trust policy "github-actions-opsdrift-preview" no longer pins repository_id and a branch workflow_ref as strings',
+				'trust policy "github-actions-opsdrift-preview-cleanup" no longer pins repository_id and a branch workflow_ref as strings',
+			]);
+			await replacePolicy(baseDeploy, {
+				claims: {
+					...baseDeploy.claims,
+					environment: ['preview', 'staging'],
+				},
+			});
+			await replacePolicy(baseCleanup, {
+				claims: {
+					...baseCleanup.claims,
+					repository_id: ['67890'],
+				},
+			});
+			const arrayPinned = await getPreviewPolicy({ operation: 'get_preview_policy', app: 'opsdrift', hdb_user: SU });
+			assert.strictEqual(arrayPinned.enabled, false);
+			assert.deepStrictEqual(arrayPinned.problems, [
+				'trust policy "github-actions-opsdrift-preview" no longer pins environment as a non-empty string',
+				'trust policy "github-actions-opsdrift-preview-cleanup" no longer pins repository_id and a branch workflow_ref as strings',
+			]);
+
+			await replacePolicy(baseDeploy);
+			await replacePolicy(baseCleanup, {
+				audience: 'https://other.example.com:9925/',
+				claims: {
+					...baseCleanup.claims,
+					repository_id: '99999',
+					workflow_ref: 'acme/opsdrift/.github/workflows/other.yaml@refs/heads/main',
+				},
+			});
+			const mismatched = await getPreviewPolicy({ operation: 'get_preview_policy', app: 'opsdrift', hdb_user: SU });
+			assert.strictEqual(mismatched.enabled, false);
+			assert.deepStrictEqual(mismatched.problems, [
+				`trust policy "github-actions-opsdrift-preview-cleanup" has audience "https://other.example.com:9925/", not "${driftAudience}"`,
+				'trust policy "github-actions-opsdrift-preview-cleanup" pins repository_id "99999", not "67890"',
+				'trust policy "github-actions-opsdrift-preview-cleanup" pins workflow_ref "acme/opsdrift/.github/workflows/other.yaml@refs/heads/main", not "acme/opsdrift/.github/workflows/preview.yaml@refs/heads/main"',
+			]);
+		} finally {
+			await replacePolicy(baseDeploy);
+			await replacePolicy(baseCleanup);
+		}
+	});
+
 	it('lets another policy that gives a run the same authority stand, since the exchange accepts it', async () => {
 		await enablePreviews(enableRequest('opsagree'));
 		const { id: _id, ...preview } = (await policiesOf('opsagree')).find(

@@ -41,4 +41,4 @@ jobs:
         timeout-minutes: 3
         run: |
           echo "npm $(npm -v)"
-          npm ci --ignore-scripts --dry-run --no-audit --no-fund
+          npm ci --ignore-scripts --strict-peer-deps --dry-run --no-audit --no-fund

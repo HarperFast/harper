@@ -843,7 +843,7 @@ export function raiseAuditFloor(auditStore: any, cutoff: number, observeLogs = f
 				(nativeHorizon === 0 || recorded.observedAt >= (now + nativeHorizon) / 2)
 			)
 		) {
-			const base = recorded ?? freshLogPurgeBounds(floor, nativeHorizon);
+			const base = recorded ?? freshLogPurgeBounds(auditStore, floor, nativeHorizon);
 			observedBounds = observeLogPurgeBounds(auditStore, cutoff, base, nativeHorizon, now, readLogs);
 		}
 		const resume = resumeTracked ? auditStore.getBinary(AUDIT_RESUME_FLOOR_KEY) : undefined;
@@ -874,7 +874,8 @@ export function raiseAuditFloor(auditStore: any, cutoff: number, observeLogs = f
 			}
 			const floorBefore = stored === undefined ? AUDIT_FLOOR_UNKNOWN : decodeAuditFloor(stored);
 			const bounds = raisedLogPurgeBounds(
-				decodeLogPurgeBounds(read(LOG_PURGE_BOUNDS_KEY)),
+				auditStore,
+				decodeLogPurgeBounds(auditStore, read(LOG_PURGE_BOUNDS_KEY)),
 				floorBefore,
 				cutoff,
 				observedBounds,
@@ -894,10 +895,16 @@ export function raiseAuditFloor(auditStore: any, cutoff: number, observeLogs = f
  * follower that missed purged entries from one whose source wrote nothing; an empty log alone cannot.
  * `logs[name]` is `[bound, quietAt, maxKey]`: `bound` covers each tracked prune of the log, `quietAt` is the
  * last retention pass that found no entry in it at or past the cutoff, and `maxKey` the largest key it held at
- * the last pass (`observedAt`). `epoch` covers what was removed before
- * tracking began and by prunes that observe no log, `cutoff` is the highest prune cutoff the record has seen,
- * and `observedAt` its last retention pass. Raised only inside `raiseAuditFloor`'s transaction, so it shares
- * the floor's write-ahead ordering. LMDB keeps one entry, under `LMDB_PURGE_LOG`.
+ * the last pass (`observedAt`). `epoch` bounds every log, for prunes that observe no log, `cutoff` is the highest
+ * prune cutoff the record has seen, and `observedAt` its last pass that read the logs, 0 before the first. Raised
+ * only inside `raiseAuditFloor`'s transaction, so it shares the floor's write-ahead ordering. LMDB keeps one entry,
+ * under `LMDB_PURGE_LOG`.
+ *
+ * `trackedFrom` is where this accounting begins, raised whenever no pass has read the logs within the native
+ * retention: below it any log may have lost anything, including a log with no entry left to say so. It is a position
+ * on this node, not a key of any log, so a source compares it with the follower's start on this node. A relayed log's
+ * keys are its origin's and can predate this node, so a cursor for that origin below `trackedFrom` says nothing about
+ * what the follower lacks.
  *
  * rocksdb-js deletes whole segments by file mtime, for `purgeLogs` and on its own (`transactionLogRetention`)
  * when a log opens, closes or rotates, outside `raiseAuditFloor`. A segment last written before `quietAt` held
@@ -913,13 +920,25 @@ const LMDB_PURGE_LOG = '';
 type LogPurgeEntry = [bound: number, quietAt: number, maxKey: number];
 // a largest key a log could not be read for: exposure then falls back to the native horizon
 const UNKNOWN_MAXIMUM = Number.MAX_SAFE_INTEGER;
-type LogPurgeBounds = { epoch: number; cutoff: number; observedAt: number; logs: Record<string, LogPurgeEntry> };
+type LogPurgeBounds = {
+	epoch: number;
+	trackedFrom: number;
+	cutoff: number;
+	observedAt: number;
+	logs: Record<string, LogPurgeEntry>;
+};
 
 function isPurgeBoundValue(value: unknown): value is number {
 	return typeof value === 'number' && Number.isFinite(value) && value >= 0 && !Object.is(value, -0);
 }
 
-function decodeLogPurgeBounds(stored: any): LogPurgeBounds | undefined {
+/**
+ * The stored `epoch` also covers `trackedFrom`, so a build that reads only `epoch` stays conservative after a
+ * rollback; `unobserved` holds what bounds every log. A record with neither `unobserved` nor `trackedFrom` predates
+ * the split: its epoch was the tracking start, folded into each log's bound, and its builds compared it only with a
+ * follower's merged start, so it reads as a tracking start here too.
+ */
+function decodeLogPurgeBounds(auditStore: any, stored: any): LogPurgeBounds | undefined {
 	if (stored === undefined) return undefined;
 	let value: any;
 	try {
@@ -932,7 +951,9 @@ function decodeLogPurgeBounds(stored: any): LogPurgeBounds | undefined {
 		typeof value !== 'object' ||
 		!isPurgeBoundValue(value.epoch) ||
 		!isPurgeBoundValue(value.cutoff) ||
-		!isPurgeBoundValue(value.observedAt)
+		!isPurgeBoundValue(value.observedAt) ||
+		(value.trackedFrom !== undefined && !isPurgeBoundValue(value.trackedFrom)) ||
+		(value.unobserved !== undefined && !isPurgeBoundValue(value.unobserved))
 	)
 		return undefined;
 	const logs = value.logs;
@@ -941,12 +962,34 @@ function decodeLogPurgeBounds(stored: any): LogPurgeBounds | undefined {
 		const entry = logs[name];
 		if (!Array.isArray(entry) || entry.length !== 3 || !entry.every(isPurgeBoundValue)) return undefined;
 	}
-	return { epoch: value.epoch, cutoff: value.cutoff, observedAt: value.observedAt, logs };
+	const predatesSplit = value.trackedFrom === undefined && isRocksStore(auditStore);
+	if (predatesSplit) {
+		for (const name in logs) {
+			const entry = logs[name];
+			if (entry[0] === value.epoch) entry[0] = 0;
+			if (entry[2] === value.epoch) entry[2] = 0;
+		}
+	}
+	return {
+		epoch: value.unobserved ?? (predatesSplit ? 0 : value.epoch),
+		trackedFrom: value.trackedFrom ?? value.epoch,
+		cutoff: value.cutoff,
+		observedAt: value.observedAt,
+		logs,
+	};
 }
 
-// past the native horizon too: a log that rocksdb-js emptied before tracking began may not be listed at all
-function freshLogPurgeBounds(floor: number, nativeHorizon = 0): LogPurgeBounds {
-	return { epoch: Math.max(floor, nativeHorizon), cutoff: floor, observedAt: 0, logs: Object.create(null) };
+// past the native horizon too: a log that rocksdb-js emptied before tracking began may not be listed at all. LMDB's
+// one log is compared only from the merged start, so its epoch keeps the tracking start.
+function freshLogPurgeBounds(auditStore: any, floor: number, nativeHorizon = 0): LogPurgeBounds {
+	const trackedFrom = Math.max(floor, nativeHorizon);
+	return {
+		epoch: isRocksStore(auditStore) ? 0 : trackedFrom,
+		trackedFrom,
+		cutoff: floor,
+		observedAt: 0,
+		logs: Object.create(null),
+	};
 }
 
 /**
@@ -955,7 +998,7 @@ function freshLogPurgeBounds(floor: number, nativeHorizon = 0): LogPurgeBounds {
  */
 function trustedLogPurgeBounds(auditStore: any, floor: number): LogPurgeBounds | undefined {
 	if (!Number.isFinite(floor)) return undefined;
-	const recorded = decodeLogPurgeBounds(auditStore.getBinary(LOG_PURGE_BOUNDS_KEY));
+	const recorded = decodeLogPurgeBounds(auditStore, auditStore.getBinary(LOG_PURGE_BOUNDS_KEY));
 	return recorded && recorded.cutoff >= floor ? recorded : undefined;
 }
 
@@ -964,12 +1007,11 @@ function recordedEntry(recorded: LogPurgeBounds, name: string): LogPurgeEntry {
 	return (Object.hasOwn(recorded.logs, name) && recorded.logs[name]) || [0, recorded.observedAt, 0];
 }
 
-/** A log's bound as recorded, raised to the native purge horizon once the log has not been quiet within it. */
+/** A log's bound as recorded, raised to its largest key, up to the native purge horizon, once a pass has not seen it quiet within that horizon. */
 function exposedBound(recorded: LogPurgeBounds, name: string, nativeHorizon: number): number {
 	const [bound, quietAt, maxKey] = recordedEntry(recorded, name);
-	let native = 0;
-	if (quietAt < nativeHorizon)
-		native = recorded.observedAt >= nativeHorizon ? Math.min(nativeHorizon, maxKey) : nativeHorizon;
+	// what no pass has seen is `trackedFrom`'s to answer
+	const native = quietAt < nativeHorizon ? Math.min(nativeHorizon, maxKey) : 0;
 	return Math.max(recorded.epoch, bound, native);
 }
 
@@ -1026,7 +1068,8 @@ function lmdbMaximumBelow(auditStore: any, cutoff: number, known: number): numbe
  * bounded by its largest key. A log written since it was last quiet keeps its bound while that quiet pass is
  * at or past the reach: every segment either purge can remove was last written before it. Otherwise, and for
  * a log that cannot be read, the reach bounds it. Undefined when the logs cannot be listed, which records the
- * cutoff as the epoch.
+ * cutoff as the epoch. A prune that reads no log, with no pass inside the native retention, observes nothing, and
+ * `trackedFrom` answers for it.
  */
 function observeLogPurgeBounds(
 	auditStore: any,
@@ -1049,6 +1092,9 @@ function observeLogPurgeBounds(
 		observed.set(LMDB_PURGE_LOG, [bound, now, bound]);
 		return observed;
 	}
+	// a pass stamped ahead of the clock says nothing about what a cutoff now reaches
+	if (!readLogs && (recorded.observedAt === 0 || recorded.observedAt < nativeHorizon || recorded.observedAt > now))
+		return observed;
 	// the furthest either purge reaches: this prune's cutoff, or rocksdb-js's own retention when it reaches further
 	const reach = Math.max(cutoff, nativeHorizon);
 	const rootStore = auditStore.rootStore;
@@ -1105,6 +1151,7 @@ function logPurgeBoundsCover(
 ): boolean {
 	if (!recorded || cutoff > recorded.cutoff) return false;
 	if (!observed) return recorded.epoch >= cutoff;
+	if (observed.size === 0 && recorded.trackedFrom < cutoff) return false;
 	const refreshBefore = nativeHorizon > 0 ? (now + nativeHorizon) / 2 : 0;
 	if (recorded.observedAt < refreshBefore) return false;
 	for (const [name, [bound, quietAt, maxKey]] of observed) {
@@ -1120,6 +1167,7 @@ function logPurgeBoundsCover(
  * epoch, a bound for every log. No record while the floor is unknown.
  */
 function raisedLogPurgeBounds(
+	auditStore: any,
 	current: LogPurgeBounds | undefined,
 	floor: number,
 	cutoff: number,
@@ -1129,11 +1177,14 @@ function raisedLogPurgeBounds(
 	logsRead = true
 ): Uint8Array | undefined {
 	if (!Number.isFinite(floor)) return undefined;
-	const base = current && current.cutoff >= floor ? current : freshLogPurgeBounds(floor, nativeHorizon);
+	const base = current && current.cutoff >= floor ? current : freshLogPurgeBounds(auditStore, floor, nativeHorizon);
 	let epoch = observed ? base.epoch : Math.max(base.epoch, cutoff);
-	// a log created after the last pass and emptied by the native purge since is neither listed nor recorded
-	if (observed && nativeHorizon !== undefined && base.observedAt < nativeHorizon)
-		epoch = Math.max(epoch, nativeHorizon);
+	let { trackedFrom } = base;
+	if (observed && nativeHorizon !== undefined) {
+		// a log created after the last pass and emptied by the native purge since is neither listed nor recorded
+		if (base.observedAt < nativeHorizon) trackedFrom = Math.max(trackedFrom, nativeHorizon);
+		if (!logsRead && observed.size === 0) trackedFrom = Math.max(trackedFrom, cutoff);
+	}
 	const logs = Object.assign(Object.create(null), base.logs);
 	for (const [name, [bound, quietAt, maxKey]] of observed ?? []) {
 		// msgpackr renames this key on read, so the epoch carries its bound instead
@@ -1150,7 +1201,14 @@ function raisedLogPurgeBounds(
 	}
 	// each maxKey is a log's largest key at observedAt, which only a pass that read the logs advances
 	const observedAt = observed && logsRead ? now : base.observedAt;
-	return pack({ epoch, cutoff: Math.max(base.cutoff, cutoff), observedAt, logs });
+	return pack({
+		epoch: Math.max(epoch, trackedFrom),
+		unobserved: epoch,
+		trackedFrom,
+		cutoff: Math.max(base.cutoff, cutoff),
+		observedAt,
+		logs,
+	});
 }
 
 /** rocksdb-js's own transaction-log retention in ms: 0 on LMDB or when it has none, undefined when unreadable. */
@@ -1187,7 +1245,8 @@ function establishLogPurgeBounds(auditStore: any): void {
 			(read) => {
 				const recordedFloor = decodeAuditFloor(read(AUDIT_FLOOR_KEY));
 				if (read(LOG_PURGE_BOUNDS_KEY) !== undefined || !Number.isFinite(recordedFloor)) return undefined;
-				return [[LOG_PURGE_BOUNDS_KEY, pack(freshLogPurgeBounds(recordedFloor, nativeHorizon))]];
+				const fresh = freshLogPurgeBounds(auditStore, recordedFloor, nativeHorizon);
+				return [[LOG_PURGE_BOUNDS_KEY, pack({ ...fresh, epoch: fresh.trackedFrom, unobserved: fresh.epoch })]];
 			},
 			'transaction-log purge bounds'
 		);
@@ -1198,29 +1257,34 @@ function establishLogPurgeBounds(auditStore: any): void {
 
 function logPurgeBoundReader(
 	auditStore: any
-): { recorded: LogPurgeBounds; boundOf: (name: string) => number } | undefined {
+): { recorded: LogPurgeBounds; trackedFrom: number; boundOf: (name: string) => number } | undefined {
 	const recorded = trustedLogPurgeBounds(auditStore, getAuditFloor(auditStore));
 	if (!recorded) return undefined;
-	if (!isRocksStore(auditStore)) return { recorded, boundOf: () => exposedBound(recorded, LMDB_PURGE_LOG, 0) };
+	if (!isRocksStore(auditStore))
+		return { recorded, trackedFrom: recorded.trackedFrom, boundOf: () => exposedBound(recorded, LMDB_PURGE_LOG, 0) };
 	const nativeHorizon = nativePurgeHorizon(auditStore, Date.now());
 	if (nativeHorizon === undefined) return undefined;
-	return { recorded, boundOf: (name) => exposedBound(recorded, name, nativeHorizon) };
+	return {
+		recorded,
+		trackedFrom: Math.max(recorded.trackedFrom, recorded.observedAt < nativeHorizon ? nativeHorizon : 0),
+		boundOf: (name) => exposedBound(recorded, name, nativeHorizon),
+	};
 }
 
 /**
  * An upper bound on every key any prune removed from the named logs (every recorded or listed log when none
- * are named; LMDB has one), so a resume position at or past it missed nothing a prune took. Undefined when the
- * store cannot say: no record, an unreadable one, an unknown floor, a prune the record did not see, or an
- * unreadable native retention.
+ * are named; LMDB has one), where tracking began included, so a resume position at or past it missed nothing a prune
+ * took. Undefined when the store cannot say: no record, an unreadable one, an unknown floor, a prune the record did
+ * not see, or an unreadable native retention.
  */
 export function getLogPurgeBound(auditStore: any, logNames?: Iterable<string> | string): number | undefined {
 	try {
 		const reader = logPurgeBoundReader(auditStore);
 		if (!reader) return undefined;
-		const { recorded, boundOf } = reader;
+		const { recorded, trackedFrom, boundOf } = reader;
 		if (!isRocksStore(auditStore)) return boundOf(LMDB_PURGE_LOG);
 		// no RocksDB log is named '', so this is the bound of a log no pass has recorded
-		let scopeBound = boundOf(LMDB_PURGE_LOG);
+		let scopeBound = Math.max(trackedFrom, boundOf(LMDB_PURGE_LOG));
 		const names = typeof logNames === 'string' ? [logNames] : logNames;
 		if (names) for (const name of names) scopeBound = Math.max(scopeBound, boundOf(name));
 		else {
@@ -1234,7 +1298,10 @@ export function getLogPurgeBound(auditStore: any, logNames?: Iterable<string> | 
 	}
 }
 
-/** Each named log's bound, from one read of the record, or undefined as for `getLogPurgeBound`. */
+/**
+ * Each named log's bound on what tracked prunes removed, from one read of the record, or undefined as for
+ * `getLogPurgeBound`. What was removed before tracking began is `getLogPurgeTrackedFrom`'s.
+ */
 export function getLogPurgeBounds(
 	auditStore: any,
 	logNames: Iterable<string> | string
@@ -1245,6 +1312,20 @@ export function getLogPurgeBounds(
 		const bounds = new Map<string, number>();
 		for (const name of typeof logNames === 'string' ? [logNames] : logNames) bounds.set(name, reader.boundOf(name));
 		return bounds;
+	} catch (error) {
+		warnContained('Error reading the transaction-log purge bounds', error);
+		return undefined;
+	}
+}
+
+/**
+ * The position on this node below which any log may have lost anything, or undefined as for `getLogPurgeBound`.
+ * Compare it with a follower's start on this node, never with a per-origin cursor: a relayed log keeps its origin's
+ * keys, which can predate this node.
+ */
+export function getLogPurgeTrackedFrom(auditStore: any): number | undefined {
+	try {
+		return logPurgeBoundReader(auditStore)?.trackedFrom;
 	} catch (error) {
 		warnContained('Error reading the transaction-log purge bounds', error);
 		return undefined;
@@ -1264,7 +1345,8 @@ export function getLogPurgeBounds(
  *
  * There is no "brand new store, use a permissive baseline" case: creating the audit DBI proves only
  * that the DBI was absent, which the audit-less backup above also produces. Being conservative on a
- * genuinely new database costs nothing, since its entries are all written after this instant.
+ * genuinely new database costs nothing: every position on it is past this instant, whatever older origin
+ * keys its relayed logs hold.
  *
  * In read-only mode nothing is written and the floor stays unknown — the fail-closed answer for a
  * process that cannot record what it does not know.
