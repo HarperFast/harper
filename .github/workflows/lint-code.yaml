@@ -31,7 +31,7 @@ jobs:
           EVENT: ${{ github.event_name }}
           BEFORE: ${{ github.event.before }}
         # A push compares against the tip it replaced, so every commit of a multi-commit push is covered; --push
-        # says that range can hold several merged pull requests, each already held to the floor rule on its own.
+        # skips the floor rule, which judges one change against the base it was made on.
         run: |
           base=
           push=

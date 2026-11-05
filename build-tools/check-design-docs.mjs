@@ -192,8 +192,8 @@ function baseState(root, base) {
 const TOKEN = /[\p{L}\p{N}]+|[^\s\p{L}\p{N}]/gu;
 
 // The bytes of new text `text` holds over `before`: the tokens (letter and digit runs, single other marks) it has
-// more of, plus the whitespace it gained. A token matches itself wherever it sits, so text the change only moved,
-// re-wrapped or reordered adds nothing, and an edited sentence adds only its changed tokens.
+// more of, plus the whitespace it gained. A token matches itself anywhere in the file, so text the change only moved
+// or reordered adds nothing, re-wrapped text adds only whitespace it gained, and an edit adds its changed tokens.
 function addedBytes(before, text) {
 	const left = new Map();
 	let spaceBefore = byteSize(before);
