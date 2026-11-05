@@ -24,8 +24,7 @@ function settle(promise) {
 	);
 }
 
-// harper#3929 resolved the replacement link for a lock() whose wait outlives its link, but several uses after
-// the wait stayed on the dropped one.
+// Everything a lock() does after a wait that outlives its chained link belongs to the link that replaced it.
 describe('lock() waiting across a commit that drops its chained link', () => {
 	let TableA;
 	let TableB;
@@ -42,7 +41,6 @@ describe('lock() waiting across a commit that drops its chained link', () => {
 		return TableB.lock(id, { hold: true, lease: 10000 }, makeContext()).then(track);
 	}
 
-	// `launch` starts the waiters on a chained dbB link behind `contender`; txn.commit() then drops that link.
 	async function parkAcrossMidScopeCommit(ctx, txn, contender, launch) {
 		await new TableA('ls-head', ctx).put('ls-head', { id: 'ls-head', n: 1 });
 		const waiters = launch(ctx);

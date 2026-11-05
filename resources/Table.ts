@@ -5396,7 +5396,9 @@ export function makeTable(options): TableResourceClass {
 				return Promise.race([pending, followerDeadline]).then(
 					() => {
 						clearTimeout(followerTimer);
-						// Where the leader registered, which is the replacement when `link` left the chain.
+						// A hold handle survives its scope, so finding one does not say the scope is still live.
+						if (lockScopeEnded(link))
+							throw new ServerError('Transaction was closed while waiting for a record lock', 500);
 						const registeredOn = link.leftChain ? txnForContext(context) : link;
 						const acquired = registeredOn.recordLockFor(primaryStore, keyId);
 						if (acquired && !acquired.isExpired()) {
