@@ -2213,6 +2213,17 @@ export class HierarchicalNavigableSmallWorld {
 	 * and $distance.
 	 */
 	exactDistance(searchCondition: { target: number[]; distance?: string }, recordVector: number[] | Int8Array): number {
+		const fn = this.queryDistance(searchCondition);
+		if (recordVector == null) return Infinity; // missing vector sorts last
+		// distance fns require a plain Array (they guard on Array.isArray); records normally store a
+		// float[] vector, but convert defensively in case a typed array slips through.
+		const vec = Array.isArray(recordVector) ? recordVector : Array.from(recordVector);
+		return fn(searchCondition.target, vec);
+	}
+	private queryDistance(searchCondition: {
+		target: number[];
+		distance?: string;
+	}): (a: number[], b: number[]) => number {
 		if (!searchCondition.target) throw new ClientError('A target vector must be provided for an HNSW query');
 		if (!Array.isArray(searchCondition.target)) throw new ClientError('The target vector must be an array');
 		const fn =
@@ -2226,37 +2237,33 @@ export class HierarchicalNavigableSmallWorld {
 							? null
 							: this.distance;
 		if (!fn) throw new ClientError('Unknown distance function');
-		if (recordVector == null) return Infinity; // missing vector sorts last
-		// distance fns require a plain Array (they guard on Array.isArray); records normally store a
-		// float[] vector, but convert defensively in case a typed array slips through.
-		const vec = Array.isArray(recordVector) ? recordVector : Array.from(recordVector);
-		return fn(searchCondition.target, vec);
+		return fn;
 	}
 	/**
-	 * The predicate a threshold condition applies to a record's vector when it filters rows another condition
-	 * produced (search.ts filterByType): the exact distance against the threshold, as rescoreResults() applies it,
-	 * with the validation search() applies. None for a sort, or for a condition without a target that is not a
-	 * threshold (such as `ne null`), which compares the stored value itself.
+	 * A threshold condition's predicate on a record's vector, for when another condition leads (search.ts
+	 * filterByType): exact distance, as rescoreResults() applies it, after the checks search() makes.
+	 * `comparator` and `value` arrive resolved from aliases and tuple form. Returns none for a sort, or for a
+	 * condition with no target that is not a threshold, such as `ne null`.
 	 */
-	thresholdFilter(searchCondition: {
-		attribute?: any;
-		target: number[];
-		distance?: string;
-		comparator?: string;
-		value?: number;
-	}): ((recordVector: number[] | Int8Array) => boolean) | undefined {
-		const { comparator, value } = searchCondition;
+	thresholdFilter(
+		searchCondition: { attribute?: any; target: number[]; distance?: string; comparator?: string },
+		comparator: string,
+		value: number
+	): ((recordVector: number[] | Int8Array) => boolean) | undefined {
 		if (comparator === 'sort') return;
-		if (comparator !== 'lt' && comparator !== 'le') {
-			if (searchCondition.target === undefined) return;
-			throw new ClientError(`Can not use "${comparator}" comparator with HNSW`);
-		}
+		if (comparator !== 'lt' && comparator !== 'le' && searchCondition.target === undefined) return;
+		if (searchCondition.comparator !== 'lt' && searchCondition.comparator !== 'le')
+			throw new ClientError(`Can not use "${searchCondition.comparator}" comparator with HNSW`);
 		if (value === undefined)
 			throw new ClientError(`Search condition for ${searchCondition.attribute} must have a value`);
-		this.exactDistance(searchCondition, null);
-		return comparator === 'le'
-			? (recordVector) => recordVector != null && this.exactDistance(searchCondition, recordVector) <= value
-			: (recordVector) => recordVector != null && this.exactDistance(searchCondition, recordVector) < value;
+		const fn = this.queryDistance(searchCondition);
+		const { target } = searchCondition;
+		const inclusive = comparator === 'le';
+		return (recordVector) => {
+			if (recordVector == null) return false;
+			const distance = fn(target, Array.isArray(recordVector) ? recordVector : Array.from(recordVector));
+			return inclusive ? distance <= value : distance < value;
+		};
 	}
 	/**
 	 * Post-load rescoring hook called by search.ts after full records have been loaded.

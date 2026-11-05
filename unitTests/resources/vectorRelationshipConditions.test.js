@@ -131,38 +131,49 @@ describe('HNSW conditions inside relationship queries and as non-leading filters
 				['b-near'],
 				`relationship path, ${label}`
 			);
-			// two thresholds on one attribute, each against its own target
-			assert.deepStrictEqual(
-				await ids(Shelf, inRoom(near(), { attribute: 'embedding', comparator: 'lt', value: 20, target: [0, 3] })),
-				['near'],
-				label
-			);
-			assert.deepStrictEqual(
-				await ids(Shelf, inRoom(near(), { attribute: 'embedding', comparator: 'lt', value: 1, target: [0, 3] })),
-				[],
-				label
-			);
-			// `le` admits a distance equal to the threshold, `lt` does not
+			const second = (value) => ({ attribute: 'embedding', comparator: 'lt', value, target: [0, 3] });
+			assert.deepStrictEqual(await ids(Shelf, inRoom(near(), second(20))), ['near'], `two targets, ${label}`);
+			assert.deepStrictEqual(await ids(Shelf, inRoom(near(), second(1))), [], `two targets, ${label}`);
 			const exact = { attribute: 'embedding', value: 0, target: [1, 0.1] };
-			assert.deepStrictEqual(await ids(Shelf, inRoom({ ...exact, comparator: 'le' })), ['near'], label);
-			assert.deepStrictEqual(await ids(Shelf, inRoom({ ...exact, comparator: 'lt' })), [], label);
-			// a query's own metric overrides the index's
+			assert.deepStrictEqual(await ids(Shelf, inRoom({ ...exact, comparator: 'le' })), ['near'], `le, ${label}`);
+			assert.deepStrictEqual(await ids(Shelf, inRoom({ ...exact, comparator: 'lt' })), [], `lt, ${label}`);
 			assert.deepStrictEqual(
 				await ids(Shelf, inRoom(near('embedding', { value: 0.01, distance: 'cosine' }))),
 				['near'],
-				label
+				`query metric, ${label}`
 			);
-			// inside an OR nested in the AND
 			assert.deepStrictEqual(
 				await ids(Shelf, inRoom({ operator: 'or', conditions: [near(), { attribute: 'id', value: 'bare' }] })),
 				['bare', 'near'],
-				label
+				`nested OR, ${label}`
 			);
-			// negation excludes the rows within the threshold, a row without a vector included
-			assert.deepStrictEqual(await ids(Shelf, inRoom(near('embedding', { negated: true }))), ['bare', 'far'], label);
+			assert.deepStrictEqual(
+				await ids(Shelf, inRoom(near('embedding', { negated: true }))),
+				['bare', 'far'],
+				`negated, ${label}`
+			);
 		}
-		// a presence check is not a distance condition and compares the stored value (the planner cannot
-		// estimate one on an HNSW attribute, so the order is pinned)
+		assert.deepStrictEqual(
+			await ids(Shelf, {
+				conditions: [near(), { attribute: 'embedding', comparator: 'lt', value: 20, target: [0, 3] }],
+				enforceExecutionOrder: true,
+			}),
+			['near'],
+			'a threshold filtering an HNSW-led search'
+		);
+		assert.deepStrictEqual(
+			await ids(Shelf, {
+				conditions: [
+					{ attribute: 'room', value: 'a' },
+					Object.assign(['embedding', 0.5], { comparator: 'lt', target: TARGET }),
+				],
+				enforceExecutionOrder: true,
+			}),
+			['near'],
+			'tuple form'
+		);
+		// not a distance condition, so it compares the stored value; pinned order because the planner
+		// cannot estimate it on an HNSW attribute
 		assert.deepStrictEqual(
 			await ids(Shelf, {
 				conditions: [
@@ -194,6 +205,10 @@ describe('HNSW conditions inside relationship queries and as non-leading filters
 		await assert.rejects(
 			() => ids(Shelf, behind(near('embedding', { comparator: 'gt' }))),
 			/Can not use "gt" comparator/
+		);
+		await assert.rejects(
+			() => ids(Shelf, behind({ attribute: 'embedding', comparator: 'less_than', value: 0.5 })),
+			/Can not use "less_than" comparator/
 		);
 		await assert.rejects(() => ids(Shelf, behind(near('embedding', { value: undefined }))), /must have a value/);
 		await assert.rejects(

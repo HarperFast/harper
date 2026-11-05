@@ -1146,6 +1146,8 @@ export function searchByIndex(
 				allowFullScan,
 				filtered: joined,
 				context,
+				// no parent rows wanted means no related rows either; any other count does not carry across a join
+				minResults: minResults === 0 ? 0 : undefined,
 				holderTable,
 				holderReadTxn,
 				disableSnapshot,
@@ -1444,9 +1446,8 @@ export function searchByIndex(
 				: undefined;
 			const indexSearchStart = waiting ? start.promise.then(() => checkActive?.()) : undefined;
 			indexSearchStart?.catch(() => {});
-			// The index reads through context.transaction, the head of the context's per-database chain. Reached
-			// through a relationship, or after the scope touched another database first, the head is another
-			// database's, so the index gets this table's link.
+			// the index reads through context.transaction, which heads a chain of per-database links and can be another
+			// database's (a relationship, or a scope that touched another database first)
 			const headTransaction = context?.transaction;
 			const tableTransaction = headTransaction && Table._txnForContext(context);
 			const tableContext =
@@ -1563,7 +1564,7 @@ export function searchByIndex(
 				return results;
 			}
 			const loaded = processEntries(searched);
-			// an iterable like every other branch returns, with an iterator a join or a union can close early
+			// unlike an Array's, this iterator can be closed, which a join or union that stops early does
 			const results: any = new ExtendedIterable();
 			results.iterate = function* () {
 				yield* loaded;
@@ -2386,7 +2387,7 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 		}
 	}
 	if (value instanceof Date) value = value.getTime();
-	const distanceFilter = vectorDistanceFilter(searchCondition, Table, attribute);
+	const distanceFilter = vectorDistanceFilter(searchCondition, Table, attribute, value);
 	if (distanceFilter) return negated ? (record) => !distanceFilter(record) : distanceFilter;
 
 	let baseFilter;
@@ -2615,9 +2616,11 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 	}
 }
 
-/** A vector distance condition's record predicate, from its index's own metric; a per-coordinate comparison is wrong */
-function vectorDistanceFilter(condition, table, attribute): ((record: any) => boolean) | undefined {
-	const matches = table && conditionIndex(table, attribute)?.customIndex?.thresholdFilter?.(condition);
+/** A vector threshold compares distance, not each coordinate, so its index supplies the predicate */
+function vectorDistanceFilter(condition, table, attribute, value): ((record: any) => boolean) | undefined {
+	const comparator = ALTERNATE_COMPARATOR_NAMES[condition.comparator] || condition.comparator;
+	const matches =
+		table && conditionIndex(table, attribute)?.customIndex?.thresholdFilter?.(condition, comparator, value);
 	return matches && ((record) => matches(record?.[attribute]));
 }
 
