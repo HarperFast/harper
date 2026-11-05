@@ -62,6 +62,7 @@ import * as globals from '../../globals.js';
 import { whenScopesClosed, startDeferredScopeCloses } from '../../components/scopeShutdown.ts';
 import { getComponentName } from '../../components/componentLoader.ts';
 import { onStartup } from '../../utility/lifecycle.ts';
+import { flushAnalyticsForExit } from '../../resources/analytics/write.ts';
 
 let debugThreads = env.get(terms.CONFIG_PARAMS.THREADS_DEBUG);
 let inspectorInitialized = false;
@@ -261,6 +262,7 @@ function shutdownServers(exitDeadline: number | undefined = getProcessExitDeadli
 				}
 			})
 		)
+		.then(phase('flushing analytics', flushAnalyticsForExit))
 		.then(() => {
 			if (!isMainThread) realExit(0);
 		});
@@ -735,8 +737,7 @@ async function listenOnPortsBun() {
 				httpComponent.recordUdsBindSuccess(udsPath);
 
 				const writeMetadata = () => httpComponent.writeUdsMetadata(yamlPath, port, config.pseudoServer);
-				config.tlsSelector.ready.then(writeMetadata);
-				config.pseudoServer?.secureContextsListeners?.push(writeMetadata);
+				httpComponent.publishUdsMetadata(config.tlsSelector.ready, config.pseudoServer, writeMetadata);
 				harperLogger.info('Domain socket listening on ' + udsPath);
 			}
 		} catch (error) {
@@ -907,12 +908,10 @@ function onSocket(listener?: any, options?: any) {
 			SERVERS[udsPath] = udsServer;
 			httpComponent.registerUdsCleanupPaths(udsPath, yamlPath);
 
-			const writeMetadata = () => {
-				if (!httpComponent.isUdsBindFailed(udsPath))
-					httpComponent.writeUdsMetadata(yamlPath, options.securePort, secureSocketServer);
-			};
-			SNICallback.ready.then(writeMetadata);
-			secureSocketServer.secureContextsListeners.push(writeMetadata);
+			const writeMetadata = () =>
+				httpComponent.isUdsBindFailed(udsPath) ||
+				httpComponent.writeUdsMetadata(yamlPath, options.securePort, secureSocketServer);
+			httpComponent.publishUdsMetadata(SNICallback.ready, secureSocketServer, writeMetadata);
 		}
 	}
 	if (options.port) {

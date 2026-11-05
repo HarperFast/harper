@@ -17,7 +17,9 @@ import { GITHUB_ACTIONS_ISSUER, buildWorkflowRef, canonicalWorkflowPath } from '
 import {
 	planIdentityReconcile,
 	policyDifferences,
+	policiesOverlap,
 	roleDifference,
+	sameAuthority,
 	userDifference,
 	type DesiredPolicy,
 	type DesiredRole,
@@ -228,22 +230,58 @@ function conjuncts(expression: string): string[] | undefined {
 	return terms.map(withoutEnclosingParentheses);
 }
 
-const PULL_REQUEST_HEAD = /head\.sha|head\.ref|head\.repo|head_ref|merge_commit_sha|refs\/pull\//;
-const PR_HEAD_SHELL_CHECKOUT =
-	/\bgh\s+pr\s+checkout\b|\bgit\b[^\n]*\b(?:checkout|switch|fetch|pull|worktree|clone|reset)\b[^\n]*(?:head\.sha|head\.ref|head_ref|refs\/pull\/|pull\/)/;
+const PULL_REQUEST_HEAD =
+	/head\.sha|head\.ref|head\.repo|head_ref|GITHUB_HEAD_REF|merge_commit_sha|refs\/pull\/|(?<![\w/])pull\/\S/;
+// Also matched over a whole step, since `$( )` or a quote can put the verb on a later line than `git`.
+const GIT_FETCHING_CODE = /\bgit\b.*\b(?:checkout|switch|fetch|pull|worktree|clone|reset)\b/s;
+// Read over the whole step: a multi-line quote, a pipe or xargs carries a value onto a git line that shows none of it.
+const DYNAMIC_INPUT = /[$`<|]|\bxargs\b/;
+const COMMAND_ASSIGNMENTS =
+	/(^|[;&|({]|\b(?:then|do|else|export|local|declare|readonly)\b)(?:\s*\w+=(?:"(?:[^"\\]|\\.)*"|'[^']*'|\$\{\{[^}]*\}\}|[^\s;&|"'])*)+/g;
 
-/** How a job holding an identity token could end up running the PR's own code, as far as its steps show. */
-function checkPullRequestCheckout(name: string, job: any, problems: string[], unsafe: string[]): void {
+// Any mention but a read counts: shell has more ways to set a variable than a list of them would hold.
+function maySetVariable(script: string, variable: string): boolean {
+	return new RegExp(String.raw`(?<!\$\{?[#!]?|env\.)\b${variable}\b`).test(script);
+}
+
+/**
+ * Only a head the file shows outright counts: in the command itself, or in the `env:` value of a variable that no
+ * script able to replace it touches. A shell assignment's scope and order are not read, so its value is unverified.
+ */
+function namesPullRequestHead(text: string, scopes: any[], earlierScripts: string, ownScript = ''): boolean {
+	const command = text.replace(COMMAND_ASSIGNMENTS, '$1');
+	if (PULL_REQUEST_HEAD.test(command)) return true;
+	return [...command.matchAll(/\benv\.(\w+)|\$\{?(\w+)/g)].some(([, inExpression, inShell]) => {
+		const variable = inExpression ?? inShell;
+		// `${{ env.X }}` is filled in before the step's shell starts; an earlier step can still write X to GITHUB_ENV.
+		if (maySetVariable(inExpression ? earlierScripts : `${earlierScripts}\n${ownScript}`, variable)) return false;
+		const value = scopes.map((scope) => scope?.env?.[variable]).find((candidate) => candidate !== undefined);
+		return value !== undefined && PULL_REQUEST_HEAD.test(String(value));
+	});
+}
+
+/**
+ * A `git` fetch or checkout in a step that takes any input is unverified rather than resolved: reading shell has no end,
+ * and the operator can vouch for it with `allow_unverified=true`.
+ */
+function checkPullRequestCheckout(name: string, job: any, workflow: any, problems: string[], unsafe: string[]): void {
 	if (typeof job?.uses === 'string') {
 		unsafe.push(`that the reusable workflow job "${name}" calls never checks out the pull request's head`);
 		return;
 	}
-	for (const step of asList(job?.steps) as any[]) {
+	const steps = asList(job?.steps) as any[];
+	const scripts = steps.map((step) => (typeof step?.run === 'string' ? step.run : ''));
+	const headCheckout =
+		`job "${name}" holds an identity token and a step checks out the pull request's head, so a PR's code would ` +
+		'run with the preview identity';
+	for (const [index, step] of steps.entries()) {
+		const scopes = [step, job, workflow];
+		const earlierScripts = scripts.slice(0, index).join('\n');
 		if (typeof step?.uses === 'string' && /^actions\/checkout@/i.test(step.uses.trim())) {
 			for (const field of ['ref', 'repository']) {
 				const value = step.with?.[field];
 				if (value === undefined) continue;
-				if (PULL_REQUEST_HEAD.test(String(value))) {
+				if (namesPullRequestHead(String(value), scopes, earlierScripts)) {
 					problems.push(
 						`job "${name}" holds an identity token and checks out the pull request's head (${field}: ${value}), so a ` +
 							`PR's code would run with the preview identity`
@@ -253,11 +291,20 @@ function checkPullRequestCheckout(name: string, job: any, problems: string[], un
 				}
 			}
 		}
-		if (typeof step?.run === 'string' && PR_HEAD_SHELL_CHECKOUT.test(step.run)) {
-			problems.push(
-				`job "${name}" holds an identity token and a step checks out the pull request's head, so a PR's code would ` +
-					'run with the preview identity'
-			);
+		if (typeof step?.run !== 'string') continue;
+		const lines = step.run.replace(/\\\r?\n\s*/g, ' ').split('\n');
+		if (lines.some((line: string) => /\bgh\s+pr\s+checkout\b/.test(line))) {
+			problems.push(headCheckout);
+			continue;
+		}
+		const gitLines = lines.filter((line: string) => GIT_FETCHING_CODE.test(line));
+		if (gitLines.some((line: string) => namesPullRequestHead(line, scopes, earlierScripts, step.run))) {
+			problems.push(headCheckout);
+		} else if (DYNAMIC_INPUT.test(step.run) && GIT_FETCHING_CODE.test(step.run)) {
+			const named = gitLines.length > 0 ? gitLines : lines.filter((line: string) => /\bgit\b/.test(line));
+			for (const line of named) {
+				unsafe.push(`that \`${line.trim()}\` in job "${name}" does not check out the pull request's head`);
+			}
 		}
 	}
 }
@@ -304,6 +351,52 @@ function checkSameRepositoryCondition(
 	);
 }
 
+const ACTION_IS_CLOSED = /^(?:github\.event\.action\s*==\s*'closed'|'closed'\s*==\s*github\.event\.action)$/i;
+const ACTION_IS_NOT_CLOSED = /^(?:github\.event\.action\s*!=\s*'closed'|'closed'\s*!=\s*github\.event\.action)$/i;
+
+/** Undefined when a condition says more than that the job runs for a closed same-repository pull request. */
+function runsOnClose(name: string, jobs: Record<string, any>, path = new Set<string>()): boolean | undefined {
+	if (path.has(name) || !jobs[name]) return undefined;
+	const condition = jobCondition(jobs[name]);
+	if (condition) {
+		const terms = conjuncts(withoutEnclosingParentheses(condition));
+		if (terms?.some((term) => ACTION_IS_NOT_CLOSED.test(term))) return false;
+		if (!terms?.every((term) => ACTION_IS_CLOSED.test(term) || SAME_REPOSITORY_TERM.test(term))) return undefined;
+	}
+	// With no status function in the condition, a needed job that is skipped skips this one.
+	let runs: boolean | undefined = true;
+	for (const needed of asList(jobs[name]?.needs)) {
+		const neededRuns = runsOnClose(String(needed), jobs, new Set(path).add(name));
+		if (neededRuns === false) return false;
+		if (neededRuns === undefined) runs = undefined;
+	}
+	return runs;
+}
+
+/** A closed PR's preview lasts until it expires unless a job drops it, and `closed` is not a default event type. */
+function checkCleanupPath(workflow: any, filter: any, cleanupEnvironment: string, unverified: string[]): void {
+	const jobs: Record<string, any> = workflow?.jobs ?? {};
+	const cleanupJobs = Object.keys(jobs).filter((name) => environmentName(jobs[name]) === cleanupEnvironment);
+	const dropped = "that a closed pull request's preview is dropped before it expires";
+	if (cleanupJobs.length === 0) {
+		unverified.push(`${dropped}, since no job here runs in "${cleanupEnvironment}"`);
+		return;
+	}
+	if (!asList(filter?.types).includes('closed')) {
+		unverified.push(`${dropped}, since its pull_request_target types leave out closed`);
+		return;
+	}
+	const runs = cleanupJobs.map((name) => runsOnClose(name, jobs));
+	if (runs.includes(true)) return;
+	const named = (names: string[]) => names.map((name) => `job "${name}"`).join(' or ');
+	const unknown = cleanupJobs.filter((_, index) => runs[index] === undefined);
+	unverified.push(
+		unknown.length > 0
+			? `that ${named(unknown)} runs when a pull request closes, which is what drops its preview before it expires`
+			: `${dropped}, since ${named(cleanupJobs)} does not run when a pull request closes`
+	);
+}
+
 /**
  * Checks a `pull_request_target` preview workflow against the policies `enable_previews` writes: what can never match
  * them is a problem, and so is what would hand a fork, or a PR's own code, the preview identity.
@@ -335,6 +428,7 @@ export function checkPreviewWorkflowFile(
 		if (asList(filter?.['branches-ignore']).includes(branch)) {
 			problems.push(`its branches-ignore filter leaves out pull requests into "${branch}"`);
 		}
+		checkCleanupPath(workflow, filter, cleanupEnvironment, unverified);
 	}
 	checkEnvironmentJobs(workflow, environment, problems, unverified);
 	const jobs: Record<string, any> = workflow?.jobs ?? {};
@@ -344,7 +438,7 @@ export function checkPreviewWorkflowFile(
 			problems.push(`job "${name}" runs in "${cleanupEnvironment}" without \`permissions: id-token: write\``);
 		}
 		if (!grantsIdToken(job, workflow) && typeof job?.uses !== 'string') continue;
-		checkPullRequestCheckout(name, job, problems, unsafe);
+		checkPullRequestCheckout(name, job, workflow, problems, unsafe);
 		checkSameRepositoryCondition(name, jobs, problems, unsafe);
 	}
 	return { problems, unverified, unsafe };
@@ -365,6 +459,23 @@ export interface ReconcilePlan {
 	conflicts: string[];
 }
 
+function rivalPolicyProblem(policies: any[], wanted: DesiredPolicy): string | undefined {
+	const rival = policies.find(
+		(policy) =>
+			policy?.id !== wanted.id &&
+			policy?.enabled !== false &&
+			policy?.exchangeable !== false &&
+			policiesOverlap(policy, wanted) &&
+			!sameAuthority(policy, wanted)
+	);
+	if (!rival) return undefined;
+	return (
+		`Trust policy "${rival.id}", for user "${rival.user}", can match the same runs, and the exchange refuses a run two ` +
+		'policies give different users or operations. Give this component its own workflow (workflow=) or ' +
+		'environment (environment=), or drop that policy if this identity should deploy from those runs instead.'
+	);
+}
+
 export function planReconcile(
 	existing: { roles: any[]; users: any[]; policies: any[] },
 	desired: DesiredRecords
@@ -374,6 +485,8 @@ export function planReconcile(
 		{ role: desired.role, user: desired.user, policies: [desired.policy] },
 		(id) => `If it should be replaced, drop it with \`harper drop_oidc_trust id=${id}\` and run setup again.`
 	);
+	const rival = rivalPolicyProblem(existing.policies, desired.policy);
+	if (rival) plan.conflicts.push(rival);
 	return { role: plan.role, user: plan.user, policy: plan.policies[0], conflicts: plan.conflicts };
 }
 
@@ -761,10 +874,9 @@ export async function setupGithubActions(req: any, transport: any, component: st
 	}
 
 	const created: string[] = [];
-	const policyNow = async () =>
-		asList(((await cliOperations({ ...transport, operation: 'list_oidc_trust' }, true)) as any)?.policies).find(
-			(policy: any) => policy?.id === names.policy
-		);
+	const policiesNow = async () =>
+		asList(((await cliOperations({ ...transport, operation: 'list_oidc_trust' }, true)) as any)?.policies);
+	const policyNow = async () => (await policiesNow()).find((policy: any) => policy?.id === names.policy);
 	if (plan.role === 'create' || plan.user === 'create' || plan.policy === 'create') {
 		console.log(chalk.gray('Creating what is missing. If this stops partway, run it again to finish.'));
 	}
@@ -791,9 +903,12 @@ export async function setupGithubActions(req: any, transport: any, component: st
 		// add_oidc_trust replaces a policy, so one another super user creates (enabled or not) since the
 		// preflight would be overwritten. Checking again narrows that window to one round trip. An existing
 		// policy is never written, so this can't undo a disable or a drop.
-		if (await policyNow()) {
+		const policies = await policiesNow();
+		if (policies.some((policy: any) => policy?.id === names.policy)) {
 			throw cliError(`Trust policy "${names.policy}" was created while setup ran. Run setup again to check it.`);
 		}
+		const rival = rivalPolicyProblem(policies, desired.policy);
+		if (rival) throw cliError(`${rival} Run setup again to check it.`);
 		const response: any = await cliOperations({ ...transport, operation: 'add_oidc_trust', ...desired.policy }, true);
 		if (response?.warning) console.log(chalk.yellow(response.warning));
 		created.push(`trust policy ${names.policy}`);

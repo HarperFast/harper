@@ -256,7 +256,10 @@ export default function (searchObject: any, type: any) {
 			const addConditions = (condGroup) => {
 				//this is used to validate condition attributes exist in the schema
 				for (const condition of condGroup.conditions) {
-					if (condition.conditions) addConditions(condition);
+					if (condition.conditions) {
+						if (condition.attribute != null) checkAttributes.push(condition.attribute);
+						else addConditions(condition);
+					}
 					// Table.search resolves full-text names together with source-field authorization.
 					else if (!FULL_TEXT_COMPARATOR_SET.has(condition.comparator)) checkAttributes.push(condition.attribute);
 				}

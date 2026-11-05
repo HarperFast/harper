@@ -40,6 +40,9 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import { parsePassing, resolveTimeout } from './windowsGateChecks.mjs';
 
+// The cold-install subprocess suites take minutes on a Windows runner, so they get their own
+// group budget instead of sharing the server group's.
+const INSTALL_TESTS = 'unitTests/server/install*.test.js';
 // Same filename shape `test:unit:main` collects (package.json), so a `.test.mjs` suite under
 // one of these directories is not silently skipped.
 const GROUPS = [
@@ -48,6 +51,7 @@ const GROUPS = [
 	'unitTests/components/**/*test.*js',
 	'unitTests/config/**/*test.*js',
 	'unitTests/server/**/*test.*js',
+	INSTALL_TESTS,
 	'unitTests/sqlEngine/**/*test.*js',
 	'unitTests/utility/**/*test.*js',
 	'unitTests/validation/**/*test.*js',
@@ -125,6 +129,7 @@ function runGroup(pattern) {
 		// --no-color: an ANSI-prefixed epilogue would defeat parsePassing()'s line anchor.
 		const args = [MOCHA, '--reporter', 'dot', '--no-color', pattern];
 		for (const excluded of EXCLUDED) args.push('--exclude', excluded);
+		if (pattern !== INSTALL_TESTS) args.push('--exclude', INSTALL_TESTS);
 
 		const startedAt = Date.now();
 		const child = spawn(process.execPath, args, { cwd: repoRoot, stdio: ['ignore', 'pipe', 'pipe'] });

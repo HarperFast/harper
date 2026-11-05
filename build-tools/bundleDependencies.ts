@@ -25,6 +25,7 @@ type Package = {
 	peerDependenciesMeta?: Record<string, { optional?: boolean }>;
 	bundleDependencies?: string[];
 	devDependencies?: Record<string, string>;
+	overrides?: Record<string, string | Record<string, string>>;
 	files?: string[];
 	scripts?: Record<string, string>;
 	os?: string[];
@@ -258,6 +259,7 @@ export function prepareBundle(source: string, destination: string) {
 	rmSync(join(stage, 'npm-shrinkwrap.json'), { force: true });
 	const manifest: Package = readJson(join(stage, 'package.json'));
 	delete manifest.devDependencies;
+	delete manifest.overrides?.['@harperfast/integration-testing'];
 	manifest.bundleDependencies = plan.roots;
 	manifest.files = manifest.files?.filter((file) => file !== 'npm-shrinkwrap.json');
 	for (const [name, version] of Object.entries(plan.external)) {
@@ -319,6 +321,9 @@ export function checkBundle(root: string, lockFile: string, installed = false) {
 	const manifest: Package = readJson(join(root, 'package.json'));
 	if (manifest.name !== lock.packages[''].name || manifest.version !== lock.packages[''].version) {
 		throw new Error('Release identity differs from package-lock.json');
+	}
+	if (manifest.overrides?.['@harperfast/integration-testing']) {
+		throw new Error('Release must not contain the development host override');
 	}
 	if (existsSync(join(root, 'npm-shrinkwrap.json'))) throw new Error('Release must not contain npm-shrinkwrap.json');
 	if (JSON.stringify(manifest.bundleDependencies?.toSorted()) !== JSON.stringify(plan.roots.toSorted())) {

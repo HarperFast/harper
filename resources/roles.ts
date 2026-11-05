@@ -2,6 +2,8 @@ import { getDatabases } from './databases.ts';
 import { alterRole, addRole } from '../security/role.ts';
 import { parseDocument } from 'yaml';
 import isEqual from 'lodash/isEqual.js';
+import { ClientError } from '../utility/errors/hdbError.ts';
+import { HDB_ERROR_MSGS } from '../utility/errors/commonErrors.ts';
 import { RESERVED_DATABASE_NAMES } from '../utility/hdbTerms.ts';
 
 // Named permission flags are keyed alongside per-database permissions in a role's
@@ -84,6 +86,14 @@ function warnForStaleRoles(
  */
 async function handleFile(rolesContent, ensureRoleFn: (role: any) => Promise<unknown>) {
 	let rolesToDefine = parseDocument(rolesContent.toString(), { simpleKeys: true } as any).toJSON();
+	for (const [roleName, role] of Object.entries(rolesToDefine ?? {}) as [string, any][]) {
+		if (role === null || typeof role !== 'object' || Array.isArray(role)) {
+			throw new ClientError(`Role '${roleName}' must be an object`);
+		}
+		if (Object.hasOwn(role.permission || role, 'system')) {
+			throw new ClientError(`Role '${roleName}': ${HDB_ERROR_MSGS.SYSTEM_ROLE_PERMISSIONS_MANAGED}`);
+		}
+	}
 	const roleNames = new Set<string>();
 	for (let roleName in rolesToDefine) {
 		roleNames.add(roleName);

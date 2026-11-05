@@ -326,6 +326,7 @@ export function replayLogs(
 				const options = {
 					context,
 					isReplay: true,
+					auditEntry: auditRecord,
 					residencyId,
 					residencySlot,
 					nodeId,

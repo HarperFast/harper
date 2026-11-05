@@ -2,11 +2,13 @@ declare const tables: any;
 declare const Resource: any;
 
 const { DirectSource, DirectMirror, GenericSource, GenericMirror, Probe } = tables;
+let genericSourceReads = 0;
 
 DirectMirror.sourcedFrom(DirectSource);
 GenericMirror.sourcedFrom({
 	name: 'ForwardedTableSource',
 	async get(id) {
+		genericSourceReads++;
 		const record = await GenericSource.get(id, {});
 		return record ? { ...record } : undefined;
 	},
@@ -50,6 +52,6 @@ export class SourceState extends Resource {
 			])
 		);
 		const readiness = Probe.indices.vector.customIndex.derivedHost.readiness();
-		return { entries, records, vector: { ...readiness, ownerEpoch: String(readiness.ownerEpoch) } };
+		return { entries, records, vector: { ...readiness, ownerEpoch: String(readiness.ownerEpoch) }, genericSourceReads };
 	}
 }

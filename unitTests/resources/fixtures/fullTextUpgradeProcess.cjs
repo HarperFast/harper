@@ -6,13 +6,15 @@ const assert = require('node:assert');
 	const chunks = [];
 	for await (const chunk of process.stdin) chunks.push(chunk);
 	const { mode, options, documents, payload, version = '0.5.0' } = JSON.parse(Buffer.concat(chunks));
-	assert(['0.5.0', '0.7.0'].includes(version));
-	const binding = await import(
-		version === '0.7.0' ? '@harperfast/fulltext-v07/native' : '@harperfast/fulltext-previous/native'
-	);
+	assert(['0.5.0', '0.7.0', '0.8.0'].includes(version));
+	const binding = await import('@harperfast/fulltext/native');
 	const info = await binding.runtimeInfo();
 	assert.strictEqual(info.packageVersion, version);
-	assert.strictEqual(info.tantivyVersion, version === '0.7.0' ? '0.27.0' : '0.26.2');
+	assert.strictEqual(info.tantivyVersion, version !== '0.5.0' ? '0.27.0' : '0.26.2');
+	if (mode === 'probe') {
+		console.log(JSON.stringify({ runtimeInfo: info }));
+		return;
+	}
 	let index;
 	let ghostIds;
 	try {
@@ -39,7 +41,7 @@ const assert = require('node:assert');
 			try {
 				const reader = await binding.openNativeFullTextReader(options);
 				try {
-					if (version === '0.7.0') searchIds = (await reader.search({ text: 'catalog' })).hits.map(({ id }) => id);
+					if (version !== '0.5.0') searchIds = (await reader.search({ text: 'catalog' })).hits.map(({ id }) => id);
 				} finally {
 					await reader.close();
 				}

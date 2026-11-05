@@ -5,20 +5,28 @@ const testUtils = require('../../testUtils.js');
 testUtils.preTestPrep();
 
 const Fastify = require('fastify');
+const { decode } = require('cbor-x');
+const { unpackMultiple } = require('../../packageBindings.mts').packageBindings('msgpackr');
 const { ExtendedIterable } = require('@harperfast/extended-iterable');
 const { serialize, registerContentHandlers } = require('#src/server/serverHelpers/contentTypes');
 const { serverErrorHandler } = require('#src/server/serverHelpers/serverHandlers');
 const { ReadSnapshotExpiredError, ServerError } = require('#src/utility/errors/hdbError');
 
-function rowsFailingAt2(error, { asynchronous = false } = {}) {
+function rowsFailingAt(failingId, error, { asynchronous = false, columns, withName = false } = {}) {
 	const perRow = (id) => {
-		if (id === 2) {
+		if (id === failingId) {
 			if (asynchronous) return Promise.reject(error);
 			throw error;
 		}
-		return { id };
+		return withName ? { id, name: `n${id}` } : { id };
 	};
-	return new ExtendedIterable([1, 2, 3]).map(perRow);
+	const iterable = new ExtendedIterable([1, 2, 3]).map(perRow);
+	if (columns) iterable.getColumns = () => columns;
+	return iterable;
+}
+
+function rowsFailingAt2(error, options) {
+	return rowsFailingAt(2, error, options);
 }
 
 function respond(iterable, accept) {
@@ -38,12 +46,13 @@ function drain(readable) {
 		readable.on('error', (error) => (failure = error));
 		readable.on('close', () => {
 			clearTimeout(deadline);
-			resolve({ body: Buffer.concat(chunks).toString(), failure });
+			const raw = Buffer.concat(chunks);
+			resolve({ body: raw.toString(), raw, failure });
 		});
 	});
 }
 
-const ordinary = () => Object.assign(new Error('row 2 failed'), { partialObject: { id: 2 } });
+const ordinary = (id = 2) => Object.assign(new Error(`row ${id} failed`), { partialObject: { id } });
 const unavailableRow = () =>
 	Object.assign(new ServerError('source unavailable for row 2', 503), { partialObject: { id: 2 } });
 
@@ -55,6 +64,68 @@ for (const asynchronous of [false, true]) {
 			assert.deepStrictEqual(JSON.parse(body), [
 				{ id: 1 },
 				{ error: 'Error', message: 'row 2 failed', id: 2 },
+				{ id: 3 },
+			]);
+		});
+
+		it('keeps a row-local error as an in-band CBOR item carrying the primary key', async function () {
+			const { raw, failure } = await drain(respond(rowsFailingAt2(ordinary(), { asynchronous }), 'application/cbor'));
+			assert.strictEqual(failure, undefined);
+			assert.deepStrictEqual(decode(raw), [{ id: 1 }, { error: 'Error', message: 'row 2 failed', id: 2 }, { id: 3 }]);
+		});
+
+		it('keeps a row-local error as an in-band MessagePack item carrying the primary key', async function () {
+			const { raw, failure } = await drain(
+				respond(rowsFailingAt2(ordinary(), { asynchronous }), 'application/x-msgpack')
+			);
+			assert.strictEqual(failure, undefined);
+			assert.deepStrictEqual(unpackMultiple(raw), [
+				{ id: 1 },
+				{ error: 'Error', message: 'row 2 failed', id: 2 },
+				{ id: 3 },
+			]);
+		});
+
+		it('keeps a row-local error as an in-band CSV row carrying the primary key and error columns when present', async function () {
+			const firstRowFailed = await drain(
+				respond(rowsFailingAt(1, ordinary(1), { asynchronous, withName: true }), 'text/csv')
+			);
+			assert.strictEqual(firstRowFailed.failure, undefined);
+			assert.deepStrictEqual(firstRowFailed.body.trim().split('\n'), [
+				'"error","message","id"',
+				'"Error","row 1 failed",1',
+				',,2',
+				',,3',
+			]);
+
+			const defaultColumns = await drain(
+				respond(rowsFailingAt2(ordinary(), { asynchronous, withName: true, columns: ['id', 'name'] }), 'text/csv')
+			);
+			assert.strictEqual(defaultColumns.failure, undefined);
+			assert.deepStrictEqual(defaultColumns.body.trim().split('\n'), ['"id","name"', '1,"n1"', '2,', '3,"n3"']);
+
+			const withErrorColumns = await drain(
+				respond(
+					rowsFailingAt2(ordinary(), { asynchronous, withName: true, columns: ['id', 'name', 'error', 'message'] }),
+					'text/csv'
+				)
+			);
+			assert.strictEqual(withErrorColumns.failure, undefined);
+			assert.deepStrictEqual(withErrorColumns.body.trim().split('\n'), [
+				'"id","name","error","message"',
+				'1,"n1",,',
+				'2,,"Error","row 2 failed"',
+				'3,"n3",,',
+			]);
+		});
+
+		it('recovers a thrown non-Error object with default error name and stringified message', async function () {
+			const nonError = { toString: () => 'row 2 non-Error fault', partialObject: { id: 2 } };
+			const { body, failure } = await drain(respond(rowsFailingAt2(nonError, { asynchronous }), 'application/json'));
+			assert.strictEqual(failure, undefined);
+			assert.deepStrictEqual(JSON.parse(body), [
+				{ id: 1 },
+				{ id: 2, error: 'Error', message: 'row 2 non-Error fault' },
 				{ id: 3 },
 			]);
 		});
@@ -118,6 +189,40 @@ describe('the operations API serializer hook with a per-row map that throws', fu
 			{ id: 1 },
 			{ error: 'Error', message: 'row 2 failed', id: 2 },
 			{ id: 3 },
+		]);
+	});
+
+	it('keeps a row-local error as an in-band CBOR item', async function () {
+		await serve(rowsFailingAt2(ordinary()));
+		const res = await post('application/cbor');
+		assert.strictEqual(res.statusCode, 200);
+		assert.deepStrictEqual(decode(res.rawPayload), [
+			{ id: 1 },
+			{ error: 'Error', message: 'row 2 failed', id: 2 },
+			{ id: 3 },
+		]);
+	});
+
+	it('keeps a row-local error as an in-band MessagePack item', async function () {
+		await serve(rowsFailingAt2(ordinary()));
+		const res = await post('application/x-msgpack');
+		assert.strictEqual(res.statusCode, 200);
+		assert.deepStrictEqual(unpackMultiple(res.rawPayload), [
+			{ id: 1 },
+			{ error: 'Error', message: 'row 2 failed', id: 2 },
+			{ id: 3 },
+		]);
+	});
+
+	it('keeps a row-local error as an in-band CSV row', async function () {
+		await serve(rowsFailingAt(1, ordinary(1), { withName: true }));
+		const res = await post('text/csv');
+		assert.strictEqual(res.statusCode, 200);
+		assert.deepStrictEqual(res.body.trim().split('\n'), [
+			'"error","message","id"',
+			'"Error","row 1 failed",1',
+			',,2',
+			',,3',
 		]);
 	});
 

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { fullTextTelemetryIndexLabel } from './analytics/fullTextTelemetry.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import { settleBeforeDeadline } from '../utility/when.ts';
 import { ITC_EVENT_TYPES } from '../utility/hdbTerms.ts';
@@ -403,6 +404,7 @@ export function attachDerivedIndexes(
 		const generation = Table.fullTextIndexGenerations?.[definition.name];
 		const id = fullTextDerivedIndexId(Table, definition.name);
 		const readinessId = fullTextDerivedIndexReadinessId(Table, definition.name, generation);
+		const telemetryLabel = fullTextTelemetryIndexLabel(Table.databaseName, Table.tableName, definition.name);
 		if (typeof generation !== 'string' || generation.length === 0) {
 			publishDerivedIndexReadiness(auditStore, readinessId, 'unavailable', 'backend-failed');
 			fullTextLogger.error?.(
@@ -419,6 +421,7 @@ export function attachDerivedIndexes(
 				indexId: id,
 				storePath: Table.primaryStore.rootStore.path,
 				storeName: `${Table.tableName}/${definition.name}`,
+				telemetryLabel,
 				sourceGeneration: `${Table.tableId}:${generation}`,
 				limits: { ...FULL_TEXT_READER_LIMITS },
 				...(fullTextTest ? { binding: fullTextTest.binding } : null),
@@ -478,6 +481,7 @@ export function attachDerivedIndexes(
 				storePath: Table.primaryStore.rootStore.path,
 				storeName,
 				sourceGeneration: `${Table.tableId}:${generation}`,
+				telemetryLabel,
 				fields: definition.fields.map(({ name, weight }) => ({ name, weight })),
 				analyzer: storage.analyzer,
 				stopWords: storage.stopWords,

@@ -39,6 +39,7 @@ describe('schema-declared full-text 0.5.0 to 0.7.0 checkpoint upgrade', function
 	this.timeout(60_000);
 
 	it('fences public search, rebuilds the old checkpoint and replays writes through the production runtime', async function () {
+		if (!process.env.HARPER_FULLTEXT_UPGRADE_ROOT) this.skip();
 		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb' || !(await supportsPublishedFullTextBinding())) this.skip();
 		setupTestDBPath();
 		const previousMainIsWorker = getWorkerIndex() === 0;
