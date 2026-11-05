@@ -112,6 +112,24 @@ describeUnlessLmdb('offline restore_backup in a fresh CLI process', function () 
 		});
 	});
 
+	it('refuses while the system database is blocked by an unfinished restore, changing nothing', async function () {
+		const { backupId } = await seed();
+		await install.runToReport(`
+			const marker = require(paths.restoreMarker);
+			marker.abandonRestore(marker.beginRestore(require(paths.databases).resolveDatabasePath('system')));
+			report({});
+		`);
+		const outcome = await restore(backupId);
+		assert.strictEqual(outcome.statusCode, 409, outcome.error);
+		assert.match(outcome.error, /Cannot tell whether this node has replication peers: .* blocked by a restore/);
+		assert.deepStrictEqual(await inspect(), {
+			state: 'clear',
+			debris: [],
+			alpha: { n: 1 },
+			afterBackup: { kept: true },
+		});
+	});
+
 	/**
 	 * Runs `restoreCall` in a process that SIGKILLs itself when its child has verified the backup and asks
 	 * to purge, before the marker that permits it: what a crash leaves at that point. Returns once the

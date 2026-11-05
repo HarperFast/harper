@@ -147,7 +147,7 @@ function restoreResult(receipt: RestoreReceipt): Record<string, unknown> {
 		...(evidence.compatibility_waived?.length ? { compatibility_waived: evidence.compatibility_waived } : {}),
 		...(evidence.tables ? { tables: evidence.tables } : {}),
 		...(evidence.blobs ? { blob_integrity: evidence.blobs.blob_integrity } : {}),
-		...(evidence.blobs?.waived ? { accept_unverified_blobs: true } : {}),
+		...(receipt.options.accept_unverified_blobs ? { accept_unverified_blobs: true } : {}),
 		...(evidence.durability ? { durability: evidence.durability } : {}),
 	};
 }
@@ -329,9 +329,9 @@ async function publishUnderFence(request: PublishRestoreRequest): Promise<Record
 	} catch (error: any) {
 		await abandonOrRelease(lock, receipt, request, minted ? pinId : undefined, destructionStarted, error);
 		if (destructionStarted || lock.preexisting) {
-			throw new Error(
-				`Restore of database '${targetDatabase}' from ${describeRestoreSource({ backup_id: backupId })} failed (rerun restore_backup to recover): ${error.message}`,
-				{ cause: error }
+			throw withRecoveryGuidance(
+				error,
+				`Restore of database '${targetDatabase}' from ${describeRestoreSource({ backup_id: backupId })} failed (rerun restore_backup to recover): ${error.message}`
 			);
 		}
 		throw error;
@@ -378,6 +378,17 @@ async function publishUnderFence(request: PublishRestoreRequest): Promise<Record
 		...(request.route === 'offline' ? { restored_to: databaseDir } : {}),
 		...(request.immutableSource ? { immutable_source: true } : {}),
 	};
+}
+
+/** Adds recovery guidance without losing what a caller branches on: the client status and the phase. */
+function withRecoveryGuidance(error: any, message: string): Error {
+	const wrapped: any =
+		error?.statusCode >= 400 && error.statusCode < 500
+			? new ClientError(message, error.statusCode)
+			: new Error(message);
+	wrapped.cause = error;
+	if (error?.phase !== undefined) wrapped.phase = error.phase;
+	return wrapped;
 }
 
 function applyArgs(

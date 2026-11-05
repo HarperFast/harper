@@ -189,7 +189,6 @@ async function prove(args: ApplyAndProveArgs): Promise<RestoreEvidence> {
 			);
 		}
 		const replay = (await replayLogs(generation.rootStore, generation.tables, { policy: 'restore' })) as ReplaySummary;
-		let blobs: RestoreEvidence['blobs'];
 		// the scan is also the strict read of every record, so the waiver relaxes only the blob verdict
 		const { blobIntegrity, ...assessment } = await assessBlobReferences(generation.tables);
 		if (blobIntegrity === 'failed' && !args.acceptUnverifiedBlobs) {
@@ -200,9 +199,10 @@ async function prove(args: ApplyAndProveArgs): Promise<RestoreEvidence> {
 				409
 			);
 		}
-		blobs = args.acceptUnverifiedBlobs
-			? { blob_integrity: blobIntegrity === 'failed' ? 'unverified' : blobIntegrity, waived: true, ...assessment }
-			: { blob_integrity: blobIntegrity, ...assessment };
+		const blobs: RestoreEvidence['blobs'] =
+			blobIntegrity === 'failed'
+				? { blob_integrity: 'unverified', waived: true, ...assessment }
+				: { blob_integrity: blobIntegrity, ...assessment };
 		await (generation.rootStore as any).flush?.();
 		evidence = {
 			tables: Object.keys(generation.tables),

@@ -333,10 +333,11 @@ describeUnlessLmdb('restore child', function () {
 			}
 		});
 
-		it('records the waiver and the scan together for a backup that decodes', async function () {
+		it('records no waiver for a backup whose every blob reference verifies', async function () {
 			const target = targetWithSentinel('waived-target');
 			const evidence = await run({ ...applyArgs(target), acceptUnverifiedBlobs: true }, target);
-			assert.strictEqual(evidence.blobs.waived, true);
+			assert.strictEqual(evidence.blobs.waived, undefined);
+			assert.strictEqual(evidence.blobs.blob_integrity, 'verified');
 			assert.deepStrictEqual(evidence.blobs.recordsScanned, { Items: 200 });
 		});
 	});
