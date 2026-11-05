@@ -163,7 +163,6 @@ Then you can run commands without specifying the `target` or credentials (if the
 harper deploy
 harper describe_database database=dev
 harper get_components
-harper logout
 ```
 
 **Example Script**:
