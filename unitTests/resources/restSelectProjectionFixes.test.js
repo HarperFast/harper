@@ -1086,6 +1086,7 @@ describe('REST and operations API select projection fixes', function () {
 
 	describe('CSV scalar and tuple select projection (harper#1482)', function () {
 		let Plain;
+		let Sparse;
 		let PlainAsyncMapped;
 		let CustomInstanceList;
 
@@ -1275,6 +1276,105 @@ describe('REST and operations API select projection fixes', function () {
 					}
 				}
 			);
+			Sparse = table({
+				database: dbName,
+				table: 'Sparse',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true, type: 'String' },
+					{ name: 'name', type: 'String' },
+					{ name: 'note', type: 'String' },
+					{ name: 'count', type: 'Int' },
+				],
+			});
+			// the first row omits the optional `note`; `extra` is undeclared
+			const sparseRows = () => [
+				{ id: 's1', name: 'One', extra: 1 },
+				{ id: 's2', name: 'Two', note: 'later', extra: 2 },
+			];
+			mount(
+				'SparseRows',
+				class extends Sparse {
+					get() {
+						return sparseRows();
+					}
+				}
+			);
+			mount(
+				'SparseRowsStatic',
+				class extends Sparse {
+					static loadAsInstance = false;
+					get() {
+						return sparseRows();
+					}
+				}
+			);
+			mount(
+				'SparseRowsInstance',
+				class extends Sparse {
+					static loadAsInstance = true;
+					get() {
+						return sparseRows();
+					}
+				}
+			);
+			mount(
+				'SparseOwnGet',
+				class extends Sparse {
+					get(target) {
+						return { id: target.id, name: 'Own' };
+					}
+				}
+			);
+			mount('Sparse', Sparse);
+			mount(
+				'PlainEnvelope',
+				class extends Plain {
+					async get(target) {
+						return { headers: new Headers(), data: await super.get(target) };
+					}
+				}
+			);
+			mount(
+				'PlainThrown',
+				class extends Plain {
+					async get(target) {
+						throw Object.assign(new Response(), { data: await super.get(target) });
+					}
+				}
+			);
+			mount(
+				'PlainForbiddenEnvelope',
+				class extends Plain {
+					get() {
+						return { status: 403, headers: new Headers(), data: { message: 'Forbidden' } };
+					}
+				}
+			);
+			mount(
+				'PlainForbiddenThrown',
+				class extends Plain {
+					get() {
+						throw Object.assign(new Response(null, { status: 403 }), { data: { message: 'Forbidden' } });
+					}
+				}
+			);
+			mount(
+				'CustomScalarEnvelope',
+				class extends Resource {
+					get(target) {
+						return { headers: new Headers(), data: target.id };
+					}
+				}
+			);
+			mount(
+				'CustomScalarThrown',
+				class extends Resource {
+					get(target) {
+						throw Object.assign(new Response(), { data: target.id });
+					}
+				}
+			);
+
 			mount('Plain', Plain);
 			mount('PlainAsyncMapped', PlainAsyncMapped);
 			mount('PlainInstance', PlainInstance);
@@ -1282,6 +1382,8 @@ describe('REST and operations API select projection fixes', function () {
 			mount('CustomScalar', CustomScalar);
 			mount('NestedSummary', NestedSummary);
 
+			await Sparse.put({ id: 'r1', name: 'R' });
+			await Sparse.put({ id: 'r2', name: 'R2', note: 'n', count: 2 });
 			await Child.put({ id: 'c1', parentId: 'p1', label: 'child-label-v1', grandchildId: 'g1' });
 			await Plain.put({
 				id: 'a-1',
@@ -1336,6 +1438,7 @@ describe('REST and operations API select projection fixes', function () {
 
 		after(async function () {
 			await Plain?.dropTable();
+			await Sparse?.dropTable();
 		});
 
 		it('returns an "id" header and one id per row for CSV select(id), while JSON select(id) still returns scalars', async function () {
@@ -1739,5 +1842,75 @@ describe('REST and operations API select projection fixes', function () {
 				assert.strictEqual(tupleCsv.text, '"id","total"\n"o1",5\n"o2",7\n', path);
 			}
 		});
+
+		it('keeps declared columns and every row for CSV select(*), select(*,) and select(*,note) when a custom get omits an optional column (#4028 follow-up)', async function () {
+			for (const path of ['/SparseRows/c', '/SparseRowsStatic/c', '/SparseRowsInstance/c']) {
+				for (const select of ['select(*)', 'select(*,)', 'select(*,note)']) {
+					const url = `${path}?${select}`;
+					const csv = await restGet(url, { accept: 'text/csv' });
+					assert.strictEqual(csv.status, 200, url);
+					assert.strictEqual(
+						csv.text,
+						'"id","name","note","count","extra"\n"s1","One",,,1\n"s2","Two","later",,2\n',
+						url
+					);
+				}
+			}
+		});
+
+		it('lists every declared column for a single-record CSV select(*) whose record omits optional attributes (#4028 follow-up)', async function () {
+			const expected = '"id","name","note","count"\n"r1","R",,\n';
+			for (const url of ['/Sparse/r1?select(*)', '/Sparse/r1?select(*,)']) {
+				const csv = await restGet(url, { accept: 'text/csv' });
+				assert.strictEqual(csv.status, 200, url);
+				assert.strictEqual(csv.text, expected, url);
+			}
+			const own = await restGet('/SparseOwnGet/o1?select(*)', { accept: 'text/csv' });
+			assert.strictEqual(own.text, '"id","name","note","count"\n"o1","Own",,\n');
+			const collection = await restGet('/Sparse/?select(*)&sort(id)', { accept: 'text/csv' });
+			assert.strictEqual(collection.text, '"id","name","note","count"\n"r1","R",,\n"r2","R2","n",2\n');
+		});
+
+		for (const [kind, path] of [
+			['returns a response envelope', '/PlainEnvelope'],
+			['throws a Response', '/PlainThrown'],
+		]) {
+			for (const [select, expected] of [
+				['select(id)', '"id"\n"z-1"\n'],
+				['select(count)', '"count"\n0\n'],
+				['select(active)', '"active"\n"false"\n'],
+				['select([id,note])', '"id","note"\n"z-1","n1"\n'],
+			]) {
+				it(`serializes ${select} as CSV when get ${kind} (#4028 follow-up)`, async function () {
+					const csv = await restGet(`${path}/z-1?${select}`, { accept: 'text/csv' });
+					assert.strictEqual(csv.status, 200);
+					assert.strictEqual(csv.text, expected);
+				});
+			}
+		}
+
+		for (const [kind, path] of [
+			['returns an error envelope', '/PlainForbiddenEnvelope'],
+			['throws an error Response', '/PlainForbiddenThrown'],
+		]) {
+			it(`leaves the data of an error status unshaped by the select when get ${kind} (#4028 follow-up)`, async function () {
+				for (const select of ['select(id)', 'select(*)', 'select([id,note])']) {
+					const csv = await restGet(`${path}/z-1?${select}`, { accept: 'text/csv' });
+					assert.strictEqual(csv.status, 403, select);
+					assert.strictEqual(csv.text, '"message"\n"Forbidden"\n', select);
+				}
+			});
+		}
+
+		for (const [kind, path] of [
+			['returns a response envelope', '/CustomScalarEnvelope'],
+			['throws a Response', '/CustomScalarThrown'],
+		]) {
+			it(`serializes a custom resource's scalar select(id) as CSV when get ${kind} (#4028 follow-up)`, async function () {
+				const scalar = await restGet(`${path}/z-1?select(id)`, { accept: 'text/csv' });
+				assert.strictEqual(scalar.status, 200);
+				assert.strictEqual(scalar.text, '"id"\n"z-1"\n');
+			});
+		}
 	});
 });
