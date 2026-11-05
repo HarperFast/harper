@@ -26,7 +26,7 @@ harper get_components
 harper set_configuration logging_level=info
 ```
 
-When no `target` parameter is specified, the CLI falls back to the target saved by a previous `harper login` if there is one, and only otherwise to the local domain socket connection, which gives authenticated access to the local Harper instance. See [Authentication Precedence](#authentication-precedence) for what that means on a shared machine.
+When no `target` parameter is specified, the CLI uses `HARPER_CLI_TARGET` or `CLI_TARGET` if set, then the target saved by a previous `harper login`, and only otherwise to the local domain socket connection, which gives authenticated access to the local Harper instance. See [Authentication Precedence](#authentication-precedence) for what that means on a shared machine.
 
 ## Remote Operations
 

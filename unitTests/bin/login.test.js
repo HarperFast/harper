@@ -208,6 +208,7 @@ describe('Login', () => {
 			delete process.env.HARPER_CLI_PASSWORD;
 			delete process.env.CLI_TARGET_USERNAME;
 			delete process.env.HARPER_CLI_USERNAME;
+			delete process.env.EXISTING_VAR;
 		});
 
 		it('should append HARPER_CLI_TARGET with a leading newline if .env does not end with one', async () => {
@@ -219,8 +220,6 @@ describe('Login', () => {
 			await login('example.com', 'mockuser');
 
 			const envContent = fs.readFileSync(envPath, 'utf8');
-			// The fix added `\nHARPER_CLI_TARGET=${resolvedTarget}\n`
-			// So it should be `EXISTING_VAR=value\nHARPER_CLI_TARGET=https://example.com:9925/\n`
 			assert.strictEqual(envContent, 'EXISTING_VAR=value\nHARPER_CLI_TARGET=https://example.com:9925/\n');
 		});
 
@@ -232,8 +231,6 @@ describe('Login', () => {
 			await login('example.com', 'mockuser');
 
 			const envContent = fs.readFileSync(envPath, 'utf8');
-			// It will result in `EXISTING_VAR=value\n\nHARPER_CLI_TARGET=https://example.com:9925/\n`
-			// This is acceptable as it ensures the new entry is on its own line.
 			assert.strictEqual(envContent, 'EXISTING_VAR=value\n\nHARPER_CLI_TARGET=https://example.com:9925/\n');
 		});
 
