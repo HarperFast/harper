@@ -166,7 +166,7 @@ Provide credentials via:
 
 - **Dedicated authentication parameters**: Use `auth_username=<user> auth_password=<pass>` for one-off commands
 - **Target URL credentials**: Embed a complete username and password in the URL (supported, but not recommended because URLs are easily exposed)
-- **Environment variables and `.env` files**: Use `HARPER_CLI_TARGET` with `HARPER_CLI_USERNAME` and `HARPER_CLI_PASSWORD` (project-specific configuration)
+- **Environment variables**: Export `HARPER_CLI_TARGET` with `HARPER_CLI_USERNAME` and `HARPER_CLI_PASSWORD` in your shell or CI environment. A `.env` file in the current directory cannot set them (v5.4.0); see [Project `.env` files](./authentication.md#project-env-files)
 - **Workload identity (OIDC)**: on GitHub Actions, the CLI trades the runner's identity token for an operation token against a [trust policy](./authentication.md#workload-identity-oidc), so the pipeline stores no Harper credential (recommended for CI/CD, v5.3.0)
 - **Token credentials**: `HARPER_CLI_REFRESH_TOKEN`, provisioned with [`harper login --for-ci`](./authentication.md#token-credentials-for-cicd) (for CI/CD where workload identity is not available)
 - **Persistent Login**: `harper login` to store tokens (recommended for local development)
@@ -174,7 +174,7 @@ Provide credentials via:
 
 This list is abbreviated and is **not** in precedence order. See [Authentication Precedence](./authentication.md#authentication-precedence) for the resolution order, which changed in v5.2.0, and for the preferred and legacy environment-variable namespaces. Configure one style per context rather than combining them.
 
-**Example: Persistent Login and `.env`**:
+**Example: Persistent Login**:
 
 ```bash
 # Log in to a specific target
@@ -184,7 +184,7 @@ harper login https://server.com:9925
 harper describe_database database=dev
 ```
 
-If the current directory has a `.env` file that sets no target, `harper login` also appends `HARPER_CLI_TARGET` to it.
+`harper login` saves the target in `~/.harperdb/credentials.json`, and later commands use it from any directory. See [How the CLI Picks a Target](./authentication.md#how-the-cli-picks-a-target).
 
 **Example: CLI Target Environment Variables**:
 

@@ -274,7 +274,7 @@ See [`deploy_component` credentials](../operations-api/operations.md#deploy-cred
 
 <VersionBadge version="v5.4.0" />
 
-`harper deploy setup=true provider=github-actions` sets a cluster up so a GitHub Actions workflow can deploy with its [OIDC identity token](./authentication.md#workload-identity-oidc) instead of a stored credential. Run it once, signed in to the cluster as a `super_user` (`harper login`), from the project's checkout:
+`harper deploy setup=true provider=github-actions` sets a cluster up so a GitHub Actions workflow can deploy with its [OIDC identity token](./authentication.md#workload-identity-oidc) instead of a stored credential. Run it once, signed in to the cluster as a `super_user` (`harper login`), from the project's checkout. Remove any `HARPER_CLI_TARGET` line from that checkout's `.env` first; see [Project `.env` files](./authentication.md#project-env-files):
 
 ```bash
 harper deploy setup=true provider=github-actions project=my-app
@@ -312,7 +312,7 @@ A preview of the application `my-app` for PR `42` is the [isolated application](
 
 #### `harper preview setup`
 
-Enables previews of one application on the cluster, and sets up the GitHub side. Run it once, signed in to the cluster as a `super_user` (`harper login`), from a checkout of the application's repository:
+Enables previews of one application on the cluster, and sets up the GitHub side. Run it once, signed in to the cluster as a `super_user` (`harper login`), from a checkout of the application's repository. Remove any `HARPER_CLI_TARGET` line from that checkout's `.env` first; see [Project `.env` files](./authentication.md#project-env-files):
 
 ```bash
 harper preview setup app=my-app target=https://my-cluster.example.com:9925
@@ -488,9 +488,11 @@ The `harper install` command operates exactly like the [`harper`](#harper) comma
 
 Available since: v5.1.0
 
-Log in to a Harper instance to store authentication tokens locally. Once logged in, subsequent commands targeting this instance (via `target`) will automatically use the stored token.
+Log in to a Harper instance to store authentication tokens locally. Once logged in, subsequent commands targeting this instance (via `target`) will automatically use the stored token. The instance also becomes the CLI's saved target, so later commands can omit `target` from any directory. See [How the CLI Picks a Target](./authentication.md#how-the-cli-picks-a-target).
 
-The CLI also supports `.env` files. When you log in in a directory that already has a `.env` file, and neither that file nor your environment sets `HARPER_CLI_TARGET` or `CLI_TARGET`, the CLI appends `HARPER_CLI_TARGET` to it. It never creates the file. This allows you to omit the `target` parameter in subsequent commands within that directory.
+<VersionBadge type="changed" version="v5.4.0" />
+
+`harper login` writes only to `~/.harperdb/credentials.json`, and no longer appends `HARPER_CLI_TARGET` to a project `.env`. It stops with an error if a `.env` file in the current directory sets a name the CLI refuses, such as its target, credentials or a proxy setting, and your environment does not. See [Project `.env` files](./authentication.md#project-env-files).
 
 ```bash
 harper login <URL>
@@ -505,7 +507,7 @@ harper login <URL>
 
 You'll be asked to type in the following information:
 
-- `<URL>` - If a URL parameter is not provided, you'll be prompted to enter the URL of the Harper instance to log in to.
+- `<URL>` - If a URL parameter is not provided, you'll be prompted to enter the URL of the Harper instance to log in to. An exported `HARPER_CLI_TARGET` or `CLI_TARGET` is the default answer.
 - `<username>` - Harper admin username.
 - `<password>` - Harper admin password.
 
@@ -535,6 +537,10 @@ harper logout <URL>
 **Optional Parameters**:
 
 - `<URL>` - The URL of the Harper instance to log out from. If none is provided, you'll be signed out of all instances.
+
+<VersionBadge type="changed" version="v5.4.0" />
+
+`harper logout` does not read `.env`, so it runs in a directory whose `.env` other commands refuse. It does not edit that file.
 
 ## Information Commands
 
