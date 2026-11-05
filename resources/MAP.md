@@ -49,6 +49,7 @@ Where things are in `resources/`. The rules live in [DESIGN.md](DESIGN.md): read
 - record TTL and eviction → `setTTLExpiration`, `evict`, `scheduleCleanup` in Table.ts
 - cache miss to source → `getFromSource` in Table.ts
 - subscriptions and replay → `subscribe`, `eventFromAudit` in Table.ts; `addSubscription` in transactionBroadcast.ts
+- record history listings → `getHistory`, `getHistoryOfRecord`, `foldsHistoryOf` in Table.ts; `createHistoryFold`, `getRecordAtTime` in crdt.ts
 - replication apply loop → `sourcedFrom` in Table.ts
 - the per-request transaction → `txnForContext` in Table.ts; `transaction()` in transaction.ts
 - transaction timeouts and long-held handles → `startMonitoringTxns` in DatabaseTransaction.ts; longLivedTransactions.ts

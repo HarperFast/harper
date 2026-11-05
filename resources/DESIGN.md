@@ -75,7 +75,7 @@ The synthesized target keeps the collection flag, or the batch is one null-keyed
 
 ## Historical record reconstruction (`getRecordAtTime`)
 
-`getRecordAtTime` (`crdt.ts`) undoes only patches. Past a newer put, delete or invalidate it rebuilds forward (`reconstructForward`): carrying an image back returns a future state. A reversed field survives only when the reversal is exact. An unlinked put ends the chain without implying an empty past (`crdt.test.js`).
+`getRecordAtTime` undoes only patches; past a newer put, delete or invalidate it rebuilds forward (`reconstructForward`), as an image carried back is a future state. A reversed field survives only if exact; an unlinked put ends the chain, implying no empty past (`crdt.test.js`). Listings fold forward if `foldsHistoryOf` allows (`historyFold.test.js`).
 
 ## Path routing & parameterised routes
 
