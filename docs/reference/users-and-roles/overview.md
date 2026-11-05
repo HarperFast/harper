@@ -268,6 +268,10 @@ Each table entry defines CRUD access:
 - `DELETE` is not an attribute-level permission. Deleting rows is controlled at the table level.
 - The `__createdtime__` and `__updatedtime__` attributes managed by Harper can have `read` permissions set; other attribute-level permissions for these fields are ignored.
 
+<VersionBadge type="changed" version="v5.4.0" />
+
+Subscriptions follow the same rule. When `attribute_permissions` is non-empty, each record or message a role receives over SSE, WebSocket or MQTT holds only the stored attributes it may read. Computed and relationship attributes are left out of these messages, even when the role may read them.
+
 #### Filter side-channel for read-restricted attributes
 
 :::note
