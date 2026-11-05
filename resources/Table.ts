@@ -168,6 +168,7 @@ import {
 	openReplicaDeadlineStore,
 	replicaDeadlinesCatalogKey,
 	REPLICA_DEADLINES_STORE,
+	requestComputedIndexRepair,
 } from './databases.ts';
 import { notifyReplicatedApplyFailure } from './replicatedApplyFailure.ts';
 import {
@@ -311,6 +312,7 @@ import {
 	isScalarSelect,
 	isTupleSelect,
 	buildSelectColumns,
+	recordAppliedSelect,
 	type ColumnsList,
 } from '../server/serverHelpers/contentTypes.ts';
 import { type JsonSchemaFragment, projectAttributesToProperties } from './jsonSchemaTypes.ts';
@@ -336,6 +338,7 @@ export type Attribute = {
 	computed?: any;
 	resolve?: any;
 	computedFromExpression?: any;
+	computedFromHash?: string;
 	embed?: { source: string; model: string };
 	decide?: DecideConfig;
 	version?: any;
@@ -356,6 +359,8 @@ NULL_WITH_TIMESTAMP[8] = 0xc0; // null
 const sourceWriteTypes = new Set(['put', 'patch', 'delete', 'publish', 'message', 'invalidate', 'relocate']);
 const isSourceWriteType = (type: string) => sourceWriteTypes.has(type);
 const OPERATION_TYPES = new Set(['Int', 'Long', 'Float', 'Number', 'BigInt', 'Any']);
+// declared types `validate` holds to one value on validated writes: `ID` admits an array of strings
+const SCALAR_TYPES = new Set(['String', 'Int', 'Long', 'Float', 'Boolean', 'Date', 'BigInt']);
 const SOURCE_APPLY_POSITION = Symbol('sourceApplyPosition');
 type SourceTxnStream = {
 	txn: any;
@@ -1134,6 +1139,8 @@ interface TableResourceClass {
 	 * and `scanInterval` (all in seconds, all optional). Number form preserves any previously configured
 	 * eviction/scanInterval; object form replaces all three, unless it names only the replica options. An internal schema ownership-only call with
 	 * none of those values preserves the settings already loaded from the catalog.
+	 * Either form then scans for expired records every `scanInterval`, or a quarter of expiration + eviction
+	 * when none is configured.
 	 */
 	setTTLExpiration(
 		opts:
@@ -1647,6 +1654,14 @@ function rescope(resolved: ResolvedRecordLockOptions, tableReplicates: boolean):
 	return scope === resolved.scope ? resolved : { ...resolved, scope };
 }
 
+/** A lock covers only writes staged while it was held, so one acquired over a pending write would not cover it. */
+function pendingWriteLockError(): ClientError {
+	return new ClientError(
+		'This transaction has an uncommitted write to this record; acquire the record lock before writing the record',
+		409
+	);
+}
+
 function transportUnavailable(databaseName: string): LockUnavailableError {
 	return new LockUnavailableError(
 		`Cluster-scoped record locks are not available on ${databaseName}: no record lock transport is registered`
@@ -1848,6 +1863,10 @@ export function makeTable(options): TableResourceClass {
 	// a stored table permission (stable per role record version) -> that permission with the primary key's implicit grant
 	let primaryKeyGranted = new WeakMap<object, any>();
 	let declaredAttributeNames: Set<string>;
+	let deferComputedIndexRepair = false;
+	// The resolver each declared function `from` installed, with its source hash (databases.ts); an attribute,
+	// even one read from the catalog, that no longer carries that hash no longer has that function.
+	const functionFromResolvers = new Map<string, { resolver: Function; hash: string }>();
 	// Attribute names surfaced by the struct `toJSON` on the default (no-select) read: everything that is
 	// @enumerable, PLUS @computed attributes whose declared type is NOT a table type (scalars/objects/arrays
 	// that don't resolve to another entity — harper#1484). Table-typed computed attributes and non-enumerable
@@ -2150,6 +2169,8 @@ export function makeTable(options): TableResourceClass {
 	}
 	const COMMIT_BASE_METHODS = new Set(['put', 'patch', 'delete']);
 	const recordDbRead = actionRecorder('db-read', tableName, null);
+	// a covered row is read from its index entry, whose size the scan does not report
+	const recordCoveredRead = databaseName !== 'system' ? () => recordDbRead(1) : undefined;
 	function conditionForWrite(context, id: Id) {
 		const condition = context?.[WRITE_CONDITION];
 		const matches =
@@ -2248,6 +2269,13 @@ export function makeTable(options): TableResourceClass {
 		}
 		[GET_TRACKED_WRITE_GENERATION](): WriteGeneration {
 			return (this.#writeGeneration ??= { closed: false, internalWrites: 0 });
+		}
+		/** Nested objects tracked in discarded changes are refused rather than edited into nothing. */
+		#discardChanges(): void {
+			this.#changes = undefined;
+			if (!this.#writeGeneration) return;
+			this.#writeGeneration.closed = true;
+			this.#writeGeneration = undefined;
 		}
 
 		/**
@@ -3641,6 +3669,8 @@ export function makeTable(options): TableResourceClass {
 		 * and `scanInterval` (all in seconds, all optional). Number form preserves any previously configured
 		 * eviction/scanInterval; object form replaces all three, unless it names only the replica options. An internal schema ownership-only call with
 		 * none of those values preserves the settings already loaded from the catalog.
+		 * Either form then scans for expired records every `scanInterval`, or a quarter of expiration + eviction
+		 * when none is configured.
 		 */
 		static setTTLExpiration(
 			opts:
@@ -3689,8 +3719,7 @@ export function makeTable(options): TableResourceClass {
 			if (expirationMs < 0) throw new Error('Expiration can not be negative');
 			if (!preserveLoadedConfiguration) {
 				// default to one quarter of the total expiration+eviction window
-				recordCleanupInterval =
-					(typeof opts === 'number' ? recordCleanupInterval : recordScanInterval) || (expirationMs + evictionMs) / 4;
+				recordCleanupInterval = recordScanInterval || (expirationMs + evictionMs) / 4;
 				cleanupInterval = recordCleanupInterval;
 				expirationScanScheduled = true;
 			}
@@ -4365,7 +4394,7 @@ export function makeTable(options): TableResourceClass {
 							const select = target?.select;
 							if (select && record != null) {
 								const transform = transformForSelect(select, this.constructor);
-								return transform(record);
+								return recordAppliedSelect(this.getContext(), select, false, transform(record));
 							}
 							if (target?.property) {
 								return record?.[target.property];
@@ -4383,7 +4412,7 @@ export function makeTable(options): TableResourceClass {
 				const select = target?.select;
 				if (select && record != null && constructor.loadAsInstance !== true) {
 					const transform = transformForSelect(select, this.constructor);
-					return promiseNormalize(transform(record), target);
+					return promiseNormalize(recordAppliedSelect(this.getContext(), select, false, transform(record)), target);
 				}
 				return promiseNormalize(record, target);
 			}
@@ -4532,6 +4561,19 @@ export function makeTable(options): TableResourceClass {
 			// A supplied root must reach validation as itself, not as the staged changes (harper#1298).
 			const recordRoot = updates === undefined ? this.#changes : updates;
 			return this.#whenStaged(this._writeUpdate(id, recordRoot, fullUpdate));
+		}
+		/** This instance's unsaved staged write, which reads #changes when it is saved. */
+		#stagedWrite() {
+			const operation = this.#savingOperation;
+			if (!operation || operation.saved || operation.dropped || operation instanceof ConditionLockWait) return;
+			return operation;
+		}
+		/**
+		 * A fresh lock() on this record would reload over this instance's staged write, which can still be in
+		 * its model hooks and so absent from `writesByKey`.
+		 */
+		#hasStagedWriteFor(keyId: unknown): boolean {
+			return this.#stagedWrite() !== undefined && keyId === writeKeyId(this.getId());
 		}
 		#whenStaged(staging: any) {
 			const updated = when(staging, () => this);
@@ -5226,6 +5268,9 @@ export function makeTable(options): TableResourceClass {
 		 * in the same transaction), and the commit or abort releases it. `{ hold: true }`: the lock
 		 * outlives the transaction; write through the returned record and release with `unlock()`, or
 		 * let the lease expire.
+		 *
+		 * Lock first, then write: a transaction that already has an uncommitted write to the record is
+		 * refused with 409, since that write was not made under the lock.
 		 */
 		// async so option/id validation rejects rather than throwing past a caller's `.catch()`; the
 		// body still runs to completion synchronously, which is what keeps concurrent lock() calls
@@ -5274,6 +5319,10 @@ export function makeTable(options): TableResourceClass {
 			if (scoped && !scoped.isExpired()) {
 				const violation = scopeViolation(scoped, resolved, databaseName);
 				if (violation) return Promise.reject(violation);
+				// Only changes a write bound to this lock reads were made under it; others are discarded, as on a
+				// fresh acquisition, which also refuses an unbound staged write.
+				const joined = this.#stagedWrite()?.lockHandle === scoped;
+				if (!joined && this.#hasStagedWriteFor(keyId)) return Promise.reject(pendingWriteLockError());
 				if (resolved.hold && !scoped.hold) {
 					// Upgrade scoped → hold: flip the existing handle object to hold mode so every
 					// instance that already references this handle stays valid.  Retiring and creating a
@@ -5281,11 +5330,12 @@ export function makeTable(options): TableResourceClass {
 					// 409 against a released handle).  The native key stays locked throughout.
 					scoped.upgradeToHold(resolved.lease);
 					detachScopedUpgradeWrite(link, keyId, scoped);
-					return Promise.resolve(this.#reloadLocked(id, scoped, true));
+					return Promise.resolve(this.#reloadLocked(id, scoped, joined));
 				}
-				// Already held with the same type: re-entrant return. Preserve any staged changes.
-				return Promise.resolve(this.#reloadLocked(id, scoped, true));
+				return Promise.resolve(this.#reloadLocked(id, scoped, joined));
 			}
+			if (link.hasPendingWriteTo(primaryStore, keyId) || this.#hasStagedWriteFor(keyId))
+				return Promise.reject(pendingWriteLockError());
 			// Cluster scope needs a registered transport. An EXPLICIT { scope: 'cluster' } without one is
 			// a caller asking for a guarantee this node cannot make, so it fails closed rather than
 			// silently returning the node-local lock; the default keeps Phase 0 behavior, which is what
@@ -5349,11 +5399,13 @@ export function makeTable(options): TableResourceClass {
 								databaseName
 							);
 							if (violation) throw violation;
+							const joined = this.#stagedWrite()?.lockHandle === acquired;
+							if (!joined && this.#hasStagedWriteFor(keyId)) throw pendingWriteLockError();
 							if (resolved.hold && !acquired.hold) {
 								acquired.upgradeToHold(resolved.lease);
 								detachScopedUpgradeWrite(link, keyId, acquired);
 							}
-							return this.#reloadLocked(id, acquired, true);
+							return this.#reloadLocked(id, acquired, joined);
 						}
 						return retryOnRemainingBudget();
 					},
@@ -5381,6 +5433,7 @@ export function makeTable(options): TableResourceClass {
 			const clusterStart = performance.now();
 			// One read for both the floor and the reload: a write landing between two reads would be uncovered.
 			let admittedEntry: any;
+			let lockLink = link;
 			let previousTimestamp: number | undefined;
 			let raisedTimestamp: number | undefined;
 			let pinnedTimestamp: number | undefined;
@@ -5477,6 +5530,14 @@ export function makeTable(options): TableResourceClass {
 						throw new ServerError('Transaction was closed while waiting for a record lock', 500);
 					}
 				}
+				// A self-committing link can leave the chain while this call waits; the handle belongs on the
+				// link that replaced it, or no later lookup through txnForContext finds it.
+				if (link.leftChain) lockLink = txnForContext(context);
+				// Nothing awaits from here to registerRecordLock, so a write staged during the wait is seen here.
+				if (lockLink.hasPendingWriteTo(primaryStore, keyId) || this.#hasStagedWriteFor(keyId)) {
+					handle.release();
+					throw pendingWriteLockError();
+				}
 				let admitted: { floor: number; stamp: number; claimed: boolean } | undefined;
 				try {
 					admittedEntry = (primaryStore as any).getEntry(id);
@@ -5486,7 +5547,7 @@ export function makeTable(options): TableResourceClass {
 						const transactionCannotAdopt =
 							explicit &&
 							((link.transaction && reservedLocalKey(link.transaction) !== undefined) ||
-								link.hasUnlockedWrite(primaryStore, keyId) ||
+								link.hasUnlockedWrite() ||
 								(link.timestamp !== undefined && link.timestamp >= floor));
 						admitted = admissionStamp(tableRootStore, floor, handle.acquiredAt, !transactionCannotAdopt);
 					}
@@ -5496,7 +5557,7 @@ export function makeTable(options): TableResourceClass {
 				}
 				if (admitted)
 					handle.noteCandidateFloor(admitted.stamp, !admitted.claimed && admitted.floor > handle.acquiredAt);
-				link.registerRecordLock(handle);
+				lockLink.registerRecordLock(handle);
 				if (link.saveCommits && (context as any)?.timestamp) handle.noteCandidateFloor((context as any).timestamp);
 				if (link.open === TRANSACTION_STATE.OPEN && !link.saveCommits) {
 					// Explicit transaction() (not ImmediateTransaction): pin the clock to
@@ -5551,8 +5612,8 @@ export function makeTable(options): TableResourceClass {
 				(handle) => {
 					link.unregisterPendingLock(primaryStore, keyId);
 					const releaseAfterReloadFailure = (error) => {
-						detachScopedUpgradeWrite(link, keyId, handle, true, true);
-						link.unregisterRecordLock(handle);
+						detachScopedUpgradeWrite(lockLink, keyId, handle, true, true);
+						lockLink.unregisterRecordLock(handle);
 						handle.release();
 						if (
 							timestampChanged &&
@@ -5563,6 +5624,7 @@ export function makeTable(options): TableResourceClass {
 						throw error;
 					};
 					try {
+						if (this.#hasStagedWriteFor(keyId)) throw pendingWriteLockError();
 						const result = this.#reloadLocked(id, handle, false, { entry: admittedEntry });
 						return result?.then ? result.catch(releaseAfterReloadFailure) : result;
 					} catch (error) {
@@ -5636,7 +5698,7 @@ export function makeTable(options): TableResourceClass {
 			}
 			// Preserve staged changes when upgrading the same instance from scoped to hold so that
 			// set() calls made under the scoped lock survive the reload.
-			if (!preserveChanges) this.#changes = undefined;
+			if (!preserveChanges) this.#discardChanges();
 			this.#lockWritable = true;
 			// Scoped (not hold): stage now, same as update() would.  Skip if a write from an earlier
 			// lock() cycle on this instance is still pending (re-entrant call before its save()).
@@ -5656,12 +5718,17 @@ export function makeTable(options): TableResourceClass {
 			const handle = this.#lockHandle;
 			this.#lockHandle = undefined;
 			this.#lockWritable = false;
-			if (!handle || handle.released) return Promise.resolve(false);
-			const link = txnForContext(this.getContext());
+			if (!handle) return Promise.resolve(false);
+			const saving = this.#savingOperation;
 			// A scoped lock staged its write at lock() time; released before commit, that write must not
-			// run into the released-handle guard at the sweep.
-			if (this.#savingOperation && !this.#savingOperation.saved && this.#savingOperation.lockHandle === handle)
+			// run into the released-handle guard at the sweep. A joined write is the caller's own and
+			// stays, as an ordinary write (detachScopedUpgradeWrite). A dropped one would swallow the next save().
+			if (saving?.dropped || (saving && !saving.saved && saving.lockHandle === handle && !saving.lockJoined))
 				this.#savingOperation = null;
+			// Changes made under the lock are abandoned with it, unless a kept write still reads them.
+			if (!this.#stagedWrite()) this.#discardChanges();
+			if (handle.released) return Promise.resolve(false);
+			const link = txnForContext(this.getContext());
 			detachScopedUpgradeWrite(link, writeKeyId(this.getId()), handle, true);
 			link.unregisterRecordLock(handle);
 			return Promise.resolve(handle.release());
@@ -7896,6 +7963,14 @@ export function makeTable(options): TableResourceClass {
 					? { rowFilter: boundRowFilter, vectorFilter: target.vectorFilter }
 					: undefined;
 			try {
+				const coveredAttribute =
+					select !== undefined &&
+					!postOrdering &&
+					!recordAccess &&
+					(context as Context)?.replicateFrom !== false &&
+					!residencyPolicy
+						? coveredSelectAttribute(select)
+						: undefined;
 				const entries = executeConditions(
 					conditions,
 					operator,
@@ -7905,7 +7980,9 @@ export function makeTable(options): TableResourceClass {
 					context,
 					(results: any[], filters: Function[]) => transformToEntries(results, select, context, readTxn, filters),
 					filtered,
-					recordAccess
+					recordAccess,
+					undefined,
+					coveredAttribute === undefined ? undefined : { attribute: coveredAttribute, recordRead: recordCoveredRead }
 				);
 				const ensure_loaded = (target as any).ensureLoaded !== false;
 				// The guards inside executeConditions evaluate the
@@ -8467,7 +8544,9 @@ export function makeTable(options): TableResourceClass {
 						includeFullTextHighlights ||= condition.includeHighlights;
 						continue;
 					}
-					let attribute = attribute_name == null ? primaryKeyAttribute : findAttribute(attributes, attribute_name);
+					const leafAttribute =
+						attribute_name == null ? primaryKeyAttribute : findAttribute(attributes, attribute_name);
+					let attribute = leafAttribute;
 					if (!attribute && Array.isArray(attribute_name) && attribute_name.length > 1) {
 						// Plain JSON nested path: the leaf may not be declared in the
 						// schema. Fall back to the root attribute so we can validate
@@ -8477,16 +8556,10 @@ export function makeTable(options): TableResourceClass {
 					if (!attribute) {
 						if (attribute_name != null && !target.allowConditionsOnDynamicAttributes)
 							throw handleHDBError(new Error(), `${attribute_name} is not a defined attribute`, 404);
-					} else if (attribute.type || COERCIBLE_OPERATORS[condition.comparator]) {
-						// Do auto-coercion or coercion as required by the attribute type.
-						// Skipped for nested paths into plain JSON — the root attribute's
-						// type is not the leaf type, so coercion would be wrong.
-						const isNestedPathRoot =
-							Array.isArray(attribute_name) && attribute_name.length > 1 && !attribute.relationship;
-						if (!isNestedPathRoot) {
-							if (condition[1] === undefined) condition.value = coerceTypedValues(condition.value, attribute);
-							else condition[1] = coerceTypedValues(condition[1], attribute);
-						}
+					} else if (leafAttribute && condition.target === undefined) {
+						if (condition[1] === undefined)
+							condition.value = coerceConditionValue(condition.value, condition.comparator, leafAttribute);
+						else condition[1] = coerceConditionValue(condition[1], condition.comparator, leafAttribute);
 					}
 					if (condition.chainedConditions) {
 						if (condition.operator === 'or')
@@ -8499,8 +8572,6 @@ export function makeTable(options): TableResourceClass {
 						const conditionComparator = ALTERNATE_COMPARATOR_NAMES[condition.comparator] || condition.comparator;
 						const chainedComparator = ALTERNATE_COMPARATOR_NAMES[chained.comparator] || chained.comparator;
 						const chainedIsLower = chainedComparator === 'gt' || chainedComparator === 'ge';
-						const lower = chainedIsLower ? chained : condition;
-						const upper = chainedIsLower ? condition : chained;
 						const lowerComparator = chainedIsLower ? chainedComparator : conditionComparator;
 						const upperComparator = chainedIsLower ? conditionComparator : chainedComparator;
 						if (
@@ -8511,8 +8582,16 @@ export function makeTable(options): TableResourceClass {
 								'Invalid chained condition, only a greater than and a less than condition can be chained together'
 							);
 						}
+						// chained children are shared with the caller (cloneConditions), so convert into locals
+						const primaryValue = condition[1] === undefined ? condition.value : condition[1];
+						const chainedRawValue = chained[1] === undefined ? chained.value : chained[1];
+						const chainedValue =
+							leafAttribute && condition.target === undefined && chained.target === undefined
+								? coerceConditionValue(chainedRawValue, chained.comparator, leafAttribute)
+								: chainedRawValue;
 						condition.comparator = (lowerComparator + upperComparator) as any;
-						condition.value = [lower.value, upper.value];
+						condition.value = chainedIsLower ? [chainedValue, primaryValue] : [primaryValue, chainedValue];
+						if (condition[1] !== undefined) condition[1] = condition.value;
 					}
 				}
 				return conditions;
@@ -8586,12 +8665,6 @@ export function makeTable(options): TableResourceClass {
 					else if (fullTextComparatorMode(condition.comparator))
 						throw new ClientError('Full-text predicates must directly name an index on the queried table', 400);
 				}
-			}
-			function coerceTypedValues(value: any, attribute: Attribute) {
-				if (Array.isArray(value)) {
-					return value.map((value) => coerceType(value, attribute));
-				}
-				return coerceType(value, attribute);
 			}
 			return {
 				conditions: conditions.length > 0 || operator ? prepareConditions(conditions, operator) : conditions,
@@ -8948,9 +9021,8 @@ export function makeTable(options): TableResourceClass {
 					}
 					if (
 						(checkLoaded && entry?.metadataFlags & (INVALIDATED | EVICTED)) || // invalidated or evicted should go to load from source
-						(!includeExpired && hasExpired(entry))
+						(!includeExpired && hasSourceGet && !context?.onlyIfCached && hasExpired(entry))
 					) {
-						// should expiration really apply?
 						if (context.onlyIfCached) {
 							if (isHiddenExpiry(entry.expiresAt)) return canSkip ? SKIP : undefined;
 							return {
@@ -10934,11 +11006,17 @@ export function makeTable(options): TableResourceClass {
 			for (const a of this.attributes as any[]) if (a?.computed && !a.relationship) computedByName.set(a.name, a);
 			for (const name of Object.keys(this.userResolvers)) {
 				const attribute = computedByName.get(name);
+				const declared = functionFromResolvers.get(name);
 				if (
 					!attribute ||
-					(!attribute.computedFromExpression && schemaExpressionResolvers.has(this.userResolvers[name]))
-				)
+					(!attribute.computedFromExpression && schemaExpressionResolvers.has(this.userResolvers[name])) ||
+					(declared !== undefined &&
+						declared.resolver === this.userResolvers[name] &&
+						declared.hash !== attribute.computedFromHash)
+				) {
 					delete this.userResolvers[name];
+					functionFromResolvers.delete(name);
+				}
 			}
 			// null prototype: a selected or indexed name like `toString` must not find an Object.prototype member
 			// (setPrototypeOf keeps fast properties; Object.create(null) starts in dictionary mode)
@@ -11183,12 +11261,22 @@ export function makeTable(options): TableResourceClass {
 					nextPropertyResolvers[attribute.name].directReturn = true;
 				}
 			}
-			for (const [attribute, resolver] of computedResolvers) {
-				if (attribute.computedFromExpression) {
-					schemaExpressionResolvers.add(resolver);
-					this.userResolvers[attribute.name] = resolver;
-				} else this.setComputedAttribute(attribute.name, resolver);
+			// one repair request for all of them, so their rebuilds share one scan
+			deferComputedIndexRepair = true;
+			try {
+				for (const [attribute, resolver] of computedResolvers) {
+					if (attribute.computedFromExpression) {
+						schemaExpressionResolvers.add(resolver);
+						this.userResolvers[attribute.name] = resolver;
+					} else {
+						functionFromResolvers.set(attribute.name, { resolver, hash: attribute.computedFromHash });
+						this.setComputedAttribute(attribute.name, resolver);
+					}
+				}
+			} finally {
+				deferComputedIndexRepair = false;
 			}
+			if (!isBranch && computedResolvers.size > 0) requestComputedIndexRepair(TableResource);
 			propertyResolvers = this.propertyResolvers = nextPropertyResolvers;
 			primaryKeyAttribute = nextPrimaryKeyAttribute;
 			expiresAtProperty = nextExpiresAtProperty;
@@ -11296,6 +11384,10 @@ export function makeTable(options): TableResourceClass {
 				}
 			}
 			this.userResolvers[attribute_name] = resolver;
+			if (deferComputedIndexRepair) return;
+			// registered by the application, so a later declaration that drops a function `from` keeps it
+			functionFromResolvers.delete(attribute_name);
+			if (!isBranch) requestComputedIndexRepair(TableResource);
 		}
 		/**
 		 * Override the default embedder for an `@embed` attribute. Return the vector to
@@ -11717,7 +11809,7 @@ export function makeTable(options): TableResourceClass {
 	defaultAllowReads.add(TableResource.prototype.allowRead);
 	try {
 		TableResource.updatedAttributes(); // on creation, update accessors as well
-		if (expirationMs) {
+		if (expirationMs || evictionMs) {
 			ttlFromLoad = true;
 			try {
 				TableResource.setTTLExpiration(expirationMs / 1000);
@@ -11780,12 +11872,13 @@ export function makeTable(options): TableResourceClass {
 			const value = record == null ? undefined : resolver ? resolver(record) : record[key];
 			const overStub = existingIsStub && resolver && primaryStore.encoder.resolvedAttributeNames?.has(key);
 			const existingValue =
-				existingRecord &&
-				(resolver
-					? overStub
-						? resolveOverStub(resolver, existingRecord, key)
-						: resolver(existingRecord)
-					: existingRecord[key]);
+				existingRecord == null
+					? undefined
+					: resolver
+						? overStub
+							? resolveOverStub(resolver, existingRecord, key)
+							: resolver(existingRecord)
+						: existingRecord[key];
 			if (value === existingValue && !isIndexing && !overStub) {
 				continue;
 			}
@@ -12544,6 +12637,33 @@ export function makeTable(options): TableResourceClass {
 			}
 		}
 	}
+	// resources/DESIGN.md, Per-row read work on RocksDB index scans
+	function coveredSelectAttribute(select: any): string | undefined {
+		if (primaryKey == null || !coverableAttribute(primaryKey)) return;
+		if (typeof select === 'string') return select === primaryKey || coverableAttribute(select) ? select : undefined;
+		if (!Array.isArray(select) || select.length === 0) return;
+		let attribute: string | undefined;
+		for (const name of select) {
+			if (name === primaryKey) continue;
+			if (typeof name !== 'string' || (attribute !== undefined && name !== attribute) || !coverableAttribute(name))
+				return;
+			attribute = name;
+		}
+		return attribute ?? primaryKey;
+	}
+	function coverableAttribute(name: string): boolean {
+		const attribute = findAttribute(attributes, name);
+		const isPrimary = name === primaryKey;
+		const index = !isPrimary && Object.hasOwn(indices, name) ? indices[name] : undefined;
+		return (
+			(isPrimary
+				? attribute?.type === undefined || attribute.type === 'ID' || SCALAR_TYPES.has(attribute.type)
+				: index !== undefined && !index.customIndex && SCALAR_TYPES.has(attribute?.type)) &&
+			!attribute?.elements &&
+			!propertyResolvers?.[name] &&
+			!primaryStore.encoder.resolvedAttributeNames?.has(name)
+		);
+	}
 	function txnForContext(context: Context) {
 		let transaction = context?.transaction;
 		if (isReleasedTransaction(transaction)) transaction = undefined;
@@ -12562,8 +12682,9 @@ export function makeTable(options): TableResourceClass {
 				// A self-committing link is CLOSED once it has committed, and a further write through it
 				// commits on a native handle nothing awaits (#2323). Spent — closed, handle detached, none of
 				// its OWN writes left (hasPendingWrites walks successors, which is not this question) — it
-				// holds nothing, so drop it. A run of them can be spent, hence the loop. A timeout-poisoned
-				// link is kept: reusing it is what makes the rest of the operation fail atomically (#1411).
+				// holds no writes, so drop it; its record locks pass to the link that replaces it. A run of
+				// them can be spent, hence the loop. A timeout-poisoned link is kept: reusing it is what
+				// makes the rest of the operation fail atomically (#1411).
 				while (
 					nextTxn?.saveCommits &&
 					nextTxn.open !== TRANSACTION_STATE.OPEN &&
@@ -12571,6 +12692,7 @@ export function makeTable(options): TableResourceClass {
 					!nextTxn.transaction &&
 					!nextTxn.writes.some((write) => write)
 				) {
+					(transaction.root ?? transaction).retainRecordLocksOf(nextTxn);
 					transaction.next = nextTxn.next;
 					nextTxn = transaction.next;
 				}
@@ -12622,6 +12744,7 @@ export function makeTable(options): TableResourceClass {
 					if (transaction.postSubmitPoisoned) transaction.next.postSubmitPoisoned = true;
 					transaction = transaction.next;
 					transaction.db = primaryStore;
+					transaction.root.adoptDetachedRecordLocks(transaction);
 					return transaction;
 				}
 				transaction = nextTxn;
@@ -12644,11 +12767,12 @@ export function makeTable(options): TableResourceClass {
 	 * dangling scoped write would otherwise auto-commit at the transaction sweep and clobber
 	 * whatever the hold write lands. Marking it .dropped lets a later save() on the instance that
 	 * owns it (checked via #savingOperation === this write) fall through to the hold branch
-	 * instead of resolving a detached, dead reference. A joined write (a static verb's, or one staged
-	 * before lock()) is the caller's own: an upgrade keeps it, and a release within the lease (`releasing`)
-	 * returns it to an ordinary unlocked write, which is what it would be had it been staged after the
-	 * unlock. Past the lease it keeps the handle, so its save is refused like any lapsed lock write. A
-	 * `lockFailed` lock() was never handed to the caller, so its joined writes always revert.
+	 * instead of resolving a detached, dead reference. A joined write (a static verb's, or another
+	 * instance's, staged under the lock) is the caller's own: an upgrade keeps it, and a release within
+	 * the lease (`releasing`) returns it to an ordinary unlocked write, which is what it would be had it
+	 * been staged after the unlock. Past the lease it keeps the handle, so its save is refused like any
+	 * lapsed lock write. A `lockFailed` lock() was never handed to the caller, so its joined writes
+	 * always revert.
 	 */
 	function detachScopedUpgradeWrite(
 		link: any,
@@ -14690,6 +14814,31 @@ function createComputedFrom(computedFromExpression: string, attributesFallback?:
 	return script.runInThisContext()(attributesFallback);
 }
 
+// Pattern comparators (contains, starts_with, ends_with) stay out so their operand remains text.
+const ELEMENT_VALUE_COMPARATORS = new Set<string | undefined>([
+	undefined,
+	'equals',
+	'ne',
+	'lt',
+	'le',
+	'gt',
+	'ge',
+	'in',
+	'between',
+	'gele',
+	'gelt',
+	'gtlt',
+	'gtle',
+]);
+function coerceConditionValue(value: any, comparator: string, attribute: Attribute) {
+	const compared =
+		attribute.elements?.type && ELEMENT_VALUE_COMPARATORS.has(ALTERNATE_COMPARATOR_NAMES[comparator] || comparator)
+			? attribute.elements
+			: attribute;
+	if (!compared.type && !COERCIBLE_OPERATORS[comparator]) return value;
+	if (Array.isArray(value)) return value.map((value) => coerceType(value, compared, attribute.name));
+	return coerceType(value, compared, attribute.name);
+}
 const ENDS_WITH_TIMEZONE = /[+-][0-9]{2}:[0-9]{2}|[a-zA-Z]$/;
 /**
  * Coerce a string to the type defined by the attribute
@@ -14697,7 +14846,7 @@ const ENDS_WITH_TIMEZONE = /[+-][0-9]{2}:[0-9]{2}|[a-zA-Z]$/;
  * @param attribute
  * @returns
  */
-export function coerceType(value: any, attribute: any): any {
+export function coerceType(value: any, attribute: any, name?: string): any {
 	const type = attribute?.type;
 	//if a type is String is it safe to execute a .toString() on the value and return? Does not work for Array/Object so we would need to detect if is either of those first
 	if (value === null) {
@@ -14740,7 +14889,7 @@ export function coerceType(value: any, attribute: any): any {
 				return value;
 		}
 	} catch (error) {
-		error.message = `Invalid value for attribute ${attribute.name}: "${value}", expecting ${type}`;
+		error.message = `Invalid value for attribute ${name ?? attribute?.name}: "${value}", expecting ${type}`;
 		error.statusCode = 400;
 		throw error;
 	}

@@ -1,4 +1,6 @@
+import dotenv from 'dotenv';
 import { getHomeDir } from '../utility/common_utils.ts';
+import { ClientError } from '../utility/errors/hdbError.ts';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -42,8 +44,8 @@ export function extractTargetCredentials(target: string): { username: string; pa
  * embedded credentials.
  *
  * A normalized target is an identity, not a credential: it keys ~/.harperdb/credentials.json, is
- * echoed by the "Connecting to ..." line, written to `.env`, and emitted by `harper login --for-ci`.
- * Userinfo riding along would put the password in all four, so it is dropped here rather than at
+ * echoed by the "Connecting to ..." line, and emitted by `harper login --for-ci`.
+ * Userinfo riding along would put the password in all three, so it is dropped here rather than at
  * each of those sites — use `extractTargetCredentials` to read it for transport authentication.
  */
 export function normalizeTarget(target: string): string {
@@ -75,6 +77,60 @@ export function normalizeTarget(target: string): string {
 		normalized += '/';
 	}
 	return normalized;
+}
+
+/**
+ * Environment names the CLI process itself reads to pick its target, credential, saved-login file,
+ * TLS/proxy behaviour, or the `GITHUB_*` deploy inputs. Not what git or gh read when the CLI runs them:
+ * see bin/DESIGN.md. Upper case: Windows environment names are case-insensitive, and Node reads
+ * lowercase proxy names too.
+ */
+const CLI_TRUST_ENV_KEYS = new Set([
+	'HARPER_CLI_TARGET',
+	'CLI_TARGET',
+	...['HARPER_CLI', 'CLI_TARGET'].flatMap((prefix) =>
+		['USERNAME', 'PASSWORD', 'OPERATION_TOKEN', 'REFRESH_TOKEN'].map((suffix) => `${prefix}_${suffix}`)
+	),
+	'ACTIONS_ID_TOKEN_REQUEST_URL',
+	'ACTIONS_ID_TOKEN_REQUEST_TOKEN',
+	'GITHUB_REPOSITORY',
+	'GITHUB_SHA',
+	'GITHUB_REF',
+	'GITHUB_EVENT_PATH',
+	'HOME',
+	'USERPROFILE',
+	'NODE_TLS_REJECT_UNAUTHORIZED',
+	'NODE_EXTRA_CA_CERTS',
+	'SSL_CERT_FILE',
+	'SSL_CERT_DIR',
+	'NODE_USE_ENV_PROXY',
+	'HTTP_PROXY',
+	'HTTPS_PROXY',
+	'NO_PROXY',
+]);
+
+/**
+ * Applies the current directory's `.env` (or `.env.vault`) like `dotenv.config()`, never overriding an
+ * inherited value, but refuses the whole file first if it would supply a `CLI_TRUST_ENV_KEYS` value.
+ * Ignoring those keys instead would silently fall back to the saved login target or, for backup
+ * commands, to local files.
+ */
+export function loadCliDotenv(): void {
+	const staged: Record<string, string> = {};
+	dotenv.config({ processEnv: staged, quiet: true });
+	const refused = Object.keys(staged).filter(
+		(key) => CLI_TRUST_ENV_KEYS.has(key.toUpperCase()) && !Object.prototype.hasOwnProperty.call(process.env, key)
+	);
+	if (refused.length > 0) {
+		const them = refused.length === 1 ? 'it' : 'them';
+		throw new ClientError(
+			`${refused.join(', ')} must not come from a .env or .env.vault file in ${process.cwd()}: a project's .env no longer ` +
+				`sets the Harper CLI's target, credentials or connection settings (earlier 'harper login' versions ` +
+				`added HARPER_CLI_TARGET there). Remove ${them} from that file, then set ${them} in your shell or CI ` +
+				`environment, pass target=<url>, or rely on the target 'harper login <url>' saves.`
+		);
+	}
+	dotenv.populate(process.env as Record<string, string>, staged);
 }
 
 /**

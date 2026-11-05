@@ -15,6 +15,7 @@ const {
 	serialize,
 	serializeMessage,
 	toCsvStream,
+	recordAppliedSelect,
 	waitForStreamStartup,
 	discardSerializedStream,
 	brotliOptions,
@@ -1141,5 +1142,34 @@ describe('contentTypes – toCsvStream scalar and tuple columns (harper#1482)', 
 			tupleErrOut,
 			'"id","note"\n"z-1","n1"\n"{""error"":""Error"",""message"":""row 2 failed"",""id"":""z-2""}"\n"z-3","n3"\n'
 		);
+	});
+});
+
+describe('contentTypes – text/csv applied select', function () {
+	const response = { headers: { set() {} } };
+	const nestedSelect = () => ({ name: 'child', select: ['id', 'label'] });
+
+	it('formats a value as one cell when its applied scalar select names the same column as the target select', async function () {
+		const request = { headers: { accept: 'text/csv' } };
+		const child = { id: 'c1', label: 'l1' };
+		recordAppliedSelect(request, nestedSelect(), false, child);
+		const body = await streamToString(serialize(child, request, response, { select: nestedSelect() }));
+		assert.strictEqual(body, '"child"\n"{""id"":""c1"",""label"":""l1""}"\n');
+	});
+
+	it('formats a value by its own keys when its applied select names another column', async function () {
+		const request = { headers: { accept: 'text/csv' } };
+		const child = { id: 'c1', label: 'l1' };
+		recordAppliedSelect(request, nestedSelect(), false, child);
+		const body = await streamToString(serialize(child, request, response, { select: { name: 'owner' } }));
+		assert.strictEqual(body, '"id","label"\n"c1","l1"\n');
+	});
+
+	it('records nothing for a request that cannot negotiate CSV', async function () {
+		const child = { id: 'c1', label: 'l1' };
+		recordAppliedSelect({ headers: { accept: 'application/json' } }, nestedSelect(), false, child);
+		const request = { headers: { accept: 'text/csv' } };
+		const body = await streamToString(serialize(child, request, response, { select: nestedSelect() }));
+		assert.strictEqual(body, '"id","label"\n"c1","l1"\n');
 	});
 });

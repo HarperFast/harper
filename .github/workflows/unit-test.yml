@@ -333,16 +333,25 @@ jobs:
       - name: Install dependencies
         run: npm install --ignore-scripts
 
+      - name: Install isolated historical full-text engines
+        timeout-minutes: 3
+        run: npm run test:fulltext:install-previous -- "${{ runner.temp }}/fulltext-upgrade"
+
       - name: Build
         run: npm run build
 
       - name: Verify the published native binding loads
-        run: node --input-type=module --eval "const binding = await import('@harperfast/fulltext/native'); const info = await binding.runtimeInfo(); if (typeof binding.openNativeFullTextIndex !== 'function' || typeof binding.openNativeFullTextReader !== 'function' || typeof binding.NativeFullTextIndex?.prototype.searchPage !== 'function' || info.nativeAbiVersion !== 13 || info.queryApiVersion !== 7) throw new Error('@harperfast/fulltext loaded without the required writer, reader, and native ABI 13 and query API 7 contract');"
+        run: node --input-type=module --eval "const { validateFullTextNativeBinding } = await import('./dist/resources/indexes/fullTextNativeBinding.js'); await validateFullTextNativeBinding(await import('@harperfast/fulltext/native'));"
 
       - name: Native full-text lifecycle test
+        env:
+          HARPER_FULLTEXT_UPGRADE_ROOT: ${{ runner.temp }}/fulltext-upgrade
         run: >-
           npx mocha
-          unitTests/resources/nativeFullTextDerivedIndexLifecycle.test.js
+          unitTests/resources/nativeFullTextDerivedIndexLifecycle.test.js unitTests/resources/nativeFullTextTelemetry.test.js
+          unitTests/resources/nativeFullTextTelemetryClose.test.js
+          unitTests/resources/nativeFullTextTelemetryWorkers.test.js
+          unitTests/resources/nativeFullTextTelemetryShutdown.test.js
           unitTests/resources/nativeFullTextTableSearch.test.js
           unitTests/resources/nativeFullTextIndexSchemaUpgrade.test.js
           unitTests/resources/nativeFullTextIndexUpgradeWorkers.test.js

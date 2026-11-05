@@ -8,11 +8,10 @@ const { loadGQLSchema } = require('#src/resources/graphql');
 const { writeKey } = require('ordered-binary');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 
-// Contract under test: resources/DESIGN.md → "What do chained conditions mean over array
-// values?". Convention: tests titled `pins harper#NNNN` assert today's defective output so
-// the suite stays green; each has an it.skip twin asserting the correct behavior to enable
-// when the defect is fixed. The harper#2434 twins are live — indexed elements-array scans no
-// longer emit one result per matching index entry.
+// Contract under test: resources/DESIGN.md → "Chained query conditions scope one array
+// element; FIQL tokens always advance". Convention: tests titled `pins harper#NNNN` assert
+// today's defective output so the suite stays green; each has an it.skip twin asserting the
+// correct behavior to enable when the defect is fixed. The harper#2434 and harper#2433 twins are live.
 describe('Array-valued property scoping', () => {
 	let Widgets;
 
@@ -70,8 +69,6 @@ describe('Array-valued property scoping', () => {
 		it('parses a chained condition onto the previous condition', () => {
 			const parsed = parseQuery('sizes=ge=175&=le=180');
 			assert.strictEqual(parsed.conditions.length, 1);
-			// untyped FIQL values stay strings at parse time; only the parent condition's
-			// value is coerced during query planning (harper#2433)
 			assert.deepStrictEqual(parsed.conditions[0], {
 				comparator: 'ge',
 				attribute: 'sizes',
@@ -122,14 +119,7 @@ describe('Array-valued property scoping', () => {
 			assert.deepStrictEqual(await collectIds(searchRest('sizes=gt=number:175&=lt=number:180')), [2]);
 			assert.deepStrictEqual(await collectIds(searchRest('sizesIdx=gt=number:175&=lt=number:180')), [2]);
 		});
-		it('pins harper#2433: untyped REST chain degenerates', async function () {
-			// prepareConditions coerces only the parent value, so the collapsed range is
-			// [175, '180']; every number sorts below a string, making the string upper bound
-			// a no-op (superset) and a string lower bound exclude everything (empty set)
-			assert.deepStrictEqual(await collectIds(searchRest('sizes=ge=175&=le=180')), [1, 2, 4, 6]);
-			assert.deepStrictEqual(await collectIds(searchRest('sizes=le=180&=ge=175')), []);
-		});
-		it.skip('harper#2433: untyped REST chained range must coerce the chained leg', async function () {
+		it('harper#2433: untyped REST chained range coerces the chained leg', async function () {
 			assert.deepStrictEqual(await collectIds(searchRest('sizes=ge=175&=le=180')), [2, 4, 6]);
 			assert.deepStrictEqual(await collectIds(searchRest('sizes=le=180&=ge=175')), [2, 4, 6]);
 		});
@@ -246,10 +236,10 @@ describe('Array-valued property scoping', () => {
 		});
 	});
 
-	// The programmatic `elements`-only declaration leaves `attribute.type` undefined, which sends
-	// condition values through coerceType's autoCast branch. A GraphQL `[Int]` declares
-	// `type: 'array'` with the element type nested underneath and takes the uncoerced default
-	// branch, so it is a separate route to the same index scan and is asserted on its own.
+	// The programmatic `elements`-only declaration leaves `attribute.type` undefined; a GraphQL
+	// `[Int]` declares `type: 'array'` with the element type nested underneath. Both convert
+	// condition values with the element type, but they are separate declaration routes to the
+	// same index scan, so each is asserted on its own.
 	describe('GraphQL-declared elements attribute', () => {
 		let GqlWidgets;
 
@@ -284,6 +274,12 @@ describe('Array-valued property scoping', () => {
 			const sizes = GqlWidgets.attributes.find((attribute) => attribute.name === 'sizes');
 			assert.strictEqual(sizes.type, 'array');
 			assert.strictEqual(sizes.elements.type, 'Int');
+		});
+
+		it('untyped REST conditions convert with the element type (harper#2481)', async function () {
+			const searchGqlRest = (queryString) => collectIds(GqlWidgets.search(new RequestTarget('?' + queryString)));
+			assert.deepStrictEqual(await searchGqlRest('sizes=ge=180'), [1, 6, 7]);
+			assert.deepStrictEqual(await searchGqlRest('sizes=ge=175&=le=180'), [2, 4, 6]);
 		});
 
 		it('chained range returns each record once', async function () {

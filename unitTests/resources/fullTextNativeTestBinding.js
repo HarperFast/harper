@@ -23,6 +23,12 @@ class FullTextNativeTestBinding {
 			publish() {}
 			close() {}
 			searchPage() {}
+			telemetry() {}
+			configureTelemetry() {}
+		};
+		this.NativeFullTextReader = class {
+			telemetry() {}
+			configureTelemetry() {}
 		};
 	}
 
@@ -30,11 +36,12 @@ class FullTextNativeTestBinding {
 		return {
 			packageVersion: 'test',
 			tantivyVersion: 'test',
-			nativeAbiVersion: 13,
+			nativeAbiVersion: 14,
 			queryClassIsolationMinimumSearchThreads: 2,
 			lifecycleApiVersion: 1,
 			mutationBatchApiVersion: 5,
-			queryApiVersion: 7,
+			queryApiVersion: 8,
+			telemetryApiVersion: 1,
 			storageBackends: ['native'],
 			limits: {
 				maxCommitPayloadBytes: 64 * 1024,

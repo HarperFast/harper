@@ -1,7 +1,9 @@
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
-const { table } = require('#src/resources/databases');
+const { waitFor } = require('../waitFor');
+const { table, closeDatabase, resetDatabases } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
+const { addAnalyticsListener, checkAnalyticsEnabled, setAnalyticsEnabled } = require('#src/resources/analytics/write');
 const { RocksDatabase } = require('../rocksdbBindings.mts').rocksdbBindings();
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
@@ -33,7 +35,7 @@ describe('Secondary-index range select', function () {
 	});
 
 	after(function () {
-		Records.dropTable();
+		Records?.dropTable();
 	});
 
 	const range = [{ attribute: 'score', comparator: 'between', value: [3, 6] }];
@@ -194,6 +196,811 @@ describe('Secondary-index range select', function () {
 				await collect({ conditions: range, select: ['id', { name: 'nested', select: ['label'] }] }),
 				fullRecords.map(({ id, nested }) => ({ id, nested: { label: nested.label } }))
 			);
+		});
+	});
+
+	describe('covered selects', function () {
+		let Covered;
+
+		before(async function () {
+			Covered = table({
+				table: 'IndexRangeCoveredTest',
+				database: 'test',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'score', indexed: true, type: 'Int' },
+					{ name: 'name', indexed: true, type: 'String' },
+					{ name: 'label' },
+					{ name: 'tags', indexed: true, elements: { type: 'String' } },
+					{ name: 'when', indexed: true, type: 'Date' },
+					{ name: 'big', indexed: true, type: 'BigInt' },
+				],
+			});
+			const puts = [];
+			for (let id = 1; id <= 30; id++) {
+				puts.push(
+					Covered.put(id, {
+						score: id % 10,
+						name: `name-${String(id).padStart(2, '0')}${id % 4 ? '' : '-son'}`,
+						label: `label-${30 - id}`,
+						tags: [`t${id % 3}`, `t${(id % 3) + 1}`],
+						when: id % 5 ? new Date(Date.UTC(2026, 0, id)) : null,
+						big: BigInt(id) * 1000n,
+					})
+				);
+			}
+			await Promise.all(puts);
+		});
+
+		after(function () {
+			Covered?.dropTable();
+		});
+
+		async function withReads(Table, callback) {
+			const store = Table.primaryStore;
+			const getEntry = store.getEntry;
+			let reads = 0;
+			store.getEntry = function (id, options) {
+				reads++;
+				return getEntry.call(this, id, options);
+			};
+			try {
+				const result = await callback();
+				return { result, reads };
+			} finally {
+				store.getEntry = getEntry;
+			}
+		}
+		async function rows(Table, query, context) {
+			const results = [];
+			for await (const row of Table.search(query, context)) results.push(row);
+			return results;
+		}
+		function rowsSync(Table, query) {
+			const results = [];
+			for (const row of Table.search(query)) results.push(row);
+			return results;
+		}
+		function project(record, select) {
+			if (typeof select === 'string') return record[select];
+			if (select.asArray) return select.map((name) => record[name]);
+			const projected = {};
+			for (const name of select)
+				projected[name] = record[name] === undefined && select.forceNulls ? null : record[name];
+			return projected;
+		}
+		async function assertCovered(Table, query, expected) {
+			const { result, reads } = await withReads(Table, () => rows(Table, query));
+			assert.deepStrictEqual(result, expected, `rows for ${JSON.stringify(query.select)}`);
+			assert.equal(reads, 0, `primary reads for ${JSON.stringify(query.select)}`);
+		}
+
+		it('serves a primary-key or scanned-attribute select from the index, with the rows the record path returns', async function () {
+			const asArray = ['id', 'score'];
+			asArray.asArray = true;
+			const forceNulls = ['id', 'score'];
+			forceNulls.forceNulls = true;
+			const selects = [
+				['id'],
+				['id', 'score'],
+				['score'],
+				['score', 'id', 'score'],
+				'id',
+				'score',
+				asArray,
+				forceNulls,
+			];
+			const queries = [
+				{ conditions: [{ attribute: 'score', comparator: 'between', value: [3, 6] }] },
+				{ conditions: [{ attribute: 'score', value: 4 }] },
+				{ conditions: [{ attribute: 'score', comparator: 'ne', value: null }] },
+				{
+					conditions: [{ attribute: 'score', comparator: 'gt', value: 6 }],
+					sort: { attribute: 'score', descending: true },
+				},
+				{ conditions: [{ attribute: 'score', comparator: 'between', value: [2, 8] }], limit: 3, offset: 2 },
+			];
+			for (const query of queries) {
+				const records = await rows(Covered, query);
+				assert.ok(records.length > 0);
+				for (const select of selects) {
+					const expected = records.map((record) => project(record, select));
+					await assertCovered(Covered, { ...query, select }, expected);
+					const { result, reads } = await withReads(Covered, () => rowsSync(Covered, { ...query, select }));
+					assert.deepStrictEqual(result, expected);
+					assert.equal(reads, 0);
+				}
+			}
+		});
+
+		it('covers scans whose condition filter runs on the index key', async function () {
+			const queries = [
+				{ conditions: [{ attribute: 'name', comparator: 'ends_with', value: '-son' }], select: ['id', 'name'] },
+				{ conditions: [{ attribute: 'name', comparator: 'contains', value: '-1' }], select: ['id', 'name'] },
+				{ conditions: [{ attribute: 'score', comparator: 'in', value: [1, 8] }], select: ['id', 'score'] },
+				{ conditions: [{ attribute: 'score', comparator: 'in', value: [1, 8] }], select: ['id'] },
+				{ sort: { attribute: 'score' }, select: ['id', 'score'] },
+			];
+			for (const query of queries) {
+				const expected = (await rows(Covered, { ...query, select: undefined })).map((record) =>
+					project(record, query.select)
+				);
+				assert.ok(expected.length > 0);
+				await assertCovered(Covered, query, expected);
+			}
+		});
+
+		it('loads records when the index entry cannot answer the query', async function () {
+			const range = [{ attribute: 'score', comparator: 'between', value: [3, 6] }];
+			const records = await rows(Covered, { conditions: range });
+			await assertCovered(
+				Covered,
+				{ conditions: range, select: ['id', 'score'] },
+				records.map(({ id, score }) => ({ id, score }))
+			);
+
+			const loads = async (query, expected, context) => {
+				const { result, reads } = await withReads(Covered, () => rows(Covered, query, context));
+				assert.deepStrictEqual(result, expected, JSON.stringify(query));
+				assert.ok(reads >= expected.length && reads > 0, `expected record reads for ${JSON.stringify(query)}`);
+			};
+			await loads(
+				{ conditions: range, select: ['id', 'name'] },
+				records.map(({ id, name }) => ({ id, name }))
+			);
+			const notFive = await rows(Covered, { conditions: [{ attribute: 'score', comparator: 'ne', value: 5 }] });
+			await loads(
+				{ conditions: [{ attribute: 'score', comparator: 'ne', value: 5 }], select: ['id', 'score'] },
+				notFive.map(({ id, score }) => ({ id, score }))
+			);
+			const byLabel = [...records].sort((a, b) => (a.label < b.label ? -1 : 1));
+			await loads(
+				{ conditions: range, sort: { attribute: 'label' }, select: ['id', 'score'] },
+				byLabel.map(({ id, score }) => ({ id, score }))
+			);
+			const chained = [...records].sort((a, b) => a.score - b.score || (a.label < b.label ? -1 : 1));
+			await loads(
+				{ conditions: range, sort: { attribute: 'score', next: { attribute: 'label' } }, select: ['id', 'score'] },
+				chained.map(({ id, score }) => ({ id, score }))
+			);
+			const visible = records.filter(({ label }) => label !== 'label-26');
+			await loads(
+				{ conditions: range, rowFilter: (record) => record.label !== 'label-26', select: ['id', 'score'] },
+				visible.map(({ id, score }) => ({ id, score }))
+			);
+			await loads(
+				{ conditions: range, vectorFilter: (record) => record.label !== 'label-26', select: ['id', 'score'] },
+				visible.map(({ id, score }) => ({ id, score }))
+			);
+			const named = records.filter(({ name }) => name.endsWith('-son'));
+			await loads(
+				{
+					conditions: [...range, { attribute: 'name', comparator: 'ends_with', value: '-son' }],
+					select: ['id', 'score'],
+				},
+				named.map(({ id, score }) => ({ id, score }))
+			);
+			const either = await rows(Covered, {
+				operator: 'or',
+				conditions: [
+					{ attribute: 'score', value: 3 },
+					{ attribute: 'score', value: 4 },
+				],
+			});
+			await loads(
+				{
+					operator: 'or',
+					conditions: [
+						{ attribute: 'score', value: 3 },
+						{ attribute: 'score', value: 4 },
+					],
+					select: ['id'],
+				},
+				either.map(({ id }) => ({ id }))
+			);
+			const { result: resolved, reads } = await withReads(Covered, () =>
+				rows(Covered, { conditions: range, select: ['id', '$updatedtime'] })
+			);
+			assert.equal(resolved.length, records.length);
+			assert.ok(reads > 0);
+			await loads(
+				{ conditions: range, select: ['id', 'score'] },
+				records.map(({ id, score }) => ({ id, score })),
+				{ replicateFrom: false }
+			);
+		});
+
+		it('returns an expired row until eviction removes it, from every select', async function () {
+			const attributes = [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'score', indexed: true, type: 'Int' },
+				{ name: 'label' },
+			];
+			const Expiring = table({ table: 'IndexRangeCoveredExpiryTest', database: 'test', attributes });
+			const Cached = table({ table: 'IndexRangeCoveredExpiryCacheTest', database: 'test', attributes });
+			let sourceGets = 0;
+			Cached.sourcedFrom({
+				get(id) {
+					sourceGets++;
+					return { id, score: 5, label: 'refreshed' };
+				},
+			});
+			try {
+				const condition = [{ attribute: 'score', value: 5 }];
+				const stored = [
+					{ id: 1, label: 'kept' },
+					{ id: 2, label: 'expired' },
+				];
+				for (const Table of [Expiring, Cached]) {
+					await Table.put({ id: 1, score: 5, label: 'kept' });
+					await Table.put({ id: 2, score: 5, label: 'expired' }, { expiresAt: Date.now() - 1000 });
+					await assertCovered(Table, { conditions: condition, select: ['id', 'score'] }, [
+						{ id: 1, score: 5 },
+						{ id: 2, score: 5 },
+					]);
+					assert.deepStrictEqual(
+						await rows(Table, { conditions: condition, select: ['id', 'label'] }, { onlyIfCached: true }),
+						stored
+					);
+				}
+				assert.equal(sourceGets, 0);
+				assert.deepStrictEqual(await rows(Expiring, { conditions: condition, select: ['id', 'label'] }), stored);
+				assert.deepStrictEqual(
+					rowsSync(Expiring, { conditions: [{ attribute: 'label', value: 'expired' }], select: ['id', 'label'] }),
+					[{ id: 2, label: 'expired' }]
+				);
+				assert.equal(await Expiring.get(2), undefined);
+				assert.deepStrictEqual(await rows(Cached, { conditions: condition, select: ['id', 'label'] }), [
+					{ id: 1, label: 'kept' },
+					{ id: 2, label: 'refreshed' },
+				]);
+				assert.equal(sourceGets, 1);
+			} finally {
+				Expiring.dropTable();
+				Cached.dropTable();
+			}
+		});
+
+		it('decodes index values by the declared type, and an undeclared bigint id as a number', async function () {
+			const nonNull = [{ attribute: 'when', comparator: 'gt', value: new Date(Date.UTC(2026, 0, 1)) }];
+			const expectedWhen = (await rows(Covered, { conditions: nonNull })).map(({ id, when }) => ({ id, when }));
+			await assertCovered(Covered, { conditions: nonNull, select: ['id', 'when'] }, expectedWhen);
+			assert.ok(expectedWhen[0].when instanceof Date);
+			const nullWhen = [{ attribute: 'when', value: null }];
+			await assertCovered(
+				Covered,
+				{ conditions: nullWhen, select: ['id', 'when'] },
+				[5, 10, 15, 20, 25, 30].map((id) => ({ id, when: null }))
+			);
+			const bigRange = [{ attribute: 'big', comparator: 'between', value: [3000n, 5000n] }];
+			await assertCovered(Covered, { conditions: bigRange, select: ['id', 'big'] }, [
+				{ id: 3, big: 3000n },
+				{ id: 4, big: 4000n },
+				{ id: 5, big: 5000n },
+			]);
+			const Loose = table({
+				table: 'IndexRangeCoveredLooseTest',
+				database: 'test',
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'value', indexed: true }, { name: 'label' }],
+			});
+			try {
+				await Loose.put(10n, { value: 1, label: 'bigint id' });
+				await Loose.put(2, { value: 1, label: 'number id' });
+				await Loose.put({ id: ['sku'], value: 1, label: 'array id' });
+				assert.deepStrictEqual(
+					await rows(Loose, { conditions: [{ attribute: 'value', value: 1 }], select: ['id', 'label'] }),
+					[
+						{ id: 2, label: 'number id' },
+						{ id: 10n, label: 'bigint id' },
+						{ id: ['sku'], label: 'array id' },
+					]
+				);
+				await assertCovered(Loose, { conditions: [{ attribute: 'value', value: 1 }], select: ['id'] }, [
+					{ id: 2 },
+					{ id: 10 },
+					{ id: 'sku' },
+				]);
+			} finally {
+				Loose.dropTable();
+			}
+		});
+
+		it('loads the record for an attribute or primary key whose declared type can hold an array', async function () {
+			const Lists = table({
+				table: 'IndexRangeCoveredListTest',
+				database: 'test',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true, type: 'ID' },
+					{ name: 'score', indexed: true, type: 'Int' },
+					{ name: 'tags', indexed: true, elements: { type: 'String' } },
+					{ name: 'anything', indexed: true, type: 'Any' },
+					{ name: 'untyped', indexed: true },
+					{ name: 'ref', indexed: true, type: 'ID' },
+				],
+			});
+			const Composite = table({
+				table: 'IndexRangeCoveredCompositeKeyTest',
+				database: 'test',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true, type: 'array', elements: { type: 'String' } },
+					{ name: 'score', indexed: true, type: 'Int' },
+					{ name: 'label' },
+				],
+			});
+			const ArrayKey = table({
+				table: 'IndexRangeCoveredArrayKeyTest',
+				database: 'test',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true, type: 'Array' },
+					{ name: 'score', indexed: true, type: 'Int' },
+				],
+			});
+			try {
+				const list = ['x', 'y'];
+				await Lists.put('row-1', { score: 7, tags: list, anything: list, untyped: list, ref: list });
+				await Lists.put('row-2', { score: 8, tags: ['y'], anything: 'y', untyped: 'y', ref: 'y' });
+				await assertCovered(Lists, { conditions: [{ attribute: 'score', value: 7 }], select: ['id'] }, [
+					{ id: 'row-1' },
+				]);
+				await assertCovered(Lists, { conditions: [{ attribute: 'score', value: 7 }], select: 'id' }, ['row-1']);
+				await assertCovered(Lists, { conditions: [{ attribute: 'score', value: 7 }], select: ['id', 'score'] }, [
+					{ id: 'row-1', score: 7 },
+				]);
+				for (const attribute of ['tags', 'anything', 'untyped', 'ref']) {
+					const condition = [{ attribute, value: 'x' }];
+					const { result, reads } = await withReads(Lists, () =>
+						rows(Lists, { conditions: condition, select: ['id', attribute] })
+					);
+					assert.deepStrictEqual(result, [{ id: 'row-1', [attribute]: list }], attribute);
+					assert.equal(reads, 1, attribute);
+					await assertCovered(Lists, { conditions: condition, select: ['id'] }, [{ id: 'row-1' }]);
+				}
+				await assertCovered(
+					Lists,
+					{ conditions: [{ attribute: 'tags', comparator: 'ge', value: 'x' }], select: ['id'] },
+					[{ id: 'row-1' }, { id: 'row-2' }]
+				);
+				await Lists.put({ id: ['sku'], score: 9, tags: ['z'], anything: 'z', untyped: 'z', ref: 'z' });
+				await assertCovered(Lists, { conditions: [{ attribute: 'score', value: 9 }], select: ['id', 'score'] }, [
+					{ id: 'sku', score: 9 },
+				]);
+				const { result: loadedId, reads: loadedIdReads } = await withReads(Lists, () =>
+					rows(Lists, { conditions: [{ attribute: 'score', value: 9 }], select: ['id', 'tags'] })
+				);
+				assert.deepStrictEqual(loadedId, [{ id: ['sku'], tags: ['z'] }]);
+				assert.equal(loadedIdReads, 1);
+
+				for (const Keyed of [Composite, ArrayKey]) {
+					await Keyed.put({ id: ['sku'], score: 7, label: 'single-element' });
+					await Keyed.put({ id: ['us', 'w1'], score: 7, label: 'composite' });
+					const conditions = [{ attribute: 'score', value: 7 }];
+					const full = await rows(Keyed, { conditions });
+					assert.deepStrictEqual(
+						full.map(({ id }) => id),
+						[['sku'], ['us', 'w1']]
+					);
+					for (const select of [['id'], 'id', ['id', 'score'], ['score']]) {
+						const { result, reads } = await withReads(Keyed, () => rows(Keyed, { conditions, select }));
+						assert.deepStrictEqual(
+							result,
+							full.map((record) => project(record, select)),
+							`${Keyed.tableName} ${JSON.stringify(select)}`
+						);
+						assert.equal(reads, 2, `${Keyed.tableName} ${JSON.stringify(select)}`);
+					}
+				}
+			} finally {
+				Lists.dropTable();
+				Composite.dropTable();
+				ArrayKey.dropTable();
+			}
+		});
+
+		it('recovers a long value from its record, matching it by the prefix the index stores', async function () {
+			const Text = table({
+				table: 'IndexRangeCoveredTextTest',
+				database: 'test',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'value', indexed: true, type: 'String' },
+					{ name: 'label' },
+				],
+			});
+			try {
+				const text256 = 'a'.repeat(256);
+				const text257 = 'a'.repeat(257);
+				await Text.put(5, { value: text256, label: '256' });
+				await Text.put(6, { value: text257, label: '257' });
+				const value = (condition) => [{ attribute: 'value', ...condition }];
+				await assertCovered(Text, { conditions: value({ value: text256 }), select: ['id', 'value'] }, [
+					{ id: 5, value: text256 },
+				]);
+				const prefixed = value({ comparator: 'starts_with', value: 'aaa' });
+				const { result, reads } = await withReads(Text, () =>
+					rows(Text, { conditions: prefixed, select: ['id', 'value'] })
+				);
+				assert.deepStrictEqual(result, [
+					{ id: 5, value: text256 },
+					{ id: 6, value: text257 },
+				]);
+				assert.equal(reads, 1);
+				await assertCovered(Text, { conditions: prefixed, select: ['id'] }, [{ id: 5 }, { id: 6 }]);
+				await Text.put(11n, { value: 'b'.repeat(299), label: 'bigint id, long value' });
+				const prefix = 'd'.repeat(256);
+				await Text.put(8, { value: prefix + '1' });
+				await Text.put(9, { value: prefix + '2' });
+				const shared = await withReads(Text, () =>
+					rows(Text, { conditions: value({ value: prefix + '2' }), select: ['id', 'value'] })
+				);
+				assert.deepStrictEqual(shared.result, [{ id: 9, value: prefix + '2' }]);
+				assert.equal(shared.reads, 2);
+				assert.deepStrictEqual(
+					await rows(Text, { conditions: value({ comparator: 'starts_with', value: 'bb' }), select: ['id', 'value'] }),
+					[{ id: 11, value: 'b'.repeat(299) }]
+				);
+				const sorted = (await rows(Text, { sort: { attribute: 'value' } })).map(({ id }) => ({ id: Number(id) }));
+				await assertCovered(Text, { sort: { attribute: 'value' }, select: ['id'] }, sorted);
+				const sortedValues = await rows(Text, { sort: { attribute: 'value' }, select: ['id', 'value'] });
+				assert.ok(sortedValues.some(({ id, value }) => id === 6 && value === text257));
+				assert.ok(!sortedValues.some(({ value }) => value.endsWith('\uffff')));
+			} finally {
+				Text.dropTable();
+			}
+		});
+
+		it('matches a long value whose index prefix ends in half of a surrogate pair', async function () {
+			const Split = table({
+				table: 'IndexRangeCoveredSplitTest',
+				database: 'test',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'name', indexed: true, type: 'String' },
+					{ name: 'tags', indexed: true, elements: { type: 'String' } },
+					{ name: 'note' },
+				],
+			});
+			try {
+				const z = (count) => 'Z'.repeat(count);
+				const values = [
+					z(255) + '😀rest',
+					z(255) + '😎rest',
+					z(255) + '\ufffdrest',
+					z(255) + 'arest',
+					z(254) + '😀rest',
+					z(256) + '😀rest',
+					z(256),
+					z(257),
+					'Z😀',
+				];
+				for (let i = 0; i < values.length; i++)
+					await Split.put(i + 1, { name: values[i], tags: [values[i]], note: `note-${i + 1}` });
+				const byIndex = await rows(Split, {
+					conditions: [{ attribute: 'name', comparator: 'starts_with', value: 'Z' }],
+					select: ['id', 'name', 'note'],
+				});
+				assert.deepStrictEqual(
+					byIndex.map(({ id, name }) => ({ id, name })).sort((a, b) => a.id - b.id),
+					values.map((name, i) => ({ id: i + 1, name }))
+				);
+				for (const read of [rows, rowsSync]) {
+					const startsWith = [{ attribute: 'name', comparator: 'starts_with', value: 'Z' }];
+					assert.deepStrictEqual(
+						await read(Split, { conditions: startsWith, select: ['id', 'name'] }),
+						byIndex.map(({ id, name }) => ({ id, name }))
+					);
+					assert.deepStrictEqual(
+						await read(Split, { conditions: startsWith, select: ['id'] }),
+						byIndex.map(({ id }) => ({ id }))
+					);
+					for (let i = 0; i < 3; i++) {
+						const exact = [{ attribute: 'name', value: values[i] }];
+						assert.deepStrictEqual(await read(Split, { conditions: exact, select: ['id'] }), [{ id: i + 1 }]);
+						assert.deepStrictEqual(await read(Split, { conditions: exact, select: ['id', 'name'] }), [
+							{ id: i + 1, name: values[i] },
+						]);
+						assert.deepStrictEqual(
+							await read(Split, { conditions: [{ attribute: 'tags', value: values[i] }], select: ['id'] }),
+							[{ id: i + 1 }]
+						);
+					}
+					const tags = await read(Split, {
+						conditions: [{ attribute: 'tags', comparator: 'starts_with', value: 'Z' }],
+						select: ['id'],
+					});
+					assert.equal(tags.length, values.length);
+				}
+			} finally {
+				Split.dropTable();
+			}
+		});
+
+		it('yields between overflow entries a covered scan rejects', async function () {
+			let scanning = true;
+			const Long = table({
+				table: 'IndexRangeCoveredYieldTest',
+				database: 'test',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'value', indexed: true },
+				],
+			});
+			try {
+				for (let id = 1; id <= 20; id++) await Long.put(id, { value: ['e'.repeat(300) + id] });
+				let turns = 0;
+				const tick = () => {
+					turns++;
+					if (scanning) setImmediate(tick);
+				};
+				setImmediate(tick);
+				for (const select of [['id', 'value'], ['id']]) {
+					const before = turns;
+					const result = await rows(Long, {
+						conditions: [{ attribute: 'value', comparator: 'ends_with', value: 'none' }],
+						select,
+					});
+					assert.deepStrictEqual(result, []);
+					assert.ok(turns - before >= 10, `the scan yielded ${turns - before} times across 20 rejected entries`);
+				}
+			} finally {
+				scanning = false;
+				Long.dropTable();
+			}
+		});
+
+		it('rejects an overflow entry before the dedupe of a declared array, so a matching element keeps the row', async function () {
+			const Paths = table({
+				table: 'IndexRangeCoveredOverflowDedupeTest',
+				database: 'test',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'paths', indexed: true, elements: { type: 'String' } },
+				],
+			});
+			try {
+				const long = (suffix) => 'g'.repeat(300) + suffix;
+				await Paths.put(1, { paths: [long('x'), 'z-match'] });
+				await Paths.put(2, { paths: [long('a'), long('match')] });
+				const query = { conditions: [{ attribute: 'paths', comparator: 'ends_with', value: 'match' }] };
+				for (const reverse of [false, true]) {
+					assert.deepStrictEqual(
+						rowsSync(Paths, { ...query, reverse, select: ['id'] }).map(({ id }) => id),
+						reverse ? [1, 2] : [2, 1]
+					);
+					assert.deepStrictEqual(
+						(await rows(Paths, { ...query, reverse, select: ['id'] })).map(({ id }) => id),
+						reverse ? [1, 2] : [2, 1]
+					);
+				}
+			} finally {
+				Paths.dropTable();
+			}
+		});
+
+		it('keeps a value the declared type cannot reconstruct as the index holds it', async function () {
+			const attributes = (amount, when) => [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'amount', indexed: true, type: amount },
+				{ name: 'when', indexed: true, type: when },
+			];
+			let Amounts = table({
+				table: 'IndexRangeCoveredRedeclareTest',
+				database: 'test',
+				attributes: attributes(undefined, undefined),
+			});
+			try {
+				await Amounts.put(1, { amount: 1.5, when: 1.5 });
+				await Amounts.put(2, { amount: 7, when: 9e15 });
+				await Amounts.put(3, { amount: 8, when: 5 });
+				Amounts = table({
+					table: 'IndexRangeCoveredRedeclareTest',
+					database: 'test',
+					attributes: attributes('BigInt', 'Date'),
+				});
+				await Amounts.indexingOperation;
+				const amountCondition = [{ attribute: 'amount', comparator: 'between', value: [1n, 7n] }];
+				await assertCovered(Amounts, { conditions: amountCondition, select: ['id', 'amount'] }, [
+					{ id: 1, amount: 1.5 },
+					{ id: 2, amount: 7n },
+				]);
+				assert.deepStrictEqual(
+					await rows(Amounts, { conditions: amountCondition, select: ['id', 'amount'], rowFilter: () => true }),
+					[
+						{ id: 1, amount: 1.5 },
+						{ id: 2, amount: 7 },
+					]
+				);
+				const whenCondition = [{ attribute: 'when', comparator: 'gt', value: new Date(1) }];
+				await assertCovered(Amounts, { conditions: whenCondition, select: ['id', 'when'] }, [
+					{ id: 1, when: 1.5 },
+					{ id: 3, when: new Date(5) },
+					{ id: 2, when: 9e15 },
+				]);
+				assert.deepStrictEqual(
+					await rows(Amounts, { conditions: whenCondition, select: ['id', 'when'], rowFilter: () => true }),
+					[
+						{ id: 1, when: 1.5 },
+						{ id: 3, when: 5 },
+						{ id: 2, when: 9e15 },
+					]
+				);
+			} finally {
+				Amounts.dropTable();
+			}
+		});
+
+		it('serves an id select on a reopened table holding non-scalar and -0 values under an untyped index', async function () {
+			const databaseName = 'covered_reopen';
+			const declare = () =>
+				table({
+					table: 'Reopened',
+					database: databaseName,
+					attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'value', indexed: true }, { name: 'label' }],
+				});
+			let Reopened = declare();
+			try {
+				await Reopened.put(1, { value: 5, label: 'number' });
+				await Reopened.put(2, { value: 7n, label: 'bigint' });
+				await Reopened.put(3, { value: [6, 8], label: 'array' });
+				await Reopened.put(4, { value: { nested: 6 }, label: 'object' });
+				await Reopened.put(5, { value: -0, label: 'negative zero' });
+				await Reopened.put({ id: [null, 7], value: '\x18', label: 'control character' });
+				await closeDatabase(databaseName);
+				resetDatabases();
+				Reopened = declare();
+				const recordPath = (conditions, select) => rows(Reopened, { conditions, select, rowFilter: () => true });
+				const open = [{ attribute: 'value', comparator: 'gt', value: 4 }];
+				const { result, reads } = await withReads(Reopened, () => rows(Reopened, { conditions: open, select: ['id'] }));
+				assert.deepStrictEqual(result, await recordPath(open, ['id']));
+				assert.deepStrictEqual(
+					result.filter(({ id }) => typeof id === 'number' && id !== 5),
+					[{ id: 1 }, { id: 3 }, { id: 2 }, { id: 3 }]
+				);
+				assert.ok(result.some(({ id }) => Array.isArray(id) && id[0] === null && id[1] === 7));
+				assert.equal(reads, 2);
+				assert.deepStrictEqual(
+					await rows(Reopened, { conditions: open, select: ['id', 'value'] }),
+					await recordPath(open, ['id', 'value'])
+				);
+				for (const condition of [
+					{ attribute: 'value', comparator: 'ge', value: -1 },
+					{ attribute: 'value', comparator: 'in', value: [0] },
+				]) {
+					assert.deepStrictEqual(
+						await rows(Reopened, { conditions: [condition], select: ['id'] }),
+						await recordPath([condition], ['id'])
+					);
+				}
+			} finally {
+				Reopened.dropTable();
+			}
+		});
+
+		it('serves an invalidated row from its indexed projection, and skips it for local-only reads', async function () {
+			const Stubs = table({
+				table: 'IndexRangeCoveredStubTest',
+				database: 'test',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'score', indexed: true, type: 'Int' },
+					{ name: 'label' },
+				],
+			});
+			try {
+				await Stubs.put(1, { score: 5, label: 'one' });
+				await Stubs.put(2, { score: 5, label: 'two' });
+				await Stubs.invalidate(2);
+				const condition = [{ attribute: 'score', value: 5 }];
+				const expected = [
+					{ id: 1, score: 5 },
+					{ id: 2, score: 5 },
+				];
+				assert.deepStrictEqual(await rows(Stubs, { conditions: condition, select: ['id', 'score', 'label'] }), [
+					{ id: 1, score: 5, label: 'one' },
+					{ id: 2, score: 5, label: undefined },
+				]);
+				await assertCovered(Stubs, { conditions: condition, select: ['id', 'score'] }, expected);
+				assert.deepStrictEqual(
+					await rows(Stubs, { conditions: condition, select: ['id', 'score'] }, { replicateFrom: false }),
+					[{ id: 1, score: 5 }]
+				);
+			} finally {
+				Stubs.dropTable();
+			}
+		});
+
+		it('records one db-read per covered row', async function () {
+			const wasEnabled = checkAnalyticsEnabled();
+			setAnalyticsEnabled(false);
+			setAnalyticsEnabled(true);
+			let collecting = true;
+			try {
+				const reads = [];
+				addAnalyticsListener((metrics) => {
+					if (!collecting) return;
+					for (const metric of metrics)
+						if (metric.metric === 'db-read' && metric.path === 'IndexRangeCoveredTest') reads.push(metric);
+				});
+				const { result, reads: primaryReads } = await withReads(Covered, () =>
+					rows(Covered, {
+						conditions: [{ attribute: 'score', comparator: 'between', value: [2, 6] }],
+						select: ['id', 'score'],
+					})
+				);
+				assert.equal(primaryReads, 0);
+				await waitFor(() => reads.length > 0, { timeout: 10_000, message: 'no analytics report was flushed' });
+				assert.equal(
+					reads.reduce((sum, metric) => sum + metric.count, 0),
+					result.length
+				);
+				assert.equal(reads[0].mean, 1);
+			} finally {
+				collecting = false;
+				setAnalyticsEnabled(wasEnabled);
+			}
+		});
+
+		it('leaves the index readable after an early return, and scans its read snapshot on RocksDB', async function () {
+			const Snapshot = table({
+				table: 'IndexRangeCoveredSnapshotTest',
+				database: 'test',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'score', indexed: true, type: 'Int' },
+					{ name: 'text', indexed: true, type: 'String' },
+				],
+			});
+			try {
+				for (let id = 1; id <= 5; id++) await Snapshot.put(id, { score: id * 10 });
+				const query = {
+					conditions: [{ attribute: 'score', comparator: 'between', value: [10, 100] }],
+					select: ['id', 'score'],
+				};
+				const { result } = await withReads(Snapshot, async () => {
+					for await (const row of Snapshot.search(query)) return row;
+				});
+				assert.deepStrictEqual(result, { id: 1, score: 10 });
+				const before = [1, 2, 3, 4, 5].map((id) => ({ id, score: id * 10 }));
+				if (!isLMDB) {
+					const iterator = Snapshot.search(query)[Symbol.asyncIterator]();
+					const scanned = [(await iterator.next()).value];
+					await Snapshot.put(3, { score: 999 });
+					await Snapshot.put(6, { score: 25 });
+					await Snapshot.delete(4);
+					for (let step = await iterator.next(); !step.done; step = await iterator.next()) scanned.push(step.value);
+					assert.deepStrictEqual(scanned, before);
+					// an overflow row's value is read in the same snapshot as its index entry
+					const long = (suffix) => 'f'.repeat(300) + suffix;
+					await Snapshot.put(7, { text: long('a') });
+					await Snapshot.put(8, { text: long('b') });
+					const overflowQuery = {
+						conditions: [{ attribute: 'text', comparator: 'starts_with', value: 'fff' }],
+						select: ['id', 'text'],
+					};
+					const overflow = Snapshot.search(overflowQuery)[Symbol.asyncIterator]();
+					const overflowRows = [(await overflow.next()).value];
+					await Snapshot.put(8, { text: long('changed') });
+					for (let step = await overflow.next(); !step.done; step = await overflow.next())
+						overflowRows.push(step.value);
+					assert.deepStrictEqual(overflowRows, [
+						{ id: 7, text: long('a') },
+						{ id: 8, text: long('b') },
+					]);
+					await Snapshot.delete(7);
+					await Snapshot.delete(8);
+				} else {
+					await Snapshot.put(3, { score: 999 });
+					await Snapshot.put(6, { score: 25 });
+					await Snapshot.delete(4);
+				}
+				await assertCovered(Snapshot, query, [
+					{ id: 1, score: 10 },
+					{ id: 2, score: 20 },
+					{ id: 6, score: 25 },
+					{ id: 5, score: 50 },
+				]);
+			} finally {
+				Snapshot.dropTable();
+			}
 		});
 	});
 
