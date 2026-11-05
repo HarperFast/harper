@@ -125,6 +125,7 @@ Use this to land in the right folder before grepping. Every top-level folder is 
 - **`bin/`** — covered above (it's source).
 - **`benchmarks/`** — Stand-alone HNSW search (`hnsw-search.js`) and paired full-text analytics (`fulltext-analytics.mjs` / `.bench.js`) workloads; not part of CI.
 - **`build-tools/`** — build-pipeline scripts. [build-tools/DESIGN.md](build-tools/DESIGN.md) covers the published artifacts. Tests: `unitTests/build-tools/`; run `npm run test:unit:main` after changes.
+- **`docs/`** — user-facing reference pages and release-note fragments, published by [HarperFast/documentation](https://github.com/HarperFast/documentation). A PR that changes user-visible behavior updates them in the same PR; layout, fragment format and previewing are in [docs/README.md](docs/README.md), writing rules in [docs/AGENTS.md](docs/AGENTS.md). Their examples are checked against executable fixtures by `unitTests/docs/` and the `integrationTests/resources/*-docs.test.ts` suites.
 - **`dev/`** — single dev utility (`sync-commits.js`) for cross-repo commit syncing. Not runtime.
 - **`integrationTests/`** — end-to-end tests against a built distribution. Run with `npm run test:integration` / `npm run test:integration:all`. Subdirs mirror source. See `integrationTests/README.md`.
 - **`unitTests/`** — Mocha unit tests; subdir per source layer. Run with `npm run test:unit:<layer>`. **See [unitTests/AGENTS.md](unitTests/AGENTS.md)** for test-writing pitfalls (thread-global capture + absolute count).
