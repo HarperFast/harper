@@ -513,3 +513,159 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 		});
 	});
 });
+
+describe('liveSubscriptionAuth.ts Resource subscriptions of a component’s principal', () => {
+	const userModule = require('#src/security/user');
+	const { databases, table } = require('#src/resources/databases');
+	const { setMainIsWorker } = require('#src/server/threads/manageThreads');
+	const ends = [];
+	let Docs;
+
+	before(async () => {
+		testUtils.setupTestDBPath();
+		setMainIsWorker(true);
+		await testUtils.ensureSystemTables();
+		const Table = table({
+			table: 'ReauthRecordless',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'value' }],
+		});
+		Docs = class extends Table {
+			subscribe() {
+				return fakeSubscription();
+			}
+		};
+	});
+
+	afterEach(async () => {
+		while (ends.length) ends.pop()();
+		await testUtils.seedUsers();
+		assert.strictEqual(_liveSubscriptionCount(), 0, 'test left an entry in the registry');
+	});
+
+	const readRole = (id) => ({
+		id,
+		role: id,
+		permission: {
+			super_user: false,
+			test: {
+				tables: {
+					ReauthRecordless: { read: true, insert: false, update: false, delete: false, attribute_permissions: [] },
+				},
+			},
+		},
+	});
+
+	async function subscribe(Resource, user) {
+		const context = { user, authorize: true };
+		const subscription = await Resource.subscribe('topic', undefined, context);
+		ends.push(() => subscription.end());
+		return context;
+	}
+
+	function resolvedByComponent(username, extra = {}) {
+		const versions = userModule.userRecordVersions(username);
+		const user = { username, active: true, role: readRole(`${username}_role`), ...extra };
+		userModule.trackUserRecords(user, versions);
+		return user;
+	}
+
+	it('keeps a principal built with no hdb_user record, rechecking it with its allowRead alone', async () => {
+		let allowed = true;
+		class Gated extends Docs {
+			allowRead() {
+				return allowed;
+			}
+		}
+		const user = resolvedByComponent('component_only');
+		const context = await subscribe(Gated, user);
+		await _sweepNow();
+		await _sweepNow();
+		assert.strictEqual(_liveSubscriptionCount(), 1);
+		assert.strictEqual(context.user, user, 'the admitted principal is kept');
+
+		allowed = false;
+		await _sweepNow();
+		assert.strictEqual(_liveSubscriptionCount(), 0, 'its allowRead still revokes it');
+	});
+
+	const unrelatedRecord = (username) => ({
+		username,
+		active: true,
+		role: { id: `${username}_other`, role: `${username}_other`, permission: { super_user: false } },
+	});
+
+	it('keeps a principal built with no hdb_user record when a record takes its name', async () => {
+		const user = resolvedByComponent('component_named');
+		const first = await subscribe(Docs, user);
+		await testUtils.seedUsers([unrelatedRecord('component_named')]);
+		const second = await subscribe(Docs, user);
+		await _sweepNow();
+		assert.strictEqual(_liveSubscriptionCount(), 2, 'an unrelated record does not stand in for it');
+		assert.strictEqual(first.user, user);
+		assert.strictEqual(second.user, user);
+	});
+
+	it('keeps the principal a Basic login through a component’s server.getUser built with no record', async () => {
+		const { authentication } = require('#src/security/auth');
+		const { Headers } = require('#src/server/serverHelpers/Headers');
+		const { server } = require('#src/server/Server');
+		const getUser = server.getUser;
+		server.getUser = async (username) => ({ username, active: true, role: readRole('component_basic_role') });
+		try {
+			let user;
+			const authorization = 'Basic ' + Buffer.from('component_basic:a-token').toString('base64');
+			await authentication(
+				{ headers: { asObject: { authorization, host: 'localhost' } }, method: 'GET', pathname: '/', ip: '10.0.0.1' },
+				async (request) => {
+					user = request.user;
+					return { status: 200, headers: new Headers(), body: {} };
+				}
+			);
+			const context = await subscribe(Docs, user);
+			await testUtils.seedUsers([unrelatedRecord('component_basic')]);
+			await _sweepNow();
+			assert.strictEqual(_liveSubscriptionCount(), 1);
+			assert.strictEqual(context.user, user);
+		} finally {
+			server.getUser = getUser;
+		}
+	});
+
+	it('rechecks by name a principal whose name gained a record while it resolved', async () => {
+		const versions = userModule.userRecordVersions('component_raced');
+		await testUtils.seedUsers([unrelatedRecord('component_raced')]);
+		const user = { username: 'component_raced', active: true, role: readRole('component_raced_role') };
+		userModule.trackUserRecords(user, versions);
+		await subscribe(Docs, user);
+		await _sweepNow();
+		assert.strictEqual(_liveSubscriptionCount(), 0);
+	});
+
+	it('ends a recordless principal’s subscription at the sweep after its authExpiresAt', async () => {
+		await subscribe(Docs, resolvedByComponent('component_expiring', { authExpiresAt: Date.now() / 1000 - 1 }));
+		assert.strictEqual(_liveSubscriptionCount(), 1);
+		await _sweepNow();
+		assert.strictEqual(_liveSubscriptionCount(), 0);
+	});
+
+	it('re-resolves a record-backed user a component returned, in place or as a tracked copy', async () => {
+		await testUtils.seedUsers([
+			{ username: 'returned_user', active: true, role: readRole('returned_role') },
+			{ username: 'copied_user', active: true, role: readRole('copied_role') },
+		]);
+		const returned = await userModule.findAndValidateUser('returned_user', undefined, false);
+		returned.client_id = 'returned_user';
+		const versions = userModule.userRecordVersions('copied_user');
+		const copied = structuredClone(userModule.getUserWithRole('copied_user'));
+		userModule.trackUserRecords(copied, versions);
+		await subscribe(Docs, returned);
+		await subscribe(Docs, copied);
+
+		await databases.system.hdb_user.delete('returned_user');
+		await databases.system.hdb_user.delete('copied_user');
+		await _sweepNow();
+
+		assert.strictEqual(_liveSubscriptionCount(), 0, 'both are revoked once their records are gone');
+	});
+});

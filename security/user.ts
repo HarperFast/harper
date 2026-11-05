@@ -20,6 +20,9 @@ export {
 	isCurrentUser,
 	userRecordVersions,
 	trackUserRecords,
+	cloneUserView,
+	getTrackedUser,
+	isRecordlessPrincipal,
 	onUserChange,
 	USERNAME_REQUIRED,
 	ALTERUSER_NOTHING_TO_UPDATE,
@@ -114,9 +117,11 @@ import { VERSION_REUSED } from '../resources/RecordEncoder.ts';
 import { contextStorage } from '../resources/transaction.ts';
 import { writeKey } from 'ordered-binary';
 
-server.getUser = (username: string, password?: string | null): Promise<User> => {
+function getUserImpl(username: string, password?: string | null): Promise<User> {
 	return findAndValidateUser(username, password, password != null);
-};
+}
+
+server.getUser = getUserImpl;
 
 server.authenticateUser = (username: string, password?: string | null): Promise<User> => {
 	return findAndValidateUser(username, password);
@@ -501,6 +506,8 @@ interface UserProvenance {
 	userStamp: RecordStamp;
 	roleId?: unknown;
 	roleStamp: RecordStamp;
+	/** No hdb_user record had the user's name before or after a component's server.getUser resolved it. */
+	recordless?: boolean;
 }
 
 const userProvenance = new WeakMap<User, UserProvenance>();
@@ -537,10 +544,73 @@ function userRecordVersions(username: string): UserProvenance {
 
 /**
  * Makes `isCurrentUser` check a user resolved outside this module against the record versions read
- * before it was resolved; a write in between then shows as a change.
+ * before it was resolved, or after it for a user named otherwise when no record had the login name; a
+ * write in between then shows as a change. Returns whether `user` was resolved outside this module.
  */
-function trackUserRecords(user: User, versions: UserProvenance): void {
-	if (user && typeof user === 'object' && !userProvenance.has(user)) trackedProvenance.set(user, versions);
+function trackUserRecords(user: User, versions: UserProvenance): boolean {
+	if (!user || typeof user !== 'object' || userProvenance.has(user)) return false;
+	let provenance: UserProvenance;
+	const store = systemStore(USER_TABLE_NAME);
+	if (
+		user.username === versions.username ||
+		versions.userStamp !== null ||
+		readEntry(store, versions.username) !== undefined
+	) {
+		// read again: a record created while it resolved may be what the component built it from. Under another
+		// name, a record for the login name may be what admitted it, so it stays checked against that record.
+		provenance = {
+			...versions,
+			recordless:
+				user.username === versions.username &&
+				versions.userStamp === null &&
+				readEntry(store, user.username) === undefined,
+		};
+	} else {
+		// no record has the login name: only the records for the name it carries can back it
+		provenance = userRecordVersions(user.username);
+		provenance.recordless = provenance.userStamp === null && readEntry(store, user.username) === undefined;
+	}
+	trackedProvenance.set(user, provenance);
+	return true;
+}
+
+/** A copy whose `role` and `permission` the caller may replace, tracked as `user` is when a component resolved it. */
+function cloneUserView(user: User & { role: UserRole }): User {
+	const clone: User = { ...user, role: { ...user.role, permission: { ...user.role.permission } } };
+	const tracked = trackedProvenance.get(user);
+	if (tracked) trackedProvenance.set(clone, tracked);
+	return clone;
+}
+
+/**
+ * `server.getUser` for a connection that holds its user (MQTT CONNECT), with a component's principal tracked
+ * against the records read for its name before it resolved. A memoizing server.getUser hands one user to later
+ * lookups: one whose records changed since gets a view of its own, so it does not re-track an earlier
+ * connection's user. The view keeps the class but not its private fields.
+ */
+async function getTrackedUser(username: string, password: string | null, request?: unknown): Promise<User> {
+	if (server.getUser === getUserImpl) return getUserImpl(username, password);
+	const versions = userRecordVersions(username);
+	const user = await server.getUser(username, password, request as any);
+	const tracked = user && typeof user === 'object' ? trackedProvenance.get(user) : undefined;
+	if (
+		tracked?.username === versions.username &&
+		tracked.userStamp === versions.userStamp &&
+		tracked.roleStamp === versions.roleStamp
+	)
+		return user;
+	const holder = tracked ? Object.create(Object.getPrototypeOf(user), Object.getOwnPropertyDescriptors(user)) : user;
+	trackUserRecords(holder, versions);
+	return holder;
+}
+
+/**
+ * Whether a component's server.getUser built `user` with no hdb_user record for its name when it was
+ * resolved (`trackUserRecords`). No record change can revoke it, and a record created later is another
+ * principal's, so a holder never re-reads it by name.
+ */
+function isRecordlessPrincipal(user: User): boolean {
+	return trackedProvenance.get(user)?.recordless === true;
 }
 
 /**

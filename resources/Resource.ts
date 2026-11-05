@@ -1035,11 +1035,15 @@ function hasPermissionControl(value: any, seen = new WeakSet<object>()): boolean
 	return false;
 }
 
+let securityUser: any;
+
 function registerLiveSubscriptionForContext(subscription: any, resource: any, admittedTarget: any, context: Context) {
 	const user: any = context?.user;
 	const username = user?.username;
 	// Internal watchers, replication and local-bypass have no user principal — nothing to re-authorize.
 	if (!username) return;
+	securityUser ??= require('../security/user');
+	const fixedPrincipal = Boolean(user._scopedToken) || securityUser.isRecordlessPrincipal(user);
 	registerLiveSubscription({
 		subscription,
 		username,
@@ -1047,10 +1051,11 @@ function registerLiveSubscriptionForContext(subscription: any, resource: any, ad
 		authExpiresAt: user.authExpiresAt,
 		recheck: async () => {
 			let fresh: any;
-			if (user._scopedToken) {
-				// A scoped token's identity IS its embedded role — never re-resolve its attribution
-				// username against hdb_user (it may not exist, or may name an unrelated principal
-				// created later). Expiry (authExpiresAt above) is its only revocation.
+			if (fixedPrincipal) {
+				// A scoped token's identity IS its embedded role, and a component's server.getUser built a
+				// recordless principal from its credential — never re-resolve either username against
+				// hdb_user (it may not exist, or may name an unrelated principal created later). Expiry
+				// (authExpiresAt above) and closing are their only revocation besides allowRead.
 				fresh = user;
 			} else {
 				// Re-read current user state from hdb_user/hdb_role, so a dropped or

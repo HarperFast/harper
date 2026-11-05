@@ -1,4 +1,4 @@
-import { getSuperUser, isCurrentUser, trackUserRecords, userRecordVersions } from './user.ts';
+import { cloneUserView, getSuperUser, isCurrentUser, trackUserRecords, userRecordVersions } from './user.ts';
 import { server } from '../server/Server.ts';
 import { resources } from '../resources/Resources.ts';
 import { validateOperationToken, validateRefreshToken, validateLoginToken, decodeJWT } from './tokenAuthentication.ts';
@@ -243,7 +243,7 @@ export async function authentication(request, nextHandler) {
 				// Shallow-clone so verifyPerms's `role.permission = fullRolePerms` reassignment
 				// doesn't mutate the cache entry (defense-in-depth; operations and other
 				// meta-permission fields are now preserved through translation in permissionsTranslator).
-				newUser = { ...cachedUser, role: { ...cachedUser.role, permission: { ...cachedUser.role.permission } } };
+				newUser = cloneUserView(cachedUser);
 			} else if (cachedUser) {
 				newUser = cachedUser;
 			}
@@ -265,7 +265,8 @@ export async function authentication(request, nextHandler) {
 								// read first: a component's server.getUser principal carries no record versions itself
 								const versions = userRecordVersions(username);
 								newUser = await server.getUser(username, password, request);
-								trackUserRecords(newUser, versions);
+								// cache a copy of a component's user: a memoizing server.getUser hands it to later lookups, which re-track it
+								if (trackUserRecords(newUser, versions) && newUser.role) newUser = cloneUserView(newUser);
 							} else newUser = null;
 							break;
 						case 'Bearer':
@@ -324,7 +325,7 @@ export async function authentication(request, nextHandler) {
 					// Shallow-clone so verifyPerms's `role.permission = fullRolePerms` reassignment
 					// doesn't mutate the just-stored cache entry (defense-in-depth).
 					if (newUser?.role) {
-						newUser = { ...newUser, role: { ...newUser.role, permission: { ...newUser.role.permission } } };
+						newUser = cloneUserView(newUser);
 					}
 				}
 			}
