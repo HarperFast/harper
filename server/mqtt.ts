@@ -144,7 +144,7 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 									if (username === undefined || username === 'Common Name' || username === 'CN')
 										username = (socket as any).getPeerCertificate().subject.CN;
 									try {
-										user = await getTrackedUser(username, null, null);
+										user = await getTrackedUser(username, null, null, server);
 										if (get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGSUCCESSFUL)) {
 											authEventLog.notify?.({
 												username: user?.username,
