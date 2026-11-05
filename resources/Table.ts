@@ -813,8 +813,8 @@ const AUTHORIZATION_SELECT = Symbol.for('harper.authorizationSelect');
 const RELATIONSHIPS_LISTED = Symbol.for('harper.relationshipsListed');
 const SEARCH_AUTHORIZATION_TRANSFORMS = Symbol.for('harper.searchAuthorizationTransforms');
 const FULL_TEXT_READ_PERMISSION = Symbol('fullTextReadPermission');
-// Set beside AUTHORIZATION_SELECT only when attribute permissions (not just relationships) narrowed the select:
-// the stored attribute names a subscription delivers.
+// Set beside AUTHORIZATION_SELECT only when attribute permissions (not just relationships) narrowed the select: true
+// when the select's own names are delivered, else the names, so reads never build a list only subscribe uses.
 const ATTRIBUTE_PERMISSION_SELECT = Symbol('attributePermissionSelect');
 const AUTHORIZATION_TRANSFORM_METHODS = ['map', 'filter', 'concat', 'flatMap', 'slice', 'mapError'];
 
@@ -9303,7 +9303,9 @@ export function makeTable(options): TableResourceClass {
 			}
 			if (!auditStore) throw new Error('Can not subscribe to a table without an audit log');
 			// a caller's own select is not applied to deliveries, only the one attribute permissions narrowed
-			const deliveredAttributes: string[] | undefined = (request as any)[ATTRIBUTE_PERMISSION_SELECT];
+			const permissionSelect = (request as any)[ATTRIBUTE_PERMISSION_SELECT];
+			const deliveredAttributes: string[] | undefined =
+				permissionSelect === true ? selectedNames(request.select) : permissionSelect;
 			const thisId = requestTargetToId(request) ?? null; // treat undefined and null as the root
 			const scope = () =>
 				checkpointScope({
@@ -12468,8 +12470,7 @@ export function makeTable(options): TableResourceClass {
 				target.select = permittedScalarAttributes(attribute_permissions);
 			}
 			(target as any)[AUTHORIZATION_SELECT] = true;
-			if (attribute_permissions?.length > 0)
-				(target as any)[ATTRIBUTE_PERMISSION_SELECT] = selectedNames(target.select);
+			if (attribute_permissions?.length > 0) (target as any)[ATTRIBUTE_PERMISSION_SELECT] = true;
 			return true;
 		} else {
 			return true;
