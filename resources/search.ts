@@ -82,7 +82,8 @@ export function executeConditions(
 	filtered,
 	recordAccess?,
 	// where this group's relationship conditions register: sibling conditions share one scope, an OR branch gets its own
-	scope: any = filtered
+	scope: any = filtered,
+	covered?: CoveredSelect
 ) {
 	conditions = combineFullTextConditions(conditions, operator, table);
 	const firstSearch = conditions[0];
@@ -142,12 +143,15 @@ export function executeConditions(
 		}
 		// General path: execute the lead FIRST — a leading join populates `filtered`, which the sibling
 		// filters read as they are built — then apply the sibling filters plus any record guards.
-		const results = executeCondition(firstSearch);
+		const results = executeCondition(
+			firstSearch,
+			conditions.length === 1 && !firstSearch.conditions && !recordGuards ? covered : undefined
+		);
 		const filters = mapConditionsToFilters(conditions.slice(1), true, firstSearch.estimated_count, scope);
 		const recordFilters = recordGuards ? filters.concat(recordGuards) : filters;
 		return recordFilters.length > 0 ? transformToEntries(results, recordFilters) : results;
 	}
-	function executeCondition(condition) {
+	function executeCondition(condition, covered?: CoveredSelect) {
 		const branchScope = operator === 'or' ? Object.create(null) : scope;
 		if (condition.conditions && !isRelationshipGroup(condition))
 			return executeConditions(
@@ -170,6 +174,7 @@ export function executeConditions(
 			holderReadTxn: txn,
 			disableSnapshot: request.snapshot === false,
 			leaseHost: filtered,
+			covered,
 			minResults:
 				request.limit === 0 ? 0 : request.limit !== undefined ? (request.offset || 0) + request.limit : undefined,
 			resultOffset: request.offset || 0,
@@ -869,7 +874,7 @@ async function collectCandidateKeysCooperatively(
  * range that is hundreds of MB where main streamed at O(1). Accepted for #2434 over the bounded
  * alternative, which costs a primary read per index entry.
  */
-function distinctRecords(entries: any): AsyncIterable<Id> {
+function distinctRecords(entries: any, primaryKeyOf?: (entry: any) => Id): AsyncIterable<Id> {
 	const distinct = new ExtendedIterable();
 	(distinct as any).iterate = (options) => {
 		// A non-scalar key decodes to a fresh instance per entry, so identity never matches it;
@@ -880,13 +885,14 @@ function distinctRecords(entries: any): AsyncIterable<Id> {
 		const yieldedEncodedKeys = new Set();
 		// map rather than filter: filter clears `continueOnRecoverableError` for everything below it
 		return entries
-			.map((primaryKey) => {
+			.map((entry) => {
+				const primaryKey = primaryKeyOf ? primaryKeyOf(entry) : entry;
 				const isEncoded = typeof primaryKey === 'object' && primaryKey !== null;
 				const yielded = isEncoded ? yieldedEncodedKeys : yieldedKeys;
 				const identity = isEncoded ? writeKeyId(primaryKey) : primaryKey;
 				if (yielded.has(identity)) return SKIP;
 				yielded.add(identity);
-				return primaryKey;
+				return entry;
 			})
 			.iterate(options);
 	};
@@ -911,6 +917,146 @@ function leaseRelatedReadTxn(relatedTable, context, holderTable, holderReadTxn, 
 export function releaseRelatedLeases(leaseHost) {
 	const leases = leaseHost[RELATED_LEASES];
 	if (leases) for (const lease of leases.values()) lease.onDone?.();
+}
+
+interface CoveredSelect {
+	attribute: string;
+	recordRead?: () => void;
+}
+
+// ordered-binary writes -0 as bytes that decode as ['\x18', null] on LMDB and as key '\x18' with a null-led primary
+// key on RocksDB (as a real [null, …] id can too): such an entry is left to the record path
+function negativeZeroShape(key: any, primaryKey: any): boolean {
+	return (typeof key === 'object' && key !== null) || (key === '\x18' && primaryKey?.[0] === null);
+}
+
+function overflowResolver(
+	Table: any,
+	searchCondition: any,
+	attributeName: string,
+	filter: ((record: any) => boolean) | undefined,
+	filtered: any,
+	transaction: any
+) {
+	let condition = filter;
+	const checkActive = getReadTransactionGuard(transaction);
+	const matches = (record: any) => (condition ??= filterByType(searchCondition, Table, null, filtered, false))(record);
+	const recover = (entry, record) => {
+		entry.recovered =
+			record != null ? overflowedValue(record[attributeName], entry.key, attributeName, matches) : undefined;
+		return entry.recovered === undefined ? SKIP : entry;
+	};
+	return (sync: boolean, entry) => {
+		if (sync) return recover(entry, Table.primaryStore.getEntry(entry.value, { transaction })?.value);
+		const load = () => {
+			checkActive?.();
+			return when(Table.primaryStore.getEntry(entry.value, { transaction, async: true }), (loaded) =>
+				recover(entry, loaded?.value)
+			);
+		};
+		if (!filter) return load();
+		return new Promise((resolve, reject) =>
+			setImmediate(() => {
+				try {
+					resolve(load());
+				} catch (error) {
+					reject(error);
+				}
+			})
+		);
+	};
+}
+
+// resources/DESIGN.md, Per-row read work on RocksDB index scans: with a filter or a dedupe, admission (and an
+// overflow entry's value) is settled before distinctRecords collapses a record onto one entry
+function admitCoveredEntries(
+	range: any,
+	attributeName: string,
+	coverAttribute: boolean,
+	filter: ((record: any) => boolean) | undefined,
+	sorting: boolean,
+	resolveOverflow: (sync: boolean, entry: any) => any
+) {
+	return range.map(function (entry) {
+		const { key, value: primaryKey } = entry;
+		if (negativeZeroShape(key, primaryKey)) entry.uncovered = true;
+		else if (
+			typeof key === 'string' &&
+			key.length > MAX_SEARCH_KEY_LENGTH &&
+			(coverAttribute || (filter !== undefined && !sorting))
+		)
+			return resolveOverflow(this?.isSync, entry);
+		if (!filter) return entry;
+		if (this?.isSync) return filter({ [attributeName]: key }) ? entry : SKIP;
+		return new Promise((resolve, reject) =>
+			setImmediate(() => {
+				try {
+					resolve(filter({ [attributeName]: key }) ? entry : SKIP);
+				} catch (error) {
+					reject(error);
+				}
+			})
+		);
+	});
+}
+
+function coverIndexEntries(
+	entries: any,
+	Table: any,
+	attributeName: string,
+	coverAttribute: boolean,
+	covered: CoveredSelect,
+	resolveOverflow: ((sync: boolean, entry: any) => any) | undefined
+) {
+	const primaryKeyName = Table.primaryKey;
+	const decodePrimaryKey = declaredTypeDecoder(findAttribute(Table.attributes, primaryKeyName));
+	const decodeValue = coverAttribute && declaredTypeDecoder(findAttribute(Table.attributes, attributeName));
+	const recordRead = covered.recordRead;
+	const project = (entry) => {
+		if (entry === SKIP) return SKIP;
+		const { key, value: primaryKey, recovered } = entry;
+		recordRead?.();
+		const id = decodePrimaryKey ? decodePrimaryKey(primaryKey) : primaryKey;
+		entry.key = id;
+		entry.value = coverAttribute
+			? {
+					[primaryKeyName]: id,
+					[attributeName]: recovered !== undefined ? recovered : decodeValue ? decodeValue(key) : key,
+				}
+			: { [primaryKeyName]: id };
+		return entry;
+	};
+	return entries.map(function (entry) {
+		if (resolveOverflow) {
+			if (negativeZeroShape(entry.key, entry.value)) return entry.value;
+			if (coverAttribute && typeof entry.key === 'string' && entry.key.length > MAX_SEARCH_KEY_LENGTH) {
+				const resolved = resolveOverflow(this?.isSync, entry);
+				return typeof resolved?.then === 'function' ? resolved.then(project) : project(resolved);
+			}
+		} else if (entry.uncovered) return entry.value;
+		return project(entry);
+	});
+}
+
+function overflowedValue(stored: any, key: string, attributeName: string, filter?: (record: any) => boolean) {
+	const prefix = key.slice(0, MAX_SEARCH_KEY_LENGTH);
+	const indexed = (value: any) =>
+		typeof value === 'string' &&
+		value.length > MAX_SEARCH_KEY_LENGTH &&
+		// the key is stored as UTF-8, which writes a surrogate left unpaired by the cut as U+FFFD
+		(value.startsWith(prefix) || value.slice(0, MAX_SEARCH_KEY_LENGTH).toWellFormed() === prefix) &&
+		(!filter || filter({ [attributeName]: value }));
+	return Array.isArray(stored) ? stored.find(indexed) : indexed(stored) ? stored : undefined;
+}
+
+const MAX_DATE_TIME = 8.64e15;
+function declaredTypeDecoder(attribute: any): ((key: any) => any) | undefined {
+	switch (attribute?.type) {
+		case 'Date':
+			return (key) => (Number.isInteger(key) && Math.abs(key) <= MAX_DATE_TIME ? new Date(key) : key);
+		case 'BigInt':
+			return (key) => (Number.isInteger(key) ? BigInt(key) : key);
+	}
 }
 
 /**
@@ -945,6 +1091,7 @@ export function searchByIndex(
 		disableSnapshot?: boolean;
 		leaseHost?: any;
 		leaseContext?: any;
+		covered?: CoveredSelect;
 	} = {}
 ): AsyncIterable<Id | { key: Id; value: any }> {
 	// A stale positional caller passes `allowFullScan` here. Type checking only covers .ts callers, so
@@ -961,6 +1108,7 @@ export function searchByIndex(
 		holderReadTxn,
 		disableSnapshot,
 		leaseHost,
+		covered,
 	} = options;
 	const leaseContext = options.leaseContext ?? context;
 	const group: any = isRelationshipGroup(searchCondition) ? searchCondition : undefined;
@@ -1397,37 +1545,55 @@ export function searchByIndex(
 			}
 			return processEntries(searched);
 		}
-		const scanned = index.getRange(rangeOptions).map(
-			filter
-				? function ({ key, value }) {
-						let recordMatcher: any;
-						if (typeof key === 'string' && key.length > MAX_SEARCH_KEY_LENGTH) {
-							// if it is an overflow string, need to get the actual value from the database
-							recordMatcher = Table.primaryStore.getSync(value);
-						} else recordMatcher = { [attribute_name]: key };
-						if (this.isSync) return filter(recordMatcher) ? value : SKIP;
-						// for filter operations, we intentionally yield the event turn so that scanning queries
-						// do not hog resources
-						return new Promise((resolve, reject) =>
-							setImmediate(() => {
-								try {
-									resolve(filter(recordMatcher) ? value : SKIP);
-								} catch (error) {
-									reject(error);
-								}
-							})
-						);
-					}
-				: ({ value }) => value
-		);
+		const coverAttribute = covered?.attribute === attribute_name;
+		const coverEntries = coverAttribute || (covered !== undefined && covered.attribute === Table.primaryKey);
+		const dedupe = !scansOneIndexedValue && Boolean(findAttribute(Table.attributes, attribute_name)?.elements);
+		const resolveOverflow =
+			coverEntries && overflowResolver(Table, searchCondition, attribute_name, filter, filtered, transaction);
+		const admit = coverEntries && (filter !== undefined || dedupe);
+		const scanned = coverEntries
+			? admit
+				? admitCoveredEntries(
+						index.getRange(rangeOptions),
+						attribute_name,
+						coverAttribute,
+						filter,
+						resolvedComparator === 'sort',
+						resolveOverflow
+					)
+				: index.getRange(rangeOptions)
+			: index.getRange(rangeOptions).map(
+					filter
+						? function ({ key, value }) {
+								let recordMatcher: any;
+								if (typeof key === 'string' && key.length > MAX_SEARCH_KEY_LENGTH) {
+									// if it is an overflow string, need to get the actual value from the database
+									recordMatcher = Table.primaryStore.getSync(value);
+								} else recordMatcher = { [attribute_name]: key };
+								if (this.isSync) return filter(recordMatcher) ? value : SKIP;
+								// for filter operations, we intentionally yield the event turn so that scanning queries
+								// do not hog resources
+								return new Promise((resolve, reject) =>
+									setImmediate(() => {
+										try {
+											resolve(filter(recordMatcher) ? value : SKIP);
+										} catch (error) {
+											reject(error);
+										}
+									})
+								);
+							}
+						: ({ value }) => value
+				);
 		// Collapsing AFTER the map is required, not incidental: the condition's own filter tests one
 		// element at a time, so a record whose first entry fails it and whose second passes must
 		// still be reached. Collapsing first would settle that record on the failing entry and drop
 		// it. Scoped to attributes the schema declares multi-valued; a runtime array under an
 		// undeclared attribute repeats the same way but stays outside this boundary.
-		return scansOneIndexedValue || !findAttribute(Table.attributes, attribute_name)?.elements
-			? scanned
-			: distinctRecords(scanned);
+		const distinct = dedupe ? distinctRecords(scanned, coverEntries ? (entry) => entry.value : undefined) : scanned;
+		return coverEntries
+			? coverIndexEntries(distinct, Table, attribute_name, coverAttribute, covered, admit ? undefined : resolveOverflow)
+			: distinct;
 	} else {
 		return Table.primaryStore
 			.getRange(reverse ? { end: true, transaction, reverse: true } : { start: true, transaction })

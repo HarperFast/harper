@@ -357,6 +357,8 @@ NULL_WITH_TIMESTAMP[8] = 0xc0; // null
 const sourceWriteTypes = new Set(['put', 'patch', 'delete', 'publish', 'message', 'invalidate', 'relocate']);
 const isSourceWriteType = (type: string) => sourceWriteTypes.has(type);
 const OPERATION_TYPES = new Set(['Int', 'Long', 'Float', 'Number', 'BigInt', 'Any']);
+// declared types `validate` holds to one value on validated writes: `ID` admits an array of strings
+const SCALAR_TYPES = new Set(['String', 'Int', 'Long', 'Float', 'Boolean', 'Date', 'BigInt']);
 const SOURCE_APPLY_POSITION = Symbol('sourceApplyPosition');
 type SourceTxnStream = {
 	txn: any;
@@ -1135,6 +1137,8 @@ interface TableResourceClass {
 	 * and `scanInterval` (all in seconds, all optional). Number form preserves any previously configured
 	 * eviction/scanInterval; object form replaces all three, unless it names only the replica options. An internal schema ownership-only call with
 	 * none of those values preserves the settings already loaded from the catalog.
+	 * Either form then scans for expired records every `scanInterval`, or a quarter of expiration + eviction
+	 * when none is configured.
 	 */
 	setTTLExpiration(
 		opts:
@@ -2159,6 +2163,8 @@ export function makeTable(options): TableResourceClass {
 	}
 	const COMMIT_BASE_METHODS = new Set(['put', 'patch', 'delete']);
 	const recordDbRead = actionRecorder('db-read', tableName, null);
+	// a covered row is read from its index entry, whose size the scan does not report
+	const recordCoveredRead = databaseName !== 'system' ? () => recordDbRead(1) : undefined;
 	function conditionForWrite(context, id: Id) {
 		const condition = context?.[WRITE_CONDITION];
 		const matches =
@@ -3657,6 +3663,8 @@ export function makeTable(options): TableResourceClass {
 		 * and `scanInterval` (all in seconds, all optional). Number form preserves any previously configured
 		 * eviction/scanInterval; object form replaces all three, unless it names only the replica options. An internal schema ownership-only call with
 		 * none of those values preserves the settings already loaded from the catalog.
+		 * Either form then scans for expired records every `scanInterval`, or a quarter of expiration + eviction
+		 * when none is configured.
 		 */
 		static setTTLExpiration(
 			opts:
@@ -3705,8 +3713,7 @@ export function makeTable(options): TableResourceClass {
 			if (expirationMs < 0) throw new Error('Expiration can not be negative');
 			if (!preserveLoadedConfiguration) {
 				// default to one quarter of the total expiration+eviction window
-				recordCleanupInterval =
-					(typeof opts === 'number' ? recordCleanupInterval : recordScanInterval) || (expirationMs + evictionMs) / 4;
+				recordCleanupInterval = recordScanInterval || (expirationMs + evictionMs) / 4;
 				cleanupInterval = recordCleanupInterval;
 				expirationScanScheduled = true;
 			}
@@ -7950,6 +7957,14 @@ export function makeTable(options): TableResourceClass {
 					? { rowFilter: boundRowFilter, vectorFilter: target.vectorFilter }
 					: undefined;
 			try {
+				const coveredAttribute =
+					select !== undefined &&
+					!postOrdering &&
+					!recordAccess &&
+					(context as Context)?.replicateFrom !== false &&
+					!residencyPolicy
+						? coveredSelectAttribute(select)
+						: undefined;
 				const entries = executeConditions(
 					conditions,
 					operator,
@@ -7959,7 +7974,9 @@ export function makeTable(options): TableResourceClass {
 					context,
 					(results: any[], filters: Function[]) => transformToEntries(results, select, context, readTxn, filters),
 					filtered,
-					recordAccess
+					recordAccess,
+					undefined,
+					coveredAttribute === undefined ? undefined : { attribute: coveredAttribute, recordRead: recordCoveredRead }
 				);
 				const ensure_loaded = (target as any).ensureLoaded !== false;
 				// The guards inside executeConditions evaluate the
@@ -9002,9 +9019,8 @@ export function makeTable(options): TableResourceClass {
 					}
 					if (
 						(checkLoaded && entry?.metadataFlags & (INVALIDATED | EVICTED)) || // invalidated or evicted should go to load from source
-						(!includeExpired && hasExpired(entry))
+						(!includeExpired && hasSourceGet && !context?.onlyIfCached && hasExpired(entry))
 					) {
-						// should expiration really apply?
 						if (context.onlyIfCached) {
 							if (isHiddenExpiry(entry.expiresAt)) return canSkip ? SKIP : undefined;
 							return {
@@ -11771,7 +11787,7 @@ export function makeTable(options): TableResourceClass {
 	defaultAllowReads.add(TableResource.prototype.allowRead);
 	try {
 		TableResource.updatedAttributes(); // on creation, update accessors as well
-		if (expirationMs) {
+		if (expirationMs || evictionMs) {
 			ttlFromLoad = true;
 			try {
 				TableResource.setTTLExpiration(expirationMs / 1000);
@@ -12597,6 +12613,33 @@ export function makeTable(options): TableResourceClass {
 				};
 			}
 		}
+	}
+	// resources/DESIGN.md, Per-row read work on RocksDB index scans
+	function coveredSelectAttribute(select: any): string | undefined {
+		if (primaryKey == null || !coverableAttribute(primaryKey)) return;
+		if (typeof select === 'string') return select === primaryKey || coverableAttribute(select) ? select : undefined;
+		if (!Array.isArray(select) || select.length === 0) return;
+		let attribute: string | undefined;
+		for (const name of select) {
+			if (name === primaryKey) continue;
+			if (typeof name !== 'string' || (attribute !== undefined && name !== attribute) || !coverableAttribute(name))
+				return;
+			attribute = name;
+		}
+		return attribute ?? primaryKey;
+	}
+	function coverableAttribute(name: string): boolean {
+		const attribute = findAttribute(attributes, name);
+		const isPrimary = name === primaryKey;
+		const index = !isPrimary && Object.hasOwn(indices, name) ? indices[name] : undefined;
+		return (
+			(isPrimary
+				? attribute?.type === undefined || attribute.type === 'ID' || SCALAR_TYPES.has(attribute.type)
+				: index !== undefined && !index.customIndex && SCALAR_TYPES.has(attribute?.type)) &&
+			!attribute?.elements &&
+			!propertyResolvers?.[name] &&
+			!primaryStore.encoder.resolvedAttributeNames?.has(name)
+		);
 	}
 	function txnForContext(context: Context) {
 		let transaction = context?.transaction;

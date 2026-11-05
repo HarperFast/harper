@@ -2733,13 +2733,16 @@ describeUnlessLmdbFilter('HNSW filtered search via Table.search (#1241)', () => 
 		});
 		try {
 			sourceRecords.set(1, { kind: 'doc', ownerId: 1 });
-			C.setTTLExpiration(0.01); // 10ms — expiry retains the stale value (unlike invalidate), which is the vulnerable path
+			// 10ms — expiry retains the stale value (unlike invalidate), which is the vulnerable path; the long scan
+			// interval keeps the cleanup scan from evicting it first
+			C.setTTLExpiration({ expiration: 0.01, scanInterval: 3600 });
 			const cached = await C.get(1, { user: { id: 1 } });
 			assert.strictEqual(cached.ownerId, 1, 'cache populated with the original owner');
 			// Ownership changes at the source; let the cached copy expire so the next query revalidates
 			// while the STALE value (ownerId 1) is still what the query filters evaluate.
 			sourceRecords.set(1, { kind: 'doc', ownerId: 2 });
 			await new Promise((resolve) => setTimeout(resolve, 20));
+			assert.strictEqual(C.primaryStore.getEntry(1)?.value?.ownerId, 1, 'the stale copy is still stored');
 			const results = await fromAsync(
 				C.search(
 					{
