@@ -222,51 +222,55 @@ suite('Component: registered-operation (#1736)', (ctx: ContextWithHarper) => {
 		strictEqual(draft06Body.result.structuredContent.echoed, 'draft-06-echo');
 	});
 
-	test('a literal allow never exposes conflicting worker contracts and becomes visible after agreement', async () => {
-		const init = await mcp({
-			jsonrpc: '2.0',
-			id: 101,
-			method: 'initialize',
-			params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'rollout', version: '0' } },
-		});
-		strictEqual(init.status, 200);
-		const sessionId = init.headers.get('mcp-session-id');
-		ok(sessionId);
-		await init.body.cancel();
-		const list = async () => {
-			const response = await mcp({ jsonrpc: '2.0', id: 102, method: 'tools/list' }, sessionId);
-			strictEqual(response.status, 200);
-			const body = (await response.json()) as { result: { tools: Array<{ name: string; inputSchema: object }> } };
-			return body.result.tools;
-		};
-		const ownerTools = (await waitFor(
-			async () => {
-				const owners = (await list()).filter(({ name }) => /^component_registered_owner_\d+$/.test(name));
-				return owners.length === 2 && owners;
-			},
-			{ timeout: 15_000, interval: 50, message: 'both worker-specific controls must be registered' }
-		)) as Array<{ name: string }>;
-		const owners = new Set<number>();
-		for (const owner of ownerTools) {
-			const control = await op({ operation: owner.name });
-			strictEqual(control.status, 200, JSON.stringify(control.body));
-			strictEqual(owner.name, 'component_registered_owner_' + control.body.threadId);
-			owners.add(control.body.threadId);
-			const interleaved = await op({ operation: 'component_registered_echo', value: 'interleaved-owner-control' });
-			strictEqual(interleaved.status, 200);
+	test(
+		'a literal allow never exposes conflicting worker contracts and becomes visible after agreement',
+		{ skip: process.platform === 'win32' && 'Windows supports one HTTP worker; consensus requires two' },
+		async () => {
+			const init = await mcp({
+				jsonrpc: '2.0',
+				id: 101,
+				method: 'initialize',
+				params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'rollout', version: '0' } },
+			});
+			strictEqual(init.status, 200);
+			const sessionId = init.headers.get('mcp-session-id');
+			ok(sessionId);
+			await init.body.cancel();
+			const list = async () => {
+				const response = await mcp({ jsonrpc: '2.0', id: 102, method: 'tools/list' }, sessionId);
+				strictEqual(response.status, 200);
+				const body = (await response.json()) as { result: { tools: Array<{ name: string; inputSchema: object }> } };
+				return body.result.tools;
+			};
+			const ownerTools = (await waitFor(
+				async () => {
+					const owners = (await list()).filter(({ name }) => /^component_registered_owner_\d+$/.test(name));
+					return owners.length === 2 && owners;
+				},
+				{ timeout: 15_000, interval: 50, message: 'both worker-specific controls must be registered' }
+			)) as Array<{ name: string }>;
+			const owners = new Set<number>();
+			for (const owner of ownerTools) {
+				const control = await op({ operation: owner.name });
+				strictEqual(control.status, 200, JSON.stringify(control.body));
+				strictEqual(owner.name, 'component_registered_owner_' + control.body.threadId);
+				owners.add(control.body.threadId);
+				const interleaved = await op({ operation: 'component_registered_echo', value: 'interleaved-owner-control' });
+				strictEqual(interleaved.status, 200);
+			}
+			strictEqual(owners.size, 2);
+			const listed = async () => (await list()).find(({ name }) => name === 'component_registered_disagreement');
+			strictEqual(await listed(), undefined);
+			const first = await op({ operation: ownerTools[0].name, align: true });
+			strictEqual(first.status, 200);
+			strictEqual(await listed(), undefined, 'the other worker still declares its old contract');
+			const second = await op({ operation: ownerTools[1].name, align: true });
+			strictEqual(second.status, 200);
+			ok(first.body.threadId !== second.body.threadId);
+			const tool = (await waitFor(listed, { timeout: 15_000, interval: 50 })) as { inputSchema: object };
+			deepStrictEqual(tool.inputSchema, { type: 'object', properties: { value: { type: 'string' } } });
 		}
-		strictEqual(owners.size, 2);
-		const listed = async () => (await list()).find(({ name }) => name === 'component_registered_disagreement');
-		strictEqual(await listed(), undefined);
-		const first = await op({ operation: ownerTools[0].name, align: true });
-		strictEqual(first.status, 200);
-		strictEqual(await listed(), undefined, 'the other worker still declares its old contract');
-		const second = await op({ operation: ownerTools[1].name, align: true });
-		strictEqual(second.status, 200);
-		ok(first.body.threadId !== second.body.threadId);
-		const tool = (await waitFor(listed, { timeout: 15_000, interval: 50 })) as { inputSchema: object };
-		deepStrictEqual(tool.inputSchema, { type: 'object', properties: { value: { type: 'string' } } });
-	});
+	);
 
 	test('repeated calls keep working (round-robin across registering workers)', async () => {
 		const threadIds = new Set<number>();
