@@ -271,7 +271,19 @@
 											}
 										}
 									},
-									"operations": { "type": "array", "items": { "type": "string" } }
+									"operations": { "type": "array", "items": { "type": "string" } },
+									"optional": {
+										"type": "object",
+										"description": "Declared but not required to see the page: controls that need one appear only for roles that hold it.",
+										"properties": {
+											"tables": {
+												"$ref": "#/properties/studio/properties/pages/items/properties/access/properties/tables"
+											},
+											"operations": {
+												"$ref": "#/properties/studio/properties/pages/items/properties/access/properties/operations"
+											}
+										}
+									}
 								}
 							},
 							"content": {
