@@ -20,8 +20,24 @@ const FIXTURE_PAGES = [
 		icon: 'signpost',
 		placement: 'tab',
 		description: 'HTTP redirects served before your app runs.',
-		access: { role: 'super_user', endpoints: ['/Redirect/'] },
-		content: { kind: 'sections', sections: [{ kind: 'table', columns: ['from', 'to'] }] },
+		access: { role: 'super_user', tables: [{ database: 'data', table: 'Redirect', actions: ['read', 'update'] }] },
+		content: {
+			kind: 'sections',
+			sections: [
+				{ type: 'text', body: 'Redirects are matched before your application handles the request.' },
+				{ type: 'stats', items: [{ label: 'Rules', value: { kind: 'count', database: 'data', table: 'Redirect' } }] },
+				{
+					type: 'table',
+					database: 'data',
+					table: 'Redirect',
+					primaryKey: 'id',
+					columns: [
+						{ attribute: 'from', label: 'From' },
+						{ attribute: 'to', label: 'To', format: 'url' },
+					],
+				},
+			],
+		},
 	},
 ];
 
@@ -69,7 +85,7 @@ suite('Component: get_studio_configuration', (ctx: ContextWithHarper) => {
 		await mkdir(directory, { recursive: true });
 		await writeFile(
 			join(directory, 'config.yaml'),
-			`studio:\n  pages:\n    - { id: caching, name: ${pageName}, icon: database-zap, placement: config }\n`
+			`studio:\n  pages:\n    - id: caching\n      name: ${pageName}\n      icon: database-zap\n      placement: config\n      content: { kind: sections, sections: [{ type: text, body: Cache rules. }] }\n`
 		);
 		const payload = await targz(directory);
 		const deployed = await call({ operation: 'deploy_component', project: DEPLOYED, payload, restart });
@@ -167,7 +183,13 @@ suite('Component: get_studio_configuration', (ctx: ContextWithHarper) => {
 
 	test("a deployed component's pages are returned as soon as deploy_component answers, and leave with it", async () => {
 		await deployPages('Caching', false);
-		const deployedPage = { component: DEPLOYED, id: 'caching', icon: 'database-zap', placement: 'config' };
+		const deployedPage = {
+			component: DEPLOYED,
+			id: 'caching',
+			icon: 'database-zap',
+			placement: 'config',
+			content: { kind: 'sections', sections: [{ type: 'text', body: 'Cache rules.' }] },
+		};
 		deepStrictEqual((await studioConfiguration('studio_no_permissions_user')).pages, [
 			{ ...deployedPage, name: 'Caching' },
 			...FIXTURE_PAGES,

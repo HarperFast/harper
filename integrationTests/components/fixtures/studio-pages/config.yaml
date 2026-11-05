@@ -10,13 +10,30 @@ studio:
       description: HTTP redirects served before your app runs.
       access:
         role: super_user
-        endpoints: ['/Redirect/']
+        tables:
+          - { database: data, table: Redirect, actions: [read, update] }
       content:
         kind: sections
         sections:
-          - kind: table
-            columns: [from, to]
+          - type: text
+            body: Redirects are matched before your application handles the request.
+          - type: stats
+            items:
+              - label: Rules
+                value: { kind: count, database: data, table: Redirect }
+          - type: table
+            database: data
+            table: Redirect
+            primaryKey: id
+            columns:
+              - { attribute: from, label: From }
+              - { attribute: to, label: To, format: url }
       notAPageField: should not be returned
     - id: Not_Valid
       name: Dropped
       placement: tab
+      content:
+        kind: sections
+        sections:
+          - type: text
+            body: Never returned, since its id is not a valid page id.

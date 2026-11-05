@@ -14,7 +14,7 @@ Index of every design note: [DESIGN.md](../DESIGN.md).
 
 ## Studio configuration is read from disk (`config/studioConfiguration.ts`)
 
-`get_studio_configuration` is open to every authenticated role, so it returns only the root `studio.navigation`/`studio.landing` and each component's validated `studio.pages` (`access`/`content` passed through unread); a logged problem never quotes a value. It reads disk on every call, since no thread's load state is complete (operations run on main, plugins on workers, an isolated application on its own), and the root file synchronously (the rename retry, below); a caller arriving mid-scan shares the next scan. A key is a tab key or `<component>.<pageId>`, split at the last dot; env layers nest it on that dot, so a read accepts the nested form and a write only the dotted one. The settings are `set_configuration`-only like `models`, validated at the write, and refused with 409 when `HARPER_CONFIG` or `HARPER_SET_CONFIG` would revert them. The loader must not special-case `studio`: an application may use that name. Enforced by `unitTests/config/studioConfiguration.test.js`.
+`get_studio_configuration` is open to every authenticated role, so it returns only the root `studio.navigation`/`studio.landing` and each component's validated `studio.pages`, which must hold no secret or option value; a logged problem never quotes a value. Harper never validates or strips `access`/`content` but drops unknown page keys, so a future marker (`content.requires`, absent for the 5.4 baseline; app context; a placement refinement) goes inside `content`. It reads disk on every call, since no thread's load state is complete (operations run on main, plugins on workers, an isolated application on its own), and the root file synchronously (the rename retry, below); a caller arriving mid-scan shares the next scan. A key is a tab key or `<component>.<pageId>`, split at the last dot; env layers nest it on that dot, so a read accepts the nested form and a write only the dotted one. The settings are `set_configuration`-only like `models`, validated at the write, and refused with 409 when `HARPER_CONFIG` or `HARPER_SET_CONFIG` would revert them. The loader must not special-case `studio`: an application may use that name. Enforced by `unitTests/config/studioConfiguration.test.js`.
 
 ## Root config is adopted only when it parses (`config/configUtils.ts`)
 
@@ -53,8 +53,7 @@ unsynced, since every other config write is re-derivable.
 `atomicWriteFile()` swaps the config file in with `renameSync` and, on Windows, retries the
 `EPERM`/`EACCES`/`EBUSY` a still-open destination handle produces — blocking the calling thread in
 `Atomics.wait`. The handle that blocks it belongs to the _process_, not to the thread that opened
-it: measured on `windows-latest`/Node 24 (harper#2313), a single Node **read** descriptor on the
-destination fails the rename, while `fs.watch` and chokidar's own handles do not.
+it: a single Node **read** descriptor on the destination fails the rename (harper#2313), while `fs.watch` and chokidar's own handles do not.
 `set_configuration` reaches that loop from a live request thread, and every worker runs root config
 watchers over the same file, so an **async** read in a watcher is unsatisfiable by construction:
 libuv opens the descriptor on the threadpool but closes it from JS, which cannot run while the same

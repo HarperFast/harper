@@ -257,7 +257,7 @@
 							"description": { "type": "string" },
 							"access": {
 								"type": "object",
-								"description": "Who Studio shows the page to, evaluated by Studio against the viewer's role. Not a server permission.",
+								"description": "Who Studio shows the page to, evaluated by Studio against the viewer's role. Not a server permission. Like content, Harper returns it unvalidated to every signed-in role.",
 								"properties": {
 									"role": { "enum": ["super_user", "structure_user"] },
 									"tables": {
@@ -271,11 +271,13 @@
 											}
 										}
 									},
-									"operations": { "type": "array", "items": { "type": "string" } },
-									"endpoints": { "type": "array", "items": { "type": "string" } }
+									"operations": { "type": "array", "items": { "type": "string" } }
 								}
 							},
-							"content": { "type": "object", "description": "The page's content, rendered and validated by Studio." }
+							"content": {
+								"type": "object",
+								"description": "The page's content, rendered and validated by Studio. Harper never validates or strips content or access; future markers such as capability requirements (content.requires: string[], absent means the 5.4 baseline), app context and placement refinements go inside content, not as new page-level keys (5.4 strips unknown page keys). Declarations are returned to every signed-in role, so they must hold no secrets or option values."
+							}
 						}
 					}
 				}
