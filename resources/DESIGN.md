@@ -23,7 +23,7 @@ Declarations compile to `fullTextIndexes`/`fullTextFields` (`fullTextSchema.ts`)
 - `additionalAuditRefs` holds log keys; `receivedIdentityRefs` (bit 31, `RECEIVED_IDENTITY_REF`) holds received identities (addressing no entry, omitted from audit entries, proving unaudited re-delivery). Walks read all non-head branches (log keys never bound versions). `identityIsNotKey` writes record the head as a log-key ref even if key == version. **Never "fix" a log key to the version** (`auditRefKinds.test.js`).
 - LMDB merges keep the older version (`LMDBTransaction.commit` `ifVersion`, `noAuditOutOfOrderPatch.test.js`).
 - Duplicates use committed identity (read outside the txn after a same-key relocate/publish restamps the base); only minted keys mark a retry's own staging (`readsOwnStaging`, `replicatedRetryDuplicate.test.js`).
-- RocksDB logs once; the watermark stalls at uncommitted entries, so ref walks set `readUncommitted` (dedup does not), and retries/replays add the base head and missed refs (`withRefsMissedByLoggedEntry`), head last. Gaps: `crdt` and `subscribe` walk `previousVersion` (`retryAuditChain.test.js`).
+- RocksDB logs once; the watermark stalls at uncommitted entries, so ref walks pass `followingCommittedRef` and retries/replays add the base head and missed refs (`withRefsMissedByLoggedEntry`). History walks follow one chain and can miss a branch ([#3977](https://github.com/HarperFast/harper/issues/3977)).
 - `FULL_WRITE_HEAD`: the head replaced the record, unchanged since; any other write (base-copy frames included) clears it. Older writes skip the walk only if they and `fullWriteHeadKey` >= a known floor (`fullWriteHead.test.js`).
 - Numeric log selectors only look up (`useLog` creates); `local` reads filter by `nodeId`, received-key dedup skips unnamed ids, and named-log misses never fall back to `local` (`auditLog.test.js`).
 - Equal versions tie (0) only within one origin; others order by node name (named > unnamed), then local id. Only the head's own same-origin entry resolves 0 (`precedesAudited`, `equalVersionOriginOrder.test.js`).
@@ -102,7 +102,8 @@ The operations thread loads no schema, so `table()` stores `@relationship` targe
 - Only records and relationship targets use a table's resolvers; plain JSON uses resolver-free `nestedSelectTransform` (`searchSelectProjection.test.js`).
 - Storage keeps only stored fields (`storedFieldsOnly`); `toJSON` is a projection.
 - **`relationship.from` accessors are synchronous** (v4 parity): `getSync`/`getEntry`, never `get()` (`query.test.js`). Resolving one marks the request uncacheable (`markRelatedReadUncacheable`), or a stale ETag yields a 304 (gap: unselected `@enumerable` links resolve in `toJSON` after the ETag).
-- **Async query iteration reads related records via `loadEntries`**, picks one or many by `toMany`, and checks `getReadTransactionGuard` after each await; sync iteration reads synchronously (`relationshipAsyncReads.test.js`; gaps: `.to` `asArray` on a caching table can yield Promises, harper#3588, and the adaptive index switch uses `getSync`). Restrictions and sibling filters use symbol keys (`relationshipRestriction`) so names never collide with map members; AND conditions on one relationship (leading to-one hop or nested select `conditions` included) meet the same related record whichever leads, while an OR branch gets its own scope without narrowing a sibling join or select (`relationshipConditionScope.test.js`; gap: OR multi-hop and to-one→to-many, harper#3762).
+- **Async query iteration reads related records via `loadEntries`**, picks one or many by `toMany`, and checks `getReadTransactionGuard` after each await; sync iteration reads synchronously (`relationshipAsyncReads.test.js`; gaps: `.to` `asArray` on a caching table can yield Promises, harper#3588, and the adaptive index switch uses `getSync`).
+- **Each AND condition on a to-many relationship is existential, whichever leads**; a `rel[...]` group (`isRelationshipGroup`) binds its conditions to one related record, and walkers read them as the related table's (`someConditionPath`, `checkConditionPaths`). `select()` keeps the related records an AND condition matched, never an OR's (`relationshipSameRecordGroup.test.js`; gap: harper#3762).
 - **`@relationship(from, to)` joins `related[to] == local[from]`.** The resolver, `joinTo`/`joinFrom`, `transformEntryForSelect` and `filterByType` must agree.
 - `updatedAttributes` precompiles expressions before mutating, and retires removed accessors.
 - A new `_writeUpdate` early return follows the blob protocol. A new `Table.ts` section starts with `// #section:`.
@@ -195,9 +196,9 @@ Consumers trust `context.replicateTo`/`replicatedConfirmation`, set by applicati
 
 A read-only process stages no writes: every producer passes `DatabaseTransaction.admitRequestWrite()` (405). `transactional()` refuses table writes early, never `post`, `publish`, `copy` or `move`. Producers running before `addWrite` refuse themselves: `lock()`, numeric `getNewId()`, `addAttributes` and TTL eviction (`readOnlyModeWrites.test.js`).
 
-## A past-expiry record on a sourceless table is gone before eviction
+## A past-expiry record stays queryable until eviction
 
-Eviction trails expiry. Until then, a table without a source get treats an expired record as absent (`isHiddenExpiry`) in get, only-if-cached (504), search, subscribe and `withLocalEntry` (no `ETag`). Write-path loads, `relationship.from` (`getSync`) and `includeExpired` (SQL UPDATE/DELETE) still see it. Stored expiry resolves at commit: option, context, field, table default; an out-of-order write keeps its merge base's expiry (`onlyIfCachedExpiry.test.js`).
+Eviction (`scheduleCleanup`) trails expiry (`ttlCleanupInterval.test.js`). Search returns expired rows as stored (covered selects too); a caching table's loaded select refreshes unless only-if-cached or `includeExpired` (SQL). With no source get, get, only-if-cached (504), subscribe and `withLocalEntry` (no `ETag`) hide it (`isHiddenExpiry`). Expiry resolves at commit (option, context, field, default); out-of-order writes keep their base's expiry (`onlyIfCachedExpiry.test.js`).
 
 ## RocksDB range activity and snapshot expiration
 
@@ -205,7 +206,7 @@ Eviction trails expiry. Until then, a table without a source get treats an expir
 
 ## Per-row read work on RocksDB index scans
 
-RocksDB index rows store `null`, so `RocksIndexStore.getRange` reads keys only. A cached read in `PrimaryRocksDatabase.getEntry` passes a fresh options literal, never the caller's object (`uncachedRead` and cache-disabled reads forward it); add newly needed options to that literal. Select load options are built once per query, sync and async apart, because `loadLocalRecord` mutates `options.async`; the plain-column fast path is decided per row (`indexRangeSelect.test.js`).
+RocksDB index rows store `null`, so `RocksIndexStore.getRange` reads keys only. A cached `PrimaryRocksDatabase.getEntry` passes a fresh literal, not caller options (`uncachedRead` forwards it); add options there. `coverIndexEntries` reads no record (overflow and `-0` keys aside), covering `SCALAR_TYPES` and untyped/`ID` PKs; unvalidated values (`Date`/`BigInt` ints still decode) and untyped/`ID` `[x]` or bigint ids keep index form (`indexRangeSelect.test.js`).
 
 ## A read reference belongs to the handle acquisition it was taken on
 
@@ -266,11 +267,11 @@ If this same write (origin and log key) emptied the key, `_writeDelete` writes n
 
 ## Schema migration and `runIndexing` internals
 
-`runIndexing` (`databases.ts`) writes a checkpoint (`lastIndexedKey`) only after the index writes it covers have settled. A checkpoint resumes only with matching certification; a failure sets `indexingFailed` (503, never partial results). **Set `dbi.isIndexing` on any dbi created mid-build**, because `resetDatabases()` reopens tables (`indexBuildAbandonment.test.js`).
+`runIndexing` (`databases.ts`) checkpoints (`lastIndexedKey`) only after the writes it covers settle and resumes only a matching certification; a failure sets `indexingFailed` (503, never partial). **Set `dbi.isIndexing` on any dbi created mid-build**: `resetDatabases()` reopens tables (`indexBuildAbandonment.test.js`). A `@computed` index rebuilds on `computationChanged` (a function `from` by `computedFromHash`); a resolver the catalog lacks certifies rows only as `RESOLVED_CHECKPOINT_ALGORITHM` (`requestComputedIndexRepair`; `computedRedeclare.test.js`).
 
 ## Cluster-origin table definitions are additive-only
 
-An `origin: 'cluster'` definition is a peer snapshot, possibly mid-create, so `table()` only adds from it: never removing or redefining attributes or flipping `schemaDefined`, and logging what it discards. Drops and redefinitions therefore do not converge through gossip (when `schemaDefined` is set, recover a missing descriptor via local `create_attribute` or redeploy). Abandoned index builds still recover (`clusterSchemaMerge.test.js`).
+An `origin: 'cluster'` definition is a peer snapshot, possibly mid-create, so `table()` only adds from it (never removing or redefining attributes or flipping `schemaDefined`) and logs what it discards. Drops and redefinitions never converge via gossip (when `schemaDefined` is set, recover a missing descriptor via local `create_attribute` or redeploy). Abandoned index builds still recover (`clusterSchemaMerge.test.js`).
 
 ## `drop_attribute` never removes the primary key, and a strip keeps each row's version
 
@@ -278,11 +279,11 @@ An `origin: 'cluster'` definition is a peer snapshot, possibly mid-create, so `t
 
 ## A table is invisible to catalog scans until its create is complete
 
-`table()` writes the primary-key row last, under the lock, and `initStores` skips a table that has no primary row. A scan mid-create once announced a partial table (`createTableCatalogOrder.test.js`).
+`table()` writes the primary-key row last, under the lock, and `initStores` skips a table without one; a scan mid-create once announced a partial table (`createTableCatalogOrder.test.js`).
 
 ## A keyless table's bare catalog row names its primary store
 
-A bare `<table>/` row can lack both `name` and `isPrimaryKey` (harper#3225), so primary-store selection goes through `isPrimaryCatalogRow`. A key declared later cannot re-key existing records, so `table()` clears it (`keylessTable.test.js`).
+A bare `<table>/` row can lack both `name` and `isPrimaryKey` (harper#3225), so primary-store selection uses `isPrimaryCatalogRow`. A key declared later cannot re-key records, so `table()` clears it (`keylessTable.test.js`).
 
 ## Per-origin subscription checkpoints
 
@@ -313,11 +314,11 @@ A bare `<table>/` row can lack both `name` and `isPrimaryKey` (harper#3225), so 
 
 ## `createBlob(readable)` and `table.put()` don't synchronously drain the source
 
-The commit waits for a fresh local blob (`startPreCommitBlobsForRecord`), but `put` can resolve before the commit runs. Finalize anything derived from the source only after `storageInfo.saving` settles, as `deploymentRecorder.ts` does.
+The commit waits for a fresh local blob (`startPreCommitBlobsForRecord`), but `put` can resolve before it runs. Finalize anything derived from the source after `storageInfo.saving` settles, as `deploymentRecorder.ts` does.
 
 ## Table drops, the `dropping` tombstone, ghost tables, and lifecycle stamps
 
-Nothing spans a table's column families and catalog rows, so `dropTable()` writes a `dropping` tombstone first; boot (`completeInterruptedDrop`) or a same-name create finishes an interrupted drop.
+Nothing spans a table's column families and catalog rows, so `dropTable()` writes a `dropping` tombstone first; boot (`completeInterruptedDrop`) or a same-name create finishes it.
 
 - Rows carry `createdTime`; a drop records `droppedTime` in `/dropped/<table>`; `isDeadGeneration` is strict. An untimed drop never gets a time later, which could postdate a peer's recreate.
 - Checks run under the row-publishing lock: a dead peer generation is a 409 before any store opens; a peer drop spares `replicate: false` and needs `REPLICATED_FROM`.
@@ -325,28 +326,30 @@ Nothing spans a table's column families and catalog rows, so `dropTable()` write
 
 ## The exclusive `update-attributes` lock is a bounded synchronous wait
 
-`acquireUpdateAttributesLock` can time out, so `table()` takes the lock before mutating the live `Table`. **Locked sections stay synchronous**: the wait blocks the event loop. Release is structural (`withUpdateAttributesLock`). Recreating a table needs rocksdb-js 2.1.0 or later (`updateAttributesLock.test.js`).
+`acquireUpdateAttributesLock` can time out, so `table()` locks before mutating the live `Table`. **Locked sections stay synchronous**: the wait blocks the event loop. Release is structural (`withUpdateAttributesLock`; `updateAttributesLock.test.js`).
 
 ## RocksDB transaction log purges are database-wide only
 
-A database's tables share its logs and purges delete whole files, so `deleteTransactionLogsBefore` returns 400 for a table-scoped purge and 404 for a missing table (harper#2049); presence uses `!= null` (`deleteTransactionLogsBeforeRocks.test.js`).
+Tables share their database's logs and purges delete whole files, so `deleteTransactionLogsBefore` returns 400 for a table-scoped purge, 404 for a missing table (harper#2049); presence uses `!= null` (`deleteTransactionLogsBeforeRocks.test.js`).
 
 ## Boot replay reads bypass the primary-record cache, and replay limits never establish data loss
 
-Replay reads bases with `uncachedRead`: cached WeakRefs outlived the replay and kept the backlog alive (harper#2950). Its guards cannot prove durability or peer completeness, so they advise copying the database first and verifying peers before re-cloning (harper#2951).
+Replay reads bases with `uncachedRead`: cached WeakRefs outlived the replay, keeping the backlog alive (harper#2950). Its guards cannot prove durability or peer completeness, so they advise copying the database and verifying peers before re-cloning (harper#2951).
 
 ## Query-plan range estimation blends statistical estimates by confidence
 
-- **Capability is feature-detected per store** and answers are validated (`estimateRangeCondition`), so an odd store degrades to the heuristic rather than NaN-poisoning the order.
+- Store estimates are feature-detected and validated (`estimateRangeCondition`).
 - **The estimated range is the executed range**: `getRange` and `estimateCount` share `translateIndexBounds`.
 - Secondary-index scans open at `null` exclusive; primary scans at `true`, past symbol-keyed metadata (`searchBooleanFalseIndex.test.js`).
-- A negated condition estimates `Infinity`; an AND group's estimate ignores non-finite legs and is `Infinity` only when every leg is (`estimateConditionForTable`, `estimateFilterOnlySibling.test.js`; gap: `intersectionEstimate` still multiplies `Infinity` into the incoming-row hint). Non-driving filters drop null and omitted values, as ranges do (harper#3212; `estimateRangeCondition.test.js`).
-- **An AND leads with its narrowest condition that can drive an index scan** (`orderConditions`, `conditionDrivesIndex`), because `in`, an empty `starts_with` and unindexed ranges estimate finite counts (kept finite for `count: 'estimated'` and the lazy index switch) yet full-scan. A relationship condition drives when each hop's local join index and the leaf scan can run (`relationshipScanRuns`; an unindexed local FK never drives, even under `allowFullScan: true`), and a leading synthetic index-order `sort` keeps the lead to stream a sorted page.
+- A negated condition estimates `Infinity`; an AND's estimate ignores non-finite legs (`estimateConditionForTable`, `estimateFilterOnlySibling.test.js`; gap: `intersectionEstimate` multiplies `Infinity` into the incoming-row hint).
+- **Null and omitted values match alike on every path** (`nullOmittedScanFilterParity.test.js`): no range matches them; a `null` lower bound opens it; a non-null `ne` matches them (and an array with any differing element), so it reads the primary store (`bypassesSecondaryIndex`); SQL leaves a range against NULL residual.
+- **An AND leads with its narrowest condition that can drive an index scan** (`orderConditions`, `conditionDrivesIndex`), because `in`, an empty `starts_with` and unindexed ranges estimate finite counts (for `count: 'estimated'` and the lazy index switch) yet full-scan. A relationship drives only if each hop's join index and leaf scan can run (`relationshipScanRuns`). Only a lead reading the sort attribute's index (`scansInAttributeOrder`) streams the sort and keeps the lead.
 
 ## Chained query conditions scope one array element; FIQL tokens always advance
 
-- **What do chained conditions mean over array values?** `a=ge=X&=le=Y` matches within one array element: `prepareConditions` collapses it to one range comparator so indexed and unindexed paths agree; separate conditions may match different elements; other chains are 400. Multi-value ranges dedupe records before paging (`distinctRecords`; `query-array-scoping.test.js`).
-- In `parseBlock`, a pending condition makes the next token a value, and only the group terminator picks the tokenizer. **Every token must advance**: a zero-length match is an error, or the global regexes rematch forever (`query-parse.test.js`).
+- `a=ge=X&=le=Y` collapses in `prepareConditions` so both paths agree; separate legs match any element; other chains 400. Array ranges dedupe (`distinctRecords`; `query-array-scoping.test.js`).
+- Values (not `target`) convert to leaf/element type (`''`→`null` bar `String`/`Any`; `Any` & untyped coercing ops `autoCast`, so numeric/bool/date text in `[Any]`/`Any` misses `=`), chains too (`coerceConditionValue`; `restConditionCoercion.test.js`; harper#3950).
+- In `parseBlock`, a pending condition makes next token a value; only group end picks tokenizer. **Every token must advance**: 0-length match errors or regexes loop (`query-parse.test.js`).
 
 ## A table declaration lands where the application's `databases` binding points
 
@@ -354,23 +357,23 @@ Replay reads bases with `uncachedRead`: cached WeakRefs outlived the replay and 
 
 ## Ordering an in-memory result set reads each record at most twice
 
-`transformToOrderedSelect` resolves sort keys once per row before sorting, so the comparator never reads the store (harper#2675). Vector distances are cached per sort clause. A stub stays for revalidation unless a filter needs its record, so sorted and unsorted reads agree (`sortedKeyInvalidationReads.test.js`).
+`transformToOrderedSelect` resolves sort keys once per row before sorting; the comparator never reads the store (harper#2675). Vector distances are cached per sort clause. A stub stays for revalidation unless a filter needs its record; sorted and unsorted reads agree (`sortedKeyInvalidationReads.test.js`).
 
 ## A related-table read uses the related table's own database link
 
-A read transaction belongs to one database, so a related read uses the related table's (`_readTxnForContext`); a post-commit join leases that handle (`leaseRelatedReadTxn`). Renewals never count as activity, so abandoned leases are reaped (`crossDatabaseRelationship.test.js`).
+A read transaction belongs to one database, so a related read uses the related table's (`_readTxnForContext`); a post-commit join leases it (`leaseRelatedReadTxn`). Renewals are not activity, so abandoned leases are reaped (`crossDatabaseRelationship.test.js`).
 
 ## `enc:v1:` env values wait for a registered decryptor and never fail the boot
 
-`loadEnv.ts` defers an encrypted value until a decryptor registers (`deferEncryptedEnvValue`), then replays it; ciphertext is never exposed (`secretDeferredReplay.test.js`).
+`loadEnv.ts` defers an encrypted value until a decryptor registers (`deferEncryptedEnvValue`), then replays it, never exposing ciphertext (`secretDeferredReplay.test.js`).
 
 ## Closing an LMDB database closes its environment, never its dbis
 
-Closing a dbi after its environment is a use-after-free, so `closeDatabase` closes an LMDB root once, skipping dbis. Only `closed` counts: lmdb-js resolves `close()` early during a read (`lmdbCloseCompletion.test.js`). A rescan (`getDatabases`) opens every `.mdb` under the storage paths, and lmdb-js double-frees on a failed open, so **every `.mdb` there must be LMDB** (harper#2669).
+Closing a dbi after its environment is a use-after-free, so `closeDatabase` closes only the LMDB root, once. Only `closed` counts; lmdb-js resolves `close()` early during a read (`lmdbCloseCompletion.test.js`). A rescan (`getDatabases`) opens every `.mdb` under the storage paths, and lmdb-js double-frees on a failed open, so **every `.mdb` there must be LMDB** (harper#2669).
 
 ## RocksDB teardown closes every wrapper the database opened
 
-A redeclare reuses open wrappers (`internalDbisFor`, `indexFor`). Every wrapper is recorded in `ownedRocksStores` and closed before the root, or `restore_backup` finds the database open (harper#3120). Never close one just because the graph dropped it (`closeLoadedDatabases.test.js`).
+A redeclare reuses open wrappers (`internalDbisFor`, `indexFor`); each is recorded in `ownedRocksStores` and closed before the root, or `restore_backup` finds the database open (harper#3120). Never close one because the graph dropped it (`closeLoadedDatabases.test.js`).
 
 ## A local-only write marks its record and audit entry, and replay keeps the mark
 
@@ -378,7 +381,7 @@ A redeclare reuses open wrappers (`internalDbisFor`, `indexFor`). Every wrapper 
 
 ## Legacy residency includes the writer, and a patch over a stub stays a stub
 
-When a local write's residency excludes this node, `_writeUpdate` adds the node and stores the full record. A patch over a stub stays a stub, with the base's `residencyId` (harper#2257; `writerResidency.test.js`).
+If a local write's residency excludes this node, `_writeUpdate` adds it and stores the full record. A patch over a stub stays a stub, with the base's `residencyId` (harper#2257; `writerResidency.test.js`).
 
 - **Residency stubs** are projections. Local-only collection reads skip them, and over a stub a computed index's old value is a guess (`updateIndices` `existingIsStub`, harper#2370; `residencyReads.test.js`).
 

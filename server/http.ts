@@ -2317,10 +2317,11 @@ export function logRequest(nodeRequest: IncomingMessage, status: number, request
 		);
 	}
 }
-function headersToString(headers: any) {
+const CREDENTIAL_HEADER = /^(?:authorization|proxy-authorization|cookie)$/i;
+export function headersToString(headers: any) {
 	const result: string[] = [];
 	for (const name in headers) {
-		result.push(`${name}: ${headers[name]}`);
+		result.push(`${name}: ${CREDENTIAL_HEADER.test(name) ? '[REDACTED]' : headers[name]}`);
 	}
 	return result.join(', ');
 }

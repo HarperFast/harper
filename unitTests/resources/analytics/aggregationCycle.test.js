@@ -195,6 +195,60 @@ describe('analytics aggregation cycle', () => {
 		assert.ok(entry.value.metrics.some((metric) => metric.path === 'Bootstrap'));
 	});
 
+	it('keeps the latest exact cumulative sample per worker and logical index without averaging counters', async function () {
+		this.timeout(30000);
+		await drainLiveReports();
+		const first = lastRawKey() + 1;
+		const metric = 'fulltext';
+		const entry = (sampledAt, value, extra = {}) => ({
+			metric,
+			path: 'AggWindowFulltext',
+			method: 'reader',
+			perThread: true,
+			cumulative: true,
+			series: 'worker-one-series',
+			sampledAt,
+			completed: value,
+			available: true,
+			pending: false,
+			error: null,
+			...extra,
+		});
+		await seedRawReports([
+			sampleReport(first, 1, entry(10, '9007199254740993')),
+			sampleReport(first + 1, 1, entry(20, '9007199254740997', { pending: true, error: 'E_STORAGE' })),
+			sampleReport(first + 2, 1, entry(15, '9007199254740995')),
+			sampleReport(first + 3, 2, entry(30, '7', { series: 'worker-two-series' })),
+		]);
+		await nextPeriod();
+		await runCycle();
+		const fullTextRows = () => aggregatedMetrics(metric, first + 3).filter((row) => row.path === 'AggWindowFulltext');
+		await waitFor(async () => {
+			await runCycle();
+			return fullTextRows().length === 2;
+		}, 10000);
+		const rows = fullTextRows().sort((a, b) => a.thread - b.thread);
+		assert.strictEqual(rows[0].completed, '9007199254740997');
+		assert.strictEqual(rows[0].sampledAt, 20);
+		assert.strictEqual(rows[0].pending, true);
+		assert.strictEqual(rows[0].error, 'E_STORAGE');
+		assert.strictEqual(rows[1].completed, '7');
+		assert.strictEqual(rows[0].mean, undefined);
+		assert.strictEqual(rows[0].ratio, undefined);
+		assert.strictEqual(rows[1].error, null);
+		const reader = require('#src/resources/analytics/read');
+		const description = await reader.describeMetric(metric);
+		assert.ok(
+			description.attributes.some((attribute) => attribute.name === 'completed' && attribute.type === 'string')
+		);
+		assert.ok(!description.attributes.some((attribute) => attribute.name === 'error' && attribute.type === 'object'));
+		await waitFor(async () => {
+			for await (const value of await reader.get(metric, { startTime: first, endTime: Date.now() + 1000 }))
+				if (value.completed === '9007199254740997') return true;
+			return false;
+		}, 10000);
+	});
+
 	it('keeps its place when a cycle finds nothing to aggregate', async function () {
 		this.timeout(30000);
 		const lastReportKey = lastRawKey();

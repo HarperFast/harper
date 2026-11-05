@@ -165,6 +165,8 @@ suite('SQL engine differential — new vs legacy', () => {
 		await diff('between-indexed', 'SELECT id FROM dev.widget WHERE id BETWEEN 2 AND 3');
 		await diff('like-prefix', "SELECT name FROM dev.widget WHERE id >= 1 AND name LIKE 'a%'");
 		await diff('like-contains', "SELECT name FROM dev.widget WHERE id >= 1 AND name LIKE '%a%'");
+		await diff('like-escape', "SELECT name FROM dev.widget WHERE id >= 1 AND name LIKE 'a!lph_' ESCAPE '!'");
+		await diff('like-escape-wildcard', "SELECT name FROM dev.widget WHERE id >= 1 AND name LIKE '%!_%' ESCAPE '!'");
 		// Non-indexable predicate (qty not indexed) — exercises the fallback path.
 		await diff('between-unindexed', 'SELECT id FROM dev.widget WHERE qty BETWEEN 15 AND 35');
 		// Standalone suffix/substring LIKE can't seek even an indexed column — the

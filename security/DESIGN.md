@@ -2,7 +2,7 @@
 
 Authentication tokens, OIDC exchange and TLS material.
 
-**Read this when:** touching `tokenAuthentication.ts`, `impersonation.ts`, `authn/oidc/`, `keys.ts` or `certificateVerification/`.
+**Read this when:** touching `tokenAuthentication.ts`, `impersonation.ts`, `authn/oidc/`, `keys.ts`, `certificateVerification/` or role attribute permissions.
 
 Index of every design note: [DESIGN.md](../DESIGN.md).
 
@@ -237,12 +237,12 @@ or per-write path: assign a function literal to a local first, or bind a module 
 
 ## User and role lookups read the records, and nothing derived from them outlives them (`security/user.ts`)
 
-There is no per-thread copy of `hdb_user`/`hdb_role`: every lookup point-reads the user by name and its role by id through the primary store's record cache, so no writer (an operation, a replicated commit) has to announce a change for lookups to see it. Three rules keep that true:
+Each lookup reads `hdb_user` by name and `hdb_role` by id through the primary store cache; neither operation nor replication writers need notifications to make those reads current:
 
 - **One committed state.** RocksDB point reads share no snapshot, so `readUserEntries` re-checks the user's version after reading its role and retries if it moved; otherwise one transaction that moves a user to role B and grants role A super_user could be read as the user on A with A's new grant.
-- **Derived data is keyed by entry version, not object identity.** With `storage.caching: false` every read returns a new object. The per-role memo of `appendSystemTablesToRole` + expanded operations, and `isCurrentUser`, compare versions; a `VERSION_REUSED` entry is compared by value instead, since its version no longer identifies one value. `auth.ts` runs `isCurrentUser` on every `authorizationCache` hit, so a cached principal is re-verified once its user or role record changes; a component's `server.getUser` principal is checked against the versions read for its name before it was resolved (`trackUserRecords`).
+- **Derived data uses entry versions, not identity.** Uncached reads return fresh objects. The per-role memo and `isCurrentUser` compare versions, or values for `VERSION_REUSED` entries. `auth.ts` rechecks every authorization-cache hit; component-resolved users are checked against the versions captured before resolution (`trackUserRecords`).
 - **Notifications are only for holders of a user.** `onUserChange` feeds live-subscription revocation and MCP list-changed from per-thread `hdb_user`/`hdb_role` subscriptions, passing the primary keys of the records changed since the last notification. No argument means which records changed is unknown — a whole-table reload, an oversized batch, a subscription re-established after a gap — and every holder rechecks. `userChangeNotificationEpoch()` is non-zero only while both subscriptions are open and the broadcaster certifies it read every record since (progress tracking, RocksDB only): a consumer that sees one non-zero epoch across a period was notified of every change in it. It never subscribes to an unaudited table, because `subscribe()` would enable and persist auditing on it; on such a node the epoch stays 0 and those consumers fall back to their own backstops.
-- **A request's user is a view.** `auth.ts` hands each request `cloneUserView(user)`, whose `role` and `permission` it may replace (verifyPerms does) without touching the cached principal. The view carries the original's record provenance, so `isCurrentUser` on a request's user answers for the records that admitted it; live-subscription registration relies on that to catch a principal that changed before it registered. Provenance is an own symbol-keyed property of a user this module built, so the spread copies it with no `WeakMap` write on the request path; only a user resolved outside the module (`trackUserRecords`) is tracked in a `WeakMap`.
+- **A request's user is a view.** `cloneUserView(user)` permits replacing `role` and `permission` without changing the cached principal. It carries record provenance so subscription registration can detect intervening changes. An own symbol preserves provenance across spreads without a request-path `WeakMap` write; only externally resolved users use `trackedProvenance`.
 
 LMDB lookups use the thread's shared read txn, which lmdb-js renews at most once per event-loop turn, so a commit on another thread is seen from the next turn. Resetting it per lookup would give each in-flight transaction its own reader slot. Enforced by `unitTests/security/userRecordLookups.test.js` and `unitTests/resources/replicatedUserWrites.test.js`.
 
@@ -279,7 +279,7 @@ A request trusted by its transport — `authentication.authorizeLocal` from a lo
 
 - **Recognized by its marker, never its name.** `isLocalPrincipal` checks `_localPrincipal: true`, which only trusted code sets: `userView` copies no such field from a record, and the token, bearer-validator, OIDC and impersonation paths build users from explicit fields. A string, not a symbol, because the Bun/uWS fallback forwards `request.user` as JSON and the MQTT will row stores it. `add_user` refuses the name; a stored `local` that predates that is an ordinary user.
 - **Never resolvable by name, so never portable.** Local trust belongs to the connection. A session row never names the principal (`session.update` drops it), and no token is minted for it: a credential-free `create_authentication_tokens` from it mints for the first active stored user whose role has the `super_user` flag (`getSuperUser`), or fails with 409. A by-name rehydration site checks `isLocalPrincipal` first: the MQTT will replay rebuilds the principal from the marker; live-subscription re-authorization and MCP list_changed skip it, since no record change can revoke it.
-- **Each call is a separate view**, as with `userView`: fresh user, `role` and `permission` objects; the shared system-table tree is frozen. The role is a default install's `super_user` role, id included, because applications authorize on `role.id` (the published redirector and early-hints templates do).
+- **Each call is a separate view**, as with `userView`: fresh user, `role` and `permission` objects; the shared system-table entries and their enclosing `system` object are frozen; the table-name map stays mutable so registry updates reach held principals. The role is a default install's `super_user` role, id included, because applications authorize on `role.id` (the published redirector and early-hints templates do).
 
 Enforced by `unitTests/security/localPrincipal.test.js` and `integrationTests/security/local-principal-token-mint.test.ts`.
 
@@ -295,32 +295,7 @@ Named-process probe and lock failures use `NamedProcessError`, a `ServerError` s
 
 ## Application lockdown seals the intrinsics by default (`security/intrinsicsLockdown.ts`)
 
-`applications.lockdown` makes prototype-pollution exploits against apps harder; it is not a sandbox. The default
-`seal-after-load` (and eager `seal`) seals 21 intrinsic globals (constructors plus `Math`, `JSON`, `Reflect` and
-`Atomics`) and their prototypes, plus `Function` and `Function.prototype`, once components have loaded. After that point no property can be added to or deleted
-from them, which is what a polluting key (`__proto__.isAdmin`, `constructor.prototype.isAdmin`) needs.
-Overwriting an existing property is still allowed: it is mostly a denial of service, not an escalation.
-
-Never make prototype properties read-only in a seal mode, whether by `Object.freeze`, `writable: false` or
-getter/setter accessors. A read-only elements kind on `Object.prototype` or `Array.prototype` moves every store
-into an array hole off V8's fast path, process-wide (about 45× for `new Array(n)` fills, about 3× for msgpackr
-decode). Accessors block V8 from inlining the built-ins. Sealing keeps properties writable, so instances still
-shadow inherited methods by plain assignment. That is why only the freeze modes need the `overridableProperty`
-accessors.
-
-The `freeze` modes are unchanged opt-ins, and they still leave `Function.prototype` extensible. When a component
-replaces one of these globals while it loads, sealing locks both the replacement and the realm's original, which
-literals and async functions keep using. Freezing locks only the current global, because freezing the original
-would skip its overridable accessors.
-
-`lockDownIntrinsics` matches mode names exactly: any other truthy value, including a typo or a non-string, freezes
-eagerly (fails closed). A falsy value skips lockdown, like `none` (`security/jsLoader.ts`). Only fresh installs get
-the default: the installer writes the whole default config into each instance's `harper-config.yaml`, so an
-upgraded instance keeps the `freeze-after-load` it was installed with.
-
-Enforced by `unitTests/security/intrinsicsLockdown.test.js`, which runs each mode in a fresh `Worker` because
-lockdown cannot be undone in a realm, and by `integrationTests/components/intrinsics-lockdown.test.ts`. The cost of
-each mode is measured by `benchmarks/lockdown/run.mts`.
+`applications.lockdown` defaults to `seal-after-load` on fresh installs; the installer writes the whole config, so upgrades keep their prior mode. Sealing blocks additions/deletions on 21 intrinsic globals and prototypes plus `Function`/`Function.prototype`, while allowing overwrites; it is not a sandbox. Never make seal-mode prototype properties read-only: array-hole stores become ~45× slower and msgpackr decode ~3× slower; accessors prevent built-in inlining. Only freeze modes need `overridableProperty`. Sealing covers replaced globals and realm originals, which literals/async functions retain; freezing covers current globals, leaving `Function.prototype` extensible. Unknown truthy modes freeze eagerly (fail closed); falsy modes skip lockdown. Tests: `unitTests/security/intrinsicsLockdown.test.js` (fresh workers), `integrationTests/components/intrinsics-lockdown.test.ts`; measurements: `benchmarks/lockdown/run.mts`.
 
 ## A scoped mirror is never advertised before its allowlist is read (`security/networkAccess.ts`)
 
@@ -329,3 +304,13 @@ each mode is measured by `benchmarks/lockdown/run.mts`.
 - **No unrestricted advertisement.** The writer, not `ready`, holds a scoped mirror until this thread's first successful read, because `security/keys.ts` fires `secureContextsListeners` before readiness. A table absent after databases load means unrestricted.
 - **One reconciler per scope.** Subscription events, the 60 s tick and `onUpdatedTable` only trigger one serialized `table.get(scope)`; payloads are ignored, so a missed event converges on the next read. A failed write is retried by the tick.
 - **Lockout check.** `set_network_access` refuses a list excluding the caller's address, carried by `runWithCallerAddress`, never on the operation body. Only Node's operations domain socket (the recovery path) skips it; any other unknown address needs `force`. Matching unmaps `::ffff:a.b.c.d` first, as the proxy does. Peers reached through the proxy must be listed too; Harper cannot see their addresses, so it only warns.
+
+## Resource attribute permissions
+
+`getTablePermissions` adds the unlisted key’s `implicitPrimaryKeyPermission`; operations translation drops listed undeclared properties. Explicit key denials, timestamps and sealed membership apply. `updatedAttributes` resets the permission memo.
+
+`allowUpdate` retains `allowTableUpdate`’s map through puts/locks until its next call. Payloads omit protected values. `restrictedReplacement` patches full puts: omitted writable keys remain own `undefined` properties (JavaScript/MessagePack see them; JSON omits them). This avoids stale protected bases. Restricted source writes use implemented `patch` or materialized `put`. PATCH limits remain: delete/retry can create partial rows, put-only sources with cold/stale caches can lose protected values, and `__op__` values are operations. Invalid full roots are refused. Trusted direct PATCH/create thenables can check resolved keys but store original fields. Dispatch resolves bodies; helpers reject failed promises without override re-entry. Tests: `unitTests/resources/permissions.test.js`, `unitTests/server/preconditions.test.js`, `integrationTests/security/resource-attribute-permissions.test.ts`. Gaps: commit-time retry, crash replay and replication apply.
+
+## System permissions on roles
+
+`permission.system` comes from `super_user` and the live registry. Its plain map updates in place for held identities; entries are frozen, not the map. Remove declarations before upgrading: validation rejects them. Legacy blocks are omitted from response copies and warned once per role revision per thread, without writes that could race `alter_role`. Impersonation reinstalls the downgraded map. External response reuse is per-call. Listeners register lazily to avoid the Resource import cycle.

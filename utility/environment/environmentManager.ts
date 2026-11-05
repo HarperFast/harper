@@ -197,6 +197,49 @@ function sameConfigValue(a: any, b: any) {
 	}
 }
 
+/** Refresh one live-config subtree without losing unrelated installer or inherited overrides. */
+export function refreshConfigSubtree(
+	param: string,
+	previousRoot: unknown,
+	nextRoot: unknown,
+	validate: (value: unknown) => unknown
+): unknown {
+	const canonical = (hdbTerms.CONFIG_PARAM_MAP as any)[param.toLowerCase()] ?? param;
+	const target = canonical.split('_');
+	const read = (root: any, parts: string[]) => {
+		for (const part of parts) root = root && typeof root === 'object' ? root[part] : undefined;
+		return root;
+	};
+	let value = snapshotConfigValue(read(nextRoot, target));
+	const retired: string[] = [];
+	for (const [name, override] of appliedOverrides) {
+		const parts = name.split('_');
+		if (!parts.slice(0, target.length).every((part, i) => part === target[i])) continue;
+		if (previousRoot !== undefined && !sameConfigValue(read(previousRoot, parts), read(nextRoot, parts))) {
+			retired.push(name);
+			continue;
+		}
+		if (parts.length <= target.length) value = snapshotConfigValue(read(override.value, target.slice(parts.length)));
+		else {
+			if (!value || typeof value !== 'object' || Array.isArray(value)) value = {};
+			let node = value;
+			const relative = parts.slice(target.length);
+			for (const part of relative.slice(0, -1)) {
+				if (!node[part] || typeof node[part] !== 'object' || Array.isArray(node[part])) node[part] = {};
+				node = node[part];
+			}
+			node[relative.at(-1)!] = snapshotConfigValue(override.value);
+		}
+	}
+	const validated = validate(value);
+	for (const name of retired) appliedOverrides.delete(name);
+	configUtils.updateConfigObject(canonical, value);
+	for (const name of new Set<string>(Object.values(hdbTerms.CONFIG_PARAMS)))
+		if (name.startsWith(canonical + '_'))
+			configUtils.updateConfigObject(name, read(value, name.slice(canonical.length + 1).split('_')));
+	return validated;
+}
+
 /**
  * Replays this thread's overrides on top of a config that was just re-read from disk. A forced
  * initSync() rebuilds the whole config, which would otherwise revert the thread to the on-disk

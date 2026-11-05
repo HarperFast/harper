@@ -572,20 +572,37 @@ describe('Querying through Resource API', () => {
 			assert.equal(results[0].id, 2);
 		});
 		it('Query by join with one-to-many with multiple conditions', async function () {
-			let results = [];
-			for await (let record of RelatedTable.search({
-				conditions: [
-					{ attribute: ['relatedToMany', 'id'], comparator: 'greater_than', value: 'id-2' },
-					{ attribute: ['relatedToMany', 'name'], comparator: 'less_than', value: 'name-3' },
-				],
-				select: ['id', 'relatedToMany', 'name'],
-			})) {
-				results.push(record);
-			}
-			assert.equal(results.length, 5);
+			const search = async (conditions) => {
+				const results = [];
+				for await (let record of RelatedTable.search({ conditions, select: ['id', 'relatedToMany', 'name'] }))
+					results.push(record);
+				return results;
+			};
+			const id = { attribute: 'id', comparator: 'greater_than', value: 'id-2' };
+			const name = { attribute: 'name', comparator: 'less_than', value: 'name-3' };
+			let results = await search([{ attribute: 'relatedToMany', conditions: [id, name] }]);
+			assert.deepEqual(
+				results.map((r) => r.id),
+				[0, 1, 2, 3, 4]
+			);
 			let related = await results[0].relatedToMany;
 			assert.equal(related.length, 2);
 			assert.equal(related[0].name, 'name-20');
+			results = await search([
+				{ ...id, attribute: ['relatedToMany', 'id'] },
+				{ ...name, attribute: ['relatedToMany', 'name'] },
+			]);
+			assert.deepEqual(
+				results.map((r) => r.id),
+				[0, 1, 2, 3, 4]
+			);
+			for (const result of results) {
+				related = await result.relatedToMany;
+				assert(related.length > 2);
+				assert(related.some((record) => record.id > 'id-2' && !(record.name < 'name-3')));
+				assert(related.some((record) => record.name < 'name-3' && !(record.id > 'id-2')));
+				assert(related.every((record) => record.id > 'id-2' || record.name < 'name-3'));
+			}
 		});
 		it('Query by join with one-to-many with relational condition as filter', async function () {
 			let results = [];
@@ -653,22 +670,54 @@ describe('Querying through Resource API', () => {
 		});
 
 		it('Query by joined condition with many-to-many and multiple joined condition', async function () {
-			let results = [];
-			for await (let record of QueryTable.search({
-				conditions: [
-					{ attribute: ['manyToMany', 'name'], comparator: 'greater_than', value: 'many-to-many entry 4' },
-					{ attribute: ['manyToMany', 'id'], comparator: 'less_than', value: 8 },
-				],
-				select: ['id', 'manyToMany', 'manyToManyIds', 'name'],
-			})) {
-				results.push(record);
-			}
-			assert.equal(results.length, 14);
+			const search = async (conditions) => {
+				const results = [];
+				for await (let record of QueryTable.search({
+					conditions,
+					select: ['id', 'manyToMany', 'manyToManyIds', 'name'],
+				}))
+					results.push(record);
+				return results;
+			};
+			const name = { attribute: 'name', comparator: 'greater_than', value: 'many-to-many entry 4' };
+			const id = { attribute: 'id', comparator: 'less_than', value: 8 };
+			const expectedIds = [
+				'id-3',
+				'id-33',
+				'id-34',
+				'id-36',
+				'id-4',
+				'id-6',
+				'id-62',
+				'id-63',
+				'id-64',
+				'id-7',
+				'id-89',
+				'id-92',
+				'id-93',
+				'id-94',
+			];
+			let results = await search([{ attribute: 'manyToMany', conditions: [name, id] }]);
+			assert.deepEqual(results.map((r) => r.id).sort(), expectedIds);
 			for (let result of results) {
 				const related = await result.manyToMany;
 				assert(related.every((record) => record.name > 'many-to-many entry 4'));
 				assert(related.every((record) => record.id < 8));
 			}
+			results = await search([
+				{ ...name, attribute: ['manyToMany', 'name'] },
+				{ ...id, attribute: ['manyToMany', 'id'] },
+			]);
+			assert.deepEqual(results.map((r) => r.id).sort(), expectedIds);
+			let sawOnlyName = false;
+			let sawOnlyId = false;
+			for (let result of results) {
+				const related = await result.manyToMany;
+				sawOnlyName ||= related.some((record) => record.name > 'many-to-many entry 4' && !(record.id < 8));
+				sawOnlyId ||= related.some((record) => record.id < 8 && !(record.name > 'many-to-many entry 4'));
+				assert(related.every((record) => record.name > 'many-to-many entry 4' || record.id < 8));
+			}
+			assert(sawOnlyName && sawOnlyId);
 		});
 
 		it('Query with many-to-many selected, but non-existent entries (forward)', async function () {

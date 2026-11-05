@@ -111,7 +111,7 @@ describe('the local principal of a request trusted by its transport', function (
 			assert.strictEqual(user.isLocalPrincipal(principal), true);
 		});
 
-		it('gives each call its own user, role and permission, and shares only a frozen system-table tree', () => {
+		it('gives each call its own user, role and permission, and shares frozen system-table permission entries', () => {
 			const first = user.localPrincipal();
 			const second = user.localPrincipal();
 			assert.notStrictEqual(first, second);
@@ -130,6 +130,21 @@ describe('the local principal of a request trusted by its transport', function (
 			assert.throws(() => {
 				second.role.permission.system.tables.hdb_user.insert = true;
 			}, TypeError);
+		});
+
+		it('keeps a held local principal current when a system table is registered', async () => {
+			const principal = user.localPrincipal();
+			const name = 'hdb_local_live_permissions';
+			const late = table({ database: 'system', table: name, attributes: [{ name: 'id', isPrimaryKey: true }] });
+			try {
+				const permission = principal.role.permission.system.tables[name];
+				assert.strictEqual(permission.read, true);
+				assert.strictEqual(permission.insert, false);
+				assert.ok(Object.isFrozen(permission));
+				assert.strictEqual(user.localPrincipal().role.permission.system.tables[name], permission);
+			} finally {
+				await late.dropTable();
+			}
 		});
 
 		it('is recognized by its marker, never by its name', async () => {

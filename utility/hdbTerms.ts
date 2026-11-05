@@ -397,6 +397,7 @@ export const OPERATIONS_ENUM = {
 	CANCEL_AGENT_RUN: 'cancel_agent_run',
 	APPROVE_AGENT_ACTION: 'approve_agent_action',
 	SET_AGENT_CONFIG: 'set_agent_config',
+	GET_AGENT_CONFIG: 'get_agent_config',
 } as const;
 
 /** Defines valid file types that we are able to handle in 'import_from_s3' ops */
@@ -532,6 +533,11 @@ export const LEGACY_CONFIG_PARAMS = {
  */
 export const CONFIG_PARAMS = {
 	ANALYTICS_AGGREGATEPERIOD: 'analytics_aggregatePeriod',
+	ANALYTICS_FULL_TEXT: 'analytics_fullText',
+	ANALYTICS_FULL_TEXT_ENABLED: 'analytics_fullText_enabled',
+	ANALYTICS_FULL_TEXT_INTERVAL_MILLISECONDS: 'analytics_fullText_intervalMilliseconds',
+	ANALYTICS_FULL_TEXT_HISTOGRAMS: 'analytics_fullText_histograms',
+	ANALYTICS_FULL_TEXT_SNAPSHOT_BYTES: 'analytics_fullText_snapshotBytes',
 	ANALYTICS_AGGREGATERETENTIONMS: 'analytics_aggregateRetentionMs',
 	ANALYTICS_RAWRETENTIONMS: 'analytics_rawRetentionMs',
 	ANALYTICS_REPLICATE: 'analytics_replicate',
@@ -720,6 +726,10 @@ export const CONFIG_PARAMS = {
 	AGENT_CONFIGSCOPE: 'agent_configScope',
 	AGENT_HTTPFETCH: 'agent_httpFetch',
 	AGENT_HTTPFETCH_ALLOW: 'agent_httpFetch_allow',
+	AGENT_TOOLS_FILESYSTEM: 'agent_tools_filesystem',
+	AGENT_TOOLS_SCHEDULE: 'agent_tools_schedule',
+	AGENT_TOOLS_INSPECTOR: 'agent_tools_inspector',
+	AGENT_TOOLS_BESTPRACTICES: 'agent_tools_bestPractices',
 	REPLICATION: 'replication',
 	REPLICATION_HOSTNAME: 'replication_hostname',
 	REPLICATION_URL: 'replication_url',

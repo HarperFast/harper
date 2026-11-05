@@ -19,6 +19,8 @@ Operations map onto REST as:
 | update    | `PUT /usertable/<key>` (full record replace) |
 | rmw       | `GET` then `PUT`                             |
 | scan      | `GET /usertable/?id>=<key>&limit(<n>)`       |
+| inspect   | `GET /inspect/<key>` (as the caller)         |
+| chain     | `GET /chain/<key>?hops=<n>`                  |
 
 The runner is **closed-loop**: a fixed number of in-flight requests
 (`--concurrency`) each issue their next request as soon as the previous completes,
@@ -34,10 +36,26 @@ so throughput reflects the server rather than a fixed injection rate.
 | D        | 95% read / 5% insert (read latest) | latest       |
 | E        | 95% scan / 5% insert               | zipfian      |
 | F        | 50% read / 50% read-modify-write   | zipfian      |
+| inspect  | 100% inspect (5% denied with 403)  | zipfian      |
+| chain-N  | 100% chain, N = 1, 2, 4 hops       | zipfian      |
 
 Key distributions: `uniform`, `zipfian` (scrambled hotspot, YCSB default), and
 `latest` (biased toward recently inserted keys). Override per-run with
 `--distribution`.
+
+`inspect` and `chain-N` are application endpoints (`app/resources.js`, sharing
+`app/dependentReads.mjs` with the Fastify stack in `../ycsb-vs-pg`) that must read a
+record's contents before answering. Every record's `field0` starts with
+`<next key>:<owner>:`, padded to the field length, in every workload, A–F included;
+a `field0` too short for it (under 23 characters at the default key width) gets no
+link, and `inspect`/`chain-N` then refuse to start. `owner` is `owner00`..`owner19` by
+key index. The next key is a scrambled-zipfian draw taken from a hash of the key
+index, never the key itself, so every load of a keyspace has the same link graph and
+the most requested keys are also the most linked-to. Writes keep a record's link.
+`inspect` answers 403 unless the caller (the `x-caller` header here) owns the record,
+and otherwise a projection of `id`, `owner`, `field1` and `field2`. `chain` reads
+the record, then the record its link names, `hops` times in sequence, and returns a
+projection of each.
 
 ## Prerequisites
 

@@ -19,7 +19,7 @@ it stops at `firstForPeriod + toPeriod` so one cycle's main-thread msgpackr deco
   a backlog longer than one window and every report written while the cycle ran, because nothing
   reads below the cursor again.
 - **A cycle that reads nothing leaves it where it is.** An empty scan is not proof that nothing is
-  there: `recordAnalytics` does not await its table `put`, so a report can be uncommitted and
+  there: worker report delivery does not await its table `put`, so a report can be uncommitted and
   invisible to the scan while carrying a key older than anything the cycle could compare against. No
   wall-clock reading is safe to put in the cursor for the same reason.
 
@@ -32,10 +32,14 @@ Cycles must not overlap. `setInterval` does not await its async callback, so `ru
 holds a single-flight flag — two cycles reading the same cursor roll the same window up twice and
 double every count in it.
 
-Still open: `findLastAggregationTime` seeds both markers after a restart from the newest stored
-analytics record, whose `time` is an end-of-cycle stamp, so a restart mid-drain can skip the rest of
-the backlog; and `storeMetric` discards `table.put()`'s result, so the cursor advances past raw
-records whose aggregate rows failed to commit. Both need a cursor persisted with the rows.
+`storeMetric` handles synchronous and asynchronous write failures: overload (503) is debug-logged,
+other errors are warned, and the sample is dropped without retry. The wedged-commit regression in
+`noAbortAfterTxnLog.test.js` keeps rejected metrics from escaping the collector or leaking rejections.
+
+Still open: restart markers come from the newest stored analytics record, which can skip backlog;
+aggregate writes are not joined before advancing the cursor, so failed rows are lost. Synchronous
+refusals now drop a row instead of aborting a partially written cycle. Durable replay needs a cursor
+persisted with the rows.
 
 ## A reset ends the window that was being flushed too (`resources/analytics/write.ts`)
 
@@ -70,3 +74,13 @@ the key's first sample lacked, or that only some threads carry, is kept. That ho
 thread record carries nothing but measures and its `count`, which the thread count then replaces:
 the fold keeps `total`/`ratio` on non-thread actions only, so a `ratio` on a thread record is
 always a caller's measure.
+
+## Full-text collection follows actual handle ownership
+
+`fullTextTelemetry.ts` keeps private per-handle baselines and carries exact counters into a stable worker/index/role series. `nativeFullTextTelemetry.test.js` pins reader churn, wrap/precision, optional recording unions and peer-gauge aggregation; cached aggregate names include null leaves, so a live peer's queue age survives a newest null observation. `nativeFullTextTelemetryClose.test.js` holds backend close across live-peer timer ticks and recording changes: closing handles are neither sampled nor reconfigured until settlement. Completed registrations release references; inactive groups remain until their final row drains. Pending export has a 128-row bound with explicit drop counts. Graceful HTTP/job exit reuses the serialized analytics flush after owner cleanup, drains pending rows and samples open handles without overflowing that bound (`nativeFullTextTelemetryShutdown.test.js`).
+
+`fullTextTelemetryRuntime.ts` joins removable internal consumer demand with live operator policy. The consumer hook is an internal diagnostic/test seam with no production caller yet. Only operator demand enables persistence; persisted optional fields reflect the union of recording requests. No demand means no timer; no cold handles open. Exact counters are decimal strings; `cumulative` retains the newest worker row instead of averaging. Lost final counts force a new series on the next live observation. Overflow prefers replaceable live rows, ordered by last refresh, before final rows; dropped live totals remain recoverable. Main also filters worker rows by its receive-time policy; transition losses, including final rows, do not increment `droppedRows`. Failed closes reconcile deferred recording even with no demand; a never-enabled handle may receive an idempotent configure-off call. `aggregationCycle.test.js` verifies counters above 2^53 survive storage and `get_analytics`.
+
+`watchFullTextTelemetryConfiguration` initializes and reloads through the shared watcher's nested root, environment overlay and transactional `refreshConfigSubtree`; it never reads the missing camel-case flat aggregate. Invalid edits retain valid policy. Missing files retain valid policy and overrides, matching the root watcher; valid edits retire only changed overrides. `fullTextTelemetryConfiguration.test.js` pins initialization, override retirement and deletion/recreation. Native runtime/query policy remains frozen separately. Binding telemetry types are structural: `buildDist.test.mjs` checks compilation and emitted declarations without the optional package.
+
+Final main-thread analytics flush awaits its own raw write and the raw store’s existing commit barrier for worker reports. This is commit completion, not a new disk-sync guarantee; the process shutdown deadline still bounds it. `describe_metric` omits null-valued attributes from inferred metadata rather than describing unavailable scalar observations as objects; stored rows and `get_analytics` retain their null values.

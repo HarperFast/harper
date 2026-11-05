@@ -305,21 +305,34 @@ describe('Relationship query contracts: async reads, select restrictions and sor
 	});
 
 	describe('select restrictions from non-leading conditions', function () {
-		it('every sibling condition on a to-many relationship restricts its select()', async function () {
+		it('select() keeps the children meeting any AND condition on the relationship, or the whole same-record group', async function () {
 			for (const name of ['children', 'linkedChildren']) {
-				clearValueMap(ColdChild);
-				const rows = await collect(
-					Parent.search({
-						conditions: [
-							{ attribute: 'group', value: 'g1' },
-							{ attribute: [name, 'label'], comparator: 'starts_with', value: 'match' },
-							{ attribute: [name, 'tier'], value: 'gold' },
+				const label = { attribute: 'label', comparator: 'starts_with', value: 'match' };
+				const tier = { attribute: 'tier', value: 'gold' };
+				for (const [conditions, expected] of [
+					[
+						[
+							{ ...label, attribute: [name, 'label'] },
+							{ ...tier, attribute: [name, 'tier'] },
 						],
-						select: ['id', { name, select: ['id', 'label', 'tier'] }],
-					})
-				);
-				assert.strictEqual(rows.length, 1, name);
-				assert.deepStrictEqual(rows[0][name], [{ id: 'c2', label: 'match-beta', tier: 'gold' }], name);
+						['c1', 'c2', 'c3'],
+					],
+					[[{ attribute: name, conditions: [label, tier] }], ['c2']],
+				]) {
+					clearValueMap(ColdChild);
+					const rows = await collect(
+						Parent.search({
+							conditions: [{ attribute: 'group', value: 'g1' }, ...conditions],
+							select: ['id', { name, select: ['id', 'label', 'tier'] }],
+						})
+					);
+					assert.strictEqual(rows.length, 1, name);
+					assert.deepStrictEqual(
+						rows[0][name].map((child) => child.id),
+						expected,
+						JSON.stringify(conditions)
+					);
+				}
 			}
 		});
 
@@ -342,7 +355,7 @@ describe('Relationship query contracts: async reads, select restrictions and sor
 					assert.deepStrictEqual(rows, [], name);
 				}
 				assert.strictEqual(reads.sync + reads.async, 0);
-				// a key that matches does not bypass the other conditions on the same related record
+				// a key that matches does not bypass a sibling condition on the relationship
 				for (const [prefix, expected] of [
 					['match', ['parent-1']],
 					['zzz', []],
@@ -369,18 +382,24 @@ describe('Relationship query contracts: async reads, select restrictions and sor
 			}
 		});
 
-		it('sibling conditions met only by different children do not match the parent', async function () {
-			const rows = await collect(
-				Parent.search({
-					conditions: [
-						{ attribute: 'group', value: 'g3' },
-						{ attribute: ['children', 'label'], comparator: 'starts_with', value: 'match' },
-						{ attribute: ['children', 'tier'], value: 'gold' },
-					],
-					select: ['id', { name: 'children', select: ['id'] }],
-				})
+		it('conditions met only by different children match the parent; a same-record group of them does not', async function () {
+			const label = { attribute: 'label', comparator: 'starts_with', value: 'match' };
+			const tier = { attribute: 'tier', value: 'gold' };
+			const search = (conditions) =>
+				collect(
+					Parent.search({
+						conditions: [{ attribute: 'group', value: 'g3' }, ...conditions],
+						select: ['id', { name: 'children', select: ['id'] }],
+					})
+				);
+			assert.deepStrictEqual(
+				await search([
+					{ ...label, attribute: ['children', 'label'] },
+					{ ...tier, attribute: ['children', 'tier'] },
+				]),
+				[{ id: 'parent-3', children: [{ id: 'c5' }, { id: 'c6' }] }]
 			);
-			assert.deepStrictEqual(rows, []);
+			assert.deepStrictEqual(await search([{ attribute: 'children', conditions: [label, tier] }]), []);
 		});
 
 		it('a condition inside an OR group decides rows and never narrows the selected children', async function () {
@@ -455,37 +474,55 @@ describe('Relationship query contracts: async reads, select restrictions and sor
 	});
 
 	describe('multi-hop relationship conditions', function () {
-		it('a second condition on a leading two-hop path filters the same innermost records', async function () {
-			clearValueMap(Department);
-			clearValueMap(Employee);
-			const rows = await collect(
-				Company.search({
-					conditions: [
-						{ attribute: ['departments', 'employees', 'role'], value: 'eng' },
-						{ attribute: ['departments', 'employees', 'active'], value: true },
-					],
-					select: [
-						'id',
-						{ name: 'departments', select: ['id', { name: 'employees', select: ['id', 'role', 'active'] }] },
-					],
-					enforceExecutionOrder: true,
-				})
+		it('a two-hop same-record group filters one innermost record; separate two-hop conditions do not', async function () {
+			const search = async (conditions) => {
+				clearValueMap(Department);
+				clearValueMap(Employee);
+				return collect(
+					Company.search({
+						conditions,
+						select: [
+							'id',
+							{ name: 'departments', select: ['id', { name: 'employees', select: ['id', 'role', 'active'] }] },
+						],
+						enforceExecutionOrder: true,
+					})
+				);
+			};
+			assert.deepStrictEqual(
+				await search([
+					{
+						attribute: ['departments', 'employees'],
+						conditions: [
+							{ attribute: 'role', value: 'eng' },
+							{ attribute: 'active', value: true },
+						],
+					},
+				]),
+				[
+					{
+						id: 'co-match',
+						departments: [{ id: 'dept-match', employees: [{ id: 'emp-match-1', role: 'eng', active: true }] }],
+					},
+				]
 			);
-			assert.deepStrictEqual(rows, [
-				{
-					id: 'co-match',
-					departments: [{ id: 'dept-match', employees: [{ id: 'emp-match-1', role: 'eng', active: true }] }],
-				},
+			const separate = await search([
+				{ attribute: ['departments', 'employees', 'role'], value: 'eng' },
+				{ attribute: ['departments', 'employees', 'active'], value: true },
 			]);
+			assert.deepStrictEqual(
+				separate.map((row) => row.id),
+				['co-match', 'co-split']
+			);
 		});
 
 		it('a two-hop path that leads by estimate keeps the lead ahead of a local index', async function () {
 			const hop = (attribute, value) => ({ attribute: ['departments', 'employees', attribute], value });
 			const conditions = [hop('role', 'eng'), hop('active', true), { attribute: 'group', value: 'g1' }];
 			const ids = async (options) => (await collect(Company.search({ conditions, ...options }))).map((row) => row.id);
-			assert.deepStrictEqual(await ids({ enforceExecutionOrder: true, allowFullScan: true }), ['co-match']);
+			assert.deepStrictEqual(await ids({ enforceExecutionOrder: true, allowFullScan: true }), ['co-match', 'co-split']);
 			conditions.unshift(conditions.pop());
-			assert.deepStrictEqual(await ids({ allowFullScan: false }), ['co-match']);
+			assert.deepStrictEqual(await ids({ allowFullScan: false }), ['co-match', 'co-split']);
 		});
 
 		it('a non-leading two-hop condition restricts the nested select()', async function () {

@@ -2,18 +2,19 @@
 
 This directory contains single-node storage and throughput benchmarks for Harper.
 
-| Benchmark          | File                              | What it measures                                                                                            |
-| ------------------ | --------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| YCSB               | `ycsb/`                           | Standard CRUD workloads (A–F) across the REST interface                                                     |
-| HNSW search        | `hnsw-search.js`                  | In-memory vector index search latency and recall                                                            |
-| **Indexed-write**  | `indexed-write/`                  | Write throughput at 0 / 3 / 5 secondary indexes (**ST-2**)                                                  |
-| **TTL-churn**      | `ttl-churn/`                      | Storage size stability under continuous insert-with-TTL (**ST-1**)                                          |
-| **Concurrent R+W** | `concurrent-rw/`                  | Read p99 under mixed concurrent writes on a highly-indexed table (**ST-5**)                                 |
-| Hot-key commit     | `hot-key-commit/`                 | Commit throughput, latency and retries per commit when audited transactions contend on a few keys           |
-| **SQL engine A/B** | `sql-engine/`                     | New (Resource-API) vs legacy (AlaSQL) SQL engine latency, per query shape                                   |
-| **Compression**    | `compression/`                    | RocksDB codec comparison: on-disk size and throughput per codec                                             |
-| WebSocket scale    | [`ws-scale/`](ws-scale/README.md) | Memory and CPU per WebSocket connection, subscription and delivered message; write rates that drive fan-out |
-| Lockdown           | `lockdown/`                       | Per-mode `applications.lockdown` cost in a worker: holey-array string building, msgpackr decode             |
+| Benchmark           | File                              | What it measures                                                                                            |
+| ------------------- | --------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| YCSB                | `ycsb/`                           | Standard CRUD workloads (A–F) across the REST interface                                                     |
+| HNSW search         | `hnsw-search.js`                  | In-memory vector index search latency and recall                                                            |
+| Full-text analytics | `fulltext-analytics.mjs`          | Paired collection-disabled/enabled cost through real Tables, native indexes and analytics persistence       |
+| **Indexed-write**   | `indexed-write/`                  | Write throughput at 0 / 3 / 5 secondary indexes (**ST-2**)                                                  |
+| **TTL-churn**       | `ttl-churn/`                      | Storage size stability under continuous insert-with-TTL (**ST-1**)                                          |
+| **Concurrent R+W**  | `concurrent-rw/`                  | Read p99 under mixed concurrent writes on a highly-indexed table (**ST-5**)                                 |
+| Hot-key commit      | `hot-key-commit/`                 | Commit throughput, latency and retries per commit when audited transactions contend on a few keys           |
+| **SQL engine A/B**  | `sql-engine/`                     | New (Resource-API) vs legacy (AlaSQL) SQL engine latency, per query shape                                   |
+| **Compression**     | `compression/`                    | RocksDB codec comparison: on-disk size and throughput per codec                                             |
+| WebSocket scale     | [`ws-scale/`](ws-scale/README.md) | Memory and CPU per WebSocket connection, subscription and delivered message; write rates that drive fan-out |
+| Lockdown            | `lockdown/`                       | Per-mode `applications.lockdown` cost in a worker: holey-array string building, msgpackr decode             |
 
 The three new benchmarks (ST-1, ST-2, ST-5) address gaps called out in §6.3 of the
 Harper Release Testing Strategy and §5 of the v5 Integration Test Plan.
@@ -40,6 +41,51 @@ On macOS/Windows, set up loopback addresses once (Linux has them by default):
 ```sh
 npx harper-integration-test-setup-loopback
 ```
+
+---
+
+## Full-text analytics (`fulltext-analytics.mjs`)
+
+Run manually after `npm run build`, with the optional `@harperfast/fulltext` native
+package installed on a supported platform. The runner starts isolated Mocha children
+using Harper's test fixtures and RocksDB. It does not start a REST server or require
+loopback setup. Each pair alternates which profile runs first.
+
+### Short smoke (not performance qualification)
+
+```sh
+node benchmarks/fulltext-analytics.mjs --duration 1000 --indexes 1 --pairs 1 --interval 1000 --output benchmarks/fulltext-analytics/results/smoke-01
+```
+
+### Full-cadence comparison (about five minutes)
+
+```sh
+node benchmarks/fulltext-analytics.mjs --output benchmarks/fulltext-analytics/results/paired-01
+```
+
+| Flag            | Default  | Meaning                                                                                   |
+| --------------- | -------- | ----------------------------------------------------------------------------------------- |
+| `--duration`    | `70000`  | Measured milliseconds per profile; 100–3600000                                            |
+| `--indexes`     | `4`      | Audited product Tables with native full-text indexes; 1–16                                |
+| `--pairs`       | `2`      | Disabled/enabled pairs; 1–10                                                              |
+| `--interval`    | `60000`  | Telemetry collection interval in milliseconds; 1000–2147483647                            |
+| `--maxIndexLag` | `0`      | Allowed index lag in milliseconds; 0–60000. Zero waits up to 5000 ms for index freshness. |
+| `--output`      | Required | Fresh or empty artifact directory; existing nonempty directories are rejected             |
+
+The ignored `benchmarks/fulltext-analytics/results/` directory holds generated
+manifests, child logs, results and comparisons, including failure evidence. Choose
+a new run subdirectory each time. Custom output paths are supported; keep them
+outside the checkout or add a suitable ignore rule before running. Do not commit
+generated output or test databases.
+
+Compare throughput, API latency, CPU, event-loop delay, RSS and exported/persisted
+rows with identical settings on the same host. Both profiles use fulltext 0.9.0;
+this does not measure the engine upgrade's always-on accounting cost. Histograms
+and snapshot-byte observations remain off. Short runs report
+`qualificationSufficient: false`; full-cadence runs require at least 60000 ms and
+one collection interval plus 1000 ms. Even sufficient runs are finite local
+evidence, not production or sustained-memory qualification. This benchmark is not
+part of CI or the trend dashboard.
 
 ---
 
