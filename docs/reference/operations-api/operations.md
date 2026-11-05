@@ -301,7 +301,7 @@ Returns records with a matching value on any attribute. Supports wildcards (e.g.
 
 ### `search_by_conditions`
 
-Returns records matching one or more conditions. Supports `operator` (`and`/`or`), `offset`, `limit`, nested `conditions` groups, and `sort` with multi-level tie-breaking. Full-text conditions use comparators such as `matches` and `matches_prefix`; see [full-text query execution](../resources/query-optimization.md#full-text-search-work-and-paging) for paging costs and limits. Conditions match null and omitted values by the rules in [Null and Omitted Values](../rest/querying.md#null-and-omitted-values).
+Returns records matching one or more conditions. Supports `operator` (`and`/`or`), `offset`, `limit`, nested `conditions` groups, and `sort` with multi-level tie-breaking. A condition that pairs an `attribute` with nested `conditions` (the Resource API's [relationship groups](../resources/resource-api.md#conditions-on-a-to-many-relationship)) is not supported. Full-text conditions use comparators such as `matches` and `matches_prefix`; see [full-text query execution](../resources/query-optimization.md#full-text-search-work-and-paging) for paging costs and limits. Conditions match null and omitted values by the rules in [Null and Omitted Values](../rest/querying.md#null-and-omitted-values).
 
 ```json
 {
