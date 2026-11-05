@@ -24,6 +24,7 @@ export {
 	getUserWithRole,
 	isCurrentUser,
 	hasRecordProvenance,
+	isRecordBacked,
 	userRecordVersions,
 	trackUserRecords,
 	cloneUserView,
@@ -675,6 +676,15 @@ function cloneUserView(user: User): User {
 /** Whether `isCurrentUser` can answer for `user`: false for one resolved outside this module and not tracked. */
 function hasRecordProvenance(user: User): boolean {
 	return Boolean((user as any)[PROVENANCE] ?? trackedProvenance.has(user));
+}
+
+/**
+ * Whether `user` was built from an hdb_user record; undefined when it has no record provenance (a scoped token,
+ * or a user resolved outside this module and not tracked).
+ */
+function isRecordBacked(user: User): boolean | undefined {
+	const provenance: UserProvenance | undefined = (user as any)[PROVENANCE] ?? trackedProvenance.get(user);
+	return provenance && provenance.userStamp !== null;
 }
 
 /**

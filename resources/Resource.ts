@@ -1176,7 +1176,10 @@ function registerLiveSubscriptionForContext(
 	if (!username || securityUser!.isLocalPrincipal(user)) return subscription;
 	// no subscription, or one already closed (a refused resume): nothing will be delivered to revoke
 	if (!subscription || typeof subscription !== 'object' || subscription.closed) return subscription;
-	const { cloneUserView, hasRecordProvenance, isCurrentUser } = securityUser!;
+	const { cloneUserView, hasRecordProvenance, isCurrentUser, isRecordBacked } = securityUser!;
+	// A principal built from an hdb_user record needs a role to keep a subscription (#1414). One with no record
+	// (an mTLS CN that names no hdb_user) was admitted by allowRead alone, so allowRead alone rechecks it.
+	const roleRequired = isRecordBacked(user) ?? Boolean(user.role);
 	// Without a caller's select or a condition or sort through a relationship, the default allowRead only
 	// narrows what it returns, so its verdict depends on the role's permission for this table alone.
 	const sharedDecision =
@@ -1185,7 +1188,8 @@ function registerLiveSubscriptionForContext(
 		!resource.constructor._referencesRelationship?.(admittedTarget);
 	const evaluate = (principal: any) => {
 		const reTarget: any = cloneRequestTarget(admittedTarget);
-		reTarget.checkPermission = principal.role?.permission;
+		// an object, as MQTT admission passes, even for a principal with no role
+		reTarget.checkPermission = principal.role?.permission ?? {};
 		return resource.allowRead(principal, reTarget, context);
 	};
 	const handle = registerLiveSubscription({
@@ -1208,9 +1212,7 @@ function registerLiveSubscriptionForContext(
 				// Re-read current user state from hdb_user/hdb_role, once per username per pass, so a dropped
 				// or role-stripped user no longer authorizes.
 				fresh = await pass.memo(resolveUser, username, resolveUser);
-				// Losing a role revokes only a principal admitted with one. A principal admitted without one (an
-				// mTLS CN with no hdb_user) was granted by allowRead alone, so allowRead alone rechecks it.
-				if (!fresh || (!fresh.role && user.role)) return false;
+				if (!fresh?.role && roleRequired) return false;
 				// Advance the subscription's context to the fresh user so downstream checks — context.user
 				// and getCurrentUser() (which reads the resource's context) — evaluate against current state,
 				// not the stale user captured at subscribe time. Each context gets its own view, which its
