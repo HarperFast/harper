@@ -859,7 +859,7 @@ let results = Document.search({
 });
 ```
 
-`$distance` is available in both `sort`-based ranking and `conditions`-based threshold queries. A threshold condition that another condition drives does not set it; add a `sort` on the vector with the same `target` to select it there.
+`$distance` is available in both `sort`-based ranking and `conditions`-based threshold queries. It is not set by a threshold condition that another condition drives, or by one on a relationship path; add a `sort` on the vector with the same `target` to select it for the queried table's own vector.
 
 ### Per-Query Search Options
 

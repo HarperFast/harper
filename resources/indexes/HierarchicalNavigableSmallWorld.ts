@@ -2240,10 +2240,9 @@ export class HierarchicalNavigableSmallWorld {
 		return fn;
 	}
 	/**
-	 * A threshold condition's predicate on a record's vector, for when another condition leads (search.ts
-	 * filterByType): exact distance, as rescoreResults() applies it, after the checks search() makes.
-	 * `comparator` and `value` arrive resolved from aliases and tuple form. Returns none for a sort, or for a
-	 * condition with no target that is not a threshold, such as `ne null`.
+	 * A threshold's predicate on a record's vector, for when another condition leads (search.ts filterByType):
+	 * exact distance, after the checks search() makes. None for a sort, or for a condition with no target that
+	 * is not a threshold, such as `ne null`.
 	 */
 	thresholdFilter(
 		searchCondition: { attribute?: any; target: number[]; distance?: string; comparator?: string },
@@ -2258,6 +2257,11 @@ export class HierarchicalNavigableSmallWorld {
 			throw new ClientError(`Search condition for ${searchCondition.attribute} must have a value`);
 		const fn = this.queryDistance(searchCondition);
 		const { target } = searchCondition;
+		if (this.filePrimary) {
+			if (fn !== this.distance)
+				throw new ClientError('A nativePlane index only supports its configured cosine distance');
+			this.assertPlaneVector(target, 'Search target');
+		}
 		const inclusive = comparator === 'le';
 		return (recordVector) => {
 			if (recordVector == null) return false;

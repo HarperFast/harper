@@ -2616,7 +2616,6 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 	}
 }
 
-/** A vector threshold compares distance, not each coordinate, so its index supplies the predicate */
 function vectorDistanceFilter(condition, table, attribute, value): ((record: any) => boolean) | undefined {
 	const comparator = ALTERNATE_COMPARATOR_NAMES[condition.comparator] || condition.comparator;
 	const matches =

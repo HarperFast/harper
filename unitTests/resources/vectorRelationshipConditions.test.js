@@ -343,4 +343,19 @@ describe('native-plane HNSW conditions through a relationship', function () {
 			['r1', 'r2', 'r4', 'r5']
 		);
 	});
+
+	it('validates a non-leading threshold against the native plane as the leading form does', async () => {
+		const behind = (condition) => ({
+			conditions: [{ attribute: 'itemId', value: 'none' }, condition],
+			enforceExecutionOrder: true,
+		});
+		await assert.rejects(
+			() => ids(Review, behind(close({ distance: 'euclidean' }))),
+			/only supports its configured cosine distance/
+		);
+		await assert.rejects(
+			() => ids(Review, behind(close({ target: [1, Number.NaN, 0, 0] }))),
+			/not a finite 32-bit float/
+		);
+	});
 });
