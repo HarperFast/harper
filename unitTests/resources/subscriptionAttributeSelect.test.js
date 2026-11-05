@@ -206,6 +206,42 @@ describe('Attribute read permissions on subscription deliveries', () => {
 		assert.strictEqual(events[0].value, Doc.primaryStore.getEntry('relationship').value);
 	});
 
+	it('a subscription to a relationship property omits unreadable attributes', async () => {
+		const relationshipUser = {
+			role: {
+				permission: {
+					subselect: {
+						tables: {
+							SelectDoc: {
+								read: true,
+								insert: false,
+								update: false,
+								delete: false,
+								attribute_permissions: [
+									{ attribute_name: 'title', read: true },
+									{ attribute_name: 'related', read: true },
+									{ attribute_name: 'secret', read: false },
+								],
+							},
+							SelectRelated: { read: true, insert: false, update: false, delete: false, attribute_permissions: [] },
+						},
+					},
+				},
+			},
+		};
+		await Related.put('related-2', { name: 'related' });
+		await Doc.put('property', { title: 'stored', secret: 's', relatedId: 'related-2' });
+		const events = await subscribe(
+			Doc,
+			{ id: 'property', property: 'related' },
+			{ user: relationshipUser, authorize: true }
+		);
+		await waitFor(() => delivered(events, 'stored'));
+		await Doc.put('property', { title: 'next', secret: 's', relatedId: 'related-2' });
+		await waitFor(() => delivered(events, 'next'));
+		assertNoSecret(events);
+	});
+
 	it('a reload re-snapshot omits unreadable attributes', async () => {
 		await Doc.put('reload', { title: 'reloaded', secret: 's' });
 		const single = await subscribe(Doc, { id: 'reload', omitCurrent: true }, asUser());
@@ -276,10 +312,10 @@ describe('Attribute read permissions on subscription deliveries', () => {
 		];
 		for (const request of requests) {
 			const events = await subscribe(Typed, request, { user: typedUser, authorize: true });
-			await waitFor(() => delivered(events, 't0'), {
+			await waitFor(() => delivered(events, 't0') && (!request.isCollection || delivered(events, 't39')), {
 				message: () => `${JSON.stringify(request)}: ${JSON.stringify(events)}`,
 			});
-			for (const { value } of recordEvents(events)) assert.ok(!('secret' in value), JSON.stringify(value));
+			assertNoSecret(events);
 		}
 	});
 });
