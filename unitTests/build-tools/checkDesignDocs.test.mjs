@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import {
-	CEILING_SLACK,
+	CEILING_HEADROOM,
 	CEILINGS_FILE,
 	DESIGN_BUDGET,
 	MAP_BUDGET,
@@ -50,7 +50,16 @@ const MAP = [
 ].join('\n');
 const AGENTS = '- [lib/ map](lib/MAP.md)\n';
 
-const sized = (bytes) => `## Note\n${'x'.repeat(bytes - 9)}\n`;
+// Many one-letter words, so a smaller or larger version of the file reads as a cut or an addition, not a rewrite.
+const sized = (bytes) => `## Note\n${'x '.repeat(bytes).slice(0, bytes - 9)}\n`;
+// About `bytes` of prose whose words no other `seed` uses.
+const prose = (seed, bytes) => {
+	let text = '';
+	for (let i = 0; text.length < bytes; i++) text += ` ${seed}${i}`;
+	return `${text.slice(1, bytes)}\n`;
+};
+const bytesOf = (text) => Buffer.byteLength(text);
+const formatted = (n) => n.toLocaleString('en-US');
 
 function createTree(files = {}) {
 	const dir = mkdtempSync(join(tmpdir(), 'design-docs-'));
@@ -323,24 +332,56 @@ describe('build-tools/check-design-docs.mjs', function () {
 
 	describe('ceilings', function () {
 		const over = DESIGN_BUDGET + 10 * 1024;
-		const withCeiling = (size, ceiling, extra = {}) =>
-			createTree({ 'lib/DESIGN.md': sized(size), [CEILINGS_FILE]: ceilings({ 'lib/DESIGN.md': ceiling }), ...extra });
+		const ceiling = 100_000;
+		const floor = 60_000;
+		const withCeiling = (size, limit, extra = {}) =>
+			createTree({ 'lib/DESIGN.md': sized(size), [CEILINGS_FILE]: ceilings({ 'lib/DESIGN.md': limit }), ...extra });
 
-		it('lets a file over budget sit at or just under its ceiling', async function () {
-			dir = withCeiling(over, over);
+		it(`lets a file over budget sit anywhere from its ceiling down to ${100 - CEILING_HEADROOM}% of it`, async function () {
+			dir = withCeiling(ceiling, ceiling);
+			for (const size of [ceiling, ceiling - 1, 70_000, floor]) {
+				write(dir, { 'lib/DESIGN.md': sized(size) });
+				assert.deepStrictEqual(await errorsOf(), [], `${size} bytes needs no ceiling change`);
+			}
+		});
+
+		it('fails a file that grows past its ceiling, naming the size a cut must reach', async function () {
+			dir = withCeiling(ceiling + 1, ceiling);
+			assert.match(
+				(await errorsOf()).join('\n'),
+				/^lib\/DESIGN\.md is 100,001 bytes, over its ceiling of 100,000 — prune it to at most 60,000 bytes \(60% of the ceiling\), then run `npm run check:design-docs -- --update-ceilings`$/
+			);
+			write(dir, { 'lib/DESIGN.md': sized(over + 1), [CEILINGS_FILE]: ceilings({ 'lib/DESIGN.md': over }) });
+			assert.match(
+				(await errorsOf()).join('\n'),
+				/prune it to at most 30,720 bytes \(60% of the ceiling, and within the budget, so the ceiling goes\)/
+			);
+		});
+
+		it('fails a trim more than 40% under the ceiling until --update-ceilings lowers it, keeping 40% of room', async function () {
+			dir = withCeiling(floor - 1, ceiling);
+			assert.match(
+				(await errorsOf()).join('\n'),
+				/^lib\/DESIGN\.md is 59,999 bytes, more than 40% under its ceiling of 100,000; a trim that deep lowers the ceiling — run `npm run check:design-docs -- --update-ceilings`$/
+			);
+			write(dir, { 'lib/DESIGN.md': sized(50_000) });
+			assert.deepStrictEqual(updateCeilings({ root: dir }), { 'lib/DESIGN.md': 83_334 });
 			assert.deepStrictEqual(await errorsOf(), []);
-			write(dir, { 'lib/DESIGN.md': sized(over - CEILING_SLACK) });
-			assert.deepStrictEqual(await errorsOf(), [], 'a trim of up to the slack needs no ceiling change');
 		});
 
-		it('fails a file that grows past its ceiling', async function () {
-			dir = withCeiling(over + 1, over);
-			assert.match((await errorsOf()).join('\n'), /over its ceiling of [\d,]+ — prune it/);
-		});
-
-		it('fails a trim that leaves the ceiling more than the slack above the file', async function () {
-			dir = withCeiling(over - CEILING_SLACK - 1, over);
-			assert.match((await errorsOf()).join('\n'), /under its ceiling .* --update-ceilings/);
+		it('--update-ceilings writes the highest ceiling a size fits, never above the old one', function () {
+			dir = withCeiling(ceiling + 500, ceiling);
+			assert.deepStrictEqual(updateCeilings({ root: dir }), { 'lib/DESIGN.md': ceiling }, 'over its ceiling');
+			for (const size of [floor, 70_000, ceiling - 1]) {
+				write(dir, { 'lib/DESIGN.md': sized(size), [CEILINGS_FILE]: ceilings({ 'lib/DESIGN.md': ceiling }) });
+				assert.deepStrictEqual(updateCeilings({ root: dir }), { 'lib/DESIGN.md': ceiling }, `${size} is in the band`);
+			}
+			for (const size of [41_000, 50_001, 50_002, 59_999]) {
+				write(dir, { 'lib/DESIGN.md': sized(size), [CEILINGS_FILE]: ceilings({ 'lib/DESIGN.md': ceiling }) });
+				const lowered = updateCeilings({ root: dir })['lib/DESIGN.md'];
+				assert.ok(lowered < ceiling, `${size}`);
+				assert.ok(Math.floor((lowered * 3) / 5) <= size && Math.floor(((lowered + 1) * 3) / 5) > size, `${size}`);
+			}
 		});
 
 		it('fails a spent ceiling, a ceiling for a missing file, and one for a non-DESIGN.md file', async function () {
@@ -366,7 +407,7 @@ describe('build-tools/check-design-docs.mjs', function () {
 			dir = undefined;
 		});
 
-		it('--update-ceilings records every DESIGN.md over budget at its size and drops the rest', async function () {
+		it('--update-ceilings records a DESIGN.md new to the list at its size and drops the ones within budget', async function () {
 			dir = createTree({
 				'lib/DESIGN.md': sized(over),
 				'other/DESIGN.md': sized(DESIGN_BUDGET),
@@ -376,13 +417,6 @@ describe('build-tools/check-design-docs.mjs', function () {
 			assert.deepStrictEqual(updateCeilings({ root: dir }), { 'lib/DESIGN.md': over });
 			assert.strictEqual(readFileSync(join(dir, CEILINGS_FILE), 'utf8'), ceilings({ 'lib/DESIGN.md': over }));
 			assert.deepStrictEqual(await errorsOf(), []);
-		});
-
-		it('--update-ceilings lowers a ceiling but never raises one', function () {
-			dir = withCeiling(over + 500, over);
-			assert.deepStrictEqual(updateCeilings({ root: dir }), { 'lib/DESIGN.md': over });
-			write(dir, { 'lib/DESIGN.md': sized(over - 2048) });
-			assert.deepStrictEqual(updateCeilings({ root: dir }), { 'lib/DESIGN.md': over - 2048 });
 		});
 	});
 
@@ -471,6 +505,104 @@ describe('build-tools/check-design-docs.mjs', function () {
 
 		it('fails on a base that does not resolve rather than skipping the ratchet', async function () {
 			await assert.rejects(errorsOf({ base: 'no-such-ref' }), /--base no-such-ref does not resolve to a commit/);
+			await assert.rejects(errorsOf({ base: '--output=x' }), /--base --output=x does not resolve to a commit/);
+		});
+	});
+
+	describe('a cut a ceiling forces', function () {
+		const head = '## Note\n\n';
+		const paragraphs = { a: prose('a', 40_000), b: prose('b', 30_000), c: prose('c', 20_000), d: prose('d', 9_000) };
+		const base = head + Object.values(paragraphs).join('\n');
+		const ceiling = bytesOf(base) + 1_000;
+		const floor = Math.floor((ceiling * 3) / 5);
+		// Pads `text` with prose to exactly `bytes`.
+		const fill = (text, bytes) => text + prose('z', bytes - bytesOf(text));
+		let baseRef;
+		beforeEach(function () {
+			dir = createTree({ 'lib/DESIGN.md': base, [CEILINGS_FILE]: ceilings({ 'lib/DESIGN.md': ceiling }) });
+			baseRef = isolatedGit(dir).commit('base');
+		});
+		const errorsSince = async (options) => (await errorsOf({ base: baseRef, ...options })).join('\n');
+
+		it('fails a change whose new text passes the ceiling and that cuts back only to just under it', async function () {
+			const added = prose('e', 2_000);
+			write(dir, {
+				'lib/DESIGN.md': `${head}${paragraphs.a}\n${paragraphs.b}\n${paragraphs.c}\n${prose('d', 7_500)}\n${added}`,
+			});
+			const size = bytesOf(readFileSync(join(dir, 'lib/DESIGN.md'), 'utf8'));
+			assert.ok(size < ceiling && size > ceiling - 1_000, `${size} sits just under ${ceiling}`);
+			assert.deepStrictEqual(await errorsOf(), [], 'without --base only the size is judged');
+			const errors = await errorsSince();
+			assert.match(
+				errors,
+				new RegExp(
+					`^lib/DESIGN\\.md: this change adds 2,0\\d\\d bytes of new text to a file 1,000 bytes under its ceiling of ${formatted(ceiling)} at ${baseRef}, and cuts it back only to ${formatted(size)}; a change that has to cut to fit cuts to at most ${formatted(floor)} bytes \\(60% of the ceiling\\) — prune ${formatted(size - floor)} more, then run \`npm run check:design-docs -- --update-ceilings\`$`
+				)
+			);
+			assert.strictEqual(errors.split('\n').length, 1, errors);
+		});
+
+		it('catches new text added and paid for inside the same paragraph line', async function () {
+			write(dir, {
+				'lib/DESIGN.md': `${head}${prose('e', 2_000).trimEnd()} ${paragraphs.a.slice(1_500)}\n${paragraphs.b}\n${paragraphs.c}\n${paragraphs.d}`,
+			});
+			assert.match(await errorsSince(), /adds 2,0\d\d bytes of new text/);
+		});
+
+		it('passes the same change once it is cut to the floor, and after --update-ceilings when cut deeper', async function () {
+			write(dir, { 'lib/DESIGN.md': fill(`${head}${prose('e', 2_000)}${paragraphs.b}`, floor) });
+			assert.strictEqual(await errorsSince(), '');
+			write(dir, { 'lib/DESIGN.md': fill(`${head}${prose('e', 2_000)}${paragraphs.b}`, floor - 5_000) });
+			assert.match(await errorsSince(), /more than 40% under its ceiling/);
+			const lowered = updateCeilings({ root: dir })['lib/DESIGN.md'];
+			assert.ok(lowered < ceiling && lowered > floor, `${lowered}`);
+			assert.strictEqual(await errorsSince(), '');
+		});
+
+		it('passes a cut that takes the file within budget once --update-ceilings drops its ceiling', async function () {
+			write(dir, { 'lib/DESIGN.md': `${head}${prose('e', 2_000)}${paragraphs.c}` });
+			assert.match(await errorsSince(), /within the [\d,]+-byte budget, so its ceiling is spent/);
+			assert.deepStrictEqual(updateCeilings({ root: dir }), {});
+			assert.strictEqual(await errorsSince(), '');
+		});
+
+		it('passes changes that bring no new text past the room: a cut, a move, an edited move, a re-wrap, CRLF', async function () {
+			const variants = {
+				'cut': `${head}${paragraphs.a}\n${paragraphs.b}\n${paragraphs.d}`,
+				'move': `${head}${paragraphs.d}\n${paragraphs.b}\n${paragraphs.a}\n${paragraphs.c}`,
+				'edited move': `${head}${paragraphs.b.replace('b7 ', 'b7, ')}\n${paragraphs.a}\n${paragraphs.c}\n${paragraphs.d.trimEnd()}.\n`,
+				're-wrap': `${head}${paragraphs.a.replaceAll(/(a\d*0) /g, '$1\n')}\n${paragraphs.b}\n${paragraphs.c}\n${paragraphs.d}`,
+				'one token edited': base.replace(' c10 ', ' c10x '),
+				'CRLF': base.replaceAll('\n', '\r\n'),
+			};
+			for (const [name, text] of Object.entries(variants)) {
+				write(dir, { 'lib/DESIGN.md': text });
+				assert.strictEqual(await errorsSince(), '', name);
+			}
+		});
+
+		it('fails a small cut of a file that was already over its ceiling at the base', async function () {
+			write(dir, { 'lib/DESIGN.md': `${base}${prose('e', 1_300)}` });
+			const red = isolatedGit(dir).commit('a race left it over its ceiling');
+			write(dir, { 'lib/DESIGN.md': `${base}${prose('e', 900)}` });
+			assert.match(
+				(await errorsOf({ base: red })).join('\n'),
+				/adds \d+ bytes of new text to a file 300 bytes over its ceiling .* cuts to at most/
+			);
+		});
+
+		it('skips the rule under --push, and on the command line', async function () {
+			write(dir, {
+				'lib/DESIGN.md': `${head}${paragraphs.a}\n${paragraphs.b}\n${paragraphs.c}\n${prose('d', 7_500)}\n${prose('e', 2_000)}`,
+			});
+			assert.strictEqual(await errorsSince({ push: true }), '');
+			const run = (...args) =>
+				spawnSync(process.execPath, [CLI, '--root', dir, '--base', baseRef, ...args], {
+					encoding: 'utf8',
+					timeout: DEADLINE,
+				});
+			assert.match(run().stderr, /^error: lib\/DESIGN\.md: this change adds/m);
+			assert.strictEqual(run('--push').status, 0);
 		});
 	});
 

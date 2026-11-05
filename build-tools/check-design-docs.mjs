@@ -1,10 +1,13 @@
 #!/usr/bin/env node
 // Enforces the design-doc layout described in the root DESIGN.md: the root is an index only, every
 // section of a note the index registers is indexed there and every inline relative link and anchor in
-// the index and the notes resolves; each DESIGN.md and MAP.md stays within its byte budget, or its ceiling
-// in CEILINGS_FILE; and each MAP.md has a `@MAP.md` CLAUDE.md, is listed in AGENTS.md and names only
-// symbols and files that exist.
-//   --base <ref>       also reject a raised or new ceiling, and hold only files changed since <ref> to their budget
+// the index and the notes resolves; each DESIGN.md and MAP.md stays within its byte budget, or between its
+// ceiling in CEILINGS_FILE and that ceiling's floor, CEILING_HEADROOM percent under it; and each MAP.md has a
+// `@MAP.md` CLAUDE.md, is listed in AGENTS.md and names only symbols and files that exist.
+//   --base <ref>       also reject a raised or new ceiling, hold only files changed since <ref> to their budget, and
+//                      hold a change whose new text alone would pass a ceiling to cutting that file to the floor
+//   --push             <ref> is the tip a push replaced, so the range can hold changes made against other bases:
+//                      skip the floor rule, which judges one change
 //   --update-ceilings  rewrite CEILINGS_FILE from current sizes
 //   --stale            report-only: dead backticked paths and symbols, and files over ceiling (markdown, exit 0)
 //   --limit <chars>    cap the --stale report at about this many characters
@@ -19,7 +22,7 @@ const KIB = 1024;
 export const DESIGN_BUDGET = 40 * KIB;
 export const MAP_BUDGET = 8 * KIB;
 export const MAP_LINES = 80;
-export const CEILING_SLACK = KIB;
+export const CEILING_HEADROOM = 40;
 export const CEILINGS_FILE = 'build-tools/design-docs-ceilings.json';
 const SKIP = new Set(['node_modules', 'dist', '.git', '.claude', 'fixtures']);
 const LITERALS = new Set(['true', 'false', 'null', 'undefined', 'this', 'super', 'NaN', 'Infinity']);
@@ -34,6 +37,11 @@ const LOCATED =
 
 const readText = (root, file) => fs.readFileSync(path.join(root, file), 'utf8').replace(/\r\n/g, '\n');
 const byteSize = (text) => Buffer.byteLength(text);
+// A ceiling's floor: the least a file may weigh before its ceiling must come down to it, and the most a cut
+// forced by that ceiling may leave.
+const ceilingFloor = (ceiling) => Math.floor((ceiling * (100 - CEILING_HEADROOM)) / 100);
+// The highest ceiling whose floor is at most `size`.
+const ceilingFor = (size) => Math.ceil(((size + 1) * 100) / (100 - CEILING_HEADROOM)) - 1;
 const lineCount = (text) => (text === '' ? 0 : text.replace(/\n$/, '').split('\n').length);
 const formatBytes = (n) => n.toLocaleString('en-US');
 
@@ -157,28 +165,49 @@ function readCeilings(root) {
 	return fs.existsSync(file) ? parseCeilings(fs.readFileSync(file, 'utf8'), CEILINGS_FILE) : {};
 }
 
-function baseState(root, base) {
+function textAt(root, commit, file) {
 	try {
-		git(root, 'rev-parse', '--verify', '--quiet', `${base}^{commit}`);
+		git(root, 'cat-file', '-e', `${commit}:${file}`);
+	} catch {
+		return undefined;
+	}
+	return git(root, 'cat-file', 'blob', `${commit}:${file}`).replace(/\r\n/g, '\n');
+}
+
+function baseState(root, base) {
+	let commit;
+	try {
+		if (base.startsWith('-')) throw new Error('an option, not a ref');
+		commit = git(root, 'rev-parse', '--verify', '--quiet', `${base}^{commit}`).trim();
 	} catch {
 		throw new Error(`--base ${base} does not resolve to a commit in this checkout`);
 	}
 	const changed = new Set(
 		[
-			...git(root, 'diff', '--name-only', '-z', '--no-renames', base, '--').split('\0'),
+			...git(root, 'diff', '--name-only', '-z', '--no-renames', commit, '--').split('\0'),
 			...git(root, 'ls-files', '-z', '--others', '--exclude-standard').split('\0'),
 		].filter(Boolean)
 	);
-	let atBase = true;
-	try {
-		git(root, 'cat-file', '-e', `${base}:${CEILINGS_FILE}`);
-	} catch {
-		atBase = false;
+	const ceilingsText = textAt(root, commit, CEILINGS_FILE);
+	const ceilings = ceilingsText === undefined ? undefined : parseCeilings(ceilingsText, `${base}:${CEILINGS_FILE}`);
+	return { commit, changed, ceilings };
+}
+
+const TOKEN = /\s*([\p{L}\p{N}]+|[^\s\p{L}\p{N}])/gu;
+
+// Bytes of the tokens (letter and digit runs, single other marks, each with its leading whitespace) that `text` has
+// more of than `before`. Text the change only moved, re-wrapped or reordered matches itself wherever it went, so
+// what counts is the vocabulary it brings: a new sentence in full, one changed token of an edited one.
+function addedBytes(before, text) {
+	const left = new Map();
+	for (const [, token] of before.matchAll(TOKEN)) left.set(token, (left.get(token) ?? 0) + 1);
+	let added = 0;
+	for (const [spaced, token] of text.matchAll(TOKEN)) {
+		const count = left.get(token);
+		if (count) left.set(token, count - 1);
+		else added += byteSize(spaced);
 	}
-	const ceilings = atBase
-		? parseCeilings(git(root, 'show', `${base}:${CEILINGS_FILE}`), `${base}:${CEILINGS_FILE}`)
-		: undefined;
-	return { changed, ceilings };
+	return added;
 }
 
 let outlineModule;
@@ -347,7 +376,7 @@ function checkLinks(root, design, errors) {
 	}
 }
 
-export async function checkDesignDocs({ root, base } = {}) {
+export async function checkDesignDocs({ root, base, push } = {}) {
 	const errors = [];
 	const warnings = [];
 	const { design, maps } = docFiles(root);
@@ -364,6 +393,11 @@ export async function checkDesignDocs({ root, base } = {}) {
 		if (inScope(file)) errors.push(message);
 		else warnings.push(`${message} (unchanged since ${base}, so not failing this change)`);
 	};
+	const update = 'run `npm run check:design-docs -- --update-ceilings`';
+	const floorText = (ceiling) => {
+		const floor = ceilingFloor(ceiling);
+		return `${formatBytes(floor)} bytes (${100 - CEILING_HEADROOM}% of the ceiling${floor <= DESIGN_BUDGET ? ', and within the budget, so the ceiling goes' : ''})`;
+	};
 	for (const file of [...design, ...maps]) {
 		const text = readText(root, file);
 		const size = byteSize(text);
@@ -371,12 +405,13 @@ export async function checkDesignDocs({ root, base } = {}) {
 		if (size > limit)
 			report(
 				file,
-				`${file} is ${formatBytes(size)} bytes, over its ${file in ceilings ? 'ceiling' : 'budget'} of ${formatBytes(limit)} — prune it before adding`
+				file in ceilings
+					? `${file} is ${formatBytes(size)} bytes, over its ceiling of ${formatBytes(limit)} — prune it to at most ${floorText(limit)}, then ${update}`
+					: `${file} is ${formatBytes(size)} bytes, over its budget of ${formatBytes(limit)} — prune it before adding`
 			);
 		if (file.endsWith('MAP.md') && lineCount(text) > MAP_LINES)
 			report(file, `${file} is ${lineCount(text)} lines; a MAP.md stays within ${MAP_LINES}`);
 	}
-	const update = 'run `npm run check:design-docs -- --update-ceilings`';
 	for (const [file, ceiling] of Object.entries(ceilings)) {
 		if (path.posix.basename(file) !== 'DESIGN.md') {
 			errors.push(`${CEILINGS_FILE} lists ${file}; only DESIGN.md files get ceilings`);
@@ -392,10 +427,10 @@ export async function checkDesignDocs({ root, base } = {}) {
 				file,
 				`${file} is within the ${formatBytes(DESIGN_BUDGET)}-byte budget, so its ceiling is spent — ${update}`
 			);
-		else if (ceiling - size > CEILING_SLACK)
+		else if (size < ceilingFloor(ceiling))
 			report(
 				file,
-				`${file} is ${formatBytes(size)} bytes, ${formatBytes(ceiling - size)} under its ceiling of ${formatBytes(ceiling)}; a trim lowers the ceiling — ${update}`
+				`${file} is ${formatBytes(size)} bytes, more than ${CEILING_HEADROOM}% under its ceiling of ${formatBytes(ceiling)}; a trim that deep lowers the ceiling — ${update}`
 			);
 	}
 	if (baseline?.ceilings) {
@@ -416,6 +451,21 @@ export async function checkDesignDocs({ root, base } = {}) {
 			else if (ceiling > before)
 				errors.push(
 					`${CEILINGS_FILE} raises ${file} from ${formatBytes(before)} to ${formatBytes(ceiling)}; a ceiling only ever falls — prune instead`
+				);
+		}
+		// A cut back to just under the ceiling leaves the next change no room, so a change that needs a cut makes a deep
+		// one. Judged against the base ceiling, the one the change's new text had to fit under.
+		for (const [file, ceiling] of push ? [] : Object.entries(baseline.ceilings)) {
+			if (!baseline.changed.has(file) || !fs.existsSync(path.join(root, file))) continue;
+			const before = textAt(root, baseline.commit, file);
+			if (before === undefined) continue;
+			const text = readText(root, file);
+			const size = byteSize(text);
+			const room = ceiling - byteSize(before);
+			const added = addedBytes(before, text);
+			if (size <= ceiling && size > ceilingFloor(ceiling) && added > room)
+				errors.push(
+					`${file}: this change adds ${formatBytes(added)} bytes of new text to a file ${formatBytes(Math.abs(room))} bytes ${room < 0 ? 'over' : 'under'} its ceiling of ${formatBytes(ceiling)} at ${base}, and cuts it back only to ${formatBytes(size)}; a change that has to cut to fit cuts to at most ${floorText(ceiling)} — prune ${formatBytes(size - ceilingFloor(ceiling))} more, then ${update}`
 				);
 		}
 	}
@@ -624,14 +674,15 @@ export async function staleReport({ root, limit = Infinity } = {}) {
 	return text;
 }
 
-// Never raises an existing entry: a file past its ceiling has to be pruned, not re-recorded.
+// Never raises an entry: a file past its ceiling has to be pruned, not re-recorded. A file new to the list gets no
+// headroom, since a ceiling is never added under --base and room is what a trim earns.
 export function updateCeilings({ root } = {}) {
 	const { design } = docFiles(root);
 	const current = readCeilings(root);
 	const ceilings = {};
 	for (const file of design) {
 		const size = byteSize(readText(root, file));
-		if (size > DESIGN_BUDGET) ceilings[file] = Math.min(size, current[file] ?? size);
+		if (size > DESIGN_BUDGET) ceilings[file] = file in current ? Math.min(current[file], ceilingFor(size)) : size;
 	}
 	fs.writeFileSync(path.join(root, CEILINGS_FILE), `${JSON.stringify(ceilings, null, '\t')}\n`);
 	return ceilings;
@@ -640,6 +691,7 @@ export function updateCeilings({ root } = {}) {
 async function main(args) {
 	let root = path.resolve(import.meta.dirname, '..');
 	let base;
+	let push = false;
 	let mode = 'check';
 	let limit;
 	const value = (i) => {
@@ -649,6 +701,7 @@ async function main(args) {
 	for (let i = 0; i < args.length; i++) {
 		if (args[i] === '--base') base = value(i++);
 		else if (args[i] === '--root') root = path.resolve(value(i++));
+		else if (args[i] === '--push') push = true;
 		else if (args[i] === '--stale') mode = 'stale';
 		else if (args[i] === '--update-ceilings') mode = 'update';
 		else if (args[i] === '--limit') limit = Number(value(i++));
@@ -670,7 +723,7 @@ async function main(args) {
 		);
 		return 0;
 	}
-	const { errors, warnings } = await checkDesignDocs({ root, base });
+	const { errors, warnings } = await checkDesignDocs({ root, base, push });
 	for (const warning of warnings) console.error(`warning: ${warning}`);
 	if (errors.length) {
 		console.error(errors.map((e) => `error: ${e}`).join('\n'));
