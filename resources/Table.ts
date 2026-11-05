@@ -8538,7 +8538,9 @@ export function makeTable(options): TableResourceClass {
 						includeFullTextHighlights ||= condition.includeHighlights;
 						continue;
 					}
-					let attribute = attribute_name == null ? primaryKeyAttribute : findAttribute(attributes, attribute_name);
+					const leafAttribute =
+						attribute_name == null ? primaryKeyAttribute : findAttribute(attributes, attribute_name);
+					let attribute = leafAttribute;
 					if (!attribute && Array.isArray(attribute_name) && attribute_name.length > 1) {
 						// Plain JSON nested path: the leaf may not be declared in the
 						// schema. Fall back to the root attribute so we can validate
@@ -8548,16 +8550,10 @@ export function makeTable(options): TableResourceClass {
 					if (!attribute) {
 						if (attribute_name != null && !target.allowConditionsOnDynamicAttributes)
 							throw handleHDBError(new Error(), `${attribute_name} is not a defined attribute`, 404);
-					} else if (attribute.type || COERCIBLE_OPERATORS[condition.comparator]) {
-						// Do auto-coercion or coercion as required by the attribute type.
-						// Skipped for nested paths into plain JSON — the root attribute's
-						// type is not the leaf type, so coercion would be wrong.
-						const isNestedPathRoot =
-							Array.isArray(attribute_name) && attribute_name.length > 1 && !attribute.relationship;
-						if (!isNestedPathRoot) {
-							if (condition[1] === undefined) condition.value = coerceTypedValues(condition.value, attribute);
-							else condition[1] = coerceTypedValues(condition[1], attribute);
-						}
+					} else if (leafAttribute && condition.target === undefined) {
+						if (condition[1] === undefined)
+							condition.value = coerceConditionValue(condition.value, condition.comparator, leafAttribute);
+						else condition[1] = coerceConditionValue(condition[1], condition.comparator, leafAttribute);
 					}
 					if (condition.chainedConditions) {
 						if (condition.operator === 'or')
@@ -8570,8 +8566,6 @@ export function makeTable(options): TableResourceClass {
 						const conditionComparator = ALTERNATE_COMPARATOR_NAMES[condition.comparator] || condition.comparator;
 						const chainedComparator = ALTERNATE_COMPARATOR_NAMES[chained.comparator] || chained.comparator;
 						const chainedIsLower = chainedComparator === 'gt' || chainedComparator === 'ge';
-						const lower = chainedIsLower ? chained : condition;
-						const upper = chainedIsLower ? condition : chained;
 						const lowerComparator = chainedIsLower ? chainedComparator : conditionComparator;
 						const upperComparator = chainedIsLower ? conditionComparator : chainedComparator;
 						if (
@@ -8582,8 +8576,16 @@ export function makeTable(options): TableResourceClass {
 								'Invalid chained condition, only a greater than and a less than condition can be chained together'
 							);
 						}
+						// chained children are shared with the caller (cloneConditions), so convert into locals
+						const primaryValue = condition[1] === undefined ? condition.value : condition[1];
+						const chainedRawValue = chained[1] === undefined ? chained.value : chained[1];
+						const chainedValue =
+							leafAttribute && condition.target === undefined && chained.target === undefined
+								? coerceConditionValue(chainedRawValue, chained.comparator, leafAttribute)
+								: chainedRawValue;
 						condition.comparator = (lowerComparator + upperComparator) as any;
-						condition.value = [lower.value, upper.value];
+						condition.value = chainedIsLower ? [chainedValue, primaryValue] : [primaryValue, chainedValue];
+						if (condition[1] !== undefined) condition[1] = condition.value;
 					}
 				}
 				return conditions;
@@ -8657,12 +8659,6 @@ export function makeTable(options): TableResourceClass {
 					else if (fullTextComparatorMode(condition.comparator))
 						throw new ClientError('Full-text predicates must directly name an index on the queried table', 400);
 				}
-			}
-			function coerceTypedValues(value: any, attribute: Attribute) {
-				if (Array.isArray(value)) {
-					return value.map((value) => coerceType(value, attribute));
-				}
-				return coerceType(value, attribute);
 			}
 			return {
 				conditions: conditions.length > 0 || operator ? prepareConditions(conditions, operator) : conditions,
@@ -14791,6 +14787,31 @@ function createComputedFrom(computedFromExpression: string, attributesFallback?:
 	return script.runInThisContext()(attributesFallback);
 }
 
+// Pattern comparators (contains, starts_with, ends_with) stay out so their operand remains text.
+const ELEMENT_VALUE_COMPARATORS = new Set<string | undefined>([
+	undefined,
+	'equals',
+	'ne',
+	'lt',
+	'le',
+	'gt',
+	'ge',
+	'in',
+	'between',
+	'gele',
+	'gelt',
+	'gtlt',
+	'gtle',
+]);
+function coerceConditionValue(value: any, comparator: string, attribute: Attribute) {
+	const compared =
+		attribute.elements?.type && ELEMENT_VALUE_COMPARATORS.has(ALTERNATE_COMPARATOR_NAMES[comparator] || comparator)
+			? attribute.elements
+			: attribute;
+	if (!compared.type && !COERCIBLE_OPERATORS[comparator]) return value;
+	if (Array.isArray(value)) return value.map((value) => coerceType(value, compared, attribute.name));
+	return coerceType(value, compared, attribute.name);
+}
 const ENDS_WITH_TIMEZONE = /[+-][0-9]{2}:[0-9]{2}|[a-zA-Z]$/;
 /**
  * Coerce a string to the type defined by the attribute
@@ -14798,7 +14819,7 @@ const ENDS_WITH_TIMEZONE = /[+-][0-9]{2}:[0-9]{2}|[a-zA-Z]$/;
  * @param attribute
  * @returns
  */
-export function coerceType(value: any, attribute: any): any {
+export function coerceType(value: any, attribute: any, name?: string): any {
 	const type = attribute?.type;
 	//if a type is String is it safe to execute a .toString() on the value and return? Does not work for Array/Object so we would need to detect if is either of those first
 	if (value === null) {
@@ -14841,7 +14862,7 @@ export function coerceType(value: any, attribute: any): any {
 				return value;
 		}
 	} catch (error) {
-		error.message = `Invalid value for attribute ${attribute.name}: "${value}", expecting ${type}`;
+		error.message = `Invalid value for attribute ${name ?? attribute?.name}: "${value}", expecting ${type}`;
 		error.statusCode = 400;
 		throw error;
 	}

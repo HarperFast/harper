@@ -170,6 +170,25 @@ suite('documented nested relationship requests and responses', { timeout: 120_00
 		);
 	});
 
+	test('untyped condition values convert with the compared attribute type', async () => {
+		assert.deepStrictEqual(await get('/Brand/?products.price=ge=30&sort(id)&select(id,)'), [{ id: 42 }, { id: 44 }]);
+		assert.deepStrictEqual(await get('/Brand/?products.price=ge=30&=le=40&sort(id)&select(id,)'), [{ id: 42 }]);
+		assert.deepStrictEqual(await get('/Brand/?products[price=ge=30&=le=40]&sort(id)&select(id,)'), [{ id: 42 }]);
+		assert.deepStrictEqual(await get('/Product/?price=ge=10&=le=30&sort(id)&select(id,)'), [
+			{ id: 'p1' },
+			{ id: 'p4' },
+		]);
+		assert.deepStrictEqual(await get('/Product/?price=le=30&=ge=10&sort(id)&select(id,)'), [
+			{ id: 'p1' },
+			{ id: 'p4' },
+		]);
+		const invalid = await fetch(ctx.harper.httpURL + '/Product/?price=ge=10&=le=abc', {
+			headers: { Authorization: auth },
+			signal: AbortSignal.timeout(10_000),
+		});
+		assert.strictEqual(invalid.status, 400, await invalid.text());
+		assert.deepStrictEqual(await get('/Product/?price=ge=100&select(id,)'), [{ id: 'p6' }]);
+	});
 	test('the unique child sort key breaks equal-price ties', async () => {
 		try {
 			await insert('Product', [{ id: 'p0', brandId: 42, name: 'Adapter', price: 35 }]);
