@@ -42,11 +42,13 @@ describe('TTL cleanup scan interval', () => {
 			database: databaseName,
 			attributes: [{ name: 'id', isPrimaryKey: true }],
 		});
+		await Declared.put(1, { id: 1 }, { expiresAt: Date.now() - 1000 });
+		await Declared.primaryStore.committed;
+		const entry = Declared.primaryStore.getEntry(1);
+		assert(entry);
+		assert(entry.expiresAt < Date.now());
 		const Hydrated = hydrate(Declared, 'TtlHydrated', { expirationMS: 50 });
 		try {
-			await Hydrated.put(1, { id: 1 });
-			await Hydrated.primaryStore.committed;
-			assert(stored(Hydrated, 1));
 			await waitFor(() => !stored(Hydrated, 1), { timeout: 5000, message: 'the expired record was never evicted' });
 		} finally {
 			Hydrated.cleanup();
