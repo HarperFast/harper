@@ -93,7 +93,9 @@ describe('jobProcess', function () {
 			}
 		);
 		const messages = [];
-		worker.on('message', (message) => messages.push(message));
+		// the thread's own reports (resource metrics) share the port; only this harness's messages count
+		const harnessTypes = new Set(['updateJob', 'continued', 'withdrawn']);
+		worker.on('message', (message) => harnessTypes.has(message?.type) && messages.push(message));
 		const errors = [];
 		worker.on('error', (error) => errors.push(error));
 		let exited = false;
