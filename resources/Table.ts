@@ -1654,6 +1654,12 @@ function rescope(resolved: ResolvedRecordLockOptions, tableReplicates: boolean):
 	return scope === resolved.scope ? resolved : { ...resolved, scope };
 }
 
+/** A link that left the chain no longer reports its scope's state; the chain root does. */
+function lockScopeEnded(link: DatabaseTransaction): boolean {
+	const scope = link.leftChain ? (link.root ?? link) : link;
+	return scope.open === TRANSACTION_STATE.CLOSED && !link.saveCommits;
+}
+
 /** A lock covers only writes staged while it was held, so one acquired over a pending write would not cover it. */
 function pendingWriteLockError(): ClientError {
 	return new ClientError(
@@ -5372,7 +5378,7 @@ export function makeTable(options): TableResourceClass {
 					// context, which no longer points at this link, so the handle it acquired would be
 					// registered on a fresh transaction that no commit or abort ever releases — the
 					// same abandonment the leader's own post-acquisition guard below rejects.
-					if (link.open === TRANSACTION_STATE.CLOSED && !link.saveCommits)
+					if (lockScopeEnded(link))
 						throw new ServerError('Transaction was closed while waiting for a record lock', 500);
 					const remaining = resolved.timeout - (Date.now() - followerStart);
 					if (remaining <= 0)
@@ -5390,7 +5396,9 @@ export function makeTable(options): TableResourceClass {
 				return Promise.race([pending, followerDeadline]).then(
 					() => {
 						clearTimeout(followerTimer);
-						const acquired = link.recordLockFor(primaryStore, keyId);
+						// Where the leader registered, which is the replacement when `link` left the chain.
+						const registeredOn = link.leftChain ? txnForContext(context) : link;
+						const acquired = registeredOn.recordLockFor(primaryStore, keyId);
 						if (acquired && !acquired.isExpired()) {
 							const violation = scopeViolation(
 								acquired,
@@ -5402,7 +5410,7 @@ export function makeTable(options): TableResourceClass {
 							if (!joined && this.#hasStagedWriteFor(keyId)) throw pendingWriteLockError();
 							if (resolved.hold && !acquired.hold) {
 								acquired.upgradeToHold(resolved.lease);
-								detachScopedUpgradeWrite(link, keyId, acquired);
+								detachScopedUpgradeWrite(registeredOn, keyId, acquired);
 							}
 							return this.#reloadLocked(id, acquired, joined);
 						}
@@ -5443,8 +5451,7 @@ export function makeTable(options): TableResourceClass {
 			// handle is registered, so it retries and parks on the leader's own lock for its full timeout
 			// — inside a transaction that cannot finish until it gives up.
 			const acquisition = pendingPromise.then(async (handle) => {
-				const closedWhileWaiting = () => link.open === TRANSACTION_STATE.CLOSED && !link.saveCommits;
-				if (closedWhileWaiting()) {
+				if (lockScopeEnded(link)) {
 					// The transaction was aborted while this call waited; nothing would ever release the handle.
 					handle.release();
 					throw new ServerError('Transaction was closed while waiting for a record lock', 500);
@@ -5524,13 +5531,14 @@ export function makeTable(options): TableResourceClass {
 						handle.release();
 						throw error;
 					}
-					if (closedWhileWaiting()) {
+					if (lockScopeEnded(link)) {
 						handle.release();
 						throw new ServerError('Transaction was closed while waiting for a record lock', 500);
 					}
 				}
-				// A self-committing link can leave the chain while this call waits; the handle belongs on the
-				// link that replaced it, or no later lookup through txnForContext finds it.
+				// A link leaves the chain when a self-committing link commits or a mid-scope commit cuts it; the
+				// handle, its clock and its read snapshot belong to the link that replaced it, or no later lookup
+				// through txnForContext finds them.
 				if (link.leftChain) lockLink = txnForContext(context);
 				// Nothing awaits from here to registerRecordLock, so a write staged during the wait is seen here.
 				if (lockLink.hasPendingWriteTo(primaryStore, keyId) || this.#hasStagedWriteFor(keyId)) {
@@ -5542,12 +5550,12 @@ export function makeTable(options): TableResourceClass {
 					admittedEntry = (primaryStore as any).getEntry(id);
 					const floor = admissionFloor(admittedEntry?.version, dependencyFloor);
 					if (floor !== undefined) {
-						const explicit = link.open === TRANSACTION_STATE.OPEN && !link.saveCommits;
+						const explicit = lockLink.open === TRANSACTION_STATE.OPEN && !lockLink.saveCommits;
 						const transactionCannotAdopt =
 							explicit &&
-							((link.transaction && reservedLocalKey(link.transaction) !== undefined) ||
-								link.hasUnlockedWrite() ||
-								(link.timestamp !== undefined && link.timestamp >= floor));
+							((lockLink.transaction && reservedLocalKey(lockLink.transaction) !== undefined) ||
+								lockLink.hasUnlockedWrite() ||
+								(lockLink.timestamp !== undefined && lockLink.timestamp >= floor));
 						admitted = admissionStamp(tableRootStore, floor, handle.acquiredAt, !transactionCannotAdopt);
 					}
 				} catch (error) {
@@ -5557,48 +5565,48 @@ export function makeTable(options): TableResourceClass {
 				if (admitted)
 					handle.noteCandidateFloor(admitted.stamp, !admitted.claimed && admitted.floor > handle.acquiredAt);
 				lockLink.registerRecordLock(handle);
-				if (link.saveCommits && (context as any)?.timestamp) handle.noteCandidateFloor((context as any).timestamp);
-				if (link.open === TRANSACTION_STATE.OPEN && !link.saveCommits) {
+				if (lockLink.saveCommits && (context as any)?.timestamp) handle.noteCandidateFloor((context as any).timestamp);
+				if (lockLink.open === TRANSACTION_STATE.OPEN && !lockLink.saveCommits) {
 					// Explicit transaction() (not ImmediateTransaction): pin the clock to
 					// acquiredAt when no writes have been staged yet.  When writes already
 					// exist, leave the clock alone (ordering is best-effort; write held records
 					// in their own transaction for the guarantee).  ImmediateTransaction is
 					// excluded (saveCommits=true) — its clock is never pinned in lock();
 					// each save() stamps from the handle's committed version floor instead.
-					if (link.writes.length === 0 && !link.timestamp) {
-						previousTimestamp = link.timestamp;
-						writesBeforeTimestampRaise = link.writes.length;
+					if (lockLink.writes.length === 0 && !lockLink.timestamp) {
+						previousTimestamp = lockLink.timestamp;
+						writesBeforeTimestampRaise = lockLink.writes.length;
 						timestampChanged = true;
-						link.timestamp = handle.acquiredAt;
-						pinnedTimestamp = link.timestamp;
+						lockLink.timestamp = handle.acquiredAt;
+						pinnedTimestamp = lockLink.timestamp;
 					}
 					if (
 						admitted &&
-						admitted.floor > link.timestamp &&
-						(!link.transaction || reservedLocalKey(link.transaction) === undefined) &&
-						!link.hasUnlockedWrite()
+						admitted.floor > lockLink.timestamp &&
+						(!lockLink.transaction || reservedLocalKey(lockLink.transaction) === undefined) &&
+						!lockLink.hasUnlockedWrite()
 					) {
 						if (!timestampChanged) {
-							previousTimestamp = link.timestamp;
-							writesBeforeTimestampRaise = link.writes.length;
+							previousTimestamp = lockLink.timestamp;
+							writesBeforeTimestampRaise = lockLink.writes.length;
 							timestampChanged = true;
 						}
-						link.timestamp = Math.max(admitted.stamp, link.timestamp || handle.acquiredAt);
-						raisedTimestamp = link.timestamp;
+						lockLink.timestamp = Math.max(admitted.stamp, lockLink.timestamp || handle.acquiredAt);
+						raisedTimestamp = lockLink.timestamp;
 					}
-					if (!resolved.hold && link.transaction) {
+					if (!resolved.hold && lockLink.transaction) {
 						// Scoped lock: the read snapshot may predate the lock; drop it so the
 						// scope reads what it locked.  Hold locks use acquiredAt directly and
 						// do not update the read snapshot.
 						// The timestamp guard matches DatabaseTransaction's own setTimestamp calls: a
 						// deferred update() write leaves the clock at 0, which rocksdb-js rejects.
-						if (link.writes.length === 0 && link.readTxnsUsed <= 1) {
-							link.releaseReadTxn();
-							link.snapshotFree = true;
-						} else if (link.timestamp && reservedLocalKey(link.transaction) === undefined) {
+						if (lockLink.writes.length === 0 && lockLink.readTxnsUsed <= 1) {
+							lockLink.releaseReadTxn();
+							lockLink.snapshotFree = true;
+						} else if (lockLink.timestamp && reservedLocalKey(lockLink.transaction) === undefined) {
 							// A handle already reserved against the origin-closed floor keeps its minted key; the
-							// stamp is the record version either way, through `link.timestamp`.
-							link.transaction.setTimestamp(link.timestamp);
+							// stamp is the record version either way, through `lockLink.timestamp`.
+							lockLink.transaction.setTimestamp(lockLink.timestamp);
 						}
 					}
 				}
@@ -5616,10 +5624,10 @@ export function makeTable(options): TableResourceClass {
 						handle.release();
 						if (
 							timestampChanged &&
-							(link.timestamp === raisedTimestamp || link.timestamp === pinnedTimestamp) &&
-							link.writes.length === writesBeforeTimestampRaise
+							(lockLink.timestamp === raisedTimestamp || lockLink.timestamp === pinnedTimestamp) &&
+							lockLink.writes.length === writesBeforeTimestampRaise
 						)
-							link.timestamp = previousTimestamp;
+							lockLink.timestamp = previousTimestamp;
 						throw error;
 					};
 					try {
