@@ -149,7 +149,6 @@ class FakeCluster {
 			recovering: false,
 			/** Set by a test to make this node's control-entry writer throw synchronously. */
 			writerThrows: false,
-			/** A promise the writer waits for before the entry lands. */
 			writerGate: undefined,
 			timestampThrows: false,
 			writerCalls: 0,

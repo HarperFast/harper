@@ -2984,7 +2984,7 @@ export class LockCoordinator {
 	 * set the previous sweep measured — amortized O(1) per admission, and the map stays within twice
 	 * the live set rather than growing at the lock rate.
 	 *
-	 * Never has a drain to wake: `#admit` reaches neither call site for a recalled delegation.
+	 * Never has a drain to wake: `#admit` reaches a recalled delegation only as it installs, before any drain.
 	 */
 	#pruneAdmissions(delegation: Delegation, now: number): void {
 		for (const [admissionId, admission] of delegation.admissions) {
