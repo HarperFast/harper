@@ -29,7 +29,7 @@
  * `HARPER_CLI_*`, `CLI_TARGET_*` and the workload-identity variables. Each is a credential source
  * outranking the legacy payload fallback, so any of them left in place would decide what the
  * fallback arms resolve to: a developer's saved `harper login` token in ~/.harperdb/credentials.json,
- * a repo-root `.env` (cliOperations() calls dotenv.config() before resolving auth), the env vars
+ * a repo-root `.env` (cliOperations() refuses one that sets any of them), the env vars
  * themselves, and a CI runner's OIDC identity token.
  *
  * Run:
@@ -102,8 +102,6 @@ suite(
 			delete base.DOTENV_CONFIG_PATH;
 			try {
 				const { stdout, stderr } = await execFileAsync(process.execPath, [HARPER_BIN, ...args], {
-					// dotenv.config() runs before auth resolution, so a repo-root `.env` would refill
-					// what was just deleted.
 					cwd: cliHome,
 					env: { ...base, HOME: cliHome, USERPROFILE: cliHome, ...env },
 					timeout: 20_000,
