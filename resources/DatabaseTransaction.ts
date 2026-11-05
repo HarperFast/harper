@@ -806,8 +806,7 @@ export type TransactionWrite = {
 	// The record lock covering this write's key, whichever instance staged it; DatabaseTransaction.save()
 	// applies the lock's stamps, floor and liveness checks through it.
 	lockHandle?: RecordLockHandle;
-	// lockHandle came from recordLocks, not the locked instance: the caller's own write, which a
-	// scoped -> hold upgrade keeps and unlock() turns back into an ordinary write.
+	// Caller write: keep on scoped -> hold upgrade; make ordinary on unlock() before expiry.
 	lockJoined?: boolean;
 	// Per-operation holder version, set once on first save() and reused on retry so each lock write
 	// keeps its own candidate version across retries instead of falling back to stagedTxnTime or an

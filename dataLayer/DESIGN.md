@@ -10,113 +10,85 @@ Index of every design note: [DESIGN.md](../DESIGN.md).
 
 ## Version gate at startup: downgrades prompt, and only the minor direction is confirmable
 
-`getVersionUpdateInfo()` (`dataLayer/hdbInfoController.ts`) compares the store's `data_version_num` (latest `system.hdb_info` record) against the binary's `packageJson.version` on every start. Data newer than binary by a **major** version → hard refusal. Newer by a **minor** version → `forceDowngradePrompt()` asks for confirmation; answering yes records the data version back down to the binary's version and boots (upgrade directives are deliberately additive/downgrade-compatible — see [Struct mode is gated to primary DBIs](../resources/DESIGN.md#struct-mode-is-gated-to-primary-dbis-downgrade-compatibility) and `patchHdbSecretIsHashAttribute` in `upgrade/directives/5-2-0.ts`).
+`getVersionUpdateInfo()` (`dataLayer/hdbInfoController.ts`) compares the store's `data_version_num` (latest `system.hdb_info` record) with the binary's version on every start. Data newer by a **major** is refused; newer by a **minor**, `forceDowngradePrompt()` asks, and yes records the data version down and boots (upgrade directives are additive and downgrade-compatible — see [Struct mode is gated to primary DBIs](../resources/DESIGN.md#struct-mode-is-gated-to-primary-dbis-downgrade-compatibility) and `patchHdbSecretIsHashAttribute` in `upgrade/directives/5-2-0.ts`).
 
-- The prompt's answer can be supplied non-interactively via `CONFIRM_DOWNGRADE` — env var or `--CONFIRM_DOWNGRADE` CLI arg; argv wins (`assignCMDENVVariables`). With no override and no TTY on stdin, the prompt throws instead of blocking on stdin forever (#2046 — services/CI hung with nothing in the log; the mismatch is also logged to hdb.log now).
-- Upgrades never prompt (see the rationale comment in `bin/upgrade.js`); only the downgrade direction confirms. `upgradeCertsPrompt()` (4.x upgrade path; currently has no in-core caller) has the same no-TTY guard as `forceDowngradePrompt()` — a `GENERATE_CERTS` override is honored first, and with no TTY and no override it throws instead of blocking.
-- Enforced end to end by `integrationTests/upgrade/minor-downgrade.test.ts`: each release in `HARPER_PREVIOUS_MINOR_PATH` (CI: pinned releases of the previous minor and of `package.json`'s own minor) reads and writes what the current build wrote, and the data survives re-upgrading. Known exception (#3102): a table created on 5.3.0+ reads as empty on 5.2.x, because its stores carry a generation 5.2 does not read; rows 5.2.x writes to it land in a separate legacy store and vanish again on re-upgrade.
-- Test-suite gotcha: a suite that supplies the override via `process.argv` affects every later test file in the same mocha process — save and restore `process.argv` in `before`/`after` (see `unitTests/dataLayer/hdbInfoController.test.js`).
+- `CONFIRM_DOWNGRADE` (env var or `--CONFIRM_DOWNGRADE`; argv wins, `assignCMDENVVariables`) answers non-interactively. With no override and no TTY the prompt throws rather than blocking (#2046). `upgradeCertsPrompt()` has the same guard, honoring `GENERATE_CERTS` first. Upgrades never prompt (`bin/upgrade.ts`).
+- Enforced by `integrationTests/upgrade/minor-downgrade.test.ts` against each release in `HARPER_PREVIOUS_MINOR_PATH`. Known exception (#3102): a table created on 5.3.0+ reads as empty on 5.2.x, and rows 5.2.x writes to it vanish on re-upgrade.
+- A suite that sets the override through `process.argv` leaks it to later files in the same mocha process; save and restore it (`unitTests/dataLayer/hdbInfoController.test.js`).
 
 ## Opening a source LMDB DBI for migration must thread through `compression`
 
-When `migrateOnStart` opens a source LMDB primary store to read records out for the RocksDB copy, it constructs an `OpenDBIObject` and calls `sourceRootStore.openDB(key, dbiInit)`. Critically, the per-attribute `compression` setting from the corresponding `__dbis__` entry must be assigned onto `dbiInit` before that call — `dbiInit.compression = attribute.compression`. Without it, lmdb-js doesn't install its decompression layer; every read on the DBI returns raw compressed bytes. msgpackr then misreads bytes in the `0x40–0x7F` range as shared-structure refs, calls `loadStructures` → decodes the (also compressed) structures buffer → finds more bytes in that range → recurses → stack overflow.
+When `migrateOnStart` opens a source LMDB primary store for the RocksDB copy, it must set `dbiInit.compression = attribute.compression` from the `__dbis__` entry before `sourceRootStore.openDB(key, dbiInit)`, as `databases.ts` does. Without it lmdb-js installs no decompression layer, msgpackr misreads compressed bytes in `0x40–0x7F` as shared-structure refs, and `loadStructures` recurses into a stack overflow.
 
-Harper's normal `databases.ts` path already does this (search for `dbiInit.compression = primaryKeyAttribute.compression`); the migration path in `bin/copyDb.ts` has to match.
-
-The persisted `compression` value itself is LMDB-era and loosely shaped: `getDefaultCompression()` historically stored whatever falsy value the config resolved to (`''`, `false`, `null`) when `storage.compression` was disabled, and `{ startingOffset, threshold, dictionary? }` when enabled. lmdb-js interprets falsy as "no compression", but rocksdb-js >= 2.6 validates the option strictly (`''`/booleans throw `Unsupported compression algorithm`) and treats UNSET as "keep the family's persisted codec, or the build default (lz4) for a new family" — the inverse default of lmdb. Every RocksDB open therefore takes one per-process deployment codec, `getRocksCompression()` (applied inside `openRocksDatabase`; see [The RocksDB codec is a deployment setting, resolved once per process](../resources/DESIGN.md#the-rocksdb-codec-is-a-deployment-setting-resolved-once-per-process)), derived through `toRocksCompression()` in `resources/databases.ts`, which maps defined-falsy → `'none'` and enabled-without-an-algorithm → an explicit lz4 request when available. Don't pass persisted attribute compression to a RocksDB open directly.
-
-`bin/copyDb.ts`'s `openRocksDb` applies the same codec (`getRocksCompression() ?? toRocksCompression(...)`), not an exception to it. This is about the bytes migration writes, not about a later failure: `copyDbToRocks()` closes every target handle before the staging directory is renamed, and rocksdb-js permits an explicit codec change across a close/reopen, so the runtime would open the migrated database fine either way. But a migration that ignores the configured codec writes the entire dataset uncompressed, and those SST/blob files then keep their original codec until write traffic rewrites them — a full LMDB→RocksDB migration is the one moment the whole dataset is written at once, so it is exactly when the deployment's codec should apply.
+The persisted `compression` is LMDB-shaped: falsy (`''`, `false`, `null`) when disabled, `{ startingOffset, threshold, dictionary? }` when enabled. rocksdb-js >= 2.6 rejects `''` and booleans and treats unset as "keep the family's codec, or lz4". So every RocksDB open takes the one per-process codec, `getRocksCompression()` (inside `openRocksDatabase`; see [The RocksDB codec is a deployment setting, resolved once per process](../resources/DESIGN.md#the-rocksdb-codec-is-a-deployment-setting-resolved-once-per-process)), derived by `toRocksCompression()`; never pass persisted attribute compression to a RocksDB open. `bin/copyDb.ts`'s `openRocksDb` applies the same codec, because a full migration is the one moment the whole dataset is written, and files written uncompressed stay so until rewritten.
 
 ## System table bootstrap: `systemSchema.json` + upgrade directive
 
-Adding a new system table (e.g. `hdb_deployment` in #641 Slice A) requires three changes:
+A new system table needs three changes:
 
-1. **`json/systemSchema.json`** — the table entry. Fresh installs auto-create it via `utility/mount_hdb.ts:createTables()`, which iterates `Object.keys(systemSchema)` on first boot.
-2. **`utility/hdbTerms.ts`** — add the table name to `SYSTEM_TABLE_NAMES`.
-3. **`upgrade/directives/<version>.ts`** — provisions the table on existing installs that already have a system schema. Registered in `upgrade/directives/directivesController.ts` (which is otherwise empty — its `versions` Map gets populated by these imports). Each directive module default-exports an array of `{ version, sync_functions, async_functions }`; copy `5-1-0.ts` for the canonical pattern (uses `bridge.createTable` to match what `mount_hdb` does on a fresh install).
+1. **`json/systemSchema.json`** — the entry; fresh installs create it in `utility/mount_hdb.ts:createTables()`.
+2. **`utility/hdbTerms.ts`** — the name in `SYSTEM_TABLE_NAMES`.
+3. **`upgrade/directives/<version>.ts`** — provisions it on existing installs; registered in `directivesController.ts`, each module default-exporting `{ version, sync_functions, async_functions }` (copy `5-1-0.ts`, which uses `bridge.createTable` as `mount_hdb` does).
 
-   **Version the directive to the first release that ships the dependent code, not a later one.** Directives only run when `current_version < directive_version <= upgrade_version` (`directivesController.getVersionsForUpgrade`). The `hdb_deployment` directive was originally mis-tagged `5.2.0` while the deployment-recorder code shipped in `5.1.0`, so on every `5.0.x -> 5.1.x` upgrade the directive was filtered out (`5.2.0 > 5.1.x`) and the table never got created — breaking replicated `deploy_component` on peer nodes for the entire existing customer base. Caveat: `utility/common_utils.ts:compareVersions` strips trailing `.0` and therefore sorts a pre-release (`5.1.0-beta.1`) _above_ its GA (`5.1.0`), so an install already on a `5.1.0-beta.x` data version will not pick up a `5.1.0` directive when upgrading to GA; those pre-release installs need the table created by other means.
+   **Version the directive to the first release that ships the dependent code.** Directives run only when `current_version < directive_version <= upgrade_version` (`getVersionsForUpgrade`); `hdb_deployment`'s, mis-tagged `5.2.0` for code shipped in `5.1.0`, never ran on `5.0.x -> 5.1.x`, breaking replicated `deploy_component`. `compareVersions` sorts a pre-release above its GA, so an install on `5.1.0-beta.x` never runs a `5.1.0` directive.
 
-**Adding an attribute to an existing system table** takes only the `systemSchema.json` entry, as long as the directive for the release that ships it runs `registerSystemSchemaAttributes` (`upgrade/systemSchemaAttributes.ts`). A fresh install creates each table from the schema, but an upgraded install keeps the catalog its table was created with, so before 5.4.0 every attribute added to `hdb_deployment` after 5.1.0 (`activated_from`, `install_fingerprint`) was missing there (#2659). The function compares every system table this node has with its schema entry and adds what the catalog lacks, indexed the way a fresh install indexes the legacy `{ "attribute": … }` form. It never removes or changes an attribute, so each release's directive can list it again; 5.4.0's is the first. An attribute whose table declares its own shape on every boot (`hdb_oidc_token_use`, the certificate verification tables) belongs in that declaration instead. `mount_hdb` and the directives hand `table()` a copy of each schema attribute list, because `table()` keeps the array it is given as the table's live attribute list: without the copy, dropping an attribute from a fresh install's table also dropped it from the in-process schema.
+Set `audit = true` on the directive's `CreateTableObject`: `createTables()` audits every system table on a fresh install, so a directive without it makes upgraded nodes diverge. System tables replicate unless named in `NON_REPLICATING_SYSTEM_TABLES` (`resources/databases.ts`).
 
-System tables replicate by default. To opt out, add the name to `NON_REPLICATING_SYSTEM_TABLES` in `resources/databases.ts`. The check happens after table init and sets `table.replicate = false` per-node.
+**Adding an attribute to an existing system table** needs only the schema entry, provided the shipping release's directive runs `registerSystemSchemaAttributes` (`upgrade/systemSchemaAttributes.ts`): an upgraded install keeps the catalog its table was created with (#2659). It adds what each catalog lacks, never removes or changes, so every directive can list it again. `mount_hdb` and the directives pass `table()` a copy of each attribute list, since `table()` keeps the array as the live attribute list.
 
-Set `audit = true` on the directive's `CreateTableObject` (for upgrades): a fresh install audits every system table — `utility/mount_hdb.ts:createTables()` sets `createTable.audit = true` regardless of the schema entry — so a directive that leaves it off makes upgraded nodes diverge from fresh ones.
+**A replicated system table whose owner declares more than a name list** (a table-level `expiration`, an index) needs that declaration on every node, every boot. `hdb_oidc_token_use` is the case: `security/authn/oidc/tokenUseTable.ts` holds its one definition, which `bin/run.ts initialize()` applies after the upgrade step and before workers start, as do the 5.3.0 directive and the exchange path. Rows carry their expiry as record metadata, which replication applies; the table's `expiration` arms the cleanup scan. Every other route to a copy leaves it partial:
 
-**A replicated system table whose owner declares more than a name list** — a table-level `expiration`, an index — needs that declaration on every node, every boot. `hdb_oidc_token_use` is the case: `security/authn/oidc/tokenUseTable.ts` holds its one definition, and `bin/run.ts initialize()` applies it after the upgrade step and before worker threads start (skipped in read-only mode; a failure is logged and retried on the next start), as do the 5.3.0 directive and the exchange path. Each replay row carries its own expiry as record metadata, which replication applies on the receiving node; the table's stored `expiration` is what arms the cleanup scan that removes those rows once a node loads the table. Metadata rather than an `@expiresAt` attribute, because the attribute needs an index and a sweep of its own on every node, while reads and the cleanup scan already honor the metadata. `systemSchema.json` keeps only its primary key; the declaration completes the table on the first boot after install. Every other route to a copy leaves it partial, which is why the declaration cannot live only on the exchange path or in the directive:
+- A node not yet upgraded gets the table from a peer's `DB_SCHEMA` handshake, which carries names, types and the primary key but never `indexed`, `expiresAt` or `expiration`, and no peer repairs it afterwards; the directive then finds the table present.
+- A node that never runs the owner's code path never declares the rest, and its replicated rows are never removed.
+- An install on a pre-release of the directive's version never runs it (the `compareVersions` caveat).
 
-- A node that has not upgraded yet gets any system table it lacks from a peer's replication handshake (`DB_SCHEMA`), created from a snapshot that carries each attribute's name, type and primary-key bit — never `indexed`, `expiresAt` or the table's `expiration` — and schema-defined like the peer's copy. From then on the handshake keeps that local definition and logs `Schema for '<db>.<table>' is defined locally, but attribute '<name>: <type>' from '<node>' does not match local attribute which does not exist` for every attribute a peer has and it lacks, so no peer repairs it; the directive that runs when that node upgrades finds the table already there.
-- A node that never exercises the owner's code path (a passive cluster member for the OIDC exchange) never declares the rest, and the rows replicated to it are never removed.
-- An install already on a pre-release of the directive's version never runs the directive again (the `compareVersions` caveat above): from `5.3.0-beta.2`, `getVersionsForUpgrade` selects nothing for `5.3.0`, `5.3.0-beta.3` or `5.3.1`.
-
-A local `table()` declaration is authoritative, so repeating it repairs any of those shapes in place, keeping every row and its expiry, and is a no-op once the shape matches (measured 2026-09-25: under 1 ms; repairing a copy holding 100,000 replay rows, under 10 ms on either engine, since no row is rewritten and no index is built). Limits that come from the storage layer rather than this table:
-
-- A thread that only loads the table scans daily (the load path keeps the default interval; only a declaring thread uses a quarter of the `expiration`), so a spent row can stay on disk up to a day past its expiry. Reads skip it meanwhile.
-- Under `threads: 0` the main thread loads and declares the table before `startHTTPThreads` makes it worker 0. `scheduleCleanup` records an interval only once its thread has a worker index, so the first expiring write or declaration after that arms the scan; a single-threaded node that writes nothing after a restart does not scan until it does.
-- An attribute a declaration drops keeps its index store on disk: `table()` looks that store up by table name rather than attribute name, so it never drops it. A node that served exchanges on 5.3.0-beta.2 keeps its old `expiresAt` index; after a restart nothing opens it.
-
-The certificate verification tables (`hdb_certificate_cache`, `hdb_crl_cache`, `hdb_revoked_certificates`) follow the same pattern through `security/certificateVerification/verificationTables.ts`, applied in `initialize()` right after the OIDC table and by the verification path's getters. `ensureCertificateVerificationTables` also waits for the revoked table's index backfill and reads its outcome back from the catalog, since a failed backfill still settles. What their rows hold is in security/DESIGN.md.
+Repeating a local `table()` declaration repairs any of these in place, keeping every row, and is a no-op once the shape matches. Storage-layer limits: a thread that only loads the table scans daily, so a spent row can stay a day (reads skip it); under `threads: 0` nothing scans until the first expiring write or declaration after restart; and a dropped attribute's index store stays on disk, since `table()` looks it up by table name. The certificate verification tables follow the same pattern through `security/certificateVerification/verificationTables.ts`; their rows are covered in security/DESIGN.md.
 
 ## RocksDB restore: the restore lock + marker protocol (`dataLayer/restoreMarker.ts`)
 
 `restore_backup` closes the database on every thread, purges its directory and installs the backup.
 What keeps that safe:
 
-- **Nothing is purged until the backup verifies (harper#2965, `assertBackupReadable`).** `purgeAllFiles`
-  deletes before it copies, so `backups.verify` (checksums, plus `verifyTables`: each table opened one
-  at a time, the log snapshot validated strictly) runs first — in the repository, not a staged copy,
-  since restores often run short of disk. Selection and every manifest-derived check run under the
-  repository lock before the claim, so the backup checked is the one pinned. Verification is phase 0
-  of the child's `apply-and-prove` on every route and retry; online it runs after the close and
-  `verifyDatabaseClosed`, so no acknowledged write is lost to the purge. A crash before the marker
-  leaves an `applying` receipt and no marker, dropped with its pin before startup loads anything
-  (`finishCommittedRestoresBeforeStartup`); a failure after it leaves the marker for a rerun.
+- **Nothing is purged until the backup verifies (harper#2965).** `purgeAllFiles` deletes before it
+  copies, so `backups.verify` (checksums, plus `verifyTables`) runs first, in the repository, as phase
+  0 of the child's `apply-and-prove` on every route and retry. Selection and manifest checks run under
+  the repository lock before the claim, so the backup checked is the one pinned. Online it runs after
+  the close and `verifyDatabaseClosed`, so no acknowledged write is lost to the purge.
 - **Metadata lives in the reserved `` `restore` `` directory beside the database directory**, keyed by
-  `sha256(basename(dbPath)).slice(0,32)`. `<key>.lock` (an OS flock, released on death) serializes
-  restores; `<key>.restoring`, fsynced immediately before the first destructive step
-  (`markRestoreDestructive`), means destruction began and has not finished — its first line is the
-  directory name, so the scan maps it back. Hashing avoids a database named `orders.restoring` and
-  `NAME_MAX` at the 250-character name limit; the backtick is the one filesystem-legal character
-  `schemaRegex` forbids, and the startup scan skips the entry (warning when it looks like a database,
-  harper#2033). `scanBlockedRestores` probes the lock only when a marker exists: marker + held lock is
-  in progress, marker + free lock is a crashed restore awaiting a rerun.
+  `sha256(basename(dbPath)).slice(0,32)` (avoiding name clashes and `NAME_MAX`). `<key>.lock`, an OS
+  flock, serializes restores; `<key>.restoring`, fsynced just before the first destructive step
+  (`markRestoreDestructive`), means destruction began and has not finished, and its first line maps it
+  back to the directory. The backtick is the one filesystem-legal character `schemaRegex` forbids; the
+  startup scan skips the entry (harper#2033). Marker + held lock is in progress; marker + free lock is
+  a crashed restore awaiting a rerun (`scanBlockedRestores`).
 - **A recovery never clears a marker it found.** `claimRestore` samples `preexisting` under the lock;
-  such a run failing before destruction keeps the marker, or a reload would publish the earlier
-  attempt's partial directory.
-- **Closure is verified, not assumed.** The restore `close` phase waits for every recipient — job
-  workers included — to acknowledge or exit (else a retryable 409 after 30 s); the parent then polls
-  the process-global `getRegistryStatus()` until the path has no instance.
-- **The close fences blob work, not just handles.** Blob roots live outside RocksDB and saves,
-  reclamations and `cleanup_orphan_blobs` walks settle on their own, so each worker refuses saves
-  under every name it holds the directory by, stops reclamation and orphan walks, awaits dispatched
-  saves and unlinks, then closes and acknowledges. The fence records its restore's token: overlapping
-  restores must not lift each other's fence, and a set would fence a dead restore's database forever.
-  Lifting it discards the database's queued reclamations (they name paths the new generation reuses)
-  unless the restore aborted before destruction, and happens before the reload's rescan, whose replay
-  saves blobs.
+  such a run failing before destruction keeps it, or a reload would publish the partial directory.
+- **Closure is verified, not assumed.** The `close` phase waits for every recipient, job workers
+  included, to acknowledge or exit (else a retryable 409 after 30 s); the parent then polls
+  `getRegistryStatus()` until the path has no instance.
+- **The close fences blob work, not just handles.** Each worker refuses saves under every name it
+  holds the directory by, stops reclamation and orphan walks, awaits dispatched saves and unlinks, then
+  acknowledges. The fence records its restore's token, so overlapping restores cannot lift each
+  other's. Lifting it discards queued reclamations (their paths are reused) unless the restore aborted
+  before destruction, and precedes the reload's rescan, whose replay saves blobs.
 - **A component-held database cannot be restored online.** rocksdb-js counts handles per path with no
-  owner, so Harper cannot identify or close a component's handle. `verifyDatabaseClosed` waits
-  `DATABASE_CLOSE_WAIT_MS` for a finished job worker's close, then 409s naming `on_restart=true` and
-  the offline CLI; `system` is refused online up front. The CLI falls back offline only when the local
-  server is stopped, and a saved loopback `last_target` does not prove this install, so destructive
-  operations refuse rather than fall back (harper#2032).
-- **Job workers close their handles on exit** (`closeLoadedDatabases` in `jobProcess`): an exiting
-  thread otherwise leaks its refcount, and since `create_backup` is a job, every restore would fail its
-  closure check.
+  owner, so `verifyDatabaseClosed` waits `DATABASE_CLOSE_WAIT_MS`, then 409s naming `on_restart=true`
+  and the offline CLI; `system` is refused online up front. The CLI falls back offline only when the
+  local server is stopped, and a saved loopback `last_target` does not prove this install, so
+  destructive operations refuse rather than fall back (harper#2032).
+- **Job workers close their handles on exit** (`closeLoadedDatabases` in `jobProcess`), or every
+  restore after a `create_backup` job would fail its closure check.
 - **The child stamps a new generation before proving it** (`stampDatabaseDirectory`,
   [database generation](../resources/DESIGN.md#database-generation-and-resumable-positions)).
-- **Drop and restore share the lock.** `dropDatabase` takes the restore lock for every root, both
-  engines, and publishes a `.dropping` marker beside each before deleting any — recording the root's
-  blob identity and pinned blob paths under an integrity digest — removed only once every root and
-  blob path is gone. Scans and opens reject a marked root and its whole graph; a retry re-enumerates the
-  graph without the catalog, and re-attempts a worker close that failed strictly. A configured
-  `databases.<name>.path` is the exclusive root of one graph. Every open runs under
-  `withRestoreExclusion`, so the marker check and the open are one critical section;
-  `throwIfBlockedByRestore` is only a cheap pre-check.
+- **Drop and restore share the lock.** `dropDatabase` takes the restore lock for every root and
+  publishes a `.dropping` marker (blob identity and pinned blob paths under a digest) before deleting
+  any, removed once every root and blob path is gone. Scans and opens reject a marked root's whole
+  graph, and a retry re-enumerates the graph without the catalog. A configured `databases.<name>.path`
+  is the exclusive root of one graph. Every open runs under `withRestoreExclusion`, so the marker check
+  and the open are one critical section; `throwIfBlockedByRestore` is only a cheap pre-check.
 - **The child probes RocksDB's `LOCK` and fails closed**, since `purgeAllFiles` takes no lock and the
-  offline route rests on a PID heuristic. Only a lock conflict (`isRocksDbLockError`, matched by message
-  — rocksdb-js has no typed lock error) aborts with 409; any other open failure is what a restore
-  recovers.
+  offline route rests on a PID heuristic. Only `isRocksDbLockError` (matched by message) aborts with
+  409; any other open failure is what a restore recovers.
 
 Known limitation: the flock is process-owned, so a restore job thread that dies inside a live process
 keeps restores at 409 until restart; its child dies with the IPC channel, and the child's own lifetime
@@ -124,75 +96,57 @@ lock blocks a claim until it has.
 
 ## Backup repository coordination: the management lock, pins, and the restore exclusion (`dataLayer/backupRepository.ts`)
 
-- **The management lock.** rocksdb-js's `.backup.lock` covers only engine files, while blob snapshots
-  and manifests are Harper's, so every Harper mutation takes `withBackupRepositoryLock` first and a
-  create holds it across `db.backup()` and finalization (harper#2031). It waits 30 s, then 409s;
-  maintenance stalling behind a large create is the accepted cost. `assertBackupStillPresent` remains
-  for writers outside this protocol.
-- **`purge_backups` names its ids first** — sorted by `backupId`, not by listing order — checks them
-  against pins, then removes them in one call.
-- **A pin lives exactly as long as its restore's lock, marker or receipt (`pinIsLive`).** A killed
-  restore leaves both and its rerun clears both; a pin outliving them is ignored. Hence no owner, expiry
-  or sweep: each would be a second answer to when a pin ends. A marked `target_database` is proved this
-  source's debris by the marker's `source <sha256 of the resolved repository>` line
-  (`assertTargetClaimable`), never by a pin, except a marker that predates the line (harper#3106); an
-  admitted claim re-publishes the marker with its own source, and an in-place restore is always
-  admitted. The lock is taken before the pin; pin ids derive from the target, and the receipt records
-  its own (`source_pin_id`); the existence check and the pin are one step under the management lock.
-  A rerun that takes over an interrupted attempt pins its source under its own operation id, unless
-  an inherited pin already names that backup, and retires the inherited pins (`superseded_pin_ids`)
-  only once its source has proved: until then the earlier backup may be the blocked database's only
-  usable recovery source.
+- **The management lock.** rocksdb-js's `.backup.lock` covers only engine files, so every Harper
+  mutation takes `withBackupRepositoryLock`, and a create holds it across `db.backup()` and
+  finalization (harper#2031). It waits 30 s, then 409s.
+- **`purge_backups` names its ids first**, sorted by `backupId`, checks them against pins, then
+  removes them in one call.
+- **A pin lives exactly as long as its restore's lock, marker or receipt (`pinIsLive`)**, so it needs
+  no owner, expiry or sweep. A marked `target_database` is proved this source's debris by the marker's
+  `source` line (`assertTargetClaimable`), never by a pin, except a marker that predates the line
+  (harper#3106); an in-place restore is always admitted. The existence check and the
+  pin are one step under the management lock. A rerun over an interrupted attempt retires the
+  inherited pins (`superseded_pin_ids`) only once its own source has proved: until then the earlier
+  backup may be the blocked database's only recovery source.
 - **The restoring marker is an exclusion, not a check.** `withRestoreExclusion` holds the restore lock
-  shared across the marker check and the open; `checkRestoreState` probes shared, so concurrent
-  rescans never read each other as `in-progress`. On an unwritable root it degrades to the marker check
-  and warns once; any other failure propagates. A root already open is skipped.
-- **The marker is published temp → fsync → rename → parent fsync**, and an intact one (first line equal
-  to the directory name) is rewritten only to change its source.
+  shared across the marker check and the open; `checkRestoreState` probes shared. On an unwritable root
+  it degrades to the marker check and warns once.
+- **The marker is published temp → fsync → rename → parent fsync**, and an intact one is rewritten
+  only to change its source.
 
 ## Restore publication: receipts and the publication boundary
 
-Both routes — online and offline — publish through one protocol, because copied files are no proof
-that the restored generation is usable.
+Online and offline restores publish through one protocol, because copied files are no proof that the
+restored generation is usable.
 
-- **Process boundary.** The parent (job worker or CLI) owns the lock, marker,
-  pins, membership lock, every durable decision and publication. The child (`runRestoreChild`) runs
-  verify → probe → purge → blobs → stamp → prove and returns bounded evidence, so a native abort on
-  untrusted data costs the child. It takes the instance slot (one restore or verification child at a
-  time) and the target's `<key>.child.lock`, waits for `authorize`, and re-reads the receipt: a child
-  that outlived its parent or names another attempt exits untouched. Before its purge it sends
-  `destroying` and waits while the parent publishes the marker, so the marker exists exactly when
-  destruction may have begun. `acquireRestoreLock` refuses while the child lock is held.
-- **Receipts (`<key>.intent`).** Written under the target's lock before anything destructive;
-  `committed` (with the evidence) is written before the marker clears, and the receipt is deleted
-  last. Clearing the marker is the publication boundary: before it a failure leaves the target blocked
-  and rerunnable; after it the restore is only finished — marker, pins, job row, receipt — by the next
-  claim (`finishOutstandingRestore`) or startup, never re-applied. Online, the job row reads
-  `COMPLETE` only after the reload broadcast has returned, so the receipt outlives the reload. Only the
-  matching `operation_id` removes a receipt. One that is not committed, or unreadable, reserves its
-  database as a marker does.
-- **The proof.** Required column families come from a root-only open, checked against
-  `requiredStoreNames`, the predicate `initStores` opens by (`openRestoredGeneration`). Replay runs
-  with `policy: 'restore'` (no aged-log purge; any skipped entry, torn transaction, unreadable log or
-  corrupt frame fails). `assessBlobReferences` decodes every record strictly; a reference with neither
-  a file nor a capture marker fails unless `accept_unverified_blobs`.
+- **Process boundary.** The parent (job worker or CLI) owns the lock, marker, pins, membership lock
+  and every durable decision. The child (`runRestoreChild`) runs verify → probe → purge → blobs → stamp
+  → prove, so a native abort on untrusted data costs only the child. It takes the instance slot and the
+  target's `<key>.child.lock`, waits for `authorize`, and exits untouched if its receipt names another
+  attempt. It sends `destroying` and waits for the marker before its purge, so the marker exists
+  exactly when destruction may have begun.
+- **Receipts (`<key>.intent`).** Written under the lock before anything destructive; `committed`, with
+  the evidence, before the marker clears; deleted last, only by its `operation_id`. Clearing the marker
+  is the publication boundary: before it a failure leaves the target blocked and rerunnable; after it
+  the restore is only finished, by the next claim (`finishOutstandingRestore`) or startup, never
+  re-applied. Online, the job reads `COMPLETE` only after the reload broadcast returns. A receipt not
+  committed, or unreadable, reserves its database as a marker does.
+- **The proof.** Required column families are checked against `requiredStoreNames`
+  (`openRestoredGeneration`); replay runs with `policy: 'restore'`, failing on any skipped entry, torn
+  transaction or corrupt frame; `assessBlobReferences` decodes every record strictly, and a reference
+  with neither a file nor a capture marker fails unless `accept_unverified_blobs`.
 - **Peers.** Every route refuses with replication peers (`hdb_nodes` rows other than this node, or
-  `replication.routes`); an offline restore of `system` replaces the node list itself, so it checks
-  routes only. Routes are read from the configuration this process started with: a route written by
-  `set_configuration` is seen after the restart that applies it. Peer-adding operations hold
-  `.replication-membership.lock` shared (`fenceMembershipChange` in `chooseOperation`, keys matched
-  case-insensitively, a string `replication` value included); a restore holds it exclusive from its
-  peer check, which precedes finishing any earlier committed receipt, to the boundary; the startup
-  finalizers publish without it, since that data is already in place. This relies on
-  harper-pro's `add_node_back` also running through `chooseOperation`.
-- **Startup.** A committed receipt with no job row is finished before `system` loads (`bin/run.ts`,
-  `finishCommittedRestoresBeforeStartup`), which is how a crashed offline `system` restore finishes;
-  the same pass drops an `applying` receipt with no marker, whose restore died before destroying
-  anything (never a restart receipt, which is its request). `recoverRestoresAtStartup` runs once per
-  process, first on the main thread in `loadRootComponents` — before secret custody, application
-  install or any component — never from a worker-replacing reload; it finishes committed receipts
-  whose job row it can now settle and runs restart restores. Where directory fsync is unsupported (Windows) the evidence says
-  `durability: 'no-directory-fsync'`.
+  `replication.routes` as this process started with them); an offline `system` restore checks routes
+  only. While `system` is restore-blocked the census refuses rather than read it. Peer-adding
+  operations hold `.replication-membership.lock` shared (`fenceMembershipChange`); a restore holds it
+  exclusive from its peer check to the boundary. Startup finalizers publish without it (#4043). This
+  relies on harper-pro's `add_node_back` also running through `chooseOperation`.
+- **Startup.** `finishCommittedRestoresBeforeStartup` (`bin/run.ts`) finishes committed receipts with
+  no job row before `system` loads, and drops `applying` receipts with no marker (never a restart
+  receipt, which is its request). `recoverRestoresAtStartup` runs once, first on the main thread in
+  `loadRootComponents` (before secret custody, application install or any component, never from a
+  worker-replacing reload), settling the rest and running restart restores. Without directory fsync
+  (Windows) the evidence says `durability: 'no-directory-fsync'`.
 
 ## Restart restores (`dataLayer/restoreIntent.ts`)
 
@@ -225,129 +179,65 @@ restore and the next startup applies it, before anything can open the target.
 
 ## RocksDB managed backups: blob snapshots (`dataLayer/blobBackup.ts`)
 
-Restore admission rechecks the source under the management lock, then `claimRestore` takes the
-destination lock and durably writes the source claim; the marker follows just before the purge.
-`immutable_source` is the one exception: the operator asserts nothing modifies the repository until
-the restore finishes, so it takes no management lock and writes nothing there
-(`withBackupRepositoryReadAccess`), which lets it read read-only media; the marker's source line proves
-the rerun's ownership. rocksdb-js `backups.restore` tolerates its shared `.backup.lock` only on
-`EROFS`, so `EACCES` still fails. Delete and purge reconcile Harper's files even after an engine
-failure, propagating a cleanup failure only when the engine succeeded.
+`immutable_source` takes no management lock and writes nothing in the repository
+(`withBackupRepositoryReadAccess`): the operator asserts nothing modifies it until the restore
+finishes, and the marker's source line proves a rerun's ownership. rocksdb-js `backups.restore`
+tolerates its shared `.backup.lock` only on `EROFS`. Delete and purge reconcile Harper's files even
+after an engine failure.
 
-A database's file-backed blobs live in one or more roots _outside_ the RocksDB directory
-(`getBlobPathsForDatabaseName` in `resources/blob.ts` — one per configured `storage.blobPaths`, else
-`<hdb_root>/blobs/<database>`), so the engine's backup does not capture them. `create_backup`,
-`restore_backup`, `delete_backup`, `purge_backups`, and the streaming `get_backup` therefore handle
-blobs alongside the engine data (the `exclude_blobs` request option — default false — opts out for an
-engine-only backup):
+File-backed blobs live in roots outside the RocksDB directory (`getBlobPathsForDatabaseName`), so the
+engine's backup misses them; every backup operation handles them alongside (`exclude_blobs` opts out):
 
-- **Managed backups** snapshot the blob roots to `<backupDir>/blobs/<backupId>/<rootIndex>/<relpath>`
-  — a full, non-incremental copy per backup, mirroring the binding's `transaction_logs/<id>/` layout.
-  Each enumerated entry is classified before capture: complete blobs and existing abort markers are
-  hard-linked when possible (copied across filesystems), `.repair` temporaries are omitted, and an
-  incomplete blob is replaced by a retryable PENDING (`0xfe`) marker. If a classified blob vanishes
-  before capture, a terminal ERROR (`0xff`) marker preserves its file id. A file reclaimed before its
-  parent directory is read is outside the snapshot. This keeps a snapshot inode from changing as a
-  live write finishes, while complete blobs remain safe to hard-link because published blob paths are
-  write-once. The snapshot is built in a `<backupId>.tmp` sibling and atomically renamed so a failed create
-  leaves no partial snapshot. `restore_backup` purges each blob root and rewrites it from the snapshot;
-  `delete_backup` / `purge_backups` remove the corresponding snapshot directories.
-- **`get_backup`** appends the blob files to the same tar under `blobs/<rootIndex>/<relpath>`. Both
-  variants — engine-only and with blobs — go through one assembly (`streamBackupArchive`), because
-  only a plain tar can have an entry placed ahead of it and `harper-backup.json` must be first (see
-  below); the binding's own ability to emit a complete, natively gzipped archive is unusable for that
-  reason, and engine-only archives gave it up. The binding's streaming backup finalizes its tar with
-  exactly a 1024-byte (two-block) end-of-archive marker; `createBackupStream` writes the manifest
-  entry, streams the native _plain_ tar while withholding that trailer (verifying it is all-zero),
-  appends the blob entries and READMEs via `tar-stream` (whose `finalize` writes the one real
-  trailer), and gzips the combined stream itself when requested — so the binding is always asked for
-  a plain tar and compression happens after the append. No scratch disk. The same blob
-  classification rule applies: complete blobs are streamed, incomplete or post-enumeration missing
-  blobs become PENDING/ERROR marker entries, and repair temporaries are omitted.
-- **A consumer that aborts must tear the native producer down.** Destroying the response rejects the
-  gzip/passthrough pipeline from anywhere, including while `streamBackupArchive` is awaiting
-  something that never touches the combined stream. Nothing would then drain the native tar and the
-  binding would wait on it forever, holding the snapshot — and its deferred file deletions — open.
-  The rejection handler destroys the native stream itself rather than relying on control reaching the
-  `catch`.
-- **A native producer rejection must terminate the archive streams.** The producer can reject
-  without closing its writable. Its rejection handler destroys both the native tar and the combined
-  stream with the original error, releasing an assembler waiting for EOF or downstream backpressure.
+- **Managed backups** snapshot each root to `<backupDir>/blobs/<backupId>/<rootIndex>/<relpath>`, a
+  full copy per backup, built in a `<backupId>.tmp` sibling and renamed. Complete blobs and abort
+  markers are hard-linked (published blob paths are write-once), `.repair` temporaries are omitted,
+  an incomplete blob becomes a PENDING (`0xfe`) marker, and one that vanished after classification an
+  ERROR (`0xff`) marker, so a snapshot inode never changes as a live write finishes.
+- **`get_backup`** appends the blobs under `blobs/<rootIndex>/<relpath>` through one assembly
+  (`streamBackupArchive`), since `harper-backup.json` must be the first entry. It asks the binding for
+  a plain tar, withholds its 1024-byte trailer (verified all-zero), appends with `tar-stream`, and
+  gzips the result itself.
+- **A consumer that aborts must tear the native producer down**, or the binding waits on an undrained
+  tar forever, holding the snapshot open; the rejection handler destroys the native stream itself.
+  **A native producer rejection must terminate both streams** with the original error.
 
-**Completion manifest (`dataLayer/backupManifest.ts`).** `create_backup` is two-phase: the engine
-backup (`rootStore.backup()`) resolves — and is immediately visible to `list_backups`/`verify_backup`/
-`restore_backup` — before the blob snapshot is copied. Without a completion record, a blob-snapshot
-failure (or a crash between the phases) would leave an engine backup that lists and verifies as
-healthy while silently missing its blobs, and a concurrent restore could pick a backup id whose
-snapshot is still being written and treat it as intentionally engine-only. So a manifest at
-`<backupDir>/manifests/<backupId>.json` — recording the blob-inclusion policy — is written
-(atomically, temp + rename) only after _both_ phases are durable, and a graceful blob-snapshot
-failure rolls back the just-created engine backup + partial snapshot. Consumers treat a backup id
-with no manifest as incomplete: `list_backups` hides it, `verify_backup`/`restore_backup` reject it
-(409 for a specific id, "no complete backups" for `latest`), and restore uses the manifest's `blobs`
-flag — not the mere presence of a snapshot dir — to decide whether to restore blobs (so an engine-only
-backup leaves live blobs untouched, and a manifest that claims blobs but has no snapshot is flagged
-corrupt by verify). This closes the "healthy-looking but incomplete" and concurrent-restore races;
-the remaining engine/blob point-in-time skew (a blob unlinked between the engine cut and the blob
-walk) is best-effort: Harper does not freeze blob writes for a backup.
+**Completion manifest (`dataLayer/backupManifest.ts`).** The engine backup is visible before the blob
+snapshot is copied, so `<backupDir>/manifests/<backupId>.json`, recording the blob policy, is written
+atomically only after both phases are durable; a failed snapshot rolls the engine backup back. A
+backup with no manifest is incomplete: `list_backups` hides it and `verify_backup`/`restore_backup`
+reject it. Restore uses the manifest's `blobs` flag, not a snapshot directory's presence. Engine/blob
+point-in-time skew remains best-effort: blob writes are not frozen.
 
-**Archive manifest (`dataLayer/backupArchiveManifest.ts`).** Every `get_backup` archive carries
-`harper-backup.json` as its **first** tar entry, and a managed backup's completion manifest carries
-the same document in an optional `producer` block. First is load-bearing, not tidy: a `.tar.gz` must
-be inflated from the start to reach a later entry, so a trailing manifest would cost a full pass over
-a multi-gigabyte archive just to decide whether to reject it.
+**Archive manifest (`dataLayer/backupArchiveManifest.ts`).** `harper-backup.json` is every
+`get_backup` archive's **first** entry (a trailing one would cost inflating the whole `.tar.gz`), and
+a completion manifest's optional `producer` block.
 
-- **Compatibility is a capability list, not a version comparison.** The producer declares the tokens
-  a reader needs in `requires` (`rocksdb-stream-backup`, `blob-root-index`, `blob-deflate`) and a
-  reader refuses any token not in its own `SUPPORTED_ARCHIVE_CAPABILITIES`. Most releases change
-  nothing about the formats an archive carries, and the engine-level ones already fail closed on
-  their own, so a version table would be wrong in both directions. New tokens are additive, and an
-  older reader refusing an unknown one is the intended answer. `harper_version`,
-  `rocksdb_js_version` and the whole `source` block are provenance and are **never** gated on —
-  keeping them separate is what stops a description from becoming a compatibility check.
-  Restore submission and execution share `resolveCompleteBackup`, so an incompatible producer
-  returns a 4xx before a job is queued and is checked again when the restore runs.
-- **`roles: null` means "not enumerated", which is not "no roles".** Enumeration reads the
-  already-loaded `system` database rather than calling `getDatabases()`: the offline CLI runs with
-  nothing loaded, and a scan there would open — and lock — every database on the instance. Names
-  only; the archive carries no role definitions and a restore never creates a role.
-- **`archive_schema_version` is the major; `archive_schema_minor` is informational.** Additive
-  fields bump the minor, which no reader gates on. A reader refuses only a newer major.
-- **A manifest that predates this is accepted, not refused.** A managed backup written without a
-  `producer` block came from this instance's own lineage, so it is reported as unidentified. A
-  manifest that is present but malformed is an error — that is a different situation, and only the
-  first is eligible for an operator's provenance override.
-- **`accept_incompatible_backup` is that override.** A super-user boolean on `restore_backup`
-  (online, offline, CLI). It waives only the newer-major refusal, never an unsupported `requires`
-  token, which names a format this build cannot read. A waiver is logged at `warn` with the
-  producer's `harper_version`/`rocksdb_js_version` and returned as `compatibility_waived`.
+- **Compatibility is a capability list, not a version comparison.** A reader refuses any `requires`
+  token outside `SUPPORTED_ARCHIVE_CAPABILITIES`; versions and the `source` block are provenance,
+  **never** gated on. Submission and execution share `resolveCompleteBackup`, so an incompatible
+  producer gets a 4xx before a job is queued.
+- **`roles: null` means "not enumerated".** Enumeration reads the loaded `system` rather than calling
+  `getDatabases()`, which offline would open and lock every database.
+- **`archive_schema_version` is the major** a reader refuses when newer; `archive_schema_minor` is
+  informational. A manifest with no `producer` block is accepted as unidentified; a malformed one is an
+  error.
+- **`accept_incompatible_backup`** waives only the newer-major refusal, never an unsupported token; the
+  waiver is logged at `warn` and returned as `compatibility_waived`.
 
 ## Legacy SQL pre-fetch narrows only by top-level AND conjuncts (`dataLayer/SQLSearch.ts`)
 
-The legacy executor loads each WHERE column into one row pool (a union across columns, null where a
-row was not fetched for a column) and lets AlaSQL evaluate the WHERE over that pool.
-`_conditionsToFetchAttributeValues` may narrow a column's fetch to the values a predicate names only
-when every result row must satisfy that predicate: a leaf of the top-level AND chain, parentheses
-transparent. A predicate under `NOT` or inside any other expression must see every row, or the rows
-it rejects never reach AlaSQL and the negation runs over the wrong set (`NOT (c = 'alpha')` returned
-nothing, #1397 §D). Two blunter guards stay: any `OR` disables narrowing, and so does a self-join,
-because the narrowing maps are keyed by physical table, not alias. Under the default `auto` engine
-parenthesized predicates are handled by `sqlEngine` v2, so only queries v2 still rejects (such as
-`IIF(...)` or standalone unindexed predicates) fall back here. Enforced by
-`unitTests/dataLayer/SQLSearch.test.js` and `integrationTests/database/sql-not-predicate.test.ts`.
+The legacy executor loads each WHERE column into one row pool and lets AlaSQL evaluate the WHERE over
+it. `_conditionsToFetchAttributeValues` may narrow a column's fetch only by a leaf of the top-level AND
+chain, which every result row must satisfy; a predicate under `NOT` or inside another expression must
+see every row (`NOT (c = 'alpha')` returned nothing, #1397 §D). Any `OR` or self-join disables
+narrowing, since the maps are keyed by physical table. Under the default `auto` engine only queries
+`sqlEngine` v2 rejects fall back here. Enforced by `unitTests/dataLayer/SQLSearch.test.js` and
+`integrationTests/database/sql-not-predicate.test.ts`.
 
 ## SQL preserves sharding recovery refusals (`dataLayer/SQLSearch.ts`)
 
-An incomplete owner may return present bodies, but it must refuse owned misses and collection
-reads until its baseline is certified. SQL fetch and result-stage wrappers preserve
-`DatabaseShardingHeldError` and permanent `DATABASE_SHARDING_BLOCKED` refusals, including their
-503 status, retryable flag, and recovery or restart reason.
-Replacing it with a generic search error hides the operator action required to resume reads.
-`ResourceBridge.getRecords` also preserves this refusal instead of returning a message row,
-settling its transaction before rejecting `next()`. Unexpected SQL failures retain the existing
-generic response. Real baseline guards exercise
-scan, key, predicate, and aggregate query shapes in `unitTests/resources/shardingBaseline.test.js`;
-the Pro bootstrap suite checks the operations HTTP response after a lost origin is diagnosed.
-
-The unclean-exit fixture also checks permanent quarantine through scan, key, and legacy `IIF`
-queries before and after a worker starts with repaired configuration.
+An incomplete owner must refuse owned misses and collection reads until its baseline is certified. SQL
+fetch and result-stage wrappers, and `ResourceBridge.getRecords`, preserve `DatabaseShardingHeldError`
+and `DATABASE_SHARDING_BLOCKED` with their 503 status, retryable flag and reason; a generic search
+error would hide the operator action required. Exercised in `unitTests/resources/shardingBaseline.test.js`
+and the Pro bootstrap suite.
