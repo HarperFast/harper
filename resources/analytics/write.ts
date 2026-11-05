@@ -45,6 +45,8 @@ interface Action {
 }
 
 let activeActions = new Map<string, Action>();
+// recordAction's lookup of activeActions by its arguments, so a call does not concatenate and hash a key
+let actionIndex = new Map<string, Map<string | undefined, Map<string | undefined, Map<string | undefined, Action>>>>();
 let analyticsEnabled = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) > -1;
 let analyticsReadOnlyChecked = false;
 let sendAnalyticsTimeout: NodeJS.Timeout;
@@ -83,6 +85,7 @@ export function setAnalyticsEnabled(enabled: boolean) {
 	analyticsStart = 0;
 	lastFlushAt = 0;
 	activeActions = new Map();
+	actionIndex = new Map();
 	getTransactionQueueDepths(); // restarts the queue high-water marks with the window
 	analyticsGeneration++;
 }
@@ -132,6 +135,7 @@ function recordNewAction(key: string, value: Value, metric?: string, path?: stri
 		type,
 	};
 	activeActions.set(key, action);
+	return action;
 }
 
 /**
@@ -143,8 +147,25 @@ function recordNewAction(key: string, value: Value, metric?: string, path?: stri
  * @param type
  */
 export function recordAction(value: Value, metric: string, path?: string, method?: string, type?: string) {
-	if (!checkAnalyticsEnabled()) return;
-	recordKeyedAction(actionKey(metric, path, method, type), value, metric, path, method, type);
+	if (!checkAnalyticsEnabled() || analyticsExiting) return;
+	let byPath = actionIndex.get(metric);
+	if (byPath === undefined) actionIndex.set(metric, (byPath = new Map()));
+	let byMethod = byPath.get(path);
+	if (byMethod === undefined) byPath.set(path, (byMethod = new Map()));
+	let byType = byMethod.get(method);
+	if (byType === undefined) byMethod.set(method, (byType = new Map()));
+	let action = byType.get(type);
+	if (action) {
+		recordExistingAction(value, action);
+	} else {
+		// arguments that differ only in form (an empty path, a number for a string) share one action
+		const key = actionKey(metric, path, method, type);
+		action = activeActions.get(key);
+		if (action) recordExistingAction(value, action);
+		else action = recordNewAction(key, value, metric, path, method, type);
+		byType.set(type, action);
+	}
+	if (!sendAnalyticsTimeout) contextStorage.exit(sendAnalytics);
 }
 
 /** recordAction with the key built once, for a hot path that would otherwise concatenate and hash it per call */
@@ -258,6 +279,7 @@ async function collectAnalytics(final: boolean) {
 	// an entry already reported, and dropped with it.
 	const reportingActions = activeActions;
 	activeActions = new Map();
+	actionIndex = new Map();
 	const period = analyticsStart ? performance.now() - analyticsStart : 0;
 	analyticsStart = 0;
 	// Read before the first yield too, so the event loop's samples from the rest of the flush belong

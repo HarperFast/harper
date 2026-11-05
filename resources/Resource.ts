@@ -569,6 +569,7 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 	/** @deprecated Override the resource operation to perform application authorization with the complete request. */
 	// eslint-disable-next-line no-unused-vars
 	allowRead(user: User, target: RequestTarget, context: Context): boolean | Promise<boolean> {
+		// reads nothing from `this`: a live subscription's recheck runs it without the instance (readEvaluator)
 		return user?.role.permission.super_user;
 	}
 	/** @deprecated Override the resource operation to perform application authorization with the complete request. */
@@ -1183,11 +1184,12 @@ function registerLiveSubscriptionForContext(
 		!selectedByCaller &&
 		defaultAllowReads.has(resource.allowRead) &&
 		!resource.constructor._referencesRelationship?.(admittedTarget);
-	const evaluate = (principal: any) => {
-		const reTarget: any = cloneRequestTarget(admittedTarget);
-		reTarget.checkPermission = principal.role?.permission;
-		return resource.allowRead(principal, reTarget, context);
-	};
+	const resourceClass = resource.constructor;
+	// No closure here may name `resource`: it would keep the instance, and the record it loaded, alive for as
+	// long as the subscription, while a shared decision's stock allowRead reads nothing from its instance.
+	const evaluate = sharedDecision
+		? readEvaluator(resource.allowRead, undefined, admittedTarget, context)
+		: readEvaluator(resource.allowRead, resource, admittedTarget, context);
 	const handle = registerLiveSubscription({
 		subscription,
 		username,
@@ -1217,7 +1219,7 @@ function registerLiveSubscriptionForContext(
 				if (context) (context as any).user = viewer;
 			}
 			// Re-run the same operation-level allowRead that granted the subscription.
-			return !!(await (sharedDecision ? pass.memo(fresh, resource.constructor, evaluate) : evaluate(viewer)));
+			return !!(await (sharedDecision ? pass.memo(fresh, resourceClass, evaluate) : evaluate(viewer)));
 		},
 	});
 	let stale: boolean;
@@ -1234,6 +1236,15 @@ function registerLiveSubscriptionForContext(
 		// closed by its owner meanwhile, perhaps with a terminal error the caller acts on
 		return subscription;
 	});
+}
+
+/** Re-runs the allowRead that admitted a subscription, against a fresh copy of the target it was admitted with. */
+function readEvaluator(allowRead: Function, resource: any, admittedTarget: any, context: Context) {
+	return (principal: any) => {
+		const reTarget: any = cloneRequestTarget(admittedTarget);
+		reTarget.checkPermission = principal.role?.permission;
+		return allowRead.call(resource, principal, reTarget, context);
+	};
 }
 
 const KNOWN_METHODS = ['get', 'head', 'put', 'post', 'delete', 'patch', 'query', 'move', 'copy'];
