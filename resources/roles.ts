@@ -100,6 +100,12 @@ async function handleFile(
 		if (role === null || typeof role !== 'object' || Array.isArray(role)) {
 			throw new ClientError(`Role '${roleName}' must be an object`);
 		}
+		if (
+			Object.hasOwn(role, 'permission') &&
+			(!role.permission || typeof role.permission !== 'object' || Array.isArray(role.permission))
+		) {
+			throw new ClientError(`Role '${roleName}' permission must be an object`);
+		}
 		if (Object.hasOwn(role.permission || role, 'system')) {
 			const normalized = withoutSystemGrants({ permission: role.permission || role }, false).permission;
 			rolesToDefine[roleName] = role.permission ? { ...role, permission: normalized } : normalized;

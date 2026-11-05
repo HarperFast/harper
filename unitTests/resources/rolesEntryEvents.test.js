@@ -77,6 +77,24 @@ describe('roles entry events', () => {
 			assert.strictEqual(warnings.length, 2);
 		});
 	}
+	it('rejects a false permission wrapper before applying any role', async () => {
+		const harness = testScope();
+		const applied = [];
+		handleApplication(harness.scope, async (role) => applied.push(role.role));
+		await assert.rejects(
+			harness.handler({
+				entryType: 'file',
+				eventType: 'add',
+				absolutePath: '/app/roles.yaml',
+				contents: Buffer.from(
+					'first:\n  super_user: false\nlegacy:\n  permission: false\n  system:\n    hdb_user:\n      read: true\n'
+				),
+			}),
+			(error) => error.statusCode === 400
+		);
+		assert.deepStrictEqual(applied, []);
+	});
+
 	for (const contents of ['', '# No roles yet\n', '---\n']) {
 		it(`accepts an empty roles document ${JSON.stringify(contents)}`, async () => {
 			const harness = testScope();
