@@ -49,9 +49,11 @@ describe('TTL cleanup scan interval', () => {
 		assert(entry.expiresAt < Date.now());
 		const Hydrated = hydrate(Declared, 'TtlHydrated', { expirationMS: 50 });
 		try {
+			assert.strictEqual(Hydrated.expirationMS, 50);
 			await waitFor(() => !stored(Hydrated, 1), { timeout: 5000, message: 'the expired record was never evicted' });
 		} finally {
 			Hydrated.cleanup();
+			Declared.cleanup();
 		}
 	});
 
