@@ -815,7 +815,6 @@ interface PendingDelegation {
 	 * install, handed back with this one otherwise, so the home never keeps a token nothing here releases.
 	 */
 	supersededBy?: FencingToken;
-	/** Must not be admitted on: stops the barrier at once. */
 	recalled: boolean;
 	recalledPromise: Promise<void>;
 	markRecalled: () => void;
@@ -1775,7 +1774,7 @@ export class LockCoordinator {
 					// token on the NEXT pass, which is too late — this pass would have admitted on it first.
 					if (reply.token[0] !== authority.transport.homeMap(this.database)?.generation) {
 						// Hand it back rather than let the old home hold a key nobody is using for a full lease.
-						authority.#handBackPending(pending);
+						await authority.#handBackPending(pending);
 					} else {
 						const installed = authority.#installDelegation(
 							keyId,
@@ -1795,12 +1794,12 @@ export class LockCoordinator {
 						// A reply that outlived its own delegation grants nothing; fall through and ask again
 						// rather than admitting on authority the home has already expired.
 						if (installed && !installed.recalled && installed.expiresMono - authority.#monotonic() >= leaseMs) {
-							const round = authority.#admit(installed, leaseMs);
+							// Before `#admit`, which can throw: the recall must still find this delegation to surrender.
 							if (ours && pending.lastAdmission) {
 								installed.recalled = true;
 								pending.installed = installed;
 							}
-							return round;
+							return authority.#admit(installed, leaseMs);
 						}
 						// A long barrier can consume enough of the delegation that the requested lease no longer
 						// fits. Surrender the unused installed delegation before retrying; otherwise the home renews
@@ -2476,7 +2475,6 @@ export class LockCoordinator {
 			throw new Error('Cluster record lock coordination is not owned by this worker thread');
 		const keyId = this.#keyIdOf(recall.key);
 		const pending = this.#pendingDelegations.get(keyId);
-		// The pending token, or a renewal of it the home made in place.
 		if (pending && pending.token[0] === recall.token[0] && compareTokens(pending.token, recall.token) <= 0) {
 			// A newer token is the home's renewal of this grant: the handback must name it too, or the home
 			// keeps it until its lease.
@@ -2640,8 +2638,9 @@ export class LockCoordinator {
 	async quiesce(result: QuiesceResult, remaining: () => number, seen?: WeakSet<object>): Promise<void> {
 		if (this.#closed) return;
 		// Delegate side first: this is what admits, and surrendering is purely local — it cannot be
-		// refused by an unreachable peer, so it succeeds even when the recalls below do not.
-		for (const delegation of [...this.#delegations.values()]) {
+		// refused by an unreachable peer, so it succeeds even when the recalls below do not. A grant still
+		// in its barrier admits once it finishes, so it is drained here too.
+		for (const delegation of [...this.#delegations.values(), ...this.#pendingDelegations.values()]) {
 			// Closed mid-drain: a successor holds what is left, and the sweep visits it.
 			if (this.#closed) return;
 			// A successor shares these objects, so a sweep that also visits it must count each once.

@@ -149,6 +149,9 @@ class FakeCluster {
 			recovering: false,
 			/** Set by a test to make this node's control-entry writer throw synchronously. */
 			writerThrows: false,
+			/** A promise the writer waits for before the entry lands. */
+			writerGate: undefined,
+			timestampThrows: false,
 			writerCalls: 0,
 			writerReturnsVoid: false,
 			freshnessCalls: [],
@@ -191,7 +194,10 @@ class FakeCluster {
 			},
 			writeControl: this.writeControlFor(name),
 			keyIdOf: (key) => String(key),
-			nextTimestamp: () => ++this.tsCounter,
+			nextTimestamp: () => {
+				if (node.timestampThrows) throw new Error('the local key ceiling could not be persisted');
+				return ++this.tsCounter;
+			},
 			monotonic: () => node.mono + performance.now(),
 			skewMs: this.skewMs,
 			// The harness drives an injected clock whose readings say nothing about process start, so the
@@ -237,10 +243,13 @@ class FakeCluster {
 				throw new Error('transaction log is not accepting control entries');
 			}
 			if (!node?.alive) return Promise.resolve();
-			const position = ++this.tsCounter;
-			node.written.push({ ...entry, position });
-			this.#broadcastRelease(name, entry, position);
-			return Promise.resolve(node.writerReturnsVoid ? undefined : position);
+			const write = () => {
+				const position = ++this.tsCounter;
+				node.written.push({ ...entry, position });
+				this.#broadcastRelease(name, entry, position);
+				return node.writerReturnsVoid ? undefined : position;
+			};
+			return node.writerGate ? node.writerGate.then(write) : Promise.resolve(write());
 		};
 	}
 
@@ -678,7 +687,6 @@ describe('record lock delegations', () => {
 		});
 
 		describe('a recall that lands during the barrier (harper-pro#438)', () => {
-			/** Beta holds a grant for a key homed on gamma, inside a barrier the test ends; the lineage names alpha. */
 			async function grantInBarrier(waitMs = WAIT, leaseMs = LEASE) {
 				const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
 				const key = cluster.keyHomedOn('gamma');
@@ -699,7 +707,6 @@ describe('record lock delegations', () => {
 				return { cluster, key, beta, gamma: cluster.node('gamma'), barrier, acquiring };
 			}
 
-			/** A contender asks the key's home, which recalls beta. Resolves to the recalled token. */
 			async function contend(cluster, key) {
 				await cluster.node('gamma').coordinator.onDelegationRequest({
 					key,
@@ -847,7 +854,12 @@ describe('record lock delegations', () => {
 				const token = await contend(cluster, key);
 				const recall = beta.coordinator.onDelegationRecall({ key, token });
 				cluster.generation = 2;
+				let openWriter;
+				beta.writerGate = new Promise((resolve) => (openWriter = resolve));
 				barrier.finish();
+				assert.strictEqual(await settledWithin(recall, 50), false, 'answered before the handback was written');
+				beta.writerGate = undefined;
+				openWriter();
 				const round = await acquiring;
 				await recall;
 				assert.deepStrictEqual(
@@ -871,6 +883,38 @@ describe('record lock delegations', () => {
 					[null]
 				);
 				await assert.rejects(acquiring, /grants that arrived too late to use/);
+			});
+
+			it('an admission that throws still surrenders the grant the recall is waiting on', async () => {
+				const { cluster, key, beta, gamma, barrier, acquiring } = await grantInBarrier();
+				const token = await contend(cluster, key);
+				const recall = beta.coordinator.onDelegationRecall({ key, token });
+				beta.timestampThrows = true;
+				barrier.finish();
+				await assert.rejects(acquiring, /local key ceiling/);
+				await recall;
+				assert.strictEqual(beta.coordinator.stats.delegations, 0, 'a confirmed recall left the delegation admitting');
+				assert.strictEqual(beta.written.length, 1);
+				await waitFor(() => gamma.coordinator.stats.granted === 0);
+			});
+
+			it("a node's own drain covers a grant still in its barrier", async () => {
+				const { key, beta, barrier, acquiring } = await grantInBarrier();
+				const result = { complete: true, surrendered: 0, recalled: 0, outstanding: [] };
+				await beta.coordinator.quiesce(result, () => 50);
+				assert.deepStrictEqual(
+					result.outstanding.map((entry) => entry.key),
+					[key],
+					'reported nothing outstanding while the barrier could still admit'
+				);
+				barrier.finish();
+				const round = await acquiring;
+				const drained = { complete: true, surrendered: 0, recalled: 0, outstanding: [] };
+				const draining = beta.coordinator.quiesce(drained, () => 1_000);
+				beta.coordinator.release(key, round.admissionId);
+				await draining;
+				assert.deepStrictEqual(drained.outstanding, []);
+				assert.strictEqual(beta.coordinator.stats.delegations, 0);
 			});
 
 			it('a release the writer refuses still answers the recall', async () => {
