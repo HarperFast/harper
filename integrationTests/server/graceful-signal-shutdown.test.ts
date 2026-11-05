@@ -143,7 +143,10 @@ async function subscribe(ctx: ContextWithHarper): Promise<Subscription> {
 	);
 	// a socket reset by the exiting server still reports its close code
 	socket.on('error', () => {});
-	const [message] = await once(socket, 'message', { signal: AbortSignal.timeout(10_000) });
+	const [message] = await Promise.race([
+		once(socket, 'message', { signal: AbortSignal.timeout(10_000) }),
+		closed.then(({ code }) => Promise.reject(new Error(`subscriber closed with ${code} before its first message`))),
+	]);
 	return { threadId: JSON.parse(message.toString()).threadId, closed };
 }
 
@@ -334,7 +337,7 @@ suite(
 			// its response can be lost with the worker that serves it
 			sendOperation(ctx.harper, { operation: 'restart_service', service: 'http_workers' }).catch(() => {});
 			await waitFor(async () => (await subscribe(ctx)).threadId !== retiring.threadId, { timeout: 30_000 });
-			// the worker retires once its replacement is up, and then holds its subscriber for 5 s
+			// the worker retires once its replacement is up, then holds its subscriber for 5 s: signal inside that hold
 			await delay(500);
 			const signalledAt = Date.now();
 			proc.kill('SIGTERM');

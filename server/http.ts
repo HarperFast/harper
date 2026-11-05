@@ -1216,6 +1216,7 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 				});
 				const h2Front = createH2CProxyFront(h2Server) as any;
 				h2Front.isPerThreadSocket = true;
+				h2Front.servesHttp2 = true;
 				// Same mTLS mirroring as the h1 UDS server. Set on both servers: the
 				// compat req.socket.server resolves through the accepting net server
 				// (the front), but guard against Node reassigning socket.server during

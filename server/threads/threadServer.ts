@@ -163,6 +163,8 @@ function closeServers() {
 		const server = SERVERS[port];
 		const { promise: requestsDrain, resolve: requestsDrained } = Promise.withResolvers<void>();
 		requestDrains.push(requestsDrain);
+		// A raw socket listener has no requests, and its connections are its own to end
+		if (!server.closeIdleConnections && !server.servesHttp2) requestsDrained();
 		if (server.closeIdleConnections) {
 			// Here we attempt to gracefully close all outstanding keep-alive connections,
 			// repeatedly closing any connections that are idle. This allows any active requests
