@@ -814,7 +814,8 @@ const RELATIONSHIPS_LISTED = Symbol.for('harper.relationshipsListed');
 const SEARCH_AUTHORIZATION_TRANSFORMS = Symbol.for('harper.searchAuthorizationTransforms');
 const FULL_TEXT_READ_PERMISSION = Symbol('fullTextReadPermission');
 // Set beside AUTHORIZATION_SELECT only when attribute permissions (not just relationships) narrowed the select: true
-// when the select's own names are delivered, else the names, so reads never build a list only subscribe uses.
+// to deliver the select's names, or the role's attribute permissions to deliver its readable stored attributes.
+// subscribe derives the names, so a read never builds a list only subscribe uses.
 const ATTRIBUTE_PERMISSION_SELECT = Symbol('attributePermissionSelect');
 const AUTHORIZATION_TRANSFORM_METHODS = ['map', 'filter', 'concat', 'flatMap', 'slice', 'mapError'];
 
@@ -9305,7 +9306,9 @@ export function makeTable(options): TableResourceClass {
 			// a caller's own select is not applied to deliveries, only the one attribute permissions narrowed
 			const permissionSelect = (request as any)[ATTRIBUTE_PERMISSION_SELECT];
 			const deliveredAttributes: string[] | undefined =
-				permissionSelect === true ? selectedNames(request.select) : permissionSelect;
+				permissionSelect === true
+					? selectedNames(request.select)
+					: permissionSelect && permittedScalarAttributes(permissionSelect);
 			const thisId = requestTargetToId(request) ?? null; // treat undefined and null as the root
 			const scope = () =>
 				checkpointScope({
@@ -12408,8 +12411,7 @@ export function makeTable(options): TableResourceClass {
 			delete target.property;
 			(target as any)[AUTHORIZATION_SELECT] = true;
 			// subscribe delivers this record, not the related one, so it gets the readable stored attributes
-			if (attribute_permissions?.length > 0)
-				(target as any)[ATTRIBUTE_PERMISSION_SELECT] = permittedScalarAttributes(attribute_permissions);
+			if (attribute_permissions?.length > 0) (target as any)[ATTRIBUTE_PERMISSION_SELECT] = attribute_permissions;
 			return true;
 		}
 		let select: any = target?.select;
