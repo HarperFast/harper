@@ -108,7 +108,7 @@ interface PolicyPins {
 	environment: string;
 }
 
-/** The trust policy `enable_previews` writes for these pins; `get_preview_policy` judges a stored one against it. */
+/** Shared by `enable_previews` and `get_preview_policy`, so what one writes the other accepts. */
 function previewPolicy(names: PreviewNames, cleanup: boolean, pins: PolicyPins, description: string): DesiredPolicy {
 	return {
 		id: cleanup ? names.cleanupPolicy : names.policy,
@@ -271,6 +271,7 @@ export async function enablePreviews(req: any) {
 		const constraints = (desired.role.permission.component_deploy as ComponentGrant).constraints!;
 		const existing = roles.find((role) => role?.role === names.role);
 		const kept = existing?.permission?.component_deploy?.constraints?.generation;
+		// This node's fence record only: a generation fenced just on a peer is not seen.
 		const revoked = kept !== undefined && (await revokedGenerations(req.app)).includes(kept);
 		if (!existing) constraints.generation = mintGeneration();
 		else if (kept !== undefined) constraints.generation = kept;
@@ -480,11 +481,7 @@ interface PreviewRelease {
 	deploymentId: string;
 }
 
-/**
- * Asks every node, this one included, what it holds, and with a `generation`, to record it as revoked first. A node that
- * cannot answer, or does not acknowledge the fence, is returned as unreachable, since what it holds is unknown or still
- * unfenced.
- */
+/** A node that cannot answer, or does not acknowledge the fence, is unreachable: what it holds is unknown or unfenced. */
 async function censusOfNodes(app: string, generation?: string): Promise<{ nodes: any[]; unreachable: string[] }> {
 	const request: any =
 		generation === undefined
