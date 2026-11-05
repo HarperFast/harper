@@ -163,8 +163,8 @@ function closeServers() {
 		const server = SERVERS[port];
 		const { promise: requestsDrain, resolve: requestsDrained } = Promise.withResolvers<void>();
 		requestDrains.push(requestsDrain);
-		// A raw socket listener has no requests, and its connections are its own to end
-		if (!server.closeIdleConnections && !server.servesHttp2) requestsDrained();
+		// It has no requests, and its connections are its own to end
+		if (server.rawSocketListener) requestsDrained();
 		if (server.closeIdleConnections) {
 			// Here we attempt to gracefully close all outstanding keep-alive connections,
 			// repeatedly closing any connections that are idle. This allows any active requests
@@ -921,6 +921,7 @@ function onSocket(listener?: any, options?: any) {
 		// them lets listenOnPorts() give an exclusive (non-reusePort) one a single deterministic
 		// owner worker, which makes any EADDRINUSE on it unambiguously an external process.
 		secureSocketServer.dedicatedListener = true;
+		secureSocketServer.rawSocketListener = true;
 		SERVERS[options.securePort] = secureSocketServer;
 
 		// Create a corresponding Unix Domain Socket mirror for the secure socket
@@ -944,6 +945,7 @@ function onSocket(listener?: any, options?: any) {
 			const udsServer: any = createSocketServer({ ...socketOptionDefaults }, withProxyProtocol(listener));
 
 			udsServer.isPerThreadSocket = true;
+			udsServer.rawSocketListener = true;
 			if (threadType) claimListener(udsPath, threadType);
 			SERVERS[udsPath] = udsServer;
 			httpComponent.registerUdsCleanupPaths(udsPath, yamlPath);
@@ -961,6 +963,7 @@ function onSocket(listener?: any, options?: any) {
 		// accept connections for this listener elsewhere, and mark it worker-owned.
 		if (process.platform === 'darwin') socketServer.noReusePort = true;
 		socketServer.dedicatedListener = true;
+		socketServer.rawSocketListener = true;
 		SERVERS[options.port] = socketServer;
 	}
 	return socketServer;
