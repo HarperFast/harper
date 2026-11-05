@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793863038524,
+  "lastUpdate": 1793869583104,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -27297,6 +27297,58 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw write ops",
             "value": 1970,
+            "unit": "ops"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "b334fd009ce12dd9fe1efd57667fbff27e64f060",
+          "message": "Release v5.4.0-beta.2",
+          "timestamp": "2026-11-05T05:41:19Z",
+          "url": "https://github.com/HarperFast/harper/commit/b334fd009ce12dd9fe1efd57667fbff27e64f060"
+        },
+        "date": 1793869579159,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "value": 21818,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed3",
+            "value": 14352,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed5",
+            "value": 12720,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "value": 15034560,
+            "unit": "records"
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "value": 8939,
+            "unit": "ops"
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "value": 3349,
             "unit": "ops"
           }
         ]
