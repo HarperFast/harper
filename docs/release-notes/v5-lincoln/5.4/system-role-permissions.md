@@ -6,7 +6,7 @@ section: Upgrade Notes
 
 Role declarations cannot grant direct system-table access. Superusers retain Harper-managed read permissions.
 
-- The `add_role` and `alter_role` Operations API requests reject `permission.system` with a 400 response.
+- The `add_role` and `alter_role` Operations API requests, and `create_authentication_tokens` requests minting a scoped token, reject `permission.system` with a 400 response.
 - Legacy `system` declarations in roles files are ignored with a warning naming the role. Other permissions and roles still apply. Remove these declarations from configuration.
 - Legacy scoped tokens lose declared system grants when validated, while their other permissions remain effective. This does not invalidate the token itself.
 

@@ -32,6 +32,7 @@ if (process.env.HARPER_SYSTEM_ROLE_TEST_CHILD !== '1') {
 } else {
 	const assert = require('node:assert');
 	const testUtils = require('../testUtils.js');
+	const { waitFor } = require('../waitFor.js');
 	const env = require('#src/utility/environment/environmentManager');
 	const { databases } = require('#src/resources/databases');
 	const roles = require('#src/security/role');
@@ -59,7 +60,7 @@ if (process.env.HARPER_SYSTEM_ROLE_TEST_CHILD !== '1') {
 			await databases.system.hdb_user.delete(ROLE + '_second');
 		});
 
-		it('roles-file reconciliation removes a stored legacy grant once', async () => {
+		it('roles-file replay strips a stored legacy grant and then converges', async () => {
 			await insert.insert({
 				operation: 'insert',
 				schema: 'system',
@@ -95,9 +96,13 @@ if (process.env.HARPER_SYSTEM_ROLE_TEST_CHILD !== '1') {
 			const first = await databases.system.hdb_role.get(ROLE);
 			assert.strictEqual(first.permission.system, undefined);
 			assert.deepStrictEqual(first.permission.operations, ['read_only']);
+			await databases.system.hdb_role.put({ id: ROLE, role: ROLE, permission: { ...first.permission, system } });
+			assert.ok((await databases.system.hdb_role.get(ROLE)).permission.system);
 			reconcile();
+			await waitFor(async () => !(await databases.system.hdb_role.get(ROLE)).permission.system);
+			const cleaned = await databases.system.hdb_role.get(ROLE);
 			await handler(entry);
-			assert.strictEqual((await databases.system.hdb_role.get(ROLE)).__updatedtime__, first.__updatedtime__);
+			assert.strictEqual((await databases.system.hdb_role.get(ROLE)).__updatedtime__, cleaned.__updatedtime__);
 		});
 
 		for (const operation of ['add_role', 'alter_role']) {
