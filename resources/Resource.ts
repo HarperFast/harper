@@ -1208,7 +1208,9 @@ function registerLiveSubscriptionForContext(
 				// Re-read current user state from hdb_user/hdb_role, once per username per pass, so a dropped
 				// or role-stripped user no longer authorizes.
 				fresh = await pass.memo(resolveUser, username, resolveUser);
-				if (!fresh?.role) return false;
+				// Losing a role revokes only a principal admitted with one. A principal admitted without one (an
+				// mTLS CN with no hdb_user) was granted by allowRead alone, so allowRead alone rechecks it.
+				if (!fresh || (!fresh.role && user.role)) return false;
 				// Advance the subscription's context to the fresh user so downstream checks — context.user
 				// and getCurrentUser() (which reads the resource's context) — evaluate against current state,
 				// not the stale user captured at subscribe time. Each context gets its own view, which its
