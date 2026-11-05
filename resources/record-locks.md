@@ -82,7 +82,8 @@ Consequences that shape the code:
   `txn.commit()`) does everything after the wait on the link that replaced it: the pending-write check below,
   registration, the clock pin, the read-snapshot refresh, and a coalesced follower's lookup. Whether the scope
   ended is read from the chain root (`lockScopeEnded`), since a dropped explicit link is CLOSED while the scope
-  lives on. `abort()` still drops the chain without handing anything over: it releases scoped handles
+  lives on. A waiter that wakes while a mid-scope commit is still in flight sees the root CLOSED, as a link still
+  in the chain does, and gets the 500. `abort()` still drops the chain without handing anything over: it releases scoped handles
   link by link after the cut. Covered by `recordLockChainedImmediateLinks.test.js`,
   `recordLockChainedMidScopeCommit.test.js` and `recordLockLeftChainLockLink.test.js`.
 - **Release.** Every handle — scoped or hold — is registered in `link.recordLocks` and kept on the

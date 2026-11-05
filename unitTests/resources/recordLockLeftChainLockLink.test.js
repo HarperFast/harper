@@ -24,7 +24,6 @@ function settle(promise) {
 	);
 }
 
-// Everything a lock() does after a wait that outlives its chained link belongs to the link that replaced it.
 describe('lock() waiting across a commit that drops its chained link', () => {
 	let TableA;
 	let TableB;

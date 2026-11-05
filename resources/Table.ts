@@ -5538,9 +5538,8 @@ export function makeTable(options): TableResourceClass {
 						throw new ServerError('Transaction was closed while waiting for a record lock', 500);
 					}
 				}
-				// A link leaves the chain when a self-committing link commits or a mid-scope commit cuts it; the
-				// handle, its clock and its read snapshot belong to the link that replaced it, or no later lookup
-				// through txnForContext finds them.
+				// What follows belongs to the link that replaced a dropped one, or no later txnForContext lookup
+				// finds it.
 				if (link.leftChain) lockLink = txnForContext(context);
 				// Nothing awaits from here to registerRecordLock, so a write staged during the wait is seen here.
 				if (lockLink.hasPendingWriteTo(primaryStore, keyId) || this.#hasStagedWriteFor(keyId)) {
