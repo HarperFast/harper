@@ -123,7 +123,7 @@ Use this to land in the right folder before grepping. Every top-level folder is 
 ### Non-source
 
 - **`bin/`** — covered above (it's source).
-- **`benchmarks/`** — HNSW vector-search benchmark only (`hnsw-search.js`). Stand-alone; not part of CI.
+- **`benchmarks/`** — Stand-alone HNSW search (`hnsw-search.js`) and paired full-text analytics (`fulltext-analytics.mjs` / `.bench.js`) workloads; not part of CI.
 - **`build-tools/`** — build-pipeline scripts. [build-tools/DESIGN.md](build-tools/DESIGN.md) covers the published artifacts. Tests: `unitTests/build-tools/`; run `npm run test:unit:main` after changes.
 - **`dev/`** — single dev utility (`sync-commits.js`) for cross-repo commit syncing. Not runtime.
 - **`integrationTests/`** — end-to-end tests against a built distribution. Run with `npm run test:integration` / `npm run test:integration:all`. Subdirs mirror source. See `integrationTests/README.md`.

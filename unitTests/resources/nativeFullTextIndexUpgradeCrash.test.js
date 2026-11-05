@@ -13,6 +13,7 @@ describe('published native full-text upgrade process crash recovery', function (
 	this.timeout(120_000);
 	let directory;
 	before(async function () {
+		if (!process.env.HARPER_FULLTEXT_UPGRADE_ROOT) this.skip();
 		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb' || !(await supportsPublishedFullTextBinding())) this.skip();
 		directory = path.join(setupTestDBPath(), 'native-upgrade-crashes');
 	});

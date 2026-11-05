@@ -1033,6 +1033,28 @@
 			"type": "object",
 			"additionalProperties": false,
 			"properties": {
+				"fullText": {
+					"type": "object",
+					"additionalProperties": false,
+					"description": "Live, opt-in native full-text analytics. Omitted means disabled; no polling. Counters always record in the wrapper.",
+					"properties": {
+						"enabled": { "type": "boolean" },
+						"intervalMilliseconds": {
+							"type": "integer",
+							"minimum": 1000,
+							"maximum": 2147483647,
+							"description": "Per-handle collection interval. Implied default: 60000 ms. Calls are staggered."
+						},
+						"histograms": {
+							"type": "boolean",
+							"description": "Independently opt in to histogram recording. Implied default: false."
+						},
+						"snapshotBytes": {
+							"type": "boolean",
+							"description": "Independently opt in to reader byte observation. Implied default: false."
+						}
+					}
+				},
 				"aggregatePeriod": {
 					"type": "number",
 					"description": "Seconds between aggregation of raw analytics. Default: 60"

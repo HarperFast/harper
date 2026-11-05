@@ -17,6 +17,7 @@ import type {
 	DerivedIndexPositions,
 } from '../derivedIndexRuntime.ts';
 import { toBufferKey } from 'ordered-binary';
+import { fullTextTelemetryCollector } from '../analytics/fullTextTelemetryRuntime.ts';
 import { loggerWithTag } from '../../utility/logging/logger.ts';
 
 const logger = loggerWithTag('fulltext-derived-index');
@@ -791,7 +792,22 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	): Promise<void> {
 		let closeOperation = this.#closeOperations.get(engine);
 		if (!closeOperation) {
-			closeOperation = engine.close(options);
+			fullTextTelemetryCollector.beforeClose(engine);
+			try {
+				closeOperation = engine.close(options).then(
+					(result) => {
+						fullTextTelemetryCollector.afterClose(engine);
+						return result;
+					},
+					(error) => {
+						fullTextTelemetryCollector.closeFailed(engine);
+						throw error;
+					}
+				);
+			} catch (error) {
+				fullTextTelemetryCollector.closeFailed(engine);
+				throw error;
+			}
 			this.#closeOperations.set(engine, closeOperation);
 			const installed = closeOperation;
 			void installed.catch(() => {
