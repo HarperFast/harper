@@ -21,7 +21,7 @@ describe('lint-code.yaml design-docs step', function () {
 		}
 	});
 	afterEach(function () {
-		rmSync(dir, { recursive: true, force: true });
+		if (dir) rmSync(dir, { recursive: true, force: true });
 	});
 
 	// Runs the step the way GitHub runs a `run:` with no `shell:` on Linux: `bash -e {0}`.
