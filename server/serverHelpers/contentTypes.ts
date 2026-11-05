@@ -85,7 +85,6 @@ export function buildSelectColumns(currentSelect: any, attributes?: any[]): Colu
 			} else columns.push((column as any).name || column);
 		}
 		if (columns.wildcard) {
-			// a column the select also names (`*,note`) is already listed
 			const unique = [...new Set(columns)];
 			columns.length = 0;
 			columns.push(...unique);

@@ -46,6 +46,8 @@ MessagePack is another efficient binary format similar to CBOR, with broader ado
 
 ### CSV — `text/csv`
 
+<VersionBadge type="changed" version="v5.4.0" />
+
 Comma-separated values format, suitable for data export and spreadsheet import/export. CSV lacks hierarchical structure and explicit typing.
 
 A `select(*)` header starts with the table's declared attributes, so an optional attribute that is missing from the first row still has its column, with an empty cell where a row lacks it. When a custom `get` returns keys that are not declared attributes, those on the first row follow the declared columns; a key that first appears in a later row is not added.
