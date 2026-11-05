@@ -1,0 +1,56 @@
+name: Docs Preview
+
+# Asks HarperFast/documentation to deploy a preview of its site built from this PR when the PR
+# changes docs/, and to remove it when the PR closes. That repo's source-pr-preview.yaml re-reads
+# the PR, builds, deploys and keeps the link in a comment here.
+#
+# pull_request_target, so a fork's PR can dispatch as well: never check out or run anything from the
+# PR here, and never put PR text (title, branch, body) into a run: step.
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, closed]
+
+permissions: {}
+
+jobs:
+  dispatch:
+    name: Request the docs preview
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: read
+    steps:
+      # Not a paths filter: a close must dispatch even after the PR's docs/ changes were reverted.
+      - name: Check whether the PR changes docs/
+        id: scope
+        if: github.event.action != 'closed'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          count=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$NUMBER/files" \
+            --jq '[.[] | select((.filename | startswith("docs/")) or ((.previous_filename // "") | startswith("docs/")))] | length' |
+            awk '{ sum += $1 } END { print sum + 0 }')
+          echo "docs=$([ "$count" -gt 0 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+      # GITHUB_TOKEN cannot dispatch to another repository.
+      - name: Generate app token
+        id: app-token
+        if: github.event.action == 'closed' || steps.scope.outputs.docs == 'true'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ secrets.HARPERFAST_AI_CLIENT_ID }}
+          private-key: ${{ secrets.HARPERFAST_AI_APP_PRIVATE_KEY }}
+          owner: HarperFast
+          repositories: documentation
+          permission-contents: write
+      - name: Dispatch to HarperFast/documentation
+        if: steps.app-token.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          EVENT: ${{ github.event.action == 'closed' && 'docs-source-pr-preview-cleanup' || 'docs-source-pr-preview' }}
+          NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          jq -n --arg event "$EVENT" --arg repo "$GITHUB_REPOSITORY" --argjson number "$NUMBER" \
+            '{event_type: $event, client_payload: {repo: $repo, number: $number}}' |
+            gh api repos/HarperFast/documentation/dispatches --input -
