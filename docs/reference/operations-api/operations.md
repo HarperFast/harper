@@ -1686,7 +1686,7 @@ The grant is where the application's preview limits live, so the cluster enforce
 | `maxPreviews`   | A whole number of 1 or more. Without it, a node's [`deployment.previews.maxPerApplication`](../configuration/options.md#deployment) applies.                 |
 | `maxTtlDays`    | A number of days greater than 0. Defaults to `7`.                                                                                                            |
 
-It only creates. It keeps a record that already matches, so running it again changes nothing. If a record exists and differs, such as a role with other limits, it fails with `409`, writes nothing, and lists each difference. So does another enabled trust policy that would match the same runs and give them a different user or operations, since the exchange [refuses such a token](#exchange_oidc_token): give the application its own workflow file. To change the limits, disable previews, then enable them again.
+It creates what is missing and keeps a record that already matches, so running it again changes nothing, with one exception: a role whose identity `generation` this node revoked, which is what a `disable_previews` that stopped part-way leaves once its user is reactivated, refuses every deploy under it. `enable_previews` then fences that generation on every node, and only if each acknowledges it replaces the role's `generation` with a new one; otherwise it fails with `409` and changes no record, and running it again once the nodes answer, or finishing `disable_previews`, resumes. Only this node's record of revoked generations is consulted. If a record exists and differs, such as a role with other limits, it fails with `409`, writes nothing, and lists each difference. So does another enabled trust policy that would match the same runs and give them a different user or operations, since the exchange [refuses such a token](#exchange_oidc_token): give the application its own workflow file. To change the limits, disable previews, then enable them again.
 
 The response has `message`, `created`, the list of records it created, and everything [`get_preview_policy`](#get_preview_policy) returns.
 
@@ -1740,7 +1740,7 @@ Returns the application's preview identity as the cluster holds it:
 - `repository`, `workflow` and `branch`, read from the deploy policy's `workflow_ref`; `repository_id`, `environment` and `audience` from the deploy policy; `cleanupEnvironment` from the cleanup policy.
 - `grant`, the role's `component_deploy`, with its constraints; `operations`, the role's.
 - `trust`, the two trust policies as [`list_oidc_trust`](#list_oidc_trust) returns them.
-- `problems`, each way the records differ from what `enable_previews` writes, such as `user "my-app-ci-preview" is inactive`, `trust policy "github-actions-my-app-preview" is disabled`, or a policy whose operations are not the expected ones.
+- `problems`, each way the records differ from what `enable_previews` writes, such as `user "my-app-ci-preview" is inactive`, a role whose identity `generation` this node revoked, or a trust policy that is disabled or whose issuer, claims or operations are not the expected ones: the same differences that make `enable_previews` fail with `409`.
 - `enabled`, `true` only when `problems` is empty.
 
 ### `add_ssh_key`
