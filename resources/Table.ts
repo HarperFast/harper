@@ -11846,12 +11846,13 @@ export function makeTable(options): TableResourceClass {
 			const value = record == null ? undefined : resolver ? resolver(record) : record[key];
 			const overStub = existingIsStub && resolver && primaryStore.encoder.resolvedAttributeNames?.has(key);
 			const existingValue =
-				existingRecord &&
-				(resolver
-					? overStub
-						? resolveOverStub(resolver, existingRecord, key)
-						: resolver(existingRecord)
-					: existingRecord[key]);
+				existingRecord == null
+					? undefined
+					: resolver
+						? overStub
+							? resolveOverStub(resolver, existingRecord, key)
+							: resolver(existingRecord)
+						: existingRecord[key];
 			if (value === existingValue && !isIndexing && !overStub) {
 				continue;
 			}
