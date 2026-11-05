@@ -76,7 +76,7 @@ describe('threads.v8Flags', function () {
 		assert.deepStrictEqual(result, { stackTraceLimit: 7 });
 	});
 
-	it('refuses an invalid value at startHTTPThreads entry, before any startup work', async () => {
+	it('refuses an invalid value at startHTTPThreads entry, before workers or listeners', async () => {
 		const {
 			results: [refused],
 		} = await runHarness(['optimize-for-size'], 'startHTTPThreads');
