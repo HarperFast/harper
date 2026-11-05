@@ -42,6 +42,28 @@ suite('live sourcedFrom local log identities', (ctx: ContextWithHarper) => {
 		return { state: readiness.state, ownerEpoch: readiness.owner_epoch };
 	}
 
+	async function waitForSourceState(condition: (state: any) => boolean, message: string) {
+		let state;
+		try {
+			await waitFor(
+				async () => {
+					state = await request('/SourceState/');
+					return condition(state);
+				},
+				{ timeout: 30_000, message }
+			);
+		} catch (error) {
+			(error as Error).message += `; last source state: ${JSON.stringify({
+				entries: state?.entries?.slice(-20),
+				records: state?.records,
+				vector: state?.vector,
+				genericSourceReads: state?.genericSourceReads,
+			})}`;
+			throw error;
+		}
+		return state;
+	}
+
 	async function search(text: string) {
 		const records = await request('/Probe/', 'QUERY', {
 			conditions: [
@@ -139,22 +161,27 @@ suite('live sourcedFrom local log identities', (ctx: ContextWithHarper) => {
 			const source = `${kind}Source`;
 			const mirror = `${kind}Mirror`;
 			const before = await indexEpochs();
+			const sourceReads = kind === 'Generic' ? (await request('/SourceState/')).genericSourceReads : undefined;
 			for (const [id, title] of [
 				['s1', 'alpha'],
 				['s2', 'beta'],
 			]) {
 				await request(`/${source}/${id}`, 'PUT', { id, title, status: 'active', revision: 'r1' });
 			}
+			if (kind === 'Generic') {
+				await waitForSourceState((state) => {
+					const original = state.records[source].find((record) => record?.id === 's2');
+					return state.records[mirror].some(
+						(record) => record?.id === 's2' && record.value.revision === 'r1' && record.version === original?.version
+					);
+				}, `${mirror} must receive s2 revision r1 before its source is patched`);
+			}
 			await request(`/${source}/s2`, 'PATCH', { status: 'withdrawn', revision: 'r2' });
 
 			const isCaseRecord = ({ id }) => id === 's1' || id === 's2';
-			let state;
-			await waitFor(
-				async () => {
-					state = await request('/SourceState/');
-					return state.entries.filter((entry) => entry.table === mirror && isCaseRecord(entry)).length >= 3;
-				},
-				{ timeout: 30_000, message: `${mirror} must receive all three live writes without a cache read` }
+			const state = await waitForSourceState(
+				(state) => state.entries.filter((entry) => entry.table === mirror && isCaseRecord(entry)).length >= 3,
+				`${mirror} must receive all three live writes without a cache read`
 			);
 			const sourceEntries = state.entries.filter((entry) => entry.table === source && isCaseRecord(entry));
 			const mirrorEntries = state.entries.filter((entry) => entry.table === mirror && isCaseRecord(entry));
@@ -188,10 +215,27 @@ suite('live sourcedFrom local log identities', (ctx: ContextWithHarper) => {
 				6,
 				`separate local commits must have distinct keys: ${JSON.stringify(entries)}`
 			);
+			if (kind === 'Generic') {
+				await request(`/${source}/s2`, 'PUT', { id: 's2', title: 'burst', revision: 'r3' });
+				await request(`/${source}/s2`, 'PATCH', { revision: 'r4' });
+				await waitForSourceState((state) => {
+					const original = state.records[source].find((record) => record?.id === 's2');
+					return state.records[mirror].some(
+						(record) => record?.id === 's2' && record.value.revision === 'r4' && record.version === original?.version
+					);
+				}, `${mirror} must receive the newest burst revision and source version`);
+				await assertIndexProgress('genericburst', [0, 0.5, 0.25], before);
+				assert.strictEqual(
+					(await request('/SourceState/')).genericSourceReads,
+					sourceReads,
+					'live apply must not re-fetch the source'
+				);
+			}
 		});
 
 		test(`${kind} multi-record live apply keeps each transaction grouped under one fresh key`, async () => {
 			const before = await indexEpochs();
+			const sourceReads = kind === 'Generic' ? (await request('/SourceState/')).genericSourceReads : undefined;
 			await request(`/${kind}Source/`, 'PUT', [
 				{ id: 'batch1', title: 'one', revision: 'r1' },
 				{ id: 'batch2', title: 'two', revision: 'r1' },
@@ -227,6 +271,22 @@ suite('live sourcedFrom local log identities', (ctx: ContextWithHarper) => {
 				source.map(({ version }) => version)
 			);
 			await assertIndexProgress(`${kind.toLowerCase()}batch`, kind === 'Direct' ? [0, 1, 1] : [0, -1, 1], before);
+			if (kind === 'Generic') {
+				assert.strictEqual(
+					(await request('/SourceState/')).genericSourceReads,
+					sourceReads,
+					'live transaction apply must not re-fetch the source'
+				);
+				const response = await fetch(`${ctx.harper.httpURL}/GenericMirror/source-read-observation`, {
+					headers,
+					signal: AbortSignal.timeout(45_000),
+				});
+				assert.strictEqual(response.status, 404, await response.text());
+				assert.ok(
+					(await request('/SourceState/')).genericSourceReads > sourceReads,
+					'a real cache miss must exercise the observed source get'
+				);
+			}
 		});
 	}
 });

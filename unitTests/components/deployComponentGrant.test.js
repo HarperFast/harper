@@ -305,6 +305,35 @@ describe('deploy_component under a component grant (harper#3046)', function () {
 			);
 		});
 
+		it("refuses to activate a staged build stamped with another of its identity's generations, or with none", async () => {
+			const stage = (pr, generation) =>
+				deploy(
+					{
+						project: `pk-pr-${pr}`,
+						host: `pk-${pr}.app.example.com`,
+						activate: false,
+						restart: undefined,
+						preview: { ...metadata('pk', pr), ...(generation && { generation }) },
+					},
+					superUser
+				);
+			const activate = (pr, deployment_id) =>
+				deployComponent({
+					operation: 'deploy_component',
+					project: `pk-pr-${pr}`,
+					deployment_id,
+					hdb_user: previewUser(previewGrant('pk', { generation: 'pk-gen-2' })),
+				});
+			const refused = { statusCode: 403, message: /built before previews of pk were last enabled/ };
+			await assert.rejects(activate(1, (await stage(1)).deployment_id), refused);
+			await assert.rejects(activate(2, (await stage(2, 'pk-gen-1')).deployment_id), refused);
+			await activate(3, (await stage(3, 'pk-gen-2')).deployment_id);
+			assert.deepStrictEqual(
+				(await listLocalPreviews()).map((entry) => entry.component).filter((name) => name.startsWith('pk-pr-')),
+				['pk-pr-3']
+			);
+		});
+
 		it('refuses to make a preview live once its deployer was revoked during the deploy', async () => {
 			const { getUserWithRole } = require('#src/security/user');
 			const permission = { super_user: false, component_deploy: previewGrant('pg') };

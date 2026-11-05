@@ -224,7 +224,9 @@ async function refreshSessionUser(record: RegisteredSession): Promise<void> {
 	// never granted. Its embedded role is fixed for the token's life, so there is nothing to refresh.
 	if (record.user?._scopedToken || userRuntimeModule.isLocalPrincipal(record.user)) return;
 	const fresh = await resolveUser(record.user?.username);
-	if (fresh) record.user = fresh;
+	if (fresh)
+		record.user =
+			record.user.authExpiresAt === undefined ? fresh : { ...fresh, authExpiresAt: record.user.authExpiresAt };
 }
 
 /**

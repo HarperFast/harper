@@ -209,18 +209,31 @@ export class RocksTransactionLogStore extends EventEmitter {
 			this.put(suggestedKey, value, options);
 		}
 	}
-	get(key: any, tableId: number, recordId: any, nodeId: number) {
-		return this.getSync(key, tableId, recordId, nodeId);
+	/** See `getSync` for when to pass `followingCommittedRef`. */
+	get(key: any, tableId: number, recordId: any, nodeId: number, followingCommittedRef?: boolean) {
+		return this.getSync(key, tableId, recordId, nodeId, followingCommittedRef);
 	}
-	getSync(key: any, tableId: number, recordId: any, nodeId: number) {
+	/**
+	 * A numeric key reads the record's entry in the transaction keyed by it. Pass `followingCommittedRef = true`
+	 * only when the key came from committed state (a record's audit refs or an audit entry's `previous*` fields):
+	 * it names a committed entry, even when that entry sits past the log's committed-read watermark because an
+	 * older entry is still in flight. Duplicate checks, whose keys come from incoming messages, keep the default
+	 * and read only up to the watermark.
+	 */
+	getSync(key: any, tableId: number, recordId: any, nodeId: number, followingCommittedRef?: boolean) {
 		if (typeof key === 'number') {
 			if (typeof tableId !== 'number') throw new Error('tableId must be a number');
 			if (recordId === undefined) {
 				throw new Error('recordId must be provided');
 			}
-			// this a request for a transaction log entry by a timestamp
+			// this is a request for a transaction log entry by a timestamp
 			const sharedLog = typeof nodeId === 'number' && nodeId !== 0 && !this.logById(nodeId);
-			for (const entry of this.getRange({ start: key, exactStart: true, log: nodeId })) {
+			for (const entry of this.getRange({
+				start: key,
+				exactStart: true,
+				log: nodeId,
+				readUncommitted: followingCommittedRef,
+			})) {
 				if (entry.txnLogKey !== key) return; // no longer in this transaction
 				if (entry.recordId === recordId && entry.tableId === tableId && (!sharedLog || entry.nodeId === nodeId)) {
 					return entry;

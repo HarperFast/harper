@@ -232,7 +232,9 @@ off on the very boot that could not read its configuration.
 
 ## `RootConfigWatcher` schedules a trailing verify-read (`config/RootConfigWatcher.ts`)
 
-Chokidar throttles `EV.CHANGE` events per path for 50ms (`node_modules/chokidar/index.js`) with no trailing emission, so the second of two `atomicWriteFile()` renames landing within 50ms produces no watcher event. After a successful `handleChange` read, `RootConfigWatcher` arms one 100ms (`TRAILING_VERIFY_READ_DELAY_MS`, double the 50ms throttle window) trailing verify-read (`#read(true)`), re-armed on each event and cleared on `close()`, terminal read failure, or when `ConfigReadRetry` takes over. Post-`ready` reads short-circuit when raw file text matches `#lastData` and otherwise compare the parsed object against an unmutated clone (`#lastParsedConfig`) with `isDeepStrictEqual`, so neither the trailing read nor an identical rewrite emits a duplicate `change` even when consumers (`harper_logger`) mutate `this.#config` in place (`unitTests/config/rootConfigWatcher.test.js`). Root-config `OptionsWatcher`s do not schedule a trailing read and remain exposed to the 50ms throttle window.
+Chokidar throttles per-path `EV.CHANGE` for 50ms (`node_modules/chokidar/index.js`) without a trailing event, so adjacent `atomicWriteFile()` renames can be missed. A successful `handleChange` arms a 100ms verify-read (`TRAILING_VERIFY_READ_DELAY_MS`, `#read(true)`), re-armed on each event; close, terminal read failure or `ConfigReadRetry` clears it. After `ready`, matching `#lastData` skips parsing; otherwise `isDeepStrictEqual` compares an unmutated clone (`#lastParsedConfig`), preventing duplicate changes after `harper_logger` mutates `#config` in place (`unitTests/config/rootConfigWatcher.test.js`). Root-config `OptionsWatcher`s lack this verification and remain exposed.
+
+For `fullTextTelemetryConfiguration.ts` policy retention and override behavior, see [analytics design](../resources/analytics/DESIGN.md#full-text-collection-follows-actual-handle-ownership).
 
 ## `RootConfigWatcher` polls under Bun (`config/RootConfigWatcher.ts`)
 

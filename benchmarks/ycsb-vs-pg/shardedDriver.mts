@@ -31,6 +31,10 @@ export interface DriverConfig {
 	shape: RecordShape;
 	keyWidth: number;
 	maxScanLength: number;
+	/** false attaches to an already-loaded dataset (a restored snapshot) instead of inserting it. */
+	load?: boolean;
+	authorization?: string;
+	callerAuthorizations?: Record<string, string>;
 }
 
 class ShardPool {
@@ -80,9 +84,20 @@ class ShardPool {
 		return this.children.length;
 	}
 
-	stop(): void {
-		for (const child of this.children) child.kill();
+	/** Resolves once every shard has exited, so none outlives the sample (or the run) that forked it. */
+	async stop(): Promise<void> {
+		const children = this.children;
 		this.children = [];
+		await Promise.all(
+			children.map(async (child) => {
+				if (child.exitCode !== null || child.signalCode !== null) return;
+				const exited = new Promise((resolve) => child.once('exit', resolve));
+				child.kill();
+				const timer = setTimeout(() => child.kill('SIGKILL'), 5_000);
+				await exited;
+				clearTimeout(timer);
+			})
+		);
 	}
 }
 
@@ -139,7 +154,7 @@ export interface DriverRun {
 		mix?: Record<string, number>
 	): Promise<PhaseResult>;
 	shardsUsed(name: string): number;
-	close(): void;
+	close(): Promise<void>;
 }
 
 export async function startDriver(config: DriverConfig): Promise<DriverRun> {
@@ -151,7 +166,7 @@ export async function startDriver(config: DriverConfig): Promise<DriverRun> {
 	try {
 		return await drive(pool, config);
 	} catch (error) {
-		pool.stop();
+		await pool.stop();
 		throw error;
 	}
 }
@@ -162,9 +177,12 @@ async function drive(pool: ShardPool, config: DriverConfig): Promise<DriverRun> 
 	const base = {
 		baseUrl: config.baseUrl,
 		table: config.table,
+		records: config.records,
 		shape: config.shape,
 		keyWidth: config.keyWidth,
 		maxScanLength: config.maxScanLength,
+		authorization: config.authorization,
+		callerAuthorizations: config.callerAuthorizations,
 	};
 
 	const rangeCommands = (phase: 'load' | 'readAll'): ShardCommand[] => {
@@ -175,7 +193,10 @@ async function drive(pool: ShardPool, config: DriverConfig): Promise<DriverRun> 
 			return { ...base, phase, concurrency: split(config.concurrency, config.shards)[i], from, to: cursor };
 		});
 	};
-	const load = mergeShardResults(await pool.dispatch(rangeCommands('load')));
+	const load =
+		config.load === false
+			? { ops: 0, errors: 0, elapsedMs: 0, throughput: 0, latency: {} }
+			: mergeShardResults(await pool.dispatch(rangeCommands('load')));
 
 	// Inserting workloads can't be split without cross-shard key coordination.
 	const shardsFor = (name: string) => (WORKLOADS[name].mix.insert ? 1 : config.shards);
@@ -195,14 +216,11 @@ async function drive(pool: ShardPool, config: DriverConfig): Promise<DriverRun> 
 				concurrency: conc[i],
 				workload: name,
 				opCount,
-				records: config.records,
 				distribution,
 				mix,
 			}));
 			return mergeShardResults(await pool.dispatch(commands));
 		},
-		close(): void {
-			pool.stop();
-		},
+		close: () => pool.stop(),
 	};
 }

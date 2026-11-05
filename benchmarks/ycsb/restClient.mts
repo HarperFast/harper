@@ -7,6 +7,8 @@
  *   update -> PUT    /<table>/<key>   (full record replace)
  *   rmw    -> GET then PUT
  *   scan   -> GET    /<table>/?id>=<startKey>&limit(<count>)
+ *   inspect -> GET   /inspect/<key>   (as the caller; 403 expected when denied)
+ *   chain  -> GET    /chain/<key>?hops=<n>
  *
  * Uses node:http(s) with a keep-alive agent (no external dependency) so the
  * client's connection pool is sized to the configured concurrency and never
@@ -30,6 +32,13 @@ export interface RestClientOptions {
 	table: string;
 	maxSockets: number;
 	auth?: { username: string; password: string };
+	/** A complete Authorization header value (e.g. `Bearer <token>`); takes precedence over `auth`. */
+	authorization?: string;
+	/**
+	 * Owner -> Authorization header, when the target identifies the inspect caller by its credential
+	 * (--auth=token). Without it the caller is sent as `x-caller`.
+	 */
+	callerAuthorizations?: Record<string, string>;
 	/** Per-request timeout; a hung socket otherwise blocks a closed-loop worker forever. */
 	requestTimeoutMs?: number;
 }
@@ -41,9 +50,11 @@ export interface RestExecutor extends OpExecutor {
 export function createRestExecutor(options: RestClientOptions): RestExecutor {
 	const { table } = options;
 	const requestTimeoutMs = options.requestTimeoutMs ?? 30_000;
-	const authHeader = options.auth
-		? 'Basic ' + Buffer.from(`${options.auth.username}:${options.auth.password}`).toString('base64')
-		: undefined;
+	const authHeader =
+		options.authorization ??
+		(options.auth
+			? 'Basic ' + Buffer.from(`${options.auth.username}:${options.auth.password}`).toString('base64')
+			: undefined);
 
 	const endpoints: Endpoint[] = options.baseUrls.map((raw) => {
 		const url = new URL(raw);
@@ -60,10 +71,17 @@ export function createRestExecutor(options: RestClientOptions): RestExecutor {
 	let cursor = 0;
 	const nextEndpoint = (): Endpoint => endpoints[cursor++ % endpoints.length];
 
-	function send(method: string, path: string, body?: Buffer): Promise<Buffer> {
+	function send(
+		method: string,
+		path: string,
+		body?: Buffer,
+		expectedStatus?: number,
+		extraHeaders?: Record<string, string>
+	): Promise<Buffer> {
 		const endpoint = nextEndpoint();
 		const headers: Record<string, string> = {};
 		if (authHeader) headers.authorization = authHeader;
+		if (extraHeaders) Object.assign(headers, extraHeaders);
 		if (body) {
 			headers['content-type'] = 'application/json';
 			headers['content-length'] = String(body.length);
@@ -76,7 +94,7 @@ export function createRestExecutor(options: RestClientOptions): RestExecutor {
 					res.on('data', (chunk: Buffer) => chunks.push(chunk));
 					res.on('end', () => {
 						const status = res.statusCode ?? 0;
-						if (status >= 200 && status < 300) {
+						if (expectedStatus === undefined ? status >= 200 && status < 300 : status === expectedStatus) {
 							resolve(Buffer.concat(chunks));
 						} else {
 							reject(new Error(`${method} ${path} -> ${status}: ${Buffer.concat(chunks).toString().slice(0, 200)}`));
@@ -95,6 +113,13 @@ export function createRestExecutor(options: RestClientOptions): RestExecutor {
 	}
 
 	const recordPath = (key: string): string => `/${table}/${key}`;
+	const { callerAuthorizations } = options;
+	const callerHeaders = (caller: string): Record<string, string> => {
+		if (!callerAuthorizations) return { 'x-caller': caller };
+		const authorization = callerAuthorizations[caller];
+		if (!authorization) throw new Error(`no credential for inspect caller ${caller}`);
+		return { authorization };
+	};
 
 	return {
 		async read(key: string): Promise<void> {
@@ -112,6 +137,12 @@ export function createRestExecutor(options: RestClientOptions): RestExecutor {
 		},
 		async scan(startKey: string, count: number): Promise<void> {
 			await send('GET', `/${table}/?id>=${startKey}&limit(${count})`);
+		},
+		async inspect(key: string, caller: string, forbidden: boolean): Promise<void> {
+			await send('GET', `/inspect/${key}`, undefined, forbidden ? 403 : 200, callerHeaders(caller));
+		},
+		async chain(key: string, hops: number): Promise<void> {
+			await send('GET', `/chain/${key}?hops=${hops}`, undefined, 200);
 		},
 		close(): void {
 			for (const endpoint of endpoints) endpoint.agent.destroy();

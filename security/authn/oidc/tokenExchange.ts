@@ -25,6 +25,7 @@ import { normalizeIssuer } from './jwks.ts';
 import { profileForIssuer, type IdentityProviderProfile } from './providers/index.ts';
 import { loadEnabledPolicies } from './trustPolicyOperations.ts';
 import { declareTokenUseTable } from './tokenUseTable.ts';
+import { sameAuthority } from '../../ciIdentity.ts';
 import type { OidcTrustPolicy, TokenClaims } from './types.ts';
 
 const logger = loggerWithTag('oidc-trust');
@@ -112,9 +113,13 @@ async function findMatchingPolicy(
 	token: string,
 	issuer: string,
 	policies: OidcTrustPolicy[],
-	profile: IdentityProviderProfile
-): Promise<{ policy: OidcTrustPolicy; claims: TokenClaims } | undefined> {
+	profile: IdentityProviderProfile,
+	audience: unknown
+): Promise<{ policy: OidcTrustPolicy; claims: TokenClaims; conflict?: OidcTrustPolicy } | undefined> {
 	const claimsByAudience = new Map<string, TokenClaims | undefined>();
+	let matched: { policy: OidcTrustPolicy; claims: TokenClaims } | undefined;
+	// After a match, a policy for an audience the token does not name cannot match, and verifying it only logs noise.
+	const audiences = Array.isArray(audience) ? audience : [audience];
 
 	for (const policy of policies) {
 		// Re-validate specificity at exchange time. add_oidc_trust enforces these, but a stored row can
@@ -130,6 +135,7 @@ async function findMatchingPolicy(
 			continue;
 		}
 
+		if (matched && !audiences.includes(policy.audience)) continue;
 		if (!claimsByAudience.has(policy.audience)) {
 			// verifyIdentityToken logs its own reason via rejectToken, but everything jwks.ts throws
 			// (unknown kid, unreachable host, non-2xx, oversized body, bad JSON, no usable keys) is
@@ -149,10 +155,14 @@ async function findMatchingPolicy(
 		if (!claims) continue;
 
 		const mismatch = matchTrustPolicyClaims(claims, policy.claims) ?? profile.vetoClaims?.(claims, policy.claims);
-		if (!mismatch) return { policy, claims };
-		logger.debug?.(`Trust policy '${policy.id}' did not match: ${mismatch}`);
+		if (mismatch) {
+			logger.debug?.(`Trust policy '${policy.id}' did not match: ${mismatch}`);
+			continue;
+		}
+		if (!matched) matched = { policy, claims };
+		else if (!sameAuthority(matched.policy, policy)) return { ...matched, conflict: policy };
 	}
-	return undefined;
+	return matched;
 }
 
 /**
@@ -229,11 +239,18 @@ export async function exchangeOidcToken(req: any) {
 		const policies = await loadEnabledPolicies(issuer);
 		if (policies.length === 0) rejectToken(`no enabled trust policy for issuer ${issuer}`);
 
-		const matched = await findMatchingPolicy(req.token, issuer, policies, profile);
+		const matched = await findMatchingPolicy(req.token, issuer, policies, profile, (unverified?.payload as any)?.aud);
 		if (!matched) rejectToken(`no trust policy matched a token from ${issuer}`);
-		const { policy, claims } = matched;
+		const { policy, claims, conflict } = matched;
 		audit.oidc_policy = policy.id;
 		audit.principal = profile.describePrincipal(claims);
+		if (conflict) {
+			audit.oidc_conflicting_policy = conflict.id;
+			rejectToken(
+				`trust policies '${policy.id}' and '${conflict.id}' both match ${audit.principal} with different users or ` +
+					'operations; disable or drop one, or give them distinct claims'
+			);
+		}
 
 		// Resolved before the token is spent, so a policy naming a deleted or deactivated user fails
 		// without burning a token the runner cannot re-mint.

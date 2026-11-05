@@ -379,6 +379,8 @@ export function configValidator(configJson, skipFsValidation = false) {
 		perToolBurst: number.min(0).optional(),
 		sessionConcurrency: number.min(0).optional(),
 		sessionPerSecond: number.min(0).optional(),
+		initializePerSecond: number.min(0).optional(),
+		initializeBurst: number.min(1).optional(),
 	});
 	const mcpOperationsSchema = Joi.object({
 		// `convert: false` — validateConfig() doesn't write coerced mcp values back, so a quoted
@@ -457,6 +459,15 @@ export function configValidator(configJson, skipFsValidation = false) {
 		analytics: Joi.object({
 			aggregatePeriod: number,
 			replicate: boolean.optional(),
+			fullText: Joi.object({
+				enabled: boolean.optional(),
+				intervalMilliseconds: number.integer().min(1000).max(2147483647).optional(),
+				histograms: boolean.optional(),
+				snapshotBytes: boolean.optional(),
+			})
+				.unknown(false)
+				.strict()
+				.optional(),
 		}),
 		replication: Joi.object({
 			hostname: bareHostConstraints,
