@@ -12,7 +12,7 @@ Declarations compile to `fullTextIndexes`/`fullTextFields` (`fullTextSchema.ts`)
 
 ## A primitive-id static get skips instance dispatch only behind its gate
 
-`registerPrimitiveIdGet` gates exact classes (subclass constructors may have effects), original hooks and dispatch-preserving contexts. **Gate every new instance-get hook.** Async loads re-enter instance dispatch for authorization (`tableGetPrimitiveId.test.js`).
+The `registerPrimitiveIdGet` getter shares `loadRecord()` with `_loadRecord`; its gate compares each hook the instance dispatch would call with the original and declines dispatch-changing contexts. **Add every new instance-get hook to that gate.** It matches only the exact class (subclass constructors may have effects); an async load hands its instance back to the general dispatch, so authorization still runs (`tableGetPrimitiveId.test.js`).
 
 ## An audit record carries two clocks; identity is (nodeId, log key), never a version
 
@@ -38,7 +38,7 @@ Declarations compile to `fullTextIndexes`/`fullTextFields` (`fullTextSchema.ts`)
 
 ## Array PUT is a collection dispatch that settles every element before it fails
 
-Array PUT requires a collection target or writes one null-keyed record. `elementTargetFactory` supplies each object's target without `checkPermission`; context in that slot would become data. Non-objects fail first. `settleElements` waits for all dispatched work so the transaction cannot unwind under a slow write; earliest-index error wins without `cause`. Static classes get the array unchanged; null elements yield 500 (`arrayPutCallerImpact.test.js`).
+The synthesized target keeps the collection flag, or the batch is one null-keyed record. Each element gets its own target (`elementTargetFactory`, no `checkPermission`); a context there would be staged as data. Non-objects are refused before dispatch. `settleElements`, not `Promise.all`, lets every element finish, so the transaction cannot unwind under a slow one into a partial PUT; the earliest-index error is reported, no `cause` added. Static-mode classes get the whole array, unguarded (a `null` element is a 500) (`arrayPutCallerImpact.test.js`).
 
 ## Sharding resolves fixed slots through an authoritative database map
 
@@ -116,10 +116,6 @@ Each encoder has its own `StoreRecordObject` prototype, so getters stay per tabl
 ## Struct mode is gated to primary DBIs (downgrade compatibility)
 
 v4 (msgpackr v1) reads struct headers `0x20-0x3f` as integers, so a struct-encoded `__dbis__` breaks a v5→v4 downgrade. `OpenDBIObject` allows structs only on primary stores (opt-in); `databases.ts` forces them on for custom-index object stores. `RecordEncoder` bails the write hook (`_writeStruct = () => 0`), never clears it: clearing moves the fixint boundary, so the read hook would misread `0x20-0x3f`. The read hook stays, and structon's `prepareStructures` saves records-mode structures as the plain array v4 reads (`recordEncoder.test.js`).
-
-## Raw primary rows need explicit metadata
-
-`0x42` denotes both a RocksDB timestamp and classic record id 2. Table writes supply metadata; raw puts do not. Embedded audit values use `noMetadata` ([telemetry consequence](models/DESIGN.md#telemetry-writes-use-the-table-path)).
 
 ## Non-`initStore` structure saves read inside their own transaction
 
