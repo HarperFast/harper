@@ -1,6 +1,9 @@
 import chalk from 'chalk';
+import dotenv from 'dotenv';
+import fs from 'node:fs';
+import path from 'node:path';
 import { prompts } from '../utility/interactivePrompts.ts';
-import { loadCliDotenv, saveCredentials, normalizeTarget } from './cliCredentials.ts';
+import { saveCredentials, normalizeTarget } from './cliCredentials.ts';
 import { cliOperations } from './cliOperations.ts';
 
 /**
@@ -16,7 +19,7 @@ export async function login(
 	usernameArg: string,
 	{ forCi = false }: { forCi?: boolean } = {}
 ): Promise<void> {
-	loadCliDotenv();
+	dotenv.config();
 
 	// In --for-ci mode stdout is reserved for the credential block, so anything a human reads is
 	// written to stderr instead. The prompt library defaults to stdout too, hence the explicit
@@ -142,6 +145,29 @@ export async function login(
 			process.exit(1);
 		}
 
+		// If CLI_TARGET is not in process.env before we started (meaning it's not in .env or other env vars),
+		// and we just logged in with a target, let's consider adding it to .env. This is non-critical
+		// (credentials are already saved), so a filesystem error here must not crash the CLI.
+		try {
+			const envPath = path.join(process.cwd(), '.env');
+			if (fs.existsSync(envPath)) {
+				const envConfig = dotenv.parse(fs.readFileSync(envPath));
+
+				if (
+					!envConfig.CLI_TARGET &&
+					!envConfig.HARPER_CLI_TARGET &&
+					!process.env.CLI_TARGET &&
+					!process.env.HARPER_CLI_TARGET
+				) {
+					const envLine = `\nHARPER_CLI_TARGET=${target}\n`;
+					fs.appendFileSync(envPath, envLine);
+					say(`Added HARPER_CLI_TARGET to .env`);
+				}
+			}
+		} catch (err) {
+			console.error(chalk.yellow(`Could not update .env: ${err instanceof Error ? err.message : String(err)}`));
+		}
+
 		say(`Successfully logged in to ${target} and saved credentials.`);
 
 		if (forCi) printCiCdEnv(target, response.refresh_token, targetUsername);
@@ -169,7 +195,7 @@ export async function login(
  * every consumer of this block reads it as data.
  *
  * `target` needs no sanitizing here: `normalizeTarget` guarantees a credential-free target, which is
- * the same value already stored and echoed.
+ * the same value already stored, echoed and written to `.env`.
  */
 function printCiCdEnv(target: string, refreshToken: string, username: string): void {
 	if (!refreshToken) {

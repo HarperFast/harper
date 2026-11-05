@@ -26,24 +26,13 @@ harper get_components
 harper set_configuration logging_level=info
 ```
 
-When no `target` parameter is specified, the CLI falls back to a target set in the environment, then to the target saved by a previous `harper login` if there is one, and only otherwise to the local domain socket connection, which gives authenticated access to the local Harper instance. See [How the CLI Picks a Target](#how-the-cli-picks-a-target), and [Authentication Precedence](#authentication-precedence) for what that means on a shared machine.
+When no `target` parameter is specified, the CLI uses `HARPER_CLI_TARGET` or `CLI_TARGET` if set, then the target saved by a previous `harper login`, and only otherwise to the local domain socket connection, which gives authenticated access to the local Harper instance. See [Authentication Precedence](#authentication-precedence) for what that means on a shared machine.
 
 ## Remote Operations
 
 Available since: v4.1.0; expanded in: v4.3.0
 
 For remote operations (operations executed on a remote Harper instance via the `target` parameter), you must provide authentication credentials.
-
-### How the CLI Picks a Target
-
-The CLI connects to the first of these it finds:
-
-1. `target=<url>` on the command
-2. The `HARPER_CLI_TARGET` environment variable, then the legacy `CLI_TARGET`
-3. The target saved in `~/.harperdb/credentials.json`
-4. The local domain socket
-
-The saved target belongs to your OS user, not to a project: it is the target of your last `harper login`, or of the last saved token the CLI refreshed. A command with no target goes there from any directory, so to keep a project's commands on one cluster, pass `target=` or export `HARPER_CLI_TARGET`. `harper logout <url>` clears the saved target if it is that URL, and `harper logout` with no URL removes every saved login.
 
 ### Authentication Precedence
 
@@ -86,7 +75,7 @@ Before v5.2.0, `username=` and `password=` operation parameters took precedence 
 
 Available since: v5.1.0
 
-Use `harper login` to store authentication tokens for a specific target and make it the CLI's saved target. This is the most convenient method for local development as it removes the need to pass credentials with every command.
+Use `harper login` to store authentication tokens for a specific target. This is the most convenient method for local development as it removes the need to pass credentials with every command.
 
 ```bash
 # Log in once
@@ -96,14 +85,7 @@ harper login https://server.com:9925
 # Subsequently execute operations without credentials
 harper describe_database database=dev target=https://server.com:9925
 harper deploy target=https://server.com:9925
-
-# target= is optional while this is the saved target
-harper describe_database database=dev
 ```
-
-<VersionBadge type="changed" version="v5.4.0" />
-
-`harper login` writes only to `~/.harperdb/credentials.json`, never to a project `.env`. It saves and prints the URL you gave it, in normalized form, never a target named in the server's reply.
 
 When you are finished, you can log out to remove the stored token:
 
@@ -117,13 +99,13 @@ harper logout https://server.com:9925
 - Simplifies frequent remote operations
 - No need to maintain environment variables in multiple terminal sessions
 
-A complete environment-variable credential pair takes precedence over a saved login token. Check the [authentication precedence](#authentication-precedence) when environment variables and `harper login` are both configured for the same target.
+A complete environment-variable credential pair takes precedence over a saved login token. Check the [authentication precedence](#authentication-precedence) when a project `.env` file and `harper login` are both configured for the same target.
 
 #### Method 2: Environment Variables (Recommended for CI/CD)
 
 <VersionBadge type="changed" version="v5.2.0" />
 
-The CLI reads these variables from your shell or CI environment. A `.env` file in the current directory cannot set them: see [Project `.env` files](#project-env-files). This is the recommended method for CI/CD pipelines and for pre-populating the `target` parameter for specific projects.
+The CLI supports loading environment variables from your shell environment (or optionally from a `.env` file in the current directory). This is the recommended method for CI/CD pipelines and for pre-populating the `target` parameter for specific projects.
 
 Starting in v5.2.0, a complete environment-variable credential pair takes precedence over a saved login token and the legacy `username=` and `password=` fallback. This makes the configured CI identity authoritative even when the operation payload also contains username or password fields.
 
@@ -143,12 +125,19 @@ The namespace is chosen by which one is **set**, not by which one has a usable v
 
 For a pipeline, a token is the right style: it is scoped to authentication, it can be revoked without changing the account password, and it cannot be used to log in interactively. Use it _instead of_ a password or payload credentials, not alongside them — see [Token credentials for CI/CD](#token-credentials-for-cicd).
 
+**Example `.env` file**:
+
+```bash
+HARPER_CLI_TARGET=https://example.com:9925
+HARPER_CLI_USERNAME=HDB_ADMIN
+HARPER_CLI_PASSWORD=password
+```
+
 **Manual Environment Variables**:
 
 Set these variables in your shell to avoid exposing credentials in command history:
 
 ```bash
-export HARPER_CLI_TARGET=https://example.com:9925
 export HARPER_CLI_USERNAME=HDB_ADMIN
 export HARPER_CLI_PASSWORD=password
 ```
@@ -157,7 +146,24 @@ export HARPER_CLI_PASSWORD=password
 
 - Credentials not visible in command history
 - More secure for scripting and CI/CD systems
-- Can be set once per session
+- Can be set once per session or project directory
+
+**Automatic `.env` Updates**:
+
+When you run `harper login <URL>` in a directory that already has a `.env` file, the CLI appends `HARPER_CLI_TARGET` with the URL you logged in to. It does not create a `.env` file, and it leaves the file alone if the file, or your environment, already sets `HARPER_CLI_TARGET` or `CLI_TARGET`.
+
+```bash
+harper login https://my-project.harperdb.cloud
+```
+
+Then you can run commands without specifying the `target` or credentials (if they are also in `.env` or exported):
+
+```bash
+# Respects HARPER_CLI_TARGET from .env
+harper deploy
+harper describe_database database=dev
+harper get_components
+```
 
 **Example Script**:
 
@@ -181,46 +187,6 @@ harper add_user \
   password="$NEW_USER_PASSWORD" \
   target=https://prod-server.com:9925
 ```
-
-##### Project `.env` files
-
-<VersionBadge type="changed" version="v5.4.0" />
-
-A `.env` or `.env.vault` file in the current directory cannot configure the CLI's target, credentials or connection trust. That directory is often a cloned project, and a file it ships must not decide where your credentials go ([harper#4001: Refuse a project .env CLI target or credential](https://github.com/HarperFast/harper/pull/4001)).
-
-Every Operations API command, including `harper deploy` and `harper preview`, as well as `harper login` and the backup commands, reads the file first. If it sets one of these names and the shell or CI environment does not, the command stops with an error naming the keys. It stops before contacting a server or touching a file, for local operations too:
-
-| Purpose              | Names, in any letter case                                                                                                                                     |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Target               | `HARPER_CLI_TARGET`, `CLI_TARGET`                                                                                                                             |
-| Credentials          | `HARPER_CLI_USERNAME`, `HARPER_CLI_PASSWORD`, `HARPER_CLI_OPERATION_TOKEN`, `HARPER_CLI_REFRESH_TOKEN`, and the same four names with the `CLI_TARGET_` prefix |
-| Workload identity    | `ACTIONS_ID_TOKEN_REQUEST_URL`, `ACTIONS_ID_TOKEN_REQUEST_TOKEN`                                                                                              |
-| GitHub deploy inputs | `GITHUB_REPOSITORY`, `GITHUB_SHA`, `GITHUB_REF`, `GITHUB_EVENT_PATH`                                                                                          |
-| Saved login location | `HOME`, `USERPROFILE`                                                                                                                                         |
-| TLS                  | `NODE_TLS_REJECT_UNAUTHORIZED`, `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `SSL_CERT_DIR`                                                                        |
-| Proxy                | `NODE_USE_ENV_PROXY`, `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`                                                                                                 |
-
-```text
-error: HARPER_CLI_TARGET must not come from a .env or .env.vault file in /path/to/project: a project's .env no longer sets the Harper CLI's target, credentials or connection settings ...
-```
-
-- **`target=` does not get past the error.** The line has to leave the file, or the name has to be set in the environment.
-- **Shell and CI values win.** When the environment already sets a name, the CLI ignores the file's value and runs. On Linux and macOS the spelling has to match: exporting `HTTPS_PROXY` does not clear `https_proxy` in the file.
-- **Other keys still load.** A file with none of these names is applied as before, and `.env.example` and `.env.local` are not read at all.
-- **Applications are unaffected.** `.env` handling in `harper run`, `harper dev` and a component's [`loadEnv`](../environment-variables/overview.md) is unchanged. `harper status`, `harper version`, `harper logout`, `harper agent` and `harper mcp` do not read the file.
-
-To migrate a project, remove the listed names from its `.env`. Other names with these prefixes, such as `HARPER_CLI_TIMEOUT_MS`, still load. `npm create harper@latest` writes `HARPER_CLI_TARGET` there, and `harper login` before v5.4.0 could append it. Then choose where the target comes from:
-
-| Route                                        | Scope                                                                                                                                                                    |
-| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `harper login <url>`                         | Your OS user. Later commands use the saved target from any directory, so this suits one cluster at a time.                                                               |
-| `target=<url>`                               | One command. To share a target with your team, put it in a `package.json` script: `"deploy": "harper deploy project=my-app target=https://my-cluster.example.com:9925"`. |
-| `export HARPER_CLI_TARGET=<url>`             | One shell session, or a CI job through its variables and secrets.                                                                                                        |
-| `dotenv -- harper deploy`, from `dotenv-cli` | One script. This hands the CLI every value in the file, including the names above, so use it only on a file you trust.                                                   |
-
-CI that stores `harper login --for-ci` output as secrets is unaffected, because those values reach the job as environment variables. A job that relied on a committed `.env` for its target needs `HARPER_CLI_TARGET` in its environment instead.
-
-If your application reads one of these names at runtime, such as a proxy setting, the CLI still stops when it finds that name in `.env`. Set the name in the process environment, or keep it in a differently named file listed under [`loadEnv`'s `files`](../environment-variables/overview.md).
 
 ##### Token credentials for CI/CD
 
@@ -420,7 +386,7 @@ The target URL can also contain a complete username and password, which the CLI 
 target=https://username:password@server.example.com:9925
 ```
 
-Percent-encode reserved characters in either value (`@` becomes `%40`, for example). Avoid this form when possible: the URL can be exposed in shell history and process listings. Prefer environment variables or a saved login for routine use.
+Percent-encode reserved characters in either value (`@` becomes `%40`, for example). Avoid this form when possible: the URL can be exposed in shell history and process listings, and `harper login` can save its target to the project `.env` file. Prefer environment variables or a saved login for routine use.
 
 ## Security Best Practices
 
@@ -540,9 +506,6 @@ If environment variables aren't working:
 3. **Check variable scope**:
    - Variables must be exported before running commands
    - Variables set in one terminal don't affect other terminals
-
-4. **Check for a refused project `.env`**:
-   - If the error says a name `must not come from a .env or .env.vault file`, remove that line or set the name in your environment. See [Project `.env` files](#project-env-files)
 
 ## See Also
 

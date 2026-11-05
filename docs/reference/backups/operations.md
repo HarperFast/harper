@@ -27,11 +27,7 @@ Every operation on this page can be run from the CLI under its operation name, f
 
 Like any [CLI operation](../cli/operations-api-commands.md), backup commands also accept a remote `target=<url>` to run against another instance instead of the local one (see [Remote Operations](../cli/overview.md#remote-operations)). With a remote target the operation is always forwarded — there is no offline path.
 
-A target set with `HARPER_CLI_TARGET` or `CLI_TARGET` in the environment is always forwarded too. Unset it to run commands offline.
-
-<VersionBadge type="changed" version="v5.4.0" />
-
-A `.env` file in the current directory cannot set the target. If it sets either variable, or another [name the CLI refuses](../cli/authentication.md#project-env-files), and the environment does not, a backup command stops with an error naming the keys. It stops before forwarding the operation or touching a file, whether or not Harper is running. Before v5.4.0 the file's target was forwarded, including one that `harper login` added. `harper logout` does not edit the file, so delete that line.
+A target set with `HARPER_CLI_TARGET` or `CLI_TARGET` is always forwarded too, including one that `harper login` added to a `.env` file. `harper logout` does not remove a `.env` entry, so delete that line to run commands offline.
 
 A target saved by `harper login` is also forwarded, with one exception. If the saved target is a loopback address (`localhost`, `127.x` or `::1`) and the local server is stopped:
 
