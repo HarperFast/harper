@@ -59,6 +59,47 @@ if (process.env.HARPER_SYSTEM_ROLE_TEST_CHILD !== '1') {
 			await databases.system.hdb_user.delete(ROLE + '_second');
 		});
 
+		it('roles-file reconciliation removes a stored legacy grant once', async () => {
+			await insert.insert({
+				operation: 'insert',
+				schema: 'system',
+				table: 'hdb_role',
+				records: [{ id: ROLE, role: ROLE, permission: { super_user: false, operations: ['read_only'], system } }],
+			});
+			let handler;
+			let reconcile;
+			require('#src/resources/roles').handleApplication({
+				handleEntry(callback) {
+					handler = callback;
+					return { ready: Promise.resolve() };
+				},
+				on(event, callback) {
+					if (event === 'deploy:end') reconcile = callback;
+				},
+				logger: {
+					warn() {},
+					error(error) {
+						throw error;
+					},
+				},
+			});
+			const entry = {
+				entryType: 'file',
+				eventType: 'add',
+				absolutePath: '/app/roles.yaml',
+				contents: Buffer.from(
+					`${ROLE}:\n  super_user: false\n  operations: [read_only]\n  system:\n    hdb_user:\n      read: true\n`
+				),
+			};
+			await handler(entry);
+			const first = await databases.system.hdb_role.get(ROLE);
+			assert.strictEqual(first.permission.system, undefined);
+			assert.deepStrictEqual(first.permission.operations, ['read_only']);
+			reconcile();
+			await handler(entry);
+			assert.strictEqual((await databases.system.hdb_role.get(ROLE)).__updatedtime__, first.__updatedtime__);
+		});
+
 		for (const operation of ['add_role', 'alter_role']) {
 			it(`rejects permission.system through ${operation} without changing storage`, async () => {
 				await roles.addRole({ operation: 'add_role', role: ROLE, id: ROLE, permission: { super_user: false } });
