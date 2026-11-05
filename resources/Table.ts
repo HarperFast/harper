@@ -1840,6 +1840,18 @@ export function makeTable(options): TableResourceClass {
 		if (missingCreatedTime) completed[createdTimeProperty.name] = timestampValue(createdTimeProperty, version);
 		return Object.freeze(completed);
 	}
+	function stampRecordTimes(record: any, base: Partial<Entry> | undefined, version: number, fullUpdate: boolean) {
+		if (updatedTimeProperty) record[updatedTimeProperty.name] = timestampValue(updatedTimeProperty, version);
+		if (!createdTimeProperty) return;
+		// a cache stub without a created time was never stored; a residency stub's record lives on its residents
+		if (
+			base?.value &&
+			(!(base.metadataFlags & INVALIDATED) || base.residencyId || base.value[createdTimeProperty.name] != null)
+		) {
+			if (fullUpdate || record[createdTimeProperty.name])
+				record[createdTimeProperty.name] = base.value[createdTimeProperty.name];
+		} else record[createdTimeProperty.name] = timestampValue(createdTimeProperty, version);
+	}
 	const tableGeneration = options.storageGeneration ?? (primaryKeyAttribute as any)?.generation;
 	const createdTime: number | undefined = options.createdTime ?? (primaryKeyAttribute as any)?.createdTime;
 	let deleteCallbackHandle: { remove: () => void };
@@ -6088,29 +6100,9 @@ export function makeTable(options): TableResourceClass {
 								);
 								if (ownMerged) applyOwnChanges(this, recordUpdate, ownKeys);
 							}
-							if (updatedTimeProperty) {
-								recordUpdate[updatedTimeProperty.name] = timestampValue(updatedTimeProperty, txnTime);
-							}
-							if (createdTimeProperty) {
-								// the reloaded commit base, not the pre-read one: a full PUT racing a create
-								// would otherwise stamp a fresh created time over the real one
-								const base = write.entry;
-								// a cache stub without a created time was never stored; a residency stub's record lives on its residents
-								if (
-									base?.value &&
-									(!(base.metadataFlags & INVALIDATED) ||
-										base.residencyId ||
-										base.value[createdTimeProperty.name] != null)
-								) {
-									if (fullUpdate || recordUpdate[createdTimeProperty.name]) {
-										// make sure to retain original created time
-										recordUpdate[createdTimeProperty.name] = base.value[createdTimeProperty.name];
-									}
-								} else {
-									// new entry, set created time
-									recordUpdate[createdTimeProperty.name] = timestampValue(createdTimeProperty, txnTime);
-								}
-							}
+							// the reloaded commit base, not the pre-read one: a full PUT racing a create
+							// would otherwise stamp a fresh created time over the real one
+							stampRecordTimes(recordUpdate, write.entry, txnTime, fullUpdate);
 							if (primaryKey && recordUpdate[primaryKey] !== id && (fullUpdate || primaryKey in recordUpdate)) {
 								// ensure that the primary key is correct, if there is supposed to be one
 								recordUpdate[primaryKey] = id;
@@ -6168,6 +6160,20 @@ export function makeTable(options): TableResourceClass {
 					const priorStaged = priorStagedOp?.stagedEntry;
 					let existingRecord =
 						priorStagedOp?.completeResidencyRecord ?? (priorStaged ? priorStaged.value : existingEntry?.value);
+					// A batch re-logged after a refusal can commit under a new version (a fresh key) and onto a
+					// base the retry reloaded, neither of which validate stamped against.
+					if (
+						retry &&
+						transaction?.relogOnRetry === true &&
+						recordUpdate &&
+						!(context as any)?.source &&
+						(updatedTimeProperty || createdTimeProperty)
+					) {
+						const frozen = Object.isFrozen(recordUpdate);
+						recordUpdate = { ...recordUpdate };
+						stampRecordTimes(recordUpdate, priorStaged ?? existingEntry, txnTime, fullUpdate);
+						if (frozen) Object.freeze(recordUpdate);
+					}
 					if (databaseName === 'system' && tableName === RESIDENCY_MAP_TABLE) {
 						try {
 							if (!fullUpdate) throw new ClientError('A shard map must be written as a complete snapshot', 400);
