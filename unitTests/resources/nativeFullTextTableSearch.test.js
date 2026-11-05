@@ -361,16 +361,25 @@ describe('published native full-text Table.search integration', () => {
 			...allowedTarget,
 			conditions: [{ ...condition, should: [{ comparator: 'matches', value: 'trail', fields: ['details'] }] }],
 		};
-		permission.attribute_permissions = originalPermissions.map((entry) => ({ ...entry, read: true }));
+		user.role.permission[database].tables.Product = {
+			...permission,
+			attribute_permissions: originalPermissions.map((entry) => ({ ...entry, read: true })),
+		};
 		assert.strictEqual((await collect(Product.search(permissionTarget, { user }))).length, 3);
-		permission.attribute_permissions = originalPermissions.map((entry) => ({ ...entry }));
+		user.role.permission[database].tables.Product = {
+			...permission,
+			attribute_permissions: originalPermissions.map((entry) => ({ ...entry })),
+		};
 		await assert.rejects(
 			async () => collect(Product.search(permissionTarget, { user })),
 			(error) => error.name === 'AccessViolation'
 		);
-		permission.attribute_permissions = originalPermissions.map((entry) => ({ ...entry, read: true }));
+		user.role.permission[database].tables.Product = {
+			...permission,
+			attribute_permissions: originalPermissions.map((entry) => ({ ...entry, read: true })),
+		};
 		assert.strictEqual((await collect(Product.search(permissionTarget, { user }))).length, 3);
-		permission.attribute_permissions = originalPermissions;
+		user.role.permission[database].tables.Product = permission;
 		for (const fields of [
 			['missing', 'details'],
 			['details', 'details'],
