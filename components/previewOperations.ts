@@ -481,7 +481,6 @@ interface PreviewRelease {
 	deploymentId: string;
 }
 
-/** A node that cannot answer, or does not acknowledge the fence, is unreachable: what it holds is unknown or unfenced. */
 async function censusOfNodes(app: string, generation?: string): Promise<{ nodes: any[]; unreachable: string[] }> {
 	const request: any =
 		generation === undefined
