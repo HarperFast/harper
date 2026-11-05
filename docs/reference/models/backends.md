@@ -1,6 +1,8 @@
 ---
 id: backends
 title: Backends
+sidebar_position: 40
+sidebar_label: 'Backends'
 ---
 
 <!-- Source: harper components/ollama, components/openai, components/anthropic, components/bedrock (v5.1) -->

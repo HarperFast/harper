@@ -1,5 +1,7 @@
 ---
 title: Query Optimization
+sidebar_position: 30
+sidebar_label: 'Query Optimization'
 ---
 
 <!-- Source: versioned_docs/version-4.7/reference/resources/query-optimization.md (primary) -->

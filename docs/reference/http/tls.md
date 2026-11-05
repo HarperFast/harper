@@ -1,6 +1,8 @@
 ---
 id: tls
 title: TLS Configuration
+sidebar_position: 40
+sidebar_label: 'TLS'
 ---
 
 <!-- Source: versioned_docs/version-4.7/deployments/configuration.md (tls section - primary) -->

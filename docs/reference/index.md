@@ -1,5 +1,8 @@
 ---
 title: Reference
+sidebar_position: 10
+sidebar_label: 'Reference'
+sidebar_class_name: 'reference-index-item'
 ---
 
 # Harper v5 Reference

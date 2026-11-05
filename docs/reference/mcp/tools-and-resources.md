@@ -1,5 +1,7 @@
 ---
 title: MCP Tools and Resources
+sidebar_position: 40
+sidebar_label: 'Tools and Resources'
 ---
 
 # MCP Tools and Resources

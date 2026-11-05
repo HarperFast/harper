@@ -1,5 +1,7 @@
 ---
 title: Extension API
+sidebar_position: 30
+sidebar_label: 'Extension API'
 ---
 
 <!-- Source: versioned_docs/version-4.7/reference/components/extensions.md (primary) -->

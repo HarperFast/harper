@@ -1,6 +1,8 @@
 ---
 id: configuration
 title: HTTP Configuration
+sidebar_position: 20
+sidebar_label: 'Configuration'
 ---
 
 <!-- Source: versioned_docs/version-4.7/deployments/configuration.md (http section - primary) -->

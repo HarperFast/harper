@@ -1,6 +1,8 @@
 ---
 id: certificate-verification
 title: Certificate Verification
+sidebar_position: 80
+sidebar_label: 'Certificate Verification'
 ---
 
 <!-- Source: versioned_docs/version-4.7/developers/security/certificate-verification.md (primary) -->

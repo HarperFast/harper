@@ -1,5 +1,7 @@
 ---
 title: Configuration
+sidebar_position: 20
+sidebar_label: 'Configuration'
 ---
 
 # Full-Text Search Configuration

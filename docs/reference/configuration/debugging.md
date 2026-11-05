@@ -1,5 +1,7 @@
 ---
 title: Worker Thread Debugging
+sidebar_position: 40
+sidebar_label: 'Worker Thread Debugging'
 ---
 
 # Worker Thread Debugging

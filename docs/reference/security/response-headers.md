@@ -1,6 +1,8 @@
 ---
 id: response-headers
 title: Response Header Hardening
+sidebar_position: 30
+sidebar_label: 'Response Header Hardening'
 ---
 
 Harper is an origin/API server, and by default it does not emit the browser security-hardening response headers that a public-facing web application typically wants — `X-Content-Type-Options`, `X-Frame-Options`, `Content-Security-Policy`, `Referrer-Policy`, `Strict-Transport-Security`, `Permissions-Policy`, or the `Cross-Origin-*` family (COOP, COEP, CORP). Nor does it emit `Cache-Control`. For browser-facing deployments you generally want to add these.

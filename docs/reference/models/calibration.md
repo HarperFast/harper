@@ -1,6 +1,8 @@
 ---
 id: calibration
 title: Calibration
+sidebar_position: 60
+sidebar_label: 'Calibration'
 ---
 
 <!-- Source: harper resources/models/calibration.ts, resources/models/calibrationStore.ts, resources/models/generativeDecision.ts, resources/models/Models.ts (v5.3.1) -->

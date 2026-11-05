@@ -1,5 +1,7 @@
 ---
 title: Querying
+sidebar_position: 30
+sidebar_label: 'Querying'
 ---
 
 # Querying Full-Text Indexes

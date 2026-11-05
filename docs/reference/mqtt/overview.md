@@ -1,6 +1,8 @@
 ---
 id: overview
 title: MQTT
+sidebar_position: 10
+sidebar_label: 'Overview'
 ---
 
 <!-- Source: versioned_docs/version-4.7/developers/real-time.md (primary) -->

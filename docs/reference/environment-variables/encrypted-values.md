@@ -1,6 +1,8 @@
 ---
 id: encrypted-values
 title: Encrypted Environment Values
+sidebar_position: 20
+sidebar_label: 'Encrypted Values'
 ---
 
 <VersionBadge version="v5.2.0" />

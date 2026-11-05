@@ -1,6 +1,8 @@
 ---
 id: local-development
 title: Local Development
+sidebar_position: 80
+sidebar_label: 'Local Development'
 ---
 
 <!-- Source: harper resources/models/bootstrap.ts, resources/models/backendRegistry.ts, components/ollama, components/openai (v5.1) -->

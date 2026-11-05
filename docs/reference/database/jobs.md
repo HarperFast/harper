@@ -1,5 +1,7 @@
 ---
 title: Jobs
+sidebar_position: 70
+sidebar_label: 'Jobs'
 ---
 
 <!-- Source: versioned_docs/version-4.7/administration/jobs.md (primary) -->

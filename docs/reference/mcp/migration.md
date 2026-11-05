@@ -1,5 +1,7 @@
 ---
 title: Migrating from the External MCP Server
+sidebar_position: 60
+sidebar_label: 'Migration'
 ---
 
 # Migrating from the External MCP Server

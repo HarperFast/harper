@@ -1,5 +1,7 @@
 ---
 title: Harper MCP CLI
+sidebar_position: 30
+sidebar_label: 'CLI'
 ---
 
 # Harper MCP CLI

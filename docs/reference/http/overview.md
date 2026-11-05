@@ -1,6 +1,8 @@
 ---
 id: overview
 title: HTTP Server
+sidebar_position: 10
+sidebar_label: 'Overview'
 ---
 
 <!-- Source: versioned_docs/version-4.7/deployments/configuration.md (http section - primary) -->

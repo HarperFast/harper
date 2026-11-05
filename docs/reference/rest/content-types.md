@@ -1,5 +1,7 @@
 ---
 title: Content Types
+sidebar_position: 30
+sidebar_label: 'Content Types'
 ---
 
 <!-- Source: versioned_docs/version-4.7/reference/content-types.md (primary) -->

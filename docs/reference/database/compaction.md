@@ -1,5 +1,7 @@
 ---
 title: Compaction
+sidebar_position: 90
+sidebar_label: 'Compaction'
 ---
 
 <!-- Source: versioned_docs/version-4.7/administration/compact.md (primary) -->

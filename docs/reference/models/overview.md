@@ -1,6 +1,8 @@
 ---
 id: overview
 title: Models
+sidebar_position: 10
+sidebar_label: 'Overview'
 ---
 
 <!-- Source: harper resources/models/Models.ts, resources/models/types.ts, resources/models/bootstrap.ts (v5.1) -->

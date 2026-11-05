@@ -1,5 +1,7 @@
 ---
 title: MCP Configuration
+sidebar_position: 20
+sidebar_label: 'Configuration'
 ---
 
 # MCP Configuration

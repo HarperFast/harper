@@ -1,5 +1,7 @@
 ---
 title: Overview
+sidebar_position: 10
+sidebar_label: 'Overview'
 ---
 
 # Full-Text Search

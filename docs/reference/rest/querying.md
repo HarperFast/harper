@@ -1,5 +1,7 @@
 ---
 title: REST Querying
+sidebar_position: 20
+sidebar_label: 'Querying'
 ---
 
 <!-- Source: versioned_docs/version-4.7/developers/rest.md (querying sections - primary) -->

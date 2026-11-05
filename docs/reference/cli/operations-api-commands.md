@@ -1,5 +1,7 @@
 ---
 title: Operations API Commands
+sidebar_position: 30
+sidebar_label: 'Operations API Commands'
 ---
 
 <!-- Source: versioned_docs/version-4.7/deployments/harper-cli.md (primary) -->

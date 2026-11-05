@@ -1,5 +1,7 @@
 ---
 title: MCP Resource Subscriptions
+sidebar_position: 50
+sidebar_label: 'Resource Subscriptions'
 ---
 
 # MCP Resource Subscriptions

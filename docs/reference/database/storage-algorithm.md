@@ -1,5 +1,7 @@
 ---
 title: Storage Algorithm
+sidebar_position: 50
+sidebar_label: 'Storage Algorithm'
 ---
 
 <!-- Source: versioned_docs/version-4.7/reference/storage-algorithm.md (primary) -->

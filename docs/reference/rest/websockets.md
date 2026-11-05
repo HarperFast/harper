@@ -1,5 +1,7 @@
 ---
 title: WebSockets
+sidebar_position: 50
+sidebar_label: 'WebSockets'
 ---
 
 <!-- Source: versioned_docs/version-4.7/developers/real-time.md (WebSockets and ordering sections - primary) -->

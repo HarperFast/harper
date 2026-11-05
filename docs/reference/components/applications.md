@@ -1,5 +1,7 @@
 ---
 title: Applications
+sidebar_position: 20
+sidebar_label: 'Applications'
 ---
 
 <!-- Source: versioned_docs/version-4.7/reference/components/applications.md (primary) -->

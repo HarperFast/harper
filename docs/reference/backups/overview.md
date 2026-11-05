@@ -1,6 +1,8 @@
 ---
 id: overview
 title: Backups
+sidebar_position: 10
+sidebar_label: 'Overview'
 ---
 
 <!-- Source: HarperFast/harper#1831 (RocksDB managed backup and restore operations) -->

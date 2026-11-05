@@ -1,6 +1,8 @@
 ---
 id: analytics
 title: Analytics
+sidebar_position: 70
+sidebar_label: 'Analytics'
 ---
 
 <!-- Source: harper resources/models/analyticsTable.ts, resources/models/Models.ts (v5.1) -->

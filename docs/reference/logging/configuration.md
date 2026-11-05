@@ -1,6 +1,8 @@
 ---
 id: configuration
 title: Logging Configuration
+sidebar_position: 20
+sidebar_label: 'Configuration'
 ---
 
 <!-- Source: versioned_docs/version-4.7/deployments/configuration.md (logging section, lines 858–1065 - primary) -->

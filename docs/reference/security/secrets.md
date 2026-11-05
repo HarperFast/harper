@@ -1,6 +1,8 @@
 ---
 id: secrets
 title: Secrets
+sidebar_position: 110
+sidebar_label: 'Secrets'
 ---
 
 Harper provides an encrypted, replicated **secrets store** for supplying credentials and other sensitive configuration to your components without hardcoding them or leaving them in plaintext on disk. Secrets are held in the `system.hdb_secret` system table as ciphertext, replicate across the cluster like any other system table, and are delivered to components in one of two tiers: as `process.env` variables, or through a per-component `secrets` accessor.

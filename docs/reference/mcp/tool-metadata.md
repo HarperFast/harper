@@ -1,5 +1,7 @@
 ---
 title: MCP tool payload sourcing
+sidebar_position: 70
+sidebar_label: 'Tool Metadata'
 ---
 
 # MCP tool payload sourcing

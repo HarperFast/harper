@@ -1,6 +1,8 @@
 ---
 id: routing
 title: Routing & Fallback
+sidebar_position: 50
+sidebar_label: 'Routing & Fallback'
 ---
 
 <!-- Source: harper resources/models/routing.ts, resources/models/Models.ts, resources/models/bootstrap.ts, resources/models/types.ts (v5.1.15) -->

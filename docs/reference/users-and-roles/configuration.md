@@ -1,6 +1,8 @@
 ---
 id: configuration
 title: Configuration
+sidebar_position: 20
+sidebar_label: 'Configuration'
 ---
 
 <!-- Source: versioned_docs/version-4.7/reference/roles.md (roles config file format) -->

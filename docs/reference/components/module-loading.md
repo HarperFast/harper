@@ -1,5 +1,7 @@
 ---
 title: Module Loading
+sidebar_position: 60
+sidebar_label: 'Module Loading'
 ---
 
 # Module Loading

@@ -1,5 +1,7 @@
 ---
 title: Next.js Plugin
+sidebar_position: 80
+sidebar_label: 'Next.js Plugin'
 ---
 
 # Next.js Plugin (`@harperfast/nextjs`)

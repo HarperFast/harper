@@ -1,5 +1,7 @@
 ---
 title: Schema
+sidebar_position: 20
+sidebar_label: 'Schema'
 ---
 
 <!-- Source: versioned_docs/version-4.7/developers/applications/defining-schemas.md (primary) -->

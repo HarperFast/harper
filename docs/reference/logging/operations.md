@@ -1,6 +1,8 @@
 ---
 id: operations
 title: Logging Operations
+sidebar_position: 40
+sidebar_label: 'Operations'
 ---
 
 <!-- Source: versioned_docs/version-4.7/developers/operations-api/logs.md (primary) -->

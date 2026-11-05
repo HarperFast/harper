@@ -1,6 +1,8 @@
 ---
 id: basic-authentication
 title: Basic Authentication
+sidebar_position: 40
+sidebar_label: 'Basic Authentication'
 ---
 
 <!-- Source: versioned_docs/version-4.7/developers/security/basic-auth.md (primary) -->
