@@ -551,7 +551,7 @@ Search hits carry the source record version. Harper reads the authoritative reco
 
 Each page yields after at most 256 estimated source and companion-index point reads to check cancellation and the execution deadline. Equality point probes are limited to four index reads per candidate; wider equality plans use the authoritative record predicate. The requested visible `offset + limit` is bounded independently by `maxResultsPerRequest` and the raw-hit budget, not the native ordinary result window. Raising raw work for restrictive filters does not raise the retained-record target. One reader lease keeps every native batch in a request on the same snapshot.
 
-Cold capability loading and reader acquisition have separate caps. Timeout opens no reader; a strict retry may still need refresh. Warm scoring checks are synchronous. Activation requires query API 8; `FULL_TEXT_SCORING_UNSUPPORTED` guards injected older test bindings. `FULL_TEXT_INITIALIZATION_TIMEOUT` is a retryable 503; `fullTextQueryIndex.test.js` covers both paths.
+Cold binding and reader acquisition waits have separate caps. Timeout opens no reader; warm scoring checks are synchronous. Activation requires query API 8; unsupported-scoring errors guard injected older bindings. Initialization timeout is a retryable 503 (`fullTextQueryIndex.test.js`).
 
 Harper does not configure native `filterFields` or send native `filter` or `candidateIds` payloads. Candidate planning, companion-index probes and the authoritative record predicate remain Harper-owned; the wrapper's candidate limits do not cap those mechanisms.
 
