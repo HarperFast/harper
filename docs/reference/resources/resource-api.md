@@ -890,7 +890,7 @@ As of v5.4.0, calls on the same property in one transaction combine:
 - A delta after an assignment adds to the assigned value. `record.n = 100; record.addTo('n', 7)` stores 107. The write is still an assignment, so it replaces a concurrent writer's change instead of merging with it.
 - An assignment after `addTo` replaces the pending delta.
 
-As of v5.4.0, on a property declared `Int`, `Long`, `Float` or `Number`, a BigInt `value` is converted to a number. One beyond 2^53 in magnitude is rejected with a 400 error.
+As of v5.4.0, on a property declared `Int`, `Long`, `Float` or `Number`, a BigInt `value` is converted to a number. One beyond 2^53 in magnitude is rejected with a 400 error, and on an `Int` property the 32-bit range check still applies.
 
 ### `subtractFrom(property: string, value: number | bigint)` {#subtractfromproperty-string-value-number}
 
