@@ -281,7 +281,12 @@ suite(
 			const token = jwt.sign(
 				{
 					username: 'legacy_scoped_reader',
-					role: { permission: { operations: ['read_only'], system: { tables: { hdb_user: { read: true } } } } },
+					role: {
+						permission: {
+							operations: ['read_only'],
+							system: { tables: { hdb_user: { read: true, attribute_permissions: [] } } },
+						},
+					},
 				},
 				{
 					key: await readFile(resolve(keys, '.jwtPrivate.key'), 'utf8'),

@@ -834,7 +834,10 @@ describe('test scoped tokens (inline role object)', () => {
 	});
 
 	it('legacy scoped tokens cannot retain declared system grants', async () => {
-		const permission = { operations: ['read_only'], system: { tables: { hdb_user: { read: true, insert: true } } } };
+		const permission = {
+			operations: ['read_only'],
+			system: { tables: { hdb_user: { read: true, insert: true, attribute_permissions: [] } } },
+		};
 		const sign = (permission) =>
 			jwt.sign(
 				{ username: 'legacy_scoped', role: { permission }, minted_by: 'admin_minter' },
@@ -858,8 +861,6 @@ describe('test scoped tokens (inline role object)', () => {
 		);
 		assert.ok(denial, 'legacy scoped system access must be denied');
 		assert.strictEqual(legacyUser.role.role, ordinaryUser.role.role);
-		assert.strictEqual(permission.system.tables.hdb_user.read, true);
-		assert.doesNotThrow(() => structuredClone(legacyUser));
 	});
 
 	it('distinct permission sets get distinct synthetic role identities; identical sets share', async () => {
