@@ -1298,6 +1298,73 @@ describe('cliOperations', () => {
 		});
 	});
 
+	describe('project .env cannot choose the target or credentials', () => {
+		const projectDir = path.join(testDir, 'project');
+		const envKeys = ['HARPER_CLI_TARGET', 'HARPER_CLI_OPERATION_TOKEN', 'HARPER_CLI_REFRESH_TOKEN', 'CLI_TARGET'];
+		const saved = {};
+		let originalCwd;
+		let requests;
+
+		beforeEach(() => {
+			fs.ensureDirSync(projectDir);
+			originalCwd = process.cwd;
+			process.cwd = () => projectDir;
+			for (const key of envKeys) {
+				saved[key] = process.env[key];
+				delete process.env[key];
+			}
+			requests = [];
+			tokenAuthModule.isJWTExpired = () => false;
+			commonUtilsModule.httpRequest = async (options) => {
+				requests.push(options);
+				return { statusCode: 200, body: JSON.stringify({ success: true }) };
+			};
+		});
+
+		afterEach(() => {
+			process.cwd = originalCwd;
+			for (const key of envKeys) {
+				if (saved[key] === undefined) delete process.env[key];
+				else process.env[key] = saved[key];
+			}
+			fs.removeSync(projectDir);
+		});
+
+		it('refuses a .env target without sending the operation anywhere', async () => {
+			saveCredentials('https://intended.example:9925/', { operation_token: 'saved-token', refresh_token: 'r' });
+			fs.writeFileSync(path.join(projectDir, '.env'), 'HARPER_CLI_TARGET=https://attacker.example:9925\n');
+			await assert.rejects(
+				cliOperationsModule.cliOperations({ operation: 'add_user', username: 'u', password: 'new-user-pw' }, true),
+				(error) => {
+					assert.strictEqual(error.statusCode, 400);
+					assert.match(error.message, /HARPER_CLI_TARGET/);
+					return true;
+				}
+			);
+			assert.strictEqual(requests.length, 0);
+		});
+
+		it('refuses a .env token even when target= is explicit', async () => {
+			fs.writeFileSync(path.join(projectDir, '.env'), 'HARPER_CLI_OPERATION_TOKEN=planted\n');
+			await assert.rejects(
+				cliOperationsModule.cliOperations({ operation: 'describe_all', target: 'intended.example' }, true),
+				/HARPER_CLI_OPERATION_TOKEN/
+			);
+			assert.strictEqual(requests.length, 0);
+		});
+
+		it('uses an exported target and token as before', async () => {
+			process.env.HARPER_CLI_TARGET = 'https://exported.example:9925';
+			process.env.HARPER_CLI_OPERATION_TOKEN = 'exported-token';
+			fs.writeFileSync(path.join(projectDir, '.env'), 'HARPER_CLI_TARGET=https://attacker.example:9925\n');
+			const result = await cliOperationsModule.cliOperations({ operation: 'describe_all' }, true);
+			assert.strictEqual(result.resolvedTarget, 'https://exported.example:9925/');
+			assert.strictEqual(requests.length, 1);
+			assert.strictEqual(requests[0].hostname, 'exported.example');
+			assert.strictEqual(requests[0].headers.Authorization, 'Bearer exported-token');
+		});
+	});
+
 	describe('transportContext', () => {
 		// `harper deploy setup=true` issues get_secrets_public_key + set_secret on the caller's behalf.
 		// Dropping the explicit credentials would silently perform (and audit) those mutations as

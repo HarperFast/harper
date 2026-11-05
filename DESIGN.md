@@ -140,6 +140,10 @@ A note lives in the `DESIGN.md` of the directory that owns the code it describes
 - [MQTT durable sessions resume through the checked subscription (`server/DurableSubscriptionsSession.ts`)](server/DESIGN.md#mqtt-durable-sessions-resume-through-the-checked-subscription-serverdurablesubscriptionssessionts) — Positions are certified by the subscription's progress and every unacknowledged delivery, checked before CONNACK, fenced by a per-connection incarnation; pruned history (410) discards the session, while a position from another generation resumes best-effort.
 - [On a pointer-compression Node, no standard-V8-ABI addon is dlopen'ed (`server/threads/nativeAddonGuard.ts`, `utility/nativeAddonAbi.ts`)](server/DESIGN.md#on-a-pointer-compression-node-no-standard-v8-abi-addon-is-dlopened-serverthreadsnativeaddonguardts-utilitynativeaddonabits) — `process.dlopen` is wrapped first in every thread; a `.node` loads only if Node-API, marked `.pointer-compression-build`, or node-gyp-built under a pc Node; refusals are `ERR_DLOPEN_FAILED`.
 
+## bin/ — CLI
+
+- [Neither the working directory nor a server reply picks the CLI's target](bin/DESIGN.md#neither-the-working-directory-nor-a-server-reply-picks-the-clis-target-binclicredentialsts-loadclidotenv) — `.env` target/credential keys are refused, not ignored; login keys tokens by its own target.
+
 ## security/ — tokens, OIDC, TLS
 
 - [Roles](security/DESIGN.md#system-permissions-on-roles)
