@@ -1,0 +1,7 @@
+---
+section: 'Subscriptions'
+---
+
+### Subscriptions of Users a `server.getUser` Override Builds Stay Open
+
+A component can override `server.getUser` to build users from a password or token, such as a JWT sent as the MQTT password, with no `hdb_user` record behind them. Their MQTT, WebSocket and SSE subscriptions stopped delivering at the first periodic re-authorization, about 30 seconds after subscribing, with the connection left open, and their MCP sessions lost their tools at the next user change. Harper now keeps such a user as it was admitted when it logs in through MQTT, HTTP Basic or a Bearer validator: re-authorization runs `allowRead` against it, and its subscriptions end when the connection closes, or at its `authExpiresAt` if the override sets one. Users with an `hdb_user` record are still revoked when they are dropped, deactivated or moved to another role. See [Row-Level Access Control with Explicit Filters](/reference/v5/database/schema#row-level-access-control-with-explicit-filters).

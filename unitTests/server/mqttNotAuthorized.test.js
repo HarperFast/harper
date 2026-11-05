@@ -1,7 +1,7 @@
 const assert = require('node:assert');
 const { EventEmitter } = require('node:events');
 const mqttPacket = require('mqtt-packet');
-const { setupTestDBPath } = require('../testUtils');
+const { ensureSystemTables, seedUsers, setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const Resources = require('#src/resources/Resources');
 const { Resource } = require('#src/resources/Resource');
@@ -543,5 +543,43 @@ describe('mqtt.ts reason codes for a refused request', () => {
 			assert.strictEqual((await connect(open, { protocolVersion: 4 })).connack.returnCode, 3);
 			assert.strictEqual((await connect(open, { protocolVersion: 5 })).connack.reasonCode, NOT_AUTHORIZED);
 		});
+	});
+});
+
+describe('mqtt.ts CONNECT through a component’s server.getUser', () => {
+	const userModule = require('#src/security/user');
+	const { databases } = require('#src/resources/databases');
+	let open;
+	let originalGetUser;
+	before(async () => {
+		setupTestDBPath();
+		await ensureSystemTables();
+		setMainIsWorker(true);
+		if (!Resources.resources) Resources.resetResources();
+		open = mqttListener();
+		originalGetUser = server.getUser;
+	});
+	after(() => (server.getUser = originalGetUser));
+	afterEach(() => seedUsers());
+
+	it('gives each connection its own view, tracked against the records as they were', async () => {
+		await seedUsers([
+			{
+				username: 'mqtt_memoized',
+				active: true,
+				role: { id: 'mqtt_memoized_role', permission: { super_user: false } },
+			},
+		]);
+		// a component that memoizes the user it built, as a copy without the original's provenance
+		const memoized = structuredClone(userModule.getUserWithRole('mqtt_memoized'));
+		server.getUser = async () => memoized;
+		const backed = await connect(open, { username: 'mqtt_memoized', password: 'secret' });
+		await databases.system.hdb_user.delete('mqtt_memoized');
+		const unbacked = await connect(open, { username: 'mqtt_memoized', password: 'secret' });
+
+		assert.strictEqual(backed.session.user, memoized, 'the first connection keeps what the component returned');
+		assert.notStrictEqual(unbacked.session.user, memoized);
+		assert.strictEqual(userModule.isRecordlessPrincipal(backed.session.user), false, 'its record was read at login');
+		assert.strictEqual(userModule.isRecordlessPrincipal(unbacked.session.user), true);
 	});
 });

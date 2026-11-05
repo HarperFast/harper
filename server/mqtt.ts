@@ -3,7 +3,7 @@
 import _mqtt_packet from 'mqtt-packet';
 const { parser: makeParser, generate } = _mqtt_packet;
 import { getSession, DurableSubscriptionsSession, RECEIVE_MAXIMUM } from './DurableSubscriptionsSession.ts';
-import { localPrincipal } from '../security/user.ts';
+import { getTrackedUser, localPrincipal } from '../security/user.ts';
 import { getDeserializer } from './serverHelpers/contentTypes.ts';
 import {
 	getSharedMessageEncoding,
@@ -12,7 +12,6 @@ import {
 	resolveSharedPayload,
 } from './serverHelpers/sharedMessageEncoding.ts';
 import { recordAction, addAnalyticsListener, recordActionBinary } from '../resources/analytics/write.ts';
-import { server } from '../server/Server.ts';
 import { get } from '../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS, AUTH_AUDIT_STATUS, AUTH_AUDIT_TYPES } from '../utility/hdbTerms.ts';
 import { loggerWithTag } from '../utility/logging/logger.ts';
@@ -155,7 +154,7 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 									if (username === undefined || username === 'Common Name' || username === 'CN')
 										username = (socket as any).getPeerCertificate().subject.CN;
 									try {
-										user = await server.getUser(username, null, null);
+										user = await getTrackedUser(username, null, null);
 										if (get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGSUCCESSFUL)) {
 											authEventLog.notify?.({
 												username: user?.username,
@@ -458,7 +457,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 					maximumPacketSize = packet.properties?.maximumPacketSize;
 					if (packet.username) {
 						try {
-							user = await server.getUser(packet.username, packet.password.toString(), request);
+							user = await getTrackedUser(packet.username, packet.password.toString(), request);
 							if (get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGSUCCESSFUL)) {
 								authEventLog.notify?.({
 									username: user?.username,

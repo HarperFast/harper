@@ -63,7 +63,7 @@ a scoped will past `authExpiresAt`), the live-subscription stale-auth recheck (`
 `list_changed` session refresh (`components/mcp/listChanged.ts` `refreshSessionUser`). The scoped
 principal also cannot self-mint standing tokens: the passwordless path of `createTokens` rejects an
 `hdb_user._scopedToken` requester. **Any future by-name rehydration must check `_scopedToken`** (and
-`isLocalPrincipal`, below). A
+`isLocalPrincipal`, `isRecordlessPrincipal`). A
 user _created after minting_ with a colliding name is therefore inert at every current site; the
 residual is only some _new_ unguarded by-name site — another reason to prefer short expiries.
 
