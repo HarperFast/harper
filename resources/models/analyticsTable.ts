@@ -218,8 +218,10 @@ export class ModelCallAnalyticsWriter {
 	#reportDropped(): void {
 		if (!this.#dropped) return;
 		const dropped = this.#dropped;
-		this.#dropped = 0;
-		log.warn?.('Model-call analytics waiting buffer full; records dropped', { dropped });
+		try {
+			log.warn?.('Model-call analytics waiting buffer full; records dropped', { dropped });
+			this.#dropped = 0;
+		} catch {}
 	}
 
 	async #writeBatch(batch: BufferedRecord[]): Promise<void> {

@@ -184,6 +184,7 @@ let analyticsStart = 0;
 let lastFlushAt = 0;
 export const analyticsDelay = 1000;
 const ANALYTICS_REPORT_TYPE = 'analytics-report';
+const pendingRawAnalyticsWrites = new Set<Promise<unknown>>();
 const analyticsListeners = [];
 const analyticsAggregateListeners = [];
 
@@ -209,7 +210,10 @@ export function flushAnalyticsForExit(): Promise<void> {
 		await runningAnalyticsFlush?.catch(() => {});
 		if (checkAnalyticsEnabled(false)) await flushAnalytics(true);
 		else for (const listener of [...analyticsListeners]) listener([], true);
-		if (!parentPort) await RawAnalyticsTable?.primaryStore.committed;
+		if (!parentPort) {
+			while (pendingRawAnalyticsWrites.size) await Promise.allSettled(pendingRawAnalyticsWrites);
+			await RawAnalyticsTable?.primaryStore.committed;
+		}
 	}));
 }
 
@@ -1452,6 +1456,11 @@ function recordAnalytics(message, worker?) {
 	let written;
 	try {
 		written = Promise.resolve(getRawAnalyticsTable().put(report, {})).catch(logRawAnalyticsWriteError);
+		pendingRawAnalyticsWrites.add(written);
+		written.then(
+			() => pendingRawAnalyticsWrites.delete(written),
+			() => pendingRawAnalyticsWrites.delete(written)
+		);
 	} catch (error) {
 		logRawAnalyticsWriteError(error);
 	}
