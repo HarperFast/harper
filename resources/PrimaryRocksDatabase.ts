@@ -204,14 +204,15 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 
 	/**
 	 * Caches an entry a range read returned, as getEntry() caches the ones it reads, so reads after it share
-	 * its value. A later getEntry() still verifies the cached version before returning it.
+	 * its value. A later getEntry() still verifies the cached version before returning it. True when cached.
 	 */
-	cacheEntry(entry: any) {
+	cacheEntry(entry: any): boolean {
 		const value = entry.value;
-		if (!this.#cache || value == null || typeof value !== 'object' || entry.version == null) return;
-		if (entry.metadataFlags & VERSION_REUSED) return;
+		if (!this.#cache || value == null || typeof value !== 'object' || entry.version == null) return false;
+		if (entry.metadataFlags & VERSION_REUSED) return false;
 		entryMap.set(value, entry);
 		this.#cache.setValue(entry.key, value, (entry.size ?? 0) >> 10);
+		return true;
 	}
 
 	getSync(id: any, options?: any): any {

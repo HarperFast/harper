@@ -58,9 +58,9 @@ function onlyAcknowledgements(data: any): boolean {
 	}
 	return true;
 }
-/** The packet mqtt-packet's (v5) parser emits for a 4-byte acknowledgement. */
-function acknowledgementPacket(firstByte: number, messageId: number) {
-	return {
+/** The packet mqtt-packet's parser emits for a 4-byte acknowledgement; only v5 gives it a reason code. */
+function acknowledgementPacket(firstByte: number, messageId: number, protocolVersion: number) {
+	const packet: any = {
 		cmd: ACKNOWLEDGEMENT_COMMANDS[firstByte],
 		retain: false,
 		qos: (firstByte >> 1) & 3,
@@ -69,8 +69,9 @@ function acknowledgementPacket(firstByte: number, messageId: number) {
 		topic: null,
 		payload: null,
 		messageId,
-		reasonCode: 0,
 	};
+	if (protocolVersion === 5) packet.reasonCode = 0;
+	return packet;
 }
 
 onStartup(() => {
@@ -447,7 +448,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 		// properties) is read here, into the packets the parser would emit for it.
 		if (parserBetweenPackets && onlyAcknowledgements(data)) {
 			for (let offset = 0; offset < data.length; offset += 4) {
-				handlePacket(acknowledgementPacket(data[offset], data.readUInt16BE(offset + 2)));
+				handlePacket(acknowledgementPacket(data[offset], data.readUInt16BE(offset + 2), mqttOptions.protocolVersion));
 			}
 			return;
 		}

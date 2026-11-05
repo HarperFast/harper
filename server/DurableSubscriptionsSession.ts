@@ -248,9 +248,10 @@ export async function getSession({
 	return session;
 }
 /**
- * Every subscription's delivery loop on this thread draws on one budget per event turn, so a fan-out to
- * many subscribers, or a backlog behind one, cannot hold the thread for more than this many deliveries
- * before I/O runs. The loops over budget all wait on one shared turn instead of one each.
+ * Every subscription's delivery loop on this thread draws on one shared budget, so a fan-out to many
+ * subscribers, or a backlog behind one, cannot run more than this many deliveries before I/O runs. The
+ * count resets only when the budget is spent, so after idle turns a yield can come early. The loops over
+ * budget all wait on one shared turn instead of one each.
  */
 const DELIVERIES_PER_TURN = 1000;
 let deliveriesSinceYield = 0;

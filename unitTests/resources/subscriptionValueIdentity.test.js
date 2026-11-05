@@ -111,6 +111,9 @@ describe('subscription value identity across subscribers', () => {
 		for (const [i, id] of ids.entries()) {
 			assert.strictEqual(first.values.get(id).reading, i);
 			assert.strictEqual(second.values.get(id).reading, i);
+			// a shared value is the record cache's object, which later reads return, so no subscriber may change it
+			if (first.values.get(id) === second.values.get(id))
+				assert.ok(Object.isFrozen(first.values.get(id)), `the shared value of ${id} is frozen`);
 		}
 		first.subscription.end();
 		second.subscription.end();

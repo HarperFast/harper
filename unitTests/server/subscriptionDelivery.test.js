@@ -176,47 +176,53 @@ describe('MQTT subscription delivery', function () {
 	}
 
 	/** A connected MQTT session over a fake WebSocket, with every `acknowledged` event's packet collected. */
-	async function connectedClient(clientId) {
+	async function connectedClient(clientId, protocolVersion = 4) {
 		const { listener, server } = mqttWebSocketListener();
 		const socket = fakeWebSocket();
 		const acknowledged = [];
 		server.mqtt.events.on('acknowledged', (session, packet) => acknowledged.push(packet));
 		listener(socket, mqttUpgradeRequest(), Promise.resolve({ status: 200 }), () => {});
 		socket.handlers.message(
-			generate({ cmd: 'connect', protocolId: 'MQTT', protocolVersion: 4, clientId, clean: true })
+			generate({ cmd: 'connect', protocolId: 'MQTT', protocolVersion, clientId, clean: true }, { protocolVersion })
 		);
 		await waitFor(() => server.mqtt.sessions.size === 1);
 		return { socket, acknowledged };
 	}
 
-	it('reads a run of acknowledgements without the general parser, into the packets the parser emits for them', async () => {
-		const { socket, acknowledged } = await connectedClient('acknowledgement-run');
-		const acknowledgements = Buffer.concat([
-			generate({ cmd: 'puback', messageId: 5 }),
-			generate({ cmd: 'pubrec', messageId: 6 }),
-			generate({ cmd: 'pubrel', messageId: 7 }),
-			generate({ cmd: 'pubcomp', messageId: 300 }),
-		]);
-		assert.strictEqual(acknowledgements.length, 16, 'four 4-byte acknowledgements');
-		const parsed = [];
-		const parser = mqttPacket.parser({ protocolVersion: 5 });
-		parser.on('packet', (packet) => parsed.push({ ...packet }));
-		parser.parse(acknowledgements);
-		const sentBefore = socket.sent.length;
-		socket.handlers.message(acknowledgements);
-		await waitFor(() => acknowledged.length === 2);
-		// PUBACK and PUBCOMP complete a delivery; PUBREC is answered with a PUBREL, and PUBREL with a PUBCOMP
-		assert.deepStrictEqual(
-			acknowledged.map((packet) => ({ ...packet })),
-			[parsed[0], parsed[3]]
-		);
-		await waitFor(() => socket.sent.length >= sentBefore + 2);
-		assert.deepStrictEqual(
-			socket.sent.slice(sentBefore).map((packet) => Buffer.from(packet)),
-			[generate({ cmd: 'pubrel', messageId: 6 }), generate({ cmd: 'pubcomp', messageId: 7 })]
-		);
-		socket.handlers.close?.();
-	});
+	for (const protocolVersion of [4, 5]) {
+		it(`reads a run of acknowledgements without the general parser, into the packets the parser emits for them (MQTT v${protocolVersion})`, async () => {
+			const { socket, acknowledged } = await connectedClient(`acknowledgement-run-${protocolVersion}`, protocolVersion);
+			const acknowledgements = Buffer.concat([
+				generate({ cmd: 'puback', messageId: 5 }),
+				generate({ cmd: 'pubrec', messageId: 6 }),
+				generate({ cmd: 'pubrel', messageId: 7 }),
+				generate({ cmd: 'pubcomp', messageId: 300 }),
+			]);
+			assert.strictEqual(acknowledgements.length, 16, 'four 4-byte acknowledgements');
+			const parsed = [];
+			const parser = mqttPacket.parser({ protocolVersion });
+			parser.on('packet', (packet) => parsed.push({ ...packet }));
+			parser.parse(acknowledgements);
+			const sentBefore = socket.sent.length;
+			socket.handlers.message(acknowledgements);
+			await waitFor(() => acknowledged.length === 2);
+			// PUBACK and PUBCOMP complete a delivery; PUBREC is answered with a PUBREL, and PUBREL with a PUBCOMP
+			assert.deepStrictEqual(
+				acknowledged.map((packet) => ({ ...packet })),
+				[parsed[0], parsed[3]]
+			);
+			await waitFor(() => socket.sent.length >= sentBefore + 2);
+			// neither identifier is in flight on this session, which v5 reports with a reason code
+			assert.deepStrictEqual(
+				socket.sent.slice(sentBefore).map((packet) => Buffer.from(packet)),
+				[
+					generate({ cmd: 'pubrel', messageId: 6, reasonCode: 0x92 }, { protocolVersion }),
+					generate({ cmd: 'pubcomp', messageId: 7, reasonCode: 0x92 }, { protocolVersion }),
+				]
+			);
+			socket.handlers.close?.();
+		});
+	}
 
 	it('parses data that continues a partial packet with the general parser, though it looks like PUBACKs', async () => {
 		const { socket, acknowledged } = await connectedClient('puback-lookalike');

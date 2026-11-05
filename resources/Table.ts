@@ -11914,13 +11914,19 @@ export function makeTable(options): TableResourceClass {
 		let entry = primaryStore.cachedEntry(id);
 		if (!entry) {
 			if (catchUpScans < 2) return;
-			if (rangeEntry) return void primaryStore.cacheEntry(rangeEntry);
+			if (rangeEntry) {
+				// the scan's own object is the cache's from here on, so it is frozen, as get() freezes what it returns
+				if (primaryStore.cacheEntry(rangeEntry)) freezeRecord(rangeEntry.value);
+				return;
+			}
 			entry = primaryStore.getEntry(id);
 		}
 		// The cache is per thread: another thread's write can replace a version it still holds, and two
 		// nodes can write one record at the same timestamp.
 		if (entry?.version !== version || (entry.nodeId ?? 0) !== (nodeId ?? 0)) return;
 		if (entry.metadataFlags & (INVALIDATED | EVICTED | VERSION_REUSED)) return;
+		// every reader of the record shares this object, so a subscriber must not be able to change it
+		freezeRecord(entry.value);
 		return entry.value ?? undefined;
 	}
 	function sendSubscriptionEvent(state: SubscriberState, event: any, alreadyFiltered = false) {
