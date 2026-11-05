@@ -358,8 +358,8 @@ export function historyFoldEntry(auditRecord, store, txnLogKey: number = auditRe
 }
 
 interface HistoryFoldState {
-	/** The stored row's size in bytes, or false when the record is rebuilt per entry. */
-	rowBytes: number | false;
+	/** The stored row's size in bytes. */
+	rowBytes: number;
 	/** Rebuilt per entry until the next put: a patch onto a stub stores only indexed fields. */
 	stubbed?: boolean;
 	image?: { txnLogKey: number; nodeId: number; version: number; bytes: number; record: any };
@@ -374,7 +374,8 @@ interface HistoryFoldState {
  * is newer than it. Anything else (a merged branch, a gap, the first entry in range) goes to `rebuild`,
  * whose result reseeds the image; a put seeds it from its own body. `rowBytes` is asked once per record:
  * the stored row's size when its history may fold, or false. Images are held least recently extended
- * first within `maxRecords` and `maxBytes`, estimated from entry sizes.
+ * first within `maxRecords` and `maxBytes`, estimated from entry sizes. The answers are kept apart, for up
+ * to 16 times as many records, so a record that cannot fold never takes an image's slot.
  */
 export function createHistoryFold(
 	rowBytes: (recordId) => number | false,
@@ -382,6 +383,7 @@ export function createHistoryFold(
 	maxBytes = 8 * 1024 * 1024
 ) {
 	const states = new Map<any, HistoryFoldState>();
+	const answers = new Map<any, number | false>();
 	let heldBytes = 0;
 	function setImage(state: HistoryFoldState, image?: HistoryFoldState['image']) {
 		heldBytes += (image?.bytes ?? 0) - (state.image?.bytes ?? 0);
@@ -401,9 +403,14 @@ export function createHistoryFold(
 		fullValue(entry: HistoryFoldEntry, rebuild: () => any) {
 			const { recordId, type } = entry;
 			if (recordId !== null && typeof recordId === 'object') return rebuild(); // a composite key needs its own encoding
-			const state: HistoryFoldState = states.get(recordId) ?? { rowBytes: rowBytes(recordId) };
+			let bytes = answers.get(recordId);
+			if (bytes === undefined) {
+				answers.set(recordId, (bytes = rowBytes(recordId)));
+				if (answers.size > maxRecords * 16) answers.delete(answers.keys().next().value);
+			}
+			if (bytes === false) return rebuild();
+			const state: HistoryFoldState = states.get(recordId) ?? { rowBytes: bytes };
 			keep(recordId, state);
-			if (state.rowBytes === false) return rebuild();
 			const seed = (image: any, bytes: number) => {
 				setImage(state, {
 					txnLogKey: entry.txnLogKey,

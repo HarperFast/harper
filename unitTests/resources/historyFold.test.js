@@ -5,6 +5,7 @@ const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
 const { isNonHistoryType } = require('#src/resources/auditStore');
+const { createHistoryFold } = require('#src/resources/crdt');
 const { waitFor } = require('../waitFor.js');
 require('#src/server/serverHelpers/serverUtilities');
 
@@ -334,5 +335,36 @@ describe('History listings fold patches forward', () => {
 		await T.patch('row', { n: 4 });
 		assert.strictEqual(Object.hasOwn(T.primaryStore.getEntry('row').value, 'dropped'), false);
 		await assertListingsMatchRebuild(T, 'row');
+	});
+});
+
+describe('createHistoryFold', () => {
+	const entry = (recordId, type, txnLogKey, previousVersion, ownValue) => ({
+		recordId,
+		type,
+		txnLogKey,
+		version: txnLogKey,
+		previousVersion,
+		nodeId: 0,
+		ownValue,
+		size: 10,
+	});
+
+	it("keeps a folding record's image while records that cannot fold pass through", () => {
+		let asked = 0;
+		let rebuilt = 0;
+		const rebuild = () => ++rebuilt && { rebuilt: true };
+		const fold = createHistoryFold((id) => (++asked, id === 'folds' ? 100 : false), 2);
+		let key = 1;
+		fold.fullValue(entry('folds', 'put', key, undefined, { n: 0 }), rebuild);
+		let previous = key;
+		for (let n = 1; n <= 20; n++) {
+			for (const id of ['stub-a', 'stub-b', 'stub-c'])
+				fold.fullValue(entry(id, 'patch', ++key, key - 1, { n }), rebuild);
+			assert.deepStrictEqual(fold.fullValue(entry('folds', 'patch', ++key, previous, { n }), rebuild), { n });
+			previous = key;
+		}
+		assert.strictEqual(rebuilt, 60, 'only the records that cannot fold are rebuilt');
+		assert.strictEqual(asked, 4, 'each record is asked once');
 	});
 });
