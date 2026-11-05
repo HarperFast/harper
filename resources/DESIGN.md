@@ -4,7 +4,7 @@ Rules the `resources/` code cannot state, why each holds, and the symbol and tes
 
 ## Full-text declarations and reader snapshots
 
-Declarations never enter `attributes` or store/select values (`fullTextSchema.ts`). Writes ignore readiness (`assertFullTextWrite`). One lease/search; idle-only reload (`#acquireSearchReader`). Distinct snapshots require hydration version checks (`fullTextQueryIndex.test.js`). Set budgets before `startHTTPThreads()` or workers fail. Scoring keeps matches; Table authorizes each clause before compilation, reuses predicate-local lookups and isolates arrays (`nativeFullTextTableSearch.test.js`).
+Declarations compile to `fullTextIndexes`/`fullTextFields` (`fullTextSchema.ts`), never `attributes`: they hold no stored or selectable value. Write guards ignore reader readiness (`assertFullTextWrite`). One reader lease spans a search; only an idle reader reloads (`#acquireSearchReader`, `fullTextQueryIndex.test.js`). A native snapshot is not a record snapshot, so hydration re-checks source versions. Native budgets are fixed before `startHTTPThreads()`; a worker started before capture fails.
 
 ## A bare nullish id is never a collection target for `get` or `delete`
 

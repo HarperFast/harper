@@ -20,7 +20,7 @@ A note lives in the `DESIGN.md` of the directory that owns the code it describes
 
 ## resources/ — records, transactions, tables, blobs, audit
 
-- [Full-text declarations and reader snapshots](resources/DESIGN.md#full-text-declarations-and-reader-snapshots) — Declarations, reader leases and authorized optional scoring.
+- [Full-text declarations and reader snapshots](resources/DESIGN.md#full-text-declarations-and-reader-snapshots) — Declarations are not attributes; one reader lease per search.
 - [A bare nullish id is never a collection target](resources/DESIGN.md#a-bare-nullish-id-is-never-a-collection-target-for-get-or-delete) — `get`/`delete` of a bare `null` id is a 400 · [A primitive-id static get skips instance dispatch only behind its gate](resources/DESIGN.md#a-primitive-id-static-get-skips-instance-dispatch-only-behind-its-gate) — New instance-get hooks join the gate.
 - [An audit record carries two clocks](resources/DESIGN.md#an-audit-record-carries-two-clocks-identity-is-nodeid-log-key-never-a-version) — Identity is (nodeId, log key); refs state their kind; `FULL_WRITE_HEAD`; equal versions order by origin.
 - [Request admission authorizes exactly what the dispatch runs](resources/DESIGN.md#request-admission-authorizes-exactly-what-the-dispatch-runs) — QUERY projection, false-mode read and write gates · [Array PUT settles every element before it fails](resources/DESIGN.md#array-put-is-a-collection-dispatch-that-settles-every-element-before-it-fails) — `settleElements`, never `Promise.all`.
