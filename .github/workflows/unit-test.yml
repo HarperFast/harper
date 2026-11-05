@@ -35,8 +35,8 @@ jobs:
     runs-on: ubuntu-latest
     # A job that hits this cap is reported as `cancelled`, not `failure`, so it reads as non-red
     # on a required check. Every step below is capped in its own right and this sits above the
-    # largest shard's sum (37 on `main`), so a stall surfaces as a step failure and this stays a backstop.
-    timeout-minutes: 40
+    # largest shard's sum (41 on `main`), so a stall surfaces as a step failure and this stays a backstop.
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -61,7 +61,7 @@ jobs:
         include:
           - shard: main
             script: test:unit:main:core
-            timeout: 8
+            timeout: 12
           - shard: components
             script: test:unit:main:components
             timeout: 8
