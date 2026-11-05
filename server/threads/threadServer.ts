@@ -29,6 +29,7 @@ import {
 	whenWorkersStoppedForExit,
 	runLocalShutdownListeners,
 	getProcessExitDeadline,
+	whenAllRequestsDrained,
 } from './manageThreads.ts';
 import {
 	runShutdownDrains,
@@ -137,6 +138,9 @@ export { listenOnPorts };
 export { startServers };
 export { closeServers };
 
+function hasUnfinishedResponse(socket: any) {
+	return socket._httpMessage && !socket._httpMessage.finished;
+}
 let serversClosing = false;
 function closeServers() {
 	serversClosing = true;
@@ -154,8 +158,11 @@ function closeServers() {
 		return Promise.race([Promise.all(stopped), new Promise<any>((resolve) => setTimeout(resolve, 5000).unref())]);
 	}
 	const promises: any = [];
+	const requestDrains: Promise<void>[] = [];
 	for (let port in SERVERS) {
 		const server = SERVERS[port];
+		const { promise: requestsDrain, resolve: requestsDrained } = Promise.withResolvers<void>();
+		requestDrains.push(requestsDrain);
 		if (server.closeIdleConnections) {
 			// Here we attempt to gracefully close all outstanding keep-alive connections,
 			// repeatedly closing any connections that are idle. This allows any active requests
@@ -171,6 +178,13 @@ function closeServers() {
 					clearInterval(timer);
 					return;
 				}
+				// Node's list holds no HTTP/2 session; that server's close callback signals its drain instead
+				if (
+					!server.servesHttp2 &&
+					(forceClose ||
+						!server[connectionsSymbol].all().some((connection) => hasUnfinishedResponse(connection.socket)))
+				)
+					requestsDrained();
 				const connections = server[connectionsSymbol][forceClose ? 'all' : 'idle']?.() || [];
 				if (connections.length === 0) {
 					if (forceClose) clearInterval(timer);
@@ -180,7 +194,7 @@ function closeServers() {
 				else if (forceClose) harperLogger.warn(`Forcefully closing ${connections.length} active connections`);
 				for (let i = 0, l = connections.length; i < l; i++) {
 					const socket = connections[i].socket;
-					if (socket._httpMessage && !socket._httpMessage.finished && !forceClose) {
+					if (hasUnfinishedResponse(socket) && !forceClose) {
 						continue;
 					}
 					if (forceClose) socket.destroySoon();
@@ -191,19 +205,39 @@ function closeServers() {
 		// And we tell the server not to accept any more incoming connections
 		promises.push(
 			new Promise<void>((resolve) => {
-				server.close?.(() => {
-					resolve();
-				});
 				// We hope for a graceful exit once all connections have been closed, and no
 				// more incoming connections are accepted, but if we need to, we eventually will exit
-				setTimeout(() => {
+				const forceExit = setTimeout(() => {
 					if (!server.cantCleanupProperly) harperLogger.warn('Had to forcefully exit the server', port, threadId);
+					requestsDrained();
 					resolve();
 				}, 5000).unref();
+				server.close?.(() => {
+					clearTimeout(forceExit);
+					requestsDrained();
+					resolve();
+				});
 			})
 		);
 	}
+	requestsDrainedHere = Promise.all(requestDrains);
+	closeWebSocketsForExit();
 	return Promise.all(promises);
+}
+
+let requestsDrainedHere: Promise<unknown> | undefined;
+let closingWebSocketsForExit = false;
+/**
+ * Detached from the servers' close, so their timers still bound it if another thread never reports. Exit only:
+ * during a restart a retiring worker's socket may be carrying another worker's acknowledgement.
+ */
+function closeWebSocketsForExit(exitDeadline: number | undefined = getProcessExitDeadline()) {
+	if (!exitDeadline || !requestsDrainedHere || closingWebSocketsForExit) return;
+	closingWebSocketsForExit = true;
+	requestsDrainedHere
+		.then(whenAllRequestsDrained)
+		.then(httpComponent.closeWebSockets)
+		.catch((error) => harperLogger.error('Error closing WebSockets during shutdown', threadId, error));
 }
 
 let shutdownPromise: Promise<void>;
@@ -219,8 +253,10 @@ function holdOpenForExit(exitDeadline: number | undefined) {
 function shutdownServers(exitDeadline: number | undefined = getProcessExitDeadline()) {
 	holdOpenForExit(exitDeadline);
 	if (shutdownPromise) {
-		if (exitDeadline)
+		if (exitDeadline) {
 			tightenShutdownDrains(shutdownDrainDeadline(Date.now(), getShutdownDrainCeilingMs(), exitDeadline));
+			closeWebSocketsForExit(exitDeadline);
+		}
 		return shutdownPromise;
 	}
 	const drainDeadline = shutdownDrainDeadline(Date.now(), getShutdownDrainCeilingMs(), exitDeadline);
@@ -323,6 +359,8 @@ function startServers() {
 		beginProcessShutdown();
 		harperLogger.trace('received shutdown request', threadId);
 		holdOpenForExit(message.exitDeadline);
+		// With no listener bound there is no request to wait for, and its load may not settle soon
+		if (message.exitDeadline && !listening) whenAllRequestsDrained();
 		const shutdown = () => shutdownServers(message.exitDeadline);
 		void loaded.then(shutdown, shutdown).catch((error) => harperLogger.error('Error shutting down HTTP worker', error));
 	});
