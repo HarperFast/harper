@@ -2233,6 +2233,32 @@ export class HierarchicalNavigableSmallWorld {
 		return fn(searchCondition.target, vec);
 	}
 	/**
+	 * The predicate a threshold condition applies to a record's vector when it filters rows another condition
+	 * produced (search.ts filterByType): the exact distance against the threshold, as rescoreResults() applies it,
+	 * with the validation search() applies. None for a sort, or for a condition without a target that is not a
+	 * threshold (such as `ne null`), which compares the stored value itself.
+	 */
+	thresholdFilter(searchCondition: {
+		attribute?: any;
+		target: number[];
+		distance?: string;
+		comparator?: string;
+		value?: number;
+	}): ((recordVector: number[] | Int8Array) => boolean) | undefined {
+		const { comparator, value } = searchCondition;
+		if (comparator === 'sort') return;
+		if (comparator !== 'lt' && comparator !== 'le') {
+			if (searchCondition.target === undefined) return;
+			throw new ClientError(`Can not use "${comparator}" comparator with HNSW`);
+		}
+		if (value === undefined)
+			throw new ClientError(`Search condition for ${searchCondition.attribute} must have a value`);
+		this.exactDistance(searchCondition, null);
+		return comparator === 'le'
+			? (recordVector) => recordVector != null && this.exactDistance(searchCondition, recordVector) <= value
+			: (recordVector) => recordVector != null && this.exactDistance(searchCondition, recordVector) < value;
+	}
+	/**
 	 * Post-load rescoring hook called by search.ts after full records have been loaded.
 	 * Handles two quantized (int8) cases:
 	 *   - 'sort': recompute exact distances and re-sort for correct nearest-neighbor ordering.
