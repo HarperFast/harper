@@ -813,7 +813,8 @@ const AUTHORIZATION_SELECT = Symbol.for('harper.authorizationSelect');
 const RELATIONSHIPS_LISTED = Symbol.for('harper.relationshipsListed');
 const SEARCH_AUTHORIZATION_TRANSFORMS = Symbol.for('harper.searchAuthorizationTransforms');
 const FULL_TEXT_READ_PERMISSION = Symbol('fullTextReadPermission');
-// set beside AUTHORIZATION_SELECT only when attribute permissions (not just relationships) narrowed the select
+// Set beside AUTHORIZATION_SELECT only when attribute permissions (not just relationships) narrowed the select:
+// the stored attribute names a subscription delivers.
 const ATTRIBUTE_PERMISSION_SELECT = Symbol('attributePermissionSelect');
 const AUTHORIZATION_TRANSFORM_METHODS = ['map', 'filter', 'concat', 'flatMap', 'slice', 'mapError'];
 
@@ -9302,9 +9303,7 @@ export function makeTable(options): TableResourceClass {
 			}
 			if (!auditStore) throw new Error('Can not subscribe to a table without an audit log');
 			// a caller's own select is not applied to deliveries, only the one attribute permissions narrowed
-			const deliveredAttributes = (request as any)[ATTRIBUTE_PERMISSION_SELECT]
-				? selectedNames(request.select)
-				: undefined;
+			const deliveredAttributes: string[] | undefined = (request as any)[ATTRIBUTE_PERMISSION_SELECT];
 			const thisId = requestTargetToId(request) ?? null; // treat undefined and null as the root
 			const scope = () =>
 				checkpointScope({
@@ -12375,6 +12374,16 @@ export function makeTable(options): TableResourceClass {
 		}
 		return changes;
 	}
+	function permittedScalarAttributes(attribute_permissions: any[]): string[] {
+		return attribute_permissions
+			.filter(
+				(attribute) =>
+					attribute.read &&
+					!fullTextFieldNames?.has(attribute.attribute_name) &&
+					!propertyResolvers[attribute.attribute_name]
+			)
+			.map((attribute) => attribute.attribute_name);
+	}
 	function authorizeRead(tablePermission: any, user: User, target: RequestTarget, context: Context): boolean {
 		if (hasRelationships && target && someRelationshipPath(target, user, true)) return false;
 		const attribute_permissions = tablePermission.attribute_permissions;
@@ -12396,6 +12405,9 @@ export function makeTable(options): TableResourceClass {
 			target.select = selection;
 			delete target.property;
 			(target as any)[AUTHORIZATION_SELECT] = true;
+			// subscribe delivers this record, not the related one, so it gets the readable stored attributes
+			if (attribute_permissions?.length > 0)
+				(target as any)[ATTRIBUTE_PERMISSION_SELECT] = permittedScalarAttributes(attribute_permissions);
 			return true;
 		}
 		let select: any = target?.select;
@@ -12410,20 +12422,11 @@ export function makeTable(options): TableResourceClass {
 			// If attribute permissions are defined, we need to ensure there is a select that only returns the attributes the user has permission to
 			// or if there are relationships, we need to ensure that the user has permission to read from the related table
 			if (!target) target = {} as any;
-			const permittedScalarAttributes = () =>
-				attribute_permissions
-					.filter(
-						(attribute) =>
-							attribute.read &&
-							!fullTextFieldNames?.has(attribute.attribute_name) &&
-							!propertyResolvers[attribute.attribute_name]
-					)
-					.map((attribute) => attribute.attribute_name);
 			if (select) {
 				const selectArray = Array.isArray(select) ? select : [select];
 				const attrsForType = attribute_permissions?.length > 0 && attributesAsObject(attribute_permissions, 'read');
 				let authorizedSelect: any[] = selectArray.flatMap((property: any) => {
-					if (property === '*' && attrsForType) return permittedScalarAttributes();
+					if (property === '*' && attrsForType) return permittedScalarAttributes(attribute_permissions);
 					const propertyName = property.name || property;
 					if (
 						!attrsForType ||
@@ -12448,7 +12451,7 @@ export function makeTable(options): TableResourceClass {
 				// in a braced sub-select are denied, fall back to the role's default projection for the table.
 				if (Array.isArray(target) && authorizedSelect.length === 0) {
 					if (attrsForType) {
-						authorizedSelect = permittedScalarAttributes();
+						authorizedSelect = permittedScalarAttributes(attribute_permissions);
 					} else if (canListRelationships()) {
 						authorizedSelect = ['*'];
 						listEnumerableRelationships(authorizedSelect, user, (target as any).checkPermission, context);
@@ -12462,10 +12465,11 @@ export function makeTable(options): TableResourceClass {
 				}
 				(target as any).select = authorizedSelect;
 			} else {
-				target.select = permittedScalarAttributes();
+				target.select = permittedScalarAttributes(attribute_permissions);
 			}
 			(target as any)[AUTHORIZATION_SELECT] = true;
-			if (attribute_permissions?.length > 0) (target as any)[ATTRIBUTE_PERMISSION_SELECT] = true;
+			if (attribute_permissions?.length > 0)
+				(target as any)[ATTRIBUTE_PERMISSION_SELECT] = selectedNames(target.select);
 			return true;
 		} else {
 			return true;
