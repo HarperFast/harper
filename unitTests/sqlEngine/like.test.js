@@ -658,11 +658,10 @@ describe('legacy alasql LIKE', () => {
 
 describe('LIKE cost is linear in the value (#1930)', function () {
 	const fixture = join(__dirname, 'fixtures', 'likeTiming.js');
-	// An empty root: under the harness root the child's logger loads and validates its config, which on Node 22.18
-	// costs more than the match it times, and with no ROOTPATH it would read an installed Harper's.
+	// An empty root, so the child's logger reads neither the harness config nor an installed Harper's.
 	let root;
 	before(() => (root = mkdtempSync(join(tmpdir(), 'like-timing-'))));
-	after(() => rmSync(root, { recursive: true, force: true }));
+	after(() => root && rmSync(root, { recursive: true, force: true }));
 	const CASES = [
 		['%_%_%_%_%_%_%_%_%_%_%_%_%_%_Z', 'a', 10_000],
 		['%a%a%a%a%a%a%a%a%a%a%a%a%a%aZ', 'a', 10_000],

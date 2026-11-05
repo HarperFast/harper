@@ -110,8 +110,7 @@ describe('effective installation destination protection', function () {
 				const originalRoot = fingerprint(seed.ROOTPATH);
 				const originalStore = fingerprint(storage);
 				// Each check in getInstallSystemStorePaths() looks for both `<name>` and `<name>.mdb`, so which engine wrote
-				// the store does not change which check finds it. LMDB runs a mode per check, plus the opposite engine;
-				// RocksDB also runs the other spellings that reach the same checks.
+				// the store does not change which check finds it.
 				const checks = [
 					['HARPER_CONFIG', { storage: { path: storage } }],
 					['STORAGE_PATH', storage],
