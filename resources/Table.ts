@@ -6975,7 +6975,7 @@ export function makeTable(options): TableResourceClass {
 									{
 										table: tableName,
 										id,
-										depth: walkSteps,
+										depth: auditWalkCapped ? walkSteps : undefined,
 										probeDepth: cappedProbeDepth,
 										fullUpdate,
 									}
