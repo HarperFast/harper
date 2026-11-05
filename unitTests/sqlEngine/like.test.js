@@ -2,6 +2,8 @@
 
 const assert = require('assert');
 const { spawnSync } = require('node:child_process');
+const { mkdtempSync, rmSync } = require('node:fs');
+const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const alasql = require('alasql');
 const { compileExpr } = require('#src/sqlEngine/expressions/compile');
@@ -656,6 +658,11 @@ describe('legacy alasql LIKE', () => {
 
 describe('LIKE cost is linear in the value (#1930)', function () {
 	const fixture = join(__dirname, 'fixtures', 'likeTiming.js');
+	// An empty root: under the harness root the child's logger loads and validates its config, which on Node 22.18
+	// costs more than the match it times, and with no ROOTPATH it would read an installed Harper's.
+	let root;
+	before(() => (root = mkdtempSync(join(tmpdir(), 'like-timing-'))));
+	after(() => rmSync(root, { recursive: true, force: true }));
 	const CASES = [
 		['%_%_%_%_%_%_%_%_%_%_%_%_%_%_Z', 'a', 10_000],
 		['%a%a%a%a%a%a%a%a%a%a%a%a%a%aZ', 'a', 10_000],
@@ -705,6 +712,7 @@ describe('LIKE cost is linear in the value (#1930)', function () {
 			input: JSON.stringify([engine, pattern, valueUnit, valueLength, escape || null]),
 			encoding: 'utf8',
 			timeout: 20_000,
+			env: { ...process.env, ROOTPATH: root },
 		});
 		assert.strictEqual(child.signal, null, `matcher did not finish within 20 s (${engine})`);
 		assert.strictEqual(child.status, 0, child.stderr);

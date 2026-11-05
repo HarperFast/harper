@@ -109,21 +109,27 @@ describe('effective installation destination protection', function () {
 				const originalConfig = fs.readFileSync(seed.HDB_CONFIG);
 				const originalRoot = fingerprint(seed.ROOTPATH);
 				const originalStore = fingerprint(storage);
-				const modes = [
+				// Each check in getInstallSystemStorePaths() looks for both `<name>` and `<name>.mdb`, so which engine wrote
+				// the store does not change which check finds it. LMDB runs a mode per check, plus the opposite engine;
+				// RocksDB also runs the other spellings that reach the same checks.
+				const checks = [
 					['HARPER_CONFIG', { storage: { path: storage } }],
-					['HARPER_SET_CONFIG', { storage: { path: storage } }],
-					['HARPER_CONFIG', { databases: { system: { path: storage } } }],
-					['HARPER_SET_CONFIG', { databases: { system: { path: storage } } }],
 					['STORAGE_PATH', storage],
-					['GUARD_STORAGE_ARG', storage],
 					['DATABASES', [{ system: { path: storage } }]],
 					['DATABASES', [{ system: { tables: { hdb_user: { path: userStorage } } } }]],
 					['HARPER_CONFIG', { storage: { path: storage } }, 'opposite'],
+					['HARPER_CONFIG', { databases: { system: { tables: { hdb_user: { path: userStorage } } } } }],
+				];
+				const spellings = [
+					['HARPER_SET_CONFIG', { storage: { path: storage } }],
+					['HARPER_CONFIG', { databases: { system: { path: storage } } }],
+					['HARPER_SET_CONFIG', { databases: { system: { path: storage } } }],
+					['GUARD_STORAGE_ARG', storage],
 					['HARPER_CONFIG', { databases: { system: { path: path.relative(process.cwd(), storage) } } }],
 					['STORAGE_PATH', path.relative(process.cwd(), storage)],
-					['HARPER_CONFIG', { databases: { system: { tables: { hdb_user: { path: userStorage } } } } }],
 					['HARPER_SET_CONFIG', { databases: { system: { tables: { hdb_user: { path: userStorage } } } } }],
 				];
+				const modes = engine === 'lmdb' ? checks : [...checks, ...spellings];
 				for (const [index, [key, value, selectedEngine]] of modes.entries()) {
 					const env = installEnv(temp, `attempt-${index}`, engine);
 					env[key] = typeof value === 'string' ? value : JSON.stringify(value);
