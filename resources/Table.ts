@@ -2280,9 +2280,8 @@ export function makeTable(options): TableResourceClass {
 
 		/**
 		 * Shared guard: if this instance is lock-writable but the handle is gone (expired or
-		 * released), throw 409 before staging any write. Covers update/invalidate/relocate/delete
-		 * in addition to the save() path. Every lock-writable instance carries its own handle in
-		 * #lockHandle (scoped and hold alike), so we never need to search the registry here.
+		 * released), throw 409 before staging any keyed write. Every lock-writable instance carries its own
+		 * handle in #lockHandle (scoped and hold alike), so we never need to search the registry here.
 		 */
 		#assertLiveHandle(id: Id, allowClosed = false): void {
 			if (!allowClosed && this.#writeGeneration?.closed && writeKeyId(id) === writeKeyId(this.getId()))
@@ -10239,9 +10238,11 @@ export function makeTable(options): TableResourceClass {
 			if (id !== null) checkValidId(id); // note that we allow the null id for publishing so that you can publish to the root topic
 			const context = this.getContext();
 			const keyed = id !== null;
+			if (keyed) this.#assertLiveHandle(id, true);
 			const write: any = {
 				key: id,
 				store: primaryStore,
+				lockHandle: undefined,
 				requiresExclusiveCommit: Boolean(residencyPolicy) || isResidencyMapTable,
 				nodeId: options?.nodeId,
 				viaNodeId: options?.viaNodeId,
@@ -10337,10 +10338,13 @@ export function makeTable(options): TableResourceClass {
 						write.completeResidencyRecord = priorStagedOp?.completeResidencyRecord;
 						write.blobsAuditReferenced = true;
 						if (priorStagedOp) priorStagedOp.superseded = true;
+						if (write.trackRecordVersion) write.recordVersionApplied = true;
 					}
 					return result;
 				},
 			};
+			if (keyed) this.#bindWriteLock(write, id, transaction);
+			if (write.lockHandle) write.lockJoined = true;
 			// because transaction log entries can be deleted at any point, we must save the blobs in the record, there is no cleanup of them
 			write.beforeIntermediate = preCommitBlobsForRecordBefore(write, message, undefined, true);
 			transaction.addWrite(write);
@@ -12767,12 +12771,11 @@ export function makeTable(options): TableResourceClass {
 	 * dangling scoped write would otherwise auto-commit at the transaction sweep and clobber
 	 * whatever the hold write lands. Marking it .dropped lets a later save() on the instance that
 	 * owns it (checked via #savingOperation === this write) fall through to the hold branch
-	 * instead of resolving a detached, dead reference. A joined write (a static verb's, or another
-	 * instance's, staged under the lock) is the caller's own: an upgrade keeps it, and a release within
-	 * the lease (`releasing`) returns it to an ordinary unlocked write, which is what it would be had it
-	 * been staged after the unlock. Past the lease it keeps the handle, so its save is refused like any
-	 * lapsed lock write. A `lockFailed` lock() was never handed to the caller, so its joined writes
-	 * always revert.
+	 * instead of resolving a detached, dead reference. A joined write is the caller's own: an upgrade
+	 * keeps it, and a release within the lease (`releasing`) returns it to an ordinary unlocked write,
+	 * which is what it would be had it been staged after the unlock. Past the lease it keeps the handle,
+	 * so its save is refused like any lapsed lock write. A `lockFailed` lock() was never handed to the
+	 * caller, so its joined writes always revert.
 	 */
 	function detachScopedUpgradeWrite(
 		link: any,
