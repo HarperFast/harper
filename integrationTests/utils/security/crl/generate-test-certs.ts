@@ -37,6 +37,8 @@ export interface CrlCertificates {
 	};
 	/** Path to Certificate Revocation List */
 	crl: string;
+	/** Further CRLs signed by the same CA, keyed by the file name given in `extraCrls`; served only once copied over `crl` */
+	extraCrls?: Record<string, string>;
 }
 
 /**
@@ -46,12 +48,16 @@ export interface CrlCertificates {
  *   1 = CA
  *   2 = valid client
  *   3 = revoked client
+ *
+ * `extraCrls` writes more CRLs beside `test.crl` (file name -> revoked serials), e.g. one that also lists
+ * serial 2, so a test can revoke the valid client by copying it over `test.crl`.
  */
 export async function generateCrlCertificates(
 	outputDir: string,
 	crlHost: string,
 	crlPort: number,
-	crlValidity?: CrlValidity
+	crlValidity?: CrlValidity,
+	extraCrls?: Record<string, number[]>
 ): Promise<CrlCertificates> {
 	const crlUrl = `http://${crlHost}:${crlPort}/test.crl`;
 
@@ -119,10 +125,19 @@ export async function generateCrlCertificates(
 	const crlPath = path.join(outputDir, 'test.crl');
 	fs.writeFileSync(crlPath, crlToPem(crl));
 
-	return {
+	const result: CrlCertificates = {
 		ca: caCertPath,
 		valid: { cert: validChainPath, key: validKeyPath },
 		revoked: { cert: revokedChainPath, key: revokedKeyPath },
 		crl: crlPath,
 	};
+	if (extraCrls) {
+		result.extraCrls = {};
+		for (const [fileName, serials] of Object.entries(extraCrls)) {
+			const extraPath = path.join(outputDir, fileName);
+			fs.writeFileSync(extraPath, crlToPem(await createCRL(caCert, caKey.privateKey, serials, crlValidity)));
+			result.extraCrls[fileName] = extraPath;
+		}
+	}
+	return result;
 }
