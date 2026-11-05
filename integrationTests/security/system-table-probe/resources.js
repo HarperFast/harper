@@ -1,7 +1,9 @@
-// Lists the stored rows of a certificate-verification system table with each row's expiry metadata, read
-// from the primary store in-process: these tables are sourced from the verifier, so a `get` on a row past
-// its expiry re-routes to the source instead of showing the stored row, and the operations API shows no
-// expiry. Binary fields are reduced to their length.
+// Lists the stored rows of a certificate-verification system table with each row's expiry metadata and field
+// values, read from the primary store in-process. Keep it reading the store directly: these tables are sourced
+// from the verifier, so a `get` on a row past its expiry re-routes to the source instead of showing the row,
+// which hides exactly what crl-verdict-cache-expiry.test.ts observes. The same scan, returning field names
+// only, is `integrationTests/upgrade/certificate-verification-tables/resources.js`. Binary fields are reduced
+// to their length.
 const TABLES = ['hdb_certificate_cache', 'hdb_crl_cache', 'hdb_revoked_certificates'];
 
 export class SystemTableProbe extends Resource {

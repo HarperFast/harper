@@ -10,16 +10,14 @@
  * cache that never refreshes. This file interleaves seven peers on four threads, several differing only in
  * their low bytes (`127.0.0.1`, `127.0.0.2`, `127.0.1.1`, `127.0.2.2`), under keep-alive, `Connection: close`
  * and WebSocket volume, so a cache compare that ignores part of the address hands one peer's address and trust
- * to another. Measured on main with edits to `dist/`: a cache frozen after its first fill mis-attributes
- * ~80-90% of uWS responses and serves untrusted peers as `local`; a compare that skips the last address byte
- * mis-attributes ~4% here while the sibling stays green; the pre-#3855 IPv4 form (`127.0.0.1` without
- * `::ffff:`) fails every IPv4 response. The Node arm cannot see the cache (Node's `remoteAddress` is per
- * socket); it is the control for the trust rule itself (dropping `::1` from `isLocalPeerAddress` fails it).
+ * to another. The Node arm cannot see the cache (Node's `remoteAddress` is per socket); it pins the trust rule
+ * itself.
  *
  * Sources: `::1`, `127.0.0.1`, `127.0.0.2` (trusted); `127.0.1.1`, `127.0.2.2` (127/8 outside `127.0.0.x`,
- * untrusted) and this host's non-loopback IPv6 addresses (untrusted; a link-local zone is stripped before the
- * comparison, so the zone itself is not pinned). Each source runs eight concurrent loops for
- * PEER_ADDRESS_LOAD_SECONDS (default 4; 1 s still catches the edits above).
+ * untrusted) and this host's first bindable non-link-local and link-local IPv6 addresses (untrusted; a
+ * link-local zone is stripped before the comparison, so the zone itself is not pinned). Each source runs eight
+ * concurrent loops for PEER_ADDRESS_LOAD_SECONDS (default 4), then until every kind has reached its floor,
+ * under a hard deadline.
  *
  * Reproduction:
  *   npm run test:integration -- "integrationTests/security/ipv6-local-trust-load.test.ts"
@@ -47,8 +45,10 @@ const SECONDS = (() => {
 const ARM = process.env.HARPER_UWS_HTTP ? 'uws' : 'node';
 const LOOPS_PER_SOURCE = 8;
 const KEEPALIVE_BURST = 5;
-// every source must get at least this many responses of every kind, or the run did not exercise it concurrently
+// every source must get at least this many responses of every kind, or the run did not exercise it concurrently;
+// after the timed window a loop keeps driving its source's short kinds until they reach it, within this grace
 const FLOOR_PER_SOURCE_KIND = 100;
+const FLOOR_GRACE_MS = 30_000;
 const REQUEST_TIMEOUT_MS = 20_000;
 
 type Kind = 'keepalive' | 'close' | 'ws';
@@ -75,36 +75,38 @@ const loopback = (name: string, expectedIp: string, trusted: boolean, required: 
 	required,
 });
 
-/** This host's first non-link-local and first link-local IPv6 address, as untrusted sources (none on a v4-only host). */
-function hostIPv6Sources(): Source[] {
-	let global: string | undefined;
-	let linkLocal: string | undefined;
-	let linkLocalZoned: string | undefined;
+/** Every non-internal IPv6 address of this host as an untrusted source, split by class. */
+function hostIPv6Candidates(): { global: Source[]; linkLocal: Source[] } {
+	const candidates = { global: [] as Source[], linkLocal: [] as Source[] };
 	for (const [name, addresses] of Object.entries(networkInterfaces())) {
 		for (const entry of addresses ?? []) {
 			if (entry.family !== 'IPv6' || entry.internal) continue;
-			if (!entry.address.startsWith('fe80:')) global ??= entry.address;
-			else if (!linkLocal) {
-				linkLocal = entry.address;
+			if (entry.address.startsWith('fe80:')) {
 				// Windows takes a numeric zone; elsewhere it is the interface name
-				linkLocalZoned = `${entry.address}%${process.platform === 'win32' ? entry.scopeid : name}`;
+				const zoned = `${entry.address}%${process.platform === 'win32' ? entry.scopeid : name}`;
+				candidates.linkLocal.push({
+					name: zoned,
+					bind: zoned,
+					host: zoned,
+					expectedIp: entry.address,
+					trusted: false,
+					linkLocal: true,
+					required: false,
+				});
+			} else {
+				const address = entry.address;
+				candidates.global.push({
+					name: address,
+					bind: address,
+					host: address,
+					expectedIp: address,
+					trusted: false,
+					required: false,
+				});
 			}
 		}
 	}
-	const sources: Source[] = [];
-	if (global)
-		sources.push({ name: global, bind: global, host: global, expectedIp: global, trusted: false, required: false });
-	if (linkLocal && linkLocalZoned)
-		sources.push({
-			name: linkLocalZoned,
-			bind: linkLocalZoned,
-			host: linkLocalZoned,
-			expectedIp: linkLocal,
-			trusted: false,
-			linkLocal: true,
-			required: false,
-		});
-	return sources;
+	return candidates;
 }
 
 async function bindablePort(host: string): Promise<number | undefined> {
@@ -124,6 +126,13 @@ async function bindablePort(host: string): Promise<number | undefined> {
 
 const HAS_IPV6 = (await bindablePort('::')) !== undefined;
 const HAS_IPV6_LOOPBACK = (await bindablePort('::1')) !== undefined;
+const firstBindable = async (list: Source[]) => {
+	for (const s of list) if ((await bindablePort(s.bind)) !== undefined) return s;
+};
+const hostIPv6 = hostIPv6Candidates();
+const HOST_IPV6 = [await firstBindable(hostIPv6.global), await firstBindable(hostIPv6.linkLocal)].filter(
+	(s): s is Source => s !== undefined
+);
 const SOURCES: Source[] = [
 	loopback('::1', '::1', true, HAS_IPV6_LOOPBACK),
 	loopback('127.0.0.1', '::ffff:127.0.0.1', true, true),
@@ -132,7 +141,7 @@ const SOURCES: Source[] = [
 	// told to) and untrusted to Harper
 	loopback('127.0.1.1', '::ffff:127.0.1.1', false, isLinux),
 	loopback('127.0.2.2', '::ffff:127.0.2.2', false, isLinux),
-	...hostIPv6Sources(),
+	...HOST_IPV6,
 ];
 const bindable = new Set<string>();
 for (const s of SOURCES) if ((await bindablePort(s.bind)) !== undefined) bindable.add(s.name);
@@ -285,8 +294,13 @@ suite(
 			const tally = new Map<string, number>(); // source|kind|ip|localMarker|username -> n
 			const errors = new Map<string, Map<string, number>>(); // source -> code -> n
 			const bump = <K>(m: Map<K, number>, k: K) => m.set(k, (m.get(k) ?? 0) + 1);
-			const record = (s: Source, kind: Kind, r: Peer) =>
+			const live = new Map<string, number>(); // source|kind -> n, read by the loops
+			const record = (s: Source, kind: Kind, r: Peer) => {
 				bump(tally, `${s.name}|${kind}|${r.ip}|${r.localMarker}|${r.username}`);
+				bump(live, `${s.name}|${kind}`);
+			};
+			const belowFloor = (s: Source) =>
+				KINDS.filter((kind) => (live.get(`${s.name}|${kind}`) ?? 0) < FLOOR_PER_SOURCE_KIND);
 			const recordError = (s: Source, kind: Kind, e: any) => {
 				if (!errors.has(s.name)) errors.set(s.name, new Map());
 				bump(errors.get(s.name)!, `${kind}:${e?.code ?? e?.message}`);
@@ -294,11 +308,19 @@ suite(
 
 			const started = Date.now();
 			const end = started + SECONDS * 1000;
+			const hardEnd = end + FLOOR_GRACE_MS;
 			const loop = async (s: Source) => {
 				const agent = new Agent({ keepAlive: true, localAddress: s.bind, maxSockets: 1 });
 				try {
-					while (Date.now() < end) {
-						const kind = KINDS[Math.floor(Math.random() * KINDS.length)];
+					for (;;) {
+						const now = Date.now();
+						let kind: Kind;
+						if (now < end) kind = KINDS[Math.floor(Math.random() * KINDS.length)];
+						else {
+							const missing = belowFloor(s);
+							if (missing.length === 0 || now >= hardEnd) break;
+							kind = missing[Math.floor(Math.random() * missing.length)];
+						}
 						try {
 							if (kind === 'keepalive') {
 								for (let i = 0; i < KEEPALIVE_BURST; i++) record(s, kind, await httpWhoAmI(port, s, agent));
@@ -350,7 +372,7 @@ suite(
 				for (const kind of KINDS)
 					ok(
 						(counts[s.name]?.[kind] ?? 0) >= FLOOR_PER_SOURCE_KIND,
-						`${s.name} ${kind}: only ${counts[s.name]?.[kind] ?? 0} responses (< ${FLOOR_PER_SOURCE_KIND}); errors ${JSON.stringify(transportErrors[s.name])}`
+						`${s.name} ${kind}: only ${counts[s.name]?.[kind] ?? 0} responses (< ${FLOOR_PER_SOURCE_KIND}) within ${SECONDS} s + ${FLOOR_GRACE_MS} ms; errors ${JSON.stringify(transportErrors[s.name])}`
 					);
 		});
 	}

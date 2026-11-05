@@ -20,8 +20,8 @@
  *
  * R3 and R4 are the same request against the same flipped CRL and differ only in whether the verdict's TTL has
  * elapsed, so together they pin both halves of the contract: a verdict is honoured inside its TTL and refreshed
- * after it. With a 60 s TTL, R4 is accepted with the verdict unchanged (measured), so the 401 comes from the
- * expiry, not from re-verifying every request. `unitTests/resources/certificateVerificationTables.test.js`
+ * after it (with a TTL longer than the run, R4 is accepted with the verdict unchanged, so the 401 comes from the
+ * expiry, not from re-verifying every request). `unitTests/resources/certificateVerificationTables.test.js`
  * pins the stored `expiresAt` window and the refill after expiry at the table level; what only this file pins
  * is the honoured-inside-TTL half (R3), the 401 through a real handshake, and the stored-but-expired row
  * surviving a restart.
@@ -212,7 +212,7 @@ suite(
 		after(async () => {
 			if (crlServer) await stopCrlServer(crlServer);
 			await teardownHarper(ctx);
-			await rm(certsPath, { recursive: true, force: true, maxRetries: 3 });
+			if (certsPath) await rm(certsPath, { recursive: true, force: true, maxRetries: 3 });
 		});
 
 		test('R1: a valid certificate is accepted and its good verdict is stored with expiresAt = now + cacheTtl', async () => {
@@ -243,7 +243,7 @@ suite(
 		test('restart with no write', async () => {
 			await killHarper(ctx);
 			await startHarper(ctx, { config });
-			// readiness through the operations API only: nothing writes to the verification tables
+			// readiness is read through the operations API so nothing writes to the verification tables
 			const deadline = Date.now() + 120_000;
 			for (;;) {
 				try {
@@ -285,7 +285,7 @@ suite(
 		});
 
 		test('R3: with the served CRL flipped, the valid certificate is still accepted from the cached verdict inside the TTL', async () => {
-			copyFileSync(certs.extraCrls![ALL_REVOKED_CRL], certs.crl); // serial 2 is now listed
+			copyFileSync(certs.extraCrls![ALL_REVOKED_CRL], certs.crl);
 			verdicts.R3 = await request(certs.valid);
 			const verdict = verdictRows(await stored(CERT_CACHE));
 			log('R3', { status: verdicts.R3.status, secondsSinceR2: sec(verdicts.R3.at - verdicts.R2.at), verdict });
