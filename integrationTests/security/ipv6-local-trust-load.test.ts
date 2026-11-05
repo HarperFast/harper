@@ -45,8 +45,7 @@ const SECONDS = (() => {
 const ARM = process.env.HARPER_UWS_HTTP ? 'uws' : 'node';
 const LOOPS_PER_SOURCE = 8;
 const KEEPALIVE_BURST = 5;
-// every source must get at least this many responses of every kind, or the run did not exercise it concurrently;
-// after the timed window a loop keeps driving its source's short kinds until they reach it, within this grace
+// every source must get at least this many responses of every kind, or the run did not exercise it concurrently
 const FLOOR_PER_SOURCE_KIND = 100;
 const FLOOR_GRACE_MS = 30_000;
 const REQUEST_TIMEOUT_MS = 20_000;
@@ -75,7 +74,6 @@ const loopback = (name: string, expectedIp: string, trusted: boolean, required: 
 	required,
 });
 
-/** Every non-internal IPv6 address of this host as an untrusted source, split by class. */
 function hostIPv6Candidates(): { global: Source[]; linkLocal: Source[] } {
 	const candidates = { global: [] as Source[], linkLocal: [] as Source[] };
 	for (const [name, addresses] of Object.entries(networkInterfaces())) {
@@ -291,10 +289,11 @@ suite(
 				);
 			else strictEqual(uwsHeader, undefined, 'the Node arm answered with a uWebSockets header');
 
-			const tally = new Map<string, number>(); // source|kind|ip|localMarker|username -> n
-			const errors = new Map<string, Map<string, number>>(); // source -> code -> n
+			// keys: tally `source|kind|ip|localMarker|username`, live `source|kind`, errors source -> `kind:code`
+			const tally = new Map<string, number>();
+			const errors = new Map<string, Map<string, number>>();
 			const bump = <K>(m: Map<K, number>, k: K) => m.set(k, (m.get(k) ?? 0) + 1);
-			const live = new Map<string, number>(); // source|kind -> n, read by the loops
+			const live = new Map<string, number>();
 			const record = (s: Source, kind: Kind, r: Peer) => {
 				bump(tally, `${s.name}|${kind}|${r.ip}|${r.localMarker}|${r.username}`);
 				bump(live, `${s.name}|${kind}`);
@@ -337,8 +336,8 @@ suite(
 			await Promise.all(ACTIVE.flatMap((s) => Array.from({ length: LOOPS_PER_SOURCE }, () => loop(s))));
 			const elapsedMs = Date.now() - started;
 
-			const counts: Record<string, Record<string, number>> = {}; // source -> kind -> n
-			const observed: Record<string, Record<string, number>> = {}; // source -> "ip|localMarker|username" -> n
+			const counts: Record<string, Record<string, number>> = {};
+			const observed: Record<string, Record<string, number>> = {};
 			const mismatches: Record<string, number> = {};
 			for (const [key, n] of tally) {
 				const [name, kind, ip, marker, username] = key.split('|'); // an ip may contain ':' but never '|'

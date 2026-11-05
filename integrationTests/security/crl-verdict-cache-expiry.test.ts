@@ -14,7 +14,7 @@
  *   restart, no write
  *   R2 valid cert, past the TTL after R1                -> 200; the expired row is rewritten (checked_at moves)
  *   flip the served CRL to also list the valid serial
- *   R3 valid cert, inside half a TTL after R2           -> 200 from the cached verdict (checked_at unchanged)
+ *   R3 valid cert, before the R2 verdict's expiresAt     -> 200 from the cached verdict (checked_at unchanged)
  *   R4 valid cert, past the TTL after R2                -> 401; verdict rewritten to `revoked`, revoked row stored
  *   R5 revoked cert                                     -> 401 (control)
  *
@@ -58,7 +58,7 @@ import {
 
 const HTTPS_PORT = 9927;
 const FIXTURE_PATH = join(import.meta.dirname, 'system-table-probe');
-// 8 s keeps half a TTL of margin on each side of the boundary (R3 inside, R4 past) on a slow shard
+// long enough that R3 lands before the R2 verdict expires on a slow shard, short enough to cross twice in one run
 const CACHE_TTL_MS = 8000;
 const PAST_TTL_MARGIN_MS = 1500;
 const CERT_CACHE = 'hdb_certificate_cache';
@@ -93,7 +93,7 @@ suite(
 			'Content-Type': 'application/json',
 		});
 
-		/** Ports the way setupCrlServerWithCerts does; the certificates carry a second CRL that also lists serial 2. */
+		/** As setupCrlServerWithCerts, plus a second CRL that also lists the valid client's serial. */
 		async function startCrlServerWithCerts(): Promise<CrlServerContext> {
 			const maxRetries = 5;
 			for (let attempt = 0; attempt < maxRetries; attempt++) {
@@ -290,8 +290,8 @@ suite(
 			const verdict = verdictRows(await stored(CERT_CACHE));
 			log('R3', { status: verdicts.R3.status, secondsSinceR2: sec(verdicts.R3.at - verdicts.R2.at), verdict });
 			ok(
-				verdicts.R3.at - verdicts.R2.at <= CACHE_TTL_MS / 2,
-				`R3 landed ${verdicts.R3.at - verdicts.R2.at} ms after R2, wanted <= ${CACHE_TTL_MS / 2} (inside the TTL)`
+				verdicts.R3.at < rows.R2!.expiresAt,
+				`R3 landed at ${verdicts.R3.at}, past the R2 verdict's expiresAt ${rows.R2!.expiresAt} (${sec(verdicts.R3.at - verdicts.R2.at)} s after R2): not inside the TTL`
 			);
 			ok(
 				accepted(verdicts.R3),
