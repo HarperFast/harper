@@ -46,9 +46,9 @@ const { errorToString, errorForLog } = harperLogger;
 
 const OPENAPI_DOMAIN = 'openapi';
 
-// Only a read's body is shaped by the target's select
-function serializationTarget(method: string, target?: RequestTarget) {
-	return method === 'GET' || method === 'HEAD' ? target : undefined;
+// An error status carries a payload, not the read's projection
+function serializationTarget(method: string, target: RequestTarget | undefined, status?: number) {
+	return (method === 'GET' || method === 'HEAD') && !(status >= 400) ? target : undefined;
 }
 
 /**
@@ -106,9 +106,8 @@ function finalizeResponse(
 	if (!responseData.body) {
 		let body: any;
 		if ('data' in responseData) {
-			// the data of an error status is not the read's projection
-			const dataTarget = (responseData.status ?? status) >= 400 ? undefined : serializationTarget(method, target);
 			// a standard Response object does not have a setter for body, so we force it
+			const dataTarget = serializationTarget(method, target, responseData.status ?? status);
 			body = serialize(responseData.data, request, responseData, dataTarget, resource);
 		} else if (responseData.body === undefined) {
 			// if there is really no body, serialize this object into the body. Note that `new Response()` creates a response
@@ -721,7 +720,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				responseData,
 				request,
 				responseObject,
-				serializationTarget(method, target),
+				serializationTarget(method, target, responseObject.status),
 				resource
 			);
 			const startup = readStreamStartup(responseObject.body, request.method, method);

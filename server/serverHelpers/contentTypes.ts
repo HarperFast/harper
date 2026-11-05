@@ -84,6 +84,12 @@ export function buildSelectColumns(currentSelect: any, attributes?: any[]): Colu
 				columns.wildcard = true;
 			} else columns.push((column as any).name || column);
 		}
+		if (columns.wildcard) {
+			// a column the select also names (`*,note`) is already listed
+			const unique = [...new Set(columns)];
+			columns.length = 0;
+			columns.push(...unique);
+		}
 		if (isScalarSelect(currentSelect)) columns.scalar = true;
 		else if (asArray) columns.asArray = true;
 		return columns;
@@ -1168,11 +1174,10 @@ function formatCsvCell(value: any) {
 	return value;
 }
 
-// A wildcard row holds only the keys its record has: the declared columns lead, and the row adds any beyond them.
 function withDeclaredColumns(declared: ColumnsList | undefined, rowKeys: string[]): string[] {
 	if (!declared?.wildcard) return rowKeys;
 	const known = new Set<string>(declared);
-	return [...known, ...rowKeys.filter((key) => !known.has(key))];
+	return [...declared, ...rowKeys.filter((key) => !known.has(key))];
 }
 
 /**

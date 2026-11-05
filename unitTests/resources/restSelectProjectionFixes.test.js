@@ -1286,7 +1286,6 @@ describe('REST and operations API select projection fixes', function () {
 					{ name: 'count', type: 'Int' },
 				],
 			});
-			// the first row omits the optional `note`; `extra` is undeclared
 			const sparseRows = () => [
 				{ id: 's1', name: 'One', extra: 1 },
 				{ id: 's2', name: 'Two', note: 'later', extra: 2 },
@@ -1347,6 +1346,15 @@ describe('REST and operations API select projection fixes', function () {
 				class extends Plain {
 					get() {
 						return { status: 403, headers: new Headers(), data: { message: 'Forbidden' } };
+					}
+				}
+			);
+			mount(
+				'PlainForbiddenPlain',
+				class extends Plain {
+					get() {
+						this.getContext().response.status = 403;
+						return { message: 'Forbidden' };
 					}
 				}
 			);
@@ -1869,6 +1877,8 @@ describe('REST and operations API select projection fixes', function () {
 			assert.strictEqual(own.text, '"id","name","note","count"\n"o1","Own",,\n');
 			const collection = await restGet('/Sparse/?select(*)&sort(id)', { accept: 'text/csv' });
 			assert.strictEqual(collection.text, '"id","name","note","count"\n"r1","R",,\n"r2","R2","n",2\n');
+			const mixed = await restGet('/Sparse/?select(*,note)&sort(id)', { accept: 'text/csv' });
+			assert.strictEqual(mixed.text, '"id","name","note","count"\n"r1","R",,\n"r2","R2","n",2\n');
 		});
 
 		for (const [kind, path] of [
@@ -1901,6 +1911,14 @@ describe('REST and operations API select projection fixes', function () {
 				}
 			});
 		}
+
+		it('leaves a plain return with an error status unshaped by the select (#4028 follow-up)', async function () {
+			for (const select of ['select(id)', 'select(*)', 'select([id,note])']) {
+				const csv = await restGet(`/PlainForbiddenPlain/z-1?${select}`, { accept: 'text/csv' });
+				assert.strictEqual(csv.status, 403, select);
+				assert.strictEqual(csv.text, '"message"\n"Forbidden"\n', select);
+			}
+		});
 
 		for (const [kind, path] of [
 			['returns a response envelope', '/CustomScalarEnvelope'],
