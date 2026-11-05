@@ -9468,6 +9468,8 @@ export function makeTable(options): TableResourceClass {
 				request
 			);
 			if (plan) subscription.ungated = true;
+			// Every delivery (live, replay, history, current record, reload re-snapshot) passes send; a path that
+			// bypassed it would deliver attributes the role cannot read.
 			if (deliveredAttributes) {
 				const sendSelected = subscription.send;
 				subscription.send = function (event) {
@@ -10089,6 +10091,7 @@ export function makeTable(options): TableResourceClass {
 					)
 				);
 			}
+			// Field by field: spreading a stored entry or an audit record would deliver storage metadata and the audit user.
 			function currentRecordEvent(id: Id, entry: any) {
 				return {
 					id,
