@@ -700,12 +700,18 @@ function cloneUserView(user: User & { role: UserRole }): User {
  * `server.getUser` for a connection that holds its user (MQTT CONNECT), with a component's principal tracked
  * against the records read for its name before it resolved. A memoizing server.getUser hands one user to later
  * lookups: one whose records changed since gets a view of its own, so it does not re-track an earlier
- * connection's user. The view keeps the class but not its private fields.
+ * connection's user. The view keeps the class but not its private fields. `resolver` is the server whose
+ * getUser resolves the login, as the caller's scope would call it.
  */
-async function getTrackedUser(username: string, password: string | null, request?: unknown): Promise<User> {
-	if (server.getUser === getUserImpl) return getUserImpl(username, password);
+async function getTrackedUser(
+	username: string,
+	password: string | null,
+	request?: unknown,
+	resolver: { getUser: typeof server.getUser } = server
+): Promise<User> {
+	if (resolver.getUser === getUserImpl) return getUserImpl(username, password);
 	const versions = userRecordVersions(username);
-	const user = await server.getUser(username, password, request as any);
+	const user = await resolver.getUser(username, password, request as any);
 	const tracked = user && typeof user === 'object' ? trackedProvenance.get(user) : undefined;
 	if (
 		tracked?.username === versions.username &&
