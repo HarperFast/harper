@@ -28,6 +28,56 @@ function testScope(warnings = [], errors = []) {
 }
 
 describe('roles entry events', () => {
+	for (const permission of ['', '  permission: false\n']) {
+		it(`rejects system grants before applying any role (${permission || 'collapsed'})`, async () => {
+			const harness = testScope();
+			const applied = [];
+			handleApplication(harness.scope, async (role) => applied.push(role.role));
+			await assert.rejects(
+				harness.handler({
+					entryType: 'file',
+					eventType: 'add',
+					absolutePath: '/app/roles.yaml',
+					contents: Buffer.from(
+						`first:\n  super_user: false\nlegacy:\n${permission}  system:\n    hdb_user:\n      read: true\n`
+					),
+				}),
+				(error) => error.statusCode === 400 && /Role 'legacy'.*managed by Harper/.test(error.message)
+			);
+			assert.deepStrictEqual(applied, []);
+		});
+	}
+	for (const contents of ['', '# No roles yet\n', '---\n']) {
+		it(`accepts an empty roles document ${JSON.stringify(contents)}`, async () => {
+			const harness = testScope();
+			const applied = [];
+			handleApplication(harness.scope, async (role) => applied.push(role.role));
+			await harness.handler({
+				entryType: 'file',
+				eventType: 'add',
+				absolutePath: '/app/roles.yaml',
+				contents: Buffer.from(contents),
+			});
+			assert.deepStrictEqual(applied, []);
+		});
+	}
+
+	it('names a null role definition before applying other roles', async () => {
+		const harness = testScope();
+		const applied = [];
+		handleApplication(harness.scope, async (role) => applied.push(role.role));
+		await assert.rejects(
+			harness.handler({
+				entryType: 'file',
+				eventType: 'add',
+				absolutePath: '/app/roles.yaml',
+				contents: Buffer.from('first:\n  super_user: false\ninvalid:\n'),
+			}),
+			(error) => error.statusCode === 400 && /Role 'invalid' must be an object/.test(error.message)
+		);
+		assert.deepStrictEqual(applied, []);
+	});
+
 	it('ignores directory and unlink events without reading file contents', async () => {
 		const harness = testScope();
 		handleApplication(harness.scope, async () => {});

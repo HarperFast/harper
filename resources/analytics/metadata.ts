@@ -1,4 +1,5 @@
 export const METRIC = {
+	FULL_TEXT: 'fulltext',
 	TABLE_SIZE: 'table-size',
 	DATABASE_SIZE: 'database-size',
 	STORAGE_VOLUME: 'storage-volume',

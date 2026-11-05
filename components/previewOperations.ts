@@ -3,7 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 import { databases } from '../resources/databases.ts';
 import { getConfigPath } from '../config/configUtils.ts';
-import { CONFIG_PARAMS, OPERATIONS_ENUM, REPLICATED_FROM } from '../utility/hdbTerms.ts';
+import { CONFIG_PARAMS, OPERATIONS_ENUM } from '../utility/hdbTerms.ts';
 import { ClientError, ServerError, hdbErrors } from '../utility/errors/hdbError.ts';
 import { validateBySchema } from '../validation/validationWrapper.ts';
 import { PROJECT_NAME_PATTERN } from '../utility/componentNames.ts';
@@ -27,6 +27,8 @@ import {
 	planIdentityReconcile,
 	policiesOverlap,
 	policyDifferences,
+	sameAuthority,
+	sameSet,
 	type DesiredIdentity,
 	type DesiredPolicy,
 } from '../security/ciIdentity.ts';
@@ -46,6 +48,8 @@ import { deploymentRecord } from './deploymentOperations.ts';
 import { handleListReleases } from './releaseOperations.ts';
 import { REPLICATION_NOT_IMPLEMENTED, server } from '../server/Server.ts';
 import { getThisNodeName } from '../server/nodeName.ts';
+import { isOperationAuthorizationBypassed } from '../server/serverHelpers/operationAuthorizationState.ts';
+import { isThreadRunning } from '../server/threads/manageThreads.ts';
 
 const { HTTP_STATUS_CODES } = hdbErrors;
 const ENDED_DEPLOYMENT_STATUSES = new Set(['success', 'partial', 'failed', 'rolled_back', 'staged']);
@@ -88,6 +92,7 @@ function withPreviewEnablementLock<T>(app: string, run: () => Promise<T>): Promi
 	const componentsRoot = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT) as string;
 	return withComponentPreparationLock(join(componentsRoot, '.preview-enablement'), run, {
 		purpose: `enabling or disabling previews of ${app}`,
+		isOwnerAlive: (owner) => owner.pid !== process.pid || isThreadRunning(owner.threadId),
 	});
 }
 
@@ -196,12 +201,17 @@ function rivalPolicies(names: PreviewNames, policies: any[], wanted: DesiredPoli
 	const ours = new Set([names.policy, names.cleanupPolicy]);
 	return wanted.flatMap((policy) => {
 		const rival = policies.find(
-			(candidate) => !ours.has(candidate?.id) && candidate?.enabled !== false && policiesOverlap(candidate, policy)
+			(candidate) =>
+				!ours.has(candidate?.id) &&
+				candidate?.enabled !== false &&
+				candidate?.exchangeable !== false &&
+				policiesOverlap(candidate, policy) &&
+				!sameAuthority(candidate, policy)
 		);
 		return rival
 			? [
-					`Trust policy "${rival.id}" would also match the runs "${policy.id}" is for, and the exchange takes ` +
-						`whichever comes first by id. Give this application its own workflow file (workflow=).`,
+					`Trust policy "${rival.id}" would also match the runs "${policy.id}" is for, and the exchange refuses a ` +
+						`token two policies give different users or operations. Give this application its own workflow file (workflow=).`,
 				]
 			: [];
 	});
@@ -272,8 +282,8 @@ export async function enablePreviews(req: any) {
 		for (const [index, wanted] of desired.policies.entries()) {
 			if (plan.policies[index] !== 'create') continue;
 			// add_oidc_trust replaces, so a policy written since the listing (by hand, or from another node) would be
-			// overwritten, and one that matches the same runs would leave which identity a run gets to the ids. Reading
-			// again narrows both to the time between this read and the write.
+			// overwritten, and one that matches the same runs would make the exchange refuse them. Reading again narrows
+			// both to the time between this read and the write.
 			const now = await listPolicies(req);
 			const raced = [
 				...(now.some((policy) => policy?.id === wanted.id)
@@ -299,13 +309,15 @@ export async function enablePreviews(req: any) {
 		if (problems.length > 0) {
 			throw new ServerError(`Previews of ${req.app} did not verify: ${problems.join('; ')}.`);
 		}
+		const description = await describePreviewPolicy(req, names);
+		const message =
+			created.length > 0
+				? `Enabled previews of ${req.app}: created ${created.join(', ')}`
+				: `Previews of ${req.app} were already enabled; nothing changed`;
 		return {
-			message:
-				created.length > 0
-					? `Enabled previews of ${req.app}: created ${created.join(', ')}`
-					: `Previews of ${req.app} were already enabled; nothing changed`,
+			message: description.problems.length > 0 ? `${message}, but ${description.problems.join('; ')}` : message,
 			created,
-			...(await describePreviewPolicy(req, names)),
+			...description,
 		};
 	});
 }
@@ -320,6 +332,10 @@ async function describePreviewPolicy(req: any, names: PreviewNames) {
 	const user: any = getUserWithRole(names.user);
 	const trust = previewPolicies(names, await listPolicies(req));
 	const deploy = trust.find((policy) => policy.id === names.policy);
+	const cleanup = trust.find((policy) => policy.id === names.cleanupPolicy);
+	const hasRepositoryId = (policy: any) =>
+		typeof policy?.claims?.repository_id === 'string' && policy.claims.repository_id.length > 0;
+	const hasWorkflowRef = (policy: any) => Boolean(parseWorkflowRef(policy?.claims?.workflow_ref).branch);
 	const problems: string[] = [];
 	if (!role) problems.push(`role "${names.role}" is missing`);
 	else {
@@ -328,13 +344,16 @@ async function describePreviewPolicy(req: any, names: PreviewNames) {
 		if (roleProblem) problems.push(roleProblem);
 		else if (grant.constraints?.isolated !== true || !grant.constraints?.hostSuffix) {
 			problems.push(`role "${names.role}" no longer requires isolated previews under a host suffix`);
+		} else if (grant.constraints.generation === undefined) {
+			problems.push(
+				`role "${names.role}" predates revocation generations, so disabling previews cannot fence a preview it ` +
+					'built that is still swapping in or reaching a peer: disable previews, and again once that lists none ' +
+					'inProgress, to drop any that went live meanwhile, then enable them again (one a peer timed out on can ' +
+					'still go live until it expires)'
+			);
 		}
 		const operations = role.permission?.operations;
-		if (
-			!Array.isArray(operations) ||
-			operations.length !== CI_PREVIEW_OPERATIONS.length ||
-			CI_PREVIEW_OPERATIONS.some((operation) => !operations.includes(operation))
-		) {
+		if (!sameSet(operations, CI_PREVIEW_OPERATIONS)) {
 			problems.push(
 				`role "${names.role}" allows ${JSON.stringify(operations ?? null)}, not ${CI_PREVIEW_OPERATIONS.join(', ')}`
 			);
@@ -343,14 +362,62 @@ async function describePreviewPolicy(req: any, names: PreviewNames) {
 	if (!user) problems.push(`user "${names.user}" is missing`);
 	else if (user.active === false) problems.push(`user "${names.user}" is inactive`);
 	else if (user.role?.role !== names.role) problems.push(`user "${names.user}" is in role "${user.role?.role}"`);
-	for (const id of [names.policy, names.cleanupPolicy]) {
+	const policyOperations: [string, string[]][] = [
+		[names.policy, CI_PREVIEW_OPERATIONS],
+		[names.cleanupPolicy, CI_PREVIEW_CLEANUP_OPERATIONS],
+	];
+	for (const [id, operations] of policyOperations) {
 		const policy = trust.find((candidate) => candidate.id === id);
 		if (!policy) problems.push(`trust policy "${id}" is missing`);
 		else if (policy.enabled === false) problems.push(`trust policy "${id}" is disabled`);
 		else if (policy.invalid_reason) problems.push(`trust policy "${id}" ${policy.invalid_reason}`);
 		else if (policy.user !== names.user) problems.push(`trust policy "${id}" names user "${policy.user}"`);
-		else if (policy.claims?.event_name !== 'pull_request_target' || !policy.claims?.environment) {
-			problems.push(`trust policy "${id}" no longer pins event_name pull_request_target and an environment`);
+		else {
+			if (policy.claims?.event_name !== 'pull_request_target') {
+				problems.push(`trust policy "${id}" no longer pins event_name "pull_request_target"`);
+			}
+			if (typeof policy.claims?.environment !== 'string' || !policy.claims.environment) {
+				problems.push(`trust policy "${id}" no longer pins environment as a non-empty string`);
+			} else if (id === names.policy && policy.claims.environment === PREVIEW_CLEANUP_ENVIRONMENT) {
+				problems.push(`trust policy "${id}" pins environment "${PREVIEW_CLEANUP_ENVIRONMENT}", which is for cleanup`);
+			} else if (id === names.cleanupPolicy && policy.claims.environment !== PREVIEW_CLEANUP_ENVIRONMENT) {
+				problems.push(
+					`trust policy "${id}" pins environment ${JSON.stringify(policy.claims.environment)}, not "${PREVIEW_CLEANUP_ENVIRONMENT}"`
+				);
+			}
+			if (!hasRepositoryId(policy) || !hasWorkflowRef(policy)) {
+				problems.push(`trust policy "${id}" no longer pins repository_id and a branch workflow_ref as strings`);
+			}
+			if (id === names.cleanupPolicy && deploy) {
+				if (policy.audience !== deploy.audience) {
+					problems.push(
+						`trust policy "${id}" has audience ${JSON.stringify(policy.audience)}, not ${JSON.stringify(deploy.audience)}`
+					);
+				}
+				if (
+					hasRepositoryId(policy) &&
+					hasRepositoryId(deploy) &&
+					policy.claims.repository_id !== deploy.claims.repository_id
+				) {
+					problems.push(
+						`trust policy "${id}" pins repository_id ${JSON.stringify(policy.claims.repository_id)}, not ${JSON.stringify(deploy.claims.repository_id)}`
+					);
+				}
+				if (
+					hasWorkflowRef(policy) &&
+					hasWorkflowRef(deploy) &&
+					policy.claims.workflow_ref !== deploy.claims.workflow_ref
+				) {
+					problems.push(
+						`trust policy "${id}" pins workflow_ref ${JSON.stringify(policy.claims.workflow_ref)}, not ${JSON.stringify(deploy.claims.workflow_ref)}`
+					);
+				}
+			}
+			if (!sameSet(policy.operations, operations)) {
+				problems.push(
+					`trust policy "${id}" allows ${JSON.stringify(policy.operations ?? null)}, not ${operations.join(', ')}`
+				);
+			}
 		}
 	}
 	return {
@@ -362,7 +429,7 @@ async function describePreviewPolicy(req: any, names: PreviewNames) {
 		...parseWorkflowRef(deploy?.claims?.workflow_ref),
 		repository_id: deploy?.claims?.repository_id,
 		environment: deploy?.claims?.environment,
-		cleanupEnvironment: trust.find((policy) => policy.id === names.cleanupPolicy)?.claims?.environment,
+		cleanupEnvironment: cleanup?.claims?.environment,
 		audience: deploy?.audience,
 		grant: role?.permission?.component_deploy ?? null,
 		operations: role?.permission?.operations ?? null,
@@ -468,9 +535,11 @@ async function dropPreviewRelease({ node, project, deploymentId }: PreviewReleas
 /**
  * On this node and every peer, refuse from now on any preview of `app` built at `generation`, waiting for one swapping
  * now, then report what is live: `list_releases` with a fence each node acknowledges. Internal to `disable_previews`.
+ * A peer runs it as the origin node's identity, which is not a super user, under the authorization bypass harper-pro
+ * gives an authorized node's operations.
  */
 export async function fencePreviewReleases(req: any): Promise<any> {
-	if (req[REPLICATED_FROM] === undefined) requireSuperUser(req);
+	if (!isOperationAuthorizationBypassed()) requireSuperUser(req);
 	derivePreviewNames(req.app);
 	if (typeof req.generation !== 'string' || !PREVIEW_GENERATION_PATTERN.test(req.generation)) {
 		throw new ClientError(`'generation' must be the preview identity generation to revoke`);
@@ -493,7 +562,10 @@ async function previewsInProgress(app: string): Promise<string[]> {
 	for await (const row of deployments.search([
 		{ attribute: 'project', comparator: 'starts_with', value: `${app}-pr-` },
 	])) {
-		if (row?.preview?.app === app && !ENDED_DEPLOYMENT_STATUSES.has(row.status)) projects.add(row.project);
+		if (!row || ENDED_DEPLOYMENT_STATUSES.has(row.status)) continue;
+		// An activation's row has no preview metadata of its own: the build it activates does.
+		const preview = row.preview ?? (await deploymentRecord(row.activated_from))?.preview;
+		if (preview?.app === app) projects.add(row.project);
 	}
 	return [...projects].sort();
 }
@@ -561,6 +633,20 @@ export async function disablePreviews(req: any) {
 				failed.push(`${release.project} on ${release.node}: ${(error as Error).message}`);
 			}
 		}
+		// A drop that removed nothing may have lost to a newer preview release, which that node rightly kept.
+		if (dropped.some((drop) => !drop.error && !drop.componentRemoved)) {
+			const remaining = await livePreviewReleases(req.app, generation).catch((error) => {
+				failed.push(`the census after the drops: ${(error as Error).message}`);
+				return { releases: [], unreachable: [] };
+			});
+			const reported = new Set(dropped.filter((drop) => drop.error).map((drop) => `${drop.project} on ${drop.node}`));
+			for (const node of remaining.unreachable) if (!failed.includes(node)) failed.push(node);
+			for (const { project, node, deploymentId } of remaining.releases) {
+				if (!reported.has(`${project} on ${node}`)) {
+					failed.push(`${project} on ${node}: release ${deploymentId} is still live`);
+				}
+			}
+		}
 		if (failed.length > 0) {
 			throw new ServerError(
 				`Previews of ${req.app} are revoked but not removed: ${failed.join('; ')}. The trust policies are gone and ` +
@@ -579,11 +665,17 @@ export async function disablePreviews(req: any) {
 			removed.push(`role ${names.role}`);
 		}
 		const inProgress = await previewsInProgress(req.app);
+		const message =
+			removed.length + dropped.length > 0
+				? `Disabled previews of ${req.app}`
+				: `Previews of ${req.app} were not enabled; nothing changed`;
 		return {
 			message:
-				removed.length + dropped.length > 0
-					? `Disabled previews of ${req.app}`
-					: `Previews of ${req.app} were not enabled; nothing changed`,
+				role && generation === undefined
+					? `${message}, but role ${names.role} predated revocation generations, so a preview it built that is in ` +
+						'progress, or that a peer timed out on, can still go live until it expires: disable previews again once ' +
+						'none is in progress'
+					: message,
 			app: req.app,
 			dropped,
 			removed,

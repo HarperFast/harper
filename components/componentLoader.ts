@@ -65,6 +65,7 @@ import * as httpComponent from '../server/http.ts';
 import * as mcpComponent from './mcp/index.ts';
 import { Status } from '../server/status/index.ts';
 import { lifecycle as componentLifecycle, statusForComponent, STATUS } from './status/index.ts';
+import { redactUrlCredentials } from '../utility/urlCredentials.ts';
 import { DEFAULT_CONFIG } from './DEFAULT_CONFIG.ts';
 import { materializeGlobalSecrets, processComponentEnv } from './componentSecrets.ts';
 import { type PluginModule } from './PluginModule.ts';
@@ -132,13 +133,15 @@ function markLoadedUnlessReported(componentStatusName: string, message: string):
 function loadFailure(thrown: unknown, describe: (message: string) => string): Error {
 	if (thrown instanceof Error) {
 		try {
-			thrown.message = describe(thrown.message);
+			thrown.message = redactUrlCredentials(describe(thrown.message));
 			return thrown;
 		} catch {
 			// frozen: carried as the cause below
 		}
 	}
-	return new Error(describe(thrown instanceof Error ? thrown.message : String(thrown)), { cause: thrown });
+	return new Error(redactUrlCredentials(describe(thrown instanceof Error ? thrown.message : String(thrown))), {
+		cause: thrown,
+	});
 }
 
 function noteBootFailure(application: string | undefined, key: string, error: unknown): void {

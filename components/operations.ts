@@ -45,6 +45,7 @@ import {
 	liveDeploymentIdOf,
 } from './Application.ts';
 import { deploymentOfLiveRelease, deploymentRecord } from './deploymentOperations.ts';
+import { redactUrlCredentials } from '../utility/urlCredentials.ts';
 const prepareApplication = _prepareApplication;
 import {
 	COMPONENT_PREPARATION_LOCK_DIR,
@@ -618,6 +619,15 @@ async function deployComponent(req?: any) {
 		if (bound !== undefined && !(previewExpiresAtMs(preview) <= bound)) {
 			throw new ClientError(
 				`'${req.project}' expires at ${preview.expiresAt}, later than this role's component grant allows`,
+				HTTP_STATUS_CODES.FORBIDDEN
+			);
+		}
+		// Only an enable mints a generation, so a staged build stamped with another, or with none, is one a disable revoked
+		// or a role from before generations built, which no fence can name.
+		const generation = componentGrant.constraints?.generation;
+		if (generation !== undefined && preview.generation !== generation) {
+			throw new ClientError(
+				`'${req.project}' was not activated: it was built before previews of ${preview.app} were last enabled`,
 				HTTP_STATUS_CODES.FORBIDDEN
 			);
 		}
@@ -1585,7 +1595,12 @@ async function getComponents(req) {
 		if (unsatisfiedEnv.length > 0) entry.unsatisfiedEnv = unsatisfiedEnv;
 		const componentConfig = rootConfig?.[entry.name];
 		if (!componentConfig || typeof componentConfig !== 'object') continue;
-		if (componentConfig.package) entry.package = componentConfig.package;
+		if (componentConfig.package) {
+			entry.package =
+				req?.hdb_user?.role?.permission?.super_user || typeof componentConfig.package !== 'string'
+					? componentConfig.package
+					: redactUrlCredentials(componentConfig.package);
+		}
 		if (componentConfig.urlPath) entry.urlPath = componentConfig.urlPath;
 		if (componentConfig.host) entry.host = componentConfig.host;
 		if (componentConfig.loadComponent) entry.loadComponent = componentConfig.loadComponent;

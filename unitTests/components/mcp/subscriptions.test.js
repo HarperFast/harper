@@ -3,7 +3,6 @@ const {
 	addResourceSubscription,
 	removeResourceSubscription,
 	dropSessionSubscriptions,
-	restoreResourceSubscriptions,
 	_liveSubscriptionCount,
 	_resetSubscriptionsForTest,
 } = require('#src/components/mcp/subscriptions');
@@ -124,12 +123,5 @@ describe('mcp/subscriptions', () => {
 		dropSessionSubscriptions('s1');
 		assert.equal(fake.endCalls, 1);
 		assert.equal(_liveSubscriptionCount('s1'), 0);
-	});
-
-	it('restore re-establishes durable subscriptions and reports which succeeded', async () => {
-		registerSession('s1', 'application', USER);
-		const restored = await restoreResourceSubscriptions('s1', [URI, 'https://app.test:9926/nope'], USER);
-		assert.deepEqual(restored, [URI], 'only the subscribable URI is restored');
-		assert.equal(_liveSubscriptionCount('s1'), 1);
 	});
 });

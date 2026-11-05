@@ -27,7 +27,7 @@ const SEED: Record<string, any>[] = [
 	{ id: 'r_anull_b1', c: 'beta', a: null, b: 1 },
 	{ id: 'r_aabsent_b1', c: 'beta', b: 1 },
 	{ id: 'r_a5_b5', c: 'gamma', a: 5, b: 5 },
-].map((row) => ({ ...row, flag: 'none' }));
+].map((row) => ({ ...row, ...('b' in row && { u: row.b }), flag: 'none' }));
 const ALL_IDS = SEED.map((row) => row.id).sort();
 const ALPHA_IDS = ['r1', 'r_a1_b5', 'r_a1_babsent', 'r_a1_bnull'];
 
@@ -160,12 +160,20 @@ for (const sqlEngine of ['auto', 'new']) {
 				}
 			});
 
+			const B_IS_1 = ['r1', 'r_a5_b1', 'r_aabsent_b1', 'r_anull_b1'];
+			const B_PRESENT = [...B_IS_1, 'r_a1_b5', 'r_a5_b5'].sort();
 			for (const [query, expected] of [
 				['c=alpha&b=lt=3', ['r1']],
 				['b=lt=3&c=alpha', ['r1']],
 				['c=alpha&b=le=1', ['r1']],
 				['c=alpha&b=ne=null', ['r1', 'r_a1_b5']],
-			] as const) {
+				...['b', 'u'].flatMap((attribute) => [
+					[`${attribute}=ne=5`, [...B_IS_1, 'r_a1_babsent', 'r_a1_bnull'].sort()],
+					[`${attribute}=lt=3`, B_IS_1],
+					[`${attribute}=ge=null`, B_PRESENT],
+					[`${attribute}=between=(null,3)`, B_IS_1],
+				]),
+			] as [string, string[]][]) {
 				test(`REST GET /${TABLE}/?${query}`, async () => {
 					await reseed(client);
 					const response = await client.reqRest(`/${TABLE}/?${query}`).timeout(60_000);
@@ -173,6 +181,19 @@ for (const sqlEngine of ['auto', 'new']) {
 					deepStrictEqual(sortedIds(response.body), expected);
 				});
 			}
+
+			test(`REST GET /${TABLE}/ sorts a leading b=ne=5 by b before paging`, async () => {
+				await reseed(client);
+				const sortKeys = (rows: { b?: number | null }[]) => rows.map((row) => row.b ?? 'none');
+				for (const [query, expected] of [
+					['b=ne=5&select(id,b)&sort(+b)&limit(3)', ['none', 'none', 1]],
+					['b=ne=5&select(id,b)&sort(-b)&limit(1,6)', [1, 1, 1, 'none', 'none']],
+				] as const) {
+					const response = await client.reqRest(`/${TABLE}/?${query}`).timeout(60_000);
+					strictEqual(response.status, 200, `${query} -> ${response.status}`);
+					deepStrictEqual(sortKeys(response.body), expected, query);
+				}
+			});
 
 			test(`REST GET /${TABLE}/ reports an estimated total next to a filter-only condition`, async () => {
 				await reseed(client);

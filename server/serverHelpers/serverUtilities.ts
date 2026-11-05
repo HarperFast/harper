@@ -43,6 +43,7 @@ import * as deploymentOperations from '../../components/deploymentOperations.ts'
 import * as releaseOperations from '../../components/releaseOperations.ts';
 import * as secretOperations from '../../components/secretOperations.ts';
 import * as trustPolicyOperations from '../../security/authn/oidc/trustPolicyOperations.ts';
+import * as networkAccess from '../../security/networkAccess.ts';
 import * as tokenExchange from '../../security/authn/oidc/tokenExchange.ts';
 import * as previewOperations from '../../components/previewOperations.ts';
 import { contextStorage } from '../../resources/transaction.ts';
@@ -79,6 +80,7 @@ const GLOBAL_SCHEMA_UPDATE_OPERATIONS_ENUM = {
 };
 
 import { OperationFunctionObject } from './OperationFunctionObject.ts';
+import { fenceMembershipChange } from '../replicationMembership.ts';
 
 type ValueOf<T> = T[keyof T];
 export type OperationFunctionName = ValueOf<typeof terms.OPERATIONS_ENUM>;
@@ -498,7 +500,7 @@ export function chooseOperation(json: OperationRequestBody, bypassAuth = false) 
 	} catch (err) {
 		throw handleHDBError(err, `There was an error when trying to choose an operation path`, 500);
 	}
-	return operation_function;
+	return fenceMembershipChange(json, operation_function);
 }
 
 export function getOperationFunction(json: OperationRequestBody): OperationFunctionObject {
@@ -826,6 +828,8 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 		terms.OPERATIONS_ENUM.GET_PREVIEW_POLICY,
 		new OperationFunctionObject(previewOperations.getPreviewPolicy)
 	);
+	opFuncMap.set(terms.OPERATIONS_ENUM.SET_NETWORK_ACCESS, new OperationFunctionObject(networkAccess.setNetworkAccess));
+	opFuncMap.set(terms.OPERATIONS_ENUM.GET_NETWORK_ACCESS, new OperationFunctionObject(networkAccess.getNetworkAccess));
 	opFuncMap.set(
 		terms.OPERATIONS_ENUM.READ_TRANSACTION_LOG,
 		new OperationFunctionObject(transactionLog.readTransactionLog)

@@ -1,9 +1,9 @@
 /**
- * Per-worker manager for MCP `resources/subscribe` subscriptions (#1349 §3.6).
+ * Live MCP resource iterators for the worker holding the GET-SSE stream.
  *
  * Live subscription objects can't be persisted, so they live here keyed by
  * session + URI; the durable list of subscribed URIs lives on the `mcp_session`
- * record (see `session.ts`) so they can be restored on an SSE reconnect. Each
+ * record and is reconciled by `subscriptionState.ts` on changes and reconnect. Each
  * change pushes a `notifications/resources/updated` frame onto the session's
  * GET-stream queue. Row-backed URIs only — `subscribeToResource` returns null
  * for anything that isn't a subscribable application resource.
@@ -23,14 +23,18 @@ const live = new Map<string, Map<string, ResourceSubscription>>();
 /**
  * Start (or replace) a subscription for `uri` on `sessionId`. Pushes
  * `notifications/resources/updated` to the session's queue on each change.
- * Returns false if the URI isn't subscribable (caller maps that to `-32602`).
+ * Returns false if the URI isn't subscribable or its GET closes during installation.
  */
 export async function addResourceSubscription(sessionId: string, uri: string, user: AuthedUser): Promise<boolean> {
+	const owner = getRegisteredSession(sessionId);
+	if (!owner) return false;
 	const subscription = await subscribeToResource(uri, user, () => {
-		// Re-resolve the record each push: the SSE stream may have reconnected
-		// (new queue) since the subscription started.
+		if (Date.now() >= Math.min(user.authExpiresAt ?? Infinity, owner.user.authExpiresAt ?? Infinity) * 1000) {
+			owner.queue.close();
+			return;
+		}
 		const record = getRegisteredSession(sessionId);
-		if (record) {
+		if (record === owner) {
 			pushSessionFrame(record, {
 				event: 'message',
 				data: { jsonrpc: '2.0', method: 'notifications/resources/updated', params: { uri } },
@@ -38,6 +42,10 @@ export async function addResourceSubscription(sessionId: string, uri: string, us
 		}
 	});
 	if (!subscription) return false;
+	if (getRegisteredSession(sessionId) !== owner) {
+		subscription.stop();
+		return false;
+	}
 	let bySession = live.get(sessionId);
 	if (!bySession) live.set(sessionId, (bySession = new Map()));
 	// Replace any existing subscription for the same URI (idempotent re-subscribe).
@@ -69,28 +77,6 @@ export function dropSessionSubscriptions(sessionId: string): void {
 		}
 	}
 	live.delete(sessionId);
-}
-
-/**
- * Re-establish subscriptions on SSE reconnect from the durable URI list. Each is
- * best-effort: a URI that's no longer subscribable (resource removed) is skipped.
- * Returns the URIs that were successfully restored (the caller prunes the rest
- * from the durable record).
- */
-export async function restoreResourceSubscriptions(
-	sessionId: string,
-	uris: ReadonlyArray<string>,
-	user: AuthedUser
-): Promise<string[]> {
-	const restored: string[] = [];
-	for (const uri of uris) {
-		try {
-			if (await addResourceSubscription(sessionId, uri, user)) restored.push(uri);
-		} catch (err) {
-			harperLogger.trace(`MCP subscription restore ${uri}: ${(err as Error).message}`);
-		}
-	}
-	return restored;
 }
 
 /** Test seam — count of live subscriptions for a session. */

@@ -8,20 +8,32 @@ services:
     # The target's K cores, shared with Redis and the Fastify cluster with no per-service quota.
     cpuset: ${YCSB_TARGET_CPUSET}
     mem_limit: ${YCSB_PG_MEM_LIMIT:-6g}
+    # Equal to mem_limit: swap off. Docker otherwise lets a container swap as much again.
+    memswap_limit: ${YCSB_PG_MEM_LIMIT:-6g}
+    # Postgres stops on SIGINT (fast shutdown); a snapshot needs that to finish, not a SIGKILL at 10 s.
+    stop_grace_period: 300s
     environment:
       POSTGRES_PASSWORD: ycsb
       POSTGRES_USER: ycsb
       POSTGRES_DB: ycsb
       PGPORT: '5433'
+      YCSB_RESTORE: ${YCSB_PG_RESTORE:-}
+    # Restores a dataset snapshot (memory-sweep.mts) inside this container before Postgres starts,
+    # so the restored files' page cache is charged to this container's mem_limit, not to the copier.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - 'if [ -n "$$YCSB_RESTORE" ]; then cp -a "/snapshots/$$YCSB_RESTORE/." /var/lib/postgresql/data/ || exit 1; fi; exec docker-entrypoint.sh "$$@"'
+      - --
     # Durability left at the default (fsync=on, synchronous_commit=on) to match
     # Harper's default storage.writeAsync=false. Only memory sizing is tuned,
     # since the stock 128MB shared_buffers would make this a page-fault benchmark.
     command:
       - postgres
       - -c
-      - shared_buffers=4GB
+      - shared_buffers=${YCSB_PG_SHARED_BUFFERS:-4GB}
       - -c
-      - effective_cache_size=6GB
+      - effective_cache_size=${YCSB_PG_EFFECTIVE_CACHE_SIZE:-6GB}
       - -c
       - listen_addresses=127.0.0.1
       - -c
@@ -36,15 +48,17 @@ services:
     # puts both under YCSB_VS_PG_DATA_DIR and asserts they share a device).
     volumes:
       - ${YCSB_VS_PG_DATA_DIR:-./data}/pgdata:/var/lib/postgresql/data
+      - ${YCSB_VS_PG_DATA_DIR:-./data}/snapshots:/snapshots:ro
 
   redis:
     image: redis:7-alpine
     network_mode: host
     cpuset: ${YCSB_TARGET_CPUSET}
     mem_limit: ${YCSB_REDIS_MEM_LIMIT:-1g}
+    memswap_limit: ${YCSB_REDIS_MEM_LIMIT:-1g}
     # Cache role: no persistence, LRU eviction. At the default 768mb the whole
-    # ~260MB standard-scale dataset fits; --cache=warm asserts it is resident. Shrink
-    # it (YCSB_REDIS_MAXMEMORY=64mb) to force a partial hit rate.
+    # ~260MB standard-scale dataset fits; --cache=warm asserts it is resident. The
+    # memory sweep sets it from its stack split.
     command:
       - redis-server
       - --port
