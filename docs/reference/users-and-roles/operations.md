@@ -118,6 +118,8 @@ _Restricted to `super_user` roles._
 
 Returns user data for the currently authenticated user. Available to all roles.
 
+From v5.4.0, requests trusted by [`authorizeLocal` or the operations API domain socket](../security/configuration.md#local-request-identity) return `username: "local"` for the built-in super user.
+
 ```json
 {
 	"operation": "user_info"
@@ -142,6 +144,12 @@ _Restricted to `super_user` roles._
 	"active": true
 }
 ```
+
+<VersionBadge type="changed" version="v5.4.0" />
+
+The username `local` is reserved for [requests trusted by their transport](../security/configuration.md#local-request-identity). `add_user` rejects it with HTTP 400: `'local' is a reserved username: it identifies requests trusted by their transport (authorizeLocal, the operations domain socket)`.
+
+A stored user named `local` created before this change still authenticates as an ordinary stored user and can be altered or dropped. To avoid confusing it with the built-in identity, create a replacement under another name, update clients to use it, then drop the old user. Usernames cannot be changed in place.
 
 ### Alter User
 

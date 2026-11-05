@@ -149,7 +149,10 @@ http:
   corsAccessList:
     - https://example.com
     - https://app.example.com
+    - https://*.app.example.com
 ```
+
+An entry is `*`, an exact origin, or an origin whose host starts with `*.` (Added in: v5.4.0), such as `https://*.app.example.com`, for a set of hosts like [preview deployments](../operations-api/operations.md#preview-deployments)' hosts. The `*` stands for exactly one DNS label, so `https://*.app.example.com` allows `https://fix-cart.app.example.com` but neither `https://app.example.com` nor `https://a.b.app.example.com`. At least two labels must follow it, so `https://*.com` matches nothing. The scheme and the port must match exactly: that entry does not allow `https://fix-cart.app.example.com:8443`. Any other entry containing `*`, such as `*.example.com` with no scheme, matches nothing. [`operationsApi.network.corsAccessList`](../configuration/options.md#operationsapi) takes the same forms.
 
 ### `http.corsAccessControlAllowHeaders`
 

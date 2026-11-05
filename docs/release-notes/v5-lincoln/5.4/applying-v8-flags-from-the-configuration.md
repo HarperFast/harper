@@ -1,6 +1,6 @@
 ---
 section: 'Configuration'
-order: 10
+order: 20
 ---
 
 ### Applying V8 Flags From the Configuration

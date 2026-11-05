@@ -29,6 +29,7 @@ When you run `harper`:
 
 - If Harper is not installed, it will guide you through the installation process
 - Once installed, it runs Harper in the foreground as a standard process, compatible with systemd, Docker, and other process management tools
+- On SIGTERM, SIGINT (Ctrl+C) or SIGQUIT, it gives requests in flight a few seconds to finish and closes components before exiting, within [`threads.shutdownTimeout`](../configuration/options.md#shutting-down-on-a-termination-signal) <VersionBadge type="changed" version="v5.4.0" />
 
 **First-Time Installation**:
 
@@ -155,8 +156,10 @@ All parameters are passed as `key=value` arguments. Every parameter is optional.
 - `deployment_timeout=<ms>` - How long, in milliseconds, a peer waits to receive the replicated payload before failing (default: `120000`). (Added in: v5.1.4)
 - `ignore_replication_errors=true` - Treat a peer that fails to receive the deploy as non-fatal instead of failing the whole operation. (Added in: v5.1.4)
 - `force=true` - Allow deploying over a protected core component name.
-- `urlPath=<path>` - HTTP path the component is mounted at (e.g. `/api/v2`). Requires `package`.
-- `host=<hostname>` - Virtual hostname the component is served on (e.g. `api.example.com`). Requires `package`. (Added in: v5.2.0)
+- `urlPath=<path>` - HTTP path the component is mounted at (e.g. `/api/v2`). Before v5.4.0, requires `package`.
+- `host=<hostname>` - Virtual hostname the component is served on (e.g. `api.example.com`). Before v5.4.0, requires `package`. (Added in: v5.2.0)
+- `isolated=true` - Run the application in a worker thread of its own. See [Isolated applications](../components/applications.md#isolated-applications). Before v5.4.0, requires `package`. (Added in: v5.3.0)
+- `branchedDatabases='<json>'` - Give the application a private branch of these databases, as a JSON list, or `true` for all of them. See [Branched databases](../components/applications.md#branched-databases). (Added in: v5.3.0)
 - `credentials='<json>'` - JSON array of credential objects for installing from a private npm registry or git repository. See [Private deploy sources](#private-deploy-sources). (Added in: v5.2.0)
 - `activate=false` - Build and install the release on each node without making it live. The result's `deployment_id` names the staged build. Cannot be combined with `restart`. See [Staging a build and activating it later](../operations-api/operations.md#staging-a-build-and-activating-it-later). (Added in: v5.3.0)
 - `deployment_id=<id>` - Make a staged build live, or go back to a release a later deploy replaced, with no rebuild or reinstall. Takes no `package`, `by_ref`, or other build inputs. Pass `restart` here rather than on the stage. See [Going back to a previous release](../operations-api/operations.md#going-back-to-a-previous-release). (Added in: v5.3.0)
@@ -267,6 +270,8 @@ This interactive flow prompts for the provider (a private GitHub repository or a
 
 See [`deploy_component` credentials](../operations-api/operations.md#deploy-credentials-credentials) for the full credential-entry shape, including passing a literal `token` instead of a sealed `secret` reference.
 
+<VersionBadge version="v5.4.0" /> With `provider=github` or `provider=npm`, `project` can be a pattern ending in `*`, which grants one credential to every matching component, such as every preview of an application: `harper deploy setup=true provider=github project='my-app-pr-*'`. The secret's name has `_` in place of `*`, as in `deploy.my-app-pr-_.git.github.com`, and a deploy references it by that name with `credentials`, as [`harper preview deploy credential=true`](#harper-preview-deploy) does; `credential=true` on `harper deploy` would derive the one component's name instead.
+
 #### GitHub Actions deploys (OIDC)
 
 <VersionBadge version="v5.4.0" />
@@ -291,13 +296,130 @@ It needs no secret custody, and it does this:
 4. Reads the policy back and compares it, claim by claim, with what it meant to write.
 5. Sets the repository's `HARPER_CLI_TARGET` variable with `gh`, if the repository doesn't have one. One that already names this cluster is left as it is. One that names another cluster is left too, since every workflow in the repository that reads it deploys there: setup prints the command to change it and exits non-zero. Without `gh`, or if the variable can't be read or written, it prints the command to run and exits non-zero.
 
-It only creates. Running it again leaves the cluster and the variable unchanged, and a role, user or policy that already exists but differs, or that someone deactivated or disabled, stops it before it writes, naming what differs. To replace a policy, drop it with `harper drop_oidc_trust id=github-actions-<project>` and run setup again. Because `add_oidc_trust` replaces a policy, setup checks again just before writing it, but a policy with the same id that another super user creates in that moment, enabled or not, would still be overwritten. Setup never writes a policy that already exists, so it can't undo a disable or a drop.
+It only creates. Running it again leaves the cluster and the variable unchanged, and a role, user or policy that already exists but differs, or that someone deactivated or disabled, stops it before it writes, naming what differs. To replace a policy, drop it with `harper drop_oidc_trust id=github-actions-<project>` and run setup again. Because `add_oidc_trust` replaces a policy, setup checks again just before writing it, but a policy with the same id that another super user creates in that moment, enabled or not, would still be overwritten. Setup never writes a policy that already exists, so it can't undo a disable or a drop. It also stops, before and again just before it writes, when another enabled policy could match the same runs and give them a different user or operations, since [the exchange refuses](../operations-api/operations.md#exchange_oidc_token) a token two policies disagree on: give the project its own workflow (`workflow=`) or environment (`environment=`), or drop the other policy.
 
 If the variable wasn't set, the cluster part is already done: run the printed `gh variable set` command, or run setup again, which leaves the cluster as it is and tries the variable again.
 
 The deploy user can deploy any component on the cluster, not only this project, so who can deploy comes down to who can merge to the branch. To revoke, `harper drop_oidc_trust id=github-actions-<project>` stops new runs, and `harper alter_user username=<project>-ci-deploy active=false` also stops a token already issued, which lasts an hour.
 
 The policy pins one branch, so it suits a workflow that deploys when changes merge. A workflow that deploys on tags needs a policy written by hand: see [Deploying from a CI/CD Pipeline](/learn/developers/deploying-from-ci#add-a-trust-policy).
+
+### `harper preview`
+
+<VersionBadge version="v5.4.0" />
+
+Runs a preview of an application for each pull request. `setup` and `teardown` run once per application, from your machine. `deploy`, `drop` and `list` run for each PR, usually from the workflow `setup` writes. [Per-PR previews](/learn/developers/deploying-from-ci#per-pr-previews) walks through the whole flow.
+
+A preview of the application `my-app` for PR `42` is the [isolated application](../components/applications.md#isolated-applications) `my-app-pr-42`. It is served at `<slug>.<domain>`, where the slug comes from the PR's head branch, and on a cluster that supports it, it runs on its own [branch of the databases](../components/applications.md#branched-databases). The cluster drops it when the PR closes, or when it expires.
+
+#### `harper preview setup`
+
+Enables previews of one application on the cluster, and sets up the GitHub side. Run it once, signed in to the cluster as a `super_user` (`harper login`), from a checkout of the application's repository:
+
+```bash
+harper preview setup app=my-app target=https://my-cluster.example.com:9925
+```
+
+It checks everything it can before it changes anything, so a refusal before step 6 leaves the cluster and the repository as they were.
+
+1. Takes the GitHub repository from the checkout's `origin` remote, or `repo=<owner>/<name>`, and looks it up with the `gh` CLI or GitHub's public API for its numeric id, its default branch, and the spelling of its name that GitHub uses in the token. When neither answers, pass `repository_id=<id>`.
+2. Reads the preview workflow, `.github/workflows/preview.yaml`, from the checkout. It refuses a workflow the trust policies could never match, and one that may give the preview identity to a fork or to a PR's own code: see [What setup checks in the workflow](#what-setup-checks-in-the-workflow). If the file doesn't exist, it offers to write the starter workflow (`write_workflow=true` without a prompt). When it can neither check nor write the workflow, such as when it is not run from a checkout of the repository, it stops unless you pass `allow_unverified=true`.
+3. For a private repository, offers to seal a credential for the cluster to fetch each PR with (`credential=true`).
+4. Reads the repository's `HARPER_PREVIEW_TARGET` variable. One that names another cluster stops setup. One it cannot read, such as when `gh` is not installed, stops it unless you pass `allow_unverified=true`, and you then set the variable yourself afterward.
+5. With `credential=true`, asks for the token and checks that the cluster can hold a sealed secret.
+6. Calls [`enable_previews`](../operations-api/operations.md#enable_previews), which creates the role, the user and the two trust policies, and stores the application's preview limits.
+7. With `credential=true`, seals the token on your machine and grants it to every preview of the application, as the secret `deploy.<app>-pr-_.git.github.com`.
+8. Writes the starter workflow, if step 2 said to. Commit it to the default branch: GitHub runs `pull_request_target` workflows from there.
+9. Sets `HARPER_PREVIEW_TARGET` to the cluster's URL with `gh`, if the repository doesn't have it.
+
+`enable_previews` only creates. Running setup again with the same arguments leaves the cluster as it is, and one whose records differ from what is already there stops with a `409` that names each difference. To change the limits, run `harper preview teardown`, then setup again.
+
+| Parameter                   | Default                                      | Description                                                                                                                                                                                                                             |
+| --------------------------- | -------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `app=<component>`           | required                                     | The application to preview. Its previews deploy as `<app>-pr-<n>`.                                                                                                                                                                      |
+| `target=<url>`              | your login's target                          | The cluster. Its URL, with port and trailing slash, is the trust policies' `audience` and the value of `HARPER_PREVIEW_TARGET`.                                                                                                         |
+| `repo=<owner>/<name>`       | the checkout's `origin`                      | The GitHub repository.                                                                                                                                                                                                                  |
+| `repository_id=<id>`        | looked up                                    | The repository's numeric id, for when setup can't look it up (`gh api repos/<owner>/<name> --jq .id`).                                                                                                                                  |
+| `branch=<name>`             | the repository's default branch, else `main` | The branch the workflow runs from. The trust policies pin the workflow at this branch.                                                                                                                                                  |
+| `workflow=<path>`           | `.github/workflows/preview.yaml`             | The workflow file, a `.yml` or `.yaml` file in `.github/workflows/`.                                                                                                                                                                    |
+| `environment=<name>`        | `preview`                                    | The GitHub environment of the deploy job. The cleanup job's is always `preview-cleanup`.                                                                                                                                                |
+| `domain=<domain>`           | `app.<target host>`                          | The domain every preview host sits one label under. Required when the target is an IP address or `localhost`.                                                                                                                           |
+| `dataMode=branched\|shared` | `branched`                                   | `branched` requires each preview to run on its own branch of the databases. `shared` lets previews use the cluster's databases, and the starter workflow then deploys with `branchedDatabases=false`.                                   |
+| `maxPreviews=<n>`           | `deployment.previews.maxPerApplication`      | How many previews of the application each node keeps live at once. A deploy past it is refused. Without it, the node's [`deployment.previews.maxPerApplication`](../configuration/options.md#deployment) applies, which has no default. |
+| `maxTtlDays=<days>`         | `7`                                          | The longest a preview may live after its last deploy. A later expiry is lowered to it.                                                                                                                                                  |
+| `credential=true`           | asked, for a private repository              | Seal a GitHub token for the cluster to fetch each PR's commit with.                                                                                                                                                                     |
+| `write_workflow=true`       | asked                                        | Write the starter workflow when the file doesn't exist.                                                                                                                                                                                 |
+| `allow_unverified=true`     | `false`                                      | Go on when setup cannot check the workflow or the repository variable, or when the workflow has a step it cannot verify. Check the workflow yourself first: it is what keeps forks and PR code from the token.                          |
+
+##### What setup checks in the workflow
+
+The trust policies pin the workflow file at the default branch, `pull_request_target`, and an environment, so a PR cannot change what runs with the preview identity. Whatever that workflow does with the identity is up to the file, so setup reads it first.
+
+It looks only at the jobs that hold the token, those with `permissions: id-token: write`, and at reusable-workflow jobs. It refuses, whatever you pass:
+
+- a workflow that cannot match the trust policies: no `pull_request_target` trigger, a branch filter that leaves out the default branch, no job in the `preview` environment with `id-token: write`, or a job in `preview-cleanup` without it;
+- a job that a fork's PR could run: one with no condition such as `github.event.pull_request.head.repo.full_name == github.repository` on it;
+- a job that checks out or fetches the PR's head where the file shows the head outright: `gh pr checkout`, or a `git` checkout, switch, fetch, pull, worktree, clone or reset, or an `actions/checkout` `ref` or `repository`, that names the head on its own line, or through a variable whose `env:` value names it and that no script in the job could change.
+
+It stops unless you pass `allow_unverified=true` for what it cannot decide: a same-repository condition in a form it doesn't recognize, or one inherited through `needs`; a head reached through a shell variable, and any `run` step with `git` fetch or checkout code that also takes any input (`$`, a backtick, `<`, `|` or `xargs`), even one that fetches only the base branch; an `actions/checkout` `ref` or `repository` given as an expression; and a reusable-workflow job. It also notes, without stopping, a workflow whose cleanup may not run for a closed PR: one with no job in `preview-cleanup`, one whose `types` leave out `closed`, or one whose cleanup job's condition, or that of a job it needs, excludes `closed` or says more than setup can read.
+
+The check reads the workflow file only. It does not read scripts or local actions the workflow runs, and a head commit fetched without `git`, such as a downloaded tarball, is not caught.
+
+#### `harper preview teardown`
+
+```bash
+harper preview teardown app=my-app
+```
+
+Calls [`disable_previews`](../operations-api/operations.md#disable_previews): it revokes the preview identity by dropping its trust policies and deactivating its user, drops every preview of the application on every node, then removes the user and the role, and prints what each node dropped. If a node fails or does not answer, it stops with the identity revoked; run it again to finish, which you have to before setup can enable previews again. It leaves the GitHub side as it is: the workflow file, the `HARPER_PREVIEW_TARGET` variable, and the GitHub environments. A credential setup sealed is left in the secrets store too; remove it with [`delete_secret`](../operations-api/operations.md#delete_secret).
+
+#### `harper preview deploy`
+
+Deploys or updates the preview of one PR. This is what [`HarperFast/deploy-action`](https://github.com/HarperFast/deploy-action) and the starter workflow run, as the preview user:
+
+```bash
+harper preview deploy app=my-app pr=42 branch=fix/cart by_ref=true ref=<head commit>
+```
+
+`app`, `pr` and `branch` are required. Every argument other than the ones below goes to [`deploy_component`](../operations-api/operations.md#deploy_component) as it does for [`harper deploy`](#harper-deploy), such as `by_ref`, `ref`, `package`, `credentials` and `restart`. With neither `by_ref` nor `package`, it packages and uploads the current directory. With `by_ref=true` on `pull_request_target`, always pass `ref=` the PR's head commit: without it, `by_ref` deploys `GITHUB_SHA`, which for that event is the base branch's commit.
+
+| Parameter           | Default                    | Description                                                                                                                                               |
+| ------------------- | -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `app=<component>`   | required                   | The application. The preview deploys as `<app>-pr-<pr>`.                                                                                                  |
+| `pr=<n>`            | required                   | The PR number.                                                                                                                                            |
+| `branch=<name>`     | required                   | The PR's head branch, which names the preview's host.                                                                                                     |
+| `domain=<domain>`   | `app.<target host>`        | The preview host's domain: the one setup used, or the cluster refuses the deploy. Required when the target is an IP address or `localhost`.               |
+| `label=<label>`     | none                       | One DNS label of up to 20 characters added to the end of the slug, such as the application's name, for a cluster that previews more than one application. |
+| `ttl=<days>`        | `7`                        | Days until the cluster expires the preview. The application's `maxTtlDays` lowers it.                                                                     |
+| `repository=<name>` | `GITHUB_REPOSITORY`        | Recorded with the preview.                                                                                                                                |
+| `sha=<commit>`      | `ref`, when it is a commit | Recorded with the preview.                                                                                                                                |
+| `credential=true`   | none                       | Fetch a private repository with the credential `harper preview setup credential=true` sealed for every preview of the application.                        |
+| `isolated`          | `true`                     | Previews are isolated applications.                                                                                                                       |
+| `branchedDatabases` | `true`                     | Every database except `system` is branched. `branchedDatabases=false` shares the cluster's databases, which a role made with `dataMode=branched` refuses. |
+| `restart`           | `true`                     | Restarts the preview's own worker.                                                                                                                        |
+| `check=false`       | checked                    | Skip the check below.                                                                                                                                     |
+
+The slug is the branch name as one lowercase DNS label: anything outside `a`–`z` and `0`–`9` becomes `-`, runs of them collapse, and leading and trailing `-` are trimmed. A slug longer than 40 characters is cut, and ends in a 6-character hash of the branch name so two long branches stay apart. An empty slug, or one of `www`, `dev`, `stage`, `staging`, `prod`, `production`, `api`, `app`, `admin`, `mail` or `test`, becomes `pr-<n>`. So `fix/Cart` for PR `42` is served at `fix-cart.<domain>`. When another preview already has that host, `-pr<n>` is added; when that is taken too, the deploy stops and asks for `label=`.
+
+The command sends the deploy with a [`preview`](../operations-api/operations.md#preview-deployments) record of the app, the PR, the branch, the repository and commit, and `expiresAt`. A redeploy replaces the record, so each deploy starts the expiry again.
+
+After the deploy, it checks for up to 30 seconds that `https://<host>/` answers from the preview itself, and prints a warning if not; it never fails the command. The warning says why: the host has no DNS record; the certificate doesn't cover it, as on a Fabric instance whose certificate has not yet gained the `*.app.` wildcard; the request reached Harper's shared port rather than the preview's own worker, which means the proxy in front does not route preview hosts to isolated applications, or the worker is still starting; or the host answered `502` or `504`, or `503` from a proxy, which either the preview sent itself or a proxy sent because it does not route the host to the preview.
+
+#### `harper preview drop`
+
+```bash
+harper preview drop app=my-app pr=42
+```
+
+Sends [`drop_component`](../components/applications.md#drop_component) for `<app>-pr-<pr>`, whether or not the preview is listed, since a drop also stops a leftover worker and removes branches a failed drop left behind. `restart=` and `keepBranches=` are passed through. A drop of a preview that a deploy is still activating answers `409`; the starter workflow's cleanup job retries it.
+
+#### `harper preview list`
+
+```bash
+harper preview list app=my-app
+```
+
+Lists the cluster's previews, one per line: the component, its PR, branch and commit, its URL, and when it expires. `app=` keeps only that application's previews. Run as the preview user, it lists only the previews that user's role covers.
 
 ### `harper restart`
 
@@ -331,7 +453,15 @@ Stop a running Harper instance.
 harper stop
 ```
 
-`harper stop` signals Harper and returns without waiting for it to exit. Harper removes [`hdb.pid`](./overview.md#process-id-file) from `<rootPath>` as it begins shutting down, so `harper status` can report `stopped` while it is still closing databases. Before touching database or backup files, capture the PID before stopping Harper and wait for the process itself to exit:
+<VersionBadge type="changed" version="v5.4.0" />
+
+`harper stop` sends Harper SIGTERM and waits for the process to exit. Harper [shuts down gracefully](../configuration/options.md#shutting-down-on-a-termination-signal) first, within `threads.shutdownTimeout`. Until the process exits, [`hdb.pid`](./overview.md#process-id-file) stays in `<rootPath>` and [`harper status`](#harper-status) reports Harper as running. When `harper stop` has signaled a running Harper and returns `0`, Harper has exited and closed its databases.
+
+`harper stop` also prints `Stopping Harper.` and returns `0` when it finds no running Harper to signal, for example when `ROOTPATH` names a different installation. Check that the process is gone before touching database files.
+
+If Harper is still running `threads.shutdownTimeout` + 60 seconds after the signal, `harper stop` prints an error naming the PID and exits with code `1`. It does not kill the process. Running `harper stop` again sends a second signal, which makes Harper exit at once. `harper stop` reads `threads.shutdownTimeout` from the configuration file and cannot see the 30-second default of a running `harper dev`, so for that server it gives up after 8 + 60 seconds unless the value is set.
+
+Before v5.4.0, `harper stop` signals Harper and returns without waiting for it to exit, and Harper removes `hdb.pid` as it begins shutting down, so `harper status` can report `stopped` while Harper is still closing databases. On those versions, capture the PID before stopping Harper and wait for the process itself to exit before touching database or backup files. This also works on v5.4.0 and later:
 
 ```bash
 # For rootPath ~/hdb
@@ -441,6 +571,8 @@ Shows:
 - Harper process status
 - Clustering network status
 - Replication statuses
+
+From v5.4.0, `harper status` reports Harper as running until the process exits, including while it [shuts down](../configuration/options.md#shutting-down-on-a-termination-signal) after `harper stop`. <VersionBadge type="changed" version="v5.4.0" />
 
 In Harper versions where NATS is supported, this command also shows the clustering hub and leaf processes too.
 

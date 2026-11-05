@@ -20,7 +20,9 @@ JWT authentication uses two token types:
 
 ## Create Authentication Tokens
 
-Call `create_authentication_tokens` with your Harper credentials. When the request carries a `username` and `password` in the body, no `Authorization` header is required — the operation authenticates from the body. Other shapes of this operation do need an authenticated caller: sending no credentials at all mints tokens for the user the request is already authenticated as, and [minting a scoped token](#scoped-tokens-inline-role) requires an authenticated `super_user`. A request authenticated by a component's [Bearer validator](../http/api.md#serverregisterbearervalidatorvalidator-options) can do neither: it must send a `username` and `password` to mint ordinary tokens, and cannot mint a scoped token.
+Call `create_authentication_tokens` with your Harper credentials. When the request carries a `username` and `password` in the body, no `Authorization` header is required — the operation authenticates from the body. Other shapes of this operation do need an authenticated caller: sending no credentials at all normally mints tokens for the user the request is already authenticated as, and [minting a scoped token](#scoped-tokens-inline-role) requires an authenticated `super_user`. A request authenticated by a component's [Bearer validator](../http/api.md#serverregisterbearervalidatorvalidator-options) can do neither: it must send a `username` and `password` to mint ordinary tokens, and cannot mint a scoped token.
+
+From v5.4.0, omitting both `username` and `password` from a request trusted by [`authorizeLocal` or the operations API domain socket](./configuration.md#local-request-identity) instead mints ordinary tokens for an active stored super user, never the built-in `local` identity. See [`create_authentication_tokens`](../operations-api/operations.md#create_authentication_tokens) for user selection, refresh-token replacement, and the error when no eligible user exists.
 
 ```json
 {

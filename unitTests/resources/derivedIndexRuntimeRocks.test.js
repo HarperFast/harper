@@ -795,6 +795,12 @@ class FakeNativeFullTextModule {
 			publish() {}
 			close() {}
 			searchPage() {}
+			telemetry() {}
+			configureTelemetry() {}
+		};
+		this.NativeFullTextReader = class {
+			telemetry() {}
+			configureTelemetry() {}
 		};
 		this.states = new Map();
 		this.opens = [];
@@ -810,6 +816,7 @@ class FakeNativeFullTextModule {
 			lifecycleApiVersion: 1,
 			mutationBatchApiVersion: 5,
 			queryApiVersion: 8,
+			telemetryApiVersion: 1,
 			storageBackends: ['native'],
 			limits: {
 				maxCommitPayloadBytes: 64 * 1024,

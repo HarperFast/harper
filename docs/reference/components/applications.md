@@ -83,7 +83,7 @@ export function handleApplication(scope) {
 }
 ```
 
-See [Cleanup on Shutdown](./plugin-api.md#cleanup-on-shutdown) for the full shutdown sequence, including how async cleanup is awaited and the time limit it must finish within.
+See [Cleanup on Shutdown](./plugin-api.md#cleanup-on-shutdown) for the full shutdown sequence, including how async cleanup is awaited and the time limits it must finish within. Stopping Harper with SIGTERM, SIGINT or SIGQUIT, including `harper stop`, runs this cleanup from v5.4.0; earlier versions end the process without closing scopes. <VersionBadge type="changed" version="v5.4.0" />
 
 ## Writing Files in the Application Directory
 
@@ -343,7 +343,7 @@ Like `host` and `urlPath`, these keys say how one deployment of the application 
 
 ### Setting them when you deploy
 
-A `package` deploy, including `harper deploy by_ref=true`, builds the component's root-config entry from the request, so it can set `host`, `urlPath`, `isolated`, and `branchedDatabases` in the same call. The CLI parses `isolated=true` as a boolean and `branchedDatabases='["data"]'` as a list:
+A deploy can set `host`, `urlPath`, `isolated`, and `branchedDatabases` in the same call. A `package` deploy, including `harper deploy by_ref=true`, builds the component's root-config entry from the request, and from v5.4.0 a payload deploy, such as `harper deploy` from a directory, can set them too. The CLI parses `isolated=true` as a boolean and `branchedDatabases='["data"]'` as a list:
 
 ```sh
 harper deploy project=shop-preview by_ref=true \
@@ -351,7 +351,8 @@ harper deploy project=shop-preview by_ref=true \
 ```
 
 - A later `package` deploy that omits `isolated` keeps the current setting, and `isolated=false` removes it.
-- A payload deploy (from a directory, or with `payload`) refuses `isolated` with a `400`: `'isolated' is only supported for package deployments; set it on the application's root config entry instead`. It also refuses `host` and `urlPath`. A payload deploy keeps the keys already on the entry.
+- <VersionBadge type="changed" version="v5.4.0" /> A payload deploy (from a directory, or with `payload`) that sets any of the four keys sets all four: the ones it leaves out keep their current values, except that `isolated=false` removes isolation. One that sets none of them keeps the keys already on the entry. Before v5.4.0, a payload deploy refused `isolated`, `host` and `urlPath` with a `400`, and accepted `branchedDatabases` but dropped it.
+- From v5.3.2, a `package` deploy that sets `branchedDatabases` gives the application a fork, and from v5.4.0 so does a payload deploy.
 - On v5.3.0 and v5.3.1, no deploy request gives an application a fork. A `package` deploy writes `branchedDatabases` into the entry, but the application ignores it when it loads ([harper#3071](https://github.com/HarperFast/harper/issues/3071)). A payload deploy accepts `branchedDatabases` and drops it ([harper#3044](https://github.com/HarperFast/harper/issues/3044)). The manual steps under [Branched databases](#branched-databases) do work.
 
 [How a deploy updates the root config](../operations-api/operations.md#how-a-deploy-updates-the-root-config) has the full rules for the entry.
@@ -360,13 +361,13 @@ harper deploy project=shop-preview by_ref=true \
 
 By default, every worker thread loads every application. An application whose entry sets `isolated: true` is loaded by one dedicated worker thread instead, that thread loads no other application, and no other thread loads it. Its module state, its globals, and its thread's copy of `process.env` are not shared with another application, and a redeploy that keeps it isolated restarts only its own thread.
 
-Its REST export registry also belongs to that worker: exports registered by an isolated application are not registered in the shared workers. See [Deploying from CI](/learn/developers/deploying-from-ci#per-pr-previews-with-shared-databases) for isolated deployments and a preview workflow.
+Its REST export registry also belongs to that worker: exports registered by an isolated application are not registered in the shared workers. See [Deploying from CI](/learn/developers/deploying-from-ci#per-pr-previews) for isolated deployments and a preview for each pull request.
 
 Isolation is about the thread, not the data. The application still reads and writes the same databases as everything else on the instance, unless it also declares [`branchedDatabases`](#branched-databases). Users, roles, and sessions stay instance-wide.
 
 #### Reaching an isolated application
 
-The dedicated worker does not listen on Harper's HTTP or MQTT ports. A request to those ports never reaches the application, even one addressed to its `host`: the shared workers answer it, and they do not load the application. The worker listens only on Unix domain sockets of its own, one for each secure port:
+The dedicated worker does not listen on Harper's HTTP or MQTT ports. A request to those ports never reaches the application, even one addressed to its `host`. (Changed in: v5.4.0) The shared workers answer a request for the `host` of an isolated application with `503`, `Retry-After: 5`, and `Service unavailable: <host> is served by an isolated application whose worker is not running`, and close a WebSocket for it with `1013` (try again later), rather than with another application's routes. The operations API port is not affected. Before v5.4.0 they answered it like any other request. The worker listens only on Unix domain sockets of its own, one for each secure port:
 
 ```
 <rootPath>/sockets/app-<application>-<port>.sock
@@ -374,7 +375,7 @@ The dedicated worker does not listen on Harper's HTTP or MQTT ports. A request t
 
 In the socket name, every character of the application name outside `A–Z`, `a–z`, `0–9`, `.` and `_` is percent-encoded, so `shop-preview` becomes `app-shop%2Dpreview-<port>.sock`. The proxy in front terminates TLS. The socket for `http.securePort` serves plain HTTP, and the socket for the MQTT secure port serves MQTT. A `.yaml` file beside each socket names the application, its `host`, and the TLS certificates the proxy needs.
 
-- **On Harper Fabric**, the platform's proxy routes the application's `host` to its socket, by TLS SNI. It does so only for a host name the cluster claims as a [custom domain](/fabric/custom-domains). Because it picks the socket by host name alone, give each isolated application its own `host`, used by no other application. An isolated application with no `host`, or with a host it shares with another application split by `urlPath`, loads and reports healthy, but no request reaches it. Harper does not refuse these configurations yet ([harper#2757](https://github.com/HarperFast/harper/issues/2757)).
+- **On Harper Fabric**, the platform's proxy routes the application's `host` to its socket, by TLS SNI. It does so for a host name the cluster claims as a [custom domain](/fabric/custom-domains), and for a [preview host](/fabric/cluster-creation-management#preview-hosts) one label under `app.` and the cluster's host name. Because it picks the socket by host name alone, give each isolated application its own `host`, used by no other application. An isolated application with no `host`, or with a host it shares with another application split by `urlPath`, loads and reports healthy, but no request reaches it. Harper does not refuse these configurations yet ([harper#2757](https://github.com/HarperFast/harper/issues/2757)).
 - **On a self-managed instance**, Harper does not route to the socket. Run a proxy that terminates TLS and forwards the application's requests to its socket, by host name or however your proxy routes.
 
 #### Requirements and refusals
@@ -386,18 +387,19 @@ Harper never loads an isolated application in the shared workers. It refuses the
 - [`tls.unixDomainSockets`](../configuration/options.md#tls) is not enabled.
 - The instance runs on Windows.
 - The socket path would be longer than the platform allows.
-- [`threads.maxIsolated`](../configuration/options.md#threads) isolated applications are already running (default `8`).
+- It would not get one of the [`threads.maxIsolated`](../configuration/options.md#threads) dedicated workers (default `8`). Applications with a running dedicated worker keep it. Any dedicated worker still running counts against the cap until it stops, including one left running by a `drop_component` without `restart` or by turning isolation off. The rest get one in root-config order, the order startup admits them, until the cap is reached. As of v5.4.0, an application whose live release [failed closed](../operations-api/operations.md#certifying-a-release-in-a-canary-worker) gets no worker and does not count against the cap: for example, a first release its canary rejected, which stays on disk until it is redeployed or dropped.
 
-The node that receives a `deploy_component` checks these before it deploys, and answers `409` with the reason, such as `Cannot deploy 'shop-preview' as an isolated application: the instance already runs 8 isolated application(s) (threads.maxIsolated)`. It answers `503` if it cannot read which isolated applications are running. The other nodes of a replicated deploy do not check: they record the entry, and a node that cannot run the application reports it as failed in [`get_status`](../operations-api/operations.md#set_status--get_status--clear_status) instead.
+The node that receives a `deploy_component` checks these before it deploys, and answers `409` with the reason, such as `Cannot deploy 'shop-preview' as an isolated application: the instance already runs 8 isolated application(s) (threads.maxIsolated)`. For the cap, it places the application where startup would, so a redeploy of an application that is on disk but has no running worker is refused while the running applications and those ahead of it in root-config order fill the cap. Before v5.4.0, such a deploy could succeed and then never start a worker. The same check runs when a refused release is [activated again by its own `deployment_id`](../operations-api/operations.md#certifying-a-release-in-a-canary-worker). The node answers `503` if it cannot read which isolated applications are running or which releases are refused. The other nodes of a replicated deploy do not check: they record the entry, and a node that cannot run the application reports it as failed in [`get_status`](../operations-api/operations.md#set_status--get_status--clear_status) instead.
 
 At startup or restart, an isolated application that is refused is not loaded anywhere. Harper logs `Application '<name>' is isolated but gets no dedicated worker: <reason>; it is not loaded anywhere`.
 
 #### Restarting and dropping
 
-- **A new isolated application starts at the next restart.** Deploy it with `restart=true`, or restart afterward. That first restart, and any deploy that turns isolation on or off, restarts the shared workers as well as starting or stopping the dedicated one.
+- **A new isolated application starts with its first `restart=true` deploy, and nothing else restarts.** <VersionBadge type="changed" version="v5.4.0" /> Only its own worker starts, and that worker is the [canary](../operations-api/operations.md#certifying-a-release-in-a-canary-worker): a release that fails to load fails the deploy with `400` and leaves no worker and no socket. A release deployed from a local directory (`package: file:<dir>`) is linked rather than copied, so the canary does not check it. The exception is a name the shared workers still have loaded, such as an application of that name dropped without a restart: they restart too. Without `restart`, the application starts at the next restart. Before v5.4.0, that first restart also restarted the shared workers.
+- **A deploy that turns isolation off, or turns it on for an application the shared workers had loaded, restarts the shared workers** as well as starting or stopping the dedicated worker.
 - **A redeploy of an application that stays isolated restarts only its own worker.** The other applications keep running. The exception is [retrying an activation](../operations-api/operations.md#retrying-an-activation) whose release is already live, which restarts every worker.
 - **`restart_service` can target one isolated application.** `{"operation": "restart_service", "service": "http", "scope": "<application>"}` restarts only that application's worker.
-- **`drop_component` without `restart` leaves the dedicated worker running** until the next restart. With `restart=true`, a running isolated application's worker is stopped without restarting the shared workers. Dropping normally reclaims retained installs; inspect node logs if storage cleanup fails. Dropping an already-absent application with `restart=true` can restart the shared workers, so check component files and running workers before retrying. On Pro and Fabric, drops propagate to peers by default; inspect the response's `replicated` results for peer failures.
+- **Dropping an isolated application stops its worker, with or without `restart`.** <VersionBadge type="changed" version="v5.4.0" /> This is a `drop_component` of the whole project; dropping one `file` leaves the worker running, and with `restart=true` restarts it. The shared workers keep running, unless they may still have the application loaded, as after turning isolation on without a restart: then a drop with `restart=true` restarts them too. Dropping normally reclaims retained installs; inspect node logs if storage cleanup fails. On a node that does not have the application (no component directory and no root config entry), the drop restarts nothing; it only stops a dedicated worker, or removes [forks](#removing-a-fork), that an earlier drop left behind. On Pro and Fabric, the drop goes to every node, and the response reports each node's outcome; see [`drop_component`](#drop_component). Before v5.4.0, the worker stopped only with `restart=true`, and dropping an absent application with `restart=true` could restart the shared workers.
 - **`system_information` shows the dedicated worker.** In its `threads` list, the dedicated worker's entry carries `application: '<name>'`.
 
 Each isolated application adds a worker thread on top of `threads.count`. See [`threads.maxIsolated`](../configuration/options.md#threads) for how that affects memory.
@@ -428,7 +430,7 @@ Until that is fixed, use these manual steps for a new application:
 #### What the fork is
 
 - **A snapshot of the base, taken the first time the application loads with the key.** Harper takes a RocksDB checkpoint of the base database, which uses hard links when the fork is on the same filesystem as the base. It captures blob files separately, using hard links too; this is not an atomic snapshot of records and blobs together. Blobs still being written or reclaimed before capture can leave markers in the fork, with warnings in the log and errors when those records are read. Later base writes do not refresh the fork.
-- **Durable.** The fork survives restarts and redeploys, and is never refreshed from the base. To start again from the current base, drop the application with `restart=true`, confirm its worker has stopped and its fork directory has been removed on every node, then deploy it again. A failed restart can retain storage even after a successful drop response; reusing the name before removal reuses that fork.
+- **Durable.** The fork survives restarts and redeploys, and is never refreshed from the base. To start again from the current base, drop the application, confirm its fork has been [removed](#removing-a-fork) on every node, then deploy it again. Reusing the name before the fork is removed reuses that fork.
 - **Stored beside the base database**, at ``<storage path>/`branches`/<application>/<database>``. With the default storage path, that is ``<rootPath>/database/`branches`/<application>/<database>``. The backticks are part of the directory name, so quote the path with single quotes in a shell, as in ``ls '<rootPath>/database/`branches`/'``; inside double quotes, the shell runs the backticks as a command.
 - **Private.** The fork is not added to the instance's list of databases, so other applications, `describe_all`, analytics, and replication do not see it.
 - **Local to each node.** In a Harper Pro cluster, each node creates its own fork from its own copy of the base when the application first loads there. Writes to a fork stay on the node that took them. The fork's path is the same on every node.
@@ -436,7 +438,9 @@ Until that is fixed, use these manual steps for a new application:
 
 #### Reaching the fork from code
 
-Import `databases` from `harper`, and each branched name on it resolves to the fork. `tables` from `harper` is a shortcut for the default database, `data`, so it reaches a fork only when `data` itself is branched; for any other branched database, go through `databases`. The bare `databases` and `tables` globals are shared by every application in the thread. Code that uses them reads and writes the base database without any warning ([harper#3053](https://github.com/HarperFast/harper/issues/3053)).
+Import `databases` from `harper`, and each branched name on it resolves to the fork. `tables` from `harper` is a shortcut for the default database, `data`, so it reaches a fork only when `data` itself is branched; for any other branched database, go through `databases`.
+
+<VersionBadge type="changed" version="v5.4.0" /> The bare `databases` and `tables` globals reach the fork too in an isolated application, whose worker is its own, and under the `vm` and `compartment` [module loaders](./module-loading.md#module-loader-modes), which give each application its own globals. In the shared workers under the default `vm-current-context` loader, or `native`, the globals are shared by every application in the thread, so code that uses them reads and writes the base database without any warning. Before v5.4.0 that was so in every case ([harper#3053](https://github.com/HarperFast/harper/issues/3053)). Importing from `harper` reaches the fork everywhere.
 
 With `branchedDatabases: [inventory]`, this is the fork's `Product` table:
 
@@ -461,13 +465,28 @@ The value itself is checked when you deploy, and again when the application load
 
 #### Removing a fork
 
-`drop_component` with `restart=true` removes the application's forks once the restart has completed. If the restart does not complete, the drop can report success while retaining the forks; check worker state, node logs, and the fork directory before redeploying to refresh data. A replicated drop does this on every node, each removing its own fork. If a fork cannot be removed, the drop fails with an error saying the storage was left in place.
+<VersionBadge type="changed" version="v5.4.0" />
 
-Without `restart`, the forks stay, and the response says so: `Successfully dropped: <name>. Any branched database storage this application owns was left in place; drop it again with restart: true to discard that data`. Running `drop_component` with `restart=true` again removes them. Until then, deploying an application under the same name picks up the old fork, with its data.
+`drop_component` removes the application's forks by default, once nothing has them open: after its dedicated worker stops, or, for an application the shared workers run, after the restart that `restart=true` asks for. A replicated drop does this on every node, each removing its own fork, and the response reports `branchesRemoved` for each node.
+
+The forks stay, and the response message says why, when:
+
+- the drop sets `keepBranches: true`;
+- the shared workers run the application and the drop has no `restart`, so they still have it loaded;
+- the restart did not finish replacing every worker;
+- the main thread serves the application as the node's only worker.
+
+Except with `keepBranches`, the drop records the removal as owed before it changes anything, in a `` `removal-pending` `` file in the application's `` `branches`/<application> `` directory, and Harper finishes it without another drop: once no worker has the forks loaded, such as after the shared workers next restart, or, when the main thread serves the application, at Harper's next start. A `keepBranches` drop cancels a removal an earlier drop left owed. Until the forks are removed, deploying an application under the same name picks up the old fork, with its data, and the fork is then removed at that application's next drop.
+
+`keepBranches: true` cannot be combined with `restart: true`; that request is refused with `400`. A node running a version before v5.4.0 ignores `keepBranches`, and with `restart: true` it would remove its forks. To keep the forks of an application the shared workers run, drop it with `keepBranches: true`, then restart with [`restart_service`](../operations-api/operations.md#restart_service).
+
+If a fork cannot be removed, the drop fails with an error saying the storage was left in place, and Harper retries the removal until it succeeds: after each later drop, at its next start, and on a timer that starts at one minute and doubles up to an hour. A drop that a worker thread handles and then stops answers before the worker stops, with `branchesRemoved: null`: an isolated application dropping itself, or a drop handled in a shared worker that `restart=true` restarts ([harper#3091](https://github.com/HarperFast/harper/issues/3091)). A removal failure after that answer is logged and retried the same way ([harper#3600](https://github.com/HarperFast/harper/pull/3600)). A drop sent to the Operations API waits for every step, since the Operations API runs on the main thread. To confirm that a fork is gone, check its directory on each node.
+
+Before v5.4.0, only a drop with `restart=true` removes the forks, once its restart has completed. Without `restart`, they stay, and the message says to drop again with `restart: true`.
 
 ## Operations API
 
-Component operations require `super_user`, unless a role's [`operations` allowlist](../users-and-roles/overview.md#operation-permissions) lists them, which is how a deploy-only CI role gets `deploy_component`. A few cannot be granted that way, such as `get_deployment_payload`, and a deploy that passes a literal `token` in `credentials` still needs `super_user`.
+Component operations require `super_user`, unless a role's [`operations` allowlist](../users-and-roles/overview.md#operation-permissions) lists them, which is how a deploy-only CI role gets `deploy_component`. A role's [`component_deploy` grant](../users-and-roles/overview.md#component-deploy-grants) limits `deploy_component`, `drop_component` and `get_components` to the components it names (Added in: v5.4.0). A few cannot be granted that way, such as `get_deployment_payload`, and a deploy that passes a literal `token` in `credentials` still needs `super_user`.
 
 ### `add_component`
 
@@ -500,6 +519,8 @@ Deploys a component using a package reference or a base64-encoded `.tar` payload
 - `install_command` _(optional)_ — Install command override
 - `install_timeout` _(optional)_ — Install timeout override in milliseconds
 - `install_allow_scripts` _(optional)_ — Allow install scripts to run. Defaults to `false`, which causes `--ignore-scripts` to be passed to the install command (this is ignored with `install_command`).
+- `host`, `urlPath`, `isolated`, `branchedDatabases` _(optional)_ — Set the component's root-config entry, as in [Setting them when you deploy](#setting-them-when-you-deploy).
+- `preview` _(optional)_ <VersionBadge version="v5.4.0" /> — Marks the deploy as a pull request's preview, which expires. See [Preview deployments](../operations-api/operations.md#preview-deployments).
 
 ```json
 {
@@ -517,8 +538,10 @@ Deletes a component project or a specific file within it.
 
 - `project` _(required)_ — Project name
 - `file` _(optional)_ — Path relative to project folder. If omitted, deletes the entire project
-- `replicated` _(optional)_ — On Harper Pro and Fabric, deletion goes to every cluster node unless this is `false`. Inspect the response's `replicated` results for peer failures
-- `restart` _(optional)_ — `true` waits for a restart after dropping. A running isolated application stops only its own worker; an already-absent application can restart shared workers
+- `replicated` _(optional)_ — On Harper Pro and Fabric, deletion goes to every cluster node unless this is `false`. The response's `replicated` results report each peer's outcome
+- `restart` _(optional)_ — `true` also restarts the shared workers, when they run the application. Dropping a whole isolated application stops its worker either way, and a node that does not have the application restarts nothing (v5.4.0)
+- `keepBranches` _(optional)_ — `true` keeps the application's [forks](#removing-a-fork). Defaults to `false`. Cannot be combined with `"restart": true` (v5.4.0)
+- `ifDeploymentId` _(optional)_ <VersionBadge version="v5.4.0" /> — Drop the component only where its live release is this deployment. Each node checks its own, and one whose live release is another answers `componentRemoved: false` with `Did not drop <project>: its live release is not deployment <id>`, not an error. A UUID, and only with no `file`. Previews' expiry and `disable_previews` use it, so a preview redeployed in the meantime stays
 
 ```json
 {
@@ -526,6 +549,31 @@ Deletes a component project or a specific file within it.
 	"project": "my-component"
 }
 ```
+
+<VersionBadge version="v5.4.0" />
+
+The response reports this node's outcome, and each peer's in `replicated`:
+
+```json
+{
+	"message": "Successfully dropped: shop-preview",
+	"node": "node-a",
+	"componentRemoved": true,
+	"workerStopped": true,
+	"branchesRemoved": true,
+	"replicated": [
+		{ "node": "node-b", "componentRemoved": true, "workerStopped": true, "branchesRemoved": true, "error": null },
+		{ "node": "node-c", "componentRemoved": false, "workerStopped": false, "branchesRemoved": false, "error": null }
+	]
+}
+```
+
+- `componentRemoved` — the node had the component and removed it. `false` on a node that did not have it.
+- `workerStopped` — the node stopped a running dedicated worker for the application.
+- `branchesRemoved` — the node removed the application's forks.
+- `error` — the drop failed on that peer. The other fields are then `null`.
+
+A `null` field also means a peer that did not say, such as one running a version before v5.4.0, or a step that had not finished when the node answered (see [Removing a fork](#removing-a-fork)).
 
 ### `package_component`
 
@@ -561,6 +609,8 @@ Returns all local component files, folders, and configuration from `harper-confi
 - `restarted_at` — the latest time a worker thread on this node finished loading the component, whether or not the load succeeded; `status` says how it went. A worker restart refreshes it.
 
 Both times are in milliseconds since the epoch, and all three describe the node that answers. [`list_releases`](../operations-api/operations.md#list_releases) lists the releases each node keeps, for the whole cluster with `replicated: true`.
+
+<VersionBadge version="v5.4.0" /> The entry of a [preview deployment](../operations-api/operations.md#preview-deployments) also carries its `preview`: `app`, `pr`, `expiresAt`, and the `branch`, `repository` and `sha` it was deployed with. For a role with a [`component_deploy` grant](../users-and-roles/overview.md#component-deploy-grants), `entries` lists only the components the grant covers.
 
 ### `get_component_file`
 

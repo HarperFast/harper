@@ -1,6 +1,6 @@
 ---
 section: 'Authentication'
-order: 10
+order: 20
 ---
 
 ### Component Bearer Validators

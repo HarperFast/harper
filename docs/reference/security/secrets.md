@@ -95,6 +95,12 @@ Every component now sees `process.env.DATABASE_URL`.
 
 Granting a not-yet-deployed component is legal — grants may precede the deploy.
 
+<VersionBadge version="v5.4.0" /> A grant can also name a pattern, a component name prefix followed by one `*`, such as `my-app-pr-*`. A pattern grant counts only when a deploy resolves its [`credentials`](../operations-api/operations.md#deploy-credentials-credentials), so one private-source credential can serve every preview of an application. A component's code never reads a secret through a pattern grant: the `secrets` accessor and `env` use only grants that name the component exactly.
+
+```json
+{ "operation": "grant_secret", "name": "deploy.my-app-pr-_.git.github.com", "component": "my-app-pr-*" }
+```
+
 ## Consuming secrets in a component
 
 ### Declare what you expect

@@ -103,7 +103,7 @@ harper get_backup database=data target=https://node-2.example.com:9925 out=./dat
 
 **If the database has no file-backed blobs,** the archive extracts into a directory that opens directly as a RocksDB database. Stop Harper, replace the database's directory under the storage path with the extracted archive, and start Harper again:
 
-`harper stop` returns before Harper finishes closing databases, so the procedures below capture its PID and wait for the process to exit before changing files.
+Before v5.4.0, `harper stop` returns before Harper finishes closing databases, so the procedures below capture its PID and wait for the process to exit before changing files. From v5.4.0, [`harper stop`](../cli/commands.md#harper-stop) waits for the exit itself, and the loop still covers the cases where it gives up while Harper is running or finds no process to stop.
 
 ```bash
 HARPER_PID=$(cat ~/hdb/hdb.pid)

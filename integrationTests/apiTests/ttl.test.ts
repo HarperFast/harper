@@ -14,7 +14,7 @@
  * Skipped on Bun: timing-sensitive TTL tests are not reliable under Harper-on-Bun in CI.
  */
 import { suite, test, before, after } from 'node:test';
-import { ok, strictEqual } from 'node:assert';
+import { deepStrictEqual, ok, strictEqual } from 'node:assert';
 import { setTimeout as sleep } from 'node:timers/promises';
 import request from 'supertest';
 import { startHarper, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
@@ -71,12 +71,10 @@ type BulkExpiry @table(expiration: 5) @export {
 	value: String
 }
 
-# 2s TTL so reads hide a record shortly after write, but a 1h eviction window so the
-# expired record stays PHYSICALLY present ("expired but not swept") for the whole test:
-# expiration sets when reads hide the row (expiresAt = write + 2s), while eviction holds
-# off physical reclamation until expiresAt + 1h. This gives a deterministic window to
-# assert the SQL-engine row-finder's includeExpired behavior (QA-269) — see the
-# "SQL UPDATE/DELETE" test below. (eviction is persisted on the primary attribute,
+# 2s TTL, but a 1h eviction window so the expired record stays PHYSICALLY present
+# ("expired but not swept") for the whole test: eviction holds off physical reclamation
+# until expiresAt + 1h. This gives a deterministic window for the SQL SELECT/UPDATE/DELETE
+# test below (QA-269). (eviction is persisted on the primary attribute,
 # unlike scanInterval, so it survives a schema reload.)
 type SqlTtl @table(expiration: 2, eviction: 3600) @export {
 	id: ID @primaryKey
@@ -243,23 +241,14 @@ suite('TTL edge cases', { skip: skipSuite }, (ctx: ContextWithHarper) => {
 	});
 
 	/**
-	 * Test 5: SQL UPDATE/DELETE row-finder sees a not-yet-swept expired row (QA-269)
+	 * Test 5: SQL SELECT, UPDATE and DELETE all find a not-yet-swept expired row (QA-269)
 	 *
-	 * A plain SQL SELECT is right to HIDE a row whose TTL has passed but the eviction
-	 * scan hasn't reclaimed yet — and, in fact, reading it lazily evicts it. A SQL
-	 * UPDATE/DELETE must NOT drop it: like every other write surface (REST PUT/PATCH/
-	 * DELETE, ops update/delete) it targets the row directly and must find it, or the
-	 * write silently touches nothing (an UPDATE would never get to reset the TTL). The
-	 * new engine's mutation row-finder passes `includeExpired` for exactly this reason
-	 * (runMutation.ts).
-	 *
-	 * Each id is exercised by exactly ONE surface: because a plain SELECT lazily evicts
-	 * the expired row it reads, the hidden/update/delete legs must use DISTINCT ids —
-	 * otherwise the SELECT leg would drop the row the mutation legs are meant to find.
-	 * SqlTtl's 1h eviction window keeps the un-read rows physically present so the
-	 * mutation legs are deterministic (no background sweep reclaims them mid-test).
+	 * A query returns a record whose TTL has passed as stored until eviction removes it
+	 * (resources/DESIGN.md). A SQL UPDATE/DELETE must find it too, or the write silently
+	 * touches nothing (an UPDATE would never get to reset the TTL). SqlTtl's 1h eviction
+	 * window keeps the rows physically present so every leg is deterministic.
 	 */
-	test('SQL UPDATE/DELETE find a not-yet-swept expired row; plain SELECT hides it', async () => {
+	test('SQL SELECT, UPDATE and DELETE find a not-yet-swept expired row', async () => {
 		await client
 			.req()
 			.send({
@@ -274,17 +263,14 @@ suite('TTL edge cases', { skip: skipSuite }, (ctx: ContextWithHarper) => {
 			})
 			.expect(200);
 
-		// Let all rows pass their 2s TTL. No sweep reclaims them (1h eviction window),
-		// and none has been read yet, so none has been lazily evicted.
+		// Let all rows pass their 2s TTL. No sweep reclaims them (1h eviction window).
 		await sleep(2_500);
 
-		// Leg 1 — a plain SELECT hides the expired row (and lazily evicts 'sel'; that's
-		// why the mutation legs below use their own ids).
-		const hidden = await client
+		const expired = await client
 			.req()
 			.send({ operation: 'sql', sql: "SELECT id, payload FROM data.SqlTtl WHERE id = 'sel'" })
 			.expect(200);
-		strictEqual(hidden.body.length, 0, `plain SELECT should hide the expired row, got: ${JSON.stringify(hidden.body)}`);
+		deepStrictEqual(expired.body, [{ id: 'sel', payload: 'orig' }]);
 
 		// Leg 2a — SQL UPDATE finds the expired 'upd' row (includeExpired) and resets its TTL.
 		await client

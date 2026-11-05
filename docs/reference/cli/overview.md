@@ -85,6 +85,8 @@ harper status
 
 When Harper is running, the process identifier (PID) is stored in a file named `hdb.pid` located in the Harper installation directory. This file can be used by external process management tools or scripts to monitor or manage the Harper process.
 
+From v5.4.0, the file stays in place while Harper shuts down and is removed as the process exits. Before v5.4.0, Harper removed it as soon as it received a termination signal, before it had finished closing databases. <VersionBadge type="changed" version="v5.4.0" />
+
 **Location**: `<ROOTPATH>/hdb.pid`
 
 **Example**:

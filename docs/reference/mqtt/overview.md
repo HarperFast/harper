@@ -125,7 +125,9 @@ MQTT connections support two authentication methods:
 - **Credential-based** — Standard MQTT username/password in the CONNECT packet.
 - **mTLS** — Added in v4.3.0. Mutual TLS authentication using client certificates. The `CN` (common name) from the client certificate subject is used as the Harper username by default.
 
-Authentication is required by default (`requireAuthentication: true`). See [MQTT Configuration](./configuration) for details on disabling authentication or configuring mTLS options.
+On raw-TCP loopback connections, [`authentication.authorizeLocal`](../security/configuration.md#authorizelocal) also permits access without CONNECT credentials, even when `requireAuthentication` is `true`. From v5.4.0, these locally trusted connections run as the built-in [`local` super user](../security/configuration.md#local-request-identity).
+
+Authentication is otherwise required by default (`requireAuthentication: true`). See [MQTT Configuration](./configuration) for details on disabling authentication or configuring mTLS options.
 
 ## Server Events API
 

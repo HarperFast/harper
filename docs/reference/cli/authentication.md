@@ -15,7 +15,7 @@ The Harper CLI handles authentication differently for local and remote operation
 
 Available since: v4.1.0
 
-For local operations (operations executed on the same machine where Harper is installed), the CLI communicates with Harper via Unix domain sockets instead of HTTP. Domain socket requests are automatically authenticated as the superuser, so no additional authentication parameters are required.
+For local operations (operations executed on the same machine where Harper is installed), the CLI communicates with Harper via Unix domain sockets instead of HTTP. Domain socket requests are automatically authorized as a super user, so no additional authentication parameters are required. From v5.4.0, these requests run as the built-in [`local` user](../security/configuration.md#local-request-identity), independently of stored users.
 
 **Example**:
 
@@ -26,7 +26,7 @@ harper get_components
 harper set_configuration logging_level=info
 ```
 
-When no `target` parameter is specified, the CLI falls back to the target saved by a previous `harper login` if there is one, and only otherwise to the local domain socket connection, which gives authenticated access to the local Harper instance. See [Authentication Precedence](#authentication-precedence) for what that means on a shared machine.
+When no `target` parameter is specified, the CLI uses `HARPER_CLI_TARGET` or `CLI_TARGET` if set, then the target saved by a previous `harper login`, and only otherwise to the local domain socket connection, which gives authenticated access to the local Harper instance. See [Authentication Precedence](#authentication-precedence) for what that means on a shared machine.
 
 ## Remote Operations
 
@@ -163,7 +163,6 @@ Then you can run commands without specifying the `target` or credentials (if the
 harper deploy
 harper describe_database database=dev
 harper get_components
-harper logout
 ```
 
 **Example Script**:

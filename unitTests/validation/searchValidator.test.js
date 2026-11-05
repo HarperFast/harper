@@ -538,4 +538,58 @@ describe('Test searchValidator module', () => {
 			assert.strictEqual(err.message, "'value' must not be an array containing '*'");
 		}
 	});
+
+	it('validates a same-record relationship condition group against the relationship attribute rather than root attributes', () => {
+		assert.strictEqual(
+			searchValidator(
+				{
+					schema: 'searchValidatorTest',
+					table: 'test',
+					conditions: [
+						{ attribute: 'children', conditions: [{ attribute: 'label', comparator: 'equals', value: 'x' }] },
+					],
+				},
+				'conditions'
+			),
+			undefined
+		);
+
+		const unknownRelErr = searchValidator(
+			{
+				schema: 'searchValidatorTest',
+				table: 'test',
+				conditions: [
+					{ attribute: 'unknownRel', conditions: [{ attribute: 'label', comparator: 'equals', value: 'x' }] },
+				],
+			},
+			'conditions'
+		);
+		assert.ok(unknownRelErr instanceof Error);
+		assert.strictEqual(unknownRelErr.message, "unknown attribute 'unknownRel'");
+
+		const plainGroupErr = searchValidator(
+			{
+				schema: 'searchValidatorTest',
+				table: 'test',
+				conditions: [{ operator: 'and', conditions: [{ attribute: 'label', comparator: 'equals', value: 'x' }] }],
+			},
+			'conditions'
+		);
+		assert.ok(plainGroupErr instanceof Error);
+		assert.strictEqual(plainGroupErr.message, "unknown attribute 'label'");
+
+		assert.strictEqual(
+			searchValidator(
+				{
+					schema: 'searchValidatorTest',
+					table: 'test',
+					conditions: [
+						{ attribute: null, operator: 'and', conditions: [{ attribute: 'name', comparator: 'equals', value: 'x' }] },
+					],
+				},
+				'conditions'
+			),
+			undefined
+		);
+	});
 });

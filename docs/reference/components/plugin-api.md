@@ -124,7 +124,7 @@ The central object passed to `handleApplication()`. Provides access to configura
 
 #### Events
 
-- **`'close'`** — Emitted after `scope.close()` is called. Harper calls `scope.close()` itself on shutdown and on graceful restart, so this is the hook for application teardown — see [Cleanup on Shutdown](#cleanup-on-shutdown)
+- **`'close'`** — Emitted after `scope.close()` is called. Harper calls `scope.close()` itself on shutdown (on a termination signal, from v5.4.0) and on graceful restart, so this is the hook for application teardown — see [Cleanup on Shutdown](#cleanup-on-shutdown)
 - **`'error'`** — `error: unknown` — An error occurred
 - **`'ready'`** — Emitted when the Scope is ready after loading the config file
 
@@ -389,6 +389,8 @@ Function signature for the `'all'` event handler passed to `scope.handleEntry()`
 
 Harper calls `scope.close()` on every application scope when a worker thread shuts down, which emits the [`'close'`](#events) event. This happens both when Harper is stopping and on a graceful restart — including the automatic worker restarts triggered by `harper dev` file watching and by the `restart` operation.
 
+When Harper stops on SIGTERM, SIGINT or SIGQUIT (which `harper stop` sends), it closes scopes only after it has stopped accepting connections and given requests in flight a few seconds to finish, so a request that finishes in that time keeps the resources its scope owns. A longer request's handler can still be running when `'close'` fires. See [Shutting down on a termination signal](../configuration/options.md#shutting-down-on-a-termination-signal). <VersionBadge type="changed" version="v5.4.0" /> Before v5.4.0, these signals ended the process without closing scopes, so `'close'` listeners ran only on restarts.
+
 Listen for `'close'` to finish work that must complete, or be acknowledged outside the process, before the thread goes away: flushing buffered writes, deregistering from an external service or registry, releasing a distributed lock or lease, or closing a connection whose remote side expects a graceful goodbye. Node tears down timers and sockets on its own when a thread exits, so purely in-process resources need no `'close'` listener.
 
 ```js
@@ -404,8 +406,8 @@ Use `scope.once()` rather than `scope.on()` — closing is a one-time lifecycle 
 
 Notes on the shutdown sequence:
 
-- **Async listeners are awaited.** Returning a promise from a `'close'` listener is supported: Harper awaits it before the worker exits, so cleanup completes rather than racing the process exit.
-- **Cleanup is bounded.** Shutdown has a backstop timer (10 seconds by default, longer under `harper dev`), after which the worker is force-exited even if a `'close'` listener is still running. Keep teardown short and avoid unbounded work such as retry loops without a deadline.
+- **Async listeners are awaited.** Returning a promise from a `'close'` listener is supported: Harper awaits it before the worker exits, so cleanup can complete, within the bounds below, rather than racing the process exit.
+- **Cleanup is bounded.** On a restart, a backstop timer (10 seconds by default, longer under `harper dev`) force-exits the worker even if a `'close'` listener is still running. On a stop, [`threads.shutdownTimeout`](../configuration/options.md#shutting-down-on-a-termination-signal) (8 seconds by default, 30 under `harper dev`) bounds the whole shutdown, including the time connections take to drain, and the process exits when it runs out. Closing databases at exit comes after that bound. Keep teardown short and avoid unbounded work such as retry loops without a deadline.
 - **A failed listener does not block shutdown.** If a `'close'` listener throws or rejects, Harper logs the error and continues shutting down. Because all listeners are awaited together, one that rejects also stops Harper from waiting on the others still in flight — so handle errors inside the listener rather than letting them escape.
 - **Each worker cleans up independently.** `handleApplication()` runs on every worker thread that loads the application, so a `'close'` listener registered there runs once per worker. Cleanup that must happen only once for the whole instance needs its own coordination.
 
@@ -460,3 +462,4 @@ export function handleApplication(scope) {
 - **v4.6.0** — Plugin API introduced (experimental)
 - **v4.7.0** — Further improvements to the Plugin API
 - **v5.1.3** — Shutdown awaits promises returned by `'close'` listeners; earlier releases emitted `'close'` without waiting, so async cleanup could be cut off by the worker exiting
+- **v5.4.0** — SIGTERM, SIGINT and SIGQUIT close scopes once requests in flight have had a few seconds to finish, bounded by `threads.shutdownTimeout`; earlier releases exited on these signals without closing scopes

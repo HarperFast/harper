@@ -12,21 +12,38 @@ For a quick reference of every option, see [Configuration Options — `storage`]
 
 ## Durability vs. Throughput
 
+On RocksDB (the default storage engine), Harper does not call `fsync` or `fdatasync` when committing a transaction, and RocksDB's own Write-Ahead Log (WAL) is disabled for table stores. When the [transaction log](./transaction.md) is enabled (the default via [`logging.auditLog: true`](../logging/configuration.md), inherited by tables unless [`@table(audit: false)`](./transaction.md#enabling-the-transaction-log-per-table)), each acknowledged commit is written to Harper's transaction log (`database/<db>/transaction_logs/`) using a standard write to the OS page cache. On startup, Harper replays the transaction log to recover any committed writes that had not yet been flushed from RocksDB's in-memory memtables to table files.
+
+What an acknowledged write survives on a single node:
+
+- **Harper process crash or restart**: Survived when transaction logging is enabled (the default). Committed bytes are already in the OS page cache, so the operating system preserves and flushes them to disk even if the Harper process terminates unexpectedly, and Harper replays the transaction log on restart. If transaction logging is disabled globally (`logging.auditLog: false`) or for a table (`@table(audit: false)`), no transaction-log entry is written while RocksDB's WAL remains off, so unflushed memtable writes are also lost on a Harper process crash.
+- **OS crash, kernel panic, power loss, or host failure**: Recent writes that the OS has not yet flushed from the page cache to disk can be lost. On a single-node or Harper core deployment (where replication is not available), durability against OS or power failure depends on periodic OS page-cache writeback. The database remains structurally consistent — only the most recent un-flushed commits are at risk.
+
+For durability against machine, OS, power, or storage failure in a multi-node (Harper Pro) cluster, Harper relies on **replication confirmation** rather than local disk `fsync`. In production failures such as host failure or storage hardware loss, a local disk fails or becomes unreachable together with the rest of the machine, whereas an acknowledgement from a peer node on an independent machine means the write has been committed off-host. Because confirming RocksDB peers also commit to their own OS page cache without `fsync` and confirmation counts any `<k>` responding peers, surviving a power outage or site-wide failure requires peers in separate power or failure domains and setting `<k>` greater than the number of peers that share the writer's failure domain.
+
+To require confirmation from `<k>` peer nodes before a write returns, use [replication confirmation](../replication/sharding.md):
+
+- **Operations API**: Set [`replicatedConfirmation: <k>`](../replication/sharding.md#replication-control-via-operations-api) in the operation payload. Omit `replicateTo` to use the database's configured replication (every node by default, unless [`replication.databases[].replicateTo`](../replication/sharding.md#replication-count) is set), or set `replicateTo` only when you also want to limit residency (dynamic sharding) to a fixed set of nodes.
+- **Resource API**: Set [`context.replicatedConfirmation = <k>`](../replication/sharding.md#programmatic-replication-control) in your resource method (leaving `context.replicateTo` unset to use the database's configured replication, unless you also want to restrict residency).
+- **REST**: Pass [`X-Replicate-To: *;confirm=<k>`](../replication/sharding.md#replication-control-via-rest-header) on the request (requires `super_user` permissions; for non-superuser write paths, set `context.replicatedConfirmation` in a Resource method instead) to wait for `<k>` confirmations while keeping the database's configured replication (`*` leaves per-request residency unset; passing a number `<n>` or node list in `X-Replicate-To: <n>;confirm=<k>` pins the record's residency to `<n>` additional nodes from those present at write time).
+
 ### `storage.writeAsync`
+
+<EngineBadge engines="LMDB" />
 
 Type: `boolean`
 
 Default: `false`
 
-Disables `fsync` on commit. Writes return as soon as data is queued to the page cache, dramatically increasing throughput on write-heavy workloads.
+Applies only to the legacy LMDB storage engine. This setting has no effect on RocksDB, which never calls `fsync` on commit.
 
-**This disables durability guarantees.** A power loss or OS crash between the application commit and the OS flushing pages to disk can lose recently committed transactions. The database itself remains structurally consistent — only the most recent writes are at risk.
+On LMDB, enabling `writeAsync` disables `fsync` on commit so writes return as soon as data is queued to the OS page cache, matching RocksDB's commit behavior and increasing throughput on write-heavy workloads. A power loss or OS crash before the OS flushes pages to disk can lose recently committed transactions, while the database remains structurally consistent.
 
-Enable only when:
+Enable on LMDB databases when:
 
+- Durability across machine failures is handled via [replication confirmation](../replication/sharding.md).
 - The data is reproducible from an upstream source (e.g., caches with `sourcedFrom`).
-- The workload is bulk ingest where some loss on crash is acceptable and the operation can be re-run.
-- Replication provides durability — peers acknowledge writes before they could be lost.
+- The workload is bulk ingest where some loss on OS crash or power loss is acceptable and the operation can be re-run.
 
 ```yaml
 storage:
@@ -54,6 +71,26 @@ Lower this in latency-sensitive systems where it is better to shed load early th
 ```yaml
 storage:
   maxTransactionQueueTime: 30s
+```
+
+### `storage.maxTransactionOpenTime`
+
+<EngineBadge engines="RocksDB" /> <VersionBadge version="v5.0.0" />
+
+Type: `number` (milliseconds)
+
+Default: `30000`
+
+The maximum time a transaction may stay open without activity. Give a number of milliseconds; unlike `maxTransactionQueueTime`, this option does not take a duration string such as `30s`. Available since v5.0.0; LMDB databases ignore it and use a fixed 30 seconds. Harper checks open transactions once per this interval, so a stalled transaction is closed between one and two intervals after its last qualifying activity:
+
+- A transaction with uncommitted writes from an application request must keep writing; reads alone do not renew its timeout. When it expires, the writes are aborted and the request fails with status `422`. Split long-running work into smaller transactions.
+- A read-only transaction is renewed by reads. When it expires, its read snapshot is released; on RocksDB, a read that continues afterwards fails with `ReadSnapshotExpiredError` (status `503`).
+
+A streamed response, such as a REST collection query, holds its read snapshot while the client reads. On RocksDB, if the client stops reading for longer than this limit, the read fails when the client resumes. <VersionBadge type="changed" version="v5.4.0" /> The `200` status is already sent by then, so a JSON response is cut off rather than returned as a `503`; see [When a Streamed Response Fails](../rest/content-types.md#when-a-streamed-response-fails). Clients that read large results slowly should read promptly, page with [`limit(start,end)`](../rest/querying.md#limitend-or-limitstartend), or raise this limit.
+
+```yaml
+storage:
+  maxTransactionOpenTime: 60000
 ```
 
 ## Compression
@@ -296,20 +333,73 @@ storage:
 
 ### `storage.rocks.writeBufferManagerAllowStall`
 
-<VersionBadge version="v5.1.0" />
+<VersionBadge version="v5.1.0" /> <VersionBadge type="changed" version="v5.3.0" />
 
 Type: `boolean`
 
-Default: `true`
+Default: `false` (`true` in v5.2.8 and earlier)
 
 Controls behavior when memtable memory reaches `writeBufferManagerSize`:
 
 - `false` (soft cap) — Memtables may briefly exceed the limit. RocksDB compensates by flushing more aggressively. Writes proceed without latency spikes; total memory may temporarily overshoot during bursts.
 - `true` (hard cap) — Writes are stalled until flushes free up memory. Total memtable memory is strictly bounded; write latency can spike during bursts.
 
-The default (`true`) strictly bounds total memtable memory, applying write backpressure rather than letting memtables overshoot — which also keeps bulk ingest from outrunning the memtable flush/conflict-check window. Set to `false` for a soft cap when write-latency smoothness matters more than a strict memory bound and brief overshoot during bursts is acceptable.
+The default (`false`) is a soft cap because a stalling manager pauses every writer in the process. When the budget is held across enough column families, nothing triggers the flush that would release the writers, and only a restart recovers. The cost of the soft cap is memory: total memtable memory can overshoot the budget during bursts. Set to `true` for a strict memory bound when write backpressure is acceptable. With stalls allowed, the default [flush policy](#storagerockswritebuffermanagerflushpolicy) is `largestAcrossDBs` (as of v5.4.0), which flushes memory held by idle databases instead of waiting on it.
 
-This option is the only `WriteBufferManager` setting that can be changed at runtime — `costToCache` is fixed at first creation.
+`allowStall` and `writeBufferManagerFlushPolicy` are re-applied to the running manager when they change, so restarting the worker threads (`restart_service`) is enough to change them. `costToCache` is fixed when the manager is first created.
+
+### `storage.rocks.writeBufferManagerFlushPolicy`
+
+<VersionBadge version="v5.4.0" />
+
+Type: `string` (`oldest`, `largest`, or `largestAcrossDBs`)
+
+Default: `largestAcrossDBs` when `writeBufferManagerAllowStall` is `true`, otherwise `oldest`
+
+Selects which memtable is flushed when memtable memory is over `writeBufferManagerSize`:
+
+- `oldest` — Flush the oldest memtable of the database being written.
+- `largest` — Currently behaves like `oldest`, because Harper's databases use atomic flush.
+- `largestAcrossDBs` — A background thread flushes whichever database holds the most memtable memory, even if it is not being written.
+
+While no policy is set, the default follows `writeBufferManagerAllowStall`, including later changes to it. With stalls allowed, `oldest` can stall writes forever: the writer waits for memory that is held by idle databases, and `oldest` only flushes the database being written.
+
+```yaml
+storage:
+  rocks:
+    writeBufferManagerAllowStall: true
+    writeBufferManagerFlushPolicy: largestAcrossDBs
+```
+
+Has no effect when `storage.rocks.writeBufferManagerSize` is `0`. A changed value applies when the worker threads restart (`restart_service`). Once set, though, a policy stays in effect until Harper fully restarts (the `restart` operation): removing it from the configuration and restarting only the worker threads does not restore the default. An invalid value is ignored, the same as removing the key: the default applies if no policy was set earlier in the process, otherwise the earlier policy stays.
+
+### `storage.rocks.arenaBlockSize`
+
+<VersionBadge version="v5.4.0" />
+
+Type: `number` (bytes)
+
+Default: automatic — `writeBufferManagerSize / 2048`, at least 64 KiB and at most 1 MiB
+
+The size of the blocks each RocksDB column family's memtable allocates memory from. Every column family that has been written holds at least one block, and that block is charged to the `writeBufferManagerSize` budget even while the table is idle. With many tables, large blocks can use up a small budget and cause constant small flushes.
+
+The automatic size scales with the budget:
+
+| `writeBufferManagerSize` | Arena block size |
+| ------------------------ | ---------------- |
+| 64 MiB                   | 64 KiB           |
+| 1 GiB                    | 512 KiB          |
+| 2 GiB or more            | 1 MiB            |
+
+The automatic size is also capped at one eighth of the memtable size. Without a write buffer manager (`writeBufferManagerSize: 0`), RocksDB's own default of 1 MiB applies. Set to `0`, or leave unset, for the automatic size.
+
+```yaml
+storage:
+  rocks:
+    arenaBlockSize: 131072 # 128 KiB
+```
+
+The size is read when a database is opened, so a full [`restart`](../operations-api/operations.md#restart) is what reliably applies a change. Invalid values (non-integers, negatives, strings) are ignored and the default is used.
 
 ## RocksDB Transaction Log
 
@@ -415,9 +505,10 @@ Retains the pre-compaction backup files after `compactOnStart` runs. Recommended
 
 **Write-heavy ingest, durability via replication:**
 
+On RocksDB (the default), commits already avoid local disk `fsync`; pair a higher queue-time threshold in `harper-config.yaml` with per-write [replication confirmation](../replication/sharding.md) (`replicatedConfirmation` in the Operations or Resource API, or `X-Replicate-To: *;confirm=<k>` over REST — set on each write operation or request, not in `harper-config.yaml`) when writes must be confirmed by peer nodes before returning (on legacy LMDB databases, also add `writeAsync: true`):
+
 ```yaml
 storage:
-  writeAsync: true
   prefetchWrites: true
   maxTransactionQueueTime: 60s
 ```
@@ -457,6 +548,7 @@ The [storage option reference](../configuration/options.md#storage) lists the fu
 
 - [Configuration Options](../configuration/options.md) — full list of `storage` options
 - [Storage Algorithm](./storage-algorithm.md) — how Harper stores records and indexes on disk
+- [Sharding](../replication/sharding.md) — configuring `replicateTo` and replication confirmation for cross-node durability
 - [Schema — `@table(randomAccessFields:)`](./schema.md#randomaccessfields) — pinning one table's record encoding
 - [Compaction](./compaction.md) — reclaiming space inside existing database files
 - [Resource API — `sourcedFrom`](../resources/resource-api.md#sourcedfromresource-options) — caching tables that interact with reclamation

@@ -368,7 +368,7 @@ type Product @table {
 
 If the field value is an array, each element in the array is individually indexed, enabling queries by any individual value.
 
-Null values are indexed by default (added in v4.3.0), enabling queries like `GET /Product/?category=null`.
+Null values are indexed by default (Added in: v4.3.0), enabling queries like `GET /Product/?category=null`. That query matches records that store `null`, not records that omit the attribute; see [Null and Omitted Values](../rest/querying.md#null-and-omitted-values).
 
 ### `@embed`
 

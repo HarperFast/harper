@@ -23,9 +23,15 @@ const DELEGATE = { username: 'agent-runner', role: { permission: { operations: [
 
 function fakeOps() {
 	const make = (name) => ({ name, execute: async () => ({ ok: true, op: name }) });
-	return ['agent_prompt', 'get_agent_session', 'list_agent_sessions', 'approve_agent_action', 'cancel_agent_run'].map(
-		make
-	);
+	return [
+		'agent_prompt',
+		'get_agent_session',
+		'list_agent_sessions',
+		'approve_agent_action',
+		'cancel_agent_run',
+		'set_agent_config',
+		'get_agent_config',
+	].map(make);
 }
 
 // Wire the dispatch seams so handlers run the enforced path without booting Harper's
@@ -54,6 +60,7 @@ describe('agent/mcpTools registerAgentMcpTools', () => {
 		assert.ok(names.includes('list_agent_sessions'));
 		// set_agent_config is intentionally NOT exposed over MCP.
 		assert.ok(!names.includes('set_agent_config'));
+		assert.ok(!names.includes('get_agent_config'));
 	});
 
 	it('lists for super_users and scoped delegation roles, not for restricted users', () => {

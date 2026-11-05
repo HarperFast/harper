@@ -40,7 +40,7 @@ http:
 - `sessionAffinity` — Route requests from same client to same worker thread (`ip` or header name)
 - `compressionThreshold` — Response size threshold (bytes) for Brotli compression; `0` disables compression; _Default_: `0`
 - `cors` — Enable CORS; _Default_: `true`
-- `corsAccessList` — Allowed domains for CORS requests
+- `corsAccessList` — Allowed origins for CORS requests. From v5.4.0, an entry such as `https://*.app.example.com` allows any one label in place of `*`; see [`http.corsAccessList`](../http/configuration.md#httpcorsaccesslist)
 - `corsAccessControlAllowHeaders` — `Access-Control-Allow-Headers` value for OPTIONS preflight
 - `headersTimeout` — Max wait for complete HTTP headers (ms); _Default_: `60000`
 - `maxHeaderSize` — Max HTTP header size (bytes); _Default_: `16394`
@@ -67,12 +67,13 @@ threads:
 
 - `count` — Number of worker threads; _Default_: CPU count minus one
 - `maxHeapMemory` — Heap limit per thread (MB). When unset, each thread's limit is derived from available memory and the number of HTTP worker threads, including isolated applications' threads
-- `maxIsolated` <VersionBadge version="v5.3.0" /> — How many [isolated applications](../components/applications.md#isolated-applications) may run, each in a dedicated worker thread; _Default_: `8`. An isolated application past this limit is not loaded anywhere, and a `deploy_component` that would exceed it is refused with a `409`. `0` admits none. Dedicated threads are added to `count`, not taken from it, so a node runs up to `count` + `maxIsolated` HTTP worker threads. When `maxHeapMemory` is unset, they all count when Harper divides available memory into each thread's default heap limit. Each one lowers that limit for threads started afterward, until it reaches its 512 MB floor, after which more threads add to the total heap the node may use
+- `maxIsolated` <VersionBadge version="v5.3.0" /> <VersionBadge type="changed" version="v5.4.0" /> — How many [isolated applications](../components/applications.md#isolated-applications) may run, each in a dedicated worker thread; _Default_: `8`. Applications with a running dedicated worker keep it, and the rest are admitted in root-config order up to this limit. An isolated application past it is not loaded anywhere. A `deploy_component` of one that would not get a worker is refused with a `409`. An application whose live release [failed closed](../operations-api/operations.md#certifying-a-release-in-a-canary-worker) gets no worker and does not count. Before v5.4.0, every isolated application on disk counted, and a deploy of one that boot order would not admit could be accepted and then never start a worker. `0` admits none. Dedicated threads are added to `count`, not taken from it, so a node runs up to `count` + `maxIsolated` HTTP worker threads. When `maxHeapMemory` is unset, they all count when Harper divides available memory into each thread's default heap limit. Each one lowers that limit for threads started afterward, until it reaches its 512 MB floor, after which more threads add to the total heap the node may use
 - `heapSnapshotNearLimit` — Write a `.heapsnapshot` file when a thread nears its heap limit (loadable in Chrome DevTools Memory tab); _Default_: `false`. See [Worker Thread Debugging](./debugging.md#heap-snapshots-near-the-limit)
 - `debug` — Enable Node.js inspector; sub-options: `port`, `startingPort`, `host`, `waitForDebugger`. See [Worker Thread Debugging](./debugging.md)
 - `preload` <VersionBadge version="v5.2.0" /> — Module, or list of modules, to load via Node's `--import` before any Harper or application module on each worker thread. Intended for instrumentation and APM agents. Worker threads only (not under Bun).
 - `preloadRequire` <VersionBadge version="v5.2.0" /> — The same, but via Node's `--require` (CommonJS). Worker threads only (not under Bun).
 - `v8Flags` <VersionBadge version="v5.4.0" /> — V8 flag, or list of V8 flags, applied to the whole Harper process before its first worker thread starts. Each entry must start with `--`. Takes effect on process start. Not applied under Bun. See [Applying V8 flags](#applying-v8-flags)
+- `shutdownTimeout` <VersionBadge version="v5.4.0" /> — Longest time (ms) Harper spends shutting down after SIGTERM, SIGINT or SIGQUIT before it exits anyway; _Default_: `8000` (`30000` under `harper dev`). `0` exits as soon as the signal arrives. Takes effect when Harper restarts. See [Shutting down on a termination signal](#shutting-down-on-a-termination-signal)
 
 ### Preloading an instrumentation agent
 
@@ -128,6 +129,36 @@ The value can also be set from the environment, for example `HARPER_SET_CONFIG='
 - **When it takes effect.** Flags are read once per process. A changed value takes effect when the whole process restarts: the [`restart`](../operations-api/operations.md#restart) operation, which restarts only the node that receives it, or a process or container restart. [`restart_service`](../operations-api/operations.md#restart_service) restarts only worker threads, which keep the process's flags, so it does not apply a change, even with `"replicated": true`. To roll back, remove the setting from `HARPER_SET_CONFIG` or `HARPER_CONFIG` if it came from there, and from `harper-config.yaml` (for example `set_configuration` with `"threads_v8Flags": null`), then restart the process. A `THREADS_V8FLAGS` environment variable is written into `harper-config.yaml` at every startup, so unset it as well; unsetting the variable alone leaves the flags in the file.
 - **Expert setting.** Flags change V8's behavior for the whole process and are not validated beyond the `--` prefix. A conflicting combination can stop the process at startup. Measure memory and throughput with your workload before relying on a flag in production.
 
+### Shutting down on a termination signal
+
+<VersionBadge version="v5.4.0" />
+
+When the Harper process receives SIGTERM, SIGINT (Ctrl+C) or SIGQUIT, it shuts down in order instead of exiting at once. These are the signals [`harper stop`](../cli/commands.md#harper-stop), `docker stop`, Kubernetes and systemd send.
+
+1. Harper stops accepting new connections.
+2. Requests already in flight get a few seconds to finish (see the first note below).
+3. Component scopes close. Their [`'close'` listeners](../components/plugin-api.md#cleanup-on-shutdown) run once requests in flight have had a few seconds to finish.
+4. The process exits with code `0`.
+
+`threads.shutdownTimeout` bounds this sequence. If it has not finished in time, Harper logs `Shutdown did not finish within <n> ms (threads.shutdownTimeout)` and exits anyway. A second signal during the shutdown makes Harper exit at once; running `harper stop` again sends one. Harper exits with code `0` in all three cases, so a `0` exit status does not mean every `'close'` listener finished.
+
+```yaml
+threads:
+  shutdownTimeout: 25000 # Kubernetes' default 30-second grace period, no preStop hook
+```
+
+The environment variable is `THREADS_SHUTDOWNTIMEOUT`. Like other settings, a changed value takes effect when Harper restarts; `harper stop` reads the configuration file, so its wait uses the new value right away. `0` restores the behavior from before v5.4.0: Harper exits when the signal arrives, without draining requests or closing scopes.
+
+- **Requests get a few seconds, not the whole timeout.** After it stops accepting connections, Harper waits a few seconds for requests in flight (about 2.5 seconds on Node.js, 5 on Bun), however high `threads.shutdownTimeout` is set. A request still running then may not finish: on Node.js its connection is closed, and its handler can still be running when `'close'` listeners start. The rest of the timeout is for component cleanup.
+- **Fit it inside your orchestrator's grace period.** A container platform or service manager sends SIGTERM, waits for its grace period, then kills the process. After the shutdown above, Harper closes its databases as the process exits, and `threads.shutdownTimeout` does not limit that step. Set `threads.shutdownTimeout` a few seconds below the grace period to leave time for it. The default of 8 seconds fits Docker's default. On Kubernetes, the grace period also covers a `preStop` hook, which runs before SIGTERM, so subtract its time too.
+
+| Platform               | Grace period setting            | Default    |
+| ---------------------- | ------------------------------- | ---------- |
+| Docker (`docker stop`) | `--timeout` (`-t`)              | 10 seconds |
+| Docker Compose         | `stop_grace_period`             | 10 seconds |
+| Kubernetes             | `terminationGracePeriodSeconds` | 30 seconds |
+| systemd                | `TimeoutStopSec`                | 90 seconds |
+
 ---
 
 ## `authentication`
@@ -143,7 +174,7 @@ authentication:
   refreshTokenTimeout: 30d
 ```
 
-- `authorizeLocal` — Auto-authorize loopback requests as superuser; _Default_: `true`
+- `authorizeLocal` — Auto-authorize loopback requests as superuser; _Default_: `true`. From v5.4.0, these requests run as the built-in [`local` user](../security/configuration.md#local-request-identity).
 - `cacheTTL` — Session cache duration (ms); _Default_: `30000`
 - `enableSessions` — Cookie-based sessions; _Default_: `true`
 - `operationTokenTimeout` — Access token lifetime; _Default_: `1d`
@@ -167,7 +198,7 @@ operationsApi:
 ```
 
 - `componentFile.maxSize` — Maximum file size in bytes returned by `get_component_file`. Requests for files larger than this limit are rejected with HTTP 413. _Default_: `5242880` (5 MB)
-- `network.cors` / `network.corsAccessList` — CORS settings
+- `network.cors` / `network.corsAccessList` — CORS settings. `network.corsAccessList` takes the same entries as [`http.corsAccessList`](../http/configuration.md#httpcorsaccesslist)
 - `network.domainSocket` — Unix socket path for CLI communication; _Default_: `<rootPath>/hdb/operations-server`
 - `network.headersTimeout` / `network.keepAliveTimeout` / `network.timeout` — Timeout settings (ms)
 - `network.port` — Operations API port; _Default_: `9925`
@@ -305,12 +336,13 @@ storage:
 
   The runtime budgets apply together and are not hard bounds on total process memory. See [Set Configuration](./operations.md#set-configuration) for when request and native runtime changes take effect. Use the usual underscore-separated parameter names, such as `storage_fullText_maxRawHitsPerRequest`. See [full-text query execution](../resources/query-optimization.md#full-text-search-work-and-paging) for costs; see [readiness and recovery](../resources/query-optimization.md#readiness-and-recovery) for failures.
 
-- `writeAsync` — Disable disk sync for higher throughput (**disables durability guarantees**); _Default_: `false`
+- `writeAsync` <EngineBadge engines="LMDB" /> — Disable disk sync on commit for the legacy LMDB storage engine (**disables local disk durability guarantees on LMDB**). Has no effect on RocksDB, which does not `fsync` commits; see [Storage Tuning — Durability vs. Throughput](../database/storage-tuning.md#durability-vs-throughput); _Default_: `false`
 - `caching` — In-memory record caching; _Default_: `true`
 - `compression` — LZ4 record compression; _Default_: `true` (enabled by default since v4.3.0). Sub-options: `dictionary`, `threshold`
 - `compactOnStart` — Compact all non-system databases on startup; _Default_: `false` (Added in: v4.3.0)
 - `compactOnStartKeepBackup` — Retain compaction backups; _Default_: `false`
 - `maxTransactionQueueTime` — Per-thread write-commit duration threshold for HTTP 503 backpressure, and the limit on how long a write keeps retrying conflicts with other writes (a separate 503, code `TRANSACTION_COMMIT_CONFLICT_TIMEOUT`); see [Storage Tuning](../database/storage-tuning.md#storagemaxtransactionqueuetime); _Default_: `45s`
+- `maxTransactionOpenTime` — Milliseconds a transaction may stay open without activity before Harper aborts its uncommitted writes (which only writes renew) or releases its read-only snapshot (which reads renew; RocksDB only, LMDB uses a fixed 30 seconds); see [Storage Tuning](../database/storage-tuning.md#storagemaxtransactionopentime); _Default_: `30000`
 - `noReadAhead` — Advise OS against read-ahead; _Default_: `false`
 - `prefetchWrites` — Prefetch before write transactions; _Default_: `true`
 - `randomAccessFields` <VersionBadge version="v5.1.0" /> — Encode records as typed random-access structures, so a single field can be read without decoding the whole record. Best for tables whose records have a stable set of fields with stable types; leave off for wide, sparse, or variably typed schemas. Read by each table when its store opens, so a change applies to existing tables on restart, and ignored entirely by tables declaring the [`@table(randomAccessFields:)`](../database/schema.md#randomaccessfields) directive; _Default_: `false`. See [Storage Tuning — Record Encoding](../database/storage-tuning.md#storagerandomaccessfields)
@@ -324,7 +356,9 @@ storage:
 - `rocks.blockCacheSize` — RocksDB shared block cache size in bytes; _Default_: 25% of constrained memory. See [Storage Tuning — RocksDB Memory](../database/storage-tuning.md#rocksdb-memory) (Added in: v5.1.0)
 - `rocks.writeBufferManagerSize` — Process-wide cap (bytes) on RocksDB memtable memory across all databases. `0` disables; _Default_: one third of `blockCacheSize` (enabled). See [Storage Tuning — RocksDB Memory](../database/storage-tuning.md#rocksdb-memory) (Added in: v5.1.0)
 - `rocks.writeBufferManagerCostToCache` — When enabled, memtable memory and the block cache share a single, unified memory pool. During heavy write bursts, the block cache dynamically shrinks to give memtables more room. Once those memtables flush to disk, the block cache automatically reclaims that memory space. _Default_: `true`. Has no effect when `writeBufferManagerSize` is `0`. (Added in: v5.1.0)
-- `rocks.writeBufferManagerAllowStall` — Stall writes when memtable memory exceeds `writeBufferManagerSize` (hard cap) instead of allowing brief overshoot with more aggressive flushing (soft cap); _Default_: `true`. (Added in: v5.1.0)
+- `rocks.writeBufferManagerAllowStall` — Stall writes when memtable memory exceeds `writeBufferManagerSize` (hard cap) instead of allowing brief overshoot with more aggressive flushing (soft cap); _Default_: `false` <VersionBadge type="changed" version="v5.3.0" /> (`true` in v5.2.8 and earlier). See [Storage Tuning](../database/storage-tuning.md#storagerockswritebuffermanagerallowstall) (Added in: v5.1.0)
+- `rocks.writeBufferManagerFlushPolicy` <VersionBadge version="v5.4.0" /> — Which memtable is flushed when memtable memory is over `writeBufferManagerSize`: `oldest`, `largest`, or `largestAcrossDBs`. Has no effect when `writeBufferManagerSize` is `0`. A changed value applies when the worker threads restart, but removing the key restores the default only after a full `restart`; an invalid value is ignored, the same as removing the key. _Default_: `largestAcrossDBs` when `writeBufferManagerAllowStall` is `true`, otherwise `oldest`. See [Storage Tuning](../database/storage-tuning.md#storagerockswritebuffermanagerflushpolicy)
+- `rocks.arenaBlockSize` <VersionBadge version="v5.4.0" /> — Size (bytes) of the blocks each column family's memtable allocates from. Every column family that has been written holds at least one block, charged to `writeBufferManagerSize` even while idle. Invalid values are ignored. Read when a database opens, so a full [`restart`](../operations-api/operations.md#restart) is what reliably applies a change; _Default_: automatic, `writeBufferManagerSize / 2048` between 64 KiB and 1 MiB (RocksDB's 1 MiB when `writeBufferManagerSize` is `0`). See [Storage Tuning](../database/storage-tuning.md#storagerocksarenablocksize)
 - `rocks.transactionLogAbortMarkers` <VersionBadge version="v5.4.0" /> — Mark the transaction-log entry of a transaction that fails after logging as aborted, so replication, subscriptions, `read_audit_log` and crash replay skip it, and give up on a write that keeps conflicting instead of retrying it without limit. `false` keeps the 5.3 behavior. Read once per process: a change takes effect after a [`restart`](../operations-api/operations.md#restart), not `restart_service`. Harper 5.3.4 and earlier cannot read the markers. _Default_: `true`. See [Storage Tuning — RocksDB Transaction Log](../database/storage-tuning.md#storagerockstransactionlogabortmarkers)
 - `rocks.transactionLogWriteIntents` <VersionBadge version="v5.4.0" /> — Make a commit that would conflict with an older, still-open transaction wait for that transaction to finish, usually before writing its transaction-log entry. Shortens the longest waits under heavy write contention, at the cost of more retries and lower throughput when transactions are large or contention is low. No effect when `rocks.transactionLogAbortMarkers` is `false`. Read once per process: a change takes effect after a [`restart`](../operations-api/operations.md#restart), not `restart_service`. _Default_: `false`. See [Storage Tuning — RocksDB Transaction Log](../database/storage-tuning.md#storagerockstransactionlogwriteintents)
 
@@ -364,7 +398,37 @@ analytics:
 - `storageInterval` — Aggregation cycles between storage-volume measurements (`0` disables); _Default_: `10`
 - `replicate` — Replicate analytics data across cluster; _Default_: `false`
 - `logging` — Per-subsystem logger override for analytics writes. See [Logging Configuration](../logging/configuration.md#analyticslogging)
+- `fullText` <VersionBadge version="v5.4.0" /> — Optional full-text telemetry collection and export; defaults to omitted/off. See [Full-text analytics](../analytics/overview.md#full-text-analytics).
 - `profiling` <VersionBadge type="changed" version="v5.4.0" /> — Harper Pro only. Run the CPU profiler that records `cpu-usage`; it samples only in short windows and flags the `utilization` samples it affects. See [`analytics.profiling`](../analytics/overview.md#analyticsprofiling); _Default_: `true`
+
+### `analytics.fullText`
+
+<VersionBadge version="v5.4.0" /> <EngineBadge engines="RocksDB" />
+
+Type: `object`
+
+Default: omitted; collection is disabled
+
+Optionally collect telemetry from already-open [full-text indexes](../full-text-search/overview.md). Defaults are implied; add only the settings you want to change. Operator collection and persistence require Harper analytics to be enabled on a writable node. `analytics.aggregatePeriod: -1` disables analytics; read-only mode (`storage.readOnly`, `HARPER_READONLY` or the `--readonly` flag) also disables it. To enable full-text collection when those prerequisites hold:
+
+```yaml
+analytics:
+  fullText:
+    enabled: true
+```
+
+| Option                 | Type      | Implied value | Description                                                                                                                                                        |
+| ---------------------- | --------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `enabled`              | `boolean` | `false`       | Enable scheduled collection and persistent full-text analytics when Harper analytics is enabled and the node is writable. Changes apply without reopening indexes. |
+| `intervalMilliseconds` | `number`  | `60000`       | Per-handle interval, an integer from `1000` through `2147483647`. Calls are staggered across handles.                                                              |
+| `histograms`           | `boolean` | `false`       | Record optional latency histograms.                                                                                                                                |
+| `snapshotBytes`        | `boolean` | `false`       | Request cached reader-byte observations; enabling does not trigger index publication or reader reload.                                                             |
+
+Set `enabled: false` or remove the block to stop operator collection and export. Invalid edits retain the last valid policy. Deleting the configuration file removes the file-based `analytics.fullText` setting and reapplies `HARPER_DEFAULT_CONFIG`, `HARPER_CONFIG` and `HARPER_SET_CONFIG` overlays to an empty file; collection remains enabled if one of those overlays still requests it. An in-process override is retired if deletion changes its matching configuration value after those overlays are applied; recreating the file does not restore retired overrides. Internal implementation hooks can independently keep collection active without enabling persistence; they are not a public SDK or operator prerequisite. With operator export enabled, persisted fields reflect the union of operator and internal-consumer recording requests. A handle already closing retains its last options until close settles.
+
+The interval controls periodic live sampling. Successful handle closes also collect final counters, so it does not cap total snapshot or export frequency. Qualify reader churn as well as index count and sampling cadence.
+
+See [Full-text analytics](../analytics/overview.md#full-text-analytics) for fields, cumulative-counter interpretation and collection costs.
 
 ---
 
@@ -574,6 +638,10 @@ deployment:
     failedMaxCount: 2
   stagingRetention:
     maxCount: 5
+  previews:
+    sweepInterval: 600000
+    stagingRetention:
+      maxCount: 1
 ```
 
 - `startupInstallTimeout` <VersionBadge version="v5.3.0" /> — Milliseconds. The longest startup waits for component installs before it opens listeners. While waiting, it logs every 60 seconds which ones remain outstanding — including throughout `0`'s unbounded wait — unless every install settles first, which always ends the wait before that first log, whatever the timeout; a failed install logs immediately regardless of the timeout. A component whose install is still running at the deadline keeps installing in the background, and the node serves the version already installed meanwhile, or nothing for a component that was never installed. When that install succeeds, the swap lands on disk immediately and Harper flags a restart as needed (`restartRequired` in [`get_status`](../operations-api/operations.md#set_status--get_status--clear_status) called with no `id`) — any one component's late success sets it, even while others are still installing. Code already loaded keeps running until that restart, but some component plugins apply an added or changed file on their own rather than waiting for one; content served straight from disk, such as static files, can also reflect the new version before the restart. Outside `harper dev`, which restarts automatically soon after any restart request, Harper does not restart on its own. An install that fails after the deadline does not set the flag; Harper only logs an error naming the component. `0` waits indefinitely, which was the behavior before v5.3.0. An empty value uses the default. A negative, non-finite, or otherwise unparseable value also falls back to it, with a warning in the log; _Default_: `600000` (10 minutes)
@@ -581,6 +649,9 @@ deployment:
 - `payloadRetention.failedMaxAge` <VersionBadge version="v5.4.0" /> — A failed deploy keeps its payload, since that is what you retry or debug with. A failed payload older than this is dropped, as [`delete_deployment_payload`](../operations-api/operations.md#delete_deployment_payload) drops one, keeping the record; each project's newest failed payload is always kept. A number of seconds, or a number with a unit: `m`, `h`, `d`, `M` (30 days) or `y`. Any other value uses the default, and `0` turns the bound off; _Default_: `7d`
 - `payloadRetention.failedMaxCount` <VersionBadge version="v5.4.0" /> — How many failed payloads a project keeps, newest first, counting every node's deploys; older ones are dropped the same way. `0` turns the bound off. Both bounds apply after a deploy fails, for its project, and once at each startup. Each node drops only the payloads of deploys it received, so a deploy received by a node that has since left the cluster keeps its payload; _Default_: `2`
 - `stagingRetention.maxCount` <VersionBadge version="v5.3.0" /> — How many complete builds that are not live may remain per component under `<componentsRoot>/.deploy-staging`: builds staged with `activate: false`, and [releases replaced by a later deploy](../operations-api/operations.md#going-back-to-a-previous-release), which `deployment_id` can make live again. The newest survive; older ones are removed when that component next deploys and at startup. `drop_component` removes all of them. Each is a full installed copy of the component, `node_modules` included. `0` keeps none, and no replaced release is kept. This bounds dormant builds only, not a disk quota: staging directories that belong to an in-flight or unsettled deploy are never touched; _Default_: `5`
+- `previews.maxPerApplication` <VersionBadge version="v5.4.0" /> — How many live [preview deployments](../operations-api/operations.md#preview-deployments) of one application a node keeps. A deploy of another is refused with `409`, naming the oldest; a redeploy of a live preview does not count. Only the node that receives a deploy checks. A role's [`component_deploy` grant](../users-and-roles/overview.md#component-deploy-grants) can set its own `maxPreviews`, which takes the place of this for that role's deploys. A value that is not a positive whole number is ignored; _Default_: none, no limit
+- `previews.sweepInterval` <VersionBadge version="v5.4.0" /> — Milliseconds. How often the cluster looks for expired previews and drops them. Only a node that holds a preview takes part, and only the scheduler's leader looks. A value that is not a whole number of milliseconds, such as `10m`, uses the default; _Default_: `600000` (10 minutes)
+- `previews.stagingRetention.maxCount` <VersionBadge version="v5.4.0" /> — `stagingRetention.maxCount` for the component of a preview deployment, in its place. `0` keeps none; _Default_: `1`
 
 ---
 
@@ -592,7 +663,7 @@ Controls how application modules are loaded and isolated. See [Module Loading](.
 
 ```yaml
 applications:
-  lockdown: freeze-after-load
+  lockdown: seal-after-load
   moduleLoader: vm-current-context
   dependencyLoader: auto
   allowedDirectory: app
@@ -602,7 +673,7 @@ applications:
   # allowedBuiltInModules: [] # if omitted, all Node.js built-ins are allowed
 ```
 
-- `lockdown` — Indicates if intrinsic/built-in objects should be locked down/frozen. This provides additional security and protection against prototype pollution attacks. The default is `freeze-after-load` (since v5.0.2; v5.0.0 and v5.0.1 defaulted to `freeze`), which freezes the important built-in objects once all components have loaded, so component initialization can still modify them. This can also be set to `freeze` (freeze before any application code loads), `none`, or `ses` (lockdown provided by the `ses` package, which is more strict). See [Intrinsic Lockdown](../components/module-loading.md#intrinsic-lockdown).
+- `lockdown` <VersionBadge type="changed" version="v5.4.0" /> — Whether and when Harper locks the JavaScript intrinsics (see [What is locked](../components/module-loading.md#what-is-locked)), which makes prototype pollution attacks harder. The default for new installs is `seal-after-load` (since v5.4.0), which seals them once all components have loaded, so component initialization can still extend them. Sealing blocks adding or deleting a property, but still allows assigning to an existing writable one. This can also be set to `seal` (seal before any application code loads; added in v5.4.0), `freeze-after-load` (the default from v5.0.2 through v5.3; freezes once all components have loaded, so existing properties cannot be changed either), `freeze` (freeze before any application code loads), `ses` (lockdown provided by the `ses` package, which is more strict), or `none`. An upgrade keeps the value already in `harper-config.yaml`, and with no value there Harper does not lock the intrinsics. Before downgrading an instance that uses a seal mode to v5.0.1 through v5.3, set `freeze-after-load`: those releases treat the seal modes as `freeze`. See [Intrinsic Lockdown](../components/module-loading.md#intrinsic-lockdown).
 - `moduleLoader` — The method used to load modules (and isolate the application). The default is `vm-current-context` (since v5.1.0; v5.0.x defaulted to `vm`), which uses Node's VM module loader in Harper's own context so applications share JavaScript intrinsics. This can also be set to `vm` (VM loader with a separate context and its own intrinsics per application), `native` (standard Node module loader), or `compartment`, which uses the `ses` implementation of the proposed `Compartment` functionality. See [Module Loader Modes](../components/module-loading.md#module-loader-modes).
 - `dependencyLoader` — The application module loader can be used to load packages/dependencies (installed as `dependencies` from the package.json). The default is 'auto', which only use the VM module loader if the package specifies `harper` as a dependency. This can also be set to `app` to always use the application module loader or `native` to always native module loader for packages. See [Dependency Loading](../components/module-loading.md#dependency-loading).
 - `allowedDirectory` — Added in v5.0.4. Restricts where an application may load modules from. The default is `app`, which permits only modules within the application's own directory tree; loading from outside it throws. Set to `any` to remove the restriction. Dev-mode installs default to `any`. Applies to imports the application module loader handles, so treat it as a configuration guardrail rather than a security boundary. See [Allowed Directory](../components/module-loading.md#allowed-directory).

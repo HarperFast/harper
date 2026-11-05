@@ -31,11 +31,14 @@ GET /Product/?category=software&inStock=true
 
 <VersionBadge version="v4.3.0" />
 
-Query for null values or non-null values:
+Query for records that store `null`, or for records whose value is present and not `null`:
 
 ```http
 GET /Product/?discount=null
+GET /Product/?discount=ne=null
 ```
+
+`discount=null` matches records that store `null` in `discount`. A record that omits `discount` matches neither query. See [Null and Omitted Values](#null-and-omitted-values) for how other comparators treat null and omitted values.
 
 Note: Only indexes created in v4.3.0 or later support null indexing. Existing indexes must be rebuilt (removed and re-added) to support null queries.
 
@@ -43,19 +46,23 @@ Note: Only indexes created in v4.3.0 or later support null indexing. Existing in
 
 Harper uses [FIQL](https://datatracker.ietf.org/doc/html/draft-nottingham-atompub-fiql-00) syntax for comparison operators:
 
-| Operator             | Meaning                                |
-| -------------------- | -------------------------------------- |
-| `==`                 | Equal                                  |
-| `=lt=`               | Less than                              |
-| `=le=`               | Less than or equal                     |
-| `=gt=`               | Greater than                           |
-| `=ge=`               | Greater than or equal                  |
-| `=ne=`, `!=`         | Not equal                              |
-| `=ct=`               | Contains (strings)                     |
-| `=sw=`, `==<value>*` | Starts with (strings)                  |
-| `=ew=`               | Ends with (strings)                    |
-| `=`, `===`           | Strict equality (no type conversion)   |
-| `!==`                | Strict inequality (no type conversion) |
+| Operator                                  | Meaning                                 |
+| ----------------------------------------- | --------------------------------------- |
+| `==`                                      | Equal                                   |
+| `=lt=`                                    | Less than                               |
+| `=le=`                                    | Less than or equal                      |
+| `=gt=`                                    | Greater than                            |
+| `=ge=`                                    | Greater than or equal                   |
+| `=ne=`, `!=`                              | Not equal                               |
+| `=between=(low,high)`, `=gele=(low,high)` | At least `low` and at most `high`       |
+| `=gelt=(low,high)`                        | At least `low` and less than `high`     |
+| `=gtle=(low,high)`                        | Greater than `low` and at most `high`   |
+| `=gtlt=(low,high)`                        | Greater than `low` and less than `high` |
+| `=ct=`                                    | Contains (strings)                      |
+| `=sw=`, `==<value>*`                      | Starts with (strings)                   |
+| `=ew=`                                    | Ends with (strings)                     |
+| `=`, `===`                                | Strict equality (no type conversion)    |
+| `!==`                                     | Strict inequality (no type conversion)  |
 
 Full-text indexes support `=matches=`, `=matches_all=`, `=matches_phrase=`, `=matches_prefix=`, `=matches_fuzzy=`, and `=matches_fuzzy_prefix=`. Each has a negated form: `=not_matches=`, `=not_matches_all=`, `=not_matches_phrase=`, `=not_matches_prefix=`, `=not_matches_fuzzy=`, and `=not_matches_fuzzy_prefix=`. Combine a negated condition with a positive full-text condition on the same index; a structured filter alone does not qualify. These use the full-text index rather than ordinary string comparisons. See [Full-text query execution](../resources/query-optimization.md#full-text-search-work-and-paging).
 
@@ -66,6 +73,7 @@ GET /Product/?price=gt=100
 GET /Product/?price=le=20
 GET /Product/?name==Keyboard*
 GET /Product/?category=software&price=gt=100&price=lt=200
+GET /Product/?price=between=(100,200)
 ```
 
 For date fields, colons must be URL-encoded as `%3A`:
@@ -130,6 +138,60 @@ If the attribute specifies a type in the schema (e.g., `Float`), values are alwa
 
 For strict operators (`=`, `===`, `!==`), no automatic type conversion is applied — the value is decoded as a URL-encoded string, and the attribute type (if declared in the schema) dictates type conversion.
 
+### Null and Omitted Values
+
+<VersionBadge type="changed" version="v5.4.0" />
+
+:::note Pending release
+
+Targeted for v5.4.0; not released yet. See [Match null and omitted values the same way whether a condition leads the scan or filters](https://github.com/HarperFast/harper/pull/3925).
+
+:::
+
+A record can store `null` in an attribute, or omit the attribute. Comparators treat a null value and an omitted value the same way, except `==null`, which matches a stored `null` only. The rules hold whether or not the attribute is indexed, and whichever condition Harper runs first:
+
+- `ne` (`!=`) with a non-null value matches null and omitted values.
+- No range comparator (`lt`, `le`, `gt`, `ge`, `between`, `gele`, `gelt`, `gtle`, `gtlt`) matches a null or omitted value.
+- A `null` lower bound means no lower bound: `ge=null` and `gt=null` match every non-null value, and `between=(null,10)` returns the same records as `le=10`. A `null` upper bound, `lt=null` and `le=null` match nothing.
+- On an array attribute, `ne=v` matches a record when at least one element is not `v`. An array whose elements all equal `v` (`["sale"]`, `["sale", "sale"]`) does not match, an empty array matches no `ne` condition, and a null or omitted array matches `ne=v` for a non-null `v`.
+
+For example, with this schema and data:
+
+```graphql
+type Product @table @export {
+	id: ID @primaryKey
+	discount: Int @indexed
+	tags: [String] @indexed
+}
+```
+
+| `id` | `discount` | `tags`             |
+| ---- | ---------- | ------------------ |
+| 1    | `5`        | `["sale"]`         |
+| 2    | `10`       | `["sale", "new"]`  |
+| 3    | `null`     | `["sale", "sale"]` |
+| 4    | omitted    | `[]`               |
+| 5    | `15`       | `null`             |
+| 6    | `20`       | omitted            |
+
+| Query                                      | Matching `id`s |
+| ------------------------------------------ | -------------- |
+| `GET /Product/?discount=ne=5`              | 2, 3, 4, 5, 6  |
+| `GET /Product/?discount=ne=null`           | 1, 2, 5, 6     |
+| `GET /Product/?discount=null`              | 3              |
+| `GET /Product/?discount=lt=12`             | 1, 2           |
+| `GET /Product/?discount=ge=null`           | 1, 2, 5, 6     |
+| `GET /Product/?discount=between=(null,10)` | 1, 2           |
+| `GET /Product/?discount=between=(10,null)` | none           |
+| `GET /Product/?tags=ne=sale`               | 2, 5, 6        |
+| `GET /Product/?tags=ne=null`               | 1, 2, 3        |
+
+The table lists which records match, not their order. Sorting puts null and omitted values first, or last with `-`, with no guaranteed order between the two. `GET /Product/?discount=ne=5&sort(discount)` returns 3 and 4 in either order, then 2, 5, 6.
+
+Before v5.4.0, results depended on the query plan: an indexed `ne` that led the query dropped null and omitted values, `ge=null` and `between=(null,x)` matched stored `null` values, and `ne` compared an unindexed array as a whole.
+
+SQL follows different rules: `<>` and `NOT IN` exclude null and omitted values, and `IS NULL` matches both. See [NULL and omitted values in SQL](../operations-api/sql.md#null-and-omitted-values).
+
 ## Unions (OR Logic)
 
 Use `|` instead of `&` to combine conditions with OR logic:
@@ -140,7 +202,7 @@ GET /Product/?rating=5|featured=true
 
 ## Grouping
 
-Use parentheses or square brackets to control order of operations:
+Use parentheses or square brackets to control order of operations. Brackets directly after a relationship name mean [something else](#conditions-one-related-record-must-meet):
 
 ```http
 GET /Product/?rating=5|(price=gt=100&price=lt=200)
@@ -158,7 +220,7 @@ Constructing from JavaScript:
 let url = `/Product/?rating=5&[${tags.map(encodeURIComponent).join('|')}]`;
 ```
 
-These root-level brackets group conditions. Brackets after a relationship name inside `select()`, such as `select(id,products[limit(1)])`, instead form a [nested relationship query](#filtering-and-paging-each-relationship).
+These root-level brackets group conditions. Brackets directly after a relationship name among the conditions, such as `products[name=Cable&price=ge=30]`, instead hold conditions that [one related record must meet](#conditions-one-related-record-must-meet). Brackets after a relationship name inside `select()`, such as `select(id,products[limit(1)])`, form a [nested relationship query](#filtering-and-paging-each-relationship).
 
 Groups can be nested for complex conditions:
 
@@ -208,6 +270,8 @@ GET /Product/?rating=gt=3&sort(+name)
 GET /Product/?sort(+rating,-price)
 ```
 
+<VersionBadge type="changed" version="v5.4.0" /> A sort also applies when a condition on the sort attribute cannot read that attribute's index, as with an unindexed attribute, or `ne` with a non-null value on an attribute other than the primary key (`?discount=ne=5&sort(discount)`). Harper then collects and sorts every matching record in memory before applying `limit()`, so a small page does not reduce the work. Before v5.4.0, such a query could return records in primary-key order. See [Sorting](../resources/query-optimization.md#sorting) for performance guidance.
+
 ## Pagination and Total Count
 
 <VersionBadge version="v5.3.0" />
@@ -216,7 +280,7 @@ Use `limit(start,end)` to page through a collection, and opt in to a total match
 
 Counting is opt-in: without the header, no count is computed and no count headers are returned. It applies only to `GET`/`HEAD` requests and requires a bounded page — the page size (`end - start`, or `end` in the one-argument form) must be a non-negative integer no larger than **10,000**, and the window end (`offset + page size`) no larger than **1,000,000**. A request with no `limit()`, one outside those bounds, or a non-numeric one is served normally with no count headers, since counting an unbounded page would defeat the point of paging.
 
-Full-text and autocomplete queries use the same paging syntax. The page window counts eligible records after record filtering, rather than raw full-text hits. Harper fetches more ranked batches to fill that window when needed. A page can contain fewer records when no further matches remain; reaching a search work or time limit fails the query. A failure detected before response headers can set an error HTTP status. After streaming starts, the response can retain HTTP 200 and end with an error. For JSON-array responses, check for a terminal object shaped like `{ "error": "ErrorName: message" }` and treat the response as failed; do not render that element as a record. For other formats, detect stream or decoding failures as well. Neither status 200 nor count headers prove that a page completed successfully. Each page request runs a new query, so concurrent changes can cause repeats or omissions between pages. See [Full-text query execution](../resources/query-optimization.md#full-text-search-work-and-paging) for search work limits and recovery guidance.
+Full-text and autocomplete queries use the same paging syntax. The page window counts eligible records after record filtering, rather than raw full-text hits. Harper fetches more ranked batches to fill that window when needed. A page can contain fewer records when no further matches remain; reaching a search work or time limit fails the query. A failure detected before response headers can set an error HTTP status. After streaming starts, the response retains HTTP 200 and a failed JSON-array stream is cut off and aborted—with a best-effort `{ "error": "ErrorName: message" }` element or with no terminal diagnostic if interrupted mid-record—so treat a stream or JSON-parse error, or a terminal `error` element, as a failed page rather than a record; see [When a Streamed Response Fails](./content-types.md#when-a-streamed-response-fails). For other formats, detect terminal error records or stream and decoding failures as well. Neither status 200 nor count headers prove that a page completed successfully. Each page request runs a new query, so concurrent changes can cause repeats or omissions between pages. See [Full-text query execution](../resources/query-optimization.md#full-text-search-work-and-paging) for search work limits and recovery guidance.
 
 The count-header guardrails do not override query-specific limits such as the full-text work budget.
 
@@ -301,6 +365,8 @@ GET /Product/?brand.name=Microsoft
 GET /Brand/?products.name=Keyboard
 ```
 
+To combine several conditions on one to-many relationship, see [Conditions on a To-Many Relationship](#conditions-on-a-to-many-relationship).
+
 ### Nested Select with Joins
 
 Relationship attributes are not included by default. Use `select()` to include them:
@@ -311,19 +377,19 @@ GET /Product/?brand.name=Microsoft&select(name,brand{name})
 GET /Product/?name=Keyboard&select(name,brand{name,id})
 ```
 
-Selecting a relationship without an outer dot-syntax filter on it behaves as a LEFT JOIN: parents remain present even when there are no related records. For a singular foreign key that is null or references a missing record, the relationship property is omitted. An outer filter such as `products.price=ge=number:30` instead removes parents without a qualifying product and also narrows the selected products. A filter inside `select(...,products[...])` only narrows the projected products; it does not remove a parent. See the [worked scenarios](#filtering-and-paging-each-relationship) below.
+Selecting a relationship without an outer dot-syntax filter on it behaves as a LEFT JOIN: parents remain present even when there are no related records. For a singular foreign key that is null or references a missing record, the relationship property is omitted. An outer filter joined with `&`, such as `products.price=ge=number:30`, instead removes parents without a qualifying product and also narrows the selected products; with several such filters on one relationship, the selection keeps the products that meet [any one of them](#what-select-returns). An outer filter inside an OR only decides which parents match. A filter inside `select(...,products[...])` only narrows the projected products; it does not remove a parent. See the [worked scenarios](#filtering-and-paging-each-relationship) below.
 
 ### Filtering and Paging Each Relationship
 
 :::note Pending release
 
-Targeted for v5.4.0; not released yet. See [Honor nested relationship filters and pagination](https://github.com/HarperFast/harper/pull/3279) and [Fix wrong rows, unfiltered selects and ignored sorts in relationship queries](https://github.com/HarperFast/harper/pull/3775).
+Targeted for v5.4.0; not released yet. See [Honor nested relationship filters and pagination](https://github.com/HarperFast/harper/pull/3279), [Fix wrong rows, unfiltered selects and ignored sorts in relationship queries](https://github.com/HarperFast/harper/pull/3775), and [Make each relationship condition existential, and add relationship[...] for conditions one related record must meet](https://github.com/HarperFast/harper/pull/3927).
 
 :::
 
 Use square brackets inside `select()` to apply conditions, sort, and pagination to each parent's related records.
 
-**An outer relationship filter also narrows that relationship's nested results.** For example, `products.price=ge=number:30` selects brands with a qualifying product and restricts their selected products to those costing at least 30. **You do not need to repeat that price filter inside `products[...]`.** Add a nested condition only when you want to narrow the already-eligible products further without removing their parents.
+**An outer relationship filter joined with `&` also narrows that relationship's nested results.** A filter inside an OR [does not](#what-select-returns). For example, `products.price=ge=number:30` selects brands with a qualifying product and restricts their selected products to those costing at least 30. **You do not need to repeat that price filter inside `products[...]`.** Add a nested condition only when you want to narrow the already-eligible products further without removing their parents.
 
 The following scenarios use this self-contained schema, including string product IDs and an indexed price field. In a fresh application, use this schema instead of the earlier Brand/Product example; do not combine the two definitions:
 
@@ -541,7 +607,7 @@ With the sample data, the response is:
 
 The outer `sort(name,id)` orders brands; the nested `sort(price,id)` orders products within each brand. Use a unique field such as `id` as the final sort key so equal names or prices have a deterministic order. This does not prevent records moving between offset pages when data changes between requests.
 
-<VersionBadge type="changed" version="v5.4.0" /> An outer sort can also traverse a to-many relationship — for example, `GET /Brand/?products.price=ge=number:30&sort(products.name,id)` — to order parent records by their related values, unlike a nested selection sort (`products[sort(price)]`), which orders the children within each parent and not the parents. Each parent's sort key is the list of its related records' values in relationship order: the related records' primary-key order in the foreign-key index for a `@relationship(to: ...)` field (not sorted by the target attribute or reduced to a min/max), or the stored foreign-key array order for a `@relationship(from: ...)` array. An outer relationship filter such as `products.price=ge=number:30` restricts which parents match and which children `select()` returns, but does not narrow the related records loaded into each parent's sort key: on the sample data above, Acme's `products.name` key is `['Cable', 'Keyboard', 'Dock']` (from `p1`, `p2`, `p3`) and Studio Gear's is `['Stand', 'Monitor']` (`p5`, `p6`), so `sort(products.name,id)` returns Acme (`42`) before Studio Gear (`44`) and `sort(-products.name,id)` reverses that order. Lists compare element by element (`['alpha']` < `['alpha', 'delta']` < `['bravo']`). A parent with no related records has an empty list (`[]`), a related record that omits the sort attribute (or an unresolved ID in a `@relationship(from: ...)` array without `filterMissing`) produces `undefined` at that position, and an explicit `null` attribute produces `null`: both `null` and `undefined` sort before booleans, numbers, and strings (`[]` and `[undefined]` compare as equal because reading past the end of a shorter array yields `undefined`). Across multiple to-many hops, each hop produces a list in relationship order, so two to-many hops compare a nested list of lists per parent (`[]` < `[[], ['a']]` < `[['b']]`). List-per-parent sorting runs in memory when the target attribute is not `@indexed` (with a condition or `allowFullScan: true`), when a more selective condition on another attribute leads the query, or when `enforceExecutionOrder: true` is set, loading the related records for every matched parent; if the target attribute is `@indexed` (such as `products.price`) and no more selective condition on another attribute leads the query, Harper instead drives the scan from the related table's index join (yielding each parent at its first matching index entry and, when unconditional, omitting parents with no related records). Note that, unlike a nested `select` sort, an outer `sort` does not currently enforce `attribute_permissions` on the related sort attribute, so restricting read access to a child attribute does not prevent ordering parent records by it.
+<VersionBadge type="changed" version="v5.4.0" /> An outer sort can also traverse a to-many relationship — for example, `GET /Brand/?products.price=ge=number:30&sort(products.name,id)` — to order parent records by their related values, unlike a nested selection sort (`products[sort(price)]`), which orders the children within each parent and not the parents. Each parent's sort key is the list of its related records' values in relationship order: the related records' primary-key order in the foreign-key index for a `@relationship(to: ...)` field (not sorted by the target attribute or reduced to a min/max), or the stored foreign-key array order for a `@relationship(from: ...)` array. An outer relationship filter such as `products.price=ge=number:30` restricts which parents match and (when joined with `&`) which children `select()` returns, but does not narrow the related records loaded into each parent's sort key: on the sample data above, Acme's `products.name` key is `['Cable', 'Keyboard', 'Dock']` (from `p1`, `p2`, `p3`) and Studio Gear's is `['Stand', 'Monitor']` (`p5`, `p6`), so `sort(products.name,id)` returns Acme (`42`) before Studio Gear (`44`) and `sort(-products.name,id)` reverses that order. Lists compare element by element (`['alpha']` < `['alpha', 'delta']` < `['bravo']`). A parent with no related records has an empty list (`[]`), a related record that omits the sort attribute (or an unresolved ID in a `@relationship(from: ...)` array without `filterMissing`) produces `undefined` at that position, and an explicit `null` attribute produces `null`: both `null` and `undefined` sort before booleans, numbers, and strings (`[]` and `[undefined]` compare as equal because reading past the end of a shorter array yields `undefined`). Across multiple to-many hops, each hop produces a list in relationship order, so two to-many hops compare a nested list of lists per parent (`[]` < `[[], ['a']]` < `[['b']]`). List-per-parent sorting runs in memory when the target attribute is not `@indexed` (with a condition or `allowFullScan: true`), when a more selective condition on another attribute leads the query, or when `enforceExecutionOrder: true` is set, loading the related records for every matched parent; if the target attribute is `@indexed` (such as `products.price`) and no more selective condition on another attribute leads the query, Harper instead drives the scan from the related table's index join (yielding each parent at its first matching index entry and, when unconditional, omitting parents with no related records). Note that, unlike a nested `select` sort, an outer `sort` does not currently enforce `attribute_permissions` on the related sort attribute, so restricting read access to a child attribute does not prevent ordering parent records by it.
 
 Keep relationship lookup fields and outer filter fields indexed, and project only the fields the client needs. The sample schema indexes `brandId`, `price`, and `Brand.name`. Nested sorting can use an unindexed child field because it orders the already-related candidates. A child sort may still collect and sort all eligible related records before returning its page; an index on `price` does not guarantee an index-ordered nested scan. Keep parent pages small and consider a separately paginated child endpoint for very large relationships. Unsorted nested limits can stop early, but are appropriate only when child order does not matter.
 
@@ -585,23 +651,23 @@ Acme's matching products sort to Dock ($60), then Cable ($10), so `limit(1,2)` r
 
 #### Nested option reference
 
-| Nested option      | Behavior                                                                                                   |
-| ------------------ | ---------------------------------------------------------------------------------------------------------- |
-| Conditions         | Qualify children of the selected relationship; combine with `&` (AND), `\|` (OR), and [groups](#grouping). |
-| `sort(price)`      | Order that parent's eligible children before pagination.                                                   |
-| `limit(end)`       | Return at most `end` children per parent.                                                                  |
-| `limit(start,end)` | Skip `start` eligible children and return at most `end - start`.                                           |
-| `select(id,price)` | Project fields from returned children; omit it to return whole child records.                              |
+| Nested option      | Behavior                                                                                                                                                                                                                  |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Conditions         | Qualify children of the selected relationship; combine with `&` (AND), `\|` (OR), and [groups](#grouping). Conditions through a further relationship follow the [top-level rules](#conditions-on-a-to-many-relationship). |
+| `sort(price)`      | Order that parent's eligible children before pagination.                                                                                                                                                                  |
+| `limit(end)`       | Return at most `end` children per parent.                                                                                                                                                                                 |
+| `limit(start,end)` | Skip `start` eligible children and return at most `end - start`.                                                                                                                                                          |
+| `select(id,price)` | Project fields from returned children; omit it to return whole child records.                                                                                                                                             |
 
 Use a non-negative safe-integer window; invalid bounds such as negative or fractional values return HTTP 400; `limit(0)` returns no children without reading them; an absent foreign key keeps its missing-value shape. A missing singular relationship remains absent. For array-valued foreign keys, pagination alone preserves missing target positions; adding conditions or a sort drops missing targets. Child conditions and sort fields remain subject to read permissions.
 
-A condition that traverses another relationship qualifies the immediate child; it does not narrow that child's projected descendants. To filter or page grandchildren, put those constraints on the grandchild's own bracket selection. Outer join restrictions are still inherited.
+A condition that traverses another relationship qualifies the immediate child; it does not narrow that child's projected descendants. It follows the same rules as a [top-level condition](#conditions-on-a-to-many-relationship): separate conditions on a grandchild relationship may each be met by a different grandchild, and a `relationship[...]` group requires one grandchild to meet all of them. To filter or page grandchildren, put those constraints on the grandchild's own bracket selection. Outer filters joined with `&` are still inherited; one inside an OR is not.
 
 For source-backed caches, eligibility and sort keys use local cached entries, as in a top-level table query. Returned children can refresh from source; a refreshed child that no longer matches, or has been deleted, does not consume offset or limit. A locally rejected child is not fetched to discover whether its source value now matches. Ordering is not recomputed from refreshed source values.
 
 Unsorted pagination can stop when the requested page is filled. Sorting or a predicate with few matches can still examine all related candidates; a small output limit does not guarantee a small scan.
 
-Nested filters require a table-backed relationship. Filters on plain JSON projections or custom non-table resources, and full-text predicates inside a relationship selection, return HTTP 400 instead of being silently ignored. Projection-only selections and sorting/pagination of plain JSON arrays remain supported. Earlier versions accepted nested filters and pagination but could silently ignore them and return all related children; this correction can reduce child arrays and reject previously ignored unsupported options.
+Nested filters require a table-backed relationship. Filters on plain JSON projections or custom non-table resources, and full-text predicates inside a relationship selection, return HTTP 400 instead of being silently ignored. Projection-only selections and sorting/pagination of plain JSON arrays remain supported. Earlier versions accepted nested filters and pagination but could silently ignore them and return all related children; this correction can reduce child arrays and reject previously ignored unsupported options. For how several outer conditions on one relationship combine in v5.4.0, see [Conditions on a To-Many Relationship](#conditions-on-a-to-many-relationship).
 
 The [Resource API](../resources/resource-api.md#constraining-related-records) accepts the same options in a nested selection object.
 
@@ -623,6 +689,111 @@ GET /Product/?resellers.name=Cool Shop&select(id,name,resellers{name,id})
 ```
 
 The array order of `resellerIds` is preserved when resolving the relationship.
+
+### Conditions on a To-Many Relationship
+
+<VersionBadge type="changed" version="v5.4.0" />
+
+:::note Pending release
+
+Targeted for v5.4.0; not released yet. See [Make each relationship condition existential, and add relationship[...] for conditions one related record must meet](https://github.com/HarperFast/harper/pull/3927).
+
+:::
+
+The Brand examples in this section use the [sample brands and products](#filtering-and-paging-each-relationship): Acme sells a Cable for 10, a Keyboard for 35, and a Dock for 60; Budget Basics sells a Mouse for 15; Studio Gear sells a Stand for 45 and a Monitor for 120.
+
+#### Separate conditions may match different related records
+
+Each condition joined with `&` on a to-many relationship is met by some related record, which can differ from the one that meets another condition. Conditions on an array attribute work the same way. This request returns Acme, which has a Keyboard and has a Cable:
+
+```http
+GET /Brand/?products.name=Keyboard&products.name=Cable
+```
+
+Likewise, `products.name=Cable&products.price=ge=number:30` returns Acme: it has a Cable, and it has products costing at least 30, though the Cable is not one of them. A collection `DELETE` matches records by the same rule. Before v5.4.0, whether such conditions had to be met by one related record depended on which condition Harper evaluated first.
+
+#### Conditions one related record must meet
+
+<VersionBadge version="v5.4.0" />
+
+When one related record must meet several conditions, put them in brackets after the relationship name, like MongoDB's `$elemMatch`:
+
+```http
+GET /Brand/?products[name=Cable&price=ge=30]
+GET /Brand/?products[name=Keyboard&price=ge=30]
+```
+
+The first request returns `[]`: no product is a Cable that costs at least 30. The second returns Acme, whose Keyboard costs 35. Use this form for a collection `DELETE` that must not remove a parent whose conditions are met by different related records.
+
+Inside the brackets:
+
+- Conditions name attributes of the related table: `price`, not `products.price`. A value converts to that attribute's schema type, so `price=ge=30` needs no `number:` prefix; keep `number:` on a dotted path such as `products.price=ge=number:30`.
+- Conditions combine with `&`, `|`, and parenthesized or bracketed groups. `products[name=Mouse|price=ge=100]` returns Budget Basics and Studio Gear.
+- Brackets can nest another relationship and can follow a relationship path, as [the next section](#conditions-through-several-relationships) shows.
+
+The name before the brackets must be a relationship, the brackets must hold at least one condition, and no condition in them can use a full-text comparator such as `matches`; otherwise Harper returns HTTP 400. On a to-one relationship, which has one related record, brackets match the same records as separate conditions. Brackets after a relationship name inside `select()` keep their meaning as a [nested relationship query](#filtering-and-paging-each-relationship).
+
+Querying through a relationship, by a dotted path or in brackets, needs read permission on the related table and on each related attribute a condition names. Without it, Harper returns HTTP 403.
+
+#### Conditions through several relationships
+
+In this schema, each company has departments and each department has employees:
+
+```graphql
+type Company @table @export {
+	id: ID @primaryKey
+	departments: [Department] @relationship(to: "companyId")
+}
+
+type Department @table @export {
+	id: ID @primaryKey
+	companyId: ID @indexed
+	employees: [Employee] @relationship(to: "departmentId")
+}
+
+type Employee @table @export {
+	id: ID @primaryKey
+	departmentId: ID @indexed
+	tag: String @indexed
+	level: Int @indexed
+}
+```
+
+With these records:
+
+| Company | Department | Employee | Tag    | Level |
+| ------- | ---------- | -------- | ------ | ----- |
+| c1      | d1         | e1       | oncall | 1     |
+| c1      | d1         | e2       | mentor | 4     |
+| c2      | d2         | e3       | oncall | 3     |
+| c3      | d3         | e4       | oncall | 1     |
+| c3      | d4         | e5       | mentor | 5     |
+
+where the brackets go decides which conditions one record must meet:
+
+| `GET /Company/?...`                                                        | Matches    | Why                                                         |
+| -------------------------------------------------------------------------- | ---------- | ----------------------------------------------------------- |
+| `departments.employees.tag=oncall&departments.employees.level=ge=number:3` | c1, c2, c3 | each condition may be met by a different department         |
+| `departments[employees.tag=oncall&employees.level=ge=number:3]`            | c1, c2     | one department must meet both, possibly by different people |
+| `departments[employees[tag=oncall&level=ge=3]]`                            | c2         | one employee must meet both                                 |
+| `departments.employees[tag=oncall&level=ge=3]`                             | c2         | the same as the previous row                                |
+
+#### What `select()` returns
+
+An outer condition on a relationship also narrows which related records `select()` returns for that relationship:
+
+- Conditions joined with `&` keep the related records that meet at least one of them. A bracketed group counts as one condition, met by a record that meets the whole group, including any `|` inside it.
+- A condition inside an OR narrows nothing: it only decides which parents match. A condition joined with `&` beside the OR still narrows.
+
+```http
+GET /Brand/?products.name=Keyboard&products.price=ge=number:30&select(id,products{name})
+GET /Brand/?products[name=Keyboard&price=ge=30]&select(id,products{name})
+GET /Brand/?(products.name=Cable|id=44)&select(id,products{name})
+```
+
+The first request returns Acme with its Keyboard and Dock: the Keyboard meets both conditions, and the Dock meets the price condition. The second returns Acme with only its Keyboard. The third returns Acme with all three of its products and Studio Gear with its Stand and Monitor, while `products.name=Cable&select(id,products{name})` returns Acme with only its Cable. Adding `products.price=ge=number:30&` before the third request's OR returns Acme with its Keyboard and Dock (its Cable meets the OR) and Studio Gear with its Stand and Monitor.
+
+In v5.3.5, the first request returned Acme with only its Keyboard, and the third returned Acme with only its Cable and Studio Gear with an empty `products` array.
 
 ## Property Access via URL
 

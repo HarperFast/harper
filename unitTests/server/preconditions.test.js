@@ -1696,6 +1696,63 @@ describe('conditional writes through a tracked record instance', () => {
 		}
 	});
 
+	it('settles a discarded restricted full update through save without an unhandled rejection', async () => {
+		class RestrictedReplace extends Tracked {
+			put(data) {
+				this.update(data, true);
+				return this.save();
+			}
+		}
+		resources.set('RestrictedReplace', RestrictedReplace, { rest: true });
+		const id = 'restricted-staging';
+		await Tracked.put(id, { name: 'before', legacy: 'protected' });
+		const user = {
+			role: {
+				permission: {
+					test: {
+						tables: {
+							TrackedConditions: {
+								read: true,
+								update: true,
+								attribute_permissions: [{ attribute_name: 'name', read: true, update: true }],
+							},
+						},
+					},
+				},
+			},
+		};
+		const unhandled = [];
+		const onUnhandled = (reason) => {
+			if (reason?.statusCode === 412) unhandled.push(reason);
+		};
+		process.on('unhandledRejection', onUnhandled);
+		try {
+			const stale = await request(
+				'PUT',
+				`/RestrictedReplace/${id}`,
+				{ name: 'refused' },
+				{ 'if-match': '"stale"' },
+				user
+			);
+			assert.strictEqual(stale.status, 412, await bodyOf(stale));
+			assert.deepStrictEqual(stored(id), { id, name: 'before', legacy: 'protected' });
+			const matched = await request(
+				'PUT',
+				`/RestrictedReplace/${id}`,
+				{ name: 'after' },
+				{ 'if-match': etagOf(id) },
+				user
+			);
+			assert.strictEqual(matched.status, 204, await bodyOf(matched));
+			assert.deepStrictEqual(stored(id), { id, name: 'after', legacy: 'protected' });
+			await nextTurn();
+			await nextTurn();
+			assert.deepStrictEqual(unhandled, []);
+		} finally {
+			process.off('unhandledRejection', onUnhandled);
+		}
+	});
+
 	it('keeps tracked mutations made while the precondition lock is pending and after it settles', async function () {
 		this.timeout(10_000);
 		const entered = Promise.withResolvers();

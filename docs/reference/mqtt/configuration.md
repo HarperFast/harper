@@ -67,7 +67,7 @@ Type: `boolean`
 
 Default: `true`
 
-Controls whether credentials are required to establish an MQTT connection. When `true`, clients must authenticate with either a username/password or a valid mTLS client certificate.
+Controls whether credentials are required to establish an MQTT connection. When `true`, clients must authenticate with either a username/password or a valid mTLS client certificate, except that [`authentication.authorizeLocal`](../security/configuration.md#authorizelocal) permits raw-TCP loopback connections without CONNECT credentials. From v5.4.0, that transport trust uses the built-in [`local` super user](../security/configuration.md#local-request-identity).
 
 When set to `false`, unauthenticated connections are allowed. Unauthenticated clients are still subject to authorization on each publish and subscribe operation — by default, tables and resources do not grant access to unauthenticated users, but this can be configured at the resource level.
 

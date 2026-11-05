@@ -5,8 +5,8 @@ const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { waitFor } = require('../waitFor');
 
-// A record past its expiry stays stored until eviction removes it. Until then, a table with no source answers
-// as if it were already gone; a caching table may still serve it as stale.
+// A record past its expiry stays stored until eviction removes it. Until then, a get on a table with no source
+// answers as if it were already gone, and a query returns it as stored; a caching table may still serve it as stale.
 describe('an expired record that has not been evicted yet', () => {
 	let tableSeq = 0;
 	const PAST = () => Date.now() - 60_000;
@@ -90,23 +90,26 @@ describe('an expired record that has not been evicted yet', () => {
 			assertStillStored();
 		});
 
-		it('only-if-cached search omits it, by index and by scan', async function () {
-			const byIndex = { conditions: [{ attribute: 'name', value: 'seed' }] };
-			assert.deepStrictEqual(await searchIds(Table, byIndex, { onlyIfCached: true }), ['live']);
-			assert.deepStrictEqual(await searchIds(Table, { select: ['id', 'name'] }, { onlyIfCached: true }), ['live']);
-			assert.deepStrictEqual(await searchIds(Table, {}, { onlyIfCached: true }), ['live']);
-			// the SQL UPDATE/DELETE row finder still sees it
-			const withExpired = { ...byIndex, includeExpired: true };
-			assert.deepStrictEqual(await searchIds(Table, withExpired, { onlyIfCached: true }), ['expired', 'live']);
+		it('search returns it, by index and by scan, with or without only-if-cached', async function () {
+			for (const context of [{ onlyIfCached: true }, {}]) {
+				const byIndex = { conditions: [{ attribute: 'name', value: 'seed' }] };
+				assert.deepStrictEqual(await searchIds(Table, byIndex, context), ['expired', 'live']);
+				assert.deepStrictEqual(await searchIds(Table, { select: ['id', 'name'] }, context), ['expired', 'live']);
+				assert.deepStrictEqual(await searchIds(Table, {}, context), ['expired', 'live']);
+			}
 			assertStillStored();
 		});
 
-		it('only-if-cached search resolves a relationship to it as missing', async function () {
-			const children = {};
-			const select = ['id', { name: 'child', select: ['id', 'name'] }];
-			for await (const parent of Parent.search({ select }, { onlyIfCached: true })) children[parent.id] = parent.child;
-			assert.deepStrictEqual(children['of-live'], { id: 'live', name: 'seed' });
-			assert.ok(children['of-expired'] == null, JSON.stringify(children['of-expired']));
+		it('search resolves a relationship to it as stored', async function () {
+			for (const context of [{ onlyIfCached: true }, {}]) {
+				const children = {};
+				const select = ['id', { name: 'child', select: ['id', 'name'] }];
+				for await (const parent of Parent.search({ select }, context)) children[parent.id] = parent.child;
+				assert.deepStrictEqual(children, {
+					'of-live': { id: 'live', name: 'seed' },
+					'of-expired': { id: 'expired', name: 'seed' },
+				});
+			}
 			assertStillStored();
 		});
 

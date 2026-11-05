@@ -1,5 +1,6 @@
 require('../testUtils');
 const assert = require('node:assert');
+const { waitFor } = require('../waitFor');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
@@ -381,21 +382,48 @@ describe('Queries read related records asynchronously', () => {
 				assert.equal(childReads.sync + childReads.async, 0);
 			});
 
-			it('a leading many-to-many join reads only the children its key condition keeps', async function () {
+			it("separate conditions after a leading join read a candidate parent's children once, in the background", async function () {
 				const results = await collect(
 					ColdParent.search({
 						enforceExecutionOrder: true,
 						conditions: [
 							{ attribute: ['children', 'name'], comparator: 'starts_with', value: 'child 1' },
-							{ attribute: ['children', 'label'], value: 'label 10' },
 							{ attribute: ['children', 'id'], value: 'child-10' },
+							{ attribute: ['children', 'label'], value: 'label 6' },
+							{ attribute: ['children', 'name'], value: 'child 10' },
 						],
 						select: ['id'],
 					})
 				);
 				assert.deepEqual(results, [{ id: 'parent-2' }]);
 				assert.equal(childReads.sync, 0);
-				assert.equal(childReads.async, 1);
+				assert.equal(
+					childReads.async,
+					3,
+					'parent-2 has three child keys, read once for both conditions that load them'
+				);
+			});
+
+			it('a leading same-record group with a key condition reads no child: the primary scan carries the records', async function () {
+				const results = await collect(
+					ColdParent.search({
+						enforceExecutionOrder: true,
+						conditions: [
+							{
+								attribute: 'children',
+								conditions: [
+									{ attribute: 'name', comparator: 'starts_with', value: 'child 1' },
+									{ attribute: 'label', value: 'label 10' },
+									{ attribute: 'id', value: 'child-10' },
+								],
+							},
+						],
+						select: ['id'],
+					})
+				);
+				assert.deepEqual(results, [{ id: 'parent-2' }]);
+				assert.equal(childReads.sync, 0);
+				assert.equal(childReads.async, 0);
 			});
 
 			it('a joined filter that switches to an id filter mid-scan rejects the later children by key', async function () {
@@ -561,8 +589,8 @@ describe('Queries read related records asynchronously', () => {
 			];
 			const iterator = results[Symbol.asyncIterator]();
 			const next = iterator.next();
-			for (let turns = 0; !release && turns < 100; turns++) await new Promise(setImmediate);
-			assert(release, 'premise: the first joined filter is pending');
+			// the filter starts only after the store's background read settles
+			await waitFor(() => release, { message: 'premise: the first joined filter is pending' });
 			iterator.return();
 			release(true);
 			assert.deepEqual(await next, { done: true, value: undefined });

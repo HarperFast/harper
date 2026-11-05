@@ -25,6 +25,71 @@ let JSONParse: typeof JSON.parse = parse;
 let COMPRESSION_THRESHOLD: number | undefined;
 const streamStartup = Symbol('streamStartup');
 const serializedStreamError = Symbol('serializedStreamError');
+const RELATIONSHIPS_LISTED = Symbol.for('harper.relationshipsListed');
+
+export type ColumnsList = string[] & { scalar?: true; asArray?: true };
+
+export function isScalarSelect(select: any): boolean {
+	return (typeof select === 'string' && select !== '*') || (!Array.isArray(select) && select?.name !== undefined);
+}
+
+export function isTupleSelect(select: any): boolean {
+	return Array.isArray(select) && Boolean((select as any).asArray);
+}
+
+type AppliedSelect = { select: any; rows: boolean };
+// Keyed by the projected value. A primitive needs no entry: its one column is the target's select.
+const appliedSelects = new WeakMap<object, AppliedSelect>();
+const CSV_TYPE = /text\/csv/i;
+
+export function recordAppliedSelect<T>(context: any, select: any, rows: boolean, value: T): T | Promise<T> {
+	// a keyed projection sets every selected key, so its rows name their own columns
+	if (!(isScalarSelect(select) || isTupleSelect(select))) return value;
+	// the same negotiation input findBestSerializer reads; anything else never reaches the CSV serializer
+	const accept = context?.requestedContentType ?? (context?.headers?.asObject || context?.headers)?.accept;
+	if (typeof accept !== 'string' || !CSV_TYPE.test(accept)) return value;
+	if (typeof (value as any)?.then === 'function')
+		return (value as any).then((settled: T) => recordAppliedSelect(context, select, rows, settled));
+	if (value && typeof value === 'object') appliedSelects.set(value, { select, rows });
+	return value;
+}
+
+function appliedSelectFor(data: any, target: any): AppliedSelect | undefined {
+	const applied = data && typeof data === 'object' ? appliedSelects.get(data) : undefined;
+	return applied && sameColumns(applied.select, target?.select) ? applied : undefined;
+}
+
+function sameColumns(select: any, other: any): boolean {
+	if (select === other) return true;
+	if (!Array.isArray(select) || !Array.isArray(other))
+		return !Array.isArray(select) && !Array.isArray(other) && columnName(select) === columnName(other);
+	if (select.length !== other.length || isTupleSelect(select) !== isTupleSelect(other)) return false;
+	return select.every((column, index) => columnName(column) === columnName(other[index]));
+}
+
+function columnName(column: any) {
+	return column?.name ?? column;
+}
+
+export function buildSelectColumns(currentSelect: any, attributes?: any[]): ColumnsList | undefined {
+	if (currentSelect) {
+		const columns: ColumnsList = [];
+		const asArray = isTupleSelect(currentSelect);
+		for (const column of Array.isArray(currentSelect) ? currentSelect : [currentSelect]) {
+			if (column === '*' && !asArray) {
+				if (!attributes?.length) return undefined;
+				for (const attribute of attributes)
+					if (!(currentSelect[RELATIONSHIPS_LISTED] && attribute.relationship)) columns.push(attribute.name);
+			} else columns.push((column as any).name || column);
+		}
+		if (isScalarSelect(currentSelect)) columns.scalar = true;
+		else if (asArray) columns.asArray = true;
+		return columns;
+	}
+	return (attributes || [])
+		.filter((attribute) => !attribute.computed && !attribute.relationship)
+		.map((attribute) => attribute.name);
+}
 
 type StreamStartup = {
 	result: Promise<{ failed?: true; error?: unknown }>;
@@ -107,15 +172,33 @@ mediaTypes.set('application/x-msgpack', {
 	deserialize: unpack,
 	q: 0.9,
 });
+function csvColumns(data: any, target: any, resource: any) {
+	if (typeof data?.getColumns === 'function') return { columns: data.getColumns() };
+	const applied = appliedSelectFor(data, target);
+	if (applied) {
+		return { columns: buildSelectColumns(applied.select, resource?.attributes), singleRecord: !applied.rows };
+	}
+	return { fallbackColumns: target?.select ? buildSelectColumns(target.select, resource?.attributes) : undefined };
+}
+
 mediaTypes.set('text/csv', {
-	serializeStream(data: any, response: Response) {
+	serializeStream(data: any, response: Response, _request?: any, target?: any, resource?: any) {
 		response.headers.set('Content-Disposition', 'attachment; filename="data.csv"');
-		return toCsvStream(data, data?.getColumns?.());
+		const { columns, fallbackColumns, singleRecord } = csvColumns(data, target, resource);
+		if (singleRecord && data != null) return toCsvStream([data.toJSON ? data.toJSON() : data], columns);
+		return toCsvStream(data, columns, fallbackColumns);
 	},
-	serialize(data: any, response: Response) {
+	serialize(data: any, response: Response, _request?: any, target?: any, resource?: any) {
 		response.headers.set('Content-Disposition', 'attachment; filename="data.csv"');
-		if (data && !data[Symbol.iterator]) data = [data.toJSON ? data.toJSON() : data];
-		return toCsvStream(data, data?.getColumns?.());
+		const { columns, fallbackColumns, singleRecord } = csvColumns(data, target, resource);
+		if (
+			data != null &&
+			(singleRecord ||
+				(!columns && (typeof data !== 'object' || (!data[Symbol.iterator] && !data[Symbol.asyncIterator]))))
+		) {
+			data = [data.toJSON ? data.toJSON() : data];
+		}
+		return toCsvStream(data, columns, fallbackColumns);
 	},
 	q: 0.1,
 });
@@ -351,8 +434,7 @@ function recoversRowErrors(contentType: string): boolean {
 /** A row's own failure becomes a row value; a lost read snapshot ends the whole read, so it must fail the stream. */
 function recoverRowError(error: any) {
 	if (error instanceof ReadSnapshotExpiredError) throw error;
-	error.toJSON = () => ({ error: error.name, message: error.message, ...error.partialObject });
-	return error;
+	return { error: error?.name ?? 'Error', message: error?.message ?? String(error), ...error?.partialObject };
 }
 
 const registerFastifySerializers = fp(
@@ -506,7 +588,7 @@ export function isHttpPassThroughEnvelope(value: any): boolean {
  * @param responseObject
  * @returns {Uint8Array|*}
  */
-export function serialize(responseData, request, responseObject) {
+export function serialize(responseData, request, responseObject, target?, resource?) {
 	// TODO: Maybe support other compression encodings; browsers basically universally support brotli, but Node's HTTP
 	//  client itself actually (just) supports gzip/deflate
 	let canCompress = COMPRESSION_THRESHOLD && request.headers.asObject?.['accept-encoding']?.includes('br');
@@ -542,14 +624,16 @@ export function serialize(responseData, request, responseObject) {
 			if (responseData.mapError && recoversRowErrors(contentType)) {
 				// indicate that we want iterator errors to be returned so we can serialize them in a meaningful way, if possible
 				const getColumns = responseData.getColumns;
+				const appliedSelect = contentType === 'text/csv' && appliedSelects.get(responseData);
 				responseData = responseData.mapError((error) => {
 					const row = recoverRowError(error);
 					logger.warn?.(`Error serializing error ${request?.url || request}: ${error}`);
 					return row;
 				});
 				responseData.getColumns = getColumns;
+				if (appliedSelect) appliedSelects.set(responseData, appliedSelect);
 			}
-			const serialized = serializer.serializer.serializeStream(responseData, responseObject, request);
+			const serialized = serializer.serializer.serializeStream(responseData, responseObject, request, target, resource);
 			if (!canCompress) return serialized;
 			// a handler may return a complete body (msgpack does for arrays)
 			if (typeof serialized === 'string' || serialized instanceof Uint8Array) responseBody = serialized;
@@ -560,7 +644,7 @@ export function serialize(responseData, request, responseObject) {
 				if (source[streamStartup]) compressed[streamStartup] = source[streamStartup];
 				return compressed;
 			}
-		} else responseBody = serializer.serializer.serialize(responseData, responseObject);
+		} else responseBody = serializer.serializer.serialize(responseData, responseObject, request, target, resource);
 	}
 	if (canCompress && responseBody?.length > COMPRESSION_THRESHOLD) {
 		// TODO: Only do this if the size is large and we can cache the result (otherwise use logic above)
@@ -856,13 +940,14 @@ function openOnFirstStep(
 			if (closed) return { value: undefined, done: true };
 			if (step.done) return step;
 			const { value } = step;
-			return {
-				value:
-					!async && typeof value?.then === 'function'
-						? value.then((settled) => (closed ? settled : mapValue(settled)))
-						: mapValue(value),
-				done: false,
-			};
+			if (!async && typeof value?.then === 'function') {
+				return {
+					value: value.then((settled) => (closed ? settled : mapValue(settled))),
+					done: false,
+				};
+			}
+			const mapped = mapValue(value);
+			return mapped === value ? step : { value: mapped, done: false };
 		});
 	const deferred: any = {
 		[async ? Symbol.asyncIterator : Symbol.iterator]() {
@@ -1070,48 +1155,70 @@ function transformIterable(iterable, transform, serializeError, eager) {
 	};
 }
 
+function formatCsvCell(value: any) {
+	if (value === null || value === undefined) {
+		return '';
+	}
+	// Serialize objects and arrays as JSON
+	if (typeof value === 'object') {
+		return value instanceof Date ? (value.toJSON() ?? '') : JSON.stringify(value);
+	}
+	return value;
+}
+
 /**
  * Converts JS objects/arrays/iterators to a CSV stream. Should support iterators with full backpressure handling
  * @param data
  * @returns stream
  */
-export function toCsvStream(data, columns?) {
-	const source = data?.[Symbol.iterator] || data?.[Symbol.asyncIterator] ? data : [data];
-	const readStream = Readable.from(openOnFirstStep(() => source, Boolean(source[Symbol.asyncIterator])));
+export function toCsvStream(data, columns?, fallbackColumns?) {
+	const isRowIterable =
+		typeof data === 'object' && data !== null && Boolean(data[Symbol.iterator] || data[Symbol.asyncIterator]);
+	const source = isRowIterable ? data : [data];
+	const hint = columns ?? data?.getColumns?.() ?? fallbackColumns;
+	const mapNullRow = Boolean(hint?.scalar || data == null || !hint || data?.pendingAuth);
+	// Readable.from() in object mode rejects null values with ERR_STREAM_NULL_VALUES.
+	const readStream = Readable.from(
+		openOnFirstStep(
+			() => source,
+			Boolean(source[Symbol.asyncIterator]),
+			mapNullRow ? (value) => value ?? '' : undefined
+		)
+	);
 
 	let headerWritten = false;
 	let fields = columns || null;
+	let rowToValues: ((chunk: any) => any[]) | undefined;
 
 	// Create a transform stream to convert objects to CSV
 	const csvTransform = new Transform({
 		objectMode: true,
 		transform(chunk, encoding, callback) {
 			try {
-				// Extract fields from first object if not provided
-				if (!fields && typeof chunk === 'object' && chunk !== null) {
-					fields = Object.keys(chunk);
+				if (!headerWritten) {
+					if (!fields) {
+						fields =
+							data?.getColumns?.() ||
+							(typeof chunk === 'object' && chunk !== null && !Array.isArray(chunk)
+								? Object.keys(chunk)
+								: fallbackColumns || (Array.isArray(chunk) ? Object.keys(chunk) : null));
+					}
+					if (fields) {
+						const scalar = Boolean(fields.scalar);
+						const asArray = Boolean(fields.asArray);
+						rowToValues = scalar
+							? (row) => [formatCsvCell(row)]
+							: asArray
+								? (row) =>
+										Array.isArray(row) ? fields.map((_, index) => formatCsvCell(row[index])) : [formatCsvCell(row)]
+								: (row) => fields.map((field) => formatCsvCell(row[field]));
+						this.push(escapeCsvRow(fields, true) + '\n');
+						headerWritten = true;
+					}
 				}
 
-				// Write header row on first chunk
-				if (!headerWritten && fields) {
-					this.push(escapeCsvRow(fields, true) + '\n');
-					headerWritten = true;
-				}
-
-				// Convert object to CSV row
-				if (fields) {
-					const values = fields.map((field) => {
-						const value = chunk[field];
-						if (value === null || value === undefined) {
-							return '';
-						}
-						// Serialize objects and arrays as JSON
-						if (typeof value === 'object') {
-							return JSON.stringify(value);
-						}
-						return value;
-					});
-					this.push(escapeCsvRow(values, false) + '\n');
+				if (rowToValues) {
+					this.push(escapeCsvRow(rowToValues(chunk), false) + '\n');
 				}
 
 				callback();
@@ -1130,6 +1237,9 @@ export function toCsvStream(data, columns?) {
  * @param quoteAll - If true, quote all values. If false, only quote strings (not numbers)
  */
 function escapeCsvRow(values: any[], quoteAll: boolean = false): string {
+	if (values.length === 1 && (values[0] === '' || values[0] === null || values[0] === undefined)) {
+		return '""';
+	}
 	return values
 		.map((value) => {
 			// Handle empty/null values

@@ -1,6 +1,6 @@
 ---
 section: 'Component Deploys'
-order: 80
+order: 100
 ---
 
 ### A Rolling Restart Fails When a Node Did Not Restart

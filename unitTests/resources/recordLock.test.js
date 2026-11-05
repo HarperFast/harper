@@ -776,16 +776,29 @@ describe('Record locks (harper#483)', () => {
 			assert.strictEqual((await LockTest.get(recordB)).n, 201, 'credit write (B) landed');
 		});
 
-		it('item-1: lock() in transaction after prior staged write sees the staged value', async function () {
-			// put(id,{n:1}) in the same transaction then lock(id) → r.n must be 1 (staged value),
-			// so r.set('n', r.n+1) lands as n=2, not n=1 (the pre-put value from a naked getEntry).
-			// Also verifies that the locked instance has a full entry (version defined) so a
-			// subsequent save() can use it as a valid existingEntry in the commit handler.
+		it('item-1: lock() in a transaction that already wrote the record is refused (harper#3896)', async function () {
 			if (isLMDB) return this.skip();
 			this.timeout(2000);
 			const recordId = id();
 			await LockTest.put({ id: recordId, n: 0 });
 			await transaction(async () => {
+				await LockTest.put({ id: recordId, n: 1 });
+				await assert.rejects(
+					() => LockTest.lock(recordId),
+					(err) => err?.statusCode === 409
+				);
+			});
+			assert.strictEqual((await LockTest.get(recordId)).n, 1, 'the earlier write still commits');
+		});
+
+		it('item-1: a re-entrant lock() sees what the transaction wrote under the lock', async function () {
+			// The locked instance has a full entry (version defined), so its save() has a valid existingEntry.
+			if (isLMDB) return this.skip();
+			this.timeout(2000);
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 0 });
+			await transaction(async () => {
+				await LockTest.lock(recordId);
 				await LockTest.put({ id: recordId, n: 1 });
 				const r = await LockTest.lock(recordId);
 				assert.strictEqual(r.getProperty('n'), 1, 'lock() sees staged put value (n===1)');
@@ -1676,7 +1689,9 @@ describe('Record locks (harper#483)', () => {
 		// Within storage.maxLockClockSkew, so admissions claim their stamps from the local key ratchet.
 		// That ratchet is process-wide, so the suite waits for the clock to pass the last one.
 		let aheadUntil = 0;
-		const futureTimestamp = (aheadMs = 1_000) => (aheadUntil = Math.max(aheadUntil, Date.now() + aheadMs));
+		// Two calls in the same millisecond would otherwise share a value, and an earlier test's admission
+		// at it has already moved the ratchet past it.
+		const futureTimestamp = (aheadMs = 1_000) => (aheadUntil = Math.max(aheadUntil + 1, Date.now() + aheadMs));
 		after(async () => {
 			if (isLMDB) return;
 			const rootStore = LockTest.primaryStore.rootStore;

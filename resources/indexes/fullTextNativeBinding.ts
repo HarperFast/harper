@@ -1,4 +1,3 @@
-import { FULLTEXT_SCORING_NATIVE_ABI_VERSION, FULLTEXT_SCORING_QUERY_API_VERSION } from './fullTextQueryProtocol.ts';
 import type { FullTextDerivedIndexEngine } from './fullTextDerivedIndex.ts';
 import * as env from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
@@ -10,10 +9,11 @@ import {
 import { getFullTextRuntimeConfiguration, FullTextWorkerInitializationError } from './fullTextRuntimeConfiguration.ts';
 import { loggerWithTag } from '../../utility/logging/logger.ts';
 
-const FULLTEXT_LEGACY_NATIVE_ABI_VERSION = 13;
+const FULLTEXT_NATIVE_ABI_VERSION = 14;
 const FULLTEXT_LIFECYCLE_API_VERSION = 1;
 const FULLTEXT_MUTATION_BATCH_API_VERSION = 5;
-const FULLTEXT_LEGACY_QUERY_API_VERSION = 7;
+const FULLTEXT_QUERY_API_VERSION = 8;
+const FULLTEXT_TELEMETRY_API_VERSION = 1;
 const logger = loggerWithTag('fulltext-derived-index');
 
 export interface NativeFullTextRuntimeBudget {
@@ -98,7 +98,12 @@ export type NativeFullTextTraceResult = {
 	}>;
 };
 
-export interface NativeFullTextReader {
+export interface NativeFullTextTelemetryHandle {
+	telemetry(): { available: boolean };
+	configureTelemetry(options: { histograms?: boolean; snapshotBytes?: boolean }): void;
+}
+
+export interface NativeFullTextReader extends NativeFullTextTelemetryHandle {
 	readonly committedPayload?: string;
 	reload(): Promise<void>;
 	search(
@@ -130,6 +135,7 @@ export type NativeFullTextRuntimeInfo = {
 	lifecycleApiVersion: number;
 	mutationBatchApiVersion: number;
 	queryApiVersion: number;
+	telemetryApiVersion: number;
 	storageBackends: ReadonlyArray<'native'>;
 	limits: {
 		maxConfiguredQueryTerms: number;
@@ -173,7 +179,11 @@ export interface NativeFullTextModule {
 	configureNativeFullTextRuntime(limits: NativeFullTextRuntimeBudget): void;
 	NativeFullTextIndex: {
 		prototype: Pick<FullTextDerivedIndexEngine, 'applyMutationBatch' | 'publish' | 'close'> &
-			Pick<NativeFullTextReader, 'searchPage'>;
+			Pick<NativeFullTextReader, 'searchPage'> &
+			NativeFullTextTelemetryHandle;
+	};
+	NativeFullTextReader: {
+		prototype: NativeFullTextTelemetryHandle;
 	};
 	runtimeInfo(): Promise<NativeFullTextRuntimeInfo>;
 	validateNativeFullTextIndexOptions(
@@ -267,10 +277,14 @@ export async function validateFullTextNativeBinding(module: unknown): Promise<Na
 	const prototype = (
 		module as {
 			NativeFullTextIndex?: {
-				prototype?: Partial<FullTextDerivedIndexEngine & Pick<NativeFullTextReader, 'searchPage'>>;
+				prototype?: Partial<
+					FullTextDerivedIndexEngine & Pick<NativeFullTextReader, 'searchPage'> & NativeFullTextTelemetryHandle
+				>;
 			};
 		}
 	)?.NativeFullTextIndex?.prototype;
+	const readerPrototype = (module as { NativeFullTextReader?: { prototype?: Partial<NativeFullTextTelemetryHandle> } })
+		?.NativeFullTextReader?.prototype;
 	if (
 		!module ||
 		typeof module !== 'object' ||
@@ -282,6 +296,12 @@ export async function validateFullTextNativeBinding(module: unknown): Promise<Na
 		typeof prototype.publish !== 'function' ||
 		typeof prototype.close !== 'function' ||
 		typeof prototype.searchPage !== 'function' ||
+		typeof prototype.telemetry !== 'function' ||
+		typeof prototype.configureTelemetry !== 'function' ||
+		!('NativeFullTextReader' in module) ||
+		typeof module.NativeFullTextReader !== 'function' ||
+		typeof readerPrototype?.telemetry !== 'function' ||
+		typeof readerPrototype.configureTelemetry !== 'function' ||
 		!('openNativeFullTextIndex' in module) ||
 		typeof module.openNativeFullTextIndex !== 'function' ||
 		!('openNativeFullTextReader' in module) ||
@@ -304,6 +324,7 @@ export async function validateFullTextNativeBinding(module: unknown): Promise<Na
 		!info ||
 		typeof info.packageVersion !== 'string' ||
 		typeof info.tantivyVersion !== 'string' ||
+		info.telemetryApiVersion !== FULLTEXT_TELEMETRY_API_VERSION ||
 		!Array.isArray(info.storageBackends) ||
 		!info.storageBackends.includes('native') ||
 		!info.limits ||
@@ -386,12 +407,8 @@ export function validateFullTextRuntimeVersions(
 ): void {
 	if (
 		!info ||
-		!(
-			(info.nativeAbiVersion === FULLTEXT_LEGACY_NATIVE_ABI_VERSION &&
-				info.queryApiVersion === FULLTEXT_LEGACY_QUERY_API_VERSION) ||
-			(info.nativeAbiVersion === FULLTEXT_SCORING_NATIVE_ABI_VERSION &&
-				info.queryApiVersion === FULLTEXT_SCORING_QUERY_API_VERSION)
-		) ||
+		info.nativeAbiVersion !== FULLTEXT_NATIVE_ABI_VERSION ||
+		info.queryApiVersion !== FULLTEXT_QUERY_API_VERSION ||
 		info.lifecycleApiVersion !== FULLTEXT_LIFECYCLE_API_VERSION ||
 		info.mutationBatchApiVersion !== FULLTEXT_MUTATION_BATCH_API_VERSION
 	)

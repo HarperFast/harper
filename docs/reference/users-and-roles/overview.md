@@ -83,7 +83,7 @@ Operations normally restricted to `super_user` can be selectively granted by inc
 
 List an aliased operation by its canonical name. `create_database`, `drop_database`, `describe_schema`, `search_by_hash`, `add_component`, `package_component`, `deploy_component`, and `delete_files_before` each grant their legacy spelling too (`create_schema`, `drop_schema`, `describe_database`, `search_by_id`, `add_custom_function_project`, `package_custom_function_project`, `deploy_custom_function_project`, `delete_records_before`), but a list that names only the legacy spelling grants neither.
 
-A few `super_user` operations cannot be granted by listing them: the secrets-store operations, the OIDC trust-policy operations, `get_deployment_payload`, the managed-backup operations (`create_backup`, `list_backups`, `verify_backup`, `delete_backup`, `purge_backups`, `restore_backup`), `get_backup`, `read_transaction_log`, and the legacy `catchup`. A role can still store these names, since `add_role` and `alter_role` check only that each entry is a known operation or group name, but a call to one from that role is refused. When auditing roles, don't read a listed name as a grant.
+A few `super_user` operations cannot be granted by listing them: the secrets-store operations, the OIDC trust-policy operations, the PR preview operations (`enable_previews`, `disable_previews`, `get_preview_policy`), `get_deployment_payload`, the managed-backup operations (`create_backup`, `list_backups`, `verify_backup`, `delete_backup`, `purge_backups`, `restore_backup`), `get_backup`, `read_transaction_log`, and the legacy `catchup`. A role can still store these names, since `add_role` and `alter_role` check only that each entry is a known operation or group name, but a call to one from that role is refused. When auditing roles, don't read a listed name as a grant.
 
 <VersionBadge type="changed" version="v5.3.0" />
 
@@ -176,6 +176,57 @@ Groups expand to a predefined set of operations and can be mixed with individual
 	}
 }
 ```
+
+### Component Deploy Grants
+
+<VersionBadge version="v5.4.0" />
+
+A role's `component_deploy` key limits which components it may deploy, drop and read, and how it may deploy them. It is how a CI identity can deploy one application's pull-request previews and nothing else: [`enable_previews`](../operations-api/operations.md#pr-previews) writes one. It is a boundary for the identity, not for the code it deploys, which runs in the Harper process like any component.
+
+```json
+{
+	"operation": "add_role",
+	"role": "my-app-ci-preview",
+	"permission": {
+		"operations": ["deploy_component", "drop_component", "get_components", "get_deployment", "registration_info"],
+		"component_deploy": {
+			"names": ["my-app-pr-*"],
+			"constraints": {
+				"isolated": true,
+				"hostSuffix": ".app.my-cluster.example.com",
+				"branchedDatabases": "required",
+				"preview": "required",
+				"maxPreviews": 5,
+				"maxTtlDays": 7
+			}
+		}
+	}
+}
+```
+
+**`names`** is a list of component names, each of which may end in one `*`, which matches one or more further letters, numbers, `-` or `_`. `my-app-pr-*` covers `my-app-pr-12`, but neither `my-app` nor `my-app-pr-`.
+
+The grant answers for five operations, which otherwise need `super_user`:
+
+- `deploy_component` and `drop_component`, for a component the grant covers. Any other fails with `403`: `Component '<name>' is not covered by this role's component grant`. A deploy under a grant cannot pass a literal `token` in `credentials`, only a `secret` reference.
+- `get_components`, which lists only the components the grant covers.
+- `list_deployments`, which lists only their deployments, and `get_deployment`, which refuses any other deployment with `403`.
+
+A role with no `operations` allowlist reaches the five through the grant alone. A role with one still has to list each of them, as above, and listing them does not widen the grant: its answer is final for those five operations.
+
+**`constraints`** are optional. Each is checked against what the deploy would leave in force, such as the root-config entry a payload deploy that sets none of them keeps, and a deploy that breaks one fails with `403` before anything is written:
+
+| Constraint          | Value                               | The deploy must                                                                                                                                                                                                                                                                                   |
+| ------------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `isolated`          | `true`                              | Leave the application [isolated](../components/applications.md#isolated-applications).                                                                                                                                                                                                            |
+| `hostSuffix`        | `.<domain>`                         | Set a `host` that ends in it and is longer than it, such as `fix-cart.app.my-cluster.example.com`.                                                                                                                                                                                                |
+| `branchedDatabases` | `"required"`                        | Set `branchedDatabases` to `true` or a non-empty list.                                                                                                                                                                                                                                            |
+| `preview`           | `"required"`                        | Carry [`preview`](../operations-api/operations.md#preview-deployments) metadata naming an application `A` whose `A-pr-*` the grant lists, as the component `A-pr-<n>`. Each of `names` must then end in `-pr-*`, and covers only `A-pr-<n>`, so `my-app-pr-*` no longer covers `my-app-pr-tools`. |
+| `maxPreviews`       | 1 or more                           | Leave that many previews of the application live, at most, on the node that receives it. It takes the place of `deployment.previews.maxPerApplication` for this role. Needs `preview`.                                                                                                            |
+| `maxTtlDays`        | days, above 0                       | Expire within that many days. A later `expiresAt` is lowered to it, with a `warning` event on the deploy's stream and in its record, and activating a staged preview whose `expiresAt` is later is refused. Needs `preview`.                                                                      |
+| `generation`        | 8 to 64 letters, digits, `_` or `-` | Nothing: [`enable_previews`](../operations-api/operations.md#pr-previews) writes it, each deploy under the grant carries it, and `disable_previews` revokes it on every node. Needs `preview`.                                                                                                    |
+
+Only the node that receives the deploy checks the constraints; the other nodes apply what it allowed. `add_role` and `alter_role` reject a malformed grant with `400`, naming the problem. `component_deploy` is a reserved name, so no database can be called that.
 
 ### Table Permissions
 
@@ -307,6 +358,8 @@ Setting `read: false` on an attribute prevents the **value** from appearing in r
 | `add_component`      |            X             |
 | `package_component`  |            X             |
 | `deploy_component`   |            X             |
+
+A [component deploy grant](#component-deploy-grants) (Added in: v5.4.0) lets a role that is not `super_user` deploy, drop and read the components it names.
 
 ### Registration
 

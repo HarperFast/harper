@@ -1,6 +1,6 @@
 ---
 section: 'Component Deploys'
-order: 70
+order: 90
 ---
 
 ### Setting Up GitHub Actions Deploys
