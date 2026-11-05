@@ -6624,7 +6624,11 @@ export function makeTable(options): TableResourceClass {
 												auditHistoryMissing = true;
 												cappedProbeDepth = probeSteps;
 											} else
-												for (const entry of auditStore.getRange({ start: localTime, exactStart: true, readUncommitted: true })) {
+												for (const entry of auditStore.getRange({
+													start: localTime,
+													exactStart: true,
+													readUncommitted: true,
+												})) {
 													if (entry.txnLogKey !== localTime) break;
 													if (++probeSteps > MAX_OUT_OF_ORDER_AUDIT_DEPTH) {
 														auditHistoryMissing = true;
