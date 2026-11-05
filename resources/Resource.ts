@@ -1053,11 +1053,20 @@ function registerLiveSubscriptionForContext(subscription: any, resource: any, ad
 				// created later). Expiry (authExpiresAt above) is its only revocation.
 				fresh = user;
 			} else {
+<<<<<<< HEAD
 				// Re-read current user state from hdb_user/hdb_role, so a dropped or
 				// role-stripped user no longer authorizes.
 				const { findAndValidateUser } = require('../security/user');
 				fresh = await findAndValidateUser(username, undefined, false);
 				if (!fresh?.role) return false;
+=======
+				// Re-read current user state from hdb_user/hdb_role, once per username per pass, so a dropped
+				// or role-stripped user no longer authorizes.
+				fresh = await pass.memo(resolveUser, username, resolveUser);
+				// Losing a role revokes only a principal admitted with one. A principal admitted without one (an
+				// mTLS CN with no hdb_user) was granted by allowRead alone, so allowRead alone rechecks it.
+				if (!fresh || (!fresh.role && user.role)) return false;
+>>>>>>> 295f19697 (Keep live subscriptions of mTLS clients with no hdb_user that allowRead admitted)
 				// Advance the subscription's context to the fresh user so downstream checks — context.user
 				// and getCurrentUser() (which reads the resource's context) — evaluate against current state,
 				// not the stale user captured at subscribe time.

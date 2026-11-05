@@ -539,8 +539,34 @@ function userRecordVersions(username: string): UserProvenance {
  * Makes `isCurrentUser` check a user resolved outside this module against the record versions read
  * before it was resolved; a write in between then shows as a change.
  */
+<<<<<<< HEAD
 function trackUserRecords(user: User, versions: UserProvenance): void {
 	if (user && typeof user === 'object' && !userProvenance.has(user)) trackedProvenance.set(user, versions);
+=======
+function trackUserRecords(user: User, versions: UserProvenance): boolean {
+	if (!user || typeof user !== 'object' || (user as any)[PROVENANCE]) return false;
+	trackedProvenance.set(user, versions);
+	return true;
+}
+
+/**
+ * A copy whose `role` and `permission` the caller may replace (verifyPerms does) without touching `user`;
+ * `isCurrentUser` checks it against the records `user` was built from.
+ */
+function cloneUserView(user: User): User {
+	const clone: User = { ...user };
+	if (user.role) clone.role = { ...user.role, permission: { ...user.role.permission } };
+	if (!(clone as any)[PROVENANCE]) {
+		const tracked = trackedProvenance.get(user);
+		if (tracked) (clone as any)[PROVENANCE] = tracked;
+	}
+	return clone;
+}
+
+/** Whether `isCurrentUser` can answer for `user`: false for one resolved outside this module and not tracked. */
+function hasRecordProvenance(user: User): boolean {
+	return Boolean((user as any)[PROVENANCE] ?? trackedProvenance.has(user));
+>>>>>>> 295f19697 (Keep live subscriptions of mTLS clients with no hdb_user that allowRead admitted)
 }
 
 /**
