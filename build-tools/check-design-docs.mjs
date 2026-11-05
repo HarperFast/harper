@@ -166,11 +166,7 @@ function readCeilings(root) {
 }
 
 function textAt(root, commit, file) {
-	try {
-		git(root, 'cat-file', '-e', `${commit}:${file}`);
-	} catch {
-		return undefined;
-	}
+	if (!git(root, 'ls-tree', '--name-only', commit, '--', file)) return undefined;
 	return git(root, 'cat-file', 'blob', `${commit}:${file}`).replace(/\r\n/g, '\n');
 }
 
@@ -193,21 +189,28 @@ function baseState(root, base) {
 	return { commit, changed, ceilings };
 }
 
-const TOKEN = /\s*([\p{L}\p{N}]+|[^\s\p{L}\p{N}])/gu;
+const TOKEN = /[\p{L}\p{N}]+|[^\s\p{L}\p{N}]/gu;
 
-// Bytes of the tokens (letter and digit runs, single other marks, each with its leading whitespace) that `text` has
-// more of than `before`. Text the change only moved, re-wrapped or reordered matches itself wherever it went, so
-// what counts is the vocabulary it brings: a new sentence in full, one changed token of an edited one.
+// The bytes of new text `text` holds over `before`: the tokens (letter and digit runs, single other marks) it has
+// more of, plus the whitespace it gained. A token matches itself wherever it sits, so text the change only moved,
+// re-wrapped or reordered adds nothing, and an edited sentence adds only its changed tokens.
 function addedBytes(before, text) {
 	const left = new Map();
-	for (const [, token] of before.matchAll(TOKEN)) left.set(token, (left.get(token) ?? 0) + 1);
+	let spaceBefore = byteSize(before);
+	for (const [token] of before.matchAll(TOKEN)) {
+		left.set(token, (left.get(token) ?? 0) + 1);
+		spaceBefore -= byteSize(token);
+	}
 	let added = 0;
-	for (const [spaced, token] of text.matchAll(TOKEN)) {
+	let space = byteSize(text);
+	for (const [token] of text.matchAll(TOKEN)) {
+		const bytes = byteSize(token);
+		space -= bytes;
 		const count = left.get(token);
 		if (count) left.set(token, count - 1);
-		else added += byteSize(spaced);
+		else added += bytes;
 	}
-	return added;
+	return added + Math.max(0, space - spaceBefore);
 }
 
 let outlineModule;

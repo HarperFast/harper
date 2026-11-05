@@ -515,7 +515,6 @@ describe('build-tools/check-design-docs.mjs', function () {
 		const base = head + Object.values(paragraphs).join('\n');
 		const ceiling = bytesOf(base) + 1_000;
 		const floor = Math.floor((ceiling * 3) / 5);
-		// Pads `text` with prose to exactly `bytes`.
 		const fill = (text, bytes) => text + prose('z', bytes - bytesOf(text));
 		let baseRef;
 		beforeEach(function () {
@@ -536,7 +535,7 @@ describe('build-tools/check-design-docs.mjs', function () {
 			assert.match(
 				errors,
 				new RegExp(
-					`^lib/DESIGN\\.md: this change adds 2,0\\d\\d bytes of new text to a file 1,000 bytes under its ceiling of ${formatted(ceiling)} at ${baseRef}, and cuts it back only to ${formatted(size)}; a change that has to cut to fit cuts to at most ${formatted(floor)} bytes \\(60% of the ceiling\\) — prune ${formatted(size - floor)} more, then run \`npm run check:design-docs -- --update-ceilings\`$`
+					`^lib/DESIGN\\.md: this change adds 1,[\\d,]{3} bytes of new text to a file 1,000 bytes under its ceiling of ${formatted(ceiling)} at ${baseRef}, and cuts it back only to ${formatted(size)}; a change that has to cut to fit cuts to at most ${formatted(floor)} bytes \\(60% of the ceiling\\) — prune ${formatted(size - floor)} more, then run \`npm run check:design-docs -- --update-ceilings\`$`
 				)
 			);
 			assert.strictEqual(errors.split('\n').length, 1, errors);
@@ -546,7 +545,14 @@ describe('build-tools/check-design-docs.mjs', function () {
 			write(dir, {
 				'lib/DESIGN.md': `${head}${prose('e', 2_000).trimEnd()} ${paragraphs.a.slice(1_500)}\n${paragraphs.b}\n${paragraphs.c}\n${paragraphs.d}`,
 			});
-			assert.match(await errorsSince(), /adds 2,0\d\d bytes of new text/);
+			assert.match(await errorsSince(), /adds 1,[\d,]{3} bytes of new text/);
+		});
+
+		it('counts the whitespace a change adds', async function () {
+			write(dir, {
+				'lib/DESIGN.md': `${head}${paragraphs.a}\n${paragraphs.b}\n${paragraphs.c.replaceAll(' ', '  ')}\n${prose('d', 6_000)}`,
+			});
+			assert.match(await errorsSince(), /adds [\d,]+ bytes of new text/);
 		});
 
 		it('passes the same change once it is cut to the floor, and after --update-ceilings when cut deeper', async function () {
