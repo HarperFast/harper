@@ -1,0 +1,2727 @@
+---
+title: Operations Reference
+---
+
+<!-- Source: versioned_docs/version-4.7/developers/operations-api/databases-and-tables.md (primary) -->
+<!-- Source: versioned_docs/version-4.7/developers/operations-api/nosql-operations.md (primary) -->
+<!-- Source: versioned_docs/version-4.7/developers/operations-api/bulk-operations.md (primary) -->
+<!-- Source: versioned_docs/version-4.7/developers/operations-api/sql-operations.md (primary) -->
+<!-- Source: versioned_docs/version-4.7/developers/operations-api/users-and-roles.md (primary) -->
+<!-- Source: versioned_docs/version-4.7/developers/operations-api/token-authentication.md (primary) -->
+<!-- Source: versioned_docs/version-4.7/developers/operations-api/components.md (primary) -->
+<!-- Source: versioned_docs/version-4.7/developers/operations-api/clustering.md (primary) -->
+<!-- Source: versioned_docs/version-4.7/developers/operations-api/configuration.md (primary) -->
+<!-- Source: versioned_docs/version-4.7/developers/operations-api/system-operations.md (primary) -->
+<!-- Source: versioned_docs/version-4.7/developers/operations-api/jobs.md (primary) -->
+<!-- Source: versioned_docs/version-4.7/developers/operations-api/logs.md (primary) -->
+<!-- Source: versioned_docs/version-4.7/developers/operations-api/certificate-management.md (primary) -->
+<!-- Source: versioned_docs/version-4.7/developers/operations-api/analytics.md (primary) -->
+<!-- Source: versioned_docs/version-4.7/developers/operations-api/registration.md (primary) -->
+<!-- Source: versioned_docs/version-4.7/developers/operations-api/custom-functions.md (deprecated operations) -->
+
+# Operations Reference
+
+This page lists all available Operations API operations, grouped by category. Each entry links to the feature section where the full documentation lives.
+
+For endpoint and authentication setup, see the [Operations API Overview](./overview.md).
+
+---
+
+## Databases & Tables
+
+Operations for managing databases, tables, and attributes.
+
+Detailed documentation: [Database Overview](../database/overview.md)
+
+| Operation           | Description                                                         | Role Required |
+| ------------------- | ------------------------------------------------------------------- | ------------- |
+| `describe_all`      | Returns definitions of all databases and tables, with record counts | any           |
+| `describe_database` | Returns all table definitions for a specified database              | any           |
+| `describe_table`    | Returns the definition of a specified table                         | any           |
+| `create_database`   | Creates a new database                                              | super_user    |
+| `drop_database`     | Drops a database and all its tables/records                         | super_user    |
+| `create_table`      | Creates a new table with optional schema and expiration             | super_user    |
+| `drop_table`        | Drops a table and all its records                                   | super_user    |
+| `create_attribute`  | Adds a new attribute to a table                                     | super_user    |
+| `drop_attribute`    | Removes an attribute and all its values from a table                | super_user    |
+
+### `describe_all`
+
+Returns the definitions of all databases and tables within the database. Record counts above 5000 records are estimated; the response includes `estimated_record_range` when estimated. To force an exact count (requires full table scan), include `"exact_count": true`. Each table definition includes the [record-structure dictionary fields](#record-structure-dictionaries) described for `describe_table`.
+
+```json
+{ "operation": "describe_all" }
+```
+
+### `describe_database`
+
+Returns all table definitions within the specified database. Each table definition includes the [record-structure dictionary fields](#record-structure-dictionaries) described for `describe_table`.
+
+```json
+{ "operation": "describe_database", "database": "dev" }
+```
+
+### `describe_table`
+
+Returns the definition of a specific table, including its schema and storage metadata.
+
+```json
+{ "operation": "describe_table", "table": "dog", "database": "dev" }
+```
+
+#### Full-text indexes
+
+<VersionBadge version="v5.3.0" />
+
+A table with native full-text indexes includes `full_text_indexes`; each entry reports its query-only field name, source fields, analyzer options, enabled query modes, and `readiness` (`unknown`, `ready`, `needs-rebuild`, `rebuilding`, or `unavailable`). The readiness object also includes `owner_epoch`, `rebuild_attempts`, and an optional `reason`. Query-only `FullText` fields do not appear in the ordinary `attributes` list. Metadata respects attribute permissions: unreadable source fields are omitted, and an index with no readable source fields is omitted entirely. Use an account with access to every indexed source field when checking upgrade readiness; a missing entry does not prove that no index exists.
+
+Requesting a table with full-text indexes:
+
+```json
+{ "operation": "describe_table", "table": "Product", "database": "catalog" }
+```
+
+The response also includes the table's ordinary schema and storage metadata. The relevant full-text fragment is:
+
+```json
+{
+	"name": "Product",
+	"full_text_indexes": [
+		{
+			"name": "catalogSearch",
+			"fields": [{ "name": "name", "weight": 3 }],
+			"analyzer": "english@2",
+			"query_modes": ["any", "all", "fuzzy", "phrase", "prefix", "fuzzy-prefix"],
+			"readiness": { "state": "ready", "owner_epoch": "4", "rebuild_attempts": 0 }
+		}
+	]
+}
+```
+
+#### Record-structure dictionaries
+
+<VersionBadge type="changed" version="v5.2.5" />
+
+Alongside the schema, the response carries the size of the table's **record-structure dictionaries**
+— the physical record layouts Harper has seen for this table. They are how you check whether a table
+is getting
+[random-access field encoding](../database/storage-tuning.md#storagerandomaccessfields) and how much
+room it has left before novel layouts stop receiving it:
+
+| Field                      | Description                                                                          |
+| -------------------------- | ------------------------------------------------------------------------------------ |
+| `typed_structures_enabled` | Whether random-access (typed) encoding is enabled for this table                     |
+| `typed_structure_count`    | Structures in the random-access dictionary                                           |
+| `typed_structure_limit`    | Bound past which novel record shapes are stored without random-access field encoding |
+| `classic_structure_count`  | Structures in the classic named-record dictionary                                    |
+
+A typed structure is minted per distinct _shape_, where shape means the ordered list of fields plus
+the encoded type and width each field's value takes — so `{a, b}` and `{b, a}` are different shapes,
+and so are `{v: 1}`, `{v: 70000}`, and `{v: "ok"}`. Dictionary size therefore tracks the variety of
+shapes a table has ever written, not its column count, and it only grows: structures are never
+pruned, because stored records, transaction-log entries, and replication backlogs all reference them
+by id. A classic structure keys on the ordered field names alone, so `classic_structure_count` moves
+only when a table writes a field-name set it has not written before, and it stops at 32 — the
+classic dictionary's own bound, which is why the response carries no limit field for it.
+
+[`storage.randomAccessFields`](../configuration/options.md#storage) defaults to off, so `typed_structures_enabled: false` with
+`typed_structure_count: 0` is the normal state for most tables — that is typed encoding being
+disabled, not spare headroom. Where it is enabled, reaching `typed_structure_limit` is not an error:
+records with novel shapes past that point still write and read correctly, but are stored without
+random-access field encoding, which makes reading individual fields of large records slower. Harper
+logs a warning when a thread first observes the bound, but that depends on which thread served the
+writes and whether it has loaded the dictionary — the counts here are the reliable signal.
+
+To keep the typed dictionary small, write records in a consistent field order, avoid making the _set_
+of present fields vary per write (nest volatile or optional fields inside one sub-object rather than
+adding and removing top-level fields), keep a given field to one value type across records, and
+expect a small fixed number of extra shapes from numeric fields whose values cross a width boundary.
+
+### `create_database`
+
+Creates a new database.
+
+```json
+{ "operation": "create_database", "database": "dev" }
+```
+
+### `drop_database`
+
+Drops a database and all its tables/records. **Replicates to all cluster nodes by default** — pass `"replicated": false` to drop it on this node only.
+
+```json
+{ "operation": "drop_database", "database": "dev" }
+```
+
+### `create_table`
+
+Creates a new table. Optional fields: `database` (defaults to `data`), `attributes` (array defining schema), `expiration` (TTL in seconds).
+
+```json
+{
+	"operation": "create_table",
+	"database": "dev",
+	"table": "dog",
+	"primary_key": "id"
+}
+```
+
+### `drop_table`
+
+Drops a table and all associated records. **Replicates to all cluster nodes by default** — pass `"replicated": false` to drop it on this node only.
+
+```json
+{ "operation": "drop_table", "database": "dev", "table": "dog" }
+```
+
+### `create_attribute`
+
+Creates a new attribute within a table. Harper auto-creates attributes on insert/update, but this can be used to pre-define them (e.g., for role-based permission setup).
+
+```json
+{
+	"operation": "create_attribute",
+	"database": "dev",
+	"table": "dog",
+	"attribute": "is_adorable"
+}
+```
+
+### `drop_attribute`
+
+Drops an attribute and all its values from the specified table.
+
+```json
+{
+	"operation": "drop_attribute",
+	"database": "dev",
+	"table": "dog",
+	"attribute": "is_adorable"
+}
+```
+
+---
+
+## NoSQL Operations
+
+Operations for inserting, updating, deleting, and querying records using NoSQL.
+
+Detailed documentation: [REST Querying Reference](../rest/querying.md)
+
+| Operation              | Description                                                               | Role Required |
+| ---------------------- | ------------------------------------------------------------------------- | ------------- |
+| `insert`               | Inserts one or more records                                               | any           |
+| `update`               | Updates one or more records by primary key                                | any           |
+| `upsert`               | Inserts or updates records                                                | any           |
+| `delete`               | Deletes records by primary key                                            | any           |
+| `search_by_id`         | Retrieves records by primary key                                          | any           |
+| `search_by_value`      | Retrieves records matching a value on any attribute                       | any           |
+| `search_by_conditions` | Retrieves records matching complex conditions with sorting and pagination | any           |
+
+### `insert`
+
+Inserts one or more records. If a primary key is not provided, a GUID or auto-increment value is generated.
+
+```json
+{
+	"operation": "insert",
+	"database": "dev",
+	"table": "dog",
+	"records": [{ "id": 1, "dog_name": "Penny" }]
+}
+```
+
+### `update`
+
+Updates one or more records. Primary key must be supplied for each record.
+
+```json
+{
+	"operation": "update",
+	"database": "dev",
+	"table": "dog",
+	"records": [{ "id": 1, "weight_lbs": 38 }]
+}
+```
+
+### `upsert`
+
+Updates existing records and inserts new ones. Matches on primary key if provided.
+
+```json
+{
+	"operation": "upsert",
+	"database": "dev",
+	"table": "dog",
+	"records": [{ "id": 1, "weight_lbs": 40 }]
+}
+```
+
+### `delete`
+
+Deletes records by primary key values.
+
+```json
+{
+	"operation": "delete",
+	"database": "dev",
+	"table": "dog",
+	"ids": [1, 2]
+}
+```
+
+### `search_by_id`
+
+Returns records matching the given primary key values. Use `"get_attributes": ["*"]` to return all attributes.
+
+```json
+{
+	"operation": "search_by_id",
+	"database": "dev",
+	"table": "dog",
+	"ids": [1, 2],
+	"get_attributes": ["dog_name", "breed_id"]
+}
+```
+
+### `search_by_value`
+
+Returns records with a matching value on any attribute. Supports wildcards (e.g., `"Ky*"`).
+
+```json
+{
+	"operation": "search_by_value",
+	"database": "dev",
+	"table": "dog",
+	"attribute": "owner_name",
+	"value": "Ky*",
+	"get_attributes": ["id", "dog_name"]
+}
+```
+
+### `search_by_conditions`
+
+Returns records matching one or more conditions. Supports `operator` (`and`/`or`), `offset`, `limit`, nested `conditions` groups, and `sort` with multi-level tie-breaking. A condition that pairs an `attribute` with nested `conditions` (the Resource API's [relationship groups](../resources/resource-api.md#conditions-on-a-to-many-relationship)) is not supported. Full-text conditions use comparators such as `matches` and `matches_prefix`; see [full-text query execution](../resources/query-optimization.md#full-text-search-work-and-paging) for paging costs and limits. Conditions match null and omitted values by the rules in [Null and Omitted Values](../rest/querying.md#null-and-omitted-values).
+
+```json
+{
+	"operation": "search_by_conditions",
+	"database": "dev",
+	"table": "dog",
+	"operator": "and",
+	"limit": 10,
+	"get_attributes": ["*"],
+	"conditions": [{ "attribute": "age", "comparator": "between", "value": [5, 8] }]
+}
+```
+
+Full-text conditions (Added in: v5.3.0):
+
+Conditions can query a declared full-text index with the `matches`, `matches_all`, `matches_phrase`, `matches_prefix`, `matches_fuzzy`, and `matches_fuzzy_prefix` comparators and their `not_` forms. A negated full-text condition requires a non-negated condition on the same full-text index. The Operations API preserves advanced condition options such as source `fields`, `includeHighlights`, `maxIndexLagMilliseconds`, and `waitForIndexMilliseconds`. See [Querying Full-Text Indexes](../full-text-search/querying.md#operations-api).
+
+---
+
+## Bulk Operations
+
+Operations for bulk import/export of data.
+
+Detailed documentation: [Database Jobs](../database/jobs.md)
+
+| Operation               | Description                                                    | Role Required |
+| ----------------------- | -------------------------------------------------------------- | ------------- |
+| `export_local`          | Exports query results to a local file in JSON or CSV           | super_user    |
+| `csv_data_load`         | Ingests CSV data provided inline                               | any           |
+| `csv_file_load`         | Ingests CSV data from a server-local file path                 | any           |
+| `csv_url_load`          | Ingests CSV data from a URL                                    | any           |
+| `export_to_s3`          | Exports query results to AWS S3                                | super_user    |
+| `import_from_s3`        | Imports CSV or JSON data from AWS S3                           | any           |
+| `delete_records_before` | Deletes records older than a given timestamp (local node only) | super_user    |
+
+All bulk import/export operations are asynchronous and return a job ID. Use [`get_job`](#get_job) to check status.
+
+### `export_local`
+
+Exports query results to a local path on the server. Formats: `json` or `csv`.
+
+<VersionBadge type="changed" version="v5.4.0" /> If the query fails partway through a `json` export, the job ends with status `ERROR` and the partial file is removed. Before v5.4.0, the job completed and the file could hold a complete-looking array ending in an `error` element.
+
+```json
+{
+	"operation": "export_local",
+	"format": "json",
+	"path": "/data/",
+	"search_operation": { "operation": "sql", "sql": "SELECT * FROM dev.dog" }
+}
+```
+
+### `csv_data_load`
+
+Ingests inline CSV data. Actions: `insert` (default), `update`, `upsert`.
+
+```json
+{
+	"operation": "csv_data_load",
+	"database": "dev",
+	"table": "dog",
+	"action": "insert",
+	"data": "id,name\n1,Penny\n"
+}
+```
+
+### `csv_file_load`
+
+Ingests CSV from a file path on the server running Harper.
+
+```json
+{
+	"operation": "csv_file_load",
+	"database": "dev",
+	"table": "dog",
+	"file_path": "/home/user/imports/dogs.csv"
+}
+```
+
+### `csv_url_load`
+
+Ingests CSV from a URL.
+
+```json
+{
+	"operation": "csv_url_load",
+	"database": "dev",
+	"table": "dog",
+	"csv_url": "https://example.com/dogs.csv"
+}
+```
+
+### `export_to_s3`
+
+Exports query results to an AWS S3 bucket as JSON or CSV.
+
+```json
+{
+	"operation": "export_to_s3",
+	"format": "json",
+	"s3": {
+		"aws_access_key_id": "YOUR_KEY",
+		"aws_secret_access_key": "YOUR_SECRET",
+		"bucket": "my-bucket",
+		"key": "dogs.json",
+		"region": "us-east-1"
+	},
+	"search_operation": { "operation": "sql", "sql": "SELECT * FROM dev.dog" }
+}
+```
+
+### `import_from_s3`
+
+Imports CSV or JSON from an AWS S3 bucket. File must include a valid `.csv` or `.json` extension.
+
+```json
+{
+	"operation": "import_from_s3",
+	"database": "dev",
+	"table": "dog",
+	"s3": {
+		"aws_access_key_id": "YOUR_KEY",
+		"aws_secret_access_key": "YOUR_SECRET",
+		"bucket": "my-bucket",
+		"key": "dogs.csv",
+		"region": "us-east-1"
+	}
+}
+```
+
+### `delete_records_before`
+
+Deletes records older than the specified timestamp from the local node only. Clustered nodes retain their data.
+
+```json
+{
+	"operation": "delete_records_before",
+	"date": "2021-01-25T23:05:27.464",
+	"schema": "dev",
+	"table": "dog"
+}
+```
+
+---
+
+## SQL Operations
+
+Operations for executing SQL statements.
+
+:::warning
+Harper SQL is intended for data investigation and use cases where performance is not a priority. For production workloads, use NoSQL or REST operations. SQL performance optimizations are on the roadmap.
+:::
+
+Detailed documentation: [SQL Reference](../operations-api/sql.md)
+
+| Operation | Description                                                        | Role Required |
+| --------- | ------------------------------------------------------------------ | ------------- |
+| `sql`     | Executes a SQL `SELECT`, `INSERT`, `UPDATE`, or `DELETE` statement | any           |
+
+### `sql`
+
+Executes a standard SQL statement.
+
+```json
+{ "operation": "sql", "sql": "SELECT * FROM dev.dog WHERE id = 1" }
+```
+
+---
+
+## Users & Roles
+
+Operations for managing users and role-based access control (RBAC).
+
+Detailed documentation: [Users & Roles Operations](../users-and-roles/operations.md)
+
+| Operation    | Description                                         | Role Required |
+| ------------ | --------------------------------------------------- | ------------- |
+| `list_roles` | Returns all roles                                   | super_user    |
+| `add_role`   | Creates a new role with permissions                 | super_user    |
+| `alter_role` | Modifies an existing role's permissions             | super_user    |
+| `drop_role`  | Deletes a role (role must have no associated users) | super_user    |
+| `list_users` | Returns all users                                   | super_user    |
+| `user_info`  | Returns data for the authenticated user             | any           |
+| `add_user`   | Creates a new user                                  | super_user    |
+| `alter_user` | Modifies an existing user's credentials or role     | super_user    |
+| `drop_user`  | Deletes a user                                      | super_user    |
+
+### `list_roles`
+
+Returns all roles defined in the instance.
+
+```json
+{ "operation": "list_roles" }
+```
+
+### `add_role`
+
+Creates a new role with the specified permissions. The `permission` object maps database names to table-level access rules (`read`, `insert`, `update`, `delete`). Set `super_user: true` to grant full access.
+
+```json
+{
+	"operation": "add_role",
+	"role": "developer",
+	"permission": {
+		"super_user": false,
+		"dev": {
+			"tables": {
+				"dog": { "read": true, "insert": true, "update": true, "delete": false }
+			}
+		}
+	}
+}
+```
+
+### `alter_role`
+
+Modifies an existing role's name or permissions. Requires the role's `id` (returned by `list_roles`).
+
+```json
+{
+	"operation": "alter_role",
+	"id": "f92162e2-cd17-450c-aae0-372a76859038",
+	"role": "senior_developer",
+	"permission": {
+		"super_user": false,
+		"dev": {
+			"tables": {
+				"dog": { "read": true, "insert": true, "update": true, "delete": true }
+			}
+		}
+	}
+}
+```
+
+### `drop_role`
+
+Deletes a role. The role must have no associated users before it can be dropped.
+
+```json
+{ "operation": "drop_role", "id": "f92162e2-cd17-450c-aae0-372a76859038" }
+```
+
+### `list_users`
+
+Returns all users.
+
+```json
+{ "operation": "list_users" }
+```
+
+### `user_info`
+
+Returns data for the currently authenticated user. From v5.4.0, [locally trusted requests](../security/configuration.md#local-request-identity) report `username: "local"` for the built-in super user.
+
+```json
+{ "operation": "user_info" }
+```
+
+### `add_user`
+
+Creates a new user. `username` cannot be changed after creation. `password` is stored encrypted.
+
+```json
+{
+	"operation": "add_user",
+	"role": "developer",
+	"username": "hdb_user",
+	"password": "password",
+	"active": true
+}
+```
+
+### `alter_user`
+
+Modifies an existing user's password, role, or active status. All fields except `username` are optional.
+
+```json
+{
+	"operation": "alter_user",
+	"username": "hdb_user",
+	"password": "new_password",
+	"role": "senior_developer",
+	"active": true
+}
+```
+
+### `drop_user`
+
+Deletes a user by username.
+
+```json
+{ "operation": "drop_user", "username": "hdb_user" }
+```
+
+See [Users & Roles Operations](../users-and-roles/operations.md) for full documentation including permission object structure.
+
+---
+
+## Token Authentication
+
+Operations for JWT token creation and refresh.
+
+Detailed documentation: [JWT Authentication](../security/jwt-authentication.md)
+
+| Operation                      | Description                                                | Role Required          |
+| ------------------------------ | ---------------------------------------------------------- | ---------------------- |
+| `create_authentication_tokens` | Creates an operation token and refresh token for a user    | none (unauthenticated) |
+| `refresh_operation_token`      | Creates a new operation token from a refresh token         | any                    |
+| `exchange_oidc_token`          | Trades a CI workload identity token for an operation token | none (unauthenticated) |
+| `add_oidc_trust`               | Creates or replaces an OIDC trust policy                   | super_user             |
+| `list_oidc_trust`              | Lists all OIDC trust policies, including disabled ones     | super_user             |
+| `drop_oidc_trust`              | Deletes an OIDC trust policy                               | super_user             |
+
+### `create_authentication_tokens`
+
+Does not require prior authentication when called with `username`/`password`. Returns `operation_token` (short-lived JWT) and `refresh_token` (long-lived JWT).
+
+```json
+{
+	"operation": "create_authentication_tokens",
+	"username": "my-user",
+	"password": "my-password"
+}
+```
+
+<VersionBadge type="changed" version="v5.4.0" />
+
+When both `username` and `password` are omitted from a [locally trusted request](../security/configuration.md#local-request-identity), Harper issues tokens for the first active stored user, in username order, whose role has the `super_user` permission. The role need not be named `super_user`. The operation and refresh tokens carry that stored user's normal claims, and the mint replaces that user's stored refresh token, as before. No token is issued for the built-in `local` identity.
+
+If no such stored user exists, the operation fails with HTTP 409: `no user to mint a token for; create a user first`. For ordinary tokens, supplying a `username` still requires its `password`, even on a local connection.
+
+With `role` as an inline role object, instead mints a single **scoped token** whose bearer is limited to the embedded permissions — requires an authenticated `super_user` caller, and refuses one authenticated by a component's [Bearer validator](../http/api.md#serverregisterbearervalidatorvalidator-options); `username` is attribution only and must not name an existing user (defaults to `scoped:<minter>`); no refresh token is issued and the token cannot be revoked before expiry. See [JWT Authentication / Scoped Tokens](../security/jwt-authentication.md#scoped-tokens-inline-role).
+
+```json
+{
+	"operation": "create_authentication_tokens",
+	"username": "reporting-service",
+	"role": { "permission": { "operations": ["read_only"] } },
+	"expires_in": "7d"
+}
+```
+
+### `refresh_operation_token`
+
+Creates a new operation token from an existing refresh token.
+
+```json
+{
+	"operation": "refresh_operation_token",
+	"refresh_token": "EXISTING_REFRESH_TOKEN"
+}
+```
+
+### OIDC Trusted Publishing
+
+<VersionBadge version="v5.3.0" />
+
+A CI runner can authenticate to Harper with **no stored credential**. It presents an identity token minted by its own provider; if that token verifies against a stored **trust policy**, Harper returns a one-hour operation token for the user the policy names. This is the same exchange npm, PyPI, and AWS STS `AssumeRoleWithWebIdentity` use.
+
+The alternative is a `HARPER_CLI_REFRESH_TOKEN` secret: a 30-day credential, one per user, that expires on a schedule nobody tracks. A trust policy replaces it with a rule you configure once, and revoke with `drop_oidc_trust`.
+
+The job that deploys needs `permissions: id-token: write` and the `HARPER_CLI_TARGET` variable, and no secret at all, since the target is not sensitive. Any step in that job can request the identity token, so build in another job. Nothing in it names the policy: every `harper` command in the job authenticates through it by itself, and may do what the policy's user's role allows — see [Using it in a workflow](../cli/authentication.md#using-it-in-a-workflow). For a workflow that deploys from a branch, [`harper deploy setup=true provider=github-actions`](../cli/commands.md#github-actions-deploys-oidc) (v5.4.0) creates a deploy-only role and user and the policy, and sets the repository's `HARPER_CLI_TARGET` variable, in one command. [Deploying from a CI/CD Pipeline](/learn/developers/deploying-from-ci#let-the-workflow-authenticate-with-oidc) has a complete workflow, with the trust policy and deploy-only role it needs. See [CLI Authentication](../cli/authentication.md#workload-identity-oidc) for the client half and where the exchange sits in credential precedence.
+
+Policies live in the replicated `system.hdb_oidc_trust` table, so configuring one on any node applies cluster-wide.
+
+#### `add_oidc_trust`
+
+Creates or replaces a trust policy. **super_user only** — a policy lets an external system authenticate as a Harper user, so granting one is equivalent to handing out a credential.
+
+```json
+{
+	"operation": "add_oidc_trust",
+	"id": "my-app-prod",
+	"issuer": "https://token.actions.githubusercontent.com",
+	"audience": "https://my-instance.harperdb.io:9925/",
+	"user": "ci-deploy",
+	"claims": {
+		"repository_id": "67890",
+		"workflow_ref": "HarperFast/my-app/.github/workflows/deploy.yml@refs/heads/main",
+		"environment": "production"
+	}
+}
+```
+
+| Parameter     | Description                                                                                                                |
+| ------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `id`          | **Required.** Policy identifier, 1–128 characters of letters, numbers, `_`, `-`, and `.`.                                  |
+| `issuer`      | **Required.** The token issuer (`iss`) this policy trusts.                                                                 |
+| `audience`    | **Required.** The audience the token must be addressed to. Should identify **this instance**; enforced for GitHub Actions. |
+| `claims`      | **Required.** The claim constraints a token must satisfy. At least one, and specific enough for the issuer's profile.      |
+| `user`        | **Required.** The Harper user a matching run authenticates as. Must already exist and be active.                           |
+| `operations`  | Narrow the minted token to these operations, 1–100 unique names. Omit for the user's full role — see below.                |
+| `enabled`     | Defaults to `true`. A disabled policy is kept but never matched.                                                           |
+| `description` | Optional free text, up to 1024 characters.                                                                                 |
+
+##### Setting a policy up from the CLI
+
+Every Operations API operation is available as a CLI command of the same name, which is usually the easiest way to configure a policy: log in once from your machine, then run the operation against the cluster.
+
+```sh
+# 1. Authenticate to the cluster you are configuring (once, interactively)
+harper login https://my-instance.harperdb.io:9925
+
+# 2. Create the trust policy
+harper add_oidc_trust \
+  id=my-app-prod \
+  issuer=https://token.actions.githubusercontent.com \
+  audience=https://my-instance.harperdb.io:9925/ \
+  user=ci-deploy \
+  claims='{"repository_id":"67890","workflow_ref":"HarperFast/my-app/.github/workflows/deploy.yml@refs/heads/main","environment":"production"}'
+
+# 3. Confirm what the cluster now trusts
+harper list_oidc_trust
+```
+
+`claims` is a JSON object, so quote it as a single shell argument — the CLI parses each value as JSON, which is what turns that string into the nested object the operation expects. `operations` works the same way if you scope the policy: `operations='["deploy_component","get_job","get_deployment","registration_info"]'`.
+
+`harper login` stores a token for that target, so step 2 needs no credentials of its own. If you would rather not store one, pass the target and credentials explicitly instead:
+
+```sh
+harper add_oidc_trust target=https://my-instance.harperdb.io:9925 auth_username=HDB_ADMIN auth_password="$ADMIN_PASSWORD" id=my-app-prod ...
+```
+
+Both routes need **super_user**, since that is what the trust-policy operations require.
+
+This **replaces** the policy rather than merging into it. A partial update is how an over-broad policy gets created by accident, and the point of `claims` is that every constraint in it was written deliberately.
+
+##### Narrowing what the token may do (`operations`)
+
+The user the policy names is the privilege boundary: a matching run gets that user's role. `operations` narrows it further, so one CI user can back several policies that each do less than the role allows:
+
+```json
+{
+	"operation": "add_oidc_trust",
+	"id": "my-app-prod",
+	"issuer": "https://token.actions.githubusercontent.com",
+	"audience": "https://my-instance.harperdb.io:9925/",
+	"user": "ci-deploy",
+	"operations": ["deploy_component", "get_job", "get_deployment", "registration_info"],
+	"claims": {
+		"repository_id": "67890",
+		"workflow_ref": "HarperFast/my-app/.github/workflows/deploy.yml@refs/heads/main",
+		"environment": "production"
+	}
+}
+```
+
+It is **narrowing only** — never widening. An operation the role forbids stays forbidden, so the scope cannot be used to grant something the user does not already have. Omit `operations` and the token carries the user's full role.
+
+Names are validated when the policy is written, against the same registry `add_role` and `alter_role` use, so a typo is rejected there rather than failing later inside CI with nothing to point at. One consequence: an operation a component registered at runtime with `server.registerOperation` is **not** recognized, because that registry is process-local, so a policy naming one is rejected. It fails closed — a rejected policy, never a widened one — and the same gap applies to `add_role` and `alter_role`.
+
+:::warning
+**The scope covers the Operations API and SQL, not the application data path.** It is enforced at the `verifyPerms` / `verifyPermsAST` gate, so a scoped token still carries the role's full table-level CRUD when it reaches an application's REST or GraphQL resources, which authorize through `checkPermission` instead.
+
+So `operations` bounds what a CI credential can _administer_, not what data it can read or write. If that matters, point the policy's `user` at a role that is itself least-privilege for the data the token can reach, rather than relying on the scope alone.
+:::
+
+A deploy user does not need `super_user`. A role that lists the operations the pipeline calls is enough:
+
+```json
+{
+	"operation": "add_role",
+	"role": "ci_deploy",
+	"permission": {
+		"operations": ["deploy_component", "get_job", "get_deployment", "registration_info"]
+	}
+}
+```
+
+`get_deployment` reads the deployment record, which is what `harper deploy restart=rolling` follows on v5.4.0 and later to wait for every node; `get_job` is for a pipeline that polls a rolling deploy's job itself; and `registration_info` is the version check `harper deploy` makes before it uploads; without that one the deploy still works, but the node logs a refused operation on every run. Each has to be listed: an `operations` allowlist, and a policy's `operations` scope, refuse every operation they don't name, including ones like `get_job` that any role may otherwise call. `restart_service` is not needed, since Harper starts the rolling restart's job itself.
+
+Deploying is still administrative authority, since the deployed component runs inside the Harper process. A deploy that passes a literal registry or git `token` in `credentials` needs `super_user` on a node that holds secret custody, because Harper seals that token into the secrets store. Give a least-privilege role a `secret` reference instead.
+
+A scoped token also cannot trade itself for a browser session: `create_authentication_tokens` with `purpose: "login"` is refused, because a session carries no operation scope and would silently restore the user's full role.
+
+`user` is resolved at write time. A policy naming a user that does not exist, or one that is inactive, is rejected — otherwise it would fail only at exchange time, inside CI, with nothing to point at. If the named user is a **super_user**, the policy is still created but the response carries a `warning`: any run matching it gains full administrative access.
+
+**Claim constraints** are exact string matches. A value may be a string, or an array of strings meaning any-of:
+
+```json
+{ "claims": { "repository": "HarperFast/my-app", "ref": ["refs/heads/main", "refs/heads/release"] } }
+```
+
+A constrained claim that is **absent** from the token fails rather than passes, so a policy cannot be weakened by an issuer that stops emitting a claim.
+
+**An http(s) audience must be the exact string the CI client asks for**, which means an explicit port and a trailing slash — `https://my-instance.example.com:9925/`, not `https://my-instance.example.com`. This is checked for **every** issuer, not only GitHub Actions, and the shorter form is rejected at write time. The audience is matched byte-for-byte at verification, and the CLI requests its token for the normalized target, which supplies `:9925` and the trailing slash — so a policy written without them could never authenticate. An audience that is not an http(s) URL (an `api://` identifier, a bare GUID) is not constrained.
+
+**The audience should identify this instance.** For GitHub Actions, Harper rejects the provider's shared default — anything shaped like `https://github.com/<owner>` — because that value is shared by every repository under the owner, so accepting it would make a token minted by any of them valid here.
+
+That check is a guard against the one known-dangerous value, not a proof of correctness: Harper does not compare the audience against its own identity, so an arbitrary or mistyped value is accepted at write time and instead fails to match at exchange time, when the CLI derives the audience from its target URL. Use the instance URL your CI targets. For an issuer with no registered profile the audience is not checked for _specificity_ — the canonical-form rule above still applies — and the required `sub` pin is what binds the policy to one principal.
+
+##### Policy specificity for GitHub Actions
+
+For `https://token.actions.githubusercontent.com`, a policy must satisfy all three of these, each closing a distinct way a policy can be accidentally broad:
+
+| Requirement            | Satisfied by one of                                                      | Left open otherwise                             |
+| ---------------------- | ------------------------------------------------------------------------ | ----------------------------------------------- |
+| **Pin the repository** | `repository_id`, `repository`                                            | Any repository                                  |
+| **Pin the workflow**   | `workflow_ref`, `workflow_path`, `job_workflow_ref`, `job_workflow_path` | Any workflow in that repository                 |
+| **Gate the ref**       | `workflow_ref`, `ref`, `environment`                                     | Any branch that can be pushed to the repository |
+
+The ref gate is the one worth understanding, and it is stricter than npm's model. Pinning repository and workflow without also pinning a ref is not safe: anyone who can push a branch can add the trusted workflow to that branch and mint a token. npm accepts that shape and relies on environment protection instead.
+
+Consequences worth planning around:
+
+- **`repository_id` is preferred over `repository`** because it is immutable — it survives a repository rename, and is immune to org-name recycling.
+- **A tag-triggered release cannot pin `workflow_ref`**, since the tag is unknown when the policy is written. Pin `workflow_path` instead — Harper derives it from `workflow_ref` by removing the ref — and gate on `environment`.
+- **`ref_type: tag` is deliberately not accepted as a ref gate.** Anyone with push access can create a tag.
+- **`sub` is not accepted as a pin.** It varies by trigger, and its format changed for repositories created after 2026-07-15 (immutable subjects embed owner and repository ids), so a policy pinning it would have to handle two shapes indefinitely.
+- **`job_workflow_ref` pins the workflow but does not gate the ref.** In a reusable workflow, it names the reusable workflow that ran, not the caller that invoked it, and its `@ref` suffix is that workflow's own branch — constant however it is called. Accepting it as a ref gate would admit any branch of any repository that references the reusable workflow. Pin the workflow with it if you like, then gate the ref with `workflow_ref`, `ref`, or `environment`.
+- **`pull_request_target` runs are denied** unless the policy explicitly constrains `event_name`. Such a run executes the base repository's workflow, with its secrets, while a fork controls the checked-out code. A plain `pull_request` run from a fork cannot mint at all, since it gets no `id-token: write`.
+
+##### Other issuers
+
+An issuer with no registered profile gets a strict generic profile: the policy must pin **`sub`**. That is the one claim every OIDC issuer defines as identifying a single principal, and it makes workload identity work with no provider-specific code — a Kubernetes service-account token (`system:serviceaccount:<namespace>:<name>`), a GCP service account, and a SPIFFE SVID all carry a stable canonical subject.
+
+GitHub Actions needs its own profile precisely because its `sub` is the one claim you should _not_ pin.
+
+#### `exchange_oidc_token`
+
+Trades an identity token for a Harper operation token. **Unauthenticated by design** — this operation _is_ the authentication, the way `create_authentication_tokens` is against a password. The CLI calls it for you; you would call it directly only from a client that mints its own requests.
+
+```json
+{
+	"operation": "exchange_oidc_token",
+	"token": "eyJhbGciOi..."
+}
+```
+
+Response:
+
+```json
+{
+	"operation_token": "eyJhbGciOi...",
+	"expires_in": 3600,
+	"username": "ci-deploy",
+	"policy": "my-app-prod"
+}
+```
+
+The operation token also carries the policy's id and the run's verified claims (`repository`, `sha`, `ref`, `workflow_ref`, `run_id`, `run_attempt`, `actor` and `environment`, whichever the identity token has). They are signed with the rest of the token, and a deploy made with it records them as its [`source`](#get_deployment) <VersionBadge version="v5.4.0" />.
+
+The operation token is valid for **one hour** — long enough to cover a slow deploy, short enough to bound the exposure if it leaks. That is a reduced window, not safety: within the hour it is a live credential carrying the policy's identity, so treat it like any other secret and keep it out of logs and step outputs. No refresh token is issued; a subsequent run performs a new exchange.
+
+:::note
+**Every rejection of a well-formed token returns the same message.** The endpoint is unauthenticated, so a caller told which check failed could enumerate a policy one claim at a time. A malformed request — a missing `token`, or one over 8192 characters — is rejected by schema validation before any of that, with its own message; that reveals nothing about a policy. The specific reason is written to the `oidc-trust` logger, which is where to look when a workflow that should match does not.
+:::
+
+**When several policies match a token** (Changed in: v5.4.0), the exchange checks every enabled policy for the token's issuer. Policies that agree, naming the same `user` and the same `operations`, answer with the first by `id`. If two give the token a different user, or different operations, the exchange refuses it, with the same message as any other rejection, and the log names both policies. The token is not spent, so the run can be retried once one of the two is dropped, disabled, or given claims that keep it apart. Operations are compared as the operations they allow: the same names in any order agree, a permission group such as `read_only` equals the operations it expands to, and an unscoped policy differs from every scoped one. Before v5.4.0, the first matching policy by `id` answered, and the others were ignored. [`list_oidc_trust`](#list_oidc_trust) names each such pair.
+
+**An identity token can be exchanged once.** Harper records a SHA-256 fingerprint of each spent token in `system.hdb_oidc_token_use`, expiring with the token itself, so the table stays proportional to in-flight tokens and never holds a credential. The record is written _before_ the operation token is minted: if minting then fails, the identity token is burned, costing a CI re-run, where the reverse order would leave a spendable token behind.
+
+That replay check is replicated, but replication is asynchronous, so two simultaneous replays against **different nodes** can both succeed. This is not a privilege escalation — whoever holds the token could obtain one operation token regardless — and what it does stop is the realistic case: a token that leaks after a legitimate run and is reused inside its window.
+
+Exchanges are recorded in the authentication audit stream alongside Basic, Bearer, and mTLS events, for failures as well as successes — a run repeatedly failing to authenticate is what an audit trail is for. Enable it with `logging.auditAuthEvents.logSuccessful` and `logging.auditAuthEvents.logFailed`.
+
+#### `list_oidc_trust`
+
+Lists every policy, **including disabled ones**, sorted by `id`. **super_user only** — the policy set names exactly which repository and workflow are worth compromising.
+
+```json
+{ "operation": "list_oidc_trust" }
+```
+
+Returns `{ "policies": [ ... ] }`. Each entry carries `id`, `issuer`, `audience`, `claims`, `user`, `operations` (`null` when unscoped), `enabled`, `description`, `updated_by`, and timestamps.
+
+An entry may also carry **`invalid_reason`** — set when the policy cannot currently authenticate anyone, because it is malformed or because the user it names was deleted or deactivated after the policy was written. Check for it first when diagnosing a rejected exchange: the exchange will not say what failed, so a policy you expected to match that carries an `invalid_reason` is the fastest explanation available.
+
+<VersionBadge type="changed" version="v5.4.0" /> Each entry also carries **`exchangeable`**: `true` when the exchange considers the policy, and `false` when it is disabled, malformed, or not specific enough for its issuer, such as a GitHub Actions policy that pins no ref. A policy that fails the issuer's specificity rules now says why in `invalid_reason`; before v5.4.0 the exchange skipped it and only logged it. And when two exchangeable policies can match the same token but give it a different user or operations, so the exchange [refuses it](#exchange_oidc_token), both carry `invalid_reason`, naming a rival on the same audience first: `can match the same runs as '<other id>', which gives them a different user or operations, so the exchange refuses those runs`. Two policies on different audiences can share only a token that names both audiences, and their `invalid_reason` says so: `can match a token that names both its audience and '<other id>'s, and '<other id>' gives it a different user or operations, so the exchange refuses such a token`. A GitHub Actions token names one audience, so GitHub Actions policies on different audiences never conflict, and neither does one pinned to `event_name: pull_request_target` with one that leaves `event_name` open, since GitHub refuses such a run to the second. Drop or disable one policy of a pair, or give them claims that keep them apart.
+
+#### `drop_oidc_trust`
+
+Stops every workflow that matched the policy from exchanging again. **super_user only.** Fails with `404` if no policy has that `id`.
+
+```json
+{ "operation": "drop_oidc_trust", "id": "my-app-prod" }
+```
+
+:::caution
+**This does not revoke operation tokens already issued.** The minted token is a stateless JWT valid until its one-hour expiry, so a token obtained moments before the policy was dropped keeps authorizing for the rest of that hour.
+
+Dropping the policy is therefore containment against _future_ runs. If you are responding to a suspected compromise rather than doing routine cleanup, also deactivate or re-role the user the policy named (`alter_user`), which is what stops a token that is already in someone's hands.
+:::
+
+---
+
+## Network Access
+
+<VersionBadge version="v5.4.0" />
+
+A source address allowlist for the operations API, enforced by a proxy in front of Harper (such as Harper Fabric's), not by Harper itself. Lists live in the `system.hdb_network_access` table, one row per scope, which replicates like users and roles: a list set on one node reaches every node that receives `system` database replication from it (all nodes, by default). The only scope is `operations`.
+
+Harper publishes the list in the metadata file it writes for each operations API [Unix domain socket](../configuration/options.md#tls), as `allowedSources`, and rewrites that file within moments of any change, on every node that receives it, without a restart. Those sockets exist only when `tls.unixDomainSockets` is `true` and `operationsApi.network.securePort` is set. A proxy that reads that file admits only connections from the listed addresses. A direct connection to the operations API port, or one through a proxy that does not read `allowedSources`, is not restricted.
+
+| Operation            | Description                                       | Role Required |
+| -------------------- | ------------------------------------------------- | ------------- |
+| `set_network_access` | Sets or clears the allowlist for a scope          | super_user    |
+| `get_network_access` | Returns the allowlist for one scope or all scopes | super_user    |
+
+### `set_network_access`
+
+Replaces the scope's list. Each entry in `allow` is an IPv4 or IPv6 CIDR, or a bare address (a `/32` or `/128`). An invalid entry rejects the whole request. Entries are stored in canonical form: lowercase, compressed IPv6, with an explicit prefix; an IPv4-mapped IPv6 entry (`::ffff:10.0.0.0/104`) is stored as the IPv4 network it covers (`10.0.0.0/8`). An entry matches only clients of its own address family, so `::/0` does not admit IPv4 clients; an IPv4-mapped IPv6 client (`::ffff:10.1.2.3`) matches IPv4 entries. Up to 1000 entries.
+
+```json
+{
+	"operation": "set_network_access",
+	"scope": "operations",
+	"allow": ["203.0.113.0/24", "2001:db8::/32", "198.51.100.7"]
+}
+```
+
+An empty `allow` removes the restriction:
+
+```json
+{ "operation": "set_network_access", "scope": "operations", "allow": [] }
+```
+
+**Lockout check.** Setting a non-empty list fails with `409` when it does not include the address the request came from, because the proxy would then block that client. It also fails with `409` when Harper cannot tell the request's source address: a call through the MCP server or `server.operation()`, and some requests on the Bun runtime. Add the address, or pass `"force": true` (a boolean) to set the list anyway.
+
+Requests over the local operations API domain socket (`operationsApi.network.domainSocket`, which the `harper` CLI uses on the same host) skip this check on Node.js. That socket is never behind the proxy, which makes it the way to recover from a list that locked you out:
+
+```bash
+harper set_network_access scope=operations allow='[]'
+```
+
+When the node handling the request publishes no operations API socket metadata (it lacks either setting above), the response carries a `warning`: the list is stored and replicated, but nothing on that node enforces it.
+
+:::caution
+Before setting a list, add every source that reaches the operations API through the proxy, not only your own. This includes management tools such as Studio and, in a cluster where replication uses the operations API port, the other nodes.
+:::
+
+### `get_network_access`
+
+```json
+{ "operation": "get_network_access", "scope": "operations" }
+```
+
+Returns `{ "scope", "allow", "updatedBy", "updatedAt" }`; `allow` is `[]` when no list is set. Without `scope`, returns an array with one entry per scope.
+
+---
+
+## Components
+
+Operations for deploying and managing Harper components (applications, plugins).
+
+Detailed documentation: [Components Overview](../components/overview.md)
+
+| Operation                   | Description                                                             | Role Required |
+| --------------------------- | ----------------------------------------------------------------------- | ------------- |
+| `add_component`             | Creates a new component project from a template                         | super_user    |
+| `deploy_component`          | Deploys a component via payload (tar) or package reference (NPM/GitHub) | super_user    |
+| `package_component`         | Packages a component project into a base64-encoded tar                  | super_user    |
+| `drop_component`            | Deletes a component or a file within a component                        | super_user    |
+| `get_components`            | Lists all component files and config                                    | super_user    |
+| `get_component_file`        | Returns the contents of a file within a component                       | super_user    |
+| `set_component_file`        | Creates or updates a file within a component                            | super_user    |
+| `get_env_keys`              | Lists the key names in a component's `.env` file (never values)         | super_user    |
+| `set_env_value`             | Sets one or many `.env` keys, preserving the rest of the file           | super_user    |
+| `delete_env_value`          | Removes one or many `.env` keys, leaving the rest intact                | super_user    |
+| `list_deployments`          | Lists deployment records with optional filters                          | super_user    |
+| `get_deployment`            | Fetches a single deployment record by ID; supports SSE streaming        | super_user    |
+| `list_releases`             | Lists the live release and the releases each node keeps                 | super_user    |
+| `enable_previews`           | Creates an application's PR preview identity (v5.4.0)                   | super_user    |
+| `disable_previews`          | Removes it and every preview of the application (v5.4.0)                | super_user    |
+| `get_preview_policy`        | Returns an application's PR preview identity and limits (v5.4.0)        | super_user    |
+| `get_deployment_payload`    | Returns the tarball stored for a deployment                             | super_user    |
+| `delete_deployment_payload` | Removes the stored tarball to free space                                | super_user    |
+| `add_ssh_key`               | Adds an SSH key for deploying from private repositories                 | super_user    |
+| `update_ssh_key`            | Updates an existing SSH key                                             | super_user    |
+| `delete_ssh_key`            | Deletes an SSH key                                                      | super_user    |
+| `list_ssh_keys`             | Lists all configured SSH key names                                      | super_user    |
+| `set_ssh_known_hosts`       | Overwrites the SSH known_hosts file                                     | super_user    |
+| `get_ssh_known_hosts`       | Returns the contents of the SSH known_hosts file                        | super_user    |
+| `install_node_modules`      | _(Deprecated)_ Run npm install on component projects                    | super_user    |
+
+A role that is not `super_user` can be granted these operations by listing them in its [`operations` allowlist](../users-and-roles/overview.md#operation-permissions), which is how a deploy-only CI role gets `deploy_component` and `get_deployment`. A few cannot be granted that way, such as `get_deployment_payload` and the three preview operations; that section lists them. (Added in: v5.4.0) A role's [`component_deploy` grant](../users-and-roles/overview.md#component-deploy-grants) instead limits `deploy_component`, `drop_component`, `get_components`, `list_deployments` and `get_deployment` to the components whose names it lists, and can require that each deploy be isolated, under a host suffix, on branched databases, or a PR preview.
+
+### `deploy_component`
+
+Deploys a component. The `package` option accepts any valid NPM reference including GitHub repos (`HarperDB/app#semver:v1.0.0`), tarballs, or NPM packages. The `payload` option accepts a base64-encoded tar string from `package_component`. Supports `"restart": true` or `"restart": "rolling"`. On Harper Pro and Fabric, a deploy goes to every node in the cluster unless you pass `"replicated": false`; Harper core on its own does not replicate.
+
+Additional parameters:
+
+- `urlPath` — the HTTP URL path the component is mounted at (e.g. `"/api/v2"`). Must not contain `..` or `.` path segments. Persisted on the component's root-config entry; see [HTTP middleware routing](../http/overview.md#middleware-routing).
+- `host` <VersionBadge version="v5.2.0" /> — the virtual hostname the component is served on (e.g. `"api.example.com"`). Must be a bare hostname or IPv6 literal — no scheme, port, path, or brackets. Persisted alongside `urlPath`.
+- `isolated` <VersionBadge version="v5.3.0" /> — `true` to run the application in a worker thread of its own. See [Isolated applications](../components/applications.md#isolated-applications).
+- `branchedDatabases` <VersionBadge version="v5.3.0" /> — `true`, or a list of database names, to give the application a private branch of them. See [Branched databases](../components/applications.md#branched-databases).
+- `preview` <VersionBadge version="v5.4.0" /> — marks the deploy as a pull request's preview, which expires. See [Preview deployments](#preview-deployments).
+- `install_allow_scripts` — set to `true` to allow npm pre/post install scripts (disabled by default)
+- `credentials` — credentials for installing a component from a private npm registry or private git repository (see below)
+- `deployment_timeout` <VersionBadge version="v5.1.4" /> — how long, in milliseconds, a peer waits to receive the replicated deployment payload before failing (default: `120000`)
+- `ignore_replication_errors` <VersionBadge version="v5.1.4" /> — set to `true` to treat a peer that fails to receive the deploy as non-fatal instead of failing the whole operation. By default a failed peer causes `deploy_component` to return a non-2xx status; the component is still deployed (and, if requested, restarted) on the origin node.
+- `activate` <VersionBadge version="v5.3.0" /> — set to `false` to build and install the component without making it live. See [Staging a build and activating it later](#staging-a-build-and-activating-it-later).
+- `deployment_id` <VersionBadge version="v5.3.0" /> — make a staged build live, or return to a release a later deploy replaced. Takes no build inputs of its own. See [Going back to a previous release](#going-back-to-a-previous-release).
+
+<VersionBadge type="changed" version="v5.4.0" /> A payload deploy, such as `harper deploy` from a directory, can set `host`, `urlPath`, `isolated` and `branchedDatabases` too; before v5.4.0 it refused them, and they could only be added to the component's entry in the root `harper-config.yaml`. See [How a deploy updates the root config](#how-a-deploy-updates-the-root-config) for what it does with the ones it leaves out.
+
+<VersionBadge type="changed" version="v5.4.0" /> `project` must be letters, numbers, `-` and `_`, after a leading npm scope (`@my-org/`) and an archive extension (`.tgz`, `.tar.gz` or `.tar`) are removed. A name with any other character, such as `my-app.pr-12`, fails with `400` before anything is written. Before v5.4.0, the part after its last `.` was dropped, as from a file extension, so `my-app.pr-12` deployed over `my-app`.
+
+:::warning
+Only a deploy that restarts workers can be checked before it serves. On a node running v5.4.0 or later, `"restart": true` or `"restart": "rolling"` [certifies the release in a canary worker](#certifying-a-release-in-a-canary-worker) first, unless the response's `certification` is `uncertified` or `unavailable`, which say why it went out unchecked. A release that fails to load is rejected. The release it replaced is put back, or, if there is none, the component is failed closed on that node. A deploy without `restart` is not test-loaded: a release that installs but throws when it loads is deployed, and it reports the failure in the `componentStatus` of [`get_status`](#set_status--get_status--clear_status) once workers load it. The rest of the instance keeps serving.
+:::
+
+#### Declared entry points that matched nothing
+
+<VersionBadge version="v5.4.0" />
+
+Before its release goes live, a deploy checks the built component for every `jsResource.files` and `graphqlSchema.files` pattern its own config file declares: `harper-config.yaml`, `harperdb-config.yaml` or `config.yaml`, whichever it finds first in that order. A pattern counts only the entries its [`only`](../components/extension-api.md) setting lets the component load, so a directory does not satisfy `only: files`. A pattern that matches nothing is named in a `warning` event and at the end of the response's `message`, such as `The release of my-app is missing entry points its config.yaml declares: jsResource.files 'resources.js' matched no file.` A truncated or partial payload looks exactly like this. The deploy still goes ahead, since a config can name a file a release no longer ships. A component with no config file of its own declares nothing, so it is not checked, and neither are other plugins' `files`.
+
+#### How a deploy updates the root config
+
+<VersionBadge type="changed" version="v5.3.0" />
+
+A deploy changes the component's entry in the root `harper-config.yaml` only once the new release is live on that node. A deploy that fails to install or validate leaves the entry exactly as it was, so a restart does not install a release that never went live. If Harper stops partway through the swap, startup settles it before it installs anything from the root config: either the previous release stays live with its entry, or the new release goes live with its entry, including whether the component runs isolated.
+
+- **A `package` deploy replaces the entry.** The new entry is built from the request: `package`, `install`, `credentials`, `urlPath`, `host`, `branchedDatabases`, and `isolated`.
+- **A `payload` deploy removes `package`, `install`, and `credentials`.** A `package` key left in place would make a node installing from the root config resolve the old package instead of the payload release that is live. A payload deploy that sets none of `host`, `urlPath`, `isolated` and `branchedDatabases` keeps those keys as they are in the entry, and an entry left with no keys is removed.
+- **A `payload` deploy that sets any of those four keys owns all four** <VersionBadge version="v5.4.0" />. The release records them, and the entry gets `host`, `urlPath` and `branchedDatabases` from the request where it sets them, and as the entry has them otherwise. `isolated` stays only if the request sets it to `true`, or leaves it out and the application is isolated now, so `isolated: false` removes it. Going back to that release later puts those four back. A key a payload deploy owns replaces a hand edit of it in the root config.
+- **`drop_component` removes the entry.**
+
+These writes are serialized with each other and with `set_configuration`, so concurrent deploys, drops, and configuration changes do not overwrite one another.
+
+A deploy that has to change the entry is refused before anything changes if the root config does not parse, or if Harper cannot write to the directory that holds it. A deploy that leaves the entry as it is, such as a `payload` deploy of a component that has no entry, does not need the root config to be writable.
+
+#### Staging a build and activating it later
+
+<VersionBadge version="v5.3.0" />
+
+A deploy normally builds the new version and swaps it in as one operation. `activate: false` stops after the build, so the work that takes time and can fail — fetching, resolving, installing dependencies — happens when you choose, and the cut-over itself is two directory renames you can run in a maintenance window.
+
+Every `deploy_component` response carries a `deployment_id`, staged or not, so a build you deploy today can be named later.
+
+```json
+{
+	"operation": "deploy_component",
+	"project": "my-app",
+	"package": "npm:@my-org/my-app@1.2.3",
+	"activate": false
+}
+```
+
+The response names the artifact that is now waiting:
+
+```json
+{
+	"deployment_id": "a3f8c2d1-...",
+	"message": "Staged: my-app. Deploy it with deploy_component deployment_id=a3f8c2d1-..."
+}
+```
+
+Nothing about the running component changes: the live directory, the root config entry, and the restart-required flag are all untouched, and `get_deployment` reports the deployment as `staged`. Make it live with that id:
+
+```json
+{
+	"operation": "deploy_component",
+	"project": "my-app",
+	"deployment_id": "a3f8c2d1-..."
+}
+```
+
+That request takes no `package`, `payload`, `credentials`, install options, or `urlPath`/`host` — they are rejected rather than ignored, because the staged build already decided them and re-supplying one here would have no effect. It resolves and installs nothing; it swaps in the exact bytes that were verified at staging time, including across a full Harper restart in between.
+
+A few things worth knowing before you rely on it:
+
+- **Activating the release that is already live succeeds and changes nothing.** A retry is therefore safe: see [Retrying an activation](#retrying-an-activation).
+- **A staged build outlives later deploys.** Stage v2, deploy v3, and activating v2's id later returns the component to v2.
+- **Builds that are not live are bounded.** [`deployment.stagingRetention.maxCount`](../configuration/options.md#deployment) caps how many a component keeps — staged builds and [replaced releases](#going-back-to-a-previous-release) together (default `5`). The oldest are removed at the start of that component's next deploy and at startup. A build pruned before you activate it has to be staged again.
+- **A deployment id names one release on a node for as long as the node holds it** — waiting, live, or kept after a later deploy replaced it. Staging again with the same id is rejected rather than rebuilding over it.
+- **`file:` directory sources cannot be staged.** A local-directory package is linked rather than copied, so the bytes could change between staging and activation. Deploy those normally.
+- **`restart` belongs on the activation, not the stage.** A stage changes nothing that is running, so `restart` is rejected alongside `activate: false`; pass it with `deployment_id` to restart as the new version goes live.
+- **Reclaiming the payload does not disable the artifact.** [`delete_deployment_payload`](#delete_deployment_payload) on a staged deployment frees the stored tarball; the build is already installed on disk, so its id still activates.
+
+A refused activation says which kind of refusal it is: `404` when nothing on that node answers to the id — it never existed there, it was pruned, or its release was replaced and not kept — and `409` when the build is there but cannot be activated, such as one belonging to another component or one whose files changed after it was staged.
+
+:::warning
+**Upgrade every node before staging.** A stage is replicated like any other deploy. A node still running a version before v5.3.0 does not recognize `activate: false`. It performs an ordinary deploy and serves the release immediately.
+
+The origin cannot detect this in advance, so it checks afterward. Any peer that does not confirm staging fails the operation with the node names. Check those nodes before activating. Pass `ignore_replication_errors: true` only if you have accepted that difference.
+:::
+
+#### Going back to a previous release
+
+<VersionBadge version="v5.3.0" />
+
+When a deploy replaces the release that is live, Harper keeps the replaced one under the `deployment_id` that deployed it. Activating that id puts it back, with no rebuild, resolve, or install:
+
+```json
+{
+	"operation": "deploy_component",
+	"project": "my-app",
+	"deployment_id": "<id of the deployment you want back>",
+	"restart": true
+}
+```
+
+[`list_deployments`](#list_deployments) shows each deployment's id. The activation publishes the root config entry published by that deployment, so a `package` release gets its `package` entry back and a `payload` release removes the one a later deploy added. The release it replaces is kept in turn, so you can go forward again the same way.
+
+- **Kept releases count against [`deployment.stagingRetention.maxCount`](../configuration/options.md#deployment)**, with staged builds. The most recently replaced ones are kept.
+- **Each kept release is a full installed copy of the component, `node_modules` included.** At the default of `5`, budget disk for up to five extra copies per component. `0` keeps no replaced release.
+- **A release is kept as it was when it was replaced**, including anything it wrote into its own directory while it was live.
+- **Not every release can be kept.** A release made live before v5.3.0, or deployed from a `file:` directory, is not kept. A release whose dependency links use absolute paths is kept but refused (`409`) when you try to activate it; on Windows, npm writes such links for `file:` and workspace dependencies.
+- **Each node answers for itself.** A node that never had the release, or no longer keeps it, answers `404`. `deploy_component` reports that as a failed peer.
+
+#### Retrying an activation
+
+<VersionBadge version="v5.3.0" />
+
+An activation of the id that is already live on a node succeeds there without a swap. If an activation fails partway — a peer was unreachable, or the component went live on the origin but its root config entry could not be written — retry the same `deployment_id`. During the retry:
+
+- A node that already switched answers success.
+- A node still holding the build switches now.
+- A node that holds neither answers `404`.
+
+The retry also finishes anything the failed attempt left half done on that node, such as writing the root config entry. A node that answers "already live" still restarts if you pass `restart` — every worker, including those of isolated applications, since it cannot tell which ones loaded the previous release. Without `restart`, it marks the component as needing a restart, because it cannot tell whether every worker has loaded that release.
+
+A plain deploy (without `activate: false`) that went live only on the origin leaves the peers nothing to activate. Their retry answers `404`, so deploy the release again instead.
+
+#### Preview deployments
+
+<VersionBadge version="v5.4.0" />
+
+`preview` marks a deploy as a preview of an application for one pull request. Harper drops the preview when it expires, caps how many previews of the application a node keeps, and keeps fewer of its replaced releases. [`harper preview deploy`](../cli/commands.md#harper-preview-deploy) sends it, and [Per-PR previews](/learn/developers/deploying-from-ci#per-pr-previews) sets up the identity that deploys it.
+
+```json
+{
+	"operation": "deploy_component",
+	"project": "my-app-pr-42",
+	"package": "git+https://github.com/my-org/my-app.git#3f9c2e1d...",
+	"host": "fix-cart.app.my-cluster.example.com",
+	"isolated": true,
+	"branchedDatabases": true,
+	"restart": true,
+	"preview": {
+		"app": "my-app",
+		"pr": 42,
+		"branch": "fix/cart",
+		"repository": "my-org/my-app",
+		"sha": "3f9c2e1d...",
+		"expiresAt": "2026-11-10T18:00:00.000Z"
+	}
+}
+```
+
+| Field        | Description                                                                                |
+| ------------ | ------------------------------------------------------------------------------------------ |
+| `app`        | **Required.** The application this is a preview of.                                        |
+| `pr`         | **Required.** The pull request's number, an integer of 1 or more.                          |
+| `expiresAt`  | **Required.** When the preview expires: an ISO 8601 date, or milliseconds since the epoch. |
+| `branch`     | The PR's head branch, up to 256 characters.                                                |
+| `repository` | The repository, up to 256 characters.                                                      |
+| `sha`        | The commit, 7 to 64 hex characters.                                                        |
+
+Any other field fails with `400`, and so does a `project` other than `<app>-pr-<pr>`: `'preview' describes a preview that must be deployed as 'my-app-pr-42'`. `preview` goes on a package or payload deploy, or a stage. An activation by `deployment_id` refuses it, and takes the staged build's own.
+
+The release keeps its `preview`, and [`get_components`](../components/applications.md#get_components) shows it on the component's entry, while the deployment record carries it as `preview` in [`list_deployments`](#list_deployments) and [`get_deployment`](#get_deployment). A redeploy replaces it, so each deploy of a preview sets its expiry again.
+
+- **Expiry.** Once a node holds a preview, the cluster's scheduler leader looks for expired previews every [`deployment.previews.sweepInterval`](../configuration/options.md#deployment), ten minutes by default. It drops each preview whose `expiresAt` has passed, on every node, and only where that node's live release is still the one it found expired, so a preview redeployed in the meantime stays. An isolated preview's worker stops. A preview that is not isolated keeps being served by the shared workers until they restart.
+- **The cap.** With [`deployment.previews.maxPerApplication`](../configuration/options.md#deployment) set, a node keeps at most that many live previews of one application. The deploy of another is refused with `409`, naming the oldest: `Cannot deploy preview 'my-app-pr-43': 'my-app' already has 5 preview(s), the most deployment.previews.maxPerApplication allows. The oldest is 'my-app-pr-12' (PR 12); drop it, or another, first.` A redeploy of a live preview does not count. The node that receives the deploy checks before it builds, and again when the release goes live; the other nodes do not check, so two deploys through two nodes at once can each take the last place. A [`component_deploy` grant](../users-and-roles/overview.md#component-deploy-grants)'s `maxPreviews` takes its place for that role's deploys.
+- **Fewer kept releases.** A preview's component keeps [`deployment.previews.stagingRetention.maxCount`](../configuration/options.md#deployment) replaced and staged releases, one by default, in place of `deployment.stagingRetention.maxCount`. The stored payload of a preview deploy that succeeds is removed at once, except for a stage.
+
+#### Deploy credentials (`credentials`)
+
+When a component is installed from a private source, `credentials` supplies the authentication. It is an array of entries; each entry is one of two kinds, identified by its key:
+
+- **npm registry auth** — an entry with a `registry` key, applied to a private npm registry.
+- **git host auth** — an entry with a `host` key, applied to a private git repository fetched by reference (e.g. `package: "github:my-org/my-app#semver:v1.2.3"`).
+
+An entry provides its credential exactly one of two ways — a literal `token`, or a `secret` reference:
+
+| Field      | Kind | Description                                                                                                         |
+| ---------- | ---- | ------------------------------------------------------------------------------------------------------------------- |
+| `registry` | npm  | The registry URL or host the credential applies to. **Required** for an npm entry.                                  |
+| `scope`    | npm  | Optional npm `@scope` (e.g. `"@my-org"`) the entry applies to; omit to set the default registry.                    |
+| `host`     | git  | The bare git host the credential applies to (e.g. `"github.com"`). **Required** for a git entry.                    |
+| `username` | git  | Optional git HTTPS username. Defaults to `x-access-token` (GitHub); GitLab uses `oauth2`, Bitbucket `x-token-auth`. |
+| `token`    | both | A literal auth token, **or**                                                                                        |
+| `secret`   | both | The name of an [`hdb_secret`](../security/secrets.md) row to resolve the token from.                                |
+
+A provided **`token`** is not treated as ephemeral: Harper ingests it into the encrypted [secrets store](../security/secrets.md) and references it everywhere, so package-reference deploys keep working through rollback, reboot, and new peers joining — without re-supplying the token. The token is encrypted at rest, stripped from the operation before replication and from the operations log, and only ever crosses the cluster as ciphertext. A git-host token is additionally served to git **from memory** (via a credential helper) — it is never written to a file or into a URL. Using a **`secret`** reference names an existing store row directly. Ingesting a token requires custody on the deploying node; on OSS core without custody, a literal token falls back to a transient, this-node-only credential (not persisted or replicated).
+
+Ingested tokens are stored under a derived name granted to the component — `deploy.<component>.<registry>` for a registry entry, `deploy.<component>.git.<host>` for a git entry — so re-deploying with a rotated token idempotently updates the same row.
+
+Private npm registry:
+
+```json
+{
+	"operation": "deploy_component",
+	"project": "my-app",
+	"package": "npm:@my-org/my-app@1.2.3",
+	"credentials": [{ "registry": "https://registry.my-org.com", "scope": "@my-org", "token": "npm_..." }]
+}
+```
+
+Private git repository (token resolved from an existing secret):
+
+```json
+{
+	"operation": "deploy_component",
+	"project": "my-app",
+	"package": "github:my-org/my-app#semver:v1.2.3",
+	"credentials": [{ "host": "github.com", "secret": "deploy.my-app.git.github.com" }]
+}
+```
+
+:::note
+`credentials` replaces the earlier `registryAuth` field (renamed while the feature was in alpha, before it grew to carry git-host credentials). `registryAuth` is now rejected with an error directing you to `credentials`.
+:::
+
+The response includes a `deployment_id` that can be used to query the deployment record:
+
+```json
+{
+	"operation": "deploy_component",
+	"project": "my-app",
+	"package": "my-org/my-app#semver:v1.2.3",
+	"replicated": true,
+	"restart": "rolling"
+}
+```
+
+Response:
+
+```json
+{
+	"deployment_id": "a3f8c2d1...",
+	"restartJobId": "b7d41e09...",
+	"status": "rolling_out",
+	"certification": "certified",
+	"message": "Successfully deployed: my-app, activating it on each other node in turn"
+}
+```
+
+`restartJobId` is present only for `"restart": "rolling"`, which is the one path that hands the restart to a separate job. From v5.4.0, a certified rolling deploy also returns `status: "rolling_out"`: its [record](#get_deployment) stays `rolling_out` until the job has visited every other node. An inline `"restart": true` returns `Successfully deployed: my-app, restarting Harper` without it, and a deploy that does not restart returns `Successfully deployed: my-app`. `certification` says whether the release was [certified in a canary worker](#certifying-a-release-in-a-canary-worker).
+
+#### Restarting (`restart`)
+
+<VersionBadge type="changed" version="v5.3.0" />
+
+`"restart": true` requests a restart of this node's HTTP workers and waits for it before responding. A redeploy that keeps an application isolated targets only its worker, and so does creating an isolated application (v5.4.0; before, that also restarted the shared pool). Turning isolation off also restarts the shared pool, and so does turning it on for an application the shared workers had loaded. Retrying an activation whose release is already live restarts every worker. After a completed restart, the workers in that scope serve the newly deployed code; a restart failure can still leave a successful deploy response, as described below. Until a worker has been replaced it is still running the previous code, and on platforms where replacements share a listening port it keeps accepting connections for the whole rolling restart — before this, a client that treated the immediate response as "the component is live" could be served by a worker that had never loaded it.
+
+The wait follows the restart's own progress rather than a fixed timeout, so a wide thread pool, a slow component install, or a worker draining in-flight work does not cut it short. That also means the response can take as long as the install plus the restart — tens of seconds on a slow install with many worker threads — so a caller with a short request timeout should use `"restart": "rolling"` and follow its record instead. If it does give up — the restart stopped reporting progress, ran past the wait's absolute ceiling, or left a worker thread that could not be replaced — the restart continues in the background and the Harper log says which of those happened. A restart that fails does not fail the deploy: the component is already installed and replicated.
+
+`"restart": "rolling"` does not restart the other nodes inline: it starts a `restart_service` job and returns its `restartJobId`. Both certify the release in a canary worker before rolling it out, except in the cases the next section lists. When the deploy's `certification` is `unavailable`, the job only restarts the other nodes, and reports each node's outcome as a [replicated `restart_service`](#restart_service-replicated) does: it ends `ERROR` if any node did not restart.
+
+`drop_component` accepts `"restart": true` and waits for the restart the same way (v5.3.0). From v5.4.0, dropping an isolated application stops only that application's worker, with or without `restart`, and answers once the worker has stopped. With `restart=true`, it also restarts the shared workers when they may still have the application loaded, as after turning isolation on without a restart. The exception is an isolated application that drops itself: the node answers before stopping the worker that asked, with `workerStopped: null`. Dropping an application a node does not have restarts nothing there. Before v5.4.0, dropping an already-absent application with `restart` can restart the shared workers. On Pro and Fabric it propagates to peers by default unless `replicated` is `false`. Inspect its `replicated` results for each peer's outcome; see [`drop_component`](../components/applications.md#drop_component).
+
+#### Certifying a release in a canary worker
+
+<VersionBadge version="v5.4.0" />
+
+A deploy with `"restart": true` or `"restart": "rolling"` checks its release before rolling it out. The first worker thread started on the new release, the canary, loads every component as any worker does when it starts, but it is held out of traffic until it reports whether the deployed component loaded. It replaces the first worker thread (worker 0), so code a component runs only in that thread is part of what it checks. For an isolated application, the canary is instead its new dedicated worker, which loads only that application. Until then the workers already running keep serving the release being replaced. The rollout goes on only if the release loaded, and each later replacement is checked the same way before it serves.
+
+A deploy that succeeds, and is not staged, reports how this went as a string in `certification`:
+
+| `certification` | Meaning                                                                                                                                                                                                                                                                          |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `certified`     | The canary loaded the release, and the rollout went on.                                                                                                                                                                                                                          |
+| `uncertified`   | The rollout went on unchecked: the component ran nothing as it loaded (`loadComponent: dev-only`, an absent `if-installed` component, or safe mode), or no worker was replaced.                                                                                                  |
+| `unavailable`   | The deploy restarted unchecked: no worker on this node loads the component, this deploy turned an existing component's `isolated` setting on or off, it was already live, or it was deployed from a local directory (`package: file:<dir>`), which is linked rather than copied. |
+| `not-requested` | The deploy did not restart.                                                                                                                                                                                                                                                      |
+
+A release whose canary throws while loading the component, exits, or does not report within a minute is rejected, and the deploy fails with `400`. The release the deploy replaced, when there is one, is made live again first, as in [going back to a previous release](#going-back-to-a-previous-release), so the workers that never stopped serving it continue to do so. Nothing is replicated to other nodes. The error carries the decision as an object in `certification` instead of a string, with `status` set to `rejected`, or to `interrupted` for a restart that stopped before the canary decided:
+
+```json
+{
+	"error": "my-app was not deployed: release 9b2e... failed to load in its canary worker: my-app.jsResource: ... Deployment a3f8c2d1..., the release it replaced, is live again. No other node received it. Deploy a fix, or activate deployment 9b2e... again once the cause is fixed.",
+	"deployment_id": "9b2e...",
+	"certification": {
+		"status": "rejected",
+		"reason": "my-app.jsResource: ...",
+		"failures": [{ "key": "my-app.jsResource", "name": "ResourceLoadError", "message": "...", "stack": "..." }],
+		"restored": "a3f8c2d1...",
+		"failed_closed": false
+	}
+}
+```
+
+- **A release with nothing to go back to fails closed.** A rejected first deploy, or one whose previous release was not kept, stays on disk, but no worker on that node loads it, including after Harper restarts. `get_status` reports the component as failed and says why. Deploy a fixed release, or once the cause is fixed, activate the same `deployment_id` again with `restart`, which certifies it again. For an [isolated application](../components/applications.md#requirements-and-refusals), either one is refused with `409` while the application would not get a dedicated worker under `threads.maxIsolated`, or with `503` if the node cannot read which isolated applications are running or which releases are refused.
+- **Nothing else changes the component while its release rolls out.** Another deploy or a `drop_component` of it on that node is refused with `409` until the canary has decided and the rollout that follows has finished.
+- **A restart that stops before the canary decides restores the previous release.** The decision is reported with `status: "interrupted"`. If the process dies first, the next start rejects the undecided release and restores the one it replaced before it loads anything.
+- **It checks what a worker loads when it starts.** The release is on disk before the canary starts. Workers that have not been replaced yet keep running the previous release and do not react to the new files until the rollout ends, but one that first imports one of the component's modules while the canary is held gets the new release's copy of it.
+
+With `"restart": "rolling"`, the node that received the deploy certifies the release itself, the other nodes only stage it, and the job then activates it on each of them in turn with `deployment_id` and `"restart": true`, so every node certifies it with a canary of its own. Each node decides for itself. A node whose canary rejects the release keeps the previous one, or fails closed if it had none. Nothing is rolled back on the others, and the job fails naming each node that did not activate it; from v5.4.0 the deployment record ends `partial` too, as below. A node running a version before v5.4.0 activates the release without a canary.
+
+The deploy responds once it has started the job, and its [record](#get_deployment) follows the job:
+
+- The node that received the deploy writes the record as `rolling_out`, with the job's id in `restart_job_id`.
+- As the job visits each node, it adds that node's outcome to the node's `peer_results` entry as `activation`: `activated`, `certification`, `message`, `error` and `completed_at`.
+- When the job has visited every node, it ends the record `success`, or `partial` with `error.nodes` naming each node that did not take the release.
+- If the job fails before it has visited every node, it ends the record `partial` itself.
+- If the record is left `rolling_out` — the job's node restarted mid-rollout, or the job's last write to the record kept failing, which fails the job — that node ends it at its next start. It adds any node's outcome the job recorded in its own result but the record lacks, then ends it `success` if every node took the release, otherwise `partial`, naming each node with no confirmed activation. Until then the record reads `rolling_out`, and `harper deploy restart=rolling` keeps waiting, up to its `wait_timeout`.
+
+The record replicates, so any node can answer [`get_deployment`](#get_deployment) for it, and [`harper deploy restart=rolling`](../cli/commands.md#waiting-for-a-rolling-deploy) waits on it. The job lives only on the node that received the deploy: [`get_job`](#get_job) on its `restartJobId` answers only there, ending `COMPLETE`, or `ERROR` with a `message` listing each node's outcome under `activated`.
+
+#### Deploying without a restart
+
+<VersionBadge version="v5.2.0" />
+
+A deploy that does not restart (`"restart": false`, or omitting `restart`) flags a restart as needed when it changed something the running process cannot pick up on its own. `get_status`, called with no `id`, then reports `restartRequired: true`.
+
+Two kinds of deploy set it:
+
+- A component that had no directory before this deploy. It has never been loaded, so its routes cannot be live until Harper restarts.
+- A redeploy whose package metadata changed (v5.2.1) — a dependency or module-entry change invalidates loaded code, and package metadata sits outside most plugin file globs, so the component's own watcher does not see it.
+
+A third source is not a deploy at all: a component install still running when [`deployment.startupInstallTimeout`](../configuration/options.md#deployment) expires at startup sets the flag if it later succeeds (v5.3.0).
+
+An ordinary redeploy sets nothing: the component's watched files are handled by its file watcher, which requests a restart only when the update needs one.
+
+The flag is evaluated per node. A peer applying the replicated deploy checks its own directory state, since whether the component was already active can differ from node to node.
+
+Until the restart happens, a request to a route of a never-loaded component returns a 404 naming the component and saying a restart may be needed, instead of the generic 404. That fuller message is returned only to an authenticated `super_user`. The difference between the two responses would otherwise report which component directories exist on disk.
+
+#### Checking what each node installed
+
+<VersionBadge version="v5.3.1" />
+
+Each node of a replicated deploy resolves and installs the release itself. So a mutable reference can resolve differently between nodes' installs and leave them running different code: a branch or tag that was updated, a `latest` version published in between, or a dependency range that resolved to a newer version. Harper doesn't prevent this, but it reports it.
+
+A deploy or a stage records an install fingerprint on each node after it installs. An activation by `deployment_id` installs nothing, so it records none: its response has no `install`, its deployment record has no `install_fingerprint`, and its `peer_results` carry no comparison fields. The fingerprint has two parts:
+
+- `source`: what the package resolved to, named the way its resolver already names it. That is `git:<commit>` for a git reference, the commit a branch or tag pointed at; `npm:<name>@<version>` for a registry package, where a tag resolves to one version; or npm's `integrity:<sri>` for a tarball URL, or for a git reference npm packed itself because `install_allow_scripts` is set. A source that can't be identified is `unidentified`. A `payload` deploy has no `source`, because every node extracts the same uploaded bytes. A local `file:` path, a directory or a tarball, is `unidentified`, because each node reads its own copy, so a peer on one compares as unknown rather than matching.
+- `lockfiles`: the SHA-256 of each lockfile at the component's root (`package-lock.json`, `npm-shrinkwrap.json`, `pnpm-lock.yaml`, `yarn.lock`, `bun.lock` or `bun.lockb`), keyed by file name. A lockfile that exists but can't be read is recorded as an object naming the error instead, such as `{"unreadable": "EISDIR"}`, which leaves the comparison unknown unless another field differs.
+
+Every node that recorded a fingerprint returns it as `install` in its `deploy_component` response. The node that received the deploy compares each peer's fingerprint with its own, and when any differ:
+
+- the response's `message` ends with a sentence naming them, such as `Install fingerprints differ from this node's on 1 of 2 peer node(s): node-b (source npm:web@1.5.0, package-lock.json).`;
+- a `warning` event goes to a caller [streaming Server-Sent Events](#streaming-deploy-progress), and the Harper CLI prints it on a directory deploy;
+- each peer's entry in the deployment's `peer_results` carries `install`, the peer's fingerprint; `install_matches`; and `install_differs`, the list of fields that differ. `install_matches` is `false` when anything compared differs. Otherwise it is `null` when a fingerprint is missing or unreadable, or a source could not be identified (as from a peer on an earlier version), and `true` only when everything compared matches.
+
+A difference never fails the deploy or changes the CLI's exit status. A match means the evidence is equal, not that the installed trees are: an `install_command` can install different dependencies and leave the same lockfile, and lockfiles written against different registry mirrors differ even when the code matches. A staged deploy reports at stage time, before you activate it.
+
+#### Streaming deploy progress
+
+<VersionBadge version="v5.1.0" />
+
+A `deploy_component` request that accepts `text/event-stream` gets its progress as Server-Sent Events, ending in the result, instead of one JSON response. Once the stream starts the HTTP status is `200`, so a failure arrives in-band as an `error` event. The Harper CLI requests it for every deploy, except to a target older than v5.1.0.
+
+| Event             | Data                                                                                                                                                                                                                                            |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `phase`           | `{ phase, status }`. `phase` is `prepare`, `load`, `replicate`, or `restart`, each sent with `status` `start` and then `done`. A deploy that succeeds ends with `{ "phase": "success", "status": "done" }`, or `"staged"` for `activate: false` |
+| `install`         | `{ manager, stream, line }`: one line of the package manager's output, and whether it came from `stdout` or `stderr`                                                                                                                            |
+| `peer`            | One peer's outcome as it arrives, in the shape of an entry in the record's `peer_results`                                                                                                                                                       |
+| `warning`         | `{ message }`, such as [install fingerprints that differ](#checking-what-each-node-installed) or [entry points that matched nothing](#declared-entry-points-that-matched-nothing)                                                               |
+| `payload_dropped` | `{ payload_size, max_size }`: payload retention dropped the stored tarball, because it is larger than `max_size`                                                                                                                                |
+| `error`           | `{ message, code, phase }`, plus `deployment_id`, and when they apply `install_output`, `failed_peers`, and `certification`. The stream ends after it                                                                                           |
+| `done`            | `{ result }`: the response the deploy would have returned as JSON. The stream ends after it                                                                                                                                                     |
+
+From v5.4.0, the `load` phase brackets the [canary's decision](#certifying-a-release-in-a-canary-worker), so a deploy that does not restart, or whose `certification` is `unavailable`, sends no `load` phase. Before v5.4.0, every deploy sends one.
+
+Every event but `done` is also appended to the deployment's `event_log`, which [`get_deployment`](#get_deployment) replays as a stream. A replayed log can also contain `truncated`, `{ dropped_events }`, where the log reached its 200-entry bound and dropped entries from its middle, keeping the start and the most recent, and a `payload_dropped` carrying `deleted_by` instead of `max_size` when [`delete_deployment_payload`](#delete_deployment_payload) reclaimed the tarball.
+
+### Environment File Operations
+
+<VersionBadge version="v5.2.0" />
+
+Three operations edit a component's `.env` file without ever returning a value. They let an editor (Studio, CI, your own tooling) rotate one key without seeing — or accidentally clobbering — the other secrets in the file.
+
+| Operation          | Description                                                     | Role Required |
+| ------------------ | --------------------------------------------------------------- | ------------- |
+| `get_env_keys`     | Lists the key names in a component's `.env` file — never values | super_user    |
+| `set_env_value`    | Sets one or many keys, preserving the rest of the file          | super_user    |
+| `delete_env_value` | Removes one or many keys, leaving the rest intact               | super_user    |
+
+All three take a `project` (the component directory name) and an optional `file`, which defaults to `.env`. `file` must name an env file — `.env` or `.env.<suffix>` such as `.env.local` — and is rejected otherwise. Key names must match `[A-Za-z0-9_.-]+`, the character set the `.env` parser accepts.
+
+`set_env_value` and `delete_env_value` replicate. The node that receives the request edits its own file, then sends the edit once to each peer. The response's `replicated` array has one entry per peer, naming it in `node`. A peer that could not be reached, or that answered with an error, is listed with `"status": "failed"` and a `reason`. Harper does not retry it, so that node's file may not have the edit. The request still succeeds, so check `replicated` for a `failed` entry. Once that peer is back, send the affected keys' current state again: their current values, or a delete for keys that should still be absent. A resend reaches every node, so resending the original request is safe only if no later edit changed those keys. Deleting a key that is not present is not an error.
+
+An edit changes the file, not the running components. [`loadEnv`](../environment-variables/overview.md) reads a `.env` file into `process.env` when the component loads, and reads only the files its `files` option names. When a file it has already loaded changes, it does not reload the values. It flags the node as needing a restart instead, so `get_status` reports `restartRequired: true`. Until the node's worker threads restart, running code still sees the old value of a changed key, and still sees a deleted key. To apply an edit, restart the workers on every node, for example with [`restart_service`](#restart_service) using `"service": "http_workers"` and `"replicated": true`, which restarts the nodes one at a time. When `harper dev` runs an application directory, it restarts the workers on its own when the flag is set.
+
+:::note
+`get_component_file` on a `.env` file returns a **masked** body: `protected: true`, the `keys` array, and a `message` of one `KEY=********` line per key. `get_components` likewise flags such files with `protected: true`. Template files — `.env.example`, `.env.sample`, `.env.template` — hold placeholders rather than secrets, so they are returned verbatim and are not masked.
+
+`set_component_file` is **not** blocked on a `.env` file. It overwrites the file verbatim with whatever payload you send. Use `set_env_value` when you want to change one key and keep the others.
+
+This is disclosure protection for the editor surface, not a security boundary — component code can still read the real values from `process.env`.
+:::
+
+#### `get_env_keys`
+
+```json
+{
+	"operation": "get_env_keys",
+	"project": "my-app",
+	"file": ".env"
+}
+```
+
+Response:
+
+```json
+{
+	"file": ".env",
+	"keys": ["API_KEY", "DB_URL"],
+	"size": 62,
+	"mtime": "2026-02-11T18:04:22.000Z"
+}
+```
+
+Returns an error if the file does not exist.
+
+#### `set_env_value`
+
+Supply exactly one of `key` + `value` (a single entry) or `values` (a key-to-value map). Every other line in the file — comments, blank lines, untouched keys, and their formatting — is left exactly as it was; existing keys are replaced in place and new keys are appended. The file (and the project directory) is created if it does not exist.
+
+```json
+{
+	"operation": "set_env_value",
+	"project": "my-app",
+	"key": "API_KEY",
+	"value": "rotated-value"
+}
+```
+
+```json
+{
+	"operation": "set_env_value",
+	"project": "my-app",
+	"values": { "API_KEY": "rotated-value", "DB_URL": "postgres://user:pass@host/db" }
+}
+```
+
+Response:
+
+```json
+{
+	"message": "Successfully set env value(s) in .env",
+	"keys": ["API_KEY", "DB_URL"]
+}
+```
+
+`keys` is the file's key list after the write — the request value is never echoed back. With Harper Pro, the response of both `set_env_value` and `delete_env_value` also carries the [`replicated` array](#environment-file-operations).
+
+Harper quotes the value as needed so the `.env` parser reads back exactly what you sent, including spaces, `#`, quotes, backslashes, and newlines. A carriage return is the exception: the parser reads `\r\n` and a lone `\r` back as `\n`. One combination cannot be represented: a value containing a single quote (`'`) together with a double quote, a backslash, or a carriage return is rejected with a `400`.
+
+A value may also be an `enc:v1:` ciphertext envelope rather than plaintext — see [Encrypted Environment Values](../environment-variables/encrypted-values.md).
+
+#### `delete_env_value`
+
+Supply exactly one of `key` (a single name) or `keys` (an array of names).
+
+```json
+{
+	"operation": "delete_env_value",
+	"project": "my-app",
+	"keys": ["API_KEY", "DB_URL"]
+}
+```
+
+Response:
+
+```json
+{
+	"message": "Successfully deleted env value(s) from .env",
+	"keys": []
+}
+```
+
+Returns an error if the file does not exist. Removing a key that is not present is not an error.
+
+### Deployment Operations
+
+Harper records every `deploy_component` call in the `system.hdb_deployment` table, capturing the full lifecycle of a deployment including phase transitions (prepare → load → replicate → restart → success/failed), per-node outcomes, and a bounded event log of install output.
+
+The record is written by the node that received the deploy, and describes that deploy, not what each node is running now. A certified rolling deploy is the exception that follows the other nodes too: from v5.4.0 its record stays `rolling_out` until its job has visited each of them, then ends `success` or `partial`; see [Certifying a release in a canary worker](#certifying-a-release-in-a-canary-worker). To learn which release is live on each node now, use [`list_releases`](#list_releases).
+
+### `list_deployments`
+
+Returns a list of deployment records, newest first. All filter parameters are optional.
+
+| Parameter | Type   | Description                                                                  |
+| --------- | ------ | ---------------------------------------------------------------------------- |
+| `project` | string | Filter to a specific component project                                       |
+| `status`  | string | Filter by one status. See `status` under [`get_deployment`](#get_deployment) |
+| `since`   | number | Start of time range (Unix timestamp ms)                                      |
+| `until`   | number | End of time range (Unix timestamp ms)                                        |
+| `sha`     | string | (v5.4.0) Only deploys whose `source` names this commit                       |
+| `limit`   | number | Maximum number of results. Omit to return every matching record              |
+| `offset`  | number | Pagination offset                                                            |
+
+```json
+{
+	"operation": "list_deployments",
+	"project": "my-app",
+	"status": "success",
+	"limit": 20
+}
+```
+
+Response includes a `deployments` array and a `total` count. The `payload_blob` field is stripped from list responses for size, and replaced by `payload_blob_present`; use `get_deployment_payload` to retrieve the tarball.
+
+A deploy in progress reads `pending`, or `loading` once its release has started loading, and from v5.4.0 a certified rolling deploy reads `rolling_out` until its job has visited every node, so filtering on one status misses some deploys in flight. List without `status` and check that each record's `status` is a finished one (`success`, `failed`, `staged` or `partial`). `completed_at` alone does not say so, since a `rolling_out` record already has it.
+
+The list is the history of deploys as each receiving node recorded them, newest first. It answers what was deployed and when, but the newest `success` for a project is not necessarily the release every node is serving: a node can keep an older release after a later deploy that failed on it, and before v5.4.0 a rolling deploy's record said `success` before the other nodes had taken the release. [`list_releases`](#list_releases) answers what each node holds.
+
+`sha` matches a source the deploying client declared as readily as one an OIDC exchange attested; each record's `source.via` says which.
+
+<VersionBadge version="v5.4.0" /> For a role with a [`component_deploy` grant](../users-and-roles/overview.md#component-deploy-grants), `list_deployments` lists only the deployments of components the grant covers, and `total` counts only those, and `get_deployment` refuses any other deployment with `403`.
+
+### `get_deployment`
+
+Returns a single deployment record by `deployment_id`. A request that accepts `text/event-stream` gets the record's event log replayed as [Server-Sent Events](#streaming-deploy-progress), followed by a `done` event carrying the record.
+
+The replay is followed by a live tail only when the deploy is still running in the same Harper thread that answers the request. Any other request — one answered by another node, as a load balancer may route it, or by another thread on the same node — replays the log and returns at once, with whatever status the record has then, which may not be terminal. Poll until `status` is one of the finished ones if you need the outcome; a rolling deploy's record has `completed_at` set while it is still `rolling_out`.
+
+```json
+{
+	"operation": "get_deployment",
+	"deployment_id": "a3f8c2d1..."
+}
+```
+
+The deployment record includes:
+
+| Field                  | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `deployment_id`        | Unique identifier, a random UUID assigned to each deploy. `payload_hash` is the content hash                                                                                                                                                                                                                                                                                                                                                                                            |
+| `project`              | Component project name                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `package_identifier`   | Package reference or `payload` for tar uploads                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `status`               | In progress: `pending`, or `loading` once the release has started loading. The record is not rewritten during the replicate and restart phases, so it keeps that status until the deploy finishes. Then `rolling_out` (v5.4.0) while a certified rolling deploy's job takes the release to the other nodes. Finished: `success`, `failed`, `staged` (v5.3.0), or `partial` (v5.4.0), a rolling deploy some node did not take. A stage whose peers fail stays `staged`, with `error` set |
+| `phase`                | The last lifecycle phase reached: `pending` before the first, then `prepare`, `load`, `replicate`, `restart`, and finally `success` or `staged`; a failed deploy keeps the phase it failed in                                                                                                                                                                                                                                                                                           |
+| `event_log`            | Bounded log of install output and phase transitions (up to 200 entries)                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `peer_results`         | Per-node outcomes for replicated deployments, one entry per peer; from v5.3.1, on a deploy or a stage, each peer also carries `install`, `install_matches` and `install_differs` (see [Checking what each node installed](#checking-what-each-node-installed)); from v5.4.0, on a certified rolling deploy, each peer the job visited carries `activation` (`activated`, `certification`, `message`, `error`, `completed_at`)                                                           |
+| `payload_hash`         | SHA-256 hash of the deployment tarball                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `payload_size`         | Byte size of the deployment tarball                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `payload_blob_present` | Whether the tarball is still stored. `false` once payload retention or `delete_deployment_payload` has reclaimed it                                                                                                                                                                                                                                                                                                                                                                     |
+| `install_fingerprint`  | (v5.3.1) On a deploy or a stage, this node's install fingerprint: its `source` and `lockfiles`                                                                                                                                                                                                                                                                                                                                                                                          |
+| `started_at`           | Timestamp when deployment began                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `completed_at`         | Timestamp when the deploy finished on the node that received it. A rolling deploy's record sets it again when its job ends the record `success` or `partial` (v5.4.0)                                                                                                                                                                                                                                                                                                                   |
+| `user`                 | User who initiated the deployment                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `origin_node`          | Host name of the node that received the deploy and wrote this record                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `restart_mode`         | `immediate` for `"restart": true`, `rolling` for `"restart": "rolling"`, or `null` for a deploy that did not restart                                                                                                                                                                                                                                                                                                                                                                    |
+| `restart_job_id`       | (v5.4.0) For `"restart": "rolling"`, the id of the job that restarts the other nodes, which [`get_job`](#get_job) answers on the node that received the deploy                                                                                                                                                                                                                                                                                                                          |
+| `source`               | (v5.4.0) Where the deploy came from. `via: "oidc"`: attested by an [OIDC exchange](#exchange_oidc_token), with its `policy` and the run's `repository`, `sha`, `ref`, `workflow_ref`, `run_id`, `run_attempt`, `actor` and `environment`, whichever the identity token had. `via: "declared"`: what the client said, such as the `harper` CLI's GitHub Actions run and, for a directory deploy, the checkout's `sha` and whether it was `dirty`. `null` when neither applies            |
+| `credentials`          | The deploy's `credentials`, in reference form (`secret` names, never a token), or `null`                                                                                                                                                                                                                                                                                                                                                                                                |
+| `preview`              | (v5.4.0) A [preview deployment](#preview-deployments)'s `preview`, as recorded: under a role's `maxTtlDays`, with its `expiresAt` lowered. `null` otherwise                                                                                                                                                                                                                                                                                                                             |
+| `activated_from`       | (v5.3.0) On an activation, the id of the deployment it made live: a staged build, or a release a later deploy replaced. [Going back to a previous release](#going-back-to-a-previous-release) writes a new `success` record with this set                                                                                                                                                                                                                                               |
+| `error`                | For a deploy that failed, or a stage whose peers failed: an object with `message`, `code`, and `phase`, the phase it failed in. On a `partial` rolling deploy, also `nodes`, the nodes that did not take the release                                                                                                                                                                                                                                                                    |
+
+### `get_deployment_payload`
+
+Returns the raw tarball for a deployment. Useful for inspecting or re-deploying a specific version.
+
+```json
+{
+	"operation": "get_deployment_payload",
+	"deployment_id": "a3f8c2d1..."
+}
+```
+
+The response is the raw tarball bytes (`Content-Type: application/octet-stream`, with a `Content-Disposition` download filename) - not JSON and not base64-encoded, so payloads of any size stream without inflation. Returns `404` if the deployment does not exist or its payload has already been reclaimed (by payload retention or `delete_deployment_payload`).
+
+Unlike most other `super_user` operations, this check is enforced directly in the handler and cannot be satisfied by granting the operation through a role's `operations` allowlist - only an actual `super_user` role can call it.
+
+### `delete_deployment_payload`
+
+Removes the tarball blob from a deployment record. The deployment record itself is retained; only the binary payload is deleted. Use this to reclaim storage after confirming a deployment is stable. The deletion replicates, so one call frees the payload's storage on every node in the cluster.
+
+```json
+{
+	"operation": "delete_deployment_payload",
+	"deployment_id": "a3f8c2d1..."
+}
+```
+
+Response:
+
+```json
+{
+	"message": "Deleted payload for deployment 'a3f8c2d1...'",
+	"deployment_id": "a3f8c2d1...",
+	"freed_bytes": 52428800
+}
+```
+
+The deployment must be in a terminal status (`success`, `failed`, `staged`, or `partial`); deleting the payload of an in-progress deployment, including one still `rolling_out`, fails with `409`, since its payload may still be replicating to peers. Deleting an already-reclaimed payload succeeds with `freed_bytes: 0` (the operation is idempotent). A `payload_dropped` entry recording the deleting user is appended to the deployment's `event_log`.
+
+### `list_releases`
+
+<VersionBadge version="v5.4.0" />
+
+Lists, per component, the release live on a node's disk and the releases it keeps, which [`deploy_component`](#deploy_component) with `deployment_id` can make live again. [`list_deployments`](#list_deployments) lists the records the receiving node wrote; this lists what is on disk, and a node's answer describes only that node: [retention](../configuration/options.md#deployment) prunes per node, a node that joined later never had older releases, and a release made live before v5.3.0, or deployed from a `file:` directory, is not kept.
+
+| Parameter    | Type    | Description                                                                         |
+| ------------ | ------- | ----------------------------------------------------------------------------------- |
+| `project`    | string  | Only this component. Omit to list every component with a live release or a kept one |
+| `replicated` | boolean | `true` also returns every other node's answer                                       |
+
+```json
+{
+	"operation": "list_releases",
+	"project": "my-app"
+}
+```
+
+Response:
+
+```json
+{
+	"node": "node-a",
+	"components": [
+		{
+			"project": "my-app",
+			"deployment_id": "c91e...",
+			"releases": [
+				{ "deployment_id": "d02f...", "state": "staged", "at": 1792774321000, "size": 5242880 },
+				{ "deployment_id": "b7d4...", "state": "kept", "at": 1792770011000, "size": 5230112 }
+			]
+		}
+	]
+}
+```
+
+- `deployment_id` on a component is the release live on this node's disk, which its workers load when they start. After a deploy that did not restart, they may still run the previous one: [`get_components`](../components/applications.md#get_components)' `restarted_at` says when this node last loaded the component, and `get_status` reports `restartRequired` when the deploy changed something [that needs one](#deploying-without-a-restart). It is absent for a tree installed before v5.3.0, by `add_component`, or from a `file:` link.
+- `state` is `staged` for a build made with `activate: false` that never went live here, or `kept` for a release a later activation replaced on this node. A release kept before v5.4.0 reports `staged`.
+- `at` is when the build was made or, for a kept release, when it was replaced. `size` is its tree's size on disk, in bytes.
+
+With `"replicated": true` the response is `{ "nodes": [...] }`, one entry per node in the shape above, this node first. A node that could not answer has `error` instead of `components`.
+
+### PR Previews
+
+<VersionBadge version="v5.4.0" />
+
+Three operations manage the identity CI deploys an application's pull-request previews as. [`harper preview setup`](../cli/commands.md#harper-preview-setup) and `harper preview teardown` call them, and [Per-PR previews](/learn/developers/deploying-from-ci#per-pr-previews) covers the whole flow.
+
+| Operation            | Description                                                                      | Role Required |
+| -------------------- | -------------------------------------------------------------------------------- | ------------- |
+| `enable_previews`    | Creates an application's preview role, user and trust policies                   | super_user    |
+| `disable_previews`   | Revokes them, drops every preview of the application on every node, removes them | super_user    |
+| `get_preview_policy` | Returns an application's preview identity and limits, and what differs from them | super_user    |
+
+The three check for a `super_user` themselves, so a role's `operations` allowlist cannot grant them, and they are not on the default MCP operations surface. One `enable_previews` or `disable_previews` runs at a time on a node, for any application. A fourth operation, `fence_preview_releases`, is what `disable_previews` calls on each node; it is not meant to be called directly.
+
+What `enable_previews` writes, for the application `my-app`:
+
+- **The role and user `my-app-ci-preview`.** The role's `operations` are `deploy_component`, `drop_component`, `get_components`, `get_deployment` and `registration_info`, and its [`component_deploy`](../users-and-roles/overview.md#component-deploy-grants) grant covers `my-app-pr-*`. It has no table permissions. The user's password is random, and nothing uses it.
+- **The trust policy `github-actions-my-app-preview`**, for the deploy job. It names the user, with the same operations, and pins `repository_id`, `workflow_ref` (the workflow file at the branch), `event_name: pull_request_target` and `environment` (`preview` by default).
+- **The trust policy `github-actions-my-app-preview-cleanup`**, for the job that drops a closed PR's preview. It pins the same claims, except `environment: preview-cleanup`, and narrows the token to `drop_component`.
+
+The grant is where the application's preview limits live, so the cluster enforces them on every deploy, whatever the workflow sends:
+
+| Constraint          | Value                                                                                                                                                                                     |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `isolated`          | `true`. Each preview is an isolated application.                                                                                                                                          |
+| `hostSuffix`        | Each preview's `host` ends in it, such as `.app.my-cluster.example.com`.                                                                                                                  |
+| `branchedDatabases` | `"required"`, so each preview runs on its own branch of the databases. Left out with `dataMode: "shared"`.                                                                                |
+| `preview`           | `"required"`. Each deploy carries [`preview`](#preview-deployments) metadata naming `my-app`, as `my-app-pr-<n>`.                                                                         |
+| `maxPreviews`       | How many previews of the application a node keeps live. The deploy that would pass it is refused with `409`, naming the oldest preview. Left out unless set.                              |
+| `maxTtlDays`        | The longest a preview lives after its deploy. A later `expiresAt` is lowered to it, with a warning, and activating a staged build whose `expiresAt` is later is refused. Defaults to `7`. |
+| `generation`        | A random value `enable_previews` writes. Each deploy under the grant carries it, and `disable_previews` revokes it on every node.                                                         |
+
+#### `enable_previews`
+
+```json
+{
+	"operation": "enable_previews",
+	"app": "my-app",
+	"repository": "my-org/my-app",
+	"repository_id": "67890",
+	"branch": "main",
+	"audience": "https://my-cluster.example.com:9925/"
+}
+```
+
+| Parameter       | Description                                                                                                                                                  |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `app`           | **Required.** The application's component name: letters, numbers, `-` and `_`. Its previews deploy as `<app>-pr-<n>`.                                        |
+| `repository`    | **Required.** The GitHub repository, `owner/name`, as GitHub spells it in the token.                                                                         |
+| `repository_id` | **Required.** The repository's numeric id.                                                                                                                   |
+| `branch`        | **Required.** The branch the workflow runs from, usually the default branch. A leading `refs/heads/` is removed.                                             |
+| `audience`      | **Required.** The cluster's URL as the CLI asks for its token: with the port and a trailing slash, as for [`add_oidc_trust`](#add_oidc_trust).               |
+| `workflow`      | The workflow file. Defaults to `.github/workflows/preview.yaml`.                                                                                             |
+| `environment`   | The deploy job's GitHub environment. Defaults to `preview`, and cannot be `preview-cleanup`.                                                                 |
+| `hostSuffix`    | What every preview's host ends in, starting with `.`. Defaults to `.app.<audience host>`; required when the audience's host is an IP address or `localhost`. |
+| `dataMode`      | `branched` (the default), or `shared` to let previews run on the cluster's databases.                                                                        |
+| `maxPreviews`   | A whole number of 1 or more. Without it, a node's [`deployment.previews.maxPerApplication`](../configuration/options.md#deployment) applies.                 |
+| `maxTtlDays`    | A number of days greater than 0. Defaults to `7`.                                                                                                            |
+
+It only creates. It keeps a record that already matches, so running it again changes nothing. If a record exists and differs, such as a role with other limits, it fails with `409`, writes nothing, and lists each difference. So does another enabled trust policy that would match the same runs and give them a different user or operations, since the exchange [refuses such a token](#exchange_oidc_token): give the application its own workflow file. To change the limits, disable previews, then enable them again.
+
+The response has `message`, `created`, the list of records it created, and everything [`get_preview_policy`](#get_preview_policy) returns.
+
+#### `disable_previews`
+
+```json
+{ "operation": "disable_previews", "app": "my-app" }
+```
+
+1. Refuses with `409`, changing nothing, if the records are not the ones `enable_previews` writes: a role that covers more than `<app>-pr-*`, or another user in the role.
+2. Revokes the identity: drops both trust policies and deactivates the user.
+3. Fences every node: each records the identity's `generation` as revoked, under the lock its preview deploys hold while they go live, and then lists its live releases. A preview deploy already going live finishes first, and is listed. One that would go live later, on that node or on a peer applying a replicated deploy, is refused with `403`: `'my-app-pr-12' was not activated: previews of my-app by the identity that built it were disabled`.
+4. Drops each live preview of the application on the node that holds it, and only while it is still that node's live release. If a drop removed nothing, because a newer release went live meanwhile, it lists again.
+5. Removes the user and the role.
+
+A node that fails, does not answer, or does not acknowledge the fence stops it at step 4 with `500`: `Previews of my-app are revoked but not removed: ...`, naming each failure. The identity stays revoked, and the user and role stay, so running `disable_previews` again resumes. Until it finishes, `enable_previews` refuses the inactive user with `409`. Every node has to run a version that acknowledges the fence.
+
+```json
+{
+	"message": "Disabled previews of my-app",
+	"app": "my-app",
+	"dropped": [
+		{
+			"node": "node-a",
+			"project": "my-app-pr-12",
+			"deploymentId": "c91e...",
+			"componentRemoved": true,
+			"message": "Successfully dropped: my-app-pr-12"
+		}
+	],
+	"removed": [
+		"trust policy github-actions-my-app-preview",
+		"trust policy github-actions-my-app-preview-cleanup",
+		"user my-app-ci-preview",
+		"role my-app-ci-preview"
+	]
+}
+```
+
+Each entry of `dropped` is one drop on one node, with the [`drop_component`](../components/applications.md#drop_component) response's `componentRemoved` and `message`; a drop that failed has `error` in their place. `inProgress`, when present, lists previews whose deploy had started and not finished; each is fenced, and dropped when it expires if one goes live anyway. `disable_previews` does not delete a credential sealed for the previews, such as `deploy.my-app-pr-_.git.github.com`, or anything on the GitHub side. With nothing enabled, it answers `Previews of my-app were not enabled; nothing changed`.
+
+#### `get_preview_policy`
+
+```json
+{ "operation": "get_preview_policy", "app": "my-app" }
+```
+
+Returns the application's preview identity as the cluster holds it:
+
+- `app`; `role` and `user`; `components`, the grant's pattern (`my-app-pr-*`).
+- `repository`, `workflow` and `branch`, read from the deploy policy's `workflow_ref`; `repository_id`, `environment` and `audience` from the deploy policy; `cleanupEnvironment` from the cleanup policy.
+- `grant`, the role's `component_deploy`, with its constraints; `operations`, the role's.
+- `trust`, the two trust policies as [`list_oidc_trust`](#list_oidc_trust) returns them.
+- `problems`, each way the records differ from what `enable_previews` writes, such as `user "my-app-ci-preview" is inactive`, `trust policy "github-actions-my-app-preview" is disabled`, or a policy whose operations are not the expected ones.
+- `enabled`, `true` only when `problems` is empty.
+
+### `add_ssh_key`
+
+Adds an SSH key for authenticating deployments from private repositories. Supply the private key with `key`, or omit it and pass `generate: true` to have Harper mint the keypair itself.
+
+`list_ssh_keys` and the logs never return key material.
+
+The stored private key is encrypted at rest and crosses the cluster as ciphertext **when secret custody is configured**. Custody is present by default — the file tier generates a cluster keypair on first boot — so this is the normal case.
+
+:::warning
+On a node with **no** secret custody registered, `add_ssh_key` stores and replicates the private key in **plaintext**. It logs a WARN saying so and the operation still succeeds, because SSH keys predate custody and must keep working on a node that has none.
+
+That means encryption at rest is a property of your configuration, not a guarantee of the operation. If you are relying on it — and `generate: true` in particular reads as though the key can never be exposed — verify `secretCustody` is configured on every node in the cluster, and check the logs for that warning after adding a key. See [Secrets](../security/secrets.md).
+:::
+
+Adding an existing key:
+
+```json
+{
+	"operation": "add_ssh_key",
+	"name": "my-key",
+	"key": "-----BEGIN OPENSSH PRIVATE KEY-----\n...\n-----END OPENSSH PRIVATE KEY-----\n",
+	"host": "my-key.github.com",
+	"hostname": "github.com"
+}
+```
+
+#### What `key`, `host` and `hostname` must be
+
+<VersionBadge type="changed" version="v5.3.0" />
+
+A key ssh can't use would otherwise go unnoticed until ssh loads it for a git deploy, where it fails as a generic authentication error. So `add_ssh_key` and `update_ssh_key` check a supplied key first, and refuse one ssh couldn't use with a `400` that names the problem.
+
+`key` must be an unencrypted **Ed25519**, **ECDSA** (P-256, P-384 or P-521) or **RSA** (at least 1024 bits) private key, in one of the formats ssh reads:
+
+- **OpenSSH** (`-----BEGIN OPENSSH PRIVATE KEY-----`, what `ssh-keygen` writes by default), with nothing before the `BEGIN` line
+- **PEM**: PKCS#1 (`RSA PRIVATE KEY`), SEC1 (`EC PRIVATE KEY`) or PKCS#8 (`PRIVATE KEY`)
+
+These are refused:
+
+- a public key — the `.pub` file, or a public key exported as PEM or RFC 4716 — in place of the private one
+- a PuTTY key (`.ppk`); export it from PuTTYgen with **Conversions → Export OpenSSH key**
+- a passphrase-protected key: Harper runs git without a terminal, so ssh has nowhere to ask for the passphrase
+- a DSA key, which OpenSSH 10 no longer supports
+- a FIDO security key (`sk-ssh-ed25519@openssh.com`, `sk-ecdsa-sha2-nistp256@openssh.com`), which signs only with its hardware authenticator attached
+- any other algorithm or curve ssh doesn't support, or an SSH certificate in place of a plain key
+- a key that is cut off, has lines missing or repeated, or is otherwise damaged — including one whose private half doesn't match its public half, which ssh may load but can never authenticate with
+
+Harper stores the key the way ssh needs it: each line trimmed, blank lines dropped, and a final newline added. An indented or CRLF paste therefore works. A value already sealed as `enc:v1:` for this cluster (for example one copied from another node's `get_ssh_key` in the same cluster) is stored as-is, since checking it would mean decrypting it. It must still be a well-formed envelope, and a node with secret custody refuses one sealed for another cluster's key.
+
+`host` and `hostname` are written into the ssh config that every key on the node shares, so a value that would break it is refused: any whitespace or control character, such as a space, tab or line break (`Host my key` matches two aliases, and `HostName my key` stops ssh for every key), a quote, an `=`, or a leading `#`. A leading `-` or any backslash is refused too, since no real host has either, and so is a pattern (`*`, `?`, `!`) in `host`, whose block would also apply to other keys' aliases. In `hostname`, a `%` must be `%h` (replaced by the alias) or `%%` (a literal `%`), the only expansions ssh makes there, so an IPv6 zone needs the doubled form: `fe80::1%%en0`. Surrounding whitespace is trimmed.
+
+#### The key's block in the ssh config
+
+<VersionBadge type="changed" version="v5.3.0" />
+
+Harper writes each key's settings to `<rootPath>/ssh/config`, in a block that starts and ends with lines Harper owns:
+
+```
+#my-key
+# BEGIN harper ssh key my-key
+Host my-key.github.com
+	HostName github.com
+	User git
+	IdentityFile <rootPath>/ssh/my-key.key
+	IdentitiesOnly yes
+# END harper ssh key my-key
+```
+
+`get_ssh_key`, `list_ssh_keys` and `delete_ssh_key` read and change only the lines from `#<name>` through `# END harper ssh key <name>`, so you can add your own sections and settings anywhere outside them. `delete_ssh_key` removes exactly those lines, including anything you put between them, and leaves every other line of the file as it was. ssh_config has no end-of-section marker, so ssh still reads a line placed just after a key's `END` line as part of that key's `Host` section. Put your own settings under a `Host` or `Match` line of your own.
+
+A config written by an earlier version gets these lines when the node starts, without changing what ssh resolves for any host. Only blocks whose `IdentityFile` is exactly `<rootPath>/ssh/<name>.key` get them, so a section of your own under a comment that looks like a key's name stays yours.
+
+If a key's `BEGIN` line has no matching `END` line, where its block ends is unknown. `delete_ssh_key` then refuses that key with a `400` naming the line, until the `END` line is restored or the block is removed by hand. Other keys are unaffected.
+
+#### Server-side key generation (`generate`)
+
+<VersionBadge version="v5.2.4" />
+
+With `generate: true`, Harper mints an ed25519 keypair on the node handling the request and returns only the **public** half. The private key is created inside the cluster and never travels from a client, so it can't be captured in a shell history, CI log, or request body on the way in:
+
+```json
+{
+	"operation": "add_ssh_key",
+	"name": "my-key",
+	"generate": true,
+	"host": "my-key.github.com",
+	"hostname": "github.com"
+}
+```
+
+Response:
+
+```json
+{
+	"message": "Added ssh key: my-key",
+	"public_key": "ssh-ed25519 AAAAC3Nza... harper:my-key"
+}
+```
+
+Register that `public_key` with your git host (e.g. as a GitHub deploy key) to authorize the deploy. The generated key is commented `harper:<name>` so it's identifiable in the host's key list.
+
+`key` and `generate` are mutually exclusive — sending both is rejected. Generation happens in-process, so it requires no `ssh-keygen` binary on the host and the minted private key is never written to a temporary file on its way into storage.
+
+:::note
+`public_key` is returned **only** on the generating call — that response is the one time the public half is handed back. Harper stores the private key (sealed, subject to the custody caveat above) and the host config; it does not retain the public key for later retrieval, and `update_ssh_key` requires a key you supply (it can't mint one). So capture `public_key` from this response — if you lose it, `delete_ssh_key` then `add_ssh_key` with `generate: true` again to mint a fresh pair, and re-register the new public key with your git host.
+:::
+
+---
+
+## Secrets
+
+Operations for managing the encrypted [secrets store](../security/secrets.md) (`system.hdb_secret`). All secret operations are **`super_user` only**. Values are never returned or logged by any of these operations.
+
+Detailed documentation: [Secrets](../security/secrets.md)
+
+:::tip
+Prefer a UI? [Harper Studio](../studio/overview.md) provides a graphical interface for creating, granting, and rotating secrets — it drives these operations for you, so you don't have to hand-craft the request bodies below.
+:::
+
+| Operation                | Description                                                    | Role Required |
+| ------------------------ | -------------------------------------------------------------- | ------------- |
+| `set_secret`             | Creates or updates a secret and chooses its delivery tier      | super_user    |
+| `grant_secret`           | Adds a component to a scoped secret's grants (idempotent)      | super_user    |
+| `revoke_secret`          | Removes a component from a scoped secret's grants (idempotent) | super_user    |
+| `list_secrets`           | Lists secret metadata — never envelopes or values              | super_user    |
+| `delete_secret`          | Deletes a secret row                                           | super_user    |
+| `get_secrets_public_key` | Returns the cluster public key for client-side encryption      | super_user    |
+
+### `set_secret`
+
+Creates or updates a secret. Supply exactly one of `value` (plaintext, encrypted on ingest — requires custody on this node) or `envelope` (an `enc:v1:` ciphertext produced client-side against `get_secrets_public_key`). The delivery tier is `processEnv: true` **or** `grants` — the two are mutually exclusive. On update, tier and metadata default to the stored row, so a value rotation preserves the tier without re-specifying it.
+
+| Parameter    | Type     | Description                                                                     |
+| ------------ | -------- | ------------------------------------------------------------------------------- |
+| `name`       | string   | Secret name (word characters, dots, dashes). **Required.**                      |
+| `value`      | string   | Plaintext value; encrypted immediately, then discarded. Requires custody.       |
+| `envelope`   | string   | `enc:v1:` ciphertext (alternative to `value`).                                  |
+| `processEnv` | boolean  | `true` delivers the secret via `process.env` (global tier).                     |
+| `grants`     | string[] | Components allowed to read the secret via the `secrets` accessor (scoped tier). |
+| `metadata`   | object   | Optional free-form label object (not a payload store).                          |
+
+```json
+{
+	"operation": "set_secret",
+	"name": "STRIPE_KEY",
+	"value": "sk_live_...",
+	"grants": ["payments-service"]
+}
+```
+
+Response:
+
+```json
+{ "name": "STRIPE_KEY", "kid": "<hex fingerprint>", "created": true }
+```
+
+### `grant_secret` / `revoke_secret`
+
+Add or remove a component from a scoped secret's grants list. Both are idempotent. A `processEnv` (global) secret cannot be granted — convert it with `set_secret` `processEnv: false` first.
+
+```json
+{ "operation": "grant_secret", "name": "STRIPE_KEY", "component": "payments-service" }
+```
+
+Response includes the updated `grants` array and a `changed` flag (`false` when the call was a no-op).
+
+<VersionBadge version="v5.4.0" /> `component` can also be a name prefix followed by one `*`, such as `my-app-pr-*`, which grants the secret to every component whose name starts with the prefix and goes on. A pattern grant counts only when a deploy resolves its `credentials`, so one deploy credential serves every preview of an application. A component's own code never reads a secret through a pattern grant: [the `secrets` accessor](../security/secrets.md#read-scoped-secrets-with-the-secrets-accessor) and `env` use only grants that name the component exactly. Any other `*` fails with `400`.
+
+### `list_secrets`
+
+Returns metadata for every secret — **never** envelopes or values. Each entry includes `name`, `kid`, `grants`, `processEnv`, `metadata`, `unverified`, `updated_by`, timestamps, and `kid_matches_custody` (so a stale row on a cloned/rekeyed node is immediately visible). The response also carries the node's `custody_fingerprint` (`null` when no custody is held).
+
+```json
+{ "operation": "list_secrets" }
+```
+
+Response:
+
+```json
+{
+	"secrets": [
+		{
+			"name": "STRIPE_KEY",
+			"kid": "a1b2c3d4...",
+			"grants": ["payments-service"],
+			"processEnv": false,
+			"metadata": {},
+			"unverified": false,
+			"updated_by": "admin",
+			"__createdtime__": 1700000000000,
+			"__updatedtime__": 1700000000000,
+			"kid_matches_custody": true
+		}
+	],
+	"custody_fingerprint": "a1b2c3d4..."
+}
+```
+
+### `delete_secret`
+
+Removes a secret row by `name`. Not cryptographic erasure — audit/transaction logs and backups retain the encrypted envelope.
+
+```json
+{ "operation": "delete_secret", "name": "STRIPE_KEY" }
+```
+
+### `get_secrets_public_key`
+
+Returns the cluster secrets public key for client-side envelope encryption. Requires custody on the node.
+
+```json
+{ "operation": "get_secrets_public_key" }
+```
+
+Response:
+
+```json
+{ "public_key": "-----BEGIN PUBLIC KEY-----\n...", "fingerprint": "<hex sha256>" }
+```
+
+---
+
+## Replication & Clustering
+
+Operations for configuring and managing Harper cluster replication.
+
+Detailed documentation: [Replication & Clustering](../replication/clustering.md)
+
+| Operation               | Description                                                      | Role Required |
+| ----------------------- | ---------------------------------------------------------------- | ------------- |
+| `add_node`              | Adds a Harper instance to the cluster                            | super_user    |
+| `update_node`           | Modifies an existing node's subscriptions                        | super_user    |
+| `remove_node`           | Removes a node from the cluster                                  | super_user    |
+| `initialize_shard_map`  | Installs a custom database slot map without moving records       | super_user    |
+| `verify_shard_map`      | Compares a legacy placement function with a proposed slot policy | super_user    |
+| `cluster_status`        | Returns current cluster connection status                        | super_user    |
+| `configure_cluster`     | Bulk-creates/resets cluster subscriptions across multiple nodes  | super_user    |
+| `cluster_set_routes`    | Adds routes to the replication routes config (PATCH/upsert)      | super_user    |
+| `cluster_get_routes`    | Returns the current replication routes config                    | super_user    |
+| `cluster_delete_routes` | Removes routes from the replication routes config                | super_user    |
+
+### `add_node`
+
+Adds a remote Harper node to the cluster. If `subscriptions` are not provided, a fully replicating cluster is created. Optional fields: `verify_tls`, `authorization`, `retain_authorization`, `revoked_certificates`, `shard`.
+
+```json
+{
+	"operation": "add_node",
+	"hostname": "server-two",
+	"verify_tls": false,
+	"authorization": { "username": "admin", "password": "password" }
+}
+```
+
+### `initialize_shard_map`
+
+<VersionBadge version="v5.4.0" />
+
+POST; requires `super_user` and a RocksDB database. Takes `database`, `slots` and complete nonoverlapping `ranges` (`start`, exclusive `end`, `shard`). Returns the installed versioned snapshot. Installs metadata only and refuses changes to active slot assignments. See [Installed maps](../replication/residency.md#installed-maps).
+
+For a legacy conversion, call with `database`, `existing_owner: true` and `expected_digest` instead. This records the operator's assertion that this local owning node has complete bodies for its slots; Harper does not verify completeness. It requires an already-installed map with exactly that digest, rejects `slots` or `ranges` in the same call, and does not declare a sharded table. The receipt is local to the captured root generations and tables. Assert on each owning node, with legacy writers paused until activation is ready throughout the cluster. See [Converting an existing table](../replication/residency.md#convert-an-existing-by-id-table-without-moving-records).
+
+### `verify_shard_map`
+
+<VersionBadge version="v5.4.0" />
+
+POST; requires `super_user`. Takes `database`, `table` and a proposed key-derived `policy` (`slots`). The existing application worker must still run its legacy function, and a custom map must be installed. Returns `checked`, `mismatches`, bounded samples, observed slots, departed node names (stored legacy owners absent from the current known-node list) and map identity. It neither rewrites records nor activates the policy. See [Compare placement](../replication/residency.md#3-compare-placement-on-every-node).
+
+### `cluster_status`
+
+Returns connection state for all cluster nodes, including per-database socket status and replication timing statistics (`lastCommitConfirmed`, `lastReceivedRemoteTime`, `lastReceivedLocalTime`). A socket whose base copy is not finishing also carries `stuckCopy`; see [Stuck Copies](../replication/clustering.md#stuck-copies). Its top-level `sharding` object reports per-database map identity and placement blockers; see [Sharding Status](../replication/clustering.md#sharding-status).
+
+```json
+{ "operation": "cluster_status" }
+```
+
+### `configure_cluster`
+
+Resets and replaces the entire clustering configuration. Each entry follows the `add_node` schema.
+
+```json
+{
+	"operation": "configure_cluster",
+	"connections": [
+		{
+			"hostname": "server-two",
+			"subscriptions": [{ "database": "dev", "table": "dog", "subscribe": true, "publish": true }]
+		}
+	]
+}
+```
+
+---
+
+## Configuration
+
+Operations for reading and updating Harper configuration.
+
+Detailed documentation: [Configuration Overview](../configuration/overview.md)
+
+| Operation           | Description                                   | Role Required |
+| ------------------- | --------------------------------------------- | ------------- |
+| `set_configuration` | Modifies Harper configuration file parameters | super_user    |
+| `get_configuration` | Returns the current Harper configuration      | super_user    |
+
+### `set_configuration`
+
+Updates configuration parameters in `harper-config.yaml`. Most changes require a restart (`restart` or `restart_service`) to take effect. See [Set Configuration](../configuration/operations.md#set-configuration) for full-text restart requirements.
+
+Supports `"replicated": true` <VersionBadge version="v5.2.0" /> to apply the same change to all cluster nodes in one call; per-node outcomes are returned in the response's `replicated` array. Only send cluster-appropriate parameters when replicating — node-local parameters (ports, `node.hostname`, file paths, TLS material, `replication.hostname`/`url`/`routes`) would overwrite every peer's local values. To apply the change cluster-wide, follow with `restart_service` using `"replicated": true` (which restarts nodes one at a time); `restart_service` restarts only worker threads, though, so changes to [`threads.v8Flags`](../configuration/options.md#applying-v8-flags), `storage.fullText.runtime.*`, [`storage.rocks.transactionLogAbortMarkers`](../database/storage-tuning.md#storagerockstransactionlogabortmarkers) or [`storage.rocks.transactionLogWriteIntents`](../database/storage-tuning.md#storagerockstransactionlogwriteintents) take effect only after a `restart` sent to each node in turn (`restart` does not replicate). See [Configuration Operations](../configuration/operations.md#set-configuration) for details.
+
+```json
+{
+	"operation": "set_configuration",
+	"logging_level": "trace",
+	"replicated": true
+}
+```
+
+### `get_configuration`
+
+Returns the full current configuration object.
+
+```json
+{ "operation": "get_configuration" }
+```
+
+---
+
+## Web Application Firewall
+
+<VersionBadge version="v5.2.0" />
+
+Operations for managing Web Application Firewall rules and cluster-wide enforcement controls.
+
+Detailed documentation: [WAF Operations and Rule Schema](../web-application-firewall/operations.md)
+
+| Operation        | Description                                       | Role Required |
+| ---------------- | ------------------------------------------------- | ------------- |
+| `add_waf_rule`   | Creates a validated WAF rule                      | super_user    |
+| `alter_waf_rule` | Patches and revalidates an existing WAF rule      | super_user    |
+| `drop_waf_rule`  | Deletes a WAF rule                                | super_user    |
+| `list_waf_rules` | Returns all WAF rules                             | super_user    |
+| `set_waf_mode`   | Sets the replicated mode and/or scoring threshold | super_user    |
+
+---
+
+## System
+
+Operations for restarting Harper and managing system state.
+
+| Operation            | Description                                       | Role Required |
+| -------------------- | ------------------------------------------------- | ------------- |
+| `restart`            | Restarts the Harper instance                      | super_user    |
+| `restart_service`    | Restarts a specific Harper service                | super_user    |
+| `system_information` | Returns detailed host system metrics              | super_user    |
+| `set_status`         | Sets an application-specific status value         | super_user    |
+| `get_status`         | Returns one status value, or the instance summary | super_user    |
+| `clear_status`       | Removes a status entry                            | super_user    |
+
+### `restart`
+
+Restarts all Harper processes. May take up to 60 seconds.
+
+```json
+{ "operation": "restart" }
+```
+
+### `restart_service`
+
+Restarts a specific service. `service` must be one of: `http`, `http_workers`, `custom_functions`, `harperdb` (all currently restart the HTTP workers). Supports `"replicated": true` for a rolling cluster restart. Without a `scope`, it also restarts any [dedicated replication threads](../replication/overview.md#dedicated-replication-threads) (v5.4.0).
+
+```json
+{ "operation": "restart_service", "service": "http_workers" }
+```
+
+#### `replicated` {#restart_service-replicated}
+
+<VersionBadge type="changed" version="v5.4.0" />
+
+With `"replicated": true`, the job that `restart_service` starts (its response carries the `job_id`) restarts the node that received the request, then each other node in the cluster, one at a time. For each node it starts that node's own restart job and waits for it to finish before going on. Harper core on its own does not replicate, so this needs Harper Pro or Fabric.
+
+```json
+{ "operation": "restart_service", "service": "http_workers", "replicated": true }
+```
+
+Poll the `job_id` with [`get_job`](#get_job) on the node that received the request. The job ends `COMPLETE` only if every other node's restart job completed. Otherwise it ends `ERROR`, and its `message` names each node that failed or was skipped. In both cases `result.replicated` has one entry per other node: `{ node, message }` for a node that restarted, `{ node, error }` for one that did not.
+
+```json
+[
+	{
+		"status": "ERROR",
+		"message": "Restart of http_workers did not complete on 2 of 3 peer node(s): node-b (...); node-c (skipped: the restart of node-b did not complete)",
+		"result": {
+			"replicated": [
+				{ "node": "node-a", "message": "..." },
+				{ "node": "node-b", "error": "..." },
+				{ "node": "node-c", "error": "skipped: the restart of node-b did not complete" }
+			]
+		}
+	}
+]
+```
+
+How the roll treats a node that does not restart:
+
+- **Its restart failed, or may still be running.** The roll stops, and every node after it is reported as skipped, not restarted. This covers a node whose restart job ended `ERROR` or did not finish in time, and a node whose connection dropped or timed out before it answered, since its restart may have started.
+- **It could not be reached, or refused the request.** The node is reported as not restarted, and the roll goes on to the next node.
+- **Its write queue was full.** The node is retried after the other nodes, up to three attempts in total.
+
+Before v5.4.0, a node that could not be reached or refused the request was listed in `result.replicated` as `{ node, message }`, the same shape as a node that restarted, and the job still ended `COMPLETE`. A node whose restart job failed or timed out did end the job `ERROR`, but without `result.replicated`.
+
+#### `scope`
+
+<VersionBadge version="v5.3.0" />
+
+Set `scope` to an [isolated application's name](../components/applications.md#isolated-applications) to restart only its worker. A name that identifies neither an isolated root-config entry nor a running isolated worker is refused with `400`.
+
+```json
+{ "operation": "restart_service", "service": "http", "scope": "shop-preview" }
+```
+
+### `system_information`
+
+Returns system metrics including CPU, memory, disk, network, and Harper process info. Optionally filter by an `attributes` array (e.g., `["cpu", "memory", "threads"]`). With `attributes: ["threads"]`, the response includes a `threads` array of workers. Each entry has a `threadId`; a dedicated isolated worker also has `application: "<name>"`. These describe the node that answers, not its peers.
+
+Valid attribute names are `system`, `time`, `cpu`, `memory`, `disk`, `network`, `harperdb_processes`, `table_size`, `metrics`, and `threads`. Omitting `attributes` returns all of them.
+
+> **Unrecognized attribute names are silently ignored**, not rejected. A typo produces a smaller response rather than an error, so if a section you asked for is missing, check the spelling before you check the node.
+
+```json
+{ "operation": "system_information" }
+```
+
+### `set_status` / `get_status` / `clear_status`
+
+Manage application status values. The status types are fixed — `primary`, `maintenance`, `availability` — while the value you store against each is yours to define (availability only accepts `'Available'` or `'Unavailable'`). `set_status` stores only `status`; any other field in the request is ignored.
+
+Values are **persisted**, stored in the `hdb_status` table in the `system` database, so they survive a restart. That table is declared `replicate: false`, so a status set on one node stays on that node and does not propagate to peers — which is what makes these values usable as node-local coordination markers.
+
+These are a coordination primitive for your own automation: Harper core stores and returns them but does not change its own behavior based on them, so they are not a substitute for a real health check. A `get_status` call with no `id` additionally returns Harper-derived state, including a `restartRequired` flag that tracks pending component and code restarts (not configuration changes).
+
+On Harper Fabric, the `status-check` component answers the load balancer from the `availability` record, so that record decides whether a node receives traffic. See [Load Balancing and Node Availability](/fabric/load-balancing).
+
+```json
+{ "operation": "set_status", "id": "primary", "status": "active" }
+```
+
+`get_status` has two forms, and the one you get depends on whether you pass an `id`.
+
+With an `id`, it returns that one status record:
+
+```json
+{ "operation": "get_status", "id": "primary" }
+```
+
+**Without an `id`, it returns a summary of the instance** rather than a status value:
+
+```json
+{ "operation": "get_status" }
+```
+
+| Field              | Description                                                                                                                                                                                                                                                                                                                                         |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `systemStatus`     | Every status record set with `set_status`                                                                                                                                                                                                                                                                                                           |
+| `componentStatus`  | Per-component health, aggregated across threads: `name` plus a `status` of `healthy`, `warning`, `error`, `loading`, or `unknown`                                                                                                                                                                                                                   |
+| `restartRequired`  | Whether a restart is pending on this node — set by a deploy that did not restart (see [Deploying without a restart](#deploying-without-a-restart)) or by a component install that succeeded after startup stopped waiting for it (v5.3.0; see [`deployment.startupInstallTimeout`](../configuration/options.md#deployment)), and cleared on restart |
+| `middlewareChains` | The resolved HTTP, upgrade, and WebSocket middleware order (v5.2.0). Present only when the request passes `middleware: true`                                                                                                                                                                                                                        |
+
+`restartRequired` is per node: it reports the node that served the request, not the cluster.
+
+---
+
+## Agent
+
+<VersionBadge version="v5.2.0" />
+
+Operations for driving Harper's built-in agent — an LLM loop that operates the instance through Harper's own operations, scoped filesystem access, followup scheduling, the V8 inspector, and outbound HTTP. The loop runs on the main thread, so an active run competes with Harper's other main-thread work; prefer running exploratory prompts against a node that is not serving production traffic.
+
+The agent component is **disabled by default**. Enable it with `agent.enabled: true` in `harper-config.yaml` (see [`agent`](../configuration/options.md#agent)) and configure a generative model under [`models`](../models/overview.md#configuration). With the component disabled at startup none of these operations are registered, so calling one is an unknown-operation error rather than a permission or state error.
+
+All six operations are `super_user` by default. They participate in the role [`operations` allowlist](../users-and-roles/overview.md#operation-permissions), so a non-`super_user` role can be granted a scoped subset without granting full `super_user` — either individual names (`operations: ['agent_prompt', 'get_agent_session']`) or the built-in [`agent` permission group](../users-and-roles/overview.md#operation-permissions), which covers all of these except `set_agent_config`. Note that the read operations are not caller-scoped: a role granted `get_agent_session` or `list_agent_sessions` reads every session on the instance, including transcripts of runs it did not start. Because a transcript records the _arguments and output_ of every tool call, and those calls ran as `agent.user`, delegating a read operation hands that role the results of work done at the agent's privilege — table contents, log excerpts, configuration — regardless of its own permissions. Delegate the read operations only to roles you would trust with the agent itself.
+
+:::warning
+Anyone who can call `agent_prompt` can direct whatever the agent does. Understand the boundary before enabling it:
+
+- `agent.user` (default: a `super_user` bootstrap identity) governs only the **operations** tools. Setting it to a restricted user narrows those, and nothing else.
+- The agent's other tools — scoped filesystem access, outbound `http_fetch`, followup scheduling, and the V8 inspector — run at the Harper process's own privilege, whatever `agent.user` is. (The inspector tools additionally need `threads.debug`, and fail with an explanatory error without it.)
+- By default, `http_fetch` blocks only cloud-metadata hosts and the IPv4 link-local range `169.254.0.0/16`. It checks host names, not resolved addresses, so a name that resolves to a blocked address is not caught. Since v5.4.0, it also checks every redirect hop before following it. Every other host is reachable, including anything private or internal the server can route to. Reading is ungated too. By default, `read_file` covers the component tree, the log directory, and the Harper config file. Before v5.4.0, it covered the whole directory holding the config file. `componentsScope` and `configScope` can point it elsewhere, including somewhere wider. Every scope refuses Harper's key directories, key file names, and PEM private keys. See [Filesystem scopes](../configuration/options.md#filesystem-scopes). An enabled agent therefore has a read path and an egress path in the same toolset. Unless the agent needs the network, set [`agent.httpFetch`](../configuration/options.md#restricting-http_fetch) to `false` to remove the tool, or to an allow-list of the hosts it needs. Otherwise, treat it as an outbound network client and apply egress policy to the host.
+- With the default `agent.allowDestructive: false`, destructive tools (including filesystem writes) are removed from the toolset entirely. Turning it on admits component writes, and component code is executed by the Harper process — a write is effectively code execution at process privilege.
+- Leave `agent.autoApprove` off so any destructive call that is admitted still pauses for [approval](#approve_agent_action). The gate covers only the tools marked destructive — filesystem writes, the inspector's code-evaluation tools, and the operations on MCP's [curated destructive set](../mcp/tool-metadata.md) (`drop_table`, `delete`, `restart`, `set_configuration`, ...). `http_fetch` and followup scheduling are not gated, so an outbound POST and a self-rescheduling run proceed without an approval prompt.
+- That set is an explicit list in core rather than a prefix match, and it is not a list of every damaging operation, so `allowDestructive` and `autoApprove` are not a boundary by themselves. The component operations are the ones to know about: `drop_component` and `deploy_component` are both off the set, so opting either into [`mcp.operations.allow`](../mcp/configuration.md#mcpoperationsallow) puts it in the agent's toolset where `allowDestructive: false` does not remove it and no approval gates it — and `deploy_component` writes code the Harper process then executes. Vet anything you add to that allow list on its own merits rather than assuming these two settings cover it.
+  :::
+
+| Operation              | Description                                                   | Role Required |
+| ---------------------- | ------------------------------------------------------------- | ------------- |
+| `agent_prompt`         | Starts or continues an agent session and kicks off a run      | super_user    |
+| `get_agent_session`    | Returns a session: status, full transcript, pending approvals | super_user    |
+| `list_agent_sessions`  | Lists agent sessions                                          | super_user    |
+| `approve_agent_action` | Approves or denies a gated tool call and resumes the run      | super_user    |
+| `cancel_agent_run`     | Cancels a run and marks the session aborted                   | super_user    |
+| `set_agent_config`     | Updates agent settings in memory for the life of the process  | super_user    |
+
+### Sessions and run status
+
+Each conversation is a session, persisted to `system.hdb_agent_session` so transcripts survive a restart. Runs are asynchronous: `agent_prompt` returns as soon as the run is started, and you poll `get_agent_session` for progress and results.
+
+Transcripts are retained indefinitely — the table is audited and none of these operations delete a session — and each tool call is recorded with its arguments as well as its output, so a bearer token in an `http_fetch` header or a secret in a `set_configuration` call is stored verbatim. Treat a prompt and everything a run passes to a tool as durably recorded, and keep credentials out of both.
+
+The table also carries no replication opt-out: it is not on core's list of non-replicating system tables, so on a cluster that replicates the `system` database, expect transcripts to reach peer nodes with it, and a backup of `system` to carry them as well. Treat a run's prompts and tool output as cluster-wide rather than local to the node that served the request.
+
+A run does not resume across a restart, and nothing reconciles session status at startup: a session the restart caught in `running` or `awaiting_approval` keeps that status indefinitely, so polling never terminates and `agent_prompt` rejects it with a 409. Clear it with [`cancel_agent_run`](#cancel_agent_run), which reports `"signalledLiveRun": false` because there is no live run left to signal.
+
+A session's `status` is one of:
+
+| Status              | Meaning                                                                            |
+| ------------------- | ---------------------------------------------------------------------------------- |
+| `idle`              | Created, or resumable — no run in flight                                           |
+| `running`           | A run is in progress                                                               |
+| `awaiting_approval` | Paused on one or more destructive tool calls; see `pendingApprovals`               |
+| `completed`         | The run ended with a final answer, or at the `maxTurns` ceiling; check `lastError` |
+| `aborted`           | Cancelled by an operator via `cancel_agent_run`                                    |
+| `error`             | The run failed or a spend cap stopped it; `lastError` carries the message          |
+
+`completed` also covers hitting the `agent.maxTurns` ceiling — in that case `lastError` reads `Reached maxTurns=<n> without a final answer.`, so check it before treating a completed session as finished. From v5.4.0 a final answer that reached a [spend cap](../configuration/options.md#agent-spend-caps) also ends `completed` with `lastError` set, naming the cap.
+
+As of v5.4.0, a model reply that did not finish ends the run `error`, never `completed`, and `lastError` says why. That covers a reply cut off at [`agent.maxTokens`](../configuration/options.md#agent) or at the model's context window, one stopped by the provider's content filter or a model refusal, one that asks for tool calls of which none could be parsed, and one with neither text nor tool calls. Nothing from that reply is added to `messages`: its text is dropped, and its tool calls are neither run nor queued for approval. The session can be prompted again. Earlier versions ended such a run `completed`, often with an empty final message, and ran a cut-off tool call with its cut-off arguments.
+
+### When a conversation outgrows the model's context window
+
+<VersionBadge version="v5.4.0" />
+
+Every model request replays the session's whole conversation, so a single large tool result can fill the model's context window, and then every later request is rejected. Two rules keep a session usable:
+
+- **Tool results are capped where they are stored.** A result larger than [`agent.maxToolResultBytes`](../configuration/options.md#agent) (default 64 KiB) is cut to that size before it is added to `messages`, ending with a note that gives its original size and tells the model how to ask for less. Only the cut form is kept, so `get_agent_session` shows what the model saw. The file-reading tools return pages sized to fit under the cap, measured as JSON, unless the file's path alone takes up most of it: `read_file` returns up to `lineCount` whole lines from `startLine`, and while the file continues it gives `nextLine` and `nextOffset`, which the agent passes back as `startLine` and `offset` to read the next page without rescanning the file. So it can work through a log of any size one page at a time. A line longer than a page comes back in parts, continued the same way, with every part but the last flagged `lineTruncated`.
+- **A rejected request is retried once.** When the provider rejects a request because it does not fit the model's context window (detected for the OpenAI, Anthropic and Bedrock backends), the agent cuts every result over 2 KiB to 2 KiB, in the most recent group of tool results that has one, keeping its beginning plus a note saying it was cut, records the cut in `messages`, and sends the request again. If nothing is left to cut, or the retry is rejected as well, the run ends `error` with a `lastError` that starts `The conversation no longer fits the model's context window`. Shorten the prompt, or start a new session. With fallback models configured, a context-window rejection from a fallback that follows an unrelated failure of the first model is reported as that first failure, and is not retried.
+
+Earlier versions added every tool result in full, so one large result left the session unusable. Prompting such a session again usually recovers it, because its oversized result is cut on the first rejection; if it still ends `error`, start a new session.
+
+### `agent_prompt`
+
+Sends a prompt to the agent. Omit `session_id` to start a new session; supply one to continue an existing conversation. Returns immediately with the session id and `"status": "running"`.
+
+| Parameter    | Type   | Description                                                     |
+| ------------ | ------ | --------------------------------------------------------------- |
+| `message`    | string | The instruction for the agent. **Required**, must be non-empty. |
+| `session_id` | string | Existing session to continue. Omit to create a new session.     |
+
+```json
+{
+	"operation": "agent_prompt",
+	"message": "Create a component called inventory with a Product table keyed by sku, then verify it responds over REST."
+}
+```
+
+Response:
+
+```json
+{ "session_id": "3f7c...", "status": "running" }
+```
+
+A session that is `running` or `awaiting_approval` rejects a new prompt with a 409 — resolve the pending approval or cancel the run first. From v5.4.0 a session also answers 409 while a cancelled run is still finishing its current model call or tool. Nothing is recorded, and the session already reads `aborted`, so send the prompt again once [`get_agent_session`](#get_agent_session) on the node you prompted reports `runInFlight: false`, since each node reports only its own runs; the wait lasts as long as that call, at most the model's `requestTimeoutMs` or the tool's own run time. A prompt accepted while a [`cancel_agent_run`](#cancel_agent_run) for the same session arrives also answers 409. That prompt may already be in the transcript, where the next prompt's run sees it.
+
+From v5.4.0 each of these 409s carries a `code` and `retryable` beside `error`. `retryable: true` means nothing was recorded, so the same prompt can be sent again once the condition clears; `retryable: false` means the prompt was saved, and sending it again would add it twice:
+
+| `code`                   | `retryable` | When                                                                         |
+| ------------------------ | ----------- | ---------------------------------------------------------------------------- |
+| `AGENT_SESSION_BUSY`     | `true`      | The session is `running` or `awaiting_approval`                              |
+| `AGENT_RUN_FINISHING`    | `true`      | A cancelled run is still finishing; `runInFlight` turns `false` when it ends |
+| `AGENT_PROMPT_CANCELLED` | `true`      | A cancel arrived before the prompt was saved                                 |
+| `AGENT_PROMPT_NOT_RUN`   | `false`     | A cancel arrived after the prompt was saved, so no run started               |
+
+### `get_agent_session`
+
+Returns the full session record: `status`, `user` (the Operations API caller who created the session, falling back to `agent.user`), the `messages` transcript (user, assistant, and tool messages, including tool calls and their observations), `pendingApprovals`, `model`, `provider`, `createdAt`/`updatedAt`, and `lastError`. This is the polling endpoint for a run in flight.
+
+From v5.4.0 each assistant message carries the `usage` its model call reported (`promptTokens`, `completionTokens`, and `costUsd` when the model is [priced](../models/overview.md#pricing)), and the response adds the session's totals:
+
+```json
+{
+	"session_id": "3f7c...",
+	"status": "completed",
+	"usage": { "calls": 3, "promptTokens": 41230, "completionTokens": 2210, "costUsd": 0.157 },
+	"runInFlight": false
+}
+```
+
+`calls` counts the model calls that returned, including a reply the agent rejected as cut off or empty. That reply is kept out of `messages`, and its usage is listed in the session's `rejectedCalls`. A failed call is not counted. A total is left out once any call in the session did not report it, such as an unpriced model for `costUsd`, so a missing total means unmeasured, not zero. The [spend caps](../configuration/options.md#agent-spend-caps) read the same totals. `runInFlight` is `true` while a run for the session is still executing on the node that answered, including a cancelled run finishing its current step.
+
+```json
+{ "operation": "get_agent_session", "session_id": "3f7c..." }
+```
+
+Unknown `session_id` returns a 404.
+
+### `list_agent_sessions`
+
+Lists agent sessions, each with the same `usage` totals as `get_agent_session`.
+
+| Parameter | Type    | Description                              |
+| --------- | ------- | ---------------------------------------- |
+| `limit`   | integer | Maximum sessions to return. Default 100. |
+
+```json
+{ "operation": "list_agent_sessions", "limit": 20 }
+```
+
+Response:
+
+```json
+{ "sessions": [{ "session_id": "3f7c...", "status": "completed", "...": "..." }] }
+```
+
+Through v5.2.4 the result order is not chronological — session ids are UUIDs and the listing walks them in reverse key order — and `limit` is applied by that scan, so once there are more sessions than `limit` the ones left out are an arbitrary subset rather than the oldest. On those versions, request a `limit` above your session count and sort on `updatedAt` or `createdAt` yourself if you need recency. The ordering is fixed in core by [harper#2268](https://github.com/HarperFast/harper/issues/2268) — check the release notes for the version it ships in.
+
+### `approve_agent_action`
+
+When `agent.autoApprove` is off (the default), any tool call the agent makes to a destructive operation pauses the run and lands in the session's `pendingApprovals`. This operation resolves one of them and resumes the run. Each entry carries its identifier in an `id` field — pass that as `approval_id` — alongside `toolName`, `arguments`, and `reason`.
+
+| Parameter     | Type    | Description                                                                      |
+| ------------- | ------- | -------------------------------------------------------------------------------- |
+| `session_id`  | string  | **Required.**                                                                    |
+| `approval_id` | string  | The `id` of the entry in `get_agent_session`'s `pendingApprovals`. **Required.** |
+| `approved`    | boolean | `true` to approve (default). `false` denies the call.                            |
+
+```json
+{
+	"operation": "approve_agent_action",
+	"session_id": "3f7c...",
+	"approval_id": "9b21...",
+	"approved": true
+}
+```
+
+Both decisions resume the loop: an approval executes the saved tool call, and a denial hands the refusal back to the model as an observation so it can adjust. Neither ends the run — use `cancel_agent_run` for that. If a single turn produced several gated calls, the session stays `awaiting_approval` until every one of them is resolved. Resolving an already-resolved approval is an error. From v5.4.0 an approved action runs at most once: it is marked taken just before it runs, and if Harper stops after that and before recording its result, the next run answers that call `interrupted` with an unknown outcome instead of running it again. A tool call that needed no approval and was cut off the same way is answered `interrupted` too, so the session can continue. An approval still awaiting a decision stays pending.
+
+Whether a tool is treated as destructive at all is governed by `agent.allowDestructive`: when it is `false` (the default), destructive tools are removed from the agent's toolset entirely rather than gated. Which tools carry that mark is fixed in core — `write_file`, the inspector's code-evaluation tools, and the operations on MCP's [curated destructive set](../mcp/tool-metadata.md) — so an operation outside it (`drop_component` and `deploy_component` among them) is neither removed nor gated.
+
+### `cancel_agent_run`
+
+Cancels a session's run, clears any followups it scheduled, and marks the session `aborted`. Works on a paused (`awaiting_approval`) or `idle` session as well as an actively running one.
+
+From v5.4.0 the cancel also answers every pending approval, decided or not, with a `cancelled_by_operator` result, in the same write that marks the session `aborted`. An approved action that has not started by then never runs, neither in the cancelled run nor when you next prompt the session, and nothing is left awaiting a decision. An approved action that had already started is not answered by the cancel: if it finished, its result is recorded, and if Harper stopped before recording one, the next run answers it `interrupted`. A cancel between a turn's tool calls answers the rest of that turn `cancelled_by_operator`. The session stays `aborted`. A run caught mid-step finishes that step without marking the session `completed`, `error` or `awaiting_approval`. A tool call it then asks to have approved is answered `cancelled_by_operator` instead, and the run makes no further model call.
+
+```json
+{ "operation": "cancel_agent_run", "session_id": "3f7c..." }
+```
+
+Response:
+
+```json
+{ "cancelled": true, "signalledLiveRun": true }
+```
+
+`cancelled` is `false` if the session had already reached a terminal state (`completed`, `aborted`, `error`). `signalledLiveRun` reports whether there was an in-flight run to abort — a paused session yields `false` while still being marked aborted.
+
+One gap is worth knowing: changing `allowDestructive` with [`set_agent_config`](#set_agent_config) rebuilds the toolset, and followups scheduled before that change are no longer tracked, so a later cancel does not clear them. A stray followup starts a fresh run even after a cancel and even with `enabled` set to `false`. If a run has scheduled followups, avoid toggling `allowDestructive` mid-session, and restart the node if one escapes.
+
+### `set_agent_config`
+
+<VersionBadge type="changed" version="v5.4.0" />
+
+Updates agent settings and returns the resulting configuration. Accepts any of `enabled`, `provider`, `model`, `maxTurns`, `maxTokens`, `maxToolResultBytes`, `maxSessionTokens`, `maxCostUsd`, `autoApprove`, `allowDestructive`, and `systemPromptAppend`; keys not supplied are left unchanged. Set `maxSessionTokens` or `maxCostUsd` to `null` to remove that cap. Each field is described under [`agent`](../configuration/options.md#agent). A request that includes `httpFetch`, `componentsScope`, or `configScope` is rejected with a 400 and nothing in it is applied: the [`http_fetch` policy](../configuration/options.md#restricting-http_fetch) and the [filesystem scopes](../configuration/options.md#filesystem-scopes) are read at startup only. A `maxTurns` or `maxTokens` that is not a positive integer, or a cap that is not a usable number, is rejected the same way. A `maxToolResultBytes` that is not an integer from `1024` to `1048576` is rejected the same way.
+
+```json
+{ "operation": "set_agent_config", "autoApprove": false, "maxTurns": 20 }
+```
+
+Three limits are worth knowing:
+
+- **The change is in-memory and not persisted.** It applies for the life of the process and is lost on restart; edit `harper-config.yaml` for a durable change.
+- **A run already in flight keeps the settings it started with** — its toolset, `autoApprove`, `model`, `maxTurns`, `maxTokens`, `maxToolResultBytes`, `systemPromptAppend` and spend caps are all captured at start. Changes take effect on the next run, and a paused run that `approve_agent_action` resumes counts as a new one: it picks up the current settings. To stop a run immediately, use `cancel_agent_run`.
+- **`enabled` is not a kill switch.** It cannot turn the agent on — if it was off at startup, this operation does not exist. Setting it to `false` only makes subsequent `agent_prompt` calls return 409; a run already in flight continues, and `approve_agent_action` still resumes a paused one. Use `cancel_agent_run` to stop a run.
+
+### MCP access
+
+When the [MCP server](../mcp/overview.md) is enabled with the operations profile, `agent_prompt`, `get_agent_session`, `list_agent_sessions`, `approve_agent_action`, and `cancel_agent_run` are also exposed as MCP tools, with no allow-list entry required. They dispatch through the same authorization path as the operations above, and are listed only for users whose role could call them. `set_agent_config` is deliberately not exposed over MCP — it is an operator action.
+
+---
+
+## Backup & Restore
+
+Operations for backing up and restoring databases. Managed backups <VersionBadge version="v5.2.0" /> require the RocksDB storage engine; `get_backup` works with both RocksDB and LMDB.
+
+Detailed documentation: [Backup Operations](../backups/operations.md)
+
+| Operation        | Description                                                         | Role Required |
+| ---------------- | ------------------------------------------------------------------- | ------------- |
+| `create_backup`  | Creates a managed, incremental directory backup of a database (job) | super_user    |
+| `list_backups`   | Lists the managed backups for a database                            | super_user    |
+| `verify_backup`  | Verifies a managed backup's integrity (job)                         | super_user    |
+| `delete_backup`  | Deletes a single managed backup                                     | super_user    |
+| `purge_backups`  | Deletes all but the newest `keep_count` managed backups             | super_user    |
+| `restore_backup` | Restores a database from a managed backup (job)                     | super_user    |
+| `get_backup`     | Streams a full snapshot of a database in the response for download  | super_user    |
+
+### `create_backup`
+
+Creates an incremental directory backup of the database under the configured backup root. Runs as a background [job](#jobs) that reports the new `backup_id`.
+
+```json
+{ "operation": "create_backup", "database": "dev" }
+```
+
+### `list_backups`
+
+Returns the managed backups for a database, each with its `backup_id`, `timestamp`, `size`, and `file_count`.
+
+```json
+{ "operation": "list_backups", "database": "dev" }
+```
+
+### `verify_backup`
+
+Verifies a managed backup's integrity, including checksums when `verify_checksum` is `true` (slower). Runs as a background [job](#jobs).
+
+```json
+{ "operation": "verify_backup", "database": "dev", "backup_id": 1, "verify_checksum": true }
+```
+
+### `delete_backup`
+
+Deletes a single managed backup.
+
+```json
+{ "operation": "delete_backup", "database": "dev", "backup_id": 1 }
+```
+
+### `purge_backups`
+
+Deletes all but the newest `keep_count` managed backups.
+
+```json
+{ "operation": "purge_backups", "database": "dev", "keep_count": 3 }
+```
+
+### `restore_backup`
+
+Restores a database in place from a managed backup, as a background [job](#jobs). `backup_id` defaults to the latest backup. Restoring the `system` database, or a database a loaded component keeps open, requires the server to be stopped — see [when can a database be restored?](../backups/overview.md#when-can-a-database-be-restored)
+
+```json
+{ "operation": "restore_backup", "database": "dev", "backup_id": 1 }
+```
+
+### `get_backup`
+
+Streams a full snapshot of the specified database in the HTTP response for download. For RocksDB <VersionBadge type="changed" version="v5.2.0" />, a `tar` archive of the current state (including file-backed blobs unless `exclude_blobs` is set), gzipped by default; for LMDB, the `.mdb` file.
+
+```json
+{ "operation": "get_backup", "database": "dev" }
+```
+
+---
+
+## Jobs
+
+Operations for querying background job status.
+
+Detailed documentation: [Database Jobs](../database/jobs.md)
+
+| Operation                   | Description                                      | Role Required |
+| --------------------------- | ------------------------------------------------ | ------------- |
+| `get_job`                   | Returns status and results for a specific job ID | any           |
+| `search_jobs_by_start_date` | Returns jobs within a specified time window      | super_user    |
+
+### `get_job`
+
+Returns job status (`CREATED`, `IN_PROGRESS`, `COMPLETE`, `ERROR`), timing, and result message for the specified job ID. Bulk import/export operations return a job ID on initiation, as does a `deploy_component` with `"restart": "rolling"`, as `restartJobId`. [`restart_service`](#restart_service) also returns one; with `"replicated": true`, its job's `status` and `result.replicated` report whether each node restarted, as [`replicated`](#restart_service-replicated) describes.
+
+```json
+{ "operation": "get_job", "id": "4a982782-929a-4507-8794-26dae1132def" }
+```
+
+A job is recorded only on the node that ran it, because `system.hdb_job` is not replicated, so `get_job` answers only there; any other node returns an empty array. For a `deploy_component` with `"restart": "rolling"`, that is the node that received the deploy.
+
+Any role may call `get_job`, unless the role has an `operations` allowlist, or the caller's token an `operations` scope, that does not list it. Either one refuses every operation it doesn't name, so a deploy-only role that waits for its rolling deploys must list `get_job` for a job that only restarts the nodes, and, from v5.4.0, [`get_deployment`](#get_deployment) for a certified rolling deploy, whose record `harper deploy` waits on.
+
+### `search_jobs_by_start_date`
+
+Returns all jobs started within the specified datetime range.
+
+```json
+{
+	"operation": "search_jobs_by_start_date",
+	"from_date": "2021-01-25T22:05:27.464+0000",
+	"to_date": "2021-01-25T23:05:27.464+0000"
+}
+```
+
+---
+
+## Logs
+
+Operations for reading Harper logs.
+
+Detailed documentation: [Logging Operations](../logging/operations.md)
+
+| Operation                        | Description                                                                                                              | Role Required |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------ | ------------- |
+| `read_log`                       | Returns entries from the primary `hdb.log`                                                                               | super_user    |
+| `read_transaction_log`           | Returns transaction history for a table                                                                                  | super_user    |
+| `delete_transaction_logs_before` | Deletes transaction log entries older than a timestamp                                                                   | super_user    |
+| `read_audit_log`                 | Returns verbose transaction history for a table, including original record values (requires transaction logging enabled) | super_user    |
+| `delete_audit_logs_before`       | Deletes transaction log entries older than a timestamp (deprecated alias of `delete_transaction_logs_before`)            | super_user    |
+
+### `read_log`
+
+Returns entries from `hdb.log`. Filter by `level` (`notify`, `error`, `warn`, `info`, `debug`, `trace`), date range (`from`, `until`), and text `filter`.
+
+```json
+{
+	"operation": "read_log",
+	"start": 0,
+	"limit": 100,
+	"level": "error"
+}
+```
+
+### `read_transaction_log`
+
+Returns transaction history for a specific table. Optionally filter by `from`/`to` (millisecond epoch) and `limit`.
+
+```json
+{
+	"operation": "read_transaction_log",
+	"schema": "dev",
+	"table": "dog",
+	"limit": 10
+}
+```
+
+### `read_audit_log`
+
+Returns verbose transaction history including original record state. Requires transaction logging (`logging.auditLog: true`) in configuration. Filter by `search_type`: `hash_value`, `timestamp`, or `username`.
+
+```json
+{
+	"operation": "read_audit_log",
+	"schema": "dev",
+	"table": "dog",
+	"search_type": "username",
+	"search_values": ["admin"]
+}
+```
+
+---
+
+## Certificate Management
+
+Operations for managing TLS certificates in the `hdb_certificate` system table.
+
+Detailed documentation: [Certificate Management](../security/certificate-management.md)
+
+| Operation            | Description                                    | Role Required |
+| -------------------- | ---------------------------------------------- | ------------- |
+| `add_certificate`    | Adds or updates a certificate                  | super_user    |
+| `remove_certificate` | Removes a certificate and its private key file | super_user    |
+| `list_certificates`  | Lists all certificates                         | super_user    |
+
+### `add_certificate`
+
+Adds a certificate to `hdb_certificate`. If a `private_key` is provided, it is written to `<rootPath>/keys/` (not stored in the table). If no private key is provided, the operation searches for a matching one on disk.
+
+```json
+{
+	"operation": "add_certificate",
+	"name": "my-cert",
+	"certificate": "-----BEGIN CERTIFICATE-----...",
+	"is_authority": false,
+	"private_key": "-----BEGIN RSA PRIVATE KEY-----..."
+}
+```
+
+---
+
+## Analytics
+
+Operations for querying analytics metrics.
+
+Detailed documentation: [Analytics Operations](../analytics/operations.md)
+
+| Operation         | Description                                     | Role Required |
+| ----------------- | ----------------------------------------------- | ------------- |
+| `get_analytics`   | Retrieves analytics data for a specified metric | any           |
+| `list_metrics`    | Lists available analytics metrics               | any           |
+| `describe_metric` | Returns the schema of a specific metric         | any           |
+
+### `get_analytics`
+
+Retrieves analytics data. Supports `start_time`/`end_time` (Unix ms), `get_attributes`, and `conditions` (same format as `search_by_conditions`, including its [null and omitted value rules](../rest/querying.md#null-and-omitted-values)).
+
+```json
+{
+	"operation": "get_analytics",
+	"metric": "resource-usage",
+	"start_time": 1769198332754,
+	"end_time": 1769198532754
+}
+```
+
+### `list_metrics`
+
+Returns available metric names. Filter by `metric_types`: `custom`, `builtin` (default: `builtin`).
+
+```json
+{ "operation": "list_metrics" }
+```
+
+---
+
+## Registration & Licensing
+
+Operations for license management.
+
+| Operation               | Description                                        | Role Required |
+| ----------------------- | -------------------------------------------------- | ------------- |
+| `registration_info`     | Returns the Harper version                         | any           |
+| `install_usage_license` | Installs a Harper usage license block              | super_user    |
+| `get_usage_licenses`    | Returns all usage licenses with consumption counts | super_user    |
+
+### `registration_info`
+
+Returns the instance's Harper version, and `deprecated: true`. It no longer returns registration details. `harper deploy` calls it to check the target's version before it uploads, so a role with an `operations` allowlist that runs `harper deploy` should list it.
+
+```json
+{ "operation": "registration_info" }
+```
+
+```json
+{ "version": "5.3.2", "deprecated": true }
+```
+
+### `install_usage_license`
+
+Installs a usage license block. A license is a JWT-like structure (`header.payload.signature`) signed by Harper. Multiple blocks may be installed; earliest blocks are consumed first.
+
+```json
+{
+	"operation": "install_usage_license",
+	"license": "abc...0123.abc...0123.abc...0123"
+}
+```
+
+### `get_usage_licenses`
+
+Returns all usage licenses (including expired/exhausted) with current consumption counts. Optionally filter by `region`.
+
+```json
+{ "operation": "get_usage_licenses" }
+```
+
+---
+
+## Deprecated Operations
+
+The following operations are deprecated and should not be used in new code.
+
+### Custom Functions (Deprecated)
+
+Custom Functions were the precursor to the Component architecture introduced in v4.2.0. These operations are preserved for backward compatibility.
+
+<VersionBadge type="deprecated" version="v4.2.0" /> (moved to legacy in v4.7+)
+
+For modern equivalents, see [Components Overview](../components/overview.md).
+
+| Operation                         | Description                                      |
+| --------------------------------- | ------------------------------------------------ |
+| `custom_functions_status`         | Returns Custom Functions server status           |
+| `get_custom_functions`            | Lists all Custom Function projects               |
+| `get_custom_function`             | Returns a Custom Function file's content         |
+| `set_custom_function`             | Creates or updates a Custom Function file        |
+| `drop_custom_function`            | Deletes a Custom Function file                   |
+| `add_custom_function_project`     | Creates a new Custom Function project            |
+| `drop_custom_function_project`    | Deletes a Custom Function project                |
+| `package_custom_function_project` | Packages a Custom Function project as base64 tar |
+| `deploy_custom_function_project`  | Deploys a packaged Custom Function project       |
+
+### Other Deprecated Operations
+
+| Operation              | Replaced By                                                         |
+| ---------------------- | ------------------------------------------------------------------- |
+| `install_node_modules` | Handled automatically by `deploy_component` and `restart`           |
+| `get_fingerprint`      | Removed in v5.0.0, with no replacement                              |
+| `set_license`          | Removed in v5.0.0; use `install_usage_license` (Harper Pro)         |
+| `search_by_hash`       | Use `search_by_id`                                                  |
+| `search_attribute`     | Use `attribute` field in `search_by_value` / `search_by_conditions` |
+| `search_value`         | Use `value` field in `search_by_value` / `search_by_conditions`     |
+| `search_type`          | Use `comparator` field in `search_by_conditions`                    |

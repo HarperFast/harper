@@ -1,0 +1,188 @@
+---
+id: overview
+title: MQTT
+---
+
+<!-- Source: versioned_docs/version-4.7/developers/real-time.md (primary) -->
+<!-- Source: release-notes/v4-tucker/4.2.0.md (confirmed MQTT introduction, QoS 0/1, durable sessions) -->
+<!-- Source: release-notes/v4-tucker/4.3.0.md (confirmed mTLS, single-level wildcards, retain handling, CRDT) -->
+<!-- Source: release-notes/v4-tucker/4.5.0.md (confirmed improved message delivery, blob support) -->
+
+<VersionBadge version="v4.2.0" />
+
+Harper includes a built-in MQTT broker that provides real-time pub/sub messaging deeply integrated with the database. Unlike a generic MQTT broker, Harper's MQTT implementation connects topics directly to database records — publishing to a topic writes to the database, and subscribing to a topic delivers live updates for the corresponding record.
+
+## How Topics Map to Database Records
+
+MQTT topics in Harper follow the same path convention as REST endpoints. If you define a table or resource with an endpoint path of `my-resource`, the corresponding MQTT topic namespace is `my-resource`.
+
+A topic of `my-resource/some-id` corresponds to the record with id `some-id` in the `my-resource` table (or custom resource). This means:
+
+- **Subscribing** to `my-resource/some-id` delivers notification messages whenever that record is updated or deleted.
+- The **current value** of the record is treated as the retained message for that topic. On subscription, the subscriber immediately receives the current record as the initial retained message — no separate GET request needed.
+- **Publishing** with the `retain` flag set replaces the record in the database (equivalent to a PUT operation).
+- **Publishing without** the `retain` flag delivers the message to current subscribers without writing to the database.
+
+Defining a table that creates a topic can be as simple as adding a table with no attributes to your [schema.graphql](../database/schema.md) in a Harper application:
+
+```graphql
+type MyTopic @table @export
+```
+
+## Protocol Support
+
+Harper supports MQTT versions **v3.1.1** and **v5**, with standard publish/subscribe capabilities.
+
+### Topics and Wildcards
+
+Harper supports multi-level topics for both publishing and subscribing:
+
+- **Multi-level wildcard (`#`)** — Subscribe to `my-resource/#` to receive notifications for all records in that resource, including nested paths (`my-resource/some-id`, `my-resource/nested/id`).
+- **Single-level wildcard (`+`)** — Added in v4.3.0. Subscribe to `my-resource/+/status` to match any single path segment.
+
+### QoS Levels
+
+- **QoS 0** — At most once delivery (fire and forget).
+- **QoS 1** — At least once delivery (acknowledged delivery).
+- **QoS 2** — Harper can perform the QoS 2 conversation but does not guarantee exactly-once delivery.
+
+### Sessions
+
+- **Clean sessions** — Subscriptions and queued messages are discarded on disconnect.
+- **Durable sessions** — Subscriptions and queued messages are persisted across reconnects. See [Durable Sessions](#durable-sessions) below.
+
+### Durable Sessions
+
+<VersionBadge type="changed" version="v5.4.0" />
+
+A durable session retains a client's subscription list and any unacknowledged messages across disconnects. When the client reconnects with the same client ID, Harper catches up subscribed topics from retained audit history, picking up from where it left off.
+
+Durable sessions in Harper are persisted as records in the `hdb_durable_session` system table, indexed by client ID. The session record holds the list of subscriptions (topic + QoS) and, per topic, the position in the transaction log from which a reconnect catches up. Because durable sessions are records rather than in-memory state, an abandoned session sits idle with no runtime cost until the client reconnects or the record is deleted.
+
+**Establishing a durable session** — Connect with a stable client ID and `cleanSession: false` (MQTT v3.1.1) or `cleanStart: false` (MQTT v5):
+
+```javascript
+// MQTT v5 with the `mqtt` npm package
+mqtt.connect('mqtts://harper.example.com:8883', {
+	clientId: 'sensor-42',
+	clean: false, // request a durable session
+	protocolVersion: 5,
+	properties: {
+		sessionExpiryInterval: 86400, // keep session for 24h after disconnect
+	},
+});
+```
+
+**Catch-up on reconnect** — When the client reconnects, Harper replays missed messages on subscribed topics by reading retained audit history. For this to work, audit logging must be enabled on the tables backing the subscribed topics. See [Transaction Logging](../database/transaction.md) and [`logging.auditLog`](../logging/configuration.md#loggingauditlog). Catch-up applies to QoS 1 and 2 subscriptions. A QoS 0 subscription is kept with the session and resumes live, without the messages published while the client was away.
+
+**When a session can no longer catch up** — As of v5.4.0, Harper checks each subscription's saved position against the database's history before replaying from it. When audit retention has since removed history the replay would need, Harper resets the session instead of replaying only part of what was missed:
+
+- **At connect** — If the check fails at connect time, Harper deletes the session record and answers `CONNACK` with `sessionPresent: false`. Resubscribe when you see it.
+- **After `CONNACK`** — If the problem is found after `CONNACK`, Harper deletes the session and closes the connection, sending an MQTT v5 client `DISCONNECT` with reason code `0x83` first. The next connect gets `sessionPresent: false`.
+- **Record and wildcard subscriptions** — A subscription to a single record resumes as long as that record's history back to the saved position is still retained, even when retention has removed other history. A wildcard subscription resumes as long as the database-wide log still covers its position.
+
+A position saved before the database was restored or copied, or saved on another cluster node, cannot be checked against this database's history. Harper resumes those subscriptions best-effort instead of resetting the session: it replays from the saved position without the check, as earlier versions did, and once the subscription has caught up, the positions it saves are checked again on later reconnects. A restore ends a connected session's subscriptions, so the connection closes with `0x83` and the client resumes the same session when it reconnects. Because a restore leaves no event in the history, a resumed client is not told that state was rolled back.
+
+Harper keeps a quiet topic's position current while the client is connected, and again when it disconnects, so a subscription that receives nothing is not reset merely because other tables' retention advanced. A position only moves past a message once that message, and every other message from the same transaction, has been acknowledged; an out-of-order acknowledgement can mean some messages are delivered again after a reconnect. A client that sends SUBSCRIBE again for a topic its session already holds, as many clients do on every connect, continues from the saved position, so resubscribing loses nothing. A new connection with the same client ID on the same Harper thread takes the session over, and the older connection is closed (MQTT v5 reason code `0x8E`); a clean-start connect closes it the same way. These checks apply to RocksDB databases; LMDB sessions catch up as before.
+
+<VersionBadge type="changed" version="v5.3.0" />
+
+Durable subscriptions with QoS 1 or 2 explicitly include superseded record versions during both live delivery and reconnect catch-up. This preserves delivery of intermediate retained publications (`retain: true`), even though ordinary table subscriptions now default to current-state delivery. Non-retained publications remain independent messages. Catch-up is limited by audit-log retention. See [Superseded record updates](../resources/resource-api.md#superseded-record-updates).
+
+**Session expiry** — In MQTT v5, the `sessionExpiryInterval` property on `CONNECT` controls how long the session is retained after the client disconnects. With `sessionExpiryInterval: 0` (or a clean session connect), Harper deletes the session record at disconnect. Connecting with the same client ID and `clean: true` also explicitly deletes any existing durable session.
+
+**Distributed durable sessions** — Harper does not currently maintain a single logical durable session across multiple cluster nodes; a durable session record lives on the node where it was created. Clients that may reconnect to different nodes (e.g., behind a load balancer with round-robin DNS) should use sticky routing or terminate on a fixed node.
+
+### Last Will
+
+<VersionBadge version="v4.3.0" />
+
+Harper supports the MQTT Last Will and Testament feature. If a client disconnects unexpectedly, the broker publishes the configured will message on its behalf. Will messages are persisted in the `hdb_session_will` system table at CONNECT time, so they survive a broker restart and fire reliably on unexpected disconnect.
+
+As of v5.4.0, each connection's will is kept separately, so a connection that closes after a newer one with the same client ID has connected publishes only its own will. When the newer connection takes a durable session over, the older connection is closed and publishes its will then, as MQTT v5 specifies.
+
+## Content Negotiation
+
+Harper handles structured data natively. Messages can be published and received in any supported structured format — JSON, CBOR, or MessagePack — and Harper stores and delivers them as structured objects. Different clients can independently choose their preferred format: one client may publish in JSON while another subscribes and receives in CBOR.
+
+## Ordering and Distributed Delivery
+
+Harper is designed for distributed, low-latency message delivery. Messages are delivered to subscribers immediately on arrival — Harper does not delay delivery to coordinate consensus across nodes.
+
+In a distributed cluster, messages may arrive out of order due to network topology. The behavior depends on whether the message is retained or non-retained:
+
+- **Retained messages** (published with `retain: true`, or written via PUT/upsert) maintain eventual consistency across the cluster. Harper keeps the message with the latest timestamp as the winning record state. Ordinary subscriptions skip superseded updates. Durable QoS 1/2 subscriptions include superseded versions, so their delivered history can include older updates even though the stored record converges to the most recent state.
+- **Non-retained messages** are always delivered to local subscribers when received, even if they arrive out of order. Every message is delivered, prioritizing completeness over strict ordering.
+
+**Non-retained messages** are suited for applications like chat where every message must be delivered. **Retained messages** are suited for sensor readings or state updates where only the latest value matters.
+
+## Authentication
+
+MQTT connections support two authentication methods:
+
+- **Credential-based** — Standard MQTT username/password in the CONNECT packet.
+- **mTLS** — Added in v4.3.0. Mutual TLS authentication using client certificates. The `CN` (common name) from the client certificate subject is used as the Harper username by default.
+
+On raw-TCP loopback connections, [`authentication.authorizeLocal`](../security/configuration.md#authorizelocal) also permits access without CONNECT credentials, even when `requireAuthentication` is `true`. From v5.4.0, these locally trusted connections run as the built-in [`local` super user](../security/configuration.md#local-request-identity).
+
+Authentication is otherwise required by default (`requireAuthentication: true`). See [MQTT Configuration](./configuration) for details on disabling authentication or configuring mTLS options.
+
+## Server Events API
+
+JavaScript components can listen for MQTT connection events via `server.mqtt.events`:
+
+```javascript
+server.mqtt.events.on('connected', (session, socket) => {
+	console.log('client connected with id', session.clientId);
+});
+```
+
+Available events:
+
+| Event          | Description                                          |
+| -------------- | ---------------------------------------------------- |
+| `connection`   | Client establishes a TCP or WebSocket connection     |
+| `connected`    | Client completes MQTT handshake and is authenticated |
+| `auth-failed`  | Client fails to authenticate                         |
+| `disconnected` | Client disconnects                                   |
+
+## Feature Support Matrix
+
+| Feature                                       | Support                                                      |
+| --------------------------------------------- | ------------------------------------------------------------ |
+| MQTT v3.1.1 connections                       | ✅                                                           |
+| MQTT v5 connections                           | ✅                                                           |
+| Secure MQTTS (TLS)                            | ✅                                                           |
+| MQTT over WebSockets                          | ✅                                                           |
+| Authentication via username/password          | ✅                                                           |
+| Authentication via mTLS                       | ✅ (added v4.3.0)                                            |
+| Publish                                       | ✅                                                           |
+| Subscribe                                     | ✅                                                           |
+| Multi-level wildcard (`#`)                    | ✅                                                           |
+| Single-level wildcard (`+`)                   | ✅ (added v4.3.0)                                            |
+| QoS 0                                         | ✅                                                           |
+| QoS 1                                         | ✅                                                           |
+| QoS 2                                         | Not fully supported — conversation supported, not guaranteed |
+| Keep-Alive monitoring                         | ✅                                                           |
+| Clean session                                 | ✅                                                           |
+| Durable session                               | ✅                                                           |
+| Distributed durable session                   | Not supported                                                |
+| Last Will                                     | ✅                                                           |
+| MQTT V5 Subscribe retain handling             | ✅ (added v4.3.0)                                            |
+| MQTT V5 User properties                       | Not supported                                                |
+| MQTT V5 Will properties                       | Not supported                                                |
+| MQTT V5 Connection properties                 | Not supported                                                |
+| MQTT V5 Connection acknowledgement properties | Not supported                                                |
+| MQTT V5 Publish properties                    | Not supported                                                |
+| MQTT V5 Subscribe properties (general)        | Not supported                                                |
+| MQTT V5 Ack properties                        | Not supported                                                |
+| MQTT V5 AUTH command                          | Not supported                                                |
+| MQTT V5 Shared subscriptions                  | Not supported                                                |
+
+## Related
+
+- [MQTT Configuration](./configuration)
+- [HTTP Overview](../http/overview.md)
+- [Security Overview](../security/overview.md)
+- [Database Schema](../database/schema.md)
+- [REST Overview](../rest/overview.md)
