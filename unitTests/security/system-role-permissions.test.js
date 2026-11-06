@@ -32,6 +32,7 @@ if (process.env.HARPER_SYSTEM_ROLE_TEST_CHILD !== '1') {
 } else {
 	const assert = require('node:assert');
 	const testUtils = require('../testUtils.js');
+	const { waitFor } = require('../waitFor.js');
 	const env = require('#src/utility/environment/environmentManager');
 	const { databases } = require('#src/resources/databases');
 	const roles = require('#src/security/role');
@@ -57,6 +58,51 @@ if (process.env.HARPER_SYSTEM_ROLE_TEST_CHILD !== '1') {
 			await databases.system.hdb_role.delete(ROLE + '_rejected');
 			await databases.system.hdb_user.delete(ROLE + '_first');
 			await databases.system.hdb_user.delete(ROLE + '_second');
+		});
+
+		it('roles-file replay strips a stored legacy grant and then converges', async () => {
+			await insert.insert({
+				operation: 'insert',
+				schema: 'system',
+				table: 'hdb_role',
+				records: [{ id: ROLE, role: ROLE, permission: { super_user: false, operations: ['read_only'], system } }],
+			});
+			let handler;
+			let reconcile;
+			require('#src/resources/roles').handleApplication({
+				handleEntry(callback) {
+					handler = callback;
+					return { ready: Promise.resolve() };
+				},
+				on(event, callback) {
+					if (event === 'deploy:end') reconcile = callback;
+				},
+				logger: {
+					warn() {},
+					error(error) {
+						throw error;
+					},
+				},
+			});
+			const entry = {
+				entryType: 'file',
+				eventType: 'add',
+				absolutePath: '/app/roles.yaml',
+				contents: Buffer.from(
+					`${ROLE}:\n  super_user: false\n  operations: [read_only]\n  system:\n    hdb_user:\n      read: true\n`
+				),
+			};
+			await handler(entry);
+			const first = await databases.system.hdb_role.get(ROLE);
+			assert.strictEqual(first.permission.system, undefined);
+			assert.deepStrictEqual(first.permission.operations, ['read_only']);
+			await databases.system.hdb_role.put({ id: ROLE, role: ROLE, permission: { ...first.permission, system } });
+			assert.ok((await databases.system.hdb_role.get(ROLE)).permission.system);
+			reconcile();
+			await waitFor(async () => !(await databases.system.hdb_role.get(ROLE)).permission.system);
+			const cleaned = await databases.system.hdb_role.get(ROLE);
+			await handler(entry);
+			assert.strictEqual((await databases.system.hdb_role.get(ROLE)).__updatedtime__, cleaned.__updatedtime__);
 		});
 
 		for (const operation of ['add_role', 'alter_role']) {

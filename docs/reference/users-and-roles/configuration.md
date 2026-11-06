@@ -51,6 +51,7 @@ editor:
 
 - If a declared role does not exist, Harper creates it.
 - If a declared role already exists, Harper updates its permissions to match the definition.
+- <VersionBadge type="changed" version="v5.4.0" /> System-table permissions are managed by Harper. Legacy `system` declarations in a roles file are ignored with a warning naming the role; other permissions and roles still apply. Remove these declarations from configuration. The `add_role` and `alter_role` Operations API requests reject `permission.system` with a 400 response.
 
 ## Password Hashing
 

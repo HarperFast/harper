@@ -313,4 +313,4 @@ Named-process probe and lock failures use `NamedProcessError`, a `ServerError` s
 
 ## System permissions on roles
 
-`permission.system` comes from `super_user` and the live registry. Its plain map updates in place for held identities; entries are frozen, not the map. Remove declarations before upgrading: validation rejects them. Legacy blocks are omitted from response copies and warned once per role revision per thread, without writes that could race `alter_role`. Impersonation reinstalls the downgraded map. External response reuse is per-call. Listeners register lazily to avoid the Resource import cycle.
+`permission.system` derives from `super_user` and the registry. Held identities share mutable maps with frozen entries. API declarations return 400; files strip and warn on changed contents, not replay. Legacy copies strip without writes that could race `alter_role`; warnings dedupe by revision/thread. Impersonation reinstalls managed maps; scoped tokens strip before hashing to avoid MCP churn. External response reuse is per-call; listeners are lazy to avoid the Resource import cycle.
