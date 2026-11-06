@@ -292,8 +292,25 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		else this.#logger.error?.('Error in component scope:', error);
 	}
 
+	get closed(): boolean {
+		return this.#closed;
+	}
+
 	close(): Promise<this> {
 		return (this.#closing ??= this.#close());
+	}
+
+	finalizeClose(): void {
+		this.removeAllListeners();
+
+		// Release this identity's subscription hold (#1776), AFTER the close listeners (so a subscription a
+		// close listener created is still accounted for). Streams end only when the LAST holder of the
+		// identity releases — so a discarded validation-load Scope can't kill a still-running app's streams.
+		// Guarded so a double close() can't underflow the refcount.
+		if (!this.#secretsReleased) {
+			this.#secretsReleased = true;
+			releaseComponentSubscriptions(this.applicationScope?.name ?? this.#appName);
+		}
 	}
 
 	async #close(): Promise<this> {
@@ -326,16 +343,7 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 				})
 			);
 		} finally {
-			this.removeAllListeners();
-
-			// Release this identity's subscription hold (#1776), AFTER the close listeners (so a subscription a
-			// close listener created is still accounted for). Streams end only when the LAST holder of the
-			// identity releases — so a discarded validation-load Scope can't kill a still-running app's streams.
-			// Guarded so a double close() can't underflow the refcount.
-			if (!this.#secretsReleased) {
-				this.#secretsReleased = true;
-				releaseComponentSubscriptions(this.applicationScope?.name ?? this.#appName);
-			}
+			this.finalizeClose();
 		}
 
 		return this;
@@ -389,6 +397,9 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 	}
 
 	#createEntryHandler(config: FilesOption | FileAndURLPathConfig): EntryHandler {
+		if (this.#closed) {
+			throw new Error(`Cannot handle entries on closed scope ${this.#pluginName}`);
+		}
 		const entryHandler = new EntryHandler(this.#pluginName, this.#directory, config, this.#logger)
 			.on('error', this.#handleError.bind(this))
 			.on('add', this.#defaultEntryHandlerListener('add'))
@@ -494,6 +505,9 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		filesOrHandler?: FilesOption | FileAndURLPathConfig | onEntryEventHandler,
 		handler?: onEntryEventHandler
 	): EntryHandler {
+		if (this.#closed) {
+			throw new Error(`Cannot handle entries on closed scope ${this.#pluginName}`);
+		}
 		let entryHandler: EntryHandler;
 
 		// Helper to wrap async handlers for tracking

@@ -37,6 +37,7 @@ import {
 } from '../server/threads/manageThreads.ts';
 import { resetRestartNeeded, subscribeToRestartRequests } from './requestRestart.ts';
 import { closeScopeAfterLoad, closeScopeOnShutdown } from './scopeShutdown.ts';
+import { settleBeforeDeadline } from '../utility/when.ts';
 import { deployLifecycle } from './deployLifecycle.ts';
 import { assertBranchedDatabases, assertIsolationConfig } from './Application.ts';
 import { prepareBranches } from '../resources/branchDatabase.ts';
@@ -753,8 +754,10 @@ function sequentiallyHandleApplication(scope: Scope, plugin: PluginModule) {
 			throw new Error(`Invalid timeout value for ${scope.pluginName}. Expected a number, received: ${typeof timeout}`);
 		}
 		let whenResolved, timer;
+		let lockTimedOut = false;
 		const callback = () => {
 			clearTimeout(timer);
+			if (lockTimedOut || scopesSkippedForShutdown.has(scope) || scope.closed) return;
 			whenResolved(sequentiallyHandleApplication(scope, plugin));
 		};
 		const store = Status.primaryStore;
@@ -769,12 +772,13 @@ function sequentiallyHandleApplication(scope: Scope, plugin: PluginModule) {
 			return new Promise((resolve, reject) => {
 				whenResolved = resolve;
 				timer = setTimeout(() => {
+					lockTimedOut = true;
 					reject(new Error(`Timeout waiting for lock on ${scope.pluginName} on behalf of ${scope.appName}`));
 				}, timeout + 5_000); // extra time for lock acquisition
 			});
 		}
 		try {
-			if (scopesSkippedForShutdown.has(scope)) return;
+			if (scopesSkippedForShutdown.has(scope) || scope.closed) return;
 			// note that handleApplication can throw sync or async errors, need to run finally block for both
 			const handling = new Promise((resolve) => resolve(plugin.handleApplication(scope))).then(async () => {
 				// Wait for any initial entry handler loads to complete
@@ -785,7 +789,6 @@ function sequentiallyHandleApplication(scope: Scope, plugin: PluginModule) {
 			await withDeployAwareTimeout(handling, scope, timeout);
 		} catch (error) {
 			scope.disposeBearerValidators();
-			await scope.close().catch(() => {});
 			throw error;
 		} finally {
 			Status.primaryStore.unlock(lockId);
@@ -1169,12 +1172,14 @@ export async function loadComponent(
 
 					// Track the close so the worker's shutdown path waits for it (and thus for any async
 					// native-runtime disposal, e.g. @harperfast/vite's dev server) before calling realExit.
-					const closeAfterLoad = () => {
-						const started = startedLoads.get(scope);
-						if (started) return closeScopeAfterLoad(started, () => scope.close(), getTerminateTimeout() / 2);
-						scopesSkippedForShutdown.add(scope);
-						return scope.close();
-					};
+					let closingAfterLoad: Promise<unknown> | undefined;
+					const closeAfterLoad = () =>
+						(closingAfterLoad ??= (() => {
+							const started = startedLoads.get(scope);
+							if (started) return closeScopeAfterLoad(started, () => scope.close(), getTerminateTimeout() / 2);
+							scopesSkippedForShutdown.add(scope);
+							return scope.close();
+						})());
 					onMessageByType(ITC_EVENT_TYPES.SHUTDOWN, (message) =>
 						closeScopeOnShutdown(closeAfterLoad, message?.exitDeadline !== undefined)
 					);
@@ -1184,10 +1189,48 @@ export async function loadComponent(
 					try {
 						await sequentiallyHandleApplication(scope, extensionModule);
 					} catch (error) {
+						const skippedForShutdown = scopesSkippedForShutdown.has(scope);
 						scope.disposeBearerValidators();
-						await scope.close().catch(() => {});
+						const closeBoundMs = getTerminateTimeout() / 2;
+						const closeBounded = () =>
+							settleBeforeDeadline(
+								[
+									scope.close().catch((closeError) => {
+										(scope.logger ?? harperLogger).error?.(
+											`Error closing component scope for ${componentStatusName} after failed load:`,
+											closeError
+										);
+									}),
+								],
+								Date.now() + closeBoundMs,
+								() => new Error('scope close timed out')
+							).catch(() => {
+								scope.finalizeClose();
+								(scope.logger ?? harperLogger).warn?.(
+									`Timed out after ${closeBoundMs}ms waiting for component scope ${componentStatusName} to close after a failed load`
+								);
+							});
+						const closeForFailedLoad = () => {
+							const started = startedLoads.get(scope);
+							if (started) return closeScopeAfterLoad(started, closeBounded, closeBoundMs);
+							return closeBounded();
+						};
+						const closing = (closingAfterLoad ??= closeForFailedLoad()).catch((closeError) => {
+							(scope.logger ?? harperLogger).error?.(
+								`Error closing component scope for ${componentStatusName} after failed load:`,
+								closeError
+							);
+						});
+						closingAfterLoad = closing;
+						await settleBeforeDeadline(
+							[closing],
+							Date.now() + closeBoundMs * 2,
+							() => new Error('scope close timed out')
+						).catch(() => {
+							scope.finalizeClose();
+						});
 						// a lock wait that timed out after shutdown skipped this load is not a boot failure
-						if (!scopesSkippedForShutdown.has(scope)) throw error;
+						if (!skippedForShutdown) throw error;
 					}
 					if (scopesSkippedForShutdown.has(scope)) {
 						noteBootSkipped(entryApplication);
