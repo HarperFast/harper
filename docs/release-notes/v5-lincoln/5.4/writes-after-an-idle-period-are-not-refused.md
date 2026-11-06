@@ -1,5 +1,5 @@
 ---
-section: 'Full-Text Search'
+section: 'Vector Search'
 ---
 
 ### Writes After an Idle Period Are Not Refused
