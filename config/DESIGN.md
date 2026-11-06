@@ -326,11 +326,9 @@ writers (deploy, drop, `set_configuration`). Pre-existing — both artifacts wer
 protocol — and out of scope here, but the "commits as a unit" guarantee stops at the process
 boundary.
 
-Related: a log write must not be fatal either. `fs.appendFileSync` in `logQueuedData` throws from
-both inline and timer call sites, so on a full volume every log statement was a crash point. The
-fallback goes through `nativeStdWrite`, never `console` — `installStdioGuard` routes console output
-back into this same file logger when `logging.file` and `logging.console` are both on, so a console
-fallback recurses until the stack blows.
+## Files that can hold a secret are written owner-only (`config/configUtils.ts`)
+
+The root config, its backups (`.bak` and the installer's `.install-backup-<pid>`), the env-config state, `keys/.jwtPass`, `keys/.jwtPrivate.key` and the install CA key are written through `atomicWriteFile(..., { ownerOnly: true })`: a copy keeps the source's mode, an in-place write keeps the old file's, and a chmod is lost at the next rename (harper#1925). A file a later rename publishes passes `replaces`. Enforced by `unitTests/config/secretFileModes.test.js`.
 
 ## Env-config empty objects mean three different things (`config/harperConfigEnvVars.ts`)
 

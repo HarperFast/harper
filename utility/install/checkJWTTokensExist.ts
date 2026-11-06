@@ -4,6 +4,7 @@ import path from 'node:path';
 import * as terms from '../../utility/hdbTerms.ts';
 import crypto from 'node:crypto';
 import { v4 as uuid } from 'uuid';
+import { atomicWriteFile } from '../../config/configUtils.ts';
 
 export default checkJWTTokenExist;
 
@@ -57,8 +58,8 @@ function checkJWTTokenExist() {
 					},
 				});
 
-				fs.writeFileSync(passphrasePath, passPhrase);
-				fs.writeFileSync(privateKeyPath, keyPair.privateKey);
+				atomicWriteFile(passphrasePath, passPhrase, { ownerOnly: true });
+				atomicWriteFile(privateKeyPath, keyPair.privateKey, { ownerOnly: true });
 				fs.writeFileSync(publicKeyPath, keyPair.publicKey);
 			} else {
 				throw e;
