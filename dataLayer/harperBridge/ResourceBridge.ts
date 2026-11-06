@@ -748,11 +748,12 @@ export class ResourceBridge extends BridgeMethods {
 	}
 }
 
-// the stored attributes and @computed values of a record, with no relationship getter to resolve
+// the stored attributes and (still lazy) @computed values of a record, with no relationship getter to resolve
 function withoutRelationships(record: any, Table: any) {
 	const copy = { ...record };
 	for (const name in Table.propertyResolvers)
-		if (!Table.propertyResolvers[name]?.definition?.tableClass) copy[name] = record[name];
+		if (!Table.propertyResolvers[name]?.definition?.tableClass && !Object.hasOwn(copy, name))
+			Object.defineProperty(copy, name, { get: () => record[name], enumerable: true, configurable: true });
 	return copy;
 }
 
