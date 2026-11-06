@@ -1139,6 +1139,7 @@ interface TableResourceClass {
 	getResidencyById: (id: Id) => number | void;
 	readonly residency: Readonly<ResidencyPolicy> | undefined;
 	_setResidencyPolicy(policy: ResidencyPolicy): void;
+	_adoptCatalogExpiration(expiration?: number, eviction?: number): void;
 	getResidencySlot(id: Id, record?: object): number;
 	getRecordResidency(entry: Partial<Entry>): readonly string[] | undefined;
 	get expirationMS(): any;
@@ -1836,7 +1837,8 @@ export function makeTable(options): TableResourceClass {
 	// an isolated application's schema was declared here. Hydrating persisted metadata does not set it:
 	// dedicated workers open unrelated shared tables too, whose scan remains owned by the pool.
 	let ttlConfiguredByApplication = false;
-	let ttlFromLoad = false; // true only around the creation-time call below
+	let ttlDeclaredBySchema = false;
+	let ttlFromLoad = false; // true only around a catalog load's setTTLExpiration call
 	evictionMs ??= 0;
 	// Eviction without explicit expiration means expiration:0. Apply at construction so
 	// describe_all sees it on every worker, not just ones that ran setTTLExpiration.
@@ -2601,6 +2603,29 @@ export function makeTable(options): TableResourceClass {
 			registerResidencyRoot(databaseName, tableRootStore, true);
 			for (const Table of Object.values(databases[databaseName] ?? {}))
 				if (Table.primaryStore?.rootStore) registerResidencyRoot(databaseName, Table.primaryStore.rootStore, true);
+		}
+		/**
+		 * Adopt the table-level expiration and eviction (seconds) another thread persisted, as a fresh catalog
+		 * load would. A TTL that this thread's own schema declaration or application code set is kept, as it is
+		 * across a restart, which re-applies it over the catalog.
+		 */
+		static _adoptCatalogExpiration(expiration?: number, eviction?: number) {
+			if (ttlConfiguredByApplication || ttlDeclaredBySchema) return;
+			const loadedExpirationMs = expiration && expiration > 0 ? expiration * 1000 : 0;
+			const loadedEvictionMs = eviction && eviction > 0 ? eviction * 1000 : 0;
+			if (!loadedExpirationMs && !loadedEvictionMs) return;
+			if (loadedExpirationMs === expirationMs && loadedEvictionMs === evictionMs) return;
+			evictionMs = loadedEvictionMs;
+			if (!loadedExpirationMs) {
+				expirationMs = 0;
+				return;
+			}
+			ttlFromLoad = true;
+			try {
+				TableResource.setTTLExpiration(loadedExpirationMs / 1000);
+			} finally {
+				ttlFromLoad = false;
+			}
 		}
 		static getResidencySlot(id: Id, record?: object): number {
 			return calculateResidencySlot(id, record);
@@ -3776,6 +3801,7 @@ export function makeTable(options): TableResourceClass {
 				recordScanInterval = (opts.scanInterval ?? 0) * 1000;
 			}
 			if (expirationMs < 0) throw new Error('Expiration can not be negative');
+			if (declaredHere && !preserveLoadedConfiguration) ttlDeclaredBySchema = true;
 			if (!preserveLoadedConfiguration) {
 				// default to one quarter of the total expiration+eviction window
 				recordCleanupInterval = recordScanInterval || (expirationMs + evictionMs) / 4;
