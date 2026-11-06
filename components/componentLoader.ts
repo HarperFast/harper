@@ -59,7 +59,7 @@ import { declareDecisionTablesAtBoot } from '../resources/models/decisionStore.t
 import { declareCalibrationsTableAtBoot } from '../resources/models/calibrationStore.ts';
 import { watchForPreviews } from './previews.ts';
 import { ErrorResource } from '../resources/ErrorResource.ts';
-import { Scope } from './Scope.ts';
+import { Scope, closeScope } from './Scope.ts';
 import { ApplicationScope } from './ApplicationScope.ts';
 import { ComponentV1, processResourceExtensionComponent } from './ComponentV1.ts';
 import * as httpComponent from '../server/http.ts';
@@ -777,7 +777,10 @@ function sequentiallyHandleApplication(scope: Scope, plugin: PluginModule) {
 			});
 		}
 		try {
-			if (scopesSkippedForShutdown.has(scope) || scope.closed) return;
+			if (scopesSkippedForShutdown.has(scope) || scope.closed) {
+				scopesSkippedForShutdown.add(scope);
+				return;
+			}
 			// note that handleApplication can throw sync or async errors, need to run finally block for both
 			const handling = new Promise((resolve) => resolve(plugin.handleApplication(scope))).then(async () => {
 				// Wait for any initial entry handler loads to complete
@@ -1172,13 +1175,24 @@ export async function loadComponent(
 					// Track the close so the worker's shutdown path waits for it (and thus for any async
 					// native-runtime disposal, e.g. @harperfast/vite's dev server) before calling realExit.
 					let closingAfterLoad: Promise<unknown> | undefined;
-					const closeAfterLoad = () =>
-						(closingAfterLoad ??= (() => {
-							const started = startedLoads.get(scope);
-							if (started) return closeScopeAfterLoad(started, () => scope.close(), getTerminateTimeout() / 2);
-							scopesSkippedForShutdown.add(scope);
-							return scope.close();
-						})());
+					let failedLoadClosed = false;
+					const closeAfterLoad = () => {
+						const closeBoundMs = getTerminateTimeout() / 2;
+						const closeFull = () => closeScope(scope, { listenerTimeoutMs: closeBoundMs });
+						if (closingAfterLoad) {
+							if (failedLoadClosed) {
+								failedLoadClosed = false;
+								closingAfterLoad = closingAfterLoad.then(closeFull, closeFull);
+							}
+							return closingAfterLoad;
+						}
+						const started = startedLoads.get(scope);
+						if (started) {
+							return (closingAfterLoad = closeScopeAfterLoad(started, closeFull, closeBoundMs));
+						}
+						scopesSkippedForShutdown.add(scope);
+						return (closingAfterLoad = closeFull());
+					};
 					onMessageByType(ITC_EVENT_TYPES.SHUTDOWN, (message) =>
 						closeScopeOnShutdown(closeAfterLoad, message?.exitDeadline !== undefined)
 					);
@@ -1194,11 +1208,21 @@ export async function loadComponent(
 							noteBootSkipped(entryApplication);
 							continue;
 						}
+						// Tear down the failed plugin's scope before advancing so watchers, secret-subscription
+						// holds, and close-listener resources (such as native dev-server runtimes) are released
+						// before the failure is reported or a retry/sibling load observes stale state. Both the
+						// post-timeout handleApplication drain and close listeners are bounded by closeBoundMs.
 						const closeBoundMs = getTerminateTimeout() / 2;
 						const started = startedLoads.get(scope);
-						await (closingAfterLoad ??= started
-							? closeScopeAfterLoad(started, () => scope.close(closeBoundMs), closeBoundMs)
-							: scope.close(closeBoundMs)).catch((closeError) => {
+						const closeFailedScope = () =>
+							closeScope(scope, { listenerTimeoutMs: closeBoundMs, keepFailedEntryWatchers: true });
+						if (!closingAfterLoad) {
+							failedLoadClosed = true;
+							closingAfterLoad = started
+								? closeScopeAfterLoad(started, closeFailedScope, closeBoundMs)
+								: closeFailedScope();
+						}
+						await closingAfterLoad.catch((closeError) => {
 							(scope.logger ?? harperLogger).error?.(
 								`Error closing component scope for ${componentStatusName} after failed load:`,
 								closeError

@@ -50,6 +50,20 @@ export type ScopeEventsMap = {
 	[record: string]: [...args: unknown[]];
 };
 
+type CloseScopeOptions = {
+	listenerTimeoutMs?: number;
+	keepFailedEntryWatchers?: boolean;
+};
+
+const recoveryWatchersByComponent = new Map<string, Set<EntryHandler>>();
+
+let closeScopeInternal: (scope: Scope, options?: CloseScopeOptions) => Promise<Scope>;
+
+/** @internal */
+export function closeScope(scope: Scope, options?: CloseScopeOptions): Promise<Scope> {
+	return closeScopeInternal(scope, options);
+}
+
 /**
  * This class is what is passed to the `handleApplication` function of an extension.
  *
@@ -58,6 +72,9 @@ export type ScopeEventsMap = {
  *
  */
 export class Scope extends EventEmitter<ScopeEventsMap> {
+	static {
+		closeScopeInternal = (scope: Scope, options?: CloseScopeOptions) => scope.#closeWithOptions(options);
+	}
 	#configFilePath: string;
 	#directory: string;
 	#appName: string;
@@ -65,6 +82,7 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 	#origin: string;
 	#entryHandler?: EntryHandler;
 	#entryHandlers: EntryHandler[];
+	#failedEntryHandlers: Set<EntryHandler> = new Set();
 	#logger: Logger;
 	#secretsReleased = false;
 	#pendingInitialLoads: Set<Promise<void>>;
@@ -117,6 +135,13 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		this.#configFilePath = configFilePath;
 		this.#logger = loggerWithTag(this.#appName);
 		this.#deployInFlight = deployLifecycle.loadsAwaitDeploy(this.#appName);
+		const priorRecovery = recoveryWatchersByComponent.get(this.#recoveryKey());
+		if (priorRecovery) {
+			recoveryWatchersByComponent.delete(this.#recoveryKey());
+			for (const handler of priorRecovery) {
+				void handler.close();
+			}
+		}
 
 		this.databaseEvents = databaseEventsEmitter;
 		this.applicationScope = applicationScope;
@@ -297,59 +322,123 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		return this.#closed;
 	}
 
-	close(listenerTimeoutMs?: number): Promise<this> {
-		return (this.#closing ??= this.#close(listenerTimeoutMs));
+	close(): Promise<this> {
+		return this.#closeWithOptions();
 	}
 
-	async #close(listenerTimeoutMs?: number): Promise<this> {
+	#recoveryKey(): string {
+		return `${this.#appName}\0${this.#pluginName}`;
+	}
+
+	#releaseRecoveryWatcher(handler: EntryHandler): void {
+		this.#failedEntryHandlers.delete(handler);
+		const key = this.#recoveryKey();
+		const registered = recoveryWatchersByComponent.get(key);
+		if (registered) {
+			registered.delete(handler);
+			if (registered.size === 0) recoveryWatchersByComponent.delete(key);
+		}
+		void handler.close();
+	}
+
+	#takeRecoveryWatchers(): EntryHandler[] {
+		const remaining = [...this.#failedEntryHandlers];
+		this.#failedEntryHandlers.clear();
+		const key = this.#recoveryKey();
+		const registered = recoveryWatchersByComponent.get(key);
+		if (registered) {
+			for (const handler of remaining) registered.delete(handler);
+			if (registered.size === 0) recoveryWatchersByComponent.delete(key);
+		}
+		return remaining;
+	}
+
+	#closeWithOptions(options?: CloseScopeOptions): Promise<this> {
+		let closing = (this.#closing ??= this.#close(options));
+		if (!options?.keepFailedEntryWatchers && this.#failedEntryHandlers.size > 0) {
+			const remaining = this.#takeRecoveryWatchers();
+			const closeRemaining = () => Promise.allSettled(remaining.map((h) => h.close()));
+			closing = this.#closing = closing.then(
+				async () => {
+					await closeRemaining();
+					return this;
+				},
+				async (error) => {
+					await closeRemaining();
+					throw error;
+				}
+			);
+		}
+		return closing;
+	}
+
+	async #close(options?: CloseScopeOptions): Promise<this> {
+		const listenerTimeoutMs = options?.listenerTimeoutMs;
+		const keepFailedEntryWatchers = options?.keepFailedEntryWatchers === true;
 		this.#closed = true;
 		deployLifecycle.off('deploy:start', this.#deployStartHandler);
 		deployLifecycle.off('deploy:end', this.#deployEndHandler);
 
-		await Promise.allSettled([...this.#entryHandlers.map((h) => h.close()), this.options.close()]);
+		const entryHandlersToClose = keepFailedEntryWatchers
+			? this.#entryHandlers.filter((h) => !this.#failedEntryHandlers.has(h))
+			: this.#entryHandlers;
+		if (!keepFailedEntryWatchers) {
+			this.#takeRecoveryWatchers();
+		} else if (this.#failedEntryHandlers.size > 0) {
+			recoveryWatchersByComponent.set(this.#recoveryKey(), new Set(this.#failedEntryHandlers));
+		}
+		await Promise.allSettled([...entryHandlersToClose.map((h) => h.close()), this.options.close()]);
 
 		// Invoke `close` listeners and await any promise they return. A plugin's teardown can be async —
 		// e.g. @harperfast/vite disposing its Vite/rolldown dev server — and the worker shutdown path
 		// awaits this close(), so awaiting the listeners here ensures such a native runtime is fully
 		// disposed before the worker exits. That ordering matters: tearing the worker down while a native
-		// (N-API) bundler runtime is still live crashes the whole process. `Promise.allSettled` waits for
-		// every listener to settle before releasing the subscription hold, and the first rejection is
-		// rethrown so a listener that fails still surfaces its error to the caller.
+		// (N-API) bundler runtime is still live crashes the whole process. Every listener is awaited up
+		// to `listenerTimeoutMs` (when bounded) before releasing the subscription hold, and the first
+		// rejection that settles before the deadline is rethrown; any rejection that arrives after the
+		// deadline is logged so it is never silently lost.
 		const closeListeners = this.listeners('close') as Array<(...args: any[]) => unknown>;
 		this.removeAllListeners('close');
 		try {
-			const allSettled = Promise.allSettled(
-				closeListeners.map((listener) => {
-					// Run every listener (so all teardown is attempted) and bind `this` to the Scope, matching
-					// how EventEmitter invokes listeners — a listener may rely on it (e.g. `this.logger`).
-					try {
-						return Promise.resolve(listener.call(this));
-					} catch (error) {
-						return Promise.reject(error);
+			let firstRejection: { reason: unknown } | undefined;
+			let timedOut = false;
+			const listenerPromises = closeListeners.map((listener) => {
+				// Run every listener (so all teardown is attempted) and bind `this` to the Scope, matching
+				// how EventEmitter invokes listeners — a listener may rely on it (e.g. `this.logger`).
+				let outcome: Promise<unknown>;
+				try {
+					outcome = Promise.resolve(listener.call(this));
+				} catch (error) {
+					outcome = Promise.reject(error);
+				}
+				return outcome.catch((error) => {
+					if (timedOut) {
+						this.#logger.error?.(`Error in close listener for ${this.#pluginName} after timeout:`, error);
+					} else {
+						firstRejection ??= { reason: error };
 					}
-				})
-			);
-			const results =
-				listenerTimeoutMs !== undefined
-					? await settleBeforeDeadline([allSettled], Date.now() + listenerTimeoutMs, () => {
-							this.#logger.warn?.(
-								`Timed out after ${listenerTimeoutMs}ms waiting for component scope ${this.#pluginName} to close`
-							);
-							return new Error('scope close timed out');
-						}).then(
-							() => allSettled,
-							() => [] as PromiseSettledResult<unknown>[]
-						)
-					: await allSettled;
-			const rejected = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
-			if (rejected) throw rejected.reason;
+				});
+			});
+			const allSettled = Promise.all(listenerPromises);
+			if (listenerTimeoutMs !== undefined) {
+				await settleBeforeDeadline([allSettled], Date.now() + listenerTimeoutMs, () => {
+					timedOut = true;
+					this.#logger.warn?.(
+						`Timed out after ${listenerTimeoutMs}ms waiting for component scope ${this.#pluginName} to close`
+					);
+					return new Error('scope close timed out');
+				}).catch(() => {});
+			} else {
+				await allSettled;
+			}
+			if (firstRejection) throw firstRejection.reason;
 		} finally {
 			this.removeAllListeners();
 
-			// Release this identity's subscription hold (#1776), AFTER the close listeners (so a subscription a
-			// close listener created is still accounted for). Streams end only when the LAST holder of the
-			// identity releases — so a discarded validation-load Scope can't kill a still-running app's streams.
-			// Guarded so a double close() can't underflow the refcount.
+			// Release this identity's subscription hold (#1776), after the close listeners settle (or once
+			// `listenerTimeoutMs` expires on a bounded close, so a hung listener cannot pin the hold). Streams
+			// end only when the LAST holder of the identity releases — so a discarded validation-load Scope
+			// can't kill a still-running app's streams. Guarded so a double close() can't underflow the refcount.
 			if (!this.#secretsReleased) {
 				this.#secretsReleased = true;
 				releaseComponentSubscriptions(this.applicationScope?.name ?? this.#appName);
@@ -433,6 +522,9 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 			}
 
 			scope.requestRestart();
+			if (scope.#closed || scope.#failedEntryHandlers.has(this)) {
+				scope.#releaseRecoveryWatcher(this);
+			}
 		};
 	}
 
@@ -562,7 +654,13 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 				// Drained, not fail-fast: the loader holds the plugin-wide load lock until this settles, so a
 				// first failure reported while a sibling still runs would let the next application in.
 				for (const result of await Promise.allSettled(operations)) {
-					if (result.status === 'rejected') throw result.reason;
+					if (result.status === 'rejected') {
+						// Detach the plugin's entry listener so a subsequent edit falls through to
+						// `#defaultEntryHandlerListener` and requests the restart that clears the failed load (#2432).
+						targetEntryHandler.off('all', wrapped);
+						if (!this.#closed) this.#failedEntryHandlers.add(targetEntryHandler);
+						throw result.reason;
+					}
 				}
 				targetEntryHandler.emit('initialLoadComplete');
 			});

@@ -1444,7 +1444,9 @@ describe('Scope', () => {
 			let failedScope;
 			let secretSubscription;
 			let lockFreeDuringClose = false;
+			let releaseLateRejection;
 			const loggedWarnings = [];
+			const loggedErrors = [];
 
 			setTerminateTimeout(100);
 			componentLoader.TRUSTED_RESOURCE_PLUGINS[failedPluginName] = {
@@ -1455,16 +1457,26 @@ describe('Scope', () => {
 						loggedWarnings.push(args);
 						return originalScopeWarn?.apply(this, args);
 					};
+					const originalScopeError = scope.logger.error;
+					scope.logger.error = function (...args) {
+						loggedErrors.push(args);
+						return originalScopeError?.apply(this, args);
+					};
 					secretSubscription = scope.secrets.subscribe('SCOPED_SECRET');
 					await secretSubscription.next();
 					scope.on('error', () => {});
+					scope.on('close', () => {
+						throw new Error('early close listener failure before timeout');
+					});
 					scope.on('close', () => {
 						const acquired = Status.primaryStore.tryLock(lockId);
 						if (acquired) {
 							lockFreeDuringClose = true;
 							Status.primaryStore.unlock(lockId);
 						}
-						return new Promise(() => {});
+						return new Promise((_, reject) => {
+							releaseLateRejection = () => reject(new Error('late close listener failure after timeout'));
+						});
 					});
 					throw new Error('simulated failure with hanging close');
 				},
@@ -1473,19 +1485,28 @@ describe('Scope', () => {
 			try {
 				writeFileSync(join(failedAppDir, 'harperdb-config.yaml'), stringify({ [failedPluginName]: {} }));
 				const startedAt = Date.now();
-				await componentLoader.loadComponent(failedAppDir, { isWorker: true, set() {} }, 'test', {
-					appName: failedAppName,
-					applicationScope: new ApplicationScope(failedAppName, this.resources, this.server),
-				});
+				const loadOutcome = await Promise.race([
+					componentLoader
+						.loadComponent(failedAppDir, { isWorker: true, set() {} }, 'test', {
+							appName: failedAppName,
+							applicationScope: new ApplicationScope(failedAppName, this.resources, this.server),
+						})
+						.then(() => 'settled'),
+					new Promise((resolve) => setTimeout(() => resolve('timed-out'), 2000)),
+				]);
 				const elapsedMs = Date.now() - startedAt;
 
+				assert.strictEqual(
+					loadOutcome,
+					'settled',
+					`bounded close must not hang loadComponent (took ${elapsedMs}ms)`
+				);
 				assert.ok(failedScope, 'handleApplication must have been invoked');
 				assert.strictEqual(
 					lockFreeDuringClose,
 					true,
 					'sequentiallyHandleApplication must release the (app, plugin) lock before scope.close() runs'
 				);
-				assert.ok(elapsedMs < 2000, `bounded close must not hang loadComponent (took ${elapsedMs}ms)`);
 				assert.strictEqual(
 					secretSubscription.closed,
 					true,
@@ -1497,6 +1518,20 @@ describe('Scope', () => {
 						args.some((arg) => String(arg).includes('waiting for component scope') && String(arg).includes('to close'))
 					),
 					'bounded close timeout must log a warning'
+				);
+				assert.ok(
+					loggedErrors.some((args) =>
+						args.some((arg) => String(arg?.message ?? arg).includes('early close listener failure before timeout'))
+					),
+					'an early close listener rejection before another listener times out must still be surfaced'
+				);
+				releaseLateRejection?.();
+				await new Promise((resolve) => setImmediate(resolve));
+				assert.ok(
+					loggedErrors.some((args) =>
+						args.some((arg) => String(arg?.message ?? arg).includes('late close listener failure after timeout'))
+					),
+					'a close listener rejection arriving after the timeout must be logged'
 				);
 			} finally {
 				setTerminateTimeout(priorTerminateTimeout);
@@ -1511,6 +1546,7 @@ describe('Scope', () => {
 		it('waits for handleApplication to settle after a watchdog timeout before closing the scope, and skips late lock-wait callbacks', async () => {
 			const componentLoader = require('#src/components/componentLoader');
 			const { Status } = require('#src/server/status/index');
+			const { statusForComponent, STATUS } = require('#src/components/status/index');
 			const watchdogAppDir = mkdtempSync(join(tmpdir(), 'harper.unit-test.watchdog-scope-'));
 			const watchdogAppName = basename(watchdogAppDir);
 			const watchdogPluginName = 'watchdogScopeCleanupPlugin';
@@ -1630,6 +1666,11 @@ describe('Scope', () => {
 						0,
 						'a scope closed while waiting for the lock must not run handleApplication when the lock is released'
 					);
+					assert.notStrictEqual(
+						statusForComponent(`${lockWaitAppName}.${lockWaitPluginName}`)?.status,
+						STATUS.HEALTHY,
+						'a scope closed while waiting for the lock must not be marked healthy'
+					);
 				} finally {
 					Scope.prototype.waitForDeployCompletion = originalWaitForDeploy;
 				}
@@ -1643,6 +1684,99 @@ describe('Scope', () => {
 				await new Promise((resolve) => setImmediate(resolve));
 				rmSync(watchdogAppDir, { recursive: true, force: true });
 				rmSync(lockWaitAppDir, { recursive: true, force: true });
+			}
+		});
+
+		it('closes scope resources when an initial entry load fails while keeping a one-shot recovery watcher until the file is edited or reloaded', async () => {
+			const componentLoader = require('#src/components/componentLoader');
+			const failedEntryAppDir = mkdtempSync(join(tmpdir(), 'harper.unit-test.failed-entry-recovery-'));
+			const failedEntryAppName = basename(failedEntryAppDir);
+			const failedEntryPluginName = 'failedEntryRecoveryPlugin';
+			const scopes = [];
+			const entryHandlers = [];
+			const subscriptions = [];
+			let optionsClosed = false;
+
+			componentLoader.TRUSTED_RESOURCE_PLUGINS[failedEntryPluginName] = {
+				handleApplication(scope) {
+					scopes.push(scope);
+					scope.options.on('close', () => {
+						optionsClosed = true;
+					});
+					const sub = scope.secrets.subscribe('SCOPED_SECRET');
+					subscriptions.push(sub);
+					const handler = scope.handleEntry(async () => {
+						await sub.next();
+						throw new Error('broken entry file');
+					});
+					entryHandlers.push(handler);
+					return scope.waitForInitialLoads();
+				},
+			};
+
+			try {
+				const watchedFile = join(failedEntryAppDir, 'schema.graphql');
+				writeFileSync(watchedFile, 'type Broken {');
+				writeFileSync(
+					join(failedEntryAppDir, 'harperdb-config.yaml'),
+					stringify({ [failedEntryPluginName]: { files: 'schema.graphql' } })
+				);
+
+				await componentLoader.loadComponent(failedEntryAppDir, { isWorker: true, set() {} }, 'test', {
+					appName: failedEntryAppName,
+					applicationScope: new ApplicationScope(failedEntryAppName, this.resources, this.server),
+				});
+
+				assert.strictEqual(scopes.length, 1);
+				assert.strictEqual(scopes[0].closed, true, 'failed entry scope must be closed');
+				assert.strictEqual(optionsClosed, true, 'OptionsWatcher must be closed when initial entry load fails');
+				assert.strictEqual(
+					subscriptions[0].closed,
+					true,
+					'secret subscription must be closed when initial entry load fails'
+				);
+				assert.strictEqual(
+					entryHandlers[0]._liveWatcherCountForTests,
+					1,
+					'failed entry handler must keep a recovery watcher so editing the broken file triggers a restart'
+				);
+
+				// Reloading the failing component before any file change must close the previous recovery watcher
+				// rather than accumulating watchers across repeated reloads/redeploys.
+				componentLoader.loadedPaths.clear();
+				await componentLoader.loadComponent(failedEntryAppDir, { isWorker: true, set() {} }, 'test', {
+					appName: failedEntryAppName,
+					applicationScope: new ApplicationScope(failedEntryAppName, this.resources, this.server),
+				});
+				await waitFor(() => entryHandlers[0]._liveWatcherCountForTests === 0, 2000);
+				assert.strictEqual(
+					entryHandlers[0]._liveWatcherCountForTests,
+					0,
+					'reloading the component must close the prior failed scope recovery watcher'
+				);
+				assert.strictEqual(
+					entryHandlers[1]._liveWatcherCountForTests,
+					1,
+					'latest failed load keeps a single recovery watcher'
+				);
+
+				resetRestartNeeded();
+				writeFileSync(watchedFile, 'type Fixed @table { id: ID @primaryKey }\n');
+				await waitFor(() => restartNeeded(), 2000);
+				await waitFor(() => entryHandlers[1]._liveWatcherCountForTests === 0, 2000);
+				assert.strictEqual(
+					entryHandlers[1]._liveWatcherCountForTests,
+					0,
+					'recovery watcher must close itself as soon as the file edit requests a restart'
+				);
+			} finally {
+				resetRestartNeeded();
+				for (const sub of subscriptions) await sub?.return?.();
+				for (const s of scopes) await s?.close().catch(() => {});
+				delete componentLoader.TRUSTED_RESOURCE_PLUGINS[failedEntryPluginName];
+				componentLoader.loadedPaths.clear();
+				await new Promise((resolve) => setImmediate(resolve));
+				rmSync(failedEntryAppDir, { recursive: true, force: true });
 			}
 		});
 	});
