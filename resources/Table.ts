@@ -9125,7 +9125,7 @@ export function makeTable(options): TableResourceClass {
 					}
 					if (
 						(checkLoaded && entry?.metadataFlags & (INVALIDATED | EVICTED)) || // invalidated or evicted should go to load from source
-						(!includeExpired && hasSourceGet && !context?.onlyIfCached && hasExpired(entry))
+						(!includeExpired && (prepareSelection || (hasSourceGet && !context?.onlyIfCached)) && hasExpired(entry))
 					) {
 						if (context.onlyIfCached) {
 							if (isHiddenExpiry(entry.expiresAt)) return canSkip ? SKIP : undefined;
