@@ -213,6 +213,8 @@ class sqlStatementBucket {
 							toMany = false;
 							continue;
 						}
+						// legacy SQL re-parses `1e0` or `1.0` as an index, so which element it names is not provable
+						if (toMany && !Number.isNaN(Number(member))) return { paths, unresolved: base.columnid };
 						path.push(String(member));
 						const next = current?.propertyResolvers[member];
 						current = next?.definition?.tableClass;

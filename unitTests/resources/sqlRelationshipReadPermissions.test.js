@@ -338,6 +338,14 @@ describe('SQL reads of relationship columns apply the related table permissions'
 				verifyPermsAST(parse(`SELECT ${expression} AS m FROM ${DATABASE}.Member WHERE id = 'm1'`), user, 'select');
 			assert.strictEqual(member('squad->members->0->id'), null);
 			assert.strictEqual(member('squad->members->`0`->id'), null);
+			const write = (expression) =>
+				verifyPermsAST(
+					parse(`UPDATE ${DATABASE}.Member SET squadId = 's1' WHERE id = 'm1' AND ${expression} IS NULL`),
+					userWith('sql-rel-member-writer', { Member: { ...READ, update: true }, Squad: READ }),
+					'update'
+				);
+			for (const expression of ['squad->members->`1e0`->squad', 'squad->members->`1.0`->squad'])
+				assert.ok(String(write(expression)?.unauthorized_access).includes('without naming the path'), expression);
 			for (const expression of ['squad->members->0->squad->locker->code', 'squad->members->`0`->squad->locker'])
 				assert.deepStrictEqual(
 					member(expression)?.invalid_schema_items,
