@@ -1,0 +1,6 @@
+# SQA-68: attribute read permissions on subscription deliveries, surfaces PR #3307's own test does not drive.
+graphqlSchema:
+  files: '*.graphql'
+jsResource:
+  files: 'resources.js'
+rest: true

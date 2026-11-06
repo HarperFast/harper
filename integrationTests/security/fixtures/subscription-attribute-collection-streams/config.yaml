@@ -1,0 +1,4 @@
+# SQA-35: attribute-level read restrictions vs live subscription payloads.
+graphqlSchema:
+  files: '*.graphql'
+rest: true
