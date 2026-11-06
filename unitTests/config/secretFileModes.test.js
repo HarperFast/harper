@@ -22,7 +22,6 @@ const hdbTerms = require('#src/utility/hdbTerms');
 const { default: checkJWTTokenExist } = require('#src/utility/install/checkJWTTokensExist');
 const { preserveRootConfig, readRootConfig } = require('../rootConfigFixture.js');
 
-// harper#1925: under umask 002 every one of these files used to land 0o664.
 const PERMISSIVE_UMASK = 0o002;
 const UMASK_DEFAULT_MODE = 0o666 & ~PERMISSIVE_UMASK;
 
@@ -39,7 +38,7 @@ function tempFilesIn(directory) {
 	return fs.readdirSync(directory).filter((name) => name.endsWith('.tmp'));
 }
 
-/** Route one fs-extra function, as configUtils calls it, through `wrapper` until the returned restore runs. */
+/** configUtils calls fs through fs-extra's module object, so that is where `wrapper` intercepts it. */
 function wrapFs(name, wrapper) {
 	const original = fs[name];
 	fs[name] = (...args) => wrapper(original, ...args);
@@ -149,6 +148,18 @@ describe('owner-only modes for files that can hold secrets (harper#1925)', funct
 			fs.unlinkSync(confirmed);
 			atomicWriteFile(staged, '{"a":2}\n', { ownerOnly: true, replaces: confirmed });
 			assert.strictEqual(modeOf(staged), 0o600, 'an absent destination imposes nothing narrower');
+		});
+
+		it('takes no mode from a file another user owns', function () {
+			// A file Harper reads only through its group or other bits would otherwise yield an unreadable 0o000.
+			const foreign = ['/etc/sudoers'].find((candidate) => {
+				const stats = nodeFs.statSync(candidate, { throwIfNoEntry: false });
+				return stats && stats.uid !== process.getuid() && (stats.mode & 0o600) !== 0o600;
+			});
+			if (!foreign) this.skip();
+			const staged = path.join(testRoot, 'config.yaml');
+			atomicWriteFile(staged, 'new\n', { ownerOnly: true, replaces: foreign });
+			assert.strictEqual(modeOf(staged), 0o600);
 		});
 
 		it('leaves the file, its mode and its mtime alone when an unchanged write is skipped', function () {
