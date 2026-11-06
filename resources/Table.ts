@@ -5453,7 +5453,7 @@ export function makeTable(options): TableResourceClass {
 			// that commit's own pre-commit hook belongs to it and does not wait, since the commit awaits the hook.
 			const midScopeCommitInFlight = () =>
 				scopeRoot !== undefined &&
-				scopeRoot.commitsInFlight > 0 &&
+				scopeRoot.scopeCommitsInFlight > 0 &&
 				!scopeRoot.scopeEnding &&
 				!(hook?.active && hook.root === scopeRoot);
 			// Try again on this caller's own terms with the budget it has left.

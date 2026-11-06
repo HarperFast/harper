@@ -106,7 +106,8 @@ Consequences that shape the code:
   the cascade into chained links and the rotation that reopens it. It is not the end of the scope, but a
   `lock()` must not register into it either: the commit would release a scoped handle it never covered, or
   commit the lock's placeholder before the caller wrote, and the link is about to be cut. So an explicit-scope
-  `lock()` that meets its root's commit in flight (`commitsInFlight`), at entry or after its native wait,
+  `lock()` that meets its root's own commit in flight (`scopeCommitsInFlight`: a `commit()` call, not a closed
+  transaction's write committing by itself), at entry or after its native wait,
   its cluster round, a coalesced join or a retry, gives the key and any cluster grant back
   (`retryAfterScopeCommit`), waits on `whenCommitSettles` (drained by `endCommitAttempt` after rotation)
   and retries with its remaining budget; the root still CLOSED after that means the scope ended, and the

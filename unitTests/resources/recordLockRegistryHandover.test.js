@@ -110,10 +110,10 @@ describe('Record-lock registry handover between chain links', function () {
 	it('answers a commit-settle wait at once when nothing is in flight, and unsubscribes one that times out', async function () {
 		const root = new DatabaseTransaction();
 		assert.strictEqual(root.whenCommitSettles(1000), true);
-		root.commitsInFlight = 1;
+		root.scopeCommitsInFlight = 1;
 		assert.strictEqual(root.whenCommitSettles(0), false);
 		assert.strictEqual(await root.whenCommitSettles(5), false);
 		assert.equal(root.commitSettleWaiters, undefined);
-		root.commitsInFlight = 0;
+		root.scopeCommitsInFlight = 0;
 	});
 });

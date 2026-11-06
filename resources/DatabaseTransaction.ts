@@ -1189,6 +1189,9 @@ export class DatabaseTransaction implements Transaction {
 	declare searchScanning?: boolean;
 	// Depth of commit() attempts on this link that have not reached a native outcome.
 	commitsInFlight = 0;
+	// Of those, the ones commit() was asked for directly (a mid-scope or final commit), which span the
+	// pre-commit work, the cascade into `next` and the rotation; lock() waits these out (record-locks.md).
+	scopeCommitsInFlight = 0;
 	declare private activeCommitHandle?: RocksTransaction;
 	declare private activeCommitHandles?: Set<RocksTransaction>;
 	declare private activeHandleStagedTxnTime?: number;
@@ -1628,7 +1631,7 @@ export class DatabaseTransaction implements Transaction {
 	detachNext(): void {
 		const link = this.next;
 		(this.root ?? this).retainRecordLocksOf(link);
-		this.next = link.next;
+		this.next = link.next ?? null;
 	}
 
 	private retainRecordLocksOf(link: DatabaseTransaction): void {
@@ -1675,11 +1678,11 @@ export class DatabaseTransaction implements Transaction {
 	}
 
 	/**
-	 * Resolves true once this root has no commit attempt in flight, or false after `limitMs`. True at once
-	 * when none is in flight: a waiter subscribing after endCommitAttempt drained the list must not wait.
+	 * Resolves true once this root has no scope commit attempt in flight, or false after `limitMs`. True at
+	 * once when none is: a waiter subscribing after endCommitAttempt drained the list must not wait.
 	 */
 	whenCommitSettles(limitMs: number): boolean | Promise<boolean> {
-		if (!this.commitsInFlight) return true;
+		if (!this.scopeCommitsInFlight) return true;
 		if (limitMs <= 0) return false;
 		return new Promise<boolean>((resolve) => {
 			const waiters = (this.commitSettleWaiters ??= []);
@@ -2938,6 +2941,9 @@ export class DatabaseTransaction implements Transaction {
 		}
 		if (options.doneWriting && this.endsScopeUnwritten(options)) return this.finishUnwrittenScope();
 		this.commitsInFlight = (this.commitsInFlight ?? 0) + 1;
+		// Not a closed transaction's write committing on its own, nor a retry or continuation inside one.
+		const scopeAttempt = !options.transaction && !options.continuation;
+		if (scopeAttempt) this.scopeCommitsInFlight++;
 		// Only a top-level attempt records the intent: a continuation would re-read hasPendingWrites()
 		// after clearWrites() has already emptied it.
 		if (this.commitsInFlight === 1 && !options.continuation && this.hasPendingWrites()) {
@@ -2947,20 +2953,20 @@ export class DatabaseTransaction implements Transaction {
 		try {
 			resolution = this.performCommit(options);
 		} catch (error) {
-			this.endCommitAttempt();
+			this.endCommitAttempt(scopeAttempt);
 			throw error;
 		}
 		if (!(resolution as Promise<CommitResolution>)?.then) {
-			this.endCommitAttempt();
+			this.endCommitAttempt(scopeAttempt);
 			return resolution;
 		}
 		return (resolution as Promise<CommitResolution>).then(
 			(settled) => {
-				this.endCommitAttempt();
+				this.endCommitAttempt(scopeAttempt);
 				return settled;
 			},
 			(error) => {
-				this.endCommitAttempt();
+				this.endCommitAttempt(scopeAttempt);
 				throw error;
 			}
 		);
@@ -3125,19 +3131,19 @@ export class DatabaseTransaction implements Transaction {
 		if (!attached) release(this);
 	}
 
-	private endCommitAttempt(): void {
+	private endCommitAttempt(scopeAttempt = false): void {
 		this.commitsInFlight--;
+		if (scopeAttempt && --this.scopeCommitsInFlight === 0 && this.commitSettleWaiters) {
+			const settleWaiters = this.commitSettleWaiters;
+			this.commitSettleWaiters = undefined;
+			for (const settled of settleWaiters) settled();
+		}
 		if (!this.commitsInFlight) {
 			this.clearActiveCommitHandles();
 			this.commitStartedAt = undefined;
 			if (this.commitOverdueLogged) this.commitOverdueLogged = undefined;
 			this.nativeCommitSubmitted = false;
 			this.nativeCommitAttemptEnded();
-			const settleWaiters = this.commitSettleWaiters;
-			if (settleWaiters) {
-				this.commitSettleWaiters = undefined;
-				for (const settled of settleWaiters) settled();
-			}
 		}
 		// A link closes its OWN iterators the moment its own attempt settles, without waiting for the
 		// chain: LMDBTransaction's commit detaches `next` before awaiting the child, so a scope abandoned
