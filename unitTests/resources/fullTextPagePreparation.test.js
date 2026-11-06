@@ -166,6 +166,56 @@ describe('published full-text final page preparation', () => {
 		);
 	});
 
+	it('keeps admitted filter entries when final source refresh changes a highlighted sort value', async () => {
+		await seed(3);
+		const expiresAt = Date.now() + 1500;
+		await Product.put('row-0', { id: 'row-0', title: 'widget', price: 0 }, { expiresAt });
+		let sourceCalls = 0;
+		Product.sourcedFrom({
+			async get(id) {
+				sourceCalls++;
+				return { id, title: 'widget refreshed', price: 99 };
+			},
+		});
+		const transformEntryForSelect = Product.transformEntryForSelect;
+		let crossedExpiry = false;
+		Product.transformEntryForSelect = function (...args) {
+			const transform = transformEntryForSelect.apply(this, args);
+			const delayed = async function (entry) {
+				if (entry.key === 'row-0' && !crossedExpiry) {
+					assert(Date.now() < expiresAt, 'candidate was accepted before its real TTL');
+					await waitFor(() => Date.now() > expiresAt, 5000);
+					crossedExpiry = true;
+				}
+				return transform.call(this, entry);
+			};
+			delayed.return = () => transform.return?.();
+			return delayed;
+		};
+		try {
+			const page = await Product.search(
+				query({
+					conditions: [...query().conditions, { attribute: 'price', comparator: 'lt', value: 2 }],
+					sort: { attribute: 'price' },
+					count: 'exact',
+					limit: 1,
+				})
+			);
+			assert.deepStrictEqual(
+				page.map(({ id }) => id),
+				['row-0']
+			);
+			assert.strictEqual(page[0].price, 99);
+			assert(page[0].$highlights?.title?.length > 0);
+			assert.strictEqual(page.recordCount, 2);
+			assert.strictEqual(page.recordCountExact, true);
+			assert.strictEqual(sourceCalls, 1);
+			assert.strictEqual(crossedExpiry, true);
+		} finally {
+			Product.transformEntryForSelect = transformEntryForSelect;
+		}
+	});
+
 	it('preserves application errors with native-looking codes from the final row policy', async () => {
 		await seed(1);
 		const failure = Object.assign(new Error('final row policy failed'), { code: 'E_TIMEOUT' });

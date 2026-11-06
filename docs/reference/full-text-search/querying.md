@@ -81,9 +81,11 @@ const products = Product.search({
 });
 ```
 
-Full-text results use descending relevance order. The only explicit full-text sort is `$score` descending; other sort keys and reverse iteration are rejected because they would discard the native ranking.
+Full-text results default to descending relevance order. Use the existing `sort` option to order by directly stored fields, for example `sort: { attribute: 'id', descending: true }`, or `sort(-id)` in a REST query. Linked sorts support up to 32 clauses and preserve relevance order for equal sort keys. `$score` clauses must be descending. Computed fields, relationship paths, Blob fields, vector-distance fields and the query-only full-text field cannot be sort keys; reverse iteration is rejected.
 
-Full-text queries cannot provide an exact total after authorization, structured filtering, and current-record validation. On a REST interface with `exactCount` enabled, `Prefer: count=exact` reports an unavailable total; otherwise it is downgraded to an estimated count. See [pagination and total count](../rest/querying.md#pagination-and-total-count). `Table.getRecordCount()` counts table records, not matches for a full-text query.
+Stored-field sorting examines the complete eligible matching set before applying offset and limit. It fails when the raw-hit, retained-result or execution budget cannot cover that work; it never sorts an incomplete relevance prefix. Sort keys come from admitted local records. A final source refresh can change returned values without recomputing the sort order. Highlights are prepared for the final visible page.
+
+A bounded full-text query can request `count: 'exact'` to count eligible records after authorization, structured filtering and current-record validation. On a REST interface with `exactCount` enabled, use `Prefer: count=exact`; otherwise the request is served as an estimate. For relevance-ordered queries, Harper preserves the page and its highlights before counting the tail. A count-only work, time or native-admission limit makes the total unavailable while keeping the page. Stored-field sorting still requires complete enumeration and fails if its budget is exceeded. Cancellation and other execution failures remain errors. See [pagination and total count](../rest/querying.md#pagination-and-total-count) and [query work limits](../resources/query-optimization.md#full-text-search-work-and-paging). `Table.getRecordCount()` counts table records, not matches for a full-text query.
 
 ## Highlights
 

@@ -8027,7 +8027,6 @@ export function makeTable(options): TableResourceClass {
 							if (selected === SKIP) continue;
 							if (typeof selected?.select === 'function') {
 								candidate.record = selected.record;
-								candidate.recordEntry = selected.entry;
 								prepared.set(candidate, selected);
 							} else prepared.set(candidate, { select: () => selected });
 						}
