@@ -36,7 +36,7 @@ export function search(statement: any, callback: any) {
 	runSelect(statement, undefined, callback);
 }
 
-/** A legacy SQL SELECT read for `hdb_user`, whose role narrows the related records its relationship columns read. */
+/** Runs a legacy SQL SELECT for `hdb_user`, so relationship columns return only what its role may read. */
 export function sqlSelect({ statement, hdb_user }: any, callback: any) {
 	runSelect(statement, hdb_user, callback);
 }

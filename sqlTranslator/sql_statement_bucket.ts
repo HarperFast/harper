@@ -12,6 +12,8 @@ import * as terms from '../utility/hdbTerms.ts';
 import { findDatabasesWithTable, loadDatabaseRegistry } from '../sqlEngine/binder/defaultDatabase.ts';
 import { declaringTables, usingLeftOwner, type ScopeTable } from '../sqlEngine/binder/columnScope.ts';
 
+const NO_PATH: readonly string[] = [];
+
 class sqlStatementBucket {
 	ast: any;
 	affected_attributes: any;
@@ -229,8 +231,7 @@ class sqlStatementBucket {
 				if (tableClass?.hasRelationships)
 					finalTableAttrs = finalTableAttrs.filter(
 						({ attribute_name }) =>
-							!tableClass.propertyResolvers[attribute_name]?.definition?.tableClass ||
-							!tableClass._readDenial([attribute_name], user)
+							!tableClass.propertyResolvers[attribute_name]?.definition?.tableClass?._readDenial(NO_PATH, user)
 					);
 
 				//It's important to REMOVE the wildcard as we replace it with the actual attributes that will be selected

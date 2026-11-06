@@ -147,6 +147,15 @@ describe('SQL reads of relationship columns apply the related table permissions'
 			});
 		}
 
+		it('names no related table behind a relationship attribute the role cannot see', () => {
+			const user = userWith('sql-rel-id-only', {
+				Emp: { ...READ, attribute_permissions: [{ attribute_name: 'id', read: true, insert: false, update: false }] },
+			});
+			const response = verifyPermsAST(parse(`SELECT id, dept FROM ${DATABASE}.Emp WHERE id = 'e1'`), user, 'select');
+			assert.ok(response);
+			assert.ok(!JSON.stringify(response).includes('Dept'), JSON.stringify(response));
+		});
+
 		it('names a related table the role can describe but not read as unauthorized', () => {
 			const user = userWith('sql-rel-dept-writer', { Emp: READ, Dept: { ...READ, read: false, insert: true } });
 			const response = verifyPermsAST(parse(`SELECT id, dept FROM ${DATABASE}.Emp`), user, 'select');
@@ -191,6 +200,95 @@ describe('SQL reads of relationship columns apply the related table permissions'
 				),
 				null
 			);
+		});
+	});
+
+	describe('a schema-loaded @enumerable closure', () => {
+		const SQUAD = { id: 's1', name: 'Core', lockerId: 'l1' };
+		const LOCKER = { id: 'l1', code: 'locker-code', squadId: 's1' };
+		const memberUser = (name, Locker) => userWith(name, { Member: READ, Squad: READ, ...(Locker ? { Locker } : {}) });
+		let Member;
+		before(async () => {
+			let Locker;
+			const Squad = table({
+				database: DATABASE,
+				table: 'Squad',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'name' },
+					{ name: 'lockerId' },
+					{
+						name: 'locker',
+						relationship: { from: 'lockerId' },
+						enumerable: true,
+						definition: {
+							get tableClass() {
+								return Locker;
+							},
+						},
+					},
+				],
+			});
+			Locker = table({
+				database: DATABASE,
+				table: 'Locker',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'code' },
+					{ name: 'squadId' },
+					{ name: 'squad', relationship: { from: 'squadId' }, enumerable: true, definition: { tableClass: Squad } },
+				],
+			});
+			Member = table({
+				database: DATABASE,
+				table: 'Member',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'squadId', indexed: true },
+					{ name: 'squad', relationship: { from: 'squadId' }, definition: { tableClass: Squad } },
+				],
+			});
+			await Squad.put(SQUAD);
+			await Locker.put(LOCKER);
+			await Member.put({ id: 'm1', squadId: 's1' });
+		});
+
+		async function squadRead(user) {
+			const scan = {
+				kind: 'Scan',
+				boundTable: { resource: Member, attributes: Member.attributes },
+				projection: ['id', 'squad'],
+			};
+			const op = physicalIndexScan(scan, {
+				conditions: [{ attribute: 'id', comparator: 'equals', value: 'm1' }],
+				operator: 'and',
+			});
+			const [row] = await rows(op.execute({ user }));
+			return row.squad;
+		}
+
+		it('leaves out an @enumerable relationship to an unreadable table at every level', async () => {
+			assert.deepStrictEqual(await squadRead(memberUser('sql-rel-no-locker')), SQUAD);
+		});
+
+		it('narrows an @enumerable relationship to the readable related attributes', async () => {
+			const restricted = {
+				...READ,
+				attribute_permissions: [
+					{ attribute_name: 'id', read: true, insert: false, update: false },
+					{ attribute_name: 'squadId', read: true, insert: false, update: false },
+					{ attribute_name: 'code', read: false, insert: false, update: false },
+				],
+			};
+			assert.deepStrictEqual(await squadRead(memberUser('sql-rel-locker-restricted', restricted)), {
+				...SQUAD,
+				locker: { id: LOCKER.id, squadId: LOCKER.squadId },
+			});
+		});
+
+		it('returns the whole cyclic closure to a role that can read all of it', async () => {
+			const squad = await squadRead(memberUser('sql-rel-locker-reader', READ));
+			assert.strictEqual(squad.locker.code, LOCKER.code, JSON.stringify(squad));
 		});
 	});
 

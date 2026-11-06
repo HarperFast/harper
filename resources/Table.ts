@@ -2510,9 +2510,8 @@ export function makeTable(options): TableResourceClass {
 			return property.select || hasNestedQueryOptions(property) ? property : property.name;
 		}
 		/**
-		 * Narrows each relationship an already-admitted search `select` names to what `user` can read of the related
-		 * table, for callers that search on a user's behalf without `checkPermission`. Returns `select` itself when there
-		 * is nothing to narrow, otherwise a new array.
+		 * Narrows each relationship a `select` names to what `user` may read of the related table, for a search made on
+		 * the user's behalf without `checkPermission`. Returns `select` itself when nothing needs narrowing.
 		 */
 		static _authorizeSelectedRelationships(select: any[], user: User): any[] {
 			const permission = user?.role?.permission;

@@ -95,7 +95,7 @@ class SQLSearch {
 	 *
 	 * @param statement - the AST for the SQL SELECT to process
 	 * @param attributes - all attributes that are part of the schema for the tables in select
-	 * @param hdbUser - the user the select reads for; its role narrows the related records of relationship columns
+	 * @param hdbUser - the caller, whose role narrows the related records relationship columns return
 	 */
 	constructor(statement, attributes, hdbUser?) {
 		if (commonUtils.isEmpty(statement)) {

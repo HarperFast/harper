@@ -78,7 +78,6 @@ type RoleName = keyof typeof ROLES;
 type Principal = RoleName | 'super';
 const PASSWORD = 'Rel-perm-pw-3301!';
 
-/** Starts Harper on the fixture with every role, its user and the records; returns each principal's headers. */
 async function startFixture(ctx: ContextWithHarper, env: Record<string, string>) {
 	await setupHarperWithFixture(ctx, FIXTURE_PATH, { config: {}, env });
 	const client = createApiClient(ctx.harper);
@@ -128,7 +127,7 @@ function assertRefused(response: { status: number; body: any }, context: string,
 	deepStrictEqual(response.body.unauthorized_access, [], context);
 }
 
-/** Every object key anywhere in a response body, to show a denied attribute appears nowhere in it. */
+/** Every object key in a response body, at any depth. */
 function keysIn(value: any, keys = new Set<string>()): Set<string> {
 	if (value && typeof value === 'object') {
 		for (const key of Object.keys(value)) {
@@ -930,7 +929,7 @@ for (const sqlEngine of ['legacy', 'auto', 'new'] as const) {
 				}
 			});
 
-			test('a cyclic @enumerable pair is authorized table by table, and a related record carries no relationships', async () => {
+			test('relationships both ways between two tables are authorized table by table', async () => {
 				const vault = `SELECT id, vault FROM data.Team WHERE id = 't1'`;
 				for (const as of ['super', 'teamFull'] as const)
 					deepStrictEqual(await rows(as, vault), [{ id: TEAM.id, vault: VAULT }], as);
@@ -946,7 +945,7 @@ for (const sqlEngine of ['legacy', 'auto', 'new'] as const) {
 				deepStrictEqual(await rows('vaultRestricted', team), [{ ...TEAM, vault: readableVault }]);
 				deepStrictEqual(await rows('teamOnly', team), [TEAM]);
 
-				// Team's own @enumerable vault stays out of a Team reached through Badge, whoever reads it
+				// the operations thread loads no schema, so a related record carries its stored attributes only
 				for (const as of ['super', 'teamFull', 'vaultRestricted', 'teamOnly'] as const)
 					deepStrictEqual(
 						await rows(as, `SELECT id, team FROM data.Badge WHERE id = 'b1'`),

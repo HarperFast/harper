@@ -105,6 +105,10 @@ export default class PermissionResponseObject {
 	 *
 	 * @returns { null| PermissionResponseObject }
 	 */
+	hasIssues(): boolean {
+		return Object.keys(this.unauthorized_access).length > 0 || this.invalid_schema_items.length > 0;
+	}
+
 	getPermsResponse() {
 		const unauthorizedAccessArr = Object.values(this.unauthorized_access);
 		if (unauthorizedAccessArr.length > 0 || this.invalid_schema_items.length > 0) {
