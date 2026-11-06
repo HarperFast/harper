@@ -222,23 +222,43 @@ function closeServers() {
 			})
 		);
 	}
+	serversClosed = Promise.all(promises);
 	requestsDrainedHere = Promise.all(requestDrains);
 	closeWebSocketsForExit();
-	return Promise.all(promises);
+	return serversClosed.then(() => webSocketsClosedForExit);
 }
 
+const SERVER_CLOSE_TIMEOUT_MS = 5000;
+let serversClosed: Promise<unknown> | undefined;
 let requestsDrainedHere: Promise<unknown> | undefined;
-let closingWebSocketsForExit = false;
+let webSocketsClosedForExit: Promise<unknown> | undefined;
+function waitAtMost(promise: Promise<unknown>, ms: number) {
+	let timer: NodeJS.Timeout | undefined;
+	return Promise.race([
+		promise,
+		new Promise<void>((resolve) => {
+			timer = setTimeout(resolve, Math.max(0, ms)).unref();
+		}),
+	]).finally(() => clearTimeout(timer));
+}
 /**
- * Detached from the servers' close, so their timers still bound it if another thread never reports. Exit only:
- * during a restart a retiring worker's socket may be carrying another worker's acknowledgement.
+ * Bounded by the servers' close timeout if another thread never reports or a client never finishes closing. Exit
+ * only: during a restart a retiring worker's socket may be carrying another worker's acknowledgement.
  */
 function closeWebSocketsForExit(exitDeadline: number | undefined = getProcessExitDeadline()) {
-	if (!exitDeadline || !requestsDrainedHere || closingWebSocketsForExit) return;
-	closingWebSocketsForExit = true;
-	requestsDrainedHere
-		.then(whenAllRequestsDrained)
-		.then(httpComponent.closeWebSockets)
+	if (!exitDeadline || !requestsDrainedHere || webSocketsClosedForExit) return;
+	const remainingMs = () => Math.min(SERVER_CLOSE_TIMEOUT_MS, Math.max(0, (exitDeadline - Date.now()) / 2));
+	webSocketsClosedForExit = requestsDrainedHere
+		.then(() => {
+			const allDrained = whenAllRequestsDrained();
+			if (!httpComponent.hasOpenWebSockets()) {
+				return httpComponent.closeWebSockets();
+			}
+			return Promise.race([
+				allDrained,
+				Promise.resolve(serversClosed).then(() => waitAtMost(allDrained, remainingMs())),
+			]).then(() => waitAtMost(httpComponent.closeWebSockets(), remainingMs()));
+		})
 		.catch((error) => harperLogger.error('Error closing WebSockets during shutdown', threadId, error));
 }
 

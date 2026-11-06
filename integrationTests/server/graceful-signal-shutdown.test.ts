@@ -134,9 +134,13 @@ interface Subscription {
 	closed: Promise<{ code: number; at: number }>;
 }
 
-async function subscribe(ctx: ContextWithHarper): Promise<Subscription> {
-	const socket = new WebSocket(`${ctx.harper.httpURL.replace('http', 'ws')}/Subscriber/`, {
+async function subscribe(
+	ctx: ContextWithHarper,
+	url = `${ctx.harper.httpURL.replace('http', 'ws')}/Subscriber/`
+): Promise<Subscription> {
+	const socket = new WebSocket(url, {
 		headers: { Authorization: authHeader(ctx), Accept: 'application/json' },
+		rejectUnauthorized: false,
 	});
 	const closed = new Promise<{ code: number; at: number }>((resolve) =>
 		socket.once('close', (code) => resolve({ code, at: Date.now() }))
@@ -305,6 +309,58 @@ suite(
 			const exit = await exitOf(proc, signalledAt);
 			deepStrictEqual({ code: exit.code, signal: exit.signal }, { code: 0, signal: null });
 			ok(exit.afterMs < 5000, `exited ${exit.afterMs} ms after SIGTERM`);
+		});
+	}
+);
+
+suite(
+	'WebSockets with http2 enabled across multiple threads',
+	{
+		skip:
+			SKIP_SIGNALS ||
+			SKIP_WEBSOCKET_CLOSE ||
+			(process.platform === 'darwin' && 'one worker binds each port on macOS, so nothing lands on another thread'),
+	},
+	(ctx: ContextWithHarper) => {
+		const config = { http: { http2: true }, tls: {}, threads: { count: 2 } };
+		let fixtureParent: string;
+		before(async () => {
+			fixtureParent = await mkdtemp(join(tmpdir(), 'harper-graceful-shutdown-'));
+			await setupHarperWithFixture(ctx, await writeProbeApp(fixtureParent, {}), {
+				config,
+				env: {},
+			});
+		});
+		after(async () => {
+			await teardownHarper(ctx);
+			await rm(fixtureParent, { recursive: true, force: true });
+		});
+
+		test('every subscriber across both threads sees 1001 on repeated SIGTERM stops', async () => {
+			const wssUrl = `wss://${ctx.harper.hostname}:9927/Subscriber/`;
+			for (let stop = 0; stop < 4; stop++) {
+				if (stop > 0) {
+					await startHarper(ctx, { config, env: {} });
+				}
+				const subscriptions: Subscription[] = [];
+				const threads = new Set<number>();
+				for (let i = 0; i < 64 && threads.size < 2; i++) {
+					const subscription = await subscribe(ctx, i % 2 === 0 ? wssUrl : undefined);
+					subscriptions.push(subscription);
+					threads.add(subscription.threadId);
+				}
+				strictEqual(threads.size, 2, `stop ${stop + 1}: subscribers landed on both HTTP workers`);
+
+				const proc = ctx.harper.process;
+				const signalledAt = Date.now();
+				proc.kill('SIGTERM');
+				for (const { closed } of subscriptions) {
+					const { code } = await closed;
+					strictEqual(code, 1001, `stop ${stop + 1}: subscriber received close code ${code}`);
+				}
+				const exit = await exitOf(proc, signalledAt);
+				deepStrictEqual({ code: exit.code, signal: exit.signal }, { code: 0, signal: null });
+			}
 		});
 	}
 );
