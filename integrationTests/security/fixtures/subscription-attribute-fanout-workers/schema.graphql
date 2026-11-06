@@ -1,0 +1,12 @@
+type Rel @table @export {
+	id: ID @primaryKey
+	name: String
+}
+
+type Doc @table @export {
+	id: ID @primaryKey
+	title: String
+	secret: String
+	relatedId: ID
+	related: Rel @relationship(from: relatedId)
+}

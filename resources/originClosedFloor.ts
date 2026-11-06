@@ -413,9 +413,11 @@ export function reservedLocalKey(handle: RocksTransaction | undefined): number |
 }
 
 /**
- * A retry whose attempt wrote no log batch logs afresh, under a fresh key, so it stays in order with the
+ * A retry whose attempt wrote no log batch logs afresh, under a fresh key, so its version stays above the
  * writes that beat it; the published bound stays at the original, smaller key, which still bounds it.
- * Returns the new key, or undefined when the handle has no minted reservation or its timestamp is frozen.
+ * Returns the new key, or undefined when the handle has no reservation or reserved around a caller's value:
+ * that write's version is the caller's value whatever its key, so a fresh key would order nothing, and the
+ * key it reserved is still unused and above the floor.
  */
 export function rekeyLocalRetry(handle: RocksTransaction): number | undefined {
 	const reservation: Reservation | undefined = (handle as any)[RESERVATION];

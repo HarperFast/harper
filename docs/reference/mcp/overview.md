@@ -66,6 +66,7 @@ See [MCP Tools and Resources](./tools-and-resources.md) for the full generation 
 The following items are explicitly deferred to a follow-on release:
 
 - OAuth 2.1 PRM (Protected Resource Metadata) authorization.
-- Cross-worker session sharing (each MCP session is bound to the worker that accepted the GET stream).
+- Immediate cross-worker application of `logging/setLevel`: a level set by another worker takes effect on the GET stream at its next reconnect.
+- Sharing notification replay history between workers. The live GET stream belongs to one worker, but the session accepts subscribe POSTs on other workers and [persisted resource subscriptions](./subscriptions.md#scope-and-durability) can restore on a new worker.
 - TypeScript type reflection into JSON Schema for custom `mcpTools` entries (schemas are hand-authored).
 - Global REST/operations rate limiting — the MCP rate limits (per-session, per-tool, per-client, and `initialize`) apply to the MCP surface only.

@@ -82,10 +82,11 @@ harper list_backups database=data
 Verifies a managed backup. `backup_id` is required.
 
 - **RocksDB files:** checks file sizes and, when `verify_checksum` is `true`, checksums. Checksum verification takes longer.
+- **Tables:** <VersionBadge version="v5.4.0" /> opens each table file and reads every table, so a backup this version of Harper cannot read, such as one with a newer table format, fails verification as it would fail a restore.
 - **Transaction log:** always checks the snapshot's framing.
 - **Blob snapshot:** checks that a snapshot is present if the backup recorded blobs. A missing snapshot fails verification. Individual blob sizes, checksums, and readability are not checked, so damaged blob contents can pass verification.
 
-Through a running server, verification runs as a background [job](../operations-api/operations.md#jobs). Poll `get_job` for its result.
+Through a running server, verification runs as a background [job](../operations-api/operations.md#jobs). Poll `get_job` for its result. As of v5.4.0, verification runs in a separate process, and only one restore or verification runs at a time on an instance; another one fails with status code 409 until it finishes.
 
 ```json
 { "operation": "verify_backup", "database": "data", "backup_id": 1, "verify_checksum": true }
@@ -129,26 +130,45 @@ harper purge_backups database=data keep_count=3
 
 Restores a database in place from a managed backup. `backup_id` defaults to the latest backup. The audit/transaction log is restored alongside the data, and — for a database with file-backed blobs — the blob roots are purged and rewritten from the backup's blob snapshot.
 
-<VersionBadge version="v5.3.0" /> `allow_engine_only` (optional, default `false`) permits restoring a backup created with `exclude_blobs: true`. Without it, that restore is refused, including when using `target_database`. Enabling it accepts the risk that restored records reference missing or unrelated blob files; recover and validate those blobs separately.
+Through a running server this runs as a background [job](../operations-api/operations.md#jobs): Harper closes the database across all worker threads, checks the backup, restores it, and reloads it. As of v5.4.0, the check and the restore run in a separate process, and only one restore or [verification](#verify_backup) runs at a time on an instance; another one fails with status code 409 until it finishes. This works only when no loaded component is holding the database open — if one does, the job ends in `ERROR` (surfaced by [`get_job`](../operations-api/operations.md#get_job)) telling you to restore offline. Restoring the `system` database is rejected up front, before a job is created. It requires running the command from the CLI with the server stopped. See [when can a database be restored?](./overview.md#when-can-a-database-be-restored)
 
-Through a running server this runs as a background [job](../operations-api/operations.md#jobs): Harper closes the database across all worker threads, checks the backup, restores it, and reloads it. This works only when no loaded component is holding the database open — if one does, the job ends in `ERROR` (surfaced by [`get_job`](../operations-api/operations.md#get_job)) telling you to restore offline. Restoring the `system` database is rejected up front, before a job is created, as is `target_database` while the server is running. These cases require running the command from the CLI with the server stopped. See [when can a database be restored?](./overview.md#when-can-a-database-be-restored)
+| Parameter                    | Description                                                                                                                                                                                                                                                                                                                        |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `backup_id`                  | The backup to restore. Defaults to the latest.                                                                                                                                                                                                                                                                                     |
+| `target_database`            | Restore into a separate, new database instead of overwriting the source. The target must not exist, or must be an empty directory. As of v5.4.0 this works with the server running too: the source stays online, and the new database loads on every thread when the restore publishes.                                            |
+| `allow_engine_only`          | <VersionBadge version="v5.3.0" /> Default `false`. Permits restoring a backup created with `exclude_blobs: true`; without it that restore is refused, including with `target_database`. Enabling it accepts the risk that restored records reference missing or unrelated blob files; recover and validate those blobs separately. |
+| `accept_incompatible_backup` | <VersionBadge version="v5.4.0" /> Restore a backup taken by a newer version of Harper whose archive manifest major is higher than this version understands. What it waived is logged and returned as `compatibility_waived`. A capability this version lacks is still refused.                                                     |
+| `accept_unverified_blobs`    | <VersionBadge version="v5.4.0" /> Publish the restore even if records reference blob files the backup does not contain. The result reports `blob_integrity: unverified`.                                                                                                                                                           |
+| `immutable_source`           | <VersionBadge version="v5.4.0" /> Restore from a repository Harper cannot write to, such as a read-only mount, without locking or pinning it. Use it only if nothing can modify the repository until the restore finishes.                                                                                                         |
 
 As of v5.3.1, subscriptions opened before a restore do not carry over to the restored data. When Harper reloads the database, each one ends, and its last message is a `DatabaseGenerationChangedError` (status code 409, code `DATABASE_GENERATION_CHANGED`). Resubscribe to resynchronize against the restored state. A restore that fails before it changes anything reloads the database as it was; those subscriptions end instead with a retryable `DatabaseClosingError` (status code 503, code `DATABASE_CLOSING`); resubscribe to continue.
 
-As of v5.4.0, a restore checks the backup before it deletes anything. It verifies the checksum of every database file in the backup (not blob files), checks the backup's transaction logs, and opens each of its table files to confirm this version of Harper can read their format and compression. For a backup that captured blobs, it also checks that the blob snapshot is present. A backup that fails any of these is refused: the restore fails with an error saying it did not modify the database, followed by the cause, and the database keeps its data and its blobs. A rerun over an earlier restore that did not finish is the exception: that database is already incomplete, so it stays blocked until a restore succeeds, and the error says so. [`verify_backup`](#verify_backup) does not open the table files, so a backup it reports as valid can still be refused here for a format this version cannot read.
+### What a restore checks
 
-The check reads the whole backup once before the restore copies it, so a restore takes longer than before but needs no extra disk space. Through a running server, the check runs after the database is closed, so the database is unavailable while the backup is checked as well as while it is copied. Writes during that time fail, as they do for the rest of the restore, rather than succeeding and then being lost. The contents of blob files are not checked: a blob that cannot be read fails the restore while the blobs are copied, after the database files have been replaced, and the database stays marked incompletely restored until a rerun succeeds.
+As of v5.4.0, a restore checks the backup before it deletes anything. It verifies the checksum of every database file in the backup (not blob files), checks the backup's transaction logs, and opens each of its table files to confirm this version of Harper can read their format and compression. For a backup that captured blobs, it also checks that the blob snapshot is present. A backup that fails any of these is refused: the restore fails with an error saying it did not modify the database, followed by the cause, and the database keeps its data and its blobs. A rerun over an earlier restore that did not finish is the exception: that database is already incomplete, so it stays blocked until a restore succeeds, and the error says so.
+
+The pre-copy check reads the whole backup once before the restore copies it, so a restore takes longer than before but needs no extra disk space. Through a running server, the check runs after the database is closed, so the database is unavailable while the backup is checked as well as while it is copied. Writes during that time fail, as they do for the rest of the restore, rather than succeeding and then being lost.
+
+After the files are replaced, and before the restored database is published, the restore also proves it. The transaction log replays completely, with no skipped entry, torn transaction or corrupt frame. Every record decodes. Every file-backed blob a record references is present and the size the record declares, or is a capture marker the backup recorded for a blob that was still being written; the result reports `blob_integrity: unverified` when any marker was accepted. A reference to a blob the backup does not contain fails the proof unless `accept_unverified_blobs` is set. A restore that fails this proof is not published: the database stays blocked until a restore from a sound backup succeeds.
 
 <details>
 <summary>Before v5.4.0</summary>
 
-Previously the restore deleted the database first, so a backup this version could not read, such as one taken by a newer version of Harper, destroyed the database it was meant to restore.
+Previously the restore deleted the database first, so a backup this version could not read, such as one taken by a newer version of Harper, destroyed the database it was meant to restore. Blob files were not checked at all, and `target_database` was refused while the server was running.
 
 </details>
 
-From the CLI with the server stopped, `target_database=<name>` restores into a separate database instead of overwriting the source. The target must not already exist, or must be an empty directory; Harper picks the new database up on the next start.
+### If a restore is interrupted
 
-If a restore is interrupted (crash, power loss) after it has started replacing the database's files, Harper marks the database as incompletely restored and refuses to load it on the next start, logging an incomplete-restore error. Recover by rerunning `restore_backup` for the same database and `backup_id` — do not try to load or hand-repair the directory. As of v5.4.0, an interruption while the backup is still being checked leaves the destination's files and any preexisting incomplete-restore marker unchanged; a previously healthy database loads normally on the next start.
+As of v5.4.0, every restore records its decision on disk before it changes anything, does the work in a separate process, and publishes the restored database only after that process has proven it. A crash at any point leaves one of three states:
+
+- **The database as it was**, if the restore stopped before it replaced anything. The next start discards the unfinished restore and loads the database normally.
+- **The restored database**, if the restore was proven before the crash. The next start, or the next `restore_backup` of that database, finishes publishing it without repeating the work.
+- **A blocked database**, if the restore stopped while replacing files. Harper refuses to load it and logs an incomplete-restore error. Recover by rerunning `restore_backup` for the same database and backup; do not try to load or hand-repair the directory. A backup the interrupted restore was using stays protected from `delete_backup` and `purge_backups` until a restore succeeds, unless the restore used `immutable_source`, which pins nothing.
+
+### Replication peers
+
+As of v5.4.0, a restore refuses to run on a node that has replication peers, whether from `system.hdb_nodes` or `replication.routes`, because replication would either undo the restore or spread it to the cluster. Through a running server the job ends in `ERROR`, with a message naming the peers; offline the command fails with the same message. Peers count even when replication to them is blocked by the network. Restore on a standalone node, then add fresh peers. While a restore runs, operations that add a peer, such as `add_node` or a `set_configuration` that sets replication routes, fail with status code 409. An offline restore of the `system` database checks only `replication.routes`, since it replaces the node list itself.
 
 ```json
 { "operation": "restore_backup", "database": "data", "backup_id": 1 }
@@ -156,7 +176,7 @@ If a restore is interrupted (crash, power loss) after it has started replacing t
 
 ```bash
 harper restore_backup database=data backup_id=1
-# restore into a new database instead of overwriting the source (server stopped)
+# restore into a new database instead of overwriting the source
 harper restore_backup database=data backup_id=1 target_database=data_restored
 ```
 

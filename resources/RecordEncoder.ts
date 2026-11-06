@@ -202,6 +202,20 @@ let timestampNextEncoding = 0,
 	receivedIdentityRefsNextEncoding: Array<{ version: number; nodeId: number }> | undefined;
 // tracking metadata with a singleton works better than trying to alter response of getEntry/get and coordinating that across caching layers
 export let lastMetadata: Entry | null = null;
+let strictDecodeDepth = 0;
+
+/**
+ * Runs a synchronous read with record decode failures thrown instead of read as `null`, for a caller
+ * that must not mistake an undecodable record for a deleted one.
+ */
+export function decodeStrictly<T>(read: () => T): T {
+	strictDecodeDepth++;
+	try {
+		return read();
+	} finally {
+		strictDecodeDepth--;
+	}
+}
 /**
  * A resolver owns its attribute's name, so no durable form of a record may carry a value under it.
  * A value gets there either through the response `toJSON` the table installs on the record prototype
@@ -426,7 +440,7 @@ export class RecordEncoder extends StructonEncoder {
 						// `valueStart` is OR'd into msgpackr's encode options below, where the reserved-space field
 						// is the LOW BYTE (RESERVE_START_SPACE): a valueStart over 255 wraps, so the record is
 						// written with a prefix neither side agrees on and decodes as garbage. The persisted ref
-						// count is one byte too. Refs are best-effort — a later in-order write drops them outright —
+						// count is one byte too. Refs are best-effort — an audited in-order write drops them outright —
 						// so over budget the oldest are dropped, identities first (they only answer a re-delivery, a
 						// log key also leads the walk to a branch), and never the first log key (the addressable audit
 						// head when the record and log clocks diverge) nor the last of either kind (the newest receipt
@@ -727,6 +741,7 @@ export class RecordEncoder extends StructonEncoder {
 			} // else a normal entry
 			return options?.valueAsBuffer ? buffer : decodeFromDatabase(() => super.decode(buffer, options), this.rootStore);
 		} catch (error) {
+			if (strictDecodeDepth > 0) throw error;
 			const hexPreview = buffer.slice(0, 40).toString('hex');
 			if (isMissingStructureError(error)) {
 				// This record references a shared structure that is genuinely absent on this node — the

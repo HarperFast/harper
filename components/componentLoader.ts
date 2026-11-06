@@ -33,9 +33,10 @@ import {
 	getWorkerIndex,
 	isProcessShuttingDown,
 	getProcessExitDeadline,
+	getTerminateTimeout,
 } from '../server/threads/manageThreads.ts';
 import { resetRestartNeeded, subscribeToRestartRequests } from './requestRestart.ts';
-import { closeScopeOnShutdown } from './scopeShutdown.ts';
+import { closeScopeAfterLoad, closeScopeOnShutdown } from './scopeShutdown.ts';
 import { deployLifecycle } from './deployLifecycle.ts';
 import { assertBranchedDatabases, assertIsolationConfig } from './Application.ts';
 import { prepareBranches } from '../resources/branchDatabase.ts';
@@ -728,6 +729,11 @@ function symlinkHarperModule(componentDirectory: string) {
 // Direct access keeps lock timing deterministic without exposing a broader component-load seam.
 export const _symlinkHarperModuleForTests = symlinkHarperModule;
 
+/** The running `handleApplication` of each scope whose load started, without the watchdog that can reject while it still runs. */
+const startedLoads = new WeakMap<Scope, Promise<unknown>>();
+/** Closed by shutdown before its `handleApplication` started; the load is skipped. */
+const scopesSkippedForShutdown = new WeakSet<Scope>();
+
 /**
  * This function handles the `handleApplication` call for a plugin in a sequential manner.
  * It ensures the execution of `handleApplication` happens on one thread at a time for a given scope.
@@ -768,16 +774,15 @@ function sequentiallyHandleApplication(scope: Scope, plugin: PluginModule) {
 			});
 		}
 		try {
+			if (scopesSkippedForShutdown.has(scope)) return;
 			// note that handleApplication can throw sync or async errors, need to run finally block for both
-			await withDeployAwareTimeout(
-				Promise.resolve(plugin.handleApplication(scope)).then(async () => {
-					// Wait for any initial entry handler loads to complete
-					// This ensures all async operations (like secureImport) finish before the component is marked as loaded
-					await scope.waitForInitialLoads();
-				}),
-				scope,
-				timeout
-			);
+			const handling = new Promise((resolve) => resolve(plugin.handleApplication(scope))).then(async () => {
+				// Wait for any initial entry handler loads to complete
+				// This ensures all async operations (like secureImport) finish before the component is marked as loaded
+				await scope.waitForInitialLoads();
+			});
+			startedLoads.set(scope, handling);
+			await withDeployAwareTimeout(handling, scope, timeout);
 		} catch (error) {
 			scope.disposeBearerValidators();
 			throw error;
@@ -1163,14 +1168,28 @@ export async function loadComponent(
 
 					// Track the close so the worker's shutdown path waits for it (and thus for any async
 					// native-runtime disposal, e.g. @harperfast/vite's dev server) before calling realExit.
+					const closeAfterLoad = () => {
+						const started = startedLoads.get(scope);
+						if (started) return closeScopeAfterLoad(started, () => scope.close(), getTerminateTimeout() / 2);
+						scopesSkippedForShutdown.add(scope);
+						return scope.close();
+					};
 					onMessageByType(ITC_EVENT_TYPES.SHUTDOWN, (message) =>
-						closeScopeOnShutdown(() => scope.close(), message?.exitDeadline !== undefined)
+						closeScopeOnShutdown(closeAfterLoad, message?.exitDeadline !== undefined)
 					);
 					// SHUTDOWN reaches only the listeners registered when it arrives; a scope loaded after it closes here
-					if (isProcessShuttingDown())
-						closeScopeOnShutdown(() => scope.close(), getProcessExitDeadline() !== undefined);
+					if (isProcessShuttingDown()) closeScopeOnShutdown(closeAfterLoad, getProcessExitDeadline() !== undefined);
 
-					await sequentiallyHandleApplication(scope, extensionModule);
+					try {
+						await sequentiallyHandleApplication(scope, extensionModule);
+					} catch (error) {
+						// a lock wait that timed out after shutdown skipped this load is not a boot failure
+						if (!scopesSkippedForShutdown.has(scope)) throw error;
+					}
+					if (scopesSkippedForShutdown.has(scope)) {
+						noteBootSkipped(entryApplication);
+						continue;
+					}
 
 					// Mark component as loaded after successful handleApplication call
 					markLoadedUnlessReported(componentStatusName, `Component '${componentStatusName}' loaded successfully`);

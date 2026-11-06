@@ -12,6 +12,8 @@ import * as terms from '../utility/hdbTerms.ts';
 import { findDatabasesWithTable, loadDatabaseRegistry } from '../sqlEngine/binder/defaultDatabase.ts';
 import { declaringTables, usingLeftOwner, type ScopeTable } from '../sqlEngine/binder/columnScope.ts';
 
+const NO_PATH: readonly string[] = [];
+
 class sqlStatementBucket {
 	ast: any;
 	affected_attributes: any;
@@ -157,6 +159,69 @@ class sqlStatementBucket {
 	}
 
 	/**
+	 * The relationship paths AlaSQL member access (`->`, `!`) reads: a relationship of one of the statement's tables
+	 * followed by literal member names. A member access over another expression that reads a relationship, or with a
+	 * computed member, has no provable path; `unresolved` names the first such relationship.
+	 */
+	getRelationshipMemberPaths(): { paths: { tableClass: any; path: string[] }[]; unresolved?: string } {
+		const paths = [];
+		const registry = loadDatabaseRegistry();
+		const tables = [];
+		for (const [schema, schemaTables] of this.affected_attributes) {
+			const database = registry?.[schema];
+			for (const table of schemaTables.keys()) {
+				const tableClass: any = database && Object.hasOwn(database, table) ? database[table] : undefined;
+				if (tableClass?.hasRelationships) tables.push(tableClass);
+			}
+		}
+		if (tables.length === 0) return { paths };
+		const { Op, Column, NumValue } = (alasql as any).yy;
+		const isMemberAccess = (node) => node instanceof Op && (node.op === '->' || node.op === '!');
+		const owners = (column) => {
+			const qualifier = column.tableid;
+			const tableName = qualifier && (this.table_lookup.get(qualifier) ?? qualifier);
+			const schema = qualifier && this.schema_lookup.get(qualifier);
+			return tables.filter(
+				(tableClass) =>
+					(!qualifier || (tableClass.tableName === tableName && (!schema || tableClass.databaseName === schema))) &&
+					tableClass.propertyResolvers[column.columnid]?.definition?.tableClass
+			);
+		};
+		let unresolved: string | undefined;
+		// astNodes yields an access before the accesses inside it, which the outer one's walk already covered
+		const covered = new Set();
+		for (const node of astNodes(this.ast)) {
+			if (!isMemberAccess(node) || covered.has(node)) continue;
+			const members = [];
+			let base = node;
+			let computed = false;
+			for (; isMemberAccess(base); base = base.left) {
+				covered.add(base);
+				if (typeof base.right === 'string') members.push(base.right);
+				else if (base.right instanceof NumValue) members.push(base.right.value);
+				else computed = true;
+			}
+			members.reverse();
+			if (base instanceof Column && !computed) {
+				const relationshipOwners = owners(base);
+				if (relationshipOwners.length === 0 && base.tableid && owners({ columnid: base.columnid }).length > 0)
+					unresolved ??= base.columnid;
+				for (const tableClass of relationshipOwners) {
+					const path = memberPath(tableClass, base.columnid, members);
+					if (path) paths.push({ tableClass, path });
+					else unresolved ??= base.columnid;
+				}
+				continue;
+			}
+			for (const inner of astNodes(base)) {
+				if (isMemberAccess(inner)) covered.add(inner);
+				else if (inner instanceof Column && owners(inner).length > 0) unresolved ??= inner.columnid;
+			}
+		}
+		return { paths, unresolved };
+	}
+
+	/**
 	 * Attributes an UPDATE or DELETE reads to pick rows (WHERE) or compute values (SET expressions).
 	 * They need read permission on top of the write permission the statement already needs. The primary
 	 * key is left out: the statement reports the keys of the rows it touched, as NoSQL update and delete do.
@@ -183,10 +248,11 @@ class sqlStatementBucket {
 	 * user has READ permissions
 	 *
 	 * @param rolePerms - role permission set to update the wildcard to the permitted attributes
+	 * @param user - the user those permissions belong to; a relationship to a table it cannot read is left out
 	 * @returns {ast} - this function returns the updated AST that can be used for final validation and the additional
 	 * steps to complete the request
 	 */
-	updateAttributeWildcardsForRolePerms(rolePerms) {
+	updateAttributeWildcardsForRolePerms(rolePerms, user) {
 		const astWildcards = this.ast.columns.filter((col) => terms.SEARCH_WILDCARDS.includes(col.columnid));
 
 		//If there are no wildcards, we can skip this step
@@ -223,6 +289,13 @@ class sqlStatementBucket {
 						attribute_name: attr.attribute,
 					}));
 				}
+				const tables = loadDatabaseRegistry()?.[colSchema];
+				const tableClass = tables && Object.hasOwn(tables, colTable) ? (tables[colTable] as any) : undefined;
+				if (tableClass?.hasRelationships)
+					finalTableAttrs = finalTableAttrs.filter(
+						({ attribute_name }) =>
+							!tableClass.propertyResolvers[attribute_name]?.definition?.tableClass?._readDenial(NO_PATH, user)
+					);
 
 				//It's important to REMOVE the wildcard as we replace it with the actual attributes that will be selected
 				const tableAffectedAttrs = this.affected_attributes
@@ -249,6 +322,30 @@ class sqlStatementBucket {
 
 		return this.ast;
 	}
+}
+
+/**
+ * The path a member chain reads from `relationship` of `tableClass`, with an index into a to-many value dropped, or
+ * undefined when legacy SQL could read another member than the text names: it re-parses `01`, `1e0` or `1.0` as a number.
+ */
+function memberPath(tableClass: any, relationship: string, members: any[]): string[] | undefined {
+	const resolver = tableClass.propertyResolvers[relationship];
+	const path = [relationship];
+	let current = resolver.definition.tableClass;
+	let toMany = resolver.toMany;
+	for (const member of members) {
+		if (toMany && /^\d+$/.test(String(member))) {
+			toMany = false;
+			continue;
+		}
+		const name = String(member);
+		if (!Number.isNaN(Number(name)) && (toMany || String(Number(name)) !== name)) return;
+		path.push(name);
+		const next = current?.propertyResolvers[member];
+		current = next?.definition?.tableClass;
+		toMany = current && next.toMany;
+	}
+	return path;
 }
 
 /**

@@ -155,10 +155,20 @@ function validate(validation: any): void {
 const callerAddressStorage = new AsyncLocalStorage<{ address: string | null | undefined }>();
 
 /**
- * Runs an operations API request with its source address, as `clientAddressOf` in serverHandlers.ts
- * derives it: a string; undefined for the local operations domain socket, which no proxy fronts; or null
- * when it is unknown.
+ * The source address of an operations API Fastify request: a string; undefined for Node's operations domain
+ * socket, which no proxy fronts (the same test security/auth.ts uses for its local bypass); or null when it
+ * is unknown. Only the Node path has a baseRequest; Bun and uWS inject into Fastify, whose `request.ip` is
+ * then light-my-request's 127.0.0.1, and carry the address in a header.
  */
+export function clientAddressOf(req: any): string | null | undefined {
+	const baseRequest = req.raw?.baseRequest;
+	// only injection strips the header from client input, so a Node request never reads it
+	if (!baseRequest) return req.headers?.[terms.INTERNAL_CLIENT_ADDRESS_HEADER] || null;
+	if (baseRequest.ip) return baseRequest.ip;
+	const server = baseRequest._nodeRequest?.socket?.server;
+	return server?._pipeName && server.bypassLocalAuth ? undefined : null;
+}
+
 export function runWithCallerAddress<T>(address: string | null | undefined, callback: () => T): T {
 	return callerAddressStorage.run({ address }, callback);
 }

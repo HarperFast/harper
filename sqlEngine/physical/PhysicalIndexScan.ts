@@ -13,8 +13,9 @@ import type { ConditionNode } from '../optimizer/whereToConditions.ts';
 import { EngineUnsupportedError } from '../errors.ts';
 import { ClientError, IndexRebuildingError } from '../../utility/errors/hdbError.ts';
 
-interface SearchableTable {
+export interface SearchableTable {
 	search(target: unknown, context?: unknown): AsyncIterable<Row>;
+	_authorizeSelectedRelationships(select: string[], user: unknown): unknown[];
 }
 
 export interface PhysicalIndexScanOptions {
@@ -62,7 +63,7 @@ async function* executeScan(
 		target.conditions = opts.conditions;
 		target.operator = opts.operator;
 	}
-	if (scan.projection) target.select = scan.projection;
+	if (scan.projection) target.select = resource._authorizeSelectedRelationships(scan.projection, ctx.user);
 	if (scan.pushedSort && scan.pushedSort.length > 0) {
 		const k = scan.pushedSort[0];
 		if (k.expr.kind === 'column') {

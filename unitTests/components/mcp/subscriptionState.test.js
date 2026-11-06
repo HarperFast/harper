@@ -477,6 +477,118 @@ describe('MCP persisted subscription state', function () {
 		assert.deepEqual((await loadSession(session.id)).subscriptions, []);
 	});
 
+	it('does not restore a scoped grant onto an ordinary credential with identical permissions', async () => {
+		await open();
+		_setSubscribeImplForTest(async () => changeStream());
+		assert.equal(await subscribe(URI, { ...USER, _scopedToken: true }), 'success');
+		const ordinary = `${URI}/ordinary`;
+		assert.equal(await subscribe(ordinary), 'success');
+		const record = await open();
+		assert.equal(_liveSubscriptionCount(session.id), 1);
+		const saved = await loadSession(session.id);
+		assert.deepEqual(saved.subscriptions, [ordinary]);
+		assert.deepEqual(saved.subscriptionPrincipals, {});
+		assert.equal(getRegisteredSession(session.id), record);
+	});
+
+	for (const remote of [false, true]) {
+		it(`installs a live scoped generation from ${remote ? 'another' : 'this'} worker during restore`, async () => {
+			await patchSession(session.id, { subscriptions: [URI] });
+			const started = deferred();
+			const restoring = deferred();
+			let attempts = 0;
+			_setSubscribeImplForTest(async () => {
+				if (++attempts === 1) {
+					started.resolve();
+					return restoring.promise;
+				}
+				return changeStream();
+			});
+			const owner = remote ? USER : { ...USER, _scopedToken: true, role: { permission: {} } };
+			const record = registerSession(session.id, 'application', owner);
+			const claiming = claimSubscriptionOwner(session.id, record.streamToken);
+			await started.promise;
+			const uri = `${URI}/live`;
+			const user = { ...USER, _scopedToken: true };
+			let pending;
+			try {
+				if (remote) {
+					await patchSession(session.id, {
+						subscriptions: [URI, uri],
+						subscriptionGenerations: { [uri]: 'remote-live' },
+						subscriptionPrincipals: { live: user },
+						subscriptionPrincipalIds: { [uri]: 'live' },
+						subscriptionRevision: 1,
+					});
+				} else {
+					pending = subscribe(uri, user);
+					await waitFor(async () => (await loadSession(session.id)).subscriptionGenerations?.[uri]);
+				}
+			} finally {
+				restoring.resolve(changeStream());
+			}
+			if (pending) assert.equal(await pending, 'success');
+			assert.equal(await claiming, true);
+			assert.equal(_liveSubscriptionCount(session.id), 2);
+			assert.deepEqual((await loadSession(session.id)).subscriptionAck.rejected, {});
+		});
+	}
+
+	it('checks the local POST principal when its generation precedes a scoped GET claim', async () => {
+		await open();
+		const started = deferred();
+		const installing = deferred();
+		_setSubscribeImplForTest(async () => {
+			started.resolve();
+			return installing.promise;
+		});
+		const pending = subscribe();
+		await started.promise;
+		const record = registerSession(session.id, 'application', {
+			...USER,
+			_scopedToken: true,
+			role: { permission: {} },
+		});
+		try {
+			assert.equal(await claimSubscriptionOwner(session.id, record.streamToken), true);
+			assert.equal(await pending, 'permission-denied');
+			assert.equal(_liveSubscriptionCount(session.id), 0);
+		} finally {
+			installing.resolve(changeStream());
+			await pending;
+		}
+	});
+
+	for (const replace of [false, true]) {
+		it(`acknowledges a failed live ${replace ? 'replacement' : 'subscribe'} during initial restore`, async () => {
+			_setSubscriptionTimeoutForTest(2000);
+			await patchSession(session.id, { subscriptions: [URI] });
+			const started = deferred();
+			const restoring = deferred();
+			let attempts = 0;
+			_setSubscribeImplForTest(async () => {
+				if (++attempts === 1) {
+					started.resolve();
+					return restoring.promise;
+				}
+				throw new Error('live subscription unavailable');
+			});
+			const record = registerSession(session.id, 'application', USER);
+			const claiming = claimSubscriptionOwner(session.id, record.streamToken);
+			await started.promise;
+			const uri = replace ? URI : `${URI}/live`;
+			const pending = subscribe(uri);
+			try {
+				await waitFor(async () => (await loadSession(session.id)).subscriptionGenerations?.[uri]);
+			} finally {
+				restoring.resolve(changeStream());
+			}
+			assert.equal(await pending, 'internal-error');
+			assert.equal(await claiming, true);
+			assert.equal(getRegisteredSession(session.id), record);
+		});
+	}
+
 	it('rejects expired scoped-token state on reconnect', async () => {
 		await patchSession(session.id, {
 			subscriptions: [URI],
