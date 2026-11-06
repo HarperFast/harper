@@ -1114,6 +1114,7 @@ interface TableResourceClass {
 	attributes: Attribute[];
 	description: any;
 	properties: Record<string, JsonSchemaFragment>;
+	required?: readonly string[];
 	hidden: any;
 	cacheControl: any;
 	outputSchemas:

@@ -441,6 +441,121 @@ describe('mcp/resources', () => {
 			assert.equal(res.ok, false);
 			assert.match(res.reason, /table not found/);
 		});
+
+		it('contains a malformed static-properties schema without exposing field details', async () => {
+			const cyclic = { type: 'object', properties: {} };
+			cyclic.properties.self = cyclic;
+			class Broken {}
+			Broken.databaseName = 'data';
+			Broken.tableName = 'broken';
+			Broken.properties = { cyclic };
+			_setResourcesForTest(makeFakeResources([['Broken', Broken]]));
+			const res = await readResource({
+				uri: 'harper://schema/data/broken',
+				user: SUPER,
+				profile: 'application',
+			});
+			assert.equal(res.ok, false);
+			assert.strictEqual(res.reason, 'invalid schema for data.broken');
+		});
+
+		it('contains sensitive, null and unprintable metadata getter failures', async () => {
+			for (const error of [
+				new Error('config not found: /private/secret sk-schema-sentinel'),
+				null,
+				{
+					toString() {
+						throw null;
+					},
+				},
+			]) {
+				class Broken {
+					static databaseName = 'data';
+					static tableName = 'broken';
+					static get properties() {
+						throw error;
+					}
+				}
+				_setResourcesForTest(makeFakeResources([['Broken', Broken]]));
+				const res = await readResource({ uri: 'harper://schema/data/broken', user: SUPER, profile: 'application' });
+				assert.equal(res.ok, false);
+				assert.strictEqual(res.reason, 'invalid schema for data.broken');
+			}
+		});
+
+		it('does not expose malformed hidden field names', async () => {
+			class Broken {
+				static databaseName = 'data';
+				static tableName = 'broken';
+				static properties = { secretSchemaSentinel: { type: 'string', hidden: true, enum: [] } };
+			}
+			_setResourcesForTest(makeFakeResources([['Broken', Broken]]));
+			const res = await readResource({ uri: 'harper://schema/data/broken', user: SUPER, profile: 'application' });
+			assert.deepStrictEqual(res, { ok: false, reason: 'invalid schema for data.broken' });
+		});
+
+		it('does not publish hidden static properties through the schema resource', async () => {
+			class PrivateFields {}
+			PrivateFields.databaseName = 'data';
+			PrivateFields.tableName = 'private_fields';
+			PrivateFields.required = ['extension', 'secret'];
+			PrivateFields.properties = {
+				id: { type: 'string', primaryKey: true },
+				publicProfile: {
+					type: 'object',
+					required: ['publicName', 'secretDetail', 'nestedExtension'],
+					properties: {
+						publicName: { type: 'string' },
+						secretDetail: { type: 'string', hidden: true, description: 'internal only' },
+					},
+				},
+				secret: { type: 'string', hidden: true },
+			};
+			_setResourcesForTest(makeFakeResources([['PrivateFields', PrivateFields]]));
+			const res = await readResource({
+				uri: 'harper://schema/data/private_fields',
+				user: SUPER,
+				profile: 'application',
+			});
+			assert.equal(res.ok, true);
+			const body = JSON.parse(res.contents[0].text);
+			assert.deepEqual(
+				body.attributes.map((attribute) => attribute.name),
+				['id', 'publicProfile', 'extension']
+			);
+			assert.deepEqual(
+				body.attributes
+					.find((attribute) => attribute.name === 'publicProfile')
+					.properties.map((attribute) => attribute.name),
+				['publicName']
+			);
+			assert.deepEqual(body.attributes.find((attribute) => attribute.name === 'publicProfile').required, [
+				'publicName',
+				'nestedExtension',
+			]);
+			assert.equal(body.attributes.find((attribute) => attribute.name === 'extension').requiredOnSchema, true);
+			assert.equal(JSON.stringify(body).includes('internal only'), false);
+		});
+
+		it('does not traverse non-enumerable relationship metadata', async () => {
+			const books = { name: 'books', type: 'array', elements: { name: '', type: 'Book' } };
+			const author = { name: 'author', type: 'Author' };
+			Object.defineProperty(books.elements, 'properties', { value: [author] });
+			Object.defineProperty(author, 'properties', { value: [books] });
+			const Authors = makeTableResource({
+				databaseName: 'data',
+				tableName: 'author',
+				attributes: [{ name: 'id', type: 'String' }, books],
+			});
+			_setResourcesForTest(makeFakeResources([['Authors', Authors]]));
+			const res = await readResource({
+				uri: 'harper://schema/data/author',
+				user: SUPER,
+				profile: 'application',
+			});
+			assert.equal(res.ok, true, res.reason);
+			assert.equal(JSON.stringify(JSON.parse(res.contents[0].text)).includes('"properties"'), false);
+		});
 	});
 
 	describe('readResource — harper://operations', () => {
