@@ -872,13 +872,23 @@ class DerivedIndexRunner {
 		};
 	}
 
+	/**
+	 * Commit-time span from the oldest transaction read but not yet durable to the newest one read. It
+	 * starts after the durable one: measured from that, a log idle past the budget would trip on its
+	 * next commit with nothing behind.
+	 */
 	#cursorLag(): number {
 		let cursorLag = 0;
 		const durable = this.#offeredCursors[0]?.cursor;
 		if (durable) {
 			for (const [logName, latest] of this.#latestSeen) {
 				const position = durable.logs[logName];
-				if (position !== undefined && latest > position) cursorLag = Math.max(cursorLag, latest - position);
+				if (position === undefined) continue;
+				// reconciliation keeps the durable timestamp first in its log's pending list
+				const pending = this.#pendingTimestamps.get(logName)!;
+				const oldestUndurable = pending[pending.indexOf(position) + 1];
+				if (oldestUndurable !== undefined && latest > oldestUndurable)
+					cursorLag = Math.max(cursorLag, latest - oldestUndurable);
 			}
 		}
 		return cursorLag;
@@ -907,14 +917,15 @@ class DerivedIndexRunner {
 	}
 
 	/**
-	 * Owner-only. Lag is the longest of four terms: cursor distance behind what this runner has read,
-	 * time parked on backpressure, time since the oldest commit this runner may not have read yet (a
-	 * reader too slow to reach the end of the log cannot hide), and the age of the oldest accepted
-	 * work not yet durable (a backend that accepts but never barriers cannot hide). All four are zero
-	 * for a caught-up owner sitting idle and stay within drain latency plus flush age for a runner
-	 * keeping up under sustained ingest. The trip survives discard and handoff: a successor clears it
-	 * only after proving catch-up itself — a durable advance and the end of the log both reached since
-	 * it acquired, so an inherited backlog cannot be cleared by one barrier — below half the budget.
+	 * Owner-only. Lag is the longest of four terms: the commit-time span of what this runner has read
+	 * but not made durable, time parked on backpressure, time since the oldest commit this runner may
+	 * not have read yet (a reader too slow to reach the end of the log cannot hide), and the age of
+	 * the oldest accepted work not yet durable (a backend that accepts but never barriers cannot hide).
+	 * All four are zero for a caught-up owner sitting idle and stay within drain latency plus flush age
+	 * for a runner keeping up under sustained ingest. The trip survives discard and handoff: a
+	 * successor clears it only after proving catch-up itself — a durable advance and the end of the
+	 * log both reached since it acquired, so an inherited backlog cannot be cleared by one barrier —
+	 * below half the budget.
 	 */
 	#publishLag() {
 		const max = this.#lagBudget;

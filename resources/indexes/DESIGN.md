@@ -779,10 +779,10 @@ generation for that turn.
 ### Lag policy
 
 Opt-in per registration (`maxLagMilliseconds`; 0 = none; raised to two flush ages since catch-up is
-only proven at a barrier). The owner takes the longest of: cursor distance behind what it has read,
-time parked on backpressure or the ceiling, time since the oldest commit it may not have read
-(bounded by how far its newest read trails the clock), and the age of the oldest accepted work not
-yet durable. Past the budget it sets the shared flag; every worker's `derivedIndexWriteRejection`
+only proven at a barrier). The owner takes the longest of: the log-key span of what it has read but
+not made durable, time parked on backpressure or the ceiling, time since the oldest commit it may
+not have read (bounded by how far its newest read trails the clock), and the age of the oldest
+accepted work not yet durable. Past the budget it sets the shared flag; every worker's `derivedIndexWriteRejection`
 (`resources/derivedIndexRegistry.ts`, one `WeakMap` miss for tables without a derived index) then
 fails local user writes to the index's tables with `DerivedIndexLagError` — 503,
 `DERIVED_INDEX_LAGGING`, `retryable: true` — at the staging layer (`_writeUpdate`, `_writeDelete`,
