@@ -132,12 +132,13 @@ export function deriveGitSecretName(component: string, host: string): string {
 }
 
 /**
- * The root config namespace holds core settings sections and application entries side by side, so
- * an application deployed under one of these names overwrites the section and fails the next boot's
- * config validation. Only `sql` is listed: it is the one section whose schema is closed to unknown
- * keys, so it is the one a stray application entry breaks.
+ * The root config namespace holds core settings sections and application entries side by side, and
+ * a deploy or drop of an application replaces or deletes its whole root entry. A name is listed when
+ * that breaks its section: `sql`'s schema is closed to unknown keys, so a stray application entry
+ * fails the next boot's config validation, and `studio` holds the cluster's Studio settings, which
+ * `set_configuration` writes and a deploy or drop of a `studio` application would wipe.
  */
-export const RESERVED_COMPONENT_NAMES = new Set(['sql']);
+export const RESERVED_COMPONENT_NAMES = new Set(['sql', 'studio']);
 
 export function isReservedComponentName(project: string): boolean {
 	return typeof project === 'string' && RESERVED_COMPONENT_NAMES.has(project);
