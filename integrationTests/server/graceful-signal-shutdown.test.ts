@@ -6,17 +6,22 @@
  * The probe plugin serves `/Slow/` (answers after `delayMs`, failing if its scope closed first) and
  * `/SlowStatus/` (how many `/Slow/` requests have entered). Its scope `close` listener marks the scope
  * closed and, with `hangOnClose`, never settles. One HTTP worker (or none: `threads.count: 0` serves from
- * main, which loads a plugin only with `runOnMainThread`), so both endpoints share that state.
+ * main, which loads a plugin only with `runOnMainThread`), so both endpoints share that state. With `markerFile`,
+ * `/Slow/` records its thread on entry and the time it finished, which no endpoint can report across workers.
+ * `/Subscriber/` is a WebSocket that sends its thread id and stays open.
  */
 import { suite, test, before, after } from 'node:test';
 import { strictEqual, ok, deepStrictEqual } from 'node:assert';
 import { once } from 'node:events';
+import WebSocket from 'ws';
 import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { setTimeout as delay } from 'node:timers/promises';
 import { join } from 'node:path';
 import type { ChildProcess } from 'node:child_process';
 
 import {
+	sendOperation,
 	setupHarperWithFixture,
 	startHarper,
 	teardownHarper,
@@ -24,17 +29,22 @@ import {
 } from '@harperfast/integration-testing';
 import { waitFor } from '../../unitTests/waitFor.js';
 
-const PLUGIN_SOURCE = `import { Resource } from 'harper';
+const PLUGIN_SOURCE = `import { writeFileSync } from 'node:fs';
+import { threadId } from 'node:worker_threads';
+import { Resource } from 'harper';
 let scopeOpen = true;
 let entered = 0;
 export function handleApplication(scope) {
 	const delayMs = Number(scope.options.get(['delayMs']) ?? 1500);
+	const markerFile = scope.options.get(['markerFile']);
 	class Slow extends Resource {
 		static loadAsInstance = false;
 		async get() {
 			entered++;
+			if (markerFile) writeFileSync(markerFile, String(threadId));
 			await new Promise((resolve) => setTimeout(resolve, delayMs));
 			if (!scopeOpen) throw new Error('the scope closed before this request finished');
+			if (markerFile) writeFileSync(markerFile + '.finished', String(Date.now()));
 			return { completed: true };
 		}
 	}
@@ -44,7 +54,17 @@ export function handleApplication(scope) {
 			return { entered };
 		}
 	}
+	class Subscriber extends Resource {
+		static loadAsInstance = false;
+		static connect() {
+			return (async function* () {
+				yield { threadId };
+				await new Promise(() => {});
+			})();
+		}
+	}
 	scope.resources.set('Slow', Slow);
+	scope.resources.set('Subscriber', Subscriber);
 	scope.resources.set('SlowStatus', SlowStatus);
 	scope.on('close', () => {
 		scopeOpen = false;
@@ -74,6 +94,11 @@ async function writeProbeApp(parent: string, probeOptions: Record<string, unknow
 
 // Windows delivers no POSIX signal: child.kill('SIGTERM') there is TerminateProcess, so no handler runs
 const SKIP_SIGNALS = process.platform === 'win32' ? 'Windows cannot deliver SIGTERM to a handler' : false;
+// uWS closes its sockets at server close, and Bun's server stop has its own wait
+const SKIP_WEBSOCKET_CLOSE =
+	process.env.HARPER_UWS_HTTP || process.env.HARPER_RUNTIME === 'bun'
+		? 'closing WebSockets at shutdown applies to the Node HTTP server'
+		: false;
 
 function authHeader(ctx: ContextWithHarper) {
 	return `Basic ${Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64')}`;
@@ -102,6 +127,27 @@ async function exitOf(proc: ChildProcess, since: number, limitMs = 30_000): Prom
 	} finally {
 		clearTimeout(killer);
 	}
+}
+
+interface Subscription {
+	threadId: number;
+	closed: Promise<{ code: number; at: number }>;
+}
+
+async function subscribe(ctx: ContextWithHarper): Promise<Subscription> {
+	const socket = new WebSocket(`${ctx.harper.httpURL.replace('http', 'ws')}/Subscriber/`, {
+		headers: { Authorization: authHeader(ctx), Accept: 'application/json' },
+	});
+	const closed = new Promise<{ code: number; at: number }>((resolve) =>
+		socket.once('close', (code) => resolve({ code, at: Date.now() }))
+	);
+	// a socket reset by the exiting server still reports its close code
+	socket.on('error', () => {});
+	const [message] = await Promise.race([
+		once(socket, 'message', { signal: AbortSignal.timeout(10_000) }),
+		closed.then(({ code }) => Promise.reject(new Error(`subscriber closed with ${code} before its first message`))),
+	]);
+	return { threadId: JSON.parse(message.toString()).threadId, closed };
 }
 
 async function stillRunningAfter(proc: ChildProcess, ms: number): Promise<boolean> {
@@ -189,9 +235,118 @@ for (const threadCount of [1, 0]) {
 				);
 				ok(!/Replayed \d+ records/.test(logs), 'no transaction-log replay after a clean stop');
 			});
+
+			test(
+				'a WebSocket subscriber does not hold the stop, and sees the server going away',
+				{ skip: SKIP_WEBSOCKET_CLOSE },
+				async () => {
+					const proc = ctx.harper.process;
+					const { closed } = await subscribe(ctx);
+					const signalledAt = Date.now();
+					proc.kill('SIGTERM');
+					strictEqual((await closed).code, 1001);
+					const exit = await exitOf(proc, signalledAt);
+					deepStrictEqual({ code: exit.code, signal: exit.signal }, { code: 0, signal: null });
+					ok(exit.afterMs < 5000, `stop with a subscriber took ${exit.afterMs} ms`);
+					const log = await hdbLog(ctx);
+					ok(!log.includes('Had to forcefully exit'), 'no server rode the close timer');
+				}
+			);
 		}
 	);
 }
+
+suite(
+	'a WebSocket outlives a request on another thread',
+	{
+		skip:
+			SKIP_SIGNALS ||
+			SKIP_WEBSOCKET_CLOSE ||
+			(process.platform === 'darwin' && 'one worker binds each port on macOS, so nothing lands on another thread'),
+	},
+	(ctx: ContextWithHarper) => {
+		let fixtureParent: string;
+		let markerFile: string;
+		before(async () => {
+			fixtureParent = await mkdtemp(join(tmpdir(), 'harper-graceful-shutdown-'));
+			markerFile = join(fixtureParent, 'slow-request');
+			await setupHarperWithFixture(ctx, await writeProbeApp(fixtureParent, { delayMs: 2000, markerFile }), {
+				config: { threads: { count: 2 } },
+				env: {},
+			});
+		});
+		after(async () => {
+			await teardownHarper(ctx);
+			await rm(fixtureParent, { recursive: true, force: true });
+		});
+
+		test('no subscriber closes before the request finishes, and each then sees 1001', async () => {
+			const subscriptions: Subscription[] = [];
+			const threads = new Set<number>();
+			for (let i = 0; i < 64 && threads.size < 2; i++) {
+				const subscription = await subscribe(ctx);
+				subscriptions.push(subscription);
+				threads.add(subscription.threadId);
+			}
+			strictEqual(threads.size, 2, 'subscribers landed on both HTTP workers');
+
+			const proc = ctx.harper.process;
+			const pending = appGet(ctx, '/Slow/');
+			await waitFor(async () => (await readFile(markerFile, 'utf8').catch(() => '')) !== '', { timeout: 10_000 });
+			const signalledAt = Date.now();
+			proc.kill('SIGTERM');
+			strictEqual((await pending).status, 200);
+			const finishedAt = Number(await readFile(`${markerFile}.finished`, 'utf8'));
+			for (const { closed } of subscriptions) {
+				const { code, at } = await closed;
+				strictEqual(code, 1001);
+				ok(at >= finishedAt, `a subscriber closed ${finishedAt - at} ms before the request finished`);
+			}
+			const exit = await exitOf(proc, signalledAt);
+			deepStrictEqual({ code: exit.code, signal: exit.signal }, { code: 0, signal: null });
+			ok(exit.afterMs < 5000, `exited ${exit.afterMs} ms after SIGTERM`);
+		});
+	}
+);
+
+suite(
+	'a signal during a rolling restart',
+	{
+		skip:
+			SKIP_SIGNALS ||
+			SKIP_WEBSOCKET_CLOSE ||
+			(process.platform === 'darwin' && 'the replacement starts after the worker retires on macOS'),
+	},
+	(ctx: ContextWithHarper) => {
+		let fixtureParent: string;
+		before(async () => {
+			fixtureParent = await mkdtemp(join(tmpdir(), 'harper-graceful-shutdown-'));
+			await setupHarperWithFixture(ctx, await writeProbeApp(fixtureParent, {}), {
+				config: { threads: { count: 1 } },
+				env: {},
+			});
+		});
+		after(async () => {
+			await teardownHarper(ctx);
+			await rm(fixtureParent, { recursive: true, force: true });
+		});
+
+		test('a retiring worker still closes its subscribers', async () => {
+			const proc = ctx.harper.process;
+			const retiring = await subscribe(ctx);
+			// its response can be lost with the worker that serves it
+			sendOperation(ctx.harper, { operation: 'restart_service', service: 'http_workers' }).catch(() => {});
+			await waitFor(async () => (await subscribe(ctx)).threadId !== retiring.threadId, { timeout: 30_000 });
+			// the worker retires once its replacement is up, then holds its subscriber for 5 s: signal inside that hold
+			await delay(500);
+			const signalledAt = Date.now();
+			proc.kill('SIGTERM');
+			const { code, at } = await retiring.closed;
+			strictEqual(code, 1001);
+			ok(at - signalledAt < 2500, `the subscriber closed ${at - signalledAt} ms after SIGTERM`);
+		});
+	}
+);
 
 suite('a scope close that never finishes', { skip: SKIP_SIGNALS }, (ctx: ContextWithHarper) => {
 	let fixtureParent: string;

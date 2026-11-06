@@ -32,10 +32,6 @@ export async function runStatement(input: RunStatementInput): Promise<unknown> {
 	registerAggregateFunctions();
 
 	const ctx = { user: input.jsonMessage.hdb_user };
-	// sqlTranslator/index.ts (processAST) hands SELECT the bare AlaSQL AST but
-	// wraps INSERT/UPDATE/DELETE as `{ statement, hdb_user }` (the legacy
-	// handlers' arg shape). Unwrap that envelope so the normalizer always sees
-	// the bare AST.
 	const raw = input.statement as Record<string, unknown>;
 	const ast =
 		raw && typeof raw === 'object' && 'statement' in raw && 'hdb_user' in raw

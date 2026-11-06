@@ -137,8 +137,9 @@ When the Harper process receives SIGTERM, SIGINT (Ctrl+C) or SIGQUIT, it shuts d
 
 1. Harper stops accepting new connections.
 2. Requests already in flight get a few seconds to finish (see the first note below).
-3. Component scopes close. Their [`'close'` listeners](../components/plugin-api.md#cleanup-on-shutdown) run once requests in flight have had a few seconds to finish.
-4. The process exits with code `0`.
+3. WebSocket connections close with code `1001` as soon as no request is in flight on any thread, because a request can be waiting on a replication peer's acknowledgement over one of them. With `http2` enabled on a listener, an open HTTP/2 session or WebSocket there delays this by up to 5 seconds. Under Bun or the uWS HTTP server, they are not closed this way. MQTT clients are disconnected earlier, when shutdown starts.
+4. Component scopes close. Their [`'close'` listeners](../components/plugin-api.md#cleanup-on-shutdown) run once requests in flight have had a few seconds to finish.
+5. The process exits with code `0`.
 
 `threads.shutdownTimeout` bounds this sequence. If it has not finished in time, Harper logs `Shutdown did not finish within <n> ms (threads.shutdownTimeout)` and exits anyway. A second signal during the shutdown makes Harper exit at once; running `harper stop` again sends one. Harper exits with code `0` in all three cases, so a `0` exit status does not mean every `'close'` listener finished.
 

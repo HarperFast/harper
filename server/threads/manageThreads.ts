@@ -214,6 +214,7 @@ export {
 	stopWorker,
 	stopWorkersForExit,
 	getProcessExitDeadline,
+	whenAllRequestsDrained,
 	whenWorkersStoppedForExit,
 	runLocalShutdownListeners,
 	encodeRestartScope,
@@ -228,6 +229,7 @@ export {
 	getTicketKeys,
 	setMainIsWorker,
 	setTerminateTimeout,
+	getTerminateTimeout,
 	extendShutdownDeadline,
 	restoreShutdownDeadline,
 	notifyJobCleanupComplete,
@@ -288,6 +290,9 @@ if (envMgr.get(hdbTerms.CONFIG_PARAMS.THREADS_HEAPSNAPSHOTNEARLIMIT)) setHeapSna
 let isMainWorker;
 function setTerminateTimeout(newTimeout?: any) {
 	threadTerminationTimeout = newTimeout;
+}
+function getTerminateTimeout(): number {
+	return threadTerminationTimeout;
 }
 function getWorkerIndex() {
 	return workerData ? workerData.workerIndex : isMainWorker ? 0 : undefined;
@@ -367,6 +372,7 @@ function stopWorker(worker?: any, exitDeadline?: number) {
 		worker.on('exit', () => {
 			clearTimeout(worker.terminateTimer);
 			worker.extendTerminateDeadline = undefined;
+			noteRequestsDrained(worker);
 			resolve(undefined);
 		});
 		try {
@@ -377,6 +383,7 @@ function stopWorker(worker?: any, exitDeadline?: number) {
 			});
 		} catch {
 			clearTimeout(worker.terminateTimer);
+			noteRequestsDrained(worker);
 			resolve(undefined); // already gone
 		}
 	});
@@ -411,8 +418,34 @@ let workersStoppedForExit: Promise<unknown> = Promise.resolve();
  */
 function stopWorkersForExit(exitDeadline: number) {
 	processExitDeadline = exitDeadline;
+	noteRequestsDrained = shutdownDrainRuntimeModule.trackThreadDrains<any>(
+		[MAIN_THREAD, ...workers.filter((worker) => worker.name !== hdbTerms.THREAD_TYPES.JOB)],
+		() => {
+			allRequestsDrained.resolve();
+			for (const worker of workers) {
+				try {
+					worker.postMessage({ type: ALL_REQUESTS_DRAINED });
+				} catch {} // already gone
+			}
+		}
+	);
 	workersStoppedForExit = Promise.all([...workers].map((worker) => stopWorker(worker, exitDeadline)));
 	return workersStoppedForExit;
+}
+
+const REQUESTS_DRAINED = 'requests-drained';
+const ALL_REQUESTS_DRAINED = 'all-requests-drained';
+const MAIN_THREAD = Symbol('main thread');
+const allRequestsDrained = Promise.withResolvers<void>();
+let noteRequestsDrained: (thread: any) => void = () => {};
+/**
+ * Process exit: reports this thread's requests as finished, and resolves once no thread has one. A request on
+ * one thread can be waiting on a peer's acknowledgement that arrives over another thread's WebSocket.
+ */
+function whenAllRequestsDrained() {
+	if (isMainThread) noteRequestsDrained(MAIN_THREAD);
+	else parentPort.postMessage({ type: REQUESTS_DRAINED });
+	return allRequestsDrained.promise;
 }
 
 function getProcessExitDeadline(): number | undefined {
@@ -578,6 +611,7 @@ if (!parentPort) {
 	onMessageByType(EXTEND_SHUTDOWN_DEADLINE, (message, worker) => {
 		worker?.extendTerminateDeadline?.(message.deadlineMs);
 	});
+	onMessageByType(REQUESTS_DRAINED, (_message, worker) => noteRequestsDrained(worker));
 }
 // Queue messages for late listeners without replacing registrations made during cyclic imports.
 for (const type of [
@@ -3487,6 +3521,7 @@ if (isMainThread) {
 		parentPort.unref(); // remove this handle
 		armSelfExit(threadTerminationTimeout);
 	});
+	onMessageByType(ALL_REQUESTS_DRAINED, () => allRequestsDrained.resolve());
 	// In Bun, worker.terminate() triggers a NAPI segfault; the main thread sends FORCE_EXIT
 	// instead, and the worker self-exits cleanly to avoid the crash.
 	onMessageByType(FORCE_EXIT, () => {

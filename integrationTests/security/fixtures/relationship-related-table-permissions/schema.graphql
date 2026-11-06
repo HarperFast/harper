@@ -17,3 +17,23 @@ type Seat @table @export {
 	deptId: ID @indexed
 	dept: Dept @relationship(from: deptId) @enumerable
 }
+
+type Team @table @export {
+	id: ID @primaryKey
+	name: String
+	vaultId: ID @indexed
+	vault: Vault @relationship(from: vaultId) @enumerable
+}
+
+type Vault @table @export {
+	id: ID @primaryKey
+	code: String
+	teamId: ID @indexed
+	team: Team @relationship(from: teamId) @enumerable
+}
+
+type Badge @table @export {
+	id: ID @primaryKey
+	teamId: ID @indexed
+	team: Team @relationship(from: teamId)
+}

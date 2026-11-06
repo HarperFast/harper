@@ -1,6 +1,8 @@
 /**
  * Reading through an `@relationship` applies the role's permissions on the related table, on every
- * read API: selecting the relationship, and filtering or sorting by a path through it.
+ * read API: selecting the relationship, and filtering or sorting by a path through it. SQL, under
+ * each engine, refuses a statement that reads a relationship to an unreadable table, leaves such a
+ * relationship out of `*`, and narrows every other related record to its readable attributes.
  *
  * Run:
  *   npm run build && npm run test:integration -- "integrationTests/security/relationship-related-table-permissions.test.ts"
@@ -20,23 +22,25 @@ const skipSuite = process.env.HARPER_RUNTIME === 'bun' || process.platform === '
 const DEPT = { id: 'd1', name: 'Eng', budget: 100 };
 const EMP = { id: 'e1', name: 'Ann', deptId: 'd1', payload: { deptId: 'd1' } };
 const SEAT = { id: 's1', deptId: 'd1' };
+const TEAM = { id: 't1', name: 'Core', vaultId: 'v1' };
+const VAULT = { id: 'v1', code: 'vault-code', teamId: 't1' };
+const BADGE = { id: 'b1', teamId: 't1' };
 
 const EMP_READ = { read: true, insert: false, update: false, delete: false, attribute_permissions: [] };
+const EMP_WRITE = { ...EMP_READ, update: true, delete: true };
+const WRITE_ONLY = { ...EMP_WRITE, read: false };
+const DEPT_RESTRICTED = {
+	...EMP_READ,
+	attribute_permissions: [
+		{ attribute_name: 'id', read: true, insert: false, update: false },
+		{ attribute_name: 'name', read: true, insert: false, update: false },
+		{ attribute_name: 'budget', read: false, insert: false, update: false },
+	],
+};
 const ROLES = {
 	full: { Emp: EMP_READ, Seat: EMP_READ, Dept: EMP_READ },
 	empOnly: { Emp: EMP_READ, Seat: EMP_READ },
-	restricted: {
-		Emp: EMP_READ,
-		Seat: EMP_READ,
-		Dept: {
-			...EMP_READ,
-			attribute_permissions: [
-				{ attribute_name: 'id', read: true, insert: false, update: false },
-				{ attribute_name: 'name', read: true, insert: false, update: false },
-				{ attribute_name: 'budget', read: false, insert: false, update: false },
-			],
-		},
-	},
+	restricted: { Emp: EMP_READ, Seat: EMP_READ, Dept: DEPT_RESTRICTED },
 	deptWriter: { Emp: EMP_READ, Seat: EMP_READ, Dept: { ...EMP_READ, read: false, insert: true } },
 	budgetWriter: {
 		Emp: EMP_READ,
@@ -51,9 +55,87 @@ const ROLES = {
 			],
 		},
 	},
+	empWriter: { Emp: EMP_WRITE, Seat: EMP_READ },
+	restrictedWriter: { Emp: EMP_WRITE, Seat: EMP_READ, Dept: DEPT_RESTRICTED },
+	writeOnly: { Emp: WRITE_ONLY },
+	writeOnlyDeptReader: { Emp: WRITE_ONLY, Dept: EMP_READ },
+	teamOnly: { Badge: EMP_READ, Team: EMP_READ },
+	teamFull: { Badge: EMP_READ, Team: EMP_READ, Vault: EMP_READ },
+	vaultRestricted: {
+		Badge: EMP_READ,
+		Team: EMP_READ,
+		Vault: {
+			...EMP_READ,
+			attribute_permissions: [
+				{ attribute_name: 'id', read: true, insert: false, update: false },
+				{ attribute_name: 'teamId', read: true, insert: false, update: false },
+				{ attribute_name: 'code', read: false, insert: false, update: false },
+			],
+		},
+	},
 };
 type RoleName = keyof typeof ROLES;
+type Principal = RoleName | 'super';
 const PASSWORD = 'Rel-perm-pw-3301!';
+
+async function startFixture(ctx: ContextWithHarper, env: Record<string, string>) {
+	await setupHarperWithFixture(ctx, FIXTURE_PATH, { config: {}, env });
+	const client = createApiClient(ctx.harper);
+	const headers = { super: client.headers } as Record<Principal, Record<string, string>>;
+	for (const [name, tables] of Object.entries(ROLES)) {
+		const role = `rel_perm_${name}`;
+		await client
+			.req()
+			.send({ operation: 'add_role', role, permission: { super_user: false, data: { tables } } })
+			.expect(200);
+		await client
+			.req()
+			.send({ operation: 'add_user', role, username: role, password: PASSWORD, active: true })
+			.expect(200);
+		headers[name as RoleName] = createHeaders(role, PASSWORD);
+	}
+	for (const [table, record] of [
+		['Dept', DEPT],
+		['Emp', EMP],
+		['Seat', SEAT],
+		['Vault', VAULT],
+		['Team', TEAM],
+		['Badge', BADGE],
+	] as const) {
+		await client
+			.req()
+			.send({ operation: 'insert', table, records: [record] })
+			.expect(200);
+	}
+	return { client, headers };
+}
+
+function assertRefused(response: { status: number; body: any }, context: string, denied?: string) {
+	strictEqual(
+		response.status,
+		403,
+		`${context}: expected 403, got ${response.status} ${JSON.stringify(response.body)}`
+	);
+	if (!denied) return;
+	// the operations API answers for what the role cannot describe as it does for a root reference
+	const [table, attribute] = denied.split('.');
+	deepStrictEqual(
+		response.body?.invalid_schema_items,
+		[attribute ? `Attribute '${attribute}' does not exist on 'data.${table}'` : `Table 'data.${table}' does not exist`],
+		`${context}: ${JSON.stringify(response.body)}`
+	);
+	deepStrictEqual(response.body.unauthorized_access, [], context);
+}
+
+function keysIn(value: any, keys = new Set<string>()): Set<string> {
+	if (value && typeof value === 'object') {
+		for (const key of Object.keys(value)) {
+			if (!Array.isArray(value)) keys.add(key);
+			keysIn(value[key], keys);
+		}
+	}
+	return keys;
+}
 
 suite('@relationship reads apply the related table permissions', { skip: skipSuite }, (ctx: ContextWithHarper) => {
 	let client: ReturnType<typeof createApiClient>;
@@ -88,56 +170,11 @@ suite('@relationship reads apply the related table permissions', { skip: skipSui
 	const deptName = [{ search_attribute: ['dept', 'name'], search_type: 'equals', search_value: DEPT.name }];
 	const deptBudget = [{ search_attribute: ['dept', 'budget'], search_type: 'equals', search_value: DEPT.budget }];
 
-	function assertRefused(response: { status: number; body: any }, context: string, denied?: 'Dept' | 'Dept.budget') {
-		strictEqual(
-			response.status,
-			403,
-			`${context}: expected 403, got ${response.status} ${JSON.stringify(response.body)}`
-		);
-		if (!denied) return;
-		// the operations API answers for what the role cannot describe as it does for a root reference
-		const [table, attribute] = denied.split('.');
-		deepStrictEqual(
-			response.body?.invalid_schema_items,
-			[
-				attribute
-					? `Attribute '${attribute}' does not exist on 'data.${table}'`
-					: `Table 'data.${table}' does not exist`,
-			],
-			`${context}: ${JSON.stringify(response.body)}`
-		);
-		deepStrictEqual(response.body.unauthorized_access, [], context);
-	}
-
 	before(async () => {
-		await setupHarperWithFixture(ctx, FIXTURE_PATH, { config: {}, env: {} });
-		client = createApiClient(ctx.harper);
+		let started: Record<Principal, Record<string, string>>;
+		({ client, headers: started } = await startFixture(ctx, {}));
+		Object.assign(headers, started);
 		restURL = ctx.harper.httpURL;
-		headers.super = client.headers;
-		for (const [name, tables] of Object.entries(ROLES)) {
-			const role = `rel_perm_${name}`;
-			await client
-				.req()
-				.send({ operation: 'add_role', role, permission: { super_user: false, data: { tables } } })
-				.expect(200);
-			await client
-				.req()
-				.send({ operation: 'add_user', role, username: role, password: PASSWORD, active: true })
-				.expect(200);
-			headers[name as RoleName] = createHeaders(role, PASSWORD);
-		}
-		await client
-			.req()
-			.send({ operation: 'insert', table: 'Dept', records: [DEPT] })
-			.expect(200);
-		await client
-			.req()
-			.send({ operation: 'insert', table: 'Emp', records: [EMP] })
-			.expect(200);
-		await client
-			.req()
-			.send({ operation: 'insert', table: 'Seat', records: [SEAT] })
-			.expect(200);
 	});
 
 	after(async () => {
@@ -764,3 +801,255 @@ suite('@relationship reads apply the related table permissions', { skip: skipSui
 		});
 	});
 });
+
+const DEPT_READABLE = { id: DEPT.id, name: DEPT.name };
+
+for (const sqlEngine of ['legacy', 'auto', 'new'] as const) {
+	suite(
+		`SQL reads of @relationship columns apply the related table permissions [sql.engine=${sqlEngine}]`,
+		{ skip: skipSuite },
+		(ctx: ContextWithHarper) => {
+			let client: ReturnType<typeof createApiClient>;
+			let headers: Record<Principal, Record<string, string>>;
+			// v2 rejects AlaSQL's `->`; under auto such a statement runs on legacy SQL
+			const memberAccess = sqlEngine !== 'new';
+
+			async function op(as: Principal, body: any) {
+				const response = await fetch(ctx.harper.operationsAPIURL, {
+					method: 'POST',
+					headers: { ...headers[as], 'Content-Type': 'application/json' },
+					body: JSON.stringify(body),
+				});
+				return { status: response.status, body: await response.json() };
+			}
+			const sql = (as: Principal, statement: string) => op(as, { operation: 'sql', sql: statement });
+			async function rows(as: Principal, statement: string) {
+				const response = await sql(as, statement);
+				strictEqual(response.status, 200, `${as} ${statement}: ${JSON.stringify(response.body)}`);
+				return response.body;
+			}
+			async function storedEmp() {
+				const response = await op('super', {
+					operation: 'search_by_hash',
+					table: 'Emp',
+					hash_values: [EMP.id],
+					get_attributes: ['id', 'name', 'deptId', 'payload'],
+				});
+				strictEqual(response.status, 200, JSON.stringify(response.body));
+				return response.body;
+			}
+			const restoreEmp = () =>
+				client
+					.req()
+					.send({ operation: 'update', table: 'Emp', records: [EMP] })
+					.expect(200);
+
+			before(async () => {
+				({ client, headers } = await startFixture(ctx, { HARPER_SQL_ENGINE: sqlEngine }));
+			});
+
+			after(async () => {
+				await teardownHarper(ctx);
+			});
+
+			test('an explicit relationship column returns the related record narrowed to what the role can read', async () => {
+				for (const [statement, column] of [
+					[`SELECT id, dept FROM data.Emp WHERE id = 'e1'`, 'dept'],
+					[`SELECT id, dept AS d FROM data.Emp WHERE id = 'e1'`, 'd'],
+				]) {
+					for (const as of ['super', 'full'] as const)
+						deepStrictEqual(await rows(as, statement), [{ id: EMP.id, [column]: DEPT }], `${as} ${statement}`);
+					deepStrictEqual(await rows('restricted', statement), [{ id: EMP.id, [column]: DEPT_READABLE }], statement);
+					assertRefused(await sql('empOnly', statement), statement, 'Dept');
+				}
+				const describable = await sql('deptWriter', `SELECT id, dept FROM data.Emp WHERE id = 'e1'`);
+				strictEqual(describable.status, 403, JSON.stringify(describable.body));
+				deepStrictEqual(describable.body.invalid_schema_items, []);
+				deepStrictEqual(describable.body.unauthorized_access, [
+					{ schema: 'data', table: 'Dept', required_table_permissions: ['read'], required_attribute_permissions: [] },
+				]);
+			});
+
+			test('* leaves out a relationship to an unreadable table and narrows the others', async () => {
+				for (const statement of [
+					`SELECT * FROM data.Seat WHERE id = 's1'`,
+					`SELECT s.* FROM data.Seat s WHERE s.id = 's1'`,
+				]) {
+					deepStrictEqual(await rows('empOnly', statement), [SEAT], statement);
+					deepStrictEqual(await rows('restricted', statement), [{ ...SEAT, dept: DEPT_READABLE }], statement);
+					deepStrictEqual(await rows('full', statement), [{ ...SEAT, dept: DEPT }], statement);
+					// v2 answers a super user's * from stored attributes; legacy SQL resolves the relationship
+					deepStrictEqual(await rows('super', statement), [sqlEngine === 'legacy' ? { ...SEAT, dept: DEPT } : SEAT]);
+				}
+				const emp = `SELECT * FROM data.Emp WHERE id = 'e1'`;
+				deepStrictEqual(await rows('empOnly', emp), [EMP]);
+				deepStrictEqual(await rows('restricted', emp), [{ ...EMP, dept: DEPT_READABLE }]);
+			});
+
+			test('any other read of a relationship to an unreadable table is refused', async () => {
+				for (const statement of [
+					`SELECT COUNT(dept) AS n FROM data.Emp WHERE id = 'e1'`,
+					`SELECT id FROM data.Emp WHERE id = 'e1' AND dept IS NOT NULL`,
+					`SELECT id FROM data.Emp WHERE id = 'e1' ORDER BY dept`,
+					`SELECT id, dept FROM data.Emp WHERE id = 'e1' GROUP BY id, dept`,
+					`SELECT DISTINCT dept FROM data.Emp WHERE id = 'e1'`,
+					`SELECT id, dept->budget AS b FROM data.Emp WHERE id = 'e1'`,
+					`SELECT e.id, e.dept FROM data.Emp e JOIN data.Seat s ON e.deptId = s.deptId WHERE e.id = 'e1'`,
+					`SELECT e.id FROM data.Emp e JOIN data.Seat s ON e.deptId = s.deptId WHERE e.id = 'e1' AND s.dept IS NOT NULL`,
+				])
+					assertRefused(await sql('empOnly', statement), statement, 'Dept');
+				deepStrictEqual(await rows('restricted', `SELECT COUNT(dept) AS n FROM data.Emp WHERE id = 'e1'`), [{ n: 1 }]);
+				deepStrictEqual(await rows('restricted', `SELECT DISTINCT dept FROM data.Emp WHERE id = 'e1'`), [
+					{ dept: DEPT_READABLE },
+				]);
+			});
+
+			test('member access through a relationship sees only what the role may read', async () => {
+				// v2 has no member access; legacy SQL evaluates a related record as data, so never through its relationships
+				async function memberRows(as: Principal, statement: string, expected: any[]) {
+					if (memberAccess) deepStrictEqual(await rows(as, statement), expected, `${as} ${statement}`);
+					else strictEqual((await sql(as, statement)).status, 400, `${as} ${statement}`);
+				}
+				const budget = `SELECT id, dept->budget AS b FROM data.Emp WHERE id = 'e1'`;
+				const probe = `SELECT id FROM data.Emp WHERE id = 'e1' AND dept->budget = ${DEPT.budget}`;
+				await memberRows('restricted', budget, [{ id: EMP.id }]);
+				await memberRows('restricted', probe, []);
+				await memberRows('full', budget, [{ id: EMP.id, b: DEPT.budget }]);
+				await memberRows('full', probe, [{ id: EMP.id }]);
+				await memberRows('restricted', `SELECT id, dept->name AS n FROM data.Emp WHERE id = 'e1'`, [
+					{ id: EMP.id, n: DEPT.name },
+				]);
+
+				const unread = [{ id: BADGE.id }];
+				const code = `SELECT id, team->vault->code AS c FROM data.Badge WHERE id = 'b1'`;
+				const vault = `SELECT id, team->vault AS v FROM data.Badge WHERE id = 'b1'`;
+				for (const as of ['teamOnly', 'vaultRestricted', 'teamFull'] as const) {
+					await memberRows(as, code, unread);
+					await memberRows(as, vault, unread);
+					await memberRows(as, `SELECT id, team->vault->teamId AS t FROM data.Badge WHERE id = 'b1'`, unread);
+				}
+				await memberRows('super', code, [{ id: BADGE.id, c: VAULT.code }]);
+				await memberRows('super', vault, [{ id: BADGE.id, v: VAULT }]);
+				for (const statement of [
+					`SELECT id, (team)->vault AS v FROM data.Badge WHERE id = 'b1'`,
+					`SELECT id, COALESCE(team, 1)->vault AS v FROM data.Badge WHERE id = 'b1'`,
+					`SELECT id, team->('va' + 'ult') AS v FROM data.Badge WHERE id = 'b1'`,
+					`SELECT id, SEARCH_JSON('vault.code', team) AS v FROM data.Badge WHERE id = 'b1'`,
+				])
+					await memberRows('teamOnly', statement, unread);
+				await memberRows('teamOnly', `SELECT id, SEARCH_JSON('name', team) AS n FROM data.Badge WHERE id = 'b1'`, [
+					{ id: BADGE.id, n: TEAM.name },
+				]);
+				for (const statement of [
+					`SELECT e.id, e.dept FROM data.Emp e JOIN data.Seat s ON e.deptId = s.deptId WHERE e.id = 'e1'`,
+					`SELECT e.id, s.dept FROM data.Emp e JOIN data.Seat s ON e.deptId = s.deptId WHERE e.id = 'e1'`,
+					`SELECT e.*, s.* FROM data.Emp e JOIN data.Seat s ON e.deptId = s.deptId WHERE e.id = 'e1'`,
+				]) {
+					const body = await rows('restricted', statement);
+					strictEqual(body.length, 1, `${statement}: ${JSON.stringify(body)}`);
+					ok(!keysIn(body).has('budget'), `${statement}: ${JSON.stringify(body)}`);
+				}
+			});
+
+			test('relationships both ways between two tables are authorized table by table', async () => {
+				const vault = `SELECT id, vault FROM data.Team WHERE id = 't1'`;
+				for (const as of ['super', 'teamFull'] as const)
+					deepStrictEqual(await rows(as, vault), [{ id: TEAM.id, vault: VAULT }], as);
+				const readableVault = { id: VAULT.id, teamId: VAULT.teamId };
+				deepStrictEqual(await rows('vaultRestricted', vault), [{ id: TEAM.id, vault: readableVault }]);
+				const denied = await sql('teamOnly', vault);
+				strictEqual(denied.status, 403, JSON.stringify(denied.body));
+				deepStrictEqual(denied.body.invalid_schema_items, [`Table 'data.Vault' does not exist`]);
+
+				const team = `SELECT * FROM data.Team WHERE id = 't1'`;
+				deepStrictEqual(await rows('teamFull', team), [{ ...TEAM, vault: VAULT }]);
+				deepStrictEqual(await rows('teamFull', `SELECT * FROM data.Vault WHERE id = 'v1'`), [{ ...VAULT, team: TEAM }]);
+				deepStrictEqual(await rows('vaultRestricted', team), [{ ...TEAM, vault: readableVault }]);
+				deepStrictEqual(await rows('teamOnly', team), [TEAM]);
+
+				// the operations thread loads no schema, so a related record carries its stored attributes only
+				for (const as of ['super', 'teamFull', 'vaultRestricted', 'teamOnly'] as const)
+					deepStrictEqual(
+						await rows(as, `SELECT id, team FROM data.Badge WHERE id = 'b1'`),
+						[{ id: BADGE.id, team: TEAM }],
+						as
+					);
+			});
+
+			test('a write statement that reads an unreadable relationship is refused and changes nothing', async () => {
+				for (const as of ['empWriter', 'writeOnly'] as const) {
+					for (const statement of [
+						`UPDATE data.Emp SET payload = dept WHERE id = 'e1'`,
+						`UPDATE data.Emp SET name = 'changed' WHERE id = 'e1' AND dept IS NOT NULL`,
+						`DELETE FROM data.Emp WHERE id = 'e1' AND dept IS NOT NULL`,
+					]) {
+						assertRefused(await sql(as, statement), `${as} ${statement}`, 'Dept');
+						deepStrictEqual(await storedEmp(), [EMP], `${as} ${statement}`);
+					}
+					const plain = await sql(as, `UPDATE data.Emp SET name = '${EMP.name}' WHERE id = 'e1'`);
+					strictEqual(plain.status, 200, `${as}: ${JSON.stringify(plain.body)}`);
+				}
+			});
+
+			test('a write statement stores only the related attributes the role can read', async () => {
+				const copy = `UPDATE data.Emp SET payload = dept WHERE id = 'e1'`;
+				// legacy SQL evaluates SET against the stored record, where a relationship is unset
+				const copied = (dept: any) => (sqlEngine === 'legacy' ? null : dept);
+				try {
+					strictEqual((await sql('restrictedWriter', copy)).status, 200);
+					deepStrictEqual(await storedEmp(), [{ ...EMP, payload: copied(DEPT_READABLE) }]);
+					await restoreEmp();
+					const stored = await sql('restrictedWriter', `UPDATE data.Emp SET payload = deptId WHERE id = 'e1'`);
+					strictEqual(stored.status, 200, JSON.stringify(stored.body));
+					deepStrictEqual(await storedEmp(), [{ ...EMP, payload: EMP.deptId }]);
+					await restoreEmp();
+					strictEqual((await sql('writeOnlyDeptReader', copy)).status, 200);
+					deepStrictEqual(await storedEmp(), [{ ...EMP, payload: copied(DEPT) }]);
+					await restoreEmp();
+					const probe = `UPDATE data.Emp SET name = 'probed' WHERE id = 'e1' AND dept->budget = ${DEPT.budget}`;
+					assertRefused(await sql('restrictedWriter', probe), probe, 'Dept.budget');
+					deepStrictEqual(await storedEmp(), [EMP]);
+					for (const statement of [
+						`UPDATE data.Emp SET name = 'probed' WHERE id = 'e1' AND (dept)->budget IS NULL`,
+						`DELETE FROM data.Emp WHERE id = 'e1' AND COALESCE(dept, 1)->budget IS NULL`,
+					]) {
+						const refused = await sql('restrictedWriter', statement);
+						strictEqual(refused.status, 403, `${statement}: ${JSON.stringify(refused.body)}`);
+						ok(String(refused.body.unauthorized_access).includes('without naming the path'), statement);
+						deepStrictEqual(await storedEmp(), [EMP], statement);
+					}
+				} finally {
+					await restoreEmp();
+				}
+			});
+
+			test('principals running one statement in turn each get their own result and leave the role unchanged', async () => {
+				const rolePermission = async () => {
+					const response = await op('super', { operation: 'list_roles' });
+					return response.body.find((role: any) => role.role === 'rel_perm_restricted').permission;
+				};
+				const permission = await rolePermission();
+				const statement = `SELECT id, dept FROM data.Emp WHERE id = 'e1'`;
+				const expected = {
+					restricted: [{ id: EMP.id, dept: DEPT_READABLE }],
+					full: [{ id: EMP.id, dept: DEPT }],
+					super: [{ id: EMP.id, dept: DEPT }],
+				};
+				for (const as of [
+					'restricted',
+					'full',
+					'super',
+					'empOnly',
+					'restricted',
+					'super',
+					'full',
+					'restricted',
+				] as const) {
+					if (as === 'empOnly') assertRefused(await sql(as, statement), as, 'Dept');
+					else deepStrictEqual(await rows(as, statement), expected[as], as);
+				}
+				deepStrictEqual(await rolePermission(), permission);
+			});
+		}
+	);
+}

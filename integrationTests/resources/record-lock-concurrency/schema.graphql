@@ -4,3 +4,9 @@ type Counter @table @export {
 	n: Int
 	holders: Int
 }
+
+# Holds a request's mid-scope commit open on its blob save (harper#4080).
+type CheckpointBlob @table {
+	id: ID @primaryKey
+	blob: Blob
+}

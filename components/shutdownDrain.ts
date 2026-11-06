@@ -39,6 +39,13 @@ export function getShutdownDrainCeilingMs(): number {
 	return Number.isFinite(ms) && ms >= 0 ? Math.min(ms, MAX_TIMER_MS) : DEFAULT_DRAIN_CEILING_MS;
 }
 
+export function trackThreadDrains<Thread>(threads: Iterable<Thread>, onDrained: () => void) {
+	const remaining = new Set(threads);
+	return (thread: Thread) => {
+		if (remaining.delete(thread) && remaining.size === 0) onDrained();
+	};
+}
+
 const DEFAULT_PROCESS_SHUTDOWN_TIMEOUT_MS = 8000;
 // `harper dev` disposes native runtimes (a Vite/rolldown dev server) on close; see threadTerminationTimeout
 const DEV_MODE_PROCESS_SHUTDOWN_TIMEOUT_MS = 30000;

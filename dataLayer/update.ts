@@ -11,7 +11,7 @@ import alasqlFunctionImporter from '../sqlTranslator/alasqlFunctionImporter.ts';
 import * as util from 'node:util';
 
 const pGetTableSchema = util.promisify(globalSchema.getTableSchema);
-const pSearch = util.promisify(search.search);
+const pSqlSelect = util.promisify(search.sqlSelect);
 
 import * as terms from '../utility/hdbTerms.ts';
 import * as hdbUtils from '../utility/common_utils.ts';
@@ -42,7 +42,7 @@ async function updateData({ statement, hdb_user }: any) {
 	let selectString = `SELECT ${tableInfo.hash_attribute} FROM ${from.toString()} ${whereString}`;
 	let searchStatement = (alasql as any).parse(selectString).statements[0];
 	//let result = await transaction.writeTransaction(tableInfo.schema, tableInfo.name, async () => {
-	let records: any = await pSearch(searchStatement);
+	let records: any = await pSqlSelect({ statement: searchStatement, hdb_user });
 	let newRecords = buildUpdateRecords(update_record, records);
 	return updateRecords(tableClone, newRecords, hdb_user);
 	//});

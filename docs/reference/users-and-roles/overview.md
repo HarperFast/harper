@@ -268,6 +268,17 @@ Each table entry defines CRUD access:
 - `DELETE` is not an attribute-level permission. Deleting rows is controlled at the table level.
 - The `__createdtime__` and `__updatedtime__` attributes managed by Harper can have `read` permissions set; other attribute-level permissions for these fields are ignored.
 
+<VersionBadge type="changed" version="v5.4.0" />
+
+Subscriptions follow the same rule. When `attribute_permissions` is non-empty, each record or message a role receives over SSE, WebSocket or MQTT holds only the stored attributes it may read. Computed and relationship attributes are left out of these messages, even when the role may read them.
+
+**Relationship attributes:**
+
+<VersionBadge type="changed" version="v5.4.0" />
+
+- Reading a `@relationship` attribute reads the related table, so it needs `read` on that table, through REST, GraphQL, the NoSQL operations and SQL. The NoSQL operations and SQL refuse a request that names a relationship to a table the role cannot read with HTTP 403; REST `select()` and `*` leave that relationship out.
+- When the related table has `attribute_permissions`, the related record holds only the attributes the role may read. See [Relationship Columns](../operations-api/sql.md#relationship-columns) for SQL.
+
 #### Filter side-channel for read-restricted attributes
 
 :::note

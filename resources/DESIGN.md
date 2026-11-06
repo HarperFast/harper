@@ -87,7 +87,7 @@ The operations thread loads no schema, so `table()` stores `@relationship` targe
 
 ## A relationship read is authorized against the related table
 
-`_readDenial` gates relationship steps/scalar properties. Search has no general read gate: REST `allowRead`, `verifyPerms`, `ResourceBridge.getSelect` admit; nested rechecks require `checkPermission`. Root ops use normalized `attribute`, nested `[0] ?? attribute`. Enumerable `*` rewrites unless `_readableInFull` (per admission/principal); relationship rechecks are unshared. Uncovered: subscription delivery, [SQL](https://github.com/HarperFast/harper/issues/3509), [root predicates](https://github.com/HarperFast/harper/issues/3903). Tests: `permissions.test.js`, `relationshipSelectionReadPermissions.test.js`.
+`_readDenial` gates relationship steps/scalar properties. Search has no general read gate: REST `allowRead`, `verifyPerms`, `ResourceBridge.getSelect` admit; nested rechecks require `checkPermission`. Root ops use normalized `attribute`, nested `[0] ?? attribute`. Enumerable `*` rewrites unless `_readableInFull` (per admission/principal); relationship rechecks are unshared. Uncovered: subscription delivery, [root predicates](https://github.com/HarperFast/harper/issues/3903). Tests: `permissions.test.js`, `relationshipSelectionReadPermissions.test.js`.
 
 ## Typed, discoverable resources
 
@@ -267,7 +267,7 @@ If this same write (origin and log key) emptied the key, `_writeDelete` writes n
 
 ## Cluster-origin table definitions are additive-only
 
-An `origin: 'cluster'` definition is a peer snapshot, possibly mid-create, so `table()` only adds from it (never removing or redefining attributes or flipping `schemaDefined`) and logs what it discards. Drops and redefinitions never converge via gossip (when `schemaDefined` is set, recover a missing descriptor via local `create_attribute` or redeploy). Abandoned index builds still recover (`clusterSchemaMerge.test.js`).
+An `origin: 'cluster'` definition is a peer snapshot, so `table()` only adds from it and logs what it discards. Drops and redefinitions never converge via gossip (recover via local `create_attribute` or redeploy). Abandoned index builds still recover (`clusterSchemaMerge.test.js`). A reload keeps a thread's own TTL.
 
 ## `drop_attribute` never removes the primary key, and a strip keeps each row's version
 
@@ -353,7 +353,7 @@ Replay reads bases with `uncachedRead`: cached WeakRefs outlived the replay, kee
 
 ## Ordering an in-memory result set reads each record at most twice
 
-`transformToOrderedSelect` resolves sort keys once per row before sorting; the comparator never reads the store (harper#2675). Vector distances are cached per sort clause. A stub stays for revalidation unless a filter needs its record; sorted and unsorted reads agree (`sortedKeyInvalidationReads.test.js`).
+`transformToOrderedSelect` resolves sort keys once per row before sorting; the comparator never reads the store (harper#2675). Vector distances are cached per sort clause. A stub is kept unless a filter lacks a `keyPredicate`; a content sort reloads it (`prepareForSort`), so sorted and unsorted reads match.
 
 ## A related-table read uses the related table's own database link
 
