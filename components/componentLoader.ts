@@ -37,7 +37,6 @@ import {
 } from '../server/threads/manageThreads.ts';
 import { resetRestartNeeded, subscribeToRestartRequests } from './requestRestart.ts';
 import { closeScopeAfterLoad, closeScopeOnShutdown } from './scopeShutdown.ts';
-import { settleBeforeDeadline } from '../utility/when.ts';
 import { deployLifecycle } from './deployLifecycle.ts';
 import { assertBranchedDatabases, assertIsolationConfig } from './Application.ts';
 import { prepareBranches } from '../resources/branchDatabase.ts';
@@ -60,7 +59,7 @@ import { declareDecisionTablesAtBoot } from '../resources/models/decisionStore.t
 import { declareCalibrationsTableAtBoot } from '../resources/models/calibrationStore.ts';
 import { watchForPreviews } from './previews.ts';
 import { ErrorResource } from '../resources/ErrorResource.ts';
-import { Scope, releaseTimedOutScopeHold } from './Scope.ts';
+import { Scope } from './Scope.ts';
 import { ApplicationScope } from './ApplicationScope.ts';
 import { ComponentV1, processResourceExtensionComponent } from './ComponentV1.ts';
 import * as httpComponent from '../server/http.ts';
@@ -1196,28 +1195,15 @@ export async function loadComponent(
 							continue;
 						}
 						const closeBoundMs = getTerminateTimeout() / 2;
-						const closeBounded = () =>
-							settleBeforeDeadline(
-								[
-									scope.close().catch((closeError) => {
-										(scope.logger ?? harperLogger).error?.(
-											`Error closing component scope for ${componentStatusName} after failed load:`,
-											closeError
-										);
-									}),
-								],
-								Date.now() + closeBoundMs,
-								() => new Error('scope close timed out')
-							).catch(() => {
-								releaseTimedOutScopeHold(scope);
-								(scope.logger ?? harperLogger).warn?.(
-									`Timed out after ${closeBoundMs}ms waiting for component scope ${componentStatusName} to close after a failed load`
-								);
-							});
 						const started = startedLoads.get(scope);
 						await (closingAfterLoad ??= started
-							? closeScopeAfterLoad(started, closeBounded, closeBoundMs)
-							: closeBounded());
+							? closeScopeAfterLoad(started, () => scope.close(closeBoundMs), closeBoundMs)
+							: scope.close(closeBoundMs)).catch((closeError) => {
+							(scope.logger ?? harperLogger).error?.(
+								`Error closing component scope for ${componentStatusName} after failed load:`,
+								closeError
+							);
+						});
 						throw error;
 					}
 					if (scopesSkippedForShutdown.has(scope)) {

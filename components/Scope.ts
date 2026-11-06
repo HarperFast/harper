@@ -20,6 +20,7 @@ import {
 } from './componentSecrets.ts';
 import type { SecretsView } from './componentSecrets.ts';
 import { deployLifecycle } from './deployLifecycle.ts';
+import { settleBeforeDeadline } from '../utility/when.ts';
 import { thisThreadOwnsApplication } from '../server/threads/isolatedApplications.ts';
 
 export class MissingDefaultFilesOptionError extends Error {
@@ -49,18 +50,6 @@ export type ScopeEventsMap = {
 	[record: string]: [...args: unknown[]];
 };
 
-let releaseTimedOutScope: (scope: Scope) => void;
-
-/**
- * Release a scope's secret-subscription hold (#1776) when a bounded failed-load close times out
- * before `#close()` finishes. Deliberately does NOT call `removeAllListeners()`, so if `#close()`
- * is still awaiting watcher teardown when the bound expires, any `'close'` listeners remain
- * attached for `#close()` to invoke once watcher teardown finishes.
- */
-export function releaseTimedOutScopeHold(scope: Scope): void {
-	releaseTimedOutScope(scope);
-}
-
 /**
  * This class is what is passed to the `handleApplication` function of an extension.
  *
@@ -69,11 +58,6 @@ export function releaseTimedOutScopeHold(scope: Scope): void {
  *
  */
 export class Scope extends EventEmitter<ScopeEventsMap> {
-	static {
-		releaseTimedOutScope = (scope: Scope) => {
-			scope.#releaseSecretsHold();
-		};
-	}
 	#configFilePath: string;
 	#directory: string;
 	#appName: string;
@@ -313,23 +297,11 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		return this.#closed;
 	}
 
-	close(): Promise<this> {
-		return (this.#closing ??= this.#close());
+	close(listenerTimeoutMs?: number): Promise<this> {
+		return (this.#closing ??= this.#close(listenerTimeoutMs));
 	}
 
-	#releaseSecretsHold(): void {
-		// Release this identity's subscription hold (#1776), normally AFTER the close listeners (so a
-		// subscription a close listener created is still accounted for), or early when a failed-load
-		// close bound expires. Streams end only when the LAST holder of the identity releases — so a
-		// discarded validation-load Scope can't kill a still-running app's streams. Guarded so a
-		// double close() or timeout fallback can't underflow the refcount.
-		if (!this.#secretsReleased) {
-			this.#secretsReleased = true;
-			releaseComponentSubscriptions(this.applicationScope?.name ?? this.#appName);
-		}
-	}
-
-	async #close(): Promise<this> {
+	async #close(listenerTimeoutMs?: number): Promise<this> {
 		this.#closed = true;
 		deployLifecycle.off('deploy:start', this.#deployStartHandler);
 		deployLifecycle.off('deploy:end', this.#deployEndHandler);
@@ -344,9 +316,9 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		// every listener to settle before releasing the subscription hold, and the first rejection is
 		// rethrown so a listener that fails still surfaces its error to the caller.
 		const closeListeners = this.listeners('close') as Array<(...args: any[]) => unknown>;
-		this.removeAllListeners();
+		this.removeAllListeners('close');
 		try {
-			const results = await Promise.allSettled(
+			const allSettled = Promise.allSettled(
 				closeListeners.map((listener) => {
 					// Run every listener (so all teardown is attempted) and bind `this` to the Scope, matching
 					// how EventEmitter invokes listeners — a listener may rely on it (e.g. `this.logger`).
@@ -357,11 +329,31 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 					}
 				})
 			);
+			const results =
+				listenerTimeoutMs !== undefined
+					? await settleBeforeDeadline([allSettled], Date.now() + listenerTimeoutMs, () => {
+							this.#logger.warn?.(
+								`Timed out after ${listenerTimeoutMs}ms waiting for component scope ${this.#pluginName} to close`
+							);
+							return new Error('scope close timed out');
+						}).then(
+							() => allSettled,
+							() => [] as PromiseSettledResult<unknown>[]
+						)
+					: await allSettled;
 			const rejected = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
 			if (rejected) throw rejected.reason;
 		} finally {
 			this.removeAllListeners();
-			this.#releaseSecretsHold();
+
+			// Release this identity's subscription hold (#1776), AFTER the close listeners (so a subscription a
+			// close listener created is still accounted for). Streams end only when the LAST holder of the
+			// identity releases — so a discarded validation-load Scope can't kill a still-running app's streams.
+			// Guarded so a double close() can't underflow the refcount.
+			if (!this.#secretsReleased) {
+				this.#secretsReleased = true;
+				releaseComponentSubscriptions(this.applicationScope?.name ?? this.#appName);
+			}
 		}
 
 		return this;
