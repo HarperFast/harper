@@ -175,7 +175,9 @@ function syncPathSync(targetPath: string, flags: 'r' | 'r+') {
 
 function ownerOnlyMode(replacedPath: string): number {
 	const replaced = fs.statSync(replacedPath, { throwIfNoEntry: false });
-	return replaced ? replaced.mode & hdbTerms.SECRET_FILE_PERMISSIONS : hdbTerms.SECRET_FILE_PERMISSIONS;
+	// Another user's owner bits say nothing about this process's access to the file it is about to own.
+	if (!replaced || replaced.uid !== process.getuid()) return hdbTerms.SECRET_FILE_PERMISSIONS;
+	return replaced.mode & hdbTerms.SECRET_FILE_PERMISSIONS;
 }
 
 // Exclusive, so the file is this call's own and has `mode` (less umask) from creation, before any byte is written.
@@ -632,7 +634,7 @@ export function writeStagedInstallConfig(
 	const configFilePath = targetConfigPath
 		? path.resolve(targetConfigPath)
 		: path.join(hdbRoot, hdbTerms.HARPER_CONFIG_FILE);
-	fs.createFileSync(configFilePath);
+	fs.ensureDirSync(path.dirname(configFilePath));
 	atomicWriteFile(configFilePath, String(configDoc), { ownerOnly: true });
 	flatConfigObj = setActiveConfig(configDoc.toJSON());
 	commitEnvConfigState?.();
