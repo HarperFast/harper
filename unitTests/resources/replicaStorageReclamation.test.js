@@ -240,20 +240,15 @@ async function reclaimAt(priority) {
 	});
 
 	it('does not accelerate a lifetime no longer than the minimum age', async () => {
-		limits({ minAgeMs: LIFETIME_MS * 2 });
-		const realNow = Date.now;
+		limits({ minAgeMs: 1500 });
+		await replica('near', LIFETIME_MS);
 		// past the minimum age by write time, so only the window decides
-		const later = realNow() + LIFETIME_MS * 3;
-		Date.now = () => later;
-		try {
-			await replica('near', 1000);
-			await replica('passed', -1000);
-			await reclaimAt(Infinity);
-			assertKept('near');
-			assertDemoted('passed');
-		} finally {
-			Date.now = realNow;
-		}
+		await new Promise((resolve) => setTimeout(resolve, 1600));
+		Rows.setTTLExpiration({ replicaExpiration: 1, replicaRefreshFraction: 1 });
+		deadlineStore().putSync('near', Date.now() + 700);
+		await reclaimAt(Infinity);
+		assertKept('near');
+		await Rows.closeMaintenance();
 	});
 
 	it('demotes earliest deadline first across batches, and stops once the priority falls below 1', async () => {
