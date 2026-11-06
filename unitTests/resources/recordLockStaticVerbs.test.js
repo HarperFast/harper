@@ -4,6 +4,7 @@ const { waitFor } = require('../waitFor');
 const { table, resetDatabases } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
+const { TRANSACTION_STATE } = require('#src/resources/DatabaseTransaction');
 const { setTimeout: delay } = require('node:timers/promises');
 require('#src/server/serverHelpers/serverUtilities');
 
@@ -84,8 +85,8 @@ describe('Record locks (QA-5082): static table verbs on locked keys must resolve
 				const context = {};
 				const holder = await TestTable.lock(recordId, { hold: true, lease: 5000 }, context);
 				cleanups.push(() => holder.unlock());
-				holder.publish({ n: 7 });
-				await waitFor(() => !context.transaction.isCommitting);
+				const published = await holder.publish({ n: 7 });
+				assert.strictEqual(published, undefined);
 				const publishedVersion = TestTable.primaryStore.getEntry(recordId).version;
 				holder.set('n', 2);
 				await holder.save();
@@ -93,6 +94,166 @@ describe('Record locks (QA-5082): static table verbs on locked keys must resolve
 				assert.ok(TestTable.primaryStore.getEntry(recordId).version > publishedVersion);
 			});
 		}
+
+		for (const closeFirst of [false, true]) {
+			const prefix = closeFirst ? 'save -> ' : '';
+			it(`an immediate holder ${prefix}publish -> save on audit: false commits the second write`, async function () {
+				if (SKIP_ON_LMDB) return this.skip();
+				const recordId = id();
+				await Unaudited.put({ id: recordId, n: 1 });
+				const context = {};
+				const holder = await Unaudited.lock(recordId, { hold: true, lease: 5000 }, context);
+				cleanups.push(() => holder.unlock());
+				if (closeFirst) {
+					holder.set('n', 2);
+					assert.strictEqual(await holder.save(), undefined);
+					assert.strictEqual(context.transaction.open, TRANSACTION_STATE.CLOSED);
+				}
+				assert.strictEqual(await holder.publish({ n: 7 }), undefined);
+				const publishedVersion = Unaudited.primaryStore.getEntry(recordId).version;
+				holder.set('n', 3);
+				const saveResult = await holder.save();
+				assert.strictEqual((await Unaudited.get(recordId)).n, 3);
+				assert.strictEqual(saveResult, undefined);
+				assert.ok(
+					Unaudited.primaryStore.getEntry(recordId).version > publishedVersion,
+					'expected save version to advance past publish version'
+				);
+			});
+
+			it(`an immediate holder ${prefix}invalidate -> put on audit: false commits the second write`, async function () {
+				if (SKIP_ON_LMDB) return this.skip();
+				const recordId = id();
+				await Unaudited.put({ id: recordId, n: 1 });
+				const context = {};
+				const holder = await Unaudited.lock(recordId, { hold: true, lease: 5000 }, context);
+				cleanups.push(() => holder.unlock());
+				if (closeFirst) {
+					holder.set('n', 2);
+					assert.strictEqual(await holder.save(), undefined);
+					assert.strictEqual(context.transaction.open, TRANSACTION_STATE.CLOSED);
+				}
+				assert.strictEqual(await holder.invalidate(), undefined);
+				const invalidatedEntry = Unaudited.primaryStore.getEntry(recordId);
+				assert.strictEqual(invalidatedEntry.value, null);
+				assert.strictEqual(await new Unaudited(recordId, context).put(recordId, { id: recordId, n: 4 }), undefined);
+				assert.strictEqual(Unaudited.primaryStore.getEntry(recordId).value?.n, 4);
+				assert.strictEqual((await Unaudited.get(recordId)).n, 4);
+				assert.ok(
+					Unaudited.primaryStore.getEntry(recordId).version > invalidatedEntry.version,
+					'expected put version to advance past invalidate version'
+				);
+			});
+
+			it(`an immediate holder ${prefix}delete -> put on audit: false commits the second write`, async function () {
+				if (SKIP_ON_LMDB) return this.skip();
+				const recordId = id();
+				await Unaudited.put({ id: recordId, n: 1 });
+				const context = {};
+				const holder = await Unaudited.lock(recordId, { hold: true, lease: 5000 }, context);
+				cleanups.push(() => holder.unlock());
+				if (closeFirst) {
+					holder.set('n', 2);
+					assert.strictEqual(await holder.save(), undefined);
+					assert.strictEqual(context.transaction.open, TRANSACTION_STATE.CLOSED);
+				}
+				const handle = context.transaction.recordLocks.get(Unaudited.primaryStore).get(recordId);
+				const deleteFloor = handle.holderVersionFloor();
+				assert.strictEqual(await holder.delete(), true);
+				assert.strictEqual(Unaudited.primaryStore.getEntry(recordId), undefined);
+				assert.ok(handle.holderVersionFloor() > deleteFloor, 'expected delete to advance holderVersionFloor');
+				assert.strictEqual(await new Unaudited(recordId, context).put(recordId, { id: recordId, n: 5 }), undefined);
+				assert.strictEqual(Unaudited.primaryStore.getEntry(recordId)?.value?.n, 5);
+				assert.strictEqual((await Unaudited.get(recordId)).n, 5);
+				assert.ok(
+					Unaudited.primaryStore.getEntry(recordId).version > deleteFloor,
+					'expected put version to advance past delete version'
+				);
+			});
+
+			it(`an immediate holder ${prefix}relocate -> put on audit: false commits the second write`, async function () {
+				if (SKIP_ON_LMDB) return this.skip();
+				const recordId = id();
+				await Unaudited.put({ id: recordId, n: 1 });
+				const context = {};
+				const holder = await Unaudited.lock(recordId, { hold: true, lease: 5000 }, context);
+				cleanups.push(() => holder.unlock());
+				if (closeFirst) {
+					holder.set('n', 2);
+					assert.strictEqual(await holder.save(), undefined);
+					assert.strictEqual(context.transaction.open, TRANSACTION_STATE.CLOSED);
+				}
+				const beforeRelocateVersion = Unaudited.primaryStore.getEntry(recordId).version;
+				assert.strictEqual(await holder._writeRelocate(recordId, {}), undefined);
+				const relocatedVersion = Unaudited.primaryStore.getEntry(recordId).version;
+				assert.ok(relocatedVersion > beforeRelocateVersion, 'expected relocate version to advance');
+				assert.strictEqual(await new Unaudited(recordId, context).put(recordId, { id: recordId, n: 6 }), undefined);
+				assert.strictEqual(Unaudited.primaryStore.getEntry(recordId)?.value?.n, 6);
+				assert.strictEqual((await Unaudited.get(recordId)).n, 6);
+				assert.ok(
+					Unaudited.primaryStore.getEntry(recordId).version > relocatedVersion,
+					'expected put version to advance past relocate version'
+				);
+			});
+		}
+
+		it('awaits a second immediate holder write that enters save() while isCommitting is true', async function () {
+			if (SKIP_ON_LMDB) return this.skip();
+			const firstId = id();
+			const secondId = id();
+			await Unaudited.put({ id: firstId, n: 1 });
+			await Unaudited.put({ id: secondId, n: 10 });
+			const context = {};
+			const holder1 = await Unaudited.lock(firstId, { hold: true, lease: 5000 }, context);
+			cleanups.push(() => holder1.unlock());
+			const holder2 = await Unaudited.lock(secondId, { hold: true, lease: 5000 }, context);
+			cleanups.push(() => holder2.unlock());
+			holder1.set('n', 2);
+			await holder1.save();
+			assert.strictEqual(context.transaction.open, TRANSACTION_STATE.CLOSED);
+			const firstCommit = holder1.publish({ n: 7 });
+			assert.strictEqual(context.transaction.isCommitting, true);
+			assert.strictEqual(await holder2.publish({ n: 8 }), undefined);
+			holder2.set('n', 20);
+			assert.strictEqual(await holder2.save(), undefined);
+			await firstCommit;
+			assert.strictEqual((await Unaudited.get(secondId)).n, 20);
+		});
+
+		it('clears isCommitting when an innerCommit on a closed ImmediateTransaction rejects', async function () {
+			if (SKIP_ON_LMDB) return this.skip();
+			const firstId = id();
+			const secondId = id();
+			await Unaudited.put({ id: firstId, n: 1 });
+			await Unaudited.put({ id: secondId, n: 10 });
+			const context = {};
+			const holder1 = await Unaudited.lock(firstId, { hold: true, lease: 5000 }, context);
+			cleanups.push(() => holder1.unlock());
+			const holder2 = await Unaudited.lock(secondId, { hold: true, lease: 5000 }, context);
+			cleanups.push(() => holder2.unlock());
+			holder1.set('n', 2);
+			await holder1.save();
+			assert.strictEqual(context.transaction.open, TRANSACTION_STATE.CLOSED);
+			let failNext = true;
+			const origCommit = context.transaction.commit;
+			context.transaction.commit = function (options) {
+				if (failNext && options?.transaction) {
+					failNext = false;
+					options.transaction.abort();
+					return Promise.reject(new Error('simulated innerCommit failure'));
+				}
+				return origCommit.apply(this, arguments);
+			};
+			try {
+				await assert.rejects(() => holder1.publish({ n: 7 }), /simulated innerCommit failure/);
+			} finally {
+				context.transaction.commit = origCommit;
+			}
+			assert.strictEqual(context.transaction.isCommitting, false);
+			holder2.set('n', 20);
+			await holder2.save();
+			assert.strictEqual((await Unaudited.get(secondId)).n, 20);
+		});
 
 		for (const route of ['static', 'holder']) {
 			it(`${route} publish under a held lock binds the handle and delivers its message`, async function () {
@@ -523,10 +684,6 @@ describe('Record locks (QA-5082): static table verbs on locked keys must resolve
 			holderDel.set('n', 10);
 			await holderDel.save();
 			await new Audited(idDelete, immDelCtx).delete(idDelete);
-			// an ImmediateTransaction delete() resolves before its commit lands
-			await waitFor(async () => (await Audited.get(idDelete)) == null, {
-				message: `TableResource.delete on an ImmediateTransaction { hold: true } context was dropped`,
-			});
 
 			const afterPut = await Audited.get(idPut);
 			const afterDel = await Audited.get(idDelete);
