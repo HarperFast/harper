@@ -374,6 +374,7 @@ describe('networkAccess', () => {
 		});
 
 		it('re-reads after a change that lands during a read, never publishing the older snapshot last', async () => {
+			resetNetworkAccessWatches(3_600_000);
 			let releaseFirst;
 			const firstRead = new Promise((resolve) => (releaseFirst = resolve));
 			const realGet = installed.mock.get;
@@ -392,11 +393,12 @@ describe('networkAccess', () => {
 				published.push(allowedSourcesFor('operations'));
 				return true;
 			});
-			await settle();
+			await until(() => reads === 1, 'the held first read');
 			installed.mock.notify();
 			releaseFirst();
 			await until(() => reads === 2 && published.length > 0, 'the second read');
 			await until(() => published.at(-1)?.[0] === '192.168.0.0/16', 'the newer list');
+			assert.deepStrictEqual(published, [['10.0.0.0/8'], ['192.168.0.0/16']]);
 			assert.deepStrictEqual(allowedSourcesFor('operations'), ['192.168.0.0/16']);
 		});
 

@@ -10,6 +10,13 @@ import { Readable } from 'node:stream';
 
 server.registerOperation({
 	name: 'component_registered_echo',
+	readOnly: true,
+	inputSchema: {
+		$schema: 'https://json-schema.org/draft/2020-12/schema',
+		type: 'object',
+		properties: { value: { type: 'string' } },
+		required: ['value'],
+	},
 	// Named function expression so the handler's `.name` is deterministic for the
 	// verifyPerms/requiredPermissions lookup (not inferred as "execute").
 	execute: async function componentRegisteredEcho(op) {
@@ -49,4 +56,55 @@ server.registerOperation({
 			username: op.hdb_user?.username ?? null,
 		};
 	},
+});
+
+server.registerOperation({
+	name: 'component_registered_bad_schema',
+	inputSchema: { type: 'object', properties: { value: { $ref: '#/definitions/Missing' } } },
+	execute: async function componentRegisteredBadSchema() {
+		return { ok: true };
+	},
+});
+
+server.registerOperation({
+	name: 'component_registered_draft_06',
+	inputSchema: {
+		$schema: 'http://json-schema.org/draft-06/schema#',
+		type: 'object',
+		properties: { value: { type: 'string' } },
+	},
+	execute: async function componentRegisteredDraft06(op) {
+		return { echoed: op.value };
+	},
+});
+
+server.registerOperation({
+	name: 'component_registered_disagreement',
+	inputSchema: { type: 'object', properties: { worker: { const: threadId } } },
+	execute: async function componentRegisteredDisagreement() {
+		return { threadId };
+	},
+});
+
+server.registerOperation({
+	name: `component_registered_owner_${threadId}`,
+	inputSchema: { type: 'object', properties: { align: { type: 'boolean' } } },
+	execute: async function componentRegisteredOwner(op) {
+		if (op.align)
+			server.registerOperation({
+				name: 'component_registered_disagreement',
+				inputSchema: { type: 'object', properties: { value: { type: 'string' } } },
+				execute: async function componentRegisteredAgreed() {
+					return { threadId };
+				},
+			});
+		return { threadId };
+	},
+});
+
+server.registerOperation({
+	name: 'search_registered_operation',
+	inputSchema: { type: 'object' },
+	readOnly: true,
+	execute: async () => ({ worker: threadId }),
 });

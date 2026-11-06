@@ -69,7 +69,17 @@ By default the CLI connects to the local Harper via the operations API UDS — n
 
 ### 3. Audit the operations exposed to your LLM
 
-The built-in default-allow list is intentionally narrower than the external addon's wrapper. If your agents rely on operations outside `describe_*` / `list_*` / `search_*` / `system_information` / `read_log` / `read_audit_log` / `get_job` / `get_status` / `get_analytics` / `get_metrics`, add them explicitly to `mcp.operations.allow`. See the [Default-allow list](./tools-and-resources.md#default-allow-list) and the rationale for excluding `get_*` as a glob (it would pull in `get_configuration`, `get_components`, etc., which can return secrets).
+The built-in default-allow list is intentionally narrower than the external addon's wrapper. If your agents rely on operations outside `describe_*` / `list_*` / `search_*` / `system_information` / `read_log` / `read_audit_log` / `get_job` / `get_status` / `get_analytics`, add them explicitly to `mcp.operations.allow`. See the [Default-allow list](./tools-and-resources.md#default-allow-list) and the rationale for excluding `get_*` as a glob (it would pull in `get_configuration`, `get_components`, etc., which can return secrets).
+
+#### Operation metadata in 5.4
+
+<VersionBadge type="changed" version="v5.4.0" />
+
+Default and glob allow matches now require an operation's own `inputSchema`. A schema-less operation matched only by a glob, such as `mycomponent_*`, is withheld from `tools/list` and `tools/call`. To keep that operation available, declare its schema at `server.registerOperation()`, or name the operation literally in `mcp.operations.allow` to retain a permissive object contract. Handlers still validate calls; registration does not inherit another operation's schema by name.
+
+Default discovery also requires a read-only classification. Main-thread component registrations can declare `readOnly: true` alongside their schema when the handler is read-only. Worker-forwarded operations need an explicit allow entry even when the worker declares `readOnly`. A nonempty allow list replaces the defaults, so include the default operations you still need. Conflicting schemas from live workers remain withheld even with a literal allow entry.
+
+`get_metrics` is no longer in the built-in default list. If a component supplies that operation, configure its exposure explicitly.
 
 ### 4. Decommission the addon
 

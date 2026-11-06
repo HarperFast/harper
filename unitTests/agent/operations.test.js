@@ -21,6 +21,36 @@ describe('agent/operations set_agent_config', () => {
 		return { execute: operation.execute, patches };
 	}
 
+	it('advertises nullable budgets and runtime-tunable controls accepted by the handler', async () => {
+		const { AGENT_OPERATION_INPUT_SCHEMAS } = require('#src/agent/operationInputSchemas');
+		const Ajv = require('ajv');
+		const accepts = new Ajv({ strict: false }).compile(AGENT_OPERATION_INPUT_SCHEMAS.set_agent_config);
+		const { execute, patches } = setAgentConfig();
+		for (const input of [
+			{ maxCostUsd: null, maxSessionTokens: null },
+			{ maxTokens: 8192, maxToolResultBytes: 2048, maxSessionTokens: 200000 },
+			{ maxToolResultBytes: 1_048_576 },
+		]) {
+			assert.ok(accepts(input), JSON.stringify(accepts.errors));
+			await execute(input);
+		}
+		assert.equal(patches.length, 3);
+		for (const input of [
+			{ maxSessionTokens: 0 },
+			{ maxTokens: 0 },
+			{ maxTokens: 1e20 },
+			{ maxToolResultBytes: 1023 },
+			{ maxToolResultBytes: 1_048_577 },
+			{ httpFetch: false, maxTurns: 3 },
+			{ componentsScope: '.', maxTurns: 3 },
+			{ configScope: '.', maxTurns: 3 },
+			{ tools: { filesystem: false }, maxTurns: 3 },
+		]) {
+			assert.equal(accepts(input), false);
+			await assert.rejects(execute(input));
+		}
+	});
+
 	it('rejects an httpFetch patch, applying nothing from the request', async () => {
 		const { execute, patches } = setAgentConfig();
 		for (const httpFetch of [true, false, { allow: ['example.com'] }]) {

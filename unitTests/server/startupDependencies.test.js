@@ -7,6 +7,7 @@ const path = require('node:path');
 // Each of these costs every thread heap (lmdb also a 16 MB native buffer) and is only needed by a
 // feature a default server may never use, so the startup modules must not load them.
 const DEFERRED_PACKAGES = [
+	'ajv',
 	'lmdb',
 	'pkijs',
 	'asn1js',

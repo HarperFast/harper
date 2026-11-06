@@ -256,6 +256,7 @@ describe('agent/toolset composeToolset — registry merge', () => {
 });
 
 describe('agent/registryTools read_log masking (harper#3097)', () => {
+	const { OPERATION_INPUT_SCHEMAS } = require('#src/server/serverHelpers/operationInputSchemas');
 	const {
 		registerOperationsTools,
 		_setOperationFunctionMapForTest,
@@ -277,7 +278,14 @@ describe('agent/registryTools read_log masking (harper#3097)', () => {
 		]);
 		_setOperationFunctionMapForTest(
 			new Map(
-				[...operations.keys()].map((name) => [name, { operation_function: (body) => operations.get(name)(body) }])
+				[...operations.keys()].map((name) => [
+					name,
+					{
+						builtin: true,
+						operation_function: (body) => operations.get(name)(body),
+						inputSchema: OPERATION_INPUT_SCHEMAS[name],
+					},
+				])
 			)
 		);
 		_setChooseOperationForTest((body) => (request) => operations.get(body.operation)(request));

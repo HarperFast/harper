@@ -22,6 +22,14 @@ In reviewing the third party package or dependency, the following questions shou
 
 Generally, dependencies are added by simply adding them to the dependencies list in package.json. If the dependency is not necessary for the actual execution of the application (testing or building), it can be placed in devDependencies, or in optionalDependencies (we have done that with packages with binary compilations).
 
+## ajv
+
+- Need for usage: Validates JSON Schema metadata supplied when operations are registered, before that metadata can be exposed to MCP clients. This keeps a malformed component schema from breaking `tools/list` while preserving the operation handler.
+- Size and overlap: Declaring Ajv 8.20.0 directly consolidates the four existing Ajv 8.x copies at the highest version already present, including Fastify's own resolution. Re-resolution also moves ESLint's dev-only Ajv from 6.14.0 to 6.15.0. Fastify's internal compiler is not a public standalone schema-validation API. Future upgrades must check both consumers.
+- Performance and memory: Loaded lazily for nontrivial registration schemas and never on the operation dispatch hot path. Exact empty-object contracts need no compiler. Compiler instances are registration-local because Ajv retains generated code even after removing schemas. A local 40-operation draft-2020-12 probe took 177 ms cold and 129–132 ms warm per process (3.2–4.4 ms per registration, including meta-schema compilation); this cost repeats per worker. Built-in schemas are checked in CI; their boot-time attachment skips runtime validation.
+- Security and environment: Pure JavaScript, no native build or global mutation. Component schemas larger than 64 KiB are rejected before parsing and compilation. Compilation verifies self-contained references; no remote schemas are fetched.
+- Eventual removal: Remove the direct dependency if operation contracts move to a schema facility already owned by Harper or a stable public validator supplied by the runtime.
+
 ## react-native-fs (removed from the published tree, not a dependency)
 
 This is the inverse of the entries below — a dependency we take deliberate steps to _not_ ship.

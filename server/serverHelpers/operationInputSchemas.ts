@@ -1,34 +1,7 @@
 /**
- * Hand-curated JSON Schemas for the operations-profile MCP tools.
- *
- * Why hand-curated: Harper's server-side validators are Joi, which doesn't
- * round-trip cleanly to JSON Schema. The MCP spec requires draft-07-ish
- * JSON Schema for tool inputSchema. Authoring these directly keeps the
- * schemas readable, easy to tweak per the LLM ergonomics we want, and
- * decoupled from server-side validation evolution.
- *
- * Each schema follows MCP convention: `type: 'object'` at the top, with
- * `properties` declared and a small `required` list when applicable.
- * Optional fields are listed but not required, so an LLM can call the
- * minimum-viable form.
- *
- * Coverage matches the v1 conservative `allow` default in the design
- * (#465 → Operations MCP). When operators expand `mcp.operations.allow`
- * beyond this list, ops without an entry here fall back to a permissive
- * `{ type: 'object' }` schema and a runtime-validates-as-it-goes posture
- * — better than silently dropping them from the tool surface.
- */
-
-/** Permissive default for any opted-in operation that doesn't have a hand-curated schema yet. */
-export const PERMISSIVE_SCHEMA: object = {
-	type: 'object',
-	additionalProperties: true,
-	description: 'Free-form arguments — Harper validates server-side and returns a structured error if invalid.',
-};
-
-/**
- * Map of operation name → input schema. Lookup misses fall back to
- * `PERMISSIVE_SCHEMA`. Keys mirror `OPERATIONS_ENUM` values.
+ * Interim projections of Joi, legacy and inline validation.
+ * Target: one contract consumed by both runtime validation and registration.
+ * Runtime validation remains authoritative; protocol-specific help belongs to MCP.
  */
 export const OPERATION_INPUT_SCHEMAS: Record<string, object> = {
 	// ─── describe_* ───────────────────────────────────────────────────────
@@ -262,7 +235,7 @@ export const OPERATION_INPUT_SCHEMAS: Record<string, object> = {
 			schema: { type: 'string', description: 'Legacy alias for `database`.' },
 			table: { type: 'string' },
 			from: { type: 'number', description: 'Inclusive lower-bound transaction timestamp (ms).' },
-			until: { type: 'number', description: 'Exclusive upper-bound transaction timestamp (ms).' },
+			to: { type: 'number', description: 'Exclusive upper-bound transaction timestamp (ms).' },
 			limit: { type: 'number', minimum: 1 },
 		},
 		required: ['table'],
@@ -306,10 +279,11 @@ export const OPERATION_INPUT_SCHEMAS: Record<string, object> = {
 				description: 'Attribute names to project; defaults to all.',
 			},
 			start_time: {
-				type: ['number', 'string'],
-				description: 'ISO 8601 timestamp or epoch ms — inclusive window start.',
+				type: 'number',
+				exclusiveMinimum: 0,
+				description: 'Epoch milliseconds — inclusive window start.',
 			},
-			end_time: { type: ['number', 'string'], description: 'ISO 8601 timestamp or epoch ms — exclusive window end.' },
+			end_time: { type: 'number', exclusiveMinimum: 0, description: 'Epoch milliseconds — exclusive window end.' },
 			log: {
 				type: 'string',
 				description: 'Transaction log name to filter on (rocksdb-txnlog-stats metric).',
@@ -321,33 +295,6 @@ export const OPERATION_INPUT_SCHEMAS: Record<string, object> = {
 		type: 'object',
 		properties: {
 			metric: { type: 'string', description: 'Metric name to describe (use list_metrics to discover).' },
-		},
-		required: ['metric'],
-	},
-	list_agent_sessions: {
-		type: 'object',
-		properties: {
-			limit: { type: 'integer', minimum: 1, description: 'Max sessions to return.' },
-		},
-	},
-	get_metrics: {
-		type: 'object',
-		properties: {
-			metric: { type: 'string', description: 'Metric name (use list_metrics to discover available metrics).' },
-			get_attributes: {
-				type: 'array',
-				items: { type: 'string' },
-				description: 'Attribute names to project; defaults to all.',
-			},
-			start_time: {
-				type: ['number', 'string'],
-				description: 'ISO 8601 timestamp or epoch ms — inclusive window start.',
-			},
-			end_time: { type: ['number', 'string'], description: 'ISO 8601 timestamp or epoch ms — exclusive window end.' },
-			log: {
-				type: 'string',
-				description: 'Transaction log name to filter on (rocksdb-txnlog-stats metric).',
-			},
 		},
 		required: ['metric'],
 	},

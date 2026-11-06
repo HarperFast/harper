@@ -2257,7 +2257,7 @@ describe('Record locks (harper#483)', () => {
 					coverLocalIssuance(LockTest.auditStore, key)
 				);
 				await holder.unlock();
-				fs.rmSync(directory, { recursive: true, force: true });
+				failedRoot.destroy();
 			}
 		});
 
