@@ -3,7 +3,7 @@
 import * as insert from '../dataLayer/insert.ts';
 import * as util from 'node:util';
 const cbInsertInsert = util.callbackify(insert.insert);
-import { search } from '../dataLayer/search.ts';
+import { sqlSelect } from '../dataLayer/search.ts';
 import { update } from '../dataLayer/update.ts';
 const cbUpdateUpdate = util.callbackify(update);
 import { convertDelete as deleteTranslator } from './deleteTranslator.ts';
@@ -172,8 +172,7 @@ export function processAST(jsonMessage: any, parsedSqlObject: any, callback: any
 
 		switch (parsedSqlObject.variant) {
 			case terms.VALID_SQL_OPS_ENUM.SELECT:
-				sqlFunction = search;
-				statement = parsedSqlObject.ast.statements[0];
+				sqlFunction = sqlSelect;
 				break;
 			case terms.VALID_SQL_OPS_ENUM.INSERT:
 				//TODO add validator for insert, need to make sure columns are specified

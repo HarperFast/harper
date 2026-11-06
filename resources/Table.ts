@@ -1075,6 +1075,7 @@ interface TableResourceClass {
 	assertFullTextRecordField(name: unknown): void;
 	_readDenial(path: readonly any[], user: User, target?: RequestTarget, index?: number): ReadDenial | undefined;
 	_authorizeRelatedSelection(property: any, user: User, checkPermission: any, context: Context): any;
+	_authorizeSelectedRelationships(select: any[], user: User): any[];
 	_referencesRelationship(target: RequestTarget): boolean;
 	_readableInFull(user: User, target?: RequestTarget): boolean;
 	_inReadAdmission<T>(authorize: () => T): T;
@@ -2507,6 +2508,31 @@ export function makeTable(options): TableResourceClass {
 			}
 			if (!new relatedTable(undefined, context).allowRead(user, property, context)) return false;
 			return property.select || hasNestedQueryOptions(property) ? property : property.name;
+		}
+		/**
+		 * Narrows each relationship an already-admitted search `select` names to what `user` can read of the related
+		 * table, for callers that search on a user's behalf without `checkPermission`. Returns `select` itself when there
+		 * is nothing to narrow, otherwise a new array.
+		 */
+		static _authorizeSelectedRelationships(select: any[], user: User): any[] {
+			const permission = user?.role?.permission;
+			if (
+				!hasRelationships ||
+				!permission ||
+				permission.super_user ||
+				!select.some((property) =>
+					typeof property === 'object' ? property !== null : propertyResolvers[property]?.definition?.tableClass
+				)
+			)
+				return select;
+			const context = { user };
+			return TableResource._inReadAdmission(() =>
+				select.map((property) => {
+					const authorized = TableResource._authorizeRelatedSelection(property, user, permission, context);
+					if (authorized === false) throw new AccessViolation(user);
+					return authorized;
+				})
+			);
 		}
 		static isFullTextSearchEntryCurrent(entry: Entry): boolean {
 			return !(entry.metadataFlags & (INVALIDATED | EVICTED | VERSION_REUSED));

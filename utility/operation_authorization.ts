@@ -664,7 +664,7 @@ export function verifyPermsAST(ast, userObject, operation, apiOperation = terms.
 		//If the AST is for a SELECT, we need to check for wildcards and, if they exist, update the AST to include the
 		// attributes that the user has READ perms for - we can skip this step for super users
 		if (!isSuperUser && ast instanceof (alasql.yy as any).Select) {
-			ast = parsedAst.updateAttributeWildcardsForRolePerms(fullRolePerms);
+			ast = parsedAst.updateAttributeWildcardsForRolePerms(fullRolePerms, userObject);
 		}
 		// After expansion, so a wildcard cannot expand into an attribute named `_`.
 		if (!isSuperUser && parsedAst.getRowAccessors().length > 0) {
@@ -711,6 +711,16 @@ export function verifyPermsAST(ast, userObject, operation, apiOperation = terms.
 				permsResponse,
 				undefined
 			);
+		}
+
+		if (!isSuperUser) {
+			const reads: [string, string, string[]][] = [];
+			if (ast instanceof (alasql.yy as any).Select) {
+				for (const [schemaName, tables] of schemaTableMap)
+					for (const table of tables)
+						reads.push([schemaName, table, parsedAst.getAttributesBySchemaTableName(schemaName, table) ?? []]);
+			} else if (writeReads) reads.push([writeReads.schema, writeReads.table, writeReads.attributes]);
+			checkRelationshipTargets(reads, userObject, permsResponse);
 		}
 
 		return permsResponse.getPermsResponse();
@@ -1094,6 +1104,23 @@ function stripPermissionControls(select: any) {
 	}
 }
 
+const NO_PATH: readonly string[] = [];
+
+// A relationship column reads its related table, which the statement never names. That table is checked on its own,
+// so a root the role may write but not read (or a self-relationship) still answers for it.
+function checkRelationshipTargets(reads: Iterable<[string, string, string[]]>, user: any, permsResponse) {
+	let denials: RelationshipReadCheck['denials'];
+	for (const [schemaName, table, attributes] of reads) {
+		const tableClass = getDatabases()[schemaName]?.[table];
+		if (!tableClass?.hasRelationships) continue;
+		for (const attribute of attributes) {
+			const denial = relatedTableOf(tableClass, attribute)?._readDenial(NO_PATH, user);
+			if (denial) (denials ??= new Map()).set(`${denial.database}_${denial.table}`, { denial, attributes: new Set() });
+		}
+	}
+	if (denials) reportRelationshipDenials(denials, user.role.permission, undefined, undefined, permsResponse);
+}
+
 interface RelationshipReadCheck {
 	tableClass: any;
 	user: any;
@@ -1139,8 +1166,8 @@ function checkRelationshipReads(
 function reportRelationshipDenials(
 	denials: RelationshipReadCheck['denials'],
 	permission: any,
-	operationSchema: string,
-	table: string,
+	operationSchema: string | undefined,
+	table: string | undefined,
 	permsResponse
 ): Set<string> | undefined {
 	let rootAttributes: Set<string> | undefined;

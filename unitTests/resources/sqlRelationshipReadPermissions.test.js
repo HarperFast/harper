@@ -1,0 +1,255 @@
+const assert = require('node:assert');
+const alasql = require('alasql');
+const { setupTestDBPath } = require('../testUtils.js');
+const { table } = require('#src/resources/databases');
+const { verifyPermsAST } = require('#src/utility/operation_authorization');
+const { sqlSelect } = require('#src/dataLayer/search');
+const { physicalIndexScan } = require('#src/sqlEngine/physical/PhysicalIndexScan');
+const { physicalIndexNestedLoopJoin } = require('#src/sqlEngine/physical/PhysicalIndexNestedLoopJoin');
+const { getWorkerIndex, setMainIsWorker } = require('#js/server/threads/manageThreads');
+require('#src/server/serverHelpers/serverUtilities');
+
+const DATABASE = 'sql_relationship_read';
+const READ = { read: true, insert: false, update: false, delete: false, attribute_permissions: [] };
+const DEPT_RESTRICTED = {
+	...READ,
+	attribute_permissions: [
+		{ attribute_name: 'id', read: true, insert: false, update: false },
+		{ attribute_name: 'name', read: true, insert: false, update: false },
+		{ attribute_name: 'secret', read: false, insert: false, update: false },
+	],
+};
+const DEPT = { id: 'd1', name: 'Eng', secret: 'hidden' };
+
+function userWith(name, tables) {
+	return {
+		username: name,
+		role: { id: name, role: name, __updatedtime__: 1, permission: { super_user: false, [DATABASE]: { tables } } },
+	};
+}
+const users = {
+	restricted: () => userWith('sql-rel-restricted', { Emp: READ, Dept: DEPT_RESTRICTED }),
+	empOnly: () => userWith('sql-rel-emp-only', { Emp: READ }),
+	writeOnly: () =>
+		userWith('sql-rel-write-only', { Emp: { ...READ, read: false, update: true }, Dept: DEPT_RESTRICTED }),
+	writeOnlyNoDept: () => userWith('sql-rel-write-only-no-dept', { Emp: { ...READ, read: false, update: true } }),
+	full: () => userWith('sql-rel-full', { Emp: READ, Dept: READ }),
+	super: () => ({ username: 'sql-rel-super', role: { role: 'super', permission: { super_user: true } } }),
+};
+
+function plain(value) {
+	return JSON.parse(JSON.stringify(value));
+}
+function parse(sql) {
+	return alasql.parse(sql).statements[0];
+}
+async function rows(iterable) {
+	const out = [];
+	for await (const row of iterable) out.push(plain(row));
+	return out;
+}
+
+describe('SQL reads of relationship columns apply the related table permissions', function () {
+	this.timeout(15000);
+	let Emp, Dept, priorSchema, priorMainIsWorker;
+	before(async () => {
+		priorSchema = global.hdb_schema;
+		priorMainIsWorker = getWorkerIndex() === 0;
+		setupTestDBPath();
+		setMainIsWorker(true);
+		Dept = table({
+			database: DATABASE,
+			table: 'Dept',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }, { name: 'secret' }],
+		});
+		Emp = table({
+			database: DATABASE,
+			table: 'Emp',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'deptId', indexed: true },
+				{ name: 'payload' },
+				{ name: 'dept', relationship: { from: 'deptId' }, definition: { tableClass: Dept } },
+			],
+		});
+		await Dept.put(DEPT);
+		await Emp.put({ id: 'e1', deptId: 'd1' });
+		await Emp.put({ id: 'e2', deptId: 'd1' });
+		global.hdb_schema = {
+			[DATABASE]: Object.fromEntries(
+				[Emp, Dept].map((Table) => [
+					Table.tableName,
+					{
+						name: Table.tableName,
+						schema: DATABASE,
+						hash_attribute: 'id',
+						attributes: Table.attributes.map((attribute) => ({ attribute: attribute.name })),
+					},
+				])
+			),
+		};
+	});
+	after(() => {
+		global.hdb_schema = priorSchema;
+		if (priorMainIsWorker !== undefined) setMainIsWorker(priorMainIsWorker);
+	});
+
+	describe('Table._authorizeSelectedRelationships', () => {
+		it('returns the select itself when there is nothing to narrow', () => {
+			const select = ['id', 'dept'];
+			assert.strictEqual(Emp._authorizeSelectedRelationships(select, users.super()), select);
+			assert.strictEqual(Emp._authorizeSelectedRelationships(select, undefined), select);
+			const scalars = ['id', 'deptId'];
+			assert.strictEqual(Emp._authorizeSelectedRelationships(scalars, users.restricted()), scalars);
+			const deptSelect = ['id', 'name'];
+			assert.strictEqual(Dept._authorizeSelectedRelationships(deptSelect, users.restricted()), deptSelect);
+		});
+
+		it('narrows a relationship to the readable related attributes without changing the input or the role', () => {
+			const user = users.restricted();
+			const permission = plain(user.role.permission);
+			const select = ['id', 'dept'];
+			const first = Emp._authorizeSelectedRelationships(select, user);
+			assert.notStrictEqual(first, select);
+			assert.deepStrictEqual(select, ['id', 'dept']);
+			assert.strictEqual(first[0], 'id');
+			assert.strictEqual(first[1].name, 'dept');
+			assert.deepStrictEqual([...first[1].select].sort(), ['id', 'name']);
+			const second = Emp._authorizeSelectedRelationships(select, user);
+			assert.notStrictEqual(second[1], first[1], 'each call authorizes its own selection object');
+			assert.deepStrictEqual(plain(user.role.permission), permission);
+		});
+
+		it('refuses a relationship whose related table the user cannot read', () => {
+			assert.throws(
+				() => Emp._authorizeSelectedRelationships(['id', 'dept'], users.empOnly()),
+				(error) => error.statusCode === 403
+			);
+		});
+	});
+
+	describe('verifyPermsAST', () => {
+		const refusesDept = (response) => {
+			assert.ok(response, 'expected a refusal');
+			assert.deepStrictEqual(response.invalid_schema_items, [`Table '${DATABASE}.Dept' does not exist`]);
+		};
+
+		for (const sql of [
+			`SELECT id, dept FROM ${DATABASE}.Emp WHERE id = 'e1'`,
+			`SELECT id, dept AS d FROM ${DATABASE}.Emp WHERE id = 'e1'`,
+			`SELECT COUNT(dept) AS n FROM ${DATABASE}.Emp`,
+			`SELECT id FROM ${DATABASE}.Emp WHERE dept IS NOT NULL ORDER BY dept`,
+			`SELECT e.id FROM ${DATABASE}.Emp e JOIN ${DATABASE}.Emp f ON e.id = f.id WHERE f.dept IS NULL`,
+		]) {
+			it(`refuses a read of an unreadable relationship: ${sql}`, () => {
+				refusesDept(verifyPermsAST(parse(sql), users.empOnly(), 'select'));
+				assert.strictEqual(verifyPermsAST(parse(sql), users.restricted(), 'select'), null);
+			});
+		}
+
+		it('names a related table the role can describe but not read as unauthorized', () => {
+			const user = userWith('sql-rel-dept-writer', { Emp: READ, Dept: { ...READ, read: false, insert: true } });
+			const response = verifyPermsAST(parse(`SELECT id, dept FROM ${DATABASE}.Emp`), user, 'select');
+			assert.ok(response);
+			assert.deepStrictEqual(response.invalid_schema_items, []);
+			assert.deepStrictEqual(
+				plain(response.unauthorized_access).map(({ table, required_table_permissions }) => ({
+					table,
+					required_table_permissions,
+				})),
+				[{ table: 'Dept', required_table_permissions: ['read'] }]
+			);
+		});
+
+		it('leaves an unreadable relationship out of *', () => {
+			const ast = parse(`SELECT * FROM ${DATABASE}.Emp WHERE id = 'e1'`);
+			assert.strictEqual(verifyPermsAST(ast, users.empOnly(), 'select'), null);
+			assert.deepStrictEqual(ast.columns.map((column) => column.columnid).sort(), ['deptId', 'id', 'payload']);
+			const restrictedAst = parse(`SELECT * FROM ${DATABASE}.Emp WHERE id = 'e1'`);
+			assert.strictEqual(verifyPermsAST(restrictedAst, users.restricted(), 'select'), null);
+			assert.deepStrictEqual(restrictedAst.columns.map((column) => column.columnid).sort(), [
+				'dept',
+				'deptId',
+				'id',
+				'payload',
+			]);
+		});
+
+		it('checks the related table of a write statement read even when the role cannot read the root', () => {
+			for (const sql of [
+				`UPDATE ${DATABASE}.Emp SET payload = dept WHERE id = 'e1'`,
+				`UPDATE ${DATABASE}.Emp SET payload = 'x' WHERE id = 'e1' AND dept IS NOT NULL`,
+			]) {
+				refusesDept(verifyPermsAST(parse(sql), users.writeOnlyNoDept(), 'update'));
+				assert.strictEqual(verifyPermsAST(parse(sql), users.writeOnly(), 'update'), null, sql);
+			}
+			assert.strictEqual(
+				verifyPermsAST(
+					parse(`UPDATE ${DATABASE}.Emp SET payload = 'x' WHERE id = 'e1'`),
+					users.writeOnlyNoDept(),
+					'update'
+				),
+				null
+			);
+		});
+	});
+
+	describe('engine reads carry the caller', () => {
+		it('legacy SQL narrows the related record and keeps a refusal a 403', async () => {
+			const select = (user) =>
+				new Promise((resolve, reject) =>
+					sqlSelect(
+						{ statement: parse(`SELECT id, dept FROM ${DATABASE}.Emp WHERE id = 'e1'`), hdb_user: user },
+						(error, data) => (error ? reject(error) : resolve(plain(data)))
+					)
+				);
+			assert.deepStrictEqual(await select(users.restricted()), [{ id: 'e1', dept: { id: 'd1', name: 'Eng' } }]);
+			assert.deepStrictEqual(await select(users.full()), [{ id: 'e1', dept: DEPT }]);
+			await assert.rejects(select(users.empOnly()), (error) => error.statusCode === 403);
+		});
+
+		it('a v2 index scan narrows its relationship projection', async () => {
+			const projection = ['dept', 'id'];
+			const scan = { kind: 'Scan', boundTable: { resource: Emp, attributes: Emp.attributes }, projection };
+			const op = physicalIndexScan(scan, {
+				conditions: [{ attribute: 'id', comparator: 'equals', value: 'e1' }],
+				operator: 'and',
+			});
+			assert.deepStrictEqual(await rows(op.execute({ user: users.restricted() })), [
+				{ dept: { id: 'd1', name: 'Eng' }, id: 'e1' },
+			]);
+			assert.deepStrictEqual(await rows(op.execute({ user: users.full() })), [{ dept: DEPT, id: 'e1' }]);
+			assert.deepStrictEqual(projection, ['dept', 'id']);
+			await assert.rejects(rows(op.execute({ user: users.empOnly() })), (error) => error.statusCode === 403);
+		});
+
+		it('a v2 index join narrows its inner relationship projection on every probe', async () => {
+			const innerSelect = ['dept', 'id'];
+			const left = {
+				schema: [],
+				async *execute() {
+					yield { 'o.empId': 'e1' };
+					yield { 'o.empId': 'e2' };
+				},
+			};
+			const op = physicalIndexNestedLoopJoin(left, {
+				innerResource: Emp,
+				innerAlias: 'e',
+				innerAttribute: 'id',
+				outerKey: { kind: 'column', table: 'o', name: 'empId' },
+				innerBaseConditions: [],
+				innerOperator: 'and',
+				innerSelect,
+				type: 'inner',
+				rightNullKeys: [],
+			});
+			const narrowed = { id: 'd1', name: 'Eng' };
+			assert.deepStrictEqual(await rows(op.execute({ user: users.restricted() })), [
+				{ 'o.empId': 'e1', 'e.dept': narrowed, 'e.id': 'e1' },
+				{ 'o.empId': 'e2', 'e.dept': narrowed, 'e.id': 'e2' },
+			]);
+			assert.deepStrictEqual(innerSelect, ['dept', 'id']);
+			await assert.rejects(rows(op.execute({ user: users.empOnly() })), (error) => error.statusCode === 403);
+		});
+	});
+});

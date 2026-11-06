@@ -183,10 +183,11 @@ class sqlStatementBucket {
 	 * user has READ permissions
 	 *
 	 * @param rolePerms - role permission set to update the wildcard to the permitted attributes
+	 * @param user - the user those permissions belong to; a relationship to a table it cannot read is left out
 	 * @returns {ast} - this function returns the updated AST that can be used for final validation and the additional
 	 * steps to complete the request
 	 */
-	updateAttributeWildcardsForRolePerms(rolePerms) {
+	updateAttributeWildcardsForRolePerms(rolePerms, user) {
 		const astWildcards = this.ast.columns.filter((col) => terms.SEARCH_WILDCARDS.includes(col.columnid));
 
 		//If there are no wildcards, we can skip this step
@@ -223,6 +224,14 @@ class sqlStatementBucket {
 						attribute_name: attr.attribute,
 					}));
 				}
+				const tables = loadDatabaseRegistry()?.[colSchema];
+				const tableClass = tables && Object.hasOwn(tables, colTable) ? (tables[colTable] as any) : undefined;
+				if (tableClass?.hasRelationships)
+					finalTableAttrs = finalTableAttrs.filter(
+						({ attribute_name }) =>
+							!tableClass.propertyResolvers[attribute_name]?.definition?.tableClass ||
+							!tableClass._readDenial([attribute_name], user)
+					);
 
 				//It's important to REMOVE the wildcard as we replace it with the actual attributes that will be selected
 				const tableAffectedAttrs = this.affected_attributes

@@ -7,7 +7,6 @@ import {
 	DatabaseClosingError,
 	DatabaseShardingHeldError,
 	hdbErrors,
-	AccessViolation,
 } from '../../utility/errors/hdbError.ts';
 import {
 	table,
@@ -759,24 +758,7 @@ function getSelect({ get_attributes, hdb_user }: any, table: any) {
 				...metadata,
 			];
 		}
-		const permission = hdb_user?.role?.permission;
-		if (
-			table.hasRelationships &&
-			permission &&
-			!permission.super_user &&
-			get_attributes.some((property) =>
-				typeof property === 'object' ? property !== null : table.propertyResolvers?.[property]?.definition?.tableClass
-			)
-		) {
-			const context = { user: hdb_user };
-			get_attributes = table._inReadAdmission(() =>
-				get_attributes.map((property) => {
-					const authorized = table._authorizeRelatedSelection(property, hdb_user, permission, context);
-					if (authorized === false) throw new AccessViolation(hdb_user);
-					return authorized;
-				})
-			);
-		}
+		get_attributes = table._authorizeSelectedRelationships(get_attributes, hdb_user);
 		get_attributes.forceNulls = true;
 		return get_attributes;
 	}
