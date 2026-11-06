@@ -113,7 +113,10 @@ export function shutdownDrainsHaveWork(): boolean {
 	return false;
 }
 
-/** Time a process exit leaves after the drains for `closeServers` (its 5 s fallback) and scope/branch close. */
+/**
+ * Time a process exit leaves after the drains for `closeServers` (its 5 s fallback and up to 0.5 s of
+ * WebSocket close wait) and scope/branch close.
+ */
 export const CLOSE_RESERVE_MS = 6000;
 
 /**

@@ -228,7 +228,7 @@ function closeServers() {
 	return serversClosed.then(() => webSocketsClosedForExit);
 }
 
-const SERVER_CLOSE_TIMEOUT_MS = 5000;
+const WEBSOCKET_CLOSE_WAIT_MS = 250;
 let serversClosed: Promise<unknown> | undefined;
 let requestsDrainedHere: Promise<unknown> | undefined;
 let webSocketsClosedForExit: Promise<unknown> | undefined;
@@ -242,12 +242,13 @@ function waitAtMost(promise: Promise<unknown>, ms: number) {
 	]).finally(() => clearTimeout(timer));
 }
 /**
- * Bounded by the servers' close timeout if another thread never reports or a client never finishes closing. Exit
- * only: during a restart a retiring worker's socket may be carrying another worker's acknowledgement.
+ * Bounded after `serversClosed` by {@link WEBSOCKET_CLOSE_WAIT_MS} per step if another thread never reports or a
+ * client never finishes closing. Exit only: during a restart a retiring worker's socket may be carrying another
+ * worker's acknowledgement.
  */
 function closeWebSocketsForExit(exitDeadline: number | undefined = getProcessExitDeadline()) {
 	if (!exitDeadline || !requestsDrainedHere || webSocketsClosedForExit) return;
-	const remainingMs = () => Math.min(SERVER_CLOSE_TIMEOUT_MS, Math.max(0, (exitDeadline - Date.now()) / 2));
+	const remainingMs = () => Math.min(WEBSOCKET_CLOSE_WAIT_MS, Math.max(0, (exitDeadline - Date.now()) / 4));
 	webSocketsClosedForExit = requestsDrainedHere
 		.then(() => {
 			const allDrained = whenAllRequestsDrained();
@@ -321,6 +322,7 @@ function shutdownServers(exitDeadline: number | undefined = getProcessExitDeadli
 			})
 		)
 		.then(phase('flushing analytics', flushAnalyticsForExit))
+		.then(() => webSocketsClosedForExit)
 		.then(() => {
 			if (!isMainThread) realExit(0);
 		});

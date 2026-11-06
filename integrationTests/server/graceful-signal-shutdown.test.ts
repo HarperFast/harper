@@ -136,11 +136,12 @@ interface Subscription {
 
 async function subscribe(
 	ctx: ContextWithHarper,
-	url = `${ctx.harper.httpURL.replace('http', 'ws')}/Subscriber/`
+	url = `${ctx.harper.httpURL.replace('http', 'ws')}/Subscriber/`,
+	ca?: string[]
 ): Promise<Subscription> {
 	const socket = new WebSocket(url, {
 		headers: { Authorization: authHeader(ctx), Accept: 'application/json' },
-		rejectUnauthorized: false,
+		ca,
 	});
 	const closed = new Promise<{ code: number; at: number }>((resolve) =>
 		socket.once('close', (code) => resolve({ code, at: Date.now() }))
@@ -188,7 +189,7 @@ for (const threadCount of [1, 0]) {
 			});
 			after(async () => {
 				await teardownHarper(ctx);
-				await rm(fixtureParent, { recursive: true, force: true });
+				if (fixtureParent) await rm(fixtureParent, { recursive: true, force: true });
 			});
 
 			test(
@@ -281,7 +282,7 @@ suite(
 		});
 		after(async () => {
 			await teardownHarper(ctx);
-			await rm(fixtureParent, { recursive: true, force: true });
+			if (fixtureParent) await rm(fixtureParent, { recursive: true, force: true });
 		});
 
 		test('no subscriber closes before the request finishes, and each then sees 1001', async () => {
@@ -333,10 +334,19 @@ suite(
 		});
 		after(async () => {
 			await teardownHarper(ctx);
-			await rm(fixtureParent, { recursive: true, force: true });
+			if (fixtureParent) await rm(fixtureParent, { recursive: true, force: true });
 		});
 
 		test('every subscriber across both threads sees 1001 on repeated SIGTERM stops', async () => {
+			const rows = (await sendOperation(ctx.harper, {
+				operation: 'search_by_value',
+				database: 'system',
+				table: 'hdb_certificate',
+				search_attribute: 'name',
+				search_value: '*',
+				get_attributes: ['certificate'],
+			})) as { certificate: string }[];
+			const ca = rows.map((row) => row.certificate);
 			const wssUrl = `wss://${ctx.harper.hostname}:9927/Subscriber/`;
 			for (let stop = 0; stop < 4; stop++) {
 				if (stop > 0) {
@@ -345,7 +355,7 @@ suite(
 				const subscriptions: Subscription[] = [];
 				const threads = new Set<number>();
 				for (let i = 0; i < 64 && threads.size < 2; i++) {
-					const subscription = await subscribe(ctx, i % 2 === 0 ? wssUrl : undefined);
+					const subscription = await subscribe(ctx, i % 2 === 0 ? wssUrl : undefined, ca);
 					subscriptions.push(subscription);
 					threads.add(subscription.threadId);
 				}
@@ -360,6 +370,7 @@ suite(
 				}
 				const exit = await exitOf(proc, signalledAt);
 				deepStrictEqual({ code: exit.code, signal: exit.signal }, { code: 0, signal: null });
+				ok(exit.afterMs < 7500, `stop ${stop + 1}: exited ${exit.afterMs} ms after SIGTERM`);
 			}
 		});
 	}
@@ -384,7 +395,7 @@ suite(
 		});
 		after(async () => {
 			await teardownHarper(ctx);
-			await rm(fixtureParent, { recursive: true, force: true });
+			if (fixtureParent) await rm(fixtureParent, { recursive: true, force: true });
 		});
 
 		test('a retiring worker still closes its subscribers', async () => {
@@ -415,7 +426,7 @@ suite('a scope close that never finishes', { skip: SKIP_SIGNALS }, (ctx: Context
 	});
 	after(async () => {
 		await teardownHarper(ctx);
-		await rm(fixtureParent, { recursive: true, force: true });
+		if (fixtureParent) await rm(fixtureParent, { recursive: true, force: true });
 	});
 
 	test('holds the first SIGTERM, and a second signal exits 0 at once', async () => {
