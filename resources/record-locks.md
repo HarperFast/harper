@@ -78,10 +78,14 @@ Consequences that shape the code:
   `txnForContext` creates for that database adopts them (`adoptDetachedRecordLocks`), so every lookup
   through `txnForContext` — re-entrant `lock()`, `unlock()`, `#bindWriteLock`'s holder stamp and the
   expired-lease 409 — still finds the handle (harper#3872). The closed link itself is never reused, so
-  #2323 stays fixed. A `lock()` whose wait outlives its self-committing link registers on the link that
-  replaced it, and checks that link for a pending write to the key (below). `abort()` still drops the chain without handing anything over: it releases scoped handles
-  link by link after the cut. Covered by `recordLockChainedImmediateLinks.test.js` and
-  `recordLockChainedMidScopeCommit.test.js`.
+  #2323 stays fixed. A `lock()` whose wait outlives its link (a self-committing link's commit, or a mid-scope
+  `txn.commit()`) does everything after the wait on the link that replaced it: the pending-write check below,
+  registration, the clock pin, the read-snapshot refresh, and a coalesced follower's lookup. Whether the scope
+  ended is read from the chain root (`lockScopeEnded`), since a dropped explicit link is CLOSED while the scope
+  lives on. A waiter that wakes while a mid-scope commit is still in flight sees the root CLOSED, as a link still
+  in the chain does, and gets the 500. `abort()` still drops the chain without handing anything over: it releases scoped handles
+  link by link after the cut. Covered by `recordLockChainedImmediateLinks.test.js`,
+  `recordLockChainedMidScopeCommit.test.js` and `recordLockLeftChainLockLink.test.js`.
 - **Release.** Every handle — scoped or hold — is registered in `link.recordLocks` and kept on the
   locked instance as `#lockHandle`; every commit or abort calls `releaseRecordLocks()`, which calls
   `handle.release()` on each non-hold handle, so a `{ hold: true }` handle outlives the transaction.
