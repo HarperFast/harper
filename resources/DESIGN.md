@@ -87,7 +87,7 @@ The operations thread loads no schema, so `table()` stores `@relationship` targe
 
 ## A relationship read is authorized against the related table
 
-`_readDenial` gates relationship steps/scalar properties. Search has no general read gate: REST `allowRead`, `verifyPerms`, `ResourceBridge.getSelect` admit; nested rechecks require `checkPermission`. Root ops use normalized `attribute`, nested `[0] ?? attribute`. Enumerable `*` rewrites unless `_readableInFull` (per admission/principal); relationship rechecks are unshared. Uncovered: subscription delivery, [SQL](https://github.com/HarperFast/harper/issues/3509), [root predicates](https://github.com/HarperFast/harper/issues/3903). Tests: `permissions.test.js`, `relationshipSelectionReadPermissions.test.js`.
+`_readDenial` gates relationship steps/scalar properties. Search has no general read gate: REST `allowRead`, `verifyPerms`, `ResourceBridge.getSelect` admit; nested rechecks require `checkPermission`. Root ops use normalized `attribute`, nested `[0] ?? attribute`. Enumerable `*` rewrites unless `_readableInFull` (per admission/principal); relationship rechecks are unshared. Uncovered: subscription delivery, [root predicates](https://github.com/HarperFast/harper/issues/3903). Tests: `permissions.test.js`, `relationshipSelectionReadPermissions.test.js`.
 
 ## Typed, discoverable resources
 
@@ -164,16 +164,16 @@ Pre-commit blob files land before a commit that can still skip the write.
 
 ## Over-time transactions are aborted, not force-committed
 
-`startMonitoringTxns` acts past `STORAGE_MAXTRANSACTIONOPENTIME`. Code committing a native handle itself opens it raw, never via a wrapper's `getReadTxn`: the wrapper would stay tracked, and its retry would resolve `RETRY_NOW` rather than reject with `ERR_BUSY`.
+`startMonitoringTxns` acts past `STORAGE_MAXTRANSACTIONOPENTIME`. Code committing a native handle itself opens it raw, never via a wrapper's `getReadTxn`: the wrapper would stay tracked, and its retry would resolve `RETRY_NOW`, not reject with `ERR_BUSY`.
 
 - **A write-bearing transaction is aborted and poisoned** (422 `transactionOpenTooLongError`): force-committing a partial write set breaks atomicity. `hasPendingWrites()` walks `next`.
-- Read-only, `sourceApply` and `isReplay` transactions are force-committed. Sources and replay cannot resume, so an abort drops a write the cursor passed (harper-pro#348).
+- Read-only, `sourceApply` and `isReplay` transactions are force-committed: sources and replay cannot resume, so an abort drops a write the cursor passed (harper-pro#348).
 - The owner's commit chains on `monitorCommit`. The pre-commit phase is spared `COMMIT_PHASE_GRACE` ticks (`sourceApply`/`isReplay` without limit): its writes are sealed, and poisoning there once reported success after unlinking blobs.
 - After the pre-commit await, the commit rechecks liveness or resolves as a phantom. **The monitor never aborts a submitted native commit.**
-- `timeoutBudget` is a sticky floor that chained links inherit.
+- `timeoutBudget` is a sticky floor chained links inherit.
 - Conflict retries get one deadline per logical commit (503 `TransactionCommitConflictTimeoutError`); the per-attempt clock (`trackOutstandingCommit`) drives `checkOverloaded()` shedding.
-- **Abort markers let a retry abort a logged handle and dedup trust its log** (harper#3236; `mustRetryLoggedCommit`, `mayReadOwnOrphan`). After a restart dedup waits ~3d for older log files to purge; meanwhile a twin delivery may double-count.
-- Each hop of a sealed commit cascade gets a full idle window, never the previous hop's remainder (`renewChainForNativeCommit`).
+- **Abort markers let a retry abort a logged handle and dedup trust its log** (harper#3236; `mustRetryLoggedCommit`, `mayReadOwnOrphan`); until old log files purge (~3d after a restart) a twin may double-count. Re-logging restamps record times (`stampRecordTimes`).
+- Each hop of a sealed commit cascade gets a full idle window, not the last hop's remainder (`renewChainForNativeCommit`).
 - Long-lived handles are reported from main only: rocksdb-js's registry is process-global (`runLongLivedTransactionSweep`, past `storage.longTransactionReportThreshold`); workers attribute their own by the same id (`reportIfLongLived`). Stuck-commit logs list holders from every database regardless of age: the verification table is one process-wide array (`longLivedTransactions.test.js`).
 
 ## A client disconnect cancels the request's writes
@@ -267,7 +267,7 @@ If this same write (origin and log key) emptied the key, `_writeDelete` writes n
 
 ## Cluster-origin table definitions are additive-only
 
-An `origin: 'cluster'` definition is a peer snapshot, possibly mid-create, so `table()` only adds from it (never removing or redefining attributes or flipping `schemaDefined`) and logs what it discards. Drops and redefinitions never converge via gossip (when `schemaDefined` is set, recover a missing descriptor via local `create_attribute` or redeploy). Abandoned index builds still recover (`clusterSchemaMerge.test.js`).
+An `origin: 'cluster'` definition is a peer snapshot, so `table()` only adds from it and logs what it discards. Drops and redefinitions never converge via gossip (recover via local `create_attribute` or redeploy). Abandoned index builds still recover (`clusterSchemaMerge.test.js`). A reload keeps a thread's own TTL.
 
 ## `drop_attribute` never removes the primary key, and a strip keeps each row's version
 
@@ -353,7 +353,7 @@ Replay reads bases with `uncachedRead`: cached WeakRefs outlived the replay, kee
 
 ## Ordering an in-memory result set reads each record at most twice
 
-`transformToOrderedSelect` resolves sort keys once per row before sorting; the comparator never reads the store (harper#2675). Vector distances are cached per sort clause. A stub stays for revalidation unless a filter needs its record; sorted and unsorted reads agree (`sortedKeyInvalidationReads.test.js`).
+`transformToOrderedSelect` resolves sort keys once per row before sorting; the comparator never reads the store (harper#2675). Vector distances are cached per sort clause. A stub is kept unless a filter lacks a `keyPredicate`; a content sort reloads it (`prepareForSort`), so sorted and unsorted reads match.
 
 ## A related-table read uses the related table's own database link
 

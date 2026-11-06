@@ -10,7 +10,7 @@ import * as globalSchema from '../utility/globalSchema.ts';
 const RECORD = 'record';
 const SUCCESS = 'successfully deleted';
 
-const pSearchSearch = util.promisify(search.search);
+const pSqlSelect = util.promisify(search.sqlSelect);
 const pGetTableSchema = util.promisify(globalSchema.getTableSchema);
 
 function generateReturnMessage(deleteResultsObject: any) {
@@ -40,7 +40,7 @@ export async function convertDelete({ statement, hdb_user }) {
 
 	try {
 		//let result = await transaction.writeTransaction(tableInfo.schema, tableInfo.name, async () => {
-		deleteObj.records = await pSearchSearch(searchStatement);
+		deleteObj.records = await pSqlSelect({ statement: searchStatement, hdb_user });
 		let result = await harperBridge.deleteRecords(deleteObj);
 		//});
 		//await write.flush({ schema: tableInfo.schema, table: tableInfo.name });

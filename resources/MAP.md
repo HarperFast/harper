@@ -46,7 +46,7 @@ Where things are in `resources/`. The rules live in [DESIGN.md](DESIGN.md): read
 - response shape (select) → `transformEntryForSelect` in Table.ts; `transformForSelect` in Resource.ts
 - selects answered from index entries alone → `coveredSelectAttribute` in Table.ts; `coverIndexEntries` in search.ts
 - sorting → `transformToOrderedSelect` in Table.ts; whether the lead already supplies the order → `scansInAttributeOrder` in search.ts
-- record TTL and eviction → `setTTLExpiration`, `evict`, `scheduleCleanup` in Table.ts
+- record TTL and eviction → `setTTLExpiration`, `_adoptCatalogExpiration`, `evict`, `scheduleCleanup` in Table.ts
 - cache miss to source → `getFromSource` in Table.ts
 - subscriptions and replay → `subscribe`, `eventFromAudit` in Table.ts; `addSubscription` in transactionBroadcast.ts
 - replication apply loop → `sourcedFrom` in Table.ts
@@ -65,5 +65,6 @@ Where things are in `resources/`. The rules live in [DESIGN.md](DESIGN.md): read
 - application row filtering → `eventFilter` in ResourceInterface.ts; `search`, `subscribe` in Table.ts
 - matching expired rows in SQL UPDATE/DELETE → `transformEntryForSelect` in Table.ts
 - filters during a vector search → `composeRecordFilter`, `planCandidateKeys` in search.ts; see [indexes/DESIGN.md](indexes/DESIGN.md)
+- a vector threshold that filters rather than leads → `vectorDistanceFilter` in search.ts; `thresholdFilter` in indexes/HierarchicalNavigableSmallWorld.ts
 - HNSW connectivity after a delete → `repairSeveredNeighbors` in indexes/HierarchicalNavigableSmallWorld.ts
 - tests → `unitTests/resources/`
