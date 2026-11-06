@@ -110,11 +110,11 @@ The response also includes the table's ordinary schema and storage metadata. The
 
 A table that has kept [local replicas](../database/schema.md#replicaexpiration-and-replicarefreshfraction) on this node reports how much of it is cache. The fields are absent on a table that never kept one, on LMDB, and when the request sets `skip_record_count`.
 
-| Field                     | Description                                                                                                                                                                                                                               |
-| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `replica_count`           | Replicas this node holds of the table's records, counted from their deadlines, so one whose row was lost in a crash can count until the next sweep. Estimated on large tables, like `record_count`; `"exact_count": true` counts them all |
-| `estimated_replica_range` | The range of an estimated `replica_count`; absent when the count is exact                                                                                                                                                                 |
-| `replica_size_estimate`   | Estimated bytes of those replicas: the average size of up to 100 of their rows, blobs included, times the count. A rough figure, since the rows sampled are the first by key                                                              |
+| Field                     | Description                                                                                                                                                                                                                                    |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `replica_count`           | Replicas this node holds of the table's records, counted from their deadlines, so one whose row was lost in a crash can count until its deadline passes. Estimated on large tables, like `record_count`; `"exact_count": true` counts them all |
+| `estimated_replica_range` | The range of an estimated `replica_count`; absent when the count is exact                                                                                                                                                                      |
+| `replica_size_estimate`   | Estimated bytes of those replicas: the average size of up to 100 of their rows, blobs included, times the count. A rough figure, since the rows sampled are the first by key                                                                   |
 
 See [Local replicas under storage pressure](../database/storage-tuning.md#local-replicas-under-storage-pressure).
 

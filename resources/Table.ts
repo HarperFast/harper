@@ -11246,12 +11246,10 @@ export function makeTable(options): TableResourceClass {
 				store,
 			});
 			let walked = 0;
-			let sampled = 0;
 			let sampledSize = 0;
 			for (const { key } of store.getRange({ snapshot: false })) {
 				const entry = primaryStore.getEntry(key);
 				if (entry?.metadataFlags & REPLICA) {
-					sampled++;
 					sampledSize += entry.size ?? 0;
 					if (entry.metadataFlags & HAS_BLOBS) {
 						findBlobsInObject(entry.value, (blob) => {
@@ -11261,7 +11259,7 @@ export function makeTable(options): TableResourceClass {
 				}
 				if (++walked === REPLICA_SIZE_SAMPLE) break;
 			}
-			return { count, estimatedRange, sizeEstimate: sampled ? Math.round((sampledSize / sampled) * count) : 0 };
+			return { count, estimatedRange, sizeEstimate: walked ? Math.round((sampledSize / walked) * count) : 0 };
 		}
 		/**
 		 * When attributes have been changed, we update the accessors that are assigned to this table
