@@ -44,23 +44,22 @@ suite('live sourcedFrom local log identities', (ctx: ContextWithHarper) => {
 
 	async function waitForSourceState(condition: (state: any) => boolean, message: string) {
 		let state;
-		try {
-			await waitFor(
-				async () => {
-					state = await request('/SourceState/');
-					return condition(state);
-				},
-				{ timeout: 30_000, message }
-			);
-		} catch (error) {
-			(error as Error).message += `; last source state: ${JSON.stringify({
-				entries: state?.entries?.slice(-20),
-				records: state?.records,
-				vector: state?.vector,
-				genericSourceReads: state?.genericSourceReads,
-			})}`;
-			throw error;
-		}
+		await waitFor(
+			async () => {
+				state = await request('/SourceState/');
+				return condition(state);
+			},
+			{
+				timeout: 30_000,
+				message: () =>
+					`${message}; last source state: ${JSON.stringify({
+						entries: state?.entries?.slice(-20),
+						records: state?.records,
+						vector: state?.vector,
+						genericSourceReads: state?.genericSourceReads,
+					})}`,
+			}
+		);
 		return state;
 	}
 
