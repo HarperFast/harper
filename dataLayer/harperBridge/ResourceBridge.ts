@@ -7,7 +7,6 @@ import {
 	DatabaseClosingError,
 	DatabaseShardingHeldError,
 	hdbErrors,
-	AccessViolation,
 } from '../../utility/errors/hdbError.ts';
 import {
 	table,
@@ -315,12 +314,18 @@ export class ResourceBridge extends BridgeMethods {
 					continue;
 				}
 				if (existingRecord) existingRecord = collapseData(existingRecord);
+				let setRecord;
 				for (const key in record) {
 					if (Object.prototype.hasOwnProperty.call(record, key)) {
 						let value = record[key];
 						if (typeof value === 'function') {
 							try {
-								const valueResults = value([[existingRecord]]);
+								// a relationship getter on the stored record would read past the caller's role
+								setRecord ??=
+									existingRecord && Table.hasRelationships && !context.user?.role?.permission?.super_user
+										? withoutRelationships(existingRecord, Table)
+										: existingRecord;
+								const valueResults = value([[setRecord]]);
 								if (Array.isArray(valueResults)) {
 									value = valueResults[0].func_val;
 									record[key] = value;
@@ -743,6 +748,14 @@ export class ResourceBridge extends BridgeMethods {
 	}
 }
 
+function withoutRelationships(record: any, Table: any) {
+	const copy = { ...record };
+	for (const name in Table.propertyResolvers)
+		if (!Table.propertyResolvers[name]?.definition?.tableClass && !Object.hasOwn(copy, name))
+			Object.defineProperty(copy, name, { get: () => record[name], enumerable: true, configurable: true });
+	return copy;
+}
+
 function throwSearchValidationError(validationError: any): never {
 	throw typeof validationError.statusCode === 'number' ? validationError : new ClientError(validationError.message);
 }
@@ -759,24 +772,7 @@ function getSelect({ get_attributes, hdb_user }: any, table: any) {
 				...metadata,
 			];
 		}
-		const permission = hdb_user?.role?.permission;
-		if (
-			table.hasRelationships &&
-			permission &&
-			!permission.super_user &&
-			get_attributes.some((property) =>
-				typeof property === 'object' ? property !== null : table.propertyResolvers?.[property]?.definition?.tableClass
-			)
-		) {
-			const context = { user: hdb_user };
-			get_attributes = table._inReadAdmission(() =>
-				get_attributes.map((property) => {
-					const authorized = table._authorizeRelatedSelection(property, hdb_user, permission, context);
-					if (authorized === false) throw new AccessViolation(hdb_user);
-					return authorized;
-				})
-			);
-		}
+		get_attributes = table._authorizeSelectedRelationships(get_attributes, hdb_user);
 		get_attributes.forceNulls = true;
 		return get_attributes;
 	}

@@ -1079,6 +1079,7 @@ interface TableResourceClass {
 	assertFullTextRecordField(name: unknown): void;
 	_readDenial(path: readonly any[], user: User, target?: RequestTarget, index?: number): ReadDenial | undefined;
 	_authorizeRelatedSelection(property: any, user: User, checkPermission: any, context: Context): any;
+	_authorizeSelectedRelationships(select: any[], user: User): any[];
 	_referencesRelationship(target: RequestTarget): boolean;
 	_readableInFull(user: User, target?: RequestTarget): boolean;
 	_inReadAdmission<T>(authorize: () => T): T;
@@ -1632,6 +1633,29 @@ function resolveStructForJSON(value: any): any {
 		resolvedObject[key] = resolveStructForJSON(original);
 	}
 	return resolvedObject;
+}
+/**
+ * A copy of what a related record serializes to, with no relationship resolver left on it. Legacy SQL evaluates the values
+ * it reads (`->`, functions that walk their argument), and a live record's relationship getters would read tables its
+ * caller was never authorized for.
+ */
+export function relatedRecordData(value: any): any {
+	if (value == null || typeof value !== 'object') return value;
+	if (Array.isArray(value)) return value.map(relatedRecordData);
+	const isRecordObject = value instanceof RecordObject;
+	const prototype = Object.getPrototypeOf(value);
+	if (!isRecordObject && prototype !== Object.prototype && prototype !== null) return value;
+	const serialized = isRecordObject && typeof (value as any).toJSON === 'function';
+	const source = serialized ? (value as any).toJSON() : value;
+	// toJSON returns a fresh object, so only its values need copying
+	const data = serialized ? source : {};
+	for (const key of Object.keys(source)) {
+		const copied = relatedRecordData(source[key]);
+		if (key === '__proto__')
+			Object.defineProperty(data, key, { value: copied, enumerable: true, writable: true, configurable: true });
+		else data[key] = copied;
+	}
+	return data;
 }
 // Is `start` reachable from itself through @enumerable table-typed edges? (Includes self-loops, e.g. a
 // tree table with an enumerable parent/children relationship.) Walks the per-table `enumerableRelationDefs`
@@ -2519,6 +2543,30 @@ export function makeTable(options): TableResourceClass {
 			}
 			if (!new relatedTable(undefined, context).allowRead(user, property, context)) return false;
 			return property.select || hasNestedQueryOptions(property) ? property : property.name;
+		}
+		/**
+		 * Narrows each relationship a `select` names to what `user` may read of the related table, for a search made on
+		 * the user's behalf without `checkPermission`. Returns `select` itself when nothing needs narrowing.
+		 */
+		static _authorizeSelectedRelationships(select: any[], user: User): any[] {
+			const permission = user?.role?.permission;
+			if (
+				!hasRelationships ||
+				!permission ||
+				permission.super_user ||
+				!select.some((property) =>
+					typeof property === 'object' ? property !== null : propertyResolvers[property]?.definition?.tableClass
+				)
+			)
+				return select;
+			const context = { user };
+			return TableResource._inReadAdmission(() =>
+				select.map((property) => {
+					const authorized = TableResource._authorizeRelatedSelection(property, user, permission, context);
+					if (authorized === false) throw new AccessViolation(user);
+					return authorized;
+				})
+			);
 		}
 		static isFullTextSearchEntryCurrent(entry: Entry): boolean {
 			return !(entry.metadataFlags & (INVALIDATED | EVICTED | VERSION_REUSED));

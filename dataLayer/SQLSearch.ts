@@ -19,14 +19,22 @@ import log from '../utility/logging/harper_logger.ts';
 import * as commonUtils from '../utility/common_utils.ts';
 import harperBridge from './harperBridge/harperBridge.ts';
 import * as hdbTerms from '../utility/hdbTerms.ts';
-import { ClientError, DatabaseClosingError, DatabaseShardingHeldError, hdbErrors } from '../utility/errors/hdbError.ts';
+import {
+	AccessViolation,
+	ClientError,
+	DatabaseClosingError,
+	DatabaseShardingHeldError,
+	hdbErrors,
+} from '../utility/errors/hdbError.ts';
 import { getDatabases } from '../resources/databases.ts';
+import { relatedRecordData } from '../resources/Table.ts';
 
 const WHERE_CLAUSE_IS_NULL = 'IS NULL';
 const SEARCH_ERROR_MSG = 'There was a problem performing this search. Please check the logs and try again.';
 
-function isShardingRefusal(error: unknown): boolean {
+function isRefusal(error: unknown): boolean {
 	return (
+		error instanceof AccessViolation ||
 		error instanceof DatabaseShardingHeldError ||
 		(error instanceof DatabaseClosingError && error.code === 'DATABASE_SHARDING_BLOCKED')
 	);
@@ -39,6 +47,7 @@ interface SearchObject {
 	schema: string;
 	table: string;
 	get_attributes: string[];
+	hdb_user: any;
 	attribute?: string;
 	value?: any;
 	hash_values?: any[];
@@ -81,19 +90,21 @@ class SQLSearch {
 	has_aggregator: boolean;
 	has_ordinal: boolean;
 	has_outer_join: boolean;
+	hdb_user: any;
 	/**
 	 * Constructor for FileSearch class
 	 *
 	 * @param statement - the AST for the SQL SELECT to process
 	 * @param attributes - all attributes that are part of the schema for the tables in select
 	 */
-	constructor(statement, attributes) {
+	constructor(statement, attributes, hdbUser?) {
 		if (commonUtils.isEmpty(statement)) {
 			log.error('AST statement for SQL select process cannot be empty');
 			throw 'statement cannot be null';
 		}
 
 		this.statement = statement;
+		this.hdb_user = hdbUser;
 		//this is every attribute that we need to pull data for
 		this.columns = {};
 
@@ -130,7 +141,7 @@ class SQLSearch {
 				return emptySqlResults;
 			}
 		} catch (err) {
-			if (isShardingRefusal(err) || err instanceof ClientError) throw err;
+			if (isRefusal(err) || err instanceof ClientError) throw err;
 			log.error('Error thrown from checkEmptySQL in SQLSearch class method search.');
 			log.error(err);
 			throw new Error(SEARCH_ERROR_MSG);
@@ -143,7 +154,7 @@ class SQLSearch {
 				return simpleQueryResults;
 			}
 		} catch (err) {
-			if (isShardingRefusal(err)) throw err;
+			if (isRefusal(err)) throw err;
 			log.error('Error thrown from getFetchAttributeValues in SQLSearch class method search.');
 			log.error(err);
 			throw new Error(SEARCH_ERROR_MSG);
@@ -160,7 +171,7 @@ class SQLSearch {
 			// Consolidate initial data required for first pass of sql join - narrows list of hash ids for second pass to collect all data resulting from sql request
 			joinResults = await this._processJoins();
 		} catch (err) {
-			if (isShardingRefusal(err) || err instanceof ClientError) throw err;
+			if (isRefusal(err) || err instanceof ClientError) throw err;
 			log.error('Error thrown from processJoins in SQLSearch class method search.');
 			log.error(err);
 			throw new Error(SEARCH_ERROR_MSG);
@@ -170,7 +181,7 @@ class SQLSearch {
 			// Decide the most efficient way to make the second/final pass for collecting all additional data needed for sql request
 			await this._getFinalAttributeData(joinResults.existing_attributes, joinResults.joined_length);
 		} catch (err) {
-			if (isShardingRefusal(err)) throw err;
+			if (isRefusal(err)) throw err;
 			log.error('Error thrown from getFinalAttributeData in SQLSearch class method search.');
 			log.error(err);
 			throw new Error(SEARCH_ERROR_MSG);
@@ -180,7 +191,7 @@ class SQLSearch {
 			searchResults = await this._finalSQL();
 			return searchResults;
 		} catch (err) {
-			if (isShardingRefusal(err) || err instanceof ClientError) throw err;
+			if (isRefusal(err) || err instanceof ClientError) throw err;
 			log.error('Error thrown from finalSQL in SQLSearch class method search.');
 			log.error(err);
 			throw new Error(SEARCH_ERROR_MSG);
@@ -217,7 +228,15 @@ class SQLSearch {
 		this.tables.forEach((table) => {
 			const schemaTable = `${table.databaseid}_${table.as ? table.as : table.tableid}`;
 			this.data[schemaTable] = {};
-			this.data[schemaTable].__hashName = getDatabases()[table.databaseid][table.tableid].primaryKey;
+			const tableClass = getDatabases()[table.databaseid][table.tableid];
+			this.data[schemaTable].__hashName = tableClass.primaryKey;
+			// AlaSQL evaluates what it reads, so a non-super caller's related records reach it as data
+			if (tableClass.hasRelationships && this.hdb_user && !this.hdb_user.role?.permission?.super_user)
+				this.data[schemaTable].__relationshipColumns = new Set(
+					Object.keys(tableClass.propertyResolvers).filter(
+						(name) => tableClass.propertyResolvers[name]?.definition?.tableClass
+					)
+				);
 			this.data[schemaTable].__mergedData = Object.create(null);
 			this.data[schemaTable].__mergedAttributes = [];
 			this.data[schemaTable].__mergedAttrMap = Object.create(null);
@@ -578,7 +597,16 @@ class SQLSearch {
 	 */
 	_updateMergedAttribute(schemaTable, hashValue, attr, updateValue) {
 		const attrIndex = this.data[schemaTable].__mergedAttrMap[attr];
-		this.data[schemaTable].__mergedData[hashValue].splice(attrIndex, 1, updateValue);
+		this.data[schemaTable].__mergedData[hashValue].splice(
+			attrIndex,
+			1,
+			this._fetchedValue(schemaTable, attr, updateValue)
+		);
+	}
+
+	_fetchedValue(schemaTable, attr, value) {
+		const relationshipColumns = this.data[schemaTable].__relationshipColumns;
+		return relationshipColumns !== undefined && relationshipColumns.has(attr) ? relatedRecordData(value) : value;
 	}
 
 	/**
@@ -674,6 +702,7 @@ class SQLSearch {
 				schema: attribute.table.databaseid,
 				table: attribute.table.tableid,
 				get_attributes: [attribute.attribute],
+				hdb_user: this.hdb_user,
 			};
 			let isHash = false;
 			//Specifically a slash delimited string for consistency
@@ -705,7 +734,7 @@ class SQLSearch {
 							}
 						}
 					} catch (err) {
-						if (isShardingRefusal(err)) throw err;
+						if (isRefusal(err)) throw err;
 						log.error(
 							'Error thrown from getDataByHash function in SQLSearch class method getFetchAttributeValues exact match.'
 						);
@@ -733,7 +762,7 @@ class SQLSearch {
 							})
 						);
 					} catch (err) {
-						if (isShardingRefusal(err)) throw err;
+						if (isRefusal(err)) throw err;
 						log.error(
 							'Error thrown from getDataByValue function in SQLSearch class method getFetchAttributeValues exact match.'
 						);
@@ -774,7 +803,7 @@ class SQLSearch {
 						}
 					}
 				} catch (err) {
-					if (isShardingRefusal(err)) throw err;
+					if (isRefusal(err)) throw err;
 					log.error(
 						'Error thrown from getDataByValue function in SQLSearch class method getFetchAttributeValues comparator search values.'
 					);
@@ -806,7 +835,7 @@ class SQLSearch {
 						}
 					}
 				} catch (err) {
-					if (isShardingRefusal(err)) throw err;
+					if (isRefusal(err)) throw err;
 					log.error(
 						'Error thrown from getDataByValue function in SQLSearch class method getFetchAttributeValues no comparator search values.'
 					);
@@ -1121,7 +1150,7 @@ class SQLSearch {
 		try {
 			await this._getData(allColumns);
 		} catch (e) {
-			if (isShardingRefusal(e)) throw e;
+			if (isRefusal(e)) throw e;
 			log.error('Error thrown from getData in SQLSearch class method getFinalAttributeData.');
 			log.error(e);
 			throw new Error(SEARCH_ERROR_MSG);
@@ -1166,17 +1195,21 @@ class SQLSearch {
 					table: table.table,
 					hash_values: mergedHashKeys,
 					get_attributes: table.columns,
+					hdb_user: this.hdb_user,
 				};
 
 				const searchResult = await harperBridge.getDataByHash(searchObject);
 				const tableColsLength = table.columns.length;
+				const relationshipColumns = this.data[schemaTable].__relationshipColumns;
+				const asData = relationshipColumns && table.columns.map((column) => relationshipColumns.has(column));
 
 				for (let i = 0, len = mergedHashKeys.length; i < len; i++) {
 					const theId = mergedHashKeys[i];
 					const theRow = searchResult.get(theId);
 					for (let j = 0; j < tableColsLength; j++) {
 						const val = table.columns[j];
-						const attrVal = theRow[val] === undefined ? null : theRow[val];
+						let attrVal = theRow[val] === undefined ? null : theRow[val];
+						if (asData?.[j]) attrVal = relatedRecordData(attrVal);
 						this.data[schemaTable].__mergedData[theId].push(attrVal);
 					}
 				}
@@ -1410,6 +1443,7 @@ class SQLSearch {
 				schema: attribute.table.databaseid,
 				table: attribute.table.tableid,
 				get_attributes: [attribute.attribute],
+				hdb_user: this.hdb_user,
 			};
 
 			try {
@@ -1426,7 +1460,7 @@ class SQLSearch {
 						record[attribute.attribute] ?? null;
 				}
 			} catch (err) {
-				if (isShardingRefusal(err)) throw err;
+				if (isRefusal(err)) throw err;
 				log.error('There was an error when processing this SQL operation.  Check your logs');
 				log.error(err);
 				throw new Error(SEARCH_ERROR_MSG);
