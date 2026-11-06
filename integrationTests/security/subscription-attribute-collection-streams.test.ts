@@ -8,7 +8,7 @@
  *
  * `subscription-attribute-permissions.test.ts` (PR #3307) pins the single-record streams and session replay; this
  * file pins the collection and wildcard streams and the caller-select interaction, with `authorizeLocal` off so
- * every request is authenticated as the role it names. Promoted from the qa-explorer bank (SQA-35, SP-28).
+ * every request is authenticated as the role it names.
  *
  * Reproduction:
  *   npm run test:integration -- "integrationTests/security/subscription-attribute-collection-streams.test.ts"
@@ -212,15 +212,17 @@ function mqttConnect(url: string, user: { username: string; password: string }, 
 
 /** Subscribe and return the SUBACK reason codes (err.packet.granted on a rejected SUBACK, not the callback arg). */
 function mqttSubscribe(c: MqttClient, topic: string, qos: 0 | 1): Promise<{ codes: unknown; err?: string }> {
-	return new Promise((res) =>
-		c.subscribe(topic, { qos }, (err: any, granted: any) =>
+	return new Promise((res) => {
+		const timer = setTimeout(() => res({ codes: undefined, err: `no SUBACK for ${topic} within 10 s` }), 10_000);
+		c.subscribe(topic, { qos }, (err: any, granted: any) => {
+			clearTimeout(timer);
 			res(
 				err
 					? { codes: err.packet?.granted, err: String(err.message ?? err) }
 					: { codes: granted?.map((g: any) => g.qos) }
-			)
-		)
-	);
+			);
+		});
+	});
 }
 
 function collectMqtt(c: MqttClient): Msg[] {
@@ -237,7 +239,7 @@ function collectMqtt(c: MqttClient): Msg[] {
 }
 
 suite(
-	'SQA-35 attribute-level read restriction vs subscription payloads',
+	'attribute read permissions on subscription collection streams, wildcard topics and caller selects',
 	{ skip: skipSuite },
 	(ctx: ContextWithHarper) => {
 		let client: ReturnType<typeof createApiClient>;
@@ -383,7 +385,10 @@ suite(
 			subs.add(ws);
 			await sleep(500);
 			console.log(`OBS [admission] WS noread status ${ws.status()} closed=${ws.closed()} msgs=${ws.msgs.length}`);
-			ok(ws.status() !== 101 || ws.closed(), `WS upgrade for read:false role stayed open (status ${ws.status()})`);
+			ok(
+				ws.closed() || (ws.status() !== 0 && ws.status() !== 101),
+				`WS upgrade for read:false role stayed open or hung (status ${ws.status()} closed=${ws.closed()})`
+			);
 
 			const c = await mqttConnect(mqttURL, NOREAD, 'sqa35-noread');
 			mqttClients.add(c);
@@ -411,8 +416,15 @@ suite(
 			);
 			await sleep(500);
 			await drive(s);
-			await waitFor(() => oc.msgs.some((m) => m.text.includes(`SECRET-${s}-put2`)) && oc.msgs.length >= 4, 8000);
-			await sleep(1500);
+			await waitFor(
+				() =>
+					oc.msgs.some((m) => m.text.includes(`SECRET-${s}-put2`)) &&
+					oc.msgs.length >= 4 &&
+					rs.msgs.some((m) => m.text.includes('title-v2')) &&
+					rc.msgs.some((m) => m.text.includes('title-n1')),
+				8000
+			);
+			await sleep(500);
 
 			for (const x of [rc, rs, oc, os]) obs(`sse ${x.label}`, `status=${x.status()}`, x.msgs);
 			for (const x of [rc, rs, oc, os]) strictEqual(x.status(), 200, `${x.label} status`);
@@ -455,8 +467,14 @@ suite(
 			for (const x of [rc, rs, oc, os]) strictEqual(x.status(), 101, `${x.label} upgrade status`);
 			await sleep(1000);
 			await drive(s);
-			await waitFor(() => oc.msgs.some((m) => m.text.includes(`SECRET-${s}-put2`)), 8000);
-			await sleep(1500);
+			await waitFor(
+				() =>
+					oc.msgs.some((m) => m.text.includes(`SECRET-${s}-put2`)) &&
+					rs.msgs.some((m) => m.text.includes('title-v2')) &&
+					rc.msgs.some((m) => m.text.includes('title-n1')),
+				8000
+			);
+			await sleep(500);
 
 			for (const x of [rc, rs, oc, os]) obs(`ws ${x.label}`, `status=${x.status()}`, x.msgs);
 
@@ -509,8 +527,15 @@ suite(
 			await sleep(1000);
 			await drive(s);
 			const openWild = got.get('open-q1-wild')!;
-			await waitFor(() => openWild.some((m) => m.text.includes(`SECRET-${s}-put2`)), 8000);
-			await sleep(1500);
+			await waitFor(
+				() =>
+					openWild.some((m) => m.text.includes(`SECRET-${s}-put2`)) &&
+					[...got].every(
+						([label, msgs]) => !label.startsWith('restricted') || msgs.some((m) => m.text.includes('title-n1'))
+					),
+				8000
+			);
+			await sleep(500);
 
 			for (const [label, msgs] of got) obs(`mqtt ${label}`, 'received', msgs);
 
@@ -560,8 +585,11 @@ suite(
 			for (const x of [rSel, oSel, rWide]) subs.add(x);
 			await sleep(1000);
 			await drive(s);
-			await waitFor(() => oSel.msgs.length >= 4, 8000);
-			await sleep(1500);
+			await waitFor(
+				() => oSel.msgs.length >= 4 && [rSel, rWide].every((x) => x.msgs.some((m) => m.text.includes('title-n1'))),
+				8000
+			);
+			await sleep(500);
 			for (const x of [rSel, oSel, rWide]) obs(`select ${x.label}`, `status=${x.status()}`, x.msgs);
 			for (const x of [rSel, oSel, rWide]) strictEqual(x.status(), 200, `${x.label} status`);
 
@@ -572,6 +600,16 @@ suite(
 			console.log(
 				`OBS [select] caller select(title) applied for the OPEN role: ${oSel.msgs.filter(leaked).length === 0} (documented non-goal of PR #3307)`
 			);
+			for (const x of [rSel, rWide]) {
+				ok(
+					x.msgs.some((m) => m.text.includes('title-v2')),
+					`${x.label} did not deliver the put (inconclusive)`
+				);
+				ok(
+					x.msgs.some((m) => m.text.includes('title-n1')),
+					`${x.label} did not deliver the new row (inconclusive)`
+				);
+			}
 			assertNoLeak('SSE restricted select(title)', rSel.msgs);
 			assertNoLeak('SSE restricted select(title,secret)', rWide.msgs);
 		});

@@ -1,4 +1,4 @@
-# SQA-68: attribute read permissions on subscription deliveries, surfaces PR #3307's own test does not drive.
+# Attribute read permissions on the subscription surfaces subscription-attribute-permissions.test.ts does not drive.
 graphqlSchema:
   files: '*.graphql'
 jsResource:

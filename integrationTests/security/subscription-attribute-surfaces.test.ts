@@ -7,14 +7,12 @@
  *   B  MQTT over WebSocket negotiated to CBOR (Accept: application/cbor on the upgrade), decoded + raw bytes
  *   C1 non-retained MQTT PUBLISH by an admin: JSON {title, secret} -> the restricted subscriber gets exactly {title}
  *   C2 payloads the socket's default deserializer stores as {contentType, data} (text/plain, JSON array, JSON string):
- *      delivered to six open subscribers on every worker (PR #3446), and to the restricted subscriber as {}
+ *      delivered to all six open subscribers across the workers (PR #3446), and to the restricted subscriber as {}
  *   D  custom resource TicketView68 (loadAsInstance: false, super.subscribe) over SSE and MQTT: still narrowed
- *   E  custom resource OpenView68 (allowRead overridden to true): observation only (narrowing comes from
- *      Table.allowRead, so an override that admits everything delivers the stored record)
  *
  * Every restricted arm asserts >= 1 delivery AND no `secret` key or value; every open arm asserts the secret.
- * `mqtt/opaque-payload-across-workers.test.ts` (PR #3446) pins C2's delivery for an admin alone; C2 adds the
- * restricted subscriber's `{}` projection on the same messages. Promoted from the qa-explorer bank (SQA-68, SP-51).
+ * `mqtt/opaque-payload-across-workers.test.ts` (PR #3446) pins C2's delivery for an admin alone and measures the
+ * worker placement; C2 adds the restricted subscriber's `{}` projection on the same messages.
  *
  * Reproduction:
  *   npm run test:integration -- "integrationTests/security/subscription-attribute-surfaces.test.ts"
@@ -23,7 +21,7 @@
 import { suite, test, before, after } from 'node:test';
 import { deepStrictEqual, ok, strictEqual } from 'node:assert';
 import { request as httpRequest } from 'node:http';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -97,7 +95,7 @@ function assertPositive(arm: string, msgs: Msg[]) {
 }
 
 suite(
-	'SQA-68 subscription attribute select on the remaining surfaces',
+	'attribute read permissions on the remaining subscription surfaces',
 	{ skip: skipSuite },
 	(ctx: ContextWithHarper) => {
 		let client: ReturnType<typeof createApiClient>;
@@ -215,8 +213,9 @@ suite(
 		}
 		const sawAll = (msgs: Msg[], titles: string[]) => titles.every((t) => msgs.some((m) => m.text.includes(t)));
 
+		let privateTmp: string;
 		before(async () => {
-			const privateTmp = mkdtempSync(join(tmpdir(), 'sqa68-'));
+			privateTmp = mkdtempSync(join(tmpdir(), 'subscription-attribute-surfaces-'));
 			await setupHarperWithFixture(ctx, FIXTURE_PATH, {
 				config: { threads: { count: THREADS } },
 				env: { AUTHENTICATION_AUTHORIZELOCAL: 'false', TMPDIR: privateTmp },
@@ -277,6 +276,7 @@ suite(
 			for (const close of sseClose) close();
 			for (const c of clients) await new Promise<void>((r) => c.end(true, {}, () => r()));
 			await teardownHarper(ctx);
+			rmSync(privateTmp, { recursive: true, force: true });
 		});
 
 		test('CONTROL: restricted REST GET omits secret; open GET has it', async () => {
@@ -393,7 +393,7 @@ suite(
 			strictEqual(stored.body.title, 'title-msg-v1', stored.text);
 		});
 
-		test('C2: opaque MQTT payloads (first byte not `{`) reach subscribers on every worker', async () => {
+		test('C2: opaque MQTT payloads (first byte not `{`) reach every open subscriber, and the restricted subscriber as {}', async () => {
 			// 5 WebSocket + 1 TCP open subscribers. Worker assignment is not round-robin (verifier measured 0, 2 and 3 of 6
 			// on the publisher's worker across runs), so this arm is red on a buggy build unless all six land on the
 			// publisher's worker (~(1/4)^6 with 4 workers). Order-dependent: the failure needs the opaque record shape to be
@@ -424,7 +424,10 @@ suite(
 				const rBefore = r.msgs.length;
 				strictEqual(await publish(pub.client, 'Ticket68/msg-1', payload, opts), 0, `PUBACK ${label}`);
 				await waitFor(() => opens.every((o) => o.msgs.some((m) => m.text.includes(marker))), 4000);
-				await waitFor(() => r.msgs.length > rBefore, 1000);
+				await waitFor(() => r.msgs.length > rBefore, 4000);
+				const rNew = r.msgs.slice(rBefore);
+				strictEqual(rNew.length, 1, `${label}: restricted subscriber received ${rNew.length} frame(s), expected one`);
+				deepStrictEqual(rNew[0].value, {}, `${label}: restricted projection is not {}: ${rNew[0].text}`);
 				const got = opens.filter((o) => o.msgs.some((m) => m.text.includes(marker))).map((o) => o.label);
 				delivered[label] = {
 					open: got,
@@ -453,7 +456,10 @@ suite(
 			const rCode = await subscribe(rMq.client, 'TicketView68/view-1');
 			const oCode = await subscribe(oMq.client, 'TicketView68/view-1');
 			console.log(`OBS [D] SUBACK restricted=${rCode} open=${oCode}`);
-			await sleep(800);
+			ok(
+				await waitFor(() => rSse.status() !== 0 && oSse.status() !== 0, 8000),
+				'SSE on the custom resource did not answer'
+			);
 			console.log(`OBS [D] SSE status restricted=${rSse.status()} open=${oSse.status()}`);
 			const titles = await drive('Ticket68', 'view-1', 'view');
 			await waitFor(() => sawAll(oSse.msgs, titles) && sawAll(rSse.msgs, titles), 8000);
@@ -466,26 +472,12 @@ suite(
 			strictEqual(oSse.status(), 200, 'open SSE on the custom resource');
 			assertNoLeak('D view SSE restricted', rSse.msgs, 2);
 			assertPositive('D view SSE open', oSse.msgs);
-			if (rCode === 1 || rCode === 0) {
-				assertNoLeak('D view MQTT restricted', rMq.msgs, 2);
-				assertPositive('D view MQTT open', oMq.msgs);
-			} else
-				console.log(
-					`OBS [D] MQTT subscribe to the custom resource refused (${rCode}/${oCode}); SSE arms carry the assertion`
-				);
-		});
-
-		test('E (observation): OpenView68 with allowRead overridden to true delivers the stored record unnarrowed', async () => {
-			const rSse = openSse('/OpenView68/open-1', basic(RESTRICTED));
-			await sleep(800);
-			const titles = await drive('Ticket68', 'open-1', 'open');
-			await waitFor(() => sawAll(rSse.msgs, titles), 8000);
-			obs('E openview SSE restricted', rSse.msgs);
-			strictEqual(rSse.status(), 200);
-			ok(rSse.msgs.length >= 2, 'OpenView68 delivered nothing (inconclusive)');
-			console.log(
-				`OBS [E] restricted sees secret through an allowRead override: ${rSse.msgs.some(leaked)} (documented contract: narrowing comes from Table.allowRead only)`
+			ok(
+				rCode <= 1 && oCode <= 1,
+				`MQTT subscribe to the custom resource refused (restricted ${rCode}, open ${oCode})`
 			);
+			assertNoLeak('D view MQTT restricted', rMq.msgs, 2);
+			assertPositive('D view MQTT open', oMq.msgs);
 		});
 	}
 );

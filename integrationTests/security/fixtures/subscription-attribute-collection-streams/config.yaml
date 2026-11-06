@@ -1,4 +1,4 @@
-# SQA-35: attribute-level read restrictions vs live subscription payloads.
+# Attribute read permissions on subscription collection streams, wildcard topics and caller selects.
 graphqlSchema:
   files: '*.graphql'
 rest: true

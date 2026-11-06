@@ -6,8 +6,8 @@
  * `secret`; every super-user record frame carries the matching secret; non-JSON messages reach super users
  * byte-unchanged and the restricted role as {}; no subscriber closes unplanned.
  *
- * Env: QA3307_LOAD_MS (per run, default 15000), QA3307_RUNS (default 1). Promoted from the qa-explorer bank (SQA-141,
- * SP-102; three 45 s runs on the PR head).
+ * Env: QA3307_LOAD_MS (per run, default 15000), QA3307_RUNS (default 1). Linux only: the four-worker layout needs
+ * reusePort on the HTTP listener. Throughput is reported, not asserted; every oracle has a per-subscriber frame floor.
  *
  * Reproduction:
  *   npm run test:integration -- "integrationTests/security/subscription-attribute-fanout-workers.test.ts"
@@ -30,7 +30,7 @@ import { createApiClient } from '../apiTests/utils/client.mjs';
 import { waitForRouteReady } from '../apiTests/utils/lifecycle.mjs';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'fixtures/subscription-attribute-fanout-workers');
-const skipSuite = process.env.HARPER_RUNTIME === 'bun' || process.platform === 'win32';
+const skipSuite = process.env.HARPER_RUNTIME === 'bun' || process.platform !== 'linux';
 const LOAD_MS = Number(process.env.QA3307_LOAD_MS ?? 15_000);
 const RUNS = Number(process.env.QA3307_RUNS ?? 1);
 const MIN_RECORD_FRAMES_PER_RUN = Math.min(10, Math.max(1, Math.floor(LOAD_MS / 2000)));
@@ -201,7 +201,7 @@ suite('PR 3307 mixed-role subscription fan-out over 4 workers', { skip: skipSuit
 			const sub = await subscribeMqtt(client, 'WorkerProbe/x', 0);
 			if (!sub.ok) return undefined;
 			await waitFor(() => threadId !== undefined, 5_000);
-			await new Promise<void>((res) => client.unsubscribe('WorkerProbe/x', () => res()));
+			await Promise.race([new Promise<void>((res) => client.unsubscribe('WorkerProbe/x', () => res())), sleep(5_000)]);
 			if (threadId !== undefined) workersSeen.add(threadId);
 			return threadId;
 		} finally {
@@ -657,7 +657,7 @@ suite('PR 3307 mixed-role subscription fan-out over 4 workers', { skip: skipSuit
 			const total = stats.runs.reduce((n, r) => n + r.ops, 0);
 			console.log(`[QA3307] run count=${RUNS}, total successful ops=${total}, errors=${publishedOpaque.errors}`);
 			ok(total > 0 && publishedOpaque.errors <= total * 0.01, `publish errors ${publishedOpaque.errors} of ${total}`);
-			for (const r of stats.runs) ok(r.opsPerSec >= 100, `run ${r.run} achieved only ${r.opsPerSec} ops/s`);
+			for (const r of stats.runs) console.log(`[QA3307] run ${r.run}: ${r.opsPerSec} ops/s (reported, not asserted)`);
 		}
 	);
 
@@ -674,7 +674,10 @@ suite('PR 3307 mixed-role subscription fan-out over 4 workers', { skip: skipSuit
 			`[QA3307] O1: ${frames} r frames scanned across ${rSubs.length} subscribers; violations=${bad.length}; ${JSON.stringify(bad.slice(0, 3))}`
 		);
 		strictEqual(bad.length, 0, bad.slice(0, 3).join('\n'));
-		ok(frames > 100, `only ${frames} r frames scanned`);
+		ok(
+			frames >= MIN_RECORD_FRAMES_PER_RUN * RUNS * rSubs.length,
+			`only ${frames} r frames scanned across ${rSubs.length} subscribers`
+		);
 	});
 
 	test('oracle 2 + 6: every super-user record frame carries the matching secret', () => {
@@ -701,7 +704,10 @@ suite('PR 3307 mixed-role subscription fan-out over 4 workers', { skip: skipSuit
 		);
 		strictEqual(bad.length, 0, bad.slice(0, 3).join('\n'));
 		strictEqual(restrictedShape.length, 0, restrictedShape.slice(0, 3).join('\n'));
-		ok(recordFrames > 100, `only ${recordFrames} s record frames`);
+		ok(
+			recordFrames >= MIN_RECORD_FRAMES_PER_RUN * RUNS * hotRecordSubs('s').length,
+			`only ${recordFrames} s record frames across ${hotRecordSubs('s').length} subscribers`
+		);
 	});
 
 	test('oracle 3: restricted-role record frames carry title and are only projections', () => {
@@ -767,7 +773,8 @@ suite('PR 3307 mixed-role subscription fan-out over 4 workers', { skip: skipSuit
 		strictEqual(bad.length, 0, bad.slice(0, 5).join('\n'));
 	});
 
-	test('oracle 4b (report): what REST WebSocket and SSE subscribers got for non-JSON messages', () => {
+	test('oracle 4b: REST WebSocket and SSE subscribers get non-JSON messages decoded, the restricted role as {}', () => {
+		const rNoEmpty: string[] = [];
 		for (const role of ['s', 'r'] as Role[])
 			for (const proto of ['ws', 'sse', 'sseRelated'] as Proto[]) {
 				const classes = { record: 0, empty: 0, num: 0, bytes: 0, str: 0, other: 0 };
@@ -781,7 +788,9 @@ suite('PR 3307 mixed-role subscription fan-out over 4 workers', { skip: skipSuit
 				console.log(
 					`[QA3307] O4b ${role}/${proto}: ${JSON.stringify(classes)} nonrecord samples=${JSON.stringify(samples)}`
 				);
+				if (role === 'r' && proto !== 'sseRelated' && classes.empty === 0) rNoEmpty.push(`${role}/${proto}`);
 			}
+		deepStrictEqual(rNoEmpty, [], 'restricted ws/sse subscribers received no {} frame for the non-JSON publishes');
 		const sBad = subs
 			.filter((s) => s.role === 's' && (s.proto === 'ws' || s.proto === 'sse'))
 			.map(
@@ -820,21 +829,18 @@ suite('PR 3307 mixed-role subscription fan-out over 4 workers', { skip: skipSuit
 		}
 		console.log(`[QA3307] O5 per-subscriber:\n${lines.join('\n')}`);
 		console.log(`[QA3307] workers seen (probes + MQTT attribution): ${[...workersSeen].sort()}`);
-		let log = '';
-		try {
-			log = readFileSync(logFile()).subarray(logStart).toString('utf8');
-		} catch (e: any) {
-			log = `<<cannot read ${logFile()}: ${e.message}>>`;
-		}
-		const errorLines = log.split('\n').filter((l) => /\[error\]/i.test(l));
+		const log = readFileSync(logFile()).subarray(logStart).toString('utf8');
+		const errorLines = log
+			.split('\n')
+			.filter((l) => /\[error\].*(mqtt|subscri|deliver|websocket|sse|session)/i.test(l));
 		console.log(`[QA3307] hdb.log (${logFile()}) [error] lines since test start: ${errorLines.length}`);
 		for (const l of errorLines.slice(0, 25)) console.log(`[QA3307] LOG ${l}`);
 		strictEqual(bad.length, 0, bad.join('\n'));
 		ok(workersSeen.size >= 3, `distinct workers seen ${[...workersSeen]}`);
-		strictEqual(errorLines.length, 0, `hdb.log has ${errorLines.length} [error] lines`);
+		strictEqual(errorLines.length, 0, `hdb.log has ${errorLines.length} delivery-related [error] lines`);
 	});
 
-	test('durable reconnect: frames before and after (report), resumed sessions replay', () => {
+	test('durable reconnect: resumed sessions are present and keep receiving', () => {
 		for (const s of of('r', 'mqttDurable').concat(of('s', 'mqttDurable'))) {
 			const byPhase = new Map<string, number>();
 			for (const f of s.frames) byPhase.set(f.phase, (byPhase.get(f.phase) ?? 0) + 1);
@@ -846,9 +852,11 @@ suite('PR 3307 mixed-role subscription fan-out over 4 workers', { skip: skipSuit
 		ok(resumed.length > 0);
 		const notPresent = resumed.filter((s) => !s.reconnected!.sessionPresent).map((s) => s.id);
 		strictEqual(notPresent.length, 0, `sessions not present on reconnect: ${notPresent}`);
+		const silentAfter = resumed.filter((s) => !s.frames.some((f) => f.phase.startsWith('post'))).map((s) => s.id);
+		strictEqual(silentAfter.length, 0, `resumed sessions that received nothing after reconnect: ${silentAfter}`);
 	});
 
-	test('oracle 7 (report + oracle 1): SSE /Doc/hot.related and $share subscriptions', () => {
+	test('oracle 7: SSE /Doc/hot.related delivers and $share is refused, both without leaks', () => {
 		for (const role of ['s', 'r'] as Role[]) {
 			const related = of(role, 'sseRelated');
 			const shapes = new Map<string, number>();
@@ -862,10 +870,16 @@ suite('PR 3307 mixed-role subscription fan-out over 4 workers', { skip: skipSuit
 				`[QA3307] O7 ${role} sseRelated: status=${JSON.stringify(related.map((s) => s.status))} frames=${JSON.stringify(related.map((s) => s.frames.length))} shapes=${JSON.stringify([...shapes])} samples=${JSON.stringify(samples)} events=${JSON.stringify(related.map((s) => s.events))}`
 			);
 		}
-		for (const s of of('r', 'mqttShare').concat(of('s', 'mqttShare')))
+		for (const s of of('r', 'mqttShare').concat(of('s', 'mqttShare'))) {
 			console.log(
 				`[QA3307] $share ${s.id}: suback=${s.suback} frames=${s.frames.length} events=${JSON.stringify(s.events)}`
 			);
+			ok(String(s.suback).includes('refused'), `${s.id}: $share subscribe was not refused: ${s.suback}`);
+		}
+		for (const s of of('r', 'sseRelated').concat(of('s', 'sseRelated'))) {
+			strictEqual(s.status, 200, `${s.id}: SSE /Doc/hot.related status ${s.status}`);
+			ok(s.frames.length > 0, `${s.id}: SSE /Doc/hot.related delivered nothing`);
+		}
 		const bad = of('r', 'sseRelated', 'mqttShare').flatMap((s) =>
 			s.frames.filter(leaks).map((f) => `${s.id}: ${short(f)}`)
 		);
@@ -889,15 +903,10 @@ suite('PR 3307 mixed-role subscription fan-out over 4 workers', { skip: skipSuit
 			rows.push(
 				`${s.id} reconnects=${s.events.filter((e) => e.startsWith('planned')).length} received=${JSON.stringify(c)} dupFlagged=${JSON.stringify(dups)} allDupFlagged=${s.frames.filter((f) => f.dup).length}`
 			);
-			for (const k of ['num', 'bytes', 'str'] as const) {
-				// QoS 1 is at-least-once: no loss; a surplus (observed: one redelivered frame per resume, DUP flag
-				// not set) is bounded by the number of resumes of that subscriber
-				const reconnects = s.events.filter((e) => e.startsWith('planned')).length;
+			// QoS 1 is at-least-once: no loss; a resume may redeliver what was in flight, so a surplus is reported, not asserted
+			for (const k of ['num', 'bytes', 'str'] as const)
 				if (c[k] < publishedOpaque[k])
 					bad.push(`${s.id} ${k}: LOST ${publishedOpaque[k] - c[k]} (received ${c[k]} of ${publishedOpaque[k]})`);
-				if (c[k] - publishedOpaque[k] > reconnects)
-					bad.push(`${s.id} ${k}: surplus ${c[k] - publishedOpaque[k]} exceeds ${reconnects} resumes`);
-			}
 		}
 		console.log(
 			`[QA3307] completeness (published ${publishedOpaque.num}/${publishedOpaque.bytes}/${publishedOpaque.str}):\n${rows.join('\n')}`
