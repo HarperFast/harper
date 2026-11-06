@@ -79,7 +79,7 @@ A handful of design points are non-obvious and easy to break:
   SDK tolerates supersets; tightening per-override envelopes is sibling-issue work — see the `tools/schemas/derive.ts`
   envelope note).
 
-- **Resource subscriptions are row-backed via the audit log.** `resources/subscribe` resolves the URI to a
+- **Row-backed resource subscriptions use the audit log.** `resources/subscribe` resolves the URI to a
   Resource and drives `Table.subscribe` off the audit-store `'committed'` path (same machinery as
   [Audit-store `'committed'` notification batching](../../resources/DESIGN.md#audit-store-committed-notification-batching-transactionbroadcastts)). The targeting is the subtle part:
   `getMatch` returns the matched Resource plus the remaining path on `relativeURL`, and `subscribeToResource`
@@ -92,20 +92,21 @@ A handful of design points are non-obvious and easy to break:
 
 - **Custom resources subscribe through the read resolver (#3250).** `subscribeToResource` calls
   `matchCustomResource(profile, uri)` first, exactly as `readResource` does, so read and subscribe resolve the
-  same entry; an entry without `subscribe` stays `-32602`. The author's method runs in the read path's
-  user-carrying transaction and the returned iterable is consumed after it ends, which is why generator methods
-  are refused at registration. A stream is refused at subscribe (`UnsubscribableError`, terminal
-  `not-subscribable`, so restore prunes it instead of closing the GET on every reconnect) when it has no `end()`
-  and its iterator has no `return()` or is an async generator, whose `return()` skips an unstarted body and
-  cannot interrupt a pending await. Custom values are opaque: only audit-log events get `acknowledge()`. Release
-  is one idempotent `stop()` for both sources (`end()`, else the iterator's `return()`), also run when iteration
-  ends or throws and for a stream acquired by a transaction that then failed to commit (`acquireChangeStream`).
-  The handle is unstarted until `addResourceSubscription` admits it, so a superseded GET never receives a change.
-  A custom stream is registered with `registerLiveSubscription` for identity lifetime only (token expiry, removed
-  user or role; scoped tokens are never re-resolved, the local principal is exempt), as `Resource.subscribe`
-  does for row-backed ones; an expired or stale principal is verified before admission. Access changes after
-  subscribe are the author's to enforce. Restore treats a custom URI the worker cannot resolve as not subscribable and
-  prunes it, so upgrade every worker before declaring `subscribe`; after a rollback clients subscribe again.
+  same entry; an entry without `subscribe` stays `-32602`. The author's method runs in a fresh user-carrying
+  transaction and the returned iterable is consumed after it ends, which is why generator methods are refused at
+  registration. A stream is refused at subscribe (`UnsubscribableError`, terminal `not-subscribable`, so restore
+  prunes it instead of closing the GET) when it has no `end()` and its iterator has no `return()` or is an async
+  generator, whose `return()` skips an unstarted body and cannot interrupt a pending await. `AccessViolation`
+  maps to `permission-denied`, `null` and `UnsubscribableError` map to `not-subscribable`, and other author
+  errors (including author timeouts shorter than `responseTimeoutMs`) answer `-32603` on subscribe while restore
+  records `internal-error` without closing the GET, retaining the URI for later reconnects or revisions. Custom
+  values are opaque: only audit-log events get `acknowledge()`. Release is one idempotent `stop()` for both
+  sources (`end()`, else the iterator's `return()`), also run when iteration ends or throws and for a stream whose
+  transaction failed to commit (`acquireChangeStream`). A custom stream is registered with
+  `registerLiveSubscription` for identity lifetime only (token expiry, removed user or role; scoped tokens are
+  never re-resolved, the local principal is exempt); an expired or stale principal is verified before admission,
+  while access changes after subscribe are the author's to enforce. Restore prunes a custom URI the worker cannot
+  resolve, so upgrade every worker before declaring `subscribe`.
 
 - **Subscription state is shared through the session row.** See [Persisted resource subscription state](#persisted-resource-subscription-state).
   A GET close drops resource iterators but leaves pending server requests alone; those use per-call POST streams.
@@ -190,7 +191,7 @@ Tokens include Harper's existing process incarnation, so a token from an earlier
 A replacement iterator is installed before the previous one stops, so re-subscribe has no registration gap.
 `addResourceSubscription` discards
 an installation that finishes after its GET closes. Terminal rejections are removed from the durable
-set, and a rejected replacement stops its prior iterator before acknowledgment. Each installation is bounded by the acknowledgment timeout; closing or timing out the GET releases reconciliation, and an iterator returned late is stopped by its original owner fence. Only URI generations present under the owner-claim lock are initial restore work: their transient failures close the GET with retryable 503, retaining the URI. A POST committed before the claim counts as restore work even while awaiting acknowledgment, so the new GET's grant can reject it. Later generations use live per-request error acknowledgments even while restore drains (`subscriptionState.test.js`). Failed watchers close the GET so a client can reconnect rather than keep an inert stream.
+set, and a rejected replacement stops its prior iterator before acknowledgment. Each installation is bounded by the acknowledgment timeout; closing or timing out the GET releases reconciliation, and an iterator returned late is stopped by its original owner fence. Only URI generations present under the owner-claim lock are initial restore work: transient row-backed failures close the GET with retryable 503, retaining the URI, while custom-resource restore failures keep the GET open and retain the URI. A POST committed before the claim counts as restore work even while awaiting acknowledgment, so the new GET's grant can reject it. Later generations use live per-request error acknowledgments even while restore drains (`subscriptionState.test.js`). Failed watchers close the GET so a client can reconnect rather than keep an inert stream.
 
 Ordinary principals are reauthorized through the GET principal. Expiring ordinary credentials persist only their expiry; scoped-token principals persist their embedded role and expiry. Both use the existing pool with per-URI references. Reconstructed ordinary principals use the earlier POST/GET expiry, and permission refresh preserves the GET credential's expiry. Reconnect compares the GET scope once and caches each distinct stored grant comparison only for the initial restore. Unreferenced grants are pruned. Credentials and custom claims stay out of storage. Same-worker
 requests retain their full principal during installation. Reconnect rejects expired entries; stored scoped grants require a scoped GET with the same username and role permissions (a newly issued token may expire later but cannot extend the stored grant). An ordinary GET prunes stored scoped entries while restoring valid ordinary entries. Explicit live POSTs still authorize with their own credential, including scoped POSTs onto an ordinary GET; notifications contain the URI, not record data. The notification callback closes the GET and its iterators on an update after either grant expires, including custom streams that do not enforce expiry themselves. Native table subscriptions may end at expiry before an update reaches that callback. Refreshing or reconnecting credentials does not extend an existing subscription; clients must re-subscribe with the replacement credential.

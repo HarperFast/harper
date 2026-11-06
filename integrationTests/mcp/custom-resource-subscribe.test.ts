@@ -200,6 +200,16 @@ suite('MCP resources/subscribe on custom mcpResources (#3250)', (ctx: ContextWit
 		return JSON.parse(text).delivered;
 	}
 
+	async function setFailStatus(id: string, failStatus: string | number | null): Promise<void> {
+		const res = await fetch(new URL('/Probe/', ctx.harper.httpURL), {
+			method: 'POST',
+			headers: { 'content-type': 'application/json', 'authorization': adminAuth },
+			body: JSON.stringify({ id, failStatus }),
+		});
+		const text = await res.text();
+		ok(res.ok, `Probe failStatus POST failed: ${res.status} ${text}`);
+	}
+
 	const released = (state: ProbeState, id: string, via: string) =>
 		state.released.some((entry) => entry.id === id && entry.via === via);
 
@@ -268,13 +278,17 @@ suite('MCP resources/subscribe on custom mcpResources (#3250)', (ctx: ContextWit
 		}
 	});
 
-	test('closing the GET stream releases the author stream; reconnecting restores it', async () => {
+	test('closing the GET stream releases the author stream; reconnecting restores it even if sibling custom URIs now fail', async () => {
 		const session = await initialize(basicAuth(READER.username, READER.password));
 		const uri = 'notes:///reconnect';
 		const first = await openSse(session);
 		deepStrictEqual((await rpc(session, 'resources/subscribe', { uri })).result, {});
+		deepStrictEqual((await rpc(session, 'resources/subscribe', { uri: 'notes:///vanished' })).result, {});
+		deepStrictEqual((await rpc(session, 'resources/subscribe', { uri: 'notes:///faulted' })).result, {});
 		first.close();
 		await waitForProbe((state) => released(state, 'reconnect', 'end'), 'the stream to be released on GET close');
+		await setFailStatus('vanished', 'null');
+		await setFailStatus('faulted', 'error');
 		const second = await openSse(session);
 		try {
 			await waitForProbe(
@@ -287,6 +301,53 @@ suite('MCP resources/subscribe on custom mcpResources (#3250)', (ctx: ContextWit
 			ok(await second.next(updatedFor(uri), 5000), 'the restored subscription delivers on the new stream');
 		} finally {
 			second.close();
+		}
+		await setFailStatus('faulted', null);
+		const third = await openSse(session);
+		try {
+			await waitForProbe(
+				(state) => state.open.includes('faulted'),
+				'the retained faulted URI to restore once its error clears'
+			);
+			strictEqual(
+				(await probe()).subscribes.filter((entry) => entry.params.id === 'vanished').length,
+				2,
+				'the null URI was pruned on the first restore and is not retried on the next reconnect'
+			);
+			ok(await emit('faulted'));
+			ok(
+				await third.next(updatedFor('notes:///faulted'), 5000),
+				'the retained faulted subscription delivers once restored'
+			);
+		} finally {
+			third.close();
+			await setFailStatus('vanished', null);
+			await setFailStatus('faulted', null);
+		}
+	});
+
+	test('dropping a user releases its active custom subscription stream', async () => {
+		const tempUser = { username: 'mcp_sub_temp_user', password: 'TempUserPw-3250!' };
+		await op({ operation: 'add_user', role: 'mcp_sub_note_reader', ...tempUser, active: true });
+		const session = await initialize(basicAuth(tempUser.username, tempUser.password));
+		const sse = await openSse(session);
+		try {
+			const uri = 'notes:///revoked-user';
+			deepStrictEqual((await rpc(session, 'resources/subscribe', { uri })).result, {});
+			ok((await probe()).open.includes('revoked-user'), 'custom stream is open before drop_user');
+			await op({ operation: 'drop_user', username: tempUser.username });
+			await waitForProbe(
+				(state) => released(state, 'revoked-user', 'end'),
+				'the stream to be released when its user is dropped'
+			);
+			strictEqual(await emit('revoked-user'), false, 'no author stream remains open after drop_user');
+			strictEqual(
+				(await probe()).subscribes.filter((entry) => entry.params.id === 'revoked-user').length,
+				1,
+				'revocation does not re-run the author subscribe method'
+			);
+		} finally {
+			sse.close();
 		}
 	});
 
@@ -320,7 +381,7 @@ suite('MCP resources/subscribe on custom mcpResources (#3250)', (ctx: ContextWit
 		}
 	});
 
-	test('a custom resource without subscribe answers -32602', async () => {
+	test('a custom resource without subscribe or returning an unreleasable stream answers -32602', async () => {
 		const session = await initialize(basicAuth(READER.username, READER.password));
 		const sse = await openSse(session);
 		try {
@@ -328,6 +389,9 @@ suite('MCP resources/subscribe on custom mcpResources (#3250)', (ctx: ContextWit
 			strictEqual(body.error?.code, -32602);
 			strictEqual(body.error.message, 'resource is not subscribable: plain:///readme');
 			strictEqual((await rpc(session, 'resources/read', { uri: 'plain:///readme' })).result.contents[0].text, 'readme');
+			const unreleasable = await rpc(session, 'resources/subscribe', { uri: 'notes:///unreleasable' });
+			strictEqual(unreleasable.error?.code, -32602);
+			strictEqual(unreleasable.error.message, 'resource is not subscribable: notes:///unreleasable');
 		} finally {
 			sse.close();
 		}

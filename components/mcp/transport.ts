@@ -944,8 +944,6 @@ async function dispatchResourcesSubscribe(
 		return jsonResponse(200, buildError(messageId, ERROR_CODES.INVALID_PARAMS, `permission denied: ${uri}`));
 	}
 	if (result === 'not-subscribable') {
-		// Row-backed application resources and custom resources declaring `subscribe` are
-		// subscribable; synthetic harper://* URIs (and unknown URIs) have no change source.
 		return jsonResponse(200, buildError(messageId, ERROR_CODES.INVALID_PARAMS, `resource is not subscribable: ${uri}`));
 	}
 	if (result === 'timeout') {

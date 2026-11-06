@@ -26,6 +26,7 @@ const {
 	_resetSessionRegistryForTest,
 } = require('#src/components/mcp/sessionRegistry');
 const { _setResourcesForTest, _setSubscribeImplForTest } = require('#src/components/mcp/resources');
+const { addCustomResource, clearProfileCustomResources } = require('#src/components/mcp/customResourceRegistry');
 const { _liveSubscriptionCount, _resetSubscriptionsForTest } = require('#src/components/mcp/subscriptions');
 const { AccessViolation } = require('#src/utility/errors/hdbError');
 
@@ -80,6 +81,7 @@ describe('MCP persisted subscription state', function () {
 		_resetSessionRegistryForTest();
 		if (session) await waitFor(async () => !(await loadSession(session.id))?.streamToken);
 		_resetSubscriptionsForTest();
+		clearProfileCustomResources('application');
 		_setSubscribeImplForTest(undefined);
 		_setResourcesForTest(undefined);
 		_setSubscriptionTimeoutForTest(undefined);
@@ -677,5 +679,51 @@ describe('MCP persisted subscription state', function () {
 		await sessions.delete(session.id);
 		await waitFor(() => !getRegisteredSession(session.id));
 		assert.equal(_liveSubscriptionCount(session.id), 0);
+	});
+
+	it('retains a custom restore failure without closing the GET and retries it on the next revision', async () => {
+		let faultedAttempts = 0;
+		addCustomResource({
+			uriTemplate: 'notes:///{id}',
+			name: 'note',
+			profile: 'application',
+			read: async () => 'x',
+			subscribe: async (params) => {
+				if (params.id === 'vanished') return null;
+				if (++faultedAttempts === 1) throw new Error('transient custom failure');
+				return changeStream();
+			},
+		});
+		await patchSession(session.id, { subscriptions: ['notes:///faulted', 'notes:///vanished'] });
+		const record = await open();
+		assert.equal(getRegisteredSession(session.id), record);
+		assert.equal(_liveSubscriptionCount(session.id), 0);
+		assert.deepEqual((await loadSession(session.id)).subscriptions, ['notes:///faulted']);
+		assert.equal(await subscribe(URI), 'success');
+		assert.equal(faultedAttempts, 2);
+		assert.equal(_liveSubscriptionCount(session.id), 2);
+	});
+
+	it('clears installed state when a stream stops on its own so the next reconcile pass reinstalls it', async () => {
+		const streams = [];
+		addCustomResource({
+			uriTemplate: 'notes:///{id}',
+			name: 'note',
+			profile: 'application',
+			read: async () => 'x',
+			subscribe: async () => {
+				const s = changeStream();
+				streams.push(s);
+				return s;
+			},
+		});
+		await open();
+		assert.equal(await subscribe('notes:///drop'), 'success');
+		assert.equal(streams.length, 1);
+		streams[0].end();
+		await waitFor(() => _liveSubscriptionCount(session.id) === 0);
+		assert.equal(await subscribe(URI), 'success');
+		assert.equal(streams.length, 2);
+		assert.equal(_liveSubscriptionCount(session.id), 2);
 	});
 });

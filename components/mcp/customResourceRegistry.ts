@@ -48,19 +48,8 @@
  * transaction and drops that shared, isolated snapshot.
  *
  * An entry may also declare `subscribe` (#3250): a method with the read calling
- * convention that returns an async iterable; each value it yields sends
- * `notifications/resources/updated` for the subscribed URI (the value itself is
- * never sent). It runs in the same user-carrying transaction as a read, and the
- * iterable is consumed after that transaction ends, so authorization and source
- * acquisition must happen before it returns — generator methods are rejected at
- * registration for that reason. The stream is released with `end()` when it
- * has one, else its iterator's `return()`; a stream with no `end()` is refused
- * when its iterator has no `return()`, or is an async generator, whose
- * `return()` cannot interrupt a pending await and skips an unstarted body (a
- * source the method opened before returning a refused generator stays open, so
- * open sources inside the returned stream). The MCP layer adds only
- * identity-lifetime revocation (token expiry, a removed user or role);
- * resource-specific access changes after subscribe are the author's to enforce.
+ * convention, run in a fresh user-carrying transaction, that returns an async
+ * iterable of change triggers (see `components/mcp/DESIGN.md`).
  */
 import type { McpProfile } from './transport.ts';
 import type { AuthedUser } from './toolRegistry.ts';
@@ -84,11 +73,7 @@ export type CustomResourceReadResult = string | CustomResourceContent | object;
 /** An author's subscribe that can never yield a releasable stream; retrying cannot change that. */
 export class UnsubscribableError extends Error {}
 
-/**
- * What an author `subscribe` returns: values are opaque change triggers. Without
- * `end()`, its iterator must have a `return()` that releases the source.
- */
-export type CustomResourceSubscription = AsyncIterable<unknown> & { end?: () => unknown };
+export type CustomResourceSubscription = (AsyncIterable<unknown> & { end?: () => unknown }) | null | undefined;
 
 export interface CustomResourceDef {
 	/** Fixed URI — exactly one of `uri` / `uriTemplate` is set. */

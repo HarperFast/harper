@@ -377,33 +377,39 @@ function enumerateMcpResourcePaths(): string[] {
 }
 
 export interface ResourceSubscription {
-	/**
-	 * Begin delivering: `onUpdate` runs once per change. Deferred until the caller
-	 * has admitted the subscription, so no change reaches a session that no longer
-	 * owns it. A no-op once stopped.
-	 */
+	readonly stopped: boolean;
+	readonly revoked: boolean;
+	/** Start consuming the change stream. A no-op once stopped. */
 	start: (onUpdate: () => void) => void;
 	/** Release the change stream. Idempotent; also runs when the stream ends or fails. */
 	stop: () => void;
+	revoke: () => void;
 	/** Run `callback` once stopped, for whatever reason; at once if already stopped. */
 	onStop: (callback: () => void) => void;
 }
 
+const DEFAULT_CUSTOM_SUBSCRIBE_TIMEOUT_MS = 15_000;
+let customSubscribeTimeoutMs = DEFAULT_CUSTOM_SUBSCRIBE_TIMEOUT_MS;
+const customSubscribeErrors = new WeakSet<object>();
+
+export function _setCustomSubscribeTimeoutForTest(value: number | undefined): void {
+	customSubscribeTimeoutMs = value ?? DEFAULT_CUSTOM_SUBSCRIBE_TIMEOUT_MS;
+}
+
+export function isCustomSubscribeError(err: unknown): boolean {
+	return typeof err === 'object' && err !== null && customSubscribeErrors.has(err);
+}
+
+function markCustomSubscribeError(err: unknown): Error {
+	const error = err instanceof Error ? err : new Error(describeError(err));
+	customSubscribeErrors.add(error);
+	return error;
+}
+
 /**
  * Subscribe to changes on a resource URI (#1349 §3.6), returning an unstarted
- * handle, or `null` if the URI is not subscribable. Two sources qualify:
- *   - a custom `mcpResources` entry that declares `subscribe` (#3250), matched
- *     exactly as `readResource` matches it, so read and subscribe resolve the
- *     same entry;
- *   - an application HTTP(S) resource URL backed by a Resource with `subscribe`.
- * Synthetic `harper://*` URIs have no change source and are list_changed-only.
- *
- * Mirrors the MQTT durable-subscription consumer (`server/DurableSubscriptionsSession.ts`):
- * `resource.subscribe` (a transactional static) returns an async-iterable with an
- * `.end()`; we iterate it on the worker holding the SSE stream, so the audit-log
- * `'committed'` broadcast delivers changes locally (cross-worker via the shared log).
- * Throws when the author's method or `resource.subscribe` throws, and
- * `AccessViolation` when a custom subscription's principal is no longer authorized.
+ * handle, or `null` if the URI is not subscribable (`mcpResources` with
+ * `subscribe` first, then row-backed HTTP(S)/`harper+rest:` resources).
  */
 export async function subscribeToResource(
 	uri: string,
@@ -470,23 +476,46 @@ async function subscribeToCustomResource(
 	profile: McpProfile
 ): Promise<ResourceSubscription | null> {
 	let subscription: ResourceSubscription;
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	let timedOut = false;
 	try {
 		// A fresh context, unlike a read's: reconcile runs inside whatever scope loaded the session row, and
 		// joining that open transaction would run the author's method without this user.
-		const stream = await acquireChangeStream(uri, { user: user as any }, () => subscribe(params, { user, profile }));
+		const acquiring = acquireChangeStream(uri, { user: user as any }, () => subscribe(params, { user, profile }));
+		acquiring.then(
+			(late) => {
+				if (timedOut && late) {
+					try {
+						changeStreamSubscription(uri, late, false).stop();
+					} catch {}
+				}
+			},
+			() => {}
+		);
+		const timeout = new Promise<never>((_, reject) => {
+			timer = setTimeout(() => {
+				timedOut = true;
+				reject(new Error(`subscribe for ${uri} timed out`));
+			}, customSubscribeTimeoutMs);
+			timer.unref?.();
+		});
+		const stream = await Promise.race([acquiring, timeout]);
 		if (!stream) return null;
 		subscription = changeStreamSubscription(uri, stream, false, true);
 	} catch (err) {
 		if (err instanceof AccessViolation) throw err;
 		harperLogger.error(`MCP subscribe for ${uri} failed:`, err);
 		if (err instanceof UnsubscribableError) return null;
-		throw err;
+		throw markCustomSubscribeError(err);
+	} finally {
+		clearTimeout(timer);
 	}
 	try {
 		await trackPrincipalLifetime(subscription, user);
 	} catch (err) {
 		subscription.stop();
-		throw err;
+		if (err instanceof AccessViolation) throw err;
+		throw markCustomSubscribeError(err);
 	}
 	return subscription;
 }
@@ -510,9 +539,7 @@ async function acquireChangeStream(
 		if (isChangeStream(acquired)) {
 			try {
 				changeStreamSubscription(uri, acquired, false).stop();
-			} catch {
-				// a stream that cannot even produce an iterator was released by that attempt
-			}
+			} catch {}
 		}
 		throw err;
 	}
@@ -524,14 +551,8 @@ function isChangeStream(value: unknown): value is ResourceChangeStream {
 }
 
 /**
- * Wrap a change stream in a start/stop handle. `stop` releases the stream once:
- * `end()` when it has one (a Harper subscription, or an author's queue), else
- * its iterator's `return()`. The iterator is taken up front so a stream that
- * cannot produce one fails the subscribe instead of being admitted dead. With
- * `requireRelease`, a stream with no `end()` is refused unless its iterator has
- * a `return()` that is not an async generator's: there would be nothing to call,
- * or that `return()` cannot interrupt a pending await, so unsubscribe would not
- * release its source.
+ * Wrap a change stream in a start/stop handle (`end()`, else iterator `return()`;
+ * `requireRelease` refuses streams with neither or bare async generators).
  */
 function changeStreamSubscription(
 	uri: string,
@@ -562,6 +583,7 @@ function changeStreamSubscription(
 	}
 	let started = false;
 	let stopped = false;
+	let revoked = false;
 	const stopCallbacks: Array<() => void> = [];
 	const stop = () => {
 		if (stopped) return;
@@ -576,8 +598,15 @@ function changeStreamSubscription(
 		release(uri, () => (typeof stream.end === 'function' ? stream.end() : iterator.return?.()));
 	};
 	return {
+		get stopped() {
+			if (!stopped && (stream as { closed?: boolean }).closed === true) stop();
+			return stopped;
+		},
+		get revoked() {
+			return revoked;
+		},
 		start(onUpdate) {
-			if (stopped || started) return;
+			if (this.stopped || started) return;
 			started = true;
 			void (async () => {
 				try {
@@ -595,8 +624,12 @@ function changeStreamSubscription(
 			})();
 		},
 		stop,
+		revoke() {
+			revoked = true;
+			stop();
+		},
 		onStop(callback) {
-			if (stopped) callback();
+			if (this.stopped) callback();
 			else stopCallbacks.push(callback);
 		},
 	};
@@ -639,7 +672,7 @@ async function trackPrincipalLifetime(subscription: ResourceSubscription, user: 
 		identityOnly: user._scopedToken === true || hasRecordProvenance(principal),
 		recheck: async (pass: RecheckPass) =>
 			user._scopedToken === true || !!(await pass.memo(resolveUser, username, resolveUser))?.role,
-		revoke: subscription.stop,
+		revoke: subscription.revoke,
 	});
 	subscription.onStop(handle.unregister);
 	let recheckNow: boolean;
@@ -648,7 +681,9 @@ async function trackPrincipalLifetime(subscription: ResourceSubscription, user: 
 	} catch {
 		recheckNow = true;
 	}
-	if (recheckNow && (await handle.verify()) === 'revoked') throw new AccessViolation(user);
+	if (subscription.revoked || (recheckNow && (await handle.verify()) === 'revoked') || subscription.revoked) {
+		throw new AccessViolation(user);
+	}
 }
 
 /** A rejection reason may be anything, `null` or a null-prototype object included. */

@@ -130,6 +130,30 @@ describe('mcp/subscriptions', () => {
 		assert.equal(streams[1].endCalls, 1, 'the replacement is stopped by unsubscribe');
 	});
 
+	it('rejects a replacement that is already closed or ends on its first read without stopping the live predecessor', async () => {
+		registerSession('s1', 'application', USER);
+		const liveStream = makeFakeStream();
+		_setSubscribeImplForTest(async () => liveStream);
+		assert.equal(await addResourceSubscription('s1', URI, USER), true);
+
+		const alreadyClosed = Object.assign(makeFakeStream(), { closed: true });
+		_setSubscribeImplForTest(async () => alreadyClosed);
+		assert.equal(await addResourceSubscription('s1', URI, USER), false);
+		assert.equal(liveStream.endCalls, 0, 'the live predecessor stays open when the replacement was already closed');
+		assert.equal(_liveSubscriptionCount('s1'), 1);
+
+		const doneImmediately = makeFakeStream();
+		doneImmediately.end();
+		_setSubscribeImplForTest(async () => doneImmediately);
+		assert.equal(await addResourceSubscription('s1', URI, USER), false);
+		assert.equal(
+			liveStream.endCalls,
+			0,
+			'the live predecessor stays open when the replacement ended on its first read'
+		);
+		assert.equal(_liveSubscriptionCount('s1'), 1);
+	});
+
 	it('dropSessionSubscriptions stops all live subscriptions for a session', async () => {
 		registerSession('s1', 'application', USER);
 		await addResourceSubscription('s1', URI, USER);

@@ -1,7 +1,12 @@
 // The suite runs one worker, so the state here is the state the MCP session uses.
 import { RequestTarget, getUser } from 'harper';
 
-const state = (globalThis.__MCP_SUBSCRIBE_3250__ ??= { subscribes: [], released: [], streams: new Map() });
+const state = (globalThis.__MCP_SUBSCRIBE_3250__ ??= {
+	subscribes: [],
+	released: [],
+	streams: new Map(),
+	failById: new Map([['broken', 500]]),
+});
 
 class NoteStream {
 	constructor(id, kind) {
@@ -73,7 +78,16 @@ export class NotesMcp extends Resource {
 	}
 	watchNote(params, context) {
 		recordSubscribe(this, 'notes', params, context);
-		if (params.id === 'broken') throw new Error('note source unavailable: sk-secret-3250');
+		if (params.id === 'unreleasable') {
+			return (async function* () {
+				yield await new Promise(() => {});
+			})();
+		}
+		if (state.failById.has(params.id)) {
+			const status = state.failById.get(params.id);
+			if (status === 'null') return null;
+			throw new Error('note source unavailable: sk-secret-3250');
+		}
 		return new EndableNoteStream(params.id, 'end');
 	}
 	watchNoteReturnOnly(params, context) {
@@ -124,7 +138,12 @@ export class Probe extends Resource {
 		return { subscribes: state.subscribes, released: state.released, open: [...state.streams.keys()] };
 	}
 	static async post(_target, data) {
-		const { id } = (await data) ?? {};
+		const { id, failStatus } = (await data) ?? {};
+		if (failStatus !== undefined) {
+			if (failStatus === null) state.failById.delete(id);
+			else state.failById.set(id, failStatus);
+			return { delivered: false };
+		}
 		const stream = state.streams.get(id);
 		stream?.push({ id });
 		return { delivered: !!stream };

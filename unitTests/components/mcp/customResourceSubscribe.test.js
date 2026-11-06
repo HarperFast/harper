@@ -8,7 +8,11 @@ const assert = require('node:assert');
 // A background re-authorization tick landing mid-test would add rechecks the tests do not count on.
 process.env.HARPER_SUBSCRIPTION_REAUTH_INTERVAL_MS ??= String(24 * 60 * 60 * 1000);
 
-const { subscribeToResource } = require('#src/components/mcp/resources');
+const {
+	subscribeToResource,
+	isCustomSubscribeError,
+	_setCustomSubscribeTimeoutForTest,
+} = require('#src/components/mcp/resources');
 const { addCustomResource, clearProfileCustomResources } = require('#src/components/mcp/customResourceRegistry');
 const { contextStorage } = require('#src/resources/transaction');
 const { _liveSubscriptionCount, _notifyUserChange, _tickNow } = require('#src/server/liveSubscriptionAuth');
@@ -87,6 +91,7 @@ function collectUnhandledRejections() {
 describe('mcp custom resources/subscribe (#3250)', () => {
 	afterEach(() => {
 		clearProfileCustomResources('application');
+		_setCustomSubscribeTimeoutForTest(undefined);
 	});
 
 	it('runs the declared subscribe with template params, the session user and profile, in a user-carrying transaction', async () => {
@@ -254,11 +259,40 @@ describe('mcp custom resources/subscribe (#3250)', () => {
 		}
 	});
 
-	it('lets an author error propagate, acquiring nothing', async () => {
-		addNotes(async () => {
-			throw new Error('no such note');
+	it('classifies AccessViolation and null explicitly while marking other author errors and timeouts as custom-subscribe errors', async () => {
+		addNotes(async (params) => {
+			if (params.id === 'forbidden') throw new AccessViolation({});
+			if (params.id === 'missing') return null;
+			if (params.id === 'upstream403') throw Object.assign(new Error('upstream 403'), { statusCode: 403 });
+			throw new Error('upstream unavailable');
 		});
-		await assert.rejects(subscribeToResource('notes:///n1', USER, 'application'), /no such note/);
+		await assert.rejects(subscribeToResource('notes:///forbidden', USER, 'application'), AccessViolation);
+		assert.equal(await subscribeToResource('notes:///missing', USER, 'application'), null);
+		await assert.rejects(
+			subscribeToResource('notes:///upstream403', USER, 'application'),
+			(err) => isCustomSubscribeError(err) && /upstream 403/.test(err.message)
+		);
+		await assert.rejects(
+			subscribeToResource('notes:///n1', USER, 'application'),
+			(err) => isCustomSubscribeError(err) && /upstream unavailable/.test(err.message)
+		);
+
+		clearProfileCustomResources('application');
+		_setCustomSubscribeTimeoutForTest(20);
+		let resolveLate;
+		const lateStream = makeStream();
+		addNotes(
+			() =>
+				new Promise((resolve) => {
+					resolveLate = resolve;
+				})
+		);
+		await assert.rejects(
+			subscribeToResource('notes:///hung', USER, 'application'),
+			(err) => isCustomSubscribeError(err) && /timed out/.test(err.message)
+		);
+		resolveLate(lateStream);
+		await waitFor(() => lateStream.stats.endCalls === 1, 2000);
 	});
 
 	describe('identity lifetime', () => {

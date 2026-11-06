@@ -11,6 +11,7 @@ import {
 	type McpSessionRecord,
 } from './session.ts';
 import { getRegisteredSession } from './sessionRegistry.ts';
+import { isCustomSubscribeError } from './resources.ts';
 import { addResourceSubscription, dropSessionSubscriptions, removeResourceSubscription } from './subscriptions.ts';
 import type { AuthedUser } from './toolRegistry.ts';
 
@@ -127,7 +128,7 @@ export async function claimSubscriptionOwner(sessionId: string, streamToken: str
 	record.queue.once('close', close);
 	const fail = () => record.queue.close();
 	const current = () => !stopped && getRegisteredSession(sessionId) === record;
-	async function install(uri: string, user: AuthedUser): Promise<boolean> {
+	async function install(uri: string, user: AuthedUser, generation: string): Promise<boolean> {
 		let onClose!: () => void;
 		const closed = new Promise<boolean>((resolve) => {
 			onClose = () => resolve(false);
@@ -135,7 +136,12 @@ export async function claimSubscriptionOwner(sessionId: string, streamToken: str
 		});
 		const timer = setTimeout(fail, responseTimeoutMs);
 		try {
-			return await Promise.race([addResourceSubscription(sessionId, uri, user), closed]);
+			return await Promise.race([
+				addResourceSubscription(sessionId, uri, user, () => {
+					if (installed.get(uri) === generation) installed.delete(uri);
+				}),
+				closed,
+			]);
 		} finally {
 			clearTimeout(timer);
 			record.queue.off('close', onClose);
@@ -178,8 +184,8 @@ export async function claimSubscriptionOwner(sessionId: string, streamToken: str
 			const generationOf = (uri: string) => session.subscriptionGenerations?.[uri] ?? '';
 			for (const uri of installed.keys()) {
 				if (!uris.has(uri)) {
-					removeResourceSubscription(sessionId, uri);
 					installed.delete(uri);
+					removeResourceSubscription(sessionId, uri);
 				}
 			}
 			for (const uri of Object.keys(rejected)) {
@@ -217,16 +223,18 @@ export async function claimSubscriptionOwner(sessionId: string, streamToken: str
 						(user.authExpiresAt !== undefined && Date.now() >= user.authExpiresAt * 1000)
 					) {
 						rejected[uri] = { generation, result: 'permission-denied' };
-					} else if (await install(uri, user)) installed.set(uri, generation);
-					else rejected[uri] = { generation, result: 'not-subscribable' };
+					} else if (await install(uri, user, generation)) {
+						installed.set(uri, generation);
+					} else rejected[uri] = { generation, result: 'not-subscribable' };
 				} catch (error) {
-					rejected[uri] = {
-						generation,
-						result: error instanceof AccessViolation ? 'permission-denied' : 'internal-error',
-					};
-					if (restoring && rejected[uri].result === 'internal-error') {
-						fail();
-						return;
+					if (error instanceof AccessViolation) {
+						rejected[uri] = { generation, result: 'permission-denied' };
+					} else {
+						rejected[uri] = { generation, result: 'internal-error' };
+						if (restoring && !isCustomSubscribeError(error)) {
+							fail();
+							return;
+						}
 					}
 				}
 				if (!current()) return;
@@ -255,8 +263,8 @@ export async function claimSubscriptionOwner(sessionId: string, streamToken: str
 					latest.subscriptionPrincipalIds
 				);
 				for (const uri of terminal) {
-					removeResourceSubscription(sessionId, uri);
 					installed.delete(uri);
+					removeResourceSubscription(sessionId, uri);
 					delete generations[uri];
 					delete principalIds[uri];
 				}
