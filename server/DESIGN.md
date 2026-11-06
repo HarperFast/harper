@@ -638,12 +638,6 @@ servers" loop binds that server; only the exclusive operations port reaches `Bun
 `Request`/`Response` fetch path is dead code for the main port, and its divergences show up as
 `node:http`-emulation divergences instead.
 
-That loop binds without `reusePort`, and Bun's `http.Server.listen` drops the option outside a
-`node:cluster` worker process anyway: one worker binds the main port, the others swallow `EADDRINUSE`,
-and every request on it, WebSockets included, runs on that worker whatever `threads.count` is. Suites
-that need a second serving worker (`integrationTests/mcp/initialize-admission-workers.test.ts`) narrow
-on `HARPER_RUNTIME=bun`.
-
 One such divergence, `#2210`: Bun's `node:http` never derives keep-alive from the request. For a
 `Connection: close` request `shouldKeepAlive` stays `true`, and neither a `Connection: close` response
 header nor `response.socket.end()` closes the connection — a **stream-ended** response (an async
@@ -662,13 +656,18 @@ both versions. A 1.0 `keep-alive` request whose response _did_ get a
 (`endConnectionIfClientExpectsClose`, `isBun`-gated, HTTP/1 only, clean path and a pre-header error
 response — an aborting error path already closes because the response is destroyed with the stream error). Ending the
 _request's_ socket is the only remedy that works after a clean stream end on Bun: a `Connection:
-close` response header, `response.socket.end()` and `response.destroy()` are all no-ops
-there. `socket.end()` is graceful, so it does not truncate. The
+close` response header, `response.socket.end()` and `response.destroy()` were all measured as no-ops
+there. `socket.end()` is graceful, so it does not truncate — 8 MB over plain TCP and 6 MB over TLS to
+a deliberately slow reader each arrive whole. The
 `Content-Length` check reads `response.hasHeader()`, which Bun populates from the `writeHead(status,
 headers)` fast path this file uses (Node does not, but the branch is Bun-only). A
 keep-alive arm pins the other direction (such a client keeps its connection and reuses it); the two
 HTTP/1.0 arms are Node/Bun-only, because uWS does not route an HTTP/1.0 request to the resource at
 all.
+
+`listenOnPortsBun`'s loop binds the main port without `reusePort`, and Bun's `http.Server.listen` drops
+the option outside a `node:cluster` worker process anyway: the other workers swallow `EADDRINUSE`, and
+every request on the port, WebSockets included, runs on one worker whatever `threads.count` is.
 
 ## Per-worker UDS mirrors are separate server instances — port-keyed wiring does not reach them (`server/http.ts`)
 

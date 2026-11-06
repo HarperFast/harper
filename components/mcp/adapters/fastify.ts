@@ -22,7 +22,7 @@ interface FastifyLikeRequest {
 	method: string;
 	headers: Record<string, string | string[] | undefined>;
 	body: unknown;
-	/** Read by `clientAddressOf` for the client address; Fastify's `request.ip` is wrong when injected. */
+	/** The client address source: Fastify's `request.ip` is 127.0.0.1 when injected (Bun, uWS). */
 	raw?: unknown;
 	/**
 	 * `authAndEnsureUserOnRequest` sets the full user (incl. role + permission
