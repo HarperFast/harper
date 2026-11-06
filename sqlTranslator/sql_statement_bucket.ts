@@ -178,8 +178,17 @@ class sqlStatementBucket {
 		if (tables.length === 0) return { paths, unresolved };
 		const { Op, Column } = (alasql as any).yy;
 		const isMemberAccess = (node) => node instanceof Op && (node.op === '->' || node.op === '!');
-		const isRelationship = (name) =>
-			tables.some((tableClass) => tableClass.propertyResolvers[name]?.definition?.tableClass);
+		// the tables a column may belong to that declare it as a relationship; a qualifier names one table
+		const owners = (column) => {
+			const qualifier = column.tableid;
+			const tableName = qualifier && (this.table_lookup.get(qualifier) ?? qualifier);
+			const schema = qualifier && this.schema_lookup.get(qualifier);
+			return tables.filter(
+				(tableClass) =>
+					(!qualifier || (tableClass.tableName === tableName && (!schema || tableClass.databaseName === schema))) &&
+					tableClass.propertyResolvers[column.columnid]?.definition?.tableClass
+			);
+		};
 		// astNodes yields a chain's outermost access before the accesses inside it, which that chain's path covers
 		const inChain = new Set();
 		for (const node of astNodes(this.ast)) {
@@ -195,14 +204,8 @@ class sqlStatementBucket {
 			if (base instanceof Column && !computed) {
 				members.push(base.columnid);
 				const path = members.reverse();
-				const qualified = base.tableid && (this.table_lookup.get(base.tableid) ?? base.tableid);
-				for (const tableClass of tables)
-					if (
-						(!qualified || tableClass.tableName === qualified) &&
-						tableClass.propertyResolvers[base.columnid]?.definition?.tableClass
-					)
-						paths.push({ tableClass, path });
-			} else if ([...columnNodes(base)].some((column) => isRelationship(column.columnid))) {
+				for (const tableClass of owners(base)) paths.push({ tableClass, path });
+			} else if ([...columnNodes(base)].some((column) => owners(column).length > 0)) {
 				unresolved.push(node.toString());
 			}
 		}
