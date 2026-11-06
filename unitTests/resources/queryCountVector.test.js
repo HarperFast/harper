@@ -57,6 +57,44 @@ describe('Table.search count on vector/HNSW-sorted queries (approximate totals)'
 		assert.strictEqual(large.recordCountExact, false);
 	});
 
+	it('exact: a related vector threshold keeps the outer total unavailable', async function () {
+		const vectors = {
+			name: 'vectors',
+			elements: { type: 'VectorCountTable', definition: { tableClass: VectorCount } },
+			relationship: { from: 'vectorIds' },
+		};
+		const Group = table({
+			table: 'VectorCountGroup',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'vectorIds', elements: { type: 'ID' }, indexed: true },
+				vectors,
+			],
+		});
+		await Group.put('all', { vectorIds: Array.from({ length: 80 }, (_, index) => index) });
+		const page = await Group.search({
+			conditions: [
+				{
+					attribute: 'vectors',
+					conditions: [{ attribute: 'vector', comparator: 'lt', value: 1, target: TARGET, distance: 'cosine' }],
+				},
+			],
+			select: ['id'],
+			limit: 1,
+			count: 'exact',
+		});
+		assert.deepStrictEqual(
+			page.map(({ id }) => id),
+			['all']
+		);
+		assert.strictEqual(page.recordCount, null);
+		assert.strictEqual(page.recordCountExact, false);
+		const ordinary = await Group.search({ select: ['id'], limit: 1, count: 'exact' });
+		assert.strictEqual(ordinary.recordCount, 1);
+		assert.strictEqual(ordinary.recordCountExact, true);
+	});
+
 	it('exact: a vector threshold filter (lt/le, no sort) is also reported unavailable', async function () {
 		// An HNSW `lt`/`le` threshold query drives the same bounded, minResults-widened traversal as a
 		// vector sort — no `sort` clause needed — so it must be treated as approximate too.

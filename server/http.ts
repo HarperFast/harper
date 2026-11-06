@@ -1280,7 +1280,7 @@ export function makeUwsHandler(
 					headers: request.headers.asObject,
 					body: request.body, // stream; inject() consumes it as the payload
 					user: request.user,
-					ip: isOperationsServer ? request.ip : undefined,
+					ip: request.ip,
 				});
 				const respHeaders = new Headers();
 				for (const [k, v] of Object.entries(injectResult.headers)) {
@@ -1700,6 +1700,7 @@ const INTERNAL_USER_HEADER = 'x-harper-internal-pre-auth-user';
 
 /**
  * Run a request through a Fastify instance via inject() — its internal router, no socket needed.
+ * Preserves the verified peer; a missing peer must not inherit inject()'s loopback default.
  * Shared by the Bun and uWS fallback-delegation paths. Strips any forged pre-auth header from the
  * client and, when Harper's auth middleware resolved a user without credentials (e.g. AUTHORIZE_LOCAL
  * for loopback in dev), forwards it so Fastify can skip its own auth — only when no Authorization
@@ -1733,7 +1734,14 @@ function injectToFastify(
 	if (req.user && !headers['authorization']) {
 		headers[INTERNAL_USER_HEADER] = JSON.stringify(req.user);
 	}
-	return fastify.inject({ method: req.method, url: req.url, headers, payload: req.body, payloadAsStream: true });
+	return fastify.inject({
+		method: req.method,
+		url: req.url,
+		headers,
+		payload: req.body,
+		payloadAsStream: true,
+		remoteAddress: req.ip || 'unknown',
+	});
 }
 
 export async function bunDelegateToNodeServer(
@@ -1758,7 +1766,7 @@ export async function bunDelegateToNodeServer(
 				headers,
 				body,
 				user: bunRequest?.user,
-				ip: bunRequest?.isOperationsServer ? bunRequest.ip : undefined,
+				ip: bunRequest?.ip,
 			});
 			const webHeaders = new globalThis.Headers();
 			for (const [k, v] of Object.entries(injectResult.headers)) {

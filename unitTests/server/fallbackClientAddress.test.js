@@ -6,7 +6,13 @@ testUtils.preTestPrep();
 const assert = require('node:assert');
 const { Readable } = require('node:stream');
 
-const { bunDelegateToNodeServer, registerFallbackServer, registerFastifyInstance } = require('#src/server/http');
+const {
+	bunDelegateToNodeServer,
+	httpServer,
+	makeUwsHandler,
+	registerFallbackServer,
+	registerFastifyInstance,
+} = require('#src/server/http');
 const { clientAddressOf, handlePostRequest } = require('#src/server/serverHelpers/serverHandlers');
 const { databases } = require('#src/resources/databases');
 const terms = require('#src/utility/hdbTerms');
@@ -15,8 +21,7 @@ const PORT = 19451;
 const TABLE = terms.SYSTEM_TABLE_NAMES.NETWORK_ACCESS_TABLE_NAME;
 const SUPER_USER = { username: 'admin', role: { permission: { super_user: true } } };
 
-// An injected request's mock socket always reports 127.0.0.1, so set_network_access's lockout check
-// depends on the header reaching handlePostRequest intact, and on a client never supplying it.
+// The lockout check requires a verified client address and rejects unknown injected peers.
 describe('set_network_access caller address', () => {
 	describe('clientAddressOf', () => {
 		const pipeServer = { _pipeName: '/tmp/operations.sock', bypassLocalAuth: true };
@@ -98,14 +103,104 @@ describe('set_network_access caller address', () => {
 			assert.strictEqual(rows.size, 0);
 		});
 
-		it('does not look up the address for an application request', async () => {
-			const bunRequest = {
-				isOperationsServer: false,
-				get ip() {
-					throw new Error('looked up');
-				},
-			};
-			await assert.rejects(setThroughBun(bunRequest), { statusCode: 409, message: /unknown/ });
+		it('forwards the verified application peer too', async () => {
+			await assert.rejects(setThroughBun({ isOperationsServer: false, ip: '203.0.113.9' }), {
+				statusCode: 409,
+				message: /203\.0\.113\.9/,
+			});
+			assert.strictEqual(injected.remoteAddress, '203.0.113.9');
 		});
 	});
+});
+
+describe('Fastify fallback transport peer', () => {
+	const fastify = require('fastify')();
+	const nodeServer = {};
+	before(async () => {
+		fastify.get('/peer', (request) => ({
+			ip: request.ip,
+			remoteAddress: request.raw.socket.remoteAddress,
+			clientAddress: clientAddressOf(request),
+			userHeader: request.headers['x-harper-internal-pre-auth-user'],
+		}));
+		fastify.get(
+			'/authorized',
+			(request, reply) =>
+				new Promise((resolve) => {
+					require('#src/security/fastifyAuth').authorize(request, reply, (error, user) => {
+						resolve(reply.code(error ? 401 : 200).send({ username: user?.username }));
+					});
+				})
+		);
+		await fastify.ready();
+		registerFallbackServer(PORT + 1, nodeServer);
+		registerFastifyInstance(PORT + 1, fastify);
+	});
+	after(() => fastify.close());
+	it('grants local trust only to a verified loopback peer under Bun', async function () {
+		if (typeof globalThis.Bun === 'undefined') this.skip();
+		for (const [ip, status] of [
+			['127.0.0.1', 200],
+			['203.0.113.9', 401],
+			['', 401],
+		]) {
+			const response = await bunDelegateToNodeServer(
+				nodeServer,
+				new globalThis.Request('http://localhost/authorized'),
+				{ ip, isOperationsServer: true }
+			);
+			assert.strictEqual(response.status, status, `peer ${ip || 'unknown'}`);
+			const body = await response.json();
+			if (status === 200) assert.strictEqual(body.username, 'local');
+			else assert.notStrictEqual(body.username, 'local');
+		}
+	});
+
+	for (const ip of ['203.0.113.9', '']) {
+		it(`preserves ${ip || 'unknown'} peer through uWS fallback`, async () => {
+			const port = PORT + 2;
+			httpServer(() => ({ status: -1, headers: {}, body: 'Not found' }), { port, name: 'uwsPeerFallback' });
+			registerFastifyInstance(port, fastify);
+			const response = await makeUwsHandler(
+				port,
+				false
+			)({
+				method: 'GET',
+				url: '/peer',
+				pathname: '/peer',
+				ip,
+				headers: { asObject: { 'X-Harper-Internal-Client-Address': '127.0.0.1' } },
+			});
+			let body = '';
+			if (Buffer.isBuffer(response.body)) body = response.body.toString();
+			else for await (const chunk of response.body) body += chunk;
+			const peer = JSON.parse(body);
+			assert.strictEqual(peer.ip, ip || 'unknown', body);
+			assert.strictEqual(peer.remoteAddress, ip || 'unknown');
+			assert.strictEqual(peer.clientAddress, ip || null);
+		});
+	}
+
+	for (const isOperationsServer of [true, false]) {
+		for (const ip of ['203.0.113.9', '']) {
+			it(`preserves ${ip || 'unknown'} peer on ${isOperationsServer ? 'operations' : 'application'} fallback`, async () => {
+				const response = await bunDelegateToNodeServer(
+					nodeServer,
+					new globalThis.Request('http://localhost/peer', {
+						headers: {
+							'X-Harper-Internal-Client-Address': '127.0.0.1',
+							'X-Harper-Internal-Pre-Auth-User': JSON.stringify(SUPER_USER),
+							'X-Forwarded-For': '127.0.0.1',
+						},
+					}),
+					{ ip, isOperationsServer }
+				);
+				const peer = await response.json();
+				assert.strictEqual(peer.ip, ip || 'unknown');
+				assert.strictEqual(peer.remoteAddress, ip || 'unknown');
+				assert.strictEqual(peer.clientAddress, ip || null);
+				assert.strictEqual(peer.userHeader, undefined);
+			});
+		}
+	}
 });

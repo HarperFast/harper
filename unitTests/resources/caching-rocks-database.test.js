@@ -181,6 +181,55 @@ describe('PrimaryRocksDatabase', function () {
 		assert.equal(client.count, 2, 'a client-level read sees the merged value, not a stale cache vouch');
 	});
 
+	it('a sequential snapshot keeps pre-merge bytes while a live read sees both increments', async function () {
+		const store = TestTable.primaryStore;
+		const id = 32;
+		const controlId = 33;
+		await TestTable.put(controlId, { name: 'fresh snapshot control', count: 3 });
+		store.cache.delete(controlId);
+		const controlSnapshot = new Transaction(store.store);
+		try {
+			const control = store.getEntry(controlId, { transaction: controlSnapshot });
+			assert.equal(control.value.count, 3);
+			assert.equal(control.value.name, 'fresh snapshot control');
+		} finally {
+			controlSnapshot.abort();
+		}
+		store.cache.delete(controlId);
+		const liveControl = store.getEntry(controlId);
+		assert(store.verifyVersion(controlId, liveControl.version), 'an ordinary cold live read must seed the VT');
+		// Transactional cold reads need not seed the VT; this does not model a cross-thread populate race.
+		await TestTable.put(id, { name: 'snapshot race', count: 0 });
+		const base = store.getEntry(id, { uncachedRead: true });
+		await TestTable.patch(id, { count: { __op__: 'add', value: 1 } }, { timestamp: base.version + 100 });
+		const vouched = store.getEntry(id);
+		assert(store.verifyVersion(id, vouched.version), 'the live pre-merge read must first vouch for V1');
+		const snapshot = new Transaction(store.store);
+		try {
+			const pinned = store.getEntry(id, { transaction: snapshot, uncachedRead: true });
+			assert.equal(pinned.value.count, 1, 'the native snapshot is pinned before the merged write');
+			assert(!(pinned.metadataFlags & VERSION_REUSED));
+			await TestTable.patch(id, { count: { __op__: 'add', value: 1 } }, { timestamp: base.version + 50 });
+			const current = store.getEntry(id, { uncachedRead: true });
+			assert.equal(current.value.count, 2);
+			assert.equal(current.version, pinned.version, 'the merged write reuses the pinned version');
+			assert(current.metadataFlags & VERSION_REUSED);
+			assert(!store.verifyVersion(id, current.version), 'the merge invalidated its vouch');
+			store.cache.delete(id);
+			assert.equal(store.cache.getValue(id), undefined, 'the snapshot read must use the cold native path');
+			const old = store.getEntry(id, { transaction: snapshot });
+			assert.equal(old.value.count, 1, 'the transaction still sees its pre-merge snapshot');
+			assert.equal(old.version, current.version);
+			assert(
+				!store.verifyVersion(id, current.version),
+				'the sequential snapshot read leaves the live vouch invalidated'
+			);
+			assert.equal(store.getEntry(id).value.count, 2, 'a fresh read must see both increments');
+		} finally {
+			snapshot.abort();
+		}
+	});
+
 	it('an uncachedRead bypasses the cache vouch and returns the stored record', async function () {
 		const store = TestTable.primaryStore;
 		await TestTable.put(12, { name: 'stored', count: 5 });

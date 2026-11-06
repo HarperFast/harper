@@ -35,12 +35,12 @@ const OPTIONS = {
 	},
 	env: { AUTHENTICATION_AUTHORIZELOCAL: 'false' },
 };
-const SRC_O1 = '127.0.0.211';
-const SRC_O2 = '127.0.0.212';
-const SRC_H1 = '127.0.0.213';
-const SRC_H2 = '127.0.0.214';
-const SRC_H3 = '127.0.0.215';
-const SRC_H4 = '127.0.0.216';
+const SRC_O1 = '127.0.0.2';
+const SRC_O2 = '127.0.0.3';
+const SRC_H1 = '127.0.0.4';
+const SRC_H2 = '127.0.0.5';
+const SRC_H3 = '127.0.0.6';
+const SRC_H4 = '127.0.0.7';
 
 type Reply = { status: number; headers: Record<string, string | string[] | undefined>; text: string; json: any };
 
@@ -55,9 +55,7 @@ function standardParams(name: string) {
 suite(
 	'MCP initialize admission identity: operations profile and identityHeader',
 	{
-		skip:
-			process.platform !== 'linux' &&
-			'client source addresses 127.0.0.2xx bind on Linux only (outside the macOS lo0 alias pool; Windows serves http from one thread)',
+		skip: process.platform === 'win32' && 'requires loopback source-address aliases',
 	},
 	(ctx: ContextWithHarper) => {
 		let admin: string;

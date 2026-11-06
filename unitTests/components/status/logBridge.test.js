@@ -176,18 +176,26 @@ describe('logBridge', function () {
 		}
 	});
 
-	it('extends the original expiry when the same duration is reported again', async function () {
+	it('keeps a repeated same-duration report active for its full expiry', async function () {
 		const logger = createLogger({ level: 'error', writeToLog: () => {} });
 		const key = 'test.refresh-expiry';
 		try {
 			logger.status({ problem: key, expires: 0.06 }).error('first');
-			const originalWindow = new Promise((resolve) =>
-				setTimeout(() => resolve(componentStatusRegistry.getStatus(key)?.status), 65)
-			);
-			await delay(10);
+			await delay(30);
 			logger.status({ problem: key, expires: 0.06 }).error('still failing');
-			assert.equal(await originalWindow, COMPONENT_STATUS_LEVELS.ERROR);
-			await waitFor(() => componentStatusRegistry.getStatus(key)?.status === COMPONENT_STATUS_LEVELS.HEALTHY, 2000);
+			const renewed = componentStatusRegistry.getStatus(key);
+			assert.equal(renewed.status, COMPONENT_STATUS_LEVELS.ERROR);
+			assert.equal(renewed.message, 'still failing');
+			assert.equal(renewed.occurrenceCount, 2);
+			const renewedAt = renewed.lastChecked.getTime();
+			const expired = await waitFor(() => {
+				const current = componentStatusRegistry.getStatus(key);
+				return current?.status === COMPONENT_STATUS_LEVELS.HEALTHY && current;
+			}, 2000);
+			assert.ok(
+				expired.lastChecked.getTime() - renewedAt >= 60,
+				'expiry must follow the repeated report’s full duration'
+			);
 		} finally {
 			handleStatusLog({ resolves: key }, null, undefined, []);
 		}
