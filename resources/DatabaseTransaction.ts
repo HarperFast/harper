@@ -822,9 +822,8 @@ export type TransactionWrite = {
 	// Set by a table commit handler only when this retry round staged a record change.
 	recordVersionApplied?: boolean;
 	// Set by DatabaseTransaction.save() on the immediateCommit path: the Promise returned by the
-	// inner this.commit({ transaction }) call. The ImmediateTransaction outer commit resolves before
-	// this settles (fire-and-forget from the if-branch), so Table.save()'s lock-writable path awaits
-	// it to ensure the write is durable before resolving to the caller.
+	// inner this.commit({ transaction }) call, which ImmediateTransaction.save() awaits when the
+	// outer commit() sweep returns before the native commit settles.
 	innerCommit?: MaybePromise<CommitResolution>;
 	// the commit derives stored state (folds, index diffs, residency) from its base entry, so
 	// save() must reload that base through the committing transaction's snapshot
@@ -2877,9 +2876,6 @@ export class DatabaseTransaction implements Transaction {
 		if (immediateCommit) {
 			// immediately commit if the harper transaction is closed
 			const innerCommit = this.commit({ ...options, transaction });
-			// Expose on the operation so the lock-writable Table.save() path can await the real
-			// native commit — without this the ImmediateTransaction outer commit resolves before
-			// the native transaction.commit() settles (fire-and-forget from the if-branch).
 			operation.innerCommit = innerCommit;
 			return innerCommit;
 		}
@@ -4479,7 +4475,8 @@ export class ImmediateTransaction extends DatabaseTransaction {
 		if (this.isCommitting || args[1] || args[3]) {
 			// Stage into the transaction commit() is committing (on a retry round, the one being retried)
 			// and reload within it; with no handle super.save() would open its own and nest a commit().
-			super.save(operation, args[1], true, args[3]);
+			const saveResult: any = super.save(operation, args[1], true, args[3]);
+			return saveResult?.then ? saveResult.then(() => {}) : undefined;
 		} else {
 			this.admitRequestWrite(); // a deferred save reaches here without passing through addWrite()
 			this.isCommitting = true;
@@ -4493,8 +4490,14 @@ export class ImmediateTransaction extends DatabaseTransaction {
 				this.isCommitting = false;
 				throw err;
 			}
+			const innerCommit = operation?.innerCommit;
+			const settled = innerCommit
+				? commitResult?.then && innerCommit?.then
+					? Promise.all([commitResult, innerCommit])
+					: when(commitResult, () => innerCommit)
+				: commitResult;
 			return when(
-				commitResult,
+				settled,
 				() => {
 					this.isCommitting = false;
 				},
