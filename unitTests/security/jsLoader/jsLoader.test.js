@@ -1,11 +1,11 @@
 'use strict';
 
+const assert = require('node:assert');
 const { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const { dirname, join } = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { scopedImport } = require('#src/security/jsLoader');
-const assert = require('node:assert');
 const { expect } = require('chai');
 
 const SYMLINK_FIXTURE = join(__dirname, 'fixtures', 'symlink-test', 'node_modules', 'proxyTransform');
@@ -607,6 +607,254 @@ describe('application require() of package exports (vm-current-context)', () => 
 		} finally {
 			rmSync(runtimeRoot, { recursive: true, force: true });
 		}
+	});
+});
+
+describe('compartment importHook', () => {
+	const OUTSIDE_ALLOWED_PATH = /Can not load module at .* outside of allowed path/;
+	let root;
+	let appDir;
+	let outsideDir;
+
+	beforeEach(() => {
+		root = realpathSync(mkdtempSync(join(tmpdir(), 'js-loader-compartment-')));
+		appDir = join(root, 'app');
+		outsideDir = join(root, 'outside');
+		mkdirSync(appDir);
+		mkdirSync(outsideDir);
+	});
+
+	afterEach(() => {
+		if (root) rmSync(root, { recursive: true, force: true });
+	});
+
+	const compartmentScope = (overrides = {}) => ({
+		mode: 'compartment',
+		runtimeRoot: appDir,
+		allowedPath: appDir,
+		resources: {},
+		...overrides,
+	});
+	const writeApp = (name, source) => {
+		const file = join(appDir, name);
+		writeFileSync(file, source);
+		return file;
+	};
+	const writePackage = (name, files, packageJson = {}) => {
+		const packageDir = join(appDir, 'node_modules', name);
+		mkdirSync(packageDir, { recursive: true });
+		writeFileSync(join(packageDir, 'package.json'), JSON.stringify({ name, version: '1.0.0', ...packageJson }));
+		for (const [file, source] of Object.entries(files)) writeFileSync(join(packageDir, file), source);
+	};
+
+	describe('allowedPath', () => {
+		let secretPath;
+		beforeEach(() => {
+			secretPath = join(outsideDir, 'secret.js');
+			writeFileSync(secretPath, "export const secret = 'leaked';\n");
+		});
+
+		it('refuses a relative import of a plain file outside allowedPath', async () => {
+			const entry = writeApp('entry.js', "export { secret } from '../outside/secret.js';\n");
+			await assert.rejects(scopedImport(entry, compartmentScope()), OUTSIDE_ALLOWED_PATH);
+		});
+
+		it('refuses an absolute import of a plain file outside allowedPath', async () => {
+			const entry = writeApp('entry.js', `export { secret } from ${JSON.stringify(secretPath)};\n`);
+			await assert.rejects(scopedImport(entry, compartmentScope()), OUTSIDE_ALLOWED_PATH);
+		});
+
+		it('refuses a file: URL import of a plain file outside allowedPath', async () => {
+			const entry = writeApp('entry.js', `export { secret } from ${JSON.stringify(pathToFileURL(secretPath).href)};\n`);
+			await assert.rejects(scopedImport(entry, compartmentScope()), OUTSIDE_ALLOWED_PATH);
+		});
+
+		it('refuses an import through a symlink that points outside allowedPath', async () => {
+			symlinkSync(secretPath, join(appDir, 'link.js'));
+			const entry = writeApp('entry.js', "export { secret } from './link.js';\n");
+			await assert.rejects(scopedImport(entry, compartmentScope()), OUTSIDE_ALLOWED_PATH);
+		});
+
+		it('refuses an entry module outside allowedPath', async () => {
+			await assert.rejects(scopedImport(secretPath, compartmentScope()), OUTSIDE_ALLOWED_PATH);
+		});
+
+		it('refuses a transitive import from an allowed module', async () => {
+			writeApp('hop.js', "export { secret } from '../outside/secret.js';\n");
+			const entry = writeApp('entry.js', "export { secret } from './hop.js';\n");
+			await assert.rejects(scopedImport(entry, compartmentScope()), OUTSIDE_ALLOWED_PATH);
+		});
+
+		it('refuses JSON and TypeScript files outside allowedPath', async () => {
+			writeFileSync(join(outsideDir, 'data.json'), '{"secret":"leaked"}');
+			writeFileSync(join(outsideDir, 'typed.ts'), "export const secret: string = 'leaked';\n");
+			for (const target of ['data.json', 'typed.ts']) {
+				const entry = writeApp(
+					'entry.mjs',
+					target.endsWith('.json')
+						? `import data from '../outside/${target}' with { type: 'json' };\nexport default data;\n`
+						: `export { secret } from '../outside/${target}';\n`
+				);
+				await assert.rejects(scopedImport(entry, compartmentScope()), OUTSIDE_ALLOWED_PATH, target);
+			}
+		});
+
+		it('still loads modules inside allowedPath, including JSON and TypeScript', async () => {
+			writeApp('dep.js', "export const inside = 'ok';\n");
+			writeApp('data.json', '{"value":1}');
+			writeApp('typed.ts', "export const typed: string = 'ts';\n");
+			const entry = writeApp(
+				'entry.mjs',
+				"export { inside } from './dep.js';\nexport { typed } from './typed.ts';\n" +
+					"import data from './data.json' with { type: 'json' };\nexport { data };\n"
+			);
+			const result = await scopedImport(entry, compartmentScope());
+			assert.strictEqual(result.inside, 'ok');
+			assert.strictEqual(result.typed, 'ts');
+			assert.strictEqual(result.data.value, 1);
+		});
+
+		it('still loads node: built-ins', async () => {
+			const entry = writeApp(
+				'entry.mjs',
+				"import { basename } from 'node:path';\nexport const name = basename('/a/b.js');\n"
+			);
+			assert.strictEqual((await scopedImport(entry, compartmentScope())).name, 'b.js');
+		});
+
+		it('loads a plain file outside the app directory when allowedPath is unrestricted', async () => {
+			const entry = writeApp('entry.js', "export { secret } from '../outside/secret.js';\n");
+			const result = await scopedImport(entry, compartmentScope({ allowedPath: '' }));
+			assert.strictEqual(result.secret, 'leaked');
+		});
+	});
+
+	describe('CommonJS dependencies imported natively', () => {
+		const importKeys = async (specifierSource) => {
+			const entry = writeApp('entry.mjs', specifierSource);
+			return scopedImport(entry, compartmentScope());
+		};
+
+		it('exposes names assigned dynamically to module.exports', async () => {
+			writePackage(
+				'dynpkg',
+				{
+					'index.cjs':
+						"module.exports = {};\nfor (const name of ['alpha', 'beta']) module.exports[name] = name + '!';\n",
+				},
+				{ main: 'index.cjs' }
+			);
+			const result = await importKeys(
+				"import dynpkg, { alpha, beta } from 'dynpkg';\nexport { alpha, beta };\nexport const same = typeof dynpkg.alpha;\n"
+			);
+			assert.strictEqual(result.alpha, 'alpha!');
+			assert.strictEqual(result.beta, 'beta!');
+			assert.strictEqual(result.same, 'string');
+		});
+
+		it('keeps names that native import exposes but module.exports does not enumerate', async () => {
+			writePackage(
+				'hiddenpkg',
+				{ 'index.cjs': "Object.defineProperty(exports, 'alpha', { value: 42 });\n" },
+				{ main: 'index.cjs' }
+			);
+			const result = await importKeys("export { alpha } from 'hiddenpkg';\n");
+			assert.strictEqual(result.alpha, 42);
+		});
+
+		it('keeps the native default export of a transpiled-ESM module', async () => {
+			writePackage(
+				'babelpkg',
+				{
+					'index.cjs':
+						"'use strict';\nObject.defineProperty(exports, '__esModule', { value: true });\nexports.default = 'X';\nexports.named = 'N';\n",
+				},
+				{ main: 'index.cjs' }
+			);
+			const result = await importKeys(
+				"import babel, { named } from 'babelpkg';\nexport { named };\nexport const wrapped = babel.default;\n"
+			);
+			assert.strictEqual(result.named, 'N');
+			assert.strictEqual(result.wrapped, 'X');
+		});
+
+		it('does not invoke an unextracted getter or fail for a Proxy trap that throws', async () => {
+			writePackage(
+				'getterpkg',
+				{
+					'index.cjs':
+						'exports.ok = 1;\nexports.getterRuns = 0;\n' +
+						"for (const name of ['lazy']) Object.defineProperty(exports, name, { enumerable: true, get() { exports.getterRuns++; throw new Error('unused getter'); } });\n",
+				},
+				{ main: 'index.cjs' }
+			);
+			const result = await importKeys(
+				"import getterpkg, { ok } from 'getterpkg';\nexport { ok };\nexport const runs = getterpkg.getterRuns;\n"
+			);
+			assert.strictEqual(result.ok, 1);
+			assert.strictEqual(result.runs, 0);
+
+			writePackage(
+				'proxypkg',
+				{
+					'index.cjs': "module.exports = new Proxy({ ok: 2 }, { ownKeys() { throw new Error('ownKeys trap'); } });\n",
+				},
+				{ main: 'index.cjs' }
+			);
+			const proxyResult = await importKeys("import proxypkg from 'proxypkg';\nexport const ok = proxypkg.ok;\n");
+			assert.strictEqual(proxyResult.ok, 2);
+		});
+
+		it('keeps an own __proto__ export as a name', async () => {
+			writePackage(
+				'protopkg',
+				{
+					'index.cjs':
+						"for (const name of ['__proto__']) Object.defineProperty(exports, name, { enumerable: true, value: 7 });\n",
+				},
+				{ main: 'index.cjs' }
+			);
+			const result = await importKeys("import * as ns from 'protopkg';\nexport const keys = Object.keys(ns);\n");
+			assert.ok(result.keys.includes('__proto__'), `keys: ${result.keys}`);
+		});
+
+		it('does not add a dynamically assigned callable then that would make a re-exporting entry thenable', async () => {
+			writePackage(
+				'thenpkg',
+				{
+					'index.cjs':
+						"exports.ok = 1;\nfor (const name of ['then']) exports[name] = (resolve) => resolve('wrong-value');\n",
+				},
+				{ main: 'index.cjs' }
+			);
+			const result = await importKeys("export * from 'thenpkg';\nexport const entry = true;\n");
+			assert.strictEqual(result.entry, true);
+			assert.strictEqual(result.ok, 1);
+		});
+
+		it('adds no names for an array, string or buffer module.exports', async () => {
+			const exportsByPackage = {
+				arraypkg: "module.exports = ['a', 'b'];",
+				stringpkg: "module.exports = 'text';",
+				bufferpkg: "module.exports = Buffer.from('xy');",
+			};
+			for (const [name, source] of Object.entries(exportsByPackage)) {
+				writePackage(name, { 'index.cjs': source }, { main: 'index.cjs' });
+				const result = await importKeys(`import * as ns from '${name}';\nexport const keys = Object.keys(ns);\n`);
+				assert.ok(!result.keys.includes('0'), `${name} exposed index names: ${result.keys}`);
+				assert.ok(result.keys.includes('default'), name);
+			}
+		});
+
+		it('does not promote the properties of an ES module default export to named exports', async () => {
+			writePackage(
+				'esmpkg',
+				{ 'index.js': 'export default { hidden: 1 };\nexport const shown = 2;\n' },
+				{ type: 'module', exports: { '.': { import: './index.js' } } }
+			);
+			const result = await importKeys("import * as ns from 'esmpkg';\nexport const keys = Object.keys(ns).sort();\n");
+			assert.deepStrictEqual(result.keys, ['default', 'shown']);
+		});
 	});
 });
 
