@@ -785,6 +785,7 @@ function sequentiallyHandleApplication(scope: Scope, plugin: PluginModule) {
 			await withDeployAwareTimeout(handling, scope, timeout);
 		} catch (error) {
 			scope.disposeBearerValidators();
+			await scope.close().catch(() => {});
 			throw error;
 		} finally {
 			Status.primaryStore.unlock(lockId);
@@ -1183,6 +1184,8 @@ export async function loadComponent(
 					try {
 						await sequentiallyHandleApplication(scope, extensionModule);
 					} catch (error) {
+						scope.disposeBearerValidators();
+						await scope.close().catch(() => {});
 						// a lock wait that timed out after shutdown skipped this load is not a boot failure
 						if (!scopesSkippedForShutdown.has(scope)) throw error;
 					}

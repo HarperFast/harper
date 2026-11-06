@@ -1,4 +1,4 @@
-const { Scope, MissingDefaultFilesOptionError } = require('#js/components/Scope');
+const { Scope, MissingDefaultFilesOptionError } = require('#src/components/Scope');
 const { Models } = require('#src/resources/models/Models');
 const { EventEmitter } = require('node:events');
 const assert = require('node:assert');
@@ -68,6 +68,49 @@ describe('Scope', () => {
 		await first;
 		await scope.close();
 		assert.equal(closes, 1);
+	});
+
+	it('removes listeners and releases component subscriptions even when a close listener rejects', async () => {
+		writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { files: 'test.js' } }));
+		const scope = new Scope(
+			this.appName,
+			this.pluginName,
+			this.directory,
+			this.configFilePath,
+			new ApplicationScope(this.appName, this.resources, this.server)
+		);
+		await scope.ready;
+
+		const sub = scope.secrets.subscribe('SCOPED_SECRET');
+		try {
+			const initial = await sub.next();
+			assert.equal(initial.done, false);
+
+			scope.on('ready', () => {});
+			const closeFailure = new Error('close listener failed');
+			scope.on('close', async () => {
+				throw closeFailure;
+			});
+
+			await assert.rejects(scope.close(), (error) => error === closeFailure);
+			assert.equal(
+				scope.listenerCount('ready'),
+				0,
+				'scope.close() must remove remaining listeners even when a close listener rejects'
+			);
+			assert.strictEqual(
+				sub.closed,
+				true,
+				'scope.close() must release component secret subscriptions even when a close listener rejects'
+			);
+			const nextResult = await Promise.race([
+				sub.next(),
+				new Promise((resolve) => setImmediate(() => resolve({ timedOut: true }))),
+			]);
+			assert.deepStrictEqual(nextResult, { value: undefined, done: true });
+		} finally {
+			await sub.return?.();
+		}
 	});
 
 	it('should create a default entry handler', async () => {
@@ -1020,7 +1063,6 @@ describe('Scope', () => {
 			} finally {
 				delete componentLoader.TRUSTED_RESOURCE_PLUGINS[failedPluginName];
 				componentLoader.loadedPaths.clear();
-				// a failed load leaves its scope open; its watchers must stop before Windows can delete the directory
 				await failedScope?.close();
 				rmSync(failedAppDir, { recursive: true, force: true });
 			}
@@ -1260,6 +1302,104 @@ describe('Scope', () => {
 			releaseSlow();
 			await assert.rejects(initialLoad, /broken\.js is invalid/);
 			assert.strictEqual(slowFinished, true, 'the sibling operation must have run to completion');
+		});
+
+		it('closes the scope when handleApplication rejects during loadComponent, leaving no watchers, subscriptions, or listeners', async () => {
+			const componentLoader = require('#src/components/componentLoader');
+			const failedAppDir = mkdtempSync(join(tmpdir(), 'harper.unit-test.failed-scope-cleanup-'));
+			const failedAppName = basename(failedAppDir);
+			const failedPluginName = 'failedScopeCleanupPlugin';
+			let failedScope;
+			let entryHandler;
+			let secretSubscription;
+			let optionsClosed = false;
+			let closeListenerCalls = 0;
+
+			const deployStartBefore = deployLifecycle.listenerCount('deploy:start');
+			const deployEndBefore = deployLifecycle.listenerCount('deploy:end');
+
+			componentLoader.TRUSTED_RESOURCE_PLUGINS[failedPluginName] = {
+				async handleApplication(scope) {
+					failedScope = scope;
+					scope.options.on('close', () => {
+						optionsClosed = true;
+					});
+					entryHandler = scope.handleEntry();
+					await entryHandler.ready;
+					secretSubscription = scope.secrets.subscribe('SCOPED_SECRET');
+					const firstSecret = await secretSubscription.next();
+					assert.strictEqual(firstSecret.done, false);
+					scope.on('error', () => {});
+					scope.on('close', () => {
+						closeListenerCalls++;
+						throw new Error('secondary close listener error');
+					});
+					throw new Error('simulated handleApplication failure');
+				},
+			};
+
+			const recordedResources = new Map();
+			try {
+				writeFileSync(join(failedAppDir, 'test.js'), '"hello";');
+				writeFileSync(
+					join(failedAppDir, 'harperdb-config.yaml'),
+					stringify({ [failedPluginName]: { files: 'test.js' } })
+				);
+				await componentLoader.loadComponent(
+					failedAppDir,
+					{
+						isWorker: true,
+						set(pathKey, resource) {
+							recordedResources.set(pathKey, resource);
+						},
+					},
+					'test',
+					{
+						appName: failedAppName,
+						applicationScope: new ApplicationScope(failedAppName, this.resources, this.server),
+					}
+				);
+
+				assert.ok(failedScope, 'handleApplication must have been invoked by loadComponent');
+				assert.strictEqual(closeListenerCalls, 1, 'loadComponent must close the scope when handleApplication rejects');
+				assert.strictEqual(optionsClosed, true, 'failed scope OptionsWatcher must be closed');
+				assert.strictEqual(
+					entryHandler._liveWatcherCountForTests,
+					0,
+					'failed scope EntryHandler watcher must be closed'
+				);
+				assert.strictEqual(secretSubscription.closed, true, 'failed scope secret subscriptions must be closed');
+				const nextSecret = await Promise.race([
+					secretSubscription.next(),
+					new Promise((resolve) => setImmediate(() => resolve({ timedOut: true }))),
+				]);
+				assert.deepStrictEqual(nextSecret, { value: undefined, done: true });
+				assert.strictEqual(
+					deployLifecycle.listenerCount('deploy:start'),
+					deployStartBefore,
+					'failed scope must detach its deploy:start listener'
+				);
+				assert.strictEqual(
+					deployLifecycle.listenerCount('deploy:end'),
+					deployEndBefore,
+					'failed scope must detach its deploy:end listener'
+				);
+				assert.strictEqual(failedScope.listenerCount('error'), 0, 'failed scope listeners must be removed');
+				const errorResource = recordedResources.get('/');
+				assert.ok(errorResource, 'loadComponent must still record the failure');
+				assert.match(
+					String(errorResource.error?.message ?? ''),
+					/simulated handleApplication failure/,
+					'original handleApplication error must be preserved even if a close listener throws'
+				);
+			} finally {
+				await secretSubscription?.return?.();
+				delete componentLoader.TRUSTED_RESOURCE_PLUGINS[failedPluginName];
+				componentLoader.loadedPaths.clear();
+				await failedScope?.close().catch(() => {});
+				await new Promise((resolve) => setImmediate(resolve));
+				rmSync(failedAppDir, { recursive: true, force: true });
+			}
 		});
 	});
 });

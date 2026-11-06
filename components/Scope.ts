@@ -312,28 +312,30 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		// silently swallowed; listeners that return nothing (the common case) settle immediately.
 		const closeListeners = this.listeners('close') as Array<(...args: any[]) => unknown>;
 		this.removeAllListeners('close');
-		await Promise.all(
-			closeListeners.map((listener) => {
-				// Run every listener (so all teardown is attempted) and bind `this` to the Scope, matching
-				// how EventEmitter invokes listeners — a listener may rely on it (e.g. `this.logger`). The
-				// wrapper turns a synchronous throw into a rejection so `Promise.all` surfaces it too.
-				try {
-					return listener.call(this);
-				} catch (error) {
-					return Promise.reject(error);
-				}
-			})
-		);
+		try {
+			await Promise.all(
+				closeListeners.map((listener) => {
+					// Run every listener (so all teardown is attempted) and bind `this` to the Scope, matching
+					// how EventEmitter invokes listeners — a listener may rely on it (e.g. `this.logger`). The
+					// wrapper turns a synchronous throw into a rejection so `Promise.all` surfaces it too.
+					try {
+						return listener.call(this);
+					} catch (error) {
+						return Promise.reject(error);
+					}
+				})
+			);
+		} finally {
+			this.removeAllListeners();
 
-		this.removeAllListeners();
-
-		// Release this identity's subscription hold (#1776), AFTER the close listeners (so a subscription a
-		// close listener created is still accounted for). Streams end only when the LAST holder of the
-		// identity releases — so a discarded validation-load Scope can't kill a still-running app's streams.
-		// Guarded so a double close() can't underflow the refcount.
-		if (!this.#secretsReleased) {
-			this.#secretsReleased = true;
-			releaseComponentSubscriptions(this.applicationScope?.name ?? this.#appName);
+			// Release this identity's subscription hold (#1776), AFTER the close listeners (so a subscription a
+			// close listener created is still accounted for). Streams end only when the LAST holder of the
+			// identity releases — so a discarded validation-load Scope can't kill a still-running app's streams.
+			// Guarded so a double close() can't underflow the refcount.
+			if (!this.#secretsReleased) {
+				this.#secretsReleased = true;
+				releaseComponentSubscriptions(this.applicationScope?.name ?? this.#appName);
+			}
 		}
 
 		return this;
