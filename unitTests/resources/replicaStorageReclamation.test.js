@@ -108,7 +108,6 @@ async function reclaimAt(priority) {
 		if (Table !== Rows) return openReplicaDeadlineStore(Table.primaryStore.rootStore, Table.tableName);
 		return (deadlines ??= openReplicaDeadlineStore(Rows.primaryStore.rootStore, Rows.tableName));
 	}
-	/** A replica `remainingMs` from its deadline, read through the source like any other. */
 	async function replica(id, remainingMs, Table = Rows) {
 		const entry = await stub(id, Table);
 		responses.set(id, {
@@ -200,7 +199,6 @@ async function reclaimAt(priority) {
 			order.push(id);
 			return evict.call(this, id, ...rest);
 		};
-		// the pressure ends once three replicas are gone
 		setAvailableSpaceRatioGetter(async () => {
 			const kept = Object.keys(remaining).filter((id) => isReplica(id)).length;
 			return threshold / (kept > 2 ? 10 : 0.5);
@@ -260,6 +258,14 @@ async function reclaimAt(priority) {
 		assertKept('last');
 		await reclaimAt(10);
 		assertDemoted('last');
+	});
+
+	it('reaches a deadline from a longer earlier lifetime only on a full volume', async () => {
+		await replica('older', LIFETIME_MS * 3);
+		await reclaimAt(100);
+		assertKept('older');
+		await reclaimAt(Infinity);
+		assertDemoted('older');
 	});
 
 	it('keeps a replica renewed after the pass selected it', async () => {
@@ -518,6 +524,14 @@ async function reclaimAt(priority) {
 			const after = await describeRows();
 			assert.equal(after.replica_count, 0);
 			assert.equal(after.replica_size_estimate, 0);
+		});
+
+		it('counts none after the table is cleared', async () => {
+			await replica('a', LIFETIME_MS);
+			await Rows.clear();
+			const description = await describeRows({ exact_count: true });
+			assert.equal(description.replica_count, 0);
+			assert.equal(description.replica_size_estimate, 0);
 		});
 
 		it('counts exactly on request, and reads nothing with skip_record_count', async () => {

@@ -98,7 +98,6 @@ suite('replicas under storage pressure', { skip: skipSuite }, (ctx: ContextWithH
 
 	test('a later read fetches a demoted record again, and it stays once the pressure is gone', async () => {
 		reportNoPressure();
-		// the next reclamation run reports the end of the pressure
 		await delay(INTERVAL_MS * 3);
 		strictEqual((await client.reqRest('/Reclaimable/a').expect(200)).body.body, 'from the owner');
 		await waitForReplicaCount(1);

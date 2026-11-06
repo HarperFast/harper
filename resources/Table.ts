@@ -11972,6 +11972,7 @@ export function makeTable(options): TableResourceClass {
 						.finally(releaseFullTextClearFence);
 				try {
 					promises.push(primaryStore.clear());
+					if (isRocksDB && openReplicaDeadlines()) promises.push(replicaDeadlines.clear());
 					for (const key in indices) {
 						const index = indices[key];
 						index.customIndex?.resetDerivedStorage?.();
@@ -15008,8 +15009,9 @@ export function makeTable(options): TableResourceClass {
 		const { batch: limit, checkEvery, budgetMs } = replicaReclaimLimits;
 		const priority = await getStorageReclamationPriority(primaryStore.path);
 		if (!(priority > 1)) return;
-		// fixed for the pass: a replica admitted during it starts past the cutoff, so admissions cannot extend it
-		const cutoff = Date.now() + replicaExpirationMs * (1 - 1 / priority);
+		// A deadline from a longer earlier lifetime is beyond any finite window, so only a full volume reaches it.
+		// Fixed for the pass: below that, a replica admitted during it starts past the cutoff.
+		const cutoff = priority === Infinity ? Infinity : Date.now() + replicaExpirationMs * (1 - 1 / priority);
 		const budgetEnd = performance.now() + budgetMs;
 		const proceed = () =>
 			replicaPressure && replicaEvictionArmed && !disposed && !maintenanceClosed && !isReadOnlyMode() && ownsCleanup();
@@ -15025,6 +15027,8 @@ export function makeTable(options): TableResourceClass {
 				await rest();
 				if (++attempted % checkEvery === 0 && !((await getStorageReclamationPriority(primaryStore.path)) > 1)) return;
 			}
+			if (batch.length > 0 && !progressed)
+				logger.warn?.(`Could not demote any of ${batch.length} replicas of ${tableName} under storage pressure`);
 			if (exhausted || !progressed || performance.now() >= budgetEnd) return;
 		}
 	}
