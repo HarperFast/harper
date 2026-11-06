@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793956069043,
+  "lastUpdate": 1793956074040,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -33365,6 +33365,53 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw read p99",
             "value": 708.5,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "4310bd8f541ef96be7c85885c650bd93a3e4b9b9",
+          "message": "Merge pull request #4029 from HarperFast/codex/mcp-unresolved-feedback\n\nFix scoped MCP reconnects and concurrent subscribe failures",
+          "timestamp": "2026-11-06T05:17:37Z",
+          "url": "https://github.com/HarperFast/harper/commit/4310bd8f541ef96be7c85885c650bd93a3e4b9b9"
+        },
+        "date": 1793956072891,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "value": 29003.94,
+            "unit": "MB"
+          },
+          {
+            "name": "ttl-churn final size",
+            "value": 29003.94,
+            "unit": "MB"
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "value": 590.6,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "value": 2981.1,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "value": 4378.4,
             "unit": "ms"
           }
         ]
