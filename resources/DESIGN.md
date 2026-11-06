@@ -164,16 +164,16 @@ Pre-commit blob files land before a commit that can still skip the write.
 
 ## Over-time transactions are aborted, not force-committed
 
-`startMonitoringTxns` acts past `STORAGE_MAXTRANSACTIONOPENTIME`. Code committing a native handle itself opens it raw, never via a wrapper's `getReadTxn`: the wrapper would stay tracked, and its retry would resolve `RETRY_NOW` rather than reject with `ERR_BUSY`.
+`startMonitoringTxns` acts past `STORAGE_MAXTRANSACTIONOPENTIME`. Code committing a native handle itself opens it raw, never via a wrapper's `getReadTxn`: the wrapper would stay tracked, and its retry would resolve `RETRY_NOW`, not reject with `ERR_BUSY`.
 
 - **A write-bearing transaction is aborted and poisoned** (422 `transactionOpenTooLongError`): force-committing a partial write set breaks atomicity. `hasPendingWrites()` walks `next`.
-- Read-only, `sourceApply` and `isReplay` transactions are force-committed. Sources and replay cannot resume, so an abort drops a write the cursor passed (harper-pro#348).
+- Read-only, `sourceApply` and `isReplay` transactions are force-committed: sources and replay cannot resume, so an abort drops a write the cursor passed (harper-pro#348).
 - The owner's commit chains on `monitorCommit`. The pre-commit phase is spared `COMMIT_PHASE_GRACE` ticks (`sourceApply`/`isReplay` without limit): its writes are sealed, and poisoning there once reported success after unlinking blobs.
 - After the pre-commit await, the commit rechecks liveness or resolves as a phantom. **The monitor never aborts a submitted native commit.**
-- `timeoutBudget` is a sticky floor that chained links inherit.
+- `timeoutBudget` is a sticky floor chained links inherit.
 - Conflict retries get one deadline per logical commit (503 `TransactionCommitConflictTimeoutError`); the per-attempt clock (`trackOutstandingCommit`) drives `checkOverloaded()` shedding.
-- **Abort markers let a retry abort a logged handle and dedup trust its log** (harper#3236; `mustRetryLoggedCommit`, `mayReadOwnOrphan`). After a restart dedup waits ~3d for older log files to purge; meanwhile a twin delivery may double-count.
-- Each hop of a sealed commit cascade gets a full idle window, never the previous hop's remainder (`renewChainForNativeCommit`).
+- **Abort markers let a retry abort a logged handle and dedup trust its log** (harper#3236; `mustRetryLoggedCommit`, `mayReadOwnOrphan`); until old log files purge (~3d after a restart) a twin may double-count. Re-logging restamps record times (`stampRecordTimes`).
+- Each hop of a sealed commit cascade gets a full idle window, not the last hop's remainder (`renewChainForNativeCommit`).
 - Long-lived handles are reported from main only: rocksdb-js's registry is process-global (`runLongLivedTransactionSweep`, past `storage.longTransactionReportThreshold`); workers attribute their own by the same id (`reportIfLongLived`). Stuck-commit logs list holders from every database regardless of age: the verification table is one process-wide array (`longLivedTransactions.test.js`).
 
 ## A client disconnect cancels the request's writes

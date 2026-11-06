@@ -845,6 +845,8 @@ let results = Document.search({
 
 This form is useful when you want to bound result quality by a similarity cutoff rather than ranking by similarity.
 
+<VersionBadge type="changed" version="v5.4.0" /> A threshold condition can sit beside other conditions and inside [relationship conditions](../resources/resource-api.md#conditions-on-a-to-many-relationship), on a path such as `['product', 'textEmbeddings']` or in `products[...]`. When another condition drives the search, each candidate is checked against its exact distance in the condition's metric, so every returned record is within the threshold. When the threshold drives the search, it is answered by the index and, like a vector sort, returns at most `ef` candidates. Wherever it sits, a threshold condition needs `target` and an `lt` or `le` comparator; any other comparator with `target` is rejected with a 400.
+
 ### Selecting the Distance
 
 Use the special `$distance` field in `select` to include the computed distance from the target vector in returned records:
@@ -857,7 +859,7 @@ let results = Document.search({
 });
 ```
 
-`$distance` is available in both `sort`-based ranking and `conditions`-based threshold queries.
+`$distance` is available in both `sort`-based ranking and `conditions`-based threshold queries. It is not set by a threshold condition that another condition drives, or by one on a relationship path; add a `sort` on the vector with the same `target` to select it for the queried table's own vector.
 
 ### Per-Query Search Options
 

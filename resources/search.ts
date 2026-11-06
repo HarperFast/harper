@@ -1170,6 +1170,9 @@ export function searchByIndex(
 			const relatedOptions = {
 				allowFullScan,
 				filtered: joined,
+				context,
+				// no parent rows wanted means no related rows either; any other count does not carry across a join
+				minResults: minResults === 0 ? 0 : undefined,
 				holderTable,
 				holderReadTxn,
 				disableSnapshot,
@@ -1184,7 +1187,7 @@ export function searchByIndex(
 					: searchByIndex(
 							group
 								? ({ attribute: rest, conditions: group.conditions, operator: group.operator } as any)
-								: { attribute: rest, value, comparator, negated: searchCondition.negated },
+								: relatedCondition(searchCondition, rest, value),
 							relatedTxn,
 							reverse,
 							relatedTable,
@@ -1218,7 +1221,16 @@ export function searchByIndex(
 						throw new ServerError(
 							`A same-record group on ${firstAttributeName} reached a many-to-one join without being flattened`
 						);
-					results = (results as any).flatMap(searchEntry);
+					// flatMap flattens only its own copy of ExtendedIterable; a custom index's results are this module's
+					// copy, while a store's ranges can be another (lmdb's CommonJS build when this runs from source)
+					results = (results as any).flatMap(
+						results instanceof ExtendedIterable
+							? (relatedEntry) => {
+									const matches = searchEntry(relatedEntry);
+									return matches instanceof ExtendedIterable ? matches : new ExtendedIterable(matches);
+								}
+							: searchEntry
+					);
 				}
 			}
 			return results;
@@ -1459,12 +1471,20 @@ export function searchByIndex(
 				: undefined;
 			const indexSearchStart = waiting ? start.promise.then(() => checkActive?.()) : undefined;
 			indexSearchStart?.catch(() => {});
+			// the index reads through context.transaction, which heads a chain of per-database links and can be another
+			// database's (a relationship, or a scope that touched another database first)
+			const headTransaction = context?.transaction;
+			const tableTransaction = headTransaction && Table._txnForContext(context);
+			const tableContext =
+				tableTransaction === headTransaction
+					? context
+					: Object.create(context, { transaction: { value: tableTransaction } });
 			const searchContext = waiting
-				? Object.create(context, {
+				? Object.create(tableContext, {
 						signal: { value: signal },
 						indexSearchStart: { value: indexSearchStart },
 					})
-				: context;
+				: tableContext;
 			const searched = index.customIndex.search(searchCondition, searchContext, {
 				filter:
 					waiting && recordFilter
@@ -1568,7 +1588,13 @@ export function searchByIndex(
 				};
 				return results;
 			}
-			return processEntries(searched);
+			const loaded = processEntries(searched);
+			// unlike an Array's, this iterator can be closed, which a join or union that stops early does
+			const results: any = new ExtendedIterable();
+			results.iterate = function* () {
+				yield* loaded;
+			};
+			return results;
 		}
 		const coverAttribute = covered?.attribute === attribute_name;
 		const coverEntries = coverAttribute || (covered !== undefined && covered.attribute === Table.primaryKey);
@@ -1661,6 +1687,23 @@ export function findAttribute(attributes, attribute_name) {
 		} else attribute_name = attribute_name.toString();
 	} else if (typeof attribute_name !== 'string') attribute_name = attribute_name.toString();
 	return attributes.find((attribute) => attribute.name === attribute_name);
+}
+
+/**
+ * The condition a relationship hop runs on the related table. It keeps the leaf's own query options (an HNSW
+ * `target`, `distance`, `ef`, index-lag bounds) and drops what search.ts cached or attached to it for this table,
+ * so new per-table state set on a condition belongs in this list.
+ */
+function relatedCondition(condition, attribute, value) {
+	const related = { ...condition, attribute, value };
+	delete related[0];
+	delete related[1];
+	delete related.estimated_count;
+	delete related.descending;
+	delete related.recordFilter;
+	delete related.candidateKeys;
+	delete related.cachedSet;
+	return related;
 }
 
 /**
@@ -2295,7 +2338,7 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 					: filterByType(
 							group
 								? { attribute: rest, conditions: group.conditions, operator: group.operator }
-								: { attribute: rest, value, comparator, negated },
+								: relatedCondition(searchCondition, rest, value),
 							relatedTable,
 							context,
 							nestedScope,
@@ -2369,6 +2412,8 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 		}
 	}
 	if (value instanceof Date) value = value.getTime();
+	const distanceFilter = vectorDistanceFilter(searchCondition, Table, attribute, value);
+	if (distanceFilter) return negated ? (record) => !distanceFilter(record) : distanceFilter;
 
 	let baseFilter;
 	switch (ALTERNATE_COMPARATOR_NAMES[comparator] || comparator) {
@@ -2562,7 +2607,9 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 					(++misses / filteredSoFar) * estimatedIncomingCount > thresholdRemainingMisses
 				) {
 					// if we have missed too many times, we need to switch to indexed retrieval
-					const searchResults = searchByIndex(searchCondition, Table._readTxnForContext(context), false, Table);
+					const searchResults = searchByIndex(searchCondition, Table._readTxnForContext(context), false, Table, {
+						context,
+					});
 					let matchingIds: Iterable<Id>;
 					if ((recordFilter as any).to) {
 						// the values could be an array of keys, so we flatten the mapping
@@ -2594,6 +2641,13 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 		}
 		return recordFilter;
 	}
+}
+
+function vectorDistanceFilter(condition, table, attribute, value): ((record: any) => boolean) | undefined {
+	const comparator = ALTERNATE_COMPARATOR_NAMES[condition.comparator] || condition.comparator;
+	const matches =
+		table && conditionIndex(table, attribute)?.customIndex?.thresholdFilter?.(condition, comparator, value);
+	return matches && ((record) => matches(record?.[attribute]));
 }
 
 // mirror searchByIndex's openStart: an indexNulls index's `[null, primaryKey]` entries are outside the executed range
