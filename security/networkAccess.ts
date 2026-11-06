@@ -169,9 +169,6 @@ export function clientAddressOf(req: any): string | null | undefined {
 	return server?._pipeName && server.bypassLocalAuth ? undefined : null;
 }
 
-/**
- * Runs an operations API request with its source address, as `clientAddressOf` derives it.
- */
 export function runWithCallerAddress<T>(address: string | null | undefined, callback: () => T): T {
 	return callerAddressStorage.run({ address }, callback);
 }

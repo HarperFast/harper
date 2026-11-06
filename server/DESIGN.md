@@ -648,7 +648,7 @@ strands the socket; a raw client waiting on the FIN (and the HTTP/1.0 case below
 terminal chunk to stop at) hangs outright. An HTTP/1.0 client hangs the same way
 without asking to close at all, since 1.0 persistence needs both an explicit `keep-alive` and a length
 to read to — so a 1.0 response that got no `Content-Length` is close-delimited, the same line Node
-draws. An explicit `close` token wins over `keep-alive` on
+draws (Node closes it at ~7ms; Bun never does). An explicit `close` token wins over `keep-alive` on
 both versions. A 1.0 `keep-alive` request whose response _did_ get a
 `Content-Length` (`body.size` on a blob — the `body instanceof Blob` branch of `getHTTPServer`'s request handler) is left open, as on Node.
 
@@ -666,7 +666,7 @@ HTTP/1.0 arms are Node/Bun-only, because uWS does not route an HTTP/1.0 request 
 all.
 
 `listenOnPortsBun`'s loop binds the main port without `reusePort`, and Bun's `http.Server.listen` drops
-the option outside a `node:cluster` worker process anyway: the other workers swallow `EADDRINUSE`, and
+the option outside a `node:cluster` worker anyway: the others swallow `EADDRINUSE`, and
 every request on the port, WebSockets included, runs on one worker whatever `threads.count` is.
 
 ## Per-worker UDS mirrors are separate server instances — port-keyed wiring does not reach them (`server/http.ts`)
