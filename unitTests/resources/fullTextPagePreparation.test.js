@@ -79,7 +79,7 @@ describe('published full-text final page preparation', () => {
 		} finally {
 			Product = undefined;
 			setFullTextNativeBindingForTests(undefined);
-			setFullTextTestConfiguration(previousConfiguration);
+			if (previousConfiguration) setFullTextTestConfiguration(previousConfiguration);
 		}
 	});
 
