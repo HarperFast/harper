@@ -775,7 +775,6 @@ export function setMinReplicaScanIntervalForTesting(ms: number | undefined) {
 	minReplicaScanIntervalMs = ms ?? MIN_REPLICA_SCAN_INTERVAL_MS;
 }
 type ReplicaStats = { count: number; estimatedRange?: number[]; sizeEstimate: number };
-/** Tests only: override the replica reclamation pass's limits; `undefined` restores them. */
 export function setReplicaReclaimLimitsForTesting(limits?: Partial<typeof REPLICA_RECLAIM_LIMITS>) {
 	replicaReclaimLimits = { ...REPLICA_RECLAIM_LIMITS, ...limits };
 }
@@ -15009,31 +15008,32 @@ export function makeTable(options): TableResourceClass {
 		const cutoff = Date.now() + replicaExpirationMs - lifetime;
 		const budgetEnd = performance.now() + budgetMs;
 		const proceed = () => replicaEvictionArmed && !disposed && !maintenanceClosed && !isReadOnlyMode() && ownsCleanup();
-		const young = new Set<unknown>();
+		const young = new Set<string>();
 		let attempted = 0;
 		while (proceed()) {
 			const { batch, exhausted } = await earliestReplicaDeadlines(store, cutoff, limit, young, proceed);
-			let progressed = false;
+			let skipped = 0;
+			let demoted = false;
 			for (const { key, deadline } of batch) {
 				if (!proceed()) return;
 				const entry: Entry = primaryStore.getEntry(key);
 				// a deadline capped by the record's own expiry makes a fresh row look old
 				if (entry?.metadataFlags & REPLICA && Date.now() - entry.version < minAgeMs) {
-					young.add(typeof key === 'object' ? chainKeyForId(key) : key);
-					progressed = true;
+					young.add(chainKeyForId(key));
+					skipped++;
 					await rest();
 					continue;
 				}
 				await expireReplicaDeadline(store, key, deadline, entry);
 				if (!proceed()) return;
 				// evict() resolves on a refused or failed demotion too; such an entry is still here at this deadline
-				if (store.getSync(key) !== deadline) progressed = true;
+				if (store.getSync(key) !== deadline) demoted = true;
 				await rest();
 				if (++attempted % checkEvery === 0 && !((await getStorageReclamationPriority(primaryStore.path)) > 1)) return;
 			}
-			if (batch.length > 0 && !progressed)
+			if (!demoted && skipped < batch.length)
 				logger.warn?.(`Could not demote any of ${batch.length} replicas of ${tableName} under storage pressure`);
-			if (exhausted || !progressed || performance.now() >= budgetEnd) return;
+			if (exhausted || (!demoted && !skipped) || performance.now() >= budgetEnd) return;
 		}
 	}
 	/**
@@ -15044,7 +15044,7 @@ export function makeTable(options): TableResourceClass {
 		store: any,
 		cutoff: number,
 		limit: number,
-		young: Set<unknown>,
+		young: Set<string>,
 		proceed: () => boolean
 	) {
 		const batch: { key: Id; deadline: number }[] = [];
@@ -15060,7 +15060,7 @@ export function makeTable(options): TableResourceClass {
 			if (
 				typeof deadline === 'number' &&
 				(deadline <= cutoff || deadline > Date.now() + replicaExpirationMs) &&
-				!young.has(typeof key === 'object' ? chainKeyForId(key) : key)
+				!young.has(chainKeyForId(key))
 			) {
 				matched++;
 				if (deadline <= bound) {
