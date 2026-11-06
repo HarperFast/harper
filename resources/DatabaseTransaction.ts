@@ -4462,9 +4462,12 @@ export function shouldSpareCommitPhase(
 	return commitChainHead.commitPhaseTicks <= COMMIT_PHASE_GRACE;
 }
 
+const resolveUndefined = () => {};
+
 export class ImmediateTransaction extends DatabaseTransaction {
 	isCommitting = false;
 	saveCommits = true;
+	#activeSaveCommit: Promise<void> | undefined;
 	constructor(db: RootDatabaseKind) {
 		super();
 		this.db = db;
@@ -4476,7 +4479,11 @@ export class ImmediateTransaction extends DatabaseTransaction {
 			// Stage into the transaction commit() is committing (on a retry round, the one being retried)
 			// and reload within it; with no handle super.save() would open its own and nest a commit().
 			const saveResult: any = super.save(operation, args[1], true, args[3]);
-			return saveResult?.then ? saveResult.then(() => {}) : undefined;
+			// commit() re-entry (args[1] / args[3]) discards the return value and the else-branch awaits
+			// operation.innerCommit, so deriving an unobserved .then() promise here would turn any
+			// rejected innerCommit into an unhandledRejection.
+			if (args[1] || args[3]) return;
+			return saveResult?.then ? saveResult.then(resolveUndefined) : this.#activeSaveCommit;
 		} else {
 			this.admitRequestWrite(); // a deferred save reaches here without passing through addWrite()
 			this.isCommitting = true;
@@ -4496,18 +4503,22 @@ export class ImmediateTransaction extends DatabaseTransaction {
 					? Promise.all([commitResult, innerCommit])
 					: when(commitResult, () => innerCommit)
 				: commitResult;
-			return when(
+			const done: any = when(
 				settled,
 				() => {
 					this.isCommitting = false;
+					this.#activeSaveCommit = undefined;
 				},
 				(err: any) => {
 					// Async rejection (e.g. a rejected rocksdb commit promise) must also clear the
 					// latch; without this, every subsequent save() silently fire-and-forgets.
 					this.isCommitting = false;
+					this.#activeSaveCommit = undefined;
 					throw err;
 				}
 			);
+			if (done?.then) this.#activeSaveCommit = done;
+			return done;
 		}
 	}
 
