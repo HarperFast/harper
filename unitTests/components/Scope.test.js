@@ -1496,11 +1496,7 @@ describe('Scope', () => {
 				]);
 				const elapsedMs = Date.now() - startedAt;
 
-				assert.strictEqual(
-					loadOutcome,
-					'settled',
-					`bounded close must not hang loadComponent (took ${elapsedMs}ms)`
-				);
+				assert.strictEqual(loadOutcome, 'settled', `bounded close must not hang loadComponent (took ${elapsedMs}ms)`);
 				assert.ok(failedScope, 'handleApplication must have been invoked');
 				assert.strictEqual(
 					lockFreeDuringClose,
@@ -1525,8 +1521,28 @@ describe('Scope', () => {
 					),
 					'an early close listener rejection before another listener times out must still be surfaced'
 				);
-				releaseLateRejection?.();
+				let shutdownCloseSettled = false;
+				const shutdownClose = failedScope.close().then(
+					() => {
+						shutdownCloseSettled = true;
+					},
+					() => {
+						shutdownCloseSettled = true;
+					}
+				);
 				await new Promise((resolve) => setImmediate(resolve));
+				assert.strictEqual(
+					shutdownCloseSettled,
+					false,
+					'a subsequent unbounded scope.close() (as on SHUTDOWN) must wait for in-flight close listeners that outlived the failed-load bound'
+				);
+				releaseLateRejection?.();
+				await shutdownClose;
+				assert.strictEqual(
+					shutdownCloseSettled,
+					true,
+					'unbounded scope.close() must settle once the late close listener finishes'
+				);
 				assert.ok(
 					loggedErrors.some((args) =>
 						args.some((arg) => String(arg?.message ?? arg).includes('late close listener failure after timeout'))
@@ -1740,6 +1756,30 @@ describe('Scope', () => {
 					1,
 					'failed entry handler must keep a recovery watcher so editing the broken file triggers a restart'
 				);
+
+				// A nested component sharing the same (appName, pluginName) in a different directory must not
+				// collide with or close the parent component's recovery watcher.
+				const nestedDir = mkdtempSync(join(tmpdir(), 'harper.unit-test.failed-entry-nested-'));
+				try {
+					const nestedConfig = join(nestedDir, 'harperdb-config.yaml');
+					writeFileSync(nestedConfig, stringify({ [failedEntryPluginName]: {} }));
+					const nestedScope = new Scope(
+						failedEntryAppName,
+						failedEntryPluginName,
+						nestedDir,
+						nestedConfig,
+						new ApplicationScope(failedEntryAppName, this.resources, this.server)
+					);
+					await nestedScope.ready;
+					await nestedScope.close();
+					assert.strictEqual(
+						entryHandlers[0]._liveWatcherCountForTests,
+						1,
+						'a nested scope in a different directory must not close the parent recovery watcher'
+					);
+				} finally {
+					rmSync(nestedDir, { recursive: true, force: true });
+				}
 
 				// Reloading the failing component before any file change must close the previous recovery watcher
 				// rather than accumulating watchers across repeated reloads/redeploys.

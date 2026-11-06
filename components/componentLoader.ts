@@ -37,6 +37,7 @@ import {
 } from '../server/threads/manageThreads.ts';
 import { resetRestartNeeded, subscribeToRestartRequests } from './requestRestart.ts';
 import { closeScopeAfterLoad, closeScopeOnShutdown } from './scopeShutdown.ts';
+import { settleBeforeDeadline } from '../utility/when.ts';
 import { deployLifecycle } from './deployLifecycle.ts';
 import { assertBranchedDatabases, assertIsolationConfig } from './Application.ts';
 import { prepareBranches } from '../resources/branchDatabase.ts';
@@ -1177,8 +1178,7 @@ export async function loadComponent(
 					let closingAfterLoad: Promise<unknown> | undefined;
 					let failedLoadClosed = false;
 					const closeAfterLoad = () => {
-						const closeBoundMs = getTerminateTimeout() / 2;
-						const closeFull = () => closeScope(scope, { listenerTimeoutMs: closeBoundMs });
+						const closeFull = () => scope.close();
 						if (closingAfterLoad) {
 							if (failedLoadClosed) {
 								failedLoadClosed = false;
@@ -1188,7 +1188,7 @@ export async function loadComponent(
 						}
 						const started = startedLoads.get(scope);
 						if (started) {
-							return (closingAfterLoad = closeScopeAfterLoad(started, closeFull, closeBoundMs));
+							return (closingAfterLoad = closeScopeAfterLoad(started, closeFull, getTerminateTimeout() / 2));
 						}
 						scopesSkippedForShutdown.add(scope);
 						return (closingAfterLoad = closeFull());
@@ -1211,23 +1211,31 @@ export async function loadComponent(
 						// Tear down the failed plugin's scope before advancing so watchers, secret-subscription
 						// holds, and close-listener resources (such as native dev-server runtimes) are released
 						// before the failure is reported or a retry/sibling load observes stale state. Both the
-						// post-timeout handleApplication drain and close listeners are bounded by closeBoundMs.
+						// post-timeout handleApplication drain and close listeners are bounded by closeBoundMs,
+						// while SHUTDOWN's `scope.close()` remains unbounded under the worker exit backstop.
 						const closeBoundMs = getTerminateTimeout() / 2;
-						const started = startedLoads.get(scope);
-						const closeFailedScope = () =>
-							closeScope(scope, { listenerTimeoutMs: closeBoundMs, keepFailedEntryWatchers: true });
-						if (!closingAfterLoad) {
-							failedLoadClosed = true;
-							closingAfterLoad = started
-								? closeScopeAfterLoad(started, closeFailedScope, closeBoundMs)
-								: closeFailedScope();
-						}
-						await closingAfterLoad.catch((closeError) => {
+						const logCloseError = (closeError: unknown) => {
 							(scope.logger ?? harperLogger).error?.(
 								`Error closing component scope for ${componentStatusName} after failed load:`,
 								closeError
 							);
-						});
+						};
+						if (!closingAfterLoad) {
+							const started = startedLoads.get(scope);
+							const closeFailedScope = () =>
+								closeScope(scope, { listenerTimeoutMs: closeBoundMs, keepFailedEntryWatchers: true });
+							failedLoadClosed = true;
+							closingAfterLoad = started
+								? closeScopeAfterLoad(started, closeFailedScope, closeBoundMs)
+								: closeFailedScope();
+							await closingAfterLoad.catch(logCloseError);
+						} else {
+							await settleBeforeDeadline(
+								[closingAfterLoad.catch(logCloseError)],
+								Date.now() + closeBoundMs,
+								() => new Error('scope close timed out')
+							).catch(() => {});
+						}
 						throw error;
 					}
 					if (scopesSkippedForShutdown.has(scope)) {
