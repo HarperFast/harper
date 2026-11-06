@@ -198,6 +198,12 @@ export function executeConditions(
 						: (record, entry) => filters.every((filter) => filter(record, entry));
 					if (filters.some((filter) => filter.maybeAsync))
 						groupFilter.maybeAsync = (record, entry) => matchesFilters(filters, record, entry, union);
+					if (filters.length === condition.conditions.length && filters.every((filter) => filter.keyFilter)) {
+						const keyFilters = filters.map((filter) => filter.keyFilter);
+						groupFilter.keyFilter = union
+							? (key) => keyFilters.some((keyFilter) => keyFilter(key))
+							: (key) => keyFilters.every((keyFilter) => keyFilter(key));
+					}
 					return groupFilter;
 				}
 				const isPrimaryKey = (condition.attribute || condition[0]) === table.primaryKey;
@@ -1906,22 +1912,26 @@ export function matchesFilters(filters, record, entry, any: boolean, start = 0) 
 	}
 	return !any;
 }
+// decides a filter from the primary key alone; relationship id mapping reads only `idFilter`, never `keyFilter`
+export function keyPredicate(filter): ((key: any) => boolean) | undefined {
+	return filter.idFilter ?? filter.keyFilter;
+}
 // read per candidate, since a content filter can switch to an index-backed idFilter mid-scan
 function rejectsKey(filters, key) {
 	for (let i = 0; i < filters.length; i++) {
-		const idFilter = filters[i].idFilter;
-		if (idFilter && !idFilter(key)) return true;
+		const test = keyPredicate(filters[i]);
+		if (test && !test(key)) return true;
 	}
 	return false;
 }
 function needsRecord(filters) {
-	for (let i = 0; i < filters.length; i++) if (!filters[i].idFilter) return true;
+	for (let i = 0; i < filters.length; i++) if (!keyPredicate(filters[i])) return true;
 	return false;
 }
 function matchesRelatedRecord(filters, record, skipIdFilters: boolean, scan: JoinScan, start = 0) {
 	for (let i = start; i < filters.length; i++) {
 		const filter = filters[i];
-		if (skipIdFilters && filter.idFilter) continue;
+		if (skipIdFilters && keyPredicate(filter)) continue;
 		if (record == null) return false;
 		const matches = (filter.maybeAsync ?? filter)(record);
 		if (matches?.then)
@@ -2029,7 +2039,7 @@ function joinFrom(rightIterable, attribute, store, joined: Map<any, any[]>, sear
 								const record = entry.value !== undefined ? entry.value : store.getSync(id, readOptions);
 								let matches = record != null;
 								for (let i = 0; matches && i < filters.length; i++)
-									if (!filters[i].idFilter) matches = filters[i](record);
+									if (!keyPredicate(filters[i])) matches = filters[i](record);
 								if (!matches) continue;
 							}
 						}
@@ -2534,7 +2544,10 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 		// Wrap with negation. Internal index-optimization state on `baseFilter`
 		// (idFilter, to, etc.) is intentionally not propagated through the
 		// negation wrapper — negated conditions are filter-only in Phase 1.
-		return (record, entry) => !baseFilter(record, entry);
+		const negatedFilter: any = (record, entry) => !baseFilter(record, entry);
+		const keyFilter = (baseFilter as any).keyFilter;
+		if (keyFilter) negatedFilter.keyFilter = (key) => !keyFilter(key);
+		return negatedFilter;
 	}
 	return baseFilter;
 	/** Create a comparison function that can take the record and check the attribute's value with the filter function */
@@ -2613,6 +2626,7 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 		}
 		if (isPrimaryKey) {
 			recordFilter.idFilter = filter;
+			(recordFilter as any).keyFilter = filter;
 		}
 		return recordFilter;
 	}
