@@ -111,14 +111,17 @@ Consequences that shape the code:
   after its native wait, its cluster round, a coalesced join or a retry — gives the key and any cluster grant
   back (`retryAfterScopeCommit`), waits on `whenCommitSettles` (drained by `endCommitAttempt` after rotation)
   and retries with its remaining budget; the root still CLOSED after that means the scope ended, and the waiter
-  gets 500 — as any later `lock()` does when a commit that left a read iterator open could not reopen it. Holding the key while waiting would deadlock a pre-commit hook's own `lock()` on it. A hold waits
+  gets 500 — as a later `lock()` on the head database does when a commit that left a read iterator open could
+  not reopen it (harper#4081). Holding the key while waiting would deadlock a pre-commit hook's own `lock()` on it. A hold waits
   only once the root reads CLOSED: it survives the commit and stages nothing until saved, so in pre-commit work
   it is admitted as before. The instance holding a scoped handle is not held back on re-entry: its lock ends
   with that commit, as for any re-lock without `unlock()`. Two more exceptions keep the earlier outcome. The
   scope's final commit (`scopeEnding`) is not waited out. A `lock()` made by the scope's own pre-commit hook
   (`operation.before`, a source write-through) while that hook runs belongs to the commit, which awaits it:
   `runCommitHook` marks the invocation in an `AsyncLocalStorage` (`currentCommitHook`) until the hook settles.
-  A commit that awaits a `lock()` started outside its hook still waits until that `lock()` gives up.
+  Such a call otherwise keeps the earlier outcome: a chained link's hook runs after the root went CLOSED, so its
+  `lock()` of a head-database record still gets the 500 (harper#4081). A commit that awaits a `lock()` started
+  outside its hook still waits until that `lock()` gives up.
 - **Release.** Every handle — scoped or hold — is registered in `link.recordLocks` and kept on the
   locked instance as `#lockHandle`; every commit or abort calls `releaseRecordLocks()`, which calls
   `handle.release()` on each non-hold handle, so a `{ hold: true }` handle outlives the transaction.

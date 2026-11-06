@@ -5424,7 +5424,6 @@ export function makeTable(options): TableResourceClass {
 				// a hold survives the commit and stages nothing until saved; only a CLOSED root would refuse it
 				(!resolved.hold || scopeRoot.open === TRANSACTION_STATE.CLOSED) &&
 				!(hook?.active && hook.root === scopeRoot);
-			// Try again on this caller's own terms with the budget it has left.
 			const retryOnRemainingBudget = (failure?: Error): any => {
 				if (midScopeCommitInFlight())
 					return when(scopeRoot!.whenCommitSettles(resolved.timeout - (Date.now() - lockStart)), (settled) => {
