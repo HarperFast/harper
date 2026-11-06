@@ -920,6 +920,11 @@ for (const sqlEngine of ['legacy', 'auto', 'new'] as const) {
 					ok(String(unsupported.body.error).includes('SQL engine v2'), JSON.stringify(unsupported.body));
 				}
 
+				// v2 has no member access; legacy SQL evaluates a related record as data, so never through its relationships
+				async function memberRows(as: Principal, statement: string, expected: any[]) {
+					if (memberAccess) deepStrictEqual(await rows(as, statement), expected, `${as} ${statement}`);
+					else strictEqual((await sql(as, statement)).status, 400, `${as} ${statement}`);
+				}
 				const code = `SELECT id, team->vault->code AS c FROM data.Badge WHERE id = 'b1'`;
 				const vault = `SELECT id, team->vault AS v FROM data.Badge WHERE id = 'b1'`;
 				for (const statement of [code, vault]) {
@@ -928,26 +933,24 @@ for (const sqlEngine of ['legacy', 'auto', 'new'] as const) {
 					deepStrictEqual(denied.body.invalid_schema_items, [`Table 'data.Vault' does not exist`], statement);
 				}
 				assertRefused(await sql('vaultRestricted', code), code, 'Vault.code');
-				const whole = await sql('vaultRestricted', vault);
-				strictEqual(whole.status, 403, JSON.stringify(whole.body));
-				deepStrictEqual(whole.body.unauthorized_access, [
-					{ schema: 'data', table: 'Vault', required_table_permissions: ['read'], required_attribute_permissions: [] },
-				]);
-				const teamId = `SELECT id, team->vault->teamId AS t FROM data.Badge WHERE id = 'b1'`;
-				if (memberAccess) {
-					deepStrictEqual(await rows('teamFull', code), [{ id: BADGE.id, c: VAULT.code }]);
-					deepStrictEqual(await rows('teamFull', vault), [{ id: BADGE.id, v: VAULT }]);
-					deepStrictEqual(await rows('vaultRestricted', teamId), [{ id: BADGE.id, t: VAULT.teamId }]);
-				} else strictEqual((await sql('vaultRestricted', teamId)).status, 400);
+				const unread = [{ id: BADGE.id }];
+				for (const as of ['vaultRestricted', 'teamFull'] as const) {
+					await memberRows(as, vault, unread);
+					await memberRows(as, `SELECT id, team->vault->teamId AS t FROM data.Badge WHERE id = 'b1'`, unread);
+				}
+				await memberRows('teamFull', code, unread);
+				await memberRows('super', code, [{ id: BADGE.id, c: VAULT.code }]);
+				await memberRows('super', vault, [{ id: BADGE.id, v: VAULT }]);
 				for (const statement of [
 					`SELECT id, (team)->vault AS v FROM data.Badge WHERE id = 'b1'`,
 					`SELECT id, COALESCE(team, 1)->vault AS v FROM data.Badge WHERE id = 'b1'`,
 					`SELECT id, team->('va' + 'ult') AS v FROM data.Badge WHERE id = 'b1'`,
-				]) {
-					const unresolved = await sql('teamFull', statement);
-					strictEqual(unresolved.status, 403, `${statement}: ${JSON.stringify(unresolved.body)}`);
-					ok(String(unresolved.body.unauthorized_access).includes('without naming the path'), statement);
-				}
+					`SELECT id, SEARCH_JSON('vault.code', team) AS v FROM data.Badge WHERE id = 'b1'`,
+				])
+					await memberRows('teamOnly', statement, unread);
+				await memberRows('teamOnly', `SELECT id, SEARCH_JSON('name', team) AS n FROM data.Badge WHERE id = 'b1'`, [
+					{ id: BADGE.id, n: TEAM.name },
+				]);
 				for (const statement of [
 					`SELECT e.id, e.dept FROM data.Emp e JOIN data.Seat s ON e.deptId = s.deptId WHERE e.id = 'e1'`,
 					`SELECT e.id, s.dept FROM data.Emp e JOIN data.Seat s ON e.deptId = s.deptId WHERE e.id = 'e1'`,
@@ -1013,6 +1016,15 @@ for (const sqlEngine of ['legacy', 'auto', 'new'] as const) {
 					const probe = `UPDATE data.Emp SET name = 'probed' WHERE id = 'e1' AND dept->budget = ${DEPT.budget}`;
 					assertRefused(await sql('restrictedWriter', probe), probe, 'Dept.budget');
 					deepStrictEqual(await storedEmp(), [EMP]);
+					for (const statement of [
+						`UPDATE data.Emp SET name = 'probed' WHERE id = 'e1' AND (dept)->budget IS NULL`,
+						`DELETE FROM data.Emp WHERE id = 'e1' AND COALESCE(dept, 1)->budget IS NULL`,
+					]) {
+						const refused = await sql('restrictedWriter', statement);
+						strictEqual(refused.status, 403, `${statement}: ${JSON.stringify(refused.body)}`);
+						ok(String(refused.body.unauthorized_access).includes('without naming the path'), statement);
+						deepStrictEqual(await storedEmp(), [EMP], statement);
+					}
 				} finally {
 					await restoreEmp();
 				}

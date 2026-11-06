@@ -9,4 +9,4 @@ SQL now applies a role's permissions on the related table when a statement reads
 **Upgrade impact:**
 
 - A statement from a role that cannot read a relationship's related table now fails with HTTP 403 instead of returning related data. Grant `read` on the related table, or leave the relationship column out of the statement.
-- For roles other than super user, legacy SQL member access through a relationship must name its path from the relationship column (`dept->name`); over another expression, such as `COALESCE(dept, x)->name`, or with a computed member name, it now returns HTTP 403.
+- For roles other than super user, legacy SQL member access through a relationship no longer reaches the related record's own relationships: `team->vault` returns null even when the role can read the related table (an `@enumerable` relationship the role may read is still part of the record). A member path naming a table or attribute the role cannot read, such as `dept->budget`, returns HTTP 403, and so does member access through a relationship over another expression in an `UPDATE` or `DELETE`, such as `COALESCE(dept, x)->name`.

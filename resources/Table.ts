@@ -1629,6 +1629,27 @@ function resolveStructForJSON(value: any): any {
 	}
 	return resolvedObject;
 }
+/**
+ * A copy of what a related record serializes to, with no relationship resolver left on it. Legacy SQL evaluates the values
+ * it reads (`->`, functions that walk their argument), and a live record's relationship getters would read tables its
+ * caller was never authorized for.
+ */
+export function relatedRecordData(value: any): any {
+	if (value == null || typeof value !== 'object') return value;
+	if (Array.isArray(value)) return value.map(relatedRecordData);
+	const isRecordObject = value instanceof RecordObject;
+	const prototype = Object.getPrototypeOf(value);
+	if (!isRecordObject && prototype !== Object.prototype && prototype !== null) return value;
+	const source = isRecordObject && typeof (value as any).toJSON === 'function' ? (value as any).toJSON() : value;
+	const data = {};
+	for (const key of Object.keys(source)) {
+		const copied = relatedRecordData(source[key]);
+		if (key === '__proto__')
+			Object.defineProperty(data, key, { value: copied, enumerable: true, writable: true, configurable: true });
+		else data[key] = copied;
+	}
+	return data;
+}
 // Is `start` reachable from itself through @enumerable table-typed edges? (Includes self-loops, e.g. a
 // tree table with an enumerable parent/children relationship.) Walks the per-table `enumerableRelationDefs`
 // graph, resolving each definition's `.tableClass` here — this runs lazily on first serialization, by which

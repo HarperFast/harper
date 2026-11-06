@@ -27,6 +27,7 @@ import {
 	hdbErrors,
 } from '../utility/errors/hdbError.ts';
 import { getDatabases } from '../resources/databases.ts';
+import { relatedRecordData } from '../resources/Table.ts';
 
 const WHERE_CLAUSE_IS_NULL = 'IS NULL';
 const SEARCH_ERROR_MSG = 'There was a problem performing this search. Please check the logs and try again.';
@@ -228,7 +229,11 @@ class SQLSearch {
 		this.tables.forEach((table) => {
 			const schemaTable = `${table.databaseid}_${table.as ? table.as : table.tableid}`;
 			this.data[schemaTable] = {};
-			this.data[schemaTable].__hashName = getDatabases()[table.databaseid][table.tableid].primaryKey;
+			const tableClass = getDatabases()[table.databaseid][table.tableid];
+			this.data[schemaTable].__hashName = tableClass.primaryKey;
+			// AlaSQL evaluates what it reads, so a non-super caller's related records reach it as data
+			if (tableClass.hasRelationships && this.hdb_user && !this.hdb_user.role?.permission?.super_user)
+				this.data[schemaTable].__relationships = tableClass.propertyResolvers;
 			this.data[schemaTable].__mergedData = Object.create(null);
 			this.data[schemaTable].__mergedAttributes = [];
 			this.data[schemaTable].__mergedAttrMap = Object.create(null);
@@ -589,7 +594,15 @@ class SQLSearch {
 	 */
 	_updateMergedAttribute(schemaTable, hashValue, attr, updateValue) {
 		const attrIndex = this.data[schemaTable].__mergedAttrMap[attr];
-		this.data[schemaTable].__mergedData[hashValue].splice(attrIndex, 1, updateValue);
+		this.data[schemaTable].__mergedData[hashValue].splice(
+			attrIndex,
+			1,
+			this._fetchedValue(schemaTable, attr, updateValue)
+		);
+	}
+
+	_fetchedValue(schemaTable, attr, value) {
+		return this.data[schemaTable].__relationships?.[attr]?.definition?.tableClass ? relatedRecordData(value) : value;
 	}
 
 	/**
@@ -1189,7 +1202,7 @@ class SQLSearch {
 					const theRow = searchResult.get(theId);
 					for (let j = 0; j < tableColsLength; j++) {
 						const val = table.columns[j];
-						const attrVal = theRow[val] === undefined ? null : theRow[val];
+						const attrVal = theRow[val] === undefined ? null : this._fetchedValue(schemaTable, val, theRow[val]);
 						this.data[schemaTable].__mergedData[theId].push(attrVal);
 					}
 				}

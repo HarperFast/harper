@@ -732,7 +732,8 @@ export function verifyPermsAST(ast, userObject, operation, apiOperation = terms.
 
 		if (!isSuperUser && !permsResponse.hasIssues()) {
 			const memberAccess = parsedAst.getRelationshipMemberPaths();
-			if (memberAccess.unresolved !== undefined)
+			// a write would pick or compute rows from a related attribute the role cannot see as if it were null
+			if (memberAccess.unresolved !== undefined && !nonSuperSelect)
 				return permsResponse.handleUnauthorizedItem(HDB_ERROR_MSGS.SQL_RELATIONSHIP_MEMBER(memberAccess.unresolved));
 			for (const { tableClass, path } of memberAccess.paths)
 				relatedTableDenials = addMemberPathDenial(tableClass, path, userObject, relatedTableDenials);
@@ -1144,23 +1145,16 @@ function addRelatedTableDenials(
 	return denials;
 }
 
-// Member access (`dept->name`) reads a path through the relationship, checked from the related table on like a NoSQL
-// path. It evaluates live records, so one it returns whole (`team->vault`) needs every attribute of its table.
+// Member access (`dept->budget`) names a path through the relationship, refused like a NoSQL path condition when it names
+// what the role cannot read; the value itself reaches legacy SQL as data (`relatedRecordData`).
 function addMemberPathDenial(
 	tableClass: any,
 	path: string[],
 	user: any,
 	denials: RelationshipReadCheck['denials']
 ): RelationshipReadCheck['denials'] {
-	// a lone relationship (an index into it) returns the value the selection already narrowed
-	if (path.length < 2) return denials;
-	let target = relatedTableOf(tableClass, path[0]);
-	const denial = target._readDenial(path, user, undefined, 1);
-	if (denial) return recordDenial(denials, denial);
-	for (let index = 1; target && index < path.length; index++) target = relatedTableOf(target, path[index]);
-	if (target && !target._readableInFull(user))
-		return recordDenial(denials, { database: target.databaseName, table: target.tableName });
-	return denials;
+	const denial = relatedTableOf(tableClass, path[0])._readDenial(path, user, undefined, 1);
+	return denial ? recordDenial(denials, denial) : denials;
 }
 
 function recordDenial(denials: RelationshipReadCheck['denials'], denial: ReadDenial): RelationshipReadCheck['denials'] {

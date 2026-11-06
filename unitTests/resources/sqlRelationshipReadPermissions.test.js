@@ -4,6 +4,7 @@ const { setupTestDBPath } = require('../testUtils.js');
 const { table } = require('#src/resources/databases');
 const { verifyPermsAST } = require('#src/utility/operation_authorization');
 const { sqlSelect } = require('#src/dataLayer/search');
+const { relatedRecordData } = require('#src/resources/Table');
 const { physicalIndexScan } = require('#src/sqlEngine/physical/PhysicalIndexScan');
 const { physicalIndexNestedLoopJoin } = require('#src/sqlEngine/physical/PhysicalIndexNestedLoopJoin');
 const { getWorkerIndex, setMainIsWorker } = require('#js/server/threads/manageThreads');
@@ -164,7 +165,9 @@ describe('SQL reads of relationship columns apply the related table permissions'
 			assert.strictEqual(verifyPermsAST(member('dept->secret'), users.full(), 'select'), null);
 			assert.ok(verifyPermsAST(member('dept!secret'), users.restricted(), 'select'));
 			for (const expression of ['(dept)->name', 'COALESCE(dept, 1)->name', "dept->('na' + 'me')"]) {
-				const response = verifyPermsAST(member(expression), users.full(), 'select');
+				assert.strictEqual(verifyPermsAST(member(expression), users.full(), 'select'), null, expression);
+				const write = parse(`UPDATE ${DATABASE}.Emp SET payload = 'x' WHERE id = 'e1' AND ${expression} IS NULL`);
+				const response = verifyPermsAST(write, users.writeOnly(), 'update');
 				assert.ok(String(response?.unauthorized_access).includes('without naming the path'), expression);
 			}
 			assert.strictEqual(verifyPermsAST(member('payload->dept'), users.restricted(), 'select'), null);
@@ -355,9 +358,53 @@ describe('SQL reads of relationship columns apply the related table permissions'
 			assert.ok(performance.now() - start < 500, `${performance.now() - start} ms`);
 		});
 
+		it('hands legacy SQL a related record as data, with no relationship left to resolve', async () => {
+			const select = (user) =>
+				new Promise((resolve, reject) =>
+					sqlSelect(
+						{
+							statement: parse(
+								`SELECT id, squad->locker->code AS c, squad->members AS m, squad->name AS n FROM ${DATABASE}.Member WHERE id = 'm1'`
+							),
+							hdb_user: user,
+						},
+						(error, data) => (error ? reject(error) : resolve(plain(data)))
+					)
+				);
+			// the @enumerable locker is part of what Squad serializes to; the plain members relationship is not
+			assert.deepStrictEqual(await select(memberUser('sql-rel-data-reader', READ)), [
+				{ id: 'm1', c: LOCKER.code, n: SQUAD.name },
+			]);
+			assert.deepStrictEqual(await select(memberUser('sql-rel-data-no-locker')), [{ id: 'm1', n: SQUAD.name }]);
+		});
+
 		it('returns the whole cyclic closure to a role that can read all of it', async () => {
 			const squad = await squadRead(memberUser('sql-rel-locker-reader', READ));
 			assert.strictEqual(squad.locker.code, LOCKER.code, JSON.stringify(squad));
+		});
+	});
+
+	describe('relatedRecordData', () => {
+		it('copies a related record to plain data and keeps native values', async () => {
+			const user = users.full();
+			let related;
+			for await (const row of Emp.search(
+				{ conditions: [{ attribute: 'id', value: 'e1' }], select: Emp._authorizeSelectedRelationships(['dept'], user) },
+				{ user }
+			))
+				related = row.dept;
+			const data = relatedRecordData(related);
+			assert.strictEqual(Object.getPrototypeOf(data), Object.prototype);
+			assert.deepStrictEqual(data, DEPT);
+			const when = new Date(0);
+			const bytes = Buffer.from('x');
+			const nested = relatedRecordData([{ when, bytes, list: [related] }]);
+			assert.strictEqual(nested[0].when, when);
+			assert.strictEqual(nested[0].bytes, bytes);
+			assert.deepStrictEqual(nested[0].list, [DEPT]);
+			const keyed = relatedRecordData(JSON.parse('{"__proto__": {"polluted": true}}'));
+			assert.strictEqual(Object.getPrototypeOf(keyed), Object.prototype);
+			assert.deepStrictEqual(Object.keys(keyed), ['__proto__']);
 		});
 	});
 
