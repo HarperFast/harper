@@ -148,7 +148,7 @@ function deferredUntilRestart(receipt: RestoreReceipt, message: string): Deferre
 /**
  * The job row could not record the deferral, so the job will read as failed: a receipt still pending
  * would run the restore at some later, unrelated restart. Withdrawn only while it is still this
- * operation's and nothing has started.
+ * operation's and this job's (a resume keeps the operation and takes the job), and nothing has started.
  */
 function withdrawUnrecordedRestore(receipt: RestoreReceipt): void {
 	const lock = acquireRestoreLock(receipt.database_path);
@@ -157,6 +157,7 @@ function withdrawUnrecordedRestore(receipt: RestoreReceipt): void {
 		if (
 			read.kind !== 'valid' ||
 			read.receipt.operation_id !== receipt.operation_id ||
+			read.receipt.job_id !== receipt.job_id ||
 			read.receipt.state === 'committed'
 		)
 			return;

@@ -673,10 +673,11 @@ function restartRestoreIsTerminal(receipt: RestoreReceipt): boolean {
 }
 
 /**
- * Whether this boot must start without components: a restart restore that ran out of attempts, or one
- * that began replacing its target and has not published. The restart route exists because a component
- * opens the database itself, and such a component ignores the restoring marker, so it could serve or
- * write the unproved generation.
+ * Whether this boot must start without components: a restart restore that ran out of attempts, one
+ * that began replacing its target and has not published, or one holding a rollback copy it has not yet
+ * applied over. The restart route exists because a component opens the database itself, and such a
+ * component ignores the restoring marker, so it could serve or write the unproved generation, or write
+ * to the live one after its rollback copy was taken, which the next attempt would replace uncaptured.
  */
 export function unpublishedRestoreBlocksComponents(): string | undefined {
 	// a marker with no receipt beside it: its record was lost or removed unreadable, so what replaced the
@@ -698,7 +699,11 @@ export function unpublishedRestoreBlocksComponents(): string | undefined {
 		const { receipt } = read;
 		if (receipt.route !== 'on_restart' && !receipt.superseded_from) continue;
 		if (receipt.state === 'terminal') return receipt.database;
-		if (receipt.state !== 'committed' && restoreMarkerPresent(receipt.database_path)) return receipt.database;
+		if (
+			receipt.state !== 'committed' &&
+			(restoreMarkerPresent(receipt.database_path) || receipt.pre_restore_backup_id !== undefined)
+		)
+			return receipt.database;
 	}
 	return undefined;
 }

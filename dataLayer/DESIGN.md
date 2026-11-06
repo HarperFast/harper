@@ -172,9 +172,10 @@ restore and the next startup applies it, before anything can open the target.
   with the engine-lock probe on: it aborts only on a lock conflict, so a corrupt old directory stays
   replaceable.
 - **Failure never exits.** The receipt keeps its error and the target stays blocked; the next restart
-  or `resume` retries, and at `max_attempts` it is `terminal`. A `terminal` restart receipt, or one
-  whose marker shows destruction began, starts that boot in safe mode
-  (`unpublishedRestoreBlocksComponents`): a component that opens RocksDB itself ignores the marker.
+  or `resume` retries, and at `max_attempts` it is `terminal`. A `terminal` restart receipt, one whose
+  marker shows destruction began, or one holding an unapplied rollback copy starts that boot in safe
+  mode (`unpublishedRestoreBlocksComponents`): a component that opens RocksDB itself ignores the
+  marker, and a write it makes after the copy would be replaced uncaptured by the next attempt.
   `cancel` removes a receipt, keeping marker and pins once destruction began.
 
 ## RocksDB managed backups: blob snapshots (`dataLayer/blobBackup.ts`)

@@ -403,6 +403,20 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			assert.strictEqual(checkRestoreState(fixture.dir), 'clear');
 		});
 
+		it("leaves a resumed restore to its new job when the older job's row cannot record the deferral", async function () {
+			const fixture = await seededDatabase();
+			const original = await requestRestore(fixture.name, { on_restart: true, retain_previous: false });
+			const resumed = await requestRestore(fixture.name, { resume: true });
+
+			original.result.onNotRecorded();
+
+			const kept = receiptOf(fixture.dir);
+			assert.strictEqual(kept.state, 'pending');
+			assert.strictEqual(kept.job_id, resumed.jobId);
+			assert.deepStrictEqual(pinsOf(fixture), [{ pin_id: kept.source_pin_id, backup_id: kept.backup_id }]);
+			await restoreBackup({ ...SU, database: fixture.name, cancel: true });
+		});
+
 		it('refuses a database whose drop has begun, as every restore claim does', async function () {
 			const fixture = await seededDatabase();
 			await closeDatabase(fixture.name);
@@ -638,6 +652,30 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 
 			assert.strictEqual(readRestoreReceipt(fixture.dir).kind, 'absent');
 			assert.strictEqual(restoreMarkerPresent(fixture.dir), false);
+			assert.strictEqual((await job(jobId)).status, JOB_STATUS_ENUM.COMPLETE);
+			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.backedUp[0]);
+		});
+
+		it('starts the next boot in safe mode once an attempt took its rollback copy, so nothing writes past it', async function () {
+			const fixture = await seededDatabase();
+			const [backupId] = fixture.backupIds;
+			const { jobId } = await requestRestore(fixture.name, { on_restart: true, retain_previous: true });
+			const repair = breakBackup(fixture, backupId);
+
+			await boot(fixture.name);
+
+			const failed = receiptOf(fixture.dir);
+			assert.ok(Number.isInteger(failed.pre_restore_backup_id), 'precondition: the rollback copy was taken');
+			assert.strictEqual(restoreMarkerPresent(fixture.dir), false, 'precondition: refused before the purge');
+			assert.strictEqual(
+				unpublishedRestoreBlocksComponents(),
+				fixture.name,
+				'a component that opens the database itself could write past the copy the next attempt replaces it with'
+			);
+
+			repair();
+			await boot(fixture.name);
+			assert.strictEqual(unpublishedRestoreBlocksComponents(), undefined);
 			assert.strictEqual((await job(jobId)).status, JOB_STATUS_ENUM.COMPLETE);
 			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.backedUp[0]);
 		});
