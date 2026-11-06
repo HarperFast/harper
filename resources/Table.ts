@@ -14971,8 +14971,12 @@ export function makeTable(options): TableResourceClass {
 			if (Atomics.load(state, 0) !== admissionsAtStart) armReplicaEviction();
 		} else scheduleReplicaSweep();
 	}
-	function expireReplicaDeadline(store: any, key: Id, deadline: number): Promise<unknown> {
-		const entry: Entry = primaryStore.getEntry(key);
+	function expireReplicaDeadline(
+		store: any,
+		key: Id,
+		deadline: number,
+		entry: Entry = primaryStore.getEntry(key)
+	): Promise<unknown> {
 		if (!(entry?.metadataFlags & REPLICA)) return dropOrphanDeadline(store, key);
 		return TableResource.evict(key, entry.value, entry.version, deadline);
 	}
@@ -15010,24 +15014,29 @@ export function makeTable(options): TableResourceClass {
 		const cutoff = Date.now() + replicaExpirationMs - lifetime;
 		const budgetEnd = performance.now() + budgetMs;
 		const proceed = () => replicaEvictionArmed && !disposed && !maintenanceClosed && !isReadOnlyMode() && ownsCleanup();
+		const young = new Set<Id>();
 		let attempted = 0;
 		while (proceed()) {
-			const { batch, exhausted } = await earliestReplicaDeadlines(store, cutoff, limit, proceed);
-			let tried = 0;
+			const { batch, exhausted } = await earliestReplicaDeadlines(store, cutoff, limit, young, proceed);
 			let progressed = false;
 			for (const { key, deadline } of batch) {
 				if (!proceed()) return;
-				// a deadline capped by the record's own expiry understates the row's age
-				if (Date.now() - primaryStore.getEntry(key)?.version < minAgeMs) continue;
-				tried++;
-				await expireReplicaDeadline(store, key, deadline);
+				const entry: Entry = primaryStore.getEntry(key);
+				// a deadline capped by the record's own expiry makes a fresh row look old
+				if (Date.now() - entry?.version < minAgeMs) {
+					young.add(key);
+					progressed = true;
+					await rest();
+					continue;
+				}
+				await expireReplicaDeadline(store, key, deadline, entry);
 				if (!proceed()) return;
 				// evict() resolves on a refused or failed demotion too; such an entry is still here at this deadline
 				if (store.getSync(key) !== deadline) progressed = true;
 				await rest();
 				if (++attempted % checkEvery === 0 && !((await getStorageReclamationPriority(primaryStore.path)) > 1)) return;
 			}
-			if (tried > 0 && !progressed)
+			if (batch.length > 0 && !progressed)
 				logger.warn?.(`Could not demote any of ${batch.length} replicas of ${tableName} under storage pressure`);
 			if (exhausted || !progressed || performance.now() >= budgetEnd) return;
 		}
@@ -15036,7 +15045,13 @@ export function makeTable(options): TableResourceClass {
 	 * The store is keyed by id, so each batch costs a full scan; holding only the earliest `limit` bounds
 	 * its memory. Demoted entries leave the store, so entries tying the batch's last deadline stay selectable.
 	 */
-	async function earliestReplicaDeadlines(store: any, cutoff: number, limit: number, proceed: () => boolean) {
+	async function earliestReplicaDeadlines(
+		store: any,
+		cutoff: number,
+		limit: number,
+		young: Set<Id>,
+		proceed: () => boolean
+	) {
 		const batch: { key: Id; deadline: number }[] = [];
 		const keepEarliest = () => {
 			batch.sort((a, b) => a.deadline - b.deadline);
@@ -15047,7 +15062,11 @@ export function makeTable(options): TableResourceClass {
 		let seen = 0;
 		for (const { key, value: deadline } of store.getRange({ snapshot: false })) {
 			// a deadline beyond the current lifetime is left from a longer earlier one, however young the replica looks
-			if (typeof deadline === 'number' && (deadline <= cutoff || deadline > Date.now() + replicaExpirationMs)) {
+			if (
+				typeof deadline === 'number' &&
+				(deadline <= cutoff || deadline > Date.now() + replicaExpirationMs) &&
+				!young.has(key)
+			) {
 				matched++;
 				if (deadline <= bound) {
 					batch.push({ key, deadline });

@@ -201,6 +201,17 @@ async function reclaimAt(priority) {
 		assertKept('just stored');
 	});
 
+	it('reaches an older replica behind a batch of fresh rows with earlier deadlines', async () => {
+		limits({ batch: 2, minAgeMs: 1000 });
+		await replica('older', 5000);
+		await new Promise((resolve) => setTimeout(resolve, 1100));
+		const fresh = ['fresh-1', 'fresh-2', 'fresh-3'];
+		for (const id of fresh) await replica(id, 1000);
+		await reclaimAt(Infinity);
+		assertDemoted('older');
+		for (const id of fresh) assertKept(id);
+	});
+
 	it('does not accelerate a lifetime no longer than the minimum age', async () => {
 		limits({ minAgeMs: LIFETIME_MS * 2 });
 		const realNow = Date.now;
