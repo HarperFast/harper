@@ -562,24 +562,26 @@ describe('mqtt.ts CONNECT through a component’s server.getUser', () => {
 	after(() => (server.getUser = originalGetUser));
 	afterEach(() => seedUsers());
 
-	it('gives each connection its own view, tracked against the records as they were', async () => {
+	it('keeps the user a memoizing component returns as its first login tracked it, so a drop still revokes it', async () => {
 		await seedUsers([
 			{
 				username: 'mqtt_memoized',
 				active: true,
-				role: { id: 'mqtt_memoized_role', permission: { super_user: false } },
+				role: { id: 'mqtt_memoized_role', permission: { super_user: true } },
 			},
 		]);
 		// a component that memoizes the user it built, as a copy without the original's provenance
 		const memoized = structuredClone(userModule.getUserWithRole('mqtt_memoized'));
 		server.getUser = async () => memoized;
+		const topic = `${protectedTable()}/#`;
 		const backed = await connect(open, { username: 'mqtt_memoized', password: 'secret' });
+		assert.deepStrictEqual((await backed.subscribe(topic)).granted, [1]);
 		await databases.system.hdb_user.delete('mqtt_memoized');
-		const unbacked = await connect(open, { username: 'mqtt_memoized', password: 'secret' });
+		const after = await connect(open, { username: 'mqtt_memoized', password: 'secret' });
 
 		assert.strictEqual(backed.session.user, memoized, 'the first connection keeps what the component returned');
-		assert.notStrictEqual(unbacked.session.user, memoized);
-		assert.strictEqual(userModule.isRecordlessPrincipal(backed.session.user), false, 'its record was read at login');
-		assert.strictEqual(userModule.isRecordlessPrincipal(unbacked.session.user), true);
+		assert.strictEqual(after.session.user, memoized, 'and so does a later one');
+		assert.strictEqual(userModule.isRecordlessPrincipal(memoized), false, 'its record was read at the first login');
+		assert.deepStrictEqual((await after.subscribe(topic)).granted, [NOT_AUTHORIZED], 'its record was dropped');
 	});
 });

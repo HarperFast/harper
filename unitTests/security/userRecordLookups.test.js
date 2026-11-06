@@ -262,7 +262,7 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 			assert.strictEqual(user.isRecordlessPrincipal(componentUser('lookup_untracked')), false);
 		});
 
-		it('tracks the user a component returns, and gives a memoizing component’s lookup after a record change a view', async () => {
+		it('tracks the user a component returns, and keeps what a memoizing component’s first lookup recorded', async () => {
 			class ComponentUser {
 				#clientId;
 				constructor(username) {
@@ -282,11 +282,31 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 				await testUtils.seedUsers([lookupUser({ username: 'lookup_memo' })]);
 				const second = await user.getTrackedUser('lookup_memo', 'token');
 				assert.strictEqual(first, shared, 'the first lookup keeps what the component returned');
-				assert.strictEqual(first.client_id, 'client-lookup_memo');
-				assert.notStrictEqual(second, shared);
-				assert.ok(second instanceof ComponentUser);
-				assert.strictEqual(user.isRecordlessPrincipal(first), true, 'a later lookup does not re-track it');
-				assert.strictEqual(user.isRecordlessPrincipal(second), false);
+				assert.strictEqual(second, shared, 'and so does one after a record change');
+				assert.strictEqual(second.client_id, 'client-lookup_memo', 'with its private fields');
+				assert.strictEqual(user.isRecordlessPrincipal(shared), true, 'a record created later is another principal’s');
+			} finally {
+				server.getUser = getUser;
+			}
+		});
+
+		it('keeps a memoized principal returned under another name, and one whose record was dropped', async () => {
+			const getUser = server.getUser;
+			const renamed = componentUser('lookup_memo_subject');
+			server.getUser = async () => renamed;
+			try {
+				assert.strictEqual(await user.getTrackedUser('lookup_memo_login', 'token'), renamed);
+				assert.strictEqual(await user.getTrackedUser('lookup_memo_login', 'token'), renamed, 'on a repeat login');
+				assert.strictEqual(user.isRecordlessPrincipal(renamed), true);
+
+				await testUtils.seedUsers([lookupUser()]);
+				const copied = structuredClone(user.getUserWithRole('lookup_user'));
+				server.getUser = async () => copied;
+				assert.strictEqual(await user.getTrackedUser('lookup_user', 'token'), copied);
+				await databases.system.hdb_user.delete('lookup_user');
+				assert.strictEqual(await user.getTrackedUser('lookup_user', 'token'), copied);
+				assert.strictEqual(user.isRecordlessPrincipal(copied), false, 'its first lookup read its record');
+				assert.strictEqual(user.isCurrentUser(copied), false, 'so the drop shows as a change');
 			} finally {
 				server.getUser = getUser;
 			}

@@ -699,9 +699,10 @@ function cloneUserView(user: User & { role: UserRole }): User {
 /**
  * `server.getUser` for a connection that holds its user (MQTT CONNECT), with a component's principal tracked
  * against the records read for its name before it resolved. A memoizing server.getUser hands one user to later
- * lookups: one whose records changed since gets a view of its own, so it does not re-track an earlier
- * connection's user. The view keeps the class but not its private fields. `resolver` is the server whose
- * getUser resolves the login, as the caller's scope would call it.
+ * lookups, which keep what its first lookup recorded: re-tracking it would change what an earlier connection
+ * holding it is checked against, and a copy would lose its class's private fields. A record-backed one stays
+ * re-read by name, so a dropped record still revokes it. `resolver` is the server whose getUser resolves the
+ * login, as the caller's scope would call it.
  */
 async function getTrackedUser(
 	username: string,
@@ -712,16 +713,8 @@ async function getTrackedUser(
 	if (resolver.getUser === getUserImpl) return getUserImpl(username, password);
 	const versions = userRecordVersions(username);
 	const user = await resolver.getUser(username, password, request as any);
-	const tracked = user && typeof user === 'object' ? trackedProvenance.get(user) : undefined;
-	if (
-		tracked?.username === versions.username &&
-		tracked.userStamp === versions.userStamp &&
-		tracked.roleStamp === versions.roleStamp
-	)
-		return user;
-	const holder = tracked ? Object.create(Object.getPrototypeOf(user), Object.getOwnPropertyDescriptors(user)) : user;
-	trackUserRecords(holder, versions);
-	return holder;
+	if (!trackedProvenance.has(user)) trackUserRecords(user, versions);
+	return user;
 }
 
 /** Whether `isCurrentUser` can answer for `user`: false for one resolved outside this module and not tracked. */
