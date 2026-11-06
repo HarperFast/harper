@@ -904,18 +904,47 @@ for (const sqlEngine of ['legacy', 'auto', 'new'] as const) {
 				]);
 			});
 
-			test('a related attribute the role cannot read is unreachable through an expression or a join', async () => {
-				const member = `SELECT id, dept->budget AS b FROM data.Emp WHERE id = 'e1'`;
+			test('member access through a relationship is authorized as a path', async () => {
+				const budget = `SELECT id, dept->budget AS b FROM data.Emp WHERE id = 'e1'`;
 				const probe = `SELECT id FROM data.Emp WHERE id = 'e1' AND dept->budget = ${DEPT.budget}`;
+				const name = `SELECT id, dept->name AS n FROM data.Emp WHERE id = 'e1'`;
+				for (const statement of [budget, probe])
+					assertRefused(await sql('restricted', statement), statement, 'Dept.budget');
 				if (memberAccess) {
-					deepStrictEqual(await rows('full', member), [{ id: EMP.id, b: DEPT.budget }]);
-					deepStrictEqual(await rows('restricted', member), [{ id: EMP.id }]);
+					deepStrictEqual(await rows('full', budget), [{ id: EMP.id, b: DEPT.budget }]);
 					deepStrictEqual(await rows('full', probe), [{ id: EMP.id }]);
-					deepStrictEqual(await rows('restricted', probe), []);
+					deepStrictEqual(await rows('restricted', name), [{ id: EMP.id, n: DEPT.name }]);
 				} else {
-					const unsupported = await sql('restricted', member);
+					const unsupported = await sql('restricted', name);
 					strictEqual(unsupported.status, 400, JSON.stringify(unsupported.body));
 					ok(String(unsupported.body.error).includes('SQL engine v2'), JSON.stringify(unsupported.body));
+				}
+
+				// Badge.team -> Team.vault -> Vault: each hop is checked, and a record returned whole must be readable in full
+				const code = `SELECT id, team->vault->code AS c FROM data.Badge WHERE id = 'b1'`;
+				const vault = `SELECT id, team->vault AS v FROM data.Badge WHERE id = 'b1'`;
+				for (const statement of [code, vault]) {
+					const denied = await sql('teamOnly', statement);
+					strictEqual(denied.status, 403, `${statement}: ${JSON.stringify(denied.body)}`);
+					deepStrictEqual(denied.body.invalid_schema_items, [`Table 'data.Vault' does not exist`], statement);
+				}
+				for (const statement of [code, vault]) {
+					const restricted = await sql('vaultRestricted', statement);
+					strictEqual(restricted.status, 403, `${statement}: ${JSON.stringify(restricted.body)}`);
+					ok(!keysIn(restricted.body).has('c') && !keysIn(restricted.body).has('v'), statement);
+				}
+				if (memberAccess) {
+					deepStrictEqual(await rows('teamFull', code), [{ id: BADGE.id, c: VAULT.code }]);
+					deepStrictEqual(await rows('teamFull', vault), [{ id: BADGE.id, v: VAULT }]);
+				}
+				for (const statement of [
+					`SELECT id, (team)->vault AS v FROM data.Badge WHERE id = 'b1'`,
+					`SELECT id, COALESCE(team, 1)->vault AS v FROM data.Badge WHERE id = 'b1'`,
+					`SELECT id, team->('va' + 'ult') AS v FROM data.Badge WHERE id = 'b1'`,
+				]) {
+					const unresolved = await sql('teamFull', statement);
+					strictEqual(unresolved.status, 403, `${statement}: ${JSON.stringify(unresolved.body)}`);
+					ok(String(unresolved.body.unauthorized_access).includes('without naming the path'), statement);
 				}
 				for (const statement of [
 					`SELECT e.id, e.dept FROM data.Emp e JOIN data.Seat s ON e.deptId = s.deptId WHERE e.id = 'e1'`,
@@ -979,15 +1008,9 @@ for (const sqlEngine of ['legacy', 'auto', 'new'] as const) {
 					strictEqual((await sql('writeOnlyDeptReader', copy)).status, 200);
 					deepStrictEqual(await storedEmp(), [{ ...EMP, payload: copied(DEPT) }]);
 					await restoreEmp();
-					if (memberAccess) {
-						const probe = await sql(
-							'restrictedWriter',
-							`UPDATE data.Emp SET name = 'probed' WHERE id = 'e1' AND dept->budget = ${DEPT.budget}`
-						);
-						strictEqual(probe.status, 200, JSON.stringify(probe.body));
-						deepStrictEqual(probe.body.update_hashes, []);
-						deepStrictEqual(await storedEmp(), [EMP]);
-					}
+					const probe = `UPDATE data.Emp SET name = 'probed' WHERE id = 'e1' AND dept->budget = ${DEPT.budget}`;
+					assertRefused(await sql('restrictedWriter', probe), probe, 'Dept.budget');
+					deepStrictEqual(await storedEmp(), [EMP]);
 				} finally {
 					await restoreEmp();
 				}

@@ -730,6 +730,14 @@ export function verifyPermsAST(ast, userObject, operation, apiOperation = terms.
 			);
 		}
 
+		if (!isSuperUser) {
+			const memberAccess = parsedAst.getRelationshipMemberPaths();
+			if (memberAccess.unresolved.length > 0)
+				return permsResponse.handleUnauthorizedItem(HDB_ERROR_MSGS.SQL_RELATIONSHIP_MEMBER(memberAccess.unresolved));
+			for (const { tableClass, path } of memberAccess.paths)
+				relatedTableDenials = addMemberPathDenial(tableClass, path, userObject, relatedTableDenials);
+		}
+
 		// Only a statement admitted on its own tables and attributes answers for related tables, so a refusal never
 		// names the target of a relationship attribute the role cannot see.
 		if (relatedTableDenials && !permsResponse.hasIssues())
@@ -1131,8 +1139,35 @@ function addRelatedTableDenials(
 	if (!tableClass?.hasRelationships || !attributes) return denials;
 	for (const attribute of attributes) {
 		const denial = relatedTableOf(tableClass, attribute)?._readDenial(NO_PATH, user);
-		if (denial) (denials ??= new Map()).set(`${denial.database}_${denial.table}`, { denial, attributes: new Set() });
+		if (denial) denials = recordDenial(denials, denial);
 	}
+	return denials;
+}
+
+// Member access (`dept->name`) reads a path through the relationship, checked from the related table on like a NoSQL
+// path. It evaluates live records, so one it returns whole (`team->vault`) needs every attribute of its table.
+function addMemberPathDenial(
+	tableClass: any,
+	path: string[],
+	user: any,
+	denials: RelationshipReadCheck['denials']
+): RelationshipReadCheck['denials'] {
+	let target = relatedTableOf(tableClass, path[0]);
+	const denial = target._readDenial(path, user, undefined, 1);
+	if (denial) return recordDenial(denials, denial);
+	for (let index = 1; target && index < path.length; index++) target = relatedTableOf(target, path[index]);
+	if (target && !target._readableInFull(user))
+		return recordDenial(denials, { database: target.databaseName, table: target.tableName });
+	return denials;
+}
+
+function recordDenial(denials: RelationshipReadCheck['denials'], denial: ReadDenial): RelationshipReadCheck['denials'] {
+	denials ??= new Map();
+	const key = `${denial.database}_${denial.table}`;
+	let entry = denials.get(key);
+	if (!entry) denials.set(key, (entry = { denial, attributes: new Set() }));
+	if (denial.attribute === undefined) entry.denial = denial;
+	else entry.attributes.add(denial.attribute);
 	return denials;
 }
 
@@ -1233,13 +1268,7 @@ function checkRelationshipPath(state: RelationshipReadCheck, attribute: any) {
 	const path = Array.isArray(attribute);
 	if (!relatedTableOf(state.tableClass, path ? attribute[0] : attribute)) return;
 	const denial = state.tableClass._readDenial(path ? attribute : [attribute], state.user);
-	if (!denial) return;
-	state.denials ??= new Map();
-	const key = `${denial.database}_${denial.table}`;
-	let entry = state.denials.get(key);
-	if (!entry) state.denials.set(key, (entry = { denial, attributes: new Set() }));
-	if (denial.attribute === undefined) entry.denial = denial;
-	else entry.attributes.add(denial.attribute);
+	if (denial) state.denials = recordDenial(state.denials, denial);
 }
 
 function checkSortPaths(state: RelationshipReadCheck, sort: any, prefix: any[] | undefined) {

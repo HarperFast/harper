@@ -159,6 +159,48 @@ class sqlStatementBucket {
 	}
 
 	/**
+	 * The relationship paths AlaSQL member access (`->`, `!`) reads: a relationship of one of the statement's tables
+	 * followed by literal member names. A member access over another expression that reads a relationship, or with a
+	 * computed member, has no path to check and is returned in `unresolved`.
+	 */
+	getRelationshipMemberPaths(): { paths: { tableClass: any; path: string[] }[]; unresolved: string[] } {
+		const paths = [];
+		const unresolved = [];
+		const registry = loadDatabaseRegistry();
+		const tables = [];
+		for (const [schema, schemaTables] of this.affected_attributes) {
+			const database = registry?.[schema];
+			for (const table of schemaTables.keys()) {
+				const tableClass: any = database && Object.hasOwn(database, table) ? database[table] : undefined;
+				if (tableClass?.hasRelationships) tables.push(tableClass);
+			}
+		}
+		if (tables.length === 0) return { paths, unresolved };
+		const { Op, Column } = (alasql as any).yy;
+		const isMemberAccess = (node) => node instanceof Op && (node.op === '->' || node.op === '!');
+		const isRelationship = (name) =>
+			tables.some((tableClass) => tableClass.propertyResolvers[name]?.definition?.tableClass);
+		for (const node of astNodes(this.ast)) {
+			if (!isMemberAccess(node)) continue;
+			const members = [];
+			let base = node;
+			let computed = false;
+			for (; isMemberAccess(base); base = base.left) {
+				if (typeof base.right === 'string') members.unshift(base.right);
+				else computed = true;
+			}
+			if (base instanceof Column && !computed) {
+				for (const tableClass of tables)
+					if (tableClass.propertyResolvers[base.columnid]?.definition?.tableClass)
+						paths.push({ tableClass, path: [base.columnid, ...members] });
+			} else if ([...columnNodes(base)].some((column) => isRelationship(column.columnid))) {
+				unresolved.push(node.toString());
+			}
+		}
+		return { paths, unresolved };
+	}
+
+	/**
 	 * Attributes an UPDATE or DELETE reads to pick rows (WHERE) or compute values (SET expressions).
 	 * They need read permission on top of the write permission the statement already needs. The primary
 	 * key is left out: the statement reports the keys of the rows it touched, as NoSQL update and delete do.

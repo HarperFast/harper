@@ -156,6 +156,22 @@ describe('SQL reads of relationship columns apply the related table permissions'
 			assert.ok(!JSON.stringify(response).includes('Dept'), JSON.stringify(response));
 		});
 
+		it('checks member access through a relationship as a path from the related table', () => {
+			const member = (expression) => parse(`SELECT id, ${expression} AS m FROM ${DATABASE}.Emp WHERE id = 'e1'`);
+			assert.strictEqual(verifyPermsAST(member('dept->name'), users.restricted(), 'select'), null);
+			const secret = verifyPermsAST(member('dept->secret'), users.restricted(), 'select');
+			assert.deepStrictEqual(secret?.invalid_schema_items, [`Attribute 'secret' does not exist on '${DATABASE}.Dept'`]);
+			assert.strictEqual(verifyPermsAST(member('dept->secret'), users.full(), 'select'), null);
+			assert.ok(verifyPermsAST(member('dept!secret'), users.restricted(), 'select'));
+			for (const expression of ['(dept)->name', 'COALESCE(dept, 1)->name', "dept->('na' + 'me')"]) {
+				const response = verifyPermsAST(member(expression), users.full(), 'select');
+				assert.ok(String(response?.unauthorized_access).includes('without naming the path'), expression);
+			}
+			assert.strictEqual(verifyPermsAST(member('payload->dept'), users.restricted(), 'select'), null);
+			const write = parse(`UPDATE ${DATABASE}.Emp SET payload = 'x' WHERE id = 'e1' AND dept->secret = 'hidden'`);
+			assert.ok(verifyPermsAST(write, users.writeOnly(), 'update'));
+		});
+
 		it('names a related table the role can describe but not read as unauthorized', () => {
 			const user = userWith('sql-rel-dept-writer', { Emp: READ, Dept: { ...READ, read: false, insert: true } });
 			const response = verifyPermsAST(parse(`SELECT id, dept FROM ${DATABASE}.Emp`), user, 'select');
