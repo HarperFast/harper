@@ -1,7 +1,7 @@
 const assert = require('node:assert');
 const { waitFor } = require('../waitFor');
 const { DERIVED_INDEX_ACCEPTED } = require('#src/resources/derivedIndexRuntime');
-const { HnswDerivedIndexBackend } = require('#src/resources/indexes/hnswDerivedIndex');
+const { DERIVED_INDEX_CURSOR_KEY, HnswDerivedIndexBackend } = require('#src/resources/indexes/hnswDerivedIndex');
 
 const OWNER_EPOCH = 7n;
 const SLOW_APPLY_MILLIS = 6;
@@ -227,5 +227,37 @@ describe('HnswDerivedIndexBackend durability barriers', () => {
 		}
 		(await waitFor(() => index.barriers[3], 5000)).settle();
 		await waitFor(() => backend.getDurableCursor()?.logs.local === 4, 5000);
+	});
+});
+
+describe('HnswDerivedIndexBackend native-state check', () => {
+	it('checks once per owner epoch, even after a barrier of the previous epoch reads the cursor', async () => {
+		let epoch = 1n;
+		let lost = false;
+		let checks = 0;
+		const index = new ControlledIndex(0);
+		index.derivedStorageLost = () => {
+			checks++;
+			return lost;
+		};
+		const backend = new HnswDerivedIndexBackend('hnsw:test/vector', index);
+		backend.attach({
+			isOwnerEpoch: (candidate) => candidate === epoch,
+			getReadiness: () => ({ state: 'ready', ownerEpoch: epoch, rebuildAttempts: 0 }),
+		});
+		index.indexStore.putSync(DERIVED_INDEX_CURSOR_KEY, { format: 1, logs: { local: 1 } });
+		assert.ok(backend.getDurableCursor());
+		assert.ok(backend.getDurableCursor());
+		assert.equal(checks, 1);
+
+		// the release barrier is still in flight when the epoch shuts down, and reads the cursor as it settles
+		backend.flush('shutdown');
+		const shutdown = backend.shutdown(epoch);
+		index.barriers[0].settle();
+		await shutdown;
+
+		lost = true;
+		epoch = 2n;
+		assert.equal(backend.getDurableCursor(), undefined, 'the next owner epoch checks the plane file again');
 	});
 });

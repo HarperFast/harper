@@ -73,7 +73,6 @@ async function waitForPublishedMappings(Table, count) {
 		{ timeout: 15_000, message: `the native plane never published ${count} mappings behind a durable cursor` }
 	);
 }
-/** Waits until one search over the whole (small) graph returns every key in `keys`. */
 async function waitForKeys(Table, keys) {
 	let found = [];
 	await waitFor(
@@ -986,7 +985,7 @@ describe('HNSW native plane file-primary delivery', function () {
 			writeAbandonedCreate(planePath);
 			assert.equal(index.getPlane(), null);
 			assert.ok(!fs.existsSync(planePath), 'an unopenable file past the create window is removed');
-			// past the attach retry that used to be all that stood between this state and an empty plane
+			// outside the attach retry window
 			index.planeRetryAt = 0;
 			assertCreateRefused(index);
 			await Unopenable.put(COUNT + 1, { vector: makeVector(COUNT + 1) });
@@ -1120,11 +1119,6 @@ describe('HNSW native plane across a backup restore', function () {
 		for (const database of databases) fs.rmSync(backupDirForDatabase(database), { recursive: true, force: true });
 	});
 
-	/**
-	 * A populated native index, backed up and restored in place through the restore child. The backup
-	 * holds the node mappings and the durable cursor; the purge removes the plane file, and the backup
-	 * never had one.
-	 */
 	async function restoredTables() {
 		const database = `vector_plane_restore_${++sequence}`;
 		databases.push(database);
