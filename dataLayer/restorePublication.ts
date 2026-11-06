@@ -701,7 +701,10 @@ export function unpublishedRestoreBlocksComponents(): string | undefined {
 		if (receipt.state === 'terminal') return receipt.database;
 		if (
 			receipt.state !== 'committed' &&
-			(restoreMarkerPresent(receipt.database_path) || receipt.pre_restore_backup_id !== undefined)
+			(restoreMarkerPresent(receipt.database_path) ||
+				receipt.pre_restore_backup_id !== undefined ||
+				// a copy taken but not yet recorded is adopted by the next attempt all the same
+				receipt.pre_restore_started_at !== undefined)
 		)
 			return receipt.database;
 	}

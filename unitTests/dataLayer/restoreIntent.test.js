@@ -680,6 +680,18 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.backedUp[0]);
 		});
 
+		it('starts the boot in safe mode once a rollback copy has started, even before the receipt records it', async function () {
+			const fixture = await seededDatabase();
+			await requestRestore(fixture.name, { on_restart: true, retain_previous: true });
+			await closeDatabase(fixture.name);
+			// what a pin or receipt write failing after the copy finished leaves: the next attempt adopts that copy
+			rewriteReceipt(fixture.dir, { attempts: 1, pre_restore_started_at: Date.now() });
+
+			assert.strictEqual(unpublishedRestoreBlocksComponents(), fixture.name);
+			await restoreBackup({ ...SU, database: fixture.name, cancel: true });
+			assert.strictEqual(unpublishedRestoreBlocksComponents(), undefined);
+		});
+
 		it('starts the next boot in safe mode once an attempt failed past its purge, until a restore publishes', async function () {
 			const fixture = await seededDatabase();
 			const [good] = fixture.backupIds;
