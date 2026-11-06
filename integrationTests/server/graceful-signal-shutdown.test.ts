@@ -403,7 +403,15 @@ suite(
 			const retiring = await subscribe(ctx);
 			// its response can be lost with the worker that serves it
 			sendOperation(ctx.harper, { operation: 'restart_service', service: 'http_workers' }).catch(() => {});
-			await waitFor(async () => (await subscribe(ctx)).threadId !== retiring.threadId, { timeout: 30_000 });
+			await waitFor(
+				// a probe arriving right as the retiring worker closes its listener can be reset before its first message
+				async () =>
+					subscribe(ctx).then(
+						({ threadId }) => threadId !== retiring.threadId,
+						() => false
+					),
+				{ timeout: 30_000 }
+			);
 			// the worker retires once its replacement is up, then holds its subscriber for 5 s: signal inside that hold
 			await delay(500);
 			const signalledAt = Date.now();
