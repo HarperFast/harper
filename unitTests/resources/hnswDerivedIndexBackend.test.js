@@ -39,6 +39,10 @@ class ControlledIndex {
 	}
 
 	resetDerivedStorage() {}
+
+	derivedStorageLost() {
+		return false;
+	}
 }
 
 function makeBatch(sequence, size = BATCH_RECORDS) {

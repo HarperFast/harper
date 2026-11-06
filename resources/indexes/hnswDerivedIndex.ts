@@ -51,6 +51,8 @@ export interface DerivedNativeIndex {
 	applyDerivedValue(primaryKey: Id, vector: number[] | undefined, version?: number): void;
 	flushDerived(): Promise<void>;
 	resetDerivedStorage(): void;
+	/** True when node mappings survive the native file they name, so no cursor over them describes it. */
+	derivedStorageLost(): boolean;
 	assertDerivedValue(vector: unknown, label: string): void;
 	attachDerivedHost(host: DerivedNativeIndexHost): void;
 }
@@ -80,6 +82,7 @@ export class HnswDerivedIndexBackend implements DerivedIndexBackend {
 	#interruptBarrierAfter = 0;
 	#resetting?: Promise<void>;
 	#unindexable = 0;
+	#nativeStateChecked = false;
 
 	constructor(id: string, index: DerivedNativeIndex) {
 		this.id = id;
@@ -97,9 +100,22 @@ export class HnswDerivedIndexBackend implements DerivedIndexBackend {
 		};
 	}
 
+	/**
+	 * A restore brings back the mappings and this cursor but never the plane file, so the first read of
+	 * each ownership checks that the file still exists. Only that read: once delivery runs, `undefined`
+	 * also means a rebuild's boundary is not durable yet, and a file lost after it is `getPlane`'s to refuse.
+	 */
 	getDurableCursor(): DerivedIndexCursor | undefined {
 		const cursor = this.#index.indexStore.getSync(DERIVED_INDEX_CURSOR_KEY);
-		return cursor === undefined ? undefined : (cursor as DerivedIndexCursor);
+		if (cursor === undefined) return undefined;
+		if (!this.#nativeStateChecked) {
+			if (this.#index.derivedStorageLost()) {
+				logger.warn?.(`Derived index '${this.id}' lost its native file while its node mappings survive; rebuilding`);
+				return undefined;
+			}
+			this.#nativeStateChecked = true;
+		}
+		return cursor as DerivedIndexCursor;
 	}
 
 	publishCoverage(positions: DerivedIndexPositions, ownerEpoch: bigint): void {
@@ -130,6 +146,7 @@ export class HnswDerivedIndexBackend implements DerivedIndexBackend {
 	 */
 	async shutdown(_epoch: bigint): Promise<void> {
 		this.#dropQueue();
+		this.#nativeStateChecked = false;
 		await Promise.allSettled([this.#flushing, this.#resetting]);
 	}
 
@@ -141,6 +158,7 @@ export class HnswDerivedIndexBackend implements DerivedIndexBackend {
 		this.#dropQueue();
 		this.#appliedCursor = undefined;
 		this.#appliedPastCoverage = false;
+		this.#nativeStateChecked = true;
 		this.#resetting = (async () => {
 			await this.#flushing;
 			this.#index.indexStore.removeSync(DERIVED_INDEX_CURSOR_KEY);
