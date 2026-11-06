@@ -111,7 +111,7 @@ Consequences that shape the code:
   after its native wait, its cluster round, a coalesced join or a retry — gives the key and any cluster grant
   back (`retryAfterScopeCommit`), waits on `whenCommitSettles` (drained by `endCommitAttempt` after rotation)
   and retries with its remaining budget; the root still CLOSED after that means the scope ended, and the waiter
-  gets 500. Holding the key while waiting would deadlock a pre-commit hook's own `lock()` on it. A hold waits
+  gets 500 — as any later `lock()` does when a commit that left a read iterator open could not reopen it. Holding the key while waiting would deadlock a pre-commit hook's own `lock()` on it. A hold waits
   only once the root reads CLOSED: it survives the commit and stages nothing until saved, so in pre-commit work
   it is admitted as before. The instance holding a scoped handle is not held back on re-entry: its lock ends
   with that commit, as for any re-lock without `unlock()`. Two more exceptions keep the earlier outcome. The

@@ -5395,6 +5395,23 @@ export function makeTable(options): TableResourceClass {
 				!getClusterLockTransport(databaseName)
 			)
 				return Promise.reject(transportUnavailable(databaseName));
+			const held = this.#lockHandle;
+			if (held && !held.isExpired() && held.keyId === keyId) {
+				// Re-entrant: upgrade to hold if requested, then preserve staged changes.
+				const violation = scopeViolation(held, resolved, databaseName);
+				if (violation) return Promise.reject(violation);
+				if (resolved.hold && !held.hold) {
+					held.upgradeToHold(resolved.lease);
+					// The scoped phase eagerly staged a TransactionWrite (see #reloadLocked); hold
+					// staging is deferred and explicit-save-only, so an unsaved scoped write left
+					// dangling here would otherwise auto-commit at the transaction sweep and clobber
+					// whatever the hold write lands. detachScopedUpgradeWrite marks it .dropped so a
+					// later save() on this instance falls through to the hold branch instead of the
+					// dead #savingOperation reference.
+					detachScopedUpgradeWrite(link, keyId, held);
+				}
+				return Promise.resolve(this.#reloadLocked(id, undefined, true));
+			}
 			const lockStart = Date.now();
 			const scopeRoot = link.saveCommits ? undefined : (link.root ?? link);
 			const hook = scopeRoot && currentCommitHook();
@@ -5433,23 +5450,6 @@ export function makeTable(options): TableResourceClass {
 					scope: resolved.scopeRequested ? resolved.scope : undefined,
 				});
 			};
-			const held = this.#lockHandle;
-			if (held && !held.isExpired() && held.keyId === keyId) {
-				// Re-entrant: upgrade to hold if requested, then preserve staged changes.
-				const violation = scopeViolation(held, resolved, databaseName);
-				if (violation) return Promise.reject(violation);
-				if (resolved.hold && !held.hold) {
-					held.upgradeToHold(resolved.lease);
-					// The scoped phase eagerly staged a TransactionWrite (see #reloadLocked); hold
-					// staging is deferred and explicit-save-only, so an unsaved scoped write left
-					// dangling here would otherwise auto-commit at the transaction sweep and clobber
-					// whatever the hold write lands. detachScopedUpgradeWrite marks it .dropped so a
-					// later save() on this instance falls through to the hold branch instead of the
-					// dead #savingOperation reference.
-					detachScopedUpgradeWrite(link, keyId, held);
-				}
-				return Promise.resolve(this.#reloadLocked(id, undefined, true));
-			}
 			const scoped = link.recordLockFor(primaryStore, keyId);
 			if (scoped && !scoped.isExpired()) {
 				const violation = scopeViolation(scoped, resolved, databaseName);
