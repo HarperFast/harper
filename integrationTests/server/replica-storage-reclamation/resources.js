@@ -23,7 +23,6 @@ Reclaimable.sourcedFrom(
 
 export class ReplicaFixture extends Resource {
 	static loadAsInstance = false;
-	// write stubs: the indexed projection a node holds of a record another node owns
 	async post(_target, { ids }) {
 		const context = this.getContext();
 		for (const id of ids) {

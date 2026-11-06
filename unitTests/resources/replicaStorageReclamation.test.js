@@ -84,7 +84,11 @@ async function reclaimAt(priority) {
 		return Declared;
 	}
 
+	// the fixtures are all freshly written, so only the tests of the minimum age leave it in place
+	const limits = (overrides) => setReplicaReclaimLimitsForTesting({ minAgeMs: 0, ...overrides });
+
 	beforeEach(() => {
+		limits();
 		responses = new Map();
 		loads = [];
 		Rows = declare(`Rows${++tables}`);
@@ -92,7 +96,6 @@ async function reclaimAt(priority) {
 	});
 	afterEach(async () => {
 		setReplicaReclaimLimitsForTesting();
-		// the next test's first report must read as a rise in pressure
 		await reclaimAt(0.5);
 	});
 
@@ -167,12 +170,11 @@ async function reclaimAt(priority) {
 		assert.ok(isReplica('near'), 'and kept it again');
 	});
 
-	it('widens the window as pressure rises, and takes every replica past the minimum age on a full disk', async () => {
+	it('widens the window as pressure rises, and takes every replica on a full disk', async () => {
 		await replica('tenth', LIFETIME_MS * 0.1);
 		await replica('half', LIFETIME_MS * 0.5);
 		await replica('most', LIFETIME_MS * 0.9);
-		await replica('whole', LIFETIME_MS * 0.96);
-		await replica('young', LIFETIME_MS);
+		await replica('whole', LIFETIME_MS * 0.99);
 
 		await reclaimAt(1.25);
 		assertDemoted('tenth');
@@ -188,20 +190,36 @@ async function reclaimAt(priority) {
 
 		await reclaimAt(Infinity);
 		assertDemoted('whole');
-		assertKept('young');
 	});
 
-	it('uses the whole lifetime as the minimum age when the lifetime is shorter', async () => {
-		setReplicaReclaimLimitsForTesting({ minAgeMs: LIFETIME_MS * 2 });
-		await replica('near', 1000);
-		await replica('passed', -1000);
+	it('keeps a replica younger than the minimum age on a full disk', async () => {
+		setReplicaReclaimLimitsForTesting();
+		await replica('in the window', LIFETIME_MS * 0.5);
+		await replica('just stored', LIFETIME_MS);
 		await reclaimAt(Infinity);
-		assertKept('near');
-		assertDemoted('passed');
+		assertKept('in the window');
+		assertKept('just stored');
+	});
+
+	it('does not accelerate a lifetime no longer than the minimum age', async () => {
+		limits({ minAgeMs: LIFETIME_MS * 2 });
+		const realNow = Date.now;
+		// past the minimum age by write time, so only the window decides
+		const later = realNow() + LIFETIME_MS * 3;
+		Date.now = () => later;
+		try {
+			await replica('near', 1000);
+			await replica('passed', -1000);
+			await reclaimAt(Infinity);
+			assertKept('near');
+			assertDemoted('passed');
+		} finally {
+			Date.now = realNow;
+		}
 	});
 
 	it('demotes earliest deadline first across batches, and stops once the priority falls below 1', async () => {
-		setReplicaReclaimLimitsForTesting({ batch: 2, checkEvery: 1 });
+		limits({ batch: 2, checkEvery: 1 });
 		const remaining = { e: 100, c: 300, a: 500, d: 200, b: 400 };
 		for (const [id, seconds] of Object.entries(remaining)) await replica(id, seconds * 1000);
 		const order = [];
@@ -221,7 +239,7 @@ async function reclaimAt(priority) {
 	});
 
 	it('finishes a group of equal deadlines larger than a batch before any later deadline', async () => {
-		setReplicaReclaimLimitsForTesting({ batch: 2 });
+		limits({ batch: 2 });
 		const tied = Date.now() + 1000;
 		const ids = ['t1', 't2', 't3', 't4', 't5'];
 		for (const id of ids) {
@@ -242,7 +260,7 @@ async function reclaimAt(priority) {
 	});
 
 	it('stops after a batch that could demote nothing, and tries again on the next run', async () => {
-		setReplicaReclaimLimitsForTesting({ batch: 2 });
+		limits({ batch: 2 });
 		for (const id of ['a', 'b', 'c']) await replica(id, 1000);
 		const evict = Rows.evict;
 		let attempts = 0;
@@ -259,7 +277,7 @@ async function reclaimAt(priority) {
 	});
 
 	it('finishes a batch past its budget, however long the scan took, and leaves the rest for the next run', async () => {
-		setReplicaReclaimLimitsForTesting({ batch: 2, budgetMs: 0 });
+		limits({ batch: 2, budgetMs: 0 });
 		await replica('earliest', 1000);
 		await replica('next', 2000);
 		await replica('last', 3000);
@@ -576,51 +594,68 @@ async function reclaimAt(priority) {
 			server.shards = priorShards;
 		});
 
-		it('keeps a fresh write replica on a full volume, then demotes it, and leaves the rows this node owns', async () => {
+		const flags = (Table, id) => Table.primaryStore.getEntry(id).metadataFlags;
+		async function writeRows(Table, prefix, count = 16) {
+			const ids = Array.from({ length: count }, (_, index) => `${prefix}-${index}`);
+			for (const id of ids) await Table.put(id, { id, tag: 'indexed', body: 'complete' });
+			const replicas = ids.filter((id) => flags(Table, id) & REPLICA);
+			const owned = ids.filter((id) => !(flags(Table, id) & REPLICA));
+			assert.ok(replicas.length > 0 && owned.length > 0, 'the hash places rows on both sides');
+			return { replicas, owned };
+		}
+
+		it('demotes an older write replica on a full disk, keeps a fresh one and every owned row', async () => {
+			limits({ minAgeMs: 3000 });
 			await loadGQLSchema(`type ShardedReclamation @table(database: "shardedReclamation", replicaExpiration: 3600)
 				@sharded(slots: 2) {
 				id: ID @primaryKey tag: String @indexed body: String
 			}`);
 			const Sharded = databases.shardedReclamation.ShardedReclamation;
-			const ids = Array.from({ length: 16 }, (_, index) => `row-${index}`);
-			for (const id of ids) await Sharded.put(id, { id, tag: 'indexed', body: 'complete' });
-			const entries = new Map(ids.map((id) => [id, Sharded.primaryStore.getEntry(id)]));
-			const kept = ids.filter((id) => entries.get(id).metadataFlags & REPLICA);
-			const owned = ids.filter((id) => !(entries.get(id).metadataFlags & REPLICA));
-			assert.ok(kept.length > 0 && owned.length > 0, 'the hash places rows on both sides');
+			const older = await writeRows(Sharded, 'older');
+			const versions = new Map(older.owned.map((id) => [id, Sharded.primaryStore.getEntry(id).version]));
+			await new Promise((resolve) => setTimeout(resolve, 3100));
+			const fresh = await writeRows(Sharded, 'fresh');
 
 			await reclaimAt(Infinity);
-			for (const id of kept) {
-				assert.ok(Sharded.primaryStore.getEntry(id).metadataFlags & REPLICA, `the fresh write ${id} stays`);
-				assert.equal((await Sharded.get(id)).body, 'complete');
-			}
 
-			const older = kept[0];
-			const store = openReplicaDeadlineStore(Sharded.primaryStore.rootStore, Sharded.tableName);
-			const fresh = store.getSync(older);
-			store.putSync(older, fresh - 60_000);
-			await reclaimAt(Infinity);
-			assert.ok(!(Sharded.primaryStore.getEntry(older).metadataFlags & REPLICA), 'an older replica goes');
-			for (const id of kept.slice(1))
-				assert.ok(Sharded.primaryStore.getEntry(id).metadataFlags & REPLICA, `the fresh write ${id} stays`);
-
-			for (const id of kept) store.putSync(id, fresh - 60_000);
-			await reclaimAt(Infinity);
-
-			for (const id of kept) {
+			for (const id of older.replicas) {
 				const demoted = Sharded.primaryStore.getEntry(id);
 				assert.ok(demoted.metadataFlags & INVALIDATED, `${id} must be a stub`);
 				assert.ok(!(demoted.metadataFlags & REPLICA));
 				assert.equal(demoted.value.body, undefined);
 				assert.equal(demoted.value.tag, 'indexed');
 			}
-			for (const id of owned) {
+			for (const id of fresh.replicas) {
+				assert.ok(flags(Sharded, id) & REPLICA, `the fresh write ${id} stays`);
+				assert.equal((await Sharded.get(id)).body, 'complete');
+			}
+			for (const id of older.owned) {
 				const row = Sharded.primaryStore.getEntry(id);
-				assert.equal(row.version, entries.get(id).version);
+				assert.equal(row.version, versions.get(id));
 				assert.equal(row.value.body, 'complete');
 				assert.ok(!(row.metadataFlags & (REPLICA | INVALIDATED)));
 			}
 			await Sharded.closeMaintenance();
+		});
+
+		it('keeps a fresh write replica whose deadline the record expiry capped', async () => {
+			setReplicaReclaimLimitsForTesting();
+			await loadGQLSchema(`type ShardedCapped @table(database: "shardedReclamation", expiration: 600, replicaExpiration: 3600)
+				@sharded(slots: 2) {
+				id: ID @primaryKey tag: String @indexed body: String
+			}`);
+			const Capped = databases.shardedReclamation.ShardedCapped;
+			const { replicas } = await writeRows(Capped, 'capped');
+			const store = openReplicaDeadlineStore(Capped.primaryStore.rootStore, Capped.tableName);
+			assert.ok(store.getSync(replicas[0]) < Date.now() + 700_000, 'the record expiry capped the deadline');
+
+			await reclaimAt(Infinity);
+			for (const id of replicas) assert.ok(flags(Capped, id) & REPLICA, `the fresh write ${id} stays`);
+
+			limits();
+			await reclaimAt(Infinity);
+			for (const id of replicas) assert.ok(!(flags(Capped, id) & REPLICA), `${id} is demoted past the minimum age`);
+			await Capped.closeMaintenance();
 		});
 	});
 });

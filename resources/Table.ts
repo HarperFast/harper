@@ -15013,9 +15013,13 @@ export function makeTable(options): TableResourceClass {
 		let attempted = 0;
 		while (proceed()) {
 			const { batch, exhausted } = await earliestReplicaDeadlines(store, cutoff, limit, proceed);
+			let tried = 0;
 			let progressed = false;
 			for (const { key, deadline } of batch) {
 				if (!proceed()) return;
+				// a deadline capped by the record's own expiry understates the row's age
+				if (Date.now() - primaryStore.getEntry(key)?.version < minAgeMs) continue;
+				tried++;
 				await expireReplicaDeadline(store, key, deadline);
 				if (!proceed()) return;
 				// evict() resolves on a refused or failed demotion too; such an entry is still here at this deadline
@@ -15023,7 +15027,7 @@ export function makeTable(options): TableResourceClass {
 				await rest();
 				if (++attempted % checkEvery === 0 && !((await getStorageReclamationPriority(primaryStore.path)) > 1)) return;
 			}
-			if (batch.length > 0 && !progressed)
+			if (tried > 0 && !progressed)
 				logger.warn?.(`Could not demote any of ${batch.length} replicas of ${tableName} under storage pressure`);
 			if (exhausted || !progressed || performance.now() >= budgetEnd) return;
 		}
