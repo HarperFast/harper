@@ -273,8 +273,10 @@ describe('owner-only modes for files that can hold secrets (harper#1925)', funct
 		});
 		preserveRootConfig();
 		afterEach(function () {
-			for (const name of backupsBefore ? fs.readdirSync(backupDir()) : []) {
-				if (!backupsBefore.has(name)) fs.removeSync(path.join(backupDir(), name));
+			if (backupsBefore) {
+				for (const name of fs.readdirSync(backupDir())) {
+					if (!backupsBefore.has(name)) fs.removeSync(path.join(backupDir(), name));
+				}
 			}
 			configMode = backupsBefore = undefined;
 			initConfig(true);
