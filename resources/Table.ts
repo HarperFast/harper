@@ -1699,7 +1699,6 @@ function rescope(resolved: ResolvedRecordLockOptions, tableReplicates: boolean):
 	return scope === resolved.scope ? resolved : { ...resolved, scope };
 }
 
-/** Rejects a leader's acquisition that gave its key back to wait out its scope's mid-scope commit. */
 const retryAfterScopeCommit = Symbol('retry after the scope commit');
 
 /** A link that left the chain no longer reports its scope's state; the chain root does. */
@@ -5648,7 +5647,6 @@ export function makeTable(options): TableResourceClass {
 						throw error;
 					}
 					if (midScopeCommitInFlight()) {
-						// also gives the cluster grant back (onRelease)
 						handle.release();
 						throw retryAfterScopeCommit;
 					}
@@ -7750,7 +7748,6 @@ export function makeTable(options): TableResourceClass {
 				},
 			};
 			this.#bindWriteLock(write, id, transaction);
-			// a caller write, not the scoped lock's placeholder: unlock() and a hold upgrade keep it
 			if (write.lockHandle) write.lockJoined = true;
 			transaction.addWrite(write);
 			if (condition) condition.consumed = true;

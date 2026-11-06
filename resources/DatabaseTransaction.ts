@@ -1188,9 +1188,10 @@ export class DatabaseTransaction implements Transaction {
 	declare searchScanning?: boolean;
 	// Depth of commit() attempts on this link that have not reached a native outcome.
 	commitsInFlight = 0;
-	// Of those, the ones commit() was asked for directly (a mid-scope or final commit), which span the
-	// pre-commit work, the cascade into `next` and the rotation; lock() waits these out (record-locks.md).
-	scopeCommitsInFlight = 0;
+	// Of those, the ones commit() was asked for directly on an explicit transaction (a mid-scope or final
+	// commit), which span the pre-commit work, the cascade into `next` and the rotation; lock() waits these
+	// out (record-locks.md).
+	declare scopeCommitsInFlight?: number;
 	declare private activeCommitHandle?: RocksTransaction;
 	declare private activeCommitHandles?: Set<RocksTransaction>;
 	declare private activeHandleStagedTxnTime?: number;
@@ -1665,7 +1666,6 @@ export class DatabaseTransaction implements Transaction {
 		return (this.root ?? this).pendingLocks?.get(store)?.get(keyId);
 	}
 
-	/** By identity: a later acquisition registered for the key must stay. */
 	unregisterPendingLock(store: any, keyId: unknown, pending: Promise<RecordLockHandle>): void {
 		const scope = this.root ?? this;
 		const storeMap = scope.pendingLocks?.get(store);
@@ -2942,7 +2942,7 @@ export class DatabaseTransaction implements Transaction {
 		this.commitsInFlight = (this.commitsInFlight ?? 0) + 1;
 		// Not a closed transaction's write committing on its own, nor a retry or continuation inside one.
 		const scopeAttempt = !options.transaction && !options.continuation && !this.saveCommits;
-		if (scopeAttempt) this.scopeCommitsInFlight++;
+		if (scopeAttempt) this.scopeCommitsInFlight = (this.scopeCommitsInFlight ?? 0) + 1;
 		// Only a top-level attempt records the intent: a continuation would re-read hasPendingWrites()
 		// after clearWrites() has already emptied it.
 		if (this.commitsInFlight === 1 && !options.continuation && this.hasPendingWrites()) {
