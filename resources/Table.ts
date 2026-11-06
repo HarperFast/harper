@@ -5395,6 +5395,44 @@ export function makeTable(options): TableResourceClass {
 				!getClusterLockTransport(databaseName)
 			)
 				return Promise.reject(transportUnavailable(databaseName));
+			const lockStart = Date.now();
+			const scopeRoot = link.saveCommits ? undefined : (link.root ?? link);
+			const hook = scopeRoot && currentCommitHook();
+			// A lock() never registers into its scope's in-flight mid-scope commit: that commit would release a
+			// scoped handle it never covered, and the link it would register on is about to be cut. One made by
+			// that commit's own pre-commit hook belongs to it and does not wait, since the commit awaits the hook.
+			const midScopeCommitInFlight = () =>
+				scopeRoot !== undefined &&
+				scopeRoot.scopeCommitsInFlight > 0 &&
+				!scopeRoot.scopeEnding &&
+				// a hold survives the commit and stages nothing until saved; only a CLOSED root would refuse it
+				(!resolved.hold || scopeRoot.open === TRANSACTION_STATE.CLOSED) &&
+				!(hook?.active && hook.root === scopeRoot);
+			// Try again on this caller's own terms with the budget it has left.
+			const retryOnRemainingBudget = (failure?: Error): any => {
+				if (midScopeCommitInFlight())
+					return when(scopeRoot!.whenCommitSettles(resolved.timeout - (Date.now() - lockStart)), (settled) => {
+						if (!settled) throw failure ?? new ClientError(`Record is locked and was not released in time`, 423);
+						return retryOnRemainingBudget(failure);
+					});
+				// The enclosing transaction ended while we were parked. A retry re-resolves the
+				// context, which no longer points at this link, so the handle it acquired would be
+				// registered on a fresh transaction that no commit or abort ever releases — the
+				// same abandonment the leader's own post-acquisition guard below rejects.
+				if (lockScopeEnded(link)) throw new ServerError('Transaction was closed while waiting for a record lock', 500);
+				const remaining = resolved.timeout - (Date.now() - lockStart);
+				// below the 1 ms the option accepts, it would fail validation rather than time out
+				if (remaining < 1) throw failure ?? new ClientError(`Record is locked and was not released in time`, 423);
+				// Carry the scope only if the caller named it: spreading the resolved options would turn
+				// a defaulted 'cluster' into an explicit one, which is fail-closed when no transport is
+				// registered.
+				return this.lock(target, {
+					lease: resolved.lease,
+					timeout: remaining,
+					hold: resolved.hold,
+					scope: resolved.scopeRequested ? resolved.scope : undefined,
+				});
+			};
 			const held = this.#lockHandle;
 			if (held && !held.isExpired() && held.keyId === keyId) {
 				// Re-entrant: upgrade to hold if requested, then preserve staged changes.
@@ -5416,6 +5454,9 @@ export function makeTable(options): TableResourceClass {
 			if (scoped && !scoped.isExpired()) {
 				const violation = scopeViolation(scoped, resolved, databaseName);
 				if (violation) return Promise.reject(violation);
+				// The in-flight commit releases a scoped handle, so this instance takes a fresh lock after it; a hold,
+				// including one upgraded now, survives it. The instance holding the handle keeps it (unlock() first).
+				if (!resolved.hold && !scoped.hold && midScopeCommitInFlight()) return retryOnRemainingBudget();
 				// Only changes a write bound to this lock reads were made under it; others are discarded, as on a
 				// fresh acquisition, which also refuses an unbound staged write.
 				const joined = this.#stagedWrite()?.lockHandle === scoped;
@@ -5445,41 +5486,6 @@ export function makeTable(options): TableResourceClass {
 				return Promise.reject(error as Error);
 			}
 			const key = lockAttemptKey(tableId, id);
-			const lockStart = Date.now();
-			const scopeRoot = link.saveCommits ? undefined : (link.root ?? link);
-			const hook = scopeRoot && currentCommitHook();
-			// A lock() never registers into its scope's in-flight mid-scope commit: that commit would release a
-			// scoped handle it never covered, and the link it would register on is about to be cut. One made by
-			// that commit's own pre-commit hook belongs to it and does not wait, since the commit awaits the hook.
-			const midScopeCommitInFlight = () =>
-				scopeRoot !== undefined &&
-				scopeRoot.scopeCommitsInFlight > 0 &&
-				!scopeRoot.scopeEnding &&
-				!(hook?.active && hook.root === scopeRoot);
-			// Try again on this caller's own terms with the budget it has left.
-			const retryOnRemainingBudget = (failure?: Error): any => {
-				if (midScopeCommitInFlight())
-					return when(scopeRoot!.whenCommitSettles(resolved.timeout - (Date.now() - lockStart)), (settled) => {
-						if (!settled) throw failure ?? new ClientError(`Record is locked and was not released in time`, 423);
-						return retryOnRemainingBudget(failure);
-					});
-				// The enclosing transaction ended while we were parked. A retry re-resolves the
-				// context, which no longer points at this link, so the handle it acquired would be
-				// registered on a fresh transaction that no commit or abort ever releases — the
-				// same abandonment the leader's own post-acquisition guard below rejects.
-				if (lockScopeEnded(link)) throw new ServerError('Transaction was closed while waiting for a record lock', 500);
-				const remaining = resolved.timeout - (Date.now() - lockStart);
-				if (remaining <= 0) throw failure ?? new ClientError(`Record is locked and was not released in time`, 423);
-				// Carry the scope only if the caller named it: spreading the resolved options would turn
-				// a defaulted 'cluster' into an explicit one, which is fail-closed when no transport is
-				// registered.
-				return this.lock(target, {
-					lease: resolved.lease,
-					timeout: remaining,
-					hold: resolved.hold,
-					scope: resolved.scopeRequested ? resolved.scope : undefined,
-				});
-			};
 			if (midScopeCommitInFlight()) return retryOnRemainingBudget();
 			// Coalesce concurrent lock() calls for the same key inside one scope so they don't
 			// self-block: Promise.all([T.lock(id), T.lock(id)]) would otherwise have both calls

@@ -988,7 +988,6 @@ function runCommitHook(root: DatabaseTransaction, hook: () => void | Promise<voi
 	return result;
 }
 
-/** `newer`'s handle wins for a key both registries hold. */
 function mergeRecordLocks(
 	older: RecordLockRegistry | undefined,
 	newer: RecordLockRegistry | undefined
@@ -2942,7 +2941,7 @@ export class DatabaseTransaction implements Transaction {
 		if (options.doneWriting && this.endsScopeUnwritten(options)) return this.finishUnwrittenScope();
 		this.commitsInFlight = (this.commitsInFlight ?? 0) + 1;
 		// Not a closed transaction's write committing on its own, nor a retry or continuation inside one.
-		const scopeAttempt = !options.transaction && !options.continuation;
+		const scopeAttempt = !options.transaction && !options.continuation && !this.saveCommits;
 		if (scopeAttempt) this.scopeCommitsInFlight++;
 		// Only a top-level attempt records the intent: a continuation would re-read hasPendingWrites()
 		// after clearWrites() has already emptied it.

@@ -103,21 +103,22 @@ Consequences that shape the code:
   `recordLockRegistryHandover.test.js`.
 - **A scope has ended only when it really ends** (harper#4080). From `commit()`'s entry until it settles, a
   mid-scope commit runs pre-commit work with the root still OPEN, then reads CLOSED through the native commit,
-  the cascade into chained links and the rotation that reopens it. It is not the end of the scope, but a
-  `lock()` must not register into it either: the commit would release a scoped handle it never covered, or
-  commit the lock's placeholder before the caller wrote, and the link is about to be cut. So an explicit-scope
-  `lock()` that meets its root's own commit in flight (`scopeCommitsInFlight`: a `commit()` call, not a closed
-  transaction's write committing by itself), at entry or after its native wait,
-  its cluster round, a coalesced join or a retry, gives the key and any cluster grant back
-  (`retryAfterScopeCommit`), waits on `whenCommitSettles` (drained by `endCommitAttempt` after rotation)
-  and retries with its remaining budget; the root still CLOSED after that means the scope ended, and the
-  waiter gets 500. Holding the key while waiting would deadlock a pre-commit hook's own `lock()` on it. Two
-  exceptions keep the earlier outcome. The scope's final commit (`scopeEnding`) is not waited out: a hold
-  admitted during it outlives the scope as before. A `lock()` made by the scope's own pre-commit hook
+  the cascade into chained links and the rotation that reopens it. It is not the end of the scope, but a scoped
+  `lock()` must not register into it either: the commit would release a handle it never covered, or commit the
+  lock's placeholder before the caller wrote, and the link is about to be cut. So an explicit-scope `lock()`
+  that meets its root's own commit in flight (`scopeCommitsInFlight`: a `commit()` call, not a closed
+  transaction's write committing by itself) — at entry, on another instance's re-entry into a scoped lock, or
+  after its native wait, its cluster round, a coalesced join or a retry — gives the key and any cluster grant
+  back (`retryAfterScopeCommit`), waits on `whenCommitSettles` (drained by `endCommitAttempt` after rotation)
+  and retries with its remaining budget; the root still CLOSED after that means the scope ended, and the waiter
+  gets 500. Holding the key while waiting would deadlock a pre-commit hook's own `lock()` on it. A hold waits
+  only once the root reads CLOSED: it survives the commit and stages nothing until saved, so in pre-commit work
+  it is admitted as before. The instance holding a scoped handle is not held back on re-entry: its lock ends
+  with that commit, as for any re-lock without `unlock()`. Two more exceptions keep the earlier outcome. The
+  scope's final commit (`scopeEnding`) is not waited out. A `lock()` made by the scope's own pre-commit hook
   (`operation.before`, a source write-through) while that hook runs belongs to the commit, which awaits it:
-  `runCommitHook` marks the invocation in an `AsyncLocalStorage` (`currentCommitHook`) until the hook
-  settles. A commit that awaits a `lock()` started outside its hook still waits until that `lock()` gives
-  up.
+  `runCommitHook` marks the invocation in an `AsyncLocalStorage` (`currentCommitHook`) until the hook settles.
+  A commit that awaits a `lock()` started outside its hook still waits until that `lock()` gives up.
 - **Release.** Every handle — scoped or hold — is registered in `link.recordLocks` and kept on the
   locked instance as `#lockHandle`; every commit or abort calls `releaseRecordLocks()`, which calls
   `handle.release()` on each non-hold handle, so a `{ hold: true }` handle outlives the transaction.

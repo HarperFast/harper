@@ -607,6 +607,54 @@ describe('lock() waiting across a commit that drops its chained link', () => {
 		assert.equal((await TableB.get(idB))?.n, 2);
 	});
 
+	it('makes a scoped lock() from another instance of a key the scope holds wait out a mid-scope commit', async function () {
+		if (isLMDB) return this.skip();
+		const idB = 'ls-reentrant';
+		await TableB.put(idB, { id: idB, n: 1 });
+		const ctx = makeContext();
+		await transaction(ctx, async (txn) => {
+			await new TableA('ls-head', ctx).put('ls-head', { id: 'ls-head', n: 1 });
+			await TableB.lock(idB, {}, ctx);
+			const firstHandle = TableB._txnForContext(ctx).recordLockFor(TableB.primaryStore, idB);
+			const held = await holdHeadCommitOpen(ctx, txn);
+			const outcomes = [];
+			const again = settle(TableB.lock(idB, {}, ctx));
+			again.then((outcome) => outcomes.push(outcome));
+			await waitForParked(txn, 1, outcomes);
+			assert.deepEqual(outcomes, [], 'the re-entrant call waits out the commit');
+			await held.finish();
+			const locked = await again;
+			assert.ifError(locked.error);
+			assert.equal(firstHandle.released, true, 'the commit released the first scoped handle');
+			const handle = TableB._txnForContext(ctx).recordLockFor(TableB.primaryStore, idB);
+			assert.ok(handle && handle !== firstHandle && !handle.isExpired(), 'a fresh lock covers the rest of the scope');
+			locked.value.set('n', 6);
+		});
+		assert.equal((await TableB.get(idB))?.n, 6);
+	});
+
+	it("admits a hold whose wait ends during a mid-scope commit's pre-commit work at once", async function () {
+		if (isLMDB) return this.skip();
+		const idB = 'ls-precommit-hold';
+		await TableB.put(idB, { id: idB, n: 1 });
+		const contender = await hold(idB);
+		const ctx = makeContext();
+		await transaction(ctx, async (txn) => {
+			await new TableA('ls-head', ctx).put('ls-head', { id: 'ls-head', n: 1 });
+			const waiting = settle(TableB.lock(idB, { hold: true, lease: 10000, timeout: 5000 }, ctx));
+			const held = await holdHeadCommitOpen(ctx, txn);
+			assert.equal(txn.open, TRANSACTION_STATE.OPEN, 'premise: the root still reads OPEN in its pre-commit work');
+			await contender.unlock();
+			const holder = await waiting;
+			assert.ifError(holder.error);
+			track(holder.value);
+			assert.equal(txn.commitSettleWaiters, undefined, 'it did not wait out the commit');
+			await held.finish();
+			const handle = TableB._txnForContext(ctx).recordLockFor(TableB.primaryStore, idB);
+			assert.ok(handle?.hold && !handle.isExpired(), 'the hold survived the commit');
+		});
+	});
+
 	it('makes a lock() that waited out one mid-scope commit wait out the next one it wakes in', async function () {
 		if (isLMDB) return this.skip();
 		const idB = 'ls-a-then-b';
