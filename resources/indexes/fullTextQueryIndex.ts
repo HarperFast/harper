@@ -816,7 +816,8 @@ export class FullTextQueryIndex {
 			if (context?.signal?.aborted) throw context.signal.reason ?? new Error('Full-text search aborted');
 			if (optionalCount && pageReady && Math.floor(countDeadline - performance.now()) <= 0) incompleteCount = true;
 			if (incompleteCount) options.onIncompleteCount?.();
-			if (optionalCount && incompleteCount) accepted.length = Math.min(accepted.length, pageTarget);
+			if (optionalCount && incompleteCount && (options.prepareResults || condition.includeHighlights))
+				accepted.length = Math.min(accepted.length, pageTarget);
 			if (!bounded && moreMayExist)
 				throw unboundedSearchLimitError(
 					target,

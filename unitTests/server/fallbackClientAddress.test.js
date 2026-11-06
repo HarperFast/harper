@@ -123,11 +123,39 @@ describe('Fastify fallback transport peer', () => {
 			clientAddress: clientAddressOf(request),
 			userHeader: request.headers['x-harper-internal-pre-auth-user'],
 		}));
+		fastify.get(
+			'/authorized',
+			(request, reply) =>
+				new Promise((resolve) => {
+					require('#src/security/fastifyAuth').authorize(request, reply, (error, user) => {
+						resolve(reply.code(error ? 401 : 200).send({ username: user?.username }));
+					});
+				})
+		);
 		await fastify.ready();
 		registerFallbackServer(PORT + 1, nodeServer);
 		registerFastifyInstance(PORT + 1, fastify);
 	});
 	after(() => fastify.close());
+	it('grants local trust only to a verified loopback peer under Bun', async function () {
+		if (typeof globalThis.Bun === 'undefined') this.skip();
+		for (const [ip, status] of [
+			['127.0.0.1', 200],
+			['203.0.113.9', 401],
+			['', 401],
+		]) {
+			const response = await bunDelegateToNodeServer(
+				nodeServer,
+				new globalThis.Request('http://localhost/authorized'),
+				{ ip, isOperationsServer: true }
+			);
+			assert.strictEqual(response.status, status, `peer ${ip || 'unknown'}`);
+			const body = await response.json();
+			if (status === 200) assert.strictEqual(body.username, 'local');
+			else assert.notStrictEqual(body.username, 'local');
+		}
+	});
+
 	for (const ip of ['203.0.113.9', '']) {
 		it(`preserves ${ip || 'unknown'} peer through uWS fallback`, async () => {
 			const port = PORT + 2;

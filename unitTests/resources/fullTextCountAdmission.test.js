@@ -111,6 +111,19 @@ describe('published full-text optional count admission', () => {
 		assert.strictEqual(admissionErrors.length, 1);
 		assert.strictEqual(admissionErrors[0].code, 'E_QUEUE_FULL');
 		assert.match(admissionErrors[0].message, /queue limits are exhausted/);
+		let firstCandidateChecks = 0;
+		const filteredPage = await Product.search({
+			...query,
+			count: 'exact',
+			rowFilter(record) {
+				return record.id !== baseline[0] || ++firstCandidateChecks === 1;
+			},
+		});
+		assert.strictEqual(filteredPage.length, 1, 'final row policy rejection must backfill from retained candidates');
+		assert.notStrictEqual(filteredPage[0].id, baseline[0]);
+		assert.strictEqual(filteredPage.recordCount, null);
+		assert.strictEqual(filteredPage.recordCountExact, false);
+
 		await assert.rejects(
 			async () =>
 				Product.search({
