@@ -162,6 +162,27 @@ describe('ImmediateTransaction conflict retry', () => {
 		assert.strictEqual(UnlockedUnlogged.primaryStore.getEntry(recordId).value.n, 0, 'nothing landed');
 		assert.strictEqual(immediate.isCommitting, false, 'the latch clears, so the next save on this context commits');
 		await assertNoUnhandledRejection();
+
+		// A second save on the same context after a committed write takes the closed-link innerCommit path.
+		pendingRestores.pop()();
+		immediate.commitStartedAt = undefined;
+		holder.set('n', 1);
+		await holder.save();
+		immediate.commitStartedAt = performance.now() - 3600000;
+		const { attempts: closedAttempts, aborted: closedAborted } = conflictCommits({
+			failFirst: Infinity,
+			targetTable: UnlockedUnlogged,
+		});
+		holder.set('n', 8);
+		await assert.rejects(
+			() => holder.save(),
+			(error) => error.statusCode === 503 && /in conflict with ongoing writes/.test(error.message)
+		);
+		assert.deepStrictEqual(closedAttempts, [closedAttempts[0]], 'closed-link innerCommit abandoned on first conflict');
+		assert.ok(closedAborted.includes(closedAttempts[0]), 'closed-link abandoned native transaction was released');
+		assert.strictEqual(UnlockedUnlogged.primaryStore.getEntry(recordId).value.n, 1, 'second save did not land');
+		assert.strictEqual(immediate.isCommitting, false, 'the latch clears after a rejected innerCommit');
+		await assertNoUnhandledRejection();
 		await holder.unlock();
 		const nextHolder = await UnlockedUnlogged.lock(recordId, { lease: MIN_LOCK_LEASE_MS, timeout: 300 });
 		await nextHolder.unlock();

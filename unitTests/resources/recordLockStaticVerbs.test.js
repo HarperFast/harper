@@ -109,8 +109,12 @@ describe('Record locks (QA-5082): static table verbs on locked keys must resolve
 					assert.strictEqual(await holder.save(), undefined);
 					assert.strictEqual(context.transaction.open, TRANSACTION_STATE.CLOSED);
 				}
+				const beforePublishVersion = Unaudited.primaryStore.getEntry(recordId).version;
 				assert.strictEqual(await holder.publish({ n: 7 }), undefined);
 				const publishedVersion = Unaudited.primaryStore.getEntry(recordId).version;
+				assert.ok(publishedVersion > beforePublishVersion, 'expected publish version to advance');
+				const handle = context.transaction.recordLocks.get(Unaudited.primaryStore).get(recordId);
+				assert.ok(handle.holderVersionFloor() > publishedVersion, 'expected publish to advance holderVersionFloor');
 				holder.set('n', 3);
 				const saveResult = await holder.save();
 				assert.strictEqual((await Unaudited.get(recordId)).n, 3);
@@ -211,12 +215,83 @@ describe('Record locks (QA-5082): static table verbs on locked keys must resolve
 			holder1.set('n', 2);
 			await holder1.save();
 			assert.strictEqual(context.transaction.open, TRANSACTION_STATE.CLOSED);
+			const { Transaction } = require('../rocksdbBindings.mts').rocksdbBindings();
+			const originalCommit = Transaction.prototype.commit;
+			const targetDb = Unaudited.primaryStore.store.db;
+			let releaseFirst;
+			const firstGate = new Promise((resolve) => {
+				releaseFirst = resolve;
+			});
+			let commitCalls = 0;
+			Transaction.prototype.commit = async function (...args) {
+				if (this.store?.db !== targetDb) return originalCommit.apply(this, args);
+				commitCalls++;
+				if (commitCalls === 1) await firstGate;
+				else await delay(15);
+				return originalCommit.apply(this, args);
+			};
+			cleanups.push(() => {
+				Transaction.prototype.commit = originalCommit;
+				releaseFirst?.();
+			});
 			const firstCommit = holder1.publish({ n: 7 });
 			assert.strictEqual(context.transaction.isCommitting, true);
+			const holder2FloorBefore = context.transaction.recordLocks
+				.get(Unaudited.primaryStore)
+				.get(secondId)
+				.holderVersionFloor();
 			assert.strictEqual(await holder2.publish({ n: 8 }), undefined);
+			assert.ok(
+				context.transaction.recordLocks.get(Unaudited.primaryStore).get(secondId).holderVersionFloor() >
+					holder2FloorBefore,
+				'expected forwarded publish to settle only after advancing holderVersionFloor'
+			);
+			assert.strictEqual(context.transaction.isCommitting, true);
 			holder2.set('n', 20);
 			assert.strictEqual(await holder2.save(), undefined);
+			assert.strictEqual(Unaudited.primaryStore.getEntry(secondId).value.n, 20);
+			releaseFirst();
+			Transaction.prototype.commit = originalCommit;
 			await firstCommit;
+			assert.strictEqual((await Unaudited.get(secondId)).n, 20);
+		});
+
+		it('awaits a second immediate holder write that joins an OPEN link parked in completions', async function () {
+			if (SKIP_ON_LMDB) return this.skip();
+			const firstId = id();
+			const secondId = id();
+			await Unaudited.put({ id: firstId, n: 1 });
+			await Unaudited.put({ id: secondId, n: 10 });
+			const context = {};
+			const holder1 = await Unaudited.lock(firstId, { hold: true, lease: 5000 }, context);
+			cleanups.push(() => holder1.unlock());
+			const holder2 = await Unaudited.lock(secondId, { hold: true, lease: 5000 }, context);
+			cleanups.push(() => holder2.unlock());
+			let releaseHook;
+			const hookGate = new Promise((resolve) => {
+				releaseHook = resolve;
+			});
+			Unaudited.source = { publish: () => hookGate };
+			cleanups.push(() => {
+				delete Unaudited.source;
+				releaseHook?.();
+			});
+			const firstCommit = holder1.publish({ n: 7 });
+			delete Unaudited.source;
+			assert.strictEqual(context.transaction.open, TRANSACTION_STATE.OPEN);
+			assert.strictEqual(context.transaction.isCommitting, true);
+			let secondSettled = false;
+			const secondCommit = Promise.resolve(holder2.publish({ n: 8 })).then((res) => {
+				secondSettled = true;
+				return res;
+			});
+			await delay(10);
+			assert.strictEqual(secondSettled, false, 'forwarded write on OPEN link must wait for shared commit');
+			releaseHook();
+			const [, secondRes] = await Promise.all([firstCommit, secondCommit]);
+			assert.strictEqual(secondRes, undefined);
+			holder2.set('n', 20);
+			assert.strictEqual(await holder2.save(), undefined);
 			assert.strictEqual((await Unaudited.get(secondId)).n, 20);
 		});
 
@@ -234,21 +309,36 @@ describe('Record locks (QA-5082): static table verbs on locked keys must resolve
 			holder1.set('n', 2);
 			await holder1.save();
 			assert.strictEqual(context.transaction.open, TRANSACTION_STATE.CLOSED);
+			const unhandled = [];
+			const onUnhandled = (err) => unhandled.push(err);
+			process.on('unhandledRejection', onUnhandled);
+			const { setAbortMarkersForTests } = require('#src/resources/transactionLogAbortMarkers');
+			const priorAbortMarkers = setAbortMarkersForTests(false);
+			const { Transaction } = require('../rocksdbBindings.mts').rocksdbBindings();
+			const originalCommit = Transaction.prototype.commit;
+			const targetDb = Unaudited.primaryStore.store.db;
 			let failNext = true;
-			const origCommit = context.transaction.commit;
-			context.transaction.commit = function (options) {
-				if (failNext && options?.transaction) {
+			Transaction.prototype.commit = async function (...args) {
+				if (this.store?.db === targetDb && failNext) {
 					failNext = false;
-					options.transaction.abort();
-					return Promise.reject(new Error('simulated innerCommit failure'));
+					throw Object.assign(new Error('forced conflict'), { code: 'ERR_BUSY' });
 				}
-				return origCommit.apply(this, arguments);
+				return originalCommit.apply(this, args);
 			};
+			context.transaction.commitStartedAt = performance.now() - 3600000;
 			try {
-				await assert.rejects(() => holder1.publish({ n: 7 }), /simulated innerCommit failure/);
+				await assert.rejects(
+					() => holder1.invalidate(),
+					(err) => err.statusCode === 503 && /in conflict with ongoing writes/.test(err.message)
+				);
 			} finally {
-				context.transaction.commit = origCommit;
+				Transaction.prototype.commit = originalCommit;
+				setAbortMarkersForTests(priorAbortMarkers ?? true);
+				context.transaction.commitStartedAt = undefined;
+				await delay(20);
+				process.removeListener('unhandledRejection', onUnhandled);
 			}
+			assert.deepStrictEqual(unhandled, []);
 			assert.strictEqual(context.transaction.isCommitting, false);
 			holder2.set('n', 20);
 			await holder2.save();
