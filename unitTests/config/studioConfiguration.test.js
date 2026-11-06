@@ -262,8 +262,23 @@ studio:
 			);
 		});
 
-		it('isolates an unparseable component config without quoting its source', async () => {
-			writeComponent('broken', `studio:\n  pages: [\napiKey: ${SECRET}\n`);
+		it('keeps the pages of a component config with a YAML error the loader reads past', async () => {
+			writeComponent(
+				'duplicated',
+				'studio:\n  pages:\n    - { id: first, name: First, placement: tab }\n' +
+					'    - id: second\n      name: Second\n      placement: tab\n      placement: config\n'
+			);
+			const { warnings, logger } = captureWarnings();
+			const configuration = await createStudioConfigurationReader(logger)();
+			assert.deepStrictEqual(
+				configuration.pages.map((page) => `${page.id}:${page.placement}`),
+				['first:tab', 'second:config']
+			);
+			assert.deepStrictEqual(warnings, []);
+		});
+
+		it('isolates a component config the loader could not read either, without quoting its source', async () => {
+			writeComponent('broken', `studio:\n  pages: *undefined-anchor\napiKey: ${SECRET}\n`);
 			writeComponent('harper-redirects', redirectsConfig);
 			const { warnings, logger } = captureWarnings();
 			const configuration = await createStudioConfigurationReader(logger)();
@@ -370,6 +385,31 @@ studio:
 					(await getStudioConfiguration()).pages.map((page) => `${page.component}:${page.name}`),
 					['installed-app:Installed']
 				);
+			} finally {
+				rmSync(outside, { recursive: true, force: true });
+			}
+		});
+
+		it('reads an installed component and a different `harper dev` directory of its name, giving a shared page to the latter', async () => {
+			const pages = (...declared) =>
+				`studio:\n  pages:\n${declared.map(([id, name]) => `    - { id: ${id}, name: ${name}, placement: tab }\n`).join('')}`;
+			writeComponent('my-app', pages(['shared', 'Installed'], ['installed-only', 'Installed only']));
+			writeComponent('zeta', pages(['page', 'Zeta']));
+			const outside = mkdtempSync(path.join(tmpdir(), 'harper-studio-dev-'));
+			try {
+				const devApplication = path.join(outside, 'my-app');
+				mkdirSync(devApplication);
+				writeFileSync(path.join(devApplication, 'config.yaml'), pages(['shared', 'Dev'], ['dev-only', 'Dev only']));
+				process.env.RUN_HDB_APP = devApplication;
+				const { warnings, logger } = captureWarnings();
+				const configuration = await createStudioConfigurationReader(logger)();
+				assert.deepStrictEqual(
+					configuration.pages.map((page) => `${page.component}.${page.id}:${page.name}`),
+					['my-app.shared:Dev', 'my-app.installed-only:Installed only', 'my-app.dev-only:Dev only', 'zeta.page:Zeta']
+				);
+				assert.deepStrictEqual(warnings, [
+					`Ignoring part of the Studio configuration in component 'my-app': its page 'shared' is replaced by the one in component 'my-app' at ${devApplication}`,
+				]);
 			} finally {
 				rmSync(outside, { recursive: true, force: true });
 			}

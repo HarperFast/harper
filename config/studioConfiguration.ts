@@ -1,9 +1,10 @@
-import { readdir, readFile } from 'node:fs/promises';
+import { readdir, readFile, realpath } from 'node:fs/promises';
 import { basename, join } from 'node:path';
+import { parseDocument } from 'yaml';
 import harperLogger from '../utility/logging/harper_logger.ts';
 import { COMPONENT_CONFIG_FILES, CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import { getConfigPath, getRootConfigFilePath } from './configUtils.ts';
-import { parseConfigFile } from './parseConfigFile.ts';
+import { ConfigParseError, parseConfigFile } from './parseConfigFile.ts';
 import { readConfigFileSync } from './readConfigFileSync.ts';
 
 export type StudioNavigationState = 'visible' | 'tucked' | 'hidden';
@@ -37,7 +38,7 @@ const PAGE_KEY_PATTERN = /^(?:[a-z0-9-]+|[A-Za-z0-9_-][A-Za-z0-9_.-]*\.[a-z0-9-]
 const NAVIGATION_STATES = new Set(['visible', 'tucked', 'hidden']);
 const PLACEMENTS = new Set(['tab', 'config']);
 const COMPONENT_READ_CONCURRENCY = 8;
-const ROOT_SOURCE = '';
+const ROOT_SOURCE = 'the root config';
 
 // Problems name the field and what it must be, never the value found there: a mistyped block can hold anything,
 // credentials included.
@@ -184,25 +185,50 @@ function readRootStudioSettings(problems: string[]): Pick<StudioConfiguration, '
 	return settings;
 }
 
-/** The components the loader would load, as `[name, directory]` sorted by name; the name is the one `get_components` reports. */
-async function componentDirectories(problems: string[]): Promise<[string, string][]> {
+interface ComponentSource {
+	/** The name `get_components` reports, and a page key's `<component>` part. */
+	name: string;
+	directory: string;
+	/** Unique across sources: an installed component and the `harper dev` application can share a name. */
+	where: string;
+}
+
+async function isSameDirectory(a: string, b: string): Promise<boolean> {
+	try {
+		return (await realpath(a)) === (await realpath(b));
+	} catch {
+		return false;
+	}
+}
+
+/** The components the loader would load, sorted by name, with the `harper dev` application after an installed one of its name. */
+async function componentSources(problems: string[]): Promise<ComponentSource[]> {
 	const componentsRoot = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
-	const directories = new Map<string, string>();
+	const sources: ComponentSource[] = [];
 	if (componentsRoot) {
 		try {
 			for (const entry of await readdir(componentsRoot, { withFileTypes: true })) {
 				// The loader's own filter: Harper's staging, aside and lock directories are dot-prefixed.
 				if ((entry.isDirectory() || entry.isSymbolicLink()) && !entry.name.startsWith('.'))
-					directories.set(entry.name, join(componentsRoot, entry.name));
+					sources.push({
+						name: entry.name,
+						directory: join(componentsRoot, entry.name),
+						where: `component '${entry.name}'`,
+					});
 			}
 		} catch (error) {
 			if (error.code !== 'ENOENT') problems.push(`the components root could not be listed: ${error.message}`);
 		}
 	}
 	const devApplication = process.env.RUN_HDB_APP;
-	if (devApplication && !directories.has(basename(devApplication)))
-		directories.set(basename(devApplication), devApplication);
-	return [...directories].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+	if (devApplication) {
+		const name = basename(devApplication);
+		const installed = sources.find((source) => source.name === name);
+		// The loader loads both directories under the one name; only the same directory is read once.
+		if (!installed || !(await isSameDirectory(installed.directory, devApplication)))
+			sources.push({ name, directory: devApplication, where: `component '${name}' at ${devApplication}` });
+	}
+	return sources.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 }
 
 async function readComponentStudioBlock(directory: string, readTextFile: ReadTextFile): Promise<unknown> {
@@ -215,7 +241,13 @@ async function readComponentStudioBlock(directory: string, readTextFile: ReadTex
 			if (error.code === 'ENOENT' || error.code === 'ENOTDIR') continue;
 			throw error;
 		}
-		return parseConfigFile(contents, configFilePath)?.studio;
+		// The loader's own parse, which keeps what parsed around a YAML error such as a duplicate key. The root
+		// config's strict parse is a separate contract.
+		try {
+			return parseDocument(contents, { logLevel: 'error' }).toJSON()?.studio;
+		} catch (error) {
+			throw new ConfigParseError(configFilePath, error);
+		}
 	}
 	return undefined;
 }
@@ -246,8 +278,7 @@ export function createStudioConfigurationReader(logger: WarningLogger, readTextF
 			const fingerprint = problems.join('; ');
 			logged.set(source, fingerprint);
 			if (loggedProblems.get(source) === fingerprint) continue;
-			const where = source === ROOT_SOURCE ? 'the root config' : `component '${source}'`;
-			logger.warn(`Ignoring part of the Studio configuration in ${where}: ${fingerprint}`);
+			logger.warn(`Ignoring part of the Studio configuration in ${source}: ${fingerprint}`);
 		}
 		loggedProblems = logged;
 	}
@@ -256,21 +287,33 @@ export function createStudioConfigurationReader(logger: WarningLogger, readTextF
 		const rootProblems: string[] = [];
 		const problemsBySource = new Map([[ROOT_SOURCE, rootProblems]]);
 		const configuration: StudioConfiguration = { ...readRootStudioSettings(rootProblems), pages: [] };
-		const pagesByComponent = await mapBounded(
-			await componentDirectories(rootProblems),
-			COMPONENT_READ_CONCURRENCY,
-			async ([component, directory]) => {
-				const problems: string[] = [];
-				problemsBySource.set(component, problems);
-				try {
-					return validateStudioPages(component, await readComponentStudioBlock(directory, readTextFile), problems);
-				} catch (error) {
-					problems.push(`its config could not be read: ${error.message}`);
-					return [];
-				}
+		const sources = await componentSources(rootProblems);
+		for (const source of sources) problemsBySource.set(source.where, []);
+		const pagesBySource = await mapBounded(sources, COMPONENT_READ_CONCURRENCY, async (source) => {
+			const problems = problemsBySource.get(source.where);
+			try {
+				return validateStudioPages(
+					source.name,
+					await readComponentStudioBlock(source.directory, readTextFile),
+					problems
+				);
+			} catch (error) {
+				problems.push(`its config could not be read: ${error.message}`);
+				return [];
 			}
-		);
-		for (const pages of pagesByComponent) configuration.pages.push(...pages);
+		});
+		// A page key both same-named sources declare goes to the `harper dev` application, which sorts after.
+		const pages = new Map<string, { page: StudioPage; where: string }>();
+		sources.forEach((source, index) => {
+			for (const page of pagesBySource[index]) {
+				const key = `${page.component}.${page.id}`;
+				const earlier = pages.get(key);
+				if (earlier)
+					problemsBySource.get(earlier.where).push(`its page '${page.id}' is replaced by the one in ${source.where}`);
+				pages.set(key, { page, where: source.where });
+			}
+		});
+		for (const { page } of pages.values()) configuration.pages.push(page);
 		logChangedProblems(problemsBySource);
 		return configuration;
 	}
