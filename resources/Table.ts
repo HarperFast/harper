@@ -87,6 +87,7 @@ import {
 	type Transaction as DatabaseTransactionRecord,
 	confirmingResidents,
 	confirmingOwnerNames,
+	currentCommitHook,
 } from './DatabaseTransaction.ts';
 import { readOnlyModeError } from './readOnlyMode.ts';
 import {
@@ -997,6 +998,11 @@ interface TableResourceInstance<Record extends object = any> {
 	 * in the same transaction), and the commit or abort releases it. `{ hold: true }`: the lock
 	 * outlives the transaction; write through the returned record and release with `unlock()`, or
 	 * let the lease expire.
+	 *
+	 * Lock first, then write: a transaction that already has an uncommitted write to the record is
+	 * refused with 409, since that write was not made under the lock. Changes set on the instance
+	 * before `lock()` without staging a write (`update()`, `addTo()`) are discarded, since the lock
+	 * reloads the record.
 	 */
 	lock(target?: RequestTargetOrId | RecordLockOptions, options?: RecordLockOptions): Promise<any>;
 	/**
@@ -1692,6 +1698,9 @@ function rescope(resolved: ResolvedRecordLockOptions, tableReplicates: boolean):
 	const scope = tableReplicates ? 'cluster' : 'node';
 	return scope === resolved.scope ? resolved : { ...resolved, scope };
 }
+
+/** Rejects a leader's acquisition that gave its key back to wait out its scope's mid-scope commit. */
+const retryAfterScopeCommit = Symbol('retry after the scope commit');
 
 /** A link that left the chain no longer reports its scope's state; the chain root does. */
 function lockScopeEnded(link: DatabaseTransaction): boolean {
@@ -5042,6 +5051,7 @@ export function makeTable(options): TableResourceClass {
 				},
 			};
 			this.#bindWriteLock(write, id, transaction);
+			if (write.lockHandle) write.lockJoined = true;
 			write.beforeIntermediate = preCommitBlobsForRecordBefore(write, partialRecord);
 			transaction.addWrite(write);
 		}
@@ -5355,7 +5365,9 @@ export function makeTable(options): TableResourceClass {
 		 * let the lease expire.
 		 *
 		 * Lock first, then write: a transaction that already has an uncommitted write to the record is
-		 * refused with 409, since that write was not made under the lock.
+		 * refused with 409, since that write was not made under the lock. Changes set on the instance
+		 * before `lock()` without staging a write (`update()`, `addTo()`) are discarded, since the lock
+		 * reloads the record.
 		 */
 		// async so option/id validation rejects rather than throwing past a caller's `.catch()`; the
 		// body still runs to completion synchronously, which is what keeps concurrent lock() calls
@@ -5433,7 +5445,43 @@ export function makeTable(options): TableResourceClass {
 				return Promise.reject(error as Error);
 			}
 			const key = lockAttemptKey(tableId, id);
-			// Coalesce concurrent lock() calls for the same key inside one link so they don't
+			const lockStart = Date.now();
+			const scopeRoot = link.saveCommits ? undefined : (link.root ?? link);
+			const hook = scopeRoot && currentCommitHook();
+			// A lock() never registers into its scope's in-flight mid-scope commit: that commit would release a
+			// scoped handle it never covered, and the link it would register on is about to be cut. One made by
+			// that commit's own pre-commit hook belongs to it and does not wait, since the commit awaits the hook.
+			const midScopeCommitInFlight = () =>
+				scopeRoot !== undefined &&
+				scopeRoot.commitsInFlight > 0 &&
+				!scopeRoot.scopeEnding &&
+				!(hook?.active && hook.root === scopeRoot);
+			// Try again on this caller's own terms with the budget it has left.
+			const retryOnRemainingBudget = (failure?: Error): any => {
+				if (midScopeCommitInFlight())
+					return when(scopeRoot!.whenCommitSettles(resolved.timeout - (Date.now() - lockStart)), (settled) => {
+						if (!settled) throw failure ?? new ClientError(`Record is locked and was not released in time`, 423);
+						return retryOnRemainingBudget(failure);
+					});
+				// The enclosing transaction ended while we were parked. A retry re-resolves the
+				// context, which no longer points at this link, so the handle it acquired would be
+				// registered on a fresh transaction that no commit or abort ever releases — the
+				// same abandonment the leader's own post-acquisition guard below rejects.
+				if (lockScopeEnded(link)) throw new ServerError('Transaction was closed while waiting for a record lock', 500);
+				const remaining = resolved.timeout - (Date.now() - lockStart);
+				if (remaining <= 0) throw failure ?? new ClientError(`Record is locked and was not released in time`, 423);
+				// Carry the scope only if the caller named it: spreading the resolved options would turn
+				// a defaulted 'cluster' into an explicit one, which is fail-closed when no transport is
+				// registered.
+				return this.lock(target, {
+					lease: resolved.lease,
+					timeout: remaining,
+					hold: resolved.hold,
+					scope: resolved.scopeRequested ? resolved.scope : undefined,
+				});
+			};
+			if (midScopeCommitInFlight()) return retryOnRemainingBudget();
+			// Coalesce concurrent lock() calls for the same key inside one scope so they don't
 			// self-block: Promise.all([T.lock(id), T.lock(id)]) would otherwise have both calls
 			// reach tryLock before either registers, making the second park against the first.
 			const pending = link.pendingLockFor(primaryStore, keyId);
@@ -5444,38 +5492,13 @@ export function makeTable(options): TableResourceClass {
 				// The follower waits on the leader's acquisition, but only for its own timeout.
 				let followerTimer: ReturnType<typeof setTimeout> | undefined;
 				const followerTimedOut = Symbol('follower timeout');
-				// Why the leader failed, so the follower can report that instead of inventing contention
-				// when its own budget runs out. A leader 503 means the guarantee could not be established
-				// at all; retrying is still right (the condition may clear) but 423 at the end is not.
-				let leaderFailure: Error | undefined;
-				const followerStart = Date.now();
 				const followerDeadline = new Promise<never>((_, reject) => {
 					followerTimer = setTimeout(() => reject(followerTimedOut), resolved.timeout).unref();
 				});
-				// Try again on this caller's own terms with the budget it has left.
-				const retryOnRemainingBudget = () => {
-					// The enclosing transaction ended while we were parked. A retry re-resolves the
-					// context, which no longer points at this link, so the handle it acquired would be
-					// registered on a fresh transaction that no commit or abort ever releases — the
-					// same abandonment the leader's own post-acquisition guard below rejects.
-					if (lockScopeEnded(link))
-						throw new ServerError('Transaction was closed while waiting for a record lock', 500);
-					const remaining = resolved.timeout - (Date.now() - followerStart);
-					if (remaining <= 0)
-						throw leaderFailure ?? new ClientError(`Record is locked and was not released in time`, 423);
-					// Carry the scope only if the caller named it: spreading the resolved options would turn
-					// a defaulted 'cluster' into an explicit one, which is fail-closed when no transport is
-					// registered.
-					return this.lock(target, {
-						lease: resolved.lease,
-						timeout: remaining,
-						hold: resolved.hold,
-						scope: resolved.scopeRequested ? resolved.scope : undefined,
-					}) as Promise<any>;
-				};
 				return Promise.race([pending, followerDeadline]).then(
 					() => {
 						clearTimeout(followerTimer);
+						if (midScopeCommitInFlight()) return retryOnRemainingBudget();
 						// A hold handle survives its scope, so finding one does not say the scope is still live.
 						if (lockScopeEnded(link))
 							throw new ServerError('Transaction was closed while waiting for a record lock', 500);
@@ -5503,10 +5526,11 @@ export function makeTable(options): TableResourceClass {
 						// A follower that simply ran out of its own wait was waiting on another caller in this
 						// process, which is the contention 423 describes. But if the LEADER failed for a reason
 						// that is not contention, that reason is the true one — keep it and report it if the
-						// retries below also run out, rather than ending on a 423 for a key nobody held.
+						// retries below also run out, rather than ending on a 423 for a key nobody held. A leader
+						// 503 means the guarantee could not be established at all; retrying is still right (the
+						// condition may clear) but 423 at the end is not.
 						if (error === followerTimedOut) throw new ClientError(`Record is locked and was not released in time`, 423);
-						if (error instanceof LockUnavailableError) leaderFailure = error;
-						return retryOnRemainingBudget();
+						return retryOnRemainingBudget(error instanceof LockUnavailableError ? error : undefined);
 					}
 				);
 			}
@@ -5533,6 +5557,10 @@ export function makeTable(options): TableResourceClass {
 			// handle is registered, so it retries and parks on the leader's own lock for its full timeout
 			// — inside a transaction that cannot finish until it gives up.
 			const acquisition = pendingPromise.then(async (handle) => {
+				if (midScopeCommitInFlight()) {
+					handle.release();
+					throw retryAfterScopeCommit;
+				}
 				if (lockScopeEnded(link)) {
 					// The transaction was aborted while this call waited; nothing would ever release the handle.
 					handle.release();
@@ -5612,6 +5640,11 @@ export function makeTable(options): TableResourceClass {
 					} catch (error) {
 						handle.release();
 						throw error;
+					}
+					if (midScopeCommitInFlight()) {
+						// also gives the cluster grant back (onRelease)
+						handle.release();
+						throw retryAfterScopeCommit;
 					}
 					if (lockScopeEnded(link)) {
 						handle.release();
@@ -5698,7 +5731,7 @@ export function makeTable(options): TableResourceClass {
 			link.registerPendingLock(primaryStore, keyId, acquisition);
 			return acquisition.then(
 				(handle) => {
-					link.unregisterPendingLock(primaryStore, keyId);
+					link.unregisterPendingLock(primaryStore, keyId, acquisition);
 					const releaseAfterReloadFailure = (error) => {
 						detachScopedUpgradeWrite(lockLink, keyId, handle, true, true);
 						lockLink.unregisterRecordLock(handle);
@@ -5720,7 +5753,8 @@ export function makeTable(options): TableResourceClass {
 					}
 				},
 				(error) => {
-					link.unregisterPendingLock(primaryStore, keyId);
+					link.unregisterPendingLock(primaryStore, keyId, acquisition);
+					if (error === retryAfterScopeCommit) return retryOnRemainingBudget();
 					throw error;
 				}
 			);
@@ -5815,8 +5849,12 @@ export function makeTable(options): TableResourceClass {
 				this.#savingOperation = null;
 			// Changes made under the lock are abandoned with it, unless a kept write still reads them.
 			if (!this.#stagedWrite()) this.#discardChanges();
-			if (handle.released) return Promise.resolve(false);
-			const link = txnForContext(this.getContext());
+			const context = this.getContext();
+			// A released handle stays registered, refusing writes, until this — unless its transaction already
+			// completed, taking the registry with it.
+			if (handle.released && (!context?.transaction || isReleasedTransaction(context.transaction)))
+				return Promise.resolve(false);
+			const link = txnForContext(context);
 			detachScopedUpgradeWrite(link, writeKeyId(this.getId()), handle, true);
 			link.unregisterRecordLock(handle);
 			return Promise.resolve(handle.release());
@@ -7706,6 +7744,8 @@ export function makeTable(options): TableResourceClass {
 				},
 			};
 			this.#bindWriteLock(write, id, transaction);
+			// a caller write, not the scoped lock's placeholder: unlock() and a hold upgrade keep it
+			if (write.lockHandle) write.lockJoined = true;
 			transaction.addWrite(write);
 			if (condition) condition.consumed = true;
 			return true;
@@ -12839,8 +12879,7 @@ export function makeTable(options): TableResourceClass {
 					!nextTxn.transaction &&
 					!nextTxn.writes.some((write) => write)
 				) {
-					(transaction.root ?? transaction).retainRecordLocksOf(nextTxn);
-					transaction.next = nextTxn.next;
+					transaction.detachNext();
 					nextTxn = transaction.next;
 				}
 				if (!nextTxn) {
