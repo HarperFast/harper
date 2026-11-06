@@ -4483,7 +4483,15 @@ export class ImmediateTransaction extends DatabaseTransaction {
 			// operation.innerCommit, so deriving an unobserved .then() promise here would turn any
 			// rejected innerCommit into an unhandledRejection.
 			if (args[1] || args[3]) return;
-			return saveResult?.then ? saveResult.then(resolveUndefined) : this.#activeSaveCommit;
+			// Closed links open a per-write handle and return its innerCommit (or undefined for a no-op
+			// validate=false write, which must not borrow another write's commit). OPEN links parked in
+			// completions after commit() returns share #activeSaveCommit; before commit() returns it stays
+			// undefined so a synchronous before-hook awaiting a same-context write does not deadlock completions.
+			return saveResult?.then
+				? saveResult.then(resolveUndefined)
+				: this.open === TRANSACTION_STATE.OPEN
+					? this.#activeSaveCommit
+					: undefined;
 		} else {
 			this.admitRequestWrite(); // a deferred save reaches here without passing through addWrite()
 			this.isCommitting = true;

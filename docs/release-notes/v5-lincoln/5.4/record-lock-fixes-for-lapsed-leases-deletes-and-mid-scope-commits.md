@@ -5,7 +5,7 @@ order: 40
 
 ### Record Lock Fixes for Lapsed Leases, Deletes and Mid-Scope Commits
 
-Five fixes to `table.lock()`:
+Five fixes to `table.lock()` and immediate writes outside `transaction()`:
 
 - A hold lock whose lease ran out keeps refusing writes to its record from every instance on the same context, until that lock's `unlock()` or a new `lock()` of the record. Outside `transaction()`, the next write to any record in the database used to clear it, so a late write landed after another caller could have locked the record ([harper#4053](https://github.com/HarperFast/harper/issues/4053)). `unlock()` of a lapsed lock now also lets later writes to the record through inside `transaction()`; before, they kept failing with `409`.
 - A `delete()` or `invalidate()` made through a transaction-scoped lock now commits when the lock is released early with `unlock()` or upgraded to `{ hold: true }`. It was discarded ([harper#3902](https://github.com/HarperFast/harper/issues/3902)).

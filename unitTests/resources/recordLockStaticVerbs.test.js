@@ -222,33 +222,69 @@ describe('Record locks (QA-5082): static table verbs on locked keys must resolve
 			const firstGate = new Promise((resolve) => {
 				releaseFirst = resolve;
 			});
-			let commitCalls = 0;
+			let releaseForwarded;
+			let forwardedGate = new Promise((resolve) => {
+				releaseForwarded = resolve;
+			});
+			let capturingFirst = true;
+			let firstTxn;
 			Transaction.prototype.commit = async function (...args) {
 				if (this.store?.db !== targetDb) return originalCommit.apply(this, args);
-				commitCalls++;
-				if (commitCalls === 1) await firstGate;
-				else await delay(15);
+				if (capturingFirst) {
+					firstTxn = this;
+					capturingFirst = false;
+				}
+				if (this === firstTxn) await firstGate;
+				else await forwardedGate;
 				return originalCommit.apply(this, args);
 			};
 			cleanups.push(() => {
 				Transaction.prototype.commit = originalCommit;
 				releaseFirst?.();
+				releaseForwarded?.();
 			});
 			const firstCommit = holder1.publish({ n: 7 });
+			assert.ok(firstTxn, 'expected holder1.publish to reach native commit before forwarding');
 			assert.strictEqual(context.transaction.isCommitting, true);
 			const holder2FloorBefore = context.transaction.recordLocks
 				.get(Unaudited.primaryStore)
 				.get(secondId)
 				.holderVersionFloor();
-			assert.strictEqual(await holder2.publish({ n: 8 }), undefined);
+			let publishSettled = false;
+			const forwardedPublish = Promise.resolve(holder2.publish({ n: 8 })).then((res) => {
+				publishSettled = true;
+				return res;
+			});
+			await Promise.resolve();
+			assert.strictEqual(publishSettled, false, 'forwarded publish must wait for its innerCommit');
+			releaseForwarded();
+			assert.strictEqual(await forwardedPublish, undefined);
 			assert.ok(
 				context.transaction.recordLocks.get(Unaudited.primaryStore).get(secondId).holderVersionFloor() >
 					holder2FloorBefore,
 				'expected forwarded publish to settle only after advancing holderVersionFloor'
 			);
 			assert.strictEqual(context.transaction.isCommitting, true);
+			Object.defineProperty(holder2, 'n', { value: 10, enumerable: true, configurable: true, writable: true });
+			assert.strictEqual(
+				holder2.save(),
+				undefined,
+				'no-op forwarded write on closed link must not borrow #activeSaveCommit'
+			);
+			delete holder2.n;
+			forwardedGate = new Promise((resolve) => {
+				releaseForwarded = resolve;
+			});
 			holder2.set('n', 20);
-			assert.strictEqual(await holder2.save(), undefined);
+			let saveSettled = false;
+			const forwardedSave = Promise.resolve(holder2.save()).then((res) => {
+				saveSettled = true;
+				return res;
+			});
+			await Promise.resolve();
+			assert.strictEqual(saveSettled, false, 'forwarded save must wait for its innerCommit');
+			releaseForwarded();
+			assert.strictEqual(await forwardedSave, undefined);
 			assert.strictEqual(Unaudited.primaryStore.getEntry(secondId).value.n, 20);
 			releaseFirst();
 			Transaction.prototype.commit = originalCommit;
