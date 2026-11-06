@@ -147,9 +147,9 @@ type AtomicWriteOptions = RenameRetryOptions & {
 	 */
 	durable?: boolean;
 	/**
-	 * For content that can hold a secret. On POSIX the file is created owner-only before its first byte, and a
-	 * replacement keeps only the owner bits the file it replaces had, so a narrower mode survives. Ignored on
-	 * Windows, where access comes from the directory's ACL.
+	 * For content that can hold a secret. On POSIX the file is created owner-only before its first byte, and
+	 * replacing a file this user owns keeps only its owner bits, so a narrower mode survives; another user's
+	 * file is replaced at 0o600. Ignored on Windows, where access comes from the directory's ACL.
 	 */
 	ownerOnly?: boolean;
 	/** The file whose mode `ownerOnly` must not widen, when this write is published over it by a later rename. */
