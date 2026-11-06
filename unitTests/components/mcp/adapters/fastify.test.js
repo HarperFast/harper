@@ -1,6 +1,8 @@
 const assert = require('node:assert');
 const { createFastifyHandler } = require('#src/components/mcp/adapters/fastify');
 const { _setSessionTableForTest, loadSession } = require('#src/components/mcp/session');
+const { _resetForTest, _setClockForTest } = require('#src/components/mcp/rateLimit');
+const env = require('#js/utility/environment/environmentManager');
 
 function makeFakeTable() {
 	const store = new Map();
@@ -132,5 +134,61 @@ describe('mcp/adapters/fastify', () => {
 		const reply = makeReply();
 		await handler({ method: 'GET', headers: {}, hdb_user: { username: 'alice' } }, reply);
 		assert.equal(reply.statusCode, 400);
+	});
+
+	describe('initialize identity is the client address, not Fastify request.ip', () => {
+		const originalEnvGet = env.get;
+		const ADDRESS_HEADER = 'x-harper-internal-client-address';
+		beforeEach(() => {
+			_resetForTest();
+			_setClockForTest(() => 0);
+			env.get = (key) => (key === 'mcp_operations_rateLimit_initializeBurst' ? 1 : originalEnvGet.call(env, key));
+		});
+		afterEach(() => {
+			env.get = originalEnvGet;
+			_setClockForTest(undefined);
+			_resetForTest();
+		});
+
+		async function initialize(transport) {
+			const reply = makeReply();
+			await createFastifyHandler('operations')(
+				{
+					method: 'POST',
+					headers: { 'content-type': 'application/json', ...transport.headers },
+					body: { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18' } },
+					hdb_user: { username: 'alice' },
+					raw: transport.raw,
+					ip: transport.ip,
+				},
+				reply
+			);
+			return reply.statusCode;
+		}
+		// Bun and uWS: light-my-request reports 127.0.0.1 for every request; the bridge sets the header
+		const injected = (address) => ({ raw: {}, ip: '127.0.0.1', headers: address ? { [ADDRESS_HEADER]: address } : {} });
+		// a client-supplied header reaches Fastify unstripped on Node
+		const node = (address, forged) => ({
+			raw: { baseRequest: { ip: address } },
+			ip: address,
+			headers: { [ADDRESS_HEADER]: forged },
+		});
+
+		it('gives each injected address its own bucket', async () => {
+			assert.equal(await initialize(injected('203.0.113.1')), 200);
+			assert.equal(await initialize(injected('203.0.113.1')), 429);
+			assert.equal(await initialize(injected('203.0.113.2')), 200);
+		});
+
+		it('keys a Node request on its own address, ignoring the header beside it', async () => {
+			assert.equal(await initialize(node('203.0.113.3', '198.51.100.1')), 200);
+			assert.equal(await initialize(node('203.0.113.3', '198.51.100.2')), 429);
+		});
+
+		it('puts injected requests with no address in the shared bucket, apart from known addresses', async () => {
+			assert.equal(await initialize(injected(undefined)), 200);
+			assert.equal(await initialize(injected(undefined)), 429);
+			assert.equal(await initialize(injected('127.0.0.1')), 200);
+		});
 	});
 });

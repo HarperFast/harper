@@ -148,7 +148,7 @@ Client identity is the socket IP, or the first value of [`identityHeader`](#mcpp
 - Any other IPv6 address counts as its `/64`, the block a single client is typically assigned.
 - A request with no identity (for example, a Unix-socket ingress with no `identityHeader`) shares one bucket per profile instead of going unthrottled. Past 100,000 tracked identities per profile and worker, new identities also share that bucket.
 
-The bucket is in memory per thread, like the others: it is not shared across threads and does not survive a restart. On the application profile, a client that opens fresh connections spread over the HTTP worker threads can get the configured rate and burst once per worker ([`threads.count`](../configuration/options.md#threads) of them, or the main thread alone when it is `0`); a client that reuses one connection stays on one worker and gets the configured figure. The operations profile is served by the main thread only, so it admits the configured figure.
+The bucket is in memory per thread, like the others: it is not shared across threads and does not survive a restart. On the application profile, a client that opens fresh connections spread over the HTTP worker threads can get the configured rate and burst once per worker ([`threads.count`](../configuration/options.md#threads) of them, or the main thread alone when it is `0`); a client that reuses one connection stays on one worker and gets the configured figure. Under Bun, one worker serves the HTTP port, so every client gets the configured figure. The operations profile is served by the main thread only, so it admits the configured figure.
 
 A denied `initialize` gets HTTP `429` with a `Retry-After` header and a JSON-RPC error body, and no session is created:
 

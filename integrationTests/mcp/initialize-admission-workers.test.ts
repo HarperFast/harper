@@ -5,8 +5,9 @@
  * it sees a 429 — the effective per-identity creation limit is the configured value times `threads.count`.
  *
  * Needs fresh connections spread across workers by SO_REUSEPORT, so the suite runs on Linux only (Windows
- * serves http from one thread, macOS binds without `reusePort`). Own instance (own thread count); shares
- * the `mcp-initialize-limit` fixture.
+ * serves http from one thread, macOS binds without `reusePort`). Under Bun one worker serves the port
+ * (`server/DESIGN.md` "Under Bun, the main HTTP port is served by `node:http`"), so there the suite pins
+ * exactly one bucket. Own instance (own thread count); shares the `mcp-initialize-limit` fixture.
  */
 import { suite, test, before, after } from 'node:test';
 import assert from 'node:assert';
@@ -17,6 +18,7 @@ import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '
 
 const FIXTURE_PATH = resolve(import.meta.dirname, '../fixtures/mcp-initialize-limit');
 const WORKERS = 4;
+const SERVING_WORKERS = process.env.HARPER_RUNTIME === 'bun' ? 1 : WORKERS;
 const RATE = 0.01;
 const BURST = 5;
 const ATTEMPTS = 40;
@@ -144,10 +146,15 @@ suite(
 			const rowIds = new Set(rows.map((row) => row.id));
 			for (const id of ids) assert.ok(rowIds.has(id as string), `admitted session ${id} has no row`);
 			console.log(
-				`INITIALIZE-ARM W ${JSON.stringify({ attempts: ATTEMPTS, admitted: admitted.length, denied: denied.length, workers: WORKERS, burst: BURST })}`
+				`INITIALIZE-ARM W ${JSON.stringify({ attempts: ATTEMPTS, admitted: admitted.length, denied: denied.length, workers: WORKERS, servingWorkers: SERVING_WORKERS, burst: BURST })}`
 			);
-			assert.ok(admitted.length > BURST, `admitted ${admitted.length}: a single bucket would have admitted ${BURST}`);
-			assert.ok(admitted.length <= BURST * WORKERS, `admitted ${admitted.length} > ${BURST} x ${WORKERS} workers`);
+			if (SERVING_WORKERS > 1)
+				assert.ok(admitted.length > BURST, `admitted ${admitted.length}: a single bucket would have admitted ${BURST}`);
+			else assert.strictEqual(admitted.length, BURST, `admitted ${admitted.length}: one serving worker, one bucket`);
+			assert.ok(
+				admitted.length <= BURST * SERVING_WORKERS,
+				`admitted ${admitted.length} > ${BURST} x ${SERVING_WORKERS} serving workers`
+			);
 		});
 	}
 );
