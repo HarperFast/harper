@@ -167,11 +167,12 @@ async function reclaimAt(priority) {
 		assert.ok(isReplica('near'), 'and kept it again');
 	});
 
-	it('widens the window as pressure rises, and takes every replica on a full disk', async () => {
+	it('widens the window as pressure rises, and takes every replica past the minimum age on a full disk', async () => {
 		await replica('tenth', LIFETIME_MS * 0.1);
 		await replica('half', LIFETIME_MS * 0.5);
 		await replica('most', LIFETIME_MS * 0.9);
-		await replica('whole', LIFETIME_MS);
+		await replica('whole', LIFETIME_MS * 0.96);
+		await replica('young', LIFETIME_MS);
 
 		await reclaimAt(1.25);
 		assertDemoted('tenth');
@@ -187,6 +188,16 @@ async function reclaimAt(priority) {
 
 		await reclaimAt(Infinity);
 		assertDemoted('whole');
+		assertKept('young');
+	});
+
+	it('uses the whole lifetime as the minimum age when the lifetime is shorter', async () => {
+		setReplicaReclaimLimitsForTesting({ minAgeMs: LIFETIME_MS * 2 });
+		await replica('near', 1000);
+		await replica('passed', -1000);
+		await reclaimAt(Infinity);
+		assertKept('near');
+		assertDemoted('passed');
 	});
 
 	it('demotes earliest deadline first across batches, and stops once the priority falls below 1', async () => {
@@ -260,12 +271,19 @@ async function reclaimAt(priority) {
 		assertDemoted('last');
 	});
 
-	it('reaches a deadline from a longer earlier lifetime only on a full volume', async () => {
-		await replica('older', LIFETIME_MS * 3);
-		await reclaimAt(100);
-		assertKept('older');
-		await reclaimAt(Infinity);
-		assertDemoted('older');
+	it('demotes a deadline from a longer earlier lifetime last, at any pressure', async () => {
+		await replica('longer', LIFETIME_MS * 3);
+		await replica('within', LIFETIME_MS * 0.1);
+		await replica('kept', LIFETIME_MS * 0.5);
+		const order = [];
+		const evict = Rows.evict;
+		Rows.evict = function (id, ...rest) {
+			order.push(id);
+			return evict.call(this, id, ...rest);
+		};
+		await reclaimAt(1.25);
+		assert.deepEqual(order, ['within', 'longer']);
+		assertKept('kept');
 	});
 
 	it('keeps a replica renewed after the pass selected it', async () => {
@@ -506,9 +524,9 @@ async function reclaimAt(priority) {
 		it('reports the count and an estimated size of the replicas, not of the other rows', async () => {
 			await Rows.put('owned', { id: 'owned', name: 'indexed', body: 'mine' });
 			await stub('stub');
-			await replica('a', LIFETIME_MS);
-			await replica('b', LIFETIME_MS);
-			await replica('c', LIFETIME_MS);
+			await replica('a', LIFETIME_MS * 0.9);
+			await replica('b', LIFETIME_MS * 0.9);
+			await replica('c', LIFETIME_MS * 0.9);
 			const description = await describeRows();
 			assert.equal(description.replica_count, 3);
 			assert.equal(description.estimated_replica_range, undefined);
@@ -577,7 +595,7 @@ async function reclaimAt(priority) {
 			server.shards = priorShards;
 		});
 
-		it('demotes the rows this node does not own and leaves those it owns', async () => {
+		it('keeps a fresh write replica on a full volume, then demotes it, and leaves the rows this node owns', async () => {
 			await loadGQLSchema(`type ShardedReclamation @table(database: "shardedReclamation", replicaExpiration: 3600)
 				@sharded(slots: 2) {
 				id: ID @primaryKey tag: String @indexed body: String
@@ -590,6 +608,22 @@ async function reclaimAt(priority) {
 			const owned = ids.filter((id) => !(entries.get(id).metadataFlags & REPLICA));
 			assert.ok(kept.length > 0 && owned.length > 0, 'the hash places rows on both sides');
 
+			await reclaimAt(Infinity);
+			for (const id of kept) {
+				assert.ok(Sharded.primaryStore.getEntry(id).metadataFlags & REPLICA, `the fresh write ${id} stays`);
+				assert.equal((await Sharded.get(id)).body, 'complete');
+			}
+
+			const older = kept[0];
+			const store = openReplicaDeadlineStore(Sharded.primaryStore.rootStore, Sharded.tableName);
+			const fresh = store.getSync(older);
+			store.putSync(older, fresh - 60_000);
+			await reclaimAt(Infinity);
+			assert.ok(!(Sharded.primaryStore.getEntry(older).metadataFlags & REPLICA), 'an older replica goes');
+			for (const id of kept.slice(1))
+				assert.ok(Sharded.primaryStore.getEntry(id).metadataFlags & REPLICA, `the fresh write ${id} stays`);
+
+			for (const id of kept) store.putSync(id, fresh - 60_000);
 			await reclaimAt(Infinity);
 
 			for (const id of kept) {

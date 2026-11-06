@@ -63,7 +63,8 @@ suite('replicas under storage pressure', { skip: skipSuite }, (ctx: ContextWithH
 		return description.body;
 	}
 	async function waitForReplicaCount(expected: number) {
-		const deadline = Date.now() + 30_000;
+		// a replica younger than the 30 s minimum age stays under any pressure
+		const deadline = Date.now() + 60_000;
 		let count: number | undefined;
 		while (Date.now() < deadline) {
 			count = (await replicaCount()).replica_count;

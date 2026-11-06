@@ -763,7 +763,7 @@ const REPLICA_SWEEP_YIELD_EVERY = 1000;
 const REPLICA_SIZE_SAMPLE = 100;
 // a reclamation run awaits each pass before the path's next handler (audit cleanup among them), so a pass starts no batch
 // past budgetMs and leaves the rest for the next run
-const REPLICA_RECLAIM_LIMITS = { batch: 20_000, checkEvery: 1000, budgetMs: 60_000 };
+const REPLICA_RECLAIM_LIMITS = { batch: 20_000, checkEvery: 1000, budgetMs: 60_000, minAgeMs: 30_000 };
 let replicaReclaimLimits = REPLICA_RECLAIM_LIMITS;
 const REPLICA_EVICTION_ARMED = 'replica-eviction-armed';
 const replicaEvictionArmers = new Map<string, Set<() => void>>();
@@ -15000,18 +15000,19 @@ export function makeTable(options): TableResourceClass {
 	/**
 	 * Demote replicas earliest deadline first, while this path stays under pressure, down to an effective
 	 * lifetime of `replicaExpirationMs / priority`. A replica has `replicaExpirationMs - age` left, so that
-	 * age is reached at `remaining <= replicaExpirationMs * (1 - 1 / priority)`, which widens with pressure.
+	 * age is reached at `remaining <= replicaExpirationMs - lifetime`, which widens with pressure. The lifetime
+	 * stops at minAgeMs: a younger replica may be this node's own write, which the owner may not have yet.
 	 * Demotion frees no disk until compaction rewrites the old rows, so the priority rarely falls during a
 	 * pass; the window and the budget are what bound it. Every run gets through a batch, however long its
 	 * scan took, or a store too large to scan within the budget would never shrink.
 	 */
 	async function reclaimReplicaSpace(store: any) {
-		const { batch: limit, checkEvery, budgetMs } = replicaReclaimLimits;
+		const { batch: limit, checkEvery, budgetMs, minAgeMs } = replicaReclaimLimits;
 		const priority = await getStorageReclamationPriority(primaryStore.path);
 		if (!(priority > 1)) return;
-		// A deadline from a longer earlier lifetime is beyond any finite window, so only a full volume reaches it.
-		// Fixed for the pass: below that, a replica admitted during it starts past the cutoff.
-		const cutoff = priority === Infinity ? Infinity : Date.now() + replicaExpirationMs * (1 - 1 / priority);
+		const lifetime = Math.max(replicaExpirationMs / priority, Math.min(replicaExpirationMs, minAgeMs));
+		// fixed for the pass: a replica admitted during it starts past the cutoff, so admissions cannot extend it
+		const cutoff = Date.now() + replicaExpirationMs - lifetime;
 		const budgetEnd = performance.now() + budgetMs;
 		const proceed = () =>
 			replicaPressure && replicaEvictionArmed && !disposed && !maintenanceClosed && !isReadOnlyMode() && ownsCleanup();
@@ -15042,11 +15043,12 @@ export function makeTable(options): TableResourceClass {
 			batch.sort((a, b) => a.deadline - b.deadline);
 			if (batch.length > limit) batch.length = limit;
 		};
-		let bound = cutoff;
+		let bound = Infinity;
 		let matched = 0;
 		let seen = 0;
 		for (const { key, value: deadline } of store.getRange({ snapshot: false })) {
-			if (typeof deadline === 'number' && deadline <= cutoff) {
+			// a deadline beyond the current lifetime is left from a longer earlier one, however young the replica looks
+			if (typeof deadline === 'number' && (deadline <= cutoff || deadline > Date.now() + replicaExpirationMs)) {
 				matched++;
 				if (deadline <= bound) {
 					batch.push({ key, deadline });
