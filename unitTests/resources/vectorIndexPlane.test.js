@@ -96,7 +96,7 @@ async function waitForKeys(Table, keys) {
 		}
 	);
 }
-/** A plane file that cannot be opened and is older than the create window: a crashed create's leftover. */
+// older than the create window, so getPlane treats it as a crashed create rather than one in progress
 function writeAbandonedCreate(planePath) {
 	fs.writeFileSync(planePath, Buffer.alloc(64, 0x5a));
 	const longAgo = new Date(Date.now() - 120_000);
@@ -985,7 +985,6 @@ describe('HNSW native plane file-primary delivery', function () {
 			writeAbandonedCreate(planePath);
 			assert.equal(index.getPlane(), null);
 			assert.ok(!fs.existsSync(planePath), 'an unopenable file past the create window is removed');
-			// outside the attach retry window
 			index.planeRetryAt = 0;
 			assertCreateRefused(index);
 			await Unopenable.put(COUNT + 1, { vector: makeVector(COUNT + 1) });
