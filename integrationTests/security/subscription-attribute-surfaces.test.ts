@@ -135,13 +135,15 @@ suite(
 		}
 		/** SUBACK reason code; on a refused SUBACK mqtt.js echoes the request in `granted`, so read err.packet.granted */
 		function subscribe(c: MqttClient, topic: string, qos: 0 | 1 = 1): Promise<number> {
-			return new Promise((res, reject) =>
+			return new Promise((res, reject) => {
+				const timer = setTimeout(() => reject(new Error(`no SUBACK for ${topic} within 10 s`)), 10_000);
 				c.subscribe(topic, { qos }, (err: any, granted: any) => {
+					clearTimeout(timer);
 					if (err && !err.packet) return reject(err);
 					const codes = err?.packet?.granted ?? granted?.map((g: any) => g.qos);
 					res(codes?.[0] ?? -1);
-				})
-			);
+				});
+			});
 		}
 		function publish(c: MqttClient, topic: string, payload: string | Buffer, opts: any = {}): Promise<number> {
 			return new Promise((res, reject) => {
@@ -203,13 +205,13 @@ suite(
 			secret: `SECRET-${tag}-v1`,
 		});
 
-		/** admin PUT then PATCH on `id`; returns the titles a subscriber must have seen */
+		/** admin PUT then PATCH on `id`; returns the final title a subscriber must have seen (the PUT may be superseded) */
 		async function drive(table: string, id: string, tag: string) {
 			await put(table, id, { id, title: `title-${tag}-v2`, owner: 'ownerA', secret: `SECRET-${tag}-v2` }).expect(204);
 			await sleep(150);
 			const p = await patch(table, id, { title: `title-${tag}-v3`, secret: `SECRET-${tag}-v3` });
 			ok(p.status < 300, `PATCH ${table}/${id} ${p.status} ${p.text}`);
-			return [`title-${tag}-v2`, `title-${tag}-v3`];
+			return [`title-${tag}-v3`];
 		}
 		const sawAll = (msgs: Msg[], titles: string[]) => titles.every((t) => msgs.some((m) => m.text.includes(t)));
 
@@ -276,7 +278,7 @@ suite(
 			for (const close of sseClose) close();
 			for (const c of clients) await new Promise<void>((r) => c.end(true, {}, () => r()));
 			await teardownHarper(ctx);
-			rmSync(privateTmp, { recursive: true, force: true });
+			if (privateTmp) rmSync(privateTmp, { recursive: true, force: true });
 		});
 
 		test('CONTROL: restricted REST GET omits secret; open GET has it', async () => {
@@ -324,14 +326,10 @@ suite(
 			const newRow = await waitFor(() => rWild.msgs.some((m) => m.topic === 'Ticket68/tcpw-2' && m.enc !== 'empty'));
 			const d = await del('Ticket68', 'tcpw-2');
 			ok(d.status < 300, `DELETE ${d.status}`);
-			const deleteSeen = await waitFor(
-				() => rWild.msgs.some((m) => m.topic === 'Ticket68/tcpw-2' && m.enc === 'empty'),
-				4000
-			);
+			await waitFor(() => rWild.msgs.some((m) => m.topic === 'Ticket68/tcpw-2' && m.enc === 'empty'), 4000);
 			obs('A tcp restricted single', rSingle.msgs);
 			obs('A tcp restricted wildcard', rWild.msgs);
 			obs('A tcp open single', oSingle.msgs);
-			console.log(`OBS [A] delete passthrough to the wildcard TCP subscriber (empty payload): ${deleteSeen}`);
 			ok(live, 'live PUT/PATCH delivered to every TCP subscriber');
 			ok(newRow, 'new row delivered to the wildcard TCP subscriber');
 			assertNoLeak('A tcp restricted single', rSingle.msgs, 3);
@@ -394,10 +392,8 @@ suite(
 		});
 
 		test('C2: opaque MQTT payloads (first byte not `{`) reach every open subscriber, and the restricted subscriber as {}', async () => {
-			// 5 WebSocket + 1 TCP open subscribers. Worker assignment is not round-robin (verifier measured 0, 2 and 3 of 6
-			// on the publisher's worker across runs), so this arm is red on a buggy build unless all six land on the
-			// publisher's worker (~(1/4)^6 with 4 workers). Order-dependent: the failure needs the opaque record shape to be
-			// NEW to the delivering worker, so no earlier arm may publish an opaque payload.
+			// Order-dependent: a delivering worker's first decode of the opaque record shape is what went wrong before
+			// PR #3446, so no earlier arm may publish an opaque payload.
 			const r = await connectMqtt(`${wsBase}/mqtt`, RESTRICTED, 'sqa68-opq-r');
 			const opens: Array<{ label: string; client: MqttClient; msgs: Msg[] }> = [];
 			for (let i = 0; i < 5; i++) {

@@ -61,6 +61,12 @@ interface Sub {
 	close: () => void;
 }
 
+// a live write to `<s>-1` may be superseded before delivery (PUT then PATCH), and the new row `<s>-2` by its delete,
+// so liveness accepts any delivered version of the record
+const sawPut = (m: Msg) => /title-v[23]/.test(m.text);
+const sawRow = (m: Msg, s: string) =>
+	m.text.includes('title-n1') || m.text.includes(`"${s}-2"`) || m.meta.topic === `Ticket/${s}-2`;
+
 function decodeBytes(buf: Buffer): { text: string; enc: string } {
 	const s = buf.toString('utf8');
 	try {
@@ -420,8 +426,8 @@ suite(
 				() =>
 					oc.msgs.some((m) => m.text.includes(`SECRET-${s}-put2`)) &&
 					oc.msgs.length >= 4 &&
-					rs.msgs.some((m) => m.text.includes('title-v2')) &&
-					rc.msgs.some((m) => m.text.includes('title-n1')),
+					rs.msgs.some((m) => sawPut(m)) &&
+					rc.msgs.some((m) => sawRow(m, s)),
 				8000
 			);
 			await sleep(500);
@@ -444,11 +450,11 @@ suite(
 			);
 			// liveness of restricted subscribers (so absence of secret is not vacuous)
 			ok(
-				rs.msgs.some((m) => m.text.includes('title-v2')),
-				'restricted single stream did not deliver the put (inconclusive)'
+				rs.msgs.some((m) => sawPut(m)),
+				'restricted single stream did not deliver a live write (inconclusive)'
 			);
 			ok(
-				rc.msgs.some((m) => m.text.includes('title-n1')),
+				rc.msgs.some((m) => sawRow(m, s)),
 				'restricted collection stream did not deliver the new row (inconclusive)'
 			);
 
@@ -470,8 +476,8 @@ suite(
 			await waitFor(
 				() =>
 					oc.msgs.some((m) => m.text.includes(`SECRET-${s}-put2`)) &&
-					rs.msgs.some((m) => m.text.includes('title-v2')) &&
-					rc.msgs.some((m) => m.text.includes('title-n1')),
+					rs.msgs.some((m) => sawPut(m)) &&
+					rc.msgs.some((m) => sawRow(m, s)),
 				8000
 			);
 			await sleep(500);
@@ -487,11 +493,11 @@ suite(
 				'POSITIVE CONTROL: open collection ws lacks secret on patch'
 			);
 			ok(
-				rs.msgs.some((m) => m.text.includes('title-v2')),
-				'restricted single ws did not deliver the put (inconclusive)'
+				rs.msgs.some((m) => sawPut(m)),
+				'restricted single ws did not deliver a live write (inconclusive)'
 			);
 			ok(
-				rc.msgs.some((m) => m.text.includes('title-n1')),
+				rc.msgs.some((m) => sawRow(m, s)),
 				'restricted collection ws did not deliver the new row (inconclusive)'
 			);
 
@@ -530,9 +536,7 @@ suite(
 			await waitFor(
 				() =>
 					openWild.some((m) => m.text.includes(`SECRET-${s}-put2`)) &&
-					[...got].every(
-						([label, msgs]) => !label.startsWith('restricted') || msgs.some((m) => m.text.includes('title-n1'))
-					),
+					[...got].every(([label, msgs]) => !label.startsWith('restricted') || msgs.some((m) => sawRow(m, s))),
 				8000
 			);
 			await sleep(500);
@@ -554,11 +558,11 @@ suite(
 					`POSITIVE CONTROL: open q${q} wildcard patch lacks secret`
 				);
 				ok(
-					got.get(`restricted-q${q}-single`)!.some((m) => m.text.includes('title-v2')),
-					`restricted q${q} single did not deliver the put (inconclusive)`
+					got.get(`restricted-q${q}-single`)!.some((m) => sawPut(m)),
+					`restricted q${q} single did not deliver a live write (inconclusive)`
 				);
 				ok(
-					got.get(`restricted-q${q}-wild`)!.some((m) => m.text.includes('title-n1')),
+					got.get(`restricted-q${q}-wild`)!.some((m) => sawRow(m, s)),
 					`restricted q${q} wildcard did not deliver new row (inconclusive)`
 				);
 			}
@@ -585,10 +589,7 @@ suite(
 			for (const x of [rSel, oSel, rWide]) subs.add(x);
 			await sleep(1000);
 			await drive(s);
-			await waitFor(
-				() => oSel.msgs.length >= 4 && [rSel, rWide].every((x) => x.msgs.some((m) => m.text.includes('title-n1'))),
-				8000
-			);
+			await waitFor(() => oSel.msgs.length >= 4 && [rSel, rWide].every((x) => x.msgs.some((m) => sawRow(m, s))), 8000);
 			await sleep(500);
 			for (const x of [rSel, oSel, rWide]) obs(`select ${x.label}`, `status=${x.status()}`, x.msgs);
 			for (const x of [rSel, oSel, rWide]) strictEqual(x.status(), 200, `${x.label} status`);
@@ -602,11 +603,11 @@ suite(
 			);
 			for (const x of [rSel, rWide]) {
 				ok(
-					x.msgs.some((m) => m.text.includes('title-v2')),
-					`${x.label} did not deliver the put (inconclusive)`
+					x.msgs.some((m) => sawPut(m)),
+					`${x.label} did not deliver a live write (inconclusive)`
 				);
 				ok(
-					x.msgs.some((m) => m.text.includes('title-n1')),
+					x.msgs.some((m) => sawRow(m, s)),
 					`${x.label} did not deliver the new row (inconclusive)`
 				);
 			}

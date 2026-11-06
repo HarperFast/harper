@@ -278,9 +278,16 @@ suite('PR 3307 mixed-role subscription fan-out over 4 workers', { skip: skipSuit
 			sub.unplannedClose = true;
 			sub.events.push(`unplanned close ${code} ${reason}`);
 		});
-		await new Promise((res, rej) => {
-			ws.once('open', res);
-			ws.once('error', rej);
+		await new Promise<void>((res, rej) => {
+			const timer = setTimeout(() => rej(new Error(`REST WebSocket open timed out for ${sub.id}`)), 10_000);
+			ws.once('open', () => {
+				clearTimeout(timer);
+				res();
+			});
+			ws.once('error', (e) => {
+				clearTimeout(timer);
+				rej(e);
+			});
 		});
 		sub.ws = ws;
 		sub.workerNote = 'REST WebSocket connection cannot be attributed to a worker';
@@ -788,9 +795,10 @@ suite('PR 3307 mixed-role subscription fan-out over 4 workers', { skip: skipSuit
 				console.log(
 					`[QA3307] O4b ${role}/${proto}: ${JSON.stringify(classes)} nonrecord samples=${JSON.stringify(samples)}`
 				);
-				if (role === 'r' && proto !== 'sseRelated' && classes.empty === 0) rNoEmpty.push(`${role}/${proto}`);
+				if (role === 'r' && proto !== 'sseRelated')
+					for (const s of of(role, proto)) if (!s.frames.some((f) => classify(f) === 'empty')) rNoEmpty.push(s.id);
 			}
-		deepStrictEqual(rNoEmpty, [], 'restricted ws/sse subscribers received no {} frame for the non-JSON publishes');
+		deepStrictEqual(rNoEmpty, [], 'restricted ws/sse subscribers that received no {} frame for the non-JSON publishes');
 		const sBad = subs
 			.filter((s) => s.role === 's' && (s.proto === 'ws' || s.proto === 'sse'))
 			.map(
