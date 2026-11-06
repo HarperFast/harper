@@ -23,7 +23,14 @@ import { _assignPackageExport } from '../globals.js';
 import { ClientError, AccessViolation } from '../utility/errors/hdbError.ts';
 import { transaction, contextStorage } from './transaction.ts';
 import { parseQuery } from './search.ts';
-import { RequestTarget } from './RequestTarget.ts';
+import {
+	AUTHORIZATION_SELECT,
+	RequestTarget,
+	copyQueryConditions,
+	dispatchTarget,
+	markDispatchTarget,
+	setLoadedFromSource,
+} from './RequestTarget.ts';
 import { when, promiseNormalize } from '../utility/when.ts';
 import { registerLiveSubscription } from '../server/liveSubscriptionAuth.ts';
 import type { JsonSchemaFragment } from './jsonSchemaTypes.ts';
@@ -43,7 +50,6 @@ function refuseWriteInReadOnlyMode(...args: any[]): Promise<never> {
 	return Promise.reject(readOnlyModeError());
 }
 
-const AUTHORIZATION_SELECT = Symbol.for('harper.authorizationSelect');
 const RELATIONSHIPS_LISTED = Symbol.for('harper.relationshipsListed');
 export const SEARCH_AUTHORIZATION = Symbol.for('harper.searchAuthorization');
 export const WRITE_CONDITION = Symbol('writeCondition');
@@ -759,6 +765,7 @@ function transactional(
 		if (writesByDefinition && isReadOnlyMode() && (this as any).primaryStore)
 			return refuseWriteInReadOnlyMode(idOrQuery, dataOrContext);
 		let id, query, isCollection;
+		let mintedQuery = false;
 		let data;
 		// An absent argument, not a context — and not this call's data either.
 		if (isReleasedTransaction(dataOrContext)) dataOrContext = undefined;
@@ -876,7 +883,7 @@ function transactional(
 					// get the id part from an iterable query
 					id = [];
 					isCollection = true;
-					for (const part of idOrQuery) {
+					for (const part of copyQueryConditions(idOrQuery)) {
 						if (typeof part === 'object' && part) break;
 						id.push(part);
 					}
@@ -887,6 +894,7 @@ function transactional(
 							query = query.slice(id.length, query.length);
 							if (query.length === 0) {
 								query = new RequestTarget();
+								mintedQuery = true;
 								query.id = id;
 							}
 						}
@@ -898,6 +906,7 @@ function transactional(
 			} else {
 				id = idOrQuery;
 				query = new RequestTarget();
+				mintedQuery = true;
 				query.id = id;
 				if (id == null) {
 					if (options.method === 'get' || options.method === 'delete') {
@@ -912,6 +921,7 @@ function transactional(
 		}
 		if (!query) {
 			query = new RequestTarget();
+			mintedQuery = true;
 			query.id = id;
 			// The collection inferred from the batch's null id has to survive onto the synthesized target,
 			// or the array is dispatched as one record update against a null primary key. Array-only:
@@ -1012,6 +1022,7 @@ function transactional(
 			);
 		}
 		function authorizeActionOnResource(resource: ResourceInterface) {
+			const callerTarget = query;
 			// For subscribe, register the resulting subscription for continuous re-authorization so it is
 			// terminated if the principal later loses access or its token expires (#1414). Non-subscribe
 			// actions run unchanged.
@@ -1028,7 +1039,12 @@ function transactional(
 				// than caller-owned target identity, preserves the static (target, message) signature when
 				// an override copies the target or delegates asynchronously after its own return settles.
 				if (loadAsInstance === false && options.method === 'publish') markStaticResourceInstance(resource);
-				const result = action(resource, query, context, data);
+				let result = action(resource, query, context, data);
+				if (options.method === 'get' && callerTarget !== query)
+					result = when(result, (value: any) => {
+						if (query.loadedFromSource !== undefined) setLoadedFromSource(callerTarget, query.loadedFromSource);
+						return value;
+					});
 				if (!isSubscribeAction) return result;
 				return when(result, (subscription: any) =>
 					registerLiveSubscriptionForContext(subscription, resource, admittedTarget, selectedByCaller, context)
@@ -1039,15 +1055,30 @@ function transactional(
 				checkPermission = true;
 				// authorization has been requested, but only do it for this entry call
 			}
+			let replacePermission = false;
 			if (context.authorize) {
 				checkPermission = true;
 				// authorization has been requested, but only do it for this entry call
 				context.authorize = false;
-				query.checkPermission = true;
+				// Arming only adds a check, so it stays on the caller's target and keeps a reused target gated;
+				// replacing an explicit permission must not outlive this dispatch, so that happens on a copy.
+				if (query.checkPermission) replacePermission = query.checkPermission !== true;
+				else {
+					try {
+						query.checkPermission = true;
+					} catch (error) {
+						if (typeof data?.then === 'function') data.then(undefined, () => {});
+						throw error;
+					}
+				}
 			}
 			return resolveBody(data, collectForms, authorizeResolvedBody);
 			function authorizeResolvedBody(data: any) {
 				if (checkPermission) {
+					if (mintedQuery) {
+						if (query instanceof RequestTarget) markDispatchTarget(query);
+					} else if (replacePermission || loadAsInstance !== false) query = dispatchTarget(query);
+					if (replacePermission) query.checkPermission = true;
 					if (loadAsInstance !== false) {
 						// do permission checks, with allow methods
 						let allowed;

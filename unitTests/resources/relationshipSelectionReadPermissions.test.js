@@ -162,10 +162,10 @@ describe('Read permission admission for nested selections and scalar properties'
 	});
 
 	it('defaults an omitted nested predicate attribute to the related primary key', async () => {
-		const target = { select: ['id', selection([{ value: 'd1' }])], checkPermission: true };
-		assert.ok(new Emp(undefined, { user: restricted }).allowRead(restricted, target, { user: restricted }));
+		const target = () => ({ select: ['id', selection([{ value: 'd1' }])], checkPermission: true });
+		assert.ok(new Emp(undefined, { user: restricted }).allowRead(restricted, target(), { user: restricted }));
 		const rows = [];
-		for await (const row of Emp.search(target, { user: restricted })) rows.push(plain(row));
+		for await (const row of Emp.search(target(), { user: restricted })) rows.push(plain(row));
 		assert.deepStrictEqual(rows, [{ id: 'e1', dept: { name: 'Eng' } }]);
 	});
 

@@ -1,6 +1,6 @@
 # resources/ — design notes
 
-Rules the `resources/` code cannot state, why each holds, and the symbol and test enforcing it; [MAP.md](MAP.md) is the navigation. Tests are in `unitTests/resources/` unless a path is given.
+Rules code cannot state: invariant, rationale, enforcing symbol/test. Navigation: [MAP.md](MAP.md). Tests: `unitTests/resources/` unless shown.
 
 ## Full-text declarations and reader snapshots
 
@@ -31,14 +31,16 @@ The `registerPrimitiveIdGet` getter shares `loadRecord()` with `_loadRecord`; it
 
 ## Request admission authorizes exactly what the dispatch runs
 
-- `transactional()` resolves a QUERY body first, drops client `checkPermission`, and hands its `select` to `allowRead`; only the narrowed projection reaches the search (`permissions.test.js`).
-- In false mode, `search`, `query` and `get` await `Table.search`'s `SEARCH_AUTHORIZATION` verdict, so a denial cannot become a truncated success; the verdict names its gate, so a transform derived from it is never unwrapped, and the search starts before the transaction settles, keeping its snapshot. Default-mode `get` adds no promise step: `allowRead` was already awaited (`asyncAllowReadSearchResults.test.js`).
-- In false mode, array PUT, query DELETE and publish take one verdict each; DELETE scans a private cloned target (`staticResourceDispatch.ts`).
-- `rowFilter` is rechecked on the materialized record, and `limit` applies after it.
+- `transactional()` resolves QUERY bodies first, drops client `checkPermission`, and admits `select` through `allowRead`; search uses that projection (`permissions.test.js`).
+- False-mode reads await `SEARCH_AUTHORIZATION`; denial rejects and derived transforms run. Search starts before transaction settlement, preserving its snapshot; default admission adds no promise (`asyncAllowReadSearchResults.test.js`).
+- False-mode array PUT, query DELETE and publish take one verdict each; DELETE scans a private cloned target (`staticResourceDispatch.ts`).
+- Materialized rows recheck `rowFilter` before `limit`.
+- Transport roots narrow in place; `dispatchTarget` copies caller roots. Unowned narrowed roots fail closed; context arming persists.
+- Changed predicates require a fresh iterator; resetting a snapshotted cursor is unsupported (`delegatedQueryReuse.test.js`).
 
 ## Array PUT is a collection dispatch that settles every element before it fails
 
-The synthesized target keeps the collection flag, or the batch is one null-keyed record. Each element gets its own target (`elementTargetFactory`, no `checkPermission`); a context there would be staged as data. Non-objects are refused before dispatch. `settleElements`, not `Promise.all`, lets every element finish, so the transaction cannot unwind under a slow one into a partial PUT; the earliest-index error is reported, no `cause` added. Static-mode classes get the whole array, unguarded (a `null` element is a 500) (`arrayPutCallerImpact.test.js`).
+The synthesized target keeps collection status, or a batch becomes one null-keyed record. Each element gets its own `elementTargetFactory` target without `checkPermission`; a context there becomes data. Reject non-objects before dispatch. `settleElements`, not `Promise.all`, waits for all elements before unwinding, preventing partial PUTs; report the earliest-index error without `cause`. Static mode gets the whole array unguarded (`null` yields 500; `arrayPutCallerImpact.test.js`).
 
 ## Sharding resolves fixed slots through an authoritative database map
 
@@ -99,10 +101,11 @@ The operations thread loads no schema, so `table()` stores `@relationship` targe
 - **A static override owns the whole contract.** It resolves or consumes `data` (a promise, or a multipart `AsyncIterable<{ name, value }>` that `super.post` collects) and decides access itself; no `allow*` runs (`login.ts`).
 - `transactional()` resolves the body before `allow*` and passes both one object (`requestBody.test.js`).
 - Nested relationship constraints share `_prepareRelationshipSelection`. Predicates never mutate projection maps (`nestedRelationshipConstraints.test.js`).
+- `_authorizeRelatedSelection` copies named selectors before writes. Request authority wins; arrays isolate `select` from metadata (`selectorAuthorization.test.js`).
 - Only records and relationship targets use a table's resolvers; plain JSON uses resolver-free `nestedSelectTransform` (`searchSelectProjection.test.js`).
 - Storage keeps only stored fields (`storedFieldsOnly`); `toJSON` is a projection.
 - **`relationship.from` accessors are synchronous** (v4 parity): `getSync`/`getEntry`, never `get()` (`query.test.js`). Resolving one marks the request uncacheable (`markRelatedReadUncacheable`), or a stale ETag yields a 304 (gap: unselected `@enumerable` links resolve in `toJSON` after the ETag).
-- **Async query iteration reads related records via `loadEntries`**, picks one or many by `toMany`, and checks `getReadTransactionGuard` after each await; sync iteration reads synchronously (`relationshipAsyncReads.test.js`; gaps: `.to` `asArray` on a caching table can yield Promises, harper#3588, and the adaptive index switch uses `getSync`).
+- Async related reads use `loadEntries`, `toMany` and `getReadTransactionGuard` after awaits; sync reads stay synchronous (`relationshipAsyncReads.test.js`). Gaps: cached `.to` `asArray` may yield Promises (harper#3588); adaptive switching uses `getSync`.
 - **Each AND condition on a to-many relationship is existential, whichever leads**; a `rel[...]` group (`isRelationshipGroup`) binds its conditions to one related record, and walkers read them as the related table's (`someConditionPath`, `checkConditionPaths`). `select()` keeps the related records an AND condition matched, never an OR's (`relationshipSameRecordGroup.test.js`; gap: harper#3762).
 - **`@relationship(from, to)` joins `related[to] == local[from]`.** The resolver, `joinTo`/`joinFrom`, `transformEntryForSelect` and `filterByType` must agree.
 - `updatedAttributes` precompiles expressions before mutating, and retires removed accessors.

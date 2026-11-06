@@ -4,7 +4,7 @@ require('../testUtils');
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
-const { RequestTarget } = require('#src/resources/RequestTarget');
+const { RequestTarget, markDispatchTarget } = require('#src/resources/RequestTarget');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 async function fromAsync(iterable) {
@@ -498,12 +498,30 @@ describe('operation-scoped write authorization', () => {
 					return true;
 				}
 			}
-			const target = new RequestTarget('?kind=instance-delete');
+			const target = markDispatchTarget(new RequestTarget('?kind=instance-delete'));
 			await InstanceDelete.delete(target, { user: alice, authorize: true });
 			assert.strictEqual(calls.length, 1);
 			assert.strictEqual(calls[0].target, target);
 			assert.strictEqual(calls[0].owner, undefined);
 			assert.deepStrictEqual(await idsOf('instance-delete'), []);
+		});
+
+		it("gives the one query-delete verdict on a copy of the caller's own target", async function () {
+			await seed('instance-delete-own', [{ id: 'instance-delete-own-a' }]);
+			const calls = [];
+			class InstanceDelete extends Docs {
+				allowDelete(_user, target) {
+					calls.push(target);
+					return true;
+				}
+			}
+			const target = new RequestTarget('?kind=instance-delete-own');
+			await InstanceDelete.delete(target, { user: alice, authorize: true });
+			assert.strictEqual(calls.length, 1);
+			assert.notStrictEqual(calls[0], target);
+			assert.strictEqual(calls[0].toString(), target.toString());
+			assert.strictEqual(target.checkPermission, true, 'the caller target stays armed, never consumed');
+			assert.deepStrictEqual(await idsOf('instance-delete-own'), []);
 		});
 
 		it('keeps a RequestTarget publish body as the message in default mode', async function () {
