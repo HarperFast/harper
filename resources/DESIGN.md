@@ -246,8 +246,8 @@ If this same write (origin and log key) emptied the key, `_writeDelete` writes n
 
 ## `ImmediateTransaction` saves chain on `operation.innerCommit` and forward retries
 
-- Closed-link writes outside `transaction()` commit via `operation.innerCommit`; `ImmediateTransaction.save()` holds `isCommitting` until settled (closed links self-commit; `OPEN` links return `#activeSaveCommit`), and `_write*` resolve to `undefined` (`true` for `_writeDelete`) after `addWrite`. Un-awaited same-key writes share `holderVersionCandidate()` (`recordLock.test.js`, `recordLockStaticVerbs.test.js`).
-- During a retry, `ImmediateTransaction.save()` forwards to the retried handle, or it would nest a commit and recurse (harper#2825); a failed re-save's detached handle is released before `abort()` (`immediateTransactionConflictRetry.test.js`).
+- A second write outside `transaction()` commits through a nested `commit()` stored on `operation.innerCommit`. `ImmediateTransaction.save()` awaits it before clearing `isCommitting` (forwarding returns it or `#activeSaveCommit`), and `_write*` await `addWrite` (`recordLock.test.js`, `recordLockStaticVerbs.test.js`).
+- During a retry, `ImmediateTransaction.save()` forwards to the retried handle; otherwise it would nest and recurse (harper#2825). A failed re-save releases the detached handle before `abort()` (`immediateTransactionConflictRetry.test.js`).
 
 ## A transaction is joinable as a scope only if it stages its writes
 
