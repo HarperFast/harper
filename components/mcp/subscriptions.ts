@@ -11,7 +11,6 @@
  * holding the session's SSE stream; the audit-log broadcast delivers changes
  * locally on that worker.
  */
-import { AccessViolation } from '../../utility/errors/hdbError.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
 import { subscribeToResource, type ResourceSubscription } from './resources.ts';
 import { getRegisteredSession, pushSessionFrame } from './sessionRegistry.ts';
@@ -25,19 +24,13 @@ const live = new Map<string, Map<string, ResourceSubscription>>();
  * `notifications/resources/updated` to the session's queue on each change.
  * Returns false if the URI isn't subscribable or its GET closes during installation.
  */
-export async function addResourceSubscription(
-	sessionId: string,
-	uri: string,
-	user: AuthedUser,
-	onStop?: () => void
-): Promise<boolean> {
+export async function addResourceSubscription(sessionId: string, uri: string, user: AuthedUser): Promise<boolean> {
 	const owner = getRegisteredSession(sessionId);
 	if (!owner) return false;
 	const subscription = await subscribeToResource(uri, user, owner.profile);
 	if (!subscription) return false;
-	if (getRegisteredSession(sessionId) !== owner || subscription.stopped) {
+	if (getRegisteredSession(sessionId) !== owner) {
 		subscription.stop();
-		if (subscription.revoked) throw new AccessViolation(user);
 		return false;
 	}
 	const frame = {
@@ -54,12 +47,6 @@ export async function addResourceSubscription(
 			pushSessionFrame(record, frame);
 		}
 	});
-	await Promise.resolve();
-	if (getRegisteredSession(sessionId) !== owner || subscription.stopped) {
-		subscription.stop();
-		if (subscription.revoked) throw new AccessViolation(user);
-		return false;
-	}
 	let bySession = live.get(sessionId);
 	if (!bySession) live.set(sessionId, (bySession = new Map()));
 	// Publish the replacement before stopping its predecessor, whose onStop would otherwise empty the map.
@@ -71,7 +58,6 @@ export async function addResourceSubscription(
 		if (entries?.get(uri) === subscription) {
 			entries.delete(uri);
 			if (entries.size === 0) live.delete(sessionId);
-			if (!subscription.revoked) onStop?.();
 		}
 	});
 	return true;

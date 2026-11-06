@@ -76,12 +76,12 @@ Synthetic `harper://*` metadata URIs (`harper://about`, `harper://openapi`, `har
 
 A refused subscribe, row-backed or custom, answers a JSON-RPC error rather than an HTTP 500 (Changed in: v5.4.0):
 
-| Answer                                                      | When                                                                                                                 |
-| ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `-32602 resource is not subscribable: <uri>`                | The URI has no subscription source, a custom `subscribe` returned `null`, or the returned stream cannot be released. |
-| `-32602 permission denied: <uri>`                           | The credentials used for this subscription do not permit reading the resource.                                       |
-| `-32603 resource subscription timed out; retry the request` | The GET worker did not acknowledge installation within the 30-second acknowledgment wait.                            |
-| `-32603 resource subscription failed; retry the request`    | Installation failed, or another request for the same URI replaced this request.                                      |
+| Answer                                                      | When                                                                                                                                                        |
+| ----------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-32602 resource is not subscribable: <uri>`                | The URI has no subscription source, a custom `subscribe` returned `null`, or the returned stream cannot be released.                                        |
+| `-32602 permission denied: <uri>`                           | The credentials used for this subscription do not permit reading the resource.                                                                              |
+| `-32603 resource subscription timed out; retry the request` | The GET worker did not acknowledge installation within the 30-second acknowledgment wait.                                                                   |
+| `-32603 resource subscription failed; retry the request`    | Installation failed (including a custom `subscribe` that throws or exceeds its 15-second limit), or another request for the same URI replaced this request. |
 
 A missing or expired session returns HTTP `404`. If requests for the same URI overlap, let them settle and retry with the current credential only if that subscription is still wanted. For other `-32603` failures, retry only transient causes, with backoff. If failures repeat, have the server operator investigate the installation failure and fix its cause before retrying. A consistently failing custom `subscribe` method will not be repaired by retries. The same failure response also covers the per-worker limit of 100 pending subscribe/unsubscribe requests, including at most 25 per session on that worker. Limit concurrent requests and use backoff; the response does not distinguish this limit from installation failures.
 
@@ -166,7 +166,7 @@ Mcp-Session-Id: 0c8f...
 Last-Event-ID: 137
 ```
 
-Harper replays buffered frames with a higher id (exclusive) before live frames resume, subject to the per-worker limits below. On reconnect, Harper restores persisted subscriptions under the current GET permissions, bounded by the original subscribing POST expiry and the current GET expiry. The GET response waits for restoration before returning HTTP `200`. Expired, denied, or no-longer-subscribable entries are removed. A transient row-backed restoration failure retains the URI and returns HTTP `503` with `Retry-After: 1` (Changed in: v5.4.0); an uncategorized error from a custom `subscribe` method is logged and the URI is retained without failing the GET stream. Resend `GET /mcp` with the same `Mcp-Session-Id`, `Mcp-Protocol-Version` and, if used, `Last-Event-ID` headers, using valid authorization. A `503` alone does not require repeating `initialize` or the subscribe POSTs. An absent session returns HTTP `404`.
+Harper replays buffered frames with a higher id (exclusive) before live frames resume, subject to the per-worker limits below. On reconnect, Harper restores persisted subscriptions under the current GET permissions, bounded by the original subscribing POST expiry and the current GET expiry. The GET response waits for restoration before returning HTTP `200`. Expired, denied, or no-longer-subscribable entries are removed. A transient row-backed restoration failure retains the URI and returns HTTP `503` with `Retry-After: 1` (Changed in: v5.4.0); an uncategorized error or 15-second timeout from a custom `subscribe` method is logged and the URI is retained without failing the GET stream, though that URI delivers no updates until the client re-subscribes that URI or reconnects (re-send `resources/subscribe` or reconnect to retry it). Resend `GET /mcp` with the same `Mcp-Session-Id`, `Mcp-Protocol-Version` and, if used, `Last-Event-ID` headers, using valid authorization. A `503` alone does not require repeating `initialize` or the subscribe POSTs. An absent session returns HTTP `404`.
 
 Caveats, all best-effort by design:
 

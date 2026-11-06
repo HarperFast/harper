@@ -377,14 +377,8 @@ function enumerateMcpResourcePaths(): string[] {
 }
 
 export interface ResourceSubscription {
-	readonly stopped: boolean;
-	readonly revoked: boolean;
-	/** Start consuming the change stream. A no-op once stopped. */
 	start: (onUpdate: () => void) => void;
-	/** Release the change stream. Idempotent; also runs when the stream ends or fails. */
 	stop: () => void;
-	revoke: () => void;
-	/** Run `callback` once stopped, for whatever reason; at once if already stopped. */
 	onStop: (callback: () => void) => void;
 }
 
@@ -514,8 +508,7 @@ async function subscribeToCustomResource(
 		await trackPrincipalLifetime(subscription, user);
 	} catch (err) {
 		subscription.stop();
-		if (err instanceof AccessViolation) throw err;
-		throw markCustomSubscribeError(err);
+		throw err;
 	}
 	return subscription;
 }
@@ -550,10 +543,6 @@ function isChangeStream(value: unknown): value is ResourceChangeStream {
 	return typeof (value as ResourceChangeStream | null)?.[Symbol.asyncIterator] === 'function';
 }
 
-/**
- * Wrap a change stream in a start/stop handle (`end()`, else iterator `return()`;
- * `requireRelease` refuses streams with neither or bare async generators).
- */
 function changeStreamSubscription(
 	uri: string,
 	stream: ResourceChangeStream,
@@ -583,7 +572,6 @@ function changeStreamSubscription(
 	}
 	let started = false;
 	let stopped = false;
-	let revoked = false;
 	const stopCallbacks: Array<() => void> = [];
 	const stop = () => {
 		if (stopped) return;
@@ -598,15 +586,8 @@ function changeStreamSubscription(
 		release(uri, () => (typeof stream.end === 'function' ? stream.end() : iterator.return?.()));
 	};
 	return {
-		get stopped() {
-			if (!stopped && (stream as { closed?: boolean }).closed === true) stop();
-			return stopped;
-		},
-		get revoked() {
-			return revoked;
-		},
 		start(onUpdate) {
-			if (this.stopped || started) return;
+			if (stopped || started) return;
 			started = true;
 			void (async () => {
 				try {
@@ -624,12 +605,8 @@ function changeStreamSubscription(
 			})();
 		},
 		stop,
-		revoke() {
-			revoked = true;
-			stop();
-		},
 		onStop(callback) {
-			if (this.stopped) callback();
+			if (stopped) callback();
 			else stopCallbacks.push(callback);
 		},
 	};
@@ -666,13 +643,17 @@ async function trackPrincipalLifetime(subscription: ResourceSubscription, user: 
 	if (!username || isLocalPrincipal(user)) return;
 	const { registerLiveSubscription } = liveSubscriptionAuthRuntimeModule;
 	const principal = user as User;
+	let revoked = false;
 	const handle = registerLiveSubscription({
 		username,
 		authExpiresAt: user.authExpiresAt,
 		identityOnly: user._scopedToken === true || hasRecordProvenance(principal),
 		recheck: async (pass: RecheckPass) =>
 			user._scopedToken === true || !!(await pass.memo(resolveUser, username, resolveUser))?.role,
-		revoke: subscription.revoke,
+		revoke: () => {
+			revoked = true;
+			subscription.stop();
+		},
 	});
 	subscription.onStop(handle.unregister);
 	let recheckNow: boolean;
@@ -681,7 +662,7 @@ async function trackPrincipalLifetime(subscription: ResourceSubscription, user: 
 	} catch {
 		recheckNow = true;
 	}
-	if (subscription.revoked || (recheckNow && (await handle.verify()) === 'revoked') || subscription.revoked) {
+	if (revoked || (recheckNow && (await handle.verify()) === 'revoked') || revoked) {
 		throw new AccessViolation(user);
 	}
 }
