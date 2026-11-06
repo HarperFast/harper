@@ -10,6 +10,7 @@ import {
 	type CertifiedFloors,
 } from './subscriptionCheckpoint.ts';
 import { keyArrayToString } from './Resources.ts';
+import { toBufferKey } from 'ordered-binary';
 import type { Id } from './ResourceInterface.ts';
 
 const allSubscriptions = Object.create(null); // using it as a map that doesn't change much
@@ -263,10 +264,7 @@ export function completedReplayThrough(subscription: any, key: number): void {
 	if (!subscription.reportsProgress || !subscriptions?.progressConsumers || subscriptions.progressStopped) return;
 	if (subscriptions.sameThread) return;
 	if (!advanceProgress(subscriptions, key, subscriptions.auditStore?.subscriptionLogRange)) return;
-	if (subscriptions.notifyScheduled || subscriptions.dispatching || subscriptions.passYielded) return;
-	if (subscriptions.auditStore?.rootStore?.status !== 'open') return;
-	subscriptions.notifyScheduled = true;
-	setImmediate(() => notifyFromTransactionData(subscriptions, subscriptions.auditStore.subscriptionLogRange, true));
+	schedulePass(subscriptions);
 }
 
 function stopProgress(databaseSubscriptions: any) {
@@ -399,6 +397,74 @@ export function endSubscriptionsFromEarlierHandles(auditStore: any, tracksGenera
 	}
 }
 
+export type ReplayedIds = Map<number, Map<number, Set<string | null | undefined>>>;
+interface ReplayGate {
+	/** -Infinity takes entries at any key; a number, not undefined, so the per-record compare stays numeric */
+	after: number;
+	ids?: ReplayedIds;
+}
+
+/** The record's key encoding: distinct ids never share one, and routing text would merge `['a', 'b']` with `'a/b'`. */
+export function replayRecordKey(recordId: any): string | undefined {
+	return recordId === undefined ? undefined : toBufferKey(recordId).toString('latin1');
+}
+
+function replayHandled(ids: ReplayedIds, auditRecord: any, timestamp: number, isReload: boolean): boolean {
+	const records = ids.get(auditRecord.nodeId ?? 0)?.get(timestamp);
+	return records !== undefined && records.has(isReload ? null : replayRecordKey(auditRecord.recordId));
+}
+
+/**
+ * The cross-thread registry's count of clean drains, or undefined for a same-thread registry, whose passes carry
+ * one commit's entries and so never show that the log was drained.
+ */
+export function drainCount(subscription: any): number | undefined {
+	const subscriptions = subscription.subscriptions?.tables?.envs;
+	if (!subscriptions || subscriptions.sameThread) return;
+	return subscriptions.drains ?? 0;
+}
+
+/** An idle database runs no pass of its own, so a replay asks for one to bound what it must remember. */
+export function requestDrain(subscription: any): void {
+	const subscriptions = subscription.subscriptions?.tables?.envs;
+	if (subscriptions && !subscriptions.sameThread) schedulePass(subscriptions);
+}
+
+function schedulePass(subscriptions: any): void {
+	if (subscriptions.notifyScheduled || subscriptions.dispatching || subscriptions.passYielded) return;
+	const auditStore = subscriptions.auditStore;
+	if (auditStore?.rootStore?.status !== 'open') return;
+	subscriptions.notifyScheduled = true;
+	setImmediate(() =>
+		notifyFromTransactionData(subscriptions, auditStore.reusableIterable ? auditStore.subscriptionLogRange : null, true)
+	);
+}
+
+/**
+ * Hands a finished replay to live delivery. Must run in the same turn the replay's cursor reported done: every entry
+ * dispatched while the replay dropped live ones was visible before that read, so the replay read it, and `ids`
+ * (what it handled since the last clean drain) covers the ones the broadcast has not dispatched yet.
+ */
+export function handOffReplay(subscription: any, after: number, ids: ReplayedIds | undefined): void {
+	subscription.ungated = true;
+	const subscriptions = subscription.subscriptions?.tables?.envs;
+	if (!subscriptions || (after === -Infinity && !ids)) return;
+	subscription.replayGate = { after, ids };
+	if (!ids) return;
+	(subscriptions.replayTails ??= new Set()).add(subscription);
+	schedulePass(subscriptions);
+}
+
+/**
+ * A certified subscription takes every live entry: a floor would drop a late commit below it that a certificate
+ * then passes. The replay's identities stay until the next clean drain.
+ */
+export function releaseReplayFloor(subscription: any): void {
+	const gate = subscription.replayGate;
+	if (gate?.ids) gate.after = -Infinity;
+	else subscription.replayGate = undefined;
+}
+
 /**
  * This is the class that is returned from subscribe calls and provide the interface to set a callback, end the
  * subscription and get the initial state.
@@ -423,6 +489,7 @@ class Subscription extends IterableEventQueue {
 	checkpointFloor?: (holds?: Map<number, number>) => number | undefined;
 	/** A checkpoint-resumed subscription takes every live entry: its replay seeks per log, so no key gate applies. */
 	ungated?: boolean;
+	replayGate?: ReplayGate;
 	includeDescendants?: boolean;
 	supportsTransactions?: boolean;
 	onlyChildren?: boolean;
@@ -437,6 +504,10 @@ class Subscription extends IterableEventQueue {
 			this.subscriptions = null;
 			const envSubscriptions = subscriptions.tables?.envs;
 			if (envSubscriptions?.activeCount > 0) envSubscriptions.activeCount--;
+			if (this.replayGate) {
+				this.replayGate = undefined;
+				envSubscriptions?.replayTails?.delete(this);
+			}
 			if (this.reportsProgress) {
 				this.reportsProgress = false;
 				if (envSubscriptions?.progressConsumers > 0) envSubscriptions.progressConsumers--;
@@ -592,9 +663,15 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 										!(subscription.includeDescendants && !(subscription.onlyChildren && ancestorLevel > 1))
 									)
 										continue;
-									if (!subscription.ungated && subscription.startTime >= timestamp) {
-										continue;
-									}
+									if (subscription.ungated) {
+										const gate = subscription.replayGate;
+										if (
+											gate !== undefined &&
+											(gate.after >= timestamp ||
+												(gate.ids !== undefined && replayHandled(gate.ids, auditRecord, timestamp, false)))
+										)
+											continue;
+									} else if (subscription.startTime >= timestamp) continue;
 									try {
 										let beginTxn;
 										if (subscription.supportsTransactions && subscription.txnInProgress !== txnKey) {
@@ -643,8 +720,16 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 						try {
 							for (let i = 0, length = keySubscriptions.length; i < length; i++) {
 								const subscription = keySubscriptions[i];
-								if (!subscription.subscriptions || (!subscription.ungated && subscription.startTime >= timestamp))
-									continue;
+								if (!subscription.subscriptions) continue;
+								if (subscription.ungated) {
+									const gate = subscription.replayGate;
+									if (
+										gate !== undefined &&
+										(gate.after >= timestamp ||
+											(gate.ids !== undefined && replayHandled(gate.ids, auditRecord, timestamp, true)))
+									)
+										continue;
+								} else if (subscription.startTime >= timestamp) continue;
 								try {
 									subscription.listener(null, auditRecord, timestamp, false);
 								} catch (error) {
@@ -681,6 +766,18 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 			}
 		}
 		subscriptions.pendingTxnSubscribers = null;
+		// A failed or corrupt log ends its iterator for good, so what it left undispatched is never dispatched later.
+		if (!iteratorFailed && !subscriptions.sameThread) {
+			subscriptions.drains = (subscriptions.drains ?? 0) + 1;
+			if (subscriptions.replayTails) {
+				for (const subscription of subscriptions.replayTails) {
+					const gate = subscription.replayGate;
+					if (gate.after === -Infinity) subscription.replayGate = undefined;
+					else gate.ids = undefined;
+				}
+				subscriptions.replayTails = undefined;
+			}
+		}
 		if (trackProgress && progressKey !== undefined && !iteratorFailed) {
 			trackProgress = advanceProgress(subscriptions, progressKey, auditLogIterable);
 		}

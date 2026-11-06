@@ -38,7 +38,7 @@ The `registerPrimitiveIdGet` getter shares `loadRecord()` with `_loadRecord`; it
 
 ## Array PUT is a collection dispatch that settles every element before it fails
 
-The synthesized target keeps the collection flag, or the batch is one null-keyed record. Each element gets its own target (`elementTargetFactory`, no `checkPermission`); a context there would be staged as data. Non-objects are refused before dispatch. `settleElements`, not `Promise.all`, lets every element finish, so the transaction cannot unwind under a slow one into a partial PUT; the earliest-index error is reported, no `cause` added. Static-mode classes get the whole array, unguarded (a `null` element is a 500) (`arrayPutCallerImpact.test.js`).
+The synthesized target keeps the collection flag, or the batch is one null-keyed record. Each element gets its own target (`elementTargetFactory`, no `checkPermission`); a context there would be staged as data. Non-objects are refused before dispatch. `settleElements` (unlike `Promise.all`) lets every element finish, so a slow one cannot unwind into a partial PUT; the earliest-index error is reported, no `cause`. Static-mode classes get the whole array, unguarded (a `null` element is a 500) (`arrayPutCallerImpact.test.js`).
 
 ## Sharding resolves fixed slots through an authoritative database map
 
@@ -55,12 +55,12 @@ The synthesized target keeps the collection flag, or the batch is one null-keyed
 
 ## Database generation and resumable positions
 
-**No readable copy keeps its source's generation. A collection position resumes only with the current generation and a finite cursor at or above the resume floor** (`isResumablePosition`, RocksDB only).
+**No readable copy keeps its source's generation. A collection position resumes only in the current generation, with a finite cursor at or above the resume floor** (`isResumablePosition`, RocksDB only).
 
-- A copy stamps and flushes a new generation before it is readable (`stampDatabaseGeneration`); an open never repairs one. The resume floor never reads below a finite audit floor.
+- A copy stamps and flushes a new generation before it is readable (`stampDatabaseGeneration`); an open never repairs one. The resume floor is never below a finite audit floor.
 - Cursors are progress-based: a snapshot's newest key can fall below a later floor.
 - An open ends earlier handles' subscriptions (`endSubscriptionsFromEarlierHandles`).
-- A resume is checked at registration and at each replay yield against the prior check's position (pruning raises the floor before deleting). Read errors, undecodable entries and `reload` markers refuse it; a single-record resume pre-checks only the generation, and a complete history walk overrides the floor (a missing version or the 10,000-version cap refuses; no entry or a first-version end falls back to the floor, since a pruned tombstone takes its history). Checkpoint only after `resumeVerified`. Gaps: filesystem copies, base-copy back-fill before `reload`, commits below a recorded position (harper#2928; `databaseGeneration.test.js`).
+- A resume is checked at registration and each replay yield against the prior check's position (a prune raises the floor first). Read errors, undecodable entries and `reload` markers refuse it; a single-record resume pre-checks only the generation; a complete history walk overrides the floor (a missing version or the version cap refuses; no entry or a first-version end falls back to it, as a pruned tombstone takes its history). Checkpoint only after `resumeVerified`. Gaps: filesystem copies, base-copy back-fill before `reload`, commits below a recorded position (harper#2928; `databaseGeneration.test.js`).
 
 ## Origin-closed timestamp floor
 
@@ -287,7 +287,7 @@ A bare `<table>/` row can lack both `name` and `isPrimaryKey` (harper#3225), so 
 
 - A floor publishes only after the pass that captured it drains cleanly (`passCapture`).
 - `admitCheckpoint` is rechecked at each yield against `readOriginStateEpoch`.
-- A live certified subscription is `ungated`: the `startTime` gate would drop a late lower-key commit.
+- The `startTime` gate drops a late lower-key commit: a live certified subscription is `ungated`; a `startTime` replay hands off by drain, bar same-thread (`handOffReplay`, harper#2311).
 - Only an origin's direct route sets its current generation; floors never order generations.
 - `updateRecordedSequenceId` is the only writer of a `[seq, P]` row. An audit-less copy writes its bounds (`writeCopyBounds`) before the copied rows; they void older routes (`subscribeCheckpoint.test.js`).
 
@@ -301,11 +301,11 @@ A bare `<table>/` row can lack both `name` and `isPrimaryKey` (harper#3225), so 
 
 ## Audit-store `'committed'` notification batching (`transactionBroadcast.ts`)
 
-- **Registration is the delivery boundary**: a subscriber sees only what commits after it registers, except a backlog over one batch, a subscribe inside a dispatch, or an entry behind a still-uncommitted transaction (harper#2928). With none (`activeCount`), a pass does not iterate (`subscriptionRegistrationBoundary.test.js`).
+- **Registration is the delivery boundary**: a subscriber sees only commits after it registers, except a backlog over one batch, a subscribe inside a dispatch, or an entry behind a still-uncommitted transaction (harper#2928). With none (`activeCount`), a pass reads nothing (`subscriptionRegistrationBoundary.test.js`).
 - `notifyScheduled` spans yields, so passes never share an iterator; the same-thread path holds a lock and never yields.
-- A pass skips a closing store, because LMDB emits `'committed'` inside `close()`.
+- A pass skips a closing store: LMDB emits `'committed'` inside `close()`.
 - **The ancestor key walk must strictly shrink** (harper#2687; `transactionBroadcastKeyWalk.test.js`).
-- **Ending a subscription never reshapes an array a loop is walking.** The last traversal compacts it (`transactionBroadcastEndDuringDelivery.test.js`).
+- **Ending a subscription never reshapes an array a loop walks.** The last traversal compacts it (`transactionBroadcastEndDuringDelivery.test.js`).
 - `IterableEventQueue.close(finalMessage)` always finishes, then rethrows.
 
 ## `createBlob(readable)` and `table.put()` don't synchronously drain the source

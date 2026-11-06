@@ -110,7 +110,18 @@ import {
 } from './recordLock.ts';
 import { getThisNodeName } from '../server/nodeName.ts';
 import * as envMngr from '../utility/environment/environmentManager.ts';
-import { addSubscription, certifiedFloors, certifiedThrough, completedReplayThrough } from './transactionBroadcast.ts';
+import {
+	addSubscription,
+	certifiedFloors,
+	certifiedThrough,
+	completedReplayThrough,
+	drainCount,
+	handOffReplay,
+	releaseReplayFloor,
+	replayRecordKey,
+	requestDrain,
+	type ReplayedIds,
+} from './transactionBroadcast.ts';
 import { keyArrayToString } from './Resources.ts';
 import {
 	ORIGIN_ID,
@@ -9734,6 +9745,7 @@ export function makeTable(options): TableResourceClass {
 					// a certified subscription takes every live entry from here: the key gate would drop a late
 					// lower-key commit that a floor then certifies as delivered
 					subscription.ungated = true;
+					releaseReplayFloor(subscription);
 				};
 				const filtersWithoutKey = Boolean(rowFilter || eventFilter) && !request.filterKey;
 				const checkpointScopeId = scope();
@@ -9946,6 +9958,20 @@ export function makeTable(options): TableResourceClass {
 						// transaction the same txnLogKey, so it only moves to a key once all of that key's records are
 						// handled; an early return leaves it before a partly delivered transaction.
 						let handledTxnLogKey: number | undefined;
+						// a clean drain dispatched everything read before it, so only what was handled since the last
+						// one can still reach the live path; a same-thread registry never drains and keeps the key gate
+						const handsOff = drainCount(subscription) !== undefined;
+						let replayed: { drain: number; ids: ReplayedIds } | undefined;
+						const noteReplayed = (auditRecord: any, recordKey: any) => {
+							const drain = drainCount(subscription)!;
+							if (replayed?.drain !== drain) replayed = { drain, ids: new Map() };
+							const nodeId = auditRecord.nodeId ?? 0;
+							let byKey = replayed.ids.get(nodeId);
+							if (!byKey) replayed.ids.set(nodeId, (byKey = new Map()));
+							let records = byKey.get(auditRecord.txnLogKey);
+							if (!records) byKey.set(auditRecord.txnLogKey, (records = new Set()));
+							records.add(recordKey);
+						};
 						const replayRange = auditStore.getRange({
 							start: startTime,
 							exclusiveStart: true,
@@ -9955,6 +9981,7 @@ export function makeTable(options): TableResourceClass {
 							for (const auditRecord of replayRange) {
 								if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
 									recordsSinceYield = 0;
+									if (replayed) requestDrain(subscription);
 									await rest();
 									if (!isActive()) return;
 									if (checkResume) {
@@ -9989,9 +10016,13 @@ export function makeTable(options): TableResourceClass {
 									return;
 								}
 								// a marker is table-wide, as the live broadcast delivers it
-								if (resnapshots) reloadPending = true;
-								else if (thisId == null || isReload || isDescendantId(thisId, id)) {
-									const event = eventFromAudit(id, auditRecord, auditRecord.txnLogKey);
+								if (resnapshots) {
+									reloadPending = true;
+									if (handsOff) noteReplayed(auditRecord, null);
+								} else if (thisId == null || isReload || isDescendantId(thisId, id)) {
+									// converted as the live path would, since the replay stands in for it while live entries drop
+									const event = eventFromAudit(id, auditRecord, auditRecord.txnLogKey, undefined, true);
+									if (handsOff) noteReplayed(auditRecord, isReload ? null : replayRecordKey(id));
 									if (event) {
 										if (reportingProgress) event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
 										if (!send(event)) return;
@@ -10001,22 +10032,29 @@ export function makeTable(options): TableResourceClass {
 												if (!checkResume(unreadableLogRefusal(replayRange))) return;
 												resumeCheckedThrough = auditRecord.txnLogKey;
 											}
+											if (replayed) requestDrain(subscription);
 											if ((await subscription.waitForDrain()) === false) return;
 										}
 									}
 								}
 								handledTxnLogKey = auditRecord.txnLogKey;
 							}
+							// the finished cursor reads no more commits, so live ones wait behind the scan
+							if (reloadPending) pendingRealTimeQueue = [];
+							if (handsOff) {
+								const ids = replayed?.drain === drainCount(subscription) ? replayed.ids : undefined;
+								handOffReplay(subscription, startTime ?? -Infinity, ids);
+							}
+							dropDuringReplay = false;
 							if (reloadPending) {
 								reloadPending = false;
-								// the finished cursor reads no more commits, so live ones wait behind the scan
-								pendingRealTimeQueue = [];
-								dropDuringReplay = false;
 								if (!(await sendCurrentScope())) return;
-								const replayedThrough = handledTxnLogKey;
-								pendingRealTimeQueue = pendingRealTimeQueue.filter(
-									(event) => (event.localTime ?? event.version) > replayedThrough
-								);
+								if (!handsOff) {
+									const replayedThrough = handledTxnLogKey;
+									pendingRealTimeQueue = pendingRealTimeQueue.filter(
+										(event) => (event.localTime ?? event.version) > replayedThrough
+									);
+								}
 								if (!includeSuperseded) {
 									let kept = 0;
 									for (const event of pendingRealTimeQueue) {
