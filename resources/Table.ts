@@ -1877,8 +1877,6 @@ export function makeTable(options): TableResourceClass {
 	let replicaSweepRunning = false;
 	let lastReplicaSweep: Promise<unknown> = Promise.resolve();
 	let replicaDeadlinesRepaired = false;
-	// a reclamation report of 0 ends a pass in progress
-	let replicaPressure = false;
 	const replicaRefreshCheckedAt = new Map<Id, number>();
 	const replicaRefreshCheckedAtComposite = new Map<string, number>();
 	let replicaEvictionArmed = false;
@@ -14981,9 +14979,8 @@ export function makeTable(options): TableResourceClass {
 		return TableResource.evict(key, entry.value, entry.version, deadline);
 	}
 	function reclaimReplicas(priority: number): Promise<void> | undefined {
-		replicaPressure = priority > 1;
 		if (
-			!replicaPressure ||
+			!(priority > 1) ||
 			!replicaEvictionArmed ||
 			!replicaExpirationMs ||
 			disposed ||
@@ -15014,8 +15011,7 @@ export function makeTable(options): TableResourceClass {
 		// fixed for the pass: a replica admitted during it starts past the cutoff, so admissions cannot extend it
 		const cutoff = Date.now() + replicaExpirationMs - lifetime;
 		const budgetEnd = performance.now() + budgetMs;
-		const proceed = () =>
-			replicaPressure && replicaEvictionArmed && !disposed && !maintenanceClosed && !isReadOnlyMode() && ownsCleanup();
+		const proceed = () => replicaEvictionArmed && !disposed && !maintenanceClosed && !isReadOnlyMode() && ownsCleanup();
 		let attempted = 0;
 		while (proceed()) {
 			const { batch, exhausted } = await earliestReplicaDeadlines(store, cutoff, limit, proceed);
@@ -15023,6 +15019,7 @@ export function makeTable(options): TableResourceClass {
 			for (const { key, deadline } of batch) {
 				if (!proceed()) return;
 				await expireReplicaDeadline(store, key, deadline);
+				if (!proceed()) return;
 				// evict() resolves on a refused or failed demotion too; such an entry is still here at this deadline
 				if (store.getSync(key) !== deadline) progressed = true;
 				await rest();

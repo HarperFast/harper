@@ -328,25 +328,6 @@ async function reclaimAt(priority) {
 		await Rows.closeMaintenance();
 	});
 
-	it('ends a running pass on a report of 0 without waiting for its batch', async () => {
-		for (const id of ['a', 'b', 'c', 'd']) await replica(id, 1000);
-		const evict = Rows.evict;
-		let attempts = 0;
-		let reportedEnd;
-		Rows.evict = function (...args) {
-			if (++attempts === 2) {
-				reportPressure(0.5);
-				reportedEnd = runReclamationHandlers();
-			}
-			return evict.apply(this, args);
-		};
-		await reclaimAt(10);
-		await reportedEnd;
-		assert.equal(attempts, 2);
-		const kept = ['a', 'b', 'c', 'd'].filter((id) => isReplica(id));
-		assert.equal(kept.length, 2);
-	});
-
 	it('does nothing with maintenance closed, in read-only mode, or on a thread that does not own the sweep', async () => {
 		await replica('a', 1000);
 
