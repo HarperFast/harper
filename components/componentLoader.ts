@@ -60,7 +60,7 @@ import { declareDecisionTablesAtBoot } from '../resources/models/decisionStore.t
 import { declareCalibrationsTableAtBoot } from '../resources/models/calibrationStore.ts';
 import { watchForPreviews } from './previews.ts';
 import { ErrorResource } from '../resources/ErrorResource.ts';
-import { Scope } from './Scope.ts';
+import { Scope, releaseTimedOutScopeHold } from './Scope.ts';
 import { ApplicationScope } from './ApplicationScope.ts';
 import { ComponentV1, processResourceExtensionComponent } from './ComponentV1.ts';
 import * as httpComponent from '../server/http.ts';
@@ -757,7 +757,7 @@ function sequentiallyHandleApplication(scope: Scope, plugin: PluginModule) {
 		let lockTimedOut = false;
 		const callback = () => {
 			clearTimeout(timer);
-			if (lockTimedOut || scopesSkippedForShutdown.has(scope) || scope.closed) return;
+			if (lockTimedOut) return;
 			whenResolved(sequentiallyHandleApplication(scope, plugin));
 		};
 		const store = Status.primaryStore;
@@ -1189,8 +1189,12 @@ export async function loadComponent(
 					try {
 						await sequentiallyHandleApplication(scope, extensionModule);
 					} catch (error) {
-						const skippedForShutdown = scopesSkippedForShutdown.has(scope);
 						scope.disposeBearerValidators();
+						// a lock wait that timed out after shutdown skipped this load is not a boot failure, and shutdown already closes the scope
+						if (scopesSkippedForShutdown.has(scope)) {
+							noteBootSkipped(entryApplication);
+							continue;
+						}
 						const closeBoundMs = getTerminateTimeout() / 2;
 						const closeBounded = () =>
 							settleBeforeDeadline(
@@ -1205,32 +1209,16 @@ export async function loadComponent(
 								Date.now() + closeBoundMs,
 								() => new Error('scope close timed out')
 							).catch(() => {
-								scope.finalizeClose();
+								releaseTimedOutScopeHold(scope);
 								(scope.logger ?? harperLogger).warn?.(
 									`Timed out after ${closeBoundMs}ms waiting for component scope ${componentStatusName} to close after a failed load`
 								);
 							});
-						const closeForFailedLoad = () => {
-							const started = startedLoads.get(scope);
-							if (started) return closeScopeAfterLoad(started, closeBounded, closeBoundMs);
-							return closeBounded();
-						};
-						const closing = (closingAfterLoad ??= closeForFailedLoad()).catch((closeError) => {
-							(scope.logger ?? harperLogger).error?.(
-								`Error closing component scope for ${componentStatusName} after failed load:`,
-								closeError
-							);
-						});
-						closingAfterLoad = closing;
-						await settleBeforeDeadline(
-							[closing],
-							Date.now() + closeBoundMs * 2,
-							() => new Error('scope close timed out')
-						).catch(() => {
-							scope.finalizeClose();
-						});
-						// a lock wait that timed out after shutdown skipped this load is not a boot failure
-						if (!skippedForShutdown) throw error;
+						const started = startedLoads.get(scope);
+						await (closingAfterLoad ??= started
+							? closeScopeAfterLoad(started, closeBounded, closeBoundMs)
+							: closeBounded());
+						throw error;
 					}
 					if (scopesSkippedForShutdown.has(scope)) {
 						noteBootSkipped(entryApplication);

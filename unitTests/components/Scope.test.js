@@ -82,6 +82,7 @@ describe('Scope', () => {
 		await scope.ready;
 
 		const sub = scope.secrets.subscribe('SCOPED_SECRET');
+		let siblingSub;
 		try {
 			const initial = await sub.next();
 			assert.equal(initial.done, false);
@@ -90,6 +91,11 @@ describe('Scope', () => {
 			const closeFailure = new Error('close listener failed');
 			scope.on('close', async () => {
 				throw closeFailure;
+			});
+			scope.on('close', async () => {
+				await new Promise((resolve) => setTimeout(resolve, 15));
+				siblingSub = scope.secrets.subscribe('SCOPED_SECRET');
+				await siblingSub.next();
 			});
 
 			await assert.rejects(scope.close(), (error) => error === closeFailure);
@@ -103,6 +109,11 @@ describe('Scope', () => {
 				true,
 				'scope.close() must release component secret subscriptions even when a close listener rejects'
 			);
+			assert.strictEqual(
+				siblingSub?.closed,
+				true,
+				'scope.close() must wait for sibling async close listeners before releasing component secret subscriptions'
+			);
 			const nextResult = await Promise.race([
 				sub.next(),
 				new Promise((resolve) => setImmediate(() => resolve({ timedOut: true }))),
@@ -110,6 +121,7 @@ describe('Scope', () => {
 			assert.deepStrictEqual(nextResult, { value: undefined, done: true });
 		} finally {
 			await sub.return?.();
+			await siblingSub?.return?.();
 		}
 	});
 
@@ -1580,6 +1592,47 @@ describe('Scope', () => {
 					0,
 					'releasing the lock after a lock-wait timeout must not run handleApplication on the closed scope'
 				);
+
+				componentLoader.loadedPaths.clear();
+				writeFileSync(
+					join(lockWaitAppDir, 'harperdb-config.yaml'),
+					stringify({ [lockWaitPluginName]: { timeout: 30_000 } })
+				);
+				lockHeld = Status.primaryStore.tryLock(lockId);
+				assert.strictEqual(lockHeld, true, 'fixture guard: test must re-acquire the plugin lock');
+				let waitingScope;
+				const originalWaitForDeploy = Scope.prototype.waitForDeployCompletion;
+				Scope.prototype.waitForDeployCompletion = function (...args) {
+					if (this.appName === lockWaitAppName) waitingScope = this;
+					return originalWaitForDeploy.apply(this, args);
+				};
+				try {
+					const pendingLoad = componentLoader.loadComponent(lockWaitAppDir, { isWorker: true, set() {} }, 'test', {
+						appName: lockWaitAppName,
+						applicationScope: new ApplicationScope(lockWaitAppName, this.resources, this.server),
+					});
+					await waitFor(() => Boolean(waitingScope), 2000);
+					await new Promise((resolve) => setImmediate(resolve));
+					await waitingScope.close();
+					Status.primaryStore.unlock(lockId);
+					lockHeld = false;
+					const settled = await Promise.race([
+						pendingLoad.then(() => 'settled'),
+						new Promise((resolve) => setTimeout(() => resolve('timed-out'), 500)),
+					]);
+					assert.strictEqual(
+						settled,
+						'settled',
+						'releasing the lock after a waiting scope is closed must settle loadComponent rather than hanging'
+					);
+					assert.strictEqual(
+						lockWaitPluginCalls,
+						0,
+						'a scope closed while waiting for the lock must not run handleApplication when the lock is released'
+					);
+				} finally {
+					Scope.prototype.waitForDeployCompletion = originalWaitForDeploy;
+				}
 			} finally {
 				if (lockHeld) Status.primaryStore.unlock(lockId);
 				await lateSecretSub?.return?.();

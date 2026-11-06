@@ -49,6 +49,18 @@ export type ScopeEventsMap = {
 	[record: string]: [...args: unknown[]];
 };
 
+let releaseTimedOutScope: (scope: Scope) => void;
+
+/**
+ * Release a scope's secret-subscription hold (#1776) when a bounded failed-load close times out
+ * before `#close()` finishes. Deliberately does NOT call `removeAllListeners()`, so if `#close()`
+ * is still awaiting watcher teardown when the bound expires, any `'close'` listeners remain
+ * attached for `#close()` to invoke once watcher teardown finishes.
+ */
+export function releaseTimedOutScopeHold(scope: Scope): void {
+	releaseTimedOutScope(scope);
+}
+
 /**
  * This class is what is passed to the `handleApplication` function of an extension.
  *
@@ -57,6 +69,11 @@ export type ScopeEventsMap = {
  *
  */
 export class Scope extends EventEmitter<ScopeEventsMap> {
+	static {
+		releaseTimedOutScope = (scope: Scope) => {
+			scope.#releaseSecretsHold();
+		};
+	}
 	#configFilePath: string;
 	#directory: string;
 	#appName: string;
@@ -300,13 +317,12 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		return (this.#closing ??= this.#close());
 	}
 
-	finalizeClose(): void {
-		this.removeAllListeners();
-
-		// Release this identity's subscription hold (#1776), AFTER the close listeners (so a subscription a
-		// close listener created is still accounted for). Streams end only when the LAST holder of the
-		// identity releases — so a discarded validation-load Scope can't kill a still-running app's streams.
-		// Guarded so a double close() can't underflow the refcount.
+	#releaseSecretsHold(): void {
+		// Release this identity's subscription hold (#1776), normally AFTER the close listeners (so a
+		// subscription a close listener created is still accounted for), or early when a failed-load
+		// close bound expires. Streams end only when the LAST holder of the identity releases — so a
+		// discarded validation-load Scope can't kill a still-running app's streams. Guarded so a
+		// double close() or timeout fallback can't underflow the refcount.
 		if (!this.#secretsReleased) {
 			this.#secretsReleased = true;
 			releaseComponentSubscriptions(this.applicationScope?.name ?? this.#appName);
@@ -324,26 +340,28 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		// e.g. @harperfast/vite disposing its Vite/rolldown dev server — and the worker shutdown path
 		// awaits this close(), so awaiting the listeners here ensures such a native runtime is fully
 		// disposed before the worker exits. That ordering matters: tearing the worker down while a native
-		// (N-API) bundler runtime is still live crashes the whole process. `Promise.all` (not
-		// `allSettled`) so a listener that fails surfaces its error to the caller rather than being
-		// silently swallowed; listeners that return nothing (the common case) settle immediately.
+		// (N-API) bundler runtime is still live crashes the whole process. `Promise.allSettled` waits for
+		// every listener to settle before releasing the subscription hold, and the first rejection is
+		// rethrown so a listener that fails still surfaces its error to the caller.
 		const closeListeners = this.listeners('close') as Array<(...args: any[]) => unknown>;
-		this.removeAllListeners('close');
+		this.removeAllListeners();
 		try {
-			await Promise.all(
+			const results = await Promise.allSettled(
 				closeListeners.map((listener) => {
 					// Run every listener (so all teardown is attempted) and bind `this` to the Scope, matching
-					// how EventEmitter invokes listeners — a listener may rely on it (e.g. `this.logger`). The
-					// wrapper turns a synchronous throw into a rejection so `Promise.all` surfaces it too.
+					// how EventEmitter invokes listeners — a listener may rely on it (e.g. `this.logger`).
 					try {
-						return listener.call(this);
+						return Promise.resolve(listener.call(this));
 					} catch (error) {
 						return Promise.reject(error);
 					}
 				})
 			);
+			const rejected = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+			if (rejected) throw rejected.reason;
 		} finally {
-			this.finalizeClose();
+			this.removeAllListeners();
+			this.#releaseSecretsHold();
 		}
 
 		return this;
