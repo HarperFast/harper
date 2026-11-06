@@ -16,13 +16,14 @@
 import type { ServerResponse } from 'node:http';
 import { handleMcpRequest, type McpProfile, type NormRequest } from '../transport.ts';
 import { toSseStream, type SseFrameSource } from '../sse.ts';
+import { clientAddressOf } from '../../../security/networkAccess.ts';
 
 interface FastifyLikeRequest {
 	method: string;
 	headers: Record<string, string | string[] | undefined>;
 	body: unknown;
-	/** Client socket IP (Fastify's request.ip). */
-	ip?: string;
+	/** Read by `clientAddressOf` for the client address; Fastify's `request.ip` is wrong when injected. */
+	raw?: unknown;
 	/**
 	 * `authAndEnsureUserOnRequest` sets the full user (incl. role + permission
 	 * tree) on `req.hdb_user`. Used for session binding (`username`) and
@@ -55,7 +56,7 @@ export function createFastifyHandler(profile: McpProfile) {
 			user: request.hdb_user?.username ?? '',
 			userObject: (request.hdb_user ?? undefined) as NormRequest['userObject'],
 			profile,
-			clientIp: request.ip,
+			clientIp: clientAddressOf(request) ?? undefined,
 		};
 
 		const res = await handleMcpRequest(norm);

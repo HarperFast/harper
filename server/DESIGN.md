@@ -628,17 +628,21 @@ so ops responses **will** carry the headers there (benign).
 
 ## Under Bun, the main HTTP port is served by `node:http`, not `Bun.serve`
 
-Worth knowing before debugging anything Bun-specific on the HTTP path: `getBunHTTPServer()` builds
-the `Bun.serve()` fetch config, but `onWebSocket()` calls `getHTTPServer()` unconditionally — it has
-a uWS branch and no Bun branch, because Bun native WebSockets are unimplemented (nothing ever sets
-`config.websocket`, so WS relies on the installed Node `ws` server attached to an `http.Server`, explicitly bypassing Bun's substitution). MQTT's
-`handleApplication` registers WS on the default port before REST's `httpServer()` call for that same
-port, so `httpServers[port]` is already a Node server by then and `getBunHTTPServer` early-returns
-without registering a serve config. The port is bound by `registerServer()`'s Node server via
-`listenOnPortsBun`'s trailing "non-HTTP servers" loop, and the fetch handler is never invoked for it
-(only the exclusive operations port reaches `Bun.serve`). Consequence: on Bun the `Request`/`Response`
-fetch path is dead code for the main port, and its divergences show up as `node:http`-emulation
-divergences instead.
+`getBunHTTPServer()` builds the `Bun.serve()` fetch config, but `onWebSocket()` calls
+`getHTTPServer()` unconditionally: it has a uWS branch and no Bun branch, because Bun native WebSockets
+are unimplemented (nothing sets `config.websocket`; WS uses the installed Node `ws` server on an
+`http.Server`, bypassing Bun's substitution). MQTT's `handleApplication` registers WS on the default
+port before REST's `httpServer()` call for it, so `httpServers[port]` is already a Node server and
+`getBunHTTPServer` early-returns without a serve config. `listenOnPortsBun`'s trailing "non-HTTP
+servers" loop binds that server; only the exclusive operations port reaches `Bun.serve`. So on Bun the
+`Request`/`Response` fetch path is dead code for the main port, and its divergences show up as
+`node:http`-emulation divergences instead.
+
+That loop binds without `reusePort`, and Bun's `http.Server.listen` drops the option outside a
+`node:cluster` worker process anyway: one worker binds the main port, the others swallow `EADDRINUSE`,
+and every request on it, WebSockets included, runs on that worker whatever `threads.count` is. Suites
+that need a second serving worker (`integrationTests/mcp/initialize-admission-workers.test.ts`) narrow
+on `HARPER_RUNTIME=bun`.
 
 One such divergence, `#2210`: Bun's `node:http` never derives keep-alive from the request. For a
 `Connection: close` request `shouldKeepAlive` stays `true`, and neither a `Connection: close` response
@@ -650,18 +654,16 @@ strands the socket; a raw client waiting on the FIN (and the HTTP/1.0 case below
 terminal chunk to stop at) hangs outright. An HTTP/1.0 client hangs the same way
 without asking to close at all, since 1.0 persistence needs both an explicit `keep-alive` and a length
 to read to — so a 1.0 response that got no `Content-Length` is close-delimited, the same line Node
-draws (Node closes it at ~7ms; Bun never does). An explicit `close` token wins over `keep-alive` on
+draws. An explicit `close` token wins over `keep-alive` on
 both versions. A 1.0 `keep-alive` request whose response _did_ get a
-`Content-Length` (`body.size` on a blob — the `body instanceof Blob` branch of `getHTTPServer`'s request handler) is left open, which is again what
-Node does and what Bun then handles correctly.
+`Content-Length` (`body.size` on a blob — the `body instanceof Blob` branch of `getHTTPServer`'s request handler) is left open, as on Node.
 
 `pipeBodyToResponse()` therefore ends `request.socket` itself for those shapes
 (`endConnectionIfClientExpectsClose`, `isBun`-gated, HTTP/1 only, clean path and a pre-header error
 response — an aborting error path already closes because the response is destroyed with the stream error). Ending the
 _request's_ socket is the only remedy that works after a clean stream end on Bun: a `Connection:
-close` response header, `response.socket.end()` and `response.destroy()` were all measured as no-ops
-there. `socket.end()` is graceful, so it does not truncate — 8 MB over plain TCP and 6 MB over TLS to
-a deliberately slow reader each arrive whole. The
+close` response header, `response.socket.end()` and `response.destroy()` are all no-ops
+there. `socket.end()` is graceful, so it does not truncate. The
 `Content-Length` check reads `response.hasHeader()`, which Bun populates from the `writeHead(status,
 headers)` fast path this file uses (Node does not, but the branch is Bun-only). A
 keep-alive arm pins the other direction (such a client keeps its connection and reuses it); the two
