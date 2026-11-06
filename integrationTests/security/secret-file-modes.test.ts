@@ -58,8 +58,11 @@ suite(
 		});
 
 		after(async () => {
-			await teardownHarper(ctx);
-			process.umask(savedUmask);
+			try {
+				if (ctx.harper?.process) await teardownHarper(ctx);
+			} finally {
+				if (savedUmask !== undefined) process.umask(savedUmask);
+			}
 		});
 
 		test('install leaves the root as it found it and writes the config and keys owner-only', () => {

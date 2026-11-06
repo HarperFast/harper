@@ -65,8 +65,8 @@ describe('owner-only modes for files that can hold secrets (harper#1925)', funct
 	});
 
 	afterEach(function () {
-		fs.chmodSync(testRoot, 0o700);
-		fs.removeSync(testRoot);
+		if (testRoot) fs.removeSync(testRoot);
+		testRoot = undefined;
 	});
 
 	describe('atomicWriteFile ownerOnly', function () {
@@ -190,7 +190,6 @@ describe('owner-only modes for files that can hold secrets (harper#1925)', funct
 			assert.strictEqual(modeOf(target), 0o400);
 		});
 
-		// The plain branch creates its temp in writeFileSync, the durable one in openSync.
 		for (const [durable, creatingCall] of [
 			[false, 'writeFileSync'],
 			[true, 'openSync'],
@@ -270,13 +269,14 @@ describe('owner-only modes for files that can hold secrets (harper#1925)', funct
 
 		// Before preserveRootConfig's restore, which writes in place and so needs the mode back first.
 		afterEach(function () {
-			fs.chmodSync(getConfigFilePath(), configMode);
+			if (configMode !== undefined) fs.chmodSync(getConfigFilePath(), configMode);
 		});
 		preserveRootConfig();
 		afterEach(function () {
-			for (const name of fs.readdirSync(backupDir())) {
+			for (const name of backupsBefore ? fs.readdirSync(backupDir()) : []) {
 				if (!backupsBefore.has(name)) fs.removeSync(path.join(backupDir(), name));
 			}
+			configMode = backupsBefore = undefined;
 			initConfig(true);
 		});
 
@@ -363,8 +363,11 @@ describe('owner-only modes for files that can hold secrets (harper#1925)', funct
 		let savedBasePath;
 		let keysDir;
 
-		beforeEach(function () {
+		before(function () {
 			savedBasePath = env.getHdbBasePath();
+		});
+
+		beforeEach(function () {
 			env.setHdbBasePath(testRoot);
 			keysDir = path.join(testRoot, hdbTerms.LICENSE_KEY_DIR_NAME);
 			fs.mkdirSync(keysDir);

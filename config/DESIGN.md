@@ -328,7 +328,7 @@ boundary.
 
 ## Files that can hold a secret are written owner-only (`config/configUtils.ts`)
 
-The root config, its backups (`.bak` and the installer's `.install-backup-<pid>`), the env-config state, `keys/.jwtPass`, `keys/.jwtPrivate.key` and the install CA key are written through `atomicWriteFile(..., { ownerOnly: true })`: a copy keeps the source's mode, an in-place write keeps the old file's, and a chmod is lost at the next rename (harper#1925). A file a later rename publishes passes `replaces`. Enforced by `unitTests/config/secretFileModes.test.js`.
+The root config, its backups (`.bak` and the installer's `.install-backup-<pid>`), the env-config state, `keys/.jwtPass`, `keys/.jwtPrivate.key` and the install CA key are written through `atomicWriteFile(..., { ownerOnly: true })`, because a copy would keep the source's mode, an in-place write the old file's, and a chmod is lost at the next rename (harper#1925). A file a later rename publishes passes `replaces`. Enforced by `unitTests/config/secretFileModes.test.js`.
 
 ## Env-config empty objects mean three different things (`config/harperConfigEnvVars.ts`)
 
