@@ -109,6 +109,21 @@ ORDER BY d.dog_name
 
 Use `IS NULL` and `IS NOT NULL` to test for `NULL`. REST and Resource API conditions follow different rules: `ne` with a non-null value matches null and omitted values, and a `null` lower bound means no lower bound. See [Null and Omitted Values](../rest/querying.md#null-and-omitted-values).
 
+### Relationship Columns
+
+<VersionBadge type="changed" version="v5.4.0" />
+
+A `@relationship` attribute is a column whose value is the related record. Reading it reads the related table, so it follows the role's permissions on that table, as REST and the NoSQL operations do. Super users and roles that can read the related table see the whole related record.
+
+- A statement that reads a relationship whose related table the role cannot read returns HTTP 403, wherever the column appears: the select list or an alias, `WHERE`, `ORDER BY`, `GROUP BY`, an aggregate, a join, legacy SQL's `->`, or the rows an `UPDATE` or `DELETE` reads. `SELECT *` leaves that relationship out.
+- With `attribute_permissions` on the related table, the related record holds only the attributes the role may read, in every one of those uses. An `UPDATE` that copies the relationship into another attribute never stores an attribute the role cannot read.
+
+```sql
+-- the role can read Emp, and Dept's id and name but not its budget
+SELECT id, dept FROM data.Emp WHERE id = 'e1'
+-- [{ "id": "e1", "dept": { "id": "d1", "name": "Eng" } }]
+```
+
 ---
 
 ## Query Performance

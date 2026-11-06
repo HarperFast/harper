@@ -272,6 +272,13 @@ Each table entry defines CRUD access:
 
 Subscriptions follow the same rule. When `attribute_permissions` is non-empty, each record or message a role receives over SSE, WebSocket or MQTT holds only the stored attributes it may read. Computed and relationship attributes are left out of these messages, even when the role may read them.
 
+**Relationship attributes:**
+
+<VersionBadge type="changed" version="v5.4.0" />
+
+- Reading a `@relationship` attribute reads the related table, so it needs `read` on that table, through REST, GraphQL, the NoSQL operations and SQL. Naming a relationship to a table the role cannot read returns HTTP 403, and `*` leaves it out.
+- When the related table has `attribute_permissions`, the related record holds only the attributes the role may read. See [Relationship Columns](../operations-api/sql.md#relationship-columns) for SQL.
+
 #### Filter side-channel for read-restricted attributes
 
 :::note
