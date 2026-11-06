@@ -168,6 +168,9 @@ export const MAX_SET_TIMEOUT_MS = 2147483647;
 /** Harper File Permissions Mode */
 export const HDB_FILE_PERMISSIONS = 0o700;
 
+/** Mode of a file that can hold a secret: config, its backups, private keys */
+export const SECRET_FILE_PERMISSIONS = 0o600;
+
 /** Smallest `threads.maxHeapMemory` (MB) a worker thread is accepted on — see server/threads/threadHeapMemory.ts */
 export const MIN_THREAD_HEAP_MEMORY_MB = 64;
 

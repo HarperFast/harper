@@ -146,6 +146,14 @@ type AtomicWriteOptions = RenameRetryOptions & {
 	 * entry, which the activation journal is retired on the strength of — pays for the two syncs.
 	 */
 	durable?: boolean;
+	/**
+	 * For content that can hold a secret. On POSIX the file is created owner-only before its first byte, and a
+	 * replacement keeps only the owner bits the file it replaces had, so a narrower mode survives. Ignored on
+	 * Windows, where access comes from the directory's ACL.
+	 */
+	ownerOnly?: boolean;
+	/** The file whose mode `ownerOnly` must not widen, when this write is published over it by a later rename. */
+	replaces?: string;
 };
 
 // `flags` matters on Windows, which only flushes a handle opened for writing; a directory cannot be opened
@@ -165,13 +173,30 @@ function syncPathSync(targetPath: string, flags: 'r' | 'r+') {
 	}
 }
 
-function writeFileDurablySync(filePath: string, content) {
-	const fd = fs.openSync(filePath, 'w');
+function ownerOnlyMode(replacedPath: string): number {
+	const replaced = fs.statSync(replacedPath, { throwIfNoEntry: false });
+	return replaced ? replaced.mode & hdbTerms.SECRET_FILE_PERMISSIONS : hdbTerms.SECRET_FILE_PERMISSIONS;
+}
+
+// Exclusive, so the file is this call's own and has `mode` (less umask) from creation, before any byte is written.
+function writeTempFileSync(tempPath: string, content, mode: number, durable: boolean) {
 	try {
-		fs.writeFileSync(fd, content);
-		fsyncTolerantSync(fd);
-	} finally {
-		fs.closeSync(fd);
+		if (durable) {
+			const fd = fs.openSync(tempPath, 'wx', mode);
+			try {
+				fs.writeFileSync(fd, content);
+				fsyncTolerantSync(fd);
+			} finally {
+				fs.closeSync(fd);
+			}
+		} else {
+			fs.writeFileSync(tempPath, content, { flag: 'wx', mode });
+		}
+	} catch (err) {
+		// The open succeeds before the write runs out of room, leaving the temp file behind. EEXIST
+		// means the open found a file this call did not create.
+		if (err.code !== 'EEXIST') removeTempFile(tempPath);
+		throw err;
 	}
 }
 
@@ -240,6 +265,8 @@ export function atomicWriteFile(
 		maxDelayMs = RENAME_RETRY_MAX_DELAY_MS,
 		skipIfUnchanged = false,
 		durable = false,
+		ownerOnly = false,
+		replaces = filePath,
 	}: AtomicWriteOptions = {}
 ) {
 	// Before the temp write, so an option set that can never rename leaves no file behind.
@@ -247,17 +274,11 @@ export function atomicWriteFile(
 	// Opt-in: skipping means no mtime bump, so no watcher event. Only callers that re-derive the
 	// same file every boot want that.
 	if (skipIfUnchanged && matchesFileContent(filePath, content)) return false;
+	const mode = ownerOnly && process.platform !== 'win32' ? ownerOnlyMode(replaces) : 0o666;
 	const tempPath = `${filePath}.${process.pid}.${threadId}.${randomBytes(4).toString('hex')}.tmp`;
-	try {
-		// Content before the rename: a rename that reaches storage ahead of the bytes it names is the
-		// torn write the temp file exists to prevent.
-		if (durable) writeFileDurablySync(tempPath, content);
-		else fs.writeFileSync(tempPath, content);
-	} catch (err) {
-		// The open succeeds before the write runs out of room, leaving the temp file behind.
-		removeTempFile(tempPath);
-		throw err;
-	}
+	// Content before the rename: a rename that reaches storage ahead of the bytes it names is the
+	// torn write the temp file exists to prevent.
+	writeTempFileSync(tempPath, content, mode, durable);
 	try {
 		renameWithRetry(tempPath, filePath, { retryBudgetMs, maxRetries, initialDelayMs, maxDelayMs });
 	} catch (err) {
@@ -612,7 +633,7 @@ export function writeStagedInstallConfig(
 		? path.resolve(targetConfigPath)
 		: path.join(hdbRoot, hdbTerms.HARPER_CONFIG_FILE);
 	fs.createFileSync(configFilePath);
-	atomicWriteFile(configFilePath, String(configDoc));
+	atomicWriteFile(configFilePath, String(configDoc), { ownerOnly: true });
 	flatConfigObj = setActiveConfig(configDoc.toJSON());
 	commitEnvConfigState?.();
 	logger.trace(`Config file written to ${configFilePath}`);
@@ -781,7 +802,12 @@ export function ensureConfigKeysPresent(keys: string[]): string[] {
 	// Worker threads re-read the config from disk and never run this backfill, so a key that only
 	// exists in this thread's memory activates nowhere that serves requests: report nothing when the
 	// write was refused rather than logging an activation the request path did not get.
-	if (!persistConfigDuringBoot(configFilePath, () => atomicWriteFile(configFilePath, String(configDoc)))) return [];
+	if (
+		!persistConfigDuringBoot(configFilePath, () =>
+			atomicWriteFile(configFilePath, String(configDoc), { ownerOnly: true })
+		)
+	)
+		return [];
 
 	// Mirror the additions into the already-memoized config so a built-in gated on the new key
 	// activates on the CURRENT boot: componentLoader reads the root config from getConfigObj(),
@@ -1016,7 +1042,9 @@ function checkForUpdatedConfig(configDoc, configFilePath) {
 
 	if (updateFile && configFilePath) {
 		logger.trace('Updating config file with missing config params');
-		persistConfigDuringBoot(configFilePath, () => atomicWriteFile(configFilePath, String(configDoc)));
+		persistConfigDuringBoot(configFilePath, () =>
+			atomicWriteFile(configFilePath, String(configDoc), { ownerOnly: true })
+		);
 	}
 }
 
@@ -1399,7 +1427,7 @@ export function updateConfigValue(
 	const nextDocument = String(configDoc);
 	if (previousDocument === nextDocument) return;
 	if (createBackup === true) backupConfigFile(configFilePath, hdbRoot);
-	atomicWriteFile(configFilePath, nextDocument);
+	atomicWriteFile(configFilePath, nextDocument, { ownerOnly: true });
 	if (update_config_obj) {
 		flatConfigObj = setActiveConfig(configDoc.toJSON());
 	}
@@ -1408,11 +1436,14 @@ export function updateConfigValue(
 
 function backupConfigFile(configPath, hdbRoot) {
 	try {
+		const backupDir = getBackupDirPath(hdbRoot);
 		const backupFolderPath = path.join(
-			getBackupDirPath(hdbRoot),
+			backupDir,
 			`${new Date(Date.now()).toISOString().replaceAll(':', '-')}-${hdbTerms.HARPER_CONFIG_FILE}.bak`
 		);
-		fs.copySync(configPath, backupFolderPath);
+		fs.ensureDirSync(backupDir);
+		// Not a copy: a copy takes the source's mode, and the source may predate owner-only config writes.
+		atomicWriteFile(backupFolderPath, fs.readFileSync(configPath), { ownerOnly: true });
 		logger.trace(`Config file: ${configPath} backed up to: ${backupFolderPath}`);
 	} catch (err) {
 		logger.error(BACKUP_ERR);
@@ -1799,7 +1830,10 @@ function applyRuntimeEnvVarConfig(
 			let configRewritten = false;
 			try {
 				configPersisted = persistConfigDuringBoot(configFilePath, () => {
-					configRewritten = atomicWriteFile(configFilePath, String(configDoc), { skipIfUnchanged: true });
+					configRewritten = atomicWriteFile(configFilePath, String(configDoc), {
+						skipIfUnchanged: true,
+						ownerOnly: true,
+					});
 				});
 			} finally {
 				if (!configPersisted && stateStaged) discardConfigState(rootPath as string);
