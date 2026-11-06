@@ -1435,11 +1435,8 @@ describe('Scope', () => {
 		it('releases the plugin lock before closing and bounds a never-settling close listener on a failed load', async () => {
 			const componentLoader = require('#src/components/componentLoader');
 			const { Status } = require('#src/server/status/index');
-			const {
-				getTerminateTimeout,
-				setTerminateTimeout,
-				runLocalShutdownListeners,
-			} = require('#src/server/threads/manageThreads');
+			const { getTerminateTimeout, setTerminateTimeout } = require('#src/server/threads/manageThreads');
+			const { listenersByType } = require('#src/server/threads/threadMessageState');
 			const { whenScopesClosed } = require('#src/components/scopeShutdown');
 			const { ITC_EVENT_TYPES } = require('#src/utility/hdbTerms');
 			const failedAppDir = mkdtempSync(join(tmpdir(), 'harper.unit-test.failed-scope-hang-'));
@@ -1489,6 +1486,7 @@ describe('Scope', () => {
 			};
 
 			try {
+				const shutdownListenersBefore = (listenersByType.get(ITC_EVENT_TYPES.SHUTDOWN) ?? []).length;
 				writeFileSync(join(failedAppDir, 'harperdb-config.yaml'), stringify({ [failedPluginName]: {} }));
 				const startedAt = Date.now();
 				const loadOutcome = await Promise.race([
@@ -1527,7 +1525,18 @@ describe('Scope', () => {
 					),
 					'an early close listener rejection before another listener times out must still be surfaced'
 				);
-				runLocalShutdownListeners({ type: ITC_EVENT_TYPES.SHUTDOWN });
+				for (const listener of (listenersByType.get(ITC_EVENT_TYPES.SHUTDOWN) ?? []).slice(shutdownListenersBefore)) {
+					listener({ type: ITC_EVENT_TYPES.SHUTDOWN }, null);
+				}
+				let scopeCloseSettled = false;
+				const directScopeClose = failedScope.close().then(
+					() => {
+						scopeCloseSettled = true;
+					},
+					() => {
+						scopeCloseSettled = true;
+					}
+				);
 				let shutdownCloseSettled = false;
 				const shutdownClose = whenScopesClosed().then(
 					() => {
@@ -1539,12 +1548,25 @@ describe('Scope', () => {
 				);
 				for (let turn = 0; turn < 5; turn++) await new Promise((resolve) => setImmediate(resolve));
 				assert.strictEqual(
+					scopeCloseSettled,
+					false,
+					'failedScope.close() must wait for in-flight close listeners that outlived the failed-load bound'
+				);
+				assert.strictEqual(
 					shutdownCloseSettled,
 					false,
 					'SHUTDOWN must wait for in-flight close listeners that outlived the failed-load bound'
 				);
 				releaseLateRejection?.();
-				await shutdownClose;
+				await Promise.race([
+					Promise.all([directScopeClose, shutdownClose]),
+					new Promise((_, reject) => setTimeout(() => reject(new Error('shutdownClose timed out')), 2000)),
+				]);
+				assert.strictEqual(
+					scopeCloseSettled,
+					true,
+					'failedScope.close() must settle once the late close listener finishes'
+				);
 				assert.strictEqual(
 					shutdownCloseSettled,
 					true,

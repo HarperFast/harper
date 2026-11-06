@@ -130,6 +130,8 @@ The central object passed to `handleApplication()`. Provides access to configura
 
 #### `scope.handleEntry([files][, handler])` {#scopehandleentry}
 
+<VersionBadge type="changed" version="v5.4.0" />
+
 Returns an [`EntryHandler`](#class-entryhandler) for watching and processing file system entries.
 
 Overloads:
@@ -193,10 +195,13 @@ Returns: `string` — Root directory of the application component (where `config
 
 #### `scope.closed`
 
+<VersionBadge version="v5.4.0" />
+
 Returns: `boolean` — `true` once `scope.close()` has been called on the scope.
 
 #### `scope.close()`
 
+<VersionBadge type="changed" version="v5.1.3" />
 <VersionBadge type="changed" version="v5.4.0" />
 
 Closes all associated entry handlers and the `scope.options` instance, emits `'close'`, removes all listeners, and releases the scope's hold on the component's live secret subscriptions. Promises returned by `'close'` listeners are awaited before it resolves (or up to the cleanup bound when Harper closes a scope after a failed load), and listener removal and subscription release still run if a `'close'` listener throws, rejects, or times out.

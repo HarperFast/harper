@@ -99,6 +99,7 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 	#restartRequestedDuringDeploy: boolean = false;
 	#optionsReady: boolean = false;
 	#closed: boolean = false;
+	#closeBounded: boolean = false;
 	#closing: Promise<this> | undefined;
 	#pendingCloseListeners: Promise<unknown> | undefined;
 	#bearerValidatorsDisposed: boolean = false;
@@ -368,8 +369,10 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		let closing = (this.#closing ??= this.#close(options));
 		const closeRecovery =
 			!options?.keepFailedEntryWatchers && (this.#failedEntryHandlers.size > 0 || this.#recoveryCleanup !== undefined);
-		const waitForListeners = options?.listenerTimeoutMs === undefined && this.#pendingCloseListeners !== undefined;
+		const waitForListeners =
+			options?.listenerTimeoutMs === undefined && (this.#pendingCloseListeners !== undefined || this.#closeBounded);
 		if (closeRecovery || waitForListeners) {
+			if (waitForListeners) this.#closeBounded = false;
 			const remaining = closeRecovery ? this.#takeRecoveryWatchers() : [];
 			const finishClose = async () => {
 				const tasks: Promise<unknown>[] = remaining.map((h) => h.close());
@@ -403,13 +406,12 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		const listenerTimeoutMs = options?.listenerTimeoutMs;
 		const keepFailedEntryWatchers = options?.keepFailedEntryWatchers === true;
 		this.#closed = true;
+		this.#closeBounded = listenerTimeoutMs !== undefined;
 		deployLifecycle.off('deploy:start', this.#deployStartHandler);
 		deployLifecycle.off('deploy:end', this.#deployEndHandler);
 
-		// When a component's `handleApplication` itself rejects or times out, all of its `OptionsWatcher`
-		// and `EntryHandler` watchers close so no watchers remain behind (F-1162). Only an `EntryHandler`
-		// whose own initial file scan rejected (`#failedEntryHandlers`) is kept as a one-shot recovery
-		// watcher so editing the broken file still requests a restart (#2432).
+		// Only an `EntryHandler` whose own initial file scan rejected (`#failedEntryHandlers`) is kept as a
+		// one-shot recovery watcher so editing the broken file still requests a restart (#2432).
 		const entryHandlersToClose = keepFailedEntryWatchers
 			? this.#entryHandlers.filter((h) => !this.#failedEntryHandlers.has(h))
 			: this.#entryHandlers;
@@ -461,10 +463,8 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		// e.g. @harperfast/vite disposing its Vite/rolldown dev server — and the worker shutdown path
 		// awaits this close(), so awaiting the listeners here ensures such a native runtime is fully
 		// disposed before the worker exits. That ordering matters: tearing the worker down while a native
-		// (N-API) bundler runtime is still live crashes the whole process. Every listener is awaited up
-		// to `listenerTimeoutMs` (when bounded) before releasing the subscription hold, and `#pendingCloseListeners`
-		// is retained until `allSettled` finishes so a subsequent unbounded `scope.close()` on worker SHUTDOWN
-		// still waits for any listener that outlived a failed-load bound.
+		// (N-API) bundler runtime is still live crashes the whole process. A later unbounded close on
+		// worker SHUTDOWN still awaits any listener that outlived a failed-load time limit.
 		const closeListeners = this.listeners('close') as Array<(...args: any[]) => unknown>;
 		this.removeAllListeners('close');
 		try {
@@ -738,8 +738,7 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 				// first failure reported while a sibling still runs would let the next application in.
 				for (const result of await Promise.allSettled(operations)) {
 					if (result.status === 'rejected') {
-						// Detach the plugin's entry listener so a subsequent edit falls through to
-						// `#defaultEntryHandlerListener` and requests the restart that clears the failed load (#2432).
+						// Let a subsequent edit fall through to `#defaultEntryHandlerListener` (#2432).
 						targetEntryHandler.off('all', wrapped);
 						if (!this.#closed) this.#failedEntryHandlers.add(targetEntryHandler);
 						throw result.reason;

@@ -732,7 +732,7 @@ export const _symlinkHarperModuleForTests = symlinkHarperModule;
 
 /** The running `handleApplication` of each scope whose load started, without the watchdog that can reject while it still runs. */
 const startedLoads = new WeakMap<Scope, Promise<unknown>>();
-/** Closed by shutdown before its `handleApplication` started; the load is skipped. */
+/** Closed before its `handleApplication` started; the load is skipped. */
 const scopesSkippedForShutdown = new WeakSet<Scope>();
 
 /**
@@ -1214,9 +1214,7 @@ export async function loadComponent(
 						}
 						// Tear down the failed plugin's scope before advancing so watchers, secret-subscription
 						// holds, and close-listener resources (such as native dev-server runtimes) are released
-						// before the failure is reported or a retry/sibling load observes stale state. Both the
-						// post-timeout handleApplication drain and close listeners are bounded by closeBoundMs,
-						// while SHUTDOWN's `scope.close()` remains unbounded under the worker exit backstop.
+						// before the failure is reported or a retry/sibling load observes stale state.
 						const closeBoundMs = getTerminateTimeout() / 2;
 						const logCloseError = (closeError: unknown) => {
 							(scope.logger ?? harperLogger).error?.(
