@@ -203,7 +203,10 @@ class sqlStatementBucket {
 			}
 			members.reverse();
 			if (base instanceof Column && !computed) {
-				for (const tableClass of owners(base)) {
+				const relationshipOwners = owners(base);
+				if (relationshipOwners.length === 0 && base.tableid && owners({ columnid: base.columnid }).length > 0)
+					unresolved ??= base.columnid;
+				for (const tableClass of relationshipOwners) {
 					const path = memberPath(tableClass, base.columnid, members);
 					if (path) paths.push({ tableClass, path });
 					else unresolved ??= base.columnid;
@@ -323,7 +326,7 @@ class sqlStatementBucket {
 
 /**
  * The path a member chain reads from `relationship` of `tableClass`, with an index into a to-many value dropped, or
- * undefined when legacy SQL could read a different element than the text names: it re-parses `1e0` or `1.0` as an index.
+ * undefined when legacy SQL could read another member than the text names: it re-parses `01`, `1e0` or `1.0` as a number.
  */
 function memberPath(tableClass: any, relationship: string, members: any[]): string[] | undefined {
 	const resolver = tableClass.propertyResolvers[relationship];
@@ -335,8 +338,9 @@ function memberPath(tableClass: any, relationship: string, members: any[]): stri
 			toMany = false;
 			continue;
 		}
-		if (toMany && !Number.isNaN(Number(member))) return;
-		path.push(String(member));
+		const name = String(member);
+		if (!Number.isNaN(Number(name)) && (toMany || String(Number(name)) !== name)) return;
+		path.push(name);
 		const next = current?.propertyResolvers[member];
 		current = next?.definition?.tableClass;
 		toMany = current && next.toMany;

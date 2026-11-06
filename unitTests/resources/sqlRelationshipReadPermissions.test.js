@@ -344,7 +344,7 @@ describe('SQL reads of relationship columns apply the related table permissions'
 					userWith('sql-rel-member-writer', { Member: { ...READ, update: true }, Squad: READ }),
 					'update'
 				);
-			for (const expression of ['squad->members->`1e0`->squad', 'squad->members->`1.0`->squad'])
+			for (const expression of ['squad->members->`1e0`->squad', 'squad->members->`1.0`->squad', 'squad->`01`'])
 				assert.ok(String(write(expression)?.unauthorized_access).includes('without naming the path'), expression);
 			for (const expression of ['squad->members->0->squad->locker->code', 'squad->members->`0`->squad->locker'])
 				assert.deepStrictEqual(
@@ -384,6 +384,16 @@ describe('SQL reads of relationship columns apply the related table permissions'
 				{ id: 'm1', c: LOCKER.code, n: SQUAD.name },
 			]);
 			assert.deepStrictEqual(await select(memberUser('sql-rel-data-no-locker')), [{ id: 'm1', n: SQUAD.name }]);
+			const restrictedLocker = {
+				...READ,
+				attribute_permissions: [
+					{ attribute_name: 'id', read: true, insert: false, update: false },
+					{ attribute_name: 'code', read: false, insert: false, update: false },
+				],
+			};
+			assert.deepStrictEqual(await select(memberUser('sql-rel-data-locker-restricted', restrictedLocker)), [
+				{ id: 'm1', n: SQUAD.name },
+			]);
 		});
 
 		it('returns the whole cyclic closure to a role that can read all of it', async () => {

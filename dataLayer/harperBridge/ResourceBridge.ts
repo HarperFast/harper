@@ -323,7 +323,7 @@ export class ResourceBridge extends BridgeMethods {
 								// a SET expression reads the stored attributes; a relationship getter would read past the caller's role
 								setRecord ??=
 									existingRecord && !context.user?.role?.permission?.super_user
-										? { ...existingRecord }
+										? withoutRelationships(existingRecord, Table)
 										: existingRecord;
 								const valueResults = value([[setRecord]]);
 								if (Array.isArray(valueResults)) {
@@ -746,6 +746,14 @@ export class ResourceBridge extends BridgeMethods {
 		}
 		return lmdbGetBackup(getBackupObj);
 	}
+}
+
+// the stored attributes and @computed values of a record, with no relationship getter to resolve
+function withoutRelationships(record: any, Table: any) {
+	const copy = { ...record };
+	for (const name in Table.propertyResolvers)
+		if (!Table.propertyResolvers[name]?.definition?.tableClass) copy[name] = record[name];
+	return copy;
 }
 
 function throwSearchValidationError(validationError: any): never {
