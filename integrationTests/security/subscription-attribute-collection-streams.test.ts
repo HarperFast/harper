@@ -333,14 +333,17 @@ suite(
 			await teardownHarper(ctx);
 		});
 
-		/** Admin writes: PUT existing, PATCH existing, PUT new, DELETE new. Secrets are unique per surface. */
-		async function drive(s: string) {
+		/** Admin writes: PUT existing, PATCH existing, PUT new, DELETE new; each waits for `seen(title)` before the next */
+		async function drive(s: string, seen: (title: string) => boolean = () => true) {
 			await put(`${s}-1`, { id: `${s}-1`, title: 'title-v2', owner: 'ownerA', secret: `SECRET-${s}-put` }).expect(204);
+			await waitFor(() => seen('title-v2'), 4000);
 			await sleep(200);
 			const p = await patch(`${s}-1`, { title: 'title-v3', secret: `SECRET-${s}-patch` });
 			ok(p.status < 300, `PATCH failed ${p.status} ${p.text}`);
+			await waitFor(() => seen('title-v3'), 4000);
 			await sleep(200);
 			await put(`${s}-2`, { id: `${s}-2`, title: 'title-n1', owner: 'ownerB', secret: `SECRET-${s}-put2` }).expect(204);
+			await waitFor(() => seen('title-n1'), 4000);
 			await sleep(200);
 			const d = await del(`${s}-2`);
 			ok(d.status < 300, `DELETE failed ${d.status} ${d.text}`);
@@ -421,7 +424,7 @@ suite(
 				`no initial single-record delivery: restricted=${rs.msgs.length} open=${os.msgs.length}`
 			);
 			await sleep(500);
-			await drive(s);
+			await drive(s, (t) => [oc, os].some((x) => x.msgs.some((m) => m.text.includes(t))));
 			await waitFor(
 				() =>
 					oc.msgs.some((m) => m.text.includes(`SECRET-${s}-put2`)) &&
@@ -472,7 +475,7 @@ suite(
 			for (const x of [rc, rs, oc, os]) subs.add(x);
 			for (const x of [rc, rs, oc, os]) strictEqual(x.status(), 101, `${x.label} upgrade status`);
 			await sleep(1000);
-			await drive(s);
+			await drive(s, (t) => [oc, os].some((x) => x.msgs.some((m) => m.text.includes(t))));
 			await waitFor(
 				() =>
 					oc.msgs.some((m) => m.text.includes(`SECRET-${s}-put2`)) &&
@@ -531,7 +534,7 @@ suite(
 				);
 			}
 			await sleep(1000);
-			await drive(s);
+			await drive(s, (t) => [...got].some(([l, msgs]) => l.startsWith('open') && msgs.some((m) => m.text.includes(t))));
 			const openWild = got.get('open-q1-wild')!;
 			await waitFor(
 				() =>
@@ -588,7 +591,7 @@ suite(
 			);
 			for (const x of [rSel, oSel, rWide]) subs.add(x);
 			await sleep(1000);
-			await drive(s);
+			await drive(s, (t) => oSel.msgs.some((m) => m.text.includes(t)));
 			await waitFor(() => oSel.msgs.length >= 4 && [rSel, rWide].every((x) => x.msgs.some((m) => sawRow(m, s))), 8000);
 			await sleep(500);
 			for (const x of [rSel, oSel, rWide]) obs(`select ${x.label}`, `status=${x.status()}`, x.msgs);

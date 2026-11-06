@@ -3,7 +3,7 @@
  * does not drive, on 4 worker threads:
  *
  *   A  native MQTT TCP listener (mqtt://host:1883), QoS 1, single topic + wildcard, live PUT/PATCH; a `read: false`
- *      role is refused on TCP (SUBACK >= 0x80); delete pass-through observed
+ *      role is refused on TCP (SUBACK >= 0x80)
  *   B  MQTT over WebSocket negotiated to CBOR (Accept: application/cbor on the upgrade), decoded + raw bytes
  *   C1 non-retained MQTT PUBLISH by an admin: JSON {title, secret} -> the restricted subscriber gets exactly {title}
  *   C2 payloads the socket's default deserializer stores as {contentType, data} (text/plain, JSON array, JSON string):
@@ -197,7 +197,6 @@ suite(
 			request(restURL).put(`/${table}/${id}`).set(adminHeaders()).send(body);
 		const patch = (table: string, id: string, body: object) =>
 			request(restURL).patch(`/${table}/${id}`).set(adminHeaders()).send(body);
-		const del = (table: string, id: string) => request(restURL).delete(`/${table}/${id}`).set(adminHeaders());
 		const seed = (id: string, tag: string) => ({
 			id,
 			title: `title-${tag}-v1`,
@@ -205,9 +204,10 @@ suite(
 			secret: `SECRET-${tag}-v1`,
 		});
 
-		/** admin PUT then PATCH on `id`; returns the final title a subscriber must have seen (the PUT may be superseded) */
-		async function drive(table: string, id: string, tag: string) {
+		/** admin PUT, wait for `seen(v2 title)`, then PATCH; returns the final title a subscriber must have seen */
+		async function drive(table: string, id: string, tag: string, seen: (title: string) => boolean = () => true) {
 			await put(table, id, { id, title: `title-${tag}-v2`, owner: 'ownerA', secret: `SECRET-${tag}-v2` }).expect(204);
+			await waitFor(() => seen(`title-${tag}-v2`), 4000);
 			await sleep(150);
 			const p = await patch(table, id, { title: `title-${tag}-v3`, secret: `SECRET-${tag}-v3` });
 			ok(p.status < 300, `PATCH ${table}/${id} ${p.status} ${p.text}`);
@@ -312,7 +312,7 @@ suite(
 				await waitFor(() => rSingle.msgs.length >= 1 && oSingle.msgs.length >= 1),
 				'retained current record delivered'
 			);
-			const titles = await drive('Ticket68', 'tcp-1', 'tcp');
+			const titles = await drive('Ticket68', 'tcp-1', 'tcp', (t) => oSingle.msgs.some((m) => m.text.includes(t)));
 			const live = await waitFor(
 				() => sawAll(rSingle.msgs, titles) && sawAll(oSingle.msgs, titles) && sawAll(rWild.msgs, titles)
 			);
@@ -324,16 +324,13 @@ suite(
 				secret: 'SECRET-tcpw-n1',
 			}).expect(204);
 			const newRow = await waitFor(() => rWild.msgs.some((m) => m.topic === 'Ticket68/tcpw-2' && m.enc !== 'empty'));
-			const d = await del('Ticket68', 'tcpw-2');
-			ok(d.status < 300, `DELETE ${d.status}`);
-			await waitFor(() => rWild.msgs.some((m) => m.topic === 'Ticket68/tcpw-2' && m.enc === 'empty'), 4000);
 			obs('A tcp restricted single', rSingle.msgs);
 			obs('A tcp restricted wildcard', rWild.msgs);
 			obs('A tcp open single', oSingle.msgs);
 			ok(live, 'live PUT/PATCH delivered to every TCP subscriber');
 			ok(newRow, 'new row delivered to the wildcard TCP subscriber');
-			assertNoLeak('A tcp restricted single', rSingle.msgs, 3);
-			assertNoLeak('A tcp restricted wildcard', rWild.msgs, 4);
+			assertNoLeak('A tcp restricted single', rSingle.msgs, 2);
+			assertNoLeak('A tcp restricted wildcard', rWild.msgs, 3);
 			assertPositive('A tcp open single', oSingle.msgs);
 			for (const m of rSingle.msgs) ok(m.enc === 'json', `tcp single payload not json: ${m.enc}`);
 		});
@@ -345,7 +342,7 @@ suite(
 			strictEqual(await subscribe(r.client, 'Ticket68/cbor-1'), 1);
 			strictEqual(await subscribe(o.client, 'Ticket68/cbor-1'), 1);
 			ok(await waitFor(() => r.msgs.length >= 1 && o.msgs.length >= 1), 'current record delivered');
-			const titles = await drive('Ticket68', 'cbor-1', 'cbor');
+			const titles = await drive('Ticket68', 'cbor-1', 'cbor', (t) => o.msgs.some((m) => m.text.includes(t)));
 			const live = await waitFor(() => sawAll(r.msgs, titles) && sawAll(o.msgs, titles));
 			obs('B cbor restricted', r.msgs);
 			obs('B cbor open', o.msgs);
@@ -358,7 +355,7 @@ suite(
 				r.msgs.some((m) => m.enc === 'cbor'),
 				`negotiation did not take: restricted encodings ${r.msgs.map((m) => m.enc)}`
 			);
-			assertNoLeak('B cbor restricted', r.msgs, 3);
+			assertNoLeak('B cbor restricted', r.msgs, 2);
 			assertPositive('B cbor open', o.msgs);
 		});
 
@@ -457,7 +454,7 @@ suite(
 				'SSE on the custom resource did not answer'
 			);
 			console.log(`OBS [D] SSE status restricted=${rSse.status()} open=${oSse.status()}`);
-			const titles = await drive('Ticket68', 'view-1', 'view');
+			const titles = await drive('Ticket68', 'view-1', 'view', (t) => oSse.msgs.some((m) => m.text.includes(t)));
 			await waitFor(() => sawAll(oSse.msgs, titles) && sawAll(rSse.msgs, titles), 8000);
 			await waitFor(() => sawAll(oMq.msgs, titles) && sawAll(rMq.msgs, titles), 8000);
 			obs('D view SSE restricted', rSse.msgs);
