@@ -50,6 +50,164 @@ describe('Record locks (QA-5082): static table verbs on locked keys must resolve
 		await resetDatabases();
 	});
 
+	describe('Keyed publishes', function () {
+		for (const action of ['upgrade', 'unlock']) {
+			it(`an instance publish survives a scoped lock ${action} before commit`, async function () {
+				if (SKIP_ON_LMDB) return this.skip();
+				const recordId = id();
+				await Audited.put({ id: recordId, n: 1 });
+				await transaction({}, async () => {
+					const locked = await Audited.lock(recordId);
+					locked.set('n', 2);
+					locked.publish({ n: 7 });
+					if (action === 'upgrade') {
+						const holder = await Audited.lock(recordId, { hold: true, lease: 5000 });
+						cleanups.push(() => holder.unlock());
+					} else await locked.unlock();
+				});
+				assert.ok(
+					[...Audited.auditStore.getRange({ start: 1 })].some(
+						(entry) => entry.recordId === recordId && entry.type === 'message'
+					),
+					'lock cleanup must preserve the explicit publish'
+				);
+				assert.strictEqual((await Audited.get(recordId)).n, 1);
+			});
+		}
+
+		for (const audit of [true, false]) {
+			it(`an immediate holder publish advances the floor for its next save (audit: ${audit})`, async function () {
+				if (SKIP_ON_LMDB) return this.skip();
+				const TestTable = audit ? Audited : Unaudited;
+				const recordId = id();
+				await TestTable.put({ id: recordId, n: 1 });
+				const context = {};
+				const holder = await TestTable.lock(recordId, { hold: true, lease: 5000 }, context);
+				cleanups.push(() => holder.unlock());
+				holder.publish({ n: 7 });
+				await waitFor(() => !context.transaction.isCommitting);
+				const publishedVersion = TestTable.primaryStore.getEntry(recordId).version;
+				holder.set('n', 2);
+				await holder.save();
+				assert.strictEqual((await TestTable.get(recordId)).n, 2);
+				assert.ok(TestTable.primaryStore.getEntry(recordId).version > publishedVersion);
+			});
+		}
+
+		for (const route of ['static', 'holder']) {
+			it(`${route} publish under a held lock binds the handle and delivers its message`, async function () {
+				if (SKIP_ON_LMDB) return this.skip();
+				const recordId = id();
+				await Audited.put({ id: recordId, n: 1 });
+				const events = [];
+				const subscription = await Audited.subscribe({ id: recordId, listener: (event) => events.push(event) });
+				cleanups.push(() => subscription.end());
+				const context = {};
+				await transaction(context, async () => {
+					const holder = await Audited.lock(recordId, { hold: true, lease: 5000 });
+					cleanups.push(() => holder.unlock());
+					const handle = context.transaction.recordLockFor(Audited.primaryStore, recordId);
+					if (route === 'static') await Audited.publish(recordId, { n: 7 });
+					else holder.publish({ n: 7 });
+					const write = context.transaction.writes.filter((write) => write?.key === recordId).at(-1);
+					assert.ok(write.lockHandle === handle, 'keyed publish must bind the held lock handle');
+					assert.strictEqual(context.transaction.hasUnlockedWrite(), false);
+				});
+				await waitFor(() => events.some((event) => event.value?.n === 7));
+				assert.strictEqual((await Audited.get(recordId)).n, 1);
+			});
+
+			it(`${route} publish staged before lease revocation is rejected at commit`, async function () {
+				if (SKIP_ON_LMDB) return this.skip();
+				const recordId = id();
+				await Audited.put({ id: recordId, n: 1 });
+				const context = {};
+				await assert.rejects(
+					() =>
+						transaction(context, async () => {
+							const holder = await Audited.lock(recordId, { hold: true, lease: 5000 });
+							cleanups.push(() => holder.unlock());
+							if (route === 'static') await Audited.publish(recordId, { n: 7 });
+							else holder.publish({ n: 7 });
+							context.transaction.recordLockFor(Audited.primaryStore, recordId).revokeLease();
+						}),
+					{ statusCode: 409 }
+				);
+				assert.ok(
+					![...Audited.auditStore.getRange({ start: 1 })].some(
+						(entry) => entry.recordId === recordId && entry.type === 'message'
+					)
+				);
+			});
+		}
+
+		it('rejects a stale holder before staging a publish', async function () {
+			if (SKIP_ON_LMDB) return this.skip();
+			const recordId = id();
+			await Audited.put({ id: recordId, n: 1 });
+			const context = {};
+			await transaction(context, async () => {
+				const holder = await Audited.lock(recordId, { hold: true, lease: 5000 });
+				cleanups.push(() => holder.unlock());
+				context.transaction.recordLockFor(Audited.primaryStore, recordId).revokeLease();
+				const before = context.transaction.writes.length;
+				assert.throws(() => holder.publish({ n: 7 }), { statusCode: 409 });
+				assert.strictEqual(context.transaction.writes.length, before);
+			});
+		});
+
+		it('a scoped keyed publish allows a later lock to adopt its record floor', async function () {
+			if (SKIP_ON_LMDB) return this.skip();
+			const firstId = id();
+			const secondId = id();
+			const futureStamp = Date.now() + 2500;
+			await Audited.put({ id: firstId, n: 1 });
+			await transaction({ timestamp: futureStamp }, () => Audited.put({ id: secondId, n: 2 }));
+			await transaction({}, async () => {
+				await Audited.lock(firstId);
+				await Audited.publish(firstId, { n: 7 });
+				const second = await Audited.lock(secondId);
+				second.set('n', 3);
+				await second.save();
+			});
+			assert.strictEqual((await Audited.get(secondId)).n, 3);
+			assert.ok(Audited.primaryStore.getEntry(secondId).version > futureStamp);
+		});
+
+		for (const rootId of [null, undefined]) {
+			it(`a root-topic publish with ${rootId} id stays unbound while a record lock is held`, async function () {
+				if (SKIP_ON_LMDB) return this.skip();
+				const context = {};
+				await transaction(context, async () => {
+					const holder = await Audited.lock(id(), { hold: true, lease: 5000 });
+					cleanups.push(() => holder.unlock());
+					await Audited.publish(rootId, { n: 7 });
+					const write = context.transaction.writes.filter(Boolean).at(-1);
+					assert.strictEqual(write.key, null);
+					assert.strictEqual(write.lockHandle, undefined);
+					assert.strictEqual(context.transaction.hasUnlockedWrite(), true);
+				});
+			});
+		}
+
+		it('an unlocked saved update instance can still publish', async function () {
+			const recordId = id();
+			await Audited.put({ id: recordId, n: 1 });
+			const context = {};
+			await transaction(context, async () => {
+				const updated = await Audited.update(recordId, { n: 2 });
+				await updated.save();
+				updated.publish({ n: 7 });
+			});
+			assert.ok(
+				[...Audited.auditStore.getRange({ start: 1 })].some(
+					(entry) => entry.recordId === recordId && entry.type === 'message'
+				)
+			);
+			assert.strictEqual((await Audited.get(recordId)).n, 2);
+		});
+	});
+
 	describe('Positive Controls', function () {
 		it('Positive Control 1: LMDB 501 lock contract and RocksDB multi-lock floor adoption before save()', async function () {
 			if (SKIP_ON_LMDB) {

@@ -65,5 +65,6 @@ Where things are in `resources/`. The rules live in [DESIGN.md](DESIGN.md): read
 - application row filtering → `eventFilter` in ResourceInterface.ts; `search`, `subscribe` in Table.ts
 - matching expired rows in SQL UPDATE/DELETE → `transformEntryForSelect` in Table.ts
 - filters during a vector search → `composeRecordFilter`, `planCandidateKeys` in search.ts; see [indexes/DESIGN.md](indexes/DESIGN.md)
+- a vector threshold that filters rather than leads → `vectorDistanceFilter` in search.ts; `thresholdFilter` in indexes/HierarchicalNavigableSmallWorld.ts
 - HNSW connectivity after a delete → `repairSeveredNeighbors` in indexes/HierarchicalNavigableSmallWorld.ts
 - tests → `unitTests/resources/`

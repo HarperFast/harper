@@ -30,14 +30,17 @@ jobs:
         env:
           EVENT: ${{ github.event_name }}
           BEFORE: ${{ github.event.before }}
-        # A push compares against the tip it replaced, so every commit of a multi-commit push is covered.
+        # A push compares against the tip it replaced, so every commit of a multi-commit push is covered; --push
+        # skips the floor rule, which judges one change against the base it was made on.
         run: |
           base=
+          push=
           if [ "$EVENT" = pull_request ]; then
             base=HEAD^1
           elif [ "$EVENT" = push ] && [ -n "${BEFORE//0/}" ]; then
             git fetch --no-tags --depth=1 origin "$BEFORE"
             base=$BEFORE
+            push=--push
           fi
-          npm run check:design-docs -- ${base:+--base "$base"}
+          npm run check:design-docs -- ${base:+--base "$base"} $push
       - run: npm run check:unit-partition

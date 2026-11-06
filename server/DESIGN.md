@@ -1,6 +1,10 @@
 # server/ — Navigation Guide
 
-This layer accepts inbound traffic on every supported protocol (HTTP/1.1, HTTP/2, HTTPS, WebSockets, MQTT, NATS) and routes it through to the Resource layer. **Read this when:** you're touching request/response, protocol handling, middleware ordering, or WebSocket upgrade behavior. **Navigation convention.** This guide references code by **symbol name** (function/const). Use your editor's go-to-symbol or `grep -n '<name>' server/<file>` to jump. Line numbers drift; symbols don't.
+This layer routes HTTP, HTTPS, WebSocket, MQTT and NATS traffic to Resources.
+
+**Read this when:** changing protocol handling, middleware, requests, responses or WebSocket upgrades.
+
+Use the symbol and section names below to navigate; line numbers drift.
 
 ---
 
@@ -51,22 +55,9 @@ A request entering `http.ts` does **not** go through Fastify unless no Harper ha
 | `serverRegistry.ts`                        | Trivial registry export.                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `status/`                                  | `get_status`/`set_status`/`clear_status` over `system.hdb_status`, aggregated with flat component status, an opt-in component tree (`components: true`), and opt-in resolved middleware chains (`middleware: true`, #1573). Both status views render errors with the shared `serializeStatusError()` formatter; raw Error objects remain internal.                                                                                                     |
 
-> **Subscription message identity contract.** `sharedMessageEncoding.ts` encodes a message once and
-> reuses the bytes for every subscriber of the topic, keyed on the message object's identity. That is
-> sound for every internal producer because each yields a fresh object per version — `transactionBroadcast`
-> hands one `auditRecord` to every subscription, `auditStore`'s `getValue` memoizes the decode in its
-> closure, and `primaryStore.getEntry` is version-guarded — so identity implies equal content. Pinned by
-> `unitTests/resources/subscriptionValueIdentity.test.js`.
+> **Subscription message identity.** [sharedMessageEncoding.ts](serverHelpers/sharedMessageEncoding.ts) shares bytes by envelope identity and version ([subscriptionValueIdentity.test.js](../unitTests/resources/subscriptionValueIdentity.test.js)). Internal sharing is sound because `transactionBroadcast` forwards one audit envelope, `auditStore.getValue` memoizes per closure and `primaryStore.getEntry` guards versions.
 >
-> Rather than leave that as a rule custom Resources have to know, the event's record `version` is part
-> of the cache key: `DurableSubscriptionsSession` forwards it to the delivery listener, and an entry
-> whose version does not match is re-encoded. A Resource that reuses one envelope but advances the
-> version is therefore correct, not merely disallowed; one that supplies no version is not shared at
-> all. Only mutating an object _without_ changing its version can serve stale bytes, and that is
-> indistinguishable from re-sending the same message.
->
-> This is also why a custom content-type `serialize` registered into `server.contentTypes` must be
-> pure in its argument alone: see `ContentTypeHandler.serialize`'s doc comment (`server/Server.ts`).
+> `DurableSubscriptionsSession` forwards the version to the delivery listener, which re-encodes on mismatch. Custom Resources may reuse an envelope only with a changed version; mutating it without advancing the version can serve stale bytes. Messages without a version are not shared. Custom serializers must be pure in their input (`ContentTypeHandler.serialize`, `Server.ts`).
 
 > **Pass-through payloads are `Buffer | string`.** A message that carries its own `{ contentType, data }`
 > is delivered as its `data`, but binary data leaves `serializeMessage` as a `Buffer`: on a worker other
@@ -928,7 +919,7 @@ any load error as a misleading "supports only Node.js versions" message.
 
 ## `threads.v8Flags` is applied once, before the first Harper worker (`server/threads/v8Flags.ts`)
 
-V8 reads most flags when an isolate is created, so `applyConfiguredV8Flags()` runs on the main thread before the first `new Worker`. `startWorker()` holds the only production `new Worker`, and calls it first; `startHTTPThreads()` also calls it at entry, so a bad value fails startup before components load and listeners bind, including under `threads.count: 0`, where the first worker may be a job started long after the server is serving.
+V8 reads most flags when an isolate is created, so `applyConfiguredV8Flags()` runs on the main thread before the first `new Worker`. `startWorker()` holds the only production `new Worker`, and calls it first; `startHTTPThreads()` calls it after explicit full-text query policy validation, so a bad value fails startup before components load and listeners bind, including under `threads.count: 0`, where the first worker may be a job started long after the server is serving.
 
 It is not applied at `manageThreads.ts` module load, as `threads.heapSnapshotNearLimit` is: `bin/run.ts` imports that module before `initialize()` runs the install that first composes `HARPER_SET_CONFIG` into the config file, and before it writes the `THREADS_V8FLAGS` env/CLI form. A module-load read misses the value on a fresh container's first boot. `unitTests/server/threads/v8Flags.test.js` assigns the setting after the module loads, so a move to module load fails it.
 
@@ -936,7 +927,7 @@ The first successful call latches, including on an unset value: V8 flags cannot 
 
 An entry that is not a flag fails startup, by design, unlike `threads.maxHeapMemory`, which recovers an unstartable value at the point of use (harper-pro#558). What #558 guards against is a value that one replicated `set_configuration` writes to every peer, so the next rolling restart stops the whole cluster. Here the Joi pattern (`validation/configValidator.ts`) refuses an entry that is not a flag before the write lands, because `updateConfigValue` validates before writing. So a non-flag entry can only come from an operator at boot (file edit, env var, `HARPER_SET_CONFIG`), and it stops the node with an error naming `threads.v8Flags`. The pattern checks only the prefix. A prefix-valid set that aborts V8 (for example `--abort-on-contradictory-flags` with a contradicting pair) can still be replicated, and each node then aborts natively at its next process start; that is the accepted cost of an unrestricted expert setting. Joi also runs at boot, so it usually rejects the value before `applyConfiguredV8Flags` does. The point-of-use check covers values that bypass Joi.
 
-`v8.setFlagsFromString` does not apply a flag's implications as the CLI does. `--optimize-for-size` from the CLI caps the semi-space at 1 MB; applied at runtime it does not. A worker with Harper's 1 GB limits reports a 536 MB heap limit with runtime `--optimize-for-size`, and 515 MB with that from the CLI or with `--max-semi-space-size=1` added at runtime (Node 26.2.0). Implied flags must be listed explicitly. A contradictory set (e.g. with `--abort-on-contradictory-flags`) aborts the process natively, beyond a JavaScript catch; applying at `startHTTPThreads` entry places that abort before Harper serves.
+`v8.setFlagsFromString` does not apply a flag's implications as the CLI does. `--optimize-for-size` from the CLI caps the semi-space at 1 MB; applied at runtime it does not. A worker with Harper's 1 GB limits reports a 536 MB heap limit with runtime `--optimize-for-size`, and 515 MB with that from the CLI or with `--max-semi-space-size=1` added at runtime (Node 26.2.0). Implied flags must be listed explicitly. A contradictory set (e.g. with `--abort-on-contradictory-flags`) aborts the process natively, beyond a JavaScript catch; applying after query-policy validation in `startHTTPThreads` places that abort before Harper serves.
 
 ## Server starts enable Node's compile cache before their first worker (`server/threads/compileCache.ts`)
 

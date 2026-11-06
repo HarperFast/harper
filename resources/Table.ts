@@ -1373,8 +1373,11 @@ interface TableResourceClass {
 	>;
 	getHistoryOfRecord(id: any): Promise<any[]>;
 	clear(): any;
-	/** Release everything makeTable() registered process-wide; the class must not be used afterwards. */
-	cleanup(): void;
+	/**
+	 * Release everything makeTable() registered process-wide; the class must not be used afterwards. A
+	 * `closing` table refuses requests as retryable, since its database reopens under a new class.
+	 */
+	cleanup(options?: { closing?: boolean }): void;
 	closeMaintenance(deadline?: number): Promise<void>;
 	resumeMaintenance(): void;
 	/** @internal */
@@ -1837,6 +1840,18 @@ export function makeTable(options): TableResourceClass {
 		if (missingCreatedTime) completed[createdTimeProperty.name] = timestampValue(createdTimeProperty, version);
 		return Object.freeze(completed);
 	}
+	function stampRecordTimes(record: any, base: Partial<Entry> | undefined, version: number, fullUpdate: boolean) {
+		if (updatedTimeProperty) record[updatedTimeProperty.name] = timestampValue(updatedTimeProperty, version);
+		if (!createdTimeProperty) return;
+		// a cache stub without a created time was never stored; a residency stub's record lives on its residents
+		if (
+			base?.value &&
+			(!(base.metadataFlags & INVALIDATED) || base.residencyId || base.value[createdTimeProperty.name] != null)
+		) {
+			if (fullUpdate || record[createdTimeProperty.name])
+				record[createdTimeProperty.name] = base.value[createdTimeProperty.name];
+		} else record[createdTimeProperty.name] = timestampValue(createdTimeProperty, version);
+	}
 	const tableGeneration = options.storageGeneration ?? (primaryKeyAttribute as any)?.generation;
 	const createdTime: number | undefined = options.createdTime ?? (primaryKeyAttribute as any)?.createdTime;
 	let deleteCallbackHandle: { remove: () => void };
@@ -2154,6 +2169,10 @@ export function makeTable(options): TableResourceClass {
 		error.statusCode = 404;
 		throw error;
 	}
+	function closedResource(_target: RequestTarget, request: Context): never {
+		const transaction = (request as any)?.transaction;
+		throw new DatabaseClosingError(databaseName, !transaction?.root && !transaction?.snapshotFree);
+	}
 	function currentFullTextDescriptor(): { key: string; descriptor: any } | undefined {
 		const namedKey = `${tableName}/${primaryKey}`;
 		const namedDescriptor = (dbisDb as any).getSync(namedKey);
@@ -2280,9 +2299,8 @@ export function makeTable(options): TableResourceClass {
 
 		/**
 		 * Shared guard: if this instance is lock-writable but the handle is gone (expired or
-		 * released), throw 409 before staging any write. Covers update/invalidate/relocate/delete
-		 * in addition to the save() path. Every lock-writable instance carries its own handle in
-		 * #lockHandle (scoped and hold alike), so we never need to search the registry here.
+		 * released), throw 409 before staging any keyed write. Every lock-writable instance carries its own
+		 * handle in #lockHandle (scoped and hold alike), so we never need to search the registry here.
 		 */
 		#assertLiveHandle(id: Id, allowClosed = false): void {
 			if (!allowClosed && this.#writeGeneration?.closed && writeKeyId(id) === writeKeyId(this.getId()))
@@ -6082,29 +6100,9 @@ export function makeTable(options): TableResourceClass {
 								);
 								if (ownMerged) applyOwnChanges(this, recordUpdate, ownKeys);
 							}
-							if (updatedTimeProperty) {
-								recordUpdate[updatedTimeProperty.name] = timestampValue(updatedTimeProperty, txnTime);
-							}
-							if (createdTimeProperty) {
-								// the reloaded commit base, not the pre-read one: a full PUT racing a create
-								// would otherwise stamp a fresh created time over the real one
-								const base = write.entry;
-								// a cache stub without a created time was never stored; a residency stub's record lives on its residents
-								if (
-									base?.value &&
-									(!(base.metadataFlags & INVALIDATED) ||
-										base.residencyId ||
-										base.value[createdTimeProperty.name] != null)
-								) {
-									if (fullUpdate || recordUpdate[createdTimeProperty.name]) {
-										// make sure to retain original created time
-										recordUpdate[createdTimeProperty.name] = base.value[createdTimeProperty.name];
-									}
-								} else {
-									// new entry, set created time
-									recordUpdate[createdTimeProperty.name] = timestampValue(createdTimeProperty, txnTime);
-								}
-							}
+							// the reloaded commit base, not the pre-read one: a full PUT racing a create
+							// would otherwise stamp a fresh created time over the real one
+							stampRecordTimes(recordUpdate, write.entry, txnTime, fullUpdate);
 							if (primaryKey && recordUpdate[primaryKey] !== id && (fullUpdate || primaryKey in recordUpdate)) {
 								// ensure that the primary key is correct, if there is supposed to be one
 								recordUpdate[primaryKey] = id;
@@ -6162,6 +6160,20 @@ export function makeTable(options): TableResourceClass {
 					const priorStaged = priorStagedOp?.stagedEntry;
 					let existingRecord =
 						priorStagedOp?.completeResidencyRecord ?? (priorStaged ? priorStaged.value : existingEntry?.value);
+					// A batch re-logged after a refusal can commit under a new version (a fresh key) and onto a
+					// base the retry reloaded, neither of which validate stamped against.
+					if (
+						retry &&
+						transaction?.relogOnRetry === true &&
+						recordUpdate &&
+						!(context as any)?.source &&
+						(updatedTimeProperty || createdTimeProperty)
+					) {
+						const frozen = Object.isFrozen(recordUpdate);
+						recordUpdate = { ...recordUpdate };
+						stampRecordTimes(recordUpdate, priorStaged ?? existingEntry, txnTime, fullUpdate);
+						if (frozen) Object.freeze(recordUpdate);
+					}
 					if (databaseName === 'system' && tableName === RESIDENCY_MAP_TABLE) {
 						try {
 							if (!fullUpdate) throw new ClientError('A shard map must be written as a complete snapshot', 400);
@@ -10239,9 +10251,11 @@ export function makeTable(options): TableResourceClass {
 			if (id !== null) checkValidId(id); // note that we allow the null id for publishing so that you can publish to the root topic
 			const context = this.getContext();
 			const keyed = id !== null;
+			if (keyed) this.#assertLiveHandle(id, true);
 			const write: any = {
 				key: id,
 				store: primaryStore,
+				lockHandle: undefined,
 				requiresExclusiveCommit: Boolean(residencyPolicy) || isResidencyMapTable,
 				nodeId: options?.nodeId,
 				viaNodeId: options?.viaNodeId,
@@ -10337,10 +10351,13 @@ export function makeTable(options): TableResourceClass {
 						write.completeResidencyRecord = priorStagedOp?.completeResidencyRecord;
 						write.blobsAuditReferenced = true;
 						if (priorStagedOp) priorStagedOp.superseded = true;
+						if (write.trackRecordVersion) write.recordVersionApplied = true;
 					}
 					return result;
 				},
 			};
+			if (keyed) this.#bindWriteLock(write, id, transaction);
+			if (write.lockHandle) write.lockJoined = true;
 			// because transaction log entries can be deleted at any point, we must save the blobs in the record, there is no cleanup of them
 			write.beforeIntermediate = preCommitBlobsForRecordBefore(write, message, undefined, true);
 			transaction.addWrite(write);
@@ -11686,13 +11703,13 @@ export function makeTable(options): TableResourceClass {
 			return admission instanceof Promise ? admission.then(startClear) : startClear();
 		}
 		/** Release everything makeTable() registered process-wide; the class must not be used afterwards. */
-		static cleanup() {
+		static cleanup({ closing = false }: { closing?: boolean } = {}) {
 			disposed = true;
 			const armerKey = `${primaryStore.path}:${tableId}`;
 			const armers = replicaEvictionArmers.get(armerKey);
 			armers?.delete(armReplicaEviction);
 			if (armers?.size === 0) replicaEvictionArmers.delete(armerKey);
-			TableResource.getResource = unavailableResource;
+			TableResource.getResource = closing ? closedResource : unavailableResource;
 			void TableResource.derivedIndexRuntime
 				?.close()
 				.catch((error) => logger.warn?.(`Derived index shutdown failed for ${databaseName}.${tableName}`, error));
@@ -12767,12 +12784,11 @@ export function makeTable(options): TableResourceClass {
 	 * dangling scoped write would otherwise auto-commit at the transaction sweep and clobber
 	 * whatever the hold write lands. Marking it .dropped lets a later save() on the instance that
 	 * owns it (checked via #savingOperation === this write) fall through to the hold branch
-	 * instead of resolving a detached, dead reference. A joined write (a static verb's, or another
-	 * instance's, staged under the lock) is the caller's own: an upgrade keeps it, and a release within
-	 * the lease (`releasing`) returns it to an ordinary unlocked write, which is what it would be had it
-	 * been staged after the unlock. Past the lease it keeps the handle, so its save is refused like any
-	 * lapsed lock write. A `lockFailed` lock() was never handed to the caller, so its joined writes
-	 * always revert.
+	 * instead of resolving a detached, dead reference. A joined write is the caller's own: an upgrade
+	 * keeps it, and a release within the lease (`releasing`) returns it to an ordinary unlocked write,
+	 * which is what it would be had it been staged after the unlock. Past the lease it keeps the handle,
+	 * so its save is refused like any lapsed lock write. A `lockFailed` lock() was never handed to the
+	 * caller, so its joined writes always revert.
 	 */
 	function detachScopedUpgradeWrite(
 		link: any,

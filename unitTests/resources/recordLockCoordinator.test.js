@@ -11,6 +11,7 @@ const {
 	retireDelegateEpoch,
 	HOME_RESTART_RIDE_THROUGH_MS,
 	RESTART_ATTEMPT_MS,
+	RECALLED_BARRIER_GRACE_MS,
 	decodeLockControlPayload,
 	encodeLockControlPayload,
 	homeFor,
@@ -148,6 +149,8 @@ class FakeCluster {
 			recovering: false,
 			/** Set by a test to make this node's control-entry writer throw synchronously. */
 			writerThrows: false,
+			writerGate: undefined,
+			timestampThrows: false,
 			writerCalls: 0,
 			writerReturnsVoid: false,
 			freshnessCalls: [],
@@ -190,7 +193,10 @@ class FakeCluster {
 			},
 			writeControl: this.writeControlFor(name),
 			keyIdOf: (key) => String(key),
-			nextTimestamp: () => ++this.tsCounter,
+			nextTimestamp: () => {
+				if (node.timestampThrows) throw new Error('the local key ceiling could not be persisted');
+				return ++this.tsCounter;
+			},
 			monotonic: () => node.mono + performance.now(),
 			skewMs: this.skewMs,
 			// The harness drives an injected clock whose readings say nothing about process start, so the
@@ -236,10 +242,13 @@ class FakeCluster {
 				throw new Error('transaction log is not accepting control entries');
 			}
 			if (!node?.alive) return Promise.resolve();
-			const position = ++this.tsCounter;
-			node.written.push({ ...entry, position });
-			this.#broadcastRelease(name, entry, position);
-			return Promise.resolve(node.writerReturnsVoid ? undefined : position);
+			const write = () => {
+				const position = ++this.tsCounter;
+				node.written.push({ ...entry, position });
+				this.#broadcastRelease(name, entry, position);
+				return node.writerReturnsVoid ? undefined : position;
+			};
+			return node.writerGate ? node.writerGate.then(write) : Promise.resolve(write());
 		};
 	}
 
@@ -648,7 +657,7 @@ describe('record lock delegations', () => {
 			gamma.coordinator.release(key, recovered.admissionId);
 		});
 
-		it('does not install a grant recalled while its freshness barrier is pending', async () => {
+		it('gives back a recalled grant whose barrier overruns the grace, so a contender is served', async () => {
 			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
 			const key = cluster.keyHomedOn('gamma');
 			const alpha = cluster.node('alpha').coordinator;
@@ -666,12 +675,301 @@ describe('record lock delegations', () => {
 				leaseMs: LEASE,
 			});
 			await waitFor(() => cluster.recalls.some(({ to }) => to === 'beta'));
+			const recalledAt = performance.now();
 			beta.staleMap = true;
 			await assert.rejects(pendingAcquire, /No agreed record lock home map/);
+			assert.ok(performance.now() - recalledAt >= RECALLED_BARRIER_GRACE_MS - 50, 'the barrier was given up early');
 			assert.strictEqual(beta.coordinator.stats.delegations, 0);
 			await waitFor(() => cluster.node('gamma').coordinator.stats.granted === 0);
 			const contender = await cluster.node('gamma').coordinator.acquire(key, LEASE, WAIT);
 			cluster.node('gamma').coordinator.release(key, contender.admissionId);
+		});
+
+		describe('a recall that lands during the barrier (harper-pro#438)', () => {
+			async function grantInBarrier(waitMs = WAIT, leaseMs = LEASE) {
+				const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+				const key = cluster.keyHomedOn('gamma');
+				const alpha = cluster.node('alpha').coordinator;
+				const held = await alpha.acquire(key, LEASE, WAIT);
+				alpha.release(key, held.admissionId);
+				const beta = cluster.node('beta');
+				const barrier = {};
+				cluster.beforeFreshness = (name) =>
+					name === 'beta' && !barrier.finish
+						? new Promise((resolve, reject) => {
+								barrier.finish = resolve;
+								barrier.fail = reject;
+							})
+						: undefined;
+				const acquiring = beta.coordinator.acquire(key, leaseMs, waitMs);
+				await waitFor(() => barrier.finish);
+				return { cluster, key, beta, gamma: cluster.node('gamma'), barrier, acquiring };
+			}
+
+			async function contend(cluster, key) {
+				await cluster.node('gamma').coordinator.onDelegationRequest({
+					key,
+					requester: 'gamma',
+					generation: 1,
+					leaseMs: LEASE,
+				});
+				await waitFor(() => cluster.recalls.some(({ to }) => to === 'beta'));
+				return cluster.recalls.find(({ to }) => to === 'beta').token;
+			}
+
+			const settledWithin = (promise, ms) => Promise.race([promise.then(() => true), delayMs(ms).then(() => false)]);
+
+			it('serves the waiter the grant was requested for, then nobody else, then releases with lineage', async () => {
+				const { cluster, key, beta, gamma, barrier, acquiring } = await grantInBarrier();
+				await contend(cluster, key);
+				await delayMs(50);
+				assert.strictEqual(beta.written.length, 0, 'the recall gave up a grant still proving freshness');
+
+				barrier.finish();
+				const round = await acquiring;
+				await assert.rejects(() => beta.coordinator.acquire(key, LEASE, 100), { statusCode: 423 });
+				assert.strictEqual(beta.written.length, 0, 'released while the admitted waiter still held the key');
+
+				beta.coordinator.release(key, round.admissionId);
+				await waitFor(() => beta.written.length === 1);
+				assert.deepStrictEqual(
+					beta.written[0].dependencies?.map(([origin]) => origin),
+					['alpha'],
+					'the release lost the lineage'
+				);
+				const contender = await gamma.coordinator.acquire(key, LEASE, WAIT);
+				assert.deepStrictEqual(
+					gamma.freshnessCalls.at(-1).dependencies.map(([origin]) => origin),
+					['alpha', 'beta'],
+					'the next holder does not depend on the waiter the recall let through'
+				);
+				gamma.coordinator.release(key, contender.admissionId);
+			});
+
+			it('answers the recall only once nothing can admit or commit on the token', async () => {
+				const { cluster, key, beta, barrier, acquiring } = await grantInBarrier();
+				const token = await contend(cluster, key);
+				const recall = beta.coordinator.onDelegationRecall({ key, token });
+				assert.strictEqual(await settledWithin(recall, 50), false, 'answered while the barrier could still admit');
+				barrier.finish();
+				const round = await acquiring;
+				assert.strictEqual(await settledWithin(recall, 50), false, 'answered while the admitted waiter held the key');
+				let revoked = false;
+				beta.coordinator.registerAdmission(round.admissionId, () => {
+					revoked = true;
+				});
+				beta.coordinator.release(key, round.admissionId);
+				await recall;
+				assert.strictEqual(revoked, true, 'the recall answered before fencing the handle');
+				assert.strictEqual(beta.written.length, 1);
+			});
+
+			it('a retried recall joins the first and one release is written', async () => {
+				const { cluster, key, beta, barrier, acquiring } = await grantInBarrier();
+				const token = await contend(cluster, key);
+				const recalls = [
+					beta.coordinator.onDelegationRecall({ key, token }),
+					beta.coordinator.onDelegationRecall({ key, token }),
+				];
+				barrier.finish();
+				const round = await acquiring;
+				beta.coordinator.release(key, round.admissionId);
+				await Promise.all(recalls);
+				assert.strictEqual(beta.written.length, 1, 'more than one release for one handoff');
+			});
+
+			it('a drain does not count a delegate inside its barrier as stopped', async () => {
+				const { cluster, key, beta, gamma, barrier, acquiring } = await grantInBarrier();
+				const result = { complete: true, surrendered: 0, recalled: 0, outstanding: [] };
+				await gamma.coordinator.quiesce(result, () => 50);
+				assert.strictEqual(result.recalled, 0);
+				assert.deepStrictEqual(
+					result.outstanding.map((entry) => entry.delegate),
+					['beta']
+				);
+				barrier.finish();
+				const round = await acquiring;
+				beta.coordinator.release(key, round.admissionId);
+				await waitFor(() => gamma.coordinator.stats.granted === 0);
+				assert.ok(cluster.recalls.length >= 1);
+			});
+
+			it('a barrier that fails after the recall hands the grant back and answers the recall', async () => {
+				const { cluster, key, beta, gamma, barrier, acquiring } = await grantInBarrier();
+				const token = await contend(cluster, key);
+				const recall = beta.coordinator.onDelegationRecall({ key, token });
+				barrier.fail(new Error('the origin refused'));
+				await assert.rejects(acquiring, /Could not establish successor freshness.*the origin refused/);
+				await recall;
+				assert.strictEqual(beta.coordinator.stats.delegations, 0);
+				assert.deepStrictEqual(
+					beta.written.map((entry) => entry.dependencies),
+					[null],
+					'a handback is not a clean release'
+				);
+				await waitFor(() => gamma.coordinator.stats.granted === 0);
+			});
+
+			it("the waiter's own deadline ends the barrier inside the grace", async () => {
+				const { cluster, key, beta, barrier, acquiring } = await grantInBarrier(150);
+				const token = await contend(cluster, key);
+				const recall = beta.coordinator.onDelegationRecall({ key, token });
+				await assert.rejects(acquiring, /the lock wait elapsed before its freshness barrier completed/);
+				await recall;
+				assert.strictEqual(beta.written.length, 1);
+				assert.ok(barrier.finish);
+			});
+
+			it('a coordinator closing during the grace stops the barrier at once', async () => {
+				const { cluster, key, beta, acquiring } = await grantInBarrier();
+				const token = await contend(cluster, key);
+				const recall = beta.coordinator.onDelegationRecall({ key, token });
+				beta.coordinator.close();
+				await assert.rejects(acquiring, /coordination was closed/);
+				await recall;
+			});
+
+			it("a restarted home's recall by incarnation stops the barrier at once", async () => {
+				const { cluster, key, beta, gamma, acquiring } = await grantInBarrier(RECALLED_BARRIER_GRACE_MS * 2);
+				await contend(cluster, key);
+				const startedAt = performance.now();
+				gamma.incarnation = 2;
+				gamma.quiesced = 2;
+				const homeMap = beta.coordinator.transport.homeMap(cluster.database);
+				await beta.coordinator.recallFromHome('gamma', homeMap, 2);
+				await waitFor(() => beta.written.length >= 1, 1_000);
+				assert.ok(performance.now() - startedAt < RECALLED_BARRIER_GRACE_MS, 'waited out the grace');
+				assert.deepStrictEqual(
+					[beta.written[0].token[1], beta.written[0].dependencies],
+					[1, null],
+					"the old incarnation's grant was not handed back unused"
+				);
+				const round = await acquiring;
+				beta.coordinator.release(key, round.admissionId);
+			});
+
+			it('a generation that changes during the barrier is not admitted on', async () => {
+				const { cluster, key, beta, barrier, acquiring } = await grantInBarrier();
+				const token = await contend(cluster, key);
+				const recall = beta.coordinator.onDelegationRecall({ key, token });
+				cluster.generation = 2;
+				let openWriter;
+				beta.writerGate = new Promise((resolve) => (openWriter = resolve));
+				barrier.finish();
+				assert.strictEqual(await settledWithin(recall, 50), false, 'answered before the handback was written');
+				beta.writerGate = undefined;
+				openWriter();
+				const round = await acquiring;
+				await recall;
+				assert.deepStrictEqual(
+					beta.written.map((entry) => [entry.token[0], entry.dependencies]),
+					[[1, null]],
+					'the old grant was not handed back'
+				);
+				assert.strictEqual(beta.coordinator.stats.delegations, 1);
+				beta.coordinator.release(key, round.admissionId);
+			});
+
+			it('a delegation that expired during the barrier is handed back rather than admitted on', async () => {
+				const { cluster, key, beta, barrier, acquiring } = await grantInBarrier();
+				const token = await contend(cluster, key);
+				const recall = beta.coordinator.onDelegationRecall({ key, token });
+				cluster.advance('beta', DELEGATION_LEASE_MS);
+				barrier.finish();
+				await recall;
+				assert.deepStrictEqual(
+					beta.written.map((entry) => entry.dependencies),
+					[null]
+				);
+				await assert.rejects(acquiring, /grants that arrived too late to use/);
+			});
+
+			it('an admission that throws still surrenders the grant the recall is waiting on', async () => {
+				const { cluster, key, beta, gamma, barrier, acquiring } = await grantInBarrier();
+				const token = await contend(cluster, key);
+				const recall = beta.coordinator.onDelegationRecall({ key, token });
+				beta.timestampThrows = true;
+				barrier.finish();
+				await assert.rejects(acquiring, /local key ceiling/);
+				await recall;
+				assert.strictEqual(beta.coordinator.stats.delegations, 0, 'a confirmed recall left the delegation admitting');
+				assert.strictEqual(beta.written.length, 1);
+				await waitFor(() => gamma.coordinator.stats.granted === 0);
+			});
+
+			it("a node's own drain covers a grant still in its barrier", async () => {
+				const { key, beta, barrier, acquiring } = await grantInBarrier();
+				const result = { complete: true, surrendered: 0, recalled: 0, outstanding: [] };
+				await beta.coordinator.quiesce(result, () => 50);
+				assert.deepStrictEqual(
+					result.outstanding.map((entry) => entry.key),
+					[key],
+					'reported nothing outstanding while the barrier could still admit'
+				);
+				barrier.finish();
+				const round = await acquiring;
+				const drained = { complete: true, surrendered: 0, recalled: 0, outstanding: [] };
+				const draining = beta.coordinator.quiesce(drained, () => 1_000);
+				beta.coordinator.release(key, round.admissionId);
+				await draining;
+				assert.deepStrictEqual(drained.outstanding, []);
+				assert.strictEqual(beta.coordinator.stats.delegations, 0);
+			});
+
+			it('a release the writer refuses still answers the recall', async () => {
+				const { cluster, key, beta, barrier, acquiring } = await grantInBarrier();
+				const token = await contend(cluster, key);
+				const recall = beta.coordinator.onDelegationRecall({ key, token });
+				barrier.finish();
+				const round = await acquiring;
+				beta.writerThrows = true;
+				beta.coordinator.release(key, round.admissionId);
+				await recall;
+				assert.strictEqual(beta.writerCalls, 1);
+			});
+
+			it('a revoker that rejects still answers the recall, and the release is written', async () => {
+				const { cluster, key, beta, barrier, acquiring } = await grantInBarrier(WAIT, MIN_LOCK_LEASE_MS);
+				const token = await contend(cluster, key);
+				const recall = beta.coordinator.onDelegationRecall({ key, token });
+				barrier.finish();
+				const round = await acquiring;
+				beta.coordinator.registerAdmission(round.admissionId, () =>
+					Promise.reject(new Error('the sibling port closed'))
+				);
+				beta.coordinator.release(key, round.admissionId);
+				await recall;
+				assert.strictEqual(beta.written.length, 1);
+			});
+
+			it('a key whose barrier outlasts every poll serves all its waiters without giving up a grant', async () => {
+				const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+				const key = cluster.keyHomedOn('gamma');
+				const names = ['alpha', 'beta', 'gamma'];
+				for (const name of names) {
+					const { coordinator } = cluster.node(name);
+					const warm = await coordinator.acquire(key, LEASE, WAIT);
+					coordinator.release(key, warm.admissionId);
+				}
+				cluster.beforeFreshness = () => delayMs(60);
+				const sections = [];
+				await Promise.all(
+					names.map(async (name) => {
+						const { coordinator } = cluster.node(name);
+						for (let i = 0; i < 5; i++) {
+							const round = await coordinator.acquire(key, LEASE, 20_000);
+							sections.push(name);
+							await delayMs(1);
+							coordinator.release(key, round.admissionId);
+						}
+					})
+				);
+				assert.strictEqual(sections.length, 15);
+				const handedBack = names.flatMap((name) =>
+					cluster.node(name).written.filter((entry) => entry.dependencies === null)
+				);
+				assert.deepStrictEqual(handedBack, [], 'a grant was given up before anyone was admitted on it');
+			});
 		});
 
 		it('cancels a pending freshness barrier when its coordinator closes', async () => {
@@ -1217,6 +1515,38 @@ describe('record lock delegations', () => {
 			node.coordinator = successor;
 			return { predecessor, successor };
 		}
+
+		it('a recall during the barrier follows a swap to the successor, and one release is written', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('gamma');
+			const alpha = cluster.node('alpha').coordinator;
+			const held = await alpha.acquire(key, LEASE, WAIT);
+			alpha.release(key, held.admissionId);
+			const beta = cluster.node('beta');
+			let finishBarrier;
+			cluster.beforeFreshness = (name) =>
+				name === 'beta' && !finishBarrier ? new Promise((resolve) => (finishBarrier = resolve)) : undefined;
+			const acquiring = beta.coordinator.acquire(key, LEASE, WAIT);
+			await waitFor(() => finishBarrier);
+			await cluster.node('gamma').coordinator.onDelegationRequest({
+				key,
+				requester: 'gamma',
+				generation: 1,
+				leaseMs: LEASE,
+			});
+			await waitFor(() => cluster.recalls.some(({ to }) => to === 'beta'));
+			const { token } = cluster.recalls.find(({ to }) => to === 'beta');
+			const recall = beta.coordinator.onDelegationRecall({ key, token });
+			const { successor } = replace(cluster, 'beta');
+			finishBarrier();
+			const round = await acquiring;
+			assert.strictEqual(successor.stats.delegations, 1, 'the grant was not installed on the successor');
+			assert.strictEqual(beta.written.length, 0, 'released while the admitted waiter held the key');
+			successor.release(key, round.admissionId);
+			await recall;
+			assert.strictEqual(beta.written.length, 1);
+			assert.strictEqual(successor.stats.delegations, 0);
+		});
 
 		it('installs a grant that arrived after the swap on the successor, not the coordinator it left', async () => {
 			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);

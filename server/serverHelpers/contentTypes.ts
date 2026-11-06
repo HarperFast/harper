@@ -27,7 +27,8 @@ const streamStartup = Symbol('streamStartup');
 const serializedStreamError = Symbol('serializedStreamError');
 const RELATIONSHIPS_LISTED = Symbol.for('harper.relationshipsListed');
 
-export type ColumnsList = string[] & { scalar?: true; asArray?: true };
+// `wildcard`: expanded from `*`, so a row holding fewer keys than the schema still gets every declared column
+export type ColumnsList = string[] & { scalar?: true; asArray?: true; wildcard?: true };
 
 export function isScalarSelect(select: any): boolean {
 	return (typeof select === 'string' && select !== '*') || (!Array.isArray(select) && select?.name !== undefined);
@@ -80,7 +81,13 @@ export function buildSelectColumns(currentSelect: any, attributes?: any[]): Colu
 				if (!attributes?.length) return undefined;
 				for (const attribute of attributes)
 					if (!(currentSelect[RELATIONSHIPS_LISTED] && attribute.relationship)) columns.push(attribute.name);
+				columns.wildcard = true;
 			} else columns.push((column as any).name || column);
+		}
+		if (columns.wildcard) {
+			const unique = [...new Set(columns)];
+			columns.length = 0;
+			columns.push(...unique);
 		}
 		if (isScalarSelect(currentSelect)) columns.scalar = true;
 		else if (asArray) columns.asArray = true;
@@ -1166,6 +1173,12 @@ function formatCsvCell(value: any) {
 	return value;
 }
 
+function withDeclaredColumns(declared: ColumnsList | undefined, rowKeys: string[]): string[] {
+	if (!declared?.wildcard) return rowKeys;
+	const known = new Set<string>(declared);
+	return [...declared, ...rowKeys.filter((key) => !known.has(key))];
+}
+
 /**
  * Converts JS objects/arrays/iterators to a CSV stream. Should support iterators with full backpressure handling
  * @param data
@@ -1200,7 +1213,7 @@ export function toCsvStream(data, columns?, fallbackColumns?) {
 						fields =
 							data?.getColumns?.() ||
 							(typeof chunk === 'object' && chunk !== null && !Array.isArray(chunk)
-								? Object.keys(chunk)
+								? withDeclaredColumns(fallbackColumns, Object.keys(chunk))
 								: fallbackColumns || (Array.isArray(chunk) ? Object.keys(chunk) : null));
 					}
 					if (fields) {

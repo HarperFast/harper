@@ -3,6 +3,7 @@ import { alterRole, addRole } from '../security/role.ts';
 import { parseDocument } from 'yaml';
 import isEqual from 'lodash/isEqual.js';
 import { ClientError } from '../utility/errors/hdbError.ts';
+import { withoutSystemGrants } from '../security/systemRolePermissions.ts';
 import { HDB_ERROR_MSGS } from '../utility/errors/commonErrors.ts';
 import { RESERVED_DATABASE_NAMES } from '../utility/hdbTerms.ts';
 
@@ -37,8 +38,13 @@ export function handleApplication(
 				warnForStaleRoles(scope, previousRoles, rolesByFile);
 				return;
 			}
+			const changed = !contentsByFile.get(entry.absolutePath)?.equals(entry.contents);
 			contentsByFile.set(entry.absolutePath, entry.contents);
-			const currentRoles = await handleFile(entry.contents, ensureRoleFn);
+			const currentRoles = await handleFile(
+				entry.contents,
+				ensureRoleFn,
+				changed ? (message) => scope.logger.warn?.(message) : undefined
+			);
 			rolesByFile.set(entry.absolutePath, currentRoles);
 			warnForStaleRoles(
 				scope,
@@ -84,14 +90,26 @@ function warnForStaleRoles(
  * the right shape and created in the system database.
  * @param rolesContent
  */
-async function handleFile(rolesContent, ensureRoleFn: (role: any) => Promise<unknown>) {
+async function handleFile(
+	rolesContent,
+	ensureRoleFn: (role: any) => Promise<unknown>,
+	warn?: (message: string) => void
+) {
 	let rolesToDefine = parseDocument(rolesContent.toString(), { simpleKeys: true } as any).toJSON();
 	for (const [roleName, role] of Object.entries(rolesToDefine ?? {}) as [string, any][]) {
 		if (role === null || typeof role !== 'object' || Array.isArray(role)) {
 			throw new ClientError(`Role '${roleName}' must be an object`);
 		}
+		if (
+			Object.hasOwn(role, 'permission') &&
+			(!role.permission || typeof role.permission !== 'object' || Array.isArray(role.permission))
+		) {
+			throw new ClientError(`Role '${roleName}' permission must be an object`);
+		}
 		if (Object.hasOwn(role.permission || role, 'system')) {
-			throw new ClientError(`Role '${roleName}': ${HDB_ERROR_MSGS.SYSTEM_ROLE_PERMISSIONS_MANAGED}`);
+			const normalized = withoutSystemGrants({ permission: role.permission || role }, false).permission;
+			rolesToDefine[roleName] = role.permission ? { ...role, permission: normalized } : normalized;
+			warn?.(`Role '${roleName}': ${HDB_ERROR_MSGS.SYSTEM_ROLE_PERMISSIONS_MANAGED}; ignoring the system declaration`);
 		}
 	}
 	const roleNames = new Set<string>();

@@ -106,15 +106,18 @@ Consequences that shape the code:
   `lockHandle` into the same guard.
 - **A write on a locked key carries the lock, whichever instance staged it.** `DatabaseTransaction`
   applies lock rules (holder stamps, hold floor or 409, lease-expiry 409, `refuseLockWrites`,
-  `hasUnlockedWrite`) by `write.lockHandle` alone. `#bindWriteLock` sets it at all four staging sites
-  (`_writeUpdate`, `_writeDelete`, `_writeInvalidate`, `_writeRelocate`) from the instance's own handle,
-  else from `recordLocks` — so static verbs and other instances on the same context are covered.
+  `hasUnlockedWrite`) by `write.lockHandle` alone. `#bindWriteLock` covers all five keyed staging sites
+  (`_writeUpdate`, `_writeDelete`, `_writeInvalidate`, `_writeRelocate`, `_writePublish`) using the instance
+  handle or `recordLocks` for static verbs and other instances on the same context.
   Binding happens at staging (and again after `_writeUpdate`'s async model hooks), reading the registry
   without `recordLockFor`'s pruning: a lapsed lease still refuses the write, at save time it would have
   been pruned away. A handle that lapsed while bound stays bound across the hooks even if a re-lock
-  replaced it; only one released by `unlock()` lets the write rebind or revert. Writes bound from the registry are `lockJoined`: they are the caller's writes, not
-  the scoped lock's placeholder, so a scoped → hold upgrade keeps them and `unlock()` turns them back
+  replaced it; only one released by `unlock()` lets the write rebind or revert. All bound publishes
+  (own-handle or registry) and registry-bound writes are `lockJoined`: caller writes rather than the scoped
+  lock's placeholder, so a scoped → hold upgrade keeps them and `unlock()` turns them back
   into ordinary unlocked writes rather than dropping them. Covered by `recordLockStaticVerbs.test.js`.
+  A bound publish can still stamp below a concurrent record version; see
+  [An out-of-order publish rewinds the record's version, letting a stale delete or write through](https://github.com/HarperFast/harper/issues/3637).
 - **Lock first, then write (harper#3896).** A fresh `lock()` on a key this transaction has a pending write to
   is refused with 409 (`hasPendingWriteTo`: owned, not dropped, and unsaved or saved into a transaction that
   has not committed; an `ImmediateTransaction`'s saved write was submitted on its own). Such a write was
@@ -1215,6 +1218,18 @@ takes the recovery path (§7.2). A failed or rejected recall never fabricates a 
 eviction obeys exactly the same rules: a delegate may drop a delegation early, but not while it holds
 an active handle or an unsettled write.
 
+**A recall that lands during the freshness barrier closes admission to later waiters, not to the one
+the grant was requested for** (`PendingDelegation.lastAdmission`, harper-pro#438). A barrier takes at
+least 1.5 round trips and a recall arrives within one contender poll (25 ms) plus a hop, so a delegate
+that gave the grant up on recall would be replaced by a successor recalled the same way: a key whose
+lineage names other nodes changes hands until its waiters reach their deadlines, with nobody admitted.
+So the barrier runs on, its waiter is admitted once, and the recall then drains and releases as for any
+held delegation. It answers only at the end, because `quiesce` reads the answer as "nothing here can
+admit". `RECALLED_BARRIER_GRACE_MS` bounds the wait: a delegate that can never finish (a route excluding
+the table, a dead stream from one origin) would otherwise block every other node for its whole lock
+wait. `close()`, a restarted home's recall by incarnation and a recall that beat its grant reply stop
+the barrier at once, because those grants must not admit.
+
 ### 7. Freshness
 
 #### 7.1 Clean handoff: an inherited dependency set, not a version number
@@ -1876,7 +1891,7 @@ not because each mutation shape needs its own hook.
 The release-entry position replaces an earlier per-write commit-hook design. It removes a hot-path
 callback, covers every write that remains authorized when the release is committed, and cannot sort
 behind a replication cursor that has already advanced. Cold-state trust is discarded whenever
-history may have been missed, and pending grants remain recallable before admission.
+history may have been missed, and a pending grant is given back on recall only after serving its waiter or overrunning `RECALLED_BARRIER_GRACE_MS` (§6).
 
 ### Applied-prefix holes
 
