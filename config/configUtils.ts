@@ -176,7 +176,8 @@ function syncPathSync(targetPath: string, flags: 'r' | 'r+') {
 function ownerOnlyMode(replacedPath: string): number {
 	const replaced = fs.statSync(replacedPath, { throwIfNoEntry: false });
 	// Another user's owner bits say nothing about this process's access to the file it is about to own.
-	if (!replaced || replaced.uid !== process.getuid()) return hdbTerms.SECRET_FILE_PERMISSIONS;
+	// getuid is absent on Android; with no uid to compare, nothing narrower than owner-only is kept.
+	if (!replaced || replaced.uid !== process.getuid?.()) return hdbTerms.SECRET_FILE_PERMISSIONS;
 	return replaced.mode & hdbTerms.SECRET_FILE_PERMISSIONS;
 }
 
