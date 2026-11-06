@@ -761,8 +761,8 @@ const MAX_REPLICA_REFRESHES_IN_FLIGHT = 50;
 const MAX_REPLICA_REFRESH_THROTTLE_KEYS = 10_000;
 const REPLICA_SWEEP_YIELD_EVERY = 1000;
 const REPLICA_SIZE_SAMPLE = 100;
-// a reclamation run awaits each pass before the path's next handler (audit cleanup among them), so budgetMs bounds that
-// wait; what a pass leaves waits for the next run
+// a reclamation run awaits each pass before the path's next handler (audit cleanup among them), so a pass starts no batch
+// past budgetMs and leaves the rest for the next run
 const REPLICA_RECLAIM_LIMITS = { batch: 20_000, checkEvery: 1000, budgetMs: 60_000 };
 let replicaReclaimLimits = REPLICA_RECLAIM_LIMITS;
 const REPLICA_EVICTION_ARMED = 'replica-eviction-armed';
@@ -1877,7 +1877,7 @@ export function makeTable(options): TableResourceClass {
 	let replicaSweepRunning = false;
 	let lastReplicaSweep: Promise<unknown> = Promise.resolve();
 	let replicaDeadlinesRepaired = false;
-	// the latest reclamation report for this path was priority > 1; a later 0 ends a pass in progress
+	// a reclamation report of 0 ends a pass in progress
 	let replicaPressure = false;
 	const replicaRefreshCheckedAt = new Map<Id, number>();
 	const replicaRefreshCheckedAtComposite = new Map<string, number>();
@@ -15001,7 +15001,8 @@ export function makeTable(options): TableResourceClass {
 	 * lifetime of `replicaExpirationMs / priority`. A replica has `replicaExpirationMs - age` left, so that
 	 * age is reached at `remaining <= replicaExpirationMs * (1 - 1 / priority)`, which widens with pressure.
 	 * Demotion frees no disk until compaction rewrites the old rows, so the priority rarely falls during a
-	 * pass; the window and the budget are what bound it.
+	 * pass; the window and the budget are what bound it. Every run gets through a batch, however long its
+	 * scan took, or a store too large to scan within the budget would never shrink.
 	 */
 	async function reclaimReplicaSpace(store: any) {
 		const { batch: limit, checkEvery, budgetMs } = replicaReclaimLimits;
@@ -15011,13 +15012,7 @@ export function makeTable(options): TableResourceClass {
 		const cutoff = Date.now() + replicaExpirationMs * (1 - 1 / priority);
 		const budgetEnd = performance.now() + budgetMs;
 		const proceed = () =>
-			replicaPressure &&
-			replicaEvictionArmed &&
-			!disposed &&
-			!maintenanceClosed &&
-			!isReadOnlyMode() &&
-			ownsCleanup() &&
-			performance.now() < budgetEnd;
+			replicaPressure && replicaEvictionArmed && !disposed && !maintenanceClosed && !isReadOnlyMode() && ownsCleanup();
 		let attempted = 0;
 		while (proceed()) {
 			const { batch, exhausted } = await earliestReplicaDeadlines(store, cutoff, limit, proceed);
@@ -15030,7 +15025,7 @@ export function makeTable(options): TableResourceClass {
 				await rest();
 				if (++attempted % checkEvery === 0 && !((await getStorageReclamationPriority(primaryStore.path)) > 1)) return;
 			}
-			if (exhausted || !progressed) return;
+			if (exhausted || !progressed || performance.now() >= budgetEnd) return;
 		}
 	}
 	/**
@@ -15058,8 +15053,8 @@ export function makeTable(options): TableResourceClass {
 				}
 			}
 			if (++seen % REPLICA_SWEEP_YIELD_EVERY === 0) {
-				if (!proceed()) break;
 				await rest();
+				if (!proceed()) break;
 			}
 		}
 		keepEarliest();

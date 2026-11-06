@@ -92,7 +92,7 @@ async function reclaimAt(priority) {
 	});
 	afterEach(async () => {
 		setReplicaReclaimLimitsForTesting();
-		// reports the end of the pressure, so a later test starts from no pressure on any handler
+		// the next test's first report must read as a rise in pressure
 		await reclaimAt(0.5);
 	});
 
@@ -249,14 +249,17 @@ async function reclaimAt(priority) {
 		for (const id of ['a', 'b', 'c']) assertDemoted(id);
 	});
 
-	it('leaves the rest for the next run when the budget runs out', async () => {
-		setReplicaReclaimLimitsForTesting({ budgetMs: 0 });
-		await replica('a', 1000);
+	it('finishes a batch past its budget, however long the scan took, and leaves the rest for the next run', async () => {
+		setReplicaReclaimLimitsForTesting({ batch: 2, budgetMs: 0 });
+		await replica('earliest', 1000);
+		await replica('next', 2000);
+		await replica('last', 3000);
 		await reclaimAt(10);
-		assertKept('a');
-		setReplicaReclaimLimitsForTesting();
+		assertDemoted('earliest');
+		assertDemoted('next');
+		assertKept('last');
 		await reclaimAt(10);
-		assertDemoted('a');
+		assertDemoted('last');
 	});
 
 	it('keeps a replica renewed after the pass selected it', async () => {
