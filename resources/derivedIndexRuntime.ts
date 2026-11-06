@@ -873,9 +873,9 @@ class DerivedIndexRunner {
 	}
 
 	/**
-	 * Commit-time span from the oldest transaction read but not yet durable to the newest one read. It
-	 * starts after the durable one: measured from that, a log idle past the budget would trip on its
-	 * next commit with nothing behind.
+	 * Cursor distance over what this runner has read and not made durable: the commit-time span from the
+	 * oldest such transaction to the newest one read, so an idle gap before the oldest is not lag. A log
+	 * the durable cursor does not anchor yet is left to the accepted-age term.
 	 */
 	#cursorLag(): number {
 		let cursorLag = 0;
@@ -885,8 +885,7 @@ class DerivedIndexRunner {
 				const position = durable.logs[logName];
 				if (position === undefined) continue;
 				// reconciliation keeps the durable timestamp first in its log's pending list
-				const pending = this.#pendingTimestamps.get(logName)!;
-				const oldestUndurable = pending[pending.indexOf(position) + 1];
+				const oldestUndurable = this.#pendingTimestamps.get(logName)![1];
 				if (oldestUndurable !== undefined && latest > oldestUndurable)
 					cursorLag = Math.max(cursorLag, latest - oldestUndurable);
 			}
@@ -917,8 +916,8 @@ class DerivedIndexRunner {
 	}
 
 	/**
-	 * Owner-only. Lag is the longest of four terms: the commit-time span of what this runner has read
-	 * but not made durable, time parked on backpressure, time since the oldest commit this runner may
+	 * Owner-only. Lag is the longest of four terms: cursor distance over what this runner has read and
+	 * not made durable, time parked on backpressure, time since the oldest commit this runner may
 	 * not have read yet (a reader too slow to reach the end of the log cannot hide), and the age of
 	 * the oldest accepted work not yet durable (a backend that accepts but never barriers cannot hide).
 	 * All four are zero for a caught-up owner sitting idle and stay within drain latency plus flush age

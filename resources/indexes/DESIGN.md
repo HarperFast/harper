@@ -779,7 +779,7 @@ generation for that turn.
 ### Lag policy
 
 Opt-in per registration (`maxLagMilliseconds`; 0 = none; raised to two flush ages since catch-up is
-only proven at a barrier). The owner takes the longest of: the log-key span of what it has read but
+only proven at a barrier). The owner takes the longest of: cursor distance over what it has read and
 not made durable, time parked on backpressure or the ceiling, time since the oldest commit it may
 not have read (bounded by how far its newest read trails the clock), and the age of the oldest
 accepted work not yet durable. Past the budget it sets the shared flag; every worker's `derivedIndexWriteRejection`

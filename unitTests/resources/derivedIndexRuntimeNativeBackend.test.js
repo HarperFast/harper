@@ -2121,7 +2121,6 @@ describe('DerivedIndexRuntime for native backends', () => {
 		const { runtime } = runtimeFor(store, records, { idleGraceMilliseconds: 60_000, now: () => 1_000_000 });
 		runtime.register(registration(backend, { maxLagMilliseconds: 1000, maxFlushAgeMilliseconds: 5 }));
 		await waitFor(() => runtime.getStatus('idle-gap')?.state === 'idle');
-		// a minute after the durable transaction, one in a table the index does not project
 		entries.push(audit({ timestamp: 60_010, recordId: 'x', tableId: 2 }));
 		store.rootStore.emit('committed');
 		await waitFor(() => backend.deliveries.length === 1);
