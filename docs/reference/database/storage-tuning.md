@@ -447,7 +447,7 @@ storage:
 
 ## Storage Reclamation
 
-`storage.reclamation` controls how Harper evicts data from caching tables (tables with [`sourcedFrom`](../resources/resource-api.md#sourcedfromresource-options)) when disk usage runs high. Reclamation does **not** affect non-caching tables — those rely on explicit deletion, TTL expiration, or [compaction](./compaction.md).
+`storage.reclamation` controls how Harper evicts data from caching tables (tables with [`sourcedFrom`](../resources/resource-api.md#sourcedfromresource-options)) and demotes [local replicas](./schema.md#replicaexpiration-and-replicarefreshfraction) when disk usage runs high. Reclamation does **not** affect other records — those rely on explicit deletion, TTL expiration, or [compaction](./compaction.md).
 
 ### `storage.reclamation.threshold`
 
@@ -455,7 +455,7 @@ Type: `number` (ratio)
 
 Default: `0.4`
 
-Minimum fraction of the volume that should remain free. When free space falls below this ratio, reclamation begins evicting expired and lightly-used entries from caching tables. A larger value reclaims earlier and more aggressively; a smaller value defers reclamation closer to the volume filling.
+Minimum fraction of the volume that should remain free. When free space falls below this ratio, reclamation begins evicting expired and lightly-used entries from caching tables and demoting local replicas. A larger value reclaims earlier and more aggressively; a smaller value defers reclamation closer to the volume filling.
 
 ### `storage.reclamation.interval`
 
@@ -482,6 +482,22 @@ storage:
 ```
 
 For a deeper discussion of how `sourcedFrom` interacts with reclamation, see [Resource API — `sourcedFrom`](../resources/resource-api.md#sourcedfromresource-options).
+
+### Local replicas under storage pressure
+
+<VersionBadge version="v5.4.0" />
+
+<EngineBadge engines="RocksDB" />
+
+A [local replica](./schema.md#replicaexpiration-and-replicarefreshfraction) is a copy of a record owned by another node, so dropping one loses nothing: the next read fetches the record again. When free space is below the threshold, each reclamation check demotes replicas back to their indexed stubs, oldest deadline first, instead of waiting for `replicaExpiration` to pass.
+
+The _priority_ is the threshold divided by the free-space ratio. At priority `p`, a replica is kept for about `replicaExpiration / p`. With a threshold of `0.4` and 20% free, the priority is `2`, so a one-hour lifetime becomes about 30 minutes; on a full volume every replica is demoted. Records this node owns and existing stubs are not touched. When free space is back above the threshold, replicas expire at their normal deadlines.
+
+Replicas are only demoted when `storage.reclamation.interval` runs a check, and each check spends at most about a minute on a table, then moves on; what is left waits for the next check. Lower the interval if replicas accumulate faster than one run per interval can demote them.
+
+Demoting a replica does not free disk at once. It replaces the row with a smaller stub, and RocksDB returns the space when compaction rewrites the old version, which ongoing writes trigger over time. Free space may not rise during a check, and on a volume with no room left the demotions themselves can fail to write. Reclamation slows the growth of a node's cache and shrinks it over time; it does not replace keeping enough free space for the data the node owns.
+
+To see how much of a table is cache, use the `replica_count` and `replica_size_estimate` fields of [`describe_table`](../operations-api/operations.md#replicas).
 
 ## Compaction on Start
 

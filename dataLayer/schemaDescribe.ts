@@ -279,6 +279,12 @@ async function descTable(describeTableObject: any, attrPerms?: any) {
 			const recordCount = await tableObj.getRecordCount({ exactCount: !!describeTableObject.exact_count });
 			tableResult.record_count = recordCount.recordCount;
 			tableResult.estimated_record_range = recordCount.estimatedRange;
+			const replicas = await tableObj.getReplicaStats?.({ exactCount: !!describeTableObject.exact_count });
+			if (replicas) {
+				tableResult.replica_count = replicas.count;
+				if (replicas.estimatedRange) tableResult.estimated_replica_range = replicas.estimatedRange;
+				tableResult.replica_size_estimate = replicas.sizeEstimate;
+			}
 		}
 		tableResult.table_size = tableObj.getSize();
 		tableResult.db_audit_size = tableObj.getAuditSize();
