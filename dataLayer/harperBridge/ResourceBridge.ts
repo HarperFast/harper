@@ -320,9 +320,9 @@ export class ResourceBridge extends BridgeMethods {
 						let value = record[key];
 						if (typeof value === 'function') {
 							try {
-								// a SET expression reads the stored attributes; a relationship getter would read past the caller's role
+								// a relationship getter on the stored record would read past the caller's role
 								setRecord ??=
-									existingRecord && !context.user?.role?.permission?.super_user
+									existingRecord && Table.hasRelationships && !context.user?.role?.permission?.super_user
 										? withoutRelationships(existingRecord, Table)
 										: existingRecord;
 								const valueResults = value([[setRecord]]);
@@ -748,7 +748,6 @@ export class ResourceBridge extends BridgeMethods {
 	}
 }
 
-// the stored attributes and (still lazy) @computed values of a record, with no relationship getter to resolve
 function withoutRelationships(record: any, Table: any) {
 	const copy = { ...record };
 	for (const name in Table.propertyResolvers)

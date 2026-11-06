@@ -232,7 +232,11 @@ class SQLSearch {
 			this.data[schemaTable].__hashName = tableClass.primaryKey;
 			// AlaSQL evaluates what it reads, so a non-super caller's related records reach it as data
 			if (tableClass.hasRelationships && this.hdb_user && !this.hdb_user.role?.permission?.super_user)
-				this.data[schemaTable].__relationships = tableClass.propertyResolvers;
+				this.data[schemaTable].__relationshipColumns = new Set(
+					Object.keys(tableClass.propertyResolvers).filter(
+						(name) => tableClass.propertyResolvers[name]?.definition?.tableClass
+					)
+				);
 			this.data[schemaTable].__mergedData = Object.create(null);
 			this.data[schemaTable].__mergedAttributes = [];
 			this.data[schemaTable].__mergedAttrMap = Object.create(null);
@@ -601,7 +605,8 @@ class SQLSearch {
 	}
 
 	_fetchedValue(schemaTable, attr, value) {
-		return this.data[schemaTable].__relationships?.[attr]?.definition?.tableClass ? relatedRecordData(value) : value;
+		const relationshipColumns = this.data[schemaTable].__relationshipColumns;
+		return relationshipColumns !== undefined && relationshipColumns.has(attr) ? relatedRecordData(value) : value;
 	}
 
 	/**
@@ -1195,13 +1200,16 @@ class SQLSearch {
 
 				const searchResult = await harperBridge.getDataByHash(searchObject);
 				const tableColsLength = table.columns.length;
+				const relationshipColumns = this.data[schemaTable].__relationshipColumns;
+				const asData = relationshipColumns && table.columns.map((column) => relationshipColumns.has(column));
 
 				for (let i = 0, len = mergedHashKeys.length; i < len; i++) {
 					const theId = mergedHashKeys[i];
 					const theRow = searchResult.get(theId);
 					for (let j = 0; j < tableColsLength; j++) {
 						const val = table.columns[j];
-						const attrVal = theRow[val] === undefined ? null : this._fetchedValue(schemaTable, val, theRow[val]);
+						let attrVal = theRow[val] === undefined ? null : theRow[val];
+						if (asData?.[j]) attrVal = relatedRecordData(attrVal);
 						this.data[schemaTable].__mergedData[theId].push(attrVal);
 					}
 				}
