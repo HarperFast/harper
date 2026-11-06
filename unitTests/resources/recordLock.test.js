@@ -652,18 +652,20 @@ describe('Record locks (harper#483)', () => {
 			assert.strictEqual((await LockTest.get(recordId)).n, 1, 'write committed');
 		});
 
-		it('a reused ImmediateTransaction prunes expired lock handles', async function () {
+		// harper#4053: the per-write commit does not prune it, or a stale write through another instance lands
+		it('a reused ImmediateTransaction keeps an expired lock handle registered until unlock()', async function () {
 			if (isLMDB) return this.skip();
 			this.timeout(2000);
 			const recordId = id();
 			await LockTest.put({ id: recordId, n: 0 });
 			const context = {};
-			await LockTest.lock(recordId, { hold: true, lease: MIN_LOCK_LEASE_MS }, context);
+			const holder = await LockTest.lock(recordId, { hold: true, lease: MIN_LOCK_LEASE_MS }, context);
 			const immediate = context.transaction;
 			await delay(MIN_LOCK_LEASE_MS + 50);
-			assert.ok(immediate.recordLocks?.size, 'expired handle remains until the transaction is reused');
 			immediate.releaseRecordLocks();
-			assert.strictEqual(immediate.recordLocks, undefined, 'the next cleanup drops expired handle references');
+			assert.ok(immediate.recordLocks?.size === 1, 'a per-write commit leaves the expired handle registered');
+			assert.strictEqual(await holder.unlock(), false);
+			assert.ok(immediate.recordLocks === undefined, 'unlock() removes it');
 		});
 
 		it('scoped lock with expired lease: write through the returned record throws 409', async function () {

@@ -71,21 +71,57 @@ Consequences that shape the code:
   `unregisterRecordLock` manage it. `lock()` consults it before calling `tryLock`; a re-entrant call
   returns the existing live handle. A handle expired by its lease timer is pruned on next re-lock lookup
   so a stale holder's write gets 409.
+- **A handle leaves the registry only when it is deliberately released** (harper#4053): `unlock()`; a
+  re-lock of its key, which prunes a lapsed one (`recordLockFor`); or, for a scoped handle in an explicit
+  transaction, the commit or abort that releases it (a scoped lock covers one commit, a mid-scope
+  `txn.commit()` included). A lapse never removes it, and no commit removes a hold or any handle of a
+  self-committing context: `ImmediateTransaction.releaseRecordLocks()` does nothing. Until then a lapsed or
+  released handle keeps refusing writes to its key through every instance on the context
+  (`#bindWriteLock` binds it, `DatabaseTransaction.save()` refuses it); pruning it at an unrelated write's
+  commit let a stale write through another instance land after another worker took the key. `unlock()`
+  removes even an already released handle, unless its transaction already completed and took the registry
+  with it. The cost is accepted: a context that relies on leases and never unlocks keeps one entry per key
+  it locked, and its writes pay the lock bookkeeping a live hold already costs. Covered by
+  `recordLockLapsedHandleFence.test.js`.
 - **The registry outlives the link that holds it.** Hold handles, and an `ImmediateTransaction`'s live
   scoped ones, survive the commit that drops their link from the chain — `txnForContext`'s unlink of a
   spent self-committing link (#2323) and `completeMidScopeCommit`'s cut of the chain. Each drop hands the
-  link's `recordLocks` to the chain root (`retainRecordLocksOf`, keyed by database path) and the next link
+  link's `recordLocks` to the chain root (keyed by database path) and the next link
   `txnForContext` creates for that database adopts them (`adoptDetachedRecordLocks`), so every lookup
   through `txnForContext` — re-entrant `lock()`, `unlock()`, `#bindWriteLock`'s holder stamp and the
-  expired-lease 409 — still finds the handle (harper#3872). The closed link itself is never reused, so
+  expired-lease 409 — still finds the handle (harper#3872). Every removal of a link other than abort's goes
+  through `detachNext` (the spent-link loop, `completeMidScopeCommit`, `LMDBTransaction.commit`), which also
+  marks the link `leftChain`; parking and adoption merge registries, the later registration winning a key
+  both hold. The closed link itself is never reused, so
   #2323 stays fixed. A `lock()` whose wait outlives its link (a self-committing link's commit, or a mid-scope
   `txn.commit()`) does everything after the wait on the link that replaced it: the pending-write check below,
   registration, the clock pin, the read-snapshot refresh, and a coalesced follower's lookup. Whether the scope
   ended is read from the chain root (`lockScopeEnded`), since a dropped explicit link is CLOSED while the scope
-  lives on. A waiter that wakes while a mid-scope commit is still in flight sees the root CLOSED, as a link still
-  in the chain does, and gets the 500. `abort()` still drops the chain without handing anything over: it releases scoped handles
+  lives on. `abort()` still drops the chain without handing anything over: it releases scoped handles
   link by link after the cut. Covered by `recordLockChainedImmediateLinks.test.js`,
-  `recordLockChainedMidScopeCommit.test.js` and `recordLockLeftChainLockLink.test.js`.
+  `recordLockChainedMidScopeCommit.test.js`, `recordLockLeftChainLockLink.test.js` and
+  `recordLockRegistryHandover.test.js`.
+- **A scope has ended only when it really ends** (harper#4080). From `commit()`'s entry until it settles, a
+  mid-scope commit runs pre-commit work with the root still OPEN, then reads CLOSED through the native commit,
+  the cascade into chained links and the rotation that reopens it. It is not the end of the scope, but a scoped
+  `lock()` must not register into it either: the commit would release a handle it never covered, or commit the
+  lock's placeholder before the caller wrote, and the link is about to be cut. So an explicit-scope `lock()`
+  that meets its root's own commit in flight (`scopeCommitsInFlight`: a `commit()` call, not a closed
+  transaction's write committing by itself) — at entry, on another instance's re-entry into a scoped lock, or
+  after its native wait, its cluster round, a coalesced join or a retry — gives the key and any cluster grant
+  back (`retryAfterScopeCommit`), waits on `whenCommitSettles` (drained by `endCommitAttempt` after rotation)
+  and retries with its remaining budget; the root still CLOSED after that means the scope ended, and the waiter
+  gets 500 — as a later `lock()` on the head database does when a commit that left a read iterator open could
+  not reopen it (harper#4081). Holding the key while waiting would deadlock a pre-commit hook's own `lock()` on it. A hold waits
+  only once the root reads CLOSED: it survives the commit and stages nothing until saved, so in pre-commit work
+  it is admitted as before. The instance holding a scoped handle is not held back on re-entry: its lock ends
+  with that commit, as for any re-lock without `unlock()`. Two more exceptions keep the earlier outcome. The
+  scope's final commit (`scopeEnding`) is not waited out. A `lock()` made by the scope's own pre-commit hook
+  (`operation.before`, a source write-through) while that hook runs belongs to the commit, which awaits it:
+  `runCommitHook` marks the invocation in an `AsyncLocalStorage` (`currentCommitHook`) until the hook settles.
+  Such a call otherwise keeps the earlier outcome: a chained link's hook runs after the root went CLOSED, so its
+  `lock()` of a head-database record still gets the 500 (harper#4081). A commit that awaits a `lock()` started
+  outside its hook still waits until that `lock()` gives up.
 - **Release.** Every handle — scoped or hold — is registered in `link.recordLocks` and kept on the
   locked instance as `#lockHandle`; every commit or abort calls `releaseRecordLocks()`, which calls
   `handle.release()` on each non-hold handle, so a `{ hold: true }` handle outlives the transaction.
@@ -117,9 +153,10 @@ Consequences that shape the code:
   without `recordLockFor`'s pruning: a lapsed lease still refuses the write, at save time it would have
   been pruned away. A handle that lapsed while bound stays bound across the hooks even if a re-lock
   replaced it; only one released by `unlock()` lets the write rebind or revert. All bound publishes
-  (own-handle or registry) and registry-bound writes are `lockJoined`: caller writes rather than the scoped
-  lock's placeholder, so a scoped → hold upgrade keeps them and `unlock()` turns them back
-  into ordinary unlocked writes rather than dropping them. Covered by `recordLockStaticVerbs.test.js`.
+  (own-handle or registry), deletes, invalidations and registry-bound writes are `lockJoined`: caller writes
+  rather than the scoped lock's placeholder, so a scoped → hold upgrade keeps them and `unlock()` turns them back
+  into ordinary unlocked writes rather than dropping them (a delete staged behind the placeholder was dropped
+  with it, harper#3902). Covered by `recordLockStaticVerbs.test.js` and `recordLockScopedDelete.test.js`.
   A bound publish can still stamp below a concurrent record version; see
   [An out-of-order publish rewinds the record's version, letting a stale delete or write through](https://github.com/HarperFast/harper/issues/3637).
 - **Lock first, then write (harper#3896).** A fresh `lock()` on a key this transaction has a pending write to
@@ -166,9 +203,12 @@ Consequences that shape the code:
   on the instance that owns it falls through to the hold branch instead of resolving a dead reference.
   The upgrade is gated on `!scoped.hold`; if the existing handle is already a hold the call is
   re-entrant and returns the existing handle.
-- **Concurrent `lock()` calls for one key on one link coalesce.** `Promise.all([T.lock(id), T.lock(id)])`
+- **Concurrent `lock()` calls for one key in one scope coalesce.** `Promise.all([T.lock(id), T.lock(id)])`
   would otherwise have both calls reach `tryLock` before either registers, so the second parks against
-  the first. The first registers its in-flight acquisition (`registerPendingLock`); the second becomes a
+  the first. The first registers its in-flight acquisition (`registerPendingLock`) on the chain root, which
+  outlives every link, so a call made after the first one's link left the chain still finds it
+  (harper#3913); it unregisters by identity on success and failure, so neither a later leader's entry is
+  removed nor a rejected one left for followers to rejoin. The second becomes a
   follower that races that promise against its OWN timeout, then either takes the re-entrant path or
   retries with whatever budget it has left. A follower that lands after its enclosing transaction has
   closed must NOT retry: `lock()` re-resolves the context, which no longer points at that link, so the
