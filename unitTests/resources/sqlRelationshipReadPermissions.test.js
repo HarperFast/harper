@@ -168,6 +168,15 @@ describe('SQL reads of relationship columns apply the related table permissions'
 				assert.ok(String(response?.unauthorized_access).includes('without naming the path'), expression);
 			}
 			assert.strictEqual(verifyPermsAST(member('payload->dept'), users.restricted(), 'select'), null);
+			const joined = parse(
+				`SELECT e.payload->dept AS m FROM ${DATABASE}.Emp e JOIN ${DATABASE}.Dept d ON e.deptId = d.id WHERE e.id = 'e1'`
+			);
+			assert.strictEqual(verifyPermsAST(joined, users.full(), 'select'), null);
+			const hidden = userWith('sql-rel-hidden-dept', {
+				Emp: { ...READ, attribute_permissions: [{ attribute_name: 'id', read: true, insert: false, update: false }] },
+			});
+			const hiddenResponse = verifyPermsAST(member('(dept)->name'), hidden, 'select');
+			assert.ok(!JSON.stringify(hiddenResponse).includes('without naming the path'), JSON.stringify(hiddenResponse));
 			const write = parse(`UPDATE ${DATABASE}.Emp SET payload = 'x' WHERE id = 'e1' AND dept->secret = 'hidden'`);
 			assert.ok(verifyPermsAST(write, users.writeOnly(), 'update'));
 		});

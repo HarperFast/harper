@@ -110,7 +110,7 @@ async function startFixture(ctx: ContextWithHarper, env: Record<string, string>)
 	return { client, headers };
 }
 
-function assertRefused(response: { status: number; body: any }, context: string, denied?: 'Dept' | 'Dept.budget') {
+function assertRefused(response: { status: number; body: any }, context: string, denied?: string) {
 	strictEqual(
 		response.status,
 		403,
@@ -920,7 +920,6 @@ for (const sqlEngine of ['legacy', 'auto', 'new'] as const) {
 					ok(String(unsupported.body.error).includes('SQL engine v2'), JSON.stringify(unsupported.body));
 				}
 
-				// Badge.team -> Team.vault -> Vault: each hop is checked, and a record returned whole must be readable in full
 				const code = `SELECT id, team->vault->code AS c FROM data.Badge WHERE id = 'b1'`;
 				const vault = `SELECT id, team->vault AS v FROM data.Badge WHERE id = 'b1'`;
 				for (const statement of [code, vault]) {
@@ -928,15 +927,18 @@ for (const sqlEngine of ['legacy', 'auto', 'new'] as const) {
 					strictEqual(denied.status, 403, `${statement}: ${JSON.stringify(denied.body)}`);
 					deepStrictEqual(denied.body.invalid_schema_items, [`Table 'data.Vault' does not exist`], statement);
 				}
-				for (const statement of [code, vault]) {
-					const restricted = await sql('vaultRestricted', statement);
-					strictEqual(restricted.status, 403, `${statement}: ${JSON.stringify(restricted.body)}`);
-					ok(!keysIn(restricted.body).has('c') && !keysIn(restricted.body).has('v'), statement);
-				}
+				assertRefused(await sql('vaultRestricted', code), code, 'Vault.code');
+				const whole = await sql('vaultRestricted', vault);
+				strictEqual(whole.status, 403, JSON.stringify(whole.body));
+				deepStrictEqual(whole.body.unauthorized_access, [
+					{ schema: 'data', table: 'Vault', required_table_permissions: ['read'], required_attribute_permissions: [] },
+				]);
+				const teamId = `SELECT id, team->vault->teamId AS t FROM data.Badge WHERE id = 'b1'`;
 				if (memberAccess) {
 					deepStrictEqual(await rows('teamFull', code), [{ id: BADGE.id, c: VAULT.code }]);
 					deepStrictEqual(await rows('teamFull', vault), [{ id: BADGE.id, v: VAULT }]);
-				}
+					deepStrictEqual(await rows('vaultRestricted', teamId), [{ id: BADGE.id, t: VAULT.teamId }]);
+				} else strictEqual((await sql('vaultRestricted', teamId)).status, 400);
 				for (const statement of [
 					`SELECT id, (team)->vault AS v FROM data.Badge WHERE id = 'b1'`,
 					`SELECT id, COALESCE(team, 1)->vault AS v FROM data.Badge WHERE id = 'b1'`,

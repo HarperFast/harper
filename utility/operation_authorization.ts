@@ -730,7 +730,7 @@ export function verifyPermsAST(ast, userObject, operation, apiOperation = terms.
 			);
 		}
 
-		if (!isSuperUser) {
+		if (!isSuperUser && !permsResponse.hasIssues()) {
 			const memberAccess = parsedAst.getRelationshipMemberPaths();
 			if (memberAccess.unresolved.length > 0)
 				return permsResponse.handleUnauthorizedItem(HDB_ERROR_MSGS.SQL_RELATIONSHIP_MEMBER(memberAccess.unresolved));
