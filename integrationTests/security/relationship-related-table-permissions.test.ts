@@ -904,41 +904,30 @@ for (const sqlEngine of ['legacy', 'auto', 'new'] as const) {
 				]);
 			});
 
-			test('member access through a relationship is authorized as a path', async () => {
-				const budget = `SELECT id, dept->budget AS b FROM data.Emp WHERE id = 'e1'`;
-				const probe = `SELECT id FROM data.Emp WHERE id = 'e1' AND dept->budget = ${DEPT.budget}`;
-				const name = `SELECT id, dept->name AS n FROM data.Emp WHERE id = 'e1'`;
-				for (const statement of [budget, probe])
-					assertRefused(await sql('restricted', statement), statement, 'Dept.budget');
-				if (memberAccess) {
-					deepStrictEqual(await rows('full', budget), [{ id: EMP.id, b: DEPT.budget }]);
-					deepStrictEqual(await rows('full', probe), [{ id: EMP.id }]);
-					deepStrictEqual(await rows('restricted', name), [{ id: EMP.id, n: DEPT.name }]);
-				} else {
-					const unsupported = await sql('restricted', name);
-					strictEqual(unsupported.status, 400, JSON.stringify(unsupported.body));
-					ok(String(unsupported.body.error).includes('SQL engine v2'), JSON.stringify(unsupported.body));
-				}
-
+			test('member access through a relationship sees only what the role may read', async () => {
 				// v2 has no member access; legacy SQL evaluates a related record as data, so never through its relationships
 				async function memberRows(as: Principal, statement: string, expected: any[]) {
 					if (memberAccess) deepStrictEqual(await rows(as, statement), expected, `${as} ${statement}`);
 					else strictEqual((await sql(as, statement)).status, 400, `${as} ${statement}`);
 				}
+				const budget = `SELECT id, dept->budget AS b FROM data.Emp WHERE id = 'e1'`;
+				const probe = `SELECT id FROM data.Emp WHERE id = 'e1' AND dept->budget = ${DEPT.budget}`;
+				await memberRows('restricted', budget, [{ id: EMP.id }]);
+				await memberRows('restricted', probe, []);
+				await memberRows('full', budget, [{ id: EMP.id, b: DEPT.budget }]);
+				await memberRows('full', probe, [{ id: EMP.id }]);
+				await memberRows('restricted', `SELECT id, dept->name AS n FROM data.Emp WHERE id = 'e1'`, [
+					{ id: EMP.id, n: DEPT.name },
+				]);
+
+				const unread = [{ id: BADGE.id }];
 				const code = `SELECT id, team->vault->code AS c FROM data.Badge WHERE id = 'b1'`;
 				const vault = `SELECT id, team->vault AS v FROM data.Badge WHERE id = 'b1'`;
-				for (const statement of [code, vault]) {
-					const denied = await sql('teamOnly', statement);
-					strictEqual(denied.status, 403, `${statement}: ${JSON.stringify(denied.body)}`);
-					deepStrictEqual(denied.body.invalid_schema_items, [`Table 'data.Vault' does not exist`], statement);
-				}
-				assertRefused(await sql('vaultRestricted', code), code, 'Vault.code');
-				const unread = [{ id: BADGE.id }];
-				for (const as of ['vaultRestricted', 'teamFull'] as const) {
+				for (const as of ['teamOnly', 'vaultRestricted', 'teamFull'] as const) {
+					await memberRows(as, code, unread);
 					await memberRows(as, vault, unread);
 					await memberRows(as, `SELECT id, team->vault->teamId AS t FROM data.Badge WHERE id = 'b1'`, unread);
 				}
-				await memberRows('teamFull', code, unread);
 				await memberRows('super', code, [{ id: BADGE.id, c: VAULT.code }]);
 				await memberRows('super', vault, [{ id: BADGE.id, v: VAULT }]);
 				for (const statement of [

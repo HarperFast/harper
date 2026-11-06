@@ -157,13 +157,23 @@ describe('SQL reads of relationship columns apply the related table permissions'
 			assert.ok(!JSON.stringify(response).includes('Dept'), JSON.stringify(response));
 		});
 
-		it('checks member access through a relationship as a path from the related table', () => {
+		it("checks a write's member access through a relationship as a path; a read sees data", () => {
 			const member = (expression) => parse(`SELECT id, ${expression} AS m FROM ${DATABASE}.Emp WHERE id = 'e1'`);
-			assert.strictEqual(verifyPermsAST(member('dept->name'), users.restricted(), 'select'), null);
-			const secret = verifyPermsAST(member('dept->secret'), users.restricted(), 'select');
-			assert.deepStrictEqual(secret?.invalid_schema_items, [`Attribute 'secret' does not exist on '${DATABASE}.Dept'`]);
-			assert.strictEqual(verifyPermsAST(member('dept->secret'), users.full(), 'select'), null);
-			assert.ok(verifyPermsAST(member('dept!secret'), users.restricted(), 'select'));
+			for (const expression of ['dept->name', 'dept->secret', 'dept!secret'])
+				assert.strictEqual(verifyPermsAST(member(expression), users.restricted(), 'select'), null, expression);
+			const writeWhere = (expression) =>
+				verifyPermsAST(
+					parse(`UPDATE ${DATABASE}.Emp SET payload = 'x' WHERE id = 'e1' AND ${expression} = 'hidden'`),
+					users.writeOnly(),
+					'update'
+				);
+			assert.strictEqual(writeWhere('dept->name'), null);
+			for (const expression of ['dept->secret', 'dept!secret'])
+				assert.deepStrictEqual(
+					writeWhere(expression)?.invalid_schema_items,
+					[`Attribute 'secret' does not exist on '${DATABASE}.Dept'`],
+					expression
+				);
 			for (const expression of ['(dept)->name', 'COALESCE(dept, 1)->name', "dept->('na' + 'me')"]) {
 				assert.strictEqual(verifyPermsAST(member(expression), users.full(), 'select'), null, expression);
 				const write = parse(`UPDATE ${DATABASE}.Emp SET payload = 'x' WHERE id = 'e1' AND ${expression} IS NULL`);
@@ -180,8 +190,6 @@ describe('SQL reads of relationship columns apply the related table permissions'
 			});
 			const hiddenResponse = verifyPermsAST(member('(dept)->name'), hidden, 'select');
 			assert.ok(!JSON.stringify(hiddenResponse).includes('without naming the path'), JSON.stringify(hiddenResponse));
-			const write = parse(`UPDATE ${DATABASE}.Emp SET payload = 'x' WHERE id = 'e1' AND dept->secret = 'hidden'`);
-			assert.ok(verifyPermsAST(write, users.writeOnly(), 'update'));
 		});
 
 		it('names a related table the role can describe but not read as unauthorized', () => {
@@ -333,11 +341,6 @@ describe('SQL reads of relationship columns apply the related table permissions'
 		});
 
 		it('drops only the index into a to-many value from a member path', () => {
-			const user = memberUser('sql-rel-member-paths');
-			const member = (expression) =>
-				verifyPermsAST(parse(`SELECT ${expression} AS m FROM ${DATABASE}.Member WHERE id = 'm1'`), user, 'select');
-			assert.strictEqual(member('squad->members->0->id'), null);
-			assert.strictEqual(member('squad->members->`0`->id'), null);
 			const write = (expression) =>
 				verifyPermsAST(
 					parse(`UPDATE ${DATABASE}.Member SET squadId = 's1' WHERE id = 'm1' AND ${expression} IS NULL`),
@@ -346,9 +349,11 @@ describe('SQL reads of relationship columns apply the related table permissions'
 				);
 			for (const expression of ['squad->members->`1e0`->squad', 'squad->members->`1.0`->squad', 'squad->`01`'])
 				assert.ok(String(write(expression)?.unauthorized_access).includes('without naming the path'), expression);
+			assert.strictEqual(write('squad->members->0->id'), null);
+			assert.strictEqual(write('squad->members->`0`->id'), null);
 			for (const expression of ['squad->members->0->squad->locker->code', 'squad->members->`0`->squad->locker'])
 				assert.deepStrictEqual(
-					member(expression)?.invalid_schema_items,
+					write(expression)?.invalid_schema_items,
 					[`Table '${DATABASE}.Locker' does not exist`],
 					expression
 				);
@@ -357,12 +362,12 @@ describe('SQL reads of relationship columns apply the related table permissions'
 		it('walks a deeply nested member expression in linear time', () => {
 			let expression = 'payload';
 			for (let depth = 0; depth < 2000; depth++) expression = `(${expression})->x`;
-			const ast = parse(`SELECT squad, ${expression} AS m FROM ${DATABASE}.Member WHERE id = 'm1'`);
-			const start = performance.now();
-			assert.strictEqual(
-				verifyPermsAST(ast, memberUser('sql-rel-deep'), 'select')?.invalid_schema_items?.length ?? 0,
-				0
+			const ast = parse(
+				`UPDATE ${DATABASE}.Member SET squadId = 's1' WHERE id = 'm1' AND squad->name = 'x' AND ${expression} IS NULL`
 			);
+			const writer = userWith('sql-rel-deep', { Member: { ...READ, update: true }, Squad: READ });
+			const start = performance.now();
+			assert.strictEqual(verifyPermsAST(ast, writer, 'update'), null);
 			assert.ok(performance.now() - start < 500, `${performance.now() - start} ms`);
 		});
 

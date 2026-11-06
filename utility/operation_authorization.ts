@@ -730,10 +730,11 @@ export function verifyPermsAST(ast, userObject, operation, apiOperation = terms.
 			);
 		}
 
-		if (!isSuperUser && !permsResponse.hasIssues()) {
+		// A read sees a related attribute it cannot read as absent (relatedRecordData); a write would pick or compute rows by
+		// that absent value, so a write's member access must name a path the role can read.
+		if (writeReads && !permsResponse.hasIssues()) {
 			const memberAccess = parsedAst.getRelationshipMemberPaths();
-			// a write would pick or compute rows from a related attribute the role cannot see as if it were null
-			if (memberAccess.unresolved !== undefined && !nonSuperSelect)
+			if (memberAccess.unresolved !== undefined)
 				return permsResponse.handleUnauthorizedItem(HDB_ERROR_MSGS.SQL_RELATIONSHIP_MEMBER(memberAccess.unresolved));
 			for (const { tableClass, path } of memberAccess.paths)
 				relatedTableDenials = addMemberPathDenial(tableClass, path, userObject, relatedTableDenials);
@@ -1145,8 +1146,6 @@ function addRelatedTableDenials(
 	return denials;
 }
 
-// Member access (`dept->budget`) names a path through the relationship, refused like a NoSQL path condition when it names
-// what the role cannot read; the value itself reaches legacy SQL as data (`relatedRecordData`).
 function addMemberPathDenial(
 	tableClass: any,
 	path: string[],
