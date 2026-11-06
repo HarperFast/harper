@@ -1,8 +1,6 @@
 import assert from 'node:assert';
 import { createHash } from 'node:crypto';
-import { writeFile, mkdir, statfs, readFile } from 'node:fs/promises';
-import { createWriteStream } from 'node:fs';
-import { once } from 'node:events';
+import { writeFile, mkdir, statfs, readFile, open } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { performance } from 'node:perf_hooks';
@@ -101,9 +99,9 @@ await writeFile(
 		2
 	) + '\n'
 );
-const errors = createWriteStream(resolve(output, 'errors.ndjson'), { flags: 'a' });
+const errors = await open(resolve(output, 'errors.ndjson'), 'a');
 async function errorRecord(value) {
-	if (!errors.write(JSON.stringify(value) + '\n')) await once(errors, 'drain');
+	await errors.appendFile(JSON.stringify(value) + '\n');
 }
 const contextOptions = {
 	config: { threads: { count: 2 } },
@@ -276,7 +274,7 @@ try {
 			};
 			assert(
 				workerIds.length >= expectedWorkers,
-				'did not observe required HTTP workers in the fresh process within30s'
+				'did not observe required HTTP workers in the fresh process within 30s'
 			);
 			for (const name of cases) {
 				report.firstQueries.push({
@@ -446,8 +444,7 @@ try {
 		if (fatal) throw fatal;
 	}
 } finally {
-	errors.end();
-	await once(errors, 'finish');
+	await errors.close();
 	const monitorRegistry = resolve(process.env.HARPER_INTEGRATION_TEST_MONITOR_DIR, 'registry.json');
 	try {
 		const registry = JSON.parse(await readFile(monitorRegistry, 'utf8'));

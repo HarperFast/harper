@@ -403,7 +403,7 @@ describe('published full-text ordering and exact counts', () => {
 			);
 		}
 	});
-	it('preserves pages and completes selective ordering and counting beyond the native offset window', async () => {
+	it('preserves deep pages through optional counting and orders selective matches beyond the native window', async () => {
 		const info = await (await loadFullTextNativeBinding()).runtimeInfo();
 		const count = info.limits.maxSearchWindow + 5;
 		await seed(

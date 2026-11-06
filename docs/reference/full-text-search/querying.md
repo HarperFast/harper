@@ -81,7 +81,7 @@ const products = Product.search({
 });
 ```
 
-Full-text results default to descending relevance order. Use the existing `sort` option to order by directly stored fields, for example `sort: { attribute: 'id', descending: true }`, or `sort(-id)` in a REST query. Linked sorts support up to 32 clauses and preserve relevance order for equal sort keys. `$score` clauses must be descending. Computed fields, relationship paths, Blob fields, vector-distance fields and the query-only full-text field cannot be sort keys; reverse iteration is rejected.
+Full-text results default to descending relevance order. Use the existing `sort` option to order by directly stored fields, for example `sort: { attribute: 'id', descending: true }`, or `sort(-id)` in a REST query. Linked sorts support up to 32 clauses and preserve relevance order for equal sort keys. `$score` clauses must be descending. Computed fields, relationship paths, Blob fields, vector-distance fields and the query-only full-text field cannot be sort keys; reverse iteration is rejected. Sorting by a field the caller cannot read returns 403.
 
 Stored-field sorting examines the complete eligible matching set before applying offset and limit. It fails when the raw-hit, retained-result or execution budget cannot cover that work; it never sorts an incomplete relevance prefix. Sort keys come from admitted local records. A final source refresh can change returned values without recomputing the sort order. Highlights are prepared for the final visible page.
 

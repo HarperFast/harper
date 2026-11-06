@@ -1781,14 +1781,26 @@ describe('@fullText derived-index activation', () => {
 		Product = table({ database, table: 'Product', audit: true, attributes, fullTextIndexes: [definition()] });
 		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'search').state === 'ready', 30_000);
 
+		await Product.put([
+			{ id: 'later', title: 'z shoe' },
+			{ id: 'earlier', title: 'a shoe' },
+		]);
 		assert.deepStrictEqual(
 			await collect(
 				Product.search({
-					conditions: [{ attribute: 'search', comparator: 'matches', value: 'shoe' }],
-					sort: { attribute: 'title' },
+					conditions: [
+						{
+							attribute: 'search',
+							comparator: 'matches',
+							value: 'shoe',
+							maxIndexLagMilliseconds: 0,
+							waitForIndexMilliseconds: 30000,
+						},
+					],
+					sort: { attribute: 'title', descending: true },
 				})
-			),
-			[]
+			).then((records) => records.map(({ id }) => id)),
+			['later', 'earlier']
 		);
 		assert.throws(
 			() =>
