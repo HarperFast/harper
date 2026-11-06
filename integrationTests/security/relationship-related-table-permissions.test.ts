@@ -1010,6 +1010,10 @@ for (const sqlEngine of ['legacy', 'auto', 'new'] as const) {
 					strictEqual((await sql('restrictedWriter', copy)).status, 200);
 					deepStrictEqual(await storedEmp(), [{ ...EMP, payload: copied(DEPT_READABLE) }]);
 					await restoreEmp();
+					const stored = await sql('restrictedWriter', `UPDATE data.Emp SET payload = deptId WHERE id = 'e1'`);
+					strictEqual(stored.status, 200, JSON.stringify(stored.body));
+					deepStrictEqual(await storedEmp(), [{ ...EMP, payload: EMP.deptId }]);
+					await restoreEmp();
 					strictEqual((await sql('writeOnlyDeptReader', copy)).status, 200);
 					deepStrictEqual(await storedEmp(), [{ ...EMP, payload: copied(DEPT) }]);
 					await restoreEmp();

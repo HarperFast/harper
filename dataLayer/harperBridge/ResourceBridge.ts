@@ -314,12 +314,18 @@ export class ResourceBridge extends BridgeMethods {
 					continue;
 				}
 				if (existingRecord) existingRecord = collapseData(existingRecord);
+				let setRecord;
 				for (const key in record) {
 					if (Object.prototype.hasOwnProperty.call(record, key)) {
 						let value = record[key];
 						if (typeof value === 'function') {
 							try {
-								const valueResults = value([[existingRecord]]);
+								// a SET expression reads the stored attributes; a relationship getter would read past the caller's role
+								setRecord ??=
+									existingRecord && !context.user?.role?.permission?.super_user
+										? { ...existingRecord }
+										: existingRecord;
+								const valueResults = value([[setRecord]]);
 								if (Array.isArray(valueResults)) {
 									value = valueResults[0].func_val;
 									record[key] = value;

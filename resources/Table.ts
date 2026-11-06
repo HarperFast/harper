@@ -1640,8 +1640,10 @@ export function relatedRecordData(value: any): any {
 	const isRecordObject = value instanceof RecordObject;
 	const prototype = Object.getPrototypeOf(value);
 	if (!isRecordObject && prototype !== Object.prototype && prototype !== null) return value;
-	const source = isRecordObject && typeof (value as any).toJSON === 'function' ? (value as any).toJSON() : value;
-	const data = {};
+	const serialized = isRecordObject && typeof (value as any).toJSON === 'function';
+	const source = serialized ? (value as any).toJSON() : value;
+	// toJSON returns a fresh object, so only its values need copying
+	const data = serialized ? source : {};
 	for (const key of Object.keys(source)) {
 		const copied = relatedRecordData(source[key]);
 		if (key === '__proto__')

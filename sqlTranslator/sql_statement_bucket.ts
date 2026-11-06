@@ -160,9 +160,8 @@ class sqlStatementBucket {
 
 	/**
 	 * The relationship paths AlaSQL member access (`->`, `!`) reads: a relationship of one of the statement's tables
-	 * followed by literal member names, with the index into a to-many value dropped. A member access over another
-	 * expression that reads a relationship, or with a computed member, has no provable path: `unresolved` names the
-	 * relationship column and the walk stops there.
+	 * followed by literal member names. A member access over another expression that reads a relationship, or with a
+	 * computed member, has no provable path; `unresolved` names the first such relationship.
 	 */
 	getRelationshipMemberPaths(): { paths: { tableClass: any; path: string[] }[]; unresolved?: string } {
 		const paths = [];
@@ -188,6 +187,7 @@ class sqlStatementBucket {
 					tableClass.propertyResolvers[column.columnid]?.definition?.tableClass
 			);
 		};
+		let unresolved: string | undefined;
 		// astNodes yields an access before the accesses inside it, which the outer one's walk already covered
 		const covered = new Set();
 		for (const node of astNodes(this.ast)) {
@@ -204,32 +204,18 @@ class sqlStatementBucket {
 			members.reverse();
 			if (base instanceof Column && !computed) {
 				for (const tableClass of owners(base)) {
-					const resolver = tableClass.propertyResolvers[base.columnid];
-					const path = [base.columnid];
-					let current = resolver.definition.tableClass;
-					let toMany = resolver.toMany;
-					for (const member of members) {
-						if (toMany && /^\d+$/.test(String(member))) {
-							toMany = false;
-							continue;
-						}
-						// legacy SQL re-parses `1e0` or `1.0` as an index, so which element it names is not provable
-						if (toMany && !Number.isNaN(Number(member))) return { paths, unresolved: base.columnid };
-						path.push(String(member));
-						const next = current?.propertyResolvers[member];
-						current = next?.definition?.tableClass;
-						toMany = current && next.toMany;
-					}
-					paths.push({ tableClass, path });
+					const path = memberPath(tableClass, base.columnid, members);
+					if (path) paths.push({ tableClass, path });
+					else unresolved ??= base.columnid;
 				}
 				continue;
 			}
 			for (const inner of astNodes(base)) {
 				if (isMemberAccess(inner)) covered.add(inner);
-				else if (inner instanceof Column && owners(inner).length > 0) return { paths, unresolved: inner.columnid };
+				else if (inner instanceof Column && owners(inner).length > 0) unresolved ??= inner.columnid;
 			}
 		}
-		return { paths };
+		return { paths, unresolved };
 	}
 
 	/**
@@ -333,6 +319,29 @@ class sqlStatementBucket {
 
 		return this.ast;
 	}
+}
+
+/**
+ * The path a member chain reads from `relationship` of `tableClass`, with an index into a to-many value dropped, or
+ * undefined when legacy SQL could read a different element than the text names: it re-parses `1e0` or `1.0` as an index.
+ */
+function memberPath(tableClass: any, relationship: string, members: any[]): string[] | undefined {
+	const resolver = tableClass.propertyResolvers[relationship];
+	const path = [relationship];
+	let current = resolver.definition.tableClass;
+	let toMany = resolver.toMany;
+	for (const member of members) {
+		if (toMany && /^\d+$/.test(String(member))) {
+			toMany = false;
+			continue;
+		}
+		if (toMany && !Number.isNaN(Number(member))) return;
+		path.push(String(member));
+		const next = current?.propertyResolvers[member];
+		current = next?.definition?.tableClass;
+		toMany = current && next.toMany;
+	}
+	return path;
 }
 
 /**
