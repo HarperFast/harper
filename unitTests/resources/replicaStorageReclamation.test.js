@@ -72,7 +72,7 @@ async function reclaimAt(priority) {
 				class extends Resource {
 					static async load(entry) {
 						loads.push(entry.key);
-						const found = responses.get(entry.key);
+						const found = responses.get(String(entry.key));
 						if (found) await Declared._storeReplica(entry, found);
 						return found;
 					}
@@ -113,7 +113,7 @@ async function reclaimAt(priority) {
 	}
 	async function replica(id, remainingMs, Table = Rows) {
 		const entry = await stub(id, Table);
-		responses.set(id, {
+		responses.set(String(id), {
 			key: id,
 			value: { id, name: 'indexed', body: `body of ${id}` },
 			version: entry.version,
@@ -210,6 +210,33 @@ async function reclaimAt(priority) {
 		await reclaimAt(Infinity);
 		assertDemoted('older');
 		for (const id of fresh) assertKept(id);
+	});
+
+	it('reaches an older replica behind fresh rows with composite ids', async () => {
+		limits({ batch: 2, minAgeMs: 1000 });
+		await replica('older', 5000);
+		await new Promise((resolve) => setTimeout(resolve, 1100));
+		const fresh = [
+			['fresh', 1],
+			['fresh', 2],
+			['fresh', 3],
+		];
+		for (const id of fresh) await replica(id, 1000);
+		const started = performance.now();
+		await reclaimAt(Infinity);
+		assert.ok(performance.now() - started < 10_000, 'the pass moved past them rather than rescanning to its budget');
+		assertDemoted('older');
+		for (const id of fresh) assertKept(id);
+	});
+
+	it('drops a deadline left on a freshly written row that is not a replica', async () => {
+		setReplicaReclaimLimitsForTesting();
+		await Rows.put('owned', { id: 'owned', name: 'indexed', body: 'mine' });
+		deadlineStore().putSync('owned', Date.now() + 1000);
+		await replica('kept', LIFETIME_MS);
+		await reclaimAt(10);
+		assert.equal(deadlineStore().getSync('owned'), undefined);
+		assert.equal(Rows.primaryStore.getEntry('owned').value.body, 'mine');
 	});
 
 	it('does not accelerate a lifetime no longer than the minimum age', async () => {

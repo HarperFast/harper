@@ -14951,7 +14951,7 @@ export function makeTable(options): TableResourceClass {
 				}
 				seen++;
 				if (typeof deadline === 'number' && deadline <= Date.now()) {
-					await expireReplicaDeadline(store, key, deadline);
+					await expireReplicaDeadline(store, key, deadline, primaryStore.getEntry(key));
 					await rest();
 				} else if (seen % REPLICA_SWEEP_YIELD_EVERY === 0) await rest();
 			}
@@ -14971,12 +14971,7 @@ export function makeTable(options): TableResourceClass {
 			if (Atomics.load(state, 0) !== admissionsAtStart) armReplicaEviction();
 		} else scheduleReplicaSweep();
 	}
-	function expireReplicaDeadline(
-		store: any,
-		key: Id,
-		deadline: number,
-		entry: Entry = primaryStore.getEntry(key)
-	): Promise<unknown> {
+	function expireReplicaDeadline(store: any, key: Id, deadline: number, entry: Entry | undefined): Promise<unknown> {
 		if (!(entry?.metadataFlags & REPLICA)) return dropOrphanDeadline(store, key);
 		return TableResource.evict(key, entry.value, entry.version, deadline);
 	}
@@ -15014,7 +15009,7 @@ export function makeTable(options): TableResourceClass {
 		const cutoff = Date.now() + replicaExpirationMs - lifetime;
 		const budgetEnd = performance.now() + budgetMs;
 		const proceed = () => replicaEvictionArmed && !disposed && !maintenanceClosed && !isReadOnlyMode() && ownsCleanup();
-		const young = new Set<Id>();
+		const young = new Set<unknown>();
 		let attempted = 0;
 		while (proceed()) {
 			const { batch, exhausted } = await earliestReplicaDeadlines(store, cutoff, limit, young, proceed);
@@ -15023,8 +15018,8 @@ export function makeTable(options): TableResourceClass {
 				if (!proceed()) return;
 				const entry: Entry = primaryStore.getEntry(key);
 				// a deadline capped by the record's own expiry makes a fresh row look old
-				if (Date.now() - entry?.version < minAgeMs) {
-					young.add(key);
+				if (entry?.metadataFlags & REPLICA && Date.now() - entry.version < minAgeMs) {
+					young.add(typeof key === 'object' ? chainKeyForId(key) : key);
 					progressed = true;
 					await rest();
 					continue;
@@ -15049,7 +15044,7 @@ export function makeTable(options): TableResourceClass {
 		store: any,
 		cutoff: number,
 		limit: number,
-		young: Set<Id>,
+		young: Set<unknown>,
 		proceed: () => boolean
 	) {
 		const batch: { key: Id; deadline: number }[] = [];
@@ -15065,7 +15060,7 @@ export function makeTable(options): TableResourceClass {
 			if (
 				typeof deadline === 'number' &&
 				(deadline <= cutoff || deadline > Date.now() + replicaExpirationMs) &&
-				!young.has(key)
+				!young.has(typeof key === 'object' ? chainKeyForId(key) : key)
 			) {
 				matched++;
 				if (deadline <= bound) {
