@@ -99,16 +99,16 @@ export default class PermissionResponseObject {
 		}
 	}
 
+	hasIssues(): boolean {
+		return Object.keys(this.unauthorized_access).length > 0 || this.invalid_schema_items.length > 0;
+	}
+
 	/**
 	 * This method is used to evaluate whether or not there are permissions issues tracked and, if so, returns the response
 	 * object and, if not, returns a null value meaning the validation step has passed
 	 *
 	 * @returns { null| PermissionResponseObject }
 	 */
-	hasIssues(): boolean {
-		return Object.keys(this.unauthorized_access).length > 0 || this.invalid_schema_items.length > 0;
-	}
-
 	getPermsResponse() {
 		const unauthorizedAccessArr = Object.values(this.unauthorized_access);
 		if (unauthorizedAccessArr.length > 0 || this.invalid_schema_items.length > 0) {

@@ -127,7 +127,6 @@ function assertRefused(response: { status: number; body: any }, context: string,
 	deepStrictEqual(response.body.unauthorized_access, [], context);
 }
 
-/** Every object key in a response body, at any depth. */
 function keysIn(value: any, keys = new Set<string>()): Set<string> {
 	if (value && typeof value === 'object') {
 		for (const key of Object.keys(value)) {
