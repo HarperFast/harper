@@ -324,6 +324,150 @@ function previousAuditPosition(auditStore, tableId: number, recordId: any, audit
 	);
 }
 
+/** One audit entry as `createHistoryFold` reads it, captured while the entry's buffer is still valid. */
+export interface HistoryFoldEntry {
+	recordId: any;
+	type: string;
+	txnLogKey: number;
+	nodeId?: number;
+	version?: number;
+	previousVersion?: number;
+	previousNodeId?: number;
+	previousAdditionalAuditRefs?: { version: number; nodeId: number }[];
+	/** The encoded entry's size in bytes, which bounds what the fold holds. */
+	size?: number;
+	/** The entry's own body: the full record for a put, the update for a patch. */
+	ownValue?: any;
+	/** The body could not be decoded; the entry is rebuilt the existing way. */
+	unreadable?: boolean;
+}
+
+export function historyFoldEntry(auditRecord, store, txnLogKey: number = auditRecord.txnLogKey): HistoryFoldEntry {
+	const type = auditRecord.type;
+	const entry: HistoryFoldEntry = {
+		recordId: auditRecord.recordId,
+		type,
+		txnLogKey,
+		nodeId: auditRecord.nodeId,
+		version: auditRecord.version,
+		previousVersion: auditRecord.previousVersion,
+		previousNodeId: auditRecord.previousNodeId,
+		previousAdditionalAuditRefs: auditRecord.previousAdditionalAuditRefs,
+		size: auditRecord.size,
+	};
+	if (type === 'put' || type === 'patch') {
+		try {
+			entry.ownValue = auditRecord.getValue(store, false);
+		} catch {
+			entry.unreadable = true;
+		}
+	}
+	return entry;
+}
+
+interface HistoryFoldState {
+	/** The stored row's size in bytes. */
+	rowBytes: number;
+	/** Rebuilt per entry until the next put: a patch onto a stub stores only indexed fields. */
+	stubbed?: boolean;
+	image?: { txnLogKey: number; nodeId: number; version: number; bytes: number; record: any };
+}
+
+/**
+ * Rebuilds full record images for audit entries read oldest first. Each record's image is carried from
+ * one entry to the next, so a patch costs one step instead of `getRecordAtTime`'s walk back from the
+ * live record (harper#3569, harper#3032).
+ *
+ * A patch extends a carried image only when it names that image's entry as its single predecessor and
+ * is newer than it. Anything else (a merged branch, a gap, the first entry in range) goes to `rebuild`,
+ * whose result reseeds the image; a put seeds it from its own body. `rowBytes` is asked once per record:
+ * the stored row's size when its history may fold, or false. Images are held least recently extended
+ * first within `maxRecords` and `maxBytes`, estimated from entry sizes. The answers are kept apart, for up
+ * to 16 times as many records, so a record that cannot fold never takes an image's slot.
+ */
+export function createHistoryFold(
+	rowBytes: (recordId) => number | false,
+	maxRecords = 1_000,
+	maxBytes = 8 * 1024 * 1024
+) {
+	const states = new Map<any, HistoryFoldState>();
+	const answers = new Map<any, number | false>();
+	let heldBytes = 0;
+	function setImage(state: HistoryFoldState, image?: HistoryFoldState['image']) {
+		heldBytes += (image?.bytes ?? 0) - (state.image?.bytes ?? 0);
+		state.image = image;
+	}
+	function keep(recordId, state: HistoryFoldState) {
+		states.delete(recordId); // re-inserted, so eviction drops the least recently extended record
+		states.set(recordId, state);
+		for (const [oldestId, oldest] of states) {
+			if (states.size <= maxRecords && heldBytes <= maxBytes) break;
+			setImage(oldest);
+			states.delete(oldestId);
+		}
+	}
+	return {
+		/** The full image at `entry`. `rebuild` reconstructs it the existing way when the fold cannot. */
+		fullValue(entry: HistoryFoldEntry, rebuild: () => any) {
+			const { recordId, type } = entry;
+			if (recordId !== null && typeof recordId === 'object') return rebuild(); // a composite key needs its own encoding
+			let bytes = answers.get(recordId);
+			if (bytes === undefined) {
+				answers.set(recordId, (bytes = rowBytes(recordId)));
+				if (answers.size > maxRecords * 16) answers.delete(answers.keys().next().value);
+			}
+			if (bytes === false) return rebuild();
+			const state: HistoryFoldState = states.get(recordId) ?? { rowBytes: bytes };
+			keep(recordId, state);
+			const seed = (image: any, bytes: number) => {
+				setImage(state, {
+					txnLogKey: entry.txnLogKey,
+					nodeId: entry.nodeId ?? 0,
+					version: entry.version,
+					bytes,
+					record: image,
+				});
+				keep(recordId, state);
+			};
+			if (entry.unreadable || (type !== 'put' && type !== 'patch')) {
+				setImage(state);
+				if (type === 'invalidate' || type === 'relocate') state.stubbed = true;
+				return rebuild();
+			}
+			if (type === 'put') {
+				state.stubbed = false;
+				const record = entry.ownValue;
+				if (record == null) setImage(state);
+				else seed({ ...record }, entry.size ?? 0);
+				return record;
+			}
+			const image = state.image;
+			if (
+				image &&
+				!state.stubbed &&
+				!entry.previousAdditionalAuditRefs?.length &&
+				image.txnLogKey === entry.previousVersion &&
+				image.nodeId === (entry.previousNodeId ?? 0) &&
+				entry.version > image.version
+			) {
+				const record = { ...image.record };
+				try {
+					if (entry.ownValue != null) applyForward(record, entry.ownValue);
+				} catch {
+					setImage(state); // an operation this version cannot apply; rebuilt the existing way
+					return rebuild();
+				}
+				seed(record, image.bytes + (entry.size ?? 0));
+				return { ...record };
+			}
+			const record = rebuild();
+			if (state.stubbed || !(record && typeof record === 'object')) setImage(state);
+			else seed({ ...record }, Math.max(state.rowBytes, entry.size ?? 0));
+			return record;
+		},
+	};
+}
+
 /**
  * Reconstruct the record state at a given timestamp by going back through the audit history and reversing any changes
  * @param currentEntry

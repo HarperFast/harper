@@ -285,7 +285,10 @@ import {
 import { actionRecorder, recordAction, recordActionBinary } from './analytics/write.ts';
 import {
 	commutativeOpsOf,
+	createHistoryFold,
+	getRecordAtTime,
 	hasCommutativeOp,
+	historyFoldEntry,
 	operations as crdtOperations,
 	rebuildUpdateBefore,
 	remainingAgainstRecord,
@@ -2165,6 +2168,38 @@ export function makeTable(options): TableResourceClass {
 			}
 		}
 		return refs;
+	}
+	// The stored row's size when createHistoryFold may carry this record's image through its entries since
+	// `since`, or false. getRecordAtTime reverses patches from the stored row back to the last put, delete or
+	// invalidate and rebuilds older entries forward from the chain, as the fold does; so over that newest
+	// stretch the row must be exactly what its chain implies. It is not on a sharded table (a non-owner keeps a
+	// stub while the audit entry keeps the full body), on a schemaless one (drop_attribute strips rows in place,
+	// keeping their versions), for a stub or replica row, or once an out-of-order write was merged in (a branch
+	// ref on RocksDB, a version older than its predecessor on LMDB). A row or chain that cannot be read is
+	// rebuilt per entry, as before.
+	function foldsHistoryOf(id: Id, since: number): number | false {
+		if (residencyPolicy || !TableResource.schemaDefined) return false;
+		try {
+			const entry = primaryStore.getEntry(id);
+			if (!entry) return 0;
+			if (entry.metadataFlags & (INVALIDATED | REPLICA | VERSION_REUSED) || entry.additionalAuditRefs?.length)
+				return false;
+			let key = isRocksDB ? entry.version : entry.localTime;
+			let nodeId = entry.nodeId;
+			let newer = Infinity;
+			while (key > 0 && key >= since) {
+				const audited = auditStore.get(key, tableId, id, nodeId, true);
+				if (!audited) break;
+				if (audited.previousAdditionalAuditRefs?.length || !(audited.version < newer)) return false;
+				if (audited.type === 'put' || audited.type === 'delete' || audited.type === 'invalidate') break;
+				newer = audited.version;
+				key = audited.previousVersion;
+				nodeId = audited.previousNodeId;
+			}
+			return entry.size ?? 0;
+		} catch {
+			return false;
+		}
 	}
 	function resolveAuditHead(
 		id: Id,
@@ -9966,6 +10001,9 @@ export function makeTable(options): TableResourceClass {
 						// transaction the same txnLogKey, so it only moves to a key once all of that key's records are
 						// handled; an early return leaves it before a partly delivered transaction.
 						let handledTxnLogKey: number | undefined;
+						// replays every version oldest first, so each patch extends the image built for the one before it
+						const replayFold =
+							includeSuperseded && getFullRecord ? createHistoryFold((id) => foldsHistoryOf(id, startTime)) : undefined;
 						const replayRange = auditStore.getRange({
 							start: startTime,
 							exclusiveStart: true,
@@ -10011,7 +10049,14 @@ export function makeTable(options): TableResourceClass {
 								// a marker is table-wide, as the live broadcast delivers it
 								if (resnapshots) reloadPending = true;
 								else if (thisId == null || isReload || isDescendantId(thisId, id)) {
-									const event = eventFromAudit(id, auditRecord, auditRecord.txnLogKey);
+									const event = eventFromAudit(
+										id,
+										auditRecord,
+										auditRecord.txnLogKey,
+										undefined,
+										undefined,
+										replayFold
+									);
 									if (event) {
 										if (reportingProgress) event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
 										if (!send(event)) return;
@@ -10196,6 +10241,11 @@ export function makeTable(options): TableResourceClass {
 						// duplicate of the entry send.
 						subscription!.startTime = localTime ?? entry?.version;
 						const history = [];
+						// Superseded replay to a start time (durable catch-up) walks back to the same boundary whatever
+						// the event filter decides, so each version's image can be settled after the walk, oldest first,
+						// where every patch extends the image before it rather than walking back from the live record.
+						const foldable = includeSuperseded && getFullRecord && count == null && foldsHistoryOf(thisId, startTime);
+						const deferred = foldable === false ? undefined : [];
 						let inspected = 0;
 						let missingVersion = false;
 						let nextTime = localTime;
@@ -10208,7 +10258,11 @@ export function makeTable(options): TableResourceClass {
 							if (++inspected > MAX_PREVIOUS_COUNT_SCAN) break;
 							const auditRecord = auditStore.getSync(nextTime, tableId, thisId, nodeId, true);
 							if (auditRecord && !(checkResume && auditRecord.type === undefined)) {
-								if (startTime < nextTime) {
+								if (startTime < nextTime && deferred) {
+									// the next read may reuse this entry's buffer: decode its body and read its fields now
+									auditRecord.getValue?.(primaryStore, false);
+									deferred.push({ snapshot: { ...auditRecord }, localTime: nextTime, event: undefined });
+								} else if (startTime < nextTime) {
 									const event = eventFromAudit(thisId, auditRecord, nextTime);
 									if (event && reportingProgress) event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
 									if (event && (!allowsEvent || allowsEvent(event))) {
@@ -10240,6 +10294,26 @@ export function makeTable(options): TableResourceClass {
 							}
 							// a first version may be a record recreated after retention pruned its tombstone
 							if (!(nextTime > 0) && !checkResume()) return;
+						}
+						if (deferred) {
+							const fold = createHistoryFold(() => foldable, 1);
+							for (let i = deferred.length; i > 0;) {
+								const version = deferred[--i];
+								if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
+									recordsSinceYield = 0;
+									await rest();
+									if (!isActive()) return;
+								}
+								version.event = eventFromAudit(thisId, version.snapshot, version.localTime, undefined, undefined, fold);
+							}
+							// filtered newest first, as the walk filters every other replay
+							for (const { snapshot, event } of deferred) {
+								if (event && reportingProgress) event[ORIGIN_ID] = snapshot.nodeId ?? 0;
+								if (event && (!allowsEvent || allowsEvent(event))) {
+									request.omitCurrent = true;
+									history.push(event);
+								} else if (!isActive()) return;
+							}
 						}
 						for (let i = history.length; i > 0;) {
 							if (!send(history[--i], true)) return;
@@ -10314,7 +10388,14 @@ export function makeTable(options): TableResourceClass {
 				event.type = entry.metadataFlags & INVALIDATED ? 'invalidate' : entry.value ? 'put' : 'delete';
 				return true;
 			}
-			function eventFromAudit(id: Id, auditRecord: any, localTime: number, beginTxn?: boolean, live?: boolean) {
+			function eventFromAudit(
+				id: Id,
+				auditRecord: any,
+				localTime: number,
+				beginTxn?: boolean,
+				live?: boolean,
+				fold?: ReturnType<typeof createHistoryFold>
+			) {
 				let type = auditRecord.type;
 				let value;
 				let version = auditRecord.version;
@@ -10334,7 +10415,12 @@ export function makeTable(options): TableResourceClass {
 						type = entry?.metadataFlags & INVALIDATED ? 'invalidate' : value ? 'put' : 'delete';
 					} else value = auditRecord.getValue?.(primaryStore, false, localTime);
 				} else {
-					value = auditRecord.getValue?.(primaryStore, getFullRecord, localTime);
+					value =
+						fold && auditRecord.getValue
+							? fold.fullValue(historyFoldEntry(auditRecord, primaryStore, localTime), () =>
+									auditRecord.getValue(primaryStore, getFullRecord, localTime)
+								)
+							: auditRecord.getValue?.(primaryStore, getFullRecord, localTime);
 					if (getFullRecord && type === 'patch') type = 'put';
 				}
 				return { id, localTime, value, version, type, beginTxn, size: auditRecord.size };
@@ -11790,6 +11876,7 @@ export function makeTable(options): TableResourceClass {
 		}
 		static async *getHistory(startTime = 0, endTime = Infinity) {
 			let loggedEntryError = false;
+			const fold = createHistoryFold((id) => foldsHistoryOf(id, startTime || 1));
 			for (const auditRecord of auditStore.getRange({
 				start: startTime || 1, // if startTime is 0, we actually want to shift to 1 because 0 is encoded as all zeros with audit store's special encoder, and will include symbols
 				end: endTime,
@@ -11798,7 +11885,9 @@ export function makeTable(options): TableResourceClass {
 				if (auditRecord.tableId !== tableId || isNonHistoryType(auditRecord.type)) continue;
 				let value;
 				try {
-					value = auditRecord.getValue(primaryStore, true, auditRecord.txnLogKey);
+					value = fold.fullValue(historyFoldEntry(auditRecord, primaryStore), () =>
+						auditRecord.getValue(primaryStore, true, auditRecord.txnLogKey)
+					);
 				} catch (error) {
 					if (!loggedEntryError) {
 						loggedEntryError = true;
@@ -11829,6 +11918,7 @@ export function makeTable(options): TableResourceClass {
 			const count = 0;
 			const auditWindow = 100;
 			let loggedEntryError = false;
+			const foldEntries = new Map();
 			do {
 				await rest(); // yield to other async operations
 				let insertionPoint = history.length;
@@ -11840,18 +11930,19 @@ export function makeTable(options): TableResourceClass {
 						!isNonHistoryType(auditRecord.type) &&
 						compareKeys(auditRecord.recordId, id) === 0
 					) {
-						let value;
+						// A patch's image is rebuilt after the walk, oldest first (see below); every other entry's value
+						// is read now, while the entry's buffer is still valid.
+						let foldEntry, value;
 						try {
-							// reconstruct each entry's record image as of its own log position, not the audit
-							// window boundary (nextVersion), matching getHistory (issue #1330)
-							value = auditRecord.getValue(primaryStore, true, auditRecord.txnLogKey);
+							foldEntry = historyFoldEntry(auditRecord, primaryStore);
+							if (auditRecord.type !== 'patch') value = auditRecord.getValue(primaryStore, true, auditRecord.txnLogKey);
 						} catch (error) {
 							if (!loggedEntryError) {
 								loggedEntryError = true;
 								logger.error?.('Error getting history entry', auditRecord.txnLogKey, error);
 							}
 						}
-						history.splice(insertionPoint, 0, {
+						const item = {
 							id: auditRecord.recordId,
 							localTime: isRocksDB ? auditRecord.txnLogKey : auditRecord.version,
 							version: auditRecord.version,
@@ -11859,7 +11950,9 @@ export function makeTable(options): TableResourceClass {
 							value,
 							user: auditRecord.user,
 							operation: auditRecord.originatingOperation,
-						});
+						};
+						if (foldEntry) foldEntries.set(item, foldEntry);
+						history.splice(insertionPoint, 0, item);
 						const previousVersion = isRocksDB
 							? resolveAuditHead(
 									id,
@@ -11875,7 +11968,34 @@ export function makeTable(options): TableResourceClass {
 				}
 				nextVersion = highestPreviousVersion;
 			} while (count < 1000 && nextVersion);
-			return history.reverse();
+			history.reverse();
+			// reconstruct each entry's record image as of its own log position, not the audit window boundary
+			// (nextVersion), matching getHistory (issue #1330); folding oldest first makes each patch one step
+			const fold = createHistoryFold((recordId) => foldsHistoryOf(recordId, 0));
+			for (const item of history) {
+				const foldEntry = foldEntries.get(item);
+				if (!foldEntry) continue;
+				try {
+					item.value = fold.fullValue(foldEntry, () =>
+						item.type === 'patch'
+							? getRecordAtTime(
+									primaryStore.getEntry(id),
+									foldEntry.txnLogKey,
+									primaryStore,
+									tableId,
+									item.id,
+									foldEntry.nodeId
+								)
+							: item.value
+					);
+				} catch (error) {
+					if (!loggedEntryError) {
+						loggedEntryError = true;
+						logger.error?.('Error getting history entry', foldEntry.txnLogKey, error);
+					}
+				}
+			}
+			return history;
 		}
 		static async clear() {
 			if (databaseName === 'system' && tableName === RESIDENCY_MAP_TABLE)
