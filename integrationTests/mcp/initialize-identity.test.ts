@@ -2,7 +2,7 @@
  * MCP `initialize` admission identity (PR #3537): the socket IP, or the first (client-most) value of
  * `mcp.<profile>.rateLimit.identityHeader` when that key is set (`docs/reference/mcp/configuration.md`
  * "identityHeader"; `components/mcp/rateLimit.ts` `resolveClientIdentity`). Covers the operations profile
- * (Fastify adapter: `request.ip`, no `trustProxy`) and the application profile with
+ * (Fastify adapter: `clientAddressOf`, which reads the injected address on Bun) and the application profile with
  * `identityHeader: x-forwarded-for`. The identityHeader warning is emitted on a worker's first rate-limit
  * config read (`rateLimit.ts` `configFor`), not at startup, so the log arm runs after the traffic arms.
  *
@@ -195,6 +195,11 @@ suite(
 			// a forwarded-for header on the direct TCP path: Fastify request.ip is the socket (no trustProxy)
 			expectDenied(await ops(SRC_O1, { [IDENTITY_HEADER]: '203.0.113.9' }), 'O X-Forwarded-For');
 			expectDenied(await ops(SRC_O1, { [IDENTITY_HEADER]: '203.0.113.10, 10.0.0.1' }), 'O X-Forwarded-For list');
+			// the header Bun's inject bridge carries the socket address in: replaced there, ignored on Node
+			expectDenied(
+				await ops(SRC_O1, { 'x-harper-internal-client-address': '203.0.113.11' }),
+				'O forged internal client address'
+			);
 			const before = await sessionCount();
 			const other = expectAdmitted(await ops(SRC_O2), 'O second address');
 			expectDenied(await ops(SRC_O1), 'O first address still denied');
