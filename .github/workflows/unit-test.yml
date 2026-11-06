@@ -35,8 +35,8 @@ jobs:
     runs-on: ubuntu-latest
     # A job that hits this cap is reported as `cancelled`, not `failure`, so it reads as non-red
     # on a required check. Every step below is capped in its own right and this sits above the
-    # largest shard's sum (37 on `main`), so a stall surfaces as a step failure and this stays a backstop.
-    timeout-minutes: 40
+    # largest shard's sum (41 on `main`), so a stall surfaces as a step failure and this stays a backstop.
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -51,7 +51,10 @@ jobs:
         #
         # Size a cap at roughly 1.5x that suite's slowest run which REACHED mocha's epilogue,
         # pooling all Node legs since none is reliably the slowest, and re-derive it from the
-        # Actions step API: a cap-killed sample is right-censored and reads far too low. The
+        # Actions step API: a cap-killed sample is right-censored and reads far too low. Pull
+        # requests and pushes to `main` run only the 24 and 26 legs, so take samples from a run that
+        # has every leg (the nightly schedule, or a `node-version: all` dispatch): suites that spawn
+        # processes on the type-stripped sources run up to 2.7x slower on 22.18.0 than on 26. The
         # `resources-core` halves are not balanced by size, so size each from its own runs.
         #
         # The resources shards partition the suite by file name, so a file added later lands in
@@ -61,13 +64,13 @@ jobs:
         include:
           - shard: main
             script: test:unit:main:core
-            timeout: 8
+            timeout: 12
           - shard: components
             script: test:unit:main:components
             timeout: 8
           - shard: server
             script: test:unit:main:server
-            timeout: 8
+            timeout: 13
           - shard: resources-core-a-n
             script: test:unit:resources:core:a-n
             timeout: 9
@@ -136,6 +139,16 @@ jobs:
         timeout-minutes: ${{ matrix.timeout }}
         run: npm run ${{ matrix.script }}
 
+      # Its own process: the suite runs real installs, which close and recreate the `system`
+      # database the other suites share, and the user-change subscriptions on it back off for up to a
+      # minute each time that happens. Runs on the lightest shard so no shard's step sum passes the job cap.
+      # Its first CI run (2026-10-23) completed in 12-19s; 3m is the smallest cap that absorbs one such
+      # back-off, not a 1.5x derivation.
+      - name: 'Unit tests: install'
+        if: "!cancelled() && matrix.shard == 'resources-indexes' && steps.setup-harper.outcome == 'success'"
+        timeout-minutes: 3
+        run: npm run test:unit:install
+
       - name: 'Unit tests: apitests'
         if: "!cancelled() && matrix.shard == 'components' && steps.setup-harper.outcome == 'success'"
         timeout-minutes: 3
@@ -144,7 +157,8 @@ jobs:
   unit-test-source:
     name: Native Unit Test (${{ matrix.shard }}, Node.js v${{ matrix.node-version }})
     runs-on: ubuntu-latest
-    timeout-minutes: 28
+    # Above the `core` shard's step-cap sum (40), so a stall fails a step rather than cancelling the job.
+    timeout-minutes: 41
     strategy:
       fail-fast: false
       matrix:
@@ -156,7 +170,7 @@ jobs:
         include:
           - shard: core
             script: test:unit:typestrip
-            timeout: 10
+            timeout: 23
           - shard: resources-core-a-n
             script: test:unit:typestrip:resources:core:a-n
             timeout: 9
@@ -277,7 +291,7 @@ jobs:
 
   uws-tcp-macos:
     name: uWS TCP uploads (macOS, Node.js v26)
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 15
     steps:
       - name: Checkout code
@@ -322,16 +336,25 @@ jobs:
       - name: Install dependencies
         run: npm install --ignore-scripts
 
+      - name: Install isolated historical full-text engines
+        timeout-minutes: 3
+        run: npm run test:fulltext:install-previous -- "${{ runner.temp }}/fulltext-upgrade"
+
       - name: Build
         run: npm run build
 
       - name: Verify the published native binding loads
-        run: node --input-type=module --eval "const binding = await import('@harperfast/fulltext/native'); const info = await binding.runtimeInfo(); if (typeof binding.openNativeFullTextIndex !== 'function' || typeof binding.openNativeFullTextReader !== 'function' || typeof binding.NativeFullTextIndex?.prototype.searchPage !== 'function' || info.nativeAbiVersion !== 13 || info.queryApiVersion !== 7) throw new Error('@harperfast/fulltext loaded without the required writer, reader, and native ABI 13 and query API 7 contract');"
+        run: node --input-type=module --eval "const { validateFullTextNativeBinding } = await import('./dist/resources/indexes/fullTextNativeBinding.js'); await validateFullTextNativeBinding(await import('@harperfast/fulltext/native'));"
 
       - name: Native full-text lifecycle test
+        env:
+          HARPER_FULLTEXT_UPGRADE_ROOT: ${{ runner.temp }}/fulltext-upgrade
         run: >-
           npx mocha
-          unitTests/resources/nativeFullTextDerivedIndexLifecycle.test.js
+          unitTests/resources/nativeFullTextDerivedIndexLifecycle.test.js unitTests/resources/nativeFullTextTelemetry.test.js
+          unitTests/resources/nativeFullTextTelemetryClose.test.js
+          unitTests/resources/nativeFullTextTelemetryWorkers.test.js
+          unitTests/resources/nativeFullTextTelemetryShutdown.test.js
           unitTests/resources/nativeFullTextTableSearch.test.js
           unitTests/resources/nativeFullTextIndexSchemaUpgrade.test.js
           unitTests/resources/nativeFullTextIndexUpgradeWorkers.test.js

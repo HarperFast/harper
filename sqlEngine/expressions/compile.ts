@@ -11,6 +11,7 @@ import type { ExprNode } from '../parser/ast.ts';
 import type { Row, SqlType } from '../types.ts';
 import { EngineUnsupportedError } from '../errors.ts';
 import { functionRegistry } from '../functions/registry.ts';
+import { compileLike, type LikeMatcher } from './like.ts';
 
 export interface CompiledExpr {
 	eval(row: Row): unknown;
@@ -131,16 +132,33 @@ export function compileExpr(expr: ExprNode, qualified = false): CompiledExpr {
 		}
 		case 'like': {
 			const e = compileExpr(expr.expr, qualified);
+			const { escape, negated } = expr;
+			if (expr.pattern.kind === 'literal' && typeof expr.pattern.value === 'string') {
+				const matches = compileLike(expr.pattern.value, escape);
+				return {
+					eval: (row) => {
+						const v = e.eval(row);
+						if (v == null) return null;
+						const r = matches(String(v));
+						return negated ? !r : r;
+					},
+					type: 'boolean',
+				};
+			}
 			const p = compileExpr(expr.pattern, qualified);
-			const negated = expr.negated;
+			let lastPattern: string | undefined;
+			let lastMatches: LikeMatcher | undefined;
 			return {
 				eval: (row) => {
 					const v = e.eval(row);
 					const pat = p.eval(row);
 					if (v == null || pat == null) return null;
 					if (typeof pat !== 'string') return null;
-					const re = likeToRegex(pat);
-					const r = re.test(String(v));
+					if (pat !== lastPattern) {
+						lastMatches = compileLike(pat, escape);
+						lastPattern = pat;
+					}
+					const r = lastMatches!(String(v));
 					return negated ? !r : r;
 				},
 				type: 'boolean',
@@ -290,18 +308,4 @@ function numeric(v: unknown): number {
 	if (typeof v === 'boolean') return v ? 1 : 0;
 	if (v instanceof Date) return v.getTime();
 	return Number.NaN;
-}
-
-function likeToRegex(pattern: string): RegExp {
-	let r = '^';
-	let i = 0;
-	while (i < pattern.length) {
-		const ch = pattern[i++];
-		if (ch === '%') r += '.*';
-		else if (ch === '_') r += '.';
-		else if (/[\\^$+?.()|{}[\]]/.test(ch)) r += '\\' + ch;
-		else r += ch;
-	}
-	r += '$';
-	return new RegExp(r);
 }

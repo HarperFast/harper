@@ -5,6 +5,7 @@ const { table } = require('#src/resources/databases');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
 const { Resources } = require('#src/resources/Resources');
 const { transaction } = require('#src/resources/transaction');
+const { restrictRelationship } = require('#src/resources/search');
 const { RequestTarget } = require('#src/resources/RequestTarget');
 const { handleApplication } = require('#src/server/REST');
 const { Request } = require('#src/server/serverHelpers/Request');
@@ -260,14 +261,25 @@ describe('nested relationship constraints', function () {
 			ids(
 				await get('/Parent/?children.state=open&children.score=ge=number:30&select(id,children[limit(1)&select(id,)])')
 			),
+			[['c1'], ['c6']]
+		);
+		assert.deepStrictEqual(
+			ids(await get('/Parent/?children[state=open&score=ge=number:30]&select(id,children[limit(1)&select(id,)])')),
 			[['c3'], ['c6']]
 		);
 	});
 	it('retains the outer relationship predicate control', async function () {
 		assert.deepStrictEqual(
 			ids(await get('/Parent/?children.state=open&children.score=ge=number:30&select(id,children{id})')),
-			[['c3', 'c4'], ['c6']]
+			[
+				['c1', 'c3', 'c4'],
+				['c6', 'c7'],
+			]
 		);
+		assert.deepStrictEqual(ids(await get('/Parent/?children[state=open&score=ge=number:30]&select(id,children{id})')), [
+			['c3', 'c4'],
+			['c6'],
+		]);
 	});
 	it('retains the child endpoint control', async function () {
 		assert.deepStrictEqual(
@@ -680,10 +692,12 @@ describe('nested relationship constraints', function () {
 			resolve = done;
 		});
 		await transaction({}, async () => {
+			const filtered = {};
+			restrictRelationship(filtered, 'child', { filters: [], fromRecord: () => pending });
 			const selection = Parent._prepareRelationshipSelection(
 				{ name: 'child', limit: 1, select: ['id', 'observed'] },
 				{},
-				{ child: { fromRecord: () => pending } }
+				filtered
 			);
 			const result = selection({ id: 'p1', childId: 'c1' });
 			selection.return();
@@ -900,8 +914,18 @@ describe('nested relationship constraints', function () {
 		assert.deepStrictEqual(rows[0].children, [{ id: 'a', score: 100 }]);
 		await C.put('a', { id: 'a', score: 0 }, { expiresAt: 1 });
 		await C.put('b', { id: 'b', score: 10 }, { expiresAt: 1 });
-		const direct = [];
+		const covered = [];
 		for await (const row of C.search({ sort: { attribute: 'score' }, limit: 1, select: ['id', 'score'] }))
+			covered.push(row);
+		assert.deepStrictEqual(covered, [{ id: 'a', score: 0 }]);
+		assert.strictEqual(loads, 1);
+		const direct = [];
+		for await (const row of C.search({
+			sort: { attribute: 'score' },
+			limit: 1,
+			select: ['id', 'score'],
+			rowFilter: () => true,
+		}))
 			direct.push(row);
 		assert.deepStrictEqual(rows[0].children, direct);
 	});

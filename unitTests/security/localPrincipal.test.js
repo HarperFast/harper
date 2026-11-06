@@ -111,7 +111,7 @@ describe('the local principal of a request trusted by its transport', function (
 			assert.strictEqual(user.isLocalPrincipal(principal), true);
 		});
 
-		it('gives each call its own user, role and permission, and shares only a frozen system-table tree', () => {
+		it('gives each call its own user, role and permission, and shares frozen system-table permission entries', () => {
 			const first = user.localPrincipal();
 			const second = user.localPrincipal();
 			assert.notStrictEqual(first, second);
@@ -130,6 +130,21 @@ describe('the local principal of a request trusted by its transport', function (
 			assert.throws(() => {
 				second.role.permission.system.tables.hdb_user.insert = true;
 			}, TypeError);
+		});
+
+		it('keeps a held local principal current when a system table is registered', async () => {
+			const principal = user.localPrincipal();
+			const name = 'hdb_local_live_permissions';
+			const late = table({ database: 'system', table: name, attributes: [{ name: 'id', isPrimaryKey: true }] });
+			try {
+				const permission = principal.role.permission.system.tables[name];
+				assert.strictEqual(permission.read, true);
+				assert.strictEqual(permission.insert, false);
+				assert.ok(Object.isFrozen(permission));
+				assert.strictEqual(user.localPrincipal().role.permission.system.tables[name], permission);
+			} finally {
+				await late.dropTable();
+			}
 		});
 
 		it('is recognized by its marker, never by its name', async () => {
@@ -398,7 +413,7 @@ describe('the local principal of a request trusted by its transport', function (
 			}
 		}
 
-		for (const address of ['127.0.0.1', '::1']) {
+		for (const address of ['127.0.0.1', '::ffff:127.0.0.1', '::1']) {
 			it(`connects from ${address} with no credentials as the local principal`, async () => {
 				const { connack, session } = await connectOverTcp(address, `local-tcp-${address}`);
 				assert.strictEqual(connack.reasonCode, 0);
@@ -406,10 +421,12 @@ describe('the local principal of a request trusted by its transport', function (
 			});
 		}
 
-		it('refuses the same CONNECT from any other address', async () => {
-			const { connack, session } = await connectOverTcp('203.0.113.7', 'remote-tcp');
-			assert.notStrictEqual(connack.reasonCode, 0);
-			assert.strictEqual(session, undefined);
-		});
+		for (const address of ['203.0.113.7', '2001:db8::1', '::127.0.0.1']) {
+			it(`refuses the same CONNECT from ${address}`, async () => {
+				const { connack, session } = await connectOverTcp(address, `remote-tcp-${address}`);
+				assert.notStrictEqual(connack.reasonCode, 0);
+				assert.strictEqual(session, undefined);
+			});
+		}
 	});
 });

@@ -71,6 +71,17 @@ Consequences that shape the code:
   `unregisterRecordLock` manage it. `lock()` consults it before calling `tryLock`; a re-entrant call
   returns the existing live handle. A handle expired by its lease timer is pruned on next re-lock lookup
   so a stale holder's write gets 409.
+- **The registry outlives the link that holds it.** Hold handles, and an `ImmediateTransaction`'s live
+  scoped ones, survive the commit that drops their link from the chain — `txnForContext`'s unlink of a
+  spent self-committing link (#2323) and `completeMidScopeCommit`'s cut of the chain. Each drop hands the
+  link's `recordLocks` to the chain root (`retainRecordLocksOf`, keyed by database path) and the next link
+  `txnForContext` creates for that database adopts them (`adoptDetachedRecordLocks`), so every lookup
+  through `txnForContext` — re-entrant `lock()`, `unlock()`, `#bindWriteLock`'s holder stamp and the
+  expired-lease 409 — still finds the handle (harper#3872). The closed link itself is never reused, so
+  #2323 stays fixed. A `lock()` whose wait outlives its self-committing link registers on the link that
+  replaced it, and checks that link for a pending write to the key (below). `abort()` still drops the chain without handing anything over: it releases scoped handles
+  link by link after the cut. Covered by `recordLockChainedImmediateLinks.test.js` and
+  `recordLockChainedMidScopeCommit.test.js`.
 - **Release.** Every handle — scoped or hold — is registered in `link.recordLocks` and kept on the
   locked instance as `#lockHandle`; every commit or abort calls `releaseRecordLocks()`, which calls
   `handle.release()` on each non-hold handle, so a `{ hold: true }` handle outlives the transaction.
@@ -95,28 +106,44 @@ Consequences that shape the code:
   `lockHandle` into the same guard.
 - **A write on a locked key carries the lock, whichever instance staged it.** `DatabaseTransaction`
   applies lock rules (holder stamps, hold floor or 409, lease-expiry 409, `refuseLockWrites`,
-  `hasUnlockedWrite`) by `write.lockHandle` alone. `#bindWriteLock` sets it at all four staging sites
-  (`_writeUpdate`, `_writeDelete`, `_writeInvalidate`, `_writeRelocate`) from the instance's own handle,
-  else from `recordLocks` — so static verbs and other instances on the same context are covered — and
-  `registerRecordLock` binds unsaved writes already staged on the key, so admission's
-  `hasUnlockedWrite(store, keyId)` already discounts them and claims the stamp the clock may then adopt.
+  `hasUnlockedWrite`) by `write.lockHandle` alone. `#bindWriteLock` covers all five keyed staging sites
+  (`_writeUpdate`, `_writeDelete`, `_writeInvalidate`, `_writeRelocate`, `_writePublish`) using the instance
+  handle or `recordLocks` for static verbs and other instances on the same context.
   Binding happens at staging (and again after `_writeUpdate`'s async model hooks), reading the registry
   without `recordLockFor`'s pruning: a lapsed lease still refuses the write, at save time it would have
   been pruned away. A handle that lapsed while bound stays bound across the hooks even if a re-lock
-  replaced it; only one released by `unlock()` lets the write rebind or revert. Writes bound from the registry are `lockJoined`: they are the caller's writes, not
-  the scoped lock's placeholder, so a scoped → hold upgrade keeps them and `unlock()` turns them back
+  replaced it; only one released by `unlock()` lets the write rebind or revert. All bound publishes
+  (own-handle or registry) and registry-bound writes are `lockJoined`: caller writes rather than the scoped
+  lock's placeholder, so a scoped → hold upgrade keeps them and `unlock()` turns them back
   into ordinary unlocked writes rather than dropping them. Covered by `recordLockStaticVerbs.test.js`.
+  A bound publish can still stamp below a concurrent record version; see
+  [An out-of-order publish rewinds the record's version, letting a stale delete or write through](https://github.com/HarperFast/harper/issues/3637).
+- **Lock first, then write (harper#3896).** A fresh `lock()` on a key this transaction has a pending write to
+  is refused with 409 (`hasPendingWriteTo`: owned, not dropped, and unsaved or saved into a transaction that
+  has not committed; an `ImmediateTransaction`'s saved write was submitted on its own). Such a write was
+  computed without the lock's exclusion, so it must not commit as a holder write. Re-entrant `lock()` and
+  scoped → hold upgrades are not refused. It is
+  checked at entry, before any wait, and again on the link that will own the handle once the key is
+  acquired, before admission (a write staged during the wait). The locked instance's own write can still be
+  in its model hooks, outside `writesByKey`, so a fresh acquisition also refuses one `#stagedWrite()`
+  shows (`#hasStagedWriteFor`), before `#reloadLocked` would discard the changes it reads. "Pending" means
+  staged: a write still in its hooks or record load when the lock registers stages under the lock. An
+  instance joining a lock already in the registry keeps its changes only if its staged write is bound to
+  that lock. `unlock()` keeps a joined write as the instance's saving operation and clears a dropped one;
+  changes it abandons, and those a `lock()` reloads over, are discarded with their write generation
+  closed (`#discardChanges`), so nested tracked objects in them 409. Covered by
+  `recordLockPendingWrite.test.js`.
 - **Read-your-writes in `#reloadLocked`.** Freshness always starts from the committed entry
   (`primaryStore.getEntry(id)`, snapshot-free) so a hold lock sees concurrent committed writes rather
-  than a stale snapshot. A write earlier in the _same_ explicit transaction has not reached that
-  committed entry yet, so `#reloadLocked` looks up the tail `TransactionWrite` for the key
+  than a stale snapshot. A write made under the lock earlier in the _same_ explicit transaction (seen by a
+  re-entrant `lock()`) has not reached that committed entry yet, so `#reloadLocked` looks up the tail `TransactionWrite` for the key
   (`link.writesByKey`) and, if it (or an ancestor found via `priorStagedWrite`) has a `stagedEntry`,
   takes the record from there — the same basis a chained write picks up (harper#1968): the record
   comes from the prior staged write, the rest of the entry (version, audit chain, blob metadata) stays
   the pre-transaction one.
 - **Scoped lock in an explicit `transaction()` scope.** After acquisition, when no writes have been
   staged yet (`link.writes.length === 0`), the transaction clock is pinned to `acquiredAt` so the
-  holder write wins over any pre-lock concurrent write. When prior staged writes already exist,
+  holder write wins over any pre-lock concurrent write. When writes to other records are already staged,
   ordering is best-effort — no 409 is thrown. In an `ImmediateTransaction` context (no explicit
   scope), a scoped lock's writes go through the same `update()`-style staging as above; each explicit
   `update()`+`save()` cycle is stamped with `holderVersionCandidate()` independently. A scoped lock acquired
@@ -191,7 +218,7 @@ off-key write through the locked instance, the next operation in a retry or repl
 the lock's acquisition time, which LWW then silently drops against a newer record version. In an
 explicit OPEN transaction, when the hold is the first write (no prior staged writes), the transaction
 clock is pinned to `handle.acquiredAt`; subsequent saves reuse that pinned clock. When non-hold writes
-were staged before the lock was acquired, the clock is left alone (best-effort ordering; no 409 is
+to other records were staged before the lock was acquired, the clock is left alone (best-effort ordering; no 409 is
 thrown for the mixed-write case). Either way the holder's writes commit at the transaction's version:
 `save()` stamps from the handle only a save that commits on its own handle (`saveCommits`, or
 `concurrentClosedWrite` — a write that reaches the transaction after it closed), so the conflict-retry
@@ -1032,13 +1059,15 @@ of scope here.
 
 - `DelegationRequest.requestId` is monotonic per requesting thread and echoed on the reply. The home
   answers the request that minted its current grant, delivered again, with the _same_ token and the
-  remaining lease, so the delegate's token and the home's never diverge. A request that no longer
+  remaining lease, so the delegate's token and the home's never diverge — also while a contender's
+  recall of that grant is in flight or confirmed: a delegate whose first delivery's reply went nowhere
+  learns the token only from this answer, and hands it back. A request that no longer
   matches a grant is checked against a 1024-id sliding window per `(database, requester, delegate
 epoch)`: an id already seen, or older than the window, is `stale` — never a fresh grant nobody is
   waiting for. The window admits an older unseen id, since ids are per thread and requests for
   different keys reorder freely, but not one older than the newest it admitted for the _same_ key:
-  the requester waits only on its latest request for a key, so that one is `stale` whether the grant
-  it produced is still held, recalled to a contender, or released (harper#3788). `stale` is retryable (a merely reordered live request retries with a fresh id; a dead
+  the requester waits only on its latest request for a key, so an older one is `stale` whether the
+  grant it produced is still held, recalled to a contender, or released (harper#3788). `stale` is retryable (a merely reordered live request retries with a fresh id; a dead
   epoch's replay never retries) and ends 503. The requester discards a reply whose echo is not its
   outstanding request, handing back anything it granted. The window lives on the owner thread like the
   grants it protects; a replayed id from a _live_ epoch across a home's handoff is bounded by the
@@ -1188,6 +1217,18 @@ If settlement has not completed by the delegation deadline, no release is writte
 takes the recovery path (§7.2). A failed or rejected recall never fabricates a release (§8). Delegate
 eviction obeys exactly the same rules: a delegate may drop a delegation early, but not while it holds
 an active handle or an unsettled write.
+
+**A recall that lands during the freshness barrier closes admission to later waiters, not to the one
+the grant was requested for** (`PendingDelegation.lastAdmission`, harper-pro#438). A barrier takes at
+least 1.5 round trips and a recall arrives within one contender poll (25 ms) plus a hop, so a delegate
+that gave the grant up on recall would be replaced by a successor recalled the same way: a key whose
+lineage names other nodes changes hands until its waiters reach their deadlines, with nobody admitted.
+So the barrier runs on, its waiter is admitted once, and the recall then drains and releases as for any
+held delegation. It answers only at the end, because `quiesce` reads the answer as "nothing here can
+admit". `RECALLED_BARRIER_GRACE_MS` bounds the wait: a delegate that can never finish (a route excluding
+the table, a dead stream from one origin) would otherwise block every other node for its whole lock
+wait. `close()`, a restarted home's recall by incarnation and a recall that beat its grant reply stop
+the barrier at once, because those grants must not admit.
 
 ### 7. Freshness
 
@@ -1511,7 +1552,7 @@ feature that has not yet been measured.
 >
 > **There is no caller-side mitigation for (2) — the obvious candidate is unreachable and, where it
 > is reachable, makes things worse.** `X-Replicate-To` / `confirm=` is super-user only — `server/REST.ts`
-> answers 403 to anyone else ([replication directives](DESIGN.md#x-replicate-to-and-the-replicatetoreplicatedconfirmation-operation-fields-are-super-user-only-gated-where-they-enter-serverrestts-verifyperms)). And where it is
+> answers 403 to anyone else ([replication directives](DESIGN.md#replication-directives-are-super-user-only-gated-where-they-enter)). And where it is
 > legitimately available it is a **residency** directive before it is a
 > confirmation knob: absent a `getResidencyById` function, which short-circuits ahead of it
 > (`getResidency` in `resources/Table.ts`), a numeric value sets residency to `[self, ...N nodes]` and truncates
@@ -1850,7 +1891,7 @@ not because each mutation shape needs its own hook.
 The release-entry position replaces an earlier per-write commit-hook design. It removes a hot-path
 callback, covers every write that remains authorized when the release is committed, and cannot sort
 behind a replication cursor that has already advanced. Cold-state trust is discarded whenever
-history may have been missed, and pending grants remain recallable before admission.
+history may have been missed, and a pending grant is given back on recall only after serving its waiter or overrunning `RECALLED_BARRIER_GRACE_MS` (§6).
 
 ### Applied-prefix holes
 

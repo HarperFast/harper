@@ -27,6 +27,8 @@ import minimist from 'minimist';
 import * as keys from '../security/keys.ts';
 import { startHTTPThreads } from '../server/threads/socketRouter.ts';
 import { beginProcessShutdown } from '../server/threads/manageThreads.ts';
+import { createTerminationHandler, shutdownProcess } from '../server/threads/processShutdown.ts';
+import { getProcessShutdownTimeoutMs } from '../components/shutdownDrain.ts';
 import * as hdbInfoController from '../dataLayer/hdbInfoController.ts';
 import { isReadOnlyMode } from '../resources/databases.ts';
 import { declareTokenUseTable } from '../security/authn/oidc/tokenUseTable.ts';
@@ -68,14 +70,16 @@ function addExitListeners() {
 			beginProcessShutdown();
 			removeHdbPid();
 		});
-		const exit = () => {
-			beginProcessShutdown();
-			removeHdbPid();
-			process.exit(0);
-		};
-		process.on('SIGINT', exit);
-		process.on('SIGQUIT', exit);
-		process.on('SIGTERM', exit);
+		// The pid file stays until 'exit': while draining, the instance is still running and a repeated
+		// `harper stop` is the second signal.
+		const onSignal = createTerminationHandler({
+			getTimeoutMs: getProcessShutdownTimeoutMs,
+			shutdown: shutdownProcess,
+			exit: () => process.exit(0),
+		});
+		process.on('SIGINT', onSignal);
+		process.on('SIGQUIT', onSignal);
+		process.on('SIGTERM', onSignal);
 	}
 }
 
@@ -101,10 +105,12 @@ async function initialize(calledByInstall = false, calledByMain = false) {
 		console.log(chalk.magenta('' + fs.readFileSync(path.join(PACKAGE_ROOT, 'static/ascii_logo.txt'))));
 	});
 	hdbLogger.debug('Checking to make sure hdb is installed');
+	let installedDuringInit = false;
 	if (installation.isHdbInstalled(env, hdbLogger) === false) {
 		console.log(HDB_NOT_FOUND_MSG);
 		try {
 			await install();
+			installedDuringInit = true;
 		} catch (err) {
 			console.error(INSTALL_ERR, err);
 			hdbLogger.error(err);
@@ -113,13 +119,13 @@ async function initialize(calledByInstall = false, calledByMain = false) {
 	}
 
 	// The called by install check is here because if cmd/env args are passed to install (which calls run when done)
-	// we do not need to update/backup the config file on run.
-	if (!calledByInstall) {
+	// or auto-install just ran above, we do not need to update/backup the config file on run.
+	if (!calledByInstall && !installedDuringInit) {
 		// If run is called with cmd/env vars we create a backup of config and update config file.
 		let parsedArgs = assignCMDENVVariables(Object.keys(terms.CONFIG_PARAM_MAP), true);
 
-		// If HARPER_SET_CONFIG is present, filter out any config keys that are set in it
-		// to prevent individual env vars from overriding explicit runtime configuration
+		// If HARPER_CONFIG or HARPER_SET_CONFIG is present, filter out any config keys that are set
+		// in them to prevent individual env vars from overriding explicit runtime configuration
 		const { filterArgsAgainstRuntimeConfig } = await import('../config/harperConfigEnvVars.ts');
 		parsedArgs = filterArgsAgainstRuntimeConfig(parsedArgs);
 
@@ -164,6 +170,14 @@ async function initialize(calledByInstall = false, calledByMain = false) {
 		await fs.writeFile(path.join(env.get(hdbTerms.CONFIG_PARAMS.ROOTPATH), hdbTerms.HDB_PID_FILE), `${process.pid}`);
 	}
 	hdbLogger.info(`${PRODUCT_NAME} PID`, process.pid);
+
+	// Before anything reads `system`: an offline restore (of `system` itself included) that committed and
+	// then stopped short of clearing its marker is finished here, from its receipt file alone.
+	try {
+		await (await import('../dataLayer/restorePublication.ts')).finishCommittedRestoresBeforeStartup();
+	} catch (error) {
+		hdbLogger.error('Could not finish a committed restore before startup', error);
+	}
 
 	// Check to see if an upgrade is needed based on existing hdbInfo data. If so, we need to force the user to upgrade
 	// before the server can be started.

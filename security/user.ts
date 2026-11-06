@@ -1,5 +1,7 @@
 'use strict';
 
+import { withoutSystemGrants } from './systemRolePermissions.ts';
+
 const USERNAME_REQUIRED = 'username is required';
 const ALTERUSER_NOTHING_TO_UPDATE = 'nothing to update, must supply active, role or password to update';
 const EMPTY_PASSWORD = 'password cannot be an empty string';
@@ -120,7 +122,7 @@ import * as terms from '../utility/hdbTerms.ts';
 import { expandOperationsPerms } from '../utility/operationPermissions.ts';
 import { activeSuperUserRemains } from './superUserGuard.ts';
 import { credentialRejectionError } from './credentialRejection.ts';
-import { databases, getDatabases, onUpdatedTable } from '../resources/databases.ts';
+import { databases, getDatabases, onUpdatedTable, onRemovedTable } from '../resources/databases.ts';
 import { VERSION_REUSED } from '../resources/RecordEncoder.ts';
 import { contextStorage } from '../resources/transaction.ts';
 import { deliveryCertified } from '../resources/transactionBroadcast.ts';
@@ -293,7 +295,7 @@ async function userInfo(body): Promise<string | User> {
 			get_attributes: ['*'],
 		}));
 
-	user.role = roleData?.[0];
+	user.role = withoutSystemGrants(roleData?.[0]);
 	delete user.password;
 	delete user.refresh_token;
 	delete user.hash;
@@ -308,11 +310,20 @@ async function userInfo(body): Promise<string | User> {
  */
 async function listUsersExternal(): Promise<User[]> {
 	const userData = await listUsers();
+	const externalRoles = new Map<UserRole, UserRole>();
 	userData.forEach((user) => {
 		delete user.password;
 		delete user.hash;
 		delete user.refresh_token;
 		delete user.hash_function;
+		if (user.role) {
+			let externalRole = externalRoles.get(user.role);
+			if (!externalRole) {
+				externalRole = withoutSystemGrants(user.role, false);
+				externalRoles.set(user.role, externalRole);
+			}
+			user.role = externalRole;
+		}
 	});
 
 	return [...userData.values()];
@@ -356,39 +367,87 @@ async function listUsers(): Promise<Map<string, User>> {
 	return userMap;
 }
 
+// Frozen because one instance is shared by every role with the same read permission: an entry
+// mutated by any consumer would change what every other user is allowed to do.
+function systemTablePermissions(readPerm: boolean): UserRolePermissionTable {
+	return Object.freeze({
+		read: readPerm,
+		insert: false,
+		update: false,
+		delete: false,
+		attribute_permissions: Object.freeze([]) as UserRoleAttributePermissionTable[],
+	}) as UserRolePermissionTable;
+}
+
+const systemTablesByReadPerm = new Map<boolean, Record<string, UserRolePermissionTable>>();
+let watchingSystemTables = false;
+
+// Warmed identities retain this map; forwarding requires it to remain a plain, cloneable object.
+function syncSystemTables(tables: Record<string, UserRolePermissionTable>, readPerm: boolean) {
+	const live = databases[terms.SYSTEM_SCHEMA_NAME];
+	const names = new Set([...Object.keys(systemSchema), ...(live ? Object.keys(live) : [])]);
+	for (const name of names) {
+		if (!Object.hasOwn(tables, name)) {
+			Object.defineProperty(tables, name, {
+				value: systemTablePermissions(readPerm),
+				writable: true,
+				enumerable: true,
+				configurable: true,
+			});
+		}
+	}
+	for (const name of Object.keys(tables)) {
+		if (!names.has(name)) delete tables[name];
+	}
+}
+
+function systemTablesPermissions(readPerm: boolean): Record<string, UserRolePermissionTable> {
+	watchSystemTables();
+	let tables = systemTablesByReadPerm.get(readPerm);
+	if (!tables) {
+		tables = {};
+		syncSystemTables(tables, readPerm);
+		systemTablesByReadPerm.set(readPerm, tables);
+	}
+	return tables;
+}
+
+// Registry listeners run during schema loading, so refresh failures must not abort startup.
+function refreshSystemTables() {
+	try {
+		for (const [readPerm, tables] of systemTablesByReadPerm) syncSystemTables(tables, readPerm);
+	} catch (error) {
+		harperLogger.error('Failed to refresh system table permissions; they may be stale', error);
+	}
+}
+// databases imports Resource, which imports this module before the registry is initialized.
+function watchSystemTables() {
+	if (watchingSystemTables) return;
+	onUpdatedTable((table) => {
+		if (table?.databaseName === terms.SYSTEM_SCHEMA_NAME) refreshSystemTables();
+	});
+	onRemovedTable((_tableName, databaseName) => {
+		if (databaseName === terms.SYSTEM_SCHEMA_NAME) refreshSystemTables();
+	});
+	watchingSystemTables = true;
+}
+
 /**
  * adds system table permissions to a role.  This is used to protect system tables by leveraging operationAuthorization.
  * @param userRole - Role of the user found during auth.
  */
-function appendSystemTablesToRole(userRole: UserRole) {
+export function appendSystemTablesToRole(userRole: UserRole) {
 	if (!userRole) {
 		logger.error(`invalid user role found.`);
 		return;
 	}
 	if (!userRole.permission) {
-		// reachable only via a direct table write or a replicated write; the operations API requires permission
 		logger.error(`role ${userRole.role ?? userRole.id} has no permission; skipping system table permissions.`);
 		return;
 	}
-	if (!userRole.permission.system) {
-		userRole.permission.system = {
-			tables: {},
-		};
-	}
-	if (!userRole.permission.system.tables) {
-		userRole.permission.system.tables = {};
-	}
-	for (let table of Object.keys(systemSchema)) {
-		let newProp = {
-			read: !!userRole.permission.super_user,
-			insert: false,
-			update: false,
-			delete: false,
-			attribute_permissions: [],
-		};
-
-		userRole.permission.system.tables[table] = newProp;
-	}
+	userRole.permission.system = {
+		tables: systemTablesPermissions(!!userRole.permission.super_user),
+	};
 }
 
 /**
@@ -402,7 +461,7 @@ function cacheExpandedOperationsPerms(userRole: UserRole) {
 }
 
 function withSystemTablePermissions(roleRecord: UserRole): UserRole {
-	const role = cloneDeep(roleRecord);
+	const role = cloneDeep(withoutSystemGrants(roleRecord));
 	appendSystemTablesToRole(role);
 	cacheExpandedOperationsPerms(role);
 	return role;
@@ -557,7 +616,7 @@ let localRole: UserRole | undefined;
 function localPrincipal(): User {
 	if (!localRole) {
 		localRole = withSystemTablePermissions(LOCAL_ROLE_RECORD);
-		deepFreeze(localRole.permission.system);
+		Object.freeze(localRole.permission.system);
 	}
 	return {
 		username: LOCAL_USERNAME,

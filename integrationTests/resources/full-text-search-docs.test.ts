@@ -1,8 +1,4 @@
-/**
- * Executes the native full-text schema, resource, JavaScript, REST, and Operations API examples published in
- * Harper's v5.3 documentation. This is the executable contract for
- * https://github.com/HarperFast/documentation/pull/691.
- */
+// The examples published in docs/reference/full-text-search/; change both together.
 import { suite, test, before, after } from 'node:test';
 import assert from 'node:assert';
 import { resolve } from 'node:path';

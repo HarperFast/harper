@@ -43,9 +43,8 @@ graphs searched at the full `ef` on every layer it changed recall@10 at only one
 
 The connection-building pass in `index()` is not routing — it selects the edges that get stored — so
 it keeps `efConstruction`. The insert-side descent does alter stored graphs, recoverable only by a
-reindex; its A/B (`benchmarks/hnsw-scale.js --build-upper-ef=100` restores the previous index-time
-descent) found the two builds indistinguishable on every measured metric (#2125), as expected: the
-upper layers are sparse enough that a greedy walk reaches the same entry point.
+reindex; its A/B (`benchmarks/hnsw-scale.js --build-upper-ef=100`, #2125) found the two builds
+indistinguishable: the upper layers are sparse enough that a greedy walk reaches the same entry point.
 
 Greedy-equals-full is statistical, not per-graph: rare level layouts route to a different layer-0
 entry point and displace the tail of the top-k (~2-3% of random 600-node graphs in the unit test's
@@ -60,12 +59,9 @@ necessarily a routing regression.
 
 The connection-building pass selects each node's stored edges from a candidate list of
 `efConstruction` entries. Held at a constant (100) while the corpus grows, edge quality erodes in a
-way no search-side setting can compensate: at 1M nodes, sweeping the search `ef` from 512 to 1536
-moved recall@10 only from 0.935 to 0.957 (0.967 set) at 4.7x the latency — the missing neighbours
-were not deep in the candidate list, they were unreachable. Rebuilding the identical corpus with
-`efConstruction` 200 restored recall and made queries _faster_ at the same `ef` (better-selected
-edges route more directly); quantization was a minor term beside construction quality. Full sweep in
-#2180.
+way no search-side setting can compensate: the missing neighbours are unreachable, not deep in the
+candidate list, so a larger search `ef` buys little recall at a large latency cost, while a larger
+`efConstruction` restores recall and makes queries _faster_ at the same `ef` (sweep in #2180).
 
 So when the schema does not configure `efConstruction`, it scales as `AUTO_EF_BASE * sqrt(nodes /
 AUTO_EFC_REF)`, capped at `AUTO_EFC_MAX`. The healthy write path reads the count directly from the
@@ -110,9 +106,8 @@ the graph crossed a scale threshold keep their original edges — the scale appl
 that point on. A reindex in a live process rebuilds roughly uniformly (the id counter keeps its
 high-water mark), but a reindex after a restart re-seeds the counter from the largest id in the
 rebuilding store and therefore repeats the ramp — its first 250K nodes rebuild at the base efC.
-Later inserts add reverse edges to older nodes, but a default-ramp 1M build has not been compared
-directly with the uniform-200 A/B; the larger default-ramp runs (#2181) kept the measured neighbours
-reachable at 2M and 5M without proving uniform convergence.
+Later inserts add reverse edges to older nodes, but convergence to a uniform build is unproven: the
+default-ramp runs (#2181) kept the measured neighbours reachable at 2M and 5M.
 
 Deletes have a separate tail-latency cost: connectivity repair can synchronously reinsert an orphan
 and up to 256 nodes from a severed island. Those reinserts use the current auto-scaled efC, so the
@@ -187,7 +182,11 @@ ranges plan again.
 Building the set is a cost decision: one index-entry read per match against a record load per visited
 node, where filling `ef` matches at selectivity `s` takes about `ef / s` visits. `KEYS_PER_PREDICATE_VISIT`
 is that ratio at the warm, regression-safe end of the measured range; `MAX_CANDIDATE_KEYS` and half the
-node count cap the synchronous scan. A complete set derives the visit budget from its selectivity,
+node count cap the synchronous scan, and the set is declined up front when the planner's
+`estimated_count` exceeds that key budget. An equality's count is exact; a range on a RocksDB index is a
+statistical estimate (a skip-list sample while the index is memtable-resident), so near the budget
+identical data can take either path. Both admit only matching records, but their visit budgets differ,
+so approximate recall can too. A complete set derives the visit budget from its selectivity,
 widening the `filterExpansion` budget by at most `ALLOW_SET_BUDGET_MAX_WIDENING` and never narrowing it;
 a configured `filterExpansion` stays authoritative. `CandidateKeySet` is the one identity rule for both
 the scan's intersection and admission. A node-id bitset for the native plane is not built: the
@@ -528,7 +527,7 @@ Each page yields after at most 256 estimated source and companion-index point re
 
 Harper does not configure native `filterFields` or send native `filter` or `candidateIds` payloads. Candidate planning, companion-index probes and the authoritative record predicate remain Harper-owned; the wrapper's candidate limits do not cap those mechanisms.
 
-Keep the first batch on `reader.search` so a filled bounded ordinary query stays in the native ordinary-search lane. Fulltext 0.8.0 classifies every traversal call as expensive (`protocol::search_is_expensive`), sharing the process permit budget and expensive per-index queue with deep/fuzzy work. A native-reader microbenchmark alone misses that admission/isolation difference. Unbounded exact-total queries already use expensive admission. The released [per-handle classifier](https://github.com/HarperFast/fulltext/blob/v0.8.0/src/protocol.rs#L615) uses the handle's query policy.
+Keep the first batch on `reader.search` so a filled bounded ordinary query stays in the native ordinary-search lane. Fulltext 0.8.0 classifies every traversal call as expensive (`protocol::search_is_expensive`), sharing the process permit budget and expensive per-index queue with deep/fuzzy work. Unbounded exact-total queries already use expensive admission. The released [per-handle classifier](https://github.com/HarperFast/fulltext/blob/v0.8.0/src/protocol.rs#L615) uses the handle's query policy.
 
 When more hits are needed, switch to `searchPage` on the same reader. Ordinary search supplies no continuation, so validate and skip its bounded prefix before processing new hits. Native order is descending score then ascending native document-ID UTF-8 bytes; disagreement, repeated boundaries or empty pages claiming continuations fail closed. The real-addon regression verifies the collectors agree across modes and page sizes.
 
@@ -542,11 +541,13 @@ Reaching a bound before exhaustion or page completion throws; unbounded queries 
 silently receive a retained prefix. These limits do not bound scorer visits or uninterrupted native
 query construction.
 
-Harper requires Fulltext 0.8.0, native ABI 13 and Query API 7. Traversal response capacity reserves 93 bytes before hits plus 13 bytes per versioned hit before ID/version strings; advertised page and response limits determine the batch ceiling.
+Harper requires Fulltext 0.9.0, native ABI 14, query API 8 and telemetry API 1. Traversal response capacity reserves 93 bytes before hits plus 13 bytes per versioned hit before ID/version strings; advertised page and response limits determine the batch ceiling.
 
 Stored-field ordering and bounded exact counts exhaustively source-validate via `FULL_TEXT_SEARCH_OPTIONS`; `fullTextOrdering.test.js` checks complete-set ordering, unknown counts and visible-page tracing. Default relevance remains page-bounded. Comparable sort keys are computed once per row/clause, avoiding resolver and conversion work inside comparisons. Cancellation checks precede source/highlight batches and follow candidate planning; in-flight native calls finish before lease release. The [sort cost probe](../../benchmarks/fulltext-sort-cost.md) uses real Table searches for warm single-client native timings; the [qualification matrix](../../benchmarks/fulltext-qualification.md) adds concurrency/memory evidence; catalog-scale, OS-cold and multiworker qualification remain open.
 
 Read request policy from its three registered leaves and runtime policy from `storage_fullText_runtime`: the legacy flattener drops camel-case aggregates (`storage_fullText`), silently selecting defaults. Request settings update on worker restart; native runtime settings last for the process. Generated config omits `storage.fullText.query`; resolution supplies defaults and partial overrides. That snapshot also governs reader term/clause and fuzzy-preview limits, including retrieval/highlighting fuzzy leaves. Writer limits and persisted identity do not change.
+
+`startHTTPThreads` awaits `initializeFullTextQueryPolicy` before workers/listeners: explicit policy must fit native ceilings. Defaults load lazily; unavailable bindings fail on activation. Enforced by `fullTextSearchLimits.test.js`.
 
 REST exposes index coverage; current-coverage callers use `maxIndexLagMilliseconds: 0` or `waitForIndexMilliseconds`. Stored-field sorts require complete source validation. Exact counts first preserve/highlight the page, then drain in the same lease. Count-only work/time/native-admission limits return that page with unknown total; cancellation and other failures propagate. Estimates may use the planner unless opaque row/vector filters suppress them. Native totals cannot prove Harper counts after authorization, structured filters and source-version checks.
 

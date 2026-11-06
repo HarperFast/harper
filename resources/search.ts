@@ -1,4 +1,4 @@
-import { ClientError, IndexRebuildingError, Violation } from '../utility/errors/hdbError.ts';
+import { ClientError, IndexRebuildingError, ServerError, Violation } from '../utility/errors/hdbError.ts';
 import { when } from '../utility/when.ts';
 import { OVERFLOW_MARKER, MAX_SEARCH_KEY_LENGTH, SEARCH_TYPES } from '../utility/lmdb/terms.ts';
 import { compareKeys, MAXIMUM_KEY, writeKey } from 'ordered-binary';
@@ -83,7 +83,9 @@ export function executeConditions(
 	transformToEntries,
 	filtered,
 	recordAccess?,
-	inUnion?: boolean
+	// where this group's relationship conditions register: sibling conditions share one scope, an OR branch gets its own
+	scope: any = filtered,
+	covered?: CoveredSelect
 ) {
 	conditions = combineFullTextConditions(conditions, operator, table);
 	const firstSearch = conditions[0];
@@ -122,7 +124,7 @@ export function executeConditions(
 			// during the graph walk instead of post-filtering an under-filled candidate set (#1241). They
 			// also stay in the post-filter chain as a deterministic, harmless re-check.
 			const siblings = conditions.slice(1);
-			const filters = mapConditionsToFilters(siblings, true, firstSearch.estimated_count, inUnion);
+			const filters = mapConditionsToFilters(siblings, true, firstSearch.estimated_count, scope);
 			const recordFilters = recordGuards ? filters.concat(recordGuards) : filters;
 			// The sibling conditions a secondary-index range scan answers exactly can seed an allow-set
 			// the index admits from, instead of loading and decoding a record at every visited node.
@@ -143,13 +145,17 @@ export function executeConditions(
 		}
 		// General path: execute the lead FIRST — a leading join populates `filtered`, which the sibling
 		// filters read as they are built — then apply the sibling filters plus any record guards.
-		const results = executeCondition(firstSearch);
-		const filters = mapConditionsToFilters(conditions.slice(1), true, firstSearch.estimated_count, inUnion);
+		const results = executeCondition(
+			firstSearch,
+			conditions.length === 1 && !firstSearch.conditions && !recordGuards ? covered : undefined
+		);
+		const filters = mapConditionsToFilters(conditions.slice(1), true, firstSearch.estimated_count, scope);
 		const recordFilters = recordGuards ? filters.concat(recordGuards) : filters;
 		return recordFilters.length > 0 ? transformToEntries(results, recordFilters) : results;
 	}
-	function executeCondition(condition) {
-		if (condition.conditions)
+	function executeCondition(condition, covered?: CoveredSelect) {
+		const branchScope = operator === 'or' ? Object.create(null) : scope;
+		if (condition.conditions && !isRelationshipGroup(condition))
 			return executeConditions(
 				condition.conditions,
 				condition.operator,
@@ -160,33 +166,35 @@ export function executeConditions(
 				transformToEntries,
 				filtered,
 				undefined, // recordAccess intentionally omitted: guards run once, at the top level (see above).
-				inUnion || operator === 'or'
+				branchScope
 			);
 		return searchByIndex(condition, txn, condition.descending || request.reverse === true, table, {
 			allowFullScan: request.allowFullScan,
-			filtered,
+			filtered: branchScope,
 			context,
 			holderTable: table,
 			holderReadTxn: txn,
 			disableSnapshot: request.snapshot === false,
 			leaseHost: filtered,
+			covered,
 			minResults:
 				request.limit === 0 ? 0 : request.limit !== undefined ? (request.offset || 0) + request.limit : undefined,
 			resultOffset: request.offset || 0,
 			fullTextSearchOptions: request[FULL_TEXT_SEARCH_OPTIONS],
 		});
 	}
-	function mapConditionsToFilters(conditions, intersection, estimatedIncomingCount, inUnion: boolean) {
+	function mapConditionsToFilters(conditions, intersection, estimatedIncomingCount, scope) {
 		return conditions
 			.map((condition, index) => {
-				if (condition.conditions) {
+				if (condition.conditions && !isRelationshipGroup(condition)) {
 					// this is a group of conditions, we need to combine them
 					const union = condition.operator === 'or';
+					// an OR's conditions are judged one by one; an AND inside it meets its own related records
 					const filters = mapConditionsToFilters(
 						condition.conditions,
 						!union,
 						estimatedIncomingCount,
-						inUnion || union
+						union ? null : (scope ?? Object.create(null))
 					);
 					const groupFilter: any = union
 						? (record, entry) => filters.some((filter) => filter(record, entry))
@@ -196,7 +204,7 @@ export function executeConditions(
 					return groupFilter;
 				}
 				const isPrimaryKey = (condition.attribute || condition[0]) === table.primaryKey;
-				const filter = filterByType(condition, table, context, filtered, isPrimaryKey, estimatedIncomingCount, inUnion);
+				const filter = filterByType(condition, table, context, scope, isPrimaryKey, estimatedIncomingCount);
 				if (intersection && index < conditions.length - 1 && estimatedIncomingCount) {
 					estimatedIncomingCount = intersectionEstimate(
 						table.primaryStore,
@@ -292,6 +300,7 @@ function combineFullTextConditions(conditions: any[], operator: string | undefin
 
 function containsFullTextCondition(conditions: any[], table: any): boolean {
 	for (const condition of conditions) {
+		if (isRelationshipGroup(condition)) continue;
 		if (condition.conditions) {
 			if (containsFullTextCondition(condition.conditions, table)) return true;
 			continue;
@@ -322,6 +331,7 @@ function compileFullTextExpression(
 			remaining?: any[];
 	  }
 	| undefined {
+	if (isRelationshipGroup(condition)) return;
 	if (condition.conditions) {
 		validateFullTextFuzzyOptions(condition);
 		const children = condition.conditions.map((child) => compileFullTextExpression(child, table));
@@ -607,13 +617,11 @@ function planCandidateKeyScan(condition, table, includePointProbe: boolean): Can
 	let exclusiveStart = false;
 	switch (comparator) {
 		case 'lt':
-			start = null;
-			exclusiveStart = true;
+			({ start, exclusiveStart } = SECONDARY_OPEN_START);
 			end = value;
 			break;
 		case 'le':
-			start = null;
-			exclusiveStart = true;
+			({ start, exclusiveStart } = SECONDARY_OPEN_START);
 			end = value;
 			inclusiveEnd = true;
 			break;
@@ -622,7 +630,8 @@ function planCandidateKeyScan(condition, table, includePointProbe: boolean): Can
 			exclusiveStart = true;
 			break;
 		case 'ge':
-			start = value;
+			if (value === null) ({ start, exclusiveStart } = SECONDARY_OPEN_START);
+			else start = value;
 			break;
 		case 'between':
 		case 'gele':
@@ -633,7 +642,8 @@ function planCandidateKeyScan(condition, table, includePointProbe: boolean): Can
 			start = value[0] instanceof Date ? value[0].getTime() : value[0];
 			end = value[1] instanceof Date ? value[1].getTime() : value[1];
 			inclusiveEnd = comparator === 'gele' || comparator === 'gtle' || comparator === 'between';
-			exclusiveStart = comparator === 'gtlt' || comparator === 'gtle';
+			if (start == null) ({ start, exclusiveStart } = SECONDARY_OPEN_START);
+			else exclusiveStart = comparator === 'gtlt' || comparator === 'gtle';
 			break;
 		default:
 			start = value;
@@ -716,6 +726,10 @@ function planCandidateKeys(
 function collectCandidateKeyTerms(conditions, table, terms: CandidateKeyTerm[], includePointProbe: boolean): boolean {
 	let complete = true;
 	for (const condition of conditions) {
+		if (isRelationshipGroup(condition)) {
+			complete = false;
+			continue;
+		}
 		if (condition.conditions) {
 			if (condition.operator === 'or') {
 				// A union is only sound in full: dropping one branch would exclude the records only
@@ -863,7 +877,7 @@ async function collectCandidateKeysCooperatively(
  * range that is hundreds of MB where main streamed at O(1). Accepted for #2434 over the bounded
  * alternative, which costs a primary read per index entry.
  */
-function distinctRecords(entries: any): AsyncIterable<Id> {
+function distinctRecords(entries: any, primaryKeyOf?: (entry: any) => Id): AsyncIterable<Id> {
 	const distinct = new ExtendedIterable();
 	(distinct as any).iterate = (options) => {
 		// A non-scalar key decodes to a fresh instance per entry, so identity never matches it;
@@ -874,13 +888,14 @@ function distinctRecords(entries: any): AsyncIterable<Id> {
 		const yieldedEncodedKeys = new Set();
 		// map rather than filter: filter clears `continueOnRecoverableError` for everything below it
 		return entries
-			.map((primaryKey) => {
+			.map((entry) => {
+				const primaryKey = primaryKeyOf ? primaryKeyOf(entry) : entry;
 				const isEncoded = typeof primaryKey === 'object' && primaryKey !== null;
 				const yielded = isEncoded ? yieldedEncodedKeys : yieldedKeys;
 				const identity = isEncoded ? writeKeyId(primaryKey) : primaryKey;
 				if (yielded.has(identity)) return SKIP;
 				yielded.add(identity);
-				return primaryKey;
+				return entry;
 			})
 			.iterate(options);
 	};
@@ -905,6 +920,146 @@ function leaseRelatedReadTxn(relatedTable, context, holderTable, holderReadTxn, 
 export function releaseRelatedLeases(leaseHost) {
 	const leases = leaseHost[RELATED_LEASES];
 	if (leases) for (const lease of leases.values()) lease.onDone?.();
+}
+
+interface CoveredSelect {
+	attribute: string;
+	recordRead?: () => void;
+}
+
+// ordered-binary writes -0 as bytes that decode as ['\x18', null] on LMDB and as key '\x18' with a null-led primary
+// key on RocksDB (as a real [null, …] id can too): such an entry is left to the record path
+function negativeZeroShape(key: any, primaryKey: any): boolean {
+	return (typeof key === 'object' && key !== null) || (key === '\x18' && primaryKey?.[0] === null);
+}
+
+function overflowResolver(
+	Table: any,
+	searchCondition: any,
+	attributeName: string,
+	filter: ((record: any) => boolean) | undefined,
+	filtered: any,
+	transaction: any
+) {
+	let condition = filter;
+	const checkActive = getReadTransactionGuard(transaction);
+	const matches = (record: any) => (condition ??= filterByType(searchCondition, Table, null, filtered, false))(record);
+	const recover = (entry, record) => {
+		entry.recovered =
+			record != null ? overflowedValue(record[attributeName], entry.key, attributeName, matches) : undefined;
+		return entry.recovered === undefined ? SKIP : entry;
+	};
+	return (sync: boolean, entry) => {
+		if (sync) return recover(entry, Table.primaryStore.getEntry(entry.value, { transaction })?.value);
+		const load = () => {
+			checkActive?.();
+			return when(Table.primaryStore.getEntry(entry.value, { transaction, async: true }), (loaded) =>
+				recover(entry, loaded?.value)
+			);
+		};
+		if (!filter) return load();
+		return new Promise((resolve, reject) =>
+			setImmediate(() => {
+				try {
+					resolve(load());
+				} catch (error) {
+					reject(error);
+				}
+			})
+		);
+	};
+}
+
+// resources/DESIGN.md, Per-row read work on RocksDB index scans: with a filter or a dedupe, admission (and an
+// overflow entry's value) is settled before distinctRecords collapses a record onto one entry
+function admitCoveredEntries(
+	range: any,
+	attributeName: string,
+	coverAttribute: boolean,
+	filter: ((record: any) => boolean) | undefined,
+	sorting: boolean,
+	resolveOverflow: (sync: boolean, entry: any) => any
+) {
+	return range.map(function (entry) {
+		const { key, value: primaryKey } = entry;
+		if (negativeZeroShape(key, primaryKey)) entry.uncovered = true;
+		else if (
+			typeof key === 'string' &&
+			key.length > MAX_SEARCH_KEY_LENGTH &&
+			(coverAttribute || (filter !== undefined && !sorting))
+		)
+			return resolveOverflow(this?.isSync, entry);
+		if (!filter) return entry;
+		if (this?.isSync) return filter({ [attributeName]: key }) ? entry : SKIP;
+		return new Promise((resolve, reject) =>
+			setImmediate(() => {
+				try {
+					resolve(filter({ [attributeName]: key }) ? entry : SKIP);
+				} catch (error) {
+					reject(error);
+				}
+			})
+		);
+	});
+}
+
+function coverIndexEntries(
+	entries: any,
+	Table: any,
+	attributeName: string,
+	coverAttribute: boolean,
+	covered: CoveredSelect,
+	resolveOverflow: ((sync: boolean, entry: any) => any) | undefined
+) {
+	const primaryKeyName = Table.primaryKey;
+	const decodePrimaryKey = declaredTypeDecoder(findAttribute(Table.attributes, primaryKeyName));
+	const decodeValue = coverAttribute && declaredTypeDecoder(findAttribute(Table.attributes, attributeName));
+	const recordRead = covered.recordRead;
+	const project = (entry) => {
+		if (entry === SKIP) return SKIP;
+		const { key, value: primaryKey, recovered } = entry;
+		recordRead?.();
+		const id = decodePrimaryKey ? decodePrimaryKey(primaryKey) : primaryKey;
+		entry.key = id;
+		entry.value = coverAttribute
+			? {
+					[primaryKeyName]: id,
+					[attributeName]: recovered !== undefined ? recovered : decodeValue ? decodeValue(key) : key,
+				}
+			: { [primaryKeyName]: id };
+		return entry;
+	};
+	return entries.map(function (entry) {
+		if (resolveOverflow) {
+			if (negativeZeroShape(entry.key, entry.value)) return entry.value;
+			if (coverAttribute && typeof entry.key === 'string' && entry.key.length > MAX_SEARCH_KEY_LENGTH) {
+				const resolved = resolveOverflow(this?.isSync, entry);
+				return typeof resolved?.then === 'function' ? resolved.then(project) : project(resolved);
+			}
+		} else if (entry.uncovered) return entry.value;
+		return project(entry);
+	});
+}
+
+function overflowedValue(stored: any, key: string, attributeName: string, filter?: (record: any) => boolean) {
+	const prefix = key.slice(0, MAX_SEARCH_KEY_LENGTH);
+	const indexed = (value: any) =>
+		typeof value === 'string' &&
+		value.length > MAX_SEARCH_KEY_LENGTH &&
+		// the key is stored as UTF-8, which writes a surrogate left unpaired by the cut as U+FFFD
+		(value.startsWith(prefix) || value.slice(0, MAX_SEARCH_KEY_LENGTH).toWellFormed() === prefix) &&
+		(!filter || filter({ [attributeName]: value }));
+	return Array.isArray(stored) ? stored.find(indexed) : indexed(stored) ? stored : undefined;
+}
+
+const MAX_DATE_TIME = 8.64e15;
+function declaredTypeDecoder(attribute: any): ((key: any) => any) | undefined {
+	switch (attribute?.type) {
+		case 'Date':
+			return (key) => (Number.isInteger(key) && Math.abs(key) <= MAX_DATE_TIME ? new Date(key) : key);
+		case 'BigInt':
+			return (key) => (Number.isInteger(key) ? BigInt(key) : key);
+	}
 }
 
 /**
@@ -940,6 +1095,7 @@ export function searchByIndex(
 		disableSnapshot?: boolean;
 		leaseHost?: any;
 		leaseContext?: any;
+		covered?: CoveredSelect;
 	} = {}
 ): AsyncIterable<Id | { key: Id; value: any }> {
 	// A stale positional caller passes `allowFullScan` here. Type checking only covers .ts callers, so
@@ -956,16 +1112,18 @@ export function searchByIndex(
 		holderReadTxn,
 		disableSnapshot,
 		leaseHost,
+		covered,
 	} = options;
 	const leaseContext = options.leaseContext ?? context;
-	let attribute_name = searchCondition[0] ?? searchCondition.attribute;
+	const group: any = isRelationshipGroup(searchCondition) ? searchCondition : undefined;
+	let attribute_name = group ? [].concat(group.attribute) : (searchCondition[0] ?? searchCondition.attribute);
 	let value = searchCondition[1] ?? searchCondition.value;
 	const comparator = searchCondition.comparator;
 	const fullTextMode = fullTextComparatorMode(comparator);
 	if (fullTextMode && typeof attribute_name !== 'string')
 		throw new ClientError('Full-text comparator requires an index directly on the queried table', 400);
 	if (!fullTextMode) Table.assertFullTextRecordField?.(attribute_name);
-	if (value === undefined && (comparator as any) !== 'sort') {
+	if (value === undefined && (comparator as any) !== 'sort' && !group) {
 		throw new ClientError(`Search condition for ${attribute_name} must have a value`);
 	}
 	let needFullScan;
@@ -978,7 +1136,7 @@ export function searchByIndex(
 		const attribute = findAttribute(Table.attributes, firstAttributeName);
 		if (attribute?.relationship) {
 			// it is a join/relational query
-			if (attribute_name.length < 2)
+			if (attribute_name.length < 2 && !group)
 				throw new ClientError(
 					'Can not directly query a relational attribute, must query an attribute within the target table'
 				);
@@ -988,22 +1146,35 @@ export function searchByIndex(
 				relatedTable.primaryStore.path === Table.primaryStore.path
 					? transaction
 					: leaseRelatedReadTxn(relatedTable, leaseContext, holderTable, holderReadTxn, disableSnapshot, leaseHost);
+			const relatedOptions = {
+				allowFullScan,
+				filtered: joined,
+				context,
+				// no parent rows wanted means no related rows either; any other count does not carry across a join
+				minResults: minResults === 0 ? 0 : undefined,
+				holderTable,
+				holderReadTxn,
+				disableSnapshot,
+				leaseHost,
+				leaseContext,
+			};
+			const rest = attribute_name.length > 2 ? attribute_name.slice(1) : attribute_name[1];
 			// search the related table
-			let results = searchByIndex(
-				{
-					attribute: attribute_name.length > 2 ? attribute_name.slice(1) : attribute_name[1],
-					value,
-					comparator,
-					negated: searchCondition.negated,
-				},
-				relatedTxn,
-				reverse,
-				relatedTable,
-				{ allowFullScan, filtered: joined, holderTable, holderReadTxn, disableSnapshot, leaseHost, leaseContext }
-			);
+			let results =
+				group && attribute_name.length === 1
+					? searchRelatedGroup(searchCondition, relatedTxn, reverse, relatedTable, joined, relatedOptions)
+					: searchByIndex(
+							group
+								? ({ attribute: rest, conditions: group.conditions, operator: group.operator } as any)
+								: relatedCondition(searchCondition, rest, value),
+							relatedTxn,
+							reverse,
+							relatedTable,
+							relatedOptions
+						);
 			if (attribute.relationship.to) {
 				// this is one-to-many or many-to-many, so we need to track the filtering of related entries that match
-				filtered[attribute_name[0]] = joined;
+				restrictRelationship(filtered, attribute_name[0], joined);
 				// Use the joinTo to join the results of the related table to the current table (can be one-to-many or many-to-many)
 				const isManyToMany = Boolean(findAttribute(relatedTable.attributes, attribute.relationship.to)?.elements);
 				results = joinTo(results, attribute, relatedTable.primaryStore, isManyToMany, joined, relatedTxn);
@@ -1020,15 +1191,30 @@ export function searchByIndex(
 					);
 				};
 				if (attribute.elements) {
-					filtered[attribute_name[0]] = joined;
+					restrictRelationship(filtered, attribute_name[0], joined);
 					// many-to-many relationship (forward), get all the ids first
 					results = joinFrom(results, attribute, relatedTable.primaryStore, joined, searchEntry, relatedTxn);
 				} else {
 					// many-to-one relationship, need to flatten the ids that point back to potentially many instances of this
-					results = (results as any).flatMap(searchEntry);
+					if ((joined as any).filters)
+						throw new ServerError(
+							`A same-record group on ${firstAttributeName} reached a many-to-one join without being flattened`
+						);
+					// flatMap flattens only its own copy of ExtendedIterable; a custom index's results are this module's
+					// copy, while a store's ranges can be another (lmdb's CommonJS build when this runs from source)
+					results = (results as any).flatMap(
+						results instanceof ExtendedIterable
+							? (relatedEntry) => {
+									const matches = searchEntry(relatedEntry);
+									return matches instanceof ExtendedIterable ? matches : new ExtendedIterable(matches);
+								}
+							: searchEntry
+					);
 				}
 			}
 			return results;
+		} else if (group) {
+			throw new ClientError(`${firstAttributeName}[...] requires a relationship attribute`, 400);
 		} else if (attribute_name.length === 1) {
 			attribute_name = attribute_name[0];
 		} else {
@@ -1078,11 +1264,14 @@ export function searchByIndex(
 				inclusiveEnd = true;
 				break;
 			case 'gt':
-				start = value;
-				exclusiveStart = true;
-				break;
 			case 'ge':
-				start = value;
+				if (value === null) {
+					start = openStart;
+					exclusiveStart = openStartExclusive;
+				} else {
+					start = value;
+					exclusiveStart = resolvedComparator === 'gt';
+				}
 				break;
 			case 'prefix': // this is form finding multi-part keys that start with the provided prefix
 				// this search needs to be of the form:
@@ -1120,6 +1309,10 @@ export function searchByIndex(
 				inclusiveEnd =
 					resolvedComparator === 'gele' || resolvedComparator === 'gtle' || resolvedComparator === 'between';
 				exclusiveStart = resolvedComparator === 'gtlt' || resolvedComparator === 'gtle';
+				if (start == null) {
+					start = openStart;
+					exclusiveStart = openStartExclusive;
+				}
 				break;
 			}
 			case 'equals':
@@ -1177,10 +1370,7 @@ export function searchByIndex(
 		exclusiveStart = !inclusiveEnd;
 		inclusiveEnd = newEnd;
 	}
-	// For negated conditions we need to consider records whose attribute value is
-	// missing from the index (e.g. nulls when the index doesn't index nulls), so
-	// we bypass the secondary index and iterate over the primary store.
-	const skipIndex = searchCondition.negated && index && !isPrimaryKey;
+	const skipIndex = index && !isPrimaryKey && bypassesSecondaryIndex(searchCondition, resolvedComparator, value);
 	if (!index || index.isIndexing || needFullScan || (value === null && !index.indexNulls) || skipIndex) {
 		// no indexed searching available, need a full scan
 		if (allowFullScan === false && !index)
@@ -1260,12 +1450,20 @@ export function searchByIndex(
 				: undefined;
 			const indexSearchStart = waiting ? start.promise.then(() => checkActive?.()) : undefined;
 			indexSearchStart?.catch(() => {});
+			// the index reads through context.transaction, which heads a chain of per-database links and can be another
+			// database's (a relationship, or a scope that touched another database first)
+			const headTransaction = context?.transaction;
+			const tableTransaction = headTransaction && Table._txnForContext(context);
+			const tableContext =
+				tableTransaction === headTransaction
+					? context
+					: Object.create(context, { transaction: { value: tableTransaction } });
 			const searchContext = waiting
-				? Object.create(context, {
+				? Object.create(tableContext, {
 						signal: { value: signal },
 						indexSearchStart: { value: indexSearchStart },
 					})
-				: context;
+				: tableContext;
 			const searched = index.customIndex.search(searchCondition, searchContext, {
 				filter:
 					waiting && recordFilter
@@ -1370,39 +1568,63 @@ export function searchByIndex(
 				};
 				return results;
 			}
-			return processEntries(searched);
+			const loaded = processEntries(searched);
+			// unlike an Array's, this iterator can be closed, which a join or union that stops early does
+			const results: any = new ExtendedIterable();
+			results.iterate = function* () {
+				yield* loaded;
+			};
+			return results;
 		}
-		const scanned = index.getRange(rangeOptions).map(
-			filter
-				? function ({ key, value }) {
-						let recordMatcher: any;
-						if (typeof key === 'string' && key.length > MAX_SEARCH_KEY_LENGTH) {
-							// if it is an overflow string, need to get the actual value from the database
-							recordMatcher = Table.primaryStore.getSync(value);
-						} else recordMatcher = { [attribute_name]: key };
-						if (this.isSync) return filter(recordMatcher) ? value : SKIP;
-						// for filter operations, we intentionally yield the event turn so that scanning queries
-						// do not hog resources
-						return new Promise((resolve, reject) =>
-							setImmediate(() => {
-								try {
-									resolve(filter(recordMatcher) ? value : SKIP);
-								} catch (error) {
-									reject(error);
-								}
-							})
-						);
-					}
-				: ({ value }) => value
-		);
+		const coverAttribute = covered?.attribute === attribute_name;
+		const coverEntries = coverAttribute || (covered !== undefined && covered.attribute === Table.primaryKey);
+		const dedupe = !scansOneIndexedValue && Boolean(findAttribute(Table.attributes, attribute_name)?.elements);
+		const resolveOverflow =
+			coverEntries && overflowResolver(Table, searchCondition, attribute_name, filter, filtered, transaction);
+		const admit = coverEntries && (filter !== undefined || dedupe);
+		const scanned = coverEntries
+			? admit
+				? admitCoveredEntries(
+						index.getRange(rangeOptions),
+						attribute_name,
+						coverAttribute,
+						filter,
+						resolvedComparator === 'sort',
+						resolveOverflow
+					)
+				: index.getRange(rangeOptions)
+			: index.getRange(rangeOptions).map(
+					filter
+						? function ({ key, value }) {
+								let recordMatcher: any;
+								if (typeof key === 'string' && key.length > MAX_SEARCH_KEY_LENGTH) {
+									// if it is an overflow string, need to get the actual value from the database
+									recordMatcher = Table.primaryStore.getSync(value);
+								} else recordMatcher = { [attribute_name]: key };
+								if (this.isSync) return filter(recordMatcher) ? value : SKIP;
+								// for filter operations, we intentionally yield the event turn so that scanning queries
+								// do not hog resources
+								return new Promise((resolve, reject) =>
+									setImmediate(() => {
+										try {
+											resolve(filter(recordMatcher) ? value : SKIP);
+										} catch (error) {
+											reject(error);
+										}
+									})
+								);
+							}
+						: ({ value }) => value
+				);
 		// Collapsing AFTER the map is required, not incidental: the condition's own filter tests one
 		// element at a time, so a record whose first entry fails it and whose second passes must
 		// still be reached. Collapsing first would settle that record on the failing entry and drop
 		// it. Scoped to attributes the schema declares multi-valued; a runtime array under an
 		// undeclared attribute repeats the same way but stays outside this boundary.
-		return scansOneIndexedValue || !findAttribute(Table.attributes, attribute_name)?.elements
-			? scanned
-			: distinctRecords(scanned);
+		const distinct = dedupe ? distinctRecords(scanned, coverEntries ? (entry) => entry.value : undefined) : scanned;
+		return coverEntries
+			? coverIndexEntries(distinct, Table, attribute_name, coverAttribute, covered, admit ? undefined : resolveOverflow)
+			: distinct;
 	} else {
 		return Table.primaryStore
 			.getRange(reverse ? { end: true, transaction, reverse: true } : { start: true, transaction })
@@ -1445,6 +1667,23 @@ export function findAttribute(attributes, attribute_name) {
 		} else attribute_name = attribute_name.toString();
 	} else if (typeof attribute_name !== 'string') attribute_name = attribute_name.toString();
 	return attributes.find((attribute) => attribute.name === attribute_name);
+}
+
+/**
+ * The condition a relationship hop runs on the related table. It keeps the leaf's own query options (an HNSW
+ * `target`, `distance`, `ef`, index-lag bounds) and drops what search.ts cached or attached to it for this table,
+ * so new per-table state set on a condition belongs in this list.
+ */
+function relatedCondition(condition, attribute, value) {
+	const related = { ...condition, attribute, value };
+	delete related[0];
+	delete related[1];
+	delete related.estimated_count;
+	delete related.descending;
+	delete related.recordFilter;
+	delete related.candidateKeys;
+	delete related.cachedSet;
+	return related;
 }
 
 /**
@@ -1603,13 +1842,52 @@ class RelationshipSelection {
 		this.fromRecord = fromRecord;
 	}
 }
-// keys the join and selection maps keep for themselves, so a relationship of that name cannot be tracked in them
-const SELECTION_BOOKKEEPING = new Set(['filters', 'fromRecord', 'hasMappings']);
+const RESTRICTIONS = Symbol('relationshipRestrictions');
+const UNIONS = Symbol('relationshipUnions');
+const LOADS = Symbol('relationshipLoads');
 // A query's `filtered` map holds, per relationship name, a leading join's Map or a selection with `fromRecord`.
-// Read it as an own property of that shape: a name can equal an inherited member or the maps' bookkeeping keys.
+// They are keyed by symbol because a relationship can be named like the maps' own members (`filters`, `get`).
 export function relationshipRestriction(filtered, name: string) {
-	const restriction = filtered && Object.hasOwn(filtered, name) ? filtered[name] : undefined;
-	return restriction instanceof Map || typeof restriction?.fromRecord === 'function' ? restriction : undefined;
+	return filtered?.[RESTRICTIONS]?.get(name);
+}
+export function restrictRelationship(filtered, name: string, restriction: Map<any, any> | RelationshipSelection) {
+	(filtered[RESTRICTIONS] ??= new Map()).set(name, restriction);
+}
+/**
+ * A same-record relationship condition: `{ attribute: relationship, operator, conditions }`, whose conditions are
+ * relative to the related table and are met by one related record.
+ */
+export function isRelationshipGroup(condition): boolean {
+	return Boolean(condition?.conditions) && condition.attribute != null;
+}
+/**
+ * Compile conditions on `table` into one record predicate (with a `maybeAsync` form when a leg has one). Each
+ * relationship condition is met by some related record of its own; `scope` collects their select() restrictions,
+ * which an OR never contributes to.
+ */
+export function compileConditions(conditions: any[], operator: string, table, context, scope) {
+	const any = operator === 'or';
+	const legScope = any ? undefined : scope;
+	const predicates = conditions.map((condition) => {
+		if (condition.conditions && !isRelationshipGroup(condition))
+			return compileConditions(condition.conditions, condition.operator, table, context, legScope);
+		const predicate = filterByType(
+			condition,
+			table,
+			context,
+			legScope,
+			(condition[0] ?? condition.attribute) === table.primaryKey
+		);
+		if (!predicate) throw new ClientError('This predicate is not supported in a relationship condition', 400);
+		return predicate;
+	});
+	if (predicates.length === 1) return predicates[0];
+	const combined: any = any
+		? (record, entry) => predicates.some((predicate) => predicate(record, entry))
+		: (record, entry) => predicates.every((predicate) => predicate(record, entry));
+	if (predicates.some((predicate) => predicate.maybeAsync))
+		combined.maybeAsync = (record, entry) => matchesFilters(predicates, record, entry, any);
+	return combined;
 }
 function someRelatedMatch(entries, match, start: number) {
 	for (let i = start; i < entries.length; i++) {
@@ -1878,30 +2156,28 @@ export function getNestedValue(record: any, path: string | string[]): any {
  * @param {SearchObject} searchCondition
  * @returns {({}) => boolean}
  */
-export function filterByType(
-	searchCondition,
-	Table,
-	context,
-	filtered,
-	isPrimaryKey?,
-	estimatedIncomingCount?,
-	inUnion?: boolean
-) {
+export function filterByType(searchCondition, Table, context, filtered, isPrimaryKey?, estimatedIncomingCount?) {
 	const comparator = searchCondition.comparator;
 	const negated = searchCondition.negated;
-	let attribute = searchCondition[0] ?? searchCondition.attribute;
+	const group = isRelationshipGroup(searchCondition) ? searchCondition : undefined;
+	let attribute = group ? [].concat(group.attribute) : (searchCondition[0] ?? searchCondition.attribute);
 	let value = searchCondition[1] ?? searchCondition.value;
+	if (attribute == null && Table?.primaryKey != null) {
+		attribute = Table.primaryKey;
+		isPrimaryKey = true;
+	}
 	if (Array.isArray(attribute)) {
 		if (attribute.length === 0) return () => true;
-		if (attribute.length === 1) {
-			attribute = attribute[0];
+		if (attribute.length === 1 && !group) {
+			attribute = attribute[0] ?? Table?.primaryKey;
 			isPrimaryKey = attribute === Table?.primaryKey;
-		} else if (attribute.length > 1) {
+		} else {
 			const firstAttributeName = attribute[0];
 			// get the relationship attribute (may be undefined for plain JSON paths)
 			const firstAttribute = findAttribute(Table?.attributes, firstAttributeName);
 			const relatedTable = firstAttribute?.definition?.tableClass || firstAttribute?.elements?.definition?.tableClass;
 			if (!relatedTable) {
+				if (group) throw new ClientError(`${firstAttributeName}[...] requires a relationship attribute`, 400);
 				// Plain JSON nested path — walk the path on each record. Array
 				// intermediates use `some` semantics (match if any element matches).
 				const restAttribute = attribute.length > 2 ? attribute.slice(1) : attribute[1];
@@ -1921,12 +2197,37 @@ export function filterByType(
 					return leafFilter(subObject, entry);
 				};
 			}
-			// TODO: If this is a relationship, we can potentially make this more efficient by using the index
-			// and retrieving the set of matching ids first
-			const filterMap = relationshipRestriction(filtered, firstAttributeName);
-			const join: any = filterMap instanceof Map ? filterMap : undefined;
+			const restriction = relationshipRestriction(filtered, firstAttributeName);
+			const join: any = restriction instanceof Map ? restriction : undefined;
 			const resolver = Table.propertyResolvers?.[firstAttributeName];
-			const loadEntries = resolver?.loadEntries;
+			let lastLoad;
+			if (filtered && resolver) {
+				const loads = (filtered[LOADS] ??= new Map());
+				lastLoad = loads.get(firstAttributeName);
+				if (!lastLoad)
+					loads.set(
+						firstAttributeName,
+						(lastLoad = { record: undefined, loaded: undefined, syncRecord: undefined, resolved: undefined })
+					);
+			}
+			const loadEntries =
+				resolver?.loadEntries &&
+				((record, context) => {
+					if (!lastLoad) return resolver.loadEntries(record, context);
+					if (lastLoad.record !== record) {
+						lastLoad.loaded = resolver.loadEntries(record, context);
+						lastLoad.record = record;
+					}
+					return lastLoad.loaded;
+				});
+			const resolveEntries = (record, entry) => {
+				if (!lastLoad) return resolver(record, context, entry, true);
+				if (lastLoad.syncRecord !== record) {
+					lastLoad.resolved = resolver(record, context, entry, true);
+					lastLoad.syncRecord = record;
+				}
+				return lastLoad.resolved;
+			};
 			const getSubObject = (record, entry) => {
 				let subObject, subEntry, subEntries;
 				if (resolver) {
@@ -1935,7 +2236,7 @@ export function filterByType(
 						subObject = resolver(record, context, entry);
 						subEntry = lastMetadata;
 					} else {
-						subEntry = resolver(record, context, entry, true);
+						subEntry = resolveEntries(record, entry);
 						if (Array.isArray(subEntry)) {
 							subEntries = subEntry.filter((related) => related?.value != null);
 							subObject = subEntries.map((related) => related.value);
@@ -1947,20 +2248,31 @@ export function filterByType(
 				} else subObject = record[firstAttributeName];
 				return { subObject, subEntry, subEntries };
 			};
-			const relatedSelection = (filters: any[]) =>
-				new RelationshipSelection(filters, (record, sync?: boolean) => {
-					// this is called when selecting the fields to include in results
+			const unionSelection = (join?: Map<any, any>) => {
+				const units = [];
+				const relatedKey = (entry) => entry.key ?? entry.value[relatedTable.primaryKey];
+				const joinedKeys = (record) => {
+					if (!join) return;
+					const keys = (join as any).hasMappings
+						? (join.get(resolver.from ? record[resolver.from] : flattenKey(record[Table.primaryKey])) || []).map(
+								(entry) => entry?.key ?? entry
+							)
+						: (join as any).fromRecord?.(record);
+					return new Set(keys?.map(flattenKey));
+				};
+				const selection = new RelationshipSelection(units, (record, sync?: boolean) => {
+					const joined = joinedKeys(record);
 					if (loadEntries && !sync) {
 						return when(loadEntries(record, context), (loaded) => {
 							if (!resolver.toMany || !loaded) return loaded?.value;
 							const matches = mapSettlingOnThrow(
 								loaded,
-								(entry) => entry?.value != null && matchesFilters(filters, entry.value, entry, false)
+								(entry) =>
+									entry?.value != null &&
+									(joined?.has(flattenKey(relatedKey(entry))) || matchesFilters(units, entry.value, entry, true))
 							);
 							const matchingKeys = (matches) =>
-								loaded
-									.filter((_entry, i) => matches[i])
-									.map((entry) => entry.key ?? entry.value[relatedTable.primaryKey]);
+								loaded.filter((_entry, i) => matches[i]).map((entry) => relatedKey(entry));
 							return matches.some((matches) => matches?.then)
 								? Promise.all(matches).then(matchingKeys)
 								: matchingKeys(matches);
@@ -1972,87 +2284,95 @@ export function filterByType(
 					for (let i = 0; i < subObject.length; i++) {
 						const value = subObject[i];
 						const entry = subEntries?.[i];
-						if (filters.every((filter) => filter(value, entry)))
-							keys.push(entry?.key ?? value[relatedTable.primaryKey]);
+						const key = entry?.key ?? value[relatedTable.primaryKey];
+						if (joined?.has(flattenKey(key)) || units.some((unit) => unit(value, entry))) keys.push(key);
 					}
 					return keys;
 				});
-			// AND scope: registered when built, so no row sees a partial set; OR scope: lazily, first branch wins
-			const restrictsSelect = filtered && firstAttribute.elements && !SELECTION_BOOKKEEPING.has(firstAttributeName);
-			let selection;
-			if (!join && restrictsSelect && !inUnion) {
-				if (filterMap instanceof RelationshipSelection) selection = filterMap;
-				else if (!Object.hasOwn(filtered, firstAttributeName)) selection = relatedSelection([]);
+				if (join) {
+					// the other conditions' deeper hops register beside the leading join's own
+					selection[RESTRICTIONS] = join[RESTRICTIONS] ??= new Map();
+					selection[UNIONS] = join[UNIONS] ??= new Map();
+				}
+				return selection;
+			};
+			let selection: RelationshipSelection;
+			// where this condition's deeper hops register their select() restrictions and share their loads; a to-one
+			// hop's restrictions are not read yet (to-one->to-many select() restrictions, harper#3762)
+			let nestedScope = join;
+			if (filtered) {
+				const unions = (filtered[UNIONS] ??= new Map());
+				let shared = unions.get(firstAttributeName);
+				if (!shared)
+					unions.set(
+						firstAttributeName,
+						(shared = firstAttribute.elements ? unionSelection(join) : Object.create(null))
+					);
+				if (firstAttribute.elements) selection = shared;
+				nestedScope ??= shared;
 			}
-			const nextFilter = filterByType(
-				{
-					attribute: attribute.length > 2 ? attribute.slice(1) : attribute[1],
-					value,
-					comparator,
-					negated,
-				},
-				relatedTable,
-				context,
-				join ?? selection,
-				attribute[1] === relatedTable.primaryKey,
-				estimatedIncomingCount,
-				inUnion
-			);
+			const rest = attribute.length > 2 ? attribute.slice(1) : attribute[1];
+			const nextFilter =
+				group && attribute.length === 1
+					? compileConditions(group.conditions, group.operator, relatedTable, context, nestedScope)
+					: filterByType(
+							group
+								? { attribute: rest, conditions: group.conditions, operator: group.operator }
+								: relatedCondition(searchCondition, rest, value),
+							relatedTable,
+							context,
+							nestedScope,
+							rest === relatedTable.primaryKey,
+							estimatedIncomingCount
+						);
 			if (!nextFilter) return;
-			if (join) {
-				if (!join.filters) join.filters = [];
-				join.filters.push(nextFilter);
-				return;
-			}
 			if (selection) {
-				filtered[firstAttributeName] = selection;
 				selection.filters.push(nextFilter);
+				restrictRelationship(filtered, firstAttributeName, selection);
 			}
 			if (resolver?.to) nextFilter.to = resolver.to;
 			let subIdFilter;
-			// the shortcut tests this record's `from` (or key): a `to` relationship's id filter must be mapped through `to`
-			const usesIdFilter = () => nextFilter.idFilter && (!resolver.to || nextFilter.idFilter.mappedTo);
-			const preserveForSelect = () => {
-				if (inUnion && restrictsSelect && !Object.hasOwn(filtered, firstAttributeName))
-					filtered[firstAttributeName] = relatedSelection([nextFilter]);
+			// a condition on the related key tests this record's `from` (or key) without loading the related record:
+			// a `to` relationship's id filter must be mapped through `to`
+			const usesIdFilter = () => resolver && nextFilter.idFilter && (!resolver.to || nextFilter.idFilter.mappedTo);
+			const keyTest = () => {
+				if (!subIdFilter) {
+					// an array of foreign keys is tested per element; a single key (which may be a composite array) whole
+					const allowObjectMatching = Boolean(resolver.to) || !resolver.toMany;
+					if (nextFilter.idFilter.idSet?.size === 1) {
+						// if there is a single id we are looking for, we can create a new search condition that the
+						// attribute comparator could eventually use to create a recursive id set
+						// TODO: Eventually we should be able to handle multiple ids by creating a union
+						searchCondition = {
+							attribute: resolver.from ?? Table.primaryKey, // if no from, we use our primary key
+							value: nextFilter.idFilter.onlyId,
+						};
+						subIdFilter = attributeComparator(
+							resolver.from ?? Table.primaryKey,
+							nextFilter.idFilter,
+							true,
+							allowObjectMatching
+						);
+					} else
+						subIdFilter = attributeComparator(
+							resolver.from ?? Table.primaryKey,
+							nextFilter.idFilter,
+							false,
+							allowObjectMatching
+						);
+				}
+				return subIdFilter;
 			};
 			const recordFilter = (record, entry) => {
-				if (resolver && usesIdFilter()) {
-					// if we are filtering by id, we can use the idFilter to avoid loading the record
-					if (!subIdFilter) {
-						// an array of foreign keys is tested per element; a single key (which may be a composite array) whole
-						const allowObjectMatching = Boolean(resolver.to) || !resolver.toMany;
-						if (nextFilter.idFilter.idSet?.size === 1) {
-							// if there is a single id we are looking for, we can create a new search condition that the
-							// attribute comparator could eventually use to create a recursive id set
-							// TODO: Eventually we should be able to handle multiple ids by creating a union
-							searchCondition = {
-								attribute: resolver.from ?? Table.primaryKey, // if no from, we use our primary key
-								value: nextFilter.idFilter.onlyId,
-							};
-							subIdFilter = attributeComparator(
-								resolver.from ?? Table.primaryKey,
-								nextFilter.idFilter,
-								true,
-								allowObjectMatching
-							);
-						} else
-							subIdFilter = attributeComparator(
-								resolver.from ?? Table.primaryKey,
-								nextFilter.idFilter,
-								false,
-								allowObjectMatching
-							);
-					}
-					const matches = subIdFilter(record);
-					if ((subIdFilter as any).idFilter) (recordFilter as any).idFilter = (subIdFilter as any).idFilter;
-					if (matches) preserveForSelect();
+				if (usesIdFilter()) {
+					const test = keyTest();
+					const matches = test(record);
+					if ((test as any).idFilter) (recordFilter as any).idFilter = (test as any).idFilter;
 					return matches;
 				}
 				const { subObject, subEntry, subEntries } = getSubObject(record, entry);
 				if (!subObject) return false;
 				if (!Array.isArray(subObject)) return nextFilter(subObject, subEntry);
-				preserveForSelect();
 				return subObject.some((value, i) => nextFilter(value, subEntries?.[i]));
 			};
 			const nextMatch = nextFilter.maybeAsync ?? nextFilter;
@@ -2060,7 +2380,6 @@ export function filterByType(
 				const matchLoaded = (loaded) => {
 					if (!resolver.toMany) return loaded?.value ? nextMatch(loaded.value, loaded) : false;
 					if (!loaded) return false;
-					preserveForSelect();
 					return someRelatedMatch(loaded, nextMatch, 0);
 				};
 				(recordFilter as any).maybeAsync = (record, entry) => {
@@ -2073,6 +2392,8 @@ export function filterByType(
 		}
 	}
 	if (value instanceof Date) value = value.getTime();
+	const distanceFilter = vectorDistanceFilter(searchCondition, Table, attribute, value);
+	if (distanceFilter) return negated ? (record) => !distanceFilter(record) : distanceFilter;
 
 	let baseFilter;
 	switch (ALTERNATE_COMPARATOR_NAMES[comparator] || comparator) {
@@ -2144,7 +2465,7 @@ export function filterByType(
 			baseFilter = attributeComparator(
 				attribute,
 				(recordValue) => {
-					if (recordValue === undefined) return false;
+					if (recordValue == null) return false;
 					const cmpStart = compareKeys(recordValue, value[0]);
 					const cmpEnd = compareKeys(recordValue, value[1]);
 					return (startInclusive ? cmpStart >= 0 : cmpStart > 0) && (endInclusive ? cmpEnd <= 0 : cmpEnd < 0);
@@ -2168,17 +2489,16 @@ export function filterByType(
 			baseFilter = attributeComparator(attribute, (recordValue) => valueSet.has(recordValue), true);
 			break;
 		}
-		// no index holds an entry for an omitted (undefined) value
 		case 'gt':
 			baseFilter = attributeComparator(
 				attribute,
-				(recordValue) => recordValue !== undefined && compareKeys(recordValue, value) > 0
+				(recordValue) => recordValue != null && compareKeys(recordValue, value) > 0
 			);
 			break;
 		case 'ge':
 			baseFilter = attributeComparator(
 				attribute,
-				(recordValue) => recordValue !== undefined && compareKeys(recordValue, value) >= 0
+				(recordValue) => recordValue != null && compareKeys(recordValue, value) >= 0
 			);
 			break;
 		case 'lt':
@@ -2197,13 +2517,17 @@ export function filterByType(
 			if (isPrimaryKey) {
 				const equals = primaryKeyEquals(value);
 				baseFilter = attributeComparator(attribute, (primaryKey) => !equals(primaryKey));
-			} else
+			} else {
+				// whole values reach this predicate (allowObjectMatching), so it applies the per-element array rule itself
+				const differs = (element) =>
+					compareKeys((element instanceof Date ? element.getTime() : element) ?? null, value) !== 0;
 				baseFilter = attributeComparator(
 					attribute,
-					(recordValue) => compareKeys(recordValue ?? null, value) !== 0,
+					(recordValue) => (Array.isArray(recordValue) ? recordValue.some(differs) : differs(recordValue)),
 					false,
 					true
 				);
+			}
 			break;
 		}
 		case 'sort':
@@ -2241,13 +2565,15 @@ export function filterByType(
 		}
 		let misses = 0;
 		let filteredSoFar = 3; // what we use to calculate miss rate; we give some buffer so we don't jump to indexed retrieval too quickly
+		// an array's Date elements are indexed as epoch numbers, which is what the comparators and condition values hold
+		const elementFilter = (element) => filter(element instanceof Date ? element.getTime() : element);
 		function recordFilter(record: any) {
 			// `record` may be null/undefined when called via a nested-path filter
 			// where an intermediate property is missing.
 			const value = record == null ? undefined : record[attribute];
 			let matches: boolean;
 			if (typeof value !== 'object' || !value || allowObjectMatching) matches = filter(value);
-			else if (Array.isArray(value)) matches = value.some(filter);
+			else if (Array.isArray(value)) matches = value.some(elementFilter);
 			else if (value instanceof Date) matches = filter(value.getTime());
 			//else matches = false;
 			// As we are filtering, we can lazily/reactively switch to indexing if we are getting a low match rate, allowing use to load
@@ -2261,7 +2587,9 @@ export function filterByType(
 					(++misses / filteredSoFar) * estimatedIncomingCount > thresholdRemainingMisses
 				) {
 					// if we have missed too many times, we need to switch to indexed retrieval
-					const searchResults = searchByIndex(searchCondition, Table._readTxnForContext(context), false, Table);
+					const searchResults = searchByIndex(searchCondition, Table._readTxnForContext(context), false, Table, {
+						context,
+					});
 					let matchingIds: Iterable<Id>;
 					if ((recordFilter as any).to) {
 						// the values could be an array of keys, so we flatten the mapping
@@ -2295,6 +2623,17 @@ export function filterByType(
 	}
 }
 
+function vectorDistanceFilter(condition, table, attribute, value): ((record: any) => boolean) | undefined {
+	const comparator = ALTERNATE_COMPARATOR_NAMES[condition.comparator] || condition.comparator;
+	const matches =
+		table && conditionIndex(table, attribute)?.customIndex?.thresholdFilter?.(condition, comparator, value);
+	return matches && ((record) => matches(record?.[attribute]));
+}
+
+// mirror searchByIndex's openStart: an indexNulls index's `[null, primaryKey]` entries are outside the executed range
+const PRIMARY_OPEN_START = Object.freeze({ start: true, exclusiveStart: false });
+const SECONDARY_OPEN_START = Object.freeze({ start: null, exclusiveStart: true });
+
 /**
  * Estimates a range comparator's entry count from the store's statistical estimate, blended with
  * the table-fraction heuristic by the estimate's confidence so low-confidence estimates degrade
@@ -2309,22 +2648,20 @@ function estimateRangeCondition(table, condition, searchType, fraction) {
 	if (typeof store?.estimateCount !== 'function') return undefined;
 	let value = condition[1] ?? condition.value;
 	if (value instanceof Date) value = value.getTime();
+	const openStart = isPrimaryKey ? PRIMARY_OPEN_START : SECONDARY_OPEN_START;
 	let range;
 	switch (searchType) {
 		case 'lt':
-			// mirrors searchByIndex: an indexNulls index's `[null, primaryKey]` entries are outside the executed range
-			range = isPrimaryKey ? { start: true, end: value } : { start: null, exclusiveStart: true, end: value };
+			range = { ...openStart, end: value };
 			break;
 		case 'le':
-			range = isPrimaryKey
-				? { start: true, end: value, inclusiveEnd: true }
-				: { start: null, exclusiveStart: true, end: value, inclusiveEnd: true };
+			range = { ...openStart, end: value, inclusiveEnd: true };
 			break;
 		case 'gt':
-			range = { start: value, exclusiveStart: true };
+			range = value === null ? { ...openStart } : { start: value, exclusiveStart: true };
 			break;
 		case 'ge':
-			range = { start: value };
+			range = value === null ? { ...openStart } : { start: value };
 			break;
 		case 'between':
 		case 'gele':
@@ -2341,6 +2678,7 @@ function estimateRangeCondition(table, condition, searchType, fraction) {
 				inclusiveEnd: searchType === 'between' || searchType === 'gele' || searchType === 'gtle',
 				exclusiveStart: searchType === 'gtlt' || searchType === 'gtle',
 			};
+			if (start == null) Object.assign(range, openStart);
 			break;
 		}
 		case 'starts_with': {
@@ -2392,6 +2730,172 @@ function usableIndex(table, attributeName): any {
 }
 
 /**
+ * The related records a leading same-record group matches: the narrowest index-driving inner condition (always chosen
+ * by estimate) drives the scan and the rest go on the join's `filters`, which the join applies to each related record;
+ * an OR unions its branches' scans.
+ */
+function searchRelatedGroup(group, transaction, reverse: boolean, table, joined, options) {
+	const context = options.leaseContext ?? options.context;
+	const inner = group.conditions;
+	if (group.operator === 'or') {
+		if (inner.every((condition) => scansRelated(table, condition)))
+			return unionScan(inner, transaction, reverse, table, options);
+	} else {
+		// the narrowest condition that drives an index scan, else the narrowest one searchByIndex can run (or refuse)
+		const estimate = estimateCondition(table);
+		let lead;
+		let leadDrives = false;
+		for (const condition of inner) {
+			const drives = scansRelated(table, condition);
+			if (!drives && condition.conditions && !isRelationshipGroup(condition)) continue;
+			if (!lead || (drives && !leadDrives) || (drives === leadDrives && estimate(condition) < estimate(lead))) {
+				lead = condition;
+				leadDrives = drives;
+			}
+		}
+		if (lead) {
+			const results =
+				lead.conditions && !isRelationshipGroup(lead)
+					? unionScan(lead.conditions, transaction, reverse, table, options)
+					: searchByIndex(lead, transaction, reverse, table, options);
+			// built after the lead, so a relationship condition sees the lead's join on it
+			const filters = (joined.filters ??= []);
+			for (const condition of inner)
+				if (condition !== lead) filters.push(compileConditions([condition], 'and', table, context, joined));
+			return results;
+		}
+	}
+	if (options.allowFullScan === false)
+		throw new ClientError(`Can not search ${group.attribute}[...] without a condition in it that uses an index`, 403);
+	(joined.filters ??= []).push(compileConditions(inner, group.operator, table, context, joined));
+	return searchByIndex(
+		{ attribute: null, comparator: 'prefix', value: [] } as any,
+		transaction,
+		reverse,
+		table,
+		options
+	);
+}
+function unionScan(branches, transaction, reverse: boolean, table, options) {
+	let results;
+	for (const branch of branches) {
+		// a condition inside an OR decides rows only, so its joins register nowhere
+		const branchResults =
+			branch.conditions && !isRelationshipGroup(branch)
+				? unionScan(branch.conditions, transaction, reverse, table, options)
+				: searchByIndex(branch, transaction, reverse, table, { ...options, filtered: Object.create(null) });
+		results = results ? results.concat(branchResults) : branchResults;
+	}
+	return distinctKeys(results);
+}
+// whether a condition in a same-record group can be its index scan: a plain AND inside one is flattened when
+// it is prepared, and a plain OR scans as the union of its branches
+function scansRelated(table, condition): boolean {
+	if (!condition.conditions || isRelationshipGroup(condition)) return conditionDrivesIndex(table, condition);
+	return condition.operator === 'or' && condition.conditions.every((branch) => scansRelated(table, branch));
+}
+function relationshipScanRuns(table, path: any[], offset: number, comparator, value, group?): boolean {
+	const relationship = findAttribute(table.attributes, path[offset]);
+	const relatedTable = relationship?.definition?.tableClass || relationship?.elements?.definition?.tableClass;
+	if (!relationship?.relationship || !relatedTable) return false;
+	const from = relationship.relationship.from;
+	if (from && from !== table.primaryKey && !usableIndex(table, from)) return false;
+	if (offset < path.length - (group ? 1 : 2))
+		return relationshipScanRuns(relatedTable, path, offset + 1, comparator, value, group);
+	if (!group) return scanDrivesIndex(relatedTable, path[offset + 1], comparator, value);
+	const drives = (condition) => scansRelated(relatedTable, condition);
+	return group.operator === 'or' ? group.conditions.every(drives) : group.conditions.some(drives);
+}
+
+/**
+ * Conditions searchByIndex answers from the primary store even on an indexed attribute: their record predicate
+ * admits values no secondary-index range reaches, a null below its open start or an omitted one with no entry.
+ */
+function bypassesSecondaryIndex(condition, comparator: string, value): boolean {
+	return Boolean(condition.negated) || (comparator === 'ne' && value !== null);
+}
+
+/**
+ * Whether searchByIndex reads this condition's rows in the order of its attribute, which a leading condition must do to
+ * stand in for a sort on that attribute. A primary-store read of a secondary attribute is in primary-key order.
+ */
+export function scansInAttributeOrder(table, condition): boolean {
+	let attributeName = condition[0] ?? condition.attribute;
+	const value = condition[1] ?? condition.value;
+	if (Array.isArray(attributeName)) {
+		if (attributeName.length > 1) {
+			// a join keeps the order of its related-table scan; a plain JSON path is read from the primary store
+			const relationship = findAttribute(table.attributes, attributeName[0]);
+			const relatedTable = relationship?.definition?.tableClass || relationship?.elements?.definition?.tableClass;
+			if (!relationship?.relationship || !relatedTable) return false;
+			const path = attributeName.length > 2 ? attributeName.slice(1) : attributeName[1];
+			return scansInAttributeOrder(relatedTable, {
+				attribute: path,
+				value,
+				comparator: condition.comparator,
+				negated: condition.negated,
+			});
+		}
+		attributeName = attributeName[0];
+	}
+	if (attributeName == null || attributeName === table.primaryKey) return true;
+	if (!conditionIndex(table, attributeName)) return false;
+	const comparator = ALTERNATE_COMPARATOR_NAMES[condition.comparator] || condition.comparator;
+	return !bypassesSecondaryIndex(condition, comparator, value);
+}
+
+// must follow searchByIndex's `needFullScan` and missing-index decisions (resources/DESIGN.md)
+export function conditionDrivesIndex(table, condition): boolean {
+	if (condition.negated) return false;
+	if (isRelationshipGroup(condition)) {
+		const path = condition.attribute ?? condition[0];
+		return relationshipScanRuns(table, Array.isArray(path) ? path : [path], 0, undefined, undefined, condition);
+	}
+	if (condition.conditions) {
+		const branches = condition.conditions;
+		if (branches.length === 0) return false;
+		if (condition.operator !== 'or') return conditionDrivesIndex(table, branches[0]);
+		for (let i = 0; i < branches.length; i++) if (!conditionDrivesIndex(table, branches[i])) return false;
+		return true;
+	}
+	let attributeName = condition[0] ?? condition.attribute;
+	const value = condition[1] ?? condition.value;
+	const comparator = ALTERNATE_COMPARATOR_NAMES[condition.comparator] || condition.comparator;
+	if (Array.isArray(attributeName)) {
+		if (attributeName.length > 1)
+			return !fullTextComparatorMode(comparator) && relationshipScanRuns(table, attributeName, 0, comparator, value);
+		if (attributeName.length !== 1) return false;
+		attributeName = attributeName[0];
+	}
+	return scanDrivesIndex(table, attributeName, comparator, value);
+}
+function scanDrivesIndex(table, attributeName, comparator, value): boolean {
+	if (fullTextComparatorMode(comparator))
+		return (
+			typeof attributeName === 'string' &&
+			Boolean(table.fullTextIndexes?.some(({ name }) => name === attributeName)) &&
+			Boolean(table.fullTextQueryIndexes?.[attributeName]?.customIndex)
+		);
+	switch (comparator) {
+		case 'in':
+		case 'contains':
+		case 'ends_with':
+		case 'sort':
+			return false;
+		case 'ne':
+			if (value !== null) return false;
+			break;
+		case 'starts_with':
+			if (!value?.toString().length) return false;
+	}
+	const index =
+		attributeName == null || attributeName === table.primaryKey
+			? table.primaryStore
+			: usableIndex(table, attributeName);
+	return Boolean(index) && !(value === null && !index.indexNulls);
+}
+
+/**
  * True when an index this attribute would have to be driven by is still being built, following a
  * relationship path to the local join index and on to the related table's leaf index.
  */
@@ -2409,9 +2913,31 @@ function drivesRebuildingIndex(table, attributeName, relationshipOffset = 0): bo
 	return !!relatedTable && drivesRebuildingIndex(relatedTable, attributeName, relationshipOffset + 1);
 }
 
+function estimateRelationshipGroup(table, group): number {
+	const path = Array.isArray(group.attribute) ? group.attribute : [group.attribute];
+	const attribute = findAttribute(table.attributes, path[0]);
+	const relatedTable = attribute?.definition?.tableClass || attribute?.elements?.definition?.tableClass;
+	if (!relatedTable) return Infinity;
+	const estimate = estimateCondition(relatedTable)(
+		path.length > 1
+			? { attribute: path.slice(1), conditions: group.conditions, operator: group.operator }
+			: { conditions: group.conditions, operator: group.operator }
+	);
+	const fromIndex = table.indices[attribute.relationship?.from];
+	return (
+		estimate +
+		(fromIndex
+			? (estimate * estimatedEntryCount(fromIndex)) / (estimatedEntryCount(relatedTable.primaryStore) || 1)
+			: estimate)
+	);
+}
 export function estimateCondition(table) {
 	function estimateConditionForTable(condition) {
 		if (condition.estimated_count === undefined) {
+			if (isRelationshipGroup(condition)) {
+				condition.estimated_count = estimateRelationshipGroup(table, condition);
+				return condition.estimated_count;
+			}
 			if (condition.conditions) {
 				// for a group of conditions, we can estimate the count by combining the estimates of the sub-conditions
 				let estimatedCount;
@@ -2424,12 +2950,14 @@ export function estimateCondition(table) {
 					}
 				} else {
 					// with an intersection, we have to use the rate of the sub-conditions to apply to estimate count of last condition
+					// (Infinity marks a leg with no usable estimate, which says nothing about its siblings' cardinality)
 					estimatedCount = Infinity;
 					for (const subCondition of condition.conditions) {
-						estimateConditionForTable(subCondition);
-						estimatedCount = isFinite(estimatedCount)
-							? (estimatedCount * subCondition.estimated_count) / (estimatedEntryCount(table.primaryStore) || 1)
-							: subCondition.estimated_count;
+						const subCount = estimateConditionForTable(subCondition);
+						if (!Number.isFinite(subCount)) continue;
+						estimatedCount = Number.isFinite(estimatedCount)
+							? (estimatedCount * subCount) / (estimatedEntryCount(table.primaryStore) || 1)
+							: subCount;
 					}
 				}
 				condition.estimated_count = estimatedCount;
@@ -2449,7 +2977,8 @@ export function estimateCondition(table) {
 				// estimate that would cross the native FFI boundary for nothing.
 				condition.estimated_count = Infinity;
 			} else if (searchType === SEARCH_TYPES.EQUALS || !searchType) {
-				const attribute_name = condition[0] ?? condition.attribute;
+				let attribute_name = condition[0] ?? condition.attribute;
+				if (Array.isArray(attribute_name) && attribute_name.length === 1) attribute_name = attribute_name[0];
 				if (attribute_name == null || attribute_name === table.primaryKey) condition.estimated_count = 1;
 				else if (Array.isArray(attribute_name) && attribute_name.length > 1) {
 					const attribute = findAttribute(table.attributes, attribute_name[0]);
@@ -2768,9 +3297,11 @@ function parseBlock(query, expectedEnd) {
 			case '[':
 				QUERY_PARSER.lastIndex = lastIndex;
 				if (value) {
-					// this is interpreted as propertyWithArray[name=value&anotherOtherConditions...]
+					// in a select, `relationship[...]` is a nested selection; among conditions, `relationship[conditions]`
+					// must be met by one related record
 					entry = parseBlock(new Query(), ']');
-					entry.name = value;
+					if (query.conditions) entry.attribute = decodeProperty(value);
+					else entry.name = value;
 				} else {
 					// this is interpreted a property list that can be used within other lists
 					entry = parseBlock(query.conditions ? new Query() : [], ']');

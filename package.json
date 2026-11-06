@@ -2,7 +2,7 @@
 	"name": "harper",
 	"productName": "Harper",
 	"description": "Harper is an open-source Node.js performance platform that unifies database, cache, application, and messaging layers into one in-memory process.",
-	"version": "5.4.0-alpha.2",
+	"version": "5.4.0-beta.2",
 	"license": "Apache-2.0",
 	"homepage": "https://harper.fast",
 	"bugs": {
@@ -62,6 +62,7 @@
 		"lint:required": "oxlint --format stylish --quiet .",
 		"check:design-docs": "node build-tools/check-design-docs.mjs",
 		"check:unit-partition": "node build-tools/check-unit-partition.mjs",
+		"outline": "node build-tools/outline.mjs",
 		"lint:fix": "npm run lint -- --fix",
 		"format:check": "prettier --check .",
 		"format:write": "prettier --write .",
@@ -71,11 +72,12 @@
 		"test:integration:mcp": "npm run test:integration -- \"integrationTests/mcp/**/*.test.ts\"",
 		"test:integration:bun": "HARPER_RUNTIME=bun harper-integration-test-run",
 		"test:unit": "mocha",
-		"test:unit:main": "mocha \"unitTests/**/*test.*js\" --exclude \"unitTests/apiTests/**/*\" --exclude \"unitTests/dataLayer/harperBridge/**/*\" --exclude \"unitTests/resources/**/*\"",
+		"test:unit:main": "mocha \"unitTests/**/*test.*js\" --exclude \"unitTests/apiTests/**/*\" --exclude \"unitTests/dataLayer/harperBridge/**/*\" --exclude \"unitTests/install/**/*\" --exclude \"unitTests/resources/**/*\"",
 		"test:unit:main:core": "npm run test:unit:main -- --exclude \"unitTests/components/**/*\" --exclude \"unitTests/server/**/*\"",
 		"test:unit:main:components": "mocha \"unitTests/components/**/*test.*js\"",
 		"test:unit:main:server": "mocha \"unitTests/server/**/*test.*js\"",
-		"test:unit:all": "npm run test:unit:main && npm run test:unit:apitests && npm run test:unit:resources && npm run test:unit:lmdb",
+		"test:unit:install": "mocha \"unitTests/install/**/*test.*js\"",
+		"test:unit:all": "npm run test:unit:main && npm run test:unit:install && npm run test:unit:apitests && npm run test:unit:resources && npm run test:unit:lmdb",
 		"test:unit:lmdb": "HARPER_STORAGE_ENGINE=lmdb npm run test:unit:resources && HARPER_STORAGE_ENGINE=lmdb mocha unitTests/server/preconditions.test.js unitTests/server/REST-discard-cbor-csv.test.js unitTests/server/durableSessionResume.test.js unitTests/server/durableSessionSubscribeBoundedSave.test.js && HARPER_STORAGE_ENGINE=lmdb npm run test:unit:apitests && HARPER_STORAGE_ENGINE=lmdb npm run test:unit:bin",
 		"test:unit:components": "mocha \"unitTests/components/**/*.js\"",
 		"test:unit:resources": "mocha \"unitTests/resources/**/*.js\" --exclude \"unitTests/resources/**/*.bench.js\"",
@@ -103,7 +105,8 @@
 		"test:unit:typestrip:resources:core:a-n": "node unitTests/runTypeStripTests.mts --source-only \"unitTests/resources/**/[a-nA-N]*.js\" --exclude \"unitTests/resources/**/*.bench.js\" --exclude \"unitTests/resources/**/*{[Ii]ndex,[Hh]nsw,[Vv]ector}*.js\"",
 		"test:unit:typestrip:resources:core:o-z": "node unitTests/runTypeStripTests.mts --source-only \"unitTests/resources/**/*.js\" --exclude \"unitTests/resources/**/*.bench.js\" --exclude \"unitTests/resources/**/*{[Ii]ndex,[Hh]nsw,[Vv]ector}*.js\" --exclude \"unitTests/resources/**/[a-nA-N]*.js\"",
 		"test:unit:typestrip:resources:indexes": "node unitTests/runTypeStripTests.mts --source-only \"unitTests/resources/**/*{[Ii]ndex,[Hh]nsw,[Vv]ector}*.js\" --exclude \"unitTests/resources/**/*.bench.js\"",
-		"test:types:unit": "tsc --project unitTests/tsconfig.harness.json"
+		"test:types:unit": "tsc --project unitTests/tsconfig.harness.json",
+		"test:fulltext:install-previous": "node unitTests/resources/fixtures/installFullTextUpgradeDependencies.mjs"
 	},
 	"imports": {
 		"#src/*.js": {
@@ -159,10 +162,8 @@
 	},
 	"devDependencies": {
 		"@aws-sdk/client-s3": "^3.1012.0",
-		"@aws-sdk/lib-storage": "3.1153.0",
+		"@aws-sdk/lib-storage": "3.1156.0",
 		"@harperfast/code-guidelines": "^0.1.2",
-		"@harperfast/fulltext-previous": "npm:@harperfast/fulltext@0.5.0",
-		"@harperfast/fulltext-v07": "npm:@harperfast/fulltext@0.7.0",
 		"@harperfast/integration-testing": "^1.0.0",
 		"@modelcontextprotocol/sdk": "^1.29.0",
 		"@types/busboy": "^1.5.4",
@@ -185,6 +186,7 @@
 		"compression-1.7": "npm:compression@1.8.2",
 		"eventsource": "^5.0.0",
 		"globals": "^17.0.0",
+		"harper": "file:.",
 		"intercept-stdout": "0.1.2",
 		"mkcert": "^3.2.0",
 		"mocha": "^12.0.0",
@@ -226,7 +228,7 @@
 		"@turf/distance": "6.5.0",
 		"@turf/helpers": "6.5.0",
 		"@turf/length": "6.5.0",
-		"alasql": "4.20.0",
+		"alasql": "4.21.0",
 		"amaro": "^1.1.8",
 		"argon2": "0.45.1",
 		"asn1js": "3.1.0",
@@ -251,7 +253,7 @@
 		"json-bigint-fixes": "1.1.0",
 		"jsonata": "1.8.9",
 		"jsonwebtoken": "9.0.3",
-		"lmdb": "3.5.8",
+		"lmdb": "3.5.9",
 		"lodash": "^4.17.23",
 		"mathjs": "11.12.0",
 		"micromatch": "^4.0.8",
@@ -270,7 +272,7 @@
 		"passport-http": "0.3.0",
 		"passport-local": "1.0.0",
 		"pino": "8.21.0",
-		"pkijs": "3.4.2",
+		"pkijs": "3.4.3",
 		"properties-reader": "2.3.0",
 		"recursive-iterator": "3.3.0",
 		"semver": "7.8.5",
@@ -278,24 +280,27 @@
 		"ses": "^1.15.0",
 		"stream-chain": "2.2.5",
 		"stream-json": "1.9.1",
-		"structon": "1.1.0",
+		"structon": "1.1.2",
 		"systeminformation": "^5.31.4",
 		"tar-fs": "^3.1.2",
 		"tar-stream": "3.2.0",
 		"ulidx": "0.5.0",
 		"uuid": "11.1.1",
 		"validate.js": "0.13.1",
-		"weak-lru-cache": "^1.2.2",
+		"weak-lru-cache": "^1.2.3",
 		"ws": "8.22.0",
 		"yaml": "2.9.1"
 	},
 	"overrides": {
 		"alasql": {
 			"xlsx": "0.18.5"
+		},
+		"@harperfast/integration-testing": {
+			"harper": "$harper"
 		}
 	},
 	"optionalDependencies": {
-		"@harperfast/fulltext": "0.8.0",
+		"@harperfast/fulltext": "0.9.0",
 		"@harperfast/hnsw": "0.4.0",
 		"bufferutil": "4.1.0",
 		"segfault-handler": "1.3.0"

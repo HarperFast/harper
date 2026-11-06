@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { User, UserRole } from './user.ts';
 import type { ImpersonatePayload } from '../server/operationsServer.ts';
-import { getUserWithRole } from './user.ts';
+import { getUserWithRole, appendSystemTablesToRole } from './user.ts';
 import { validateOperations } from '../utility/operationPermissions.ts';
 import { addRoleValidation } from '../validation/role_validation.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
@@ -73,6 +73,7 @@ export async function applyImpersonation(authenticatedUser: User, payload: Imper
 
 	// Enforce downgrade: never allow escalation
 	enforceDowngrade(impersonatedUser);
+	if (impersonatedUser.role?.permission) appendSystemTablesToRole(impersonatedUser.role);
 
 	// A token's operation scope (#2174) constrains the credential regardless of which principal it
 	// acts as, so it survives impersonation. enforceDowngrade only bounds the impersonated role's

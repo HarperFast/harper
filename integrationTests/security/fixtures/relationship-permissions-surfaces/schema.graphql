@@ -1,0 +1,23 @@
+type Dept @table @export {
+	id: ID @primaryKey
+	label: String
+	secret: String @indexed
+	budget: Int @indexed
+	plain: String
+	members: [Emp] @relationship(to: deptId)
+}
+
+type Emp @table @export {
+	id: ID @primaryKey
+	name: String @indexed
+	level: Int @indexed
+	deptId: ID @indexed
+	dept: Dept @relationship(from: deptId)
+}
+
+type Proj @table @export {
+	id: ID @primaryKey
+	title: String
+	deptIds: [ID]
+	depts: [Dept] @relationship(from: deptIds)
+}

@@ -36,6 +36,9 @@ function installMockDeploymentTable() {
 			puts.push(row);
 			rows.set(row.deployment_id, row);
 		},
+		async *search() {
+			yield* rows.values();
+		},
 	};
 	if (!databases.system) databases.system = {};
 	const prior = databases.system[DEPLOYMENT_TABLE];
@@ -256,5 +259,75 @@ describe('handleGetDeployment live tail (harper#3062)', () => {
 		const row = await tail;
 		assert.strictEqual(row.status, 'pending');
 		await recorder.finish('success');
+	});
+});
+
+describe('deployment reads and package URL credentials', () => {
+	const { handleGetDeployment, handleListDeployments } = require('#src/components/deploymentOperations');
+	const { ProgressEmitter } = require('#src/server/serverHelpers/progressEmitter');
+	const SECRET = 'ghp_unique_secret_3985';
+	const PACKAGE = `git+https://x-access-token:${SECRET}@github.com/org/app.git`;
+	let installed;
+	beforeEach(async () => {
+		installed = installMockDeploymentTable();
+		await installed.mock.put({
+			deployment_id: 'd-cred',
+			project: 'app',
+			status: 'failed',
+			started_at: 1,
+			package_identifier: PACKAGE,
+			error: { message: `Failed to clone package ${PACKAGE}: fatal: Authentication failed`, phase: 'prepare' },
+			event_log: [{ t: 1, event: 'error', data: { message: `Failed to clone package ${PACKAGE}` } }],
+		});
+	});
+	afterEach(() => installed?.restore());
+
+	for (const [caller, hdbUser] of [
+		['a role that is not super_user', NON_SUPER_USER],
+		['a request with no hdb_user', undefined],
+	]) {
+		it(`hides the credential from ${caller} in get_deployment, list_deployments and the SSE replay`, async () => {
+			const got = await handleGetDeployment({ deployment_id: 'd-cred', hdb_user: hdbUser });
+			assert.strictEqual(got.package_identifier, 'git+https://[REDACTED]@github.com/org/app.git');
+			assert.ok(!JSON.stringify(got).includes(SECRET), JSON.stringify(got));
+
+			const { deployments } = await handleListDeployments({ hdb_user: hdbUser });
+			assert.strictEqual(deployments.length, 1);
+			assert.ok(!JSON.stringify(deployments).includes(SECRET), JSON.stringify(deployments));
+
+			const sse = new ProgressEmitter();
+			const forwarded = [];
+			sse.subscribe((event) => forwarded.push(event));
+			await handleGetDeployment({ deployment_id: 'd-cred', hdb_user: hdbUser, progress: sse });
+			assert.ok(forwarded.length > 0);
+			assert.ok(!JSON.stringify(forwarded).includes(SECRET), JSON.stringify(forwarded));
+
+			assert.strictEqual(installed.mock.rows.get('d-cred').package_identifier, PACKAGE, 'the stored row keeps it');
+		});
+	}
+
+	it('hides the credential from a live SSE tail of a caller who is not a super_user', async () => {
+		const { DeploymentRecorder } = require('#src/components/deploymentRecorder');
+		const deployEmitter = new ProgressEmitter();
+		const recorder = await DeploymentRecorder.create({ project: 'app', emitter: deployEmitter });
+		const sse = new ProgressEmitter();
+		const forwarded = [];
+		sse.subscribe((event) => forwarded.push(event));
+
+		const tail = handleGetDeployment({ deployment_id: recorder.deploymentId, hdb_user: NON_SUPER_USER, progress: sse });
+		await new Promise((resolve) => setImmediate(resolve));
+		deployEmitter.emit('error', { message: `Failed to clone package ${PACKAGE}` });
+		await recorder.finish('failed', new Error(`Failed to clone package ${PACKAGE}`));
+		await tail;
+
+		assert.ok(forwarded.some((event) => event.event === 'error'));
+		assert.ok(!JSON.stringify(forwarded).includes(SECRET), JSON.stringify(forwarded));
+	});
+
+	it('returns the package identifier as deployed to a super_user', async () => {
+		const got = await handleGetDeployment({ deployment_id: 'd-cred', hdb_user: SUPER_USER });
+		assert.strictEqual(got.package_identifier, PACKAGE);
+		const { deployments } = await handleListDeployments({ hdb_user: SUPER_USER });
+		assert.strictEqual(deployments[0].package_identifier, PACKAGE);
 	});
 });

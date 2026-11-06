@@ -367,6 +367,41 @@ for (const isolated of [false, true]) {
 			);
 
 			test(
+				'a drop of an application no worker has loaded records its removal, and clears it once no worker can fork it',
+				{ timeout: 180000, skip: isolated },
+				async () => {
+					const deployed = await operation({
+						operation: 'deploy_component',
+						project,
+						package: pkg,
+						host,
+						branchedDatabases: ['data'],
+						restart: false,
+					});
+					assert.strictEqual(deployed.status, 200, JSON.stringify(deployed.body));
+					assert.ok(!existsSync(branchRoot()), 'no worker has loaded it');
+					const logFile = join(ctx.harper.logDir ?? join(ctx.harper.dataRootDir, 'log'), 'hdb.log');
+					const removals = async () =>
+						(await readFile(logFile, 'utf8')).split(
+							`Finished the branched database removal a drop of ${project} left owed`
+						).length;
+					const before = await removals();
+					const dropped = await operation({ operation: 'drop_component', project });
+					assert.strictEqual(dropped.status, 200, JSON.stringify(dropped.body));
+					await waitFor(async () => (await removals()) > before, {
+						timeout: 60000,
+						interval: 250,
+						message: 'the drop recorded no removal',
+					});
+					await waitFor(() => !existsSync(branchRoot()), {
+						timeout: 60000,
+						interval: 250,
+						message: 'the removal left a directory behind',
+					});
+				}
+			);
+
+			test(
 				`a fork whose removal fails after the drop answered is removed by ${isolated ? 'a later drop of another component' : 'the next start'}`,
 				// root ignores the permission that makes the removal fail
 				{ timeout: 240000, skip: process.getuid?.() === 0 },

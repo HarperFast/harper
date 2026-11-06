@@ -24,7 +24,8 @@ npm run format:write       # Prettier
 
 # Test — run specific suites
 npm run test:unit                  # All unit tests (mocha)
-npm run test:unit:main             # Core unit tests (excludes apiTests, lmdb, resources)
+npm run test:unit:main             # Core unit tests (excludes apiTests, lmdb, resources, install)
+npm run test:unit:install          # Installer suite, its own process: it closes and recreates the shared system database
 npm run test:unit:resources        # Resource layer tests
 npm run test:unit:server           # Server layer tests
 npm run test:unit:dataLayer        # Data layer tests
@@ -83,7 +84,7 @@ The universal abstraction. Everything that can be queried or mutated — databas
 
 Static methods (`Resource.get`, `Resource.put`, `Resource.post`, `Resource.delete`, `Resource.patch`, `Resource.subscribe`) are the protocol entry points: the REST layer dispatches to the _class_ (`server/REST.ts`, inside a request-level `transaction()`), and the base implementations are `transactional()` wrappers that resolve an instance and delegate to the matching instance method. **New `Resource` subclasses here override instance methods** and leave the statics generic. Overriding a static entry point is a deliberate act that takes over the whole wrapper contract — including `data` resolution and the `allow*` gate — see `resources/DESIGN.md` → Conventions for the two obligations it saddles you with. Note this is _core's_ convention: the public [Harper best-practice skills](https://github.com/HarperFast/skills) tell **application** authors to implement REST verbs as statics on their own component resources; choose based on the situation.
 
-`Table.ts` is the database table implementation (4744 lines, one giant `makeTable()` factory) — the most complex file in the codebase. **Use `resources/DESIGN.md` as a section index instead of reading top-to-bottom.**
+`Table.ts` is the database table implementation (over ten thousand lines, one giant `makeTable()` factory) — the most complex file in the codebase. **Find code through [resources/MAP.md](resources/MAP.md) instead of reading top-to-bottom, and read the [resources/DESIGN.md](resources/DESIGN.md) note before changing code it names.**
 
 **Data Layer** (`dataLayer/`)  
 Legacy translation modules plus SQL translation (`sqlTranslator/`) via AlaSQL; these should be avoided. The storage engine is selectable via `HARPER_STORAGE_ENGINE=lmdb`.
@@ -104,7 +105,7 @@ Use this to land in the right folder before grepping. Every top-level folder is 
 
 - **`components/`** — plugin/app loader. Entry: `Scope.ts`, `OptionsWatcher.ts`. **See [components/DESIGN.md](components/DESIGN.md)** (deploys, load lifecycle) and [components/mcp/DESIGN.md](components/mcp/DESIGN.md). Tests: `unitTests/components/`.
 - **`server/`** — HTTP/WS/MQTT/etc. Entry: `operationsServer.ts` (boot), `http.ts` (native HTTP). **See [server/DESIGN.md](server/DESIGN.md).** Tests: `unitTests/server/`.
-- **`resources/`** — universal Resource abstraction; tables. Entry: `Resource.ts`, `Table.ts`. **See [resources/DESIGN.md](resources/DESIGN.md).** Tests: `unitTests/resources/`.
+- **`resources/`** — universal Resource abstraction; tables. Entry: `Resource.ts`, `Table.ts`. **See [resources/MAP.md](resources/MAP.md)** (where things are) and [resources/DESIGN.md](resources/DESIGN.md) (rules). Tests: `unitTests/resources/`.
 - **`dataLayer/`** — legacy translation modules (`insert.js`, `search.js`, `update.js`). **Avoid for new code.** Backup/restore and the version gate live here too: [dataLayer/DESIGN.md](dataLayer/DESIGN.md). Tests: `unitTests/dataLayer/`.
 - **`config/`** — YAML config + hot reload. Entry: `configUtils.js`, `RootConfigWatcher.ts`. **See [config/DESIGN.md](config/DESIGN.md).** Tests: `unitTests/config/`.
 - **`utility/`** — logging, errors, helpers. [utility/DESIGN.md](utility/DESIGN.md). Tests: `unitTests/utility/`.
@@ -122,8 +123,9 @@ Use this to land in the right folder before grepping. Every top-level folder is 
 ### Non-source
 
 - **`bin/`** — covered above (it's source).
-- **`benchmarks/`** — HNSW vector-search benchmark only (`hnsw-search.js`). Stand-alone; not part of CI.
+- **`benchmarks/`** — Stand-alone HNSW search (`hnsw-search.js`) and paired full-text analytics (`fulltext-analytics.mjs` / `.bench.js`) workloads; not part of CI.
 - **`build-tools/`** — build-pipeline scripts. [build-tools/DESIGN.md](build-tools/DESIGN.md) covers the published artifacts. Tests: `unitTests/build-tools/`; run `npm run test:unit:main` after changes.
+- **`docs/`** — user-facing reference pages and release-note fragments, published by [HarperFast/documentation](https://github.com/HarperFast/documentation). A PR that changes user-visible behavior updates them in the same PR; layout, fragment format and previewing are in [docs/README.md](docs/README.md), writing rules in [docs/AGENTS.md](docs/AGENTS.md). Their examples are checked against executable fixtures by `unitTests/docs/` and the `integrationTests/resources/*-docs.test.ts` suites.
 - **`dev/`** — single dev utility (`sync-commits.js`) for cross-repo commit syncing. Not runtime.
 - **`integrationTests/`** — end-to-end tests against a built distribution. Run with `npm run test:integration` / `npm run test:integration:all`. Subdirs mirror source. See `integrationTests/README.md`.
 - **`unitTests/`** — Mocha unit tests; subdir per source layer. Run with `npm run test:unit:<layer>`. **See [unitTests/AGENTS.md](unitTests/AGENTS.md)** for test-writing pitfalls (thread-global capture + absolute count).
@@ -140,11 +142,19 @@ Use this to land in the right folder before grepping. Every top-level folder is 
 
 ## Detailed navigation
 
-For megafiles and complex subsystems, jump to the section index instead of reading top-to-bottom:
+Find code by symbol instead of reading files top-to-bottom:
+
+- **Symbols:** `npm run outline -- <file|dir>` prints a file's nested declarations (classes, functions, methods, and the declarations inside factories such as `makeTable()`) and its `// #section:` markers, with line ranges; `npm run outline -- resources/Table.ts` takes under a second. In Claude sessions the LSP tool's document and workspace symbol lookups do the same.
+- **Concepts:** a directory's `MAP.md` points each file and each question a reader brings at the symbols that answer it. Claude Code loads it through that directory's `CLAUDE.md`; Codex and Gemini do not, so read the directory's map from the list below before its source.
+- **Invariants:** the directory's `DESIGN.md`, indexed from [DESIGN.md](DESIGN.md): why the code is the way it is, kept within the byte budgets that file sets.
+
+Directory maps (`npm run check:design-docs` requires every `MAP.md` to be linked here): [resources/MAP.md](resources/MAP.md).
+
+For megafiles and complex subsystems, the design notes to read first:
 
 | If you are touching…                                   | Read first                                                 |
 | ------------------------------------------------------ | ---------------------------------------------------------- |
-| Anything in `resources/` (especially `Table.ts`)       | [resources/DESIGN.md](resources/DESIGN.md)                 |
+| Anything in `resources/` (especially `Table.ts`)       | [resources/MAP.md](resources/MAP.md)                       |
 | HTTP/WS/MQTT, middleware ordering, content types       | [server/DESIGN.md](server/DESIGN.md)                       |
 | Record-store internals (commit timing, blobs, encoder) | [resources/DESIGN.md](resources/DESIGN.md)                 |
 | `table.lock()`, record-lock ownership                  | [resources/record-locks.md](resources/record-locks.md)     |
@@ -211,6 +221,8 @@ source tree — which permanently shadows git's config file. Every subsequent ag
 - Worker threads (`server/threads/`) receive `workerData.noServerStart = true` to prevent recursive server startup; never start the server inside a worker.
 - `contextStorage` (AsyncLocalStorage) carries per-request context (user, transaction) across async boundaries — this is how authorization and transactions work without explicit parameter threading.
 - SQL authorization (`verifyPermsAST` → `hasPermissions`) only checks the tables recorded in the statement bucket's affected-attribute map — it iterates that map, so a table missing from it is never checked, and an empty map authorizes by vacuous truth. Two rules follow. Resolve a table reference exactly once, through `sqlEngine/binder/defaultDatabase.ts`, so the authorization layer and the engine's binder cannot disagree about which `database.table` a bare name means. And when adding a new SQL construct, either record its table references in that map or make `getUnauthorizedTableRefs()` report them — an unrecorded reference is a permission bypass, not a missing feature (GHSA-5c29-q62v-jrwf).
+- `json/systemSchema.json` is the _install-time_ table list, not the set of system tables. Components create their own at runtime via `table({ database: 'system', … })` — `hdb_scheduler_state`, `hdb_session`, `hdb_status`, `hdb_model_calls` are all absent from that JSON. Anything that needs "the system tables" must read the live `databases.system` registry, which is what `describe_database` enumerates; deriving it from the JSON produces a set that is correct at install and wrong at runtime (harper#2120). `role.permission.system.tables` is rebuilt from that registry, keyed off the `updateTable`/`dropTable` events `databaseEventsEmitter` already emits.
+- **Anything reachable from `hdb_user` must stay structured-cloneable.** Operation forwarding `postMessage`s the whole request — `hdb_user.role.permission` included — to a worker thread, so a `Proxy`, class instance, or function anywhere in a permission object fails the _entire operation_ with `DataCloneError`, not just the forwarding. A `Proxy`-backed permission map passed every local unit test and broke every forwarded component operation in CI (harper#2120).
 - Tests under `unitTests/apiTests/` require the server to be stopped first (`node ./dist/bin/harper.js stop`) — `test:unit:apitests` does this automatically.
 - Never assert on a fire-and-forget store write in the same turn that issued it. The engines disagree on read-your-writes: `PrimaryRocksDatabase` shows a pending `put` to a synchronous `getRange()`, `LMDBStore` shows it only after the commit lands (measured ~8 ms). `test:unit:resources` runs under both, so such an assertion passes locally and goes red on the `lmdb` shard alone. Poll with `unitTests/waitFor.js` instead — and where the property is "exactly once", no wait can establish it, so read the count from the producer (`onAnalyticsAggregate()` for aggregation cycles) rather than from storage.
 - A test that applies writes as a replicated origin must take its `nodeId` from `getIdOfRemoteNode(name, auditStore)`, never a literal. An id with no mapped node name is local origin (`isLocalOrigin`), so the write mints a local log key instead of using the origin's; and whether a literal id is mapped depends on which suites ran earlier against the shared `test` database, so such a suite passes or fails by shard. On a same-version tie the later node name wins (`precedesExistingVersion`), so pick names in the order the test expects.

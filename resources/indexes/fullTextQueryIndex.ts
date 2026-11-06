@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { fullTextTelemetryCollector, registerNativeFullTextTelemetry } from '../analytics/fullTextTelemetryRuntime.ts';
 import { getFullTextQueryPolicy } from './fullTextRuntimeConfiguration.ts';
 import * as env from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
@@ -136,6 +137,7 @@ export type FullTextQueryIndexOptions = {
 	storePath: string;
 	storeName: string;
 	sourceGeneration: string;
+	telemetryLabel?: string;
 	limits: NativeFullTextIndexConfiguration['limits'];
 	binding?: NativeFullTextModule | (() => Promise<NativeFullTextModule>);
 };
@@ -1125,6 +1127,7 @@ export class FullTextQueryIndex {
 					reloadFailures: 0,
 				};
 				this.#readerSlot = slot;
+				registerNativeFullTextTelemetry(reader, this.#options.telemetryLabel ?? this.#options.indexId, 'reader');
 				return slot;
 			} catch (error) {
 				if (canReload && error instanceof FullTextReaderPublicationError) {
@@ -1211,7 +1214,20 @@ export class FullTextQueryIndex {
 	#closeReaderSlot(slot: ReaderSlot): Promise<void> {
 		if (!slot.closeOperation) {
 			const operation = Promise.resolve()
-				.then(() => slot.reader.close())
+				.then(() => {
+					fullTextTelemetryCollector.beforeClose(slot.reader);
+					return slot.reader.close();
+				})
+				.then(
+					(result) => {
+						fullTextTelemetryCollector.afterClose(slot.reader);
+						return result;
+					},
+					(error) => {
+						fullTextTelemetryCollector.closeFailed(slot.reader);
+						throw error;
+					}
+				)
 				.then((result) => {
 					this.#retiredReaderSlots.delete(slot);
 					if (result?.cleanupError) this.#warnReaderClose(result.cleanupError);

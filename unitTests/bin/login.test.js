@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const { login } = require('#src/bin/login');
-const { normalizeTarget } = require('#src/bin/cliCredentials');
+const { loadCredentials, normalizeTarget } = require('#src/bin/cliCredentials');
 const { prompts } = require('#src/utility/interactivePrompts');
 
 function promptFieldName(message) {
@@ -208,6 +208,7 @@ describe('Login', () => {
 			delete process.env.HARPER_CLI_PASSWORD;
 			delete process.env.CLI_TARGET_USERNAME;
 			delete process.env.HARPER_CLI_USERNAME;
+			delete process.env.EXISTING_VAR;
 		});
 
 		it('should append HARPER_CLI_TARGET with a leading newline if .env does not end with one', async () => {
@@ -219,8 +220,6 @@ describe('Login', () => {
 			await login('example.com', 'mockuser');
 
 			const envContent = fs.readFileSync(envPath, 'utf8');
-			// The fix added `\nHARPER_CLI_TARGET=${resolvedTarget}\n`
-			// So it should be `EXISTING_VAR=value\nHARPER_CLI_TARGET=https://example.com:9925/\n`
 			assert.strictEqual(envContent, 'EXISTING_VAR=value\nHARPER_CLI_TARGET=https://example.com:9925/\n');
 		});
 
@@ -232,9 +231,34 @@ describe('Login', () => {
 			await login('example.com', 'mockuser');
 
 			const envContent = fs.readFileSync(envPath, 'utf8');
-			// It will result in `EXISTING_VAR=value\n\nHARPER_CLI_TARGET=https://example.com:9925/\n`
-			// This is acceptable as it ensures the new entry is on its own line.
 			assert.strictEqual(envContent, 'EXISTING_VAR=value\n\nHARPER_CLI_TARGET=https://example.com:9925/\n');
+		});
+
+		it('saves and appends the target the CLI connected to, whatever target the reply names', async () => {
+			const spoofed = 'https://attacker.example:9925/\nNODE_OPTIONS=--require=/tmp/p.js';
+			const stub = cliOperationsModule.cliOperations;
+			cliOperationsModule.cliOperations = async () => ({
+				operation_token: 'mock-token',
+				refresh_token: 'mock-refresh',
+				target: spoofed,
+				resolvedTarget: spoofed,
+			});
+			const envPath = path.join(testDir, '.env');
+			fs.writeFileSync(envPath, 'EXISTING_VAR=value');
+			process.env.HARPER_CLI_PASSWORD = 'password';
+			try {
+				await login('example.com', 'mockuser');
+			} finally {
+				cliOperationsModule.cliOperations = stub;
+			}
+
+			assert.strictEqual(
+				fs.readFileSync(envPath, 'utf8'),
+				'EXISTING_VAR=value\nHARPER_CLI_TARGET=https://example.com:9925/\n'
+			);
+			const credentials = loadCredentials();
+			assert.strictEqual(credentials.last_target, 'https://example.com:9925/');
+			assert.ok(!Object.keys(credentials.targets).some((target) => target.includes('attacker')));
 		});
 	});
 
@@ -458,6 +482,23 @@ describe('Login', () => {
 			// The short-lived operation token is intentionally not emitted — the refresh token is
 			// the single durable secret; the CLI mints an operation token from it on each run.
 			assert.ok(!stdout.join('').includes('HARPER_CLI_OPERATION_TOKEN'), stdout.join(''));
+		});
+
+		it('emits the target the CLI connected to, whatever target the reply names', async () => {
+			const stub = cliOperationsModule.cliOperations;
+			cliOperationsModule.cliOperations = async () => ({
+				operation_token: 'op-tok',
+				refresh_token: refreshToken,
+				target: 'https://attacker.example:9925/',
+			});
+			try {
+				await captureLogin('example.com', 'mockuser', { forCi: true });
+			} finally {
+				cliOperationsModule.cliOperations = stub;
+			}
+
+			assert.ok(stdout.join('').includes('HARPER_CLI_TARGET=https://example.com:9925/\n'), stdout.join(''));
+			assert.ok(!stdout.join('').includes('attacker'), stdout.join(''));
 		});
 
 		it('keeps the banner and status messages on stderr, away from the pipe', async () => {

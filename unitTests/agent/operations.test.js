@@ -339,3 +339,51 @@ describe('agent/operations budgets (#3040)', () => {
 		});
 	});
 });
+
+describe('agent/operations agent.tools and get_agent_config (harper#3993)', () => {
+	function operationsWith(config) {
+		const patches = [];
+		const deps = {
+			getConfig: () => config,
+			setConfig: (patch) => {
+				patches.push(patch);
+				return patch;
+			},
+			startRun: () => true,
+			cancelRun: () => false,
+			admitRun: () => 0,
+			isRunInFlight: () => false,
+		};
+		const operations = buildOperations(deps);
+		const find = (name) => operations.find((op) => op.name === name);
+		return { operations, patches, set: find('set_agent_config'), get: find('get_agent_config') };
+	}
+
+	it('set_agent_config rejects a tools patch of any shape, applying nothing from the request', async () => {
+		const { set, patches } = operationsWith({});
+		for (const tools of [{ filesystem: true }, {}, false, null, 'all', []]) {
+			await assert.rejects(set.execute({ operation: 'set_agent_config', tools, maxTurns: 3 }), (err) => {
+				assert.strictEqual(err.statusCode, 400);
+				assert.ok(err.message.startsWith('agent.tools is fixed at startup'), err.message);
+				return true;
+			});
+		}
+		assert.deepStrictEqual(patches, []);
+	});
+
+	it('get_agent_config returns a copy of the effective config, super_user only', async () => {
+		const config = {
+			enabled: true,
+			maxTurns: 50,
+			httpFetch: false,
+			tools: { filesystem: false, schedule: false, inspector: false, bestPractices: true },
+		};
+		const { get } = operationsWith(config);
+		assert.strictEqual(get.requiresSuperUser, true);
+		const reported = await get.execute({ operation: 'get_agent_config' });
+		assert.deepStrictEqual(reported, config);
+		assert.notStrictEqual(reported, config);
+		reported.tools.filesystem = true;
+		assert.strictEqual(config.tools.filesystem, false);
+	});
+});

@@ -213,6 +213,12 @@ export const UPGRADE_JSON_FIELD_NAMES_ENUM = {
 	UPGRADE_VERSION: 'upgrade_version',
 } as const;
 
+/**
+ * Set by the Fastify injection on Bun and uWS, whose mock socket always reports 127.0.0.1, and stripped
+ * from client headers there; read by set_network_access's lockout check.
+ */
+export const INTERNAL_CLIENT_ADDRESS_HEADER = 'x-harper-internal-client-address';
+
 /** System table names */
 export const SYSTEM_TABLE_NAMES = {
 	JOB_TABLE_NAME: 'hdb_job',
@@ -233,6 +239,7 @@ export const SYSTEM_TABLE_NAMES = {
 	MODEL_DECISIONS_TABLE_NAME: 'hdb_model_decisions',
 	MODEL_OUTCOMES_TABLE_NAME: 'hdb_model_outcomes',
 	MODEL_CALIBRATIONS_TABLE_NAME: 'hdb_model_calibrations',
+	NETWORK_ACCESS_TABLE_NAME: 'hdb_network_access',
 } as const;
 
 /** Hash attribute for the system info table */
@@ -378,7 +385,10 @@ export const OPERATIONS_ENUM = {
 	EXCHANGE_OIDC_TOKEN: 'exchange_oidc_token',
 	ENABLE_PREVIEWS: 'enable_previews',
 	DISABLE_PREVIEWS: 'disable_previews',
+	FENCE_PREVIEW_RELEASES: 'fence_preview_releases',
 	GET_PREVIEW_POLICY: 'get_preview_policy',
+	SET_NETWORK_ACCESS: 'set_network_access',
+	GET_NETWORK_ACCESS: 'get_network_access',
 	GET_DEPLOYMENT_PAYLOAD: 'get_deployment_payload',
 	DELETE_DEPLOYMENT_PAYLOAD: 'delete_deployment_payload',
 	AGENT_PROMPT: 'agent_prompt',
@@ -387,6 +397,7 @@ export const OPERATIONS_ENUM = {
 	CANCEL_AGENT_RUN: 'cancel_agent_run',
 	APPROVE_AGENT_ACTION: 'approve_agent_action',
 	SET_AGENT_CONFIG: 'set_agent_config',
+	GET_AGENT_CONFIG: 'get_agent_config',
 } as const;
 
 /** Defines valid file types that we are able to handle in 'import_from_s3' ops */
@@ -522,6 +533,11 @@ export const LEGACY_CONFIG_PARAMS = {
  */
 export const CONFIG_PARAMS = {
 	ANALYTICS_AGGREGATEPERIOD: 'analytics_aggregatePeriod',
+	ANALYTICS_FULL_TEXT: 'analytics_fullText',
+	ANALYTICS_FULL_TEXT_ENABLED: 'analytics_fullText_enabled',
+	ANALYTICS_FULL_TEXT_INTERVAL_MILLISECONDS: 'analytics_fullText_intervalMilliseconds',
+	ANALYTICS_FULL_TEXT_HISTOGRAMS: 'analytics_fullText_histograms',
+	ANALYTICS_FULL_TEXT_SNAPSHOT_BYTES: 'analytics_fullText_snapshotBytes',
 	ANALYTICS_AGGREGATERETENTIONMS: 'analytics_aggregateRetentionMs',
 	ANALYTICS_RAWRETENTIONMS: 'analytics_rawRetentionMs',
 	ANALYTICS_REPLICATE: 'analytics_replicate',
@@ -572,6 +588,7 @@ export const CONFIG_PARAMS = {
 	THREADS_HEAPSNAPSHOTNEARLIMIT: 'threads_heapSnapshotNearLimit',
 	THREADS_PRELOAD: 'threads_preload',
 	THREADS_PRELOADREQUIRE: 'threads_preloadRequire',
+	THREADS_SHUTDOWNTIMEOUT: 'threads_shutdownTimeout',
 	THREADS_V8FLAGS: 'threads_v8Flags',
 	HTTP_SESSIONAFFINITY: 'http_sessionAffinity',
 	HTTP_COMPRESSIONTHRESHOLD: 'http_compressionThreshold',
@@ -674,6 +691,8 @@ export const CONFIG_PARAMS = {
 	MCP_OPERATIONS_RATELIMIT_PERCLIENTPERSECOND: 'mcp_operations_rateLimit_perClientPerSecond',
 	MCP_OPERATIONS_RATELIMIT_PERCLIENTBURST: 'mcp_operations_rateLimit_perClientBurst',
 	MCP_OPERATIONS_RATELIMIT_IDENTITYHEADER: 'mcp_operations_rateLimit_identityHeader',
+	MCP_OPERATIONS_RATELIMIT_INITIALIZEPERSECOND: 'mcp_operations_rateLimit_initializePerSecond',
+	MCP_OPERATIONS_RATELIMIT_INITIALIZEBURST: 'mcp_operations_rateLimit_initializeBurst',
 	MCP_APPLICATION_ENABLED: 'mcp_application_enabled',
 	MCP_APPLICATION_MOUNTPATH: 'mcp_application_mountPath',
 	MCP_APPLICATION_ALLOW: 'mcp_application_allow',
@@ -687,6 +706,8 @@ export const CONFIG_PARAMS = {
 	MCP_APPLICATION_RATELIMIT_PERCLIENTPERSECOND: 'mcp_application_rateLimit_perClientPerSecond',
 	MCP_APPLICATION_RATELIMIT_PERCLIENTBURST: 'mcp_application_rateLimit_perClientBurst',
 	MCP_APPLICATION_RATELIMIT_IDENTITYHEADER: 'mcp_application_rateLimit_identityHeader',
+	MCP_APPLICATION_RATELIMIT_INITIALIZEPERSECOND: 'mcp_application_rateLimit_initializePerSecond',
+	MCP_APPLICATION_RATELIMIT_INITIALIZEBURST: 'mcp_application_rateLimit_initializeBurst',
 	MCP_SESSION_IDLETIMEOUTSECONDS: 'mcp_session_idleTimeoutSeconds',
 	MCP_SESSION_ALLOWCLIENTDELETE: 'mcp_session_allowClientDelete',
 	AGENT_ENABLED: 'agent_enabled',
@@ -705,6 +726,10 @@ export const CONFIG_PARAMS = {
 	AGENT_CONFIGSCOPE: 'agent_configScope',
 	AGENT_HTTPFETCH: 'agent_httpFetch',
 	AGENT_HTTPFETCH_ALLOW: 'agent_httpFetch_allow',
+	AGENT_TOOLS_FILESYSTEM: 'agent_tools_filesystem',
+	AGENT_TOOLS_SCHEDULE: 'agent_tools_schedule',
+	AGENT_TOOLS_INSPECTOR: 'agent_tools_inspector',
+	AGENT_TOOLS_BESTPRACTICES: 'agent_tools_bestPractices',
 	REPLICATION: 'replication',
 	REPLICATION_HOSTNAME: 'replication_hostname',
 	REPLICATION_URL: 'replication_url',
@@ -820,6 +845,7 @@ export const CONFIG_PARAMS = {
 	STORAGE_ENGINE: 'storage_engine',
 	STORAGE_READONLY: 'storage_readOnly',
 	STORAGE_ROCKS_TRANSACTIONLOGABORTMARKERS: 'storage_rocks_transactionLogAbortMarkers',
+	STORAGE_ROCKS_TRANSACTIONLOGWRITEINTENTS: 'storage_rocks_transactionLogWriteIntents',
 	STORAGE_ROCKS_COMPRESSION: 'storage_rocks_compression',
 	STORAGE_ROCKS_BLOCKCACHESIZE: 'storage_rocks_blockCacheSize',
 	STORAGE_ROCKS_WRITEBUFFERMANAGERSIZE: 'storage_rocks_writeBufferManagerSize',

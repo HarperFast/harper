@@ -126,6 +126,11 @@ export const HOME_RESTART_RIDE_THROUGH_MS = 10_000;
  * home back within the window must be asked again, not once.
  */
 export const RESTART_ATTEMPT_MS = 3_000;
+/**
+ * How long a delegate inside its freshness barrier may finish it once the home has recalled the grant
+ * (§6). Two request bounds, so a barrier whose first answer was lost is still asked again and answered.
+ */
+export const RECALLED_BARRIER_GRACE_MS = 2 * RESTART_ATTEMPT_MS;
 /** Backoff for a refusal that is waited out (§4.5), coarser than the contended loop's: many callers can
  * be parked on one restarting home. */
 const RESTART_RETRY_MIN_MS = 250;
@@ -813,15 +818,27 @@ interface PendingDelegation {
 	recalled: boolean;
 	recalledPromise: Promise<void>;
 	markRecalled: () => void;
+	/** The request whose reply this grant is; its settlement ends every path out of the barrier. */
+	request: PendingRequest;
+	/** The home wants the key back: the grant serves its own waiter, then nobody else (§6). */
+	lastAdmission?: boolean;
+	/** What that waiter was admitted on, for the recall to drain and release. */
+	installed?: Delegation;
 }
 
 const PENDING_DELEGATION_RECALLED = Symbol('pending delegation recalled');
 
-function createPendingDelegation(key: any, token: FencingToken, recalledBeforeReply: boolean): PendingDelegation {
+function createPendingDelegation(
+	key: any,
+	token: FencingToken,
+	recalledBeforeReply: boolean,
+	request: PendingRequest
+): PendingDelegation {
 	let resolveRecall: () => void;
 	const pending: PendingDelegation = {
 		key,
 		token,
+		request,
 		recalled: false,
 		recalledPromise: new Promise((resolve) => (resolveRecall = resolve)),
 		markRecalled() {
@@ -1712,7 +1729,7 @@ export class LockCoordinator {
 							return authority.#admit(renewed, leaseMs);
 						continue acquisition;
 					}
-					const pending = createPendingDelegation(key, reply.token, recalledBeforeReply);
+					const pending = createPendingDelegation(key, reply.token, recalledBeforeReply, pendingRequest);
 					authority.#pendingDelegations.set(keyId, pending);
 					let dependencies: LockDependencySet;
 					try {
@@ -1757,7 +1774,7 @@ export class LockCoordinator {
 					// token on the NEXT pass, which is too late — this pass would have admitted on it first.
 					if (reply.token[0] !== authority.transport.homeMap(this.database)?.generation) {
 						// Hand it back rather than let the old home hold a key nobody is using for a full lease.
-						authority.#handBackPending(pending);
+						await authority.#handBackPending(pending);
 					} else {
 						const installed = authority.#installDelegation(
 							keyId,
@@ -1776,8 +1793,14 @@ export class LockCoordinator {
 						}
 						// A reply that outlived its own delegation grants nothing; fall through and ask again
 						// rather than admitting on authority the home has already expired.
-						if (installed && !installed.recalled && installed.expiresMono - authority.#monotonic() >= leaseMs)
+						if (installed && !installed.recalled && installed.expiresMono - authority.#monotonic() >= leaseMs) {
+							// Before `#admit`, which can throw: the recall must still find this delegation to surrender.
+							if (ours && pending.lastAdmission) {
+								installed.recalled = true;
+								pending.installed = installed;
+							}
 							return authority.#admit(installed, leaseMs);
+						}
 						// A long barrier can consume enough of the delegation that the requested lease no longer
 						// fits. Surrender the unused installed delegation before retrying; otherwise the home renews
 						// it in place on every pass and contenders wait for its full deadline.
@@ -2452,8 +2475,6 @@ export class LockCoordinator {
 			throw new Error('Cluster record lock coordination is not owned by this worker thread');
 		const keyId = this.#keyIdOf(recall.key);
 		const pending = this.#pendingDelegations.get(keyId);
-		// The pending token, or a renewal of it the home made in place: either way this grant must not be
-		// admitted on.
 		if (pending && pending.token[0] === recall.token[0] && compareTokens(pending.token, recall.token) <= 0) {
 			// A newer token is the home's renewal of this grant: the handback must name it too, or the home
 			// keeps it until its lease.
@@ -2462,7 +2483,19 @@ export class LockCoordinator {
 				!(pending.supersededBy && compareTokens(pending.supersededBy, recall.token) >= 0)
 			)
 				pending.supersededBy = recall.token;
-			pending.markRecalled();
+			// Abandoning the barrier here would let a contender's next poll recall every successor the same
+			// way, so a hot key changes hands without anyone being admitted (§6). The recall answers only once
+			// the grant is disposed of: an answer tells a drain that nothing here can admit on it.
+			const { request } = pending;
+			const settled = (request.settled ??= new Promise<void>((resolve) => (request.settle = resolve)));
+			if (!pending.lastAdmission) {
+				pending.lastAdmission = true;
+				const grace = delay(RECALLED_BARRIER_GRACE_MS);
+				grace.promise.then(() => pending.markRecalled());
+				settled.then(grace.cancel);
+			}
+			await settled;
+			if (pending.installed) await this.#recallHeld(keyId, pending.installed);
 			return;
 		}
 		const delegation = this.#delegations.get(keyId);
@@ -2605,8 +2638,9 @@ export class LockCoordinator {
 	async quiesce(result: QuiesceResult, remaining: () => number, seen?: WeakSet<object>): Promise<void> {
 		if (this.#closed) return;
 		// Delegate side first: this is what admits, and surrendering is purely local — it cannot be
-		// refused by an unreachable peer, so it succeeds even when the recalls below do not.
-		for (const delegation of [...this.#delegations.values()]) {
+		// refused by an unreachable peer, so it succeeds even when the recalls below do not. A grant still
+		// in its barrier admits once it finishes, so it is drained here too.
+		for (const delegation of [...this.#delegations.values(), ...this.#pendingDelegations.values()]) {
 			// Closed mid-drain: a successor holds what is left, and the sweep visits it.
 			if (this.#closed) return;
 			// A successor shares these objects, so a sweep that also visits it must count each once.
@@ -2950,7 +2984,7 @@ export class LockCoordinator {
 	 * set the previous sweep measured — amortized O(1) per admission, and the map stays within twice
 	 * the live set rather than growing at the lock rate.
 	 *
-	 * Never has a drain to wake: `#admit` reaches neither call site for a recalled delegation.
+	 * Never has a drain to wake: `#admit` reaches a recalled delegation only as it installs, before any drain.
 	 */
 	#pruneAdmissions(delegation: Delegation, now: number): void {
 		for (const [admissionId, admission] of delegation.admissions) {
@@ -3281,12 +3315,12 @@ export class LockCoordinator {
 			existing.delegate === requester &&
 			existing.requestId === requestId &&
 			existing.delegateEpoch === delegateEpoch &&
-			!existing.recalling &&
-			!existing.recallConfirmed &&
 			existing.expiresMono - this.#skewMs - now >= MIN_LOCK_LEASE_MS
 		)
 			// The request that minted this grant, delivered again (§5.2): the same token and what is left
-			// of its lease, so the delegate's token and the home's never diverge.
+			// of its lease, so the delegate's token and the home's never diverge. Recalled or not: this
+			// reply is the only way a delegate whose first delivery's reply went nowhere learns the token,
+			// and handing it back is the only release that grant will get before its deadline.
 			return {
 				granted: true,
 				token: existing.token,
