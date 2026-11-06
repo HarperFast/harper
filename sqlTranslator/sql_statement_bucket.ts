@@ -160,12 +160,12 @@ class sqlStatementBucket {
 
 	/**
 	 * The relationship paths AlaSQL member access (`->`, `!`) reads: a relationship of one of the statement's tables
-	 * followed by literal member names. A member access over another expression that reads a relationship, or with a
-	 * computed member, has no path to check and is returned in `unresolved`.
+	 * followed by literal member names, with the index into a to-many value dropped. A member access over another
+	 * expression that reads a relationship, or with a computed member, has no provable path: `unresolved` names the
+	 * relationship column and the walk stops there.
 	 */
-	getRelationshipMemberPaths(): { paths: { tableClass: any; path: string[] }[]; unresolved: string[] } {
+	getRelationshipMemberPaths(): { paths: { tableClass: any; path: string[] }[]; unresolved?: string } {
 		const paths = [];
-		const unresolved = [];
 		const registry = loadDatabaseRegistry();
 		const tables = [];
 		for (const [schema, schemaTables] of this.affected_attributes) {
@@ -175,10 +175,9 @@ class sqlStatementBucket {
 				if (tableClass?.hasRelationships) tables.push(tableClass);
 			}
 		}
-		if (tables.length === 0) return { paths, unresolved };
-		const { Op, Column } = (alasql as any).yy;
+		if (tables.length === 0) return { paths };
+		const { Op, Column, NumValue } = (alasql as any).yy;
 		const isMemberAccess = (node) => node instanceof Op && (node.op === '->' || node.op === '!');
-		// the tables a column may belong to that declare it as a relationship; a qualifier names one table
 		const owners = (column) => {
 			const qualifier = column.tableid;
 			const tableName = qualifier && (this.table_lookup.get(qualifier) ?? qualifier);
@@ -189,27 +188,46 @@ class sqlStatementBucket {
 					tableClass.propertyResolvers[column.columnid]?.definition?.tableClass
 			);
 		};
-		// astNodes yields a chain's outermost access before the accesses inside it, which that chain's path covers
-		const inChain = new Set();
+		// astNodes yields an access before the accesses inside it, which the outer one's walk already covered
+		const covered = new Set();
 		for (const node of astNodes(this.ast)) {
-			if (!isMemberAccess(node) || inChain.has(node)) continue;
+			if (!isMemberAccess(node) || covered.has(node)) continue;
 			const members = [];
 			let base = node;
 			let computed = false;
 			for (; isMemberAccess(base); base = base.left) {
-				inChain.add(base);
+				covered.add(base);
 				if (typeof base.right === 'string') members.push(base.right);
+				else if (base.right instanceof NumValue) members.push(base.right.value);
 				else computed = true;
 			}
+			members.reverse();
 			if (base instanceof Column && !computed) {
-				members.push(base.columnid);
-				const path = members.reverse();
-				for (const tableClass of owners(base)) paths.push({ tableClass, path });
-			} else if ([...columnNodes(base)].some((column) => owners(column).length > 0)) {
-				unresolved.push(node.toString());
+				for (const tableClass of owners(base)) {
+					const resolver = tableClass.propertyResolvers[base.columnid];
+					const path = [base.columnid];
+					let current = resolver.definition.tableClass;
+					let toMany = resolver.toMany;
+					for (const member of members) {
+						if (toMany && /^\d+$/.test(String(member))) {
+							toMany = false;
+							continue;
+						}
+						path.push(String(member));
+						const next = current?.propertyResolvers[member];
+						current = next?.definition?.tableClass;
+						toMany = current && next.toMany;
+					}
+					paths.push({ tableClass, path });
+				}
+				continue;
+			}
+			for (const inner of astNodes(base)) {
+				if (isMemberAccess(inner)) covered.add(inner);
+				else if (inner instanceof Column && owners(inner).length > 0) return { paths, unresolved: inner.columnid };
 			}
 		}
-		return { paths, unresolved };
+		return { paths };
 	}
 
 	/**

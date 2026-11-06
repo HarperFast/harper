@@ -732,7 +732,7 @@ export function verifyPermsAST(ast, userObject, operation, apiOperation = terms.
 
 		if (!isSuperUser && !permsResponse.hasIssues()) {
 			const memberAccess = parsedAst.getRelationshipMemberPaths();
-			if (memberAccess.unresolved.length > 0)
+			if (memberAccess.unresolved !== undefined)
 				return permsResponse.handleUnauthorizedItem(HDB_ERROR_MSGS.SQL_RELATIONSHIP_MEMBER(memberAccess.unresolved));
 			for (const { tableClass, path } of memberAccess.paths)
 				relatedTableDenials = addMemberPathDenial(tableClass, path, userObject, relatedTableDenials);
@@ -1152,6 +1152,8 @@ function addMemberPathDenial(
 	user: any,
 	denials: RelationshipReadCheck['denials']
 ): RelationshipReadCheck['denials'] {
+	// a lone relationship (an index into it) returns the value the selection already narrowed
+	if (path.length < 2) return denials;
 	let target = relatedTableOf(tableClass, path[0]);
 	const denial = target._readDenial(path, user, undefined, 1);
 	if (denial) return recordDenial(denials, denial);

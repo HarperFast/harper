@@ -252,6 +252,17 @@ describe('SQL reads of relationship columns apply the related table permissions'
 							},
 						},
 					},
+					{
+						name: 'members',
+						relationship: { to: 'squadId' },
+						elements: {
+							definition: {
+								get tableClass() {
+									return Member;
+								},
+							},
+						},
+					},
 				],
 			});
 			Locker = table({
@@ -273,6 +284,13 @@ describe('SQL reads of relationship columns apply the related table permissions'
 					{ name: 'squad', relationship: { from: 'squadId' }, definition: { tableClass: Squad } },
 				],
 			});
+			for (const Table of [Squad, Locker, Member])
+				global.hdb_schema[DATABASE][Table.tableName] = {
+					name: Table.tableName,
+					schema: DATABASE,
+					hash_attribute: 'id',
+					attributes: Table.attributes.map((attribute) => ({ attribute: attribute.name })),
+				};
 			await Squad.put(SQUAD);
 			await Locker.put(LOCKER);
 			await Member.put({ id: 'm1', squadId: 's1' });
@@ -309,6 +327,32 @@ describe('SQL reads of relationship columns apply the related table permissions'
 				...SQUAD,
 				locker: { id: LOCKER.id, squadId: LOCKER.squadId },
 			});
+		});
+
+		it('drops only the index into a to-many value from a member path', () => {
+			const user = memberUser('sql-rel-member-paths');
+			const member = (expression) =>
+				verifyPermsAST(parse(`SELECT ${expression} AS m FROM ${DATABASE}.Member WHERE id = 'm1'`), user, 'select');
+			assert.strictEqual(member('squad->members->0->id'), null);
+			assert.strictEqual(member('squad->members->`0`->id'), null);
+			for (const expression of ['squad->members->0->squad->locker->code', 'squad->members->`0`->squad->locker'])
+				assert.deepStrictEqual(
+					member(expression)?.invalid_schema_items,
+					[`Table '${DATABASE}.Locker' does not exist`],
+					expression
+				);
+		});
+
+		it('walks a deeply nested member expression in linear time', () => {
+			let expression = 'payload';
+			for (let depth = 0; depth < 2000; depth++) expression = `(${expression})->x`;
+			const ast = parse(`SELECT squad, ${expression} AS m FROM ${DATABASE}.Member WHERE id = 'm1'`);
+			const start = performance.now();
+			assert.strictEqual(
+				verifyPermsAST(ast, memberUser('sql-rel-deep'), 'select')?.invalid_schema_items?.length ?? 0,
+				0
+			);
+			assert.ok(performance.now() - start < 500, `${performance.now() - start} ms`);
 		});
 
 		it('returns the whole cyclic closure to a role that can read all of it', async () => {
