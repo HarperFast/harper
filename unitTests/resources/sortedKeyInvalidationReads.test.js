@@ -347,6 +347,8 @@ describe('Primary-key filter and key-stream reads over null cache invalidations'
 			[{ attribute: 'name', comparator: 'ne', value: 'x' }, ['p1', 'p2'], ['p2']],
 			[{ attribute: 'id', comparator: 'ne', value: 'x' }, ['p1', 'p2'], ['p1', 'p2']],
 			[{ attribute: 'id', comparator: 'ne', value: 'c2' }, ['p1', 'p2'], ['p2']],
+			[{ attribute: 'id', comparator: 'not_equals', value: 'x' }, ['p1', 'p2'], ['p1', 'p2']],
+			[{ attribute: 'id', comparator: 'not_in', value: ['c2'] }, ['p1', 'p2'], ['p2']],
 		]) {
 			assert.deepStrictEqual(
 				await parentIds([byId, { ...condition, attribute: ['children', condition.attribute] }]),
@@ -364,10 +366,15 @@ describe('Primary-key filter and key-stream reads over null cache invalidations'
 			return results;
 		};
 		const keyNot = (value) => filterByType({ attribute: 'id', comparator: 'ne', value }, Child, {}, null, true);
+		const negatedKey = (value) =>
+			filterByType({ attribute: 'id', comparator: 'equals', value, negated: true }, Child, {}, null, true);
 		for (const [filters, expected] of [
 			[[(record) => record.name !== 'x'], ['p2']],
 			[[keyNot('x')], ['p1', 'p2']],
 			[[keyNot('c2')], ['p2']],
+			[[negatedKey('x')], ['p1', 'p2']],
+			[[negatedKey('c2')], ['p2']],
+			[[(record) => record.name !== 'x', negatedKey('c3')], []],
 			[[(record) => record.name !== 'x', keyNot('c3')], []],
 		]) {
 			const synchronous = [];

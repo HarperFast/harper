@@ -15,6 +15,7 @@ const {
 	serialize,
 	serializeMessage,
 	toCsvStream,
+	buildSelectColumns,
 	recordAppliedSelect,
 	waitForStreamStartup,
 	discardSerializedStream,
@@ -1171,5 +1172,33 @@ describe('contentTypes – text/csv applied select', function () {
 		const request = { headers: { accept: 'text/csv' } };
 		const body = await streamToString(serialize(child, request, response, { select: nestedSelect() }));
 		assert.strictEqual(body, '"id","label"\n"c1","l1"\n');
+	});
+});
+
+describe('contentTypes – toCsvStream wildcard columns', function () {
+	const attributes = [{ name: 'id' }, { name: 'name' }, { name: 'note' }];
+	const rows = () => [
+		{ id: '1', name: 'a', extra: 1 },
+		{ id: '2', note: 'n', extra: 2 },
+	];
+
+	it('leads the header with the declared columns of a wildcard, then adds the first row keys', async function () {
+		const out = await streamToString(toCsvStream(rows(), undefined, buildSelectColumns('*', attributes)));
+		assert.strictEqual(out, '"id","name","note","extra"\n"1","a",,1\n"2",,"n",2\n');
+	});
+
+	it('lists a column once when the select also names it', function () {
+		assert.deepStrictEqual([...buildSelectColumns(Object.assign(['*', 'note']), attributes)], ['id', 'name', 'note']);
+		assert.deepStrictEqual([...buildSelectColumns(Object.assign(['note', '*']), attributes)], ['note', 'id', 'name']);
+	});
+
+	it('keeps the first row keys for an explicit select and lets getColumns() win over a wildcard fallback', async function () {
+		const explicit = await streamToString(
+			toCsvStream(rows(), undefined, buildSelectColumns(['id', 'name'], attributes))
+		);
+		assert.strictEqual(explicit, '"id","name","extra"\n"1","a",1\n"2",,2\n');
+		const withColumns = Object.assign(rows(), { getColumns: () => ['id', 'name'] });
+		const own = await streamToString(toCsvStream(withColumns, undefined, buildSelectColumns('*', attributes)));
+		assert.strictEqual(own, '"id","name"\n"1","a"\n"2",\n');
 	});
 });

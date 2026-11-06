@@ -147,4 +147,14 @@ suite(`record locks serialize across ${WORKERS} workers`, { skip: skipSuite }, (
 		const attempt = await post('LockedIncrement', { id, timeout: 300 });
 		strictEqual(attempt.status, 423, `locked: ${JSON.stringify(attempt.body)}`);
 	});
+
+	test("a lock() that wakes during its request's own mid-scope commit takes the lock once that commit settles", async () => {
+		const id = 'checkpoint';
+		await put(id, { n: 0, holders: 0 });
+		const response = await post('LockAcrossCheckpoint', { id });
+		strictEqual(response.status, 200, JSON.stringify(response.body));
+		strictEqual(response.body.error, undefined, `a waiter was refused: ${JSON.stringify(response.body)}`);
+		strictEqual(response.body.settledEarly.length, 0, 'no waiter settled while the commit was in flight');
+		strictEqual((await get(id)).body?.n, 1, 'the write under the lock committed with the request');
+	});
 });

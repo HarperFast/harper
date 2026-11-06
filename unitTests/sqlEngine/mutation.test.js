@@ -81,6 +81,7 @@ function makeWritableTable({ primaryKey = 'id', attributes = [], rows = [] } = {
 			table._ops.push(['delete', id]);
 			return store.delete(id);
 		},
+		_authorizeSelectedRelationships: (select) => select,
 		async *search(target) {
 			let result = [...store.values()];
 			if (Array.isArray(target.conditions) && target.conditions.length > 0) {
