@@ -55,7 +55,12 @@ type CloseScopeOptions = {
 	keepFailedEntryWatchers?: boolean;
 };
 
-const recoveryWatchersByComponent = new Map<string, Set<EntryHandler>>();
+type RecoveryState = {
+	handlers: Set<EntryHandler>;
+	cleanup: () => void;
+};
+
+const recoveryWatchersByComponent = new Map<string, RecoveryState>();
 
 let closeScopeInternal: (scope: Scope, options?: CloseScopeOptions) => Promise<Scope>;
 
@@ -83,6 +88,8 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 	#entryHandler?: EntryHandler;
 	#entryHandlers: EntryHandler[];
 	#failedEntryHandlers: Set<EntryHandler> = new Set();
+	#recoveryCleanup: (() => void) | undefined;
+	#recoveryRestartPending: boolean = false;
 	#logger: Logger;
 	#secretsReleased = false;
 	#pendingInitialLoads: Set<Promise<void>>;
@@ -138,8 +145,8 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		this.#deployInFlight = deployLifecycle.loadsAwaitDeploy(this.#appName);
 		const priorRecovery = recoveryWatchersByComponent.get(this.#recoveryKey());
 		if (priorRecovery) {
-			recoveryWatchersByComponent.delete(this.#recoveryKey());
-			for (const handler of priorRecovery) {
+			priorRecovery.cleanup();
+			for (const handler of priorRecovery.handlers) {
 				void handler.close();
 			}
 		}
@@ -336,8 +343,10 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		const key = this.#recoveryKey();
 		const registered = recoveryWatchersByComponent.get(key);
 		if (registered) {
-			registered.delete(handler);
-			if (registered.size === 0) recoveryWatchersByComponent.delete(key);
+			registered.handlers.delete(handler);
+			if (registered.handlers.size === 0 && !this.#recoveryRestartPending) {
+				registered.cleanup();
+			}
 		}
 		void handler.close();
 	}
@@ -345,18 +354,20 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 	#takeRecoveryWatchers(): EntryHandler[] {
 		const remaining = [...this.#failedEntryHandlers];
 		this.#failedEntryHandlers.clear();
+		this.#recoveryCleanup?.();
 		const key = this.#recoveryKey();
 		const registered = recoveryWatchersByComponent.get(key);
 		if (registered) {
-			for (const handler of remaining) registered.delete(handler);
-			if (registered.size === 0) recoveryWatchersByComponent.delete(key);
+			for (const handler of remaining) registered.handlers.delete(handler);
+			if (registered.handlers.size === 0) registered.cleanup();
 		}
 		return remaining;
 	}
 
 	#closeWithOptions(options?: CloseScopeOptions): Promise<this> {
 		let closing = (this.#closing ??= this.#close(options));
-		const closeRecovery = !options?.keepFailedEntryWatchers && this.#failedEntryHandlers.size > 0;
+		const closeRecovery =
+			!options?.keepFailedEntryWatchers && (this.#failedEntryHandlers.size > 0 || this.#recoveryCleanup !== undefined);
 		const waitForListeners = options?.listenerTimeoutMs === undefined && this.#pendingCloseListeners !== undefined;
 		if (closeRecovery || waitForListeners) {
 			const remaining = closeRecovery ? this.#takeRecoveryWatchers() : [];
@@ -365,7 +376,14 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 				if (options?.listenerTimeoutMs === undefined && this.#pendingCloseListeners) {
 					tasks.push(this.#pendingCloseListeners);
 				}
-				if (tasks.length > 0) await Promise.allSettled(tasks);
+				if (tasks.length > 0) {
+					const keepAlive = setInterval(() => {}, 60_000);
+					try {
+						await Promise.allSettled(tasks);
+					} finally {
+						clearInterval(keepAlive);
+					}
+				}
 			};
 			closing = this.#closing = closing.then(
 				async () => {
@@ -397,11 +415,45 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 			: this.#entryHandlers;
 		if (!keepFailedEntryWatchers) {
 			this.#takeRecoveryWatchers();
-		} else if (this.#failedEntryHandlers.size > 0) {
-			for (const handler of this.#failedEntryHandlers) {
-				void handler.resume().catch(() => {});
+		} else if (this.#failedEntryHandlers.size > 0 || this.#recoveryRestartPending) {
+			const key = this.#recoveryKey();
+			const handlers = new Set(this.#failedEntryHandlers);
+			const onRecoveryDeployStart = (name: string) => {
+				if (name !== this.#appName) return;
+				for (const handler of this.#failedEntryHandlers) {
+					handler.pause();
+				}
+			};
+			const onRecoveryDeployEnd = (name: string) => {
+				if (name !== this.#appName) return;
+				const restartPending = this.#recoveryRestartPending;
+				this.#recoveryRestartPending = false;
+				for (const handler of this.#failedEntryHandlers) {
+					void handler.resume().catch(() => {});
+				}
+				if (restartPending) {
+					if (this.#failedEntryHandlers.size === 0) this.#recoveryCleanup?.();
+					requestRestart();
+				}
+			};
+			const cleanup = () => {
+				deployLifecycle.off('deploy:start', onRecoveryDeployStart);
+				deployLifecycle.off('deploy:end', onRecoveryDeployEnd);
+				this.#recoveryRestartPending = false;
+				if (this.#recoveryCleanup === cleanup) this.#recoveryCleanup = undefined;
+				if (recoveryWatchersByComponent.get(key)?.cleanup === cleanup) {
+					recoveryWatchersByComponent.delete(key);
+				}
+			};
+			this.#recoveryCleanup = cleanup;
+			recoveryWatchersByComponent.set(key, { handlers, cleanup });
+			deployLifecycle.on('deploy:start', onRecoveryDeployStart);
+			deployLifecycle.on('deploy:end', onRecoveryDeployEnd);
+			if (!deployLifecycle.loadsAwaitDeploy(this.#appName)) {
+				for (const handler of this.#failedEntryHandlers) {
+					void handler.resume().catch(() => {});
+				}
 			}
-			recoveryWatchersByComponent.set(this.#recoveryKey(), new Set(this.#failedEntryHandlers));
 		}
 		await Promise.allSettled([...entryHandlersToClose.map((h) => h.close()), this.options.close()]);
 
@@ -544,8 +596,14 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 			}
 
 			if (scope.#closed || scope.#failedEntryHandlers.has(this)) {
-				requestRestart();
+				const deferRestart = deployLifecycle.loadsAwaitDeploy(scope.#appName);
+				if (deferRestart) {
+					scope.#recoveryRestartPending = true;
+				}
 				scope.#releaseRecoveryWatcher(this);
+				if (!deferRestart) {
+					requestRestart();
+				}
 				return;
 			}
 

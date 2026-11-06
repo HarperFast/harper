@@ -1435,7 +1435,13 @@ describe('Scope', () => {
 		it('releases the plugin lock before closing and bounds a never-settling close listener on a failed load', async () => {
 			const componentLoader = require('#src/components/componentLoader');
 			const { Status } = require('#src/server/status/index');
-			const { getTerminateTimeout, setTerminateTimeout } = require('#src/server/threads/manageThreads');
+			const {
+				getTerminateTimeout,
+				setTerminateTimeout,
+				runLocalShutdownListeners,
+			} = require('#src/server/threads/manageThreads');
+			const { whenScopesClosed } = require('#src/components/scopeShutdown');
+			const { ITC_EVENT_TYPES } = require('#src/utility/hdbTerms');
 			const failedAppDir = mkdtempSync(join(tmpdir(), 'harper.unit-test.failed-scope-hang-'));
 			const failedAppName = basename(failedAppDir);
 			const failedPluginName = 'failedScopeHangPlugin';
@@ -1521,8 +1527,9 @@ describe('Scope', () => {
 					),
 					'an early close listener rejection before another listener times out must still be surfaced'
 				);
+				runLocalShutdownListeners({ type: ITC_EVENT_TYPES.SHUTDOWN });
 				let shutdownCloseSettled = false;
-				const shutdownClose = failedScope.close().then(
+				const shutdownClose = whenScopesClosed().then(
 					() => {
 						shutdownCloseSettled = true;
 					},
@@ -1530,18 +1537,18 @@ describe('Scope', () => {
 						shutdownCloseSettled = true;
 					}
 				);
-				await new Promise((resolve) => setImmediate(resolve));
+				for (let turn = 0; turn < 5; turn++) await new Promise((resolve) => setImmediate(resolve));
 				assert.strictEqual(
 					shutdownCloseSettled,
 					false,
-					'a subsequent unbounded scope.close() (as on SHUTDOWN) must wait for in-flight close listeners that outlived the failed-load bound'
+					'SHUTDOWN must wait for in-flight close listeners that outlived the failed-load bound'
 				);
 				releaseLateRejection?.();
 				await shutdownClose;
 				assert.strictEqual(
 					shutdownCloseSettled,
 					true,
-					'unbounded scope.close() must settle once the late close listener finishes'
+					'whenScopesClosed() must settle once the late close listener finishes'
 				);
 				assert.ok(
 					loggedErrors.some((args) =>
@@ -1550,6 +1557,7 @@ describe('Scope', () => {
 					'a close listener rejection arriving after the timeout must be logged'
 				);
 			} finally {
+				releaseLateRejection?.();
 				setTerminateTimeout(priorTerminateTimeout);
 				await secretSubscription?.return?.();
 				delete componentLoader.TRUSTED_RESOURCE_PLUGINS[failedPluginName];
@@ -1781,6 +1789,17 @@ describe('Scope', () => {
 					rmSync(nestedDir, { recursive: true, force: true });
 				}
 
+				// A deploy starting and ending while the recovery watcher is waiting must pause and resume it.
+				deployLifecycle._handle({ name: failedEntryAppName, phase: 'start' });
+				await waitFor(() => entryHandlers[0]._liveWatcherCountForTests === 0, 2000);
+				assert.strictEqual(
+					entryHandlers[0]._liveWatcherCountForTests,
+					0,
+					'deploy:start must pause a recovery watcher so intermediate deploy file writes do not trigger an early restart'
+				);
+				deployLifecycle._handle({ name: failedEntryAppName, phase: 'end' });
+				await waitFor(() => entryHandlers[0]._liveWatcherCountForTests === 1, 2000);
+
 				// Reloading the failing component before any file change must close the previous recovery watcher
 				// rather than accumulating watchers across repeated reloads/redeploys.
 				componentLoader.loadedPaths.clear();
@@ -1801,15 +1820,44 @@ describe('Scope', () => {
 				);
 
 				resetRestartNeeded();
+				deployLifecycle._handle({ name: failedEntryAppName, phase: 'start' });
+				entryHandlers[1].emit('change', {
+					eventType: 'change',
+					entryType: 'file',
+					absolutePath: watchedFile,
+					urlPath: '/schema.graphql',
+				});
+				assert.strictEqual(
+					restartNeeded(),
+					false,
+					'a recovery event arriving while a deploy is in flight must defer requestRestart until deploy:end'
+				);
+				deployLifecycle._handle({ name: failedEntryAppName, phase: 'end' });
+				assert.strictEqual(
+					restartNeeded(),
+					true,
+					'deploy:end must flush a recovery restart that was deferred during deploy'
+				);
+				await waitFor(() => entryHandlers[1]._liveWatcherCountForTests === 0, 2000);
+
+				// Real filesystem edit outside a deploy immediately triggers a restart and closes the recovery watcher.
+				componentLoader.loadedPaths.clear();
+				await componentLoader.loadComponent(failedEntryAppDir, { isWorker: true, set() {} }, 'test', {
+					appName: failedEntryAppName,
+					applicationScope: new ApplicationScope(failedEntryAppName, this.resources, this.server),
+				});
+				assert.strictEqual(entryHandlers[2]._liveWatcherCountForTests, 1);
+				resetRestartNeeded();
 				writeFileSync(watchedFile, 'type Fixed @table { id: ID @primaryKey }\n');
 				await waitFor(() => restartNeeded(), 2000);
-				await waitFor(() => entryHandlers[1]._liveWatcherCountForTests === 0, 2000);
+				await waitFor(() => entryHandlers[2]._liveWatcherCountForTests === 0, 2000);
 				assert.strictEqual(
-					entryHandlers[1]._liveWatcherCountForTests,
+					entryHandlers[2]._liveWatcherCountForTests,
 					0,
 					'recovery watcher must close itself as soon as the file edit requests a restart'
 				);
 			} finally {
+				resetDeployLifecycle();
 				resetRestartNeeded();
 				for (const sub of subscriptions) await sub?.return?.();
 				for (const s of scopes) await s?.close().catch(() => {});

@@ -1182,7 +1182,11 @@ export async function loadComponent(
 						if (closingAfterLoad) {
 							if (failedLoadClosed) {
 								failedLoadClosed = false;
-								closingAfterLoad = closingAfterLoad.then(closeFull, closeFull);
+								closingAfterLoad = closeScopeAfterLoad(
+									closingAfterLoad.catch(() => {}),
+									closeFull,
+									getTerminateTimeout() / 2
+								);
 							}
 							return closingAfterLoad;
 						}
