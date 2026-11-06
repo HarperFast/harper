@@ -15032,7 +15032,9 @@ export function makeTable(options): TableResourceClass {
 				if (++attempted % checkEvery === 0 && !((await getStorageReclamationPriority(primaryStore.path)) > 1)) return;
 			}
 			if (!demoted && skipped < batch.length)
-				logger.warn?.(`Could not demote any of ${batch.length} replicas of ${tableName} under storage pressure`);
+				logger.warn?.(
+					`Could not demote any of ${batch.length - skipped} replicas of ${tableName} under storage pressure`
+				);
 			if (exhausted || (!demoted && !skipped) || performance.now() >= budgetEnd) return;
 		}
 	}
