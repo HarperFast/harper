@@ -305,6 +305,7 @@ import {
 } from './blob.ts';
 import {
 	onStorageReclamation,
+	getStorageReclamationPriority,
 	removeStorageReclamation,
 	removeStorageReclamationHandler,
 	getStorageSpaceStats,
@@ -759,6 +760,11 @@ let minReplicaScanIntervalMs = MIN_REPLICA_SCAN_INTERVAL_MS;
 const MAX_REPLICA_REFRESHES_IN_FLIGHT = 50;
 const MAX_REPLICA_REFRESH_THROTTLE_KEYS = 10_000;
 const REPLICA_SWEEP_YIELD_EVERY = 1000;
+const REPLICA_SIZE_SAMPLE = 100;
+// a reclamation run awaits each pass before the path's next handler (audit cleanup among them), so a pass starts no batch
+// past budgetMs and leaves the rest for the next run
+const REPLICA_RECLAIM_LIMITS = { batch: 20_000, checkEvery: 1000, budgetMs: 60_000, minAgeMs: 30_000 };
+let replicaReclaimLimits = REPLICA_RECLAIM_LIMITS;
 const REPLICA_EVICTION_ARMED = 'replica-eviction-armed';
 const replicaEvictionArmers = new Map<string, Set<() => void>>();
 onMessageByType(REPLICA_EVICTION_ARMED, ({ storePath, tableId }: { storePath: string; tableId: number }) => {
@@ -767,6 +773,10 @@ onMessageByType(REPLICA_EVICTION_ARMED, ({ storePath, tableId }: { storePath: st
 /** Tests only: lower the replica sweep's minimum interval; `undefined` restores it. */
 export function setMinReplicaScanIntervalForTesting(ms: number | undefined) {
 	minReplicaScanIntervalMs = ms ?? MIN_REPLICA_SCAN_INTERVAL_MS;
+}
+type ReplicaStats = { count: number; estimatedRange?: number[]; sizeEstimate: number };
+export function setReplicaReclaimLimitsForTesting(limits?: Partial<typeof REPLICA_RECLAIM_LIMITS>) {
+	replicaReclaimLimits = { ...REPLICA_RECLAIM_LIMITS, ...limits };
 }
 /** `replicaRefreshFraction`: the share of the lifetime after which a read hit renews a replica; 1 never renews. */
 export function replicaRefreshFractionOf(fraction: unknown): number | undefined {
@@ -1378,6 +1388,11 @@ interface TableResourceClass {
 				estimatedRange: number[];
 		  }
 	>;
+	/**
+	 * The replicas this node keeps of this table's records, counted like `getRecordCount`, with their size
+	 * estimated from a sample of their rows. Undefined where no replica was ever stored.
+	 */
+	getReplicaStats(options?: { exactCount?: boolean }): Promise<ReplicaStats | undefined>;
 	/**
 	 * When attributes have been changed, we update the accessors that are assigned to this table
 	 */
@@ -2011,9 +2026,11 @@ export function makeTable(options): TableResourceClass {
 	const MAX_PREFETCH_BUNDLE = 6;
 	if (audit) addDeleteRemoval();
 	const reclamationHandler = (priority: number) => {
-		if (hasSourceGet) return scheduleCleanup(priority);
+		const cleanup = hasSourceGet ? scheduleCleanup(priority) : undefined;
+		const replicas = reclaimReplicas(priority);
+		return cleanup && replicas ? Promise.all([cleanup, replicas]).then(noop) : (cleanup ?? replicas);
 	};
-	onStorageReclamation(primaryStore.path, reclamationHandler);
+	let reclamationRegistered = onStorageReclamation(primaryStore.path, reclamationHandler);
 
 	class Updatable extends GenericTrackedObject implements RecordObject {
 		declare set: (property: string, value: any) => void;
@@ -11042,6 +11059,7 @@ export function makeTable(options): TableResourceClass {
 			return getStorageSpaceStats(primaryStore.path);
 		}
 		static async getRecordCount(options?: any) {
+			const store = options?.store ?? primaryStore;
 			// iterate through the metadata entries to exclude their count and exclude the deletion counts
 			const exactCount = options?.exactCount;
 			const TIME_LIMIT = options?.timeLimit ?? 1000 / 2; // one second time limit, enforced by seeing if we are halfway through at 500ms
@@ -11050,8 +11068,7 @@ export function makeTable(options): TableResourceClass {
 			let remainderPhysical = 0;
 			let estimator;
 			// feature-detected per DESIGN.md's invariant for this API family; LMDB stores do not implement it
-			const canEstimate =
-				typeof primaryStore.createCountEstimator === 'function' && typeof primaryStore.estimateCount === 'function';
+			const canEstimate = typeof store.createCountEstimator === 'function' && typeof store.estimateCount === 'function';
 			let estimatorFailed = false;
 			let warnedNoBase = false;
 			let checkpoints = 0;
@@ -11061,7 +11078,7 @@ export function makeTable(options): TableResourceClass {
 			let lastKey;
 			let limit: number;
 			let nextCheckAt = start + TIME_LIMIT;
-			for (const { key, value } of primaryStore.getRange({ start: true, lazy: true, snapshot: false })) {
+			for (const { key, value } of store.getRange({ start: true, lazy: true, snapshot: false })) {
 				if (value != null) recordCount++;
 				entriesScanned++;
 				lastKey = key;
@@ -11074,7 +11091,7 @@ export function makeTable(options): TableResourceClass {
 				checkpoints++;
 				if (canEstimate && !estimatorFailed) {
 					try {
-						estimator ??= primaryStore.createCountEstimator({ start: true });
+						estimator ??= store.createCountEstimator({ start: true });
 						estimator.advance(lastKey, entriesScanned - checkpointedEntries);
 						checkpointedEntries = entriesScanned;
 						entryCount = usableCount(estimator.estimate());
@@ -11089,7 +11106,7 @@ export function makeTable(options): TableResourceClass {
 					// `canEstimate` false is not the same as "LMDB": a RocksDB store whose native module predates
 					// the estimator API lands here too, and `RocksDatabase.getStats()` carries no `entryCount`.
 					try {
-						const stats = primaryStore.getStats?.();
+						const stats = store.getStats?.();
 						entryCount = Number.isFinite(stats?.entryCount) && stats.entryCount > 0 ? stats.entryCount : 0;
 					} catch {
 						entryCount = 0;
@@ -11100,7 +11117,7 @@ export function makeTable(options): TableResourceClass {
 					// in the memtable. Without a base the escape cannot fire at all, so fall back to the
 					// whole-store property rather than silently walking the table.
 					try {
-						const wholeStore = primaryStore.getEstimatedKeyCount();
+						const wholeStore = store.getEstimatedKeyCount();
 						entryCount = Number.isFinite(wholeStore) && wholeStore > 0 ? wholeStore : 0;
 					} catch {
 						entryCount = 0;
@@ -11119,7 +11136,7 @@ export function makeTable(options): TableResourceClass {
 				) {
 					if (canEstimate) {
 						try {
-							const remaining = primaryStore.estimateCount({ start: lastKey, exclusiveStart: true });
+							const remaining = store.estimateCount({ start: lastKey, exclusiveStart: true });
 							// widened by its own reported untrustworthiness: block-granular, so it can land below
 							// the live count it is meant to bound
 							const remainingCount = usableCount(remaining);
@@ -11132,7 +11149,7 @@ export function makeTable(options): TableResourceClass {
 						// alone. The whole-store property is a separate, non-range source, so fall back to it.
 						if (!remainderPhysical) {
 							try {
-								const wholeStore = primaryStore.getEstimatedKeyCount();
+								const wholeStore = store.getEstimatedKeyCount();
 								if (Number.isFinite(wholeStore)) remainderPhysical = Math.max(wholeStore - entriesScanned, 0);
 							} catch {
 								remainderPhysical = 0;
@@ -11163,7 +11180,7 @@ export function makeTable(options): TableResourceClass {
 				// Disjointness is enforced against the forward scan's own last key rather than inferred from
 				// the base, which is an estimate that can overshoot by more than 2x.
 				let sampledWholeTable = false;
-				for (const { key, value } of primaryStore.getRange({
+				for (const { key, value } of store.getRange({
 					start: '\uffff',
 					reverse: true,
 					lazy: true,
@@ -11219,6 +11236,29 @@ export function makeTable(options): TableResourceClass {
 			return {
 				recordCount,
 			};
+		}
+		static async getReplicaStats(options?: { exactCount?: boolean }): Promise<ReplicaStats | undefined> {
+			const store = isRocksDB ? openReplicaDeadlines() : undefined;
+			if (!store) return undefined;
+			const { recordCount: count, estimatedRange } = await TableResource.getRecordCount({
+				exactCount: options?.exactCount,
+				store,
+			});
+			let walked = 0;
+			let sampledSize = 0;
+			for (const { key } of store.getRange({ snapshot: false })) {
+				const entry = primaryStore.getEntry(key);
+				if (entry?.metadataFlags & REPLICA) {
+					sampledSize += entry.size ?? 0;
+					if (entry.metadataFlags & HAS_BLOBS) {
+						findBlobsInObject(entry.value, (blob) => {
+							if (blob.size) sampledSize += blob.size;
+						});
+					}
+				}
+				if (++walked === REPLICA_SIZE_SAMPLE) break;
+			}
+			return { count, estimatedRange, sizeEstimate: walked ? Math.round((sampledSize / walked) * count) : 0 };
 		}
 		/**
 		 * When attributes have been changed, we update the accessors that are assigned to this table
@@ -11927,6 +11967,7 @@ export function makeTable(options): TableResourceClass {
 						.finally(releaseFullTextClearFence);
 				try {
 					promises.push(primaryStore.clear());
+					if (isRocksDB && openReplicaDeadlines()) promises.push(replicaDeadlines.clear());
 					for (const key in indices) {
 						const index = indices[key];
 						index.customIndex?.resetDerivedStorage?.();
@@ -14863,6 +14904,7 @@ export function makeTable(options): TableResourceClass {
 		openReplicaDeadlines();
 		replicaEvictionArmed = true;
 		if (!ownsCleanup()) return;
+		reclamationRegistered ||= onStorageReclamation(primaryStore.path, reclamationHandler, true);
 		Atomics.store(replicaSweep(), 1, 1);
 		scheduleReplicaSweep();
 	}
@@ -14882,7 +14924,7 @@ export function makeTable(options): TableResourceClass {
 	 * entry whose key no longer holds one is dropped. A complete empty pass with no admission since it
 	 * began stands the sweep down; the next replica stored on any thread wakes it again.
 	 */
-	async function runReplicaSweep() {
+	async function runReplicaSweep(reclaim = false) {
 		if (disposed || maintenanceClosed || !replicaEvictionArmed || replicaSweepRunning) return;
 		if (isReadOnlyMode()) return;
 		replicaSweepRunning = true;
@@ -14897,6 +14939,10 @@ export function makeTable(options): TableResourceClass {
 				replicaDeadlinesRepaired = await repairReplicaDeadlines(store);
 				complete &&= replicaDeadlinesRepaired;
 			}
+			if (reclaim) {
+				complete = false;
+				return reclaimReplicaSpace(store);
+			}
 			for (const { key, value: deadline } of store.getRange()) {
 				if (disposed || maintenanceClosed || !replicaEvictionArmed) {
 					complete = false;
@@ -14904,9 +14950,7 @@ export function makeTable(options): TableResourceClass {
 				}
 				seen++;
 				if (typeof deadline === 'number' && deadline <= Date.now()) {
-					const entry: Entry = primaryStore.getEntry(key);
-					if (!(entry?.metadataFlags & REPLICA)) await dropOrphanDeadline(store, key);
-					else await TableResource.evict(key, entry.value, entry.version, deadline);
+					await expireReplicaDeadline(store, key, deadline, primaryStore.getEntry(key));
 					await rest();
 				} else if (seen % REPLICA_SWEEP_YIELD_EVERY === 0) await rest();
 			}
@@ -14925,6 +14969,117 @@ export function makeTable(options): TableResourceClass {
 			// a store that landed after the check above saw the flag still set and sent no wake
 			if (Atomics.load(state, 0) !== admissionsAtStart) armReplicaEviction();
 		} else scheduleReplicaSweep();
+	}
+	function expireReplicaDeadline(store: any, key: Id, deadline: number, entry: Entry | undefined): Promise<unknown> {
+		if (!(entry?.metadataFlags & REPLICA)) return dropOrphanDeadline(store, key);
+		return TableResource.evict(key, entry.value, entry.version, deadline);
+	}
+	function reclaimReplicas(priority: number): Promise<void> | undefined {
+		if (
+			!(priority > 1) ||
+			!replicaEvictionArmed ||
+			!replicaExpirationMs ||
+			disposed ||
+			maintenanceClosed ||
+			isReadOnlyMode() ||
+			!ownsCleanup()
+		)
+			return;
+		return (async () => {
+			while (replicaSweepRunning) await lastReplicaSweep;
+			await runReplicaSweep(true);
+		})();
+	}
+	/**
+	 * Demote replicas earliest deadline first, while this path stays under pressure, down to an effective
+	 * lifetime of `replicaExpirationMs / priority`. A replica has `replicaExpirationMs - age` left, so that
+	 * age is reached at `remaining <= replicaExpirationMs - lifetime`, which widens with pressure. The lifetime
+	 * stops at minAgeMs: a younger replica may be this node's own write, which the owner may not have yet.
+	 * Demotion frees no disk until compaction rewrites the old rows, so the priority rarely falls during a
+	 * pass; the window and the budget are what bound it. Every run gets through a batch, however long its
+	 * scan took, or a store too large to scan within the budget would never shrink.
+	 */
+	async function reclaimReplicaSpace(store: any) {
+		const { batch: limit, checkEvery, budgetMs, minAgeMs } = replicaReclaimLimits;
+		const priority = await getStorageReclamationPriority(primaryStore.path);
+		if (!(priority > 1)) return;
+		const lifetime = Math.max(replicaExpirationMs / priority, Math.min(replicaExpirationMs, minAgeMs));
+		// fixed for the pass: a replica admitted during it starts past the cutoff, so admissions cannot extend it
+		const cutoff = Date.now() + replicaExpirationMs - lifetime;
+		const budgetEnd = performance.now() + budgetMs;
+		const proceed = () => replicaEvictionArmed && !disposed && !maintenanceClosed && !isReadOnlyMode() && ownsCleanup();
+		const young = new Set<string>();
+		let attempted = 0;
+		while (proceed()) {
+			const { batch, exhausted } = await earliestReplicaDeadlines(store, cutoff, limit, young, proceed);
+			let skipped = 0;
+			let demoted = false;
+			for (const { key, deadline } of batch) {
+				if (!proceed()) return;
+				const entry: Entry = primaryStore.getEntry(key);
+				// a deadline capped by the record's own expiry makes a fresh row look old
+				if (entry?.metadataFlags & REPLICA && Date.now() - entry.version < minAgeMs) {
+					young.add(chainKeyForId(key));
+					skipped++;
+					await rest();
+					continue;
+				}
+				await expireReplicaDeadline(store, key, deadline, entry);
+				if (!proceed()) return;
+				// evict() resolves on a refused or failed demotion too; such an entry is still here at this deadline
+				if (store.getSync(key) !== deadline) demoted = true;
+				await rest();
+				if (++attempted % checkEvery === 0 && !((await getStorageReclamationPriority(primaryStore.path)) > 1)) return;
+			}
+			if (!demoted && skipped < batch.length)
+				logger.warn?.(
+					`Could not demote any of ${batch.length - skipped} replicas of ${tableName} under storage pressure`
+				);
+			if (exhausted || (!demoted && !skipped) || performance.now() >= budgetEnd) return;
+		}
+	}
+	/**
+	 * The store is keyed by id, so each batch costs a full scan; holding only the earliest `limit` bounds
+	 * its memory. Demoted entries leave the store, so entries tying the batch's last deadline stay selectable.
+	 */
+	async function earliestReplicaDeadlines(
+		store: any,
+		cutoff: number,
+		limit: number,
+		young: Set<string>,
+		proceed: () => boolean
+	) {
+		const batch: { key: Id; deadline: number }[] = [];
+		const keepEarliest = () => {
+			batch.sort((a, b) => a.deadline - b.deadline);
+			if (batch.length > limit) batch.length = limit;
+		};
+		let bound = Infinity;
+		let matched = 0;
+		let seen = 0;
+		for (const { key, value: deadline } of store.getRange({ snapshot: false })) {
+			// a deadline beyond the current lifetime is left from a longer earlier one, however young the replica looks
+			if (
+				typeof deadline === 'number' &&
+				(deadline <= cutoff || deadline > Date.now() + replicaExpirationMs) &&
+				!young.has(chainKeyForId(key))
+			) {
+				matched++;
+				if (deadline <= bound) {
+					batch.push({ key, deadline });
+					if (batch.length >= limit * 2) {
+						keepEarliest();
+						bound = batch[limit - 1].deadline;
+					}
+				}
+			}
+			if (++seen % REPLICA_SWEEP_YIELD_EVERY === 0) {
+				await rest();
+				if (!proceed()) break;
+			}
+		}
+		keepEarliest();
+		return { batch, exhausted: matched <= limit };
 	}
 	/**
 	 * Once per load: a REPLICA row with no deadline entry (a crash between column-family flushes, a

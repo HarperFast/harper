@@ -389,6 +389,7 @@ Replicas are RocksDB-only. `_storeReplica` keeps a resident's body as an audit-f
 
 - **Admission keeps only the stub's own head write, and only when no later fold can change it** (`answersStub`, `FULL_WRITE_HEAD`, harper#3640). A table written only by patches never caches.
 - The deadline lives in `<table>/@replicas`, not `expiresAt`; demotion re-reads it in its own transaction, and `repairReplicaDeadlines` leaves no replica permanent. Demote all replicas before a downgrade (`residencyReplicas.test.js`).
+- A pressure pass (`reclaimReplicaSpace`) frees no disk until compaction, so its window and budget bound it, not the priority (`replicaStorageReclamation.test.js`).
 
 ## `replicatedConfirmation` counts only the residents of each written record
 

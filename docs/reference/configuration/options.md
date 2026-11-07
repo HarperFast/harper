@@ -346,7 +346,7 @@ storage:
 - `backupPath` — Directory for managed database backups (created by [`create_backup`](../backups/operations.md#create_backup)), one subdirectory per database; _Default_: `<rootPath>/backup` (Added in: v5.2.0)
 - `blobPaths` — Blob storage directory or directories; _Default_: `<rootPath>/blobs` (Added in: v4.5.0)
 - `pageSize` — Database page size (bytes); _Default_: OS default
-- `reclamation.threshold` — Free-space ratio below which reclamation begins evicting from caching tables; _Default_: `0.4` (Added in: v4.5.0)
+- `reclamation.threshold` — Free-space ratio below which reclamation begins evicting from caching tables and [demoting local replicas](../database/storage-tuning.md#local-replicas-under-storage-pressure); _Default_: `0.4` (Added in: v4.5.0)
 - `reclamation.interval` — Free-space check interval; _Default_: `1h`
 - `reclamation.evictionFactor` — Heuristic factor for early eviction under disk pressure; _Default_: `100000`. See [Storage Tuning — Reclamation](../database/storage-tuning.md#storage-reclamation)
 - `rocks.blockCacheSize` — RocksDB shared block cache size in bytes; _Default_: 25% of constrained memory. See [Storage Tuning — RocksDB Memory](../database/storage-tuning.md#rocksdb-memory) (Added in: v5.1.0)
