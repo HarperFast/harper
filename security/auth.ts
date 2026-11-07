@@ -301,7 +301,7 @@ export async function authentication(request, nextHandler) {
 								// read first: a component's server.getUser principal carries no record versions itself
 								const versions = userRecordVersions(username);
 								newUser = await server.getUser(username, password, request);
-								// cache a view of a component's user checked against this lookup: a memoizing server.getUser hands the user itself to later lookups
+								// a memoizing server.getUser hands later lookups this same user, so the cache holds a view of it
 								const provenance = trackUserRecords(newUser, versions);
 								if (provenance && newUser.role) newUser = cloneUserView(newUser, provenance);
 							} else newUser = null;
