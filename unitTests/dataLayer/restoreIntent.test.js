@@ -43,6 +43,7 @@ const {
 	checkRestoreState,
 	droppingMarkerPath,
 	markRestoreDestructive,
+	restoringMarkerPath,
 	releaseRestoreLock,
 	restoreLockHeldExclusively,
 	restoreMarkerPresent,
@@ -83,6 +84,7 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 	let sequence = 0;
 	const databases = [];
 	const seededJobs = [];
+	const testDirs = [];
 	let savedSafeMode;
 
 	before(async function () {
@@ -95,9 +97,18 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 		savedSafeMode = process.env.HARPER_SAFE_MODE;
 	});
 
+	beforeEach(function () {
+		testDirs.length = 0;
+	});
+
 	afterEach(function () {
 		if (savedSafeMode === undefined) delete process.env.HARPER_SAFE_MODE;
 		else process.env.HARPER_SAFE_MODE = savedSafeMode;
+		// the safe-mode decision scans every receipt, so one a failed test leaves would fail every later test
+		for (const dir of testDirs) {
+			rmSync(restoreReceiptPath(dir), { force: true });
+			rmSync(restoringMarkerPath(dir), { force: true });
+		}
 	});
 
 	after(async function () {
@@ -171,6 +182,7 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 		await Items.put({ id: 'only-live', label: 'live' });
 		await Items.primaryStore.rootStore.flush();
 		const live = await snapshot(Items);
+		testDirs.push(resolveDatabasePath(name));
 		return {
 			name,
 			dir: resolveDatabasePath(name),
@@ -675,7 +687,11 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 
 			repair();
 			await boot(fixture.name);
-			assert.strictEqual(unpublishedRestoreBlocksComponents(), undefined);
+			assert.strictEqual(
+				unpublishedRestoreBlocksComponents(),
+				undefined,
+				`the retry did not publish: ${JSON.stringify(readRestoreReceipt(fixture.dir))}`
+			);
 			assert.strictEqual((await job(jobId)).status, JOB_STATUS_ENUM.COMPLETE);
 			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.backedUp[0]);
 		});
