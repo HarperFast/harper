@@ -119,6 +119,10 @@ Consequences that shape the code:
   scope's final commit (`scopeEnding`) is not waited out. A `lock()` made by the scope's own pre-commit hook
   (`operation.before`, a source write-through) while that hook runs belongs to the commit, which awaits it:
   `runCommitHook` marks the invocation in an `AsyncLocalStorage` (`currentCommitHook`) until the hook settles.
+  Outside `transaction()` the marker also names the committing link: a write made within that hook on that
+  link, directly or through a commit the hook started on another link (the marker's `parent` chain), is
+  staged into the commit and resolves without awaiting it, where any other write joining the parked commit
+  awaits it. Sibling-database links share the root but commit on their own, so the link, not the root, decides.
   Such a call otherwise keeps the earlier outcome: a chained link's hook runs after the root went CLOSED, so its
   `lock()` of a head-database record still gets the 500 (harper#4081). A commit that awaits a `lock()` started
   outside its hook still waits until that `lock()` gives up.
@@ -317,7 +321,14 @@ reserved; the joined-commit policy refuses it with a 409 before staging when tha
 its stamp (harper#3238). This is a local admission policy, not a replica version clamp: applied writes
 preserve an explicit record version even when it exceeds the origin log key. The caller unlocks, then
 locks and retries once
-the earlier commit settles. A hold steps one ulp past its last version,
+the earlier commit settles. A holder write also steps past the stamps of earlier holder writes to its key
+still committing on another native transaction and not already skipped (`inFlightHolderStamp`): they are
+not in the floor yet, and
+a tie on a separate commit is skipped on an `audit: false` table ([harper#4098](https://github.com/HarperFast/harper/issues/4098)).
+Writes sharing one native commit are ordered by it and are not stepped past, which would overrun its
+reserved log key, nor is a skipped one, whose step could claim a key above the newer write it lost to.
+Once those writes settle the candidate again rests on committed versions alone, so a skipped one leaves
+no trace. A hold steps one ulp past its last version,
 which keeps advancing above 2^42 ms, where a fixed 0.000488 ms step no longer changes a double; a step
 ahead of the clock within the cap is claimed, since one ulp above the ratchet is the next key it
 issues. A step at or below the ratchet's next key is also claimed, even after clock catch-up, so it

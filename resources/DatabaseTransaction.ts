@@ -822,9 +822,8 @@ export type TransactionWrite = {
 	// Set by a table commit handler only when this retry round staged a record change.
 	recordVersionApplied?: boolean;
 	// Set by DatabaseTransaction.save() on the immediateCommit path: the Promise returned by the
-	// inner this.commit({ transaction }) call. The ImmediateTransaction outer commit resolves before
-	// this settles (fire-and-forget from the if-branch), so Table.save()'s lock-writable path awaits
-	// it to ensure the write is durable before resolving to the caller.
+	// inner this.commit({ transaction }) call, which ImmediateTransaction.save() awaits when the
+	// outer commit() sweep returns before the native commit settles.
 	innerCommit?: MaybePromise<CommitResolution>;
 	// the commit derives stored state (folds, index diffs, residency) from its base entry, so
 	// save() must reload that base through the committing transaction's snapshot
@@ -956,10 +955,13 @@ function releaseTransactionLockHolds(transaction: RocksTransaction | null | unde
 
 type RecordLockRegistry = Map<any, Map<unknown, RecordLockHandle>>;
 
-/** One running invocation of a write's pre-commit hook (`before`) in an explicit transaction. */
+/** One running invocation of a write's pre-commit hook (`before`). */
 export interface CommitHookInvocation {
 	root: DatabaseTransaction;
+	// the link whose commit awaits the hook; sibling-database links share `root` but commit on their own
+	link: DatabaseTransaction;
 	active: boolean;
+	parent: CommitHookInvocation | undefined;
 }
 const commitHookScope = new AsyncLocalStorage<CommitHookInvocation>();
 
@@ -971,8 +973,13 @@ export function currentCommitHook(): CommitHookInvocation | undefined {
 	return commitHookScope.getStore();
 }
 
-function runCommitHook(root: DatabaseTransaction, hook: () => void | Promise<void>): void | Promise<void> {
-	const invocation: CommitHookInvocation = { root, active: true };
+function runCommitHook(link: DatabaseTransaction, hook: () => void | Promise<void>): void | Promise<void> {
+	const invocation: CommitHookInvocation = {
+		root: link.root ?? link,
+		link,
+		active: true,
+		parent: commitHookScope.getStore(),
+	};
 	const settled = () => {
 		invocation.active = false;
 	};
@@ -1579,6 +1586,33 @@ export class DatabaseTransaction implements Transaction {
 				return;
 			}
 		}
+	}
+
+	/**
+	 * Until its commit clears it, an earlier holder write's stamp is not in the handle's committed floor, and an
+	 * equal stamp on a separate native commit loses the LWW tie (harper#4098). A write sharing `target` is left
+	 * out: stepping past it would pass that commit's reserved log key. So is one already skipped: it will not land,
+	 * and stepping past it could claim a fresh key that outranks the newer write it lost to.
+	 */
+	private inFlightHolderStamp(
+		operation: TransactionWrite,
+		handle: RecordLockHandle,
+		target: RocksTransaction | undefined
+	): number | undefined {
+		let highest: number | undefined;
+		for (let write = operation.priorWrite; write; write = write.priorWrite) {
+			if (
+				write.lockHandle === handle &&
+				write.lockStamp &&
+				!write.dropped &&
+				!write.skipped &&
+				(target === undefined || write.stagedOn !== target) &&
+				(highest === undefined || write.lockStamp > highest) &&
+				this.ownedWrites?.has(write)
+			)
+				highest = write.lockStamp;
+		}
+		return highest;
 	}
 
 	registerRecordLock(handle: RecordLockHandle): void {
@@ -2592,7 +2626,14 @@ export class DatabaseTransaction implements Transaction {
 				// lock's version, which LWW then silently drops against a newer record version.
 				if (!operation.lockStamp) {
 					try {
-						operation.lockStamp = lockHandle.holderVersionCandidate();
+						operation.lockStamp = lockHandle.holderVersionCandidate(
+							undefined,
+							this.inFlightHolderStamp(
+								operation,
+								lockHandle,
+								transaction ?? (this.open === TRANSACTION_STATE.OPEN ? this.transaction : undefined)
+							)
+						);
 					} catch (error) {
 						this.refuseLockWrites(lockHandle, operation);
 						throw error;
@@ -2804,16 +2845,13 @@ export class DatabaseTransaction implements Transaction {
 					return;
 				}
 				operation.saved = true;
-				let result: Promise<void> = (
-					operation.before && !this.saveCommits
-						? runCommitHook(this.root ?? this, operation.before)
-						: operation.before?.()
-				) as Promise<void>;
+				// before the hooks: a same-key write one makes synchronously reads it to tell this commit from another
+				if (shouldStampStagedOn) operation.stagedOn = transaction;
+				let result: Promise<void> = (operation.before && runCommitHook(this, operation.before)) as Promise<void>;
 				if (result?.then) this.stageCompletion(result, transaction);
 				result = operation.beforeIntermediate?.() as Promise<void>;
 				if (result?.then) this.stageCompletion(result, transaction);
-			}
-			if (shouldStampStagedOn) operation.stagedOn = transaction;
+			} else if (shouldStampStagedOn) operation.stagedOn = transaction;
 			if (lockHandle || this.recordLocks) operation.trackRecordVersion = true;
 			appliedByPriorAttempt = operation.appliedRecordVersion;
 			if (operation.trackRecordVersion) operation.recordVersionApplied = false;
@@ -2877,9 +2915,6 @@ export class DatabaseTransaction implements Transaction {
 		if (immediateCommit) {
 			// immediately commit if the harper transaction is closed
 			const innerCommit = this.commit({ ...options, transaction });
-			// Expose on the operation so the lock-writable Table.save() path can await the real
-			// native commit — without this the ImmediateTransaction outer commit resolves before
-			// the native transaction.commit() settles (fire-and-forget from the if-branch).
 			operation.innerCommit = innerCommit;
 			return innerCommit;
 		}
@@ -4466,9 +4501,12 @@ export function shouldSpareCommitPhase(
 	return commitChainHead.commitPhaseTicks <= COMMIT_PHASE_GRACE;
 }
 
+const resolveUndefined = () => {};
+
 export class ImmediateTransaction extends DatabaseTransaction {
 	isCommitting = false;
 	saveCommits = true;
+	#activeSaveCommit: Promise<void> | undefined;
 	constructor(db: RootDatabaseKind) {
 		super();
 		this.db = db;
@@ -4479,7 +4517,23 @@ export class ImmediateTransaction extends DatabaseTransaction {
 		if (this.isCommitting || args[1] || args[3]) {
 			// Stage into the transaction commit() is committing (on a retry round, the one being retried)
 			// and reload within it; with no handle super.save() would open its own and nest a commit().
-			super.save(operation, args[1], true, args[3]);
+			const saveResult: any = super.save(operation, args[1], true, args[3]);
+			// commit() re-entry (args[1] / args[3]) discards the return value and the else-branch awaits
+			// operation.innerCommit, so deriving an unobserved .then() promise here would turn any
+			// rejected innerCommit into an unhandledRejection.
+			if (args[1] || args[3]) return;
+			// Closed links open a per-write handle and return its innerCommit (or undefined for a no-op
+			// validate=false write, which must not borrow another write's commit). OPEN links parked in
+			// completions after commit() returns share #activeSaveCommit; before commit() returns it stays
+			// undefined so a synchronous before-hook awaiting a same-context write does not deadlock completions.
+			// Nor is a write made within this commit's own before-hook (even through another link's commit):
+			// this commit awaits that hook.
+			if (saveResult?.then) return saveResult.then(resolveUndefined);
+			if (this.open !== TRANSACTION_STATE.OPEN) return;
+			for (let hook = currentCommitHook(); hook; hook = hook.parent) {
+				if (hook.active && hook.link === this) return;
+			}
+			return this.#activeSaveCommit;
 		} else {
 			this.admitRequestWrite(); // a deferred save reaches here without passing through addWrite()
 			this.isCommitting = true;
@@ -4493,18 +4547,28 @@ export class ImmediateTransaction extends DatabaseTransaction {
 				this.isCommitting = false;
 				throw err;
 			}
-			return when(
-				commitResult,
+			const innerCommit = operation?.innerCommit;
+			const settled = innerCommit
+				? commitResult?.then && innerCommit?.then
+					? Promise.all([commitResult, innerCommit])
+					: when(commitResult, () => innerCommit)
+				: commitResult;
+			const done: any = when(
+				settled,
 				() => {
 					this.isCommitting = false;
+					this.#activeSaveCommit = undefined;
 				},
 				(err: any) => {
 					// Async rejection (e.g. a rejected rocksdb commit promise) must also clear the
 					// latch; without this, every subsequent save() silently fire-and-forgets.
 					this.isCommitting = false;
+					this.#activeSaveCommit = undefined;
 					throw err;
 				}
 			);
+			if (done?.then) this.#activeSaveCommit = done;
+			return done;
 		}
 	}
 

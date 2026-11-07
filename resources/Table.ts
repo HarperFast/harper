@@ -391,6 +391,8 @@ const KEEP_STALE = Object.freeze({ allowStaleWhileRevalidate: () => true });
 const ENTRY_SORT_ATTRIBUTES = new Set(['$id', '$updatedtime', '$updatedTime', '$expiresAt', '$score', '$highlights']);
 const MAX_CONCURRENT_HISTORY_REMOVALS = 10;
 const MAX_CONCURRENT_LMDB_HISTORY_REMOVALS = 1000;
+// Every self-committing commit scans its link's in-flight writes, so unbounded overlap is quadratic in rows.
+const MAX_CONCURRENT_QUERY_DELETES = 16;
 // RocksDB-only: number of eviction/tombstone removals coalesced into a single transaction commit.
 // Each evict otherwise pays a full transaction commit, so batching amortizes that cost. LMDB already
 // coalesces async writes per event turn (eventTurnBatching), so it keeps the per-record path.
@@ -996,8 +998,8 @@ interface TableResourceInstance<Record extends object = any> {
 	_setChanges(changes: any): void;
 	setRecord(record: any): void;
 	invalidate(target: RequestTargetOrId): void | Promise<void>;
-	_writeInvalidate(id: Id, partialRecord?: any, options?: any): void;
-	_writeRelocate(id: Id, options: any): void;
+	_writeInvalidate(id: Id, partialRecord?: any, options?: any): void | Promise<void>;
+	_writeRelocate(id: Id, options: any): void | Promise<void>;
 	/**
 	 * Acquire an exclusive lock on this record (or on `target`'s) and return it ready for updates
 	 * (harper#483, Phase 0: exclusive across every worker thread of this node). The lock is held
@@ -1054,7 +1056,7 @@ interface TableResourceInstance<Record extends object = any> {
 	 * the record at all. This entries should be replicated and trigger subscription listeners.
 	 */
 	publish(target: RequestTarget, message: Record, options?: any): void | Promise<void>;
-	_writePublish(id: Id, message: any, options?: any): void;
+	_writePublish(id: Id, message: any, options?: any): void | Promise<void>;
 	validate(record: any, patch?: boolean): void;
 	getUpdatedTime(): number;
 	[ASSERT_TRACKED_WRITABLE](generation?: WriteGeneration): void;
@@ -4809,18 +4811,11 @@ export function makeTable(options): TableResourceClass {
 						// path and creates a fresh write (otherwise a non-null #savingOperation makes
 						// save() take the #saveOperation branch with an already-committed write, which
 						// is a no-op, silently dropping the new change).
-						// op.innerCommit is the real native-transaction commit Promise set on the
-						// immediateCommit path in DatabaseTransaction.save(); await it to ensure
-						// durability before resolving to the caller.
 						if (op?.saved) {
 							this.#savingOperation = null;
-							return op?.innerCommit;
+							return;
 						}
-						// op.saved = false means addWrite deferred the save; #saveOperation commits it
-						// synchronously but ImmediateTransaction.save() returns undefined while the
-						// inner rocksdb commit is still pending — return innerCommit so the caller
-						// actually waits for durability.
-						return when(this.save(), () => op?.innerCommit);
+						return this.save();
 					});
 				}
 				// No changes: nothing to stage. A dropped operation (detached at a scoped→hold
@@ -4834,16 +4829,8 @@ export function makeTable(options): TableResourceClass {
 			if (this.#savingOperation) {
 				const operation = this.#savingOperation;
 				this.#savingOperation = null;
-				// A write that lands via a nested immediateCommit (e.g. a second sequential save() on
-				// the same ImmediateTransaction context, once the first has already closed it) sets
-				// operation.innerCommit to the real native-commit promise, but the commit() sweep loop
-				// that triggers it discards its own return value — #saveOperation()'s result can
-				// resolve before that native commit actually settles. Chain on innerCommit (as the
-				// lock-writable hold branch above already does) so callers awaiting save() see the
-				// write durably land, not just the outer (possibly premature) resolution.
-				let result;
 				try {
-					result = this.#saveOperation(operation);
+					return this.#saveOperation(operation);
 				} catch (error) {
 					if (!operation.saved && !operation.dropped) {
 						operation.releaseChanges?.();
@@ -4851,8 +4838,6 @@ export function makeTable(options): TableResourceClass {
 					}
 					throw error;
 				}
-				const innerCommit = operation.innerCommit;
-				return innerCommit ? when(innerCommit, () => result) : result;
 			}
 		}
 		#saveOperation(operation: any) {
@@ -4954,7 +4939,7 @@ export function makeTable(options): TableResourceClass {
 			this.#record = record;
 		}
 
-		invalidate(target: RequestTargetOrId) {
+		invalidate(target: RequestTargetOrId): void | Promise<void> {
 			let allowed = true;
 			const context = this.getContext();
 			if ((target as RequestTarget)?.checkPermission) {
@@ -4965,10 +4950,10 @@ export function makeTable(options): TableResourceClass {
 				if (!allowed) {
 					throw new AccessViolation((context as any).user);
 				}
-				this._writeInvalidate(target ? requestTargetToId(target) : this.getId());
-			});
+				return this._writeInvalidate(target ? requestTargetToId(target) : this.getId());
+			}) as any;
 		}
-		_writeInvalidate(id: Id, partialRecord?: any, options?: any) {
+		_writeInvalidate(id: Id, partialRecord?: any, options?: any): void | Promise<void> {
 			this.#assertLiveHandle(id);
 			const incomingRecord = partialRecord;
 			const isCopyApply = isRocksDB && options?.isCopyApply === true;
@@ -5124,9 +5109,10 @@ export function makeTable(options): TableResourceClass {
 			this.#bindWriteLock(write, id, transaction);
 			if (write.lockHandle) write.lockJoined = true;
 			write.beforeIntermediate = preCommitBlobsForRecordBefore(write, partialRecord);
-			transaction.addWrite(write);
+			const result = transaction.addWrite(write);
+			return result?.then ? result.then(noop) : undefined;
 		}
-		_writeRelocate(id: Id, options: any) {
+		_writeRelocate(id: Id, options: any): void | Promise<void> {
 			this.#assertLiveHandle(id);
 			const context = this.getContext();
 			checkValidId(id);
@@ -5239,7 +5225,8 @@ export function makeTable(options): TableResourceClass {
 				},
 			};
 			this.#bindWriteLock(write, id, transaction);
-			transaction.addWrite(write);
+			const result = transaction.addWrite(write);
+			return result?.then ? result.then(noop) : undefined;
 		}
 
 		/**
@@ -7667,10 +7654,33 @@ export function makeTable(options): TableResourceClass {
 					(scanTarget as any).checkPermission = false;
 				}
 				(scanTarget as any).select = ['$id']; // just get the primary key of each record so we can delete them
-				for await (const entry of this.search(scanTarget)) {
-					const deletion = this._writeDelete((entry as any).$id);
-					if (deletion instanceof Promise) await deletion;
+				let inFlight: Set<Promise<void>> | undefined;
+				let freeSlot: (() => void) | undefined;
+				let failure: { error: unknown } | undefined;
+				try {
+					for await (const entry of this.search(scanTarget)) {
+						if (failure) break;
+						const deletion = this._writeDelete((entry as any).$id);
+						if (!(deletion instanceof Promise)) continue;
+						const settled: Promise<void> = deletion
+							.then(noop, (error) => {
+								failure ??= { error };
+							})
+							.then(() => {
+								inFlight!.delete(settled);
+								freeSlot?.();
+							});
+						(inFlight ??= new Set()).add(settled);
+						if (inFlight.size >= MAX_CONCURRENT_QUERY_DELETES)
+							await new Promise<void>((resolve) => {
+								freeSlot = resolve;
+							});
+					}
+				} catch (error) {
+					failure ??= { error };
 				}
+				if (inFlight) await Promise.all(inFlight);
+				if (failure) throw failure.error;
 				return true;
 			}
 			if (target) {
@@ -7685,8 +7695,7 @@ export function makeTable(options): TableResourceClass {
 						throw new AccessViolation((context as any).user);
 					}
 					const id = requestTargetToId(target as any);
-					const deletion = this._writeDelete(id);
-					return deletion instanceof Promise ? deletion.then(() => true) : true;
+					return this._writeDelete(id);
 				}) as any;
 			}
 			const deletion = this._writeDelete(this.getId());
@@ -7834,9 +7843,9 @@ export function makeTable(options): TableResourceClass {
 			};
 			this.#bindWriteLock(write, id, transaction);
 			if (write.lockHandle) write.lockJoined = true;
-			transaction.addWrite(write);
+			const result = transaction.addWrite(write);
 			if (condition) condition.consumed = true;
-			return true;
+			return result?.then ? result.then(returnTrue) : true;
 		}
 
 		// #section: search-query
@@ -10468,11 +10477,11 @@ export function makeTable(options): TableResourceClass {
 		 * @param message
 		 * @param options
 		 */
-		publish(target: RequestTarget, message: Record, options?: any) {
+		publish(target: RequestTarget, message: Record, options?: any): void | Promise<void> {
 			const falseModeDispatch = (this.constructor as any).loadAsInstance === false && isStaticResourceInstance(this);
 			if (!falseModeDispatch && (message === undefined || message instanceof URLSearchParams)) {
 				// legacy arg format, shift the args
-				this._writePublish(this.getId(), target, message);
+				return this._writePublish(this.getId(), target, message);
 			} else {
 				let allowed: boolean | Promise<boolean> = true;
 				const context = this.getContext();
@@ -10491,15 +10500,15 @@ export function makeTable(options): TableResourceClass {
 							throw new AccessViolation((context as any).user);
 						}
 						const id = requestTargetToId(target);
-						this._writePublish(id, message, options);
+						return this._writePublish(id, message, options);
 					},
 					() => {
 						throw new AccessViolation((context as any).user);
 					}
-				);
+				) as any;
 			}
 		}
-		_writePublish(id: Id, message, options?: any) {
+		_writePublish(id: Id, message, options?: any): void | Promise<void> {
 			const transaction = txnForContext(this.getContext());
 			id ??= null;
 			if (id !== null) checkValidId(id); // note that we allow the null id for publishing so that you can publish to the root topic
@@ -10616,7 +10625,8 @@ export function makeTable(options): TableResourceClass {
 			if (write.lockHandle) write.lockJoined = true;
 			// because transaction log entries can be deleted at any point, we must save the blobs in the record, there is no cleanup of them
 			write.beforeIntermediate = preCommitBlobsForRecordBefore(write, message, undefined, true);
-			transaction.addWrite(write);
+			const result = transaction.addWrite(write);
+			return result?.then ? result.then(noop) : undefined;
 		}
 		/**
 		 * Write a single table-reload marker for this table (harper-pro#489): a LOCAL_ONLY audit entry of
@@ -13030,9 +13040,8 @@ export function makeTable(options): TableResourceClass {
 					transaction.next.snapshotFree = transaction.snapshotFree;
 					if (transaction.open === TRANSACTION_STATE.CLOSED && !transaction.next.saveCommits) {
 						// if the current transaction is already closed, we need to retain that state on new databases we work with
-						// Never onto a self-committing link: CLOSED is what routes its first write through the
-						// commit re-entry that drops the native commit promise (#2323), and it commits per write
-						// regardless of this state.
+						// Never onto a self-committing link: it commits per write regardless of this state, and
+						// starting CLOSED would route its first write through the nested immediateCommit re-entry (#2323).
 						transaction.next.open = TRANSACTION_STATE.CLOSED;
 					}
 					// A poison flag must travel with `open`, or a link created after the poisoning (a
@@ -15252,6 +15261,9 @@ function attributesAsObject(attribute_permissions, type) {
 }
 function noop() {
 	// prefetch callback
+}
+function returnTrue() {
+	return true;
 }
 
 // Compiled from a schema @computed(from:) expression, so every thread, pool workers included, has it.
