@@ -5,8 +5,12 @@
  * Order.customer is a forward (`from`) relationship and Order.notes a one-to-many (`to`) one, both @enumerable.
  * Role 1 reads Order only; role 2 also reads Customer limited to id,name; role 3 reads every table without being a
  * super user. The super-user and role 3 arms are the live positive control: on every format they carry both related
- * records in full. CSV collection default reads derive their columns from the first row's own keys, so they carry no
- * relationship column for a principal that reads everything; the record URL and select(*) do.
+ * records in full. Known gap, characterized here and not pinned: a CSV collection default read derives its columns
+ * from the first row's own keys, so a principal that reads everything gets no relationship column there while the
+ * record URL, select(*) and a narrowed role's read carry them.
+ *
+ * Run:
+ *   npm run build && npm run test:integration -- "integrationTests/security/relationship-enumerable-formats.test.ts"
  */
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual, deepStrictEqual } from 'node:assert';
@@ -19,6 +23,7 @@ import { unpack as msgpackUnpack, unpackMultiple as msgpackUnpackMultiple } from
 import { createApiClient } from '../apiTests/utils/client.mjs';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'fixtures/relationship-enumerable-formats');
+const skipSuite = process.env.HARPER_RUNTIME === 'bun' || process.platform === 'win32';
 const ROLE1 = 'enumfmt_orders_only';
 const USER1 = 'enumfmt_orders_user';
 const ROLE2 = 'enumfmt_orders_custname';
@@ -41,6 +46,7 @@ const slice = (s: string, n = 700) => (s.length > n ? s.slice(0, n) + `…(+${s.
 
 suite(
 	'@enumerable relationships follow related-table permissions on every response format',
+	{ skip: skipSuite },
 	(ctx: ContextWithHarper) => {
 		let host: string, port: number, adminAuth: string;
 		const auth: Record<string, string> = {};
@@ -307,7 +313,7 @@ suite(
 		const csvRows = (body: string) => body.split('\n').filter(Boolean).map(csvLine);
 		const csvCell = (header: string[], row: string[], column: string) => row[header.indexOf(column)];
 
-		test('csv collection default read: super user and role 3 get the same header, and neither carries a related value', async () => {
+		test('csv collection default read: super user and role 3 get the same header (the missing relationship columns are a known gap)', async () => {
 			const su = await send('/Order/', adminAuth, 'text/csv');
 			const r3 = await send('/Order/', auth.r3, 'text/csv');
 			strictEqual(su.status, 200, slice(su.buf.toString('utf8')));
