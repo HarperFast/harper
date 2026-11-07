@@ -55,6 +55,12 @@ describe('PrimaryRocksDatabase metadata repair (#2012)', function () {
 		}
 	});
 
+	it('leaves raw primary writes in the encoder format without synthesizing metadata', () => {
+		store.putSync('raw-contract', 'raw payload');
+		assert.deepStrictEqual(rawStore.getBinarySync('raw-contract'), Buffer.from(store.encoder.encode('raw payload')));
+		assert.strictEqual(store.getEntry('raw-contract').version, undefined);
+	});
+
 	it('metadata-less record gets the prototype repair on point reads', async function () {
 		// plain msgpackr record-ext bytes with no prefix — the layout the broken migration produced
 		const packr = new Packr();
