@@ -391,6 +391,8 @@ const KEEP_STALE = Object.freeze({ allowStaleWhileRevalidate: () => true });
 const ENTRY_SORT_ATTRIBUTES = new Set(['$id', '$updatedtime', '$updatedTime', '$expiresAt', '$score', '$highlights']);
 const MAX_CONCURRENT_HISTORY_REMOVALS = 10;
 const MAX_CONCURRENT_LMDB_HISTORY_REMOVALS = 1000;
+// Every self-committing commit scans its link's in-flight writes, so unbounded overlap is quadratic in rows.
+const MAX_CONCURRENT_QUERY_DELETES = 16;
 // RocksDB-only: number of eviction/tombstone removals coalesced into a single transaction commit.
 // Each evict otherwise pays a full transaction commit, so batching amortizes that cost. LMDB already
 // coalesces async writes per event turn (eventTurnBatching), so it keeps the per-record path.
@@ -7652,10 +7654,29 @@ export function makeTable(options): TableResourceClass {
 					(scanTarget as any).checkPermission = false;
 				}
 				(scanTarget as any).select = ['$id']; // just get the primary key of each record so we can delete them
-				for await (const entry of this.search(scanTarget)) {
-					const deletion = this._writeDelete((entry as any).$id);
-					if (deletion instanceof Promise) await deletion;
+				// Outside transaction() each row commits on its own. Every issued row settles before this
+				// returns or rejects, whatever ended the scan.
+				const inFlight = new Set<Promise<void>>();
+				let failure: { error: unknown } | undefined;
+				try {
+					for await (const entry of this.search(scanTarget)) {
+						if (failure) break;
+						const deletion = this._writeDelete((entry as any).$id);
+						if (!(deletion instanceof Promise)) continue;
+						const settled: Promise<void> = deletion
+							.then(noop, (error) => {
+								failure ??= { error };
+							})
+							.then(() => {
+								inFlight.delete(settled);
+							});
+						inFlight.add(settled);
+						if (inFlight.size >= MAX_CONCURRENT_QUERY_DELETES) await Promise.race(inFlight);
+					}
+				} finally {
+					await Promise.all(inFlight);
 				}
+				if (failure) throw failure.error;
 				return true;
 			}
 			if (target) {

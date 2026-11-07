@@ -955,9 +955,11 @@ function releaseTransactionLockHolds(transaction: RocksTransaction | null | unde
 
 type RecordLockRegistry = Map<any, Map<unknown, RecordLockHandle>>;
 
-/** One running invocation of a write's pre-commit hook (`before`) in an explicit transaction. */
+/** One running invocation of a write's pre-commit hook (`before`). */
 export interface CommitHookInvocation {
 	root: DatabaseTransaction;
+	// the link whose commit awaits the hook; sibling-database links share `root` but commit on their own
+	link: DatabaseTransaction;
 	active: boolean;
 }
 const commitHookScope = new AsyncLocalStorage<CommitHookInvocation>();
@@ -970,8 +972,8 @@ export function currentCommitHook(): CommitHookInvocation | undefined {
 	return commitHookScope.getStore();
 }
 
-function runCommitHook(root: DatabaseTransaction, hook: () => void | Promise<void>): void | Promise<void> {
-	const invocation: CommitHookInvocation = { root, active: true };
+function runCommitHook(link: DatabaseTransaction, hook: () => void | Promise<void>): void | Promise<void> {
+	const invocation: CommitHookInvocation = { root: link.root ?? link, link, active: true };
 	const settled = () => {
 		invocation.active = false;
 	};
@@ -1578,6 +1580,33 @@ export class DatabaseTransaction implements Transaction {
 				return;
 			}
 		}
+	}
+
+	/**
+	 * The highest stamp among this link's earlier writes to the key through `handle` that are still committing
+	 * on a native transaction other than `target`. Until its commit clears it, such a write's stamp is not yet
+	 * in the handle's committed floor, and an equal stamp on a separate commit loses the LWW tie. Writes
+	 * sharing `target` are ordered by the commit itself (priorStagedWrite) and must not raise the stamp past
+	 * that commit's reserved log key.
+	 */
+	private inFlightHolderStamp(
+		operation: TransactionWrite,
+		handle: RecordLockHandle,
+		target: RocksTransaction | undefined
+	): number | undefined {
+		let highest: number | undefined;
+		for (let write = operation.priorWrite; write; write = write.priorWrite) {
+			if (
+				write.lockHandle === handle &&
+				write.lockStamp &&
+				!write.dropped &&
+				(target === undefined || write.stagedOn !== target) &&
+				(highest === undefined || write.lockStamp > highest) &&
+				this.ownedWrites?.has(write)
+			)
+				highest = write.lockStamp;
+		}
+		return highest;
 	}
 
 	registerRecordLock(handle: RecordLockHandle): void {
@@ -2591,7 +2620,14 @@ export class DatabaseTransaction implements Transaction {
 				// lock's version, which LWW then silently drops against a newer record version.
 				if (!operation.lockStamp) {
 					try {
-						operation.lockStamp = lockHandle.holderVersionCandidate();
+						operation.lockStamp = lockHandle.holderVersionCandidate(
+							undefined,
+							this.inFlightHolderStamp(
+								operation,
+								lockHandle,
+								transaction ?? (this.open === TRANSACTION_STATE.OPEN ? this.transaction : undefined)
+							)
+						);
 					} catch (error) {
 						this.refuseLockWrites(lockHandle, operation);
 						throw error;
@@ -2803,11 +2839,7 @@ export class DatabaseTransaction implements Transaction {
 					return;
 				}
 				operation.saved = true;
-				let result: Promise<void> = (
-					operation.before && !this.saveCommits
-						? runCommitHook(this.root ?? this, operation.before)
-						: operation.before?.()
-				) as Promise<void>;
+				let result: Promise<void> = (operation.before && runCommitHook(this, operation.before)) as Promise<void>;
 				if (result?.then) this.stageCompletion(result, transaction);
 				result = operation.beforeIntermediate?.() as Promise<void>;
 				if (result?.then) this.stageCompletion(result, transaction);
@@ -4487,11 +4519,11 @@ export class ImmediateTransaction extends DatabaseTransaction {
 			// validate=false write, which must not borrow another write's commit). OPEN links parked in
 			// completions after commit() returns share #activeSaveCommit; before commit() returns it stays
 			// undefined so a synchronous before-hook awaiting a same-context write does not deadlock completions.
-			return saveResult?.then
-				? saveResult.then(resolveUndefined)
-				: this.open === TRANSACTION_STATE.OPEN
-					? this.#activeSaveCommit
-					: undefined;
+			// A write from this commit's own before-hook is only staged: that commit is waiting on the hook.
+			if (saveResult?.then) return saveResult.then(resolveUndefined);
+			if (this.open !== TRANSACTION_STATE.OPEN) return;
+			const hook = currentCommitHook();
+			return hook?.active && hook.link === this ? undefined : this.#activeSaveCommit;
 		} else {
 			this.admitRequestWrite(); // a deferred save reaches here without passing through addWrite()
 			this.isCommitting = true;
