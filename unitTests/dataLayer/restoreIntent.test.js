@@ -670,11 +670,18 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 
 		it('starts the next boot in safe mode once an attempt took its rollback copy, so nothing writes past it', async function () {
 			const fixture = await seededDatabase();
-			const [backupId] = fixture.backupIds;
 			const { jobId } = await requestRestore(fixture.name, { on_restart: true, retain_previous: true });
-			const repair = breakBackup(fixture, backupId);
-
-			await boot(fixture.name);
+			// fails the attempt after its rollback copy and before the restore process touches the target; corrupting
+			// the source instead would let the copy's backup engine discard it as corrupt
+			const restoreRunner = replaceExport(restoreChildRunnerModule, 'runRestoreChild', async (command, ...args) => {
+				if (command !== 'pre-restore-backup') throw new Error('simulated failure before the purge');
+				return runRestoreChild(command, ...args);
+			});
+			try {
+				await boot(fixture.name);
+			} finally {
+				restoreRunner();
+			}
 
 			const failed = receiptOf(fixture.dir);
 			assert.ok(Number.isInteger(failed.pre_restore_backup_id), 'precondition: the rollback copy was taken');
@@ -685,7 +692,6 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 				'a component that opens the database itself could write past the copy the next attempt replaces it with'
 			);
 
-			repair();
 			await boot(fixture.name);
 			assert.strictEqual(
 				unpublishedRestoreBlocksComponents(),
