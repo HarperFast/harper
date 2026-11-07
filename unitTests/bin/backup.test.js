@@ -250,6 +250,21 @@ describe('backup.ts offline routing (useOperationApi)', () => {
 		});
 	});
 
+	for (const field of ['on_restart=true', 'resume=true', 'cancel=true', 'retain_previous=false']) {
+		it(`refuses ${field.split('=')[0]} offline instead of restoring immediately`, async () => {
+			cliCredentialsModule.loadCredentials = () => null;
+			processMgmtModule.getHdbPid = () => null;
+			const calls = trackRouting();
+			process.argv = ['node', 'harper', 'restore_backup', 'database=dev', field];
+			await assert.rejects(runBackupCommand('restore_backup'), (error) => {
+				assert.strictEqual(error.statusCode, 400);
+				assert.match(error.message, new RegExp(`${field.split('=')[0]}.*needs the server running`));
+				return true;
+			});
+			assert.deepStrictEqual(calls, { offline: false, api: false });
+		});
+	}
+
 	it('passes immutable_source through to the offline restore', async () => {
 		cliCredentialsModule.loadCredentials = () => null;
 		processMgmtModule.getHdbPid = () => null;

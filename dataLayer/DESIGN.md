@@ -72,10 +72,10 @@ What keeps that safe:
   other's. Lifting it discards queued reclamations (their paths are reused) unless the restore aborted
   before destruction, and precedes the reload's rescan, whose replay saves blobs.
 - **A component-held database cannot be restored online.** rocksdb-js counts handles per path with no
-  owner, so `verifyDatabaseClosed` waits `DATABASE_CLOSE_WAIT_MS`, then 409s naming the offline CLI;
-  `system` is refused online up front. The CLI falls back offline only when the local server is
-  stopped, and a saved loopback `last_target` does not prove this install, so destructive operations
-  refuse rather than fall back (harper#2032).
+  owner, so `verifyDatabaseClosed` waits `DATABASE_CLOSE_WAIT_MS`, then 409s naming `on_restart=true`
+  and the offline CLI; `system` is refused online up front. The CLI falls back offline only when the
+  local server is stopped, and a saved loopback `last_target` does not prove this install, so
+  destructive operations refuse rather than fall back (harper#2032).
 - **Job workers close their handles on exit** (`closeLoadedDatabases` in `jobProcess`), or every
   restore after a `create_backup` job would fail its closure check.
 - **The child stamps a new generation before proving it** (`stampDatabaseDirectory`,
@@ -142,9 +142,41 @@ restored generation is usable.
   exclusive from its peer check to the boundary. Startup finalizers publish without it (#4043). This
   relies on harper-pro's `add_node_back` also running through `chooseOperation`.
 - **Startup.** `finishCommittedRestoresBeforeStartup` (`bin/run.ts`) finishes committed receipts with
-  no job row before `system` loads, and drops `applying` receipts with no marker.
-  `recoverRestoresAtStartup` runs once, before any component, settling the rest. Without directory
-  fsync (Windows) the evidence says `durability: 'no-directory-fsync'`.
+  no job row before `system` loads, and drops `applying` receipts with no marker (never a restart
+  receipt, which is its request). `recoverRestoresAtStartup` runs once, first on the main thread in
+  `loadRootComponents` (before secret custody, application install or any component, never from a
+  worker-replacing reload), settling the rest and running restart restores. Without directory fsync
+  (Windows) the evidence says `durability: 'no-directory-fsync'`.
+
+## Restart restores (`dataLayer/restoreIntent.ts`)
+
+A database a component holds cannot be closed while the server runs, so `on_restart=true` records the
+restore and the next startup applies it, before anything can open the target.
+
+- **Request.** Under the membership fence and the target's lock: a `pending` receipt with its source
+  pinned under its own operation id (`restore-intent-<id>`). The job returns a `DeferredJobCompletion`:
+  the row stays `IN_PROGRESS` with `deferred_to`, and the drained restart is requested only after that
+  row is written. A supersede (another `backup_id` with `on_restart`) inherits the displaced receipt's
+  pins as `superseded_pin_ids`, retired only when the successor commits, and its rollback copy.
+- **Job ownership.** The receipt, not the row, decides the outcome. The boot sweep skips the job ids
+  `recoverRestoresAtStartup` returns, and `settleAbandonedJob` skips a `deferred_to` row only while
+  `restoreReceiptOwnsJob` finds an uncommitted receipt naming it, so a crash between receipt and row
+  cannot strand a job.
+- **Drain.** `bin/restart.ts` with `drain` runs `shutdownProcess(deadline)`, the path a SIGTERM takes,
+  so main-thread components flush too (`threads.count=0`); the exit watchdog adds
+  `threads.shutdownTimeout`.
+- **Attempt.** Counted before any native work. Peers are re-checked under the fence (`terminal` if
+  any). A `pending` receipt with `retain_previous` takes the pre-restore backup in the restore child
+  (`createPreRestoreBackup`, the one backup allowed past the reservation; `pre_restore_for` lets a
+  retry adopt it) and pins it. Then `applyProveAndCommit`, the step online and offline restores share,
+  with the engine-lock probe on: it aborts only on a lock conflict, so a corrupt old directory stays
+  replaceable.
+- **Failure never exits.** The receipt keeps its error and the target stays blocked; the next restart
+  or `resume` retries, and at `max_attempts` it is `terminal`. A `terminal` restart receipt, one whose
+  marker shows destruction began, or one whose rollback copy has started but is not applied starts that boot in safe
+  mode (`unpublishedRestoreBlocksComponents`): a component that opens RocksDB itself ignores the
+  marker, and a write it makes after the copy would be replaced uncaptured by the next attempt.
+  `cancel` removes a receipt, keeping marker and pins once destruction began.
 
 ## RocksDB managed backups: blob snapshots (`dataLayer/blobBackup.ts`)
 

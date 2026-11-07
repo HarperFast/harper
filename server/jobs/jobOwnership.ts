@@ -46,8 +46,8 @@ let reconciliation: Promise<number> | undefined;
  * nothing. A pass that left any row unsettled clears the memo instead, so the next reload retries the
  * stragglers — the recovery this exists for must not be lost to one transient write failure.
  */
-export function reconcileInterruptedJobsOnce(): Promise<number> {
-	return (reconciliation ??= reconcileInterruptedJobs().catch((error) => {
+export function reconcileInterruptedJobsOnce(ownedElsewhere?: ReadonlySet<string>): Promise<number> {
+	return (reconciliation ??= reconcileInterruptedJobs(ownedElsewhere).catch((error) => {
 		reconciliation = undefined;
 		throw error;
 	}));
@@ -61,7 +61,7 @@ export function reconcileInterruptedJobsOnce(): Promise<number> {
  * Settled rows are reported as ERROR rather than a new status, because every consumer of `get_job`
  * already handles ERROR.
  */
-export async function reconcileInterruptedJobs(): Promise<number> {
+export async function reconcileInterruptedJobs(ownedElsewhere?: ReadonlySet<string>): Promise<number> {
 	// A thread with no incarnation cannot tell a dead owner from a live one, so it settles nothing rather
 	// than declaring a running job dead. The main thread always has one.
 	if (JOB_OWNER_INSTANCE_ID == null) return 0;
@@ -73,7 +73,8 @@ export async function reconcileInterruptedJobs(): Promise<number> {
 	const interrupted: Array<{ id: any; owner_pid: any }> = [];
 	for (const status of UNFINISHED_JOB_STATUSES) {
 		for await (const job of table.search([{ attribute: 'status', value: status }])) {
-			if (job.owner_instance !== JOB_OWNER_INSTANCE_ID) interrupted.push({ id: job.id, owner_pid: job.owner_pid });
+			if (job.owner_instance === JOB_OWNER_INSTANCE_ID || ownedElsewhere?.has(String(job.id))) continue;
+			interrupted.push({ id: job.id, owner_pid: job.owner_pid });
 		}
 	}
 
@@ -100,7 +101,15 @@ export async function reconcileInterruptedJobs(): Promise<number> {
 export async function settleAbandonedJob(jobId: any): Promise<boolean> {
 	const job = await jobTable()?.get(jobId);
 	if (!UNFINISHED_JOB_STATUSES.includes(job?.status)) return false;
+	// a deferred job's worker exits by design, and the restore receipt that names it settles the row
+	if (job.deferred_to && (await deferredJobStillOwned(jobId))) return false;
 	await settle(jobId, 'its worker thread exited before it finished');
 	log.warn(`Settled job ${jobId}, whose worker thread exited before it finished`);
 	return true;
+}
+
+/** Whether a restore that has not finished still names this job; a `deferred_to` without one settles as abandoned. */
+async function deferredJobStillOwned(jobId: any): Promise<boolean> {
+	const { restoreReceiptOwnsJob } = await import('../../dataLayer/restorePublication.ts');
+	return restoreReceiptOwnsJob(String(jobId));
 }

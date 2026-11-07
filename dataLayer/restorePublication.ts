@@ -19,6 +19,7 @@ import { assertBlobSnapshotRestorable, assertEngineOnlyRestoreAllowed } from './
 import type { BackupManifest } from './backupManifest.ts';
 import {
 	RESTORE_META_DIR,
+	RESTORING_MARKER_SUFFIX,
 	acquireRestoreLock,
 	clearRestoringMarker,
 	markRestoreDestructive,
@@ -91,7 +92,7 @@ export interface PublishRestoreRequest {
  * remains, each step safe to repeat. Called with the target's lock held. The receipt goes last: until
  * it is gone, a crash re-runs exactly this and nothing else.
  */
-async function finishCommittedRestore(lock: RestoreLock, receipt: RestoreReceipt): Promise<void> {
+export async function finishCommittedRestore(lock: RestoreLock, receipt: RestoreReceipt): Promise<void> {
 	publishCommittedRestore(lock, receipt);
 	await settleCommittedRestore(lock, receipt);
 }
@@ -108,21 +109,23 @@ async function settleCommittedRestore(lock: RestoreLock, receipt: RestoreReceipt
 	removeRestoreReceipt(lock, receipt.operation_id);
 }
 
-function releaseReceiptPins(receipt: RestoreReceipt): void {
+export function releaseReceiptPins(receipt: RestoreReceipt): void {
 	const sourcePinId = receipt.source_pin_id;
 	// immutable_source pins nothing of its own, but still retires what the attempts it took over pinned
-	if (!sourcePinId && !receipt.superseded_pin_ids?.length) return;
+	if (!sourcePinId && !receipt.superseded_pin_ids?.length && !receipt.pre_restore_pin_id) return;
 	try {
 		// Only a pin this receipt's backup holds: another restore of the same target pins the same id.
 		const pin = sourcePinId && readBackupPins(receipt.backup_dir).find((candidate) => candidate.pin_id === sourcePinId);
 		if (pin && pin.backup_id === receipt.backup_id) unpinBackup(receipt.backup_dir, sourcePinId!);
 		for (const superseded of receipt.superseded_pin_ids ?? []) unpinBackup(receipt.backup_dir, superseded);
+		// the rollback copy is an ordinary managed backup once nothing restores from or over it
+		if (receipt.pre_restore_pin_id) unpinBackup(receipt.backup_dir, receipt.pre_restore_pin_id);
 	} catch (error) {
 		logger.error(`Could not release the source pin of the restore of '${receipt.database}'`, error);
 	}
 }
 
-async function settleRestoreJob(receipt: RestoreReceipt, status: string, message?: string): Promise<void> {
+export async function settleRestoreJob(receipt: RestoreReceipt, status: string, message?: string): Promise<void> {
 	const { updateJob } = await import('../server/jobs/jobs.ts');
 	const succeeded = status === hdbTerms.JOB_STATUS_ENUM.COMPLETE;
 	await updateJob({
@@ -133,6 +136,7 @@ async function settleRestoreJob(receipt: RestoreReceipt, status: string, message
 			(succeeded
 				? `Restored database '${receipt.database}' from ${describeRestoreSource(receipt)}`
 				: `Restore of database '${receipt.database}' failed: ${receipt.last_error ?? 'unknown error'}`),
+		deferred_to: null,
 		...(succeeded ? { result: restoreResult(receipt) } : {}),
 	});
 }
@@ -143,6 +147,8 @@ function restoreResult(receipt: RestoreReceipt): Record<string, unknown> {
 		database: receipt.database,
 		backup_id: receipt.backup_id,
 		...(receipt.database !== receipt.source_database ? { source_database: receipt.source_database } : {}),
+		...(receipt.pre_restore_backup_id !== undefined ? { pre_restore_backup_id: receipt.pre_restore_backup_id } : {}),
+		...(receipt.route === 'on_restart' && receipt.retain_previous === false ? { retain_previous: false } : {}),
 		...(receipt.options.allow_engine_only ? { allow_engine_only: true } : {}),
 		...(evidence.compatibility_waived?.length ? { compatibility_waived: evidence.compatibility_waived } : {}),
 		...(evidence.tables ? { tables: evidence.tables } : {}),
@@ -200,6 +206,13 @@ function admitOverEarlierReceipt(databaseDir: string, databaseName: string): Res
 	if (earlier.state === 'committed') {
 		throw new ClientError(
 			`Database '${databaseName}' is finishing an earlier restore; retry once it has been published`,
+			409
+		);
+	}
+	// a terminal restart restore is no longer scheduled, so any restore may take its target over
+	if (earlier.route === 'on_restart' && earlier.state !== 'terminal') {
+		throw new ClientError(
+			`Database '${databaseName}' has a pending restart restore (job ${earlier.job_id ?? earlier.operation_id}, ${earlier.state}); use restore_backup resume=true, cancel=true, or another backup_id with on_restart=true`,
 			409
 		);
 	}
@@ -280,7 +293,12 @@ async function publishUnderFence(request: PublishRestoreRequest): Promise<Record
 				// earlier backup may be the blocked database's only usable recovery source. A pin on this
 				// attempt's own backup is reused; the rest are retired once this attempt commits.
 				const inherited = new Set(
-					[restorePinId(databaseDir), earlier?.source_pin_id, ...(earlier?.superseded_pin_ids ?? [])].filter(Boolean)
+					[
+						restorePinId(databaseDir),
+						earlier?.source_pin_id,
+						earlier?.pre_restore_pin_id,
+						...(earlier?.superseded_pin_ids ?? []),
+					].filter(Boolean)
 				);
 				// immutable_source writes nothing in the repository, so it neither reuses nor retires a pin there;
 				// the earlier pins lapse on their own once nothing marks or records the target
@@ -295,6 +313,10 @@ async function publishUnderFence(request: PublishRestoreRequest): Promise<Record
 				}
 				receipt = writeRestoreReceipt(claimLock, {
 					...fresh,
+					// taking over a restart restore keeps its trail, so safe mode still covers the target if this fails
+					...(earlier?.route === 'on_restart' || earlier?.superseded_from
+						? { superseded_from: earlier.operation_id }
+						: {}),
 					...(pinId !== undefined ? { source_pin_id: pinId } : {}),
 					...(supersededPinIds.length > 0 ? { superseded_pin_ids: supersededPinIds } : {}),
 					attempts: 1,
@@ -305,26 +327,18 @@ async function publishUnderFence(request: PublishRestoreRequest): Promise<Record
 	);
 	logCompatibilityWaived(targetDatabase, backupId, manifest, waived);
 	let destructionStarted = false;
-	let evidence: RestoreEvidence;
 	try {
 		await request.online?.close();
-		evidence = await runRestoreChild<RestoreEvidence>(
-			'apply-and-prove',
-			applyArgs(request, backupId, manifest, lock.preexisting, receipt.operation_id),
-			{
-				databasePath: databaseDir,
-				receipt: { databasePath: databaseDir, operationId: receipt.operation_id, attempt: receipt.attempts },
-				beforeDestruction: () => {
-					markRestoreDestructive(lock);
-					destructionStarted = true;
-				},
-			}
-		);
-		if (request.checkPeers) assertNoReplicationPeers(targetDatabase, request.checkPeers === 'routes');
-		receipt = writeRestoreReceipt(lock, {
-			...receipt,
-			state: 'committed',
-			evidence: { ...evidence, ...(waived.length > 0 ? { compatibility_waived: waived } : {}) },
+		receipt = await applyProveAndCommit(lock, receipt, {
+			manifest,
+			blobRoots: request.blobRoots,
+			probe: request.probeEngineLock,
+			acceptUnverifiedBlobs: request.acceptUnverifiedBlobs,
+			waived,
+			checkPeers: request.checkPeers,
+			onDestruction: () => {
+				destructionStarted = true;
+			},
 		});
 	} catch (error: any) {
 		await abandonOrRelease(lock, receipt, request, minted ? pinId : undefined, destructionStarted, error);
@@ -391,26 +405,57 @@ function withRecoveryGuidance(error: any, message: string): Error {
 	return wrapped;
 }
 
-function applyArgs(
-	request: PublishRestoreRequest,
-	backupId: number,
-	manifest: BackupManifest,
-	interrupted: boolean,
-	operationId: string
-) {
-	return {
-		operationId,
-		databaseName: request.targetDatabase,
-		sourceDatabase: request.sourceDatabase,
-		databasePath: request.databaseDir,
-		backupDir: request.backupDir,
-		backupId,
-		manifest,
-		blobRoots: request.blobRoots,
-		probe: request.probeEngineLock,
-		interrupted,
-		acceptUnverifiedBlobs: request.acceptUnverifiedBlobs,
-	};
+export interface ApplyOptions {
+	manifest: BackupManifest;
+	blobRoots: string[];
+	probe: boolean;
+	acceptUnverifiedBlobs: boolean;
+	waived: string[];
+	checkPeers: boolean | 'routes';
+	/** Runs once the child has announced the purge and the marker is published. */
+	onDestruction?: () => void;
+}
+
+/**
+ * The part of the protocol every route shares, over a receipt the caller already wrote and a lock it
+ * holds: the child applies and proves the backup, the marker is published when the child announces the
+ * purge, peers are re-checked, and the receipt moves to `committed`. Publication is the caller's.
+ */
+export async function applyProveAndCommit(
+	lock: RestoreLock,
+	receipt: RestoreReceipt,
+	options: ApplyOptions
+): Promise<RestoreReceipt> {
+	const evidence = await runRestoreChild<RestoreEvidence>(
+		'apply-and-prove',
+		{
+			operationId: receipt.operation_id,
+			databaseName: receipt.database,
+			sourceDatabase: receipt.source_database,
+			databasePath: receipt.database_path,
+			backupDir: receipt.backup_dir,
+			backupId: receipt.backup_id,
+			manifest: options.manifest,
+			blobRoots: options.blobRoots,
+			probe: options.probe,
+			interrupted: lock.preexisting,
+			acceptUnverifiedBlobs: options.acceptUnverifiedBlobs,
+		},
+		{
+			databasePath: receipt.database_path,
+			receipt: { databasePath: receipt.database_path, operationId: receipt.operation_id, attempt: receipt.attempts },
+			beforeDestruction: () => {
+				markRestoreDestructive(lock);
+				options.onDestruction?.();
+			},
+		}
+	);
+	if (options.checkPeers) assertNoReplicationPeers(receipt.database, options.checkPeers === 'routes');
+	return writeRestoreReceipt(lock, {
+		...receipt,
+		state: 'committed',
+		evidence: { ...evidence, ...(options.waived.length > 0 ? { compatibility_waived: options.waived } : {}) },
+	});
 }
 
 /**
@@ -483,6 +528,21 @@ export function scanRestoreReceipts(roots: string[] = databaseRoots()): ScannedR
 	return scanned;
 }
 
+/** Whether a restore receipt that is not committed names this job: it, not the job row, decides the outcome. */
+/** The jobs that restores which have not finished still name; each such receipt settles its own job. */
+export function jobsNamedByUnfinishedRestores(): Set<string> {
+	const named = new Set<string>();
+	for (const { read } of scanRestoreReceipts()) {
+		if (read.kind === 'valid' && read.receipt.job_id && read.receipt.state !== 'committed')
+			named.add(read.receipt.job_id);
+	}
+	return named;
+}
+
+export function restoreReceiptOwnsJob(jobId: string): boolean {
+	return jobsNamedByUnfinishedRestores().has(jobId);
+}
+
 /**
  * Finishes committed receipts that need nothing but files — no job row to settle — before anything
  * opens a database. An offline restore of `system` that committed and then crashed would otherwise
@@ -506,7 +566,8 @@ export async function finishCommittedRestoresBeforeStartup(roots?: string[]): Pr
  * not keep it reserved.
  */
 function claimAbandonedBeforeDestruction(receipt: RestoreReceipt): boolean {
-	return receipt.state === 'applying' && !restoreMarkerPresent(receipt.database_path);
+	// a restart restore's receipt is its request, kept until it publishes, fails for good, or is cancelled
+	return receipt.route !== 'on_restart' && receipt.state === 'applying' && !restoreMarkerPresent(receipt.database_path);
 }
 
 function dropAbandonedClaim(receipt: RestoreReceipt): boolean {
@@ -551,7 +612,7 @@ async function finishWithLock(receipt: RestoreReceipt): Promise<void> {
 	}
 }
 
-let startupRecovery: Promise<void> | undefined;
+let startupRecovery: Promise<Set<string>> | undefined;
 
 export function resetStartupRecoveryForTesting(): void {
 	startupRecovery = undefined;
@@ -559,15 +620,16 @@ export function resetStartupRecoveryForTesting(): void {
 
 /**
  * Startup only, once per process: `loadRootComponents` also runs on every worker-replacing reload,
- * while the old workers still hold the databases. Later calls get the same outcome — the same
- * completion, or the same failure, so a retried caller never mistakes a scan that could not run for one
- * that found nothing.
+ * while the old workers still hold the databases. Resolves to the job ids a restore receipt still owns,
+ * for the interrupted-job sweep to leave alone. Later calls get the same outcome — the same set, or the
+ * same failure, so a retried sweep never sees an empty set in place of one that could not be read.
  */
-export function recoverRestoresAtStartup(): Promise<void> {
+export function recoverRestoresAtStartup(): Promise<Set<string>> {
 	return (startupRecovery ??= recoverRestoresOnce());
 }
 
-async function recoverRestoresOnce(): Promise<void> {
+async function recoverRestoresOnce(): Promise<Set<string>> {
+	const owned = new Set<string>();
 	let published = false;
 	for (const { file, read } of scanRestoreReceipts()) {
 		if (read.kind === 'absent') continue;
@@ -580,15 +642,71 @@ async function recoverRestoresOnce(): Promise<void> {
 			if (receipt.state === 'committed') {
 				await finishWithLock(receipt);
 				published = true;
+			} else if (receipt.route === 'on_restart' && receipt.state !== 'terminal') {
+				const { runRestartAttempt } = await import('./restoreIntent.ts');
+				if (await runRestartAttempt(receipt)) published = true;
+				// still scheduled, so its job is the receipt's; a terminal one already settled its job as failed
+				else if (receipt.job_id && !restartRestoreIsTerminal(receipt)) owned.add(receipt.job_id);
+			} else if (receipt.route === 'on_restart' && receipt.job_id) {
+				// terminal: the job failed when the receipt did, but that settle may not have landed
+				await settleRestoreJob(receipt, hdbTerms.JOB_STATUS_ENUM.ERROR);
 			} else if (claimAbandonedBeforeDestruction(receipt) && dropAbandonedClaim(receipt)) {
 				// the pre-startup pass can find the lock still held by an exiting predecessor or orphaned child
 				published = true;
 			}
 		} catch (error) {
 			logger.error(`Could not recover the restore of '${receipt.database}'`, error);
+			if (receipt.route === 'on_restart' && receipt.job_id) owned.add(receipt.job_id);
 			// a failure after its commit may already have published; rescanning a still-blocked name is harmless
 			published = true;
 		}
 	}
 	if (published) resetDatabases();
+	return owned;
+}
+
+function restartRestoreIsTerminal(receipt: RestoreReceipt): boolean {
+	const read = readRestoreReceipt(receipt.database_path);
+	return (
+		read.kind === 'valid' && read.receipt.operation_id === receipt.operation_id && read.receipt.state === 'terminal'
+	);
+}
+
+/**
+ * Whether this boot must start without components: a restart restore that ran out of attempts, one
+ * that began replacing its target and has not published, or one holding a rollback copy it has not yet
+ * applied over. The restart route exists because a component opens the database itself, and such a
+ * component ignores the restoring marker, so it could serve or write the unproved generation, or write
+ * to the live one after its rollback copy was taken, which the next attempt would replace uncaptured.
+ */
+export function unpublishedRestoreBlocksComponents(): string | undefined {
+	// a marker with no receipt beside it: its record was lost or removed unreadable, so what replaced the
+	// target, and how far, is unknown
+	for (const root of databaseRoots()) {
+		const metaDir = join(root, RESTORE_META_DIR);
+		if (!existsSync(metaDir)) continue;
+		const names = new Set(readdirSync(metaDir));
+		for (const name of names) {
+			if (!name.endsWith(RESTORING_MARKER_SUFFIX)) continue;
+			const key = name.slice(0, -RESTORING_MARKER_SUFFIX.length);
+			if (!names.has(key + RESTORE_RECEIPT_SUFFIX)) return join(metaDir, name);
+		}
+	}
+	for (const { file, read } of scanRestoreReceipts()) {
+		// what an unreadable record would have restored, or how far, is unknown
+		if (read.kind === 'unreadable') return file;
+		if (read.kind !== 'valid') continue;
+		const { receipt } = read;
+		if (receipt.route !== 'on_restart' && !receipt.superseded_from) continue;
+		if (receipt.state === 'terminal') return receipt.database;
+		if (
+			receipt.state !== 'committed' &&
+			(restoreMarkerPresent(receipt.database_path) ||
+				receipt.pre_restore_backup_id !== undefined ||
+				// a copy taken but not yet recorded is adopted by the next attempt all the same
+				receipt.pre_restore_started_at !== undefined)
+		)
+			return receipt.database;
+	}
+	return undefined;
 }
