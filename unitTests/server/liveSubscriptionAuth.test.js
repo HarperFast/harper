@@ -1221,6 +1221,87 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 			}
 		});
 
+		// an allowRead that authorizes by username alone, as a component authorizing mTLS clients by their CN does
+		function grantingByUsername(username) {
+			const gate = { grant: true, end: undefined };
+			gate.Resource = class extends Docs {
+				subscribe() {
+					const subscription = super.subscribe();
+					gate.end = subscription.end;
+					return subscription;
+				}
+				allowRead(principal) {
+					return gate.grant && principal?.username === username;
+				}
+			};
+			return gate;
+		}
+
+		it('keeps a principal with no hdb_user while the allowRead that admitted it still grants it', async () => {
+			// how an mTLS login resolves a certificate CN that names no hdb_user: no record, so no role
+			const user = await resolve('cert_only_cn');
+			assert.strictEqual(user.role, undefined);
+			const gate = grantingByUsername('cert_only_cn');
+			const { context } = await subscribe(gate.Resource, user);
+
+			await _sweepNow();
+			await _tickNow();
+
+			assert.strictEqual(gate.end.calls.length, 0, 'a recheck revoked what admission granted');
+			assert.strictEqual(_liveSubscriptionCount(), 1);
+			assert.strictEqual(context.user.username, 'cert_only_cn');
+
+			gate.grant = false;
+			await _sweepNow();
+			assert.strictEqual(gate.end.calls.length, 1, 'revoked once its allowRead denies it');
+		});
+
+		it('still revokes a principal admitted with a role once its hdb_user is dropped', async () => {
+			await testUtils.seedUsers([{ username: 'dropped_cn', active: true, role: readRole('dropped_role') }]);
+			const user = await resolve('dropped_cn');
+			const gate = grantingByUsername('dropped_cn');
+			await subscribe(gate.Resource, user);
+			await _sweepNow();
+			assert.strictEqual(gate.end.calls.length, 0);
+
+			await testUtils.seedUsers();
+			await _sweepNow();
+
+			assert.strictEqual(gate.end.calls.length, 1, 'losing the role it was admitted with revokes it');
+		});
+
+		it('still requires a role of a principal built from an hdb_user record', async () => {
+			// a user record naming a role that has no record resolves with no role
+			await testUtils.seedUsers([{ username: 'roleless_record', active: true, role: 'missing_role' }]);
+			const user = await resolve('roleless_record');
+			assert.strictEqual(user.role, undefined);
+			const gate = grantingByUsername('roleless_record');
+			await subscribe(gate.Resource, user);
+
+			await _sweepNow();
+
+			assert.strictEqual(gate.end.calls.length, 1, 'only a principal with no hdb_user is rechecked by allowRead alone');
+		});
+
+		it('rechecks a principal with no role against an object checkPermission, as MQTT admission passes', async () => {
+			const user = await resolve('cert_permission_cn');
+			const seen = [];
+			const Recorded = class extends Docs {
+				allowRead(principal, target) {
+					seen.push(target?.checkPermission);
+					return principal?.username === 'cert_permission_cn';
+				}
+			};
+			await subscribe(Recorded, user);
+			seen.length = 0;
+
+			await _sweepNow();
+
+			assert.strictEqual(_liveSubscriptionCount(), 1);
+			assert.ok(seen.length > 0, 'the sweep rechecked it');
+			for (const permission of seen) assert.ok(permission && typeof permission === 'object');
+		});
+
 		it('rejects a subscription admitted by a user whose records changed before it registered', async () => {
 			await testUtils.seedUsers([{ username: 'stale_user', active: true, role: readRole('stale_role') }]);
 			const user = await resolve('stale_user');

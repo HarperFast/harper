@@ -24,6 +24,7 @@ export {
 	getUserWithRole,
 	isCurrentUser,
 	hasRecordProvenance,
+	isRecordBacked,
 	userRecordVersions,
 	trackUserRecords,
 	cloneUserView,
@@ -662,8 +663,9 @@ function trackUserRecords(user: User, versions: UserProvenance): boolean {
  * A copy whose `role` and `permission` the caller may replace (verifyPerms does) without touching `user`;
  * `isCurrentUser` checks it against the records `user` was built from.
  */
-function cloneUserView(user: User & { role: UserRole }): User {
-	const clone: User = { ...user, role: { ...user.role, permission: { ...user.role.permission } } };
+function cloneUserView(user: User): User {
+	const clone: User = { ...user };
+	if (user.role) clone.role = { ...user.role, permission: { ...user.role.permission } };
 	if (!(clone as any)[PROVENANCE]) {
 		const tracked = trackedProvenance.get(user);
 		if (tracked) (clone as any)[PROVENANCE] = tracked;
@@ -674,6 +676,15 @@ function cloneUserView(user: User & { role: UserRole }): User {
 /** Whether `isCurrentUser` can answer for `user`: false for one resolved outside this module and not tracked. */
 function hasRecordProvenance(user: User): boolean {
 	return Boolean((user as any)[PROVENANCE] ?? trackedProvenance.has(user));
+}
+
+/**
+ * Whether `user` was built from an hdb_user record; undefined when it has no record provenance (a scoped token,
+ * or a user resolved outside this module and not tracked).
+ */
+function isRecordBacked(user: User): boolean | undefined {
+	const provenance: UserProvenance | undefined = (user as any)[PROVENANCE] ?? trackedProvenance.get(user);
+	return provenance && provenance.userStamp !== null;
 }
 
 /**
