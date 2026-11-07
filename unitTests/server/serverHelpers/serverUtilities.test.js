@@ -1226,6 +1226,16 @@ describe('redactForOperationLog', () => {
 		}
 	});
 
+	it('strips the Studio settings, whose rejected values the 400 does not repeat either', () => {
+		const body = {
+			operation: 'set_configuration',
+			studio_navigation: { 'pasted-secret': 'hidden' },
+			STUDIO_LANDING: 'pasted-secret',
+			logging_level: 'info',
+		};
+		assert.deepStrictEqual(redactForOperationLog(body), { operation: 'set_configuration', logging_level: 'info' });
+	});
+
 	it('keeps environment variable names while stripping their values', () => {
 		const clean = redactForOperationLog({
 			operation: 'set_env_value',
