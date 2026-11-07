@@ -961,7 +961,6 @@ export interface CommitHookInvocation {
 	// the link whose commit awaits the hook; sibling-database links share `root` but commit on their own
 	link: DatabaseTransaction;
 	active: boolean;
-	// the hook this one runs inside, when a hook's write started another link's commit
 	parent: CommitHookInvocation | undefined;
 }
 const commitHookScope = new AsyncLocalStorage<CommitHookInvocation>();
@@ -4526,9 +4525,9 @@ export class ImmediateTransaction extends DatabaseTransaction {
 			// Closed links open a per-write handle and return its innerCommit (or undefined for a no-op
 			// validate=false write, which must not borrow another write's commit). OPEN links parked in
 			// completions after commit() returns share #activeSaveCommit; before commit() returns it stays
-			// undefined so a synchronous before-hook awaiting a same-context write does not deadlock completions,
-			// and a write made within this commit's own before-hook, directly or through a commit that hook
-			// started on another link, is never handed it: this commit awaits that hook.
+			// undefined so a synchronous before-hook awaiting a same-context write does not deadlock completions.
+			// Nor is a write made within this commit's own before-hook (even through another link's commit):
+			// this commit awaits that hook.
 			if (saveResult?.then) return saveResult.then(resolveUndefined);
 			if (this.open !== TRANSACTION_STATE.OPEN) return;
 			for (let hook = currentCommitHook(); hook; hook = hook.parent) {

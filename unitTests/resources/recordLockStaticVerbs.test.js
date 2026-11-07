@@ -345,7 +345,7 @@ describe('Record locks (QA-5082): static table verbs on locked keys must resolve
 		overlapCases.push({ audit: false, commitOrder: 'issue', closedBy: 'another key' });
 		for (const { audit, commitOrder, closedBy } of overlapCases) {
 			{
-				it(`overlapping holder writes on a link closed by ${closedBy} land in issue order, ${commitOrder} commit order (audit: ${audit}) (harper#4098)`, async function () {
+				it(`overlapping holder writes on a link closed by ${closedBy} leave the last issued one, ${commitOrder} commit order (audit: ${audit}) (harper#4098)`, async function () {
 					if (SKIP_ON_LMDB) return this.skip();
 					const TestTable = audit ? Audited : Unaudited;
 					const recordId = id();
