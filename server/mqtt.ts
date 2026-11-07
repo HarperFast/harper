@@ -3,7 +3,7 @@
 import _mqtt_packet from 'mqtt-packet';
 const { parser: makeParser, generate } = _mqtt_packet;
 import { getSession, DurableSubscriptionsSession, RECEIVE_MAXIMUM } from './DurableSubscriptionsSession.ts';
-import { getTrackedUser, localPrincipal } from '../security/user.ts';
+import { getTrackedUser, localPrincipal, type UserProvenance } from '../security/user.ts';
 import { getDeserializer } from './serverHelpers/contentTypes.ts';
 import {
 	getSharedMessageEncoding,
@@ -126,6 +126,7 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 			server.socket(
 				async (socket) => {
 					let user;
+					const admission: { provenance?: UserProvenance } = {};
 					emitEvent('connection', socket);
 					mqttLog.debug?.(
 						`Received ${(socket as any).getCertificate ? 'SSL' : 'TCP'} connection for MQTT from ${socket.remoteAddress}`
@@ -154,7 +155,7 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 									if (username === undefined || username === 'Common Name' || username === 'CN')
 										username = (socket as any).getPeerCertificate().subject.CN;
 									try {
-										user = await getTrackedUser(username, null, null, server);
+										user = await getTrackedUser(username, null, null, admission, server);
 										if (get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGSUCCESSFUL)) {
 											authEventLog.notify?.({
 												username: user?.username,
@@ -199,7 +200,14 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 						mqttLog.debug?.('Auto-authorizing local connection');
 					}
 
-					const { onMessage, onClose } = onSocket(socket, (message) => socket.write(message), null, user, mqttSettings);
+					const { onMessage, onClose } = onSocket(
+						socket,
+						(message) => socket.write(message),
+						null,
+						user,
+						mqttSettings,
+						admission.provenance
+					);
 					socket.on('data', onMessage);
 					socket.on('close', onClose);
 					socket.on('error', (error) => {
@@ -337,7 +345,7 @@ function registerShutdownDisconnect() {
 
 let addingMetrics,
 	numberOfConnections = 0;
-function onSocket(socket, send, request, user, mqttSettings) {
+function onSocket(socket, send, request, user, mqttSettings, userProvenance?: UserProvenance) {
 	if (!addingMetrics) {
 		addingMetrics = true;
 		addAnalyticsListener((metrics) => {
@@ -457,7 +465,9 @@ function onSocket(socket, send, request, user, mqttSettings) {
 					maximumPacketSize = packet.properties?.maximumPacketSize;
 					if (packet.username) {
 						try {
-							user = await getTrackedUser(packet.username, packet.password.toString(), request);
+							const admission: { provenance?: UserProvenance } = {};
+							user = await getTrackedUser(packet.username, packet.password.toString(), request, admission);
+							userProvenance = admission.provenance;
 							if (get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGSUCCESSFUL)) {
 								authEventLog.notify?.({
 									username: user?.username,
@@ -563,6 +573,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 							session = await session;
 							if (!session) return;
 							session.closeConnection = closeConnection;
+							session.userProvenance = userProvenance;
 							// the session is used in the context, and we want to make sure we can access this
 							session.socket = socket;
 							if (request) {

@@ -617,4 +617,29 @@ describe('mqtt.ts CONNECT through a component’s server.getUser', () => {
 		assert.strictEqual(userModule.isRecordlessPrincipal(memoized), false);
 		assert.deepStrictEqual((await held.subscribe(`${protectedTable()}/#`)).granted, [NOT_AUTHORIZED]);
 	});
+
+	it('checks a connection that a login’s own record admitted against that record, though its memoized user is recordless', async () => {
+		await seedUsers([
+			{ username: 'mqtt_admitting', active: true, role: { id: 'mqtt_admitting_role', permission: {} } },
+		]);
+		const shared = { username: 'mqtt_shared_subject', role: { permission: { super_user: true } } };
+		server.getUser = async () => shared;
+		const unbacked = await connect(open, { username: 'mqtt_token_login', password: 'token' });
+		const admitted = await connect(open, { username: 'mqtt_admitting', password: 'secret' });
+		await databases.system.hdb_user.delete('mqtt_admitting');
+
+		try {
+			assert.strictEqual(userModule.isRecordlessPrincipal(shared), true, 'its first login had no record');
+			assert.deepStrictEqual((await unbacked.subscribe(`${protectedTable()}/#`)).granted, [1]);
+			assert.deepStrictEqual(
+				(await admitted.subscribe(`${protectedTable()}/#`)).granted,
+				[NOT_AUTHORIZED],
+				'the record that admitted it was dropped'
+			);
+		} finally {
+			// no recheck revokes the recordless connection's subscription
+			unbacked.socket.handlers.close();
+			admitted.socket.handlers.close();
+		}
+	});
 });

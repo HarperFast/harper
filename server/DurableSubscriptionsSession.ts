@@ -274,6 +274,8 @@ class SubscriptionsSession {
 	listener: (topic, message, messageId, subscription, version?, dup?: boolean) => any;
 	sessionId: any;
 	user: any;
+	/** What this connection's CONNECT recorded for `user` (`getTrackedUser`); mqtt.ts supplies it. */
+	userProvenance: any;
 	request: any;
 	socket: any;
 	subscriptions = [];
@@ -629,6 +631,7 @@ class SubscriptionsSession {
 			session: this,
 			socket: this.socket,
 			user: this.user,
+			userProvenance: this.userProvenance,
 			authorize: true, // authorize each action
 		};
 		if (this.request) {

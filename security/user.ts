@@ -576,7 +576,7 @@ function derivedRole(roleId: unknown, entry: RecordEntry | undefined): UserRole 
 	return role;
 }
 
-interface UserProvenance {
+export interface UserProvenance {
 	username: string;
 	userStamp: RecordStamp;
 	roleId?: unknown;
@@ -703,36 +703,49 @@ function cloneUserView(user: User & { role: UserRole }, provenance?: UserProvena
 /**
  * `server.getUser` for a connection that holds its user (MQTT CONNECT), with a component's principal tracked
  * against the records read for its name before it resolved (`trackUserRecords`). It returns the component's
- * user itself, since a copy would lose its class's private fields. A record-backed one stays re-read by name,
- * so a dropped record still revokes it. `resolver` is the server whose getUser resolves the login, as the
- * caller's scope would call it.
+ * user itself, since a copy would lose its class's private fields, and puts on `admission` the provenance the
+ * connection is checked against: the user's first lookup, or the login name's record where that admitted a
+ * user under another name, since a memoizing server.getUser can hand one user to logins backed differently.
+ * `resolver` is the server whose getUser resolves the login, as the caller's scope would call it.
  */
 function getTrackedUser(
 	username: string,
 	password: string | null,
 	request?: unknown,
+	admission?: { provenance?: UserProvenance },
 	resolver: { getUser: typeof server.getUser } = server
 ): Promise<User> {
 	// not async, so a CONNECT the core lookup serves gets its promise with nothing added
 	if (resolver.getUser === getUserImpl) return getUserImpl(username, password);
-	return getComponentUser(username, password, request, resolver);
+	return getComponentUser(username, password, request, admission, resolver);
 }
 
 async function getComponentUser(
 	username: string,
 	password: string | null,
 	request: unknown,
+	admission: { provenance?: UserProvenance } | undefined,
 	resolver: { getUser: typeof server.getUser }
 ): Promise<User> {
 	const versions = userRecordVersions(username);
 	const user = await resolver.getUser(username, password, request as any);
-	trackUserRecords(user, versions);
+	const provenance = trackUserRecords(user, versions);
+	if (admission && provenance) {
+		admission.provenance = provenance.username === user.username ? trackedProvenance.get(user) : provenance;
+	}
 	return user;
 }
 
-/** Whether `isCurrentUser` can answer for `user`: false for one resolved outside this module and not tracked. */
-function hasRecordProvenance(user: User): boolean {
-	return Boolean((user as any)[PROVENANCE] ?? trackedProvenance.has(user));
+function recordedProvenance(user: User, admitted?: UserProvenance): UserProvenance | undefined {
+	return admitted ?? (user as any)?.[PROVENANCE] ?? trackedProvenance.get(user);
+}
+
+/**
+ * Whether `isCurrentUser` can answer for `user`: false for one resolved outside this module and not tracked.
+ * `admitted` is what its holder's own lookup recorded (`getTrackedUser`), which outranks the user's.
+ */
+function hasRecordProvenance(user: User, admitted?: UserProvenance): boolean {
+	return Boolean(recordedProvenance(user, admitted));
 }
 
 /**
@@ -740,17 +753,16 @@ function hasRecordProvenance(user: User): boolean {
  * resolved (`trackUserRecords`). No record change can revoke it, and a record created later is another
  * principal's, so a holder never re-reads it by name.
  */
-function isRecordlessPrincipal(user: User): boolean {
-	const provenance: UserProvenance | undefined = (user as any)?.[PROVENANCE] ?? trackedProvenance.get(user);
-	return provenance?.recordless === true;
+function isRecordlessPrincipal(user: User, admitted?: UserProvenance): boolean {
+	return recordedProvenance(user, admitted)?.recordless === true;
 }
 
 /**
  * Whether the user and role records a user was built from are still the committed ones. A user with
  * no recorded versions (a scoped token, whose role it carries itself) is current.
  */
-function isCurrentUser(user: User): boolean {
-	const provenance: UserProvenance | undefined = (user as any)[PROVENANCE] ?? trackedProvenance.get(user);
+function isCurrentUser(user: User, admitted?: UserProvenance): boolean {
+	const provenance = recordedProvenance(user, admitted);
 	if (!provenance) return true;
 	if (!isUnchanged(systemStore(USER_TABLE_NAME), provenance.username, provenance.userStamp)) return false;
 	return (
