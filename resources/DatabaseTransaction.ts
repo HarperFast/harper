@@ -1583,11 +1583,9 @@ export class DatabaseTransaction implements Transaction {
 	}
 
 	/**
-	 * The highest stamp among this link's earlier writes to the key through `handle` that are still committing
-	 * on a native transaction other than `target`. Until its commit clears it, such a write's stamp is not yet
-	 * in the handle's committed floor, and an equal stamp on a separate commit loses the LWW tie. Writes
-	 * sharing `target` are ordered by the commit itself (priorStagedWrite) and must not raise the stamp past
-	 * that commit's reserved log key.
+	 * Until its commit clears it, an earlier holder write's stamp is not in the handle's committed floor, and an
+	 * equal stamp on a separate native commit loses the LWW tie (harper#4098). A write sharing `target` is left
+	 * out: stepping past it would pass that commit's reserved log key.
 	 */
 	private inFlightHolderStamp(
 		operation: TransactionWrite,
@@ -2839,6 +2837,8 @@ export class DatabaseTransaction implements Transaction {
 					return;
 				}
 				operation.saved = true;
+				// before the hooks: a same-key write one makes synchronously reads it to tell this commit from another
+				if (shouldStampStagedOn) operation.stagedOn = transaction;
 				let result: Promise<void> = (operation.before && runCommitHook(this, operation.before)) as Promise<void>;
 				if (result?.then) this.stageCompletion(result, transaction);
 				result = operation.beforeIntermediate?.() as Promise<void>;
@@ -4518,8 +4518,8 @@ export class ImmediateTransaction extends DatabaseTransaction {
 			// Closed links open a per-write handle and return its innerCommit (or undefined for a no-op
 			// validate=false write, which must not borrow another write's commit). OPEN links parked in
 			// completions after commit() returns share #activeSaveCommit; before commit() returns it stays
-			// undefined so a synchronous before-hook awaiting a same-context write does not deadlock completions.
-			// A write from this commit's own before-hook is only staged: that commit is waiting on the hook.
+			// undefined so a synchronous before-hook awaiting a same-context write does not deadlock completions,
+			// and a write from this commit's own before-hook is never handed it: that commit awaits the hook.
 			if (saveResult?.then) return saveResult.then(resolveUndefined);
 			if (this.open !== TRANSACTION_STATE.OPEN) return;
 			const hook = currentCommitHook();

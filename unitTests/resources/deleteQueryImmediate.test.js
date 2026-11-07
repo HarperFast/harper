@@ -6,7 +6,9 @@ const { transaction } = require('#src/resources/transaction');
 const { RequestTarget } = require('#src/resources/RequestTarget');
 const { setTimeout: delay } = require('node:timers/promises');
 
-// An instance delete(query) outside transaction() commits each row on its own native transaction.
+// On LMDB an OPEN immediate link stages a delete without committing it, so there is no per-row commit.
+const SKIP_ON_LMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
+
 describe('delete(query) outside transaction()', function () {
 	this.timeout(20000);
 	let Rows;
@@ -64,6 +66,7 @@ describe('delete(query) outside transaction()', function () {
 	}
 
 	it('overlaps a bounded number of row commits and deletes every row', async function () {
+		if (SKIP_ON_LMDB) return this.skip();
 		const { group, context, resource, target } = await seed(100);
 		const stats = trackRowCommits(resource);
 		assert.strictEqual(await resource.delete(target), true);
@@ -75,23 +78,34 @@ describe('delete(query) outside transaction()', function () {
 		assert.strictEqual(await remaining(group), 0);
 	});
 
-	for (const failure of ['rejected row commit', 'synchronous throw']) {
+	for (const failure of ['rejected row commit', 'synchronous throw', 'scan failure']) {
 		it(`a ${failure} stops the scan, settles issued rows, then rejects`, async function () {
+			if (SKIP_ON_LMDB) return this.skip();
 			const { group, resource, target } = await seed(100);
 			const unhandled = [];
 			const onUnhandled = (error) => unhandled.push(error);
 			process.on('unhandledRejection', onUnhandled);
 			try {
 				let row = 0;
+				if (failure === 'scan failure') {
+					const search = resource.search;
+					resource.search = async function* (target) {
+						for await (const entry of search.call(this, target)) {
+							if (row === 20) throw new Error('row failed');
+							yield entry;
+						}
+					};
+				}
 				const stats = trackRowCommits(resource, (write) => {
-					if (++row !== 20) return write();
+					if (++row !== 20 || failure === 'scan failure') return write();
 					if (failure === 'synchronous throw') throw new Error('row failed');
 					return Promise.reject(new Error('row failed'));
 				});
 				await assert.rejects(() => resource.delete(target), /row failed/);
 				assert.strictEqual(stats.outstanding, 0, 'issued rows settled before the rejection');
 				assert.ok(stats.issued < 100, `the scan stopped after the failure (issued ${stats.issued})`);
-				assert.strictEqual(await remaining(group), 100 - (stats.issued - 1));
+				const committed = failure === 'scan failure' ? stats.issued : stats.issued - 1;
+				assert.strictEqual(await remaining(group), 100 - committed);
 				await delay(10);
 			} finally {
 				process.removeListener('unhandledRejection', onUnhandled);
