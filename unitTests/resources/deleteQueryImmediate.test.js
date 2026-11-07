@@ -78,15 +78,29 @@ describe('delete(query) outside transaction()', function () {
 		assert.strictEqual(await remaining(group), 0);
 	});
 
-	for (const failure of ['rejected row commit', 'synchronous throw', 'scan failure']) {
+	for (const failure of ['rejected row commit', 'synchronous throw', 'scan failure', 'native commit failure']) {
 		it(`a ${failure} stops the scan, settles issued rows, then rejects`, async function () {
 			if (SKIP_ON_LMDB) return this.skip();
 			const { group, resource, target } = await seed(100);
 			const unhandled = [];
 			const onUnhandled = (error) => unhandled.push(error);
 			process.on('unhandledRejection', onUnhandled);
+			const { Transaction } = require('../rocksdbBindings.mts').rocksdbBindings();
+			const originalCommit = Transaction.prototype.commit;
 			try {
 				let row = 0;
+				if (failure === 'native commit failure') {
+					// every row's commit is parked briefly, so siblings are in flight when the 20th one fails
+					const targetDb = Rows.primaryStore.store.db;
+					let commits = 0;
+					Transaction.prototype.commit = function (...args) {
+						if (this.store?.db !== targetDb) return originalCommit.apply(this, args);
+						const fail = ++commits === 20;
+						return delay(2).then(() =>
+							fail ? Promise.reject(new Error('row failed')) : originalCommit.apply(this, args)
+						);
+					};
+				}
 				if (failure === 'scan failure') {
 					const search = resource.search;
 					resource.search = async function* (target) {
@@ -97,7 +111,7 @@ describe('delete(query) outside transaction()', function () {
 					};
 				}
 				const stats = trackRowCommits(resource, (write) => {
-					if (++row !== 20 || failure === 'scan failure') return write();
+					if (++row !== 20 || failure === 'scan failure' || failure === 'native commit failure') return write();
 					if (failure === 'synchronous throw') throw new Error('row failed');
 					return Promise.reject(new Error('row failed'));
 				});
@@ -108,6 +122,7 @@ describe('delete(query) outside transaction()', function () {
 				assert.strictEqual(await remaining(group), 100 - committed);
 				await delay(10);
 			} finally {
+				Transaction.prototype.commit = originalCommit;
 				process.removeListener('unhandledRejection', onUnhandled);
 			}
 			assert.deepStrictEqual(unhandled, []);

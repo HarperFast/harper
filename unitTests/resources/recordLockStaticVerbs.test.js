@@ -385,9 +385,18 @@ describe('Record locks (QA-5082): static table verbs on locked keys must resolve
 					holder.set('n', 3);
 					writes.push(holder.save());
 					assert.strictEqual(gates.length, 3, 'each write commits on its own native transaction');
-					for (const release of commitOrder === 'issue' ? gates : [...gates].reverse()) {
-						release();
-						await delay(1);
+					const stamps = context.transaction.writes
+						.filter((write) => write?.key === recordId)
+						.map((write) => write.lockStamp);
+					assert.ok(stamps[0] < stamps[1] && stamps[1] < stamps[2], `distinct, increasing stamps: ${stamps}`);
+					if (commitOrder === 'issue') {
+						for (const release of gates) release();
+					} else {
+						// the newest lands first; the older ones then conflict and retry on ungated handles
+						for (const index of [2, 1, 0]) {
+							gates[index]();
+							if (index === 2) await waitFor(() => TestTable.primaryStore.getEntry(recordId).value.n === 3);
+						}
 					}
 					await Promise.all(writes);
 					Transaction.prototype.commit = originalCommit;
