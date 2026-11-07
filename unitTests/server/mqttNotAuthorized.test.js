@@ -584,4 +584,37 @@ describe('mqtt.ts CONNECT through a component’s server.getUser', () => {
 		assert.strictEqual(userModule.isRecordlessPrincipal(memoized), false, 'its record was read at the first login');
 		assert.deepStrictEqual((await after.subscribe(topic)).granted, [NOT_AUTHORIZED], 'its record was dropped');
 	});
+
+	it('keeps a held connection’s memoized user as its CONNECT tracked it when an HTTP login returns it after a drop', async () => {
+		const { authentication } = require('#src/security/auth');
+		const { Headers } = require('#src/server/serverHelpers/Headers');
+		await seedUsers([
+			{
+				username: 'mqtt_memoized_http',
+				active: true,
+				role: { id: 'mqtt_memoized_http_role', permission: { super_user: true } },
+			},
+		]);
+		const memoized = structuredClone(userModule.getUserWithRole('mqtt_memoized_http'));
+		server.getUser = async () => memoized;
+		const held = await connect(open, { username: 'mqtt_memoized_http', password: 'secret' });
+		assert.deepStrictEqual((await held.subscribe(`${protectedTable()}/#`)).granted, [1]);
+		await databases.system.hdb_user.delete('mqtt_memoized_http');
+		const response = await authentication(
+			{
+				headers: {
+					asObject: { authorization: 'Basic ' + Buffer.from('mqtt_memoized_http:secret').toString('base64') },
+				},
+				method: 'GET',
+				pathname: '/',
+				ip: '10.0.0.1',
+				isOperationsServer: true,
+			},
+			async () => ({ status: 200, headers: new Headers(), body: {} })
+		);
+		assert.strictEqual(response.status, 200, 'the component still admits the HTTP login');
+
+		assert.strictEqual(userModule.isRecordlessPrincipal(memoized), false);
+		assert.deepStrictEqual((await held.subscribe(`${protectedTable()}/#`)).granted, [NOT_AUTHORIZED]);
+	});
 });

@@ -239,10 +239,10 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 		}
 
 		it('holds for a principal resolved for a name with no record, after a record takes that name too', async () => {
-			const unbacked = resolvedFor('lookup_user', componentUser('lookup_user'));
+			const unbacked = resolvedFor('lookup_unbacked', componentUser('lookup_unbacked'));
 			assert.strictEqual(user.isRecordlessPrincipal(unbacked), true);
 			assert.strictEqual(user.isRecordlessPrincipal(user.cloneUserView(unbacked)), true, 'and a view of it');
-			await testUtils.seedUsers([lookupUser()]);
+			await testUtils.seedUsers([lookupUser({ username: 'lookup_unbacked' })]);
 			assert.strictEqual(user.isRecordlessPrincipal(unbacked), true, 'a record created later is another principal’s');
 			assert.strictEqual(user.isCurrentUser(unbacked), false);
 		});
@@ -255,6 +255,32 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 			assert.strictEqual(user.isRecordlessPrincipal(raced), false, 'created while it resolved');
 			assert.strictEqual(user.isRecordlessPrincipal(resolvedFor('lookup_user', componentUser('lookup_user'))), false);
 			assert.strictEqual(user.isRecordlessPrincipal(await user.findAndValidateUser('lookup_user', PASSWORD)), false);
+		});
+
+		it('does not hold where a record with its name was dropped, before or while it resolved', async () => {
+			await testUtils.seedUsers([lookupUser({ username: 'lookup_dropped' })]);
+			await databases.system.hdb_user.delete('lookup_dropped');
+			const dropped = resolvedFor('lookup_dropped', componentUser('lookup_dropped'));
+			assert.strictEqual(user.isRecordlessPrincipal(dropped), false, 'the drop’s tombstone is still kept');
+
+			await testUtils.seedUsers([lookupUser({ username: 'lookup_alias_dropped' })]);
+			const getUser = server.getUser;
+			server.getUser = async () => {
+				const copied = structuredClone(user.getUserWithRole('lookup_alias_dropped'));
+				await databases.system.hdb_user.delete('lookup_alias_dropped');
+				return copied;
+			};
+			try {
+				const aliased = await user.getTrackedUser('lookup_alias_login', 'token');
+				assert.strictEqual(aliased.username, 'lookup_alias_dropped');
+				assert.strictEqual(
+					user.isRecordlessPrincipal(aliased),
+					false,
+					'dropped while a login under another name resolved'
+				);
+			} finally {
+				server.getUser = getUser;
+			}
 		});
 
 		it('does not hold for a user this module built, or one with nothing recorded', async () => {
@@ -399,6 +425,47 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 				await databases.system.hdb_user.put(lookupUser({ role: 'lookup_role', active: false }));
 				await authenticate(header);
 				assert.strictEqual(resolutions, 2);
+			} finally {
+				server.getUser = getUser;
+			}
+		});
+
+		it('checks a later login’s view of a memoized user against its own lookup, leaving the user as its first login tracked it', async () => {
+			await testUtils.seedUsers([lookupUser({ username: 'lookup_shared' })]);
+			const shared = structuredClone(user.getUserWithRole('lookup_shared'));
+			const unbacked = { username: 'lookup_shared_unbacked', role: { role: 'component_role', permission: {} } };
+			const getUser = server.getUser;
+			server.getUser = async (username) => (username === 'lookup_shared' ? shared : unbacked);
+			try {
+				await user.getTrackedUser('lookup_shared', 'token');
+				await user.getTrackedUser('lookup_shared_unbacked', 'token');
+				await databases.system.hdb_user.delete('lookup_shared');
+				await testUtils.seedUsers([
+					lookupUser({ username: 'lookup_shared_unbacked' }),
+					lookupUser({ username: 'lookup_admitting' }),
+				]);
+
+				const view = (await authenticate(basic('lookup_shared', 'token'))).user;
+				assert.notStrictEqual(view, shared);
+				assert.strictEqual(user.isCurrentUser(view), true, 'the view is checked against what its login read');
+				assert.strictEqual(user.isRecordlessPrincipal(view), false, 'and classed as the first login classed the user');
+				assert.strictEqual(user.isCurrentUser(shared), false, 'the user keeps what its first login read');
+				assert.strictEqual(user.isRecordlessPrincipal(shared), false);
+
+				const unbackedView = (await authenticate(basic('lookup_shared_unbacked', 'token'))).user;
+				assert.strictEqual(
+					user.isRecordlessPrincipal(unbackedView),
+					true,
+					'a record created later is another principal’s'
+				);
+				assert.strictEqual(user.isRecordlessPrincipal(unbacked), true);
+				const admittedView = (await authenticate(basic('lookup_admitting', 'token'))).user;
+				assert.strictEqual(admittedView.username, 'lookup_shared_unbacked');
+				assert.strictEqual(
+					user.isRecordlessPrincipal(admittedView),
+					false,
+					'the login name’s record may have admitted it'
+				);
 			} finally {
 				server.getUser = getUser;
 			}

@@ -509,6 +509,11 @@ function readEntry(store, id): RecordEntry | undefined {
 	return entry?.value == null ? undefined : entry;
 }
 
+// A delete leaves a tombstone (a null value) until audit cleanup, which keeps it for logging.auditRetention
+function hasLiveOrDeletedEntry(store, id): boolean {
+	return !keyTooLargeForStore(id) && store.getEntry(id) !== undefined;
+}
+
 /**
  * What a later read must match to be the same committed record: null for no record, else its version,
  * or its value when a resequenced write reused the version (RecordEncoder.ts VERSION_REUSED) so the
@@ -654,55 +659,55 @@ function userRecordVersions(username: string): UserProvenance {
 /**
  * Makes `isCurrentUser` check a user resolved outside this module against the record versions read
  * before it was resolved, or after it for a user named otherwise when no record had the login name; a
- * write in between then shows as a change. Returns whether `user` was resolved outside this module.
+ * write in between then shows as a change. Returns what this lookup read, for its view (`cloneUserView`),
+ * or undefined for a user this module built. A memoizing server.getUser hands one user to later lookups:
+ * the user keeps what its first lookup recorded, since a connection holding it is checked against that.
  */
-function trackUserRecords(user: User, versions: UserProvenance): boolean {
-	if (!user || typeof user !== 'object' || (user as any)[PROVENANCE]) return false;
-	let provenance: UserProvenance;
+function trackUserRecords(user: User, versions: UserProvenance): UserProvenance | undefined {
+	if (!user || typeof user !== 'object' || (user as any)[PROVENANCE]) return undefined;
 	const store = systemStore(USER_TABLE_NAME);
-	if (
-		user.username === versions.username ||
-		versions.userStamp !== null ||
-		readEntry(store, versions.username) !== undefined
-	) {
-		// read again: a record created while it resolved may be what the component built it from. Under another
-		// name, a record for the login name may be what admitted it, so it stays checked against that record.
+	const sameName = user.username === versions.username;
+	// under another name, a record for the login name may be what admitted it, so it stays checked against that
+	const loginBacked = !sameName && (versions.userStamp !== null || hasLiveOrDeletedEntry(store, versions.username));
+	let provenance: UserProvenance;
+	if (loginBacked) provenance = { ...versions, recordless: false };
+	else if (sameName) {
+		// read again: a record created or dropped while it resolved may be what the component built it from
 		provenance = {
 			...versions,
-			recordless:
-				user.username === versions.username &&
-				versions.userStamp === null &&
-				readEntry(store, user.username) === undefined,
+			recordless: versions.userStamp === null && !hasLiveOrDeletedEntry(store, user.username),
 		};
 	} else {
-		// no record has the login name: only the records for the name it carries can back it
+		// only the records for the name it carries can back it, and one dropped while it resolved still shows
+		// by its tombstone
 		provenance = userRecordVersions(user.username);
-		provenance.recordless = provenance.userStamp === null && readEntry(store, user.username) === undefined;
+		provenance.recordless = !hasLiveOrDeletedEntry(store, user.username);
 	}
-	trackedProvenance.set(user, provenance);
-	return true;
+	const first = trackedProvenance.get(user);
+	// a record created under its name since the first lookup is another principal's
+	if (first) provenance.recordless = first.recordless && !loginBacked;
+	else trackedProvenance.set(user, provenance);
+	return provenance;
 }
 
 /**
  * A copy whose `role` and `permission` the caller may replace (verifyPerms does) without touching `user`;
- * `isCurrentUser` checks it against the records `user` was built from.
+ * `isCurrentUser` checks it against `provenance`, what `trackUserRecords` read for this lookup, or else
+ * against the records `user` was built from.
  */
-function cloneUserView(user: User & { role: UserRole }): User {
+function cloneUserView(user: User & { role: UserRole }, provenance?: UserProvenance): User {
 	const clone: User = { ...user, role: { ...user.role, permission: { ...user.role.permission } } };
-	if (!(clone as any)[PROVENANCE]) {
-		const tracked = trackedProvenance.get(user);
-		if (tracked) (clone as any)[PROVENANCE] = tracked;
-	}
+	provenance ??= (clone as any)[PROVENANCE] ?? trackedProvenance.get(user);
+	if (provenance) (clone as any)[PROVENANCE] = provenance;
 	return clone;
 }
 
 /**
  * `server.getUser` for a connection that holds its user (MQTT CONNECT), with a component's principal tracked
- * against the records read for its name before it resolved. A memoizing server.getUser hands one user to later
- * lookups, which keep what its first lookup recorded: re-tracking it would change what an earlier connection
- * holding it is checked against, and a copy would lose its class's private fields. A record-backed one stays
- * re-read by name, so a dropped record still revokes it. `resolver` is the server whose getUser resolves the
- * login, as the caller's scope would call it.
+ * against the records read for its name before it resolved (`trackUserRecords`). It returns the component's
+ * user itself, since a copy would lose its class's private fields. A record-backed one stays re-read by name,
+ * so a dropped record still revokes it. `resolver` is the server whose getUser resolves the login, as the
+ * caller's scope would call it.
  */
 async function getTrackedUser(
 	username: string,
@@ -713,7 +718,7 @@ async function getTrackedUser(
 	if (resolver.getUser === getUserImpl) return getUserImpl(username, password);
 	const versions = userRecordVersions(username);
 	const user = await resolver.getUser(username, password, request as any);
-	if (!trackedProvenance.has(user)) trackUserRecords(user, versions);
+	trackUserRecords(user, versions);
 	return user;
 }
 
