@@ -338,18 +338,28 @@ describe('Record locks (QA-5082): static table verbs on locked keys must resolve
 			assert.strictEqual((await Unaudited.get(secondId)).n, 20);
 		});
 
-		for (const audit of [false, true]) {
-			for (const commitOrder of ['issue', 'reverse']) {
-				it(`overlapping holder writes on a closed link land in issue order, ${commitOrder} commit order (audit: ${audit}) (harper#4098)`, async function () {
+		const overlapCases = [];
+		for (const audit of [false, true])
+			for (const commitOrder of ['issue', 'reverse']) overlapCases.push({ audit, commitOrder, closedBy: 'holder' });
+		// with no committed holder version, every candidate is the lock's acquiredAt
+		overlapCases.push({ audit: false, commitOrder: 'issue', closedBy: 'another key' });
+		for (const { audit, commitOrder, closedBy } of overlapCases) {
+			{
+				it(`overlapping holder writes on a link closed by ${closedBy} land in issue order, ${commitOrder} commit order (audit: ${audit}) (harper#4098)`, async function () {
 					if (SKIP_ON_LMDB) return this.skip();
 					const TestTable = audit ? Audited : Unaudited;
 					const recordId = id();
+					const otherId = id();
 					await TestTable.put({ id: recordId, n: 1 });
+					await TestTable.put({ id: otherId, n: 1 });
 					const context = {};
 					const holder = await TestTable.lock(recordId, { hold: true, lease: 5000 }, context);
 					cleanups.push(() => holder.unlock());
-					holder.set('n', 2);
-					await holder.save();
+					const closer =
+						closedBy === 'holder' ? holder : await TestTable.lock(otherId, { hold: true, lease: 5000 }, context);
+					if (closer !== holder) cleanups.push(() => closer.unlock());
+					closer.set('n', 2);
+					await closer.save();
 					assert.strictEqual(context.transaction.open, TRANSACTION_STATE.CLOSED);
 					const { Transaction } = require('../rocksdbBindings.mts').rocksdbBindings();
 					const originalCommit = Transaction.prototype.commit;
@@ -428,6 +438,33 @@ describe('Record locks (QA-5082): static table verbs on locked keys must resolve
 			assert.strictEqual(hookWriteSettled, true);
 			assert.strictEqual(nativeCommits, 1, 'the hook write must commit with the publish, not on its own');
 			assert.strictEqual(Unaudited.primaryStore.getEntry(secondId).value.n, 20);
+		});
+
+		it('a same-key write a before hook makes synchronously shares the commit and its stamp', async function () {
+			if (SKIP_ON_LMDB) return this.skip();
+			const recordId = id();
+			await Unaudited.put({ id: recordId, n: 1 });
+			const context = {};
+			const holder = await Unaudited.lock(recordId, { hold: true, lease: 5000 }, context);
+			cleanups.push(() => holder.unlock());
+			let hookWrite;
+			let staged;
+			Unaudited.source = {
+				publish: () => {
+					delete Unaudited.source;
+					holder.set('n', 9);
+					hookWrite = holder.save();
+					const link = context.transaction;
+					staged = link.writes.filter((write) => write?.key === recordId);
+					staged = staged.map((write) => ({ stamp: write.lockStamp, shared: write.stagedOn === link.transaction }));
+				},
+			};
+			cleanups.push(() => delete Unaudited.source);
+			await holder.publish({ n: 7 });
+			assert.strictEqual(await hookWrite, undefined);
+			assert.strictEqual(staged.length, 2);
+			assert.deepStrictEqual(staged[1], staged[0], 'stepping past a write in the same commit would pass its log key');
+			assert.strictEqual(staged[0].shared, true);
 		});
 
 		it("a before-hook write into a sibling database's parked commit still waits for that commit", async function () {

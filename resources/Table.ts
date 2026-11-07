@@ -7616,9 +7616,10 @@ export function makeTable(options): TableResourceClass {
 					(scanTarget as any).checkPermission = false;
 				}
 				(scanTarget as any).select = ['$id']; // just get the primary key of each record so we can delete them
-				// Outside transaction() each row commits on its own. Every issued row settles before this
-				// returns or rejects, whatever ended the scan.
-				const inFlight = new Set<Promise<void>>();
+				// Outside transaction() each row commits on its own: every issued row settles before this returns
+				// or rejects, and the first failure, of a row or of the scan, is the one reported.
+				let inFlight: Set<Promise<void>> | undefined;
+				let freeSlot: (() => void) | undefined;
 				let failure: { error: unknown } | undefined;
 				try {
 					for await (const entry of this.search(scanTarget)) {
@@ -7630,14 +7631,19 @@ export function makeTable(options): TableResourceClass {
 								failure ??= { error };
 							})
 							.then(() => {
-								inFlight.delete(settled);
+								inFlight!.delete(settled);
+								freeSlot?.();
 							});
-						inFlight.add(settled);
-						if (inFlight.size >= MAX_CONCURRENT_QUERY_DELETES) await Promise.race(inFlight);
+						(inFlight ??= new Set()).add(settled);
+						if (inFlight.size >= MAX_CONCURRENT_QUERY_DELETES)
+							await new Promise<void>((resolve) => {
+								freeSlot = resolve;
+							});
 					}
-				} finally {
-					await Promise.all(inFlight);
+				} catch (error) {
+					failure ??= { error };
 				}
+				if (inFlight) await Promise.all(inFlight);
 				if (failure) throw failure.error;
 				return true;
 			}
