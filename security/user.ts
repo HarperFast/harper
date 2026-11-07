@@ -522,6 +522,9 @@ function hasLiveOrDeletedEntry(store, id): boolean {
  */
 type RecordStamp = number | object | null;
 
+// held by no entry: a lookup that found a record it did not read (a tombstone, or one created while it resolved)
+const UNREAD_RECORD: RecordStamp = Object.freeze({});
+
 function stampOf(entry: RecordEntry | undefined): RecordStamp {
 	if (entry === undefined) return null;
 	if (entry.metadataFlags & VERSION_REUSED) return entry.value;
@@ -529,6 +532,7 @@ function stampOf(entry: RecordEntry | undefined): RecordStamp {
 }
 
 function holdsStamp(entry: RecordEntry | undefined, stamp: RecordStamp): boolean {
+	if (stamp === UNREAD_RECORD) return false;
 	if (entry === undefined || stamp === null) return entry === undefined && stamp === null;
 	if (typeof stamp === 'object') return isEqual(entry.value, stamp);
 	return !(entry.metadataFlags & VERSION_REUSED) && (entry.version ?? 0) === stamp;
@@ -661,29 +665,25 @@ function userRecordVersions(username: string): UserProvenance {
  * Makes `isCurrentUser` check a user resolved outside this module against the record versions read
  * before it was resolved, so a write in between shows as a change. A user under another name, when no
  * record has the login name, can only have its own name's records read after it resolved, so only a drop
- * in between shows, by its tombstone. Returns what its holder is checked against, or undefined for a user
- * this module built. A memoizing server.getUser hands one user to logins backed differently, so each holder
- * gets its own lookup's provenance, against the first lookup that checked the user against the same name:
- * a name first found recordless stays so, and a record that first lookup read and that is since dropped
- * stays a change.
+ * in between shows, by its tombstone. Returns this lookup's provenance, or undefined for a user this module
+ * built. A memoizing server.getUser hands one user to logins backed differently, so the first lookup that
+ * checked the user against each name is kept (`firstLookup`): a name first found recordless stays so, and a
+ * record that first lookup read and that is since dropped stays a change.
  */
 function trackUserRecords(user: User, versions: UserProvenance): UserProvenance | undefined {
 	if (!user || typeof user !== 'object' || (user as any)[PROVENANCE]) return undefined;
 	const store = systemStore(USER_TABLE_NAME);
 	const sameName = user.username === versions.username;
-	// a record for the login name may be what admitted a user under another name
-	const loginBacked = !sameName && (versions.userStamp !== null || hasLiveOrDeletedEntry(store, versions.username));
 	let provenance: UserProvenance;
-	if (loginBacked) provenance = { ...versions, recordless: false };
-	else if (sameName) {
-		provenance = {
-			...versions,
-			recordless: versions.userStamp === null && !hasLiveOrDeletedEntry(store, user.username),
-		};
+	if (!sameName && (versions.userStamp !== null || hasLiveOrDeletedEntry(store, versions.username))) {
+		// a record for the login name may be what admitted a user under another name
+		provenance = { ...versions, recordless: false };
 	} else {
-		provenance = userRecordVersions(user.username);
+		provenance = sameName ? { ...versions } : userRecordVersions(user.username);
 		provenance.recordless = provenance.userStamp === null && !hasLiveOrDeletedEntry(store, user.username);
 	}
+	// a record that is there but this lookup did not read was dropped, or created while it resolved
+	if (provenance.userStamp === null && !provenance.recordless) provenance.userStamp = UNREAD_RECORD;
 	let firsts = trackedProvenance.get(user);
 	if (!firsts) trackedProvenance.set(user, (firsts = new Map()));
 	const first = firsts.get(provenance.username);
@@ -695,10 +695,14 @@ function trackUserRecords(user: User, versions: UserProvenance): UserProvenance 
 	return provenance;
 }
 
-// for a holder with no provenance of its own lookup: its own name's first lookup, else its first
-function firstLookup(user: User): UserProvenance | undefined {
+/**
+ * The first lookup that checked `user` against `name`, or with no name, against its own name, else its
+ * first: what a holder of the user itself (an MQTT connection) is checked against, since a later lookup's
+ * read would certify a memoized user's stale role as current.
+ */
+function firstLookup(user: User, name: unknown = user?.username): UserProvenance | undefined {
 	const firsts = trackedProvenance.get(user);
-	return firsts && (firsts.get(user.username) ?? firsts.values().next().value);
+	return firsts && (firsts.get(name) ?? firsts.values().next().value);
 }
 
 /**
@@ -741,7 +745,7 @@ async function getComponentUser(
 	const versions = userRecordVersions(username);
 	const user = await resolver.getUser(username, password, request as any);
 	const provenance = trackUserRecords(user, versions);
-	if (admission) admission.provenance = provenance;
+	if (admission && provenance) admission.provenance = firstLookup(user, provenance.username);
 	return user;
 }
 

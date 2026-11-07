@@ -262,6 +262,7 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 			await databases.system.hdb_user.delete('lookup_dropped');
 			const dropped = resolvedFor('lookup_dropped', componentUser('lookup_dropped'));
 			assert.strictEqual(user.isRecordlessPrincipal(dropped), false, 'the drop’s tombstone is still kept');
+			assert.strictEqual(user.isCurrentUser(dropped), false, 'and the record it names is gone');
 
 			await testUtils.seedUsers([lookupUser({ username: 'lookup_alias_dropped' })]);
 			const getUser = server.getUser;
@@ -278,6 +279,7 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 					false,
 					'dropped while a login under another name resolved'
 				);
+				assert.strictEqual(user.isCurrentUser(aliased), false);
 			} finally {
 				server.getUser = getUser;
 			}

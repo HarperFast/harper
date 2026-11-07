@@ -659,6 +659,49 @@ describe('mqtt.ts CONNECT through a component’s server.getUser', () => {
 		}
 	});
 
+	it('checks a later CONNECT of a memoized user against its first, so a role downgraded since is not current', async () => {
+		await seedUsers([
+			{
+				username: 'mqtt_downgraded',
+				active: true,
+				role: { id: 'mqtt_downgraded_role', role: 'mqtt_downgraded_role', permission: { super_user: true } },
+			},
+		]);
+		const memoized = structuredClone(userModule.getUserWithRole('mqtt_downgraded'));
+		server.getUser = async () => memoized;
+		const first = await connect(open, { username: 'mqtt_downgraded', password: 'secret' });
+		await databases.system.hdb_role.put({
+			id: 'mqtt_downgraded_role',
+			role: 'mqtt_downgraded_role',
+			permission: { super_user: false },
+		});
+		const later = await connect(open, { username: 'mqtt_downgraded', password: 'secret' });
+		try {
+			assert.deepStrictEqual((await later.subscribe(`${protectedTable()}/#`)).granted, [NOT_AUTHORIZED]);
+		} finally {
+			first.socket.handlers.close();
+			later.socket.handlers.close();
+		}
+	});
+
+	it('refuses a copy of a user dropped while a login under another name resolved', async () => {
+		await seedUsers([
+			{ username: 'mqtt_copied', active: true, role: { id: 'mqtt_copied_role', permission: { super_user: true } } },
+		]);
+		server.getUser = async () => {
+			const copied = structuredClone(userModule.getUserWithRole('mqtt_copied'));
+			await databases.system.hdb_user.delete('mqtt_copied');
+			return copied;
+		};
+		const client = await connect(open, { username: 'mqtt_copied_login', password: 'token' });
+		try {
+			assert.strictEqual(client.session.user.username, 'mqtt_copied');
+			assert.deepStrictEqual((await client.subscribe(`${protectedTable()}/#`)).granted, [NOT_AUTHORIZED]);
+		} finally {
+			client.socket.handlers.close();
+		}
+	});
+
 	it('classes a memoized user a record-backed login reached first as recordless for a login no record admitted', async () => {
 		await seedUsers([{ username: 'mqtt_backing', active: true, role: { id: 'mqtt_backing_role', permission: {} } }]);
 		const shared = { username: 'mqtt_backed_subject', role: { permission: { super_user: true } } };

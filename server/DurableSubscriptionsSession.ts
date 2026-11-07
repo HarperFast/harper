@@ -274,7 +274,7 @@ class SubscriptionsSession {
 	listener: (topic, message, messageId, subscription, version?, dup?: boolean) => any;
 	sessionId: any;
 	user: any;
-	/** What this connection's CONNECT recorded for `user` (`getTrackedUser`), which its subscriptions are checked against. */
+	/** What this connection's CONNECT recorded for `user` (`getTrackedUser`). */
 	userProvenance: UserProvenance | undefined;
 	request: any;
 	socket: any;

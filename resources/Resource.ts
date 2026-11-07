@@ -1177,7 +1177,7 @@ function registerLiveSubscriptionForContext(
 	// no subscription, or one already closed (a refused resume): nothing will be delivered to revoke
 	if (!subscription || typeof subscription !== 'object' || subscription.closed) return subscription;
 	const { cloneUserView, hasRecordProvenance, isCurrentUser, isRecordlessPrincipal } = securityUser!;
-	// an MQTT connection's own CONNECT: a memoizing server.getUser can hand its user to logins backed differently
+	// a memoizing server.getUser's user does not carry what an MQTT connection's own CONNECT recorded
 	const session = (context as any)?.session;
 	const admitted = session?.user === user ? session.userProvenance : undefined;
 	const fixedPrincipal = Boolean(user._scopedToken) || isRecordlessPrincipal(user, admitted);
