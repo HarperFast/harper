@@ -1178,7 +1178,8 @@ function registerLiveSubscriptionForContext(
 	if (!username || securityUser!.isLocalPrincipal(user)) return subscription;
 	// no subscription, or one already closed (a refused resume): nothing will be delivered to revoke
 	if (!subscription || typeof subscription !== 'object' || subscription.closed) return subscription;
-	const { cloneUserView, hasRecordProvenance, isCurrentUser } = securityUser!;
+	const { cloneUserView, hasRecordProvenance, isCurrentUser, isRecordlessPrincipal } = securityUser!;
+	const fixedPrincipal = Boolean(user._scopedToken) || isRecordlessPrincipal(user);
 	// Without a caller's select or a condition or sort through a relationship, the default allowRead only
 	// narrows what it returns, so its verdict depends on the role's permission for this table alone.
 	const sharedDecision =
@@ -1201,10 +1202,11 @@ function registerLiveSubscriptionForContext(
 		recheck: async (pass) => {
 			let fresh: any;
 			let viewer: any;
-			if (user._scopedToken) {
-				// A scoped token's identity IS its embedded role — never re-resolve its attribution
-				// username against hdb_user (it may not exist, or may name an unrelated principal
-				// created later). Expiry (authExpiresAt above) is its only revocation.
+			if (fixedPrincipal) {
+				// A scoped token's identity IS its embedded role, and a component's server.getUser built a
+				// recordless principal from its credential — never re-resolve either username against
+				// hdb_user (it may not exist, or may name an unrelated principal created later). Expiry
+				// (authExpiresAt above) and closing are their only revocation besides allowRead.
 				fresh = viewer = user;
 			} else {
 				// Re-read current user state from hdb_user/hdb_role, once per username per pass, so a dropped
@@ -1224,7 +1226,7 @@ function registerLiveSubscriptionForContext(
 	});
 	let stale: boolean;
 	try {
-		stale = !isCurrentUser(user);
+		stale = !fixedPrincipal && !isCurrentUser(user);
 	} catch {
 		stale = true;
 	}

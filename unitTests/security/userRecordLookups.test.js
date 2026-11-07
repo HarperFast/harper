@@ -231,6 +231,101 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 		});
 	});
 
+	describe('isRecordlessPrincipal', () => {
+		const componentUser = (username) => ({ username, role: { role: 'component_role', permission: {} } });
+		function resolvedFor(loginName, principal) {
+			user.trackUserRecords(principal, user.userRecordVersions(loginName));
+			return principal;
+		}
+
+		it('holds for a principal resolved for a name with no record, after a record takes that name too', async () => {
+			const unbacked = resolvedFor('lookup_user', componentUser('lookup_user'));
+			assert.strictEqual(user.isRecordlessPrincipal(unbacked), true);
+			assert.strictEqual(user.isRecordlessPrincipal(user.cloneUserView(unbacked)), true, 'and a view of it');
+			await testUtils.seedUsers([lookupUser()]);
+			assert.strictEqual(user.isRecordlessPrincipal(unbacked), true, 'a record created later is another principal’s');
+			assert.strictEqual(user.isCurrentUser(unbacked), false);
+		});
+
+		it('does not hold where a record has the name, or was created while it resolved', async () => {
+			const versions = user.userRecordVersions('lookup_user');
+			await testUtils.seedUsers([lookupUser()]);
+			const raced = componentUser('lookup_user');
+			user.trackUserRecords(raced, versions);
+			assert.strictEqual(user.isRecordlessPrincipal(raced), false, 'created while it resolved');
+			assert.strictEqual(user.isRecordlessPrincipal(resolvedFor('lookup_user', componentUser('lookup_user'))), false);
+			assert.strictEqual(user.isRecordlessPrincipal(await user.findAndValidateUser('lookup_user', PASSWORD)), false);
+		});
+
+		it('does not hold for a user this module built, or one with nothing recorded', async () => {
+			assert.strictEqual(user.isRecordlessPrincipal(await user.findAndValidateUser('lookup_user', null, false)), false);
+			assert.strictEqual(user.isRecordlessPrincipal(componentUser('lookup_untracked')), false);
+		});
+
+		it('tracks the user a component returns, and keeps what a memoizing component’s first lookup recorded', async () => {
+			class ComponentUser {
+				#clientId;
+				constructor(username) {
+					this.username = username;
+					this.#clientId = `client-${username}`;
+				}
+				get client_id() {
+					return this.#clientId;
+				}
+			}
+			const getUser = server.getUser;
+			const shared = new ComponentUser('lookup_memo');
+			server.getUser = async () => shared;
+			try {
+				const first = await user.getTrackedUser('lookup_memo', 'token');
+				assert.strictEqual(await user.getTrackedUser('lookup_memo', 'token'), shared, 'nothing changed in between');
+				await testUtils.seedUsers([lookupUser({ username: 'lookup_memo' })]);
+				const second = await user.getTrackedUser('lookup_memo', 'token');
+				assert.strictEqual(first, shared, 'the first lookup keeps what the component returned');
+				assert.strictEqual(second, shared, 'and so does one after a record change');
+				assert.strictEqual(second.client_id, 'client-lookup_memo', 'with its private fields');
+				assert.strictEqual(user.isRecordlessPrincipal(shared), true, 'a record created later is another principal’s');
+			} finally {
+				server.getUser = getUser;
+			}
+		});
+
+		it('keeps a memoized principal returned under another name, and one whose record was dropped', async () => {
+			const getUser = server.getUser;
+			const renamed = componentUser('lookup_memo_subject');
+			server.getUser = async () => renamed;
+			try {
+				assert.strictEqual(await user.getTrackedUser('lookup_memo_login', 'token'), renamed);
+				assert.strictEqual(await user.getTrackedUser('lookup_memo_login', 'token'), renamed, 'on a repeat login');
+				assert.strictEqual(user.isRecordlessPrincipal(renamed), true);
+
+				await testUtils.seedUsers([lookupUser()]);
+				const copied = structuredClone(user.getUserWithRole('lookup_user'));
+				server.getUser = async () => copied;
+				assert.strictEqual(await user.getTrackedUser('lookup_user', 'token'), copied);
+				await databases.system.hdb_user.delete('lookup_user');
+				assert.strictEqual(await user.getTrackedUser('lookup_user', 'token'), copied);
+				assert.strictEqual(user.isRecordlessPrincipal(copied), false, 'its first lookup read its record');
+				assert.strictEqual(user.isCurrentUser(copied), false, 'so the drop shows as a change');
+			} finally {
+				server.getUser = getUser;
+			}
+		});
+
+		it('tracks a principal returned under another name by the records for that name', async () => {
+			await testUtils.seedUsers([lookupUser()]);
+			const renamed = resolvedFor('lookup_token_login', componentUser('lookup_token_subject'));
+			assert.strictEqual(user.isRecordlessPrincipal(renamed), true, 'no record has either name');
+			const admitted = resolvedFor('lookup_user', componentUser('lookup_token_subject'));
+			assert.strictEqual(user.isRecordlessPrincipal(admitted), false, 'the login name’s record may have admitted it');
+			const aliased = resolvedFor('lookup_alias', structuredClone(user.getUserWithRole('lookup_user')));
+			assert.strictEqual(user.isRecordlessPrincipal(aliased), false, 'a copy of a record-backed user');
+			await databases.system.hdb_user.delete('lookup_user');
+			assert.strictEqual(user.isCurrentUser(aliased), false, 'it is checked against the record it copied');
+			assert.strictEqual(user.isCurrentUser(admitted), false, 'and against the login name’s record');
+		});
+	});
+
 	describe('authentication() authorization cache', () => {
 		const basic = (username, plain) => 'Basic ' + Buffer.from(`${username}:${plain}`).toString('base64');
 		async function authenticate(authorization) {
@@ -304,6 +399,18 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 				await databases.system.hdb_user.put(lookupUser({ role: 'lookup_role', active: false }));
 				await authenticate(header);
 				assert.strictEqual(resolutions, 2);
+			} finally {
+				server.getUser = getUser;
+			}
+		});
+
+		it('hands the request a recordless view of a component principal for a name with no record, cached or not', async () => {
+			const getUser = server.getUser;
+			server.getUser = async (username) => ({ username, role: { role: 'component_role', permission: {} } });
+			try {
+				const header = basic('component_only_user', 'token');
+				assert.strictEqual(user.isRecordlessPrincipal((await authenticate(header)).user), true);
+				assert.strictEqual(user.isRecordlessPrincipal((await authenticate(header)).user), true, 'from the cache');
 			} finally {
 				server.getUser = getUser;
 			}

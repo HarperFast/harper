@@ -1221,6 +1221,135 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 			}
 		});
 
+		function resolvedByComponent(username, build) {
+			const versions = userModule.userRecordVersions(username);
+			const user = build();
+			userModule.trackUserRecords(user, versions);
+			return user;
+		}
+
+		it('keeps a principal built with no hdb_user record, rechecking it with its allowRead alone', async () => {
+			let allowed = true;
+			let reads = 0;
+			class Gated extends Docs {
+				allowRead() {
+					reads++;
+					return allowed;
+				}
+			}
+			const user = resolvedByComponent('component_only', () => ({
+				username: 'component_only',
+				active: true,
+				role: readRole('component_only_role'),
+			}));
+			const { context } = await subscribe(Gated, user);
+			reads = 0;
+			const resolutions = countResolutions();
+			try {
+				await _sweepNow();
+				await _tickNow();
+			} finally {
+				resolutions.restore();
+			}
+			assert.strictEqual(_liveSubscriptionCount(), 1);
+			assert.deepStrictEqual(resolutions.calls, [], 'never re-resolved by name');
+			assert.strictEqual(context.user, user, 'the admitted principal is kept');
+			assert.strictEqual(reads, 2, 'each pass ran its allowRead');
+
+			allowed = false;
+			await _tickNow();
+			assert.strictEqual(_liveSubscriptionCount(), 0, 'its allowRead still revokes it');
+		});
+
+		const unrelatedRecord = (username) => ({
+			username,
+			active: true,
+			role: { id: `${username}_other`, role: `${username}_other`, permission: { super_user: false } },
+		});
+
+		it('keeps a principal built with no hdb_user record when a record takes its name', async () => {
+			const before = resolvedByComponent('component_named', () => ({
+				username: 'component_named',
+				active: true,
+				role: readRole('component_named_role'),
+			}));
+			const first = await subscribe(Docs, before);
+			await testUtils.seedUsers([unrelatedRecord('component_named')]);
+			const second = await subscribe(Docs, before);
+			await _sweepNow();
+			assert.strictEqual(_liveSubscriptionCount(), 2, 'an unrelated record does not stand in for it');
+			assert.strictEqual(first.context.user, before);
+			assert.strictEqual(second.context.user, before);
+		});
+
+		it('keeps the principal a Basic login through a component’s server.getUser built with no record', async () => {
+			const { authentication } = require('#src/security/auth');
+			const { Headers } = require('#src/server/serverHelpers/Headers');
+			const { server } = require('#src/server/Server');
+			const getUser = server.getUser;
+			server.getUser = async (username) => ({ username, active: true, role: readRole('component_basic_role') });
+			try {
+				let user;
+				const authorization = 'Basic ' + Buffer.from('component_basic:a-token').toString('base64');
+				await authentication(
+					{ headers: { asObject: { authorization, host: 'localhost' } }, method: 'GET', pathname: '/', ip: '10.0.0.1' },
+					async (request) => {
+						user = request.user;
+						return { status: 200, headers: new Headers(), body: {} };
+					}
+				);
+				const { context } = await subscribe(Docs, user);
+				await testUtils.seedUsers([unrelatedRecord('component_basic')]);
+				await _sweepNow();
+				assert.strictEqual(_liveSubscriptionCount(), 1);
+				assert.strictEqual(context.user, user);
+			} finally {
+				server.getUser = getUser;
+			}
+		});
+
+		it('rechecks by name a principal whose name gained a record while it resolved', async () => {
+			const versions = userModule.userRecordVersions('component_raced');
+			await testUtils.seedUsers([unrelatedRecord('component_raced')]);
+			const user = { username: 'component_raced', active: true, role: readRole('component_raced_role') };
+			userModule.trackUserRecords(user, versions);
+			await assert.rejects(subscribe(Docs, user), { statusCode: 403 });
+			assert.strictEqual(_liveSubscriptionCount(), 0);
+		});
+
+		it('ends a recordless principal’s subscription at its authExpiresAt', async () => {
+			const user = resolvedByComponent('component_expiring', () => ({
+				username: 'component_expiring',
+				active: true,
+				role: readRole('component_expiring_role'),
+				authExpiresAt: Date.now() / 1000 + 0.5,
+			}));
+			await subscribe(Docs, user);
+			assert.strictEqual(_liveSubscriptionCount(), 1);
+			await waitFor(() => _liveSubscriptionCount() === 0, { message: 'the subscription outlived its expiry' });
+		});
+
+		it('re-resolves a record-backed user a component returned, in place or as a tracked copy', async () => {
+			await testUtils.seedUsers([
+				{ username: 'returned_user', active: true, role: readRole('returned_role') },
+				{ username: 'copied_user', active: true, role: readRole('copied_role') },
+			]);
+			const returned = await resolve('returned_user');
+			returned.client_id = 'returned_user';
+			const copied = resolvedByComponent('copied_user', () =>
+				structuredClone(userModule.getUserWithRole('copied_user'))
+			);
+			assert.strictEqual(userModule.hasRecordProvenance(copied), true);
+			await subscribe(Docs, returned);
+			await subscribe(Docs, copied);
+
+			await databases.system.hdb_user.delete('returned_user');
+			await databases.system.hdb_user.delete('copied_user');
+			await _sweepNow();
+
+			assert.strictEqual(_liveSubscriptionCount(), 0, 'both are revoked once their records are gone');
+		});
+
 		it('rejects a subscription admitted by a user whose records changed before it registered', async () => {
 			await testUtils.seedUsers([{ username: 'stale_user', active: true, role: readRole('stale_role') }]);
 			const user = await resolve('stale_user');
