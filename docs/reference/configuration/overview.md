@@ -105,6 +105,33 @@ Notes:
 
 ---
 
+## File Permissions
+
+<VersionBadge type="changed" version="v5.4.0" />
+
+The configuration file can hold credentials, so on Linux and macOS Harper writes it, and the other files below that can hold secrets, readable and writable only by the user Harper runs as (mode `600`):
+
+- the configuration file, wherever `HDB_CONFIG` or the boot properties place it
+- its backups, `{rootPath}/backup/*.bak`
+- the environment-configuration state, `{rootPath}/backup/.harper-config-state.json`
+- the JWT signing key and its passphrase, `{rootPath}/keys/.jwtPrivate.key` and `{rootPath}/keys/.jwtPass`
+- private keys Harper generates, such as `{rootPath}/keys/privateKey.pem`
+
+Each file has that mode from the moment it is created, before any content is written. When Harper replaces an existing file it owns, the new file keeps only the owner's permissions of the old one: a file at `644` becomes `600`, and a file you set to `400` stays `400`. A file owned by another user is replaced at `600`. The new file is always owned by the user Harper runs as.
+
+Harper changes a file's mode only when it writes that file. Files written by earlier versions keep their modes until Harper next rewrites them, and Harper never rewrites old backups. To restrict them now:
+
+```bash
+chmod 600 <config file> {rootPath}/backup/*.bak {rootPath}/backup/.harper-config-state*.json \
+  {rootPath}/keys/.jwtPass {rootPath}/keys/.jwtPrivate.key {rootPath}/keys/*.pem
+```
+
+If other users could read these files before, changing the mode does not undo that: rotate any credential or key they held.
+
+On Windows, Harper does not set file permissions. Access comes from the permissions of the directory Harper is installed in.
+
+---
+
 ## Custom Config File Path
 
 To specify a custom config file location at install time, use the `HDB_CONFIG` variable:
