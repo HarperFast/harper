@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794036121592,
+  "lastUpdate": 1794036126101,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -21090,6 +21090,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "E insert p99 — short ranges",
             "value": 40.83,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "45519a70df369e4fdc1192fb3af4a7cbc05d3bc4",
+          "message": "Add relationship-permission anchors for the non-JSON response formats and @enumerable relationships (#4108)\n\n* Add relationship-permission anchors for the non-JSON response formats and @enumerable relationships\n\nTwo integrationTests/security/ files promoted from the qa-explorer security lane:\n\n- relationship-formats-related-read.test.ts: a role with read on Order only, and a role with\n  Customer limited to id,name, read Order as CBOR, MessagePack and NDJSON with select(*) and an\n  explicit sub-select, and through export_local (csv/json, get_attributes [\"*\"]). The granted rows\n  come back and no related value the role may not read does, in the decoded structure or the raw\n  bytes. Super-user explicit selects are the live positive control.\n- relationship-enumerable-formats.test.ts: the same contract for @enumerable relationships (from\n  and one-to-many to), which are part of a default read, on json/cbor/msgpack/ndjson/csv for the\n  default read, select(*), select(*,customer) and an explicit sub-select. A non-super role that can\n  read every table in full discriminates readable-in-full behaviour from super-user behaviour.\n\nCo-Authored-By: Claude Mythos 5.1 <noreply@anthropic.com>\n\n* Bound the REST helpers, poll export jobs as the submitter, assert the narrowed shapes on the explicit select\n\nPre-push review round 1: request timeout on both send helpers; role 2's explicit sub-select\nasserts customer narrowed to {name} and no notes on every format (plus the record URL on the\nnon-JSON formats); export jobs are polled as the principal that started them with each poll's\nstatus asserted and a named failure on the deadline; the super-user \"*\" export control asserts\nown attributes only and role 2's \"*\" export asserts the narrowed customer column is present; CSV\narms cover the record select(*), select(*,customer) and the explicit sub-select; console dumps\nand history comments removed.\n\nCo-Authored-By: Claude Mythos 5.1 <noreply@anthropic.com>\n\n* Name the CSV collection header gap, skip on Bun and Windows like the sibling suites, add Run lines\n\nCo-Authored-By: Claude Mythos 5.1 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Mythos 5.1 <noreply@anthropic.com>",
+          "timestamp": "2026-11-07T04:12:15Z",
+          "url": "https://github.com/HarperFast/harper/commit/45519a70df369e4fdc1192fb3af4a7cbc05d3bc4"
+        },
+        "date": 1794036125138,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "C read p99 — read only",
+            "value": 14.73,
+            "unit": "ms"
+          },
+          {
+            "name": "B read p99 — read mostly",
+            "value": 14.56,
+            "unit": "ms"
+          },
+          {
+            "name": "B update p99 — read mostly",
+            "value": 16.41,
+            "unit": "ms"
+          },
+          {
+            "name": "A read p99 — update heavy",
+            "value": 19.57,
+            "unit": "ms"
+          },
+          {
+            "name": "A update p99 — update heavy",
+            "value": 22.62,
+            "unit": "ms"
+          },
+          {
+            "name": "F read p99 — read-modify-write",
+            "value": 20.25,
+            "unit": "ms"
+          },
+          {
+            "name": "F rmw p99 — read-modify-write",
+            "value": 38.44,
+            "unit": "ms"
+          },
+          {
+            "name": "D read p99 — read latest",
+            "value": 15.44,
+            "unit": "ms"
+          },
+          {
+            "name": "D insert p99 — read latest",
+            "value": 17.76,
+            "unit": "ms"
+          },
+          {
+            "name": "E insert p99 — short ranges",
+            "value": 41.96,
+            "unit": "ms"
+          },
+          {
+            "name": "E scan p99 — short ranges",
+            "value": 208.64,
             "unit": "ms"
           }
         ]
