@@ -961,6 +961,8 @@ export interface CommitHookInvocation {
 	// the link whose commit awaits the hook; sibling-database links share `root` but commit on their own
 	link: DatabaseTransaction;
 	active: boolean;
+	// the hook this one runs inside, when a hook's write started another link's commit
+	parent: CommitHookInvocation | undefined;
 }
 const commitHookScope = new AsyncLocalStorage<CommitHookInvocation>();
 
@@ -973,7 +975,12 @@ export function currentCommitHook(): CommitHookInvocation | undefined {
 }
 
 function runCommitHook(link: DatabaseTransaction, hook: () => void | Promise<void>): void | Promise<void> {
-	const invocation: CommitHookInvocation = { root: link.root ?? link, link, active: true };
+	const invocation: CommitHookInvocation = {
+		root: link.root ?? link,
+		link,
+		active: true,
+		parent: commitHookScope.getStore(),
+	};
 	const settled = () => {
 		invocation.active = false;
 	};
@@ -1585,7 +1592,8 @@ export class DatabaseTransaction implements Transaction {
 	/**
 	 * Until its commit clears it, an earlier holder write's stamp is not in the handle's committed floor, and an
 	 * equal stamp on a separate native commit loses the LWW tie (harper#4098). A write sharing `target` is left
-	 * out: stepping past it would pass that commit's reserved log key.
+	 * out: stepping past it would pass that commit's reserved log key. So is one already skipped: it will not land,
+	 * and stepping past it could claim a fresh key that outranks the newer write it lost to.
 	 */
 	private inFlightHolderStamp(
 		operation: TransactionWrite,
@@ -1598,6 +1606,7 @@ export class DatabaseTransaction implements Transaction {
 				write.lockHandle === handle &&
 				write.lockStamp &&
 				!write.dropped &&
+				!write.skipped &&
 				(target === undefined || write.stagedOn !== target) &&
 				(highest === undefined || write.lockStamp > highest) &&
 				this.ownedWrites?.has(write)
@@ -2843,8 +2852,7 @@ export class DatabaseTransaction implements Transaction {
 				if (result?.then) this.stageCompletion(result, transaction);
 				result = operation.beforeIntermediate?.() as Promise<void>;
 				if (result?.then) this.stageCompletion(result, transaction);
-			}
-			if (shouldStampStagedOn) operation.stagedOn = transaction;
+			} else if (shouldStampStagedOn) operation.stagedOn = transaction;
 			if (lockHandle || this.recordLocks) operation.trackRecordVersion = true;
 			appliedByPriorAttempt = operation.appliedRecordVersion;
 			if (operation.trackRecordVersion) operation.recordVersionApplied = false;
@@ -4519,11 +4527,14 @@ export class ImmediateTransaction extends DatabaseTransaction {
 			// validate=false write, which must not borrow another write's commit). OPEN links parked in
 			// completions after commit() returns share #activeSaveCommit; before commit() returns it stays
 			// undefined so a synchronous before-hook awaiting a same-context write does not deadlock completions,
-			// and a write from this commit's own before-hook is never handed it: that commit awaits the hook.
+			// and a write made within this commit's own before-hook, directly or through a commit that hook
+			// started on another link, is never handed it: this commit awaits that hook.
 			if (saveResult?.then) return saveResult.then(resolveUndefined);
 			if (this.open !== TRANSACTION_STATE.OPEN) return;
-			const hook = currentCommitHook();
-			return hook?.active && hook.link === this ? undefined : this.#activeSaveCommit;
+			for (let hook = currentCommitHook(); hook; hook = hook.parent) {
+				if (hook.active && hook.link === this) return;
+			}
+			return this.#activeSaveCommit;
 		} else {
 			this.admitRequestWrite(); // a deferred save reaches here without passing through addWrite()
 			this.isCommitting = true;
