@@ -396,6 +396,59 @@ describe('Record locks (QA-5082): static table verbs on locked keys must resolve
 			}
 		}
 
+		it('a holder write overlapping a skipped one does not outrank the newer plain write it lost to', async function () {
+			if (SKIP_ON_LMDB) return this.skip();
+			const recordId = id();
+			const otherId = id();
+			await Unaudited.put({ id: recordId, n: 1 });
+			await Unaudited.put({ id: otherId, n: 1 });
+			const context = {};
+			const holder = await Unaudited.lock(recordId, { hold: true, lease: 5000 }, context);
+			cleanups.push(() => holder.unlock());
+			const closer = await Unaudited.lock(otherId, { hold: true, lease: 5000 }, context);
+			cleanups.push(() => closer.unlock());
+			closer.set('n', 2);
+			await closer.save();
+			const handle = context.transaction.recordLockFor(Unaudited.primaryStore, recordId);
+			const candidateBefore = handle.holderVersionCandidate();
+			await Unaudited.put({ id: recordId, n: 50 });
+			const plainVersion = Unaudited.primaryStore.getEntry(recordId).version;
+			const { Transaction } = require('../rocksdbBindings.mts').rocksdbBindings();
+			const originalCommit = Transaction.prototype.commit;
+			const targetDb = Unaudited.primaryStore.store.db;
+			let releaseFirst;
+			const firstGate = new Promise((resolve) => {
+				releaseFirst = resolve;
+			});
+			let gated = false;
+			Transaction.prototype.commit = function (...args) {
+				if (this.store?.db !== targetDb || gated) return originalCommit.apply(this, args);
+				gated = true;
+				return firstGate.then(() => originalCommit.apply(this, args));
+			};
+			cleanups.push(() => {
+				Transaction.prototype.commit = originalCommit;
+				releaseFirst();
+			});
+			holder.set('n', 3);
+			const skipped = holder.save();
+			assert.ok(gated, 'the first holder write is parked in its native commit');
+			holder.set('n', 4);
+			const overlapping = holder.save();
+			const stamps = context.transaction.writes
+				.filter((write) => write?.key === recordId)
+				.map((write) => write.lockStamp);
+			// a step past the skipped write could claim a fresh key above the plain write once the issuance ratchet leads
+			assert.strictEqual(stamps[1], stamps[0], 'the overlapping write is not stepped past a skipped one');
+			releaseFirst();
+			await Promise.all([skipped, overlapping]);
+			Transaction.prototype.commit = originalCommit;
+			const entry = Unaudited.primaryStore.getEntry(recordId);
+			assert.strictEqual(entry.value.n, 50);
+			assert.strictEqual(entry.version, plainVersion);
+			assert.strictEqual(handle.holderVersionCandidate(), candidateBefore, 'skipped writes left no trace');
+		});
+
 		it("a write from the commit's own async before hook, after an await, joins that commit", async function () {
 			if (SKIP_ON_LMDB) return this.skip();
 			const firstId = id();
@@ -467,6 +520,48 @@ describe('Record locks (QA-5082): static table verbs on locked keys must resolve
 			assert.strictEqual(staged[0].shared, true);
 		});
 
+		it('a write back into a parked commit from a hook that commit started on another link joins it', async function () {
+			if (SKIP_ON_LMDB) return this.skip();
+			const firstId = id();
+			const secondId = id();
+			const siblingId = id();
+			await Unaudited.put({ id: firstId, n: 1 });
+			await Unaudited.put({ id: secondId, n: 10 });
+			await OtherDatabase.put({ id: siblingId, n: 1 });
+			const context = {};
+			const holder1 = await Unaudited.lock(firstId, { hold: true, lease: 5000 }, context);
+			cleanups.push(() => holder1.unlock());
+			const holder2 = await Unaudited.lock(secondId, { hold: true, lease: 5000 }, context);
+			cleanups.push(() => holder2.unlock());
+			const sibling = await OtherDatabase.lock(siblingId, { hold: true, lease: 5000 }, context);
+			cleanups.push(() => sibling.unlock());
+			Unaudited.source = {
+				publish: async () => {
+					await delay(1);
+					delete Unaudited.source;
+					await sibling.publish({ n: 2 });
+				},
+			};
+			OtherDatabase.source = {
+				publish: async () => {
+					await delay(1);
+					delete OtherDatabase.source;
+					holder2.set('n', 20);
+					await holder2.save();
+				},
+			};
+			cleanups.push(() => {
+				delete Unaudited.source;
+				delete OtherDatabase.source;
+			});
+			const outcome = await Promise.race([
+				Promise.resolve(holder1.publish({ n: 7 })).then(() => 'committed'),
+				delay(2000).then(() => 'hung'),
+			]);
+			assert.strictEqual(outcome, 'committed');
+			assert.strictEqual(Unaudited.primaryStore.getEntry(secondId).value.n, 20);
+		});
+
 		it("a before-hook write into a sibling database's parked commit still waits for that commit", async function () {
 			if (SKIP_ON_LMDB) return this.skip();
 			const ownId = id();
@@ -483,11 +578,13 @@ describe('Record locks (QA-5082): static table verbs on locked keys must resolve
 				releaseSibling = resolve;
 			});
 			OtherDatabase.source = { publish: () => siblingGate };
+			let hookWriteStarted = false;
 			let hookWriteSettled = false;
 			Unaudited.source = {
 				publish: async () => {
 					await delay(1);
 					sibling.set('n', 5);
+					hookWriteStarted = true;
 					await sibling.save();
 					hookWriteSettled = true;
 				},
@@ -501,7 +598,8 @@ describe('Record locks (QA-5082): static table verbs on locked keys must resolve
 			delete OtherDatabase.source;
 			const ownCommit = holder.publish({ n: 7 });
 			delete Unaudited.source;
-			await delay(20);
+			await waitFor(() => hookWriteStarted);
+			await delay(10);
 			assert.strictEqual(hookWriteSettled, false, 'the hook write must wait for the sibling commit it joined');
 			releaseSibling();
 			await Promise.all([siblingCommit, ownCommit]);

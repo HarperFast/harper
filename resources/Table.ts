@@ -7654,8 +7654,6 @@ export function makeTable(options): TableResourceClass {
 					(scanTarget as any).checkPermission = false;
 				}
 				(scanTarget as any).select = ['$id']; // just get the primary key of each record so we can delete them
-				// Outside transaction() each row commits on its own: every issued row settles before this returns
-				// or rejects, and the first failure, of a row or of the scan, is the one reported.
 				let inFlight: Set<Promise<void>> | undefined;
 				let freeSlot: (() => void) | undefined;
 				let failure: { error: unknown } | undefined;
