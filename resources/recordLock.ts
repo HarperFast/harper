@@ -88,8 +88,11 @@ export interface RecordLockHandle {
 	noteCandidateFloor(version: number, claimOnWrite?: boolean): void;
 	/** Compute the next holder-write floor from committed holder versions without claiming a local key unless requested. */
 	holderVersionFloor(floor?: number, claim?: boolean): number;
-	/** Compute the next holder-write version; it may consume a local key before the write commits. */
-	holderVersionCandidate(floor?: number): number;
+	/**
+	 * Compute the next holder-write version; it may consume a local key before the write commits.
+	 * `inFlight` is the highest stamp of a holder write still committing on another native transaction.
+	 */
+	holderVersionCandidate(floor?: number, inFlight?: number): number;
 	/** `ts_R` of the granted cluster round; undefined while the hold is node-scoped (Phase 0). */
 	clusterTsR?: number;
 	/**
@@ -313,8 +316,13 @@ class KeyLockHandle implements RecordLockHandle {
 		return this.#resolveCandidate(floor, claim, this.#committedHolderVersion);
 	}
 
-	holderVersionCandidate(floor?: number): number {
-		return this.#resolveCandidate(floor, true, this.#lastHolderVersion);
+	holderVersionCandidate(floor?: number, inFlight?: number): number {
+		const last = this.#lastHolderVersion;
+		return this.#resolveCandidate(
+			floor,
+			true,
+			inFlight !== undefined && (last === undefined || inFlight > last) ? inFlight : last
+		);
 	}
 
 	#resolveCandidate(floor: number | undefined, claim: boolean, lastVersion: number | undefined): number {

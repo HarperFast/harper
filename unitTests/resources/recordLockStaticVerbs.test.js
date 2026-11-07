@@ -14,6 +14,7 @@ describe('Record locks (QA-5082): static table verbs on locked keys must resolve
 	this.timeout(10000);
 	let Audited;
 	let Unaudited;
+	let OtherDatabase;
 	let nextId = 1;
 	const id = () => `qa5082-${nextId++}`;
 	const cleanups = [];
@@ -40,6 +41,12 @@ describe('Record locks (QA-5082): static table verbs on locked keys must resolve
 				{ name: 'n' },
 				{ name: 'updatedAt', type: 'Date', assignUpdatedTime: true },
 			],
+		});
+		OtherDatabase = table({
+			table: 'QA5082Other',
+			database: 'qa5082_static_lock_other',
+			audit: false,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'n' }],
 		});
 	});
 
@@ -329,6 +336,140 @@ describe('Record locks (QA-5082): static table verbs on locked keys must resolve
 			holder2.set('n', 20);
 			assert.strictEqual(await holder2.save(), undefined);
 			assert.strictEqual((await Unaudited.get(secondId)).n, 20);
+		});
+
+		for (const audit of [false, true]) {
+			for (const commitOrder of ['issue', 'reverse']) {
+				it(`overlapping holder writes on a closed link land in issue order, ${commitOrder} commit order (audit: ${audit}) (harper#4098)`, async function () {
+					if (SKIP_ON_LMDB) return this.skip();
+					const TestTable = audit ? Audited : Unaudited;
+					const recordId = id();
+					await TestTable.put({ id: recordId, n: 1 });
+					const context = {};
+					const holder = await TestTable.lock(recordId, { hold: true, lease: 5000 }, context);
+					cleanups.push(() => holder.unlock());
+					holder.set('n', 2);
+					await holder.save();
+					assert.strictEqual(context.transaction.open, TRANSACTION_STATE.CLOSED);
+					const { Transaction } = require('../rocksdbBindings.mts').rocksdbBindings();
+					const originalCommit = Transaction.prototype.commit;
+					const targetDb = TestTable.primaryStore.store.db;
+					const gates = [];
+					// a same-key write committing after another one conflicts and retries on a new, ungated handle
+					Transaction.prototype.commit = function (...args) {
+						if (this.store?.db !== targetDb || gates.length === 3) return originalCommit.apply(this, args);
+						let release;
+						const gate = new Promise((resolve) => {
+							release = resolve;
+						});
+						gates.push(release);
+						return gate.then(() => originalCommit.apply(this, args));
+					};
+					cleanups.push(() => {
+						Transaction.prototype.commit = originalCommit;
+						for (const release of gates) release();
+					});
+					const writes = [holder.publish({ n: 7 })];
+					holder.set('n', 5);
+					writes.push(holder.save());
+					holder.set('n', 3);
+					writes.push(holder.save());
+					assert.strictEqual(gates.length, 3, 'each write commits on its own native transaction');
+					for (const release of commitOrder === 'issue' ? gates : [...gates].reverse()) {
+						release();
+						await delay(1);
+					}
+					await Promise.all(writes);
+					Transaction.prototype.commit = originalCommit;
+					assert.strictEqual(TestTable.primaryStore.getEntry(recordId).value.n, 3);
+				});
+			}
+		}
+
+		it("a write from the commit's own async before hook, after an await, joins that commit", async function () {
+			if (SKIP_ON_LMDB) return this.skip();
+			const firstId = id();
+			const secondId = id();
+			await Unaudited.put({ id: firstId, n: 1 });
+			await Unaudited.put({ id: secondId, n: 10 });
+			const context = {};
+			const holder1 = await Unaudited.lock(firstId, { hold: true, lease: 5000 }, context);
+			cleanups.push(() => holder1.unlock());
+			const holder2 = await Unaudited.lock(secondId, { hold: true, lease: 5000 }, context);
+			cleanups.push(() => holder2.unlock());
+			const { Transaction } = require('../rocksdbBindings.mts').rocksdbBindings();
+			const originalCommit = Transaction.prototype.commit;
+			const targetDb = Unaudited.primaryStore.store.db;
+			let nativeCommits = 0;
+			Transaction.prototype.commit = function (...args) {
+				if (this.store?.db === targetDb) nativeCommits++;
+				return originalCommit.apply(this, args);
+			};
+			let hookWriteSettled = false;
+			Unaudited.source = {
+				publish: async () => {
+					await delay(1);
+					delete Unaudited.source;
+					holder2.set('n', 20);
+					await holder2.save();
+					hookWriteSettled = true;
+				},
+			};
+			cleanups.push(() => {
+				delete Unaudited.source;
+				Transaction.prototype.commit = originalCommit;
+			});
+			const outcome = await Promise.race([
+				Promise.resolve(holder1.publish({ n: 7 })).then(() => 'committed'),
+				delay(2000).then(() => 'hung'),
+			]);
+			Transaction.prototype.commit = originalCommit;
+			assert.strictEqual(outcome, 'committed');
+			assert.strictEqual(hookWriteSettled, true);
+			assert.strictEqual(nativeCommits, 1, 'the hook write must commit with the publish, not on its own');
+			assert.strictEqual(Unaudited.primaryStore.getEntry(secondId).value.n, 20);
+		});
+
+		it("a before-hook write into a sibling database's parked commit still waits for that commit", async function () {
+			if (SKIP_ON_LMDB) return this.skip();
+			const ownId = id();
+			const siblingId = id();
+			await Unaudited.put({ id: ownId, n: 1 });
+			await OtherDatabase.put({ id: siblingId, n: 1 });
+			const context = {};
+			const holder = await Unaudited.lock(ownId, { hold: true, lease: 5000 }, context);
+			cleanups.push(() => holder.unlock());
+			const sibling = await OtherDatabase.lock(siblingId, { hold: true, lease: 5000 }, context);
+			cleanups.push(() => sibling.unlock());
+			let releaseSibling;
+			const siblingGate = new Promise((resolve) => {
+				releaseSibling = resolve;
+			});
+			OtherDatabase.source = { publish: () => siblingGate };
+			let hookWriteSettled = false;
+			Unaudited.source = {
+				publish: async () => {
+					await delay(1);
+					sibling.set('n', 5);
+					await sibling.save();
+					hookWriteSettled = true;
+				},
+			};
+			cleanups.push(() => {
+				delete OtherDatabase.source;
+				delete Unaudited.source;
+				releaseSibling();
+			});
+			const siblingCommit = sibling.publish({ n: 2 });
+			delete OtherDatabase.source;
+			const ownCommit = holder.publish({ n: 7 });
+			delete Unaudited.source;
+			await delay(20);
+			assert.strictEqual(hookWriteSettled, false, 'the hook write must wait for the sibling commit it joined');
+			releaseSibling();
+			await Promise.all([siblingCommit, ownCommit]);
+			assert.strictEqual(hookWriteSettled, true);
+			assert.strictEqual(OtherDatabase.primaryStore.getEntry(siblingId).value.n, 5);
 		});
 
 		it('clears isCommitting when an innerCommit on a closed ImmediateTransaction rejects', async function () {
