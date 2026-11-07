@@ -225,15 +225,11 @@ Two consequences that are easy to miss:
 
 ## A request's session helpers are bound module functions, never function literals assigned to a property (`security/auth.ts`)
 
-`request.session.update` and `request.login` are `updateSession` / `loginWithSession` bound to one
-per-request `SessionState`, installed after the stored session fields are copied (so a stored `update`
-field is still overwritten), and they work detached or copied, as the closures they replaced did. They
-must not go back to `request.login = async function …`: V8's parser pretenures a function literal assigned
-to a property (`CheckAssigningFunctionLiteralToProperty`, `deps/v8/src/parsing/parser.h`), so the closure is
-born in old space and keeps its young function context, and everything that context reaches (the request,
-its headers, the response), alive across every scavenge until the next major GC. On a warm REST GET those
-two closures promoted ~1.8 KB per request and nearly tripled major GCs. The same holds for any per-request
-or per-write path: assign a function literal to a local first, or bind a module function. The helpers' behavior is covered by `unitTests/security/authSessions.test.js`.
+`updateSession` / `loginWithSession` bind `SessionState` after stored fields are copied, overriding a stored `update`; detached/copied calls work (`authSessions.test.js`). A property-assigned function literal pretenures its context (`CheckAssigningFunctionLiteralToProperty`), keeping the request graph until major GC (~1.8 KB/request, nearly 3× major GCs). Bind a module function or create a local first. `SESSION_VERSION` shares accessor functions: fresh functions put the clone in dictionary mode. `loadedSessions` keeps the record outside the request's function context.
+
+## Conditional session updates are a best-effort pre-write check (`auth.ts`)
+
+`updateSession` reads outside the request snapshot: RocksDB uses `COMMITTED_SESSION_READ`; LMDB renews its shared reader. It rejects non-live, changed, `VERSION_REUSED`, payload `version`, or versions beyond the clock and issuance floor before the ordinary put. In-flight, later or unreplicated writes can still race (`sessionUpdateIfVersion.test.js`).
 
 ## User and role lookups read the records, and nothing derived from them outlives them (`security/user.ts`)
 

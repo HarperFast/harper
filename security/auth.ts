@@ -25,6 +25,8 @@ const { forComponent, AuthAuditLog, errorForLog } = harperLogger;
 import { Headers, addVaryHeader, SHARED_CACHE_OPTIN, PRIVATE_SCOPE } from '../server/serverHelpers/Headers.ts';
 import { isLocalPeerAddress } from '../server/serverHelpers/peerAddress.ts';
 import { convertToMS } from '../utility/common_utils.ts';
+import { getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
+import { localIssuanceRatchet } from '../resources/originClosedFloor.ts';
 import { verifyCertificate } from './certificateVerification/index.ts';
 import {
 	authenticationChallenge,
@@ -35,7 +37,8 @@ import {
 	isCredentialRejection,
 	markAuthenticationRejectedInPlace,
 } from './deferredAuthentication.ts';
-import { hdbErrors } from '../utility/errors/hdbError.ts';
+import { hdbErrors, ClientError, VersionConflictError } from '../utility/errors/hdbError.ts';
+import { VERSION_REUSED } from '../resources/RecordEncoder.ts';
 import { corsAccessListAllows } from '../utility/corsAccessList.ts';
 const { AUTHENTICATION_ERROR_MSGS, HTTP_STATUS_CODES } = hdbErrors;
 import { onStartup } from '../utility/lifecycle.ts';
@@ -59,6 +62,14 @@ let ENABLE_SESSIONS: boolean = true;
 let AUTHORIZE_LOCAL: any = envFlag(process.env.AUTHENTICATION_AUTHORIZELOCAL) ?? envFlag(process.env.DEV_MODE);
 let LOG_AUTH_SUCCESSFUL: boolean = false;
 let LOG_AUTH_FAILED: boolean = false;
+const COMMITTED_SESSION_READ = { uncachedRead: true };
+const loadedSessions = new WeakMap<object, any>();
+const SESSION_VERSION = {
+	get: getSessionVersion,
+	set: setSessionVersion,
+	enumerable: false,
+	configurable: true,
+};
 
 function getSessionTable() {
 	return _sessionTable;
@@ -192,6 +203,13 @@ export async function authentication(request, nextHandler) {
 				}
 			}
 			request.session = session ? { ...session } : (session = {});
+			if (
+				typeof session.getUpdatedTime === 'function' &&
+				!Object.prototype.hasOwnProperty.call(request.session, 'version')
+			) {
+				loadedSessions.set(request.session, session);
+				Object.defineProperty(request.session, 'version', SESSION_VERSION);
+			}
 		}
 
 		if (
@@ -525,6 +543,15 @@ function authAuditLog(request, sessionId: string | undefined, username, status, 
 	else authEventLog.error?.(log);
 }
 
+function getSessionVersion(this: object) {
+	return loadedSessions.get(this)?.getUpdatedTime();
+}
+
+function setSessionVersion(this: object, value: any) {
+	Object.defineProperty(this, 'version', { value, writable: true, enumerable: true, configurable: true });
+	loadedSessions.delete(this);
+}
+
 interface SessionState {
 	request: any;
 	headers: any;
@@ -535,7 +562,66 @@ interface SessionState {
 	response: any;
 }
 
-function updateSession(this: SessionState, updatedSession) {
+function updateSession(this: SessionState, updatedSession, options?: { ifVersion: number }) {
+	let ifVersion: number | undefined;
+	if (options !== undefined) {
+		if (options === null || typeof options !== 'object' || !('ifVersion' in options)) {
+			throw new ClientError('session.update(data, options) requires options.ifVersion', 400);
+		}
+		ifVersion = options.ifVersion;
+		if (typeof ifVersion !== 'number' || !Number.isFinite(ifVersion)) {
+			throw new ClientError(
+				'session.update ifVersion must be a finite number captured from an existing session; do not use payload version values',
+				400
+			);
+		}
+		if (!this.sessionId)
+			return Promise.reject(new VersionConflictError(getSessionTable().tableName, ifVersion, undefined, true));
+		try {
+			// Read the latest committed row outside the request snapshot.
+			const store = getSessionTable().primaryStore;
+			store.resetReadTxn?.();
+			const entry = store.getEntry(this.sessionId, COMMITTED_SESSION_READ);
+			const liveEntry = entry?.value != null && !(entry.expiresAt != null && entry.expiresAt < Date.now());
+			if (liveEntry && Object.prototype.hasOwnProperty.call(entry.value, 'version'))
+				return Promise.reject(
+					new VersionConflictError(
+						getSessionTable().tableName,
+						ifVersion,
+						entry.version,
+						false,
+						'session data contains the reserved version field'
+					)
+				);
+			if (!liveEntry || entry.version !== ifVersion)
+				return Promise.reject(
+					new VersionConflictError(getSessionTable().tableName, ifVersion, liveEntry ? entry.version : undefined, true)
+				);
+			if (entry.metadataFlags & VERSION_REUSED)
+				return Promise.reject(
+					new VersionConflictError(getSessionTable().tableName, ifVersion, entry.version, false, 'version reused')
+				);
+			const hasNativeClock = typeof store.getMonotonicTimestamp === 'function';
+			const nextWriteTime = hasNativeClock ? store.getMonotonicTimestamp() : getNextMonotonicTime();
+			if (
+				entry.version >= nextWriteTime &&
+				(!hasNativeClock ||
+					typeof store.rootStore?.getUserSharedBuffer !== 'function' ||
+					entry.version > localIssuanceRatchet(store.rootStore))
+			)
+				return Promise.reject(
+					new VersionConflictError(
+						getSessionTable().tableName,
+						ifVersion,
+						entry.version,
+						true,
+						'stored version is ahead of the local write clock'
+					)
+				);
+		} catch (error) {
+			return Promise.reject(error);
+		}
+	}
 	const { request, headers, origin, responseHeaders, response } = this;
 	const expires = env.get(CONFIG_PARAMS.AUTHENTICATION_COOKIE_EXPIRES);
 	const useSecure =
