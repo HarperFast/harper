@@ -6735,6 +6735,8 @@ export function makeTable(options): TableResourceClass {
 							let addedAuditRef = false;
 							let nextRef: { localTime: number; nodeId: number };
 							const visitedAuditRefs = new Set<string>();
+							const resolvedAuditRefs = isRocksDB ? new Set<string>() : undefined;
+							const visitedAuditLogKeys = isRocksDB ? new Set<number>() : undefined;
 							let isAdditionalAuditRef = false;
 							let previousHeadOf: any;
 							let previousHead: { txnLogKey: number; nodeId: number; entry?: any };
@@ -6775,7 +6777,9 @@ export function makeTable(options): TableResourceClass {
 									auditHistoryMissing = true;
 							};
 							let walkSteps = 0;
+							let probeSteps = 0;
 							let auditWalkCapped = false;
+							let cappedProbeDepth: number | undefined;
 							// Early-out residual: as we walk the chain newest-first, fold each succeeding patch into a
 							// throwaway copy of this write purely to detect when every field has been overwritten by
 							// newer writes. When it empties — and there is no alternate audit branch — the write is
@@ -6806,8 +6810,8 @@ export function makeTable(options): TableResourceClass {
 							};
 							do {
 								while (localTime > txnTime || (auditedVersion >= txnTime && localTime > 0)) {
-									const auditIdentity = `${nodeId ?? 0}:${localTime}`;
-									if (visitedAuditRefs.has(auditIdentity)) break;
+									const auditIdentity = `${nodeId ?? (isRocksDB ? 'unknown' : 0)}:${localTime}`;
+									if (visitedAuditRefs.has(auditIdentity) || resolvedAuditRefs?.has(auditIdentity)) break;
 									visitedAuditRefs.add(auditIdentity);
 									// An earlier same-key write in this transaction is not in the committed log yet; an uncommitted read
 									// on retry would see this handle's own unresolved batch from the failed attempt.
@@ -6820,6 +6824,47 @@ export function makeTable(options): TableResourceClass {
 												transaction.hasStagedLog &&
 												(nodeId ?? 0) === (options?.nodeId ?? getThisNodeId(auditStore))));
 									if (ownPendingEntry) break;
+									const revisitedLogKey = visitedAuditLogKeys?.has(localTime);
+									visitedAuditLogKeys?.add(localTime);
+									let probedAuditRef = false;
+									if (revisitedLogKey && nodeId == null) {
+										probedAuditRef = true;
+										if (resolvedEntry?.txnLogKey !== localTime) resolvedEntry = undefined;
+										if (fullUpdate && !resolvedEntry) {
+											if (probeSteps >= MAX_OUT_OF_ORDER_AUDIT_DEPTH) {
+												auditHistoryMissing = true;
+												cappedProbeDepth = probeSteps;
+											} else
+												for (const entry of auditStore.getRange({
+													start: localTime,
+													exactStart: true,
+													readUncommitted: true,
+												})) {
+													if (entry.txnLogKey !== localTime) break;
+													if (++probeSteps > MAX_OUT_OF_ORDER_AUDIT_DEPTH) {
+														auditHistoryMissing = true;
+														cappedProbeDepth = probeSteps;
+														break;
+													}
+													if (!entry.type || !Number.isFinite(entry.version)) auditHistoryMissing = true;
+													if (entry.tableId === tableId) {
+														const entryId = entry.recordId;
+														if (entryId === undefined) auditHistoryMissing = true;
+														if (entryId === id) {
+															resolvedEntry = entry;
+															break;
+														}
+													}
+												}
+										} else {
+											resolvedEntry ??= auditStore.get(localTime, tableId, id, nodeId, true);
+										}
+										if (
+											resolvedEntry &&
+											resolvedAuditRefs?.has(`${resolvedEntry.nodeId ?? 0}:${resolvedEntry.txnLogKey ?? localTime}`)
+										)
+											break;
+									}
 									// Bound the walk only for RocksDB, where the OOM was observed (issue #1114): each step
 									// is a transaction-log range scan + msgpackr decode, and the per-node logs can be huge.
 									// LMDB audit entries are keyed by local audit time (not version), so the duplicate
@@ -6834,36 +6879,38 @@ export function makeTable(options): TableResourceClass {
 										let frameComplete = false;
 										// A keyed lookup hides unreadable siblings before its first match, and a message or older
 										// version can precede newer mutations in the same frame. Read past the committed watermark.
-										for (const entry of auditStore.getRange({
-											start: localTime,
-											exactStart: true,
-											log: nodeId,
-											readUncommitted: true,
-										})) {
-											if (entry.txnLogKey !== localTime) break;
-											if (++walkSteps > MAX_OUT_OF_ORDER_AUDIT_DEPTH) {
-												auditWalkCapped = true;
-												break;
-											}
-											if (!entry.type || !Number.isFinite(entry.version)) auditHistoryMissing = true;
-											if (entry.tableId === tableId) {
-												const entryId = entry.recordId;
-												if (entryId === undefined) auditHistoryMissing = true;
-												if (entryId === id) {
-													if (!auditRecord) auditRecord = entry;
-													else (extraFrameEntries ??= []).push(entry);
+										if (!probedAuditRef || resolvedEntry) {
+											for (const entry of auditStore.getRange({
+												start: localTime,
+												exactStart: true,
+												log: nodeId,
+												readUncommitted: true,
+											})) {
+												if (entry.txnLogKey !== localTime) break;
+												if (++walkSteps > MAX_OUT_OF_ORDER_AUDIT_DEPTH) {
+													auditWalkCapped = true;
+													break;
 												}
-											}
-											if (auditRecord && entry.endTxn) {
-												frameComplete = true;
-												break;
+												if (!entry.type || !Number.isFinite(entry.version)) auditHistoryMissing = true;
+												if (entry.tableId === tableId) {
+													const entryId = entry.recordId;
+													if (entryId === undefined) auditHistoryMissing = true;
+													if (entryId === id) {
+														if (!auditRecord) auditRecord = entry;
+														else (extraFrameEntries ??= []).push(entry);
+													}
+												}
+												if (auditRecord && entry.endTxn) {
+													frameComplete = true;
+													break;
+												}
 											}
 										}
 										if (auditWalkCapped && !auditRecord) break;
 										if (auditRecord && !frameComplete) auditHistoryMissing = true;
 									} else {
 										auditRecord =
-											resolvedEntry?.txnLogKey === localTime
+											probedAuditRef || resolvedEntry?.txnLogKey === localTime
 												? resolvedEntry
 												: auditStore.get(localTime, tableId, id, nodeId, true);
 									}
@@ -6871,6 +6918,11 @@ export function makeTable(options): TableResourceClass {
 									if (!auditRecord) {
 										auditHistoryMissing = true;
 										break;
+									}
+									if (resolvedAuditRefs) {
+										const resolvedAuditIdentity = `${auditRecord.nodeId ?? 0}:${auditRecord.txnLogKey ?? localTime}`;
+										if (resolvedAuditRefs.has(resolvedAuditIdentity)) break;
+										resolvedAuditRefs.add(resolvedAuditIdentity);
 									}
 									isAdditionalAuditRef = false;
 									if (!auditRecord.type || !Number.isFinite(auditRecord.version)) auditHistoryMissing = true;
@@ -7124,28 +7176,18 @@ export function makeTable(options): TableResourceClass {
 								}
 								if (!auditHistoryMissing) succeedingUpdates = frameUpdates;
 							}
-							if (auditWalkCapped) {
-								// The out-of-order audit chain exceeded MAX_OUT_OF_ORDER_AUDIT_DEPTH (a pathologically deep
-								// history, seen during a replication full-copy of a large-history database — issue #1114).
-								// For full PUTs, depth counts scanned entries, including unrelated transaction siblings.
-								// Walking and buffering the whole chain per record OOMs the worker, so we stopped at the cap
-								// and reconcile against only the Updates collected before the cap (the fold below). That is an
-								// approximation for histories deeper than the cap — updates older than the retained window are
-								// not layered in — but the authoritative full-copy record restores exact convergence. Because we
-								// stopped before reaching txnTime, the inline duplicate detection in the walk never ran;
-								// full-copy audit-replay re-delivers writes, and re-applying one would double-apply its
-								// commutative ops. A re-delivered out-of-order write is already ruled out by the
-								// additionalAuditRefs check at the top of this block; this keyed lookup is the best-effort
-								// guard for the remaining case — a re-delivered write that was originally in-order (so it left
-								// no ref) and is now deeper than the cap. It is best-effort because the transaction-log lookup
-								// can intermittently miss an entry under load (tracked separately); the authoritative full-copy
-								// record still restores exact convergence.
+							if (auditWalkCapped || cappedProbeDepth !== undefined) {
+								// Unresolved history can hide an applied receipt; check again before replaying its operations.
+								// A subsequent full copy restores history beyond these reconciliation limits.
 								logger.warn?.(
-									'Out-of-order audit reconciliation exceeded depth cap; reconciling against collected updates only',
+									auditWalkCapped
+										? 'Out-of-order audit reconciliation exceeded depth cap; reconciling against collected updates only'
+										: 'Out-of-order audit identity probe reached its limit; reconciling available history only',
 									{
 										table: tableName,
 										id,
-										depth: walkSteps,
+										depth: auditWalkCapped ? walkSteps : undefined,
+										probeDepth: cappedProbeDepth,
 										fullUpdate,
 									}
 								);
