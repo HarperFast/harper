@@ -642,4 +642,36 @@ describe('mqtt.ts CONNECT through a component’s server.getUser', () => {
 			admitted.socket.handlers.close();
 		}
 	});
+
+	it('keeps checking a repeated login against the record that first admitted it, once that record is dropped', async () => {
+		await seedUsers([{ username: 'mqtt_alias_login', active: true, role: { id: 'mqtt_alias_role', permission: {} } }]);
+		const shared = { username: 'mqtt_alias_subject', role: { permission: { super_user: true } } };
+		server.getUser = async () => shared;
+		const first = await connect(open, { username: 'mqtt_alias_login', password: 'secret' });
+		assert.deepStrictEqual((await first.subscribe(`${protectedTable()}/#`)).granted, [1]);
+		await databases.system.hdb_user.delete('mqtt_alias_login');
+		const again = await connect(open, { username: 'mqtt_alias_login', password: 'secret' });
+		try {
+			assert.deepStrictEqual((await again.subscribe(`${protectedTable()}/#`)).granted, [NOT_AUTHORIZED]);
+		} finally {
+			first.socket.handlers.close();
+			again.socket.handlers.close();
+		}
+	});
+
+	it('classes a memoized user a record-backed login reached first as recordless for a login no record admitted', async () => {
+		await seedUsers([{ username: 'mqtt_backing', active: true, role: { id: 'mqtt_backing_role', permission: {} } }]);
+		const shared = { username: 'mqtt_backed_subject', role: { permission: { super_user: true } } };
+		server.getUser = async () => shared;
+		const backed = await connect(open, { username: 'mqtt_backing', password: 'secret' });
+		const token = await connect(open, { username: 'mqtt_token_only', password: 'token' });
+		await databases.system.hdb_user.delete('mqtt_backing');
+		try {
+			assert.deepStrictEqual((await token.subscribe(`${protectedTable()}/#`)).granted, [1], 'no record admitted it');
+			assert.deepStrictEqual((await backed.subscribe(`${protectedTable()}/#`)).granted, [NOT_AUTHORIZED]);
+		} finally {
+			token.socket.handlers.close();
+			backed.socket.handlers.close();
+		}
+	});
 });

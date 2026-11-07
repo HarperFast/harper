@@ -587,8 +587,9 @@ export interface UserProvenance {
 
 // An own property of a user this module built, so a spread copy carries it without a WeakMap write
 const PROVENANCE = Symbol('record provenance');
-// a user resolved outside this module (a component's server.getUser), which may not take a property
-const trackedProvenance = new WeakMap<User, UserProvenance>();
+// A user resolved outside this module (a component's server.getUser), which may not take a property: the
+// first lookup that checked it against each name, its own or a login name whose record admitted it
+const trackedProvenance = new WeakMap<User, Map<unknown, UserProvenance>>();
 
 function provenanceOf(username: string, entries: UserEntries): UserProvenance {
 	return {
@@ -660,9 +661,11 @@ function userRecordVersions(username: string): UserProvenance {
  * Makes `isCurrentUser` check a user resolved outside this module against the record versions read
  * before it was resolved, so a write in between shows as a change. A user under another name, when no
  * record has the login name, can only have its own name's records read after it resolved, so only a drop
- * in between shows, by its tombstone. Returns what this lookup read, for its view (`cloneUserView`), or
- * undefined for a user this module built. A memoizing server.getUser hands one user to later lookups, and
- * a connection holding it is checked against what its first lookup recorded.
+ * in between shows, by its tombstone. Returns what its holder is checked against, or undefined for a user
+ * this module built. A memoizing server.getUser hands one user to logins backed differently, so each holder
+ * gets its own lookup's provenance, against the first lookup that checked the user against the same name:
+ * a name first found recordless stays so, and a record that first lookup read and that is since dropped
+ * stays a change.
  */
 function trackUserRecords(user: User, versions: UserProvenance): UserProvenance | undefined {
 	if (!user || typeof user !== 'object' || (user as any)[PROVENANCE]) return undefined;
@@ -681,21 +684,31 @@ function trackUserRecords(user: User, versions: UserProvenance): UserProvenance 
 		provenance = userRecordVersions(user.username);
 		provenance.recordless = provenance.userStamp === null && !hasLiveOrDeletedEntry(store, user.username);
 	}
-	const first = trackedProvenance.get(user);
-	// a record created under its name since the first lookup is another principal's
-	if (first) provenance.recordless = first.recordless && !loginBacked;
-	else trackedProvenance.set(user, provenance);
+	let firsts = trackedProvenance.get(user);
+	if (!firsts) trackedProvenance.set(user, (firsts = new Map()));
+	const first = firsts.get(provenance.username);
+	if (!first) firsts.set(provenance.username, provenance);
+	// a record created under its name since is another principal's
+	else if (first.recordless) provenance.recordless = true;
+	else if (first.userStamp !== null && provenance.userStamp === null) provenance = first;
+	else provenance.recordless = false;
 	return provenance;
+}
+
+// for a holder with no provenance of its own lookup: its own name's first lookup, else its first
+function firstLookup(user: User): UserProvenance | undefined {
+	const firsts = trackedProvenance.get(user);
+	return firsts && (firsts.get(user.username) ?? firsts.values().next().value);
 }
 
 /**
  * A copy whose `role` and `permission` the caller may replace (verifyPerms does) without touching `user`;
- * `isCurrentUser` checks it against `provenance`, what `trackUserRecords` read for this lookup, or else
+ * `isCurrentUser` checks it against `provenance`, what `trackUserRecords` returned for this lookup, or else
  * against the records `user` was built from.
  */
 function cloneUserView(user: User & { role: UserRole }, provenance?: UserProvenance): User {
 	const clone: User = { ...user, role: { ...user.role, permission: { ...user.role.permission } } };
-	provenance ??= (clone as any)[PROVENANCE] ?? trackedProvenance.get(user);
+	provenance ??= (clone as any)[PROVENANCE] ?? firstLookup(user);
 	if (provenance) (clone as any)[PROVENANCE] = provenance;
 	return clone;
 }
@@ -703,10 +716,8 @@ function cloneUserView(user: User & { role: UserRole }, provenance?: UserProvena
 /**
  * `server.getUser` for a connection that holds its user (MQTT CONNECT), with a component's principal tracked
  * against the records read for its name before it resolved (`trackUserRecords`). It returns the component's
- * user itself, since a copy would lose its class's private fields, and puts on `admission` the provenance the
- * connection is checked against: the user's first lookup, or the login name's record where that admitted a
- * user under another name, since a memoizing server.getUser can hand one user to logins backed differently.
- * `resolver` is the server whose getUser resolves the login, as the caller's scope would call it.
+ * user itself, since a copy would lose its class's private fields, and puts on `admission` what the
+ * connection is checked against. `resolver` is the server whose getUser resolves the login.
  */
 function getTrackedUser(
 	username: string,
@@ -730,22 +741,21 @@ async function getComponentUser(
 	const versions = userRecordVersions(username);
 	const user = await resolver.getUser(username, password, request as any);
 	const provenance = trackUserRecords(user, versions);
-	if (admission && provenance) {
-		admission.provenance = provenance.username === user.username ? trackedProvenance.get(user) : provenance;
-	}
+	if (admission) admission.provenance = provenance;
 	return user;
 }
 
 function recordedProvenance(user: User, admitted?: UserProvenance): UserProvenance | undefined {
-	return admitted ?? (user as any)?.[PROVENANCE] ?? trackedProvenance.get(user);
+	return admitted ?? (user as any)?.[PROVENANCE] ?? firstLookup(user);
 }
 
 /**
- * Whether `isCurrentUser` can answer for `user`: false for one resolved outside this module and not tracked.
- * `admitted` is what its holder's own lookup recorded (`getTrackedUser`), which outranks the user's.
+ * Whether `isCurrentUser` answers for `user`'s own name, so a change to its records notifies its holders:
+ * false for one resolved outside this module and not tracked, or checked against the login name that admitted
+ * it under another. `admitted` is what its holder's own lookup recorded (`getTrackedUser`).
  */
 function hasRecordProvenance(user: User, admitted?: UserProvenance): boolean {
-	return Boolean(recordedProvenance(user, admitted));
+	return recordedProvenance(user, admitted)?.username === user.username;
 }
 
 /**

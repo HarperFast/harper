@@ -1178,7 +1178,8 @@ function registerLiveSubscriptionForContext(
 	if (!subscription || typeof subscription !== 'object' || subscription.closed) return subscription;
 	const { cloneUserView, hasRecordProvenance, isCurrentUser, isRecordlessPrincipal } = securityUser!;
 	// an MQTT connection's own CONNECT: a memoizing server.getUser can hand its user to logins backed differently
-	const admitted = (context as any)?.userProvenance;
+	const session = (context as any)?.session;
+	const admitted = session?.user === user ? session.userProvenance : undefined;
 	const fixedPrincipal = Boolean(user._scopedToken) || isRecordlessPrincipal(user, admitted);
 	// Without a caller's select or a condition or sort through a relationship, the default allowRead only
 	// narrows what it returns, so its verdict depends on the role's permission for this table alone.

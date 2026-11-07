@@ -13,7 +13,7 @@ import { auditRetention, getDatabaseGeneration, isResumablePosition } from '../r
 import { exportIdMapping, getNodeNameForId } from '../resources/nodeIdMapping.ts';
 import { getThisNodeName } from './nodeName.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
-import { isLocalPrincipal, localPrincipal } from '../security/user.ts';
+import { isLocalPrincipal, localPrincipal, type UserProvenance } from '../security/user.ts';
 import {
 	ORIGIN_ID,
 	admitCheckpoint,
@@ -274,8 +274,8 @@ class SubscriptionsSession {
 	listener: (topic, message, messageId, subscription, version?, dup?: boolean) => any;
 	sessionId: any;
 	user: any;
-	/** What this connection's CONNECT recorded for `user` (`getTrackedUser`); mqtt.ts supplies it. */
-	userProvenance: any;
+	/** What this connection's CONNECT recorded for `user` (`getTrackedUser`), which its subscriptions are checked against. */
+	userProvenance: UserProvenance | undefined;
 	request: any;
 	socket: any;
 	subscriptions = [];
@@ -631,7 +631,6 @@ class SubscriptionsSession {
 			session: this,
 			socket: this.socket,
 			user: this.user,
-			userProvenance: this.userProvenance,
 			authorize: true, // authorize each action
 		};
 		if (this.request) {

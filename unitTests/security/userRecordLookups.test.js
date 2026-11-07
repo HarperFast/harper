@@ -430,42 +430,48 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 			}
 		});
 
-		it('checks a later login’s view of a memoized user against its own lookup, leaving the user as its first login tracked it', async () => {
+		it('checks a later login’s view of a memoized user against its own lookup, unless the record its first lookup read was dropped', async () => {
 			await testUtils.seedUsers([lookupUser({ username: 'lookup_shared' })]);
 			const shared = structuredClone(user.getUserWithRole('lookup_shared'));
-			const unbacked = { username: 'lookup_shared_unbacked', role: { role: 'component_role', permission: {} } };
 			const getUser = server.getUser;
-			server.getUser = async (username) => (username === 'lookup_shared' ? shared : unbacked);
+			server.getUser = async () => shared;
 			try {
 				await user.getTrackedUser('lookup_shared', 'token');
-				await user.getTrackedUser('lookup_shared_unbacked', 'token');
-				await databases.system.hdb_user.delete('lookup_shared');
-				await testUtils.seedUsers([
-					lookupUser({ username: 'lookup_shared_unbacked' }),
-					lookupUser({ username: 'lookup_admitting' }),
-				]);
-
-				const view = (await authenticate(basic('lookup_shared', 'token'))).user;
-				assert.notStrictEqual(view, shared);
-				assert.strictEqual(user.isCurrentUser(view), true, 'the view is checked against what its login read');
-				assert.strictEqual(user.isRecordlessPrincipal(view), false, 'and classed as the first login classed the user');
+				await databases.system.hdb_user.put(lookupUser({ username: 'lookup_shared', role: 'lookup_role' }));
+				const updated = (await authenticate(basic('lookup_shared', 'token'))).user;
+				assert.notStrictEqual(updated, shared);
+				assert.strictEqual(user.isCurrentUser(updated), true, 'the view is checked against what its login read');
 				assert.strictEqual(user.isCurrentUser(shared), false, 'the user keeps what its first login read');
-				assert.strictEqual(user.isRecordlessPrincipal(shared), false);
 
-				const unbackedView = (await authenticate(basic('lookup_shared_unbacked', 'token'))).user;
-				assert.strictEqual(
-					user.isRecordlessPrincipal(unbackedView),
-					true,
-					'a record created later is another principal’s'
-				);
+				await databases.system.hdb_user.delete('lookup_shared');
+				const dropped = (await authenticate(basic('lookup_shared', 'token'))).user;
+				assert.strictEqual(user.isCurrentUser(dropped), false, 'the record its first login read was dropped');
+				assert.strictEqual(user.isRecordlessPrincipal(dropped), false);
+				assert.strictEqual(user.isRecordlessPrincipal(shared), false);
+			} finally {
+				server.getUser = getUser;
+			}
+		});
+
+		it('classes each login’s view of a memoized user by the name its record was checked against', async () => {
+			const unbacked = { username: 'lookup_shared_unbacked', role: { role: 'component_role', permission: {} } };
+			const getUser = server.getUser;
+			server.getUser = async () => unbacked;
+			try {
+				await testUtils.seedUsers([lookupUser({ username: 'lookup_admitting' })]);
+				const admitted = (await authenticate(basic('lookup_admitting', 'token'))).user;
+				assert.strictEqual(admitted.username, 'lookup_shared_unbacked');
+				assert.strictEqual(user.isRecordlessPrincipal(admitted), false, 'the login name’s record may have admitted it');
+				const tokenView = (await authenticate(basic('lookup_token_only', 'token'))).user;
+				assert.strictEqual(user.isRecordlessPrincipal(tokenView), true, 'no record admitted this one');
+
+				await testUtils.seedUsers([
+					lookupUser({ username: 'lookup_admitting' }),
+					lookupUser({ username: 'lookup_shared_unbacked' }),
+				]);
+				const later = (await authenticate(basic('lookup_token_later', 'token'))).user;
+				assert.strictEqual(user.isRecordlessPrincipal(later), true, 'a record created later is another principal’s');
 				assert.strictEqual(user.isRecordlessPrincipal(unbacked), true);
-				const admittedView = (await authenticate(basic('lookup_admitting', 'token'))).user;
-				assert.strictEqual(admittedView.username, 'lookup_shared_unbacked');
-				assert.strictEqual(
-					user.isRecordlessPrincipal(admittedView),
-					false,
-					'the login name’s record may have admitted it'
-				);
 			} finally {
 				server.getUser = getUser;
 			}
