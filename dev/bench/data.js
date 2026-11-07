@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794036126101,
+  "lastUpdate": 1794042202059,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -27669,6 +27669,58 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw write ops",
             "value": 530082,
+            "unit": "ops"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "45519a70df369e4fdc1192fb3af4a7cbc05d3bc4",
+          "message": "Add relationship-permission anchors for the non-JSON response formats and @enumerable relationships (#4108)\n\n* Add relationship-permission anchors for the non-JSON response formats and @enumerable relationships\n\nTwo integrationTests/security/ files promoted from the qa-explorer security lane:\n\n- relationship-formats-related-read.test.ts: a role with read on Order only, and a role with\n  Customer limited to id,name, read Order as CBOR, MessagePack and NDJSON with select(*) and an\n  explicit sub-select, and through export_local (csv/json, get_attributes [\"*\"]). The granted rows\n  come back and no related value the role may not read does, in the decoded structure or the raw\n  bytes. Super-user explicit selects are the live positive control.\n- relationship-enumerable-formats.test.ts: the same contract for @enumerable relationships (from\n  and one-to-many to), which are part of a default read, on json/cbor/msgpack/ndjson/csv for the\n  default read, select(*), select(*,customer) and an explicit sub-select. A non-super role that can\n  read every table in full discriminates readable-in-full behaviour from super-user behaviour.\n\nCo-Authored-By: Claude Mythos 5.1 <noreply@anthropic.com>\n\n* Bound the REST helpers, poll export jobs as the submitter, assert the narrowed shapes on the explicit select\n\nPre-push review round 1: request timeout on both send helpers; role 2's explicit sub-select\nasserts customer narrowed to {name} and no notes on every format (plus the record URL on the\nnon-JSON formats); export jobs are polled as the principal that started them with each poll's\nstatus asserted and a named failure on the deadline; the super-user \"*\" export control asserts\nown attributes only and role 2's \"*\" export asserts the narrowed customer column is present; CSV\narms cover the record select(*), select(*,customer) and the explicit sub-select; console dumps\nand history comments removed.\n\nCo-Authored-By: Claude Mythos 5.1 <noreply@anthropic.com>\n\n* Name the CSV collection header gap, skip on Bun and Windows like the sibling suites, add Run lines\n\nCo-Authored-By: Claude Mythos 5.1 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Mythos 5.1 <noreply@anthropic.com>",
+          "timestamp": "2026-11-07T04:12:15Z",
+          "url": "https://github.com/HarperFast/harper/commit/45519a70df369e4fdc1192fb3af4a7cbc05d3bc4"
+        },
+        "date": 1794042197935,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "value": 22456,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed3",
+            "value": 13975,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed5",
+            "value": 10821,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "value": 15162816,
+            "unit": "records"
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "value": 9022,
+            "unit": "ops"
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "value": 2043,
             "unit": "ops"
           }
         ]
