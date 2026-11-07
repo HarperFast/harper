@@ -9,8 +9,7 @@
  * an outside `.json` and `.ts`, a symlink inside the component whose realpath escapes, an outside
  * `node_modules` path, a bare specifier that resolves by climbing to `components/node_modules`, a
  * `require()` after a refused `import()` of the same file (the loader's route cache), and
- * `require.resolve()` (returns the path, loads nothing). Before #3507 (harper#2396) every one of the
- * refused legs executed the outside module.
+ * `require.resolve()` (returns the path, loads nothing).
  *
  * Oracle: `GET /Probe/` returns `{ outcome: EXECUTED | BLOCKED, sentinel?, message? }` per leg. EXECUTED
  * means the target module's body ran (its sentinel is read back); BLOCKED means `require()` threw. A
@@ -21,8 +20,6 @@
  * Not covered here: a sibling directory whose name shares the component's as a prefix (harper#1929),
  * and loaders obtained from `node:module` or `process.getBuiltinModule`, which the docs exclude from
  * this check (harper#2284).
- *
- * Run: npm run test:integration -- "integrationTests/components/require-confinement-parity.test.ts"
  */
 import { suite, test, before, after } from 'node:test';
 import assert from 'node:assert';
@@ -32,7 +29,7 @@ import { tmpdir } from 'node:os';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { startHarper, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 
-type Leg = { outcome: 'EXECUTED' | 'BLOCKED'; sentinel?: string; message?: string };
+type Leg = { outcome: 'EXECUTED' | 'BLOCKED'; sentinel?: string; message?: string; ran?: boolean };
 type Body = Record<string, Leg>;
 
 const LOADERS = ['vm-current-context', 'vm'] as const;
@@ -54,14 +51,12 @@ async function writeFixture(dataRootDir: string): Promise<void> {
 	]) {
 		await mkdir(d, { recursive: true });
 	}
-	// controls, inside the component
 	await writeFile(join(app, 'inside', 'secret.cjs'), cjs('control'));
 	await writeFile(join(app, 'inside', 'data.json'), JSON.stringify({ SENTINEL: sentinel('controljson') }));
 	await writeFile(
 		join(app, 'inside', 'typed.ts'),
 		`const s: string = '${sentinel('controlts')}';\nmodule.exports = { SENTINEL: s };\n`
 	);
-	// targets outside the component
 	await writeFile(join(other, 'secret.cjs'), cjs('rel'));
 	await writeFile(join(other, 'secret.json'), JSON.stringify({ SENTINEL: sentinel('json') }));
 	await writeFile(
@@ -70,6 +65,10 @@ async function writeFixture(dataRootDir: string): Promise<void> {
 	);
 	await writeFile(join(other, 'failfirst.cjs'), cjs('failfirst'));
 	await writeFile(join(other, 'dyn.cjs'), cjs('dyn'));
+	await writeFile(
+		join(other, 'resolve-target.cjs'),
+		'globalThis.REQUIRE_CONFINEMENT_RESOLVE_RAN = true;\nmodule.exports = {};\n'
+	);
 	await writeFile(join(outside, 'secret.cjs'), cjs('abs'));
 	await writeFile(join(outside, 'secret-symlink.cjs'), cjs('symlink'));
 	await writeFile(
@@ -111,13 +110,11 @@ class Probe extends Resource {
 		out.symlink = attempt(() => require('./link/secret-symlink.cjs'));
 		out.nm = attempt(() => require(OUTSIDE + '/node_modules/escape-pkg/index.js'));
 		out.climb = attempt(() => require('climb-pkg'));
-		// import() of a file no require() leg touches: proves the import-path check is armed on its own
 		out.dyn = await attemptAsync(() => import('../other/dyn.cjs'));
-		// a refused import() of the file first, then require() of the same file (route cache)
 		out.failfirstImport = await attemptAsync(() => import('../other/failfirst.cjs'));
 		out.failfirst = attempt(() => require('../other/failfirst.cjs'));
-		// require.resolve() must not throw; it returns the path and loads nothing
-		out.resolve = attempt(() => ({ SENTINEL: require.resolve('../other/secret.cjs') }));
+		out.resolve = attempt(() => ({ SENTINEL: require.resolve('../other/resolve-target.cjs') }));
+		out.resolve.ran = globalThis.REQUIRE_CONFINEMENT_RESOLVE_RAN === true;
 		return out;
 	}
 }
@@ -140,7 +137,7 @@ for (const loader of LOADERS) {
 			await startHarper(ctx, {
 				config: {
 					threads: { count: 1 },
-					applications: { moduleLoader: loader },
+					applications: { moduleLoader: loader, allowedDirectory: 'app' },
 					logging: { console: true, level: 'error', stdStreams: true },
 				},
 				env: {},
@@ -193,13 +190,15 @@ for (const loader of LOADERS) {
 
 		test(`[${loader}] failfirst: a require() after a refused import() of the same file is refused too`, () => {
 			assert.strictEqual(body.failfirstImport.outcome, 'BLOCKED', JSON.stringify(body.failfirstImport));
+			assert.match(body.failfirstImport.message ?? '', CONFINED);
 			assert.strictEqual(body.failfirst.outcome, 'BLOCKED', JSON.stringify(body.failfirst));
 			assert.match(body.failfirst.message ?? '', CONFINED);
 		});
 
 		test(`[${loader}] resolve: require.resolve() of an outside path returns a path and runs nothing`, () => {
 			assert.strictEqual(body.resolve.outcome, 'EXECUTED', JSON.stringify(body.resolve));
-			assert.match(body.resolve.sentinel ?? '', /other\/secret\.cjs$/);
+			assert.match(body.resolve.sentinel ?? '', /other[\\/]resolve-target\.cjs$/);
+			assert.strictEqual(body.resolve.ran, false, 'require.resolve() executed its target');
 		});
 	});
 }
