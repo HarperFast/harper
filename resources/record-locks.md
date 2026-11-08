@@ -339,8 +339,10 @@ writes (`hasCommitHold()`, between `retainTransactionLockHolds` and its release)
 commit sweep, while that handle has a commit in flight is refused the same way, but thrown, so it fails the
 scope. A self-committing refusal is a rejected promise, so a caller aggregating it with the earlier
 write still observes that write; it detaches only the refused write, and does not poison the hold
-(`writeRefused` stays false). The instance keeps its pending changes: its refused deferred write is staged
-again (`#restageRefusedWrite`), so its next awaited `save()` commits it.
+(`writeRefused` stays false). On a self-committing link the instance keeps its pending changes: its refused
+deferred write is staged again (`#restageRefusedWrite`), so its next awaited `save()` commits it. Inside
+`transaction()` a refused write is discarded with its 409, since staging it again in the commit that ran the hook
+would land the write the 409 refused; the caller catches it and writes again.
 Both counters move synchronously when a commit settles, before the awaiting caller resumes, so awaited
 sequential writes are never refused. Each holder write therefore stamps above the committed floor: overlapping
 holder writes can neither share a version (harper#4098) nor land out of order, which let an older publish
@@ -350,7 +352,7 @@ hook) is staged on a fresh native transaction flagged `immediateCommit` (`isolat
 that commit's reserved log key nor waits for it. A holder write whose active ancestor commit hook belongs to a
 write of the same handle (a source's `before` hook writing the record its own commit is writing) is refused
 with a 409, as a rejected promise the hook can catch, in an explicit transaction as well: the outer write read
-its base before the hook ran (harper#4109). A deferred write the hook leaves for the commit sweep is staged after
+its base before the hook ran (harper#4109). Inside `transaction()`, a deferred write the hook leaves for the commit sweep is staged after
 the outer write and reloads its base there; the sweep saves it before the commit takes its holds and with no
 self-commit in flight, so it is not refused. Waiting instead was rejected: a queued save stages after the instance's mutable changes have
 moved on, so it would need coalesced saves, a turn deadline and queue-aware `unlock()`, for overlap no caller

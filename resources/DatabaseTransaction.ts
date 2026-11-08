@@ -1616,11 +1616,7 @@ export class DatabaseTransaction implements Transaction {
 		}
 	}
 
-	/**
-	 * A record-lock handle has at most one self-committing commit in flight (record-locks.md): a holder write
-	 * issued while one is gets a 409, as a rejected promise so a caller aggregating it still observes the
-	 * earlier write. Neither the handle nor the instance's pending changes are refused with it.
-	 */
+	/** One self-committing commit in flight per lock (record-locks.md); rejected, so an aggregating caller still sees the earlier write. */
 	protected saveHolderSelfCommit(operation: TransactionWrite, save: () => any): any {
 		const handle = operation.lockHandle!;
 		if (holderCommitInFlight(handle) || heldByAncestorHook(handle)) {
@@ -4582,12 +4578,8 @@ export class ImmediateTransaction extends DatabaseTransaction {
 			// operation.innerCommit, so deriving an unobserved .then() promise here would turn any
 			// rejected innerCommit into an unhandledRejection.
 			if (args[1] || args[3]) return;
-			// Closed links open a per-write handle and return its innerCommit (or undefined for a no-op
-			// validate=false write, which must not borrow another write's commit). OPEN links parked in
-			// completions after commit() returns share #activeSaveCommit; before commit() returns it stays
-			// undefined so a synchronous before-hook awaiting a same-context write does not deadlock completions.
-			// Nor is a write made within this commit's own before-hook (even through another link's commit):
-			// this commit awaits that hook.
+			// A no-op write must not borrow another write's commit. #activeSaveCommit is unset until commit()
+			// returns, and a write from this commit's own hook does not wait: the commit awaits the hook.
 			if (saveResult?.then) return saveResult.then(resolveUndefined);
 			if (this.open !== TRANSACTION_STATE.OPEN || operation.isolatedCommit) return;
 			for (let hook = currentCommitHook(); hook; hook = hook.parent) {
