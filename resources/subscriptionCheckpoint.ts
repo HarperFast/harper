@@ -366,6 +366,22 @@ function qualifies(state: OriginState): boolean {
 	);
 }
 
+/**
+ * Per local origin id, the highest certified floor below which this node holds that origin's entries complete, and the
+ * generation it certifies, for each origin whose merged route state qualifies. A route that switches which peer supplies an origin can resume it
+ * from here: unlike a position, a floor certifies a complete prefix whichever route delivered it.
+ */
+export function readQualifiedOriginFloors(
+	auditStore: any,
+	dbisDb: any
+): Map<number, { floor: number; generation: string }> {
+	const floors = new Map<number, { floor: number; generation: string }>();
+	for (const [nodeId, state] of readOriginStates(auditStore, dbisDb)) {
+		if (nodeId !== 0 && qualifies(state)) floors.set(nodeId, { floor: state.floor!, generation: state.generation! });
+	}
+	return floors;
+}
+
 /** The logs the audit store holds, by name; each is an origin this node has history of. */
 function knownLogNames(auditStore: any): string[] {
 	const names: string[] = [];

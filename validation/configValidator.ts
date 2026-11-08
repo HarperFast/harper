@@ -488,6 +488,8 @@ export function configValidator(configJson, skipFsValidation = false) {
 			copyCursorFlushBytes: number.min(1).optional().empty(null),
 			copyCursorFlushIntervalMs: number.min(1).optional().empty(null),
 			replayTimeout: number.min(1).optional().empty(null),
+			region: string.allow('').optional().empty(null),
+			gateway: boolean.optional().empty(null),
 		}).optional(),
 		node: Joi.object({
 			hostname: bareHostConstraints,
