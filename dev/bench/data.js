@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794042206613,
+  "lastUpdate": 1794122238337,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -9002,6 +9002,63 @@ window.BENCHMARK_DATA = {
           {
             "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 949.19,
+            "unit": "ops/sec"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "960595764a9b74c07298fc2eab89617dbd571b38",
+          "message": "Rebuild a restored native HNSW index instead of starting an empty plane under its node mappings (#4099)\n\n* Rebuild a restored native HNSW index instead of starting an empty plane under its node mappings\n\nrestore_backup brings back a file-primary HNSW index's node mappings and durable cursor (they live in\nRocksDB) but not its .hnsw plane file, which no backup holds and the restore purges. The runtime trusted\nthe restored cursor, and the first vector write created a fresh empty plane, so every restored vector\ndisappeared from search with no error and no rebuild.\n\n- HnswDerivedIndexBackend.getDurableCursor() checks once per ownership whether node mappings survive a\n  missing plane file (derivedStorageLost) and reports no cursor if so, so acquisition rebuilds.\n- getPlane refuses to create a plane while node mappings survive; the unopenable-file branch's own\n  250 ms retry is folded into that guard.\n- openRestoredGeneration suspends derived-index activation: the restore child's proof started the HNSW\n  runtime on the generation it was proving and closed its stores without waiting for it.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nDispatch-Task: harper-hnsw-restore-missing-plane-file\n\n* Key the HNSW native-state check to the owner epoch, not a flag shutdown clears\n\nA barrier of the releasing epoch could read the cursor after shutdown() cleared the flag and set it\nagain, so the next ownership skipped the plane-file check. The check now runs on the first read under\neach owner epoch; reset() records the rebuild's epoch. Also names the repair file by its prefix (a\nrecreated table's store name carries a generation suffix) and trims test comments.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nDispatch-Task: harper-hnsw-restore-missing-plane-file\n\n* Name the repair file exactly and drop a narrating test comment\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nDispatch-Task: harper-hnsw-restore-missing-plane-file\n\n---------\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-11-08T04:46:32Z",
+          "url": "https://github.com/HarperFast/harper/commit/960595764a9b74c07298fc2eab89617dbd571b38"
+        },
+        "date": 1794122236030,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "load — bulk insert",
+            "value": 8652.41,
+            "unit": "records/sec"
+          },
+          {
+            "name": "workload C — Read only (100% read)",
+            "value": 13925.41,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload B — Read mostly (95% read / 5% update)",
+            "value": 14111.18,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload A — Update heavy (50% read / 50% update)",
+            "value": 9615.45,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
+            "value": 7052.15,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
+            "value": 13508.36,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
+            "value": 1499.15,
             "unit": "ops/sec"
           }
         ]
