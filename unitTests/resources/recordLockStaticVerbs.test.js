@@ -529,7 +529,6 @@ describe('Record locks (QA-5082): static table verbs on locked keys must resolve
 				const first = holder.save();
 				await assert.rejects(
 					transaction(holder.getContext(), async () => {
-						// a deferred update is first saved by the commit sweep
 						if (write === 'deferred') await holder.update(recordId, { n: 3 });
 						else {
 							holder.set('n', 3);
@@ -570,6 +569,25 @@ describe('Record locks (QA-5082): static table verbs on locked keys must resolve
 			delete OtherDatabase.source;
 			assert.ok(isOwnHookRefusal(refusal), refusal?.message);
 			assert.strictEqual(OtherDatabase.primaryStore.getEntry(lockedId).value.n, 1);
+		});
+
+		it("a deferred update a hook leaves for transaction()'s commit sweep is staged after the outer write and lands", async function () {
+			if (SKIP_ON_LMDB) return this.skip();
+			const recordId = id();
+			await Unaudited.put({ id: recordId, n: 1 });
+			await transaction({}, async () => {
+				const holder = await Unaudited.lock(recordId, { hold: true, lease: 5000 });
+				cleanups.push(() => holder.unlock());
+				Unaudited.source = {
+					publish: async () => {
+						delete Unaudited.source;
+						await holder.update(recordId, { n: 9 });
+					},
+				};
+				holder.publish({ n: 7 });
+			});
+			delete Unaudited.source;
+			assert.strictEqual(Unaudited.primaryStore.getEntry(recordId).value.n, 9);
 		});
 
 		it("a write to another locked record from the commit's own async before hook commits on its own transaction", async function () {

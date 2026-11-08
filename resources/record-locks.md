@@ -339,7 +339,8 @@ writes (`hasCommitHold()`, between `retainTransactionLockHolds` and its release)
 commit sweep, while that handle has a commit in flight is refused the same way, but thrown, so it fails the
 scope. A self-committing refusal is a rejected promise, so a caller aggregating it with the earlier
 write still observes that write; it detaches only the refused write, and does not poison the hold
-(`writeRefused` stays false) or touch the instance's pending changes, which the next awaited `save()` stages.
+(`writeRefused` stays false). A hold instance keeps its pending changes, which its next awaited `save()`
+stages again; a scoped lock's refused write, staged at `lock()` or `update()`, is discarded like any refused write.
 Both counters move synchronously when a commit settles, before the awaiting caller resumes, so awaited
 sequential writes are never refused. Each holder write therefore stamps above the committed floor: overlapping
 holder writes can neither share a version (harper#4098) nor land out of order, which let an older publish

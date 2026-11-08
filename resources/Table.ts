@@ -1024,8 +1024,8 @@ interface TableResourceInstance<Record extends object = any> {
 	 *
 	 * One commit in flight per lock: outside `transaction()` each write through the lock commits on its
 	 * own, so await one before issuing the next. A write issued while an earlier one through the same
-	 * lock is still committing is refused with 409 (the lock and the instance's pending changes stay
-	 * usable), as is a write to the locked record from the pre-commit hook of its own commit.
+	 * lock is still committing is refused with 409 (the lock stays usable, and a `{ hold: true }`
+	 * instance keeps its pending changes for the next save), as is a write to the locked record from the pre-commit hook of its own commit.
 	 */
 	lock(target?: RequestTargetOrId | RecordLockOptions, options?: RecordLockOptions): Promise<any>;
 	/**
@@ -5435,8 +5435,8 @@ export function makeTable(options): TableResourceClass {
 		 *
 		 * One commit in flight per lock: outside `transaction()` each write through the lock commits on its
 		 * own, so await one before issuing the next. A write issued while an earlier one through the same
-		 * lock is still committing is refused with 409 (the lock and the instance's pending changes stay
-		 * usable), as is a write to the locked record from the pre-commit hook of its own commit.
+		 * lock is still committing is refused with 409 (the lock stays usable, and a `{ hold: true }`
+		 * instance keeps its pending changes for the next save), as is a write to the locked record from the pre-commit hook of its own commit.
 		 */
 		// async so option/id validation rejects rather than throwing past a caller's `.catch()`; the
 		// body still runs to completion synchronously, which is what keeps concurrent lock() calls
