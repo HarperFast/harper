@@ -4836,7 +4836,14 @@ export function makeTable(options): TableResourceClass {
 				this.#savingOperation = null;
 				try {
 					const result = this.#saveOperation(operation);
-					if (operation.refusedDeferredWrite) this.#restageRefusedWrite(operation);
+					if (operation.refusedDeferredWrite) {
+						try {
+							this.#restageRefusedWrite(operation);
+						} catch (error) {
+							result?.catch?.(noop); // the re-stage failure is what the caller sees
+							throw error;
+						}
+					}
 					return result;
 				} catch (error) {
 					if (!operation.saved && !operation.dropped) {
@@ -4856,10 +4863,10 @@ export function makeTable(options): TableResourceClass {
 			operation.refusedDeferredWrite = false;
 			const link = txnForContext(this.getContext());
 			if (!link.saveCommits) return;
-			operation.dropped = false;
 			operation.priorWrite = undefined;
-			operation.releaseChanges?.();
 			link.addWrite(operation);
+			operation.dropped = false;
+			operation.releaseChanges?.();
 			this.#savingOperation = operation;
 		}
 		#saveOperation(operation: any) {

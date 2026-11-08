@@ -351,7 +351,8 @@ that commit's reserved log key nor waits for it. A holder write whose active anc
 write of the same handle (a source's `before` hook writing the record its own commit is writing) is refused
 with a 409, as a rejected promise the hook can catch, in an explicit transaction as well: the outer write read
 its base before the hook ran (harper#4109). A deferred write the hook leaves for the commit sweep is staged after
-the outer write and reloads its base there, so it is not refused. Waiting instead was rejected: a queued save stages after the instance's mutable changes have
+the outer write and reloads its base there; the sweep saves it before the commit takes its holds and with no
+self-commit in flight, so it is not refused. Waiting instead was rejected: a queued save stages after the instance's mutable changes have
 moved on, so it would need coalesced saves, a turn deadline and queue-aware `unlock()`, for overlap no caller
 uses. `unlock()` needs nothing new: nothing is queued, and an admitted write's commit hold defers the native
 unlock as before.
