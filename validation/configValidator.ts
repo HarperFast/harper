@@ -749,7 +749,9 @@ function validatePrivateUrl(value, helpers) {
 	} catch {
 		return helpers.message('{{#label}} must be a URL (e.g. "wss://10.0.0.5:9933")');
 	}
-	if (url.protocol !== 'wss:' || !url.hostname) return helpers.message('{{#label}} must be a wss:// URL with a host');
+	// Pro uses only a literal `wss://` prefix; the URL parser also accepts `wss:host`
+	if (url.protocol !== 'wss:' || !/^wss:\/\//i.test(value.trim()) || !url.hostname)
+		return helpers.message('{{#label}} must be a wss:// URL with a host');
 	if (url.username || url.password || url.search)
 		return helpers.message('{{#label}} must not include credentials or a query');
 	if (url.hash) return helpers.message('{{#label}} must not include a fragment');

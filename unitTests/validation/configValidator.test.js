@@ -435,12 +435,14 @@ describe('Test configValidator module', () => {
 				privateUrls: [
 					{ url: 'wss://10.0.0.5:9933', network: 'vpc-1/us-east1' },
 					{ url: 'wss://[fd00::5]:9933', network: 'vlan-7' },
+					{ url: ' WSS://10.0.0.6:9933 ', network: 'vlan-7' },
 				],
 			};
 			assert.strictEqual(configValidator(config).error, undefined);
 
 			const rejected = [
 				[{ url: 'ws://10.0.0.5:9933', network: 'a' }, 'must be a wss:// URL with a host'],
+				[{ url: 'wss:10.0.0.5:9933', network: 'a' }, 'must be a wss:// URL with a host'],
 				[{ url: 'wss://user:secret@10.0.0.5:9933', network: 'a' }, 'must not include credentials or a query'],
 				[{ url: 'wss://10.0.0.5:9933/?token=secret', network: 'a' }, 'must not include credentials or a query'],
 				[{ url: 'wss://10.0.0.5:9933/#x', network: 'a' }, 'must not include a fragment'],
