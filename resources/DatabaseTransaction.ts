@@ -825,6 +825,7 @@ export type TransactionWrite = {
 	// inner this.commit({ transaction }) call, which ImmediateTransaction.save() awaits when the
 	// outer commit() sweep returns before the native commit settles.
 	innerCommit?: MaybePromise<CommitResolution>;
+	// both set only for the synchronous save call that admitted the write: a later save is admitted afresh
 	// a closed explicit link's late holder write past its one-commit-in-flight check
 	selfCommitAdmitted?: boolean;
 	// stage on a fresh native transaction rather than the OPEN link's in-flight one (holder writes never join it)
@@ -2646,8 +2647,14 @@ export class DatabaseTransaction implements Transaction {
 			const topLevel = !transaction && !options;
 			if (this.open !== TRANSACTION_STATE.OPEN) {
 				if (topLevel && !operation.selfCommitAdmitted) {
-					operation.selfCommitAdmitted = true;
-					return this.saveHolderSelfCommit(operation, () => this.save(operation));
+					return this.saveHolderSelfCommit(operation, () => {
+						operation.selfCommitAdmitted = true;
+						try {
+							return this.save(operation);
+						} finally {
+							operation.selfCommitAdmitted = undefined;
+						}
+					});
 				}
 			} else if (holderCommitInFlight(lockHandle) || heldByAncestorHook(lockHandle)) {
 				operation.dropped = true;
@@ -4563,7 +4570,11 @@ export class ImmediateTransaction extends DatabaseTransaction {
 		if (operation?.lockHandle && !operation.saved && !args[1] && !args[3]) {
 			return this.saveHolderSelfCommit(operation, () => {
 				if (this.isCommitting && this.open === TRANSACTION_STATE.OPEN) operation.isolatedCommit = true;
-				return this.#save(args);
+				try {
+					return this.#save(args);
+				} finally {
+					operation.isolatedCommit = undefined;
+				}
 			});
 		}
 		return this.#save(args);

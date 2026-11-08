@@ -4864,7 +4864,6 @@ export function makeTable(options): TableResourceClass {
 			const link = txnForContext(this.getContext());
 			if (!link.saveCommits) return;
 			operation.priorWrite = undefined;
-			operation.isolatedCommit = undefined;
 			link.addWrite(operation);
 			operation.dropped = false;
 			operation.releaseChanges?.();
