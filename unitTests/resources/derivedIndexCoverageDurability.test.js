@@ -202,6 +202,10 @@ class MemoryHnswIndex {
 	async resetDerivedStorage() {
 		this.applied.length = 0;
 	}
+
+	derivedStorageLost() {
+		return false;
+	}
 }
 
 function createSharedFullTextState(initialCursor) {

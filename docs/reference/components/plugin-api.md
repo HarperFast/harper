@@ -124,11 +124,13 @@ The central object passed to `handleApplication()`. Provides access to configura
 
 #### Events
 
-- **`'close'`** — Emitted after `scope.close()` is called. Harper calls `scope.close()` itself on shutdown (on a termination signal, from v5.4.0) and on graceful restart, so this is the hook for application teardown — see [Cleanup on Shutdown](#cleanup-on-shutdown)
+- **`'close'`** — Emitted after `scope.close()` is called. Harper calls `scope.close()` itself on shutdown (on a termination signal, from v5.4.0), on graceful restart, and when a component load fails, so this is the hook for application teardown — see [Cleanup on Shutdown](#cleanup-on-shutdown)
 - **`'error'`** — `error: unknown` — An error occurred
 - **`'ready'`** — Emitted when the Scope is ready after loading the config file
 
 #### `scope.handleEntry([files][, handler])` {#scopehandleentry}
+
+<VersionBadge type="changed" version="v5.4.0" />
 
 Returns an [`EntryHandler`](#class-entryhandler) for watching and processing file system entries.
 
@@ -138,6 +140,8 @@ Overloads:
 - `scope.handleEntry(handler)` — Returns default `EntryHandler`, registers `handler` for the `'all'` event
 - `scope.handleEntry(files)` — Returns a new `EntryHandler` for custom `files` config
 - `scope.handleEntry(files, handler)` — Returns a new `EntryHandler` with a custom `'all'` event handler
+
+Calling `scope.handleEntry()` after `scope.close()` has been called (`scope.closed === true`) throws an error.
 
 Example:
 
@@ -189,13 +193,20 @@ Returns: `string` — The plugin name as configured in `config.yaml`.
 
 Returns: `string` — Root directory of the application component (where `config.yaml` lives).
 
+#### `scope.closed`
+
+<VersionBadge version="v5.4.0" />
+
+Returns: `boolean` — `true` once `scope.close()` has been called on the scope.
+
 #### `scope.close()`
 
 <VersionBadge type="changed" version="v5.1.3" />
+<VersionBadge type="changed" version="v5.4.0" />
 
-Closes all associated entry handlers and the `scope.options` instance, emits `'close'`, and removes all listeners. Promises returned by `'close'` listeners are awaited before it resolves.
+Closes all associated entry handlers and the `scope.options` instance, emits `'close'`, removes all listeners, and releases the scope's hold on the component's live secret subscriptions. Promises returned by `'close'` listeners are awaited before it resolves (or up to the cleanup bound when Harper closes a scope after a failed load), and listener removal and subscription release still run if a `'close'` listener throws, rejects, or times out.
 
-Plugins rarely call this directly. Harper calls it on each worker thread during shutdown and graceful restart — see [Cleanup on Shutdown](#cleanup-on-shutdown).
+Plugins rarely call this directly. Harper calls it on each worker thread during shutdown, on graceful restart, and when a component load fails — see [Cleanup on Shutdown](#cleanup-on-shutdown).
 
 ### Class: `OptionsWatcher`
 
@@ -387,7 +398,7 @@ Function signature for the `'all'` event handler passed to `scope.handleEntry()`
 
 ## Cleanup on Shutdown
 
-Harper calls `scope.close()` on every application scope when a worker thread shuts down, which emits the [`'close'`](#events) event. This happens both when Harper is stopping and on a graceful restart — including the automatic worker restarts triggered by `harper dev` file watching and by the `restart` operation.
+Harper calls `scope.close()` on every application scope when a worker thread shuts down, which emits the [`'close'`](#events) event. This happens when Harper is stopping, on a graceful restart — including the automatic worker restarts triggered by `harper dev` file watching and by the `restart` operation — and when loading the component on that worker fails (when `handleApplication()` or an initial entry load rejects, when the load or its lock wait times out, or when the scope cannot initialize). When a load fails or times out, Harper waits up to the cleanup bound (5 seconds, or 15 seconds under `harper dev`) for `handleApplication()` and `'close'` listeners to finish before reporting the failure and advancing; if the worker later shuts down while a `'close'` listener from that load is still running, shutdown still waits for it up to the worker termination backstop. Because a `'close'` listener registered early in `handleApplication()` also runs if a later step in `handleApplication()` fails, register the listener after the resource it tears down is ready, or guard the listener against a resource that did not finish starting.
 
 When Harper stops on SIGTERM, SIGINT or SIGQUIT (which `harper stop` sends), it closes scopes only after it has stopped accepting connections and given requests in flight a few seconds to finish, so a request that finishes in that time keeps the resources its scope owns. A longer request's handler can still be running when `'close'` fires. See [Shutting down on a termination signal](../configuration/options.md#shutting-down-on-a-termination-signal). <VersionBadge type="changed" version="v5.4.0" /> Before v5.4.0, these signals ended the process without closing scopes, so `'close'` listeners ran only on restarts.
 
@@ -408,10 +419,10 @@ Notes on the shutdown sequence:
 
 - **Async listeners are awaited.** Returning a promise from a `'close'` listener is supported: Harper awaits it before the worker exits, so cleanup can complete, within the bounds below, rather than racing the process exit.
 - **Cleanup is bounded.** On a restart, a backstop timer (10 seconds by default, longer under `harper dev`) force-exits the worker even if a `'close'` listener is still running. On a stop, [`threads.shutdownTimeout`](../configuration/options.md#shutting-down-on-a-termination-signal) (8 seconds by default, 30 under `harper dev`) bounds the whole shutdown, including the time connections take to drain, and the process exits when it runs out. Closing databases at exit comes after that bound. Keep teardown short and avoid unbounded work such as retry loops without a deadline.
-- **A failed listener does not block shutdown.** If a `'close'` listener throws or rejects, Harper logs the error and continues shutting down. Because all listeners are awaited together, one that rejects also stops Harper from waiting on the others still in flight — so handle errors inside the listener rather than letting them escape.
+- **A failed listener does not block shutdown.** All `'close'` listeners are awaited together (bounded to 5 seconds, or 15 seconds under `harper dev`, when Harper closes the scope after a failed load); if any throws or rejects, Harper still waits for sibling `'close'` listeners in flight within that bound, removes remaining scope listeners, releases the component's secret-subscription hold, logs the error, and continues shutting down. Handle expected teardown errors inside the listener rather than letting them escape.
 - **Each worker cleans up independently.** `handleApplication()` runs on every worker thread that loads the application, so a `'close'` listener registered there runs once per worker. Cleanup that must happen only once for the whole instance needs its own coordination.
 
-Handlers created with [`scope.handleEntry()`](#scopehandleentry) and the [`scope.options`](#scopeoptions) watcher are closed by Harper automatically; a `'close'` listener is only needed for resources the plugin manages itself.
+Handlers created with [`scope.handleEntry()`](#scopehandleentry) and the [`scope.options`](#scopeoptions) watcher are closed by Harper automatically (except when an initial entry load fails, where that `EntryHandler` stays open as a one-shot recovery watcher until a watched file changes, the component reloads, or the worker shuts down); a `'close'` listener is only needed for resources the plugin manages itself.
 
 ## Example: Static File Server Plugin
 

@@ -2,6 +2,7 @@ import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual } from 'node:assert';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import jwt from 'jsonwebtoken';
 
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error utils/client.mjs has no type declarations; runtime resolves fine
@@ -273,6 +274,39 @@ suite(
 				})
 				.expect(200);
 			strictEqual(response.body.length, 0);
+		});
+
+		test('a legacy signed scoped token cannot read a system table', async () => {
+			const keys = resolve(ctx.harper.dataRootDir, 'keys');
+			const token = jwt.sign(
+				{
+					username: 'legacy_scoped_reader',
+					role: {
+						permission: {
+							operations: ['read_only'],
+							system: { tables: { hdb_user: { read: true, attribute_permissions: [] } } },
+						},
+					},
+				},
+				{
+					key: await readFile(resolve(keys, '.jwtPrivate.key'), 'utf8'),
+					passphrase: await readFile(resolve(keys, '.jwtPass'), 'utf8'),
+				},
+				{ algorithm: 'RS256', subject: 'scoped-operation', expiresIn: '1h' }
+			);
+			const headers = { ...readerHeaders, Authorization: `Bearer ${token}` };
+			await client.reqAs(headers).send({ operation: 'user_info' }).expect(200);
+			await client
+				.reqAs(headers)
+				.send({
+					operation: 'search_by_value',
+					database: 'system',
+					table: INSTALL_TABLE,
+					search_attribute: 'username',
+					search_value: 'admin',
+					get_attributes: ['*'],
+				})
+				.expect(FORBIDDEN);
 		});
 
 		test('permissions survive forwarding to a worker thread', async () => {

@@ -9,6 +9,7 @@ const {
 	shutdownDrainDeadline,
 	tightenShutdownDrains,
 	CLOSE_RESERVE_MS,
+	trackThreadDrains,
 } = require('#src/components/shutdownDrain');
 const env = require('#src/utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
@@ -184,6 +185,33 @@ describe('shutdownDrain', () => {
 		});
 		it('is never before now', () => {
 			assert.equal(shutdownDrainDeadline(NOW, 600_000, NOW + 1000), NOW);
+		});
+	});
+
+	describe('trackThreadDrains', () => {
+		it('runs its callback once, after the last thread reports', () => {
+			let drained = 0;
+			const report = trackThreadDrains(['main', 'worker'], () => drained++);
+			report('main');
+			assert.equal(drained, 0);
+			report('worker');
+			assert.equal(drained, 1);
+		});
+		it('counts a repeated report, as from a worker that reports and then exits, once', () => {
+			let drained = 0;
+			const report = trackThreadDrains(['main', 'worker'], () => drained++);
+			report('worker');
+			report('worker');
+			assert.equal(drained, 0);
+			report('main');
+			report('main');
+			assert.equal(drained, 1);
+		});
+		it('ignores a thread it does not track, such as a pool worker exiting', () => {
+			let drained = 0;
+			const report = trackThreadDrains(['main'], () => drained++);
+			report('pool');
+			assert.equal(drained, 0);
 		});
 	});
 

@@ -564,7 +564,9 @@ Byte-aware batch sizes adapt to filter yield. Oversized responses retry the unch
 
 Harper requires Fulltext 0.9.0, native ABI 14, query API 8 and telemetry API 1. Traversal response capacity reserves 93 bytes before hits plus 13 bytes per versioned hit before ID/version strings; advertised page and response limits determine the batch ceiling.
 
-Read request policy from its three registered leaf parameters and runtime policy from `storage_fullText_runtime`. The legacy flattener does not retain camel-case aggregate containers such as `storage_fullText`; using that aggregate silently selects defaults. HTTP request settings follow normal worker-restart semantics; native runtime settings remain captured for the full process. Generated configuration omits `storage.fullText.query`; the resolver supplies defaults and preserves partial overrides. `storage.fullText.query` uses that same snapshot for reader term/clause policy and the fuzzy preview maximum; writer limits and persisted identity stay unchanged. Retrieval and highlighting retain the same fuzzy leaf controls.
+Read request policy from its three registered leaf parameters and runtime policy from `storage_fullText_runtime`; the legacy flattener drops camel-case aggregates such as `storage_fullText`. Request settings take effect on worker restart; native settings are process snapshots. The resolver defaults omitted `storage.fullText.query` and merges partial overrides into reader term/clause and fuzzy-preview policy, leaving writers and persisted identity unchanged. Retrieval and highlighting share fuzzy controls.
+
+`startHTTPThreads` awaits `initializeFullTextQueryPolicy` before workers/listeners: explicit policy must fit native ceilings. Defaults load lazily; unavailable bindings fail on activation. Enforced by `fullTextSearchLimits.test.js`.
 
 REST exposes the index coverage header; callers requiring current coverage use `maxIndexLagMilliseconds: 0` or `waitForIndexMilliseconds`. Full-text score descending is the only supported ordering. Exact count requests return `recordCount: null` and `recordCountExact: false` for full-text custom-index traversal; estimated counts may use the planner unless an opaque row/vector filter suppresses them. Native totals cannot become exact Harper counts after authorization, structured filtering and source-version checks. Each request releases its reader lease in `finally`. Separate limit/offset requests execute independently and may see different publications; Harper retains no search state between requests.
 
@@ -777,10 +779,10 @@ generation for that turn.
 ### Lag policy
 
 Opt-in per registration (`maxLagMilliseconds`; 0 = none; raised to two flush ages since catch-up is
-only proven at a barrier). The owner takes the longest of: cursor distance behind what it has read,
-time parked on backpressure or the ceiling, time since the oldest commit it may not have read
-(bounded by how far its newest read trails the clock), and the age of the oldest accepted work not
-yet durable. Past the budget it sets the shared flag; every worker's `derivedIndexWriteRejection`
+only proven at a barrier). The owner takes the longest of: cursor distance over what it has read and
+not made durable, time parked on backpressure or the ceiling, time since the oldest commit it may
+not have read (bounded by how far its newest read trails the clock), and the age of the oldest
+accepted work not yet durable. Past the budget it sets the shared flag; every worker's `derivedIndexWriteRejection`
 (`resources/derivedIndexRegistry.ts`, one `WeakMap` miss for tables without a derived index) then
 fails local user writes to the index's tables with `DerivedIndexLagError` — 503,
 `DERIVED_INDEX_LAGGING`, `retryable: true` — at the staging layer (`_writeUpdate`, `_writeDelete`,
@@ -906,8 +908,7 @@ since it was reached. That relaxed contract is safe only because Harper's read p
 and rescores exactly, which rejects a wrong candidate; it is not a general storage pattern. The file
 is `msync`ed on a cadence, not per commit, so the graph has bounded-lag durability with
 deterministic catch-up while the source of truth (records, mappings, cursor) stays transactional.
-Backup treats the file as node-local derived state: include it after a barrier, or rebuild on
-restore. A file whose format or checksum does not validate is rebuilt from records. macOS `msync` is a
+Backup treats the file as node-local derived state: a restore rebuilds it from records. A file whose format or checksum does not validate is rebuilt from records. macOS `msync` is a
 weaker barrier than Linux — the crate's `msync()` is a plain mapping flush with no `F_FULLFSYNC` pass —
 so on macOS a power loss after `flushAsync()` resolves and the cursor is written can leave the cursor
 past graph writes the file lost. Those vectors stay missing until a rebuild — nothing compares the

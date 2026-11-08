@@ -1,6 +1,10 @@
 # server/ — Navigation Guide
 
-This layer accepts inbound traffic on every supported protocol (HTTP/1.1, HTTP/2, HTTPS, WebSockets, MQTT, NATS) and routes it through to the Resource layer. **Read this when:** you're touching request/response, protocol handling, middleware ordering, or WebSocket upgrade behavior. **Navigation convention.** This guide references code by **symbol name** (function/const). Use your editor's go-to-symbol or `grep -n '<name>' server/<file>` to jump. Line numbers drift; symbols don't.
+This layer routes HTTP, HTTPS, WebSocket, MQTT and NATS traffic to Resources.
+
+**Read this when:** changing protocol handling, middleware, requests, responses or WebSocket upgrades.
+
+Use the symbol and section names below to navigate; line numbers drift.
 
 ---
 
@@ -51,22 +55,9 @@ A request entering `http.ts` does **not** go through Fastify unless no Harper ha
 | `serverRegistry.ts`                        | Trivial registry export.                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `status/`                                  | `get_status`/`set_status`/`clear_status` over `system.hdb_status`, aggregated with flat component status, an opt-in component tree (`components: true`), and opt-in resolved middleware chains (`middleware: true`, #1573). Both status views render errors with the shared `serializeStatusError()` formatter; raw Error objects remain internal.                                                                                                     |
 
-> **Subscription message identity contract.** `sharedMessageEncoding.ts` encodes a message once and
-> reuses the bytes for every subscriber of the topic, keyed on the message object's identity. That is
-> sound for every internal producer because each yields a fresh object per version — `transactionBroadcast`
-> hands one `auditRecord` to every subscription, `auditStore`'s `getValue` memoizes the decode in its
-> closure, and `primaryStore.getEntry` is version-guarded — so identity implies equal content. Pinned by
-> `unitTests/resources/subscriptionValueIdentity.test.js`.
+> **Subscription message identity.** [sharedMessageEncoding.ts](serverHelpers/sharedMessageEncoding.ts) shares bytes by envelope identity and version ([subscriptionValueIdentity.test.js](../unitTests/resources/subscriptionValueIdentity.test.js)). Internal sharing is sound because `transactionBroadcast` forwards one audit envelope, `auditStore.getValue` memoizes per closure and `primaryStore.getEntry` guards versions.
 >
-> Rather than leave that as a rule custom Resources have to know, the event's record `version` is part
-> of the cache key: `DurableSubscriptionsSession` forwards it to the delivery listener, and an entry
-> whose version does not match is re-encoded. A Resource that reuses one envelope but advances the
-> version is therefore correct, not merely disallowed; one that supplies no version is not shared at
-> all. Only mutating an object _without_ changing its version can serve stale bytes, and that is
-> indistinguishable from re-sending the same message.
->
-> This is also why a custom content-type `serialize` registered into `server.contentTypes` must be
-> pure in its argument alone: see `ContentTypeHandler.serialize`'s doc comment (`server/Server.ts`).
+> `DurableSubscriptionsSession` forwards the version to the delivery listener, which re-encodes on mismatch. Custom Resources may reuse an envelope only with a changed version; mutating it without advancing the version can serve stale bytes. Messages without a version are not shared. Custom serializers must be pure in their input (`ContentTypeHandler.serialize`, `Server.ts`).
 
 > **Pass-through payloads are `Buffer | string`.** A message that carries its own `{ contentType, data }`
 > is delivered as its `data`, but binary data leaves `serializeMessage` as a `Buffer`: on a worker other
@@ -150,7 +141,7 @@ REST WebSocket subscriptions await the underlying socket's drain signal. One res
 
 The uWS WebSocket adapter translates native drain progress into a Node-style drain only when its buffer is empty and the socket remains open. It coalesces notifications with a callback reused per connection and `setImmediate`: empirically, a promise continuation that sends again within the WebSocket behavior's `drain` callback can leave the next accepted write buffered indefinitely; a microtask retains that failure. HTTP's `onWritable` has a different progress-return contract and is unchanged. Waiting for an empty buffer also prevents a resumed producer from exceeding uWS's native backpressure limit after partial progress. The real-socket regression in `unitTests/server/serverHelpers/uwsServer.test.js` and the source/compiled subscription integration test pause, resume and disconnect readers without replacing the transport. The unit suite skips without a compatible uWS binary and is excluded from the Windows gate.
 
-HTTP startup separates worker-owned loading and verdict publication from main-owned admission. Shutdown waits for loading to settle and then runs the existing disposal chain; it never waits for CHILD_ADMITTED. The optional heldStart reporting callback closes the load barrier after the verdict is posted, while whenComponentsLoaded retains its post-admission timing. A rejected bind on a terminal worker follows cleanup instead of forcing an early exit. Scopes registered after shutdown remain outside the existing disposal boundary; this does not cancel initialization.
+HTTP startup separates worker-owned loading and verdict publication from main-owned admission. Shutdown waits for loading to settle and then runs the existing disposal chain; it never waits for CHILD_ADMITTED. The optional heldStart reporting callback closes the load barrier after the verdict is posted, while whenComponentsLoaded retains its post-admission timing. A rejected bind on a terminal worker follows cleanup instead of forcing an early exit. A restart skips a load that has not started and waits a bounded time for one that has (`closeScopeAfterLoad`).
 
 Native TypeStrip execution loads the runtime as ESM; compiled distribution files remain CommonJS. Worker paths use `RUNTIME_SRC_ROOT` and `RUNTIME_FILE_EXT` from `utility/packageUtils.js`, which stays CommonJS to resolve its own directory in both modes. `threadMessageState.ts` and `processIncarnation.ts` hold dependency-free worker state: cyclic imports may register callbacks before `manageThreads.ts` evaluates, so that registration must remain synchronous and must not be overwritten by a later initializer. Configuration-dependent wiring and built-in plugin preloads run through `utility/lifecycle.ts` after configuration initialization, before worker listeners bind. Environment-selected built-in overrides survive those preloads. Conditional loggers retain one shared object that updates with the current main logger configuration, including after first-install initialization. HTTP workers hold their parent-port ref throughout startup hooks as well as component loading, so an unreferenced asynchronous completion cannot end startup early. The compiled and source routes are exercised by `integrationTests/server/typestrip.test.ts`; native unit probes run through ESM stdin, where no global `module` exists.
 
@@ -637,17 +628,15 @@ so ops responses **will** carry the headers there (benign).
 
 ## Under Bun, the main HTTP port is served by `node:http`, not `Bun.serve`
 
-Worth knowing before debugging anything Bun-specific on the HTTP path: `getBunHTTPServer()` builds
-the `Bun.serve()` fetch config, but `onWebSocket()` calls `getHTTPServer()` unconditionally — it has
-a uWS branch and no Bun branch, because Bun native WebSockets are unimplemented (nothing ever sets
-`config.websocket`, so WS relies on the installed Node `ws` server attached to an `http.Server`, explicitly bypassing Bun's substitution). MQTT's
-`handleApplication` registers WS on the default port before REST's `httpServer()` call for that same
-port, so `httpServers[port]` is already a Node server by then and `getBunHTTPServer` early-returns
-without registering a serve config. The port is bound by `registerServer()`'s Node server via
-`listenOnPortsBun`'s trailing "non-HTTP servers" loop, and the fetch handler is never invoked for it
-(only the exclusive operations port reaches `Bun.serve`). Consequence: on Bun the `Request`/`Response`
-fetch path is dead code for the main port, and its divergences show up as `node:http`-emulation
-divergences instead.
+`getBunHTTPServer()` builds the `Bun.serve()` fetch config, but `onWebSocket()` calls
+`getHTTPServer()` unconditionally: it has a uWS branch and no Bun branch, because Bun native WebSockets
+are unimplemented (nothing sets `config.websocket`; WS uses the installed Node `ws` server on an
+`http.Server`, bypassing Bun's substitution). MQTT's `handleApplication` registers WS on the default
+port before REST's `httpServer()` call for it, so `httpServers[port]` is already a Node server and
+`getBunHTTPServer` early-returns without a serve config. `listenOnPortsBun`'s trailing "non-HTTP
+servers" loop binds that server; only the exclusive operations port reaches `Bun.serve`. So on Bun the
+`Request`/`Response` fetch path is dead code for the main port, and its divergences show up as
+`node:http`-emulation divergences instead.
 
 One such divergence, `#2210`: Bun's `node:http` never derives keep-alive from the request. For a
 `Connection: close` request `shouldKeepAlive` stays `true`, and neither a `Connection: close` response
@@ -661,8 +650,7 @@ without asking to close at all, since 1.0 persistence needs both an explicit `ke
 to read to — so a 1.0 response that got no `Content-Length` is close-delimited, the same line Node
 draws (Node closes it at ~7ms; Bun never does). An explicit `close` token wins over `keep-alive` on
 both versions. A 1.0 `keep-alive` request whose response _did_ get a
-`Content-Length` (`body.size` on a blob — the `body instanceof Blob` branch of `getHTTPServer`'s request handler) is left open, which is again what
-Node does and what Bun then handles correctly.
+`Content-Length` (`body.size` on a blob — the `body instanceof Blob` branch of `getHTTPServer`'s request handler) is left open, as on Node.
 
 `pipeBodyToResponse()` therefore ends `request.socket` itself for those shapes
 (`endConnectionIfClientExpectsClose`, `isBun`-gated, HTTP/1 only, clean path and a pre-header error
@@ -676,6 +664,10 @@ headers)` fast path this file uses (Node does not, but the branch is Bun-only). 
 keep-alive arm pins the other direction (such a client keeps its connection and reuses it); the two
 HTTP/1.0 arms are Node/Bun-only, because uWS does not route an HTTP/1.0 request to the resource at
 all.
+
+`listenOnPortsBun`'s loop binds the main port without `reusePort`, and Bun's `http.Server.listen` drops
+the option outside a `node:cluster` worker anyway: the others swallow `EADDRINUSE`, and
+every request on the port, WebSockets included, runs on one worker whatever `threads.count` is.
 
 ## Per-worker UDS mirrors are separate server instances — port-keyed wiring does not reach them (`server/http.ts`)
 
@@ -941,7 +933,7 @@ any load error as a misleading "supports only Node.js versions" message.
 
 ## `threads.v8Flags` is applied once, before the first Harper worker (`server/threads/v8Flags.ts`)
 
-V8 reads most flags when an isolate is created, so `applyConfiguredV8Flags()` runs on the main thread before the first `new Worker`. `startWorker()` holds the only production `new Worker`, and calls it first; `startHTTPThreads()` also calls it at entry, so a bad value fails startup before components load and listeners bind, including under `threads.count: 0`, where the first worker may be a job started long after the server is serving.
+V8 reads most flags when an isolate is created, so `applyConfiguredV8Flags()` runs on the main thread before the first `new Worker`. `startWorker()` holds the only production `new Worker`, and calls it first; `startHTTPThreads()` calls it after explicit full-text query policy validation, so a bad value fails startup before components load and listeners bind, including under `threads.count: 0`, where the first worker may be a job started long after the server is serving.
 
 It is not applied at `manageThreads.ts` module load, as `threads.heapSnapshotNearLimit` is: `bin/run.ts` imports that module before `initialize()` runs the install that first composes `HARPER_SET_CONFIG` into the config file, and before it writes the `THREADS_V8FLAGS` env/CLI form. A module-load read misses the value on a fresh container's first boot. `unitTests/server/threads/v8Flags.test.js` assigns the setting after the module loads, so a move to module load fails it.
 
@@ -949,7 +941,7 @@ The first successful call latches, including on an unset value: V8 flags cannot 
 
 An entry that is not a flag fails startup, by design, unlike `threads.maxHeapMemory`, which recovers an unstartable value at the point of use (harper-pro#558). What #558 guards against is a value that one replicated `set_configuration` writes to every peer, so the next rolling restart stops the whole cluster. Here the Joi pattern (`validation/configValidator.ts`) refuses an entry that is not a flag before the write lands, because `updateConfigValue` validates before writing. So a non-flag entry can only come from an operator at boot (file edit, env var, `HARPER_SET_CONFIG`), and it stops the node with an error naming `threads.v8Flags`. The pattern checks only the prefix. A prefix-valid set that aborts V8 (for example `--abort-on-contradictory-flags` with a contradicting pair) can still be replicated, and each node then aborts natively at its next process start; that is the accepted cost of an unrestricted expert setting. Joi also runs at boot, so it usually rejects the value before `applyConfiguredV8Flags` does. The point-of-use check covers values that bypass Joi.
 
-`v8.setFlagsFromString` does not apply a flag's implications as the CLI does. `--optimize-for-size` from the CLI caps the semi-space at 1 MB; applied at runtime it does not. A worker with Harper's 1 GB limits reports a 536 MB heap limit with runtime `--optimize-for-size`, and 515 MB with that from the CLI or with `--max-semi-space-size=1` added at runtime (Node 26.2.0). Implied flags must be listed explicitly. A contradictory set (e.g. with `--abort-on-contradictory-flags`) aborts the process natively, beyond a JavaScript catch; applying at `startHTTPThreads` entry places that abort before Harper serves.
+`v8.setFlagsFromString` does not apply a flag's implications as the CLI does. `--optimize-for-size` from the CLI caps the semi-space at 1 MB; applied at runtime it does not. A worker with Harper's 1 GB limits reports a 536 MB heap limit with runtime `--optimize-for-size`, and 515 MB with that from the CLI or with `--max-semi-space-size=1` added at runtime (Node 26.2.0). Implied flags must be listed explicitly. A contradictory set (e.g. with `--abort-on-contradictory-flags`) aborts the process natively, beyond a JavaScript catch; applying after query-policy validation in `startHTTPThreads` places that abort before Harper serves.
 
 ## Server starts enable Node's compile cache before their first worker (`server/threads/compileCache.ts`)
 

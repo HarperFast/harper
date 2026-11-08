@@ -106,12 +106,12 @@ export async function claimSubscriptionOwner(sessionId: string, streamToken: str
 	if (!record || record.streamToken !== streamToken) return false;
 	let stopped = false;
 	let claimed = false;
-	let initializing = true;
 	let dirty = false;
 	let running: Promise<void> | undefined;
 	let seenRevision = -1;
 	let watcher: Watcher | undefined;
 	const installed = new Map<string, string>();
+	const initialGenerations = new Map<string, string>();
 	const rejected: Rejected = Object.create(null);
 	const reconnectScope = record.user._scopedToken ? subscriptionScope(record.user) : undefined;
 	const restoredScopes = new Map<string, string>();
@@ -192,6 +192,7 @@ export async function claimSubscriptionOwner(sessionId: string, streamToken: str
 			}
 			for (const uri of uris) {
 				const generation = generationOf(uri);
+				const restoring = initialGenerations.get(uri) === generation;
 				if (installed.get(uri) === generation || rejected[uri]) continue;
 				const principalId = session.subscriptionPrincipalIds?.[uri];
 				const user =
@@ -199,7 +200,9 @@ export async function claimSubscriptionOwner(sessionId: string, streamToken: str
 					(principalId ? restorePrincipal(session.subscriptionPrincipals?.[principalId], record.user) : record.user);
 				try {
 					let differentScopedGrant = false;
-					if (initializing && reconnectScope !== undefined && user) {
+					if (restoring && user && reconnectScope === undefined) {
+						differentScopedGrant = user._scopedToken === true;
+					} else if (restoring && user) {
 						let scope =
 							user === record.user ? reconnectScope : principalId ? restoredScopes.get(principalId) : undefined;
 						if (scope === undefined) {
@@ -221,7 +224,7 @@ export async function claimSubscriptionOwner(sessionId: string, streamToken: str
 						generation,
 						result: error instanceof AccessViolation ? 'permission-denied' : 'internal-error',
 					};
-					if (initializing && rejected[uri].result === 'internal-error') {
+					if (restoring && rejected[uri].result === 'internal-error') {
 						fail();
 						return;
 					}
@@ -290,6 +293,9 @@ export async function claimSubscriptionOwner(sessionId: string, streamToken: str
 		}
 		const present = await withSessionSubscriptionLock(sessionId, async (session) => {
 			if (!session || !current()) return false;
+			for (const uri of session.subscriptions ?? []) {
+				initialGenerations.set(uri, session.subscriptionGenerations?.[uri] ?? '');
+			}
 			await patchSession(sessionId, { streamToken });
 			return true;
 		});
@@ -300,7 +306,7 @@ export async function claimSubscriptionOwner(sessionId: string, streamToken: str
 		claimed = true;
 		schedule();
 		await running;
-		initializing = false;
+		initialGenerations.clear();
 		restoredScopes.clear();
 		return current();
 	} catch (error) {

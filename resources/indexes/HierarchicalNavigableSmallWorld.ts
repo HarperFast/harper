@@ -677,13 +677,6 @@ export class HierarchicalNavigableSmallWorld {
 					}
 					logger.warn?.('deleting an unopenable HNSW plane file left by an interrupted create', openError);
 					unlinkSync(filePath);
-					if (this.filePrimary) {
-						// The surviving mappings still name node ids from the file just removed.
-						// Creating a fresh plane here would resolve them against an empty graph;
-						// only reconstruction, which clears the mappings first, is safe.
-						this.planeRetryAt = now + PLANE_ATTACH_RETRY_MS;
-						return null;
-					}
 				}
 			}
 			if (!dims) return null; // open-only call and no file: nothing to attach yet
@@ -692,6 +685,13 @@ export class HierarchicalNavigableSmallWorld {
 			// rather than creating and unlinking — a concurrent insert that saw the empty file would
 			// read it as another worker's in-progress create and 503 for PLANE_STALE_CREATE_MS.
 			if (!dimsFromVector) return null;
+			// Surviving mappings name node ids of a file that is gone (a restore, an unopenable file
+			// removed above, a hand deletion). A fresh plane would reuse those ids and hide every one of
+			// their vectors from search; only reconstruction, which clears the mappings first, may create.
+			if (this.filePrimary && this.hasNodeMappings()) {
+				logger.error?.(`${this.indexStore.name} lost its native file while its node mappings survive`);
+				return null;
+			}
 			let fd: number;
 			try {
 				fd = openSync(filePath, 'wx');
@@ -777,6 +777,11 @@ export class HierarchicalNavigableSmallWorld {
 				this.invalidatePlaneFile(filePath, attached);
 			}
 		}
+	}
+
+	derivedStorageLost(): boolean {
+		const filePath = this.planeFilePath();
+		return filePath !== undefined && !existsSync(filePath) && this.hasNodeMappings();
 	}
 
 	/** True while any primary-key mapping survives, which is the only proof this index holds nodes. */
@@ -2213,6 +2218,17 @@ export class HierarchicalNavigableSmallWorld {
 	 * and $distance.
 	 */
 	exactDistance(searchCondition: { target: number[]; distance?: string }, recordVector: number[] | Int8Array): number {
+		const fn = this.queryDistance(searchCondition);
+		if (recordVector == null) return Infinity; // missing vector sorts last
+		// distance fns require a plain Array (they guard on Array.isArray); records normally store a
+		// float[] vector, but convert defensively in case a typed array slips through.
+		const vec = Array.isArray(recordVector) ? recordVector : Array.from(recordVector);
+		return fn(searchCondition.target, vec);
+	}
+	private queryDistance(searchCondition: {
+		target: number[];
+		distance?: string;
+	}): (a: number[], b: number[]) => number {
 		if (!searchCondition.target) throw new ClientError('A target vector must be provided for an HNSW query');
 		if (!Array.isArray(searchCondition.target)) throw new ClientError('The target vector must be an array');
 		const fn =
@@ -2226,11 +2242,38 @@ export class HierarchicalNavigableSmallWorld {
 							? null
 							: this.distance;
 		if (!fn) throw new ClientError('Unknown distance function');
-		if (recordVector == null) return Infinity; // missing vector sorts last
-		// distance fns require a plain Array (they guard on Array.isArray); records normally store a
-		// float[] vector, but convert defensively in case a typed array slips through.
-		const vec = Array.isArray(recordVector) ? recordVector : Array.from(recordVector);
-		return fn(searchCondition.target, vec);
+		return fn;
+	}
+	/**
+	 * A threshold's predicate on a record's vector, for when another condition leads (search.ts filterByType):
+	 * exact distance, after the checks search() makes.
+	 */
+	thresholdFilter(
+		searchCondition: { attribute?: any; target: number[]; distance?: string; comparator?: string },
+		comparator: string,
+		value: number
+	): ((recordVector: number[] | Int8Array) => boolean) | undefined {
+		if (comparator === 'sort') return;
+		if (comparator !== 'lt' && comparator !== 'le' && searchCondition.target === undefined) return;
+		if (searchCondition.comparator !== 'lt' && searchCondition.comparator !== 'le')
+			throw new ClientError(`Can not use "${searchCondition.comparator}" comparator with HNSW`);
+		if (value === undefined)
+			throw new ClientError(`Search condition for ${searchCondition.attribute} must have a value`);
+		const fn = this.queryDistance(searchCondition);
+		const { target } = searchCondition;
+		if (this.filePrimary) {
+			if (fn !== this.distance)
+				throw new ClientError('A nativePlane index only supports its configured cosine distance');
+			// attached first, as search() does, so a cold worker checks the target's dimensions too
+			this.getPlane(target.length, false);
+			this.assertPlaneVector(target, 'Search target');
+		}
+		const inclusive = comparator === 'le';
+		return (recordVector) => {
+			if (recordVector == null) return false;
+			const distance = fn(target, Array.isArray(recordVector) ? recordVector : Array.from(recordVector));
+			return inclusive ? distance <= value : distance < value;
+		};
 	}
 	/**
 	 * Post-load rescoring hook called by search.ts after full records have been loaded.

@@ -450,7 +450,7 @@ describe('OpenAPI caller shapes across the v5.2.0 request-contract emitter', () 
 	it('a parameterised route declaring its own static inputSchemas gets that body schema (v5.1.26: { type: object })', () => {
 		assert.deepStrictEqual(paths['/gadget/{id}'].post.requestBody.content['application/json'].schema, {
 			type: 'object',
-			properties: { name: { type: 'string' } },
+			properties: Object.assign(Object.create(null), { name: { type: 'string' } }),
 		});
 	});
 });

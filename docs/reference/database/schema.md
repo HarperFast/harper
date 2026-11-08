@@ -145,7 +145,7 @@ On RocksDB, schema rescans apply changes to already-loaded tables on other worke
 
 On a table whose records live on specific nodes (see [sharding](../replication/sharding.md#by-record-content-setresidency)), a node that does not hold a record fetches it from a node that does. The fetched record is kept locally as a _replica_: a complete copy that reads and searches on that node use without contacting another node again. A replica does not move the record and is never replicated onward. A write by an owner reaches the node as an invalidation, which turns the replica back into a stub, so the next read fetches the new version. Tables using the older [`setResidencyById`](../replication/sharding.md#by-primary-key-only-setresidencybyid) mechanism keep no replicas. Schema-defined `@sharded` tables follow the rules below.
 
-- **`replicaExpiration`** — Seconds a replica is kept. A sweep runs every quarter of this time, with a minimum interval of one second, and reduces replicas past their lifetime back to their indexed stubs. A replica can still be served until the sweep reaches it; the next read after demotion fetches the record again. `0` disables new replica admissions and the sweep. A replica never outlives the record's own `expiration`, if it has one.
+- **`replicaExpiration`** — Seconds a replica is kept. A sweep runs every quarter of this time, with a minimum interval of one second, and reduces replicas past their lifetime back to their indexed stubs. A replica can still be served until the sweep reaches it; the next read after demotion fetches the record again. `0` disables new replica admissions and the sweep. A replica never outlives the record's own `expiration`, if it has one. When free space is low, replicas are demoted sooner; see [Local replicas under storage pressure](./storage-tuning.md#local-replicas-under-storage-pressure). With `0`, existing replicas are not demoted under storage pressure either.
 - **`replicaRefreshFraction`** — A read of a replica after this fraction of `replicaExpiration` has passed renews the lifetime, so records that stay in use stay local. Must be greater than `0` and at most `1`; `1` gives every replica a fixed lifetime.
 
 [Schema-defined sharding](../replication/residency.md#ownership-reads-and-writes) tables with secondary indexes can retain replicas for key-derived slots. With positive `replicaExpiration`, a non-owner writer also keeps its complete write as a temporary replica under the same expiry and replacement rules. This local copy never counts as owner confirmation. Setting the lifetime to `0` does not drain existing replicas; see the [rollback procedure](../replication/residency.md#rollback).
@@ -845,6 +845,8 @@ let results = Document.search({
 
 This form is useful when you want to bound result quality by a similarity cutoff rather than ranking by similarity.
 
+<VersionBadge type="changed" version="v5.4.0" /> A threshold condition can sit beside other conditions and inside [relationship conditions](../resources/resource-api.md#conditions-on-a-to-many-relationship), on a path such as `['product', 'textEmbeddings']` or in `products[...]`. When another condition drives the search, each candidate is checked against its exact distance in the condition's metric, so every returned record is within the threshold. When the threshold drives the search, it is answered by the index and, like a vector sort, returns at most `ef` candidates. Wherever it sits, a threshold condition needs `target` and an `lt` or `le` comparator; any other comparator with `target` is rejected with a 400.
+
 ### Selecting the Distance
 
 Use the special `$distance` field in `select` to include the computed distance from the target vector in returned records:
@@ -857,7 +859,7 @@ let results = Document.search({
 });
 ```
 
-`$distance` is available in both `sort`-based ranking and `conditions`-based threshold queries.
+`$distance` is available in both `sort`-based ranking and `conditions`-based threshold queries. It is not set by a threshold condition that another condition drives, or by one on a relationship path; add a `sort` on the vector with the same `target` to select it for the queried table's own vector.
 
 ### Per-Query Search Options
 

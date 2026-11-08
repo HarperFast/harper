@@ -826,6 +826,43 @@ describe('test scoped tokens (inline role object)', () => {
 		assert(!scopedUser.role.permission._expandedOperations.has('insert'));
 	});
 
+	it('rejects system grants when minting a new scoped token', async () => {
+		await assert.rejects(
+			mint({ role: { permission: { system: { tables: { hdb_user: { read: true } } } } } }),
+			(error) => error.statusCode === 400
+		);
+	});
+
+	it('legacy scoped tokens cannot retain declared system grants', async () => {
+		const permission = {
+			operations: ['read_only'],
+			system: { tables: { hdb_user: { read: true, insert: true, attribute_permissions: [] } } },
+		};
+		const sign = (permission) =>
+			jwt.sign(
+				{ username: 'legacy_scoped', role: { permission }, minted_by: 'admin_minter' },
+				{ key: PRIVATE_KEY_VALUE, passphrase: PASSPHRASE_VALUE },
+				{ algorithm: 'RS256', subject: 'scoped-operation', expiresIn: '1d' }
+			);
+		const legacyUser = await token_auth_plain.validateOperationToken(sign(permission));
+		const ordinaryUser = await token_auth_plain.validateOperationToken(sign({ operations: ['read_only'] }));
+		assert.strictEqual(legacyUser.role.permission.system, undefined);
+		const denial = require('#src/utility/operation_authorization').verifyPerms(
+			{
+				hdb_user: legacyUser,
+				operation: 'search_by_value',
+				schema: 'system',
+				table: 'hdb_user',
+				search_attribute: 'username',
+				search_value: 'admin',
+				get_attributes: ['*'],
+			},
+			'searchByValue'
+		);
+		assert.ok(denial, 'legacy scoped system access must be denied');
+		assert.strictEqual(legacyUser.role.role, ordinaryUser.role.role);
+	});
+
 	it('distinct permission sets get distinct synthetic role identities; identical sets share', async () => {
 		const tokenA = (await mint({ role: { permission: { operations: ['read_only'] } } })).operation_token;
 		const tokenB = (await mint({ role: { permission: { operations: ['standard_user'] } } })).operation_token;

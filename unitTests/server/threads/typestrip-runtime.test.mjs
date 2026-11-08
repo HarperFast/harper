@@ -435,6 +435,86 @@ describe('TypeStrip runtime boundaries', () => {
 		}
 	});
 
+	it('closes a component scope only after its handleApplication finishes registering', () => {
+		for (const mode of ['compiled', 'typestrip']) {
+			const workerPath = resolve(
+				root,
+				`${mode === 'compiled' ? 'dist/' : ''}server/threads/threadServer.${mode === 'compiled' ? 'js' : 'ts'}`
+			);
+			const output = runWithIsolatedRoot(
+				mode,
+				`
+				const assert = (await import('node:assert')).default;
+				const { readFileSync, writeFileSync } = await import('node:fs');
+				const YAML = require('yaml');
+				const configPath = process.env.ROOTPATH + '/harper-config.yaml';
+				const config = YAML.parseDocument(readFileSync(configPath, 'utf8'));
+				config.set('startupShutdownProbe', {});
+				writeFileSync(configPath, config.toString());
+				process.env.HARPER_BUILTIN_COMPONENTS = 'startupShutdownProbe=' + ${JSON.stringify(pathToFileURL(resolve(import.meta.dirname, 'fixtures/component-late-registration.cjs')).href)};
+				const { Worker } = await import('node:worker_threads');
+				const { once } = await import('node:events');
+				const worker = new Worker(${JSON.stringify(workerPath)}, { execArgv: ${JSON.stringify(mode === 'typestrip' ? ['--conditions=typestrip'] : [])}, workerData: { addPorts: [], addThreadIds: [] } });
+				const messages = []; worker.on('message', message => messages.push(message));
+				const deadline = AbortSignal.timeout(5000);
+				try {
+					while (!messages.some(message => message.type === 'component-held')) await once(worker, 'message', { signal: deadline });
+					worker.postMessage({ type: 'shutdown', restartNumber: 2 });
+					worker.postMessage({ type: 'release-component' });
+					const [code] = await once(worker, 'exit', { signal: AbortSignal.timeout(3000) });
+					assert.strictEqual(code, 0);
+					const order = messages.map(message => message.type).filter(type => type === 'component-loaded' || type === 'component-disposed');
+					assert.deepStrictEqual(order, ['component-loaded', 'component-disposed']);
+					assert.ok(messages.some(message => message.type === 'child_startup_phase' && message.phase === 'loading components'));
+					assert.strictEqual(messages.some(message => message.type === 'child_started' || (message.type === 'child_startup_phase' && message.phase !== 'loading components')), false);
+				} finally { if (worker.threadId !== -1) await worker.terminate(); }
+				console.log('late registration closed');
+			`
+			);
+			assert.strictEqual(output, 'late registration closed', mode);
+		}
+	});
+
+	it('skips a component that has not started loading when shutdown closes its scope', () => {
+		for (const mode of ['compiled', 'typestrip']) {
+			const workerPath = resolve(
+				root,
+				`${mode === 'compiled' ? 'dist/' : ''}server/threads/threadServer.${mode === 'compiled' ? 'js' : 'ts'}`
+			);
+			const output = runWithIsolatedRoot(
+				mode,
+				`
+				const assert = (await import('node:assert')).default;
+				const { readFileSync, writeFileSync } = await import('node:fs');
+				const YAML = require('yaml');
+				const configPath = process.env.ROOTPATH + '/harper-config.yaml';
+				const config = YAML.parseDocument(readFileSync(configPath, 'utf8'));
+				config.set('startupShutdownProbe', {});
+				config.set('secondProbe', {});
+				writeFileSync(configPath, config.toString());
+				process.env.HARPER_BUILTIN_COMPONENTS = 'startupShutdownProbe=' + ${JSON.stringify(pathToFileURL(resolve(import.meta.dirname, 'fixtures/component-late-registration.cjs')).href)} + ',secondProbe=' + ${JSON.stringify(pathToFileURL(resolve(import.meta.dirname, 'fixtures/component-second.cjs')).href)};
+				const { Worker } = await import('node:worker_threads');
+				const { once } = await import('node:events');
+				const worker = new Worker(${JSON.stringify(workerPath)}, { execArgv: ${JSON.stringify(mode === 'typestrip' ? ['--conditions=typestrip'] : [])}, workerData: { addPorts: [], addThreadIds: [] } });
+				const messages = []; worker.on('message', message => messages.push(message));
+				const deadline = AbortSignal.timeout(5000);
+				try {
+					while (!messages.some(message => message.type === 'component-held')) await once(worker, 'message', { signal: deadline });
+					worker.postMessage({ type: 'shutdown', restartNumber: 2 });
+					worker.postMessage({ type: 'release-component' });
+					const [code] = await once(worker, 'exit', { signal: AbortSignal.timeout(3000) });
+					assert.strictEqual(code, 0);
+					assert.strictEqual(messages.some(message => message.type === 'second-started'), false);
+					assert.ok(messages.some(message => message.type === 'child_startup_phase' && message.phase === 'loading components'));
+					assert.strictEqual(messages.some(message => message.type === 'child_started' || (message.type === 'child_startup_phase' && message.phase !== 'loading components')), false);
+				} finally { if (worker.threadId !== -1) await worker.terminate(); }
+				console.log('unstarted component skipped');
+			`
+			);
+			assert.strictEqual(output, 'unstarted component skipped', mode);
+		}
+	});
+
 	it('preserves environment-selected built-ins through startup', () => {
 		for (const mode of ['compiled', 'typestrip']) {
 			const prefix = mode === 'compiled' ? 'dist/' : '';

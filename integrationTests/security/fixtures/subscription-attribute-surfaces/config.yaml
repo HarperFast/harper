@@ -1,0 +1,6 @@
+# Attribute read permissions on the subscription surfaces subscription-attribute-permissions.test.ts does not drive.
+graphqlSchema:
+  files: '*.graphql'
+jsResource:
+  files: 'resources.js'
+rest: true

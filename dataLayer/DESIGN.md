@@ -135,6 +135,11 @@ restored generation is usable.
   (`openRestoredGeneration`); replay runs with `policy: 'restore'`, failing on any skipped entry, torn
   transaction or corrupt frame; `assessBlobReferences` decodes every record strictly, and a reference
   with neither a file nor a capture marker fails unless `accept_unverified_blobs`.
+- **Derived indexes are rebuilt, not restored.** A backup never holds a native index file (an HNSW
+  plane, a full-text directory). The proof's generation starts no derived index
+  (`openRestoredGeneration`): one would write into the generation being proven and still run after its
+  close. An HNSW index's node mappings and cursor live in RocksDB, so they come back without the plane
+  they name; once published, the index rebuilds at its first ownership (`derivedStorageLost`).
 - **Peers.** Every route refuses with replication peers (`hdb_nodes` rows other than this node, or
   `replication.routes` as this process started with them); an offline `system` restore checks routes
   only. While `system` is restore-blocked the census refuses rather than read it. Peer-adding
