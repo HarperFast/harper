@@ -101,7 +101,7 @@ const portConstraints = Joi.alternatives([number.min(0), string])
 const bareHostConstraints = Joi.any().custom(validateBareHost).optional().empty(null);
 const nodeUrlConstraints = string.custom(validateNodeUrl).optional().empty(null);
 // Peers identify a TLS dialer by its certificate; a plain-ws dialer by its source address, which a private
-// network changes. The URL reaches hdb_nodes and cluster_status, so it must not carry credentials.
+// network changes. The URL reaches hdb_nodes and cluster_status, so it must not carry credentials (userinfo or a query).
 const privateUrlConstraints = array
 	.items(
 		Joi.object({
@@ -750,7 +750,9 @@ function validatePrivateUrl(value, helpers) {
 		return helpers.message('{{#label}} must be a URL (e.g. "wss://10.0.0.5:9933")');
 	}
 	if (url.protocol !== 'wss:' || !url.hostname) return helpers.message('{{#label}} must be a wss:// URL with a host');
-	if (url.username || url.password) return helpers.message('{{#label}} must not include credentials');
+	if (url.username || url.password || url.search)
+		return helpers.message('{{#label}} must not include credentials or a query');
+	if (url.hash) return helpers.message('{{#label}} must not include a fragment');
 	return value;
 }
 

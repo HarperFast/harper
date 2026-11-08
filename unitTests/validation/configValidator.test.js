@@ -437,18 +437,20 @@ describe('Test configValidator module', () => {
 					{ url: 'wss://[fd00::5]:9933', network: 'vlan-7' },
 				],
 			};
-			expect(configValidator(config).error).to.be.undefined;
+			assert.strictEqual(configValidator(config).error, undefined);
 
 			const rejected = [
 				[{ url: 'ws://10.0.0.5:9933', network: 'a' }, 'must be a wss:// URL with a host'],
-				[{ url: 'wss://user:secret@10.0.0.5:9933', network: 'a' }, 'must not include credentials'],
+				[{ url: 'wss://user:secret@10.0.0.5:9933', network: 'a' }, 'must not include credentials or a query'],
+				[{ url: 'wss://10.0.0.5:9933/?token=secret', network: 'a' }, 'must not include credentials or a query'],
+				[{ url: 'wss://10.0.0.5:9933/#x', network: 'a' }, 'must not include a fragment'],
 				[{ url: 'not a url', network: 'a' }, 'must be a URL'],
 				[{ url: 'wss://10.0.0.5:9933' }, "'replication.privateUrls[0].network' is required"],
 				[{ url: 'wss://10.0.0.5:9933', network: '' }, 'is not allowed to be empty'],
 			];
 			for (const [entry, reason] of rejected) {
 				config.replication = { privateUrls: [entry] };
-				expect(configValidator(config).error?.message, JSON.stringify(entry)).to.include(reason);
+				assert.ok(configValidator(config).error?.message.includes(reason), JSON.stringify(entry));
 			}
 		});
 
