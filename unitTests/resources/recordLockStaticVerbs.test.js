@@ -433,6 +433,39 @@ describe('Record locks (QA-5082): static table verbs on locked keys must resolve
 			assert.strictEqual(Unaudited.primaryStore.getEntry(recordId).value.n, 5);
 		});
 
+		it('a write refused beside a parked commit, saved again inside a transaction() that aborts, does not land', async function () {
+			if (SKIP_ON_LMDB) return this.skip();
+			const recordId = id();
+			await Unaudited.put({ id: recordId, n: 1 });
+			const context = {};
+			const holder = await Unaudited.lock(recordId, { hold: true, lease: 5000 }, context);
+			cleanups.push(() => holder.unlock());
+			let releaseHook;
+			const hookGate = new Promise((resolve) => {
+				releaseHook = resolve;
+			});
+			Unaudited.source = { publish: () => hookGate };
+			cleanups.push(() => {
+				delete Unaudited.source;
+				releaseHook?.();
+			});
+			const published = holder.publish({ n: 7 });
+			delete Unaudited.source;
+			assert.strictEqual(context.transaction.open, TRANSACTION_STATE.OPEN);
+			holder.set('n', 9);
+			await assert.rejects(holder.save(), isOverlapRefusal);
+			releaseHook();
+			await published;
+			await assert.rejects(
+				transaction(context, async () => {
+					await holder.save();
+					throw new Error('abort');
+				}),
+				/abort/
+			);
+			assert.strictEqual(Unaudited.primaryStore.getEntry(recordId).value.n, 1, 'the aborted scope committed nothing');
+		});
+
 		it('overlapping save, publish and save never rewind the row: only the first commits (QA F-437)', async function () {
 			if (SKIP_ON_LMDB) return this.skip();
 			const recordId = id();

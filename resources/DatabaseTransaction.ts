@@ -4561,8 +4561,10 @@ export class ImmediateTransaction extends DatabaseTransaction {
 	save(...args: any[]): any {
 		const operation = args[0]; // the staged write, not a transaction — commit() re-enters here with it
 		if (operation?.lockHandle && !operation.saved && !args[1] && !args[3]) {
-			if (this.isCommitting && this.open === TRANSACTION_STATE.OPEN) operation.isolatedCommit = true;
-			return this.saveHolderSelfCommit(operation, () => this.#save(args));
+			return this.saveHolderSelfCommit(operation, () => {
+				if (this.isCommitting && this.open === TRANSACTION_STATE.OPEN) operation.isolatedCommit = true;
+				return this.#save(args);
+			});
 		}
 		return this.#save(args);
 	}
