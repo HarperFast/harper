@@ -335,8 +335,9 @@ and a holder write never joins a native commit already in flight. A self-committ
 `transaction()`, or a late write reaching a `transaction()` after it closed) issued while its handle has a commit
 in flight — another such write not yet settled (`handle.selfCommits`), or a native commit carrying the handle's
 writes (`hasCommitHold()`, between `retainTransactionLockHolds` and its release) — is refused with a 409
-(`saveHolderSelfCommit`). An explicit transaction staging a holder write while that handle's self-commit is in
-flight is refused the same way. The refusal is a rejected promise, so a caller aggregating it with the earlier
+(`saveHolderSelfCommit`). An explicit transaction staging a holder write, or first saving a deferred one in its
+commit sweep, while that handle has a commit in flight is refused the same way (the sweep's refusal fails that
+commit). The refusal is a rejected promise, so a caller aggregating it with the earlier
 write still observes that write; it detaches only the refused write, and does not poison the hold
 (`writeRefused` stays false) or touch the instance's pending changes, which the next awaited `save()` stages.
 Both counters move synchronously when a commit settles, before the awaiting caller resumes, so awaited

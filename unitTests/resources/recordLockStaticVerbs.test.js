@@ -353,7 +353,6 @@ describe('Record locks (QA-5082): static table verbs on locked keys must resolve
 			assert.ok(staged.stagedOn, 'the holder write is staged');
 			assert.notStrictEqual(staged.stagedOn, link.transaction, 'it must not join the parked native transaction');
 			assert.strictEqual(staged.stagedOn.immediateCommit, true);
-			// it settles while the first commit is still parked on its hook
 			assert.strictEqual(await Promise.race([secondCommit, delay(2000).then(() => 'hung')]), undefined);
 			assert.strictEqual(Unaudited.primaryStore.getEntry(secondId).value.n, 20);
 			assert.strictEqual(link.isCommitting, true);
@@ -544,6 +543,33 @@ describe('Record locks (QA-5082): static table verbs on locked keys must resolve
 				assert.strictEqual(Unaudited.primaryStore.getEntry(recordId).value.n, 2);
 			});
 		}
+
+		it("a same-record hook write on a chained database's link inside transaction() is refused with 409 (harper#4109)", async function () {
+			if (SKIP_ON_LMDB) return this.skip();
+			const rootId = id();
+			const lockedId = id();
+			await OtherDatabase.put({ id: lockedId, n: 1 });
+			const context = {};
+			let refusal;
+			await transaction(context, async () => {
+				await Unaudited.put({ id: rootId, n: 1 });
+				const holder = await OtherDatabase.lock(lockedId, { hold: true, lease: 5000 });
+				cleanups.push(() => holder.unlock());
+				OtherDatabase.source = {
+					publish: () => {
+						delete OtherDatabase.source;
+						holder.set('n', 9);
+						return Promise.resolve(holder.save()).catch((error) => {
+							refusal = error;
+						});
+					},
+				};
+				holder.publish({ n: 2 });
+			});
+			delete OtherDatabase.source;
+			assert.ok(isOwnHookRefusal(refusal), refusal?.message);
+			assert.strictEqual(OtherDatabase.primaryStore.getEntry(lockedId).value.n, 1);
+		});
 
 		it("a write to another locked record from the commit's own async before hook commits on its own transaction", async function () {
 			if (SKIP_ON_LMDB) return this.skip();

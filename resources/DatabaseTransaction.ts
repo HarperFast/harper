@@ -1621,7 +1621,7 @@ export class DatabaseTransaction implements Transaction {
 	 */
 	protected saveHolderSelfCommit(operation: TransactionWrite, save: () => any): any {
 		const handle = operation.lockHandle!;
-		if (holderCommitInFlight(handle)) {
+		if (holderCommitInFlight(handle) || heldByAncestorHook(handle)) {
 			operation.dropped = true;
 			this.detachWrite(operation);
 			return Promise.reject(holderWriteRefusal(handle));
@@ -2650,10 +2650,12 @@ export class DatabaseTransaction implements Transaction {
 					operation.selfCommitAdmitted = true;
 					return this.saveHolderSelfCommit(operation, () => this.save(operation));
 				}
-			} else if (lockHandle.selfCommits > 0 || (topLevel && heldByAncestorHook(lockHandle))) {
+			} else if (holderCommitInFlight(lockHandle) || heldByAncestorHook(lockHandle)) {
 				operation.dropped = true;
 				this.detachWrite(operation);
-				throw holderWriteRefusal(lockHandle);
+				const refusal = holderWriteRefusal(lockHandle);
+				if (topLevel) return Promise.reject(refusal);
+				throw refusal;
 			}
 		}
 		const concurrentClosedWrite =
