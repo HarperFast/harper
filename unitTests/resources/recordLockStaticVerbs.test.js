@@ -415,6 +415,24 @@ describe('Record locks (QA-5082): static table verbs on locked keys must resolve
 			});
 		}
 
+		it("a scoped lock's refused save stays pending, and the next awaited save commits it", async function () {
+			if (SKIP_ON_LMDB) return this.skip();
+			const recordId = id();
+			await Unaudited.put({ id: recordId, n: 1 });
+			const context = {};
+			const locked = await Unaudited.lock(recordId, { lease: 5000 }, context);
+			cleanups.push(() => locked.unlock());
+			const gates = gateNativeCommits(Unaudited);
+			const published = locked.publish({ n: 7 });
+			locked.set('n', 5);
+			await assert.rejects(locked.save(), isOverlapRefusal);
+			gates.restore();
+			await published;
+			assert.strictEqual(Unaudited.primaryStore.getEntry(recordId).value.n, 1);
+			await locked.save();
+			assert.strictEqual(Unaudited.primaryStore.getEntry(recordId).value.n, 5);
+		});
+
 		it('overlapping save, publish and save never rewind the row: only the first commits (QA F-437)', async function () {
 			if (SKIP_ON_LMDB) return this.skip();
 			const recordId = id();

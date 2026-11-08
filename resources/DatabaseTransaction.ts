@@ -829,6 +829,8 @@ export type TransactionWrite = {
 	selfCommitAdmitted?: boolean;
 	// stage on a fresh native transaction rather than the OPEN link's in-flight one (holder writes never join it)
 	isolatedCommit?: boolean;
+	// a deferred write detached by a holder-overlap refusal, for its instance to stage again
+	refusedDeferredWrite?: boolean;
 	// the commit derives stored state (folds, index diffs, residency) from its base entry, so
 	// save() must reload that base through the committing transaction's snapshot
 	reloadCommitBase?: boolean;
@@ -1624,6 +1626,7 @@ export class DatabaseTransaction implements Transaction {
 		if (holderCommitInFlight(handle) || heldByAncestorHook(handle)) {
 			operation.dropped = true;
 			this.detachWrite(operation);
+			if (operation.deferSave) operation.refusedDeferredWrite = true;
 			return Promise.reject(holderWriteRefusal(handle));
 		}
 		handle.selfCommits++;
