@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794122238337,
+  "lastUpdate": 1794122240906,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -21224,6 +21224,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "E scan p99 — short ranges",
             "value": 208.64,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "960595764a9b74c07298fc2eab89617dbd571b38",
+          "message": "Rebuild a restored native HNSW index instead of starting an empty plane under its node mappings (#4099)\n\n* Rebuild a restored native HNSW index instead of starting an empty plane under its node mappings\n\nrestore_backup brings back a file-primary HNSW index's node mappings and durable cursor (they live in\nRocksDB) but not its .hnsw plane file, which no backup holds and the restore purges. The runtime trusted\nthe restored cursor, and the first vector write created a fresh empty plane, so every restored vector\ndisappeared from search with no error and no rebuild.\n\n- HnswDerivedIndexBackend.getDurableCursor() checks once per ownership whether node mappings survive a\n  missing plane file (derivedStorageLost) and reports no cursor if so, so acquisition rebuilds.\n- getPlane refuses to create a plane while node mappings survive; the unopenable-file branch's own\n  250 ms retry is folded into that guard.\n- openRestoredGeneration suspends derived-index activation: the restore child's proof started the HNSW\n  runtime on the generation it was proving and closed its stores without waiting for it.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nDispatch-Task: harper-hnsw-restore-missing-plane-file\n\n* Key the HNSW native-state check to the owner epoch, not a flag shutdown clears\n\nA barrier of the releasing epoch could read the cursor after shutdown() cleared the flag and set it\nagain, so the next ownership skipped the plane-file check. The check now runs on the first read under\neach owner epoch; reset() records the rebuild's epoch. Also names the repair file by its prefix (a\nrecreated table's store name carries a generation suffix) and trims test comments.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nDispatch-Task: harper-hnsw-restore-missing-plane-file\n\n* Name the repair file exactly and drop a narrating test comment\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nDispatch-Task: harper-hnsw-restore-missing-plane-file\n\n---------\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-11-08T04:46:32Z",
+          "url": "https://github.com/HarperFast/harper/commit/960595764a9b74c07298fc2eab89617dbd571b38"
+        },
+        "date": 1794122240511,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "C read p99 — read only",
+            "value": 9.87,
+            "unit": "ms"
+          },
+          {
+            "name": "B read p99 — read mostly",
+            "value": 9.45,
+            "unit": "ms"
+          },
+          {
+            "name": "B update p99 — read mostly",
+            "value": 11.2,
+            "unit": "ms"
+          },
+          {
+            "name": "A read p99 — update heavy",
+            "value": 13.36,
+            "unit": "ms"
+          },
+          {
+            "name": "A update p99 — update heavy",
+            "value": 15.17,
+            "unit": "ms"
+          },
+          {
+            "name": "F read p99 — read-modify-write",
+            "value": 12.22,
+            "unit": "ms"
+          },
+          {
+            "name": "F rmw p99 — read-modify-write",
+            "value": 23.98,
+            "unit": "ms"
+          },
+          {
+            "name": "D read p99 — read latest",
+            "value": 10.09,
+            "unit": "ms"
+          },
+          {
+            "name": "D insert p99 — read latest",
+            "value": 11.89,
+            "unit": "ms"
+          },
+          {
+            "name": "E insert p99 — short ranges",
+            "value": 43.42,
+            "unit": "ms"
+          },
+          {
+            "name": "E scan p99 — short ranges",
+            "value": 146.61,
             "unit": "ms"
           }
         ]
