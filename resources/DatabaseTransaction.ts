@@ -964,7 +964,6 @@ export interface CommitHookInvocation {
 	root: DatabaseTransaction;
 	// the link whose commit awaits the hook; sibling-database links share `root` but commit on their own
 	link: DatabaseTransaction;
-	// the write whose hook this is
 	write: TransactionWrite;
 	active: boolean;
 	parent: CommitHookInvocation | undefined;
@@ -2643,13 +2642,15 @@ export class DatabaseTransaction implements Transaction {
 			this.detachWrite(operation);
 			throw lockNotHeldError(lockHandle);
 		}
-		if (lockHandle && !operation.saved && !transaction && !options && !this.saveCommits) {
+		if (lockHandle && !operation.saved && !this.saveCommits) {
+			// a deferred holder write is first saved by the commit sweep, which passes its transaction
+			const topLevel = !transaction && !options;
 			if (this.open !== TRANSACTION_STATE.OPEN) {
-				if (!operation.selfCommitAdmitted) {
+				if (topLevel && !operation.selfCommitAdmitted) {
 					operation.selfCommitAdmitted = true;
 					return this.saveHolderSelfCommit(operation, () => this.save(operation));
 				}
-			} else if (lockHandle.selfCommits > 0 || heldByAncestorHook(lockHandle)) {
+			} else if (lockHandle.selfCommits > 0 || (topLevel && heldByAncestorHook(lockHandle))) {
 				operation.dropped = true;
 				this.detachWrite(operation);
 				throw holderWriteRefusal(lockHandle);
@@ -4582,7 +4583,7 @@ export class ImmediateTransaction extends DatabaseTransaction {
 			// Nor is a write made within this commit's own before-hook (even through another link's commit):
 			// this commit awaits that hook.
 			if (saveResult?.then) return saveResult.then(resolveUndefined);
-			if (this.open !== TRANSACTION_STATE.OPEN) return;
+			if (this.open !== TRANSACTION_STATE.OPEN || operation.isolatedCommit) return;
 			for (let hook = currentCommitHook(); hook; hook = hook.parent) {
 				if (hook.active && hook.link === this) return;
 			}

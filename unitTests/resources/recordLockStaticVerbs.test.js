@@ -357,6 +357,9 @@ describe('Record locks (QA-5082): static table verbs on locked keys must resolve
 			assert.strictEqual(await Promise.race([secondCommit, delay(2000).then(() => 'hung')]), undefined);
 			assert.strictEqual(Unaudited.primaryStore.getEntry(secondId).value.n, 20);
 			assert.strictEqual(link.isCommitting, true);
+			Object.defineProperty(holder2, 'n', { value: 20, enumerable: true, configurable: true, writable: true });
+			assert.strictEqual(holder2.save(), undefined, 'a no-op write does not wait on the parked commit');
+			delete holder2.n;
 			releaseHook();
 			await firstCommit;
 			holder2.set('n', 21);
@@ -434,7 +437,7 @@ describe('Record locks (QA-5082): static table verbs on locked keys must resolve
 				settled = true;
 				return outcomes;
 			});
-			// release the newest parked commit each time: before the fix all three were parked at once
+			// release the newest parked commit each time, so overlapping commits would land newest-first
 			let maxVersion = 0;
 			while (!settled) {
 				await waitFor(() => settled || gates.pending.length > 0, 2000);
@@ -514,27 +517,33 @@ describe('Record locks (QA-5082): static table verbs on locked keys must resolve
 			assert.strictEqual(Unaudited.primaryStore.getEntry(recordId).value.n, 3);
 		});
 
-		it("an explicit transaction() on the holder's context refuses a holder write while its self-commit is in flight", async function () {
-			if (SKIP_ON_LMDB) return this.skip();
-			const recordId = id();
-			await Unaudited.put({ id: recordId, n: 1 });
-			const context = {};
-			const holder = await Unaudited.lock(recordId, { hold: true, lease: 5000 }, context);
-			cleanups.push(() => holder.unlock());
-			const gates = gateNativeCommits(Unaudited);
-			holder.set('n', 2);
-			const first = holder.save();
-			await assert.rejects(
-				transaction(holder.getContext(), async () => {
-					holder.set('n', 3);
-					await holder.save();
-				}),
-				isOverlapRefusal
-			);
-			gates.restore();
-			await first;
-			assert.strictEqual(Unaudited.primaryStore.getEntry(recordId).value.n, 2);
-		});
+		for (const deferred of [false, true]) {
+			it(`an explicit transaction() on the holder's context refuses a ${deferred ? 'deferred ' : ''}holder write while its self-commit is in flight`, async function () {
+				if (SKIP_ON_LMDB) return this.skip();
+				const recordId = id();
+				await Unaudited.put({ id: recordId, n: 1 });
+				const context = {};
+				const holder = await Unaudited.lock(recordId, { hold: true, lease: 5000 }, context);
+				cleanups.push(() => holder.unlock());
+				const gates = gateNativeCommits(Unaudited);
+				holder.set('n', 2);
+				const first = holder.save();
+				await assert.rejects(
+					transaction(holder.getContext(), async () => {
+						// a deferred update is first saved by the commit sweep
+						if (deferred) await holder.update(recordId, { n: 3 });
+						else {
+							holder.set('n', 3);
+							await holder.save();
+						}
+					}),
+					isOverlapRefusal
+				);
+				gates.restore();
+				await first;
+				assert.strictEqual(Unaudited.primaryStore.getEntry(recordId).value.n, 2);
+			});
+		}
 
 		it("a write to another locked record from the commit's own async before hook commits on its own transaction", async function () {
 			if (SKIP_ON_LMDB) return this.skip();
