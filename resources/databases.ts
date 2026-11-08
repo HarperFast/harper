@@ -1928,6 +1928,9 @@ export function openRestoredGeneration(path: string, databaseName: string): Rest
 		throw new Error(`No restored ${databaseName} database was found at ${path}`);
 	}
 	const rootStore = openRocksDatabase(path, { disableWAL: false, enableStats: true }) as RocksRootDatabase;
+	// A proof has no use for derived indexes, and a runtime started here would rebuild or apply into the
+	// generation being proven and still be running when `closeRestoredGeneration` closes its stores.
+	permanentlySuspendDerivedIndexActivation(rootStore);
 	const openedStores: any[] = [];
 	const tables: Tables = {};
 	try {
