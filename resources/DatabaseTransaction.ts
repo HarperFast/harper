@@ -2654,7 +2654,8 @@ export class DatabaseTransaction implements Transaction {
 				operation.dropped = true;
 				this.detachWrite(operation);
 				const refusal = holderWriteRefusal(lockHandle);
-				if (topLevel) return Promise.reject(refusal);
+				// thrown so an unawaited write fails its scope; a hook's own write is left to the hook to catch
+				if (topLevel && heldByAncestorHook(lockHandle)) return Promise.reject(refusal);
 				throw refusal;
 			}
 		}

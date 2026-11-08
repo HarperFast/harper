@@ -336,8 +336,8 @@ and a holder write never joins a native commit already in flight. A self-committ
 in flight — another such write not yet settled (`handle.selfCommits`), or a native commit carrying the handle's
 writes (`hasCommitHold()`, between `retainTransactionLockHolds` and its release) — is refused with a 409
 (`saveHolderSelfCommit`). An explicit transaction staging a holder write, or first saving a deferred one in its
-commit sweep, while that handle has a commit in flight is refused the same way (the sweep's refusal fails that
-commit). The refusal is a rejected promise, so a caller aggregating it with the earlier
+commit sweep, while that handle has a commit in flight is refused the same way, but thrown, so it fails the
+scope. A self-committing refusal is a rejected promise, so a caller aggregating it with the earlier
 write still observes that write; it detaches only the refused write, and does not poison the hold
 (`writeRefused` stays false) or touch the instance's pending changes, which the next awaited `save()` stages.
 Both counters move synchronously when a commit settles, before the awaiting caller resumes, so awaited
@@ -348,8 +348,9 @@ write on an OPEN `ImmediateTransaction` whose commit is in flight (a blob still 
 hook) is staged on a fresh native transaction flagged `immediateCommit` (`isolatedCommit`), so it neither joins
 that commit's reserved log key nor waits for it. A holder write whose active ancestor commit hook belongs to a
 write of the same handle (a source's `before` hook writing the record its own commit is writing) is refused
-with a 409, in an explicit transaction as well: the outer write read its base before the hook ran
-(harper#4109). Waiting instead was rejected: a queued save stages after the instance's mutable changes have
+with a 409, as a rejected promise the hook can catch, in an explicit transaction as well: the outer write read
+its base before the hook ran (harper#4109). A deferred write the hook leaves for the commit sweep is staged after
+the outer write and reloads its base there, so it is not refused. Waiting instead was rejected: a queued save stages after the instance's mutable changes have
 moved on, so it would need coalesced saves, a turn deadline and queue-aware `unlock()`, for overlap no caller
 uses. `unlock()` needs nothing new: nothing is queued, and an admitted write's commit hold defers the native
 unlock as before.
