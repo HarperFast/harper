@@ -342,7 +342,8 @@ write still observes that write; it detaches only the refused write, and does no
 (`writeRefused` stays false). On a self-committing link the instance keeps its pending changes: its refused
 deferred write is staged again (`#restageRefusedWrite`), so its next awaited `save()` commits it. Inside
 `transaction()` a refused write is discarded with its 409, since staging it again in the commit that ran the hook
-would land the write the 409 refused; the caller catches it and writes again.
+would land the write the 409 refused; the caller catches it and writes again (through a fresh `update()` on a
+scoped lock, as after any `save()`).
 Both counters move synchronously when a commit settles, before the awaiting caller resumes, so awaited
 sequential writes are never refused. Each holder write therefore stamps above the committed floor: overlapping
 holder writes can neither share a version (harper#4098) nor land out of order, which let an older publish
