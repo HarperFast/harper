@@ -5,7 +5,7 @@ const { waitFor } = require('../waitFor');
 const { table } = require('#src/resources/databases');
 const { transaction } = require('#src/resources/transaction');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
-const { createBlob, getFilePathForBlob } = require('#src/resources/blob');
+const { createBlob, getFileId, getFilePathForBlob } = require('#src/resources/blob');
 const { writeKeyId, TRANSACTION_STATE, suspendDatabaseCommits } = require('#src/resources/DatabaseTransaction');
 require('#src/server/serverHelpers/serverUtilities');
 
@@ -273,6 +273,24 @@ describe('Deferred write lifecycle', function () {
 				assert.strictEqual(changesFor(key).length, 1);
 			});
 		}
+	}
+
+	for (const keyed of [false, true]) {
+		it(`validates an unsupported operation after a pending ${keyed ? 'keyed' : 'direct'} change`, async () => {
+			const key = id();
+			await TestTable.put({ id: key, n: 0 });
+			const context = {};
+			await assert.rejects(
+				transaction(context, async () => {
+					const record = await TestTable.getResource({ id: key }, context);
+					await record.update({ n: 1 });
+					const changes = { n: { __op__: 'mul', value: 2 } };
+					await (keyed ? record.update(key, changes) : record.update(changes));
+				}),
+				(error) => error.statusCode === 400 && /not supported/.test(error.message)
+			);
+			assert.strictEqual((await TestTable.get(key)).n, 0);
+		});
 	}
 
 	for (const state of ['loaded', 'unloaded', 'new']) {
@@ -547,75 +565,80 @@ describe('Deferred write lifecycle', function () {
 		}
 	});
 
-	it('fences a hook-delayed update when a checkpoint has sealed its generation', async function () {
-		if (!isLMDB) return this.skip();
-		const Embedded = table({
-			database: 'deferred_write_lifecycle',
-			table: 'ValidatedEmbedded',
-			audit: true,
-			sealed: true,
-			attributes: [
-				{ name: 'id', isPrimaryKey: true },
-				{ name: 'n', type: 'Int' },
-				{ name: 'name' },
-				{ name: 'blob', type: 'Blob' },
-				{ name: 'embedding', type: 'Array', embed: { source: 'name', model: 'default' } },
-			],
-		});
-		let release;
-		const gate = new Promise((resolve) => {
-			release = resolve;
-		});
-		Embedded.setEmbedAttribute('embedding', async (record) => {
-			if (record.name === 'pending') await gate;
-			return [record.name.length];
-		});
-		const key = id();
-		const stream = new PassThrough();
-		const context = {};
-		try {
-			await transaction(context, async () => {
-				const record = await Embedded.getResource({ id: key }, context);
-				await record.update({ n: { __op__: 'add', value: 1 }, name: 'accepted', blob: createBlob(stream) });
-				let owner = context.transaction;
-				while (owner && !owner.writes.some((write) => write?.key === key)) owner = owner.next;
-				assert.ok(owner, 'the table write has an owner');
-				const original = owner.writes.find((write) => write?.key === key);
-				const updating = record.update({ name: 'pending', forbidden: true });
-				const refused = assert.rejects(
-					updating,
-					(error) => error.statusCode === 409 && /after it has been saved/.test(error.message)
-				);
-				const committing = context.transaction.commit();
-				committing.catch(() => {});
-				try {
-					assert.ok(original.instanceClosed && !original.saved, 'validated, waiting on the real blob stream');
-					release();
-					await refused;
-				} finally {
-					release();
-					stream.end('payload');
-				}
-				await committing;
-				await record.update({ name: 'retried' });
-				await record.save();
+	for (const full of [false, true]) {
+		it(`fences a hook-delayed ${full ? 'replacement' : 'update'} when a checkpoint has sealed its generation`, async function () {
+			if (!isLMDB) return this.skip();
+			const Embedded = table({
+				database: 'deferred_write_lifecycle',
+				table: full ? 'ValidatedFullEmbedded' : 'ValidatedEmbedded',
+				audit: true,
+				sealed: true,
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'n', type: 'Int' },
+					{ name: 'name' },
+					{ name: 'blob', type: 'Blob' },
+					{ name: 'embedding', type: 'Array', embed: { source: 'name', model: 'default' } },
+				],
 			});
-			const result = await Embedded.get(key);
-			assert.strictEqual(result.n, 1, 'the accepted increment is never replayed by the delayed update');
-			assert.strictEqual(result.name, 'retried');
-			assert.strictEqual(result.forbidden, undefined);
-			assert.strictEqual(
-				[...Embedded.auditStore.getRange({ start: 1 })].filter(
-					(entry) => entry.recordId === key && entry.type === 'patch'
-				).length,
-				2
-			);
-		} finally {
-			release();
-			stream.end();
-		}
-	});
-
+			let release;
+			const gate = new Promise((resolve) => {
+				release = resolve;
+			});
+			Embedded.setEmbedAttribute('embedding', async (record) => {
+				if (record.name === 'pending') await gate;
+				return [record.name.length];
+			});
+			const key = id();
+			const stream = new PassThrough();
+			const context = {};
+			try {
+				await transaction(context, async () => {
+					const record = await Embedded.getResource({ id: key }, context);
+					await record.update({ n: { __op__: 'add', value: 1 }, name: 'accepted', blob: createBlob(stream) });
+					let owner = context.transaction;
+					while (owner && !owner.writes.some((write) => write?.key === key)) owner = owner.next;
+					assert.ok(owner, 'the table write has an owner');
+					const original = owner.writes.find((write) => write?.key === key);
+					const rejectedBlob = createBlob('abandoned');
+					const updating = full
+						? record.put(key, { name: 'pending', blob: rejectedBlob })
+						: record.update({ name: 'pending', forbidden: true });
+					const refused = assert.rejects(
+						updating,
+						(error) => error.statusCode === 409 && /after it has been saved/.test(error.message)
+					);
+					const committing = context.transaction.commit();
+					committing.catch(() => {});
+					try {
+						assert.ok(original.instanceClosed && !original.saved, 'validated, waiting on the real blob stream');
+						release();
+						await refused;
+						assert.strictEqual(getFileId(rejectedBlob), null, 'a refused continuation never starts saving its blob');
+					} finally {
+						release();
+						stream.end('payload');
+					}
+					await committing;
+					await record.update({ name: 'retried' });
+					await record.save();
+				});
+				const result = await Embedded.get(key);
+				assert.strictEqual(result.n, 1, 'the accepted increment is never replayed by the delayed update');
+				assert.strictEqual(result.name, 'retried');
+				assert.strictEqual(result.forbidden, undefined);
+				assert.strictEqual(
+					[...Embedded.auditStore.getRange({ start: 1 })].filter(
+						(entry) => entry.recordId === key && entry.type === 'patch'
+					).length,
+					2
+				);
+			} finally {
+				release();
+				stream.end();
+			}
+		});
+	}
 	it('save waits for pending model hooks before admitting or merging their write', async function () {
 		const Embedded = table({
 			database: 'deferred_write_lifecycle',

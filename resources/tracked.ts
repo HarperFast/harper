@@ -832,8 +832,7 @@ export function mergeUpdateChanges(previous, changes, getStoredValue: (name: str
 		const value = changes[name];
 		if (!value?.__op__ || !Object.hasOwn(previous, name)) continue;
 		const prior = previous[name];
-		if (!crdtOperations.operations[value.__op__]) merged[name] = prior;
-		else if (value.__op__ === 'add') {
+		if (value.__op__ === 'add') {
 			if (prior?.__op__ === 'add')
 				merged[name] = new Addition(addDeltas(prior.value, value.value, getStoredValue(name)));
 			else if (!prior?.__op__) merged[name] = crdtOperations.addValues(prior, value.value);
