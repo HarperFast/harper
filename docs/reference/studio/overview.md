@@ -37,3 +37,7 @@ http://localhost:9925
 ```
 
 All database interactions from the local Studio are made directly from your browser to your Harper instance. Authentication is maintained via session cookies.
+
+## Customizing Studio
+
+Components can add pages to Studio, and a cluster can hide or tuck away its tabs. See [Customizing Studio](./customization.md).

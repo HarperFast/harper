@@ -34,11 +34,19 @@ describe('reserved component names', () => {
 		assert.ok(!isReservedComponentName('SQL'));
 	});
 
-	it('add_component refuses to create a project under a reserved name', () => {
-		const error = validator.addComponentValidator({ project: 'sql' });
-		assert.ok(error);
-		assert.match(error.message, /Component name 'sql' is reserved/);
+	it("reserves 'studio', the root config key that holds the cluster's Studio settings", () => {
+		assert.ok(isReservedComponentName('studio'));
+		assert.ok(!isReservedComponentName('studio-pages'));
+		assert.ok(!isReservedComponentName('Studio'));
 	});
+
+	for (const name of ['sql', 'studio']) {
+		it(`add_component refuses to create a project named '${name}'`, () => {
+			const error = validator.addComponentValidator({ project: name });
+			assert.ok(error);
+			assert.match(error.message, new RegExp(`Component name '${name}' is reserved`));
+		});
+	}
 
 	it('add_component does not refuse a name that merely contains a reserved one', () => {
 		const error = validator.addComponentValidator({ project: 'sql-tools' });
@@ -68,6 +76,27 @@ describe('reserved component names', () => {
 			fs.ensureDirSync(path.join(ROOT, 'sql'));
 			assert.strictEqual(validator.setComponentFileValidator(setComponentFile), undefined);
 			assert.strictEqual(validator.setEnvValueValidator(setEnvValue), undefined);
+		});
+	});
+
+	describe('an application deployed as studio before the name was reserved', () => {
+		before(() => fs.ensureDirSync(path.join(ROOT, 'studio')));
+		after(() => fs.removeSync(path.join(ROOT, 'studio')));
+
+		it('stays editable and droppable', () => {
+			assert.strictEqual(
+				validator.setComponentFileValidator({ project: 'studio', file: 'resources.js', payload: '' }),
+				undefined
+			);
+			assert.strictEqual(validator.dropComponentFileValidator({ project: 'studio' }), undefined);
+		});
+
+		it('cannot be redeployed under the name', async () => {
+			await assert.rejects(operations.deployComponent({ project: 'studio', payload: 'ZmFrZQ==' }), (error) => {
+				assert.match(error.message, /Component name 'studio' is reserved/);
+				assert.strictEqual(error.statusCode, 400);
+				return true;
+			});
 		});
 	});
 

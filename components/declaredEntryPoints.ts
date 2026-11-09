@@ -8,15 +8,14 @@ import { readFile } from 'node:fs/promises';
 import fg from 'fast-glob';
 import { parseDocument } from 'yaml';
 import { deriveGlobOptions, type FilesOption } from './deriveGlobOptions.ts';
+import { COMPONENT_CONFIG_FILES } from '../utility/hdbTerms.ts';
 
 // Their files are the application's code and schema, so a declaration that matches nothing is a missing application
 // rather than an optional extra.
 const ENTRY_POINT_PLUGINS = ['jsResource', 'graphqlSchema'];
-// In componentLoader's order.
-const CONFIG_FILES = ['harper-config.yaml', 'harperdb-config.yaml', 'config.yaml'];
 
 export async function missingEntryPointsWarning(componentName: string, treePath: string): Promise<string | undefined> {
-	const configFile = CONFIG_FILES.find((name) => existsSync(join(treePath, name)));
+	const configFile = COMPONENT_CONFIG_FILES.find((name) => existsSync(join(treePath, name)));
 	if (!configFile) return undefined;
 	let config: any;
 	try {
