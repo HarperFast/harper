@@ -23,6 +23,7 @@ import { onStartup } from '../utility/lifecycle.ts';
 import { convertToMS } from '../utility/common_utils.ts';
 import { settleBeforeDeadline, when } from '../utility/when.ts';
 import { setTimeout as delay } from 'node:timers/promises';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import {
 	Transaction as RocksTransaction,
 	type Store as RocksStore,
@@ -953,6 +954,54 @@ function releaseTransactionLockHolds(transaction: RocksTransaction | null | unde
 	}
 }
 
+type RecordLockRegistry = Map<any, Map<unknown, RecordLockHandle>>;
+
+/** One running invocation of a write's pre-commit hook (`before`) in an explicit transaction. */
+export interface CommitHookInvocation {
+	root: DatabaseTransaction;
+	active: boolean;
+}
+const commitHookScope = new AsyncLocalStorage<CommitHookInvocation>();
+
+/**
+ * The pre-commit hook the caller runs inside, if any. It stays the store for work the hook left running
+ * after it settled, so readers check `active`.
+ */
+export function currentCommitHook(): CommitHookInvocation | undefined {
+	return commitHookScope.getStore();
+}
+
+function runCommitHook(root: DatabaseTransaction, hook: () => void | Promise<void>): void | Promise<void> {
+	const invocation: CommitHookInvocation = { root, active: true };
+	const settled = () => {
+		invocation.active = false;
+	};
+	let result: void | Promise<void>;
+	try {
+		result = commitHookScope.run(invocation, hook);
+	} catch (error) {
+		settled();
+		throw error;
+	}
+	if ((result as Promise<void>)?.then) (result as Promise<void>).then(settled, settled);
+	else settled();
+	return result;
+}
+
+function mergeRecordLocks(
+	older: RecordLockRegistry | undefined,
+	newer: RecordLockRegistry | undefined
+): RecordLockRegistry | undefined {
+	if (!older) return newer;
+	if (!newer) return older;
+	for (const [store, handles] of newer) {
+		const target = older.get(store);
+		if (!target) older.set(store, handles);
+		else for (const [keyId, handle] of handles) target.set(keyId, handle);
+	}
+	return older;
+}
+
 export class DatabaseTransaction implements Transaction {
 	#context: Context;
 	// Whether a resources/transaction.ts scope owns this instance — i.e. a final commit or abort is
@@ -1099,9 +1148,12 @@ export class DatabaseTransaction implements Transaction {
 	 */
 	declare hasLeaseProtectedWrite?: boolean;
 	declare unlockedWriteScan?: { writes: TransactionWrite[]; index: number; found: boolean };
-	// Tracks in-flight acquireRecordKey calls so concurrent lock() calls for the same key in one
-	// link (e.g. Promise.all([T.lock(id), T.lock(id)])) can coalesce rather than self-block.
+	// On the chain root, which outlives every link: in-flight acquireRecordKey calls, so concurrent lock()
+	// calls for one key coalesce rather than self-block, even after the first one's link left the chain.
 	declare pendingLocks?: Map<any, Map<unknown, Promise<RecordLockHandle>>>;
+	// On the chain root: set by the scope's final commit, which a lock() waiter does not wait out.
+	declare scopeEnding?: boolean;
+	declare commitSettleWaiters?: Array<() => void>;
 
 	setCommitPhase(committing: boolean): void {
 		// A commit phase covers the sealed write set across the whole multi-store chain.
@@ -1136,6 +1188,10 @@ export class DatabaseTransaction implements Transaction {
 	declare searchScanning?: boolean;
 	// Depth of commit() attempts on this link that have not reached a native outcome.
 	commitsInFlight = 0;
+	// Of those, the ones commit() was asked for directly on an explicit transaction (a mid-scope or final
+	// commit), which span the pre-commit work, the cascade into `next` and the rotation; lock() waits these
+	// out (record-locks.md).
+	declare scopeCommitsInFlight?: number;
 	declare private activeCommitHandle?: RocksTransaction;
 	declare private activeCommitHandles?: Set<RocksTransaction>;
 	declare private activeHandleStagedTxnTime?: number;
@@ -1568,15 +1624,24 @@ export class DatabaseTransaction implements Transaction {
 		if (this.recordLocks!.size === 0) this.recordLocks = undefined;
 	}
 
-	/** Called on the chain root for a link leaving its chain. */
-	retainRecordLocksOf(link: DatabaseTransaction): void {
-		const recordLocks = link.recordLocks;
-		// Only a lock() waiting on the link reads leftChain; a lock-free link is left untouched.
-		if (!recordLocks && !link.pendingLocks) return;
+	/**
+	 * Remove `this.next` from the chain; every removal other than abort's goes through here. Its record
+	 * locks pass to the chain root until txnForContext replaces the link (adoptDetachedRecordLocks).
+	 */
+	detachNext(): void {
+		const link = this.next;
+		(this.root ?? this).retainRecordLocksOf(link);
+		this.next = link.next ?? null;
+	}
+
+	private retainRecordLocksOf(link: DatabaseTransaction): void {
+		// A lock() waiting on the link reads the chain root from here on.
 		link.leftChain = true;
+		const recordLocks = link.recordLocks;
 		if (!recordLocks) return;
 		link.recordLocks = undefined;
-		(this.detachedRecordLocks ??= new Map()).set(link.db.path, recordLocks);
+		const detached = (this.detachedRecordLocks ??= new Map());
+		detached.set(link.db.path, mergeRecordLocks(detached.get(link.db.path), recordLocks));
 	}
 
 	/** Called on the chain root for a link just created for `link.db`. */
@@ -1586,22 +1651,52 @@ export class DatabaseTransaction implements Transaction {
 		if (!recordLocks) return;
 		detached.delete(link.db.path);
 		if (detached.size === 0) this.detachedRecordLocks = undefined;
-		link.recordLocks = recordLocks;
+		link.recordLocks = mergeRecordLocks(recordLocks, link.recordLocks);
 	}
 
 	registerPendingLock(store: any, keyId: unknown, pending: Promise<RecordLockHandle>): void {
-		if (!this.pendingLocks) this.pendingLocks = new Map();
-		let storeMap = this.pendingLocks.get(store);
-		if (!storeMap) this.pendingLocks.set(store, (storeMap = new Map()));
+		const scope = this.root ?? this;
+		if (!scope.pendingLocks) scope.pendingLocks = new Map();
+		let storeMap = scope.pendingLocks.get(store);
+		if (!storeMap) scope.pendingLocks.set(store, (storeMap = new Map()));
 		storeMap.set(keyId, pending);
 	}
 
 	pendingLockFor(store: any, keyId: unknown): Promise<RecordLockHandle> | undefined {
-		return this.pendingLocks?.get(store)?.get(keyId);
+		return (this.root ?? this).pendingLocks?.get(store)?.get(keyId);
 	}
 
-	unregisterPendingLock(store: any, keyId: unknown): void {
-		this.pendingLocks?.get(store)?.delete(keyId);
+	unregisterPendingLock(store: any, keyId: unknown, pending: Promise<RecordLockHandle>): void {
+		const scope = this.root ?? this;
+		const storeMap = scope.pendingLocks?.get(store);
+		if (storeMap?.get(keyId) !== pending) return;
+		storeMap.delete(keyId);
+		if (storeMap.size > 0) return;
+		scope.pendingLocks!.delete(store);
+		if (scope.pendingLocks!.size === 0) scope.pendingLocks = undefined;
+	}
+
+	/**
+	 * Resolves true once this root has no scope commit attempt in flight, or false after `limitMs`. True at
+	 * once when none is: a waiter subscribing after endCommitAttempt drained the list must not wait.
+	 */
+	whenCommitSettles(limitMs: number): boolean | Promise<boolean> {
+		if (!this.scopeCommitsInFlight) return true;
+		if (limitMs <= 0) return false;
+		return new Promise<boolean>((resolve) => {
+			const waiters = (this.commitSettleWaiters ??= []);
+			const settled = () => {
+				clearTimeout(timer);
+				resolve(true);
+			};
+			const timer = setTimeout(() => {
+				const index = waiters.indexOf(settled);
+				if (index > -1) waiters.splice(index, 1);
+				if (waiters.length === 0 && this.commitSettleWaiters === waiters) this.commitSettleWaiters = undefined;
+				resolve(false);
+			}, limitMs).unref();
+			waiters.push(settled);
+		});
 	}
 
 	/** Release every transaction-scoped lock() handle this link owns. */
@@ -2709,7 +2804,11 @@ export class DatabaseTransaction implements Transaction {
 					return;
 				}
 				operation.saved = true;
-				let result: Promise<void> = operation.before?.() as Promise<void>;
+				let result: Promise<void> = (
+					operation.before && !this.saveCommits
+						? runCommitHook(this.root ?? this, operation.before)
+						: operation.before?.()
+				) as Promise<void>;
 				if (result?.then) this.stageCompletion(result, transaction);
 				result = operation.beforeIntermediate?.() as Promise<void>;
 				if (result?.then) this.stageCompletion(result, transaction);
@@ -2821,6 +2920,7 @@ export class DatabaseTransaction implements Transaction {
 	 * Resolves with information on the timestamp and success of the commit.
 	 */
 	commit(options: CommitOptions = {}): MaybePromise<CommitResolution> {
+		if (options.doneWriting && !options.continuation) this.scopeEnding = true;
 		if (this.monitorCommit && !options.transaction) {
 			return this.monitorCommit.then(
 				() => this.commit(options),
@@ -2840,6 +2940,9 @@ export class DatabaseTransaction implements Transaction {
 		}
 		if (options.doneWriting && this.endsScopeUnwritten(options)) return this.finishUnwrittenScope();
 		this.commitsInFlight = (this.commitsInFlight ?? 0) + 1;
+		// Not a closed transaction's write committing on its own, nor a retry or continuation inside one.
+		const scopeAttempt = !options.transaction && !options.continuation && !this.saveCommits;
+		if (scopeAttempt) this.scopeCommitsInFlight = (this.scopeCommitsInFlight ?? 0) + 1;
 		// Only a top-level attempt records the intent: a continuation would re-read hasPendingWrites()
 		// after clearWrites() has already emptied it.
 		if (this.commitsInFlight === 1 && !options.continuation && this.hasPendingWrites()) {
@@ -2849,20 +2952,20 @@ export class DatabaseTransaction implements Transaction {
 		try {
 			resolution = this.performCommit(options);
 		} catch (error) {
-			this.endCommitAttempt();
+			this.endCommitAttempt(scopeAttempt);
 			throw error;
 		}
 		if (!(resolution as Promise<CommitResolution>)?.then) {
-			this.endCommitAttempt();
+			this.endCommitAttempt(scopeAttempt);
 			return resolution;
 		}
 		return (resolution as Promise<CommitResolution>).then(
 			(settled) => {
-				this.endCommitAttempt();
+				this.endCommitAttempt(scopeAttempt);
 				return settled;
 			},
 			(error) => {
-				this.endCommitAttempt();
+				this.endCommitAttempt(scopeAttempt);
 				throw error;
 			}
 		);
@@ -3027,8 +3130,13 @@ export class DatabaseTransaction implements Transaction {
 		if (!attached) release(this);
 	}
 
-	private endCommitAttempt(): void {
+	private endCommitAttempt(scopeAttempt = false): void {
 		this.commitsInFlight--;
+		if (scopeAttempt && --this.scopeCommitsInFlight === 0 && this.commitSettleWaiters) {
+			const settleWaiters = this.commitSettleWaiters;
+			this.commitSettleWaiters = undefined;
+			for (const settled of settleWaiters) settled();
+		}
 		if (!this.commitsInFlight) {
 			this.clearActiveCommitHandles();
 			this.commitStartedAt = undefined;
@@ -3845,7 +3953,7 @@ export class DatabaseTransaction implements Transaction {
 	 * would be reused by txnForContext for the next write to that database and commit itself, surviving a
 	 * rollback of the rotated head — the cross-store leftover this rotation exists to prevent. Every
 	 * commit path must run this, and none may do one half without the other. The links' record locks
-	 * stay with the root (retainRecordLocksOf).
+	 * stay with the root (detachNext).
 	 */
 	/** Both scope flags leave together, so no exit can clear one and keep the other. */
 	protected endScopeOwnership(): void {
@@ -3855,9 +3963,7 @@ export class DatabaseTransaction implements Transaction {
 
 	private completeMidScopeCommit(options: CommitOptions, committedTransaction?: RocksTransaction | null): void {
 		if ((committedTransaction as RocksTransactionWithRetry | null | undefined)?.immediateCommit) return;
-		const root = this.root ?? this;
-		for (let link = this.next; link; link = link.next) root.retainRecordLocksOf(link);
-		this.next = null;
+		while (this.next) this.detachNext();
 		if (this.saveCommits && this.hasActiveCommitHandle()) return;
 		this.rotateAfterMidScopeCommit(options);
 	}
@@ -4402,17 +4508,9 @@ export class ImmediateTransaction extends DatabaseTransaction {
 		}
 	}
 
-	// Without an explicit transaction() a live lock is released only by unlock() or its lease, never
-	// by the per-write commit. Expired handles are pruned so a reused context does not retain every key.
-	releaseRecordLocks(): void {
-		const recordLocks = this.recordLocks;
-		if (!recordLocks) return;
-		for (const [store, storeMap] of recordLocks) {
-			for (const [keyId, handle] of storeMap) if (handle.released || handle.isExpired()) storeMap.delete(keyId);
-			if (storeMap.size === 0) recordLocks.delete(store);
-		}
-		if (recordLocks.size === 0) this.recordLocks = undefined;
-	}
+	// Without an explicit transaction() a lock lives until unlock() or a re-lock of its key, never ending at a
+	// per-write commit, and a lapsed one stays registered so it keeps refusing writes (record-locks.md).
+	releaseRecordLocks(): void {}
 
 	declare _timestamp: number;
 	// @ts-expect-error accessor overriding property

@@ -129,7 +129,7 @@ Groups expand to a predefined set of operations and can be mixed with individual
 
 - `standard_user` — Everything in `read_only` plus full data manipulation and bulk load. Does not include any `super_user`-restricted operations, schema DDL (`create_attribute`), or token management. Additional operations beyond `read_only`: `insert`, `update`, `upsert`, `delete`, `csv_data_load`, `csv_file_load`, `csv_url_load`, `import_from_s3`
 
-- `agent` — Drive the [built-in agent](../operations-api/operations.md#agent) without full `super_user`. Operations: `agent_prompt`, `get_agent_session`, `list_agent_sessions`, `cancel_agent_run`, `approve_agent_action`. `set_agent_config` is deliberately excluded, so a delegated role cannot change the agent's model or approval policy. Read the agent section's security warning before granting this: the session reads are not caller-scoped, and a prompt directs tools that run at process privilege
+- `agent` — Drive the [built-in agent](../operations-api/operations.md#agent) without full `super_user`. Operations: `agent_prompt`, `get_agent_session`, `list_agent_sessions`, `cancel_agent_run`, `approve_agent_action`. `set_agent_config` and `get_agent_config` are deliberately excluded, so a delegated role cannot change the agent's model or approval policy and does not get the operator's view of its startup-only settings; the session reads still show the `model` and `provider` a session ran with. Read the agent section's security warning before granting this: the session reads are not caller-scoped, and a prompt directs tools that run at process privilege
 
 **Example: read-only role**
 
@@ -267,6 +267,17 @@ Each table entry defines CRUD access:
 - Any attribute not explicitly listed in a non-empty `attribute_permissions` array has no access.
 - `DELETE` is not an attribute-level permission. Deleting rows is controlled at the table level.
 - The `__createdtime__` and `__updatedtime__` attributes managed by Harper can have `read` permissions set; other attribute-level permissions for these fields are ignored.
+
+<VersionBadge type="changed" version="v5.4.0" />
+
+Subscriptions follow the same rule. When `attribute_permissions` is non-empty, each record or message a role receives over SSE, WebSocket or MQTT holds only the stored attributes it may read. Computed and relationship attributes are left out of these messages, even when the role may read them.
+
+**Relationship attributes:**
+
+<VersionBadge type="changed" version="v5.4.0" />
+
+- Reading a `@relationship` attribute reads the related table, so it needs `read` on that table, through REST, GraphQL, the NoSQL operations and SQL. The NoSQL operations and SQL refuse a request that names a relationship to a table the role cannot read with HTTP 403; REST `select()` and `*` leave that relationship out.
+- When the related table has `attribute_permissions`, the related record holds only the attributes the role may read. See [Relationship Columns](../operations-api/sql.md#relationship-columns) for SQL.
 
 #### Filter side-channel for read-restricted attributes
 

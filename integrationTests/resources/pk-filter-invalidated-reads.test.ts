@@ -77,17 +77,48 @@ suite('primary-key filtered reads over invalidated cache rows', (ctx: ContextWit
 		'/CachedRow/?id=in=(a,c)&sort(-id)',
 		'/CachedRow/?id=ne=b',
 		'/CachedRow/?id=in=(a,c)&id=ne=b',
+		'/CachedRow/?id=in=(a,c)&id=not_in=(b)',
+		'/CachedRow/?id=in=(a,c)&(id=c|id=ne=b)',
 	]) {
 		test(`revalidates an invalidated row for ${path}`, async () => {
 			const loadsBefore = await invalidate('c');
-			const rows = await query(path);
-			deepStrictEqual(rows.map((row) => [row.id, row.body]).sort(), [
+			const rows = (await query(path)).map((row) => [row.id, row.body]);
+			const expected = [
 				['a', 'zzz'],
 				['c', 'fresh c'],
-			]);
+			];
+			if (path.includes('sort(-id)')) deepStrictEqual(rows, expected.reverse());
+			else deepStrictEqual(rows.sort(), expected);
 			strictEqual((await rowState('c')).loads, loadsBefore + 1);
 			// the cache fill commits behind the response; the next case starts from a complete record
 			await waitForState('c', (state) => state.hasRecord);
 		});
 	}
+
+	test('sorts a reloaded row by its fresh value before applying limit and offset', async () => {
+		// a missing sort value sorts first; 'fresh c' belongs after d
+		const response = await request('/CachedRow/d', {
+			method: 'PUT',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ id: 'd', body: 'bbb', rank: 40 }),
+		});
+		ok(response.status < 300, `seeding d failed: ${response.status}`);
+		try {
+			for (const [path, expected] of [
+				['/CachedRow/?id=ne=b&sort(+body)&limit(1)', [['d', 'bbb']]],
+				['/CachedRow/?id=ne=b&sort(+body)&limit(1,2)', [['c', 'fresh c']]],
+			] as const) {
+				const loadsBefore = await invalidate('c');
+				deepStrictEqual(
+					(await query(path)).map((row) => [row.id, row.body]),
+					expected,
+					path
+				);
+				strictEqual((await rowState('c')).loads, loadsBefore + 1, path);
+				await waitForState('c', (state) => state.hasRecord);
+			}
+		} finally {
+			await request('/CachedRow/d', { method: 'DELETE' });
+		}
+	});
 });
