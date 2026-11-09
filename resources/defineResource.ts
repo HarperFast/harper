@@ -26,8 +26,8 @@
  */
 
 import { resolveBody } from './resolveBody.ts';
-import type { JsonSchemaFragment } from './jsonSchemaTypes.ts';
-import { attributeToFragment, type AttributeLike } from './jsonSchemaTypes.ts';
+import type { JsonSchemaFragment, JsonValue } from './jsonSchemaTypes.ts';
+import { attributeToFragment, jsonValueKey, schemaErrorMessage, type AttributeLike } from './jsonSchemaTypes.ts';
 import { ValidationError, type ValidationIssue } from '../utility/errors/hdbError.ts';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -310,8 +310,27 @@ function isNullable(fragment: JsonSchemaFragment): boolean {
 	return fragment.nullable === true || (Array.isArray(fragment.type) && fragment.type.includes('null'));
 }
 
+function formatEnumValue(value: JsonValue): string {
+	if (typeof value === 'string') return value;
+	try {
+		return JSON.stringify(value) ?? String(value);
+	} catch {
+		return schemaErrorMessage(value);
+	}
+}
+
+// Shared only within one body validation; declarations may change before the next request.
+type EnumValidation = { keys?: Set<string> | null; description?: string };
+type EnumKeyCache = Map<readonly JsonValue[], EnumValidation>;
+
 /** Validate a JSON value against a fragment (a subset of JSON Schema), pushing structured issues. Returns coerced value. */
-function validateValue(value: any, fragment: JsonSchemaFragment, path: string, issues: ValidationIssue[]): any {
+function validateValue(
+	value: any,
+	fragment: JsonSchemaFragment,
+	path: string,
+	issues: ValidationIssue[],
+	enumKeys?: EnumKeyCache
+): any {
 	if (!fragment || fragment.type == null) return value; // passthrough / untyped
 	if (value === undefined) return value; // absence is enforced by the parent object's `required`
 	if (value === null) {
@@ -340,20 +359,59 @@ function validateValue(value: any, fragment: JsonSchemaFragment, path: string, i
 		issues.push({ path, code: 'type', message: `${path} must be of type ${types.join(' | ')}` });
 		return value;
 	}
-	if (fragment.enum && !fragment.enum.includes(value)) {
-		issues.push({ path, code: 'enum', message: `${path} must be one of: ${fragment.enum.join(', ')}` });
-		return value;
+	if (fragment.enum) {
+		let matches = false;
+		let cached: EnumValidation | undefined;
+		if (value && typeof value === 'object') {
+			try {
+				cached = enumKeys?.get(fragment.enum);
+				if (!cached) {
+					cached = {};
+					enumKeys?.set(fragment.enum, cached);
+				}
+				if (cached.keys === undefined) {
+					cached.keys = null;
+					cached.keys = new Set(
+						fragment.enum.filter((member) => member && typeof member === 'object').map((member) => jsonValueKey(member))
+					);
+				}
+				matches = Boolean(cached.keys?.size && cached.keys.has(jsonValueKey(value)));
+			} catch {}
+		} else {
+			matches = fragment.enum.includes(value);
+		}
+		if (!matches) {
+			cached ??= enumKeys?.get(fragment.enum);
+			if (!cached) {
+				cached = {};
+				enumKeys?.set(fragment.enum, cached);
+			}
+			cached.description ??= fragment.enum.map(formatEnumValue).join(', ');
+			issues.push({
+				path,
+				code: 'enum',
+				message: `${path} must be one of: ${cached.description}`,
+			});
+			return value;
+		}
 	}
 	if (primary === 'array' && fragment.items && Array.isArray(value)) {
-		return value.map((el, i) => validateValue(el, fragment.items as JsonSchemaFragment, `${path}[${i}]`, issues));
+		const keys = enumKeys ?? new Map();
+		return value.map((el, i) => validateValue(el, fragment.items as JsonSchemaFragment, `${path}[${i}]`, issues, keys));
 	}
 	if (primary === 'object' && fragment.properties && value && typeof value === 'object') {
-		return validateObject(value, fragment, path, issues);
+		return validateObject(value, fragment, path, issues, enumKeys ?? new Map());
 	}
 	return value;
 }
 
-function validateObject(value: any, fragment: JsonSchemaFragment, path: string, issues: ValidationIssue[]): any {
+function validateObject(
+	value: any,
+	fragment: JsonSchemaFragment,
+	path: string,
+	issues: ValidationIssue[],
+	enumKeys: EnumKeyCache
+): any {
 	const props = fragment.properties ?? {};
 	const scope = path ? `${path}.` : '';
 	for (const key of fragment.required ?? []) {
@@ -364,7 +422,7 @@ function validateObject(value: any, fragment: JsonSchemaFragment, path: string, 
 	}
 	for (const [key, sub] of Object.entries(props)) {
 		if (value[key] !== undefined) {
-			const coerced = validateValue(value[key], sub, `${scope}${key}`, issues);
+			const coerced = validateValue(value[key], sub, `${scope}${key}`, issues, enumKeys);
 			if (coerced !== value[key]) value[key] = coerced;
 		}
 	}
@@ -395,7 +453,7 @@ function validateBody(fragment: JsonSchemaFragment, bodyRequired: boolean, body:
 		return body;
 	}
 	// a `null` body is rejected unless the top-level body schema is nullable (validateValue handles it)
-	return validateValue(body, fragment, 'body', issues);
+	return validateValue(body, fragment, 'body', issues, body && typeof body === 'object' ? new Map() : undefined);
 }
 
 /**
@@ -487,7 +545,11 @@ function coerceScalar(
 		value = d;
 	}
 	if (fragment.enum && !fragment.enum.includes(value)) {
-		issues.push({ path, code: 'enum', message: `${path} must be one of: ${fragment.enum.join(', ')}` });
+		issues.push({
+			path,
+			code: 'enum',
+			message: `${path} must be one of: ${fragment.enum.map(formatEnumValue).join(', ')}`,
+		});
 	}
 	return value;
 }

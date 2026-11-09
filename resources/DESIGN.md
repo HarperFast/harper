@@ -91,7 +91,9 @@ The operations thread loads no schema, so `table()` stores `@relationship` targe
 
 ## Typed, discoverable resources
 
-**Runtime metadata is values; types derive from it**, since type stripping erases types (harper#1503). `attributeToFragment` is the one IR for validation, OpenAPI and MCP. Contract types narrow `RequestTarget` only because each declared verb validates its input before dispatch (`ValidationError`). `compileVerb` alone decides `bodyRequired` (`defineResource.test.js`).
+`attributeToSchema` emits MCP/OpenAPI; contract narrowing requires every verb to validate. Only `compileVerb` sets `bodyRequired` (`defineResource.test.js`).
+
+Contracts keep absent types; metadata infers omitted ones. Primitives retain conditional `properties`/`items`. Projections refresh per read; MCP rebuilds on registration (`schemaProjectionInvariants.test.js`).
 
 ## Conventions
 
@@ -246,8 +248,8 @@ If this same write (origin and log key) emptied the key, `_writeDelete` writes n
 
 ## `ImmediateTransaction` saves chain on `operation.innerCommit` and forward retries
 
-- A second `save()` outside `transaction()` commits through a nested `commit()` stored on `operation.innerCommit`. Both `Table.save()` branches must await it, or `save()` returns before the write is durable (`recordLock.test.js`).
-- During a retry, `ImmediateTransaction.save()` forwards to the retried handle; otherwise it would nest and recurse (harper#2825). A failed re-save releases the detached handle before `abort()` (`immediateTransactionConflictRetry.test.js`).
+- A second write outside `transaction()` commits through a nested `commit()` stored on `operation.innerCommit`. `ImmediateTransaction.save()` must await it, or the write returns before it is durable (`recordLock.test.js`).
+- During a retry, `save()` forwards to the retried handle; otherwise it would nest and recurse (harper#2825). A failed re-save releases the detached handle before `abort()` (`immediateTransactionConflictRetry.test.js`).
 
 ## A transaction is joinable as a scope only if it stages its writes
 
@@ -387,6 +389,7 @@ Replicas are RocksDB-only. `_storeReplica` keeps a resident's body as an audit-f
 
 - **Admission keeps only the stub's own head write, and only when no later fold can change it** (`answersStub`, `FULL_WRITE_HEAD`, harper#3640). A table written only by patches never caches.
 - The deadline lives in `<table>/@replicas`, not `expiresAt`; demotion re-reads it in its own transaction, and `repairReplicaDeadlines` leaves no replica permanent. Demote all replicas before a downgrade (`residencyReplicas.test.js`).
+- A pressure pass (`reclaimReplicaSpace`) frees no disk until compaction, so its window and budget bound it, not the priority (`replicaStorageReclamation.test.js`).
 
 ## `replicatedConfirmation` counts only the residents of each written record
 

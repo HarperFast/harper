@@ -349,6 +349,9 @@ export type { RecordLockOptions } from './recordLock.ts';
  * that transaction commits or aborts. Outside any explicit scope (ImmediateTransaction context),
  * a scoped lock persists until `unlock()` is called or the lease expires. A held lock
  * (`{ hold: true }`) is always released by `unlock()` or its lease, regardless of scope.
+ * Outside an explicit scope, await each write through the lock before the next: one issued while an
+ * earlier one is still committing, or from the pre-commit hook of the record's own commit, is refused
+ * with 409 and leaves the lock usable.
  */
 export type WritableRecord<Record extends object = any> = UpdatableRecord<Record> & {
 	save(): void | Promise<void>;

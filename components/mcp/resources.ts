@@ -43,6 +43,7 @@ import harperLogger from '../../utility/logging/harper_logger.ts';
 import { AccessViolation } from '../../utility/errors/hdbError.ts';
 import { SERVER_CAPABILITIES, SERVER_INFO, SUPPORTED_PROTOCOL_VERSIONS } from './lifecycle.ts';
 import { encodeCursor } from './pagination.ts';
+import { filterAttributeTree, resolveAttributes, schemaErrorMessage } from '../../resources/jsonSchemaTypes.ts';
 import {
 	customResourceCompletionValues,
 	listCustomResources,
@@ -131,6 +132,7 @@ const HTTP_SCHEME = 'http:';
 const HARPER_REST_SCHEME = 'harper+rest:';
 
 const DEFAULT_LIMIT = 200;
+const warnedInvalidSchemas = new WeakSet<object>();
 
 // Test seams. Injecting these lets us unit-test without standing up a full
 // Resources registry or running openapi generation.
@@ -835,8 +837,20 @@ function readTableSchema(db: string, table: string, user: AuthedUser, href: stri
 		}
 	}
 	if (!resource) return { ok: false, reason: `table not found: ${db}.${table}` };
-	const attributes = resource.attributes ?? [];
-	const filteredAttributes = filterAttributesByPermissions(attributes, perm?.attribute_permissions);
+	let filteredAttributes;
+	try {
+		const attributes = resolveAttributes(resource);
+		const visibleAttributes = filterAttributeTree(attributes);
+		filteredAttributes = filterAttributesByPermissions(visibleAttributes, perm?.attribute_permissions);
+	} catch (error) {
+		if (!warnedInvalidSchemas.has(resource)) {
+			warnedInvalidSchemas.add(resource);
+			try {
+				harperLogger.warn(`MCP harper://schema/${db}/${table} invalid schema: ${schemaErrorMessage(error)}`);
+			} catch {}
+		}
+		return { ok: false, reason: `invalid schema for ${db}.${table}` };
+	}
 	const body = {
 		database: db,
 		table,

@@ -908,8 +908,7 @@ since it was reached. That relaxed contract is safe only because Harper's read p
 and rescores exactly, which rejects a wrong candidate; it is not a general storage pattern. The file
 is `msync`ed on a cadence, not per commit, so the graph has bounded-lag durability with
 deterministic catch-up while the source of truth (records, mappings, cursor) stays transactional.
-Backup treats the file as node-local derived state: include it after a barrier, or rebuild on
-restore. A file whose format or checksum does not validate is rebuilt from records. macOS `msync` is a
+Backup treats the file as node-local derived state: a restore rebuilds it from records. A file whose format or checksum does not validate is rebuilt from records. macOS `msync` is a
 weaker barrier than Linux — the crate's `msync()` is a plain mapping flush with no `F_FULLFSYNC` pass —
 so on macOS a power loss after `flushAsync()` resolves and the cursor is written can leave the cursor
 past graph writes the file lost. Those vectors stay missing until a rebuild — nothing compares the

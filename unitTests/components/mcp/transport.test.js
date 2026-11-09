@@ -1503,6 +1503,28 @@ describe('mcp/transport', () => {
 				assert.equal(body.profile, 'application');
 			});
 
+			it('contains schema getter details in a correlated invalid-input response', async () => {
+				class Broken {
+					static databaseName = 'data';
+					static tableName = 'broken';
+					static get properties() {
+						throw new Error('config not found: /private/secret sk-schema-sentinel');
+					}
+				}
+				_setResourcesForTest(makeFakeResources([['Broken', Broken]]));
+				const res = await handleMcpRequest(
+					makeReq({
+						body: jsonRpc(133, 'resources/read', { uri: 'harper://schema/data/broken' }),
+						headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
+						userObject: { username: 'alice', role: { permission: { super_user: true } } },
+					})
+				);
+				assert.strictEqual(res.status, 200);
+				assert.strictEqual(res.jsonBody.id, 133);
+				assert.strictEqual(res.jsonBody.error.code, -32602);
+				assert.strictEqual(res.jsonBody.error.message, 'invalid schema for data.broken');
+			});
+
 			it('returns -32602 when params.uri is missing', async () => {
 				const res = await handleMcpRequest(
 					makeReq({
