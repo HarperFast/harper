@@ -248,6 +248,7 @@ function waitAtMost(promise: Promise<unknown>, ms: number) {
  */
 function closeWebSocketsForExit(exitDeadline: number | undefined = getProcessExitDeadline()) {
 	if (!exitDeadline || !requestsDrainedHere || webSocketsClosedForExit) return;
+	// Each of the two bounded steps takes at most a quarter of what is left, so scope and branch close keep half.
 	const remainingMs = () => Math.min(WEBSOCKET_CLOSE_WAIT_MS, Math.max(0, (exitDeadline - Date.now()) / 4));
 	webSocketsClosedForExit = requestsDrainedHere
 		.then(() => {
@@ -257,7 +258,10 @@ function closeWebSocketsForExit(exitDeadline: number | undefined = getProcessExi
 			}
 			return Promise.race([
 				allDrained,
-				Promise.resolve(serversClosed).then(() => waitAtMost(allDrained, remainingMs())),
+				// A listener whose close() threw still gets its WebSockets closed; closeServers' caller sees the error.
+				Promise.resolve(serversClosed)
+					.catch(() => {})
+					.then(() => waitAtMost(allDrained, remainingMs())),
 			]).then(() => waitAtMost(httpComponent.closeWebSockets(), remainingMs()));
 		})
 		.catch((error) => harperLogger.error('Error closing WebSockets during shutdown', threadId, error));
