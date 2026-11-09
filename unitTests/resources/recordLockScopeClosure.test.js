@@ -158,7 +158,7 @@ describe('lock() on a transaction() scope closed by its own commit', function ()
 			['the head database', () => Head],
 			['another database', () => Other],
 		]) {
-			it(`refuses a lock() on ${where} with 409, before and after the iterator is returned`, async function () {
+			it(`refuses a lock() on ${where} with 409, before and after the iterator is returned, until a later commit reopens the scope`, async function () {
 				const Locked = lockedTable();
 				const recordId = id();
 				await Locked.put({ id: recordId, n: 1 });
@@ -170,7 +170,16 @@ describe('lock() on a transaction() scope closed by its own commit', function ()
 					iterator.return();
 					const after = await settle(Locked.lock(recordId, { timeout: 500 }, context));
 					assert.ok(isClosedForIterators(after.error), after.error?.message ?? 'the lock was admitted');
+					await txn.commit();
+					assert.strictEqual(
+						txn.open,
+						TRANSACTION_STATE.OPEN,
+						'a commit after the iterator returned reopens the scope'
+					);
+					const relocked = await Locked.lock(recordId, { timeout: 500 }, context);
+					relocked.set('n', 4);
 				});
+				assert.strictEqual((await Locked.get(recordId)).n, 4);
 				await lockableAfterwards(Locked, recordId);
 			});
 		}

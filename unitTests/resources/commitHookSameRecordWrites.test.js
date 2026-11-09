@@ -43,7 +43,6 @@ describe('pre-commit hook writes to the record their own write is committing', f
 		await resetDatabases();
 	});
 
-	// The hook runs for the outer write only; it removes itself first so its own writes are not hooked.
 	function hookOnce(hook) {
 		const once = (...args) => {
 			delete Hooked.source;

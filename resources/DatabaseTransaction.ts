@@ -1181,7 +1181,7 @@ export class DatabaseTransaction implements Transaction {
 	// unlike `snapshotFree`, which lock() also sets on a scope that committed nothing; sticky, since a
 	// scope can end while its later segment is still committing
 	rotatedAfterCommit = false;
-	// set when open read iterators kept a mid-scope commit from reopening the scope; sticky until the scope ends
+	// set when open read iterators kept a mid-scope commit from reopening the scope, until it reopens or ends
 	closedForReadIterators = false;
 	// Set while commit() is parked in its pre-commit await (`before`/`beforeIntermediate` completions —
 	// in practice a blob's durable file write). The write set is sealed and the caller is awaiting the
@@ -4110,6 +4110,7 @@ export class DatabaseTransaction implements Transaction {
 			return;
 		}
 		this.open = TRANSACTION_STATE.OPEN;
+		this.closedForReadIterators = false;
 		this.snapshotFree = true;
 		this.rotatedAfterCommit = true;
 		this.writesAbandoned = false;

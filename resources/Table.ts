@@ -1033,7 +1033,7 @@ interface TableResourceInstance<Record extends object = any> {
 	 * Inside `transaction()`, re-locking through this instance while the scope's own `commit()` is in flight is
 	 * refused with 409: that commit releases the lock, so await it, then call `Table.lock()` again. So is a
 	 * `lock()` after a mid-scope commit made while a read iterator was open, or from a pre-commit hook whose
-	 * commit already committed the record's database.
+	 * commit already committed the record's database (on the final commit, before the hook's first await).
 	 */
 	lock(target?: RequestTargetOrId | RecordLockOptions, options?: RecordLockOptions): Promise<any>;
 	/**
@@ -5515,7 +5515,7 @@ export function makeTable(options): TableResourceClass {
 		 * Inside `transaction()`, re-locking through this instance while the scope's own `commit()` is in flight is
 		 * refused with 409: that commit releases the lock, so await it, then call `Table.lock()` again. So is a
 		 * `lock()` after a mid-scope commit made while a read iterator was open, or from a pre-commit hook whose
-		 * commit already committed the record's database.
+		 * commit already committed the record's database (on the final commit, before the hook's first await).
 		 */
 		// async so option/id validation rejects rather than throwing past a caller's `.catch()`; the
 		// body still runs to completion synchronously, which is what keeps concurrent lock() calls
