@@ -1033,7 +1033,7 @@ interface TableResourceInstance<Record extends object = any> {
 	 * Inside `transaction()`, re-locking through this instance while the scope's own `commit()` is in flight is
 	 * refused with 409: that commit releases the lock, so await it, then call `Table.lock()` again. So is a
 	 * `lock()` after a mid-scope commit made while a read iterator was open, or from a pre-commit hook whose
-	 * commit already committed the record's database (on the final commit, before the hook's first await).
+	 * commit already committed the record's database, or whose transaction's final commit released the context.
 	 */
 	lock(target?: RequestTargetOrId | RecordLockOptions, options?: RecordLockOptions): Promise<any>;
 	/**
@@ -1768,9 +1768,24 @@ function isOwnCommitHook(root: DatabaseTransaction): boolean {
 }
 
 /** A link that left the chain no longer reports its scope's state; the chain root does. */
-function lockScopeClosure(link: DatabaseTransaction): Error | undefined {
+function lockScopeClosure(link: DatabaseTransaction, context: unknown): Error | undefined {
+	if (link.saveCommits) {
+		// the hook's own transaction() released this context in its final commit, so the lock would outlive it
+		const hook = currentCommitHook();
+		if (
+			hook?.active &&
+			hook.root !== (link.root ?? link) &&
+			hook.root.getContext() === context &&
+			hook.root.scopeCommitsInFlight > 0
+		)
+			return new ClientError(
+				"A pre-commit hook can not lock a record after its transaction's final commit released the context; lock the record before committing",
+				409
+			);
+		return;
+	}
 	const scope = link.leftChain ? (link.root ?? link) : link;
-	if (scope.open !== TRANSACTION_STATE.CLOSED || link.saveCommits) return;
+	if (scope.open !== TRANSACTION_STATE.CLOSED) return;
 	const root = link.root ?? link;
 	if (root.scopeOwned) {
 		// the head committed before the cascade reached this hook, and released the locks it covered
@@ -1786,6 +1801,13 @@ function lockScopeClosure(link: DatabaseTransaction): Error | undefined {
 			);
 	}
 	return new ServerError('Transaction was closed while waiting for a record lock', 500);
+}
+
+function relockDuringCommitError(): ClientError {
+	return new ClientError(
+		"This record's lock ends with its transaction's commit, which is still in flight; await that commit, then lock the record again with Table.lock()",
+		409
+	);
 }
 
 function lockedChangeInOwnHookError(): ClientError {
@@ -5515,7 +5537,7 @@ export function makeTable(options): TableResourceClass {
 		 * Inside `transaction()`, re-locking through this instance while the scope's own `commit()` is in flight is
 		 * refused with 409: that commit releases the lock, so await it, then call `Table.lock()` again. So is a
 		 * `lock()` after a mid-scope commit made while a read iterator was open, or from a pre-commit hook whose
-		 * commit already committed the record's database (on the final commit, before the hook's first await).
+		 * commit already committed the record's database, or whose transaction's final commit released the context.
 		 */
 		// async so option/id validation rejects rather than throwing past a caller's `.catch()`; the
 		// body still runs to completion synchronously, which is what keeps concurrent lock() calls
@@ -5561,13 +5583,7 @@ export function makeTable(options): TableResourceClass {
 				const violation = scopeViolation(held, resolved, databaseName);
 				if (violation) return Promise.reject(violation);
 				// the in-flight commit releases this handle, and may already be committing its staged write
-				if (!held.hold && scopeCommitInFlight())
-					return Promise.reject(
-						new ClientError(
-							"This record's lock ends with its transaction's commit, which is still in flight; await that commit, then lock the record again with Table.lock()",
-							409
-						)
-					);
+				if (!held.hold && scopeCommitInFlight()) return Promise.reject(relockDuringCommitError());
 				if (resolved.hold && !held.hold) {
 					held.upgradeToHold(resolved.lease);
 					// The scoped phase eagerly staged a TransactionWrite (see #reloadLocked); hold
@@ -5591,7 +5607,7 @@ export function makeTable(options): TableResourceClass {
 				// context, which no longer points at this link, so the handle it acquired would be
 				// registered on a fresh transaction that no commit or abort ever releases — the
 				// same abandonment the leader's own post-acquisition guard below rejects.
-				const closure = lockScopeClosure(link);
+				const closure = lockScopeClosure(link, context);
 				if (closure) throw closure;
 				const remaining = resolved.timeout - (Date.now() - lockStart);
 				// below the 1 ms the option accepts, it would fail validation rather than time out
@@ -5610,9 +5626,12 @@ export function makeTable(options): TableResourceClass {
 			if (scoped && !scoped.isExpired()) {
 				const violation = scopeViolation(scoped, resolved, databaseName);
 				if (violation) return Promise.reject(violation);
-				// The in-flight commit releases a scoped handle, so this instance takes a fresh lock after it; a hold,
-				// including one upgraded now, survives it. The instance holding the handle keeps it (unlock() first).
-				if (!resolved.hold && !scoped.hold && midScopeCommitInFlight()) return retryOnRemainingBudget();
+				// The in-flight commit releases a scoped handle, so this instance takes a fresh lock after it. An upgrade
+				// is refused like the holding instance's: the commit may be committing the write it would detach.
+				if (!scoped.hold) {
+					if (!resolved.hold && midScopeCommitInFlight()) return retryOnRemainingBudget();
+					if (resolved.hold && scopeCommitInFlight()) return Promise.reject(relockDuringCommitError());
+				}
 				// Only changes a write bound to this lock reads were made under it; others are discarded, as on a
 				// fresh acquisition, which also refuses an unbound staged write.
 				const joined = this.#stagedWrite()?.lockHandle === scoped;
@@ -5643,7 +5662,7 @@ export function makeTable(options): TableResourceClass {
 			}
 			const key = lockAttemptKey(tableId, id);
 			if (midScopeCommitInFlight()) return retryOnRemainingBudget();
-			const closure = lockScopeClosure(link);
+			const closure = lockScopeClosure(link, context);
 			if (closure) return Promise.reject(closure);
 			// Coalesce concurrent lock() calls for the same key inside one scope so they don't
 			// self-block: Promise.all([T.lock(id), T.lock(id)]) would otherwise have both calls
@@ -5664,7 +5683,7 @@ export function makeTable(options): TableResourceClass {
 						clearTimeout(followerTimer);
 						if (midScopeCommitInFlight()) return retryOnRemainingBudget();
 						// A hold handle survives its scope, so finding one does not say the scope is still live.
-						const closure = lockScopeClosure(link);
+						const closure = lockScopeClosure(link, context);
 						if (closure) throw closure;
 						const registeredOn = link.leftChain ? txnForContext(context) : link;
 						const acquired = registeredOn.recordLockFor(primaryStore, keyId);
@@ -5726,7 +5745,7 @@ export function makeTable(options): TableResourceClass {
 					throw retryAfterScopeCommit;
 				}
 				// e.g. the transaction was aborted while this call waited; nothing would ever release the handle
-				const closure = lockScopeClosure(link);
+				const closure = lockScopeClosure(link, context);
 				if (closure) {
 					handle.release();
 					throw closure;
@@ -5810,7 +5829,7 @@ export function makeTable(options): TableResourceClass {
 						handle.release();
 						throw retryAfterScopeCommit;
 					}
-					const closure = lockScopeClosure(link);
+					const closure = lockScopeClosure(link, context);
 					if (closure) {
 						handle.release();
 						throw closure;

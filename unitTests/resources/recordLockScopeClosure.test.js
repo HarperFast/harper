@@ -6,6 +6,7 @@ const { transaction } = require('#src/resources/transaction');
 const { TRANSACTION_STATE } = require('#src/resources/DatabaseTransaction');
 const { lockAttemptKey } = require('#src/resources/recordLock');
 const { waitFor } = require('../waitFor');
+const { setTimeout: delay } = require('node:timers/promises');
 require('#src/server/serverHelpers/serverUtilities');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
@@ -29,6 +30,8 @@ const isClosedForIterators = (error) =>
 	error?.statusCode === 409 && /mid-scope commit made while a read iterator was open/.test(error.message);
 const isCommittedDatabase = (error) =>
 	error?.statusCode === 409 && /whose database this commit has already committed/.test(error.message);
+const isReleasedContext = (error) =>
+	error?.statusCode === 409 && /after its transaction's final commit released the context/.test(error.message);
 const isEndedScope = (error) =>
 	error?.statusCode === 500 && /Transaction was closed while waiting for a record lock/.test(error.message);
 
@@ -118,6 +121,22 @@ describe('lock() on a transaction() scope closed by its own commit', function ()
 				locked.set('n', 2);
 				const committing = txn.commit();
 				const upgrade = await settle(locked.lock({ hold: true, lease: 5000 }));
+				assert.ok(isRelockDuringCommit(upgrade.error), upgrade.error?.message ?? 'the upgrade was admitted');
+				await committing;
+			});
+			assert.strictEqual((await Head.get(recordId)).n, 2);
+			await lockableAfterwards(Head, recordId);
+		});
+
+		it("is refused with 409 for another instance's upgrade to a hold too", async function () {
+			const recordId = id();
+			await Head.put({ id: recordId, n: 1 });
+			const context = {};
+			await transaction(context, async (txn) => {
+				const locked = await Head.lock(recordId);
+				locked.set('n', 2);
+				const committing = txn.commit();
+				const upgrade = await settle(Head.lock(recordId, { hold: true, lease: 5000 }, context));
 				assert.ok(isRelockDuringCommit(upgrade.error), upgrade.error?.message ?? 'the upgrade was admitted');
 				await committing;
 			});
@@ -241,6 +260,34 @@ describe('lock() on a transaction() scope closed by its own commit', function ()
 				await lockableAfterwards(Head, headId);
 			});
 		}
+
+		for (const lockedTable of ['Head', 'Other'])
+			it(`refuses a lock() of a ${lockedTable === 'Head' ? 'head-database' : 'same-database'} record after the hook's first await in the final commit, which released the context`, async function () {
+				const Locked = lockedTable === 'Head' ? Head : Other;
+				const lockedId = id();
+				const sourcedId = id();
+				await Locked.put({ id: lockedId, n: 1 });
+				await SourcedOther.put({ id: sourcedId, n: 1 });
+				let refusal;
+				sourcePut = async (_id, _record, context) => {
+					await delay(1);
+					await Locked.lock(lockedId, { timeout: 500 }, context).then(
+						(locked) => locked.unlock(),
+						(error) => {
+							refusal = error;
+						}
+					);
+				};
+				const context = {};
+				await transaction(context, async () => {
+					await Head.put({ id: id(), n: 1 }, context);
+					const sourced = await SourcedOther.update(sourcedId, {}, context);
+					sourced.set('n', 2);
+				});
+				assert.ok(isReleasedContext(refusal), refusal?.message ?? 'the hook lock was admitted');
+				assert.strictEqual((await SourcedOther.get(sourcedId)).n, 2);
+				await lockableAfterwards(Locked, lockedId);
+			});
 
 		it("still admits the hook's lock() of a record in its own database, and releases it with the commit", async function () {
 			const otherId = id();

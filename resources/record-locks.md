@@ -117,8 +117,8 @@ Consequences that shape the code:
   lock at its first write; and, for a `lock()` from a pre-commit hook in the cascade, one whose own commit already
   landed and released its locks, so nothing would release a handle registered there. Holding the key while waiting would deadlock a pre-commit hook's own `lock()` on it. A hold waits
   only once the root reads CLOSED: it survives the commit and stages nothing until saved, so in pre-commit work
-  it is admitted as before. The instance holding a scoped handle is refused with a 409 on re-entry instead, an
-  upgrade to a hold included: that commit releases the handle (and may be committing its staged write), so
+  it is admitted as before. The instance holding a scoped handle is refused with a 409 on re-entry instead, and
+  an upgrade of it to a hold through any instance (harper#4122): that commit releases the handle (and may be committing its staged write), so
   returning it would leave the caller unlocked; it awaits the commit and locks again
   through `Table.lock()`, its own handle being released (harper#4081). Two more exceptions keep the earlier outcome. The
   scope's final commit (`scopeEnding`) is not waited out. A `lock()` made by the scope's own pre-commit hook
@@ -132,8 +132,9 @@ Consequences that shape the code:
   commit awaits it. Sibling-database links share the root but commit on their own, so the link, not the root,
   decides. The marker also names the hook's write: a holder write follows "One commit in flight per lock" below.
   A chained link's hook runs after the head committed, so its `lock()` of a head-database record gets the 409
-  above; on the scope's final commit the head releases the context first, so after the hook's first await it
-  resolves a fresh link instead (harper#4122). A commit that awaits a `lock()` started
+  above. On the scope's final commit the head releases the context first, so after the hook's first await its
+  `lock()` resolves a fresh self-committing link that would outlive the commit; `lockScopeClosure` recognizes the
+  hook's root by that context and refuses it with a 409 as well (harper#4122). A commit that awaits a `lock()` started
   outside its hook still waits until that `lock()` gives up.
 - **Release.** Every handle — scoped or hold — is registered in `link.recordLocks` and kept on the
   locked instance as `#lockHandle`; every commit or abort calls `releaseRecordLocks()`, which calls
