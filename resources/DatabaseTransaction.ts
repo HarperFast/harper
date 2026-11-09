@@ -726,6 +726,8 @@ export type TransactionWrite = {
 	entry?: Partial<Entry>;
 	before?: () => void | Promise<void>;
 	beforeIntermediate?: () => void | Promise<void>;
+	// the instance whose pending changes this write stores
+	trackedInstance?: object;
 	// stages the record and its audit entry before returning: staging reads what it appended (stagedAudit)
 	// as soon as it returns. A returned promise is only a completion to wait for.
 	commit?: (
@@ -981,6 +983,9 @@ export function currentCommitHook(): CommitHookInvocation | undefined {
 	return commitHookScope.getStore();
 }
 
+// Hooks whose synchronous part is running: their write is saved but has not applied yet.
+const syncCommitHooks: CommitHookInvocation[] = [];
+
 function runCommitHook(link: DatabaseTransaction, write: TransactionWrite): void | Promise<void> {
 	const invocation: CommitHookInvocation = {
 		root: link.root ?? link,
@@ -993,18 +998,35 @@ function runCommitHook(link: DatabaseTransaction, write: TransactionWrite): void
 		invocation.active = false;
 	};
 	let result: void | Promise<void>;
+	syncCommitHooks.push(invocation);
 	try {
 		result = commitHookScope.run(invocation, write.before);
 	} catch (error) {
 		settled();
 		throw error;
+	} finally {
+		syncCommitHooks.pop();
 	}
 	if ((result as Promise<void>)?.then) (result as Promise<void>).then(settled, settled);
 	else settled();
 	return result;
 }
 
-function heldByAncestorHook(handle: RecordLockHandle): boolean {
+function unappliedHookWriteTo(link: DatabaseTransaction, operation: TransactionWrite): boolean {
+	for (const hook of syncCommitHooks) {
+		const write = hook.write;
+		if (hook.link === link && write.store === operation.store && write.keyId === operation.keyId) return true;
+	}
+	return false;
+}
+
+/** Whether a write storing this instance's changes is in its pre-commit hook's synchronous part: saved, not applied. */
+export function instanceWriteInSyncCommitHook(instance: object): boolean {
+	for (const hook of syncCommitHooks) if (hook.write.trackedInstance === instance) return true;
+	return false;
+}
+
+export function heldByAncestorHook(handle: RecordLockHandle): boolean {
 	for (let hook = commitHookScope.getStore(); hook; hook = hook.parent) {
 		if (hook.active && hook.write.lockHandle === handle) return true;
 	}
@@ -1160,6 +1182,8 @@ export class DatabaseTransaction implements Transaction {
 	// unlike `snapshotFree`, which lock() also sets on a scope that committed nothing; sticky, since a
 	// scope can end while its later segment is still committing
 	rotatedAfterCommit = false;
+	// a mid-scope commit left the scope CLOSED because open read iterators still hold its native handle
+	closedForReadIterators = false;
 	// Set while commit() is parked in its pre-commit await (`before`/`beforeIntermediate` completions —
 	// in practice a blob's durable file write). The write set is sealed and the caller is awaiting the
 	// commit, so this is core's own I/O rather than an application holding a transaction open, which is
@@ -2665,6 +2689,22 @@ export class DatabaseTransaction implements Transaction {
 				throw refusal;
 			}
 		}
+		// Saved while the hook of a write to the same record runs synchronously, it would apply first and be overwritten.
+		if (
+			syncCommitHooks.length > 0 &&
+			!operation.saved &&
+			operation.key !== undefined &&
+			unappliedHookWriteTo(this, operation)
+		) {
+			operation.dropped = true;
+			this.detachWrite(operation);
+			const refusal = new ClientError(
+				"A pre-commit hook's write to the record its own write is committing is refused before the hook's first await: that write has not applied yet and would overwrite this one",
+				409
+			);
+			if (!transaction && !options) return Promise.reject(refusal);
+			throw refusal;
+		}
 		const concurrentClosedWrite =
 			Boolean((transaction as RocksTransactionWithRetry | undefined)?.immediateCommit) ||
 			(!transaction && this.open !== TRANSACTION_STATE.OPEN && !this.saveCommits);
@@ -4048,6 +4088,12 @@ export class DatabaseTransaction implements Transaction {
 	protected endScopeOwnership(): void {
 		this.#scopeOwned = false;
 		this.snapshotFree = false;
+		this.closedForReadIterators = false;
+	}
+
+	/** Whether a resources/transaction.ts scope still owns this instance: it has not finished or aborted. */
+	get scopeOwned(): boolean {
+		return this.#scopeOwned;
 	}
 
 	private completeMidScopeCommit(options: CommitOptions, committedTransaction?: RocksTransaction | null): void {
@@ -4059,15 +4105,12 @@ export class DatabaseTransaction implements Transaction {
 
 	/** See completeMidScopeCommit, which is the only caller and carries the reasoning. */
 	private rotateAfterMidScopeCommit(options: CommitOptions): void {
-		if (
-			options.doneWriting ||
-			this.timedOut ||
-			this.disconnected ||
-			this.postSubmitPoisoned ||
-			this.transaction ||
-			!this.#scopeOwned
-		)
+		if (options.doneWriting || this.timedOut || this.disconnected || this.postSubmitPoisoned || !this.#scopeOwned)
 			return;
+		if (this.transaction) {
+			this.closedForReadIterators = true;
+			return;
+		}
 		this.open = TRANSACTION_STATE.OPEN;
 		this.snapshotFree = true;
 		this.rotatedAfterCommit = true;
