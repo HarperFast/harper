@@ -839,7 +839,9 @@ export function mergeUpdateChanges(
 		if (!value?.__op__ || (!fullUpdate && !Object.hasOwn(previous, name))) continue;
 		const next = validateField(name, value, false);
 		if (!next || value.__op__ !== 'add') continue;
-		const first = validateField(name, previous[name], true);
+		const previousValue = previous[name];
+		// An add establishes a missing value; only its result must satisfy a required field.
+		const first = previousValue == null ? { [name]: previousValue } : validateField(name, previousValue, true);
 		if (!first) {
 			merged[name] = previous[name];
 			continue;

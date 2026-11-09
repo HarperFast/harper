@@ -878,9 +878,7 @@ function isSameIdAllocation(a: any, b: any): boolean {
 class ConditionLockWait {
 	fullUpdate: boolean;
 	staged: Promise<unknown>;
-	get staging() {
-		return this.staged;
-	}
+	staging?: Promise<unknown>;
 	constructor(fullUpdate: boolean) {
 		this.fullUpdate = fullUpdate;
 	}
@@ -6407,8 +6405,12 @@ export function makeTable(options): TableResourceClass {
 					return staged;
 				});
 				wait.staged = prior instanceof ConditionLockWait ? Promise.all([prior.staged, staging]) : staging;
+				wait.staging = wait.staged;
 				// callers may discard update(); save(), or REST's 501 when nothing saves, reports the failure
-				wait.staged.catch(noop);
+				const settled = () => {
+					wait.staging = undefined;
+				};
+				wait.staged.then(settled, settled);
 				return wait.staged;
 			}
 			const transaction = txnForContext(context);

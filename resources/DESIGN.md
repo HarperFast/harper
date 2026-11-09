@@ -233,8 +233,8 @@ RocksDB index rows store `null`, so `RocksIndexStore.getRange` reads keys only. 
 
 `linkWrite` chains staged state through `priorStagedWrite()`; reads cannot refresh it (harper#1968). Newer versions merge out of order; order breaks ties. `writeKeyId` uses store encoding: `1n`/`1` chain; `[0]`/`[-0]` do not.
 
-- **Staging order must equal execution order** (harper#2211): `chainsStagedState` defers behind predecessors; `save()` drains them; `stageWrite` keeps order. Gap: `_writeRelocate` saves eagerly.
-- `#mergeableWrite` edits an unvalidated node like `set()`; `mergeUpdateChanges` coerces adds and rejects invalid replacement patches. Replacement mode stays; `addWrite` admits once (`deferredWriteLifecycle.test.js`).
+- **Operations execute in staging order** (harper#2211): `chainsStagedState` defers behind predecessors; `save()` drains them. Gap: `_writeRelocate` saves eagerly.
+- `#mergeableWrite` edits one unvalidated node at its first position, like `set()`; `mergeUpdateChanges` coerces adds and rejects invalid replacement patches. Replacement mode stays; `addWrite` admits once (`deferredWriteLifecycle.test.js`).
 - Refusal keeps the write and generation; `#saveOperation` reattaches only live writes after owner release.
 - `_writePublish` stages the unchanged record, preserving re-delivery dedup (`publishRecordState.test.js`).
 

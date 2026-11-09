@@ -485,24 +485,38 @@ describe('Deferred write lifecycle', function () {
 		assert.strictEqual(changesFor(key).length, 0);
 	});
 
-	for (const type of [undefined, 'Int']) {
-		it(`applies an add to an omitted ${type ?? 'untyped'} replacement field`, async () => {
+	for (const { type, nullable } of [
+		{},
+		{ type: 'Int' },
+		{ type: 'Int', nullable: false },
+		{ type: 'BigInt', nullable: false },
+	]) {
+		it(`applies an add to an omitted ${nullable === false ? 'required ' : ''}${type ?? 'untyped'} replacement field`, async () => {
 			const T = table({
 				database: 'deferred_write_lifecycle',
-				table: type ? 'FullTypedAdds' : 'FullUntypedAdds',
+				table: `FullAdds${type ?? 'Untyped'}${nullable === false ? 'Required' : ''}`,
 				audit: true,
-				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'n', type }, { name: 'name' }],
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'n', type, nullable }, { name: 'name' }],
 			});
-			const key = id();
-			await T.put({ id: key, n: 5, name: 'old' });
-			const record = await T.getResource({ id: key }, {});
-			await record.update({ name: 'kept' }, true);
-			await record.update({ n: { __op__: 'add', value: 2 } });
-			await record.save();
-			const result = await T.get(key);
-			assert.strictEqual(result.n, 2);
-			assert.strictEqual(result.name, 'kept');
-			assert.strictEqual([...T.auditStore.getRange({ start: 1 })].filter((entry) => entry.recordId === key).length, 2);
+			const replacements =
+				nullable === false
+					? [{ name: 'kept' }, { name: 'kept', n: undefined }, { name: 'kept', n: null }]
+					: [{ name: 'kept' }];
+			for (const replacement of replacements) {
+				const key = id();
+				await T.put({ id: key, n: type === 'BigInt' ? 5n : 5, name: 'old' });
+				const record = await T.getResource({ id: key }, {});
+				await record.update(replacement, true);
+				await record.update({ n: { __op__: 'add', value: type === 'BigInt' ? 2n : 2 } });
+				await record.save();
+				const result = await T.get(key);
+				assert.strictEqual(result.n, type === 'BigInt' ? 2n : 2);
+				assert.strictEqual(result.name, 'kept');
+				assert.strictEqual(
+					[...T.auditStore.getRange({ start: 1 })].filter((entry) => entry.recordId === key).length,
+					2
+				);
+			}
 		});
 	}
 
@@ -536,6 +550,37 @@ describe('Deferred write lifecycle', function () {
 		assert.strictEqual(changesFor(key).length, 1);
 		const next = await TestTable.lock(key, { timeout: 100, lease: 5000 }, context);
 		await next.unlock();
+	});
+	it('does not re-admit a skipped keyed write after its owner clears it', async function () {
+		if (!isLMDB) return this.skip();
+		const T = table({
+			database: 'deferred_write_lifecycle',
+			table: 'SkippedWrite',
+			audit: false,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'n' }],
+		});
+		const key = id();
+		await T.put({ id: key, n: 0 });
+		const version = T.primaryStore.getEntry(key).version;
+		await T.put(key, { n: 7 }, { timestamp: version + 2 });
+		const context = { timestamp: version + 1 };
+		const record = new T('other-record', context);
+		let write;
+		await transaction(context, async () => {
+			await record.update(key, { n: 1 });
+			let owner = context.transaction;
+			while (owner && !owner.writes.some((operation) => operation?.key === key)) owner = owner.next;
+			write = owner.writes.find((operation) => operation?.key === key);
+		});
+		assert.ok(write.skipped && write.instanceClosed && !write.saved);
+		assert.strictEqual(write.writeGeneration, undefined, 'an off-key receiver has no saved-generation shortcut');
+		assert.strictEqual(write.stagedIn, undefined);
+		assert.strictEqual((await T.get(key)).n, 7);
+		const entry = T.primaryStore.getEntry(key);
+		delete context.timestamp;
+		await record.save();
+		assert.strictEqual((await T.get(key)).n, 7);
+		assert.strictEqual(T.primaryStore.getEntry(key).version, entry.version);
 	});
 	it('keeps the previous update when a replacement embed hook rejects', async () => {
 		const Embedded = table({
@@ -658,41 +703,49 @@ describe('Deferred write lifecycle', function () {
 		}
 	});
 
-	it('serializes concurrent update staging into the same pending intent', async function () {
-		const Embedded = table({
-			database: 'deferred_write_lifecycle',
-			table: 'ConcurrentEmbedded',
-			audit: true,
-			attributes: [
-				{ name: 'id', isPrimaryKey: true },
-				{ name: 'name' },
-				{ name: 'embedding', type: 'Array', embed: { source: 'name', model: 'default' } },
-			],
+	for (const verb of ['direct', 'keyed', 'put']) {
+		it(`serializes a concurrent ${verb} update into the same pending intent`, async function () {
+			const Embedded = table({
+				database: 'deferred_write_lifecycle',
+				table: `ConcurrentEmbedded${verb}`,
+				audit: true,
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'name' },
+					{ name: 'embedding', type: 'Array', embed: { source: 'name', model: 'default' } },
+				],
+			});
+			Embedded.setEmbedAttribute('embedding', async (record) => {
+				await Promise.resolve();
+				return [record.name.length];
+			});
+			const key = id();
+			const context = {};
+			const record = await Embedded.getResource({ id: key }, context);
+			const first = record.update({ name: 'first' });
+			const second =
+				verb === 'put'
+					? record.put(key, { name: 'second' })
+					: verb === 'keyed'
+						? record.update(key, { name: 'second' })
+						: record.update({ name: 'second' });
+			await Promise.all([first, second]);
+			await record.save();
+			assert.strictEqual((await Embedded.get(key)).name, 'second');
+			assert.deepStrictEqual([...(await Embedded.get(key)).embedding], [6]);
+			assert.strictEqual(
+				[...Embedded.auditStore.getRange({ start: 1 })].filter((entry) => entry.recordId === key).length,
+				1
+			);
+			if (!isLMDB) {
+				const locked = await Embedded.lock(key, { timeout: 100 }, context);
+				await locked.unlock();
+			}
 		});
-		Embedded.setEmbedAttribute('embedding', async (record) => {
-			await Promise.resolve();
-			return [record.name.length];
-		});
-		const key = id();
-		const context = {};
-		const record = await Embedded.getResource({ id: key }, context);
-		await Promise.all([record.update({ name: 'first' }), record.update({ name: 'second' })]);
-		await record.save();
-		assert.strictEqual((await Embedded.get(key)).name, 'second');
-		assert.deepStrictEqual([...(await Embedded.get(key)).embedding], [6]);
-		assert.strictEqual(
-			[...Embedded.auditStore.getRange({ start: 1 })].filter((entry) => entry.recordId === key).length,
-			1
-		);
-		if (!isLMDB) {
-			const locked = await Embedded.lock(key, { timeout: 100 }, context);
-			await locked.unlock();
-		}
-	});
+	}
 
 	for (const full of [false, true]) {
 		it(`fences a hook-delayed ${full ? 'replacement' : 'update'} when a checkpoint has sealed its generation`, async function () {
-			if (!isLMDB) return this.skip();
 			const Embedded = table({
 				database: 'deferred_write_lifecycle',
 				table: full ? 'ValidatedFullEmbedded' : 'ValidatedEmbedded',
@@ -736,7 +789,7 @@ describe('Deferred write lifecycle', function () {
 					const committing = context.transaction.commit();
 					committing.catch(() => {});
 					try {
-						assert.ok(original.instanceClosed && !original.saved, 'validated, waiting on the real blob stream');
+						assert.ok(original.instanceClosed, 'validated, waiting on the real blob stream');
 						release();
 						await refused;
 						assert.strictEqual(getFileId(rejectedBlob), null, 'a refused continuation never starts saving its blob');

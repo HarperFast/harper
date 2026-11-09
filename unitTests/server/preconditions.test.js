@@ -664,6 +664,57 @@ describe('REST preconditions with real table transactions', () => {
 		}
 	});
 
+	it('settles queued writes after their conditional precondition fails', async function () {
+		if (isLMDB) return this.skip();
+		this.timeout(45000);
+		if (!process.env.HARPER_CONDITIONAL_QUEUE_CHILD) {
+			// A microtask loop prevents Mocha's own timeout from firing.
+			const { spawnSync } = require('node:child_process');
+			const child = spawnSync(
+				process.execPath,
+				[
+					'--max-old-space-size=512',
+					require.resolve('mocha/bin/mocha.js'),
+					__filename,
+					'--grep',
+					'settles queued writes after their conditional precondition fails',
+				],
+				{
+					env: { ...process.env, HARPER_CONDITIONAL_QUEUE_CHILD: '1' },
+					encoding: 'utf8',
+					timeout: 30000,
+					killSignal: 'SIGKILL',
+				}
+			);
+			assert.ifError(child.error);
+			assert.strictEqual(child.status, 0, child.stdout + child.stderr);
+			return;
+		}
+		for (const verb of ['direct', 'keyed', 'put']) {
+			const id = `rejected-queue-${verb}`;
+			await Row.put(id, { n: 0 });
+			class RejectedQueue extends Row {
+				async patch(target) {
+					const first = this.update({ n: { __op__: 'add', value: 1 } });
+					const second =
+						verb === 'put'
+							? this.put(target, { n: 9 })
+							: verb === 'keyed'
+								? this.update(target, { n: 9 })
+								: this.update({ n: 9 });
+					await Promise.all([first, second]);
+					return this.save();
+				}
+			}
+			resources.set('RejectedQueue', RejectedQueue, { rest: true });
+			const response = await request('PATCH', `/RejectedQueue/${id}`, {}, { 'if-match': '"stale"' });
+			assert.strictEqual(response.status, 412, await bodyOf(response));
+			await nextTurn();
+			assert.strictEqual((await request('GET', `/Row/${id}`)).status, 200);
+			assert.strictEqual((await Row.get(id)).n, 0);
+		}
+	});
+
 	it('commits one audit entry per conditional mutation without a phantom lock write', async () => {
 		const id = 'audit';
 		await Row.put(id, { n: 1 });
