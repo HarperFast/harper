@@ -368,8 +368,10 @@ function qualifies(state: OriginState): boolean {
 
 /**
  * Per local origin id, the highest certified floor below which this node holds that origin's entries complete, and the
- * generation it certifies, for each origin whose merged route state qualifies. A route that switches which peer supplies an origin can resume it
- * from here: unlike a position, a floor certifies a complete prefix whichever route delivered it.
+ * generation it certifies, for each origin whose merged route state qualifies from the origin's first entry. A route
+ * that switches which peer supplies an origin can resume it from here: unlike a position, such a floor certifies a
+ * complete prefix whichever route delivered it. A floor certified from later than the first entry vouches for nothing
+ * below its start, so it is left out, as `retainsBeginning` leaves it.
  */
 export function readQualifiedOriginFloors(
 	auditStore: any,
@@ -377,7 +379,8 @@ export function readQualifiedOriginFloors(
 ): Map<number, { floor: number; generation: string }> {
 	const floors = new Map<number, { floor: number; generation: string }>();
 	for (const [nodeId, state] of readOriginStates(auditStore, dbisDb)) {
-		if (nodeId !== 0 && qualifies(state)) floors.set(nodeId, { floor: state.floor!, generation: state.generation! });
+		if (nodeId !== 0 && qualifies(state) && state.certifiedFrom === 0)
+			floors.set(nodeId, { floor: state.floor!, generation: state.generation! });
 	}
 	return floors;
 }

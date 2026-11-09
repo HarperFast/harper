@@ -574,12 +574,14 @@ describe('Per-origin subscription checkpoints (harper-pro#922 items 3–4)', fun
 			});
 			const legacy = writeSeqRow(T, 'legacy-peer', { closedFloor: 80, relayable: true });
 			const revoked = writeSeqRow(T, 'revoked-peer', { closedFloor: 90, ...qualified, floorRevoked: true });
+			const late = writeSeqRow(T, 'late-peer', { closedFloor: 95, ...qualified, certifiedFrom: 40 });
 			const floors = readQualifiedOriginFloors(T.auditStore, T.dbisDB);
 			assert.deepStrictEqual(floors.get(relay), { floor: 50, generation: 'peer-generation' });
 			assert.deepStrictEqual(floors.get(other), { floor: 70, generation: 'peer-generation' });
 			assert.deepStrictEqual(floors.get(relayed), { floor: 100, generation: 'peer-generation' });
 			assert.strictEqual(floors.has(legacy), false, 'a level-1 route names no generation');
 			assert.strictEqual(floors.has(revoked), false);
+			assert.strictEqual(floors.has(late), false, 'a floor certified from after the first entry vouches for no prefix');
 		});
 		it('refuses a route a copy bound covers, certifies nothing under it, and admits once the route starts above it', async () => {
 			const T = tableInOwnDatabase();

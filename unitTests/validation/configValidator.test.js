@@ -319,6 +319,8 @@ describe('Test configValidator module', () => {
 			assert.match(configValidator(config).error?.message, /'replication\.region' must be a string/);
 			config.replication = { gateway: 'yes' };
 			assert.match(configValidator(config).error?.message, /'replication\.gateway' must be a boolean/);
+			config.replication = { gateway: 'false' };
+			assert.match(configValidator(config).error?.message, /'replication\.gateway' must be a boolean/);
 		});
 
 		it('accepts a well-formed sql config section', () => {

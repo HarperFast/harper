@@ -489,7 +489,8 @@ export function configValidator(configJson, skipFsValidation = false) {
 			copyCursorFlushIntervalMs: number.min(1).optional().empty(null),
 			replayTimeout: number.min(1).optional().empty(null),
 			region: string.allow('').optional().empty(null),
-			gateway: boolean.optional().empty(null),
+			// a quoted "false" must not pass as a string the runtime reads as unset: validateConfig keeps replication values as given
+			gateway: boolean.optional().empty(null).prefs({ convert: false }),
 		}).optional(),
 		node: Joi.object({
 			hostname: bareHostConstraints,
