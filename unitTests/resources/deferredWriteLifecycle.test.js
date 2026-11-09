@@ -463,7 +463,8 @@ describe('Deferred write lifecycle', function () {
 		const key = id();
 		await TestTable.put({ id: key, n: 0 });
 		const context = {};
-		let holder, pending;
+		let holder, pending, second;
+		const stream = new PassThrough();
 		let observe, rejectObservation;
 		const observed = new Promise((resolve, reject) => {
 			observe = resolve;
@@ -492,13 +493,23 @@ describe('Deferred write lifecycle', function () {
 		try {
 			await observed;
 			await committing;
+			holder.set('n', 3);
+			holder.set('blob', createBlob(stream));
+			second = holder.save();
+			await waitFor(() => context.transaction.writes.some((write) => write?.key === key && write.saved));
 			await pending.update({ name: 'retry' });
+			const refused = assert.rejects(pending.save(), isOverlapRefusal);
+			stream.end('payload');
+			await second;
+			await refused;
 			await pending.save();
 			const result = await TestTable.get(key);
 			assert.strictEqual(result.n, 2);
 			assert.strictEqual(result.name, 'retry');
-			assert.strictEqual(changesFor(key).length, 2);
+			assert.strictEqual(changesFor(key).length, 3);
 		} finally {
+			stream.end();
+			if (second) await second;
 			await committing;
 			await holder?.unlock();
 		}

@@ -7,3 +7,5 @@ section: 'Resource API'
 A deferred `save()` that commits outside an open `transaction()` scope now stays pending if it is refused with `409` because an earlier write under the same record lock is still committing. Await the earlier write, then call `save()` again: the retry persists the update without closing its instance prematurely or moving it behind later staged writes.
 
 Repeated `update()` calls on one instance now merge into one pending write at its original transaction position, like `set()`. Later writes from other instances retain their order and override overlapping fields. For example, `A.update({ n: 1 }); B.update({ n: 5 }); A.update({ n: 2 });` in one transaction commits `n: 5`. A full replacement followed by a patch keeps the replacement's fields and semantics. Saving the merged update leaves no orphaned operation blocking a later `lock()`.
+
+Await an asynchronous `update()` before committing or checkpointing its transaction. If the transaction seals that update while its model hooks are still running, the update rejects with `409`; call `update()` again to start a fresh generation.

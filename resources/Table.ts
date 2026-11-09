@@ -5126,7 +5126,7 @@ export function makeTable(options): TableResourceClass {
 		 */
 		#bindWriteLock(write: any, id: Id, transaction: any): void {
 			const bound = write.lockHandle;
-			if (bound && (bound.expired || (!bound.released && bound.isLeaseExpired()))) return;
+			if (bound && (bound.expired || !bound.released)) return;
 			const own = this.#lockHandle;
 			const tableLocks = transaction.recordLocks?.get(primaryStore);
 			if (!own && !tableLocks && !write.lockJoined) return;
