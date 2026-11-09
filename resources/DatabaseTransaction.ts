@@ -1669,9 +1669,11 @@ export class DatabaseTransaction implements Transaction {
 	protected saveHolderSelfCommit(operation: TransactionWrite, save: () => any): any {
 		const handle = operation.lockHandle!;
 		if (holderCommitInFlight(handle) || heldByAncestorHook(handle)) {
-			operation.dropped = true;
-			this.detachWrite(operation);
 			if (operation.deferSave) operation.refusedDeferredWrite = true;
+			else {
+				operation.dropped = true;
+				this.detachWrite(operation);
+			}
 			return Promise.reject(holderWriteRefusal(handle));
 		}
 		handle.selfCommits++;
