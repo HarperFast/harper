@@ -441,6 +441,14 @@ localStudio:
 
 ---
 
+## `studio`
+
+<VersionBadge version="v5.4.0" />
+
+How Studio presents itself on this node: `navigation`, a map from a tab key to `visible`, `tucked` or `hidden`, and `landing`, the tab Studio opens on. Write them with `set_configuration` as `studio_navigation` and `studio_landing`, which validates them; see [Customizing Studio](../studio/customization.md#cluster-settings). `studio` is a reserved component name.
+
+---
+
 ## `componentsRoot`
 
 Path to local component files. Added in: v4.2.0 (previously `customFunctionsRoot`). See [Components](../components/overview.md).
