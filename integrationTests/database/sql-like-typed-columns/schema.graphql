@@ -2,5 +2,6 @@ type Item @table @export {
 	id: Int @primaryKey
 	intCol: Int @indexed
 	code: String @indexed
+	tags: [String] @indexed
 	flag: String
 }

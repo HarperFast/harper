@@ -13,6 +13,7 @@ const SEED = [0, 5, 50, 105, 150, -5, null, undefined].map((intCol, i) => ({
 	id: i + 1,
 	...(intCol === undefined ? {} : { intCol }),
 	code: intCol == null ? '' : String(intCol),
+	tags: i === 3 ? ['news', 'sports'] : i === 4 ? ['sports'] : [],
 	flag: 'seed',
 }));
 const CASES: [string, number[]][] = [
@@ -109,6 +110,18 @@ for (const engine of ['auto', 'new', 'legacy']) {
 			}
 			test('a declared String prefix can drive the scan on its own', async () => {
 				deepStrictEqual(ids(await sql("SELECT id FROM data.Item WHERE code LIKE '1%'")), [4, 5]);
+			});
+			test('list LIKE matches joined text for selection and mutations', async () => {
+				deepStrictEqual(ids(await sql("SELECT id FROM data.Item WHERE id >= 0 AND tags LIKE 'sports%'")), [5]);
+				deepStrictEqual(ids(await sql("SELECT id FROM data.Item WHERE id >= 0 AND tags LIKE '%s,sp%'")), [4]);
+				deepStrictEqual(ids(await sql("SELECT id FROM data.Item WHERE id >= 0 AND tags LIKE 'news,sports'")), [4]);
+				deepStrictEqual(
+					(await sql("UPDATE data.Item SET flag = 'hit' WHERE id >= 0 AND tags LIKE 'news,sports'")).update_hashes,
+					[4]
+				);
+				deepStrictEqual(ids((await read()).filter((row: { flag: string }) => row.flag === 'hit')), [4]);
+				deepStrictEqual((await sql("DELETE FROM data.Item WHERE id >= 0 AND tags LIKE 'sports%'")).deleted_hashes, [5]);
+				deepStrictEqual(ids(await read()), [1, 2, 3, 4, 6, 7, 8]);
 			});
 			test('dynamic mixed values use lexical matching', async () => {
 				deepStrictEqual(ids(await sql("SELECT id FROM data.Dynamic WHERE id >= 0 AND mixed LIKE '1%'")), [1, 2]);
