@@ -367,11 +367,9 @@ function qualifies(state: OriginState): boolean {
 }
 
 /**
- * Per local origin id, the highest certified floor below which this node holds that origin's entries complete, and the
- * generation it certifies, for each origin whose merged route state qualifies from the origin's first entry. A route
- * that switches which peer supplies an origin can resume it from here: unlike a position, such a floor certifies a
- * complete prefix whichever route delivered it. A floor certified from later than the first entry vouches for nothing
- * below its start, so it is left out, as `retainsBeginning` leaves it.
+ * Per local origin id, the floor and generation of the route that certifies it highest, when that route qualifies and
+ * certified from the origin's first entry. Unlike a position, such a floor marks a complete prefix whichever route
+ * delivered it, so a route that switches which peer supplies the origin can resume from it.
  */
 export function readQualifiedOriginFloors(
 	auditStore: any,
