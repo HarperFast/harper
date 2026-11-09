@@ -20,7 +20,7 @@ The `registerPrimitiveIdGet` getter shares `loadRecord()` with `_loadRecord`; it
 
 - `isAuditEntryWrite` is the only identity test; `removeAuditEntry` keeps unknown-identity tombstones, as version compares let one write destroy another's.
 - Applied RocksDB writes store their version (`TransactionWrite.recordVersion`) at the origin log key.
-- `additionalAuditRefs` holds log keys; `receivedIdentityRefs` (bit 31, `RECEIVED_IDENTITY_REF`) holds received identities (addressing no entry, omitted from audit entries, proving unaudited re-delivery). Walks read all non-head branches (log keys never bound versions). `identityIsNotKey` writes record the head as a log-key ref even if key == version. **Never "fix" a log key to the version** (`auditRefKinds.test.js`).
+- `additionalAuditRefs` holds log keys; `receivedIdentityRefs` (bit 31, `RECEIVED_IDENTITY_REF`) holds received identities (addressing no entry, omitted from audit entries). Unaudited, it is the only re-delivery proof: a commutative patch appends, a body-replacing write restarts it, a listed patch skips before the version comparison. Walks read all non-head branches (log keys never bound versions). `identityIsNotKey` writes record the head as a log-key ref even if key == version. **Never "fix" a log key to the version** (`auditRefKinds.test.js`).
 - LMDB merges keep the older version (`LMDBTransaction.commit` `ifVersion`, `noAuditOutOfOrderPatch.test.js`).
 - Duplicates use committed identity (read outside the txn after a same-key relocate/publish restamps the base); only minted keys mark a retry's own staging (`readsOwnStaging`, `replicatedRetryDuplicate.test.js`).
 - RocksDB logs once; the watermark stalls at uncommitted entries, so ref walks pass `followingCommittedRef` and retries/replays add the base head and missed refs (`withRefsMissedByLoggedEntry`). History walks follow one chain and can miss a branch ([#3977](https://github.com/HarperFast/harper/issues/3977)).
@@ -91,7 +91,9 @@ The operations thread loads no schema, so `table()` stores `@relationship` targe
 
 ## Typed, discoverable resources
 
-**Runtime metadata is values; types derive from it**, since type stripping erases types (harper#1503). `attributeToFragment` is the one IR for validation, OpenAPI and MCP. Contract types narrow `RequestTarget` only because each declared verb validates its input before dispatch (`ValidationError`). `compileVerb` alone decides `bodyRequired` (`defineResource.test.js`).
+`attributeToSchema` emits MCP/OpenAPI; contract narrowing requires every verb to validate. Only `compileVerb` sets `bodyRequired` (`defineResource.test.js`).
+
+Contracts keep absent types; metadata infers omitted ones. Primitives retain conditional `properties`/`items`. Projections refresh per read; MCP rebuilds on registration (`schemaProjectionInvariants.test.js`).
 
 ## Conventions
 
@@ -148,7 +150,7 @@ Closing the owning handle releases a fill's lock, so `releaseRecordLock` ignores
 
 Pre-commit blob files land before a commit that can still skip the write.
 
-- A commit handler resets `write.skipped` each round and sets it only when the round staged neither record nor audit entry (an audit-only `auditRecordToStore` entry is not a skip, and passes `write` to `updateRecord` for `stagedAudit`). Skips: duplicate tie; newer put; losing no-audit full update; no-audit patch tying the head, meeting a recordless head, already received or keeping nothing; losing invalidate, relocate or delete; source version change. A skipped write's `replicatedConfirmation` falls back to the stored version (harper#3182), so an unmarked skip looks like a write that replicates nothing.
+- A commit handler resets `write.skipped` each round and sets it only when the round staged neither record nor audit entry (an audit-only `auditRecordToStore` entry is not a skip). Skips: duplicate tie; newer put; losing no-audit full update; no-audit patch tying the head, meeting a recordless head, already received or keeping nothing; losing invalidate, relocate or delete; source version change. A skipped write's `replicatedConfirmation` falls back to the stored version (harper#3182).
 - Skips are cleaned after commit, never inline: a retry can make the skipped write win. Abort cleans all but files a durable log or audit entry owns (`abortedWithoutLog`, `blobsAuditReferenced`) and writes of another in-flight handle.
 - `cleanupUnusedBlobs(blobs, retainedFileIds)` spares the committed record's files. A deleted file tombstones its `Blob`, so `saveBlob` throws on it (#2062).
 - `cleanupOrphans` scans every retained audit value: history owns its files.
@@ -246,8 +248,8 @@ If this same write (origin and log key) emptied the key, `_writeDelete` writes n
 
 ## `ImmediateTransaction` saves chain on `operation.innerCommit` and forward retries
 
-- A second `save()` outside `transaction()` commits through a nested `commit()` stored on `operation.innerCommit`. Both `Table.save()` branches must await it, or `save()` returns before the write is durable (`recordLock.test.js`).
-- During a retry, `ImmediateTransaction.save()` forwards to the retried handle; otherwise it would nest and recurse (harper#2825). A failed re-save releases the detached handle before `abort()` (`immediateTransactionConflictRetry.test.js`).
+- A second write outside `transaction()` commits through a nested `commit()` stored on `operation.innerCommit`. `ImmediateTransaction.save()` must await it, or the write returns before it is durable (`recordLock.test.js`).
+- During a retry, `save()` forwards to the retried handle; otherwise it would nest and recurse (harper#2825). A failed re-save releases the detached handle before `abort()` (`immediateTransactionConflictRetry.test.js`).
 
 ## A transaction is joinable as a scope only if it stages its writes
 
@@ -387,6 +389,7 @@ Replicas are RocksDB-only. `_storeReplica` keeps a resident's body as an audit-f
 
 - **Admission keeps only the stub's own head write, and only when no later fold can change it** (`answersStub`, `FULL_WRITE_HEAD`, harper#3640). A table written only by patches never caches.
 - The deadline lives in `<table>/@replicas`, not `expiresAt`; demotion re-reads it in its own transaction, and `repairReplicaDeadlines` leaves no replica permanent. Demote all replicas before a downgrade (`residencyReplicas.test.js`).
+- A pressure pass (`reclaimReplicaSpace`) frees no disk until compaction, so its window and budget bound it, not the priority (`replicaStorageReclamation.test.js`).
 
 ## `replicatedConfirmation` counts only the residents of each written record
 

@@ -57,9 +57,10 @@ A handful of design points are non-obvious and easy to break:
   `initializePerSecond` and `initializeBurst` bound one worker. A client opening fresh connections that the OS
   spreads over the application profile's `threads.count` workers gets up to that many times the configured
   figure (5 per worker × 4 workers = 20 admitted at `initializeBurst: 5`); one reused connection stays on one
-  worker and gets the configured figure. Dividing the config by `threads.count` was rejected: it assumes an
-  even spread, which the exclusive operations-API listener and macOS binds (`noReusePort`, `server/http.ts`)
-  do not give, and it turns `initializeBurst: 50` into one token per worker at 32 threads, so a client reusing
+  worker and gets the configured figure, as does every client under Bun, where one worker serves the port
+  (`server/DESIGN.md` "Under Bun, the main HTTP port is served by `node:http`"). Dividing the config by
+  `threads.count` was rejected: it assumes an even spread, which the exclusive operations-API listener, macOS
+  binds (`noReusePort`, `server/http.ts`) and Bun do not give, and it turns `initializeBurst: 50` into one token per worker at 32 threads, so a client reusing
   one connection would get a 429 on its second session.
 
 - **Application tools must be rebuilt after JS resources register, not just on schema changes.** The

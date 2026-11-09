@@ -13,7 +13,8 @@ const {
 	registerFallbackServer,
 	registerFastifyInstance,
 } = require('#src/server/http');
-const { clientAddressOf, handlePostRequest } = require('#src/server/serverHelpers/serverHandlers');
+const { handlePostRequest } = require('#src/server/serverHelpers/serverHandlers');
+const { clientAddressOf } = require('#src/security/networkAccess');
 const { databases } = require('#src/resources/databases');
 const terms = require('#src/utility/hdbTerms');
 

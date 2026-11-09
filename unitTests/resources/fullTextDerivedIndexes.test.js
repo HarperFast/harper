@@ -1658,6 +1658,9 @@ describe('@fullText derived-index activation', () => {
 			applyDerivedValue() {},
 			async flushDerived() {},
 			resetDerivedStorage() {},
+			derivedStorageLost() {
+				return false;
+			},
 			propertyResolver(value) {
 				return value;
 			},
@@ -1714,6 +1717,9 @@ describe('@fullText derived-index activation', () => {
 			applyDerivedValue() {},
 			async flushDerived() {},
 			resetDerivedStorage() {},
+			derivedStorageLost() {
+				return false;
+			},
 			propertyResolver(value) {
 				return value;
 			},

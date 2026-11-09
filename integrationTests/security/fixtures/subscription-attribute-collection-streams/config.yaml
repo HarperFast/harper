@@ -1,0 +1,4 @@
+# Attribute read permissions on subscription collection streams, wildcard topics and caller selects.
+graphqlSchema:
+  files: '*.graphql'
+rest: true

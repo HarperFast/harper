@@ -1,0 +1,17 @@
+type Order @table @export {
+	id: ID @primaryKey
+	item: String
+	customerId: ID @indexed
+	customer: Customer @relationship(from: "customerId") @enumerable
+	notes: [Note] @relationship(to: "orderId") @enumerable
+}
+type Customer @table @export {
+	id: ID @primaryKey
+	name: String
+	email: String
+}
+type Note @table @export {
+	id: ID @primaryKey
+	orderId: ID @indexed
+	text: String
+}

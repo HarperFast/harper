@@ -222,7 +222,7 @@ Clear only after durable advance, end-of-log and actual age below half budget. A
 
 ### Failure flow
 
-See the runtime rules above.
+See runtime rules.
 
 ## Native HNSW plane: a file-primary mmap graph on the derived-index runtime (`resources/indexes/HierarchicalNavigableSmallWorld.ts`, `resources/indexes/hnswDerivedIndex.ts`, `resources/indexes/hnswPlaneBinding.ts`)
 
@@ -244,7 +244,7 @@ Opening old cap-128 files under the new default rebuilds once per node (only 5.3
 
 ### Concurrency and durability
 
-No cross-slot atomicity: search can see half-linked/reused slots. Harper reloads records and exactly rescores to reject wrong candidates; this is not general-purpose storage consistency. Cadenced `msync` plus transactional records/mappings/cursor permits catch-up. Backup includes the plane after a barrier or rebuilds on restore; bad format/checksum rebuilds.
+No cross-slot atomicity: search can see half-linked/reused slots. Harper reloads records and exactly rescores to reject wrong candidates; this is not general-purpose storage consistency. Cadenced `msync` plus transactional records/mappings/cursor permits catch-up. Backup treats the plane as local state and restore rebuilds it from records; bad format/checksum rebuilds.
 
 **macOS durability gap:** the crate flush lacks `F_FULLFSYNC`. Power loss after `flushAsync()`/cursor persistence can lose graph writes behind that cursor; attach does not compare `getWatermark()`, so missing vectors remain until rebuild. The Delivery crash contract below therefore assumes the stronger successful barrier and does not hold for that macOS window.
 
