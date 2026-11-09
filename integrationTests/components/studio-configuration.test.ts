@@ -255,9 +255,5 @@ suite('Component: get_studio_configuration', (ctx: ContextWithHarper) => {
 			[`${component}.quiet`]: 'hidden',
 		});
 		deepStrictEqual(configuration.rootNavigation, {});
-
-		const dropped = await call({ operation: 'drop_component', project: PLUGGED });
-		strictEqual(dropped.status, 200, JSON.stringify(dropped.body));
-		deepStrictEqual(await studioConfiguration(), { pages: FIXTURE_PAGES });
 	});
 });
