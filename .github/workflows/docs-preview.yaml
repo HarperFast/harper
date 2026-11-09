@@ -2,9 +2,6 @@ name: Docs Preview
 
 # HarperFast/documentation's source-pr-preview.yaml builds, deploys and comments the preview.
 #
-# A maintainer opts in by adding the `docs-preview` label; removing it, or closing the PR, takes the
-# preview down. While the label stays on, each push rebuilds it.
-#
 # pull_request_target, so a fork's PR can dispatch as well: never check out or run anything from the
 # PR here, and never put PR text (title, branch, body) into a run: step.
 
@@ -17,12 +14,12 @@ permissions: {}
 jobs:
   dispatch:
     name: Request the docs preview
-    # A close or unlabel dispatches the cleanup even after the PR's docs/ changes were reverted.
     if: >-
       (github.event.action == 'labeled' && github.event.pull_request.state == 'open' && github.event.label.name == 'docs-preview') ||
       (github.event.action == 'unlabeled' && github.event.label.name == 'docs-preview') ||
-      (contains(fromJSON('["synchronize", "reopened", "closed"]'), github.event.action) &&
-        contains(github.event.pull_request.labels.*.name, 'docs-preview'))
+      (contains(fromJSON('["synchronize", "reopened"]'), github.event.action) && github.event.pull_request.state == 'open' &&
+        contains(github.event.pull_request.labels.*.name, 'docs-preview')) ||
+      (github.event.action == 'closed' && contains(github.event.pull_request.labels.*.name, 'docs-preview'))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
