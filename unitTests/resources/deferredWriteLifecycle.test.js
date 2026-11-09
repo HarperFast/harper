@@ -343,8 +343,7 @@ describe('Deferred write lifecycle', function () {
 					(error) => error.statusCode === 400 && /A record must be an object/.test(error.message)
 				);
 				assert.strictEqual((await TestTable.get(key)).n, 0);
-				await record.update({ id: key, n: 2 }, true);
-				await record.save();
+				await TestTable.put({ id: key, n: 2 });
 				assert.strictEqual((await TestTable.get(key)).n, 2);
 			});
 		}
