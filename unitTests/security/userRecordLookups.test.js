@@ -480,7 +480,7 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 			}
 		});
 
-		it('caches a component user for a name whose record was dropped before it logged in', async () => {
+		it('caches a component user for a name, or a login name, whose record was dropped before it logged in', async () => {
 			await testUtils.seedUsers([lookupUser({ username: 'lookup_reused' })]);
 			await databases.system.hdb_user.delete('lookup_reused');
 			const getUser = server.getUser;
@@ -495,6 +495,17 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 				await authenticate(header);
 				assert.strictEqual(resolutions, 1, 'nothing changed while it resolved, so the cached view stays current');
 				assert.strictEqual(user.isRecordlessPrincipal(view), false, 'its name had a record');
+
+				await testUtils.seedUsers([lookupUser({ username: 'lookup_reused_login' })]);
+				await databases.system.hdb_user.delete('lookup_reused_login');
+				server.getUser = async () => {
+					resolutions++;
+					return { username: 'lookup_reused_subject', role: { role: 'component_role', permission: {} } };
+				};
+				const aliasHeader = basic('lookup_reused_login', 'token');
+				await authenticate(aliasHeader);
+				await authenticate(aliasHeader);
+				assert.strictEqual(resolutions, 2, 'nor for a login name whose record was dropped before');
 			} finally {
 				server.getUser = getUser;
 			}

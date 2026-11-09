@@ -684,13 +684,16 @@ function trackUserRecords(user: User, versions: UserProvenance): UserProvenance 
 	) {
 		// a record for the login name may be what admitted a user under another name
 		provenance = { ...versions, recordless: false };
-	} else {
-		provenance = sameName ? { ...versions } : userRecordVersions(user.username);
+	} else if (sameName) {
+		provenance = { ...versions };
 		provenance.recordless = provenance.userStamp === null && !hasLiveOrDeletedEntry(store, user.username);
+	} else {
+		provenance = userRecordVersions(user.username);
+		provenance.recordless = provenance.userStamp === null && !hasLiveOrDeletedEntry(store, user.username);
+		// its own name is read only after it resolved, so a record there this did not read may have been dropped
+		// meanwhile; a login name's read, and the same name's, came before
+		if (provenance.userStamp === null && !provenance.recordless) provenance.userStamp = UNREAD_RECORD;
 	}
-	// Under another name, only the read after resolution exists, so a record there that it did not read may
-	// have been dropped while it resolved. The same name's read before resolution already shows that.
-	if (!sameName && provenance.userStamp === null && !provenance.recordless) provenance.userStamp = UNREAD_RECORD;
 	if (!firsts) trackedProvenance.set(user, (firsts = new Map()));
 	const first = firsts.get(provenance.username);
 	if (!first) {
