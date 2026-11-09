@@ -234,7 +234,7 @@ RocksDB index rows store `null`, so `RocksIndexStore.getRange` reads keys only. 
 `linkWrite` chains same-key writes; `priorStagedWrite()` supplies the staged record no engine read can refresh. Program order only breaks ties; newer stored versions merge out of order. `writeKeyId` follows store encoding (`1n` chains with `1`, `[0]` differs from `[-0]`).
 
 - `chainsStagedState` defers behind unrun predecessors; `save()` drains them and `stageWrite` keeps arrival order. Gap: `_writeRelocate` saves eagerly.
-- `#mergeableWrite` merges only unsaved same-key tails with matching options; `_writeUpdate` retires them after admission (`deferredWriteLifecycle.test.js`).
+- `#mergeableWrite` edits one unsaved node in place, like `set()`; fresh callbacks retain full-update mode. `addWrite` admits it once (`deferredWriteLifecycle.test.js`).
 - Self-commit refusal keeps the deferred write and generation; `#saveOperation` reattaches after owner release (`deferredWriteLifecycle.test.js`).
 - `_writePublish` stages the unchanged record, preserving re-delivery dedup (`publishRecordState.test.js`).
 

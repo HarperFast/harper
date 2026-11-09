@@ -839,7 +839,7 @@ export type TransactionWrite = {
 	selfCommitAdmitted?: boolean;
 	// stage on a fresh native transaction rather than the OPEN link's in-flight one (holder writes never join it)
 	isolatedCommit?: boolean;
-	// a deferred write detached by a holder-overlap refusal, for its instance to stage again
+	// a deferred write refused before admission, for its instance to retry
 	refusedDeferredWrite?: boolean;
 	// the commit derives stored state (folds, index diffs, residency) from its base entry, so
 	// save() must reload that base through the committing transaction's snapshot
@@ -2622,6 +2622,7 @@ export class DatabaseTransaction implements Transaction {
 		// touch this, only writes do.
 		this.writeTimeout = this.timeout;
 		this.writeTick = monitorTick;
+		if (operation.stagedIn === this && !operation.saved && this.ownedWrites?.has(operation)) return operation;
 		this.linkWrite(operation);
 		this.writes.push(operation);
 		(this.ownedWrites ??= new WeakSet()).add(operation);

@@ -1108,13 +1108,7 @@ interface TableResourceInstance<Record extends object = any> {
 		target: RequestTarget,
 		recordUpdate: Partial<Record & RecordObject>
 	): void | (Record & Partial<RecordObject>) | Promise<void | (Record & Partial<RecordObject>)>;
-	_writeUpdate(
-		id: Id,
-		recordUpdate: any,
-		fullUpdate: boolean,
-		options?: any,
-		supersedes?: { operation: any; changes: any }
-	): any;
+	_writeUpdate(id: Id, recordUpdate: any, fullUpdate: boolean, options?: any): any;
 	delete(target: RequestTargetOrId): Promise<boolean>;
 	_writeDelete(id: Id, options?: any): MaybePromise<boolean>;
 	search(target: RequestTarget): AsyncIterable<Record & Partial<RecordObject>>;
@@ -4804,6 +4798,8 @@ export function makeTable(options): TableResourceClass {
 		update(updates: Partial<Record & RecordObject>, target?: RequestTarget);
 		update(target: RequestTarget, updates?: any);
 		update(target: any, updates?: any) {
+			const staging = this.#savingOperation?.staging;
+			if (staging) return staging.then(() => this.update(target, updates));
 			let id: Id;
 			// determine if it is a legacy call
 			const directInstance =
@@ -4851,7 +4847,7 @@ export function makeTable(options): TableResourceClass {
 				return this;
 			}
 			const previous = this.#mergeableWrite(id);
-			const previousChanges = this.#changes;
+			const previousChanges = previous?.pendingChanges ?? this.#changes;
 			if (fullUpdate && this.#updatableAttributes) {
 				this.#changes = restrictedReplacement(id, updates, this.#updatableAttributes);
 				return this.#whenStaged(this._writeUpdate(id, this.#changes, false, RESTRICTED_REPLACEMENT));
@@ -4861,11 +4857,12 @@ export function makeTable(options): TableResourceClass {
 					// legacy full update where we need to update the entire record, but the instance needs to continue
 					// track any further changes
 					if (Object.isFrozen(updates)) updates = { ...updates };
+					if (previous) previous.rollbackRecord = { value: this.#record };
 					this.#record = {}; // clear out the existing record
 					this.#changes = updates;
 				} else if (directInstance) {
 					// incremental update with legacy arguments
-					const ownData = previous || !this.#stagedWrite() ? this.#changes : undefined;
+					const ownData = previous ? previousChanges : !this.#stagedWrite() ? this.#changes : undefined;
 					if (ownData) updates = Object.assign({}, ownData, updates);
 					this.#changes = updates;
 				} else {
@@ -4888,26 +4885,35 @@ export function makeTable(options): TableResourceClass {
 			// Keep absent changes distinguishable from an explicit empty patch: framework-created
 			// post/publish updates do not necessarily mutate or save the instance.
 			// A supplied root must reach validation as itself, not as the staged changes (harper#1298).
+			if (updates === undefined && previous) this.#changes = previousChanges;
 			const recordRoot = updates === undefined ? this.#changes : updates;
-			return this.#whenStaged(
-				this._writeUpdate(
-					id,
-					recordRoot,
-					fullUpdate || Boolean(previous?.fullUpdate),
-					undefined,
-					previous && { operation: previous, changes: previousChanges }
-				)
-			);
+			return this.#whenStaged(this._writeUpdate(id, recordRoot, fullUpdate || Boolean(previous?.fullUpdate)));
 		}
 		#mergeableWrite(id: Id, options?: any) {
 			const previous = this.#stagedWrite();
 			if (
-				previous &&
-				previous.updateOptions === options &&
-				writeKeyId(previous.key) === writeKeyId(id) &&
-				previous.stagedIn?.writesByKey?.get(primaryStore)?.get(writeKeyId(id)) === previous
+				!previous ||
+				previous.staging ||
+				previous.instanceClosed ||
+				previous.updateOptions?.isNotification ||
+				previous.stagedIn?.sourceApply ||
+				previous.stagedIn?.isReplay ||
+				(previous.updateOptions !== options &&
+					!(previous.updateOptions === undefined && options === RESTRICTED_REPLACEMENT) &&
+					!(previous.updateOptions === RESTRICTED_REPLACEMENT && options === undefined)) ||
+				(previous.keyId ?? writeKeyId(previous.key)) !== writeKeyId(id)
 			)
-				return previous;
+				return;
+			previous.captureChanges?.();
+			return previous;
+		}
+		#restoreUpdate(previous: any, changes: any, failed: any, record?: { value: any }) {
+			if (previous && this.#savingOperation === failed) {
+				previous.releaseChanges?.();
+				this.#savingOperation = previous;
+				this.#changes = changes;
+				if (record) this.#record = record.value;
+			}
 		}
 
 		/** This instance's unsaved staged write, which reads #changes when it is saved. */
@@ -4937,18 +4943,12 @@ export function makeTable(options): TableResourceClass {
 				loading = this._loadRecord(target, this.getContext(), { ensureLoaded: true, async: true }) as Promise<any>;
 			}
 			return when(loading, () => {
+				const staging = this.#savingOperation?.staging;
+				if (staging) return staging.then(() => this.#stageChanges(id, target, changes, options));
 				const previous = this.#mergeableWrite(id, options);
-				const previousChanges = this.#changes;
+				const previousChanges = previous?.pendingChanges ?? this.#changes;
 				this.#changes = previous && previousChanges ? Object.assign({}, previousChanges, changes) : changes;
-				return this.#whenStaged(
-					this._writeUpdate(
-						id,
-						this.#changes,
-						Boolean(previous?.fullUpdate),
-						options,
-						previous && { operation: previous, changes: previousChanges }
-					)
-				);
+				return this.#whenStaged(this._writeUpdate(id, this.#changes, Boolean(previous?.fullUpdate), options));
 			});
 		}
 
@@ -5045,6 +5045,7 @@ export function makeTable(options): TableResourceClass {
 			let holder = operation.stagedIn;
 			if (!holder && operation.deferSave && !operation.saved && !operation.dropped) {
 				operation.priorWrite = undefined;
+				operation.pendingPriorWrite = undefined;
 				transaction.addWrite(operation);
 				holder = transaction;
 			}
@@ -5064,6 +5065,7 @@ export function makeTable(options): TableResourceClass {
 				// The basis chain belongs to the holder: derived from a write this scope cannot commit, the
 				// merge and index diff would be relative to a record that may never land.
 				operation.priorWrite = undefined;
+				operation.pendingPriorWrite = undefined;
 				operation.deferSave = false;
 				const result = when(transaction.addWrite(operation), () => operation.promise ?? operation.result);
 				this.#closeWriteChain(operation);
@@ -6185,6 +6187,8 @@ export function makeTable(options): TableResourceClass {
 			target: RequestTarget,
 			record: Record & RecordObject
 		): void | (Record & Partial<RecordObject>) | Promise<void | (Record & Partial<RecordObject>)> {
+			const staging = this.#savingOperation?.staging;
+			if (staging) return staging.then(() => this.put(target, record));
 			if (record === undefined || record instanceof URLSearchParams) {
 				// legacy argument position, shift the arguments and go through the update method for back-compat.
 				// `when` settles the embed hook before `save()` so the write is staged first.
@@ -6311,14 +6315,13 @@ export function makeTable(options): TableResourceClass {
 		// perform the actual write operation; this may come from a user request to write (put, post, etc.), or
 		// a notification that a write has already occurred in the canonical data source, we need to update our
 		// local copy
-		_writeUpdate(
-			id: Id,
-			recordUpdate: any,
-			fullUpdate: boolean,
-			options?: any,
-			supersedes?: { operation: any; changes: any }
-		) {
+		_writeUpdate(id: Id, recordUpdate: any, fullUpdate: boolean, options?: any) {
 			this.#assertLiveHandle(id);
+			let previous = this.#mergeableWrite(id, options);
+			let previousChanges = previous?.pendingChanges;
+			let previousRecord = previous?.rollbackRecord;
+			if (previous?.updateOptions === RESTRICTED_REPLACEMENT && options === undefined && !fullUpdate)
+				options = RESTRICTED_REPLACEMENT;
 			const context = this.getContext();
 			const condition = conditionForWrite(context, id);
 			if (awaitsConditionLock(condition)) {
@@ -6408,6 +6411,7 @@ export function makeTable(options): TableResourceClass {
 					if (!captured) {
 						captured = true;
 						recordUpdate = this.#changes;
+						write.pendingChanges = recordUpdate;
 						if (tracksInstance) instanceChanges = write.trackedChanges = recordUpdate;
 					}
 				};
@@ -6447,7 +6451,7 @@ export function makeTable(options): TableResourceClass {
 				!this.isCollection &&
 				!isSearchTarget(receiverId) &&
 				(id === receiverId || writeKeyId(id) === writeKeyId(receiverId));
-			const write: any = {
+			let write: any = {
 				key: id,
 				store: primaryStore,
 				requiresExclusiveCommit: Boolean(residencyPolicy) || isResidencyMapTable,
@@ -6458,6 +6462,7 @@ export function makeTable(options): TableResourceClass {
 				nodeName: (context as any)?.nodeName,
 				fullUpdate,
 				updateOptions: options,
+				pendingChanges: recordUpdate,
 				chainsStagedState: true,
 				// copy-apply rows keep their pre-read base: one read per row, healed by the post-copy replay
 				reloadCommitBase: reloadsCommitBase,
@@ -7894,6 +7899,10 @@ export function makeTable(options): TableResourceClass {
 					}
 				},
 			};
+			if (previous) {
+				write.lockHandle = previous.lockHandle;
+				write.lockJoined = previous.lockJoined;
+			}
 			this.#bindWriteLock(write, id, transaction);
 			this.#savingOperation = write;
 			// The hooks run before `addWrite` so the derived values are on the record at commit (the
@@ -7921,48 +7930,89 @@ export function makeTable(options): TableResourceClass {
 							)
 						: undefined;
 			} catch (err) {
-				if (supersedes && this.#savingOperation === write) {
-					this.#savingOperation = supersedes.operation;
-					this.#changes = supersedes.changes;
-				}
+				this.#restoreUpdate(previous, previousChanges, write, previousRecord);
 				return Promise.reject(err);
 			}
 			const proceed = (): any => {
-				if (condition?.finished) throw new ClientError('Conditional request already completed', 409);
-				if (modelHooksBefore) this.#bindWriteLock(write, id, transaction);
-				// On a source/replication apply (`isNotification`), the record's already-saved blobs were
-				// received out-of-band for THIS write, so track them for skip/abort cleanup (harper-pro#406).
-				if (!tracksInstance)
-					write.beforeIntermediate = preCommitBlobsForRecordBefore(
-						write,
-						recordUpdate,
-						undefined,
-						undefined,
-						options?.isNotification
-					);
-				const result = transaction.addWrite(write as any);
-				const previous = supersedes?.operation;
-				if (previous && !previous.saved && write.priorWrite === previous) {
-					previous.stagedIn.detachWrite(previous);
-					previous.dropped = true;
+				try {
+					if (condition?.finished) throw new ClientError('Conditional request already completed', 409);
+					if (modelHooksBefore) this.#bindWriteLock(write, id, transaction);
+					// On a source/replication apply (`isNotification`), the record's already-saved blobs were
+					// received out-of-band for THIS write, so track them for skip/abort cleanup (harper-pro#406).
+					if (!tracksInstance)
+						write.beforeIntermediate = preCommitBlobsForRecordBefore(
+							write,
+							recordUpdate,
+							undefined,
+							undefined,
+							options?.isNotification
+						);
+					const abandonedBlobs = previous?.savedBlobs;
+					let retainedBlobs: Set<string> | undefined;
+					if (abandonedBlobs?.some((blob) => getFileId(blob))) {
+						retainedBlobs = collectRetainedFileIds(primaryStore.getEntry(id)?.value) ?? new Set();
+						for (const fileId of collectRetainedFileIds(recordUpdate) ?? []) retainedBlobs.add(fileId);
+					}
+					let result;
+					if (
+						previous &&
+						!previous.saved &&
+						!previous.dropped &&
+						(!previous.stagedIn || previous.stagedIn === transaction) &&
+						(transaction.stagesWriteOnSave || transaction.open === TRANSACTION_STATE.OPEN)
+					) {
+						if (!previous.stagedIn) {
+							previous.priorWrite = undefined;
+							previous.pendingPriorWrite = undefined;
+						}
+						const deferred = previous.deferSave;
+						previous.deferSave = true;
+						try {
+							transaction.addWrite(previous);
+						} catch (error) {
+							previous.deferSave = deferred;
+							throw error;
+						}
+						for (const key of Object.keys(previous)) {
+							if (
+								key !== 'stagedIn' &&
+								key !== 'priorWrite' &&
+								key !== 'pendingPriorWrite' &&
+								key !== 'keyId' &&
+								!Object.hasOwn(write, key)
+							)
+								previous[key] = undefined;
+						}
+						write = Object.assign(previous, write);
+						this.#savingOperation = write;
+						result = write;
+					} else {
+						result = transaction.addWrite(write as any);
+						if (previous && !previous.saved) {
+							previous.stagedIn?.detachWrite(previous);
+							previous.dropped = true;
+						}
+					}
+					if (abandonedBlobs) cleanupUnusedBlobs(abandonedBlobs, retainedBlobs);
+					previous = undefined;
+					previousChanges = undefined;
+					previousRecord = undefined;
+					if (condition) condition.consumed = true;
+					return result;
+				} catch (error) {
+					this.#restoreUpdate(previous, previousChanges, write, previousRecord);
+					throw error;
 				}
-				if (condition) condition.consumed = true;
-				return result;
 			};
-			return modelHooksBefore
-				? modelHooksBefore((context as any)?.signal).then(
-						proceed,
-						supersedes
-							? (error: any) => {
-									if (this.#savingOperation === write) {
-										this.#savingOperation = supersedes.operation;
-										this.#changes = supersedes.changes;
-									}
-									throw error;
-								}
-							: undefined
-					)
-				: proceed();
+			if (!modelHooksBefore) return proceed();
+			const staged = modelHooksBefore((context as any)?.signal).then(proceed, (error: any) => {
+				this.#restoreUpdate(previous, previousChanges, write, previousRecord);
+				throw error;
+			});
+			write.staging = staged.finally(() => {
+				write.staging = undefined;
+			});
+			return write.staging;
 		}
 
 		async delete(target: RequestTargetOrId): Promise<boolean> {
