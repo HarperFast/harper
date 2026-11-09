@@ -45,6 +45,133 @@ describe('defineResource / Resource.withSchema — runtime request contract', ()
 		});
 	});
 
+	it('validates object enum members by JSON value rather than identity', async () => {
+		const Api = defineResource(
+			{ post: { body: schemaOf({ type: 'object', enum: [{ a: 1, b: [true, null] }] }) } },
+			{
+				post(_target, data) {
+					return data;
+				},
+			}
+		);
+		assert.deepEqual(await Api.post(targetWith('', null), { b: [true, null], a: 1 }), { b: [true, null], a: 1 });
+		await assert.rejects(
+			Promise.resolve().then(() => Api.post(targetWith('', null), { a: 2 })),
+			/must be one of/
+		);
+	});
+
+	it('reads object enum declarations once for a batch body', async () => {
+		let reads = 0;
+		const members = Array.from({ length: 75 }, (_, code) => ({ code }));
+		for (let i = 0; i < members.length; i++) {
+			const member = members[i];
+			Object.defineProperty(members, i, {
+				get() {
+					reads++;
+					return member;
+				},
+			});
+		}
+		const Api = defineResource(
+			{ post: { body: schemaOf({ type: 'array', items: { type: 'object', enum: members } }) } },
+			{
+				post(_target, data) {
+					return data;
+				},
+			}
+		);
+		const readCounts = [];
+		for (const length of [1, 100]) {
+			reads = 0;
+			const body = Array.from({ length }, () => ({ code: 74 }));
+			assert.deepEqual(await Api.post(targetWith('', null), body), body);
+			readCounts.push(reads);
+		}
+		assert.equal(readCounts[0], readCounts[1], `batch length changed declaration reads: ${readCounts}`);
+	});
+
+	it('bounds enum declaration reads for rejected batches too', async () => {
+		for (const invalidMember of [false, true]) {
+			let reads = 0;
+			const values = [{ code: 1 }, invalidMember ? { invalid: undefined } : { code: 2 }];
+			const members = values.map((value) => value);
+			for (let i = 0; i < values.length; i++) {
+				Object.defineProperty(members, i, {
+					get() {
+						reads++;
+						return values[i];
+					},
+				});
+			}
+			const Api = defineResource(
+				{ post: { body: schemaOf({ type: 'array', items: { type: 'object', enum: members } }) } },
+				{
+					post(_target, data) {
+						return data;
+					},
+				}
+			);
+			const readCounts = [];
+			for (const length of [1, 64]) {
+				reads = 0;
+				await assert.rejects(
+					Promise.resolve().then(() =>
+						Api.post(
+							targetWith('', null),
+							Array.from({ length }, () => ({ code: 3 }))
+						)
+					),
+					/must be one of/
+				);
+				readCounts.push(reads);
+			}
+			assert.equal(readCounts[0], readCounts[1], `batch length changed declaration reads: ${readCounts}`);
+		}
+	});
+
+	it('does not traverse object values when an enum has no object members', async () => {
+		let reads = 0;
+		const value = {
+			get unused() {
+				reads++;
+				return 1;
+			},
+		};
+		const Api = defineResource(
+			{ post: { body: schemaOf({ type: 'object', enum: ['scalar'] }) } },
+			{
+				post(_target, data) {
+					return data;
+				},
+			}
+		);
+		await assert.rejects(
+			Promise.resolve().then(() => Api.post(targetWith('', null), value)),
+			/must be one of/
+		);
+		assert.equal(reads, 0);
+	});
+
+	it('refreshes object enum keys between requests', async () => {
+		const members = [{ a: 1 }];
+		const Api = defineResource(
+			{ post: { body: schemaOf({ type: 'array', items: { type: 'object', enum: members } }) } },
+			{
+				post(_target, data) {
+					return data;
+				},
+			}
+		);
+		assert.deepEqual(await Api.post(targetWith('', null), [{ a: 1 }, { a: 1 }]), [{ a: 1 }, { a: 1 }]);
+		members[0].a = 2;
+		assert.deepEqual(await Api.post(targetWith('', null), [{ a: 2 }, { a: 2 }]), [{ a: 2 }, { a: 2 }]);
+		await assert.rejects(
+			Promise.resolve().then(() => Api.post(targetWith('', null), [{ a: 1 }])),
+			/must be one of/
+		);
+	});
+
 	describe('named multipart body validation', () => {
 		for (const variant of ['function', 'class']) {
 			it(`resolves named fields before validating the ${variant} contract`, async () => {

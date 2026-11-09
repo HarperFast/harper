@@ -46,14 +46,14 @@ Where things are in `resources/`. The rules live in [DESIGN.md](DESIGN.md): read
 - response shape (select) → `transformEntryForSelect` in Table.ts; `transformForSelect` in Resource.ts
 - selects answered from index entries alone → `coveredSelectAttribute` in Table.ts; `coverIndexEntries` in search.ts
 - sorting → `transformToOrderedSelect` in Table.ts; whether the lead already supplies the order → `scansInAttributeOrder` in search.ts
-- record TTL and eviction → `setTTLExpiration`, `evict`, `scheduleCleanup` in Table.ts
+- record TTL and eviction → `setTTLExpiration`, `_adoptCatalogExpiration`, `evict`, `scheduleCleanup` in Table.ts
 - cache miss to source → `getFromSource` in Table.ts
 - subscriptions and replay → `subscribe`, `eventFromAudit` in Table.ts; `addSubscription` in transactionBroadcast.ts
 - replication apply loop → `sourcedFrom` in Table.ts
 - the per-request transaction → `txnForContext` in Table.ts; `transaction()` in transaction.ts
 - transaction timeouts and long-held handles → `startMonitoringTxns` in DatabaseTransaction.ts; longLivedTransactions.ts
 - conflict retry cap, deadline, aborting a logged commit → `noteRetryBoundary`, `mustRetryLoggedCommit` in DatabaseTransaction.ts
-- residency, stubs, replicas → `getResidency`, `_storeReplica` in Table.ts; residencyMaps.ts
+- residency, stubs, replicas → `getResidency`, `_storeReplica`, `reclaimReplicaSpace` in Table.ts; residencyMaps.ts
 - table create, schema change, drop → `table()`, `runIndexing` in databases.ts; `dropTable`, `updatedAttributes` in Table.ts
 - when a `@computed` index rebuilds (re-declare, late resolver) → `declareTable`, `requestComputedIndexRepair` in databases.ts
 - relationships → the resolvers built in `updatedAttributes`; `_prepareRelationshipSelection` and `_readDenial` in Table.ts
@@ -65,5 +65,6 @@ Where things are in `resources/`. The rules live in [DESIGN.md](DESIGN.md): read
 - application row filtering → `eventFilter` in ResourceInterface.ts; `search`, `subscribe` in Table.ts
 - matching expired rows in SQL UPDATE/DELETE → `transformEntryForSelect` in Table.ts
 - filters during a vector search → `composeRecordFilter`, `planCandidateKeys` in search.ts; see [indexes/DESIGN.md](indexes/DESIGN.md)
+- a vector threshold that filters rather than leads → `vectorDistanceFilter` in search.ts; `thresholdFilter` in indexes/HierarchicalNavigableSmallWorld.ts
 - HNSW connectivity after a delete → `repairSeveredNeighbors` in indexes/HierarchicalNavigableSmallWorld.ts
 - tests → `unitTests/resources/`

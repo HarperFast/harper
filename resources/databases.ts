@@ -388,7 +388,6 @@ interface LMDBRootDatabase extends RootDatabase {
 	databaseName?: string;
 	dbisDb?: LMDBDatabase;
 	isLegacy?: boolean;
-	needsDeletion?: boolean;
 	path?: string;
 	status?: 'open' | 'closed';
 	store: any;
@@ -1102,6 +1101,25 @@ export function catalogCreatedTime(table: { dbisDB: any; tableName: string; prim
 	return Number.isFinite(createdTime) ? createdTime : undefined;
 }
 /**
+ * The table-level expiration and eviction (seconds) on disk, each present only when set. A class on a thread
+ * that application code configured can hold a TTL the catalog does not.
+ */
+export function catalogExpiration(table: { dbisDB: any; tableName: string; primaryKey?: string }): {
+	expiration?: number;
+	eviction?: number;
+} {
+	// the row declareTable writes the settings to and initStores loads them from: a named primary row wins
+	const named = table.primaryKey ? table.dbisDB?.getSync(`${table.tableName}/${table.primaryKey}`) : undefined;
+	const row = named?.isPrimaryKey ? named : table.dbisDB?.getSync(`${table.tableName}/`);
+	// a create persists the declared value as given, which can be a numeric string
+	const expiration = Number(row?.expiration);
+	const eviction = Number(row?.eviction);
+	const settings: { expiration?: number; eviction?: number } = {};
+	if (expiration > 0 && Number.isFinite(expiration)) settings.expiration = expiration;
+	if (eviction > 0 && Number.isFinite(eviction)) settings.eviction = eviction;
+	return settings;
+}
+/**
  * Backfills the stamp of a generation created on a build that stored none, once a peer's stamped definition
  * proves which generation it is. Only an absent stamp is written; false when one exists or the table is gone.
  */
@@ -1219,6 +1237,36 @@ export function getTables(): Tables {
 	return tables || {};
 }
 
+// Register getter in the shared registry so common_utils.ts can access databases
+// without importing this module directly (which would create a circular dep).
+setDatabasesGetter(() => getDatabases());
+
+/**
+ * Every directory database directories live in: the storage root and each configured database path.
+ * Resolved from config alone, so startup recovery can find restore records before anything opens.
+ */
+export function databaseRoots(): string[] {
+	const roots = new Set<string>();
+	const hdbBasePath = getHdbBasePath();
+	const defaultPath = hdbBasePath && join(hdbBasePath, DATABASES_DIR_NAME);
+	const storagePath =
+		process.env.STORAGE_PATH ||
+		getConfigPath(CONFIG_PARAMS.STORAGE_PATH) ||
+		(defaultPath && (existsSync(defaultPath) ? defaultPath : join(hdbBasePath, LEGACY_DATABASES_DIR_NAME)));
+	if (storagePath) roots.add(resolve(storagePath));
+	const schemaConfigs = { ...envGet(CONFIG_PARAMS.DATABASES) };
+	if (process.env.SCHEMAS_DATA_PATH) schemaConfigs.data = { path: process.env.SCHEMAS_DATA_PATH };
+	for (const name in schemaConfigs) {
+		if (schemaConfigs[name]?.path) roots.add(resolve(schemaConfigs[name].path));
+	}
+	return [...roots];
+}
+
+/** Whether this thread has scanned and loaded its databases; the offline CLI has not. */
+export function databasesLoaded(): boolean {
+	return loadedDatabases;
+}
+
 /**
  * This provides the main entry point for getting the set of all Harper tables (organized by schemas/databases).
  * This proactively scans the known
@@ -1228,9 +1276,6 @@ export function getTables(): Tables {
  * but in newer multi-table databases, there is one consistent, integrated audit table for the database since transactions
  * can span any tables in the database.
  */
-// Register getter in the shared registry so common_utils.ts can access databases
-// without importing this module directly (which would create a circular dep).
-setDatabasesGetter(() => getDatabases());
 export function getDatabases(): Databases {
 	if (loadedDatabases) {
 		return databases;
@@ -1275,7 +1320,10 @@ function loadDatabaseCatalogs(): Databases {
 			// the restore-metadata directory is reserved: never load it as a database, even if a
 			// (out-of-band) RocksDB directory happens to occupy that reserved name — the API can't
 			// create it (schemaRegex forbids the backtick), but the scan opens any CURRENT+MANIFEST dir
-			if (databaseEntry.name === RESTORE_META_DIR) continue;
+			if (databaseEntry.name === RESTORE_META_DIR) {
+				warnIfReservedDirLooksLikeDatabase(join(databasePath, databaseEntry.name));
+				continue;
+			}
 			// branch directories are process-local derivatives, never databases in their own right
 			if (databaseEntry.name === BRANCH_ROOT_DIR) continue;
 			const dbName = basename(databaseEntry.name, '.mdb');
@@ -1353,7 +1401,10 @@ function loadDatabaseCatalogs(): Databases {
 				const blockedByDrop = databaseRootsBlockedByDrop(databasePath);
 				for (const databaseEntry of entries) {
 					if (databaseEntry.name.endsWith(MIGRATING_DIR_SUFFIX)) continue; // migration staging dir
-					if (databaseEntry.name === RESTORE_META_DIR) continue; // reserved restore-metadata dir
+					if (databaseEntry.name === RESTORE_META_DIR) {
+						warnIfReservedDirLooksLikeDatabase(join(databasePath, databaseEntry.name));
+						continue;
+					}
 					if (databaseEntry.name === BRANCH_ROOT_DIR) continue; // reserved branch root
 					if (blockedByRestore.has(basename(databaseEntry.name, '.mdb'))) continue;
 					const dbPath = join(databasePath, databaseEntry.name);
@@ -1629,6 +1680,9 @@ function databasesBlockedByRestore(databasePath: string): Set<string> {
 				`Incomplete restore of database '${dbName}' detected (a restore started but did not finish); not loading it — rerun the restore to recover`
 			);
 			blocked.add(dbName);
+		} else if (state === 'pending') {
+			logger.warn(`Database '${dbName}' is reserved by a restore that has not finished; not loading it`);
+			blocked.add(dbName);
 		}
 	}
 	return blocked;
@@ -1687,9 +1741,7 @@ export function readMetaDb(
 	const envInit = new OpenEnvironmentObject(path, isReadOnlyMode());
 	try {
 		let rootStore = lmdbDatabaseEnvs.get(path);
-		if (rootStore) {
-			rootStore.needsDeletion = false;
-		} else {
+		if (!rootStore) {
 			rootStore = openLmdb(envInit) as any;
 			lmdbDatabaseEnvs.set(path, rootStore);
 			residencyRootsToValidate.add(databaseName);
@@ -1749,6 +1801,78 @@ function readRocksMetaDb(
 	}
 }
 
+interface CatalogTable {
+	attributes: any[];
+	primary?: any;
+	tombstone?: any;
+	replicaDeadlines?: boolean;
+}
+
+/** The catalogue rows of a database, grouped per table the way `initStores` loads them. */
+function collectCatalogTables(attributesDbi: any, defaultTable?: string): Map<string, CatalogTable> {
+	const catalogTables = new Map<string, CatalogTable>();
+	for (const result of attributesDbi.getRange({ start: false })) {
+		const { key, value } = result as { key: string; value: any };
+		if (value == null) continue;
+		if (typeof key === 'string' && (key.startsWith(GENERATION_ROW_PREFIX) || key.startsWith(DROPPED_ROW_PREFIX)))
+			continue;
+		let [tableName, attribute_name] = key.toString().split('/');
+		if (attribute_name === '') {
+			// primary key
+			attribute_name = value.name;
+		} else if (!attribute_name) {
+			attribute_name = tableName;
+			tableName = defaultTable;
+			if (!value.name) {
+				// legacy attribute
+				value.name = attribute_name;
+				value.indexed = !value.isPrimaryKey;
+			}
+		}
+		let tableDef = catalogTables.get(tableName);
+		if (!tableDef) catalogTables.set(tableName, (tableDef = { attributes: [] }));
+		if (isPrimaryCatalogRow(key, value)) tableDef.primary = value;
+		if (value.dropping) tableDef.tombstone = value;
+		if (isAuxiliaryCatalogRow(value)) {
+			tableDef.replicaDeadlines = true;
+			continue;
+		}
+		if (attribute_name != null) tableDef.attributes.push(value);
+		Object.defineProperty(value, 'key', { value: key, configurable: true });
+	}
+	return catalogTables;
+}
+
+function opensIndexStore(attribute: any): boolean {
+	return !attribute.isPrimaryKey && !!attribute.indexed;
+}
+
+function catalogPrimary({ primary, attributes }: CatalogTable): any {
+	return primary ?? attributes.find((attribute) => attribute.isPrimaryKey);
+}
+
+/**
+ * Every column family `initStores` opens for this catalogue, by the same rules it opens them with:
+ * a table mid-drop or without a primary-key row is never loaded, and only indexed attributes have a
+ * store. A restore checks these against the families the engine already has, because `initStores`
+ * would otherwise create a missing one empty and report the table as loaded. A replica-deadline store
+ * is not required: a table load rebuilds its entries from the REPLICA rows.
+ */
+export function requiredStoreNames(attributesDbi: any, defaultTable?: string): Map<string, string[]> {
+	const required = new Map<string, string[]>();
+	for (const [tableName, tableDef] of collectCatalogTables(attributesDbi, defaultTable)) {
+		if ((tableDef.tombstone ?? tableDef.primary)?.dropping) continue;
+		const primary = catalogPrimary(tableDef);
+		if (!primary) continue;
+		const names = [storeNameFor(primary.key, primary.generation)];
+		for (const attribute of tableDef.attributes) {
+			if (opensIndexStore(attribute)) names.push(storeNameFor(attribute.key, primary.generation));
+		}
+		required.set(tableName, names);
+	}
+	return required;
+}
+
 interface InitStoresOptions {
 	defaultTable?: string;
 	auditPath?: string;
@@ -1767,19 +1891,10 @@ interface InitStoresOptions {
 	openedStores?: StoreOwner;
 }
 
-function initStores(
-	path: string,
-	rootStore: RootDatabaseKind,
-	databaseName: string,
-	{ defaultTable, auditPath, isLegacy, destination, storeName, openedStores }: InitStoresOptions = {}
-) {
-	openedStores ??= ownedStoresFor(rootStore);
-	// a store with no tables never reaches the per-table loop below, and blob roots resolve from this
-	rootStore.databaseName ??= storeName ?? databaseName;
-	const envInit = new OpenEnvironmentObject(path, isReadOnlyMode());
-	const internalDbiInit = createOpenDBIObject(false);
+function openCatalogStore(rootStore: RootDatabaseKind, openedStores?: StoreOwner) {
 	let attributesDbi = rootStore.dbisDb;
 	if (!attributesDbi) {
+		const internalDbiInit = createOpenDBIObject(false);
 		if (rootStore instanceof RocksDatabase) {
 			attributesDbi = openRocksDatabase(rootStore.path, {
 				...internalDbiInit,
@@ -1792,6 +1907,75 @@ function initStores(
 		openedStores?.push(attributesDbi);
 		rootStore.dbisDb = markInternalDbiNonVersioned(attributesDbi);
 	}
+	return attributesDbi;
+}
+
+export interface RestoredGeneration {
+	rootStore: RocksRootDatabase;
+	tables: Tables;
+	openedStores: any[];
+	requiredStores: Map<string, string[]>;
+}
+
+/**
+ * Opens a just-restored RocksDB directory privately — never registered, never published — after
+ * proving every column family its catalogue requires already exists. The family set is read at a
+ * root-only open, before anything that can create a family: `initStores` recreates a missing one
+ * empty, which would make a truncated restore look loaded.
+ */
+export function openRestoredGeneration(path: string, databaseName: string): RestoredGeneration {
+	if (!existsSync(join(path, 'CURRENT'))) {
+		throw new Error(`No restored ${databaseName} database was found at ${path}`);
+	}
+	const rootStore = openRocksDatabase(path, { disableWAL: false, enableStats: true }) as RocksRootDatabase;
+	// A proof has no use for derived indexes, and a runtime started here would rebuild or apply into the
+	// generation being proven and still be running when `closeRestoredGeneration` closes its stores.
+	permanentlySuspendDerivedIndexActivation(rootStore);
+	const openedStores: any[] = [];
+	const tables: Tables = {};
+	try {
+		const resolvedPath = resolve(path);
+		const families = new Set(
+			getRegistryStatus()
+				.filter((instance) => resolve(instance.path) === resolvedPath)
+				.flatMap((instance) => Object.keys(instance.columnFamilies ?? {}))
+		);
+		if (!families.has(INTERNAL_DBIS_NAME)) {
+			throw new Error(
+				`The restored ${databaseName} database at ${path} has no table catalogue (${INTERNAL_DBIS_NAME})`
+			);
+		}
+		const requiredStores = requiredStoreNames(openCatalogStore(rootStore, openedStores));
+		const missing = [...requiredStores.values()].flat().filter((name) => !families.has(name));
+		if (missing.length > 0) {
+			throw new Error(
+				`The restored ${databaseName} database at ${path} is missing column families its catalogue requires: ${missing.join(', ')}`
+			);
+		}
+		initStores(path, rootStore, databaseName, { destination: tables, openedStores });
+		return { rootStore, tables, openedStores, requiredStores };
+	} catch (error) {
+		closeBranchHandles(path, rootStore, openedStores, tables);
+		throw error;
+	}
+}
+
+/** Closes a {@link openRestoredGeneration} result; the returned failures are close errors to surface. */
+export function closeRestoredGeneration(path: string, generation: RestoredGeneration): unknown[] {
+	return closeBranchHandles(path, generation.rootStore, generation.openedStores, generation.tables);
+}
+
+function initStores(
+	path: string,
+	rootStore: RootDatabaseKind,
+	databaseName: string,
+	{ defaultTable, auditPath, isLegacy, destination, storeName, openedStores }: InitStoresOptions = {}
+) {
+	openedStores ??= ownedStoresFor(rootStore);
+	// a store with no tables never reaches the per-table loop below, and blob roots resolve from this
+	rootStore.databaseName ??= storeName ?? databaseName;
+	const envInit = new OpenEnvironmentObject(path, isReadOnlyMode());
+	const attributesDbi = openCatalogStore(rootStore, openedStores);
 
 	let auditStore = rootStore.auditStore;
 	if (!auditStore) {
@@ -1823,38 +2007,8 @@ function initStores(
 	if (destination && !destination[DEFINED_TABLES]) destination[DEFINED_TABLES] = new Set<string>();
 	const definedTables = tables[DEFINED_TABLES];
 	(definedTables as any).rootStore = rootStore;
-	const tablesToLoad = new Map<string, any>();
-
-	for (const result of attributesDbi.getRange({ start: false })) {
-		const { key, value } = result as { key: string; value: any };
-		if (value == null) continue;
-		if (typeof key === 'string' && (key.startsWith(GENERATION_ROW_PREFIX) || key.startsWith(DROPPED_ROW_PREFIX)))
-			continue;
-		let [tableName, attribute_name] = key.toString().split('/');
-		if (attribute_name === '') {
-			// primary key
-			attribute_name = value.name;
-		} else if (!attribute_name) {
-			attribute_name = tableName;
-			tableName = defaultTable;
-			if (!value.name) {
-				// legacy attribute
-				value.name = attribute_name;
-				value.indexed = !value.isPrimaryKey;
-			}
-		}
-		definedTables?.add(tableName);
-		let tableDef = tablesToLoad.get(tableName);
-		if (!tableDef) tablesToLoad.set(tableName, (tableDef = { attributes: [] }));
-		if (isPrimaryCatalogRow(key, value)) tableDef.primary = value;
-		if (value.dropping) tableDef.tombstone = value;
-		if (isAuxiliaryCatalogRow(value)) {
-			tableDef.replicaDeadlines = true;
-			continue;
-		}
-		if (attribute_name != null) tableDef.attributes.push(value);
-		Object.defineProperty(value, 'key', { value: key, configurable: true });
-	}
+	const tablesToLoad = collectCatalogTables(attributesDbi, defaultTable);
+	for (const tableName of tablesToLoad.keys()) definedTables?.add(tableName);
 
 	// Complete any drops that were interrupted mid-flight. dropTable persists a
 	// `dropping` tombstone on the table's primary catalog entry before removing
@@ -1935,29 +2089,21 @@ function initStores(
 		);
 
 	for (const [tableName, tableDef] of tablesToLoad) {
-		let { attributes, primary: primaryAttribute } = tableDef;
+		let { attributes } = tableDef;
+		const primaryAttribute = catalogPrimary(tableDef);
 		if (!primaryAttribute) {
-			// this isn't defined, find it in the attributes
-			for (const attribute of attributes) {
-				if (attribute.isPrimaryKey) {
-					primaryAttribute = attribute;
-					break;
-				}
+			const tableKey = `${databaseName}/${tableName}`;
+			if (reportedIncompleteCatalogs.has(tableKey))
+				logger.debug(`Skipping table ${databaseName}.${tableName}: still no primary key row`);
+			else {
+				reportedIncompleteCatalogs.add(tableKey);
+				logger.warn(
+					`Skipping table ${databaseName}.${tableName}: its catalog has attribute rows (${attributes.map((attribute) => attribute.name).join(', ')}) but no primary key row - a create in progress on another thread, or an interrupted one that re-running create_table repairs`
+				);
 			}
-			if (!primaryAttribute) {
-				const tableKey = `${databaseName}/${tableName}`;
-				if (reportedIncompleteCatalogs.has(tableKey))
-					logger.debug(`Skipping table ${databaseName}.${tableName}: still no primary key row`);
-				else {
-					reportedIncompleteCatalogs.add(tableKey);
-					logger.warn(
-						`Skipping table ${databaseName}.${tableName}: its catalog has attribute rows (${attributes.map((attribute) => attribute.name).join(', ')}) but no primary key row - a create in progress on another thread, or an interrupted one that re-running create_table repairs`
-					);
-				}
-				// not defined until it loads, so the cleanup pass evicts a class left from a dropped same-name table
-				definedTables?.delete(tableName);
-				continue;
-			}
+			// not defined until it loads, so the cleanup pass evicts a class left from a dropped same-name table
+			definedTables?.delete(tableName);
+			continue;
 		}
 		if (reportedIncompleteCatalogs.size) reportedIncompleteCatalogs.delete(`${databaseName}/${tableName}`);
 		// if the table has already been defined, use that class, don't create a new one
@@ -2069,7 +2215,7 @@ function initStores(
 			attribute.attribute = attribute.name;
 			try {
 				// now load the non-primary keys, opening the dbs as necessary for indices
-				if (!attribute.isPrimaryKey && (attribute.indexed || (attribute.attribute && !attribute.name))) {
+				if (opensIndexStore(attribute)) {
 					if (!indices[attribute.name]) {
 						const dbi = openIndex(attribute.key, rootStore, attribute, primaryAttribute.generation, openedStores);
 						indices[attribute.name] = dbi;
@@ -2155,6 +2301,7 @@ function initStores(
 			if (!destination) requestComputedIndexRepair(table);
 			if (replicaExpiration !== undefined || replicaRefreshFraction !== undefined)
 				table.setTTLExpiration({ replicaExpiration, replicaRefreshFraction, fromSchema: true });
+			table._adoptCatalogExpiration(expiration, eviction);
 		} else {
 			if (recreateForTableIdChange) table.cleanup();
 			table = setTable(
@@ -2711,17 +2858,7 @@ export async function closeBranchDatabases(requireClosed = false): Promise<void>
 
 export function resetDatabases() {
 	loadedDatabases = false;
-	for (const store of Object.values(lmdbDatabaseEnvs)) {
-		store.needsDeletion = true;
-	}
-	getDatabases();
-	for (const [path, store] of lmdbDatabaseEnvs) {
-		if (store.needsDeletion && !path.endsWith('system.mdb')) {
-			store.close();
-			lmdbDatabaseEnvs.delete(path);
-		}
-	}
-	return databases;
+	return getDatabases();
 }
 
 interface TableDefinition {
@@ -2998,7 +3135,7 @@ function openUnlessBlocked(rootPath: string, dbName: string, load: () => void): 
 		(state) => {
 			// a drop holds this lock exclusively too, so 'in-progress' cannot be attributed to a restore
 			logger.warn(
-				`Not loading database '${dbName}': ${state === 'in-progress' ? 'a restore or drop is in progress' : 'an incomplete restore must be rerun'}`
+				`Not loading database '${dbName}': ${state === 'in-progress' ? 'a restore or drop is in progress' : state === 'pending' ? 'a restore has reserved it' : 'an incomplete restore must be rerun'}`
 			);
 			return undefined;
 		}
@@ -3015,7 +3152,9 @@ function throwBlockedByRestore(databaseName: string, restoreState: BlockedRestor
 	const error: any = new Error(
 		restoreState === 'in-progress'
 			? `Database '${databaseName}' is being restored or dropped; retry when that completes`
-			: `Database '${databaseName}' has an incomplete restore; rerun restore_backup to recover it`
+			: restoreState === 'pending'
+				? `Database '${databaseName}' is reserved by a restore that has not finished; it loads once that restore completes or is cancelled`
+				: `Database '${databaseName}' has an incomplete restore; rerun restore_backup to recover it`
 	);
 	error.statusCode = 409;
 	throw error;
@@ -3308,13 +3447,34 @@ export async function dropDatabase(databaseName, requestedRootPaths: Iterable<st
 	}
 }
 
+const warnedReservedDirs = new Set<string>();
+
+/** The scan skips the reserved restore directory silently; say so when it looks like a database someone expects to load. */
+function warnIfReservedDirLooksLikeDatabase(reservedDir: string): void {
+	if (!isMainThread || warnedReservedDirs.has(reservedDir)) return;
+	let names: string[];
+	try {
+		names = readdirSync(reservedDir);
+	} catch {
+		return;
+	}
+	if (!names.includes('CURRENT') || !names.some((name) => name.startsWith('MANIFEST-'))) return;
+	warnedReservedDirs.add(reservedDir);
+	logger.warn(
+		`'${reservedDir}' is a reserved directory and is never loaded as a database, but it contains a RocksDB database; rename it to load that data`
+	);
+}
+
 const databaseDropPreparationTasks = new Map<string, { id: string; task: Promise<void>; rootPaths: string[] }>();
 
 function addPhysicalDatabaseRoots(directory: string, rootPaths: Set<string>): void {
 	if (!existsSync(directory)) return;
 	for (const entry of readdirSync(directory, { withFileTypes: true })) {
-		if (entry.name === RESTORE_META_DIR || entry.name === BRANCH_ROOT_DIR || entry.name.endsWith(MIGRATING_DIR_SUFFIX))
+		if (entry.name === RESTORE_META_DIR) {
+			warnIfReservedDirLooksLikeDatabase(join(directory, entry.name));
 			continue;
+		}
+		if (entry.name === BRANCH_ROOT_DIR || entry.name.endsWith(MIGRATING_DIR_SUFFIX)) continue;
 		const rootPath = join(directory, entry.name);
 		if (entry.isFile()) {
 			if (extname(entry.name).toLowerCase() === '.mdb') rootPaths.add(rootPath);
@@ -3398,6 +3558,41 @@ export function databaseDropPreparationTargets(databaseName: string): {
 	};
 }
 
+/** Every name this thread has loaded over one of `rootPaths`, whichever alias it was loaded under. */
+function loadedDatabaseNamesAt(rootPaths: Iterable<string>): string[] {
+	const resolvedPaths = new Set([...rootPaths].map((path) => resolve(path)));
+	const atPath = (rootStore: any) => rootStore?.path !== undefined && resolvedPaths.has(resolve(rootStore.path));
+	return Object.keys(databases).filter(
+		(name) =>
+			atPath((definedDatabases?.get(name) as any)?.rootStore) ||
+			Object.values(databases[name]).some((table: any) => atPath(table?.primaryStore?.rootStore))
+	);
+}
+
+/**
+ * What a restore of the directory at `rootPath` must fence and close on this thread. A thread may have
+ * loaded that directory only under a sibling alias, so the names are found by path, not by the name the
+ * restore was requested under; and blob saves and reclamation are keyed by each root's own
+ * `databaseName`, so every name and root identity that closes, detached roots included, is fenced.
+ */
+export function restoreCloseTargets(
+	databaseName: string,
+	rootPath?: string
+): { databaseNames: string[]; blobDatabaseNames: string[] } {
+	const databaseNames = new Set(rootPath === undefined ? [] : loadedDatabaseNamesAt([rootPath]));
+	if (databases[databaseName]) databaseNames.add(databaseName);
+	const blobDatabaseNames = new Set([databaseName]);
+	if (rootPath !== undefined)
+		for (const rootStore of registeredRootsAt(rootPath))
+			if (rootStore.databaseName) blobDatabaseNames.add(rootStore.databaseName);
+	for (const name of databaseNames) {
+		const graph = collectDatabaseGraph(name);
+		for (const graphName of graph.databaseNames) blobDatabaseNames.add(graphName);
+		for (const rootStore of graph.rootStores) if (rootStore.databaseName) blobDatabaseNames.add(rootStore.databaseName);
+	}
+	return { databaseNames: [...databaseNames], blobDatabaseNames: [...blobDatabaseNames] };
+}
+
 export function prepareDatabaseDrop(
 	databaseName: string,
 	preparationId: string,
@@ -3411,22 +3606,7 @@ export function prepareDatabaseDrop(
 		const graph = collectDatabaseGraph(databaseName);
 		for (const rootStore of graph.rootStores) rootPaths.add(rootStore.path);
 	}
-	const names: string[] = [];
-	for (const name of Object.keys(databases)) {
-		const definedRoot = (definedDatabases?.get(name) as any)?.rootStore;
-		if (definedRoot && rootPaths.has(definedRoot.path)) {
-			names.push(name);
-			continue;
-		}
-		const tables = databases[name];
-		if (
-			Object.values(tables).some((table: any) => {
-				const rootStore = table?.primaryStore?.rootStore;
-				return rootStore && rootPaths.has(rootStore.path);
-			})
-		)
-			names.push(name);
-	}
+	const names = loadedDatabaseNamesAt(rootPaths);
 	const paths = [...rootPaths];
 	claimDatabaseDropPreparations(paths, preparationId, ownerThreadId, databaseName);
 	const task = (async () => {
@@ -3539,13 +3719,47 @@ export async function closeDatabase(
 	{ requireClosed = false }: { requireClosed?: boolean } = {}
 ): Promise<boolean> {
 	if (!databases[databaseName]) return false;
-	const { databaseNames, dbTables, rootStores } = collectDatabaseGraph(databaseName);
+	return closeDatabaseGraph(databaseName, collectDatabaseGraph(databaseName), requireClosed);
+}
+
+/**
+ * Close every root this thread still has registered at `rootPath` that no loaded name reaches. A rescan
+ * that finds the directory held by a restore drops its tables from the catalog, but cannot close their
+ * handles (it is synchronous), so a close by name would miss them.
+ */
+export async function closeDetachedDatabaseRoots(rootPath: string): Promise<void> {
+	const detached = new Set(
+		registeredRootsAt(rootPath).filter(
+			(rootStore) => !Object.keys(databases).some((name) => databaseUsesRootStore(name, rootStore))
+		)
+	);
+	if (detached.size === 0) return;
+	const label = [...detached][0].databaseName ?? basename(rootPath);
+	await closeDatabaseGraph(label, { databaseNames: new Set(), dbTables: {}, rootStores: detached }, false);
+}
+
+function registeredRootsAt(rootPath: string): any[] {
+	const target = resolve(rootPath);
+	const roots: any[] = [];
+	for (const envs of [rocksdbDatabaseEnvs, lmdbDatabaseEnvs] as Map<string, any>[]) {
+		for (const [path, rootStore] of envs) if (resolve(path) === target) roots.push(rootStore);
+	}
+	return roots;
+}
+
+async function closeDatabaseGraph(
+	databaseName: string,
+	{ databaseNames, dbTables, rootStores }: ReturnType<typeof collectDatabaseGraph>,
+	requireClosed: boolean
+): Promise<boolean> {
 	const releaseDerivedIndexActivation = await settleDatabaseDerivedIndexes(dbTables, false, rootStores);
 	let databaseClosed = false;
 	let handleCloseStarted = false;
 	try {
 		await Promise.all([...rootStores].map((rootStore) => rootStore.auditStore?.stopAuditCleanup?.()));
 		handleCloseStarted = true;
+		// past the last point that resumes maintenance, so a disposed table is never handed back
+		for (const table of Object.values(dbTables)) table?.cleanup?.({ closing: true });
 		const closeFailures = await closeDatabaseStores(databaseName, dbTables, rootStores, requireClosed);
 		if (requireClosed && closeFailures.length > 0) {
 			for (const rootStore of rootStores) {
@@ -4115,6 +4329,14 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	let Table = tables?.[tableName];
 	if (rootStore.status === 'closed') {
 		throw new Error(`Can not use a closed data store for ${tableName}`);
+	}
+	// A re-declaration persists these to the catalog, where a negative expiration fails every later load, and
+	// nothing it changes before then (index builds included) is rolled back.
+	if (Table && origin !== 'cluster') {
+		if (+expiration < 0 || +eviction < 0)
+			throw new ClientError(`Expiration and eviction of '${databaseName}.${tableName}' can not be negative`);
+		if (replicaExpiration != null) replicaExpirationMsOf(replicaExpiration);
+		if (replicaRefreshFraction != null) replicaRefreshFractionOf(replicaRefreshFraction);
 	}
 	let primaryKey;
 	let primaryKeyAttribute;
@@ -5130,54 +5352,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			Object.defineProperty(attribute, 'key', { value: dbiKey, configurable: true });
 			let attributeDescriptor = attributesDbi.getSync(dbiKey);
 			if (attribute.isPrimaryKey) {
-				if (deferredPrimaryRow) continue;
-				attributeDescriptor = attributeDescriptor || attributesDbi.getSync((dbiKey = tableName + '/')) || {};
-				// Persist schemaDefined when the explicit live value disagrees with disk. Without this,
-				// a stale `false` (from a v4-era write or replicated event) survives every reload: the
-				// in-memory re-assert in the existing-Table branch only fixes the worker that ran @table,
-				// but other workers' next disk-load re-reads the stale value. The whole settings update is
-				// gated off for cluster-origin callers: their values come from this worker's (possibly
-				// stale) snapshot, so a rewrite could revert a newer local declaration already on disk.
-				const schemaDefinedMismatch = schemaDefinedExplicit && attributeDescriptor.schemaDefined !== schemaDefined;
-				// primary key can't change indexing, but settings can change
-				if (
-					origin !== 'cluster' &&
-					(schemaDefinedMismatch ||
-						(typeof audit === 'boolean' && audit !== attributeDescriptor.audit) ||
-						(sealed !== undefined && sealed !== attributeDescriptor.sealed) ||
-						(replicate !== undefined && replicate !== attributeDescriptor.replicate) ||
-						(+expiration || undefined) !== (+attributeDescriptor.expiration || undefined) ||
-						(+eviction || undefined) !== (+attributeDescriptor.eviction || undefined) ||
-						(replicaExpiration != null && replicaExpiration !== attributeDescriptor.replicaExpiration) ||
-						(replicaRefreshFraction != null && replicaRefreshFraction !== attributeDescriptor.replicaRefreshFraction) ||
-						attribute.type !== attributeDescriptor.type)
-				) {
-					exclusiveLock();
-					const currentPrimaryAttribute = attributesDbi.getSync(dbiKey);
-					if (!currentPrimaryAttribute || tableIsDropping(currentPrimaryAttribute, dbiKey)) continue;
-					const updatedPrimaryAttribute = { ...currentPrimaryAttribute };
-					if (typeof audit === 'boolean') {
-						if (audit) Table.enableAuditing();
-						updatedPrimaryAttribute.audit = audit;
-					}
-					if (expiration) updatedPrimaryAttribute.expiration = +expiration;
-					if (eviction) updatedPrimaryAttribute.eviction = +eviction;
-					if (replicaExpiration != null) {
-						replicaExpirationMsOf(replicaExpiration);
-						updatedPrimaryAttribute.replicaExpiration = replicaExpiration;
-					}
-					if (replicaRefreshFraction != null) {
-						replicaRefreshFractionOf(replicaRefreshFraction);
-						updatedPrimaryAttribute.replicaRefreshFraction = replicaRefreshFraction;
-					}
-					if (sealed !== undefined) updatedPrimaryAttribute.sealed = sealed;
-					if (replicate !== undefined) updatedPrimaryAttribute.replicate = replicate;
-					if (attribute.type) updatedPrimaryAttribute.type = attribute.type;
-					if (schemaDefinedMismatch) updatedPrimaryAttribute.schemaDefined = schemaDefined;
-					hasChanges = true; // send out notification of the change
-					attributesDbi.put(dbiKey, updatedPrimaryAttribute);
-				}
-
+				if (!deferredPrimaryRow) persistTableSettings(attribute, attributeDescriptor ? dbiKey : tableName + '/');
 				continue;
 			}
 
@@ -5422,6 +5597,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				attributesDbi.put(dbiKey, attribute);
 			}
 		}
+		if (!deferredPrimaryRow && !attributes.some((attribute) => attribute.isPrimaryKey))
+			persistTableSettings({}, primaryDescriptorKey());
 		if (
 			!deferredPrimaryRow &&
 			(fullTextPersistencePending ||
@@ -5569,6 +5746,9 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	if ((hasChanges || refreshRelationshipAttributes) && !target.branch) {
 		databaseEventsEmitter.emit('updateTable', Table, origin !== 'cluster');
 	}
+	// A peer's expiration reaches a table this call created through makeTable, as a catalog load. It never
+	// configures an existing table, and applying it here would mark the TTL as this thread's own declaration.
+	if (origin === 'cluster') expiration = eviction = scanInterval = undefined;
 	if (
 		expiration ||
 		eviction ||
@@ -5599,6 +5779,54 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	// has one, and the bare table row otherwise.
 	function primaryDescriptorKey() {
 		return persistedPrimaryDescriptor(attributesDbi).key;
+	}
+	function persistTableSettings(attribute: any, dbiKey: string) {
+		const attributeDescriptor = attributesDbi.getSync(dbiKey) || {};
+		// Persist schemaDefined when the explicit live value disagrees with disk. Without this,
+		// a stale `false` (from a v4-era write or replicated event) survives every reload: the
+		// in-memory re-assert in the existing-Table branch only fixes the worker that ran @table,
+		// but other workers' next disk-load re-reads the stale value. The whole settings update is
+		// gated off for cluster-origin callers: their values come from this worker's (possibly
+		// stale) snapshot, so a rewrite could revert a newer local declaration already on disk.
+		const schemaDefinedMismatch = schemaDefinedExplicit && attributeDescriptor.schemaDefined !== schemaDefined;
+		// primary key can't change indexing, but settings can change
+		if (
+			origin !== 'cluster' &&
+			(schemaDefinedMismatch ||
+				(typeof audit === 'boolean' && audit !== attributeDescriptor.audit) ||
+				(sealed !== undefined && sealed !== attributeDescriptor.sealed) ||
+				(replicate !== undefined && replicate !== attributeDescriptor.replicate) ||
+				(expiration && +expiration !== +attributeDescriptor.expiration) ||
+				(eviction && +eviction !== +attributeDescriptor.eviction) ||
+				(replicaExpiration != null && replicaExpiration !== attributeDescriptor.replicaExpiration) ||
+				(replicaRefreshFraction != null && replicaRefreshFraction !== attributeDescriptor.replicaRefreshFraction) ||
+				attribute.type !== attributeDescriptor.type)
+		) {
+			exclusiveLock();
+			const currentPrimaryAttribute = attributesDbi.getSync(dbiKey);
+			if (!currentPrimaryAttribute || tableIsDropping(currentPrimaryAttribute, dbiKey)) return;
+			const updatedPrimaryAttribute = { ...currentPrimaryAttribute };
+			if (typeof audit === 'boolean') {
+				if (audit) Table.enableAuditing();
+				updatedPrimaryAttribute.audit = audit;
+			}
+			if (expiration) updatedPrimaryAttribute.expiration = +expiration;
+			if (eviction) updatedPrimaryAttribute.eviction = +eviction;
+			if (replicaExpiration != null) {
+				replicaExpirationMsOf(replicaExpiration);
+				updatedPrimaryAttribute.replicaExpiration = replicaExpiration;
+			}
+			if (replicaRefreshFraction != null) {
+				replicaRefreshFractionOf(replicaRefreshFraction);
+				updatedPrimaryAttribute.replicaRefreshFraction = replicaRefreshFraction;
+			}
+			if (sealed !== undefined) updatedPrimaryAttribute.sealed = sealed;
+			if (replicate !== undefined) updatedPrimaryAttribute.replicate = replicate;
+			if (attribute.type) updatedPrimaryAttribute.type = attribute.type;
+			if (schemaDefinedMismatch) updatedPrimaryAttribute.schemaDefined = schemaDefined;
+			hasChanges = true; // send out notification of the change
+			attributesDbi.put(dbiKey, updatedPrimaryAttribute);
+		}
 	}
 	// The catalog of a published table stays, but a class the registration never accepted is
 	// unreachable, so release what makeTable() registered process-wide instead of leaving its timers

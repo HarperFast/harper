@@ -418,7 +418,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 					// now reset transactions tracking; this transaction be reused and committed again
 					this.clearWrites();
 					this.timestamp = 0;
-					this.next = null;
+					while (this.next) this.detachNext();
 					const completed =
 						confirmation || (this.root ?? this).confirmationCount
 							? settleCommitCompletions(completions, confirmation)

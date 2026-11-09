@@ -77,7 +77,7 @@ describe('Test update module', () => {
 
 		before(() => {
 			p_get_table_schema_rw = update.__set__('pGetTableSchema', p_get_table_schema_stub);
-			p_search_rw = update.__set__('pSearch', p_search_stub);
+			p_search_rw = update.__set__('pSqlSelect', p_search_stub);
 			update_records_rw = update.__set__('updateRecords', update_records_stub);
 			write_rw = update.__set__('write', write_stub);
 			alasql_parse_spy = sandbox.spy(alasql, 'parse');
@@ -118,7 +118,7 @@ describe('Test update module', () => {
 			await update.update({ statement: test_ast_statement, hdb_user });
 
 			expect(alasql_parse_spy.firstCall.args[0]).to.equal(expected_select_string);
-			expect(p_search_stub.firstCall.args[0]).to.eql(expected_search_statement);
+			expect(p_search_stub.firstCall.args[0]).to.eql({ statement: expected_search_statement, hdb_user });
 			expect(update_records_stub.firstCall.args[1]).to.eql(expected_new_records);
 		});
 
@@ -174,7 +174,7 @@ describe('Test update module', () => {
 			await update.update({ statement: test_ast_statement, hdb_user });
 
 			expect(alasql_parse_spy.firstCall.args[0]).to.equal(expected_select_string);
-			expect(p_search_stub.firstCall.args[0]).to.eql(expected_search_statement);
+			expect(p_search_stub.firstCall.args[0]).to.eql({ statement: expected_search_statement, hdb_user });
 			expect(update_records_stub.firstCall.args[1]).to.eql(expected_new_records);
 		});
 
@@ -193,7 +193,7 @@ describe('Test update module', () => {
 			await update.update({ statement: test_ast_statement, hdb_user });
 
 			expect(alasql_parse_spy.firstCall.args[0]).to.equal(expected_select_string);
-			expect(p_search_stub.firstCall.args[0]).to.eql(expected_search_statement);
+			expect(p_search_stub.firstCall.args[0]).to.eql({ statement: expected_search_statement, hdb_user });
 			expect(update_records_stub.firstCall.args[1]).to.eql(expected_new_records);
 		});
 
@@ -222,7 +222,7 @@ describe('Test update module', () => {
 			await update.update({ statement: test_ast_statement, hdb_user });
 
 			expect(alasql_parse_spy.firstCall.args[0]).to.equal(expected_select_string);
-			expect(p_search_stub.firstCall.args[0]).to.eql(expected_search_statement);
+			expect(p_search_stub.firstCall.args[0]).to.eql({ statement: expected_search_statement, hdb_user });
 			expect(update_records_stub.firstCall.args[1]).to.eql(expected_new_records);
 		});
 
@@ -264,7 +264,7 @@ describe('Test update module', () => {
 			await update.update({ statement: test_ast_statement, hdb_user });
 
 			expect(alasql_parse_spy.firstCall.args[0]).to.equal(expected_select_string);
-			expect(p_search_stub.firstCall.args[0]).to.eql(expected_search_statement);
+			expect(p_search_stub.firstCall.args[0]).to.eql({ statement: expected_search_statement, hdb_user });
 			expect(update_records_stub.firstCall.args[1]).to.eql(expected_new_records);
 		});
 
@@ -312,7 +312,7 @@ describe('Test update module', () => {
 			await update.update({ statement: test_ast_statement, hdb_user });
 
 			expect(alasql_parse_spy.firstCall.args[0]).to.equal(expected_select_string);
-			expect(p_search_stub.firstCall.args[0]).to.eql(expected_search_statement);
+			expect(p_search_stub.firstCall.args[0]).to.eql({ statement: expected_search_statement, hdb_user });
 			expect(update_records_stub.firstCall.args[1]).to.eql(expected_new_records);
 		});
 

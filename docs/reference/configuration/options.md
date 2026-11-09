@@ -137,8 +137,9 @@ When the Harper process receives SIGTERM, SIGINT (Ctrl+C) or SIGQUIT, it shuts d
 
 1. Harper stops accepting new connections.
 2. Requests already in flight get a few seconds to finish (see the first note below).
-3. Component scopes close. Their [`'close'` listeners](../components/plugin-api.md#cleanup-on-shutdown) run once requests in flight have had a few seconds to finish.
-4. The process exits with code `0`.
+3. WebSocket connections close with code `1001` as soon as no request is in flight on any thread, because a request can be waiting on a replication peer's acknowledgement over one of them. With `http2` enabled on a listener, an open HTTP/2 session or WebSocket there delays this by up to 5 seconds. Under Bun or the uWS HTTP server, they are not closed this way. MQTT clients are disconnected earlier, when shutdown starts.
+4. Component scopes close. Their [`'close'` listeners](../components/plugin-api.md#cleanup-on-shutdown) run once requests in flight have had a few seconds to finish.
+5. The process exits with code `0`.
 
 `threads.shutdownTimeout` bounds this sequence. If it has not finished in time, Harper logs `Shutdown did not finish within <n> ms (threads.shutdownTimeout)` and exits anyway. A second signal during the shutdown makes Harper exit at once; running `harper stop` again sends one. Harper exits with code `0` in all three cases, so a `0` exit status does not mean every `'close'` listener finished.
 
@@ -345,7 +346,7 @@ storage:
 - `backupPath` — Directory for managed database backups (created by [`create_backup`](../backups/operations.md#create_backup)), one subdirectory per database; _Default_: `<rootPath>/backup` (Added in: v5.2.0)
 - `blobPaths` — Blob storage directory or directories; _Default_: `<rootPath>/blobs` (Added in: v4.5.0)
 - `pageSize` — Database page size (bytes); _Default_: OS default
-- `reclamation.threshold` — Free-space ratio below which reclamation begins evicting from caching tables; _Default_: `0.4` (Added in: v4.5.0)
+- `reclamation.threshold` — Free-space ratio below which reclamation begins evicting from caching tables and [demoting local replicas](../database/storage-tuning.md#local-replicas-under-storage-pressure); _Default_: `0.4` (Added in: v4.5.0)
 - `reclamation.interval` — Free-space check interval; _Default_: `1h`
 - `reclamation.evictionFactor` — Heuristic factor for early eviction under disk pressure; _Default_: `100000`. See [Storage Tuning — Reclamation](../database/storage-tuning.md#storage-reclamation)
 - `rocks.blockCacheSize` — RocksDB shared block cache size in bytes; _Default_: 25% of constrained memory. See [Storage Tuning — RocksDB Memory](../database/storage-tuning.md#rocksdb-memory) (Added in: v5.1.0)
@@ -472,7 +473,7 @@ rootPath: /var/lib/harper
 
 Added in: v5.2.0
 
-Built-in Harper agent — an LLM loop that operates this instance through Harper's own operations, scoped filesystem access, followup scheduling, the V8 inspector, and outbound HTTP. Disabled by default, so it never incurs LLM cost unless you turn it on. Driven through the [Agent operations](../operations-api/operations.md#agent), which also describe the privilege boundary before you enable it.
+Built-in Harper agent — an LLM loop that operates this instance through Harper's own operations, scoped filesystem access, followup scheduling, the V8 inspector, and outbound HTTP. Disabled by default, so it never incurs LLM cost unless you turn it on. Driven through the [Agent operations](../operations-api/operations.md#agent), which also describe the privilege boundary before you enable it. Each of its own tool groups can be [turned off](#turning-off-tool-groups).
 
 ```yaml
 agent:
@@ -500,9 +501,41 @@ agent:
 - `componentsScope` — The agent's `components` filesystem scope, which it reads and, with `allowDestructive`, writes; absolute or relative to `rootPath`. Read at startup only; _Default_: the full `componentsRoot`
 - `configScope` <VersionBadge version="v5.4.0" /> — The agent's read-only `config` filesystem scope: a file or a directory, absolute or relative to `rootPath`. Read at startup only. See [Filesystem scopes](#filesystem-scopes); _Default_: the Harper config file only
 - `httpFetch` <VersionBadge version="v5.4.0" /> — Whether the agent has its `http_fetch` tool, and which hosts it may reach: `true`, `false`, or `{ allow: [...] }`. Read at startup only. See [Restricting `http_fetch`](#restricting-http_fetch); _Default_: `true`
+- `tools` <VersionBadge version="v5.4.0" /> — Which of the agent's own tool groups are in its toolset, one boolean each: `filesystem`, `schedule`, `inspector`, and `bestPractices`. `false` removes the group. Read at startup only. See [Turning off tool groups](#turning-off-tool-groups); _Default_: every group on
 - `systemPromptAppend` — Operator text appended to the agent's system prompt
 
-`enabled`, `provider`, `model`, `maxTurns`, `maxTokens`, `maxToolResultBytes`, `maxSessionTokens`, `maxCostUsd`, `autoApprove`, `allowDestructive`, and `systemPromptAppend` can also be changed at runtime with [`set_agent_config`](../operations-api/operations.md#set_agent_config), which applies in memory only. `enabled` is the exception worth knowing: it cannot switch the agent on, because with the agent disabled at startup no agent operation is registered at all. `httpFetch`, `componentsScope`, and `configScope` are read at startup only, and `set_agent_config` rejects them.
+`enabled`, `provider`, `model`, `maxTurns`, `maxTokens`, `maxToolResultBytes`, `maxSessionTokens`, `maxCostUsd`, `autoApprove`, `allowDestructive`, and `systemPromptAppend` can also be changed at runtime with [`set_agent_config`](../operations-api/operations.md#set_agent_config), which applies in memory only. `enabled` is the exception worth knowing: it cannot switch the agent on, because with the agent disabled at startup no agent operation is registered at all. `httpFetch`, `tools`, `componentsScope`, and `configScope` are read at startup only, and `set_agent_config` rejects them. [`get_agent_config`](../operations-api/operations.md#get_agent_config) returns the configuration in effect, the startup-only keys included.
+
+### Turning off tool groups
+
+<VersionBadge version="v5.4.0" />
+
+Besides the operations tools, which run as `agent.user`, the agent has tools of its own that run at the Harper process's privilege: the filesystem tools, `schedule_followup`, the V8 inspector tools, `http_fetch`, and the best-practices lookup. `allowDestructive: false` removes only the ones marked destructive, and `maxTurns: 1` still lets the model call tools within that turn. To run the agent without a group, turn it off under `tools`:
+
+```yaml
+agent:
+  enabled: true
+  httpFetch: false
+  tools:
+    filesystem: false
+    schedule: false
+    inspector: false
+    bestPractices: false
+```
+
+| Key             | Tools removed when `false`                                                                                              |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `filesystem`    | `read_file`, `write_file`, `list_dir`, `grep_files`, `tail_file`                                                        |
+| `schedule`      | `schedule_followup`                                                                                                     |
+| `inspector`     | `inspector_attach`, `inspector_evaluate`, `inspector_set_breakpoint`, `inspector_set_logpoint`, `inspector_profile_cpu` |
+| `bestPractices` | `harper_best_practice`, and the best-practices overview leaves the system prompt                                        |
+
+Every key defaults to `true`, so an existing configuration is unchanged. The behavior worth knowing:
+
+- **A group that is off is gone, not gated.** The model is sent no schema for its tools, the system prompt does not describe them, and a call to one by name is answered as an unknown tool and runs nothing. With every group and `httpFetch` off, the toolset holds only the operations tools `agent.user` may call, which is the shape for an application that sends the agent a prepared brief and wants an answer in one turn.
+- **A disabled group's tool names stay reserved.** No operations tool or injected tool can take the name of a tool that is off, so turning a group off never changes what a call to one of its names does. This was already so for `http_fetch`.
+- **Read at startup only.** Set it in the configuration file, through `set_configuration`, through `HARPER_SET_CONFIG`, or with the `AGENT_TOOLS_FILESYSTEM`, `AGENT_TOOLS_SCHEDULE`, `AGENT_TOOLS_INSPECTOR` and `AGENT_TOOLS_BESTPRACTICES` environment variables or CLI flags, then restart. `set_agent_config` rejects a request that includes `tools` with a 400 and applies nothing from it; a later `set_agent_config` that changes `allowDestructive` rebuilds the toolset with the same switches. `get_agent_config` reports the switches in effect, so an application can check at startup that the groups it needs off are off. As with `httpFetch`, a switch holds against the agent itself only while `set_configuration` and `restart` stay out of its toolset (they are not in the default operations allow list) or behind [approval](../operations-api/operations.md#approve_agent_action): with both, a prompt-steered run could write the switch back on and restart.
+- **A malformed value turns groups off, never on.** A value other than `true` or `false` turns its group off, and an unknown key under `tools`, or a `tools` that is not a map, turns every group off, since a misspelled key may have been meant to turn a group off. The agent logs an error naming what to correct and starts with the rest of its configuration.
 
 ### Filesystem scopes
 

@@ -104,6 +104,20 @@ The response also includes the table's ordinary schema and storage metadata. The
 }
 ```
 
+#### Replicas
+
+<VersionBadge version="v5.4.0" />
+
+A table that has kept [local replicas](../database/schema.md#replicaexpiration-and-replicarefreshfraction) on this node reports how much of it is cache. The fields are absent on a table that never kept one, on LMDB, and when the request sets `skip_record_count`.
+
+| Field                     | Description                                                                                                                                                                                                                                    |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `replica_count`           | Replicas this node holds of the table's records, counted from their deadlines, so one whose row was lost in a crash can count until its deadline passes. Estimated on large tables, like `record_count`; `"exact_count": true` counts them all |
+| `estimated_replica_range` | The range of an estimated `replica_count`; absent when the count is exact                                                                                                                                                                      |
+| `replica_size_estimate`   | Estimated bytes of those replicas: the average size of up to 100 of their rows, blobs included, times the count. A rough figure, since the rows sampled are the first by key                                                                   |
+
+See [Local replicas under storage pressure](../database/storage-tuning.md#local-replicas-under-storage-pressure).
+
 #### Record-structure dictionaries
 
 <VersionBadge type="changed" version="v5.2.5" />
@@ -2153,13 +2167,13 @@ Operations for driving Harper's built-in agent — an LLM loop that operates the
 
 The agent component is **disabled by default**. Enable it with `agent.enabled: true` in `harper-config.yaml` (see [`agent`](../configuration/options.md#agent)) and configure a generative model under [`models`](../models/overview.md#configuration). With the component disabled at startup none of these operations are registered, so calling one is an unknown-operation error rather than a permission or state error.
 
-All six operations are `super_user` by default. They participate in the role [`operations` allowlist](../users-and-roles/overview.md#operation-permissions), so a non-`super_user` role can be granted a scoped subset without granting full `super_user` — either individual names (`operations: ['agent_prompt', 'get_agent_session']`) or the built-in [`agent` permission group](../users-and-roles/overview.md#operation-permissions), which covers all of these except `set_agent_config`. Note that the read operations are not caller-scoped: a role granted `get_agent_session` or `list_agent_sessions` reads every session on the instance, including transcripts of runs it did not start. Because a transcript records the _arguments and output_ of every tool call, and those calls ran as `agent.user`, delegating a read operation hands that role the results of work done at the agent's privilege — table contents, log excerpts, configuration — regardless of its own permissions. Delegate the read operations only to roles you would trust with the agent itself.
+All seven operations are `super_user` by default. They participate in the role [`operations` allowlist](../users-and-roles/overview.md#operation-permissions), so a non-`super_user` role can be granted a scoped subset without granting full `super_user` — either individual names (`operations: ['agent_prompt', 'get_agent_session']`) or the built-in [`agent` permission group](../users-and-roles/overview.md#operation-permissions), which covers all of these except `set_agent_config` and `get_agent_config`. Note that the read operations are not caller-scoped: a role granted `get_agent_session` or `list_agent_sessions` reads every session on the instance, including transcripts of runs it did not start. Because a transcript records the _arguments and output_ of every tool call, and those calls ran as `agent.user`, delegating a read operation hands that role the results of work done at the agent's privilege — table contents, log excerpts, configuration — regardless of its own permissions. Delegate the read operations only to roles you would trust with the agent itself.
 
 :::warning
 Anyone who can call `agent_prompt` can direct whatever the agent does. Understand the boundary before enabling it:
 
 - `agent.user` (default: a `super_user` bootstrap identity) governs only the **operations** tools. Setting it to a restricted user narrows those, and nothing else.
-- The agent's other tools — scoped filesystem access, outbound `http_fetch`, followup scheduling, and the V8 inspector — run at the Harper process's own privilege, whatever `agent.user` is. (The inspector tools additionally need `threads.debug`, and fail with an explanatory error without it.)
+- The agent's other tools — scoped filesystem access, outbound `http_fetch`, followup scheduling, the V8 inspector, and the best-practices lookup — run at the Harper process's own privilege, whatever `agent.user` is. (The inspector tools additionally need `threads.debug`, and fail with an explanatory error without it.) Since v5.4.0, each of these groups can be removed from the toolset at startup with [`agent.tools`](../configuration/options.md#turning-off-tool-groups) and [`agent.httpFetch`](../configuration/options.md#restricting-http_fetch); with all of them off, the agent has only the operations tools `agent.user` may call.
 - By default, `http_fetch` blocks only cloud-metadata hosts and the IPv4 link-local range `169.254.0.0/16`. It checks host names, not resolved addresses, so a name that resolves to a blocked address is not caught. Since v5.4.0, it also checks every redirect hop before following it. Every other host is reachable, including anything private or internal the server can route to. Reading is ungated too. By default, `read_file` covers the component tree, the log directory, and the Harper config file. Before v5.4.0, it covered the whole directory holding the config file. `componentsScope` and `configScope` can point it elsewhere, including somewhere wider. Every scope refuses Harper's key directories, key file names, and PEM private keys. See [Filesystem scopes](../configuration/options.md#filesystem-scopes). An enabled agent therefore has a read path and an egress path in the same toolset. Unless the agent needs the network, set [`agent.httpFetch`](../configuration/options.md#restricting-http_fetch) to `false` to remove the tool, or to an allow-list of the hosts it needs. Otherwise, treat it as an outbound network client and apply egress policy to the host.
 - With the default `agent.allowDestructive: false`, destructive tools (including filesystem writes) are removed from the toolset entirely. Turning it on admits component writes, and component code is executed by the Harper process — a write is effectively code execution at process privilege.
 - Leave `agent.autoApprove` off so any destructive call that is admitted still pauses for [approval](#approve_agent_action). The gate covers only the tools marked destructive — filesystem writes, the inspector's code-evaluation tools, and the operations on MCP's [curated destructive set](../mcp/tool-metadata.md) (`drop_table`, `delete`, `restart`, `set_configuration`, ...). `http_fetch` and followup scheduling are not gated, so an outbound POST and a self-rescheduling run proceed without an approval prompt.
@@ -2174,6 +2188,7 @@ Anyone who can call `agent_prompt` can direct whatever the agent does. Understan
 | `approve_agent_action` | Approves or denies a gated tool call and resumes the run      | super_user    |
 | `cancel_agent_run`     | Cancels a run and marks the session aborted                   | super_user    |
 | `set_agent_config`     | Updates agent settings in memory for the life of the process  | super_user    |
+| `get_agent_config`     | Returns the agent settings in effect                          | super_user    |
 
 ### Sessions and run status
 
@@ -2334,7 +2349,7 @@ One gap is worth knowing: changing `allowDestructive` with [`set_agent_config`](
 
 <VersionBadge type="changed" version="v5.4.0" />
 
-Updates agent settings and returns the resulting configuration. Accepts any of `enabled`, `provider`, `model`, `maxTurns`, `maxTokens`, `maxToolResultBytes`, `maxSessionTokens`, `maxCostUsd`, `autoApprove`, `allowDestructive`, and `systemPromptAppend`; keys not supplied are left unchanged. Set `maxSessionTokens` or `maxCostUsd` to `null` to remove that cap. Each field is described under [`agent`](../configuration/options.md#agent). A request that includes `httpFetch`, `componentsScope`, or `configScope` is rejected with a 400 and nothing in it is applied: the [`http_fetch` policy](../configuration/options.md#restricting-http_fetch) and the [filesystem scopes](../configuration/options.md#filesystem-scopes) are read at startup only. A `maxTurns` or `maxTokens` that is not a positive integer, or a cap that is not a usable number, is rejected the same way. A `maxToolResultBytes` that is not an integer from `1024` to `1048576` is rejected the same way.
+Updates agent settings and returns the resulting configuration. Accepts any of `enabled`, `provider`, `model`, `maxTurns`, `maxTokens`, `maxToolResultBytes`, `maxSessionTokens`, `maxCostUsd`, `autoApprove`, `allowDestructive`, and `systemPromptAppend`; keys not supplied are left unchanged. Set `maxSessionTokens` or `maxCostUsd` to `null` to remove that cap. Each field is described under [`agent`](../configuration/options.md#agent). A request that includes `httpFetch`, `tools`, `componentsScope`, or `configScope` is rejected with a 400 and nothing in it is applied: the [`http_fetch` policy](../configuration/options.md#restricting-http_fetch), the [tool groups](../configuration/options.md#turning-off-tool-groups) and the [filesystem scopes](../configuration/options.md#filesystem-scopes) are read at startup only. A `maxTurns` or `maxTokens` that is not a positive integer, or a cap that is not a usable number, is rejected the same way. A `maxToolResultBytes` that is not an integer from `1024` to `1048576` is rejected the same way.
 
 ```json
 { "operation": "set_agent_config", "autoApprove": false, "maxTurns": 20 }
@@ -2346,9 +2361,35 @@ Three limits are worth knowing:
 - **A run already in flight keeps the settings it started with** — its toolset, `autoApprove`, `model`, `maxTurns`, `maxTokens`, `maxToolResultBytes`, `systemPromptAppend` and spend caps are all captured at start. Changes take effect on the next run, and a paused run that `approve_agent_action` resumes counts as a new one: it picks up the current settings. To stop a run immediately, use `cancel_agent_run`.
 - **`enabled` is not a kill switch.** It cannot turn the agent on — if it was off at startup, this operation does not exist. Setting it to `false` only makes subsequent `agent_prompt` calls return 409; a run already in flight continues, and `approve_agent_action` still resumes a paused one. Use `cancel_agent_run` to stop a run.
 
+### `get_agent_config`
+
+<VersionBadge version="v5.4.0" />
+
+Returns the agent configuration in effect: the startup-only keys as resolved at startup (`httpFetch`, `tools`, `componentsScope`, `configScope`, `user`), and the runtime-tunable keys as last set by `set_agent_config`. It takes no parameters and changes nothing. An application that embeds the agent can call it at startup to confirm that the [tool groups](../configuration/options.md#turning-off-tool-groups) it needs off are off. Like `set_agent_config`, it is outside the `agent` permission group and is not exposed over MCP; grant it to a role by name if a delegated role needs it.
+
+```json
+{ "operation": "get_agent_config" }
+```
+
+```json
+{
+	"enabled": true,
+	"maxTurns": 50,
+	"maxTokens": 16384,
+	"maxToolResultBytes": 65536,
+	"autoApprove": false,
+	"allowDestructive": false,
+	"user": "hdb_agent",
+	"httpFetch": false,
+	"tools": { "filesystem": false, "schedule": false, "inspector": false, "bestPractices": false }
+}
+```
+
+A `tools` value reflects what the agent resolved, so a malformed setting shows as the groups it turned off. `provider`, `model`, `componentsScope`, `configScope`, `maxSessionTokens`, `maxCostUsd` and `systemPromptAppend` appear only when they are set.
+
 ### MCP access
 
-When the [MCP server](../mcp/overview.md) is enabled with the operations profile, `agent_prompt`, `get_agent_session`, `list_agent_sessions`, `approve_agent_action`, and `cancel_agent_run` are also exposed as MCP tools, with no allow-list entry required. They dispatch through the same authorization path as the operations above, and are listed only for users whose role could call them. `set_agent_config` is deliberately not exposed over MCP — it is an operator action.
+When the [MCP server](../mcp/overview.md) is enabled with the operations profile, `agent_prompt`, `get_agent_session`, `list_agent_sessions`, `approve_agent_action`, and `cancel_agent_run` are also exposed as MCP tools, with no allow-list entry required. They dispatch through the same authorization path as the operations above, and are listed only for users whose role could call them. `set_agent_config` and `get_agent_config` are deliberately not exposed over MCP — they are operator actions.
 
 ---
 

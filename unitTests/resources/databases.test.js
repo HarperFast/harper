@@ -14,6 +14,7 @@ const {
 } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { RocksDatabase } = require('../rocksdbBindings.mts').rocksdbBindings();
+const { forComponent } = require('#src/utility/logging/harper_logger');
 const { databaseCommitsSuspended, getSuspendedDatabaseRootCount } = require('#src/resources/DatabaseTransaction');
 const {
 	beginRestore,
@@ -261,9 +262,25 @@ describe('dropDatabase restore serialization', () => {
 		writeFileSync(join(reservedDir, 'CURRENT'), 'MANIFEST-000001\n');
 		writeFileSync(join(reservedDir, 'MANIFEST-000001'), '');
 
-		resetDatabases();
-		const loaded = getDatabases();
+		const storageLogger = forComponent('storage');
+		const realWarn = storageLogger.warn;
+		const warnings = [];
+		storageLogger.warn = (...args) => warnings.push(args.join(' '));
+		let loaded;
+		try {
+			resetDatabases();
+			loaded = getDatabases();
+			resetDatabases();
+			getDatabases();
+		} finally {
+			storageLogger.warn = realWarn;
+		}
 		assert.strictEqual(loaded[RESTORE_META_DIR], undefined, 'reserved dir must not be loaded as a database');
+		assert.strictEqual(
+			warnings.filter((message) => message.includes(reservedDir)).length,
+			1,
+			`expected one warning across two rescans, got: ${JSON.stringify(warnings)}`
+		);
 		assert.ok(existsSync(reservedDir), 'the reserved dir itself is left in place (used for lifecycle metadata)');
 	});
 

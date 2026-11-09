@@ -33,9 +33,11 @@ import {
 	getWorkerIndex,
 	isProcessShuttingDown,
 	getProcessExitDeadline,
+	getTerminateTimeout,
 } from '../server/threads/manageThreads.ts';
 import { resetRestartNeeded, subscribeToRestartRequests } from './requestRestart.ts';
-import { closeScopeOnShutdown } from './scopeShutdown.ts';
+import { closeScopeAfterLoad, closeScopeOnShutdown } from './scopeShutdown.ts';
+import { settleBeforeDeadline } from '../utility/when.ts';
 import { deployLifecycle } from './deployLifecycle.ts';
 import { assertBranchedDatabases, assertIsolationConfig } from './Application.ts';
 import { prepareBranches } from '../resources/branchDatabase.ts';
@@ -58,7 +60,7 @@ import { declareDecisionTablesAtBoot } from '../resources/models/decisionStore.t
 import { declareCalibrationsTableAtBoot } from '../resources/models/calibrationStore.ts';
 import { watchForPreviews } from './previews.ts';
 import { ErrorResource } from '../resources/ErrorResource.ts';
-import { Scope } from './Scope.ts';
+import { Scope, closeScope } from './Scope.ts';
 import { ApplicationScope } from './ApplicationScope.ts';
 import { ComponentV1, processResourceExtensionComponent } from './ComponentV1.ts';
 import * as httpComponent from '../server/http.ts';
@@ -728,6 +730,11 @@ function symlinkHarperModule(componentDirectory: string) {
 // Direct access keeps lock timing deterministic without exposing a broader component-load seam.
 export const _symlinkHarperModuleForTests = symlinkHarperModule;
 
+/** The running `handleApplication` of each scope whose load started, without the watchdog that can reject while it still runs. */
+const startedLoads = new WeakMap<Scope, Promise<unknown>>();
+/** Closed before its `handleApplication` started; the load is skipped. */
+const scopesSkippedForShutdown = new WeakSet<Scope>();
+
 /**
  * This function handles the `handleApplication` call for a plugin in a sequential manner.
  * It ensures the execution of `handleApplication` happens on one thread at a time for a given scope.
@@ -747,8 +754,10 @@ function sequentiallyHandleApplication(scope: Scope, plugin: PluginModule) {
 			throw new Error(`Invalid timeout value for ${scope.pluginName}. Expected a number, received: ${typeof timeout}`);
 		}
 		let whenResolved, timer;
+		let lockTimedOut = false;
 		const callback = () => {
 			clearTimeout(timer);
+			if (lockTimedOut) return;
 			whenResolved(sequentiallyHandleApplication(scope, plugin));
 		};
 		const store = Status.primaryStore;
@@ -763,21 +772,24 @@ function sequentiallyHandleApplication(scope: Scope, plugin: PluginModule) {
 			return new Promise((resolve, reject) => {
 				whenResolved = resolve;
 				timer = setTimeout(() => {
+					lockTimedOut = true;
 					reject(new Error(`Timeout waiting for lock on ${scope.pluginName} on behalf of ${scope.appName}`));
 				}, timeout + 5_000); // extra time for lock acquisition
 			});
 		}
 		try {
+			if (scopesSkippedForShutdown.has(scope) || scope.closed) {
+				scopesSkippedForShutdown.add(scope);
+				return;
+			}
 			// note that handleApplication can throw sync or async errors, need to run finally block for both
-			await withDeployAwareTimeout(
-				Promise.resolve(plugin.handleApplication(scope)).then(async () => {
-					// Wait for any initial entry handler loads to complete
-					// This ensures all async operations (like secureImport) finish before the component is marked as loaded
-					await scope.waitForInitialLoads();
-				}),
-				scope,
-				timeout
-			);
+			const handling = new Promise((resolve) => resolve(plugin.handleApplication(scope))).then(async () => {
+				// Wait for any initial entry handler loads to complete
+				// This ensures all async operations (like secureImport) finish before the component is marked as loaded
+				await scope.waitForInitialLoads();
+			});
+			startedLoads.set(scope, handling);
+			await withDeployAwareTimeout(handling, scope, timeout);
 		} catch (error) {
 			scope.disposeBearerValidators();
 			throw error;
@@ -1163,14 +1175,75 @@ export async function loadComponent(
 
 					// Track the close so the worker's shutdown path waits for it (and thus for any async
 					// native-runtime disposal, e.g. @harperfast/vite's dev server) before calling realExit.
+					let closingAfterLoad: Promise<unknown> | undefined;
+					let failedLoadClosed = false;
+					const closeAfterLoad = () => {
+						const closeFull = () => scope.close();
+						if (closingAfterLoad) {
+							if (failedLoadClosed) {
+								failedLoadClosed = false;
+								closingAfterLoad = closeScopeAfterLoad(
+									closingAfterLoad.catch(() => {}),
+									closeFull,
+									getTerminateTimeout() / 2
+								);
+							}
+							return closingAfterLoad;
+						}
+						const started = startedLoads.get(scope);
+						if (started) {
+							return (closingAfterLoad = closeScopeAfterLoad(started, closeFull, getTerminateTimeout() / 2));
+						}
+						scopesSkippedForShutdown.add(scope);
+						return (closingAfterLoad = closeFull());
+					};
 					onMessageByType(ITC_EVENT_TYPES.SHUTDOWN, (message) =>
-						closeScopeOnShutdown(() => scope.close(), message?.exitDeadline !== undefined)
+						closeScopeOnShutdown(closeAfterLoad, message?.exitDeadline !== undefined)
 					);
 					// SHUTDOWN reaches only the listeners registered when it arrives; a scope loaded after it closes here
-					if (isProcessShuttingDown())
-						closeScopeOnShutdown(() => scope.close(), getProcessExitDeadline() !== undefined);
+					if (isProcessShuttingDown()) closeScopeOnShutdown(closeAfterLoad, getProcessExitDeadline() !== undefined);
 
-					await sequentiallyHandleApplication(scope, extensionModule);
+					try {
+						await sequentiallyHandleApplication(scope, extensionModule);
+					} catch (error) {
+						scope.disposeBearerValidators();
+						// a lock wait that timed out after shutdown skipped this load is not a boot failure, and shutdown already closes the scope
+						if (scopesSkippedForShutdown.has(scope)) {
+							noteBootSkipped(entryApplication);
+							continue;
+						}
+						// Tear down the failed plugin's scope before advancing so watchers, secret-subscription
+						// holds, and close-listener resources (such as native dev-server runtimes) are released
+						// before the failure is reported or a retry/sibling load observes stale state.
+						const closeBoundMs = getTerminateTimeout() / 2;
+						const logCloseError = (closeError: unknown) => {
+							(scope.logger ?? harperLogger).error?.(
+								`Error closing component scope for ${componentStatusName} after failed load:`,
+								closeError
+							);
+						};
+						if (!closingAfterLoad) {
+							const started = startedLoads.get(scope);
+							const closeFailedScope = () =>
+								closeScope(scope, { listenerTimeoutMs: closeBoundMs, keepFailedEntryWatchers: true });
+							failedLoadClosed = true;
+							closingAfterLoad = started
+								? closeScopeAfterLoad(started, closeFailedScope, closeBoundMs)
+								: closeFailedScope();
+							await closingAfterLoad.catch(logCloseError);
+						} else {
+							await settleBeforeDeadline(
+								[closingAfterLoad.catch(logCloseError)],
+								Date.now() + closeBoundMs,
+								() => new Error('scope close timed out')
+							).catch(() => {});
+						}
+						throw error;
+					}
+					if (scopesSkippedForShutdown.has(scope)) {
+						noteBootSkipped(entryApplication);
+						continue;
+					}
 
 					// Mark component as loaded after successful handleApplication call
 					markLoadedUnlessReported(componentStatusName, `Component '${componentStatusName}' loaded successfully`);

@@ -35,8 +35,9 @@ jobs:
     runs-on: ubuntu-latest
     # A job that hits this cap is reported as `cancelled`, not `failure`, so it reads as non-red
     # on a required check. Every step below is capped in its own right and this sits above the
-    # largest shard's sum (37 on `main`), so a stall surfaces as a step failure and this stays a backstop.
-    timeout-minutes: 40
+    # largest shard's sum (48 on `main`, crash backtraces included), so a stall surfaces as a step
+    # failure and this stays a backstop.
+    timeout-minutes: 50
     strategy:
       fail-fast: false
       matrix:
@@ -64,7 +65,7 @@ jobs:
         include:
           - shard: main
             script: test:unit:main:core
-            timeout: 8
+            timeout: 12
           - shard: components
             script: test:unit:main:components
             timeout: 8
@@ -135,9 +136,17 @@ jobs:
 
         run: node --enable-source-maps ./dist/bin/harper.js install
 
+      # The runner's default core handling discards a crashed process, which leaves a native
+      # segfault (harper#3349, #2669, #1380) as one log line. A test step added below needs its own `ulimit`.
+      - name: Keep native crash cores
+        timeout-minutes: 1
+        run: |
+          mkdir -p "$RUNNER_TEMP/cores"
+          sudo sysctl -q -w kernel.core_pattern="$RUNNER_TEMP/cores/core.%e.%p.%t" || echo "::warning::native crash cores will not be kept"
+
       - name: 'Unit tests: ${{ matrix.shard }}'
         timeout-minutes: ${{ matrix.timeout }}
-        run: npm run ${{ matrix.script }}
+        run: ulimit -S -c "$(ulimit -H -c)" && npm run ${{ matrix.script }}
 
       # Its own process: the suite runs real installs, which close and recreate the `system`
       # database the other suites share, and the user-change subscriptions on it back off for up to a
@@ -147,12 +156,17 @@ jobs:
       - name: 'Unit tests: install'
         if: "!cancelled() && matrix.shard == 'resources-indexes' && steps.setup-harper.outcome == 'success'"
         timeout-minutes: 3
-        run: npm run test:unit:install
+        run: ulimit -S -c "$(ulimit -H -c)" && npm run test:unit:install
 
       - name: 'Unit tests: apitests'
         if: "!cancelled() && matrix.shard == 'components' && steps.setup-harper.outcome == 'success'"
         timeout-minutes: 3
-        run: npm run test:unit:apitests
+        run: ulimit -S -c "$(ulimit -H -c)" && npm run test:unit:apitests
+
+      - name: Native crash backtraces
+        if: failure()
+        timeout-minutes: 6
+        run: .github/scripts/print-core-backtraces.sh "$RUNNER_TEMP/cores"
 
   unit-test-source:
     name: Native Unit Test (${{ matrix.shard }}, Node.js v${{ matrix.node-version }})

@@ -78,7 +78,8 @@ export interface NormRequest {
 	profile: McpProfile;
 	/**
 	 * Client socket IP, for per-client rate limiting and the durable quota
-	 * hook (#1610). Adapters populate from `request.ip`; identity resolution
+	 * hook (#1610). Adapters populate it from Harper's `request.ip`, or
+	 * `clientAddressOf` on the operations Fastify; identity resolution
 	 * (socket vs trusted header) happens in `resolveClientIdentity`.
 	 */
 	clientIp?: string;

@@ -1,4 +1,5 @@
 const assert = require('assert');
+const { PassThrough } = require('node:stream');
 const { setTimeout: delay } = require('node:timers/promises');
 const { setupTestDBPath } = require('../testUtils');
 const { waitFor } = require('../waitFor');
@@ -22,6 +23,7 @@ const { writeKeyId } = require('#src/resources/DatabaseTransaction');
 const { IterableEventQueue } = require('#src/resources/IterableEventQueue');
 const { ClientError } = require('#src/utility/errors/hdbError');
 const { lockAttemptKey } = require('#src/resources/recordLock');
+const { createBlob } = require('#src/resources/blob');
 require('#src/server/serverHelpers/serverUtilities');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
@@ -1477,6 +1479,78 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 			const after = ClusterLockTest.primaryStore.getEntry(recordId);
 			assert.strictEqual(after.value.n, 13);
 			assert.ok(after.version > barrierPosition, 'stamped above the barrier position');
+		});
+	});
+
+	// harper#4080: the leader's second decision point, after its cluster round
+	describe('a cluster round that completes during a mid-scope commit', () => {
+		let BlobInTest;
+		before(function () {
+			BlobInTest = table({
+				table: 'ClusterLockBlobTest',
+				database: 'test',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'blob', type: 'Blob' },
+				],
+			});
+		});
+
+		it('gives the grant back, then acquires once the commit settles', async function () {
+			if (isLMDB) return this.skip();
+			this.timeout(15000);
+			// A coordinator retired without a successor makes the next one's first grant wait on a freshness
+			// barrier, which this test holds open.
+			useSoloTransport();
+			const warmUp = await ClusterLockTest.lock(id(), { hold: true, lease: 5000 });
+			await warmUp.unlock();
+			unregisterClusterLockTransport('test', true);
+			assert.strictEqual(ClusterLockTest.lockCoordinator, undefined, 'retires the coordinator');
+			const recordId = id();
+			await ClusterLockTest.put({ id: recordId, n: 1 });
+			let openBarrier;
+			const barrier = new Promise((resolve) => (openBarrier = resolve));
+			let barriers = 0;
+			useSoloTransport({
+				establishLockFreshness: async (_database, _table, _key, dependencies) => {
+					if (++barriers === 1) await barrier;
+					return dependencies ?? [];
+				},
+			});
+			const slow = new PassThrough();
+			try {
+				const ctx = {};
+				await transaction(ctx, async (txn) => {
+					await ClusterLockTest.put({ id: `${recordId}-head`, n: 1 }, ctx);
+					const waiting = ClusterLockTest.lock(recordId, { timeout: 10000 }, ctx).then(
+						(value) => ({ value }),
+						(error) => ({ error })
+					);
+					await waitFor(() => barriers === 1, { message: 'the cluster round should park in its freshness barrier' });
+					await BlobInTest.put({ id: `${recordId}-blob`, blob: createBlob(slow) }, ctx);
+					const committing = txn.commit();
+					slow.write(Buffer.alloc(16384, 'a'));
+					await waitFor(() => txn.committing, { message: 'the head blob save should park the mid-scope commit' });
+					openBarrier();
+					await waitFor(() => (txn.commitSettleWaiters?.length ?? 0) > 0, {
+						message: 'the leader should give the grant back and wait out the commit',
+					});
+					slow.end(Buffer.alloc(16384, 'b'));
+					await committing;
+					const locked = await waiting;
+					assert.ifError(locked.error);
+					const handle = ClusterLockTest._txnForContext(ctx).recordLockFor(
+						ClusterLockTest.primaryStore,
+						writeKeyId(recordId)
+					);
+					assert.ok(handle && !handle.isExpired(), 'the lock is live for the rest of the scope');
+					locked.value.set('n', 2);
+				});
+				assert.strictEqual((await ClusterLockTest.get(recordId)).n, 2);
+			} finally {
+				openBarrier();
+				if (!slow.writableEnded) slow.end();
+			}
 		});
 	});
 });

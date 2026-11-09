@@ -9,7 +9,11 @@
 //   see each other, so holders overlap across threads and increments are lost.
 // POST /LockHold/ { id, lease } — take a held lock ({ hold: true }) and return without releasing it;
 //   only its lease ends it (the abandoned-holder case).
+// POST /LockAcrossCheckpoint/ { id } — two transaction-scoped lock(id) waiters wake while the request's
+//   own mid-scope commit is held open on a blob save; responds with what settled before that commit did,
+//   then increments n under the lock (harper#4080).
 import { threadId } from 'node:worker_threads';
+import { PassThrough } from 'node:stream';
 import { readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -58,6 +62,54 @@ export class LockHold extends Resource {
 			worker: threadId,
 			n: record.getProperty('n'),
 		};
+	}
+}
+
+function settle(promise) {
+	return promise.then(
+		(value) => ({ value }),
+		(error) => ({ error })
+	);
+}
+
+async function until(condition) {
+	const deadline = Date.now() + 10_000;
+	while (!condition()) {
+		if (Date.now() > deadline) throw new Error('the checkpoint fixture timed out');
+		await sleep(1);
+	}
+}
+
+export class LockAcrossCheckpoint extends Resource {
+	static loadAsInstance = false;
+
+	async post(query, body) {
+		const id = body?.id ?? 'checkpoint';
+		const context = this.getContext();
+		const contender = await tables.Counter.lock(id, { hold: true, lease: 10_000 }, {});
+		await tables.Counter.put({ id: `${id}-head`, n: 0 }, context);
+		const waiters = [
+			settle(tables.Counter.lock(id, { timeout: 5_000 }, context)),
+			settle(tables.Counter.lock(id, { timeout: 5_000 }, context)),
+		];
+		const settledEarly = [];
+		for (const waiter of waiters) waiter.then((outcome) => settledEarly.push(outcome.error?.message ?? 'admitted'));
+		const slow = new PassThrough();
+		await tables.CheckpointBlob.put({ id, blob: createBlob(slow) }, context);
+		const txn = context.transaction;
+		const committing = txn.commit();
+		slow.write(Buffer.alloc(16384, 'a'));
+		await until(() => txn.committing);
+		await contender.unlock();
+		await until(() => settledEarly.length > 0 || (txn.commitSettleWaiters?.length ?? 0) >= 2);
+		const beforeCommitSettled = [...settledEarly];
+		slow.end(Buffer.alloc(16384, 'b'));
+		await committing;
+		const [led, followed] = await Promise.all(waiters);
+		const failure = led.error ?? followed.error;
+		if (failure) return { settledEarly: beforeCommitSettled, error: failure.message, status: failure.statusCode };
+		led.value.set('n', (led.value.getProperty('n') ?? 0) + 1);
+		return { settledEarly: beforeCommitSettled, worker: threadId };
 	}
 }
 
