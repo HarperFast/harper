@@ -522,7 +522,7 @@ function hasLiveOrDeletedEntry(store, id): boolean {
  */
 type RecordStamp = number | object | null;
 
-// held by no entry: a lookup that found a record it did not read (a tombstone, or one created while it resolved)
+// held by no entry: a lookup under another name that found only a tombstone for it, after it resolved
 const UNREAD_RECORD: RecordStamp = Object.freeze({});
 
 function stampOf(entry: RecordEntry | undefined): RecordStamp {
