@@ -133,6 +133,8 @@ function validateStudioPages(component: string, studio: unknown, problems: strin
 			problems.push(`${label}.id '${id}' repeats an earlier page's id`);
 			continue;
 		}
+		// Claimed by a page rejected below as well, so fixing it adds a page rather than swapping out a later one.
+		ids.add(id);
 		if (typeof name !== 'string' || name.trim() === '') {
 			problems.push(`${label} ('${id}') must have a non-empty name`);
 			continue;
@@ -155,7 +157,6 @@ function validateStudioPages(component: string, studio: unknown, problems: strin
 			problems.push(`${label} ('${id}') holds a value that cannot be returned as JSON`);
 			continue;
 		}
-		ids.add(id);
 		valid.push(accepted);
 	}
 	return valid;
@@ -241,10 +242,13 @@ async function readComponentStudioBlock(directory: string, readTextFile: ReadTex
 			if (error.code === 'ENOENT' || error.code === 'ENOTDIR') continue;
 			throw error;
 		}
-		// The loader's own parse, which keeps what parsed around a YAML error such as a duplicate key. The root
-		// config's strict parse is a separate contract.
+		// The loader reads past every YAML error; this reads past a duplicate key only, which leaves each value under
+		// its own key. An unclosed quote folds the rest of the file, secrets included, into one string every role reads.
 		try {
-			return parseDocument(contents, { logLevel: 'error' }).toJSON()?.studio;
+			const parsed = parseDocument(contents, { logLevel: 'error' });
+			const refused = parsed.errors.find((error) => error.code !== 'DUPLICATE_KEY');
+			if (refused) throw refused;
+			return parsed.toJSON()?.studio;
 		} catch (error) {
 			throw new ConfigParseError(configFilePath, error);
 		}

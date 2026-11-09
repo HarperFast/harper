@@ -194,6 +194,7 @@ studio:
     - { id: good, name: Again, placement: config }
     - just-a-string
     - { name: Missing id, placement: tab }
+    - { id: no-name, name: Named, placement: tab }
 `
 			);
 			const { warnings, logger } = captureWarnings();
@@ -207,6 +208,7 @@ studio:
 				/studio\.pages\[4\]\.id 'good' repeats/,
 				/studio\.pages\[5\] must be a map/,
 				/studio\.pages\[6\]\.id must be a string matching/,
+				/studio\.pages\[7\]\.id 'no-name' repeats/,
 			])
 				assert.match(warnings[0], problem);
 			assert.match(warnings[0], /component 'mixed'/);
@@ -275,6 +277,25 @@ studio:
 				['first:tab', 'second:config']
 			);
 			assert.deepStrictEqual(warnings, []);
+		});
+
+		it('refuses a component config with an unclosed quote, which would fold what follows into a page', async () => {
+			writeComponent(
+				'unclosed',
+				'studio:\n  pages:\n    - id: page\n      name: Page\n      placement: tab\n      description: "Redirects\n' +
+					`plugin:\n  apiKey: ${SECRET}\n`
+			);
+			writeComponent('harper-redirects', redirectsConfig);
+			const { warnings, logger } = captureWarnings();
+			const configuration = await createStudioConfigurationReader(logger)();
+			assert.deepStrictEqual(
+				configuration.pages.map((page) => `${page.component}.${page.id}`),
+				['harper-redirects.redirects', 'harper-redirects.rules']
+			);
+			assert.ok(!JSON.stringify(configuration).includes(SECRET));
+			assert.strictEqual(warnings.length, 1);
+			assert.match(warnings[0], /component 'unclosed': its config could not be read: .*MISSING_CHAR/);
+			assert.ok(!warnings[0].includes(SECRET));
 		});
 
 		it('isolates a component config the loader could not read either, without quoting its source', async () => {

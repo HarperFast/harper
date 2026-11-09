@@ -1975,10 +1975,11 @@ Operations for reading and updating Harper configuration.
 
 Detailed documentation: [Configuration Overview](../configuration/overview.md)
 
-| Operation           | Description                                   | Role Required |
-| ------------------- | --------------------------------------------- | ------------- |
-| `set_configuration` | Modifies Harper configuration file parameters | super_user    |
-| `get_configuration` | Returns the current Harper configuration      | super_user    |
+| Operation                  | Description                                           | Role Required      |
+| -------------------------- | ----------------------------------------------------- | ------------------ |
+| `set_configuration`        | Modifies Harper configuration file parameters         | super_user         |
+| `get_configuration`        | Returns the current Harper configuration              | super_user         |
+| `get_studio_configuration` | Returns Studio's cluster settings and component pages | any signed-in user |
 
 ### `set_configuration`
 
@@ -2000,6 +2001,16 @@ Returns the full current configuration object.
 
 ```json
 { "operation": "get_configuration" }
+```
+
+### `get_studio_configuration`
+
+<VersionBadge version="v5.4.0" />
+
+Returns the Studio settings written with `set_configuration` (`studio_navigation`, `studio_landing`) and the pages components declare under `studio.pages`, and nothing else from any configuration. Every signed-in user can call it. See [Customizing Studio](../studio/customization.md#get_studio_configuration).
+
+```json
+{ "operation": "get_studio_configuration" }
 ```
 
 ---

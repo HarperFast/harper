@@ -160,6 +160,11 @@ suite('Component: get_studio_configuration', (ctx: ContextWithHarper) => {
 			pages: FIXTURE_PAGES,
 		});
 
+		// No application holds the name here, so its entry is only these settings, which a drop of `studio` keeps.
+		const dropped = await call({ operation: 'drop_component', project: 'studio' });
+		strictEqual(dropped.status, 200, JSON.stringify(dropped.body));
+		strictEqual((await studioConfiguration()).landing, 'studio-pages.redirects');
+
 		const statusAfter = await call({ operation: 'get_status' });
 		strictEqual(statusAfter.body.restartRequired, false, 'a Studio setting is UI-only and needs no restart');
 
