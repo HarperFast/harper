@@ -7974,7 +7974,7 @@ export function makeTable(options): TableResourceClass {
 			this.#bindWriteLock(write, id, transaction);
 			this.#savingOperation = write;
 			// The hooks run before `addWrite` so the derived values are on the record at commit (the
-			// txn `before` slot runs after commit). They see the payload before table validation, and a
+			// txn `before` slot runs after commit). They see the payload before whole-record validation, and a
 			// tracked-instance mutation that sets the source via accessors after update() is not seen.
 			let modelHooksBefore: WriteHook | undefined;
 			try {
