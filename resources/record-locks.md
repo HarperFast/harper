@@ -117,8 +117,9 @@ Consequences that shape the code:
   lock at its first write; and, for a `lock()` from a pre-commit hook in the cascade, one whose own commit already
   landed and released its locks, so nothing would release a handle registered there. Holding the key while waiting would deadlock a pre-commit hook's own `lock()` on it. A hold waits
   only once the root reads CLOSED: it survives the commit and stages nothing until saved, so in pre-commit work
-  it is admitted as before. The instance holding a scoped handle is refused with a 409 on re-entry instead: that
-  commit releases the handle, so returning it would leave the caller unlocked; it awaits the commit and locks again
+  it is admitted as before. The instance holding a scoped handle is refused with a 409 on re-entry instead, an
+  upgrade to a hold included: that commit releases the handle (and may be committing its staged write), so
+  returning it would leave the caller unlocked; it awaits the commit and locks again
   through `Table.lock()`, its own handle being released (harper#4081). Two more exceptions keep the earlier outcome. The
   scope's final commit (`scopeEnding`) is not waited out. A `lock()` made by the scope's own pre-commit hook
   (`operation.before`, a source write-through) while that hook runs belongs to the commit, which awaits it:
@@ -131,7 +132,8 @@ Consequences that shape the code:
   commit awaits it. Sibling-database links share the root but commit on their own, so the link, not the root,
   decides. The marker also names the hook's write: a holder write follows "One commit in flight per lock" below.
   A chained link's hook runs after the head committed, so its `lock()` of a head-database record gets the 409
-  above. A commit that awaits a `lock()` started
+  above; on the scope's final commit the head releases the context first, so after the hook's first await it
+  resolves a fresh link instead (harper#4122). A commit that awaits a `lock()` started
   outside its hook still waits until that `lock()` gives up.
 - **Release.** Every handle — scoped or hold — is registered in `link.recordLocks` and kept on the
   locked instance as `#lockHandle`; every commit or abort calls `releaseRecordLocks()`, which calls
@@ -367,9 +369,9 @@ unlock as before.
 
 **A hook's synchronous part has not seen its write apply (harper#4112).** `save()` marks a write saved, runs its
 `before` hook, then applies it. While a hook's synchronous part runs (`syncCommitHooks`), a save of the same record
-on the same link would apply first and be overwritten, so it is refused with a 409, locked or not (a rejected
-promise at top level), and changing a lock-writable instance whose own write runs the hook is refused in
-`[ASSERT_TRACKED_WRITABLE]`: that write stores the instance's changes object, so a refused save of them would land
+would apply first and be overwritten, so it is refused with a 409, locked or not and on any link (only the hook
+can be saving then; a rejected promise at top level), and changing a lock-writable instance whose own write runs the hook is refused (`update()` and
+`[ASSERT_TRACKED_WRITABLE]`, which every setter passes): that write stores the instance's changes object, so a refused save of them would land
 with it. After the hook's first await the outer write has applied: an unlocked same-record write chains after it,
 and a holder write is refused as above. On a self-committing link, `update()` through the lock whose commit runs
 the hook is refused too: nothing would commit the deferred write, and left staged it would refuse a fresh `lock()`

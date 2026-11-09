@@ -726,7 +726,6 @@ export type TransactionWrite = {
 	entry?: Partial<Entry>;
 	before?: () => void | Promise<void>;
 	beforeIntermediate?: () => void | Promise<void>;
-	// the instance whose pending changes this write stores
 	trackedInstance?: object;
 	// stages the record and its audit entry before returning: staging reads what it appended (stagedAudit)
 	// as soon as it returns. A returned promise is only a completion to wait for.
@@ -1012,15 +1011,15 @@ function runCommitHook(link: DatabaseTransaction, write: TransactionWrite): void
 	return result;
 }
 
-function unappliedHookWriteTo(link: DatabaseTransaction, operation: TransactionWrite): boolean {
+// on any transaction: only the hook can be saving while its synchronous part runs
+function unappliedHookWriteTo(operation: TransactionWrite): boolean {
 	for (const hook of syncCommitHooks) {
 		const write = hook.write;
-		if (hook.link === link && write.store === operation.store && write.keyId === operation.keyId) return true;
+		if (write.store === operation.store && write.keyId === operation.keyId) return true;
 	}
 	return false;
 }
 
-/** Whether a write storing this instance's changes is in its pre-commit hook's synchronous part: saved, not applied. */
 export function instanceWriteInSyncCommitHook(instance: object): boolean {
 	for (const hook of syncCommitHooks) if (hook.write.trackedInstance === instance) return true;
 	return false;
@@ -1182,7 +1181,7 @@ export class DatabaseTransaction implements Transaction {
 	// unlike `snapshotFree`, which lock() also sets on a scope that committed nothing; sticky, since a
 	// scope can end while its later segment is still committing
 	rotatedAfterCommit = false;
-	// a mid-scope commit left the scope CLOSED because open read iterators still hold its native handle
+	// set when open read iterators kept a mid-scope commit from reopening the scope; sticky until the scope ends
 	closedForReadIterators = false;
 	// Set while commit() is parked in its pre-commit await (`before`/`beforeIntermediate` completions —
 	// in practice a blob's durable file write). The write set is sealed and the caller is awaiting the
@@ -2694,7 +2693,7 @@ export class DatabaseTransaction implements Transaction {
 			syncCommitHooks.length > 0 &&
 			!operation.saved &&
 			operation.key !== undefined &&
-			unappliedHookWriteTo(this, operation)
+			unappliedHookWriteTo(operation)
 		) {
 			operation.dropped = true;
 			this.detachWrite(operation);
@@ -4091,7 +4090,6 @@ export class DatabaseTransaction implements Transaction {
 		this.closedForReadIterators = false;
 	}
 
-	/** Whether a resources/transaction.ts scope still owns this instance: it has not finished or aborted. */
 	get scopeOwned(): boolean {
 		return this.#scopeOwned;
 	}

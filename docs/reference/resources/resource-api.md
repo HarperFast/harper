@@ -513,7 +513,7 @@ Harper waits for the source to confirm the write before committing to the local 
 
 <VersionBadge type="changed" version="v5.4.0" />
 
-A source method that writes the record being written, through the context it is given, must do so after its first `await`, by when the cached write has been applied; that write then follows it. On RocksDB, one made before that is refused with `409`, since the cached write would overwrite it. Await (or catch) every write a source method makes: a refused one is otherwise an unhandled rejection, and the cached write still commits.
+A source method that writes the record being written must do so after its first `await`, by when the cached write has been applied; that write then follows it. On RocksDB, one made before that is refused with `409`, since the cached write would overwrite it. When the cached write goes through a `lock()` holder, the source method can not write that record through the holder at all (`409`, the lock stays usable), and before its first `await` it can not change the holder either. Await (or catch) every write a source method makes: a refused one is otherwise an unhandled rejection, and the cached write still commits.
 
 **Loading from source in write methods:** Methods other than `get()` do not automatically load data from the source. Call `ensureLoaded()` first if you need the existing record:
 

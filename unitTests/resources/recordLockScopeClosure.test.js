@@ -32,7 +32,6 @@ const isCommittedDatabase = (error) =>
 const isEndedScope = (error) =>
 	error?.statusCode === 500 && /Transaction was closed while waiting for a record lock/.test(error.message);
 
-// lock() in a transaction() scope whose link is CLOSED but whose scope has not ended (harper#4081)
 describe('lock() on a transaction() scope closed by its own commit', function () {
 	this.timeout(10000);
 	let Head;
@@ -108,6 +107,21 @@ describe('lock() on a transaction() scope closed by its own commit', function ()
 				fresh.set('n', 3);
 			});
 			assert.strictEqual((await Head.get(recordId)).n, 3);
+			await lockableAfterwards(Head, recordId);
+		});
+
+		it('is refused with 409 for an upgrade to a hold too, since the commit may be committing its staged write', async function () {
+			const recordId = id();
+			await Head.put({ id: recordId, n: 1 });
+			await transaction({}, async (txn) => {
+				const locked = await Head.lock(recordId);
+				locked.set('n', 2);
+				const committing = txn.commit();
+				const upgrade = await settle(locked.lock({ hold: true, lease: 5000 }));
+				assert.ok(isRelockDuringCommit(upgrade.error), upgrade.error?.message ?? 'the upgrade was admitted');
+				await committing;
+			});
+			assert.strictEqual((await Head.get(recordId)).n, 2);
 			await lockableAfterwards(Head, recordId);
 		});
 

@@ -15,7 +15,6 @@ const isLockedChangeRefusal = (error) =>
 const isOwnHookRefusal = (error) =>
 	error?.statusCode === 409 && /from its own commit's pre-commit hook is refused/.test(error.message);
 
-// A source's write-through hook writing the record its own write is committing (harper#4112).
 describe('pre-commit hook writes to the record their own write is committing', function () {
 	this.timeout(10000);
 	let Hooked;
@@ -151,27 +150,33 @@ describe('pre-commit hook writes to the record their own write is committing', f
 		assert.deepStrictEqual(stored(middleId), { n: 5 });
 	});
 
-	it('an unlocked instance write outside transaction() refuses a same-record write from its hook', async function () {
-		if (isLMDB) return this.skip();
-		const recordId = id();
-		await Hooked.put({ id: recordId, n: 1 });
-		const context = {};
-		let refusal;
-		// an instance write, not a static verb: a static verb on this context runs in a transaction of its own
-		hookOnce((_id, _record, hookContext) => {
-			const sameRecord = new Hooked(recordId, hookContext);
+	// a static verb on this context runs in a transaction of its own; an instance write joins the committing one
+	const hookSaves = {
+		'a static verb': (recordId, context) => Hooked.put({ id: recordId, n: 1, b: 9 }, context),
+		'an instance write': (recordId, context) => {
+			const sameRecord = new Hooked(recordId, context);
 			sameRecord.update({ b: 9 });
-			return Promise.resolve(sameRecord.save()).catch((error) => {
-				refusal = error;
-			});
+			return sameRecord.save();
+		},
+	};
+	for (const [how, hookSave] of Object.entries(hookSaves))
+		it(`an unlocked instance write outside transaction() refuses a same-record write from its hook (${how})`, async function () {
+			if (isLMDB) return this.skip();
+			const recordId = id();
+			await Hooked.put({ id: recordId, n: 1 });
+			const context = {};
+			let refusal;
+			hookOnce((_id, _record, hookContext) =>
+				Promise.resolve(hookSave(recordId, hookContext)).catch((error) => {
+					refusal = error;
+				})
+			);
+			const record = new Hooked(recordId, context);
+			record.update({ n: 2 });
+			await record.save();
+			assert.ok(isSyncWindowRefusal(refusal), refusal?.message);
+			assert.deepStrictEqual(stored(recordId), { n: 2 });
 		});
-		const record = new Hooked(recordId, context);
-		record.update({ n: 2 });
-		await record.save();
-		assert.strictEqual(context.transaction.saveCommits, true, 'premise: the write committed on its own');
-		assert.ok(isSyncWindowRefusal(refusal), refusal?.message);
-		assert.deepStrictEqual(stored(recordId), { n: 2 });
-	});
 
 	describe('through a record lock', function () {
 		before(function () {
@@ -187,27 +192,35 @@ describe('pre-commit hook writes to the record their own write is committing', f
 			return { recordId, context, holder };
 		}
 
-		// F-1195: the refused save's value was stored by the outer save it was meant not to touch
-		for (const inTransaction of [false, true])
-			it(`the hook can not change the instance whose save is committing, and the hold stays writable (in transaction(): ${inTransaction})`, async function () {
-				const { recordId, context, holder } = await holdRecord();
-				let refusal;
-				hookOnce(() => {
-					try {
-						holder.set('n', 9);
-					} catch (error) {
-						refusal = error;
-					}
+		const changes = {
+			'set()': (holder) => holder.set('n', 9),
+			'update()': (holder) => holder.update({ n: 9 }),
+			'patch()': (holder) => holder.patch({ n: 9 }),
+			'addTo()': (holder) => holder.addTo('n', 7),
+		};
+		for (const [change, makeChange] of Object.entries(changes))
+			for (const inTransaction of [false, true])
+				it(`the hook can not change the instance whose save is committing through ${change}, and the hold stays writable (in transaction(): ${inTransaction})`, async function () {
+					const { recordId, context, holder } = await holdRecord();
+					let refusal;
+					hookOnce(() => {
+						try {
+							Promise.resolve(makeChange(holder)).catch((error) => {
+								refusal = error;
+							});
+						} catch (error) {
+							refusal = error;
+						}
+					});
+					holder.set('n', 2);
+					if (inTransaction) await transaction(context, () => holder.save());
+					else await holder.save();
+					assert.ok(isLockedChangeRefusal(refusal), refusal?.message);
+					assert.deepStrictEqual(stored(recordId), { n: 2 });
+					holder.set('n', 3);
+					await holder.save();
+					assert.deepStrictEqual(stored(recordId), { n: 3 });
 				});
-				holder.set('n', 2);
-				if (inTransaction) await transaction(context, () => holder.save());
-				else await holder.save();
-				assert.ok(isLockedChangeRefusal(refusal), refusal?.message);
-				assert.deepStrictEqual(stored(recordId), { n: 2 });
-				holder.set('n', 3);
-				await holder.save();
-				assert.deepStrictEqual(stored(recordId), { n: 3 });
-			});
 
 		it('after an await the hook changes the instance, its save is refused, and the change stays pending', async function () {
 			const { recordId, holder } = await holdRecord();
