@@ -684,6 +684,38 @@ describe('mqtt.ts CONNECT through a component’s server.getUser', () => {
 		}
 	});
 
+	it('refuses a CONNECT that read a role downgraded before a later CONNECT of the same memoized user completed', async () => {
+		await seedUsers([
+			{
+				username: 'mqtt_raced',
+				active: true,
+				role: { id: 'mqtt_raced_role', role: 'mqtt_raced_role', permission: { super_user: true } },
+			},
+		]);
+		let userChanges = 0;
+		userModule.onUserChange(() => userChanges++);
+		const memoized = structuredClone(userModule.getUserWithRole('mqtt_raced'));
+		const pending = [];
+		server.getUser = () => new Promise((resolve) => pending.push(() => resolve(memoized)));
+		const earlier = connect(open, { username: 'mqtt_raced', password: 'secret' });
+		await waitFor(() => pending.length === 1, { message: 'the earlier CONNECT never reached getUser' });
+		const changesBefore = userChanges;
+		await databases.system.hdb_role.put({ id: 'mqtt_raced_role', role: 'mqtt_raced_role', permission: {} });
+		await waitFor(() => userChanges > changesBefore, { message: 'the downgrade was never notified' });
+		const later = connect(open, { username: 'mqtt_raced', password: 'secret' });
+		await waitFor(() => pending.length === 2, { message: 'the later CONNECT never reached getUser' });
+		pending[1]();
+		const laterClient = await later;
+		pending[0]();
+		const earlierClient = await earlier;
+		try {
+			assert.deepStrictEqual((await earlierClient.subscribe(`${protectedTable()}/#`)).granted, [NOT_AUTHORIZED]);
+		} finally {
+			earlierClient.socket.handlers.close();
+			laterClient.socket.handlers.close();
+		}
+	});
+
 	it('refuses a copy of a user dropped while a login under another name resolved', async () => {
 		await seedUsers([
 			{ username: 'mqtt_copied', active: true, role: { id: 'mqtt_copied_role', permission: { super_user: true } } },

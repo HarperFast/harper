@@ -479,6 +479,17 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 			}
 		});
 
+		it('keeps a memoized user’s own name recordless however many record-backed logins reach it', async () => {
+			const unbacked = { username: 'lookup_many_subject', role: { role: 'component_role', permission: {} } };
+			user.trackUserRecords(unbacked, user.userRecordVersions('lookup_many_token'));
+			const logins = Array.from({ length: 70 }, (_, index) => lookupUser({ username: `lookup_many_${index}` }));
+			await testUtils.seedUsers(logins);
+			for (const login of logins) {
+				assert.strictEqual(user.trackUserRecords(unbacked, user.userRecordVersions(login.username)).recordless, false);
+			}
+			assert.strictEqual(user.isRecordlessPrincipal(unbacked), true);
+		});
+
 		it('hands the request a recordless view of a component principal for a name with no record, cached or not', async () => {
 			const getUser = server.getUser;
 			server.getUser = async (username) => ({ username, role: { role: 'component_role', permission: {} } });

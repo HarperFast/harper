@@ -594,6 +594,8 @@ const PROVENANCE = Symbol('record provenance');
 // A user resolved outside this module (a component's server.getUser), which may not take a property: the
 // first lookup that checked it against each name, its own or a login name whose record admitted it
 const trackedProvenance = new WeakMap<User, Map<unknown, UserProvenance>>();
+// bounds the login names one memoized user keeps a first lookup for; its own name's is never dropped
+const MAX_TRACKED_NAMES = 64;
 
 function provenanceOf(username: string, entries: UserEntries): UserProvenance {
 	return {
@@ -687,7 +689,16 @@ function trackUserRecords(user: User, versions: UserProvenance): UserProvenance 
 	let firsts = trackedProvenance.get(user);
 	if (!firsts) trackedProvenance.set(user, (firsts = new Map()));
 	const first = firsts.get(provenance.username);
-	if (!first) firsts.set(provenance.username, provenance);
+	if (!first) {
+		if (firsts.size >= MAX_TRACKED_NAMES) {
+			for (const name of firsts.keys()) {
+				if (name === user.username) continue;
+				firsts.delete(name);
+				break;
+			}
+		}
+		firsts.set(provenance.username, provenance);
+	}
 	// a record created under its name since is another principal's
 	else if (first.recordless) provenance.recordless = true;
 	else if (first.userStamp !== null && provenance.userStamp === null) provenance = first;
@@ -745,8 +756,17 @@ async function getComponentUser(
 	const versions = userRecordVersions(username);
 	const user = await resolver.getUser(username, password, request as any);
 	const provenance = trackUserRecords(user, versions);
-	if (admission && provenance) admission.provenance = firstLookup(user, provenance.username);
+	if (admission && provenance) {
+		const first = firstLookup(user, provenance.username);
+		// lookups complete in any order, so one that read other records than the first may hold a role changed since
+		admission.provenance =
+			first.recordless || sameRecords(first, provenance) ? first : { ...first, userStamp: UNREAD_RECORD };
+	}
 	return user;
+}
+
+function sameRecords(a: UserProvenance, b: UserProvenance): boolean {
+	return a.roleId === b.roleId && isEqual(a.userStamp, b.userStamp) && isEqual(a.roleStamp, b.roleStamp);
 }
 
 function recordedProvenance(user: User, admitted?: UserProvenance): UserProvenance | undefined {
