@@ -162,6 +162,71 @@ describe('owner-only modes for files that can hold secrets (harper#1925)', funct
 			assert.strictEqual(modeOf(staged), 0o600);
 		});
 
+		describe('run as root', function () {
+			// Root replacing a service-owned config would otherwise leave a root-owned 0o600 file the service
+			// cannot read. The test user plays the service; chowning to its own uid and gid is permitted.
+			let restoreGetuid;
+			let chowns;
+			let restoreChown;
+			let restoreFchown;
+
+			beforeEach(function () {
+				const getuid = process.getuid;
+				process.getuid = () => 0;
+				restoreGetuid = () => {
+					process.getuid = getuid;
+				};
+				chowns = [];
+				restoreChown = wrapFs('chownSync', (original, file, uid, gid) => {
+					chowns.push({ uid, gid });
+					return original(file, uid, gid);
+				});
+				restoreFchown = wrapFs('fchownSync', (original, fd, uid, gid) => {
+					chowns.push({ uid, gid });
+					return original(fd, uid, gid);
+				});
+			});
+
+			afterEach(function () {
+				restoreGetuid?.();
+				restoreChown?.();
+				restoreFchown?.();
+			});
+
+			for (const durable of [false, true]) {
+				it(`gives the file back to the owner of the file it replaces, with its owner bits (durable: ${durable})`, function () {
+					const target = path.join(testRoot, 'config.yaml');
+					writeWithMode(target, 'old\n', 0o400);
+					const { uid, gid } = fs.statSync(target);
+					atomicWriteFile(target, 'new\n', { ownerOnly: true, durable });
+					assert.deepStrictEqual(chowns, [{ uid, gid }]);
+					assert.strictEqual(modeOf(target), 0o400);
+					assert.strictEqual(fs.statSync(target).uid, uid);
+				});
+			}
+
+			it("gives a new file to its directory's owner, at 0o600", function () {
+				const target = path.join(testRoot, 'state.json');
+				const { uid, gid } = fs.statSync(testRoot);
+				atomicWriteFile(target, '{}\n', { ownerOnly: true });
+				assert.deepStrictEqual(chowns, [{ uid, gid }]);
+				assert.strictEqual(modeOf(target), 0o600);
+			});
+
+			it('removes its temp file when the chown fails', function () {
+				const target = path.join(testRoot, 'config.yaml');
+				writeWithMode(target, 'old\n', 0o600);
+				restoreChown();
+				const eperm = Object.assign(new Error('EPERM: operation not permitted, chown'), { code: 'EPERM' });
+				restoreChown = wrapFs('chownSync', () => {
+					throw eperm;
+				});
+				assert.throws(() => atomicWriteFile(target, 'new\n', { ownerOnly: true }), eperm);
+				assert.deepStrictEqual(tempFilesIn(testRoot), []);
+				assert.strictEqual(fs.readFileSync(target, 'utf8'), 'old\n');
+			});
+		});
+
 		it('leaves the file, its mode and its mtime alone when an unchanged write is skipped', function () {
 			const target = path.join(testRoot, 'config.yaml');
 			writeWithMode(target, 'same\n', 0o664);

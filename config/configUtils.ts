@@ -149,7 +149,8 @@ type AtomicWriteOptions = RenameRetryOptions & {
 	/**
 	 * For content that can hold a secret. On POSIX the file is created owner-only before its first byte, and
 	 * replacing a file this user owns keeps only its owner bits, so a narrower mode survives; another user's
-	 * file is replaced at 0o600. Ignored on Windows, where access comes from the directory's ACL.
+	 * file is replaced at 0o600. Run as root, the file keeps the owner (and owner bits) of the file it
+	 * replaces, or its directory's owner. Ignored on Windows, where access comes from the directory's ACL.
 	 */
 	ownerOnly?: boolean;
 	/** The file whose mode `ownerOnly` must not widen, when this write is published over it by a later rename. */
@@ -173,20 +174,33 @@ function syncPathSync(targetPath: string, flags: 'r' | 'r+') {
 	}
 }
 
-function ownerOnlyMode(replacedPath: string): number {
+type OwnerOnlyTarget = { mode: number; owner?: { uid: number; gid: number } };
+
+function ownerOnlyTarget(replacedPath: string): OwnerOnlyTarget {
 	const replaced = fs.statSync(replacedPath, { throwIfNoEntry: false });
+	const uid = process.getuid?.();
+	if (uid === 0) {
+		// Root hands the file to the owner of what it replaces, or of its directory, so a root-run CLI on a
+		// non-root install leaves the service files it can still read.
+		const owner = replaced ?? fs.statSync(path.dirname(replacedPath));
+		return {
+			mode: replaced ? replaced.mode & hdbTerms.SECRET_FILE_PERMISSIONS : hdbTerms.SECRET_FILE_PERMISSIONS,
+			owner: owner.uid === 0 ? undefined : { uid: owner.uid, gid: owner.gid },
+		};
+	}
 	// Another user's owner bits say nothing about this process's access to the file it is about to own.
 	// getuid is absent on Android; with no uid to compare, nothing narrower than owner-only is kept.
-	if (!replaced || replaced.uid !== process.getuid?.()) return hdbTerms.SECRET_FILE_PERMISSIONS;
-	return replaced.mode & hdbTerms.SECRET_FILE_PERMISSIONS;
+	if (!replaced || replaced.uid !== uid) return { mode: hdbTerms.SECRET_FILE_PERMISSIONS };
+	return { mode: replaced.mode & hdbTerms.SECRET_FILE_PERMISSIONS };
 }
 
 // Exclusive, so the file is this call's own and has `mode` (less umask) from creation, before any byte is written.
-function writeTempFileSync(tempPath: string, content, mode: number, durable: boolean) {
+function writeTempFileSync(tempPath: string, content, { mode, owner }: OwnerOnlyTarget, durable: boolean) {
 	try {
 		if (durable) {
 			const fd = fs.openSync(tempPath, 'wx', mode);
 			try {
+				if (owner) fs.fchownSync(fd, owner.uid, owner.gid);
 				fs.writeFileSync(fd, content);
 				fsyncTolerantSync(fd);
 			} finally {
@@ -194,6 +208,7 @@ function writeTempFileSync(tempPath: string, content, mode: number, durable: boo
 			}
 		} else {
 			fs.writeFileSync(tempPath, content, { flag: 'wx', mode });
+			if (owner) fs.chownSync(tempPath, owner.uid, owner.gid);
 		}
 	} catch (err) {
 		// The open succeeds before the write runs out of room, leaving the temp file behind. EEXIST
@@ -277,11 +292,11 @@ export function atomicWriteFile(
 	// Opt-in: skipping means no mtime bump, so no watcher event. Only callers that re-derive the
 	// same file every boot want that.
 	if (skipIfUnchanged && matchesFileContent(filePath, content)) return false;
-	const mode = ownerOnly && process.platform !== 'win32' ? ownerOnlyMode(replaces) : 0o666;
+	const target = ownerOnly && process.platform !== 'win32' ? ownerOnlyTarget(replaces) : { mode: 0o666 };
 	const tempPath = `${filePath}.${process.pid}.${threadId}.${randomBytes(4).toString('hex')}.tmp`;
 	// Content before the rename: a rename that reaches storage ahead of the bytes it names is the
 	// torn write the temp file exists to prevent.
-	writeTempFileSync(tempPath, content, mode, durable);
+	writeTempFileSync(tempPath, content, target, durable);
 	try {
 		renameWithRetry(tempPath, filePath, { retryBudgetMs, maxRetries, initialDelayMs, maxDelayMs });
 	} catch (err) {

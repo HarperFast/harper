@@ -117,7 +117,7 @@ The configuration file can hold credentials, so on Linux and macOS Harper writes
 - the JWT signing key and its passphrase, `{rootPath}/keys/.jwtPrivate.key` and `{rootPath}/keys/.jwtPass`
 - private keys Harper generates, such as `{rootPath}/keys/privateKey.pem`
 
-Each file has that mode from the moment it is created, before any content is written. When Harper replaces an existing file it owns, the new file keeps only the owner's permissions of the old one: a file at `644` becomes `600`, and a file you set to `400` stays `400`. A file owned by another user is replaced at `600`. The new file is always owned by the user Harper runs as.
+Each file has that mode from the moment it is created, before any content is written. When Harper replaces an existing file it owns, the new file keeps only the owner's permissions of the old one: a file at `644` becomes `600`, and a file you set to `400` stays `400`. A file owned by another user is replaced at `600`, owned by the user Harper runs as. Run as root (for example a `sudo harper` command on an install owned by another user), Harper gives the new file the old file's owner and owner permissions, or the owner of its directory when there was no old file, so the server can still read it.
 
 Harper changes a file's mode only when it writes that file. Files written by earlier versions keep their modes until Harper next rewrites them, and Harper never rewrites old backups. To restrict them now:
 
