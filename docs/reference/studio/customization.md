@@ -42,7 +42,7 @@ studio:
 - `description` - Text Studio shows with the page.
 - `access` - Who Studio shows the page to: a `role`, the `tables` and `operations` the viewer needs, and `optional` ones that only some controls need. Studio checks it against the viewer's role. It is not a server permission: the viewer's own permissions still decide what each request may do.
 - `content` - What the page shows, which Studio renders.
-- `navigation` - How Studio shows the page by default: `visible`, `tucked` or `hidden`. Any `studio.navigation` that names the page overrides it (see [Navigation from Components](#navigation-from-components)).
+- `navigation` - How Studio shows the page by default: `visible`, `tucked` or `hidden`. The `studio.navigation` of a component that loads this one, or the cluster settings, override it (see [Navigation from Components](#navigation-from-components)).
 
 Harper returns `access` and `content` as written, without validating them. It drops any other key, and does not return `navigation` on the page.
 
@@ -52,7 +52,7 @@ A page with a missing or invalid `id`, `name` or `placement` is left out, and Ha
 
 ## Plugin Pages
 
-A plugin declares pages in its own `config.yaml`, the same way. Harper reads them for each application that loads the plugin through a `package` entry, finding the plugin where the application loader does: in the application's `node_modules`, then in each parent directory's. A plugin that would not load is not read: one marked `loadComponent: dev-only` outside development mode, one not installed, and every plugin in safe mode.
+A plugin declares pages in its own `config.yaml`, the same way. Harper reads them for each application whose config names the plugin in a `package` entry, finding it where the application loader does: in the application's `node_modules`, then in each parent directory's. It reads what is installed and declared, not whether the plugin loaded, but it skips a plugin the loader skips by configuration: one marked `loadComponent: dev-only` outside development mode, one not installed, and every plugin in safe mode.
 
 A plugin's page belongs to each application that loads it. Its component is `<application>.<key>`, where `<key>` is the application's config entry for the plugin, so the redirector plugin loaded by `solution` as `'@harperfast/redirector'` gives the page key `solution.@harperfast/redirector.redirects`. A plugin loaded by another plugin chains the keys: `<application>.<key>.<subKey>.<id>`. Two applications that load one plugin each get its pages.
 
