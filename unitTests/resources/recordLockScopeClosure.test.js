@@ -84,7 +84,6 @@ describe('lock() on a transaction() scope closed by its own commit', function ()
 		await resetDatabases();
 	});
 
-	// another context's hold, so a lock() of the record in the scope waits for it
 	async function contend(Locked, recordId) {
 		const contender = await Locked.lock(recordId, { hold: true, lease: 10000 }, {});
 		holds.push(contender);
