@@ -56,7 +56,7 @@ HARPER_DOCS_PATH=../harper npm run build      # fails on broken links, as CI doe
 
 `HARPER_PRO_DOCS_PATH` does the same for a harper-pro checkout; a harper-pro without a path is fetched at what the site publishes (`HARPER_PRO_DOCS_REF=main` fetches `main` instead). CI runs that build on every PR that changes `docs/`, against harper-pro at the PR's base branch, and uploads the built site as an artifact.
 
-A PR that changes `docs/` also gets a deployed preview: a comment on the PR links to the site built from its head, with harper-pro at the PR's base branch. It updates with each push that still changes `docs/`, and says when the preview is removed at close. A fork's PR waits for a maintainer to approve the build. HarperFast/documentation builds and hosts it ([how](https://github.com/HarperFast/documentation/blob/main/CONTRIBUTING.md#reference-and-release-notes-content)).
+Adding the `docs-preview` label to a PR requests a deployed preview: a comment on the PR links to the site built from its head, with harper-pro at the PR's base branch. It rebuilds on each push while the label stays on. Removing the label, or closing the PR, takes the preview down and the comment says so. A fork's PR waits for a maintainer to approve the build. HarperFast/documentation builds and hosts it ([how](https://github.com/HarperFast/documentation/blob/main/CONTRIBUTING.md#reference-and-release-notes-content)).
 
 ## When docs publish
 
