@@ -405,8 +405,26 @@ describe('sqlEngine LIKE matcher (v2)', () => {
 });
 
 describe('sqlEngine LIKE index conditions', () => {
-	const ATTRS = [{ name: 'v', indexed: true }];
+	const ATTRS = [{ name: 'v', type: 'String', indexed: true }];
 	const condition = (pattern, escape) => whereToConditions(likeExpr(pattern, escape), ATTRS).conditions[0];
+
+	for (const type of ['Int', 'Float', 'Boolean', 'Date', 'Any', 'Array', undefined]) {
+		it(`leaves ${type ?? 'untyped'} LIKE patterns residual, including exact and empty patterns`, () => {
+			for (const pattern of ['05%', '%5', '%0%', '0105', '', '%']) {
+				const expr = likeExpr(pattern);
+				const result = whereToConditions(expr, [{ name: 'v', indexed: true, type }]);
+				assert.deepStrictEqual(result.conditions, [], pattern);
+				assert.strictEqual(result.residual, expr, pattern);
+			}
+		});
+	}
+	it('does not rewrite LIKE without schema metadata or inside an unsafe OR', () => {
+		const expr = likeExpr('05%');
+		assert.strictEqual(whereToConditions(expr).residual, expr);
+		const or = { kind: 'logical', op: 'or', args: [expr, { ...expr, expr: { kind: 'column', name: 's' } }] };
+		const attrs = [...ATTRS, { name: 's', type: 'Int', indexed: true }];
+		assert.strictEqual(whereToConditions(or, attrs).residual, or);
+	});
 
 	it('maps unescaped shapes exactly as before', () => {
 		assert.deepStrictEqual(condition('ab%'), { attribute: 'v', comparator: 'starts_with', value: 'ab' });

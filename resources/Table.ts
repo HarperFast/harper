@@ -15496,7 +15496,7 @@ function createComputedFrom(computedFromExpression: string, attributesFallback?:
 	return script.runInThisContext()(attributesFallback);
 }
 
-// Pattern comparators (contains, starts_with, ends_with) stay out so their operand remains text.
+const STRING_PATTERN_COMPARATORS = new Set(['contains', 'starts_with', 'ends_with']);
 const ELEMENT_VALUE_COMPARATORS = new Set<string | undefined>([
 	undefined,
 	'equals',
@@ -15513,10 +15513,10 @@ const ELEMENT_VALUE_COMPARATORS = new Set<string | undefined>([
 	'gtle',
 ]);
 function coerceConditionValue(value: any, comparator: string, attribute: Attribute) {
+	const resolvedComparator = ALTERNATE_COMPARATOR_NAMES[comparator] || comparator;
+	if (typeof value === 'string' && STRING_PATTERN_COMPARATORS.has(resolvedComparator)) return value;
 	const compared =
-		attribute.elements?.type && ELEMENT_VALUE_COMPARATORS.has(ALTERNATE_COMPARATOR_NAMES[comparator] || comparator)
-			? attribute.elements
-			: attribute;
+		attribute.elements?.type && ELEMENT_VALUE_COMPARATORS.has(resolvedComparator) ? attribute.elements : attribute;
 	if (!compared.type && !COERCIBLE_OPERATORS[comparator]) return value;
 	if (Array.isArray(value)) return value.map((value) => coerceType(value, compared, attribute.name));
 	return coerceType(value, compared, attribute.name);

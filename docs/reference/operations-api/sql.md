@@ -441,7 +441,7 @@ Geospatial data must be stored using the [GeoJSON standard](https://geojson.org/
 
 ## LIKE Pattern Matching
 
-`value LIKE pattern` is true when the whole value matches the pattern, and `NOT LIKE` negates it. The value is matched as a string. The pattern can contain these elements:
+`value LIKE pattern` is true when the whole value matches the pattern, and `NOT LIKE` negates it. The value is matched as a string. For example, numeric `105` matches `%05%` and `1%`, but not `0105` or `05%`. Null and omitted values do not match. The pattern can contain these elements:
 
 | Pattern element            | Matches                                                                                                                                 |
 | -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
@@ -532,7 +532,7 @@ On the legacy engine, a pattern with more than 64 `_` wildcards across segments 
 }
 ```
 
-The total cost of a `LIKE` is still the number of rows it tests. On an indexed attribute, the index serves a prefix pattern, which is literal text followed by one `%` (`'abc%'`, or `'50!%%' ESCAPE '!'` for values starting with `50%`), and a pattern with no wildcards, which is an equality test. Any other `LIKE` filters the rows that the rest of the query selects, so with no indexed condition it tests every row in the table. Whether such a statement falls back to the legacy engine, scans on the new engine, or is rejected with a 400 error depends on `sql.engine`, `sql.allowFullScan` and the rest of the statement; see [The fallback contract](#the-fallback-contract) and [Query Performance](#query-performance).
+The total cost of a `LIKE` is still the number of rows it tests. On an indexed scalar `String` attribute, the index serves a prefix pattern, which is literal text followed by one `%` (`'abc%'`, or `'50!%%' ESCAPE '!'` for values starting with `50%`), and a pattern with no wildcards, which is an equality test. On other attribute types, including untyped and `Any` columns, every `LIKE` uses the stringified value as a row filter. Standalone `LIKE` queries on dynamic-schema tables therefore use legacy fallback under `auto`; under `new` they need another index driver or `sql.allowFullScan: true`. Any other `LIKE` filters the rows that the rest of the query selects, so with no indexed condition it tests every row in the table. Whether such a statement falls back to the legacy engine, scans on the new engine, or is rejected with a 400 error depends on `sql.engine`, `sql.allowFullScan` and the rest of the statement; see [The fallback contract](#the-fallback-contract) and [Query Performance](#query-performance).
 
 ---
 
