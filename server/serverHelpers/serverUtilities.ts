@@ -261,19 +261,19 @@ const EXPORT_SEARCH_OPERATIONS = new Set<string>([
 ]);
 
 export function chooseOperation(json: OperationRequestBody, bypassAuth = false, forwarded = false) {
-	// Not in this thread's map — the other side of the bridge may have registered it: a component
-	// on a worker (#1736), or the main thread alone (#4134). Forward there for execution; that
-	// thread runs the full permission check (with the forwarded hdb_user) where the operation
-	// function and its metadata actually exist, so no perm check is skipped by returning early
-	// here. A request that was itself forwarded stays local, so an unknown op can't loop.
-	if (!forwarded && !OPERATION_FUNCTION_MAP.has(json.operation)) {
-		const remoteOperationFunction = getRemoteOperationFunction(json.operation, bypassAuth);
-		if (remoteOperationFunction) return remoteOperationFunction;
-	}
 	let getOpResult: OperationFunctionObject;
 	try {
 		getOpResult = getOperationFunction(json);
 	} catch (err) {
+		// Not in this thread's map — the other side of the bridge may have registered it: a component
+		// on a worker (#1736), or the main thread alone (#4134). Forward there for execution; that
+		// thread runs the full permission check (with the forwarded hdb_user) where the operation
+		// function and its metadata actually exist, so no perm check is skipped by returning early
+		// here. A request that was itself forwarded stays local, so an unknown op can't loop.
+		if (!forwarded) {
+			const remoteOperationFunction = getRemoteOperationFunction(json.operation, bypassAuth);
+			if (remoteOperationFunction) return remoteOperationFunction;
+		}
 		operationLog.error(`Error when selecting operation function - ${err}`);
 		throw err;
 	}

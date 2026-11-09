@@ -1,7 +1,6 @@
 /**
  * #4134: `server.operation()` on a worker thread must reach an operation that only the main thread
- * registered. The built-in agent registers its operations from `startOnMainThread`, and components
- * load per worker, so only an integration test crosses the boundary that hid them.
+ * registered, here the built-in agent's.
  */
 import { suite, test, before, after } from 'node:test';
 import { strictEqual, ok } from 'node:assert';

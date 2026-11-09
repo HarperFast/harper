@@ -402,9 +402,8 @@ describe('Test serverUtilities.js module ', () => {
 		});
 	});
 
-	// Only the receiving half is reachable here — on the main thread announceRegisteredOperation
-	// records and broadcasts instead, so integrationTests/components/registered-operation.test.ts owns
-	// the real hop.
+	// Only main's receiving half is reachable here; integrationTests/components/registered-operation.test.ts
+	// owns the real hop.
 	describe('cross-thread grantable operation mirroring', function () {
 		const {
 			validateOperations,

@@ -85,16 +85,13 @@ let nextRequestId = 1;
 let listenersAttached = false;
 
 const MAIN_THREAD_ID = 0;
-// name -> grantable. On main: what this thread registered. On a worker: what main announced.
+/** name -> grantable, for operations the main thread registered */
 const mainThreadOperations = new Map<string, boolean>();
-if (isMainThread) {
-	// Main loads its components before it starts workers, so the snapshot covers boot; the
-	// broadcast in announceRegisteredOperation covers a registration made after a worker spawned.
-	registerWorkerDataProvider('mainThreadOperations', () => [...mainThreadOperations]);
-} else {
-	for (const [name, grantable] of workerData?.mainThreadOperations ?? []) {
-		recordMainThreadOperation(name, grantable);
-	}
+// Main loads its components before it starts workers, so the snapshot covers boot with no window
+// in which a worker serves requests without the names.
+registerWorkerDataProvider('mainThreadOperations', () => [...mainThreadOperations]);
+for (const [name, grantable] of workerData?.mainThreadOperations ?? []) {
+	recordMainThreadOperation(name, grantable);
 }
 
 function recordMainThreadOperation(name: string, grantable: boolean) {
@@ -122,8 +119,7 @@ export function announceRegisteredOperation(name: string, grantable = false) {
 }
 
 /**
- * ITC handler. Every thread receives the broadcast: main records what workers registered, and a
- * worker records only what main registered.
+ * ITC handler (all threads receive the broadcast).
  */
 export function operationRegisteredHandler(event: {
 	message?: { name?: string; grantable?: boolean; originator?: number };
@@ -226,7 +222,19 @@ function attachListeners() {
 		if (error) pending.reject(toForwardedError(error));
 		else pending.resolve(result);
 	});
-	if (isMainThread) onThreadExit(handleThreadExit);
+	if (!isMainThread) return;
+	onThreadExit(handleThreadExit);
+	// A registration broadcast while a worker was still loading can reach it before its ITC
+	// listener exists, and is then dropped; its snapshot predates the registration.
+	onMessageByType(terms.ITC_EVENT_TYPES.CHILD_STARTED, (_message: any, worker: any) => {
+		if (typeof worker?.threadId !== 'number') return;
+		for (const [name, grantable] of mainThreadOperations) {
+			threads.sendToThread(worker.threadId, {
+				type: terms.ITC_EVENT_TYPES.OPERATION_REGISTERED,
+				message: { name, grantable, originator: MAIN_THREAD_ID },
+			});
+		}
+	});
 }
 
 // Armed at load rather than on first use: serverUtilities imports this module during its own load,
@@ -250,10 +258,7 @@ function withoutNonForwardableFields(body: any) {
 	return forwardBody;
 }
 
-/**
- * Send one execute request and await its correlated response. Returns undefined when the target's
- * port is gone, so the caller can pick another thread or report it.
- */
+/** Resolves with the correlated response; undefined when the target's port is gone. */
 function sendExecuteRequest(
 	name: string,
 	targetThreadId: number,
