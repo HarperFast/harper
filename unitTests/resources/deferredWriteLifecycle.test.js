@@ -352,6 +352,24 @@ describe('Deferred write lifecycle', function () {
 		});
 	}
 
+	it('coerces a pending numeric assignment before adding a large BigInt delta', async () => {
+		const Big = table({
+			database: 'deferred_write_lifecycle',
+			table: 'ScalarBigAdds',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'n', type: 'BigInt' },
+			],
+		});
+		const key = id();
+		await Big.put({ id: key, n: 0n });
+		const record = await Big.getResource({ id: key }, {});
+		await record.update({ n: 1 });
+		await record.update({ n: { __op__: 'add', value: 9007199254740993n } });
+		await record.save();
+		assert.strictEqual((await Big.get(key)).n, 9007199254740994n);
+	});
+
 	it('coerces a replacement field without validating absent required fields early', async () => {
 		const Big = table({
 			database: 'deferred_write_lifecycle',
