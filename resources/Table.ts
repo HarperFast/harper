@@ -4850,7 +4850,7 @@ export function makeTable(options): TableResourceClass {
 				// TODO: Remove from transaction
 				return this;
 			}
-			const previous = this.#mergeableWrite(id);
+			const previous = this.#savingOperation ? this.#mergeableWrite(id) : undefined;
 			const previousChanges = previous?.pendingChanges ?? this.#changes;
 			if (fullUpdate && this.#updatableAttributes) {
 				this.#changes = restrictedReplacement(id, updates, this.#updatableAttributes);
@@ -4977,7 +4977,7 @@ export function makeTable(options): TableResourceClass {
 					const next = () => this.#stageChanges(id, target, changes, options);
 					return staging.then(next, next);
 				}
-				const previous = this.#mergeableWrite(id, options);
+				const previous = this.#savingOperation ? this.#mergeableWrite(id, options) : undefined;
 				const previousChanges = previous?.pendingChanges ?? this.#changes;
 				this.#changes =
 					previous && previousChanges ? this.#mergeChanges(id, previousChanges, changes, previous) : changes;
@@ -6358,7 +6358,7 @@ export function makeTable(options): TableResourceClass {
 		// local copy
 		_writeUpdate(id: Id, recordUpdate: any, fullUpdate: boolean, options?: any) {
 			this.#assertLiveHandle(id);
-			let previous = this.#mergeableWrite(id, options);
+			let previous = this.#savingOperation ? this.#mergeableWrite(id, options) : undefined;
 			let previousChanges = previous?.pendingChanges;
 			let previousRecord = previous?.rollbackRecord;
 			if (previous?.updateOptions === RESTRICTED_REPLACEMENT && options === undefined && !fullUpdate)
