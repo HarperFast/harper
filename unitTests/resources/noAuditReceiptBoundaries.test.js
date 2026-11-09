@@ -16,7 +16,7 @@ describe('audit:false receipts across invalidate and replacement', () => {
 
 	async function receiptTable() {
 		const Table = table({
-			database: 'test',
+			database: 'noAuditReceiptBoundaries',
 			table: `NoAuditReceiptBoundary${++nextTable}`,
 			audit: false,
 			attributes: [
@@ -64,6 +64,7 @@ describe('audit:false receipts across invalidate and replacement', () => {
 					]);
 				let replay;
 				let finish;
+				let sourceStopped = false;
 				const replayGate = new Promise((resolve) => (replay = resolve));
 				const finishGate = new Promise((resolve) => (finish = resolve));
 				Table.sourcedFrom(
@@ -71,15 +72,19 @@ describe('audit:false receipts across invalidate and replacement', () => {
 						isReplicator: true,
 						subscribeOnThisThread: () => true,
 						async *subscribe() {
-							yield frame(start, [{ type: 'put', id: 'counter', value: { id: 'counter', count: 10 } }]);
-							yield delivery();
-							yield delivery();
-							yield frame(start + 20, [{ type: 'put', id: 'first-marker', value: { id: 'first-marker' } }]);
-							await replayGate;
-							yield frame(start + 30, [{ type: 'patch', id: 'counter', value: { tag: 'newer' } }]);
-							yield delivery();
-							yield frame(start + 40, [{ type: 'put', id: 'last-marker', value: { id: 'last-marker' } }]);
-							await finishGate;
+							try {
+								yield frame(start, [{ type: 'put', id: 'counter', value: { id: 'counter', count: 10 } }]);
+								yield delivery();
+								yield delivery();
+								yield frame(start + 20, [{ type: 'put', id: 'first-marker', value: { id: 'first-marker' } }]);
+								await replayGate;
+								yield frame(start + 30, [{ type: 'patch', id: 'counter', value: { tag: 'newer' } }]);
+								yield delivery();
+								yield frame(start + 40, [{ type: 'put', id: 'last-marker', value: { id: 'last-marker' } }]);
+								await finishGate;
+							} finally {
+								sourceStopped = true;
+							}
 						},
 					},
 					{ intermediateSource: true }
@@ -102,6 +107,7 @@ describe('audit:false receipts across invalidate and replacement', () => {
 				} finally {
 					replay();
 					finish();
+					await waitFor(() => sourceStopped, { timeout: 5000, message: 'the source should close' });
 				}
 			});
 		}

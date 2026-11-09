@@ -1,5 +1,5 @@
 ---
-section: Bug Fixes
+section: Replication
 ---
 
 ### Increment re-delivery on audit:false tables
