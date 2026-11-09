@@ -262,7 +262,8 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 			await databases.system.hdb_user.delete('lookup_dropped');
 			const dropped = resolvedFor('lookup_dropped', componentUser('lookup_dropped'));
 			assert.strictEqual(user.isRecordlessPrincipal(dropped), false, 'the drop’s tombstone is still kept');
-			assert.strictEqual(user.isCurrentUser(dropped), false, 'and the record it names is gone');
+			assert.strictEqual(user.hasRecordProvenance(dropped), false, 'so its holders re-read it by name each pass');
+			assert.strictEqual(user.isCurrentUser(dropped), true, 'though nothing changed while it resolved');
 
 			await testUtils.seedUsers([lookupUser({ username: 'lookup_alias_dropped' })]);
 			const getUser = server.getUser;
@@ -474,6 +475,26 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 				const later = (await authenticate(basic('lookup_token_later', 'token'))).user;
 				assert.strictEqual(user.isRecordlessPrincipal(later), true, 'a record created later is another principal’s');
 				assert.strictEqual(user.isRecordlessPrincipal(unbacked), true);
+			} finally {
+				server.getUser = getUser;
+			}
+		});
+
+		it('caches a component user for a name whose record was dropped before it logged in', async () => {
+			await testUtils.seedUsers([lookupUser({ username: 'lookup_reused' })]);
+			await databases.system.hdb_user.delete('lookup_reused');
+			const getUser = server.getUser;
+			let resolutions = 0;
+			server.getUser = async (username) => {
+				resolutions++;
+				return { username, role: { role: 'component_role', permission: {} } };
+			};
+			try {
+				const header = basic('lookup_reused', 'token');
+				const view = (await authenticate(header)).user;
+				await authenticate(header);
+				assert.strictEqual(resolutions, 1, 'nothing changed while it resolved, so the cached view stays current');
+				assert.strictEqual(user.isRecordlessPrincipal(view), false, 'its name had a record');
 			} finally {
 				server.getUser = getUser;
 			}

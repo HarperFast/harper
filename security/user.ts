@@ -676,17 +676,21 @@ function trackUserRecords(user: User, versions: UserProvenance): UserProvenance 
 	if (!user || typeof user !== 'object' || (user as any)[PROVENANCE]) return undefined;
 	const store = systemStore(USER_TABLE_NAME);
 	const sameName = user.username === versions.username;
+	let firsts = trackedProvenance.get(user);
 	let provenance: UserProvenance;
-	if (!sameName && (versions.userStamp !== null || hasLiveOrDeletedEntry(store, versions.username))) {
+	if (
+		!sameName &&
+		(versions.userStamp !== null || hasLiveOrDeletedEntry(store, versions.username) || firsts?.has(versions.username))
+	) {
 		// a record for the login name may be what admitted a user under another name
 		provenance = { ...versions, recordless: false };
 	} else {
 		provenance = sameName ? { ...versions } : userRecordVersions(user.username);
 		provenance.recordless = provenance.userStamp === null && !hasLiveOrDeletedEntry(store, user.username);
 	}
-	// a record that is there but this lookup did not read was dropped, or created while it resolved
-	if (provenance.userStamp === null && !provenance.recordless) provenance.userStamp = UNREAD_RECORD;
-	let firsts = trackedProvenance.get(user);
+	// Under another name, only the read after resolution exists, so a record there that it did not read may
+	// have been dropped while it resolved. The same name's read before resolution already shows that.
+	if (!sameName && provenance.userStamp === null && !provenance.recordless) provenance.userStamp = UNREAD_RECORD;
 	if (!firsts) trackedProvenance.set(user, (firsts = new Map()));
 	const first = firsts.get(provenance.username);
 	if (!first) {
@@ -775,11 +779,13 @@ function recordedProvenance(user: User, admitted?: UserProvenance): UserProvenan
 
 /**
  * Whether `isCurrentUser` answers for `user`'s own name, so a change to its records notifies its holders:
- * false for one resolved outside this module and not tracked, or checked against the login name that admitted
- * it under another. `admitted` is what its holder's own lookup recorded (`getTrackedUser`).
+ * false for one resolved outside this module and not tracked, one checked against the login name that
+ * admitted it under another, or one whose name has no record now but had one, which is re-read by name.
+ * `admitted` is what its holder's own lookup recorded (`getTrackedUser`).
  */
 function hasRecordProvenance(user: User, admitted?: UserProvenance): boolean {
-	return recordedProvenance(user, admitted)?.username === user.username;
+	const provenance = recordedProvenance(user, admitted);
+	return provenance?.username === user.username && (provenance.userStamp !== null || provenance.recordless === true);
 }
 
 /**
