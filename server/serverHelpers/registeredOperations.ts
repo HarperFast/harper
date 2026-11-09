@@ -86,18 +86,19 @@ let listenersAttached = false;
 
 const MAIN_THREAD_ID = 0;
 const mainThreadOperations = new Map<string, boolean>();
+// In a worker spawned by a worker, thread 0 addresses the parent, which could never answer, so
+// only a worker main spawned (the one that gets a snapshot) learns names to forward.
+const spawnedByMain = Array.isArray(workerData?.mainThreadOperations);
 if (isMainThread) {
 	// Main loads its components before it starts workers, so the snapshot covers boot with no
-	// window in which a worker serves requests without the names. Main only: in a worker spawned
-	// by a worker, thread 0 addresses the parent, which could never answer.
+	// window in which a worker serves requests without the names.
 	registerWorkerDataProvider('mainThreadOperations', () => [...mainThreadOperations]);
-} else {
-	for (const [name, grantable] of workerData?.mainThreadOperations ?? []) {
-		recordMainThreadOperation(name, grantable);
-	}
+} else if (spawnedByMain) {
+	for (const [name, grantable] of workerData.mainThreadOperations) recordMainThreadOperation(name, grantable);
 }
 
 function recordMainThreadOperation(name: string, grantable: boolean) {
+	if (!isMainThread && !spawnedByMain) return;
 	mainThreadOperations.set(name, grantable);
 	if (isMainThread) return;
 	if (grantable) registerWorkerGrantableOperation(name);

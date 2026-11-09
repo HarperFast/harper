@@ -406,39 +406,49 @@ describe('Test serverUtilities.js module ', () => {
 		const { Worker } = require('node:worker_threads');
 		const { join } = require('node:path');
 
-		it('forwards names from the spawn snapshot and from a main-thread announcement only', async function () {
-			const worker = new Worker(join(__dirname, 'fixtures', 'mainThreadOperationsWorker.js'), {
-				workerData: { mainThreadOperations: [['test_main_snapshot_op', true]] },
-			});
+		async function askWorker(workerData, announce, names) {
+			const worker = new Worker(join(__dirname, 'fixtures', 'mainThreadOperationsWorker.js'), { workerData });
 			try {
-				const result = await new Promise((resolve, reject) => {
+				return await new Promise((resolve, reject) => {
+					setTimeout(() => reject(new Error('the worker did not answer')), 30_000).unref();
 					worker.on('error', reject);
+					worker.on('exit', () => reject(new Error('the worker exited before answering')));
 					worker.on('message', (message) => {
-						if (message !== 'ready') return resolve(message);
-						worker.postMessage({
-							announce: [
-								{ name: 'test_main_announced_op', grantable: false, originator: 0 },
-								{ name: 'test_sibling_announced_op', grantable: true, originator: 9_000_101 },
-							],
-							names: [
-								'test_main_snapshot_op',
-								'test_main_announced_op',
-								'test_sibling_announced_op',
-								'test_main_unknown_op',
-							],
-						});
+						if (message === 'ready') worker.postMessage({ announce, names });
+						else resolve(message);
 					});
-				});
-
-				assert.deepStrictEqual(result, {
-					test_main_snapshot_op: { forwards: true, grantable: true },
-					test_main_announced_op: { forwards: true, grantable: false },
-					test_sibling_announced_op: { forwards: false, grantable: false },
-					test_main_unknown_op: { forwards: false, grantable: false },
 				});
 			} finally {
 				await worker.terminate();
 			}
+		}
+
+		it('forwards names from the spawn snapshot and from a main-thread announcement only', async function () {
+			const result = await askWorker(
+				{ mainThreadOperations: [['test_main_snapshot_op', true]] },
+				[
+					{ name: 'test_main_announced_op', grantable: false, originator: 0 },
+					{ name: 'test_sibling_announced_op', grantable: true, originator: 9_000_101 },
+				],
+				['test_main_snapshot_op', 'test_main_announced_op', 'test_sibling_announced_op', 'test_main_unknown_op']
+			);
+
+			assert.deepStrictEqual(result, {
+				test_main_snapshot_op: { forwards: true, grantable: true },
+				test_main_announced_op: { forwards: true, grantable: false },
+				test_sibling_announced_op: { forwards: false, grantable: false },
+				test_main_unknown_op: { forwards: false, grantable: false },
+			});
+		});
+
+		it('ignores announcements in a worker the main thread did not spawn', async function () {
+			const result = await askWorker(
+				{},
+				[{ name: 'test_main_announced_op', grantable: true, originator: 0 }],
+				['test_main_announced_op']
+			);
+
+			assert.deepStrictEqual(result, { test_main_announced_op: { forwards: false, grantable: false } });
 		});
 	});
 
