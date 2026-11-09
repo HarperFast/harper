@@ -668,9 +668,13 @@ function userRecordVersions(username: string): UserProvenance {
  * before it was resolved, so a write in between shows as a change. A user under another name, when no
  * record has the login name, can only have its own name's records read after it resolved, so only a drop
  * in between shows, by its tombstone. Returns this lookup's provenance, or undefined for a user this module
- * built. A memoizing server.getUser hands one user to logins backed differently, so the first lookup that
- * checked the user against each name is kept (`firstLookup`): a name first found recordless stays so, and a
- * record that first lookup read and that is since dropped stays a change.
+ * built. A user is recordless only if no hdb_user entry, live or deleted, has its name: a tombstone outlives
+ * any lookup shorter than logging.auditRetention, at the cost of re-reading by name a user whose name lost
+ * its record within it (an unaudited hdb_user keeps none). A memoizing server.getUser hands one user to logins
+ * backed differently, so the first lookup that checked the user against each name is kept (`firstLookup`): a
+ * name first found recordless stays so, and a record that first lookup read and that is since dropped stays
+ * a change. An HTTP view carries its own lookup; an MQTT connection holds the user, so `getTrackedUser` gives
+ * it the first lookup.
  */
 function trackUserRecords(user: User, versions: UserProvenance): UserProvenance | undefined {
 	if (!user || typeof user !== 'object' || (user as any)[PROVENANCE]) return undefined;
