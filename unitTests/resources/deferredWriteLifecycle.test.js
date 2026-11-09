@@ -323,6 +323,33 @@ describe('Deferred write lifecycle', function () {
 		});
 	}
 
+	for (const keyed of [false, true]) {
+		for (const [name, root] of [
+			['array', [1]],
+			['bytes', Buffer.from('bad')],
+			['null', null],
+			['string', 'bad'],
+		]) {
+			it(`keeps an invalid ${name} root visible to validation after a ${keyed ? 'keyed' : 'direct'} update`, async () => {
+				const key = id();
+				await TestTable.put({ id: key, n: 0 });
+				const record = await TestTable.getResource({ id: key }, {});
+				await record.update({ n: 1 });
+				await assert.rejects(
+					async () => {
+						await (keyed ? record.update(key, root) : record.update(root, false));
+						await record.save();
+					},
+					(error) => error.statusCode === 400 && /A record must be an object/.test(error.message)
+				);
+				assert.strictEqual((await TestTable.get(key)).n, 0);
+				await record.update({ id: key, n: 2 }, true);
+				await record.save();
+				assert.strictEqual((await TestTable.get(key)).n, 2);
+			});
+		}
+	}
+
 	it('a later replacement discards an earlier patch on the same instance', async () => {
 		const key = id();
 		await TestTable.put({ id: key, n: 0, name: 'old' });

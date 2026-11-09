@@ -814,7 +814,19 @@ export function addToChanges(target, property: string, value: number | bigint, f
 	} else target.set(property, new Addition(value));
 }
 
+function isUpdateObject(value: any): boolean {
+	return (
+		value !== null &&
+		typeof value === 'object' &&
+		!Array.isArray(value) &&
+		!ArrayBuffer.isView(value) &&
+		!(value instanceof ArrayBuffer)
+	);
+}
+
 export function mergeUpdateChanges(previous, changes, getStoredValue: (name: string) => any) {
+	if (changes === undefined) return previous;
+	if (!isUpdateObject(previous) || !isUpdateObject(changes)) return changes;
 	const merged = { ...previous, ...changes };
 	for (const name of Object.keys(changes)) {
 		const value = changes[name];
