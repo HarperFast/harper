@@ -167,6 +167,7 @@ describe('owner-only modes for files that can hold secrets (harper#1925)', funct
 			// cannot read. The test user plays the service; chowning to its own uid and gid is permitted.
 			let restoreGetuid;
 			let chowns;
+			let pathChowns;
 			let restoreChown;
 			let restoreFchown;
 
@@ -182,9 +183,11 @@ describe('owner-only modes for files that can hold secrets (harper#1925)', funct
 					process.getuid = getuid;
 				};
 				chowns = [];
-				restoreChown = wrapFs('chownSync', (original, file, uid, gid) => {
-					chowns.push({ uid, gid });
-					return original(file, uid, gid);
+				pathChowns = [];
+				// A path chown run as root follows a symlink swapped in for the temp file.
+				restoreChown = wrapFs('chownSync', (original, file, ...rest) => {
+					pathChowns.push(file);
+					return original(file, ...rest);
 				});
 				restoreFchown = wrapFs('fchownSync', (original, fd, uid, gid) => {
 					chowns.push({ uid, gid });
@@ -196,6 +199,7 @@ describe('owner-only modes for files that can hold secrets (harper#1925)', funct
 				restoreGetuid?.();
 				restoreChown?.();
 				restoreFchown?.();
+				if (pathChowns) assert.deepStrictEqual(pathChowns, [], 'the chown goes through the temp file descriptor');
 			});
 
 			for (const durable of [false, true]) {
@@ -221,9 +225,9 @@ describe('owner-only modes for files that can hold secrets (harper#1925)', funct
 			it('removes its temp file when the chown fails', function () {
 				const target = path.join(testRoot, 'config.yaml');
 				writeWithMode(target, 'old\n', 0o600);
-				restoreChown();
-				const eperm = Object.assign(new Error('EPERM: operation not permitted, chown'), { code: 'EPERM' });
-				restoreChown = wrapFs('chownSync', () => {
+				restoreFchown();
+				const eperm = Object.assign(new Error('EPERM: operation not permitted, fchown'), { code: 'EPERM' });
+				restoreFchown = wrapFs('fchownSync', () => {
 					throw eperm;
 				});
 				assert.throws(() => atomicWriteFile(target, 'new\n', { ownerOnly: true }), eperm);

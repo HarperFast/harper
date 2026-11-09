@@ -197,18 +197,19 @@ function ownerOnlyTarget(replacedPath: string): OwnerOnlyTarget {
 // Exclusive, so the file is this call's own and has `mode` (less umask) from creation, before any byte is written.
 function writeTempFileSync(tempPath: string, content, { mode, owner }: OwnerOnlyTarget, durable: boolean) {
 	try {
-		if (durable) {
+		// The chown goes through the fd: the directory can belong to the owner, who could swap the temp path
+		// for a symlink, and a path chown run as root would follow it.
+		if (durable || owner) {
 			const fd = fs.openSync(tempPath, 'wx', mode);
 			try {
 				if (owner) fs.fchownSync(fd, owner.uid, owner.gid);
 				fs.writeFileSync(fd, content);
-				fsyncTolerantSync(fd);
+				if (durable) fsyncTolerantSync(fd);
 			} finally {
 				fs.closeSync(fd);
 			}
 		} else {
 			fs.writeFileSync(tempPath, content, { flag: 'wx', mode });
-			if (owner) fs.chownSync(tempPath, owner.uid, owner.gid);
 		}
 	} catch (err) {
 		// The open succeeds before the write runs out of room, leaving the temp file behind. EEXIST
