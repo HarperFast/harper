@@ -492,7 +492,7 @@
 			"properties": {
 				"navigation": {
 					"type": ["object", "null"],
-					"description": "How Studio shows each built-in tab, or a component's page keyed <component>.<pageId>. A tab not listed is visible.",
+					"description": "How Studio shows each built-in tab, or a component's page keyed <component>.<pageId>. Beats what applications and plugins set. A tab no one lists is visible.",
 					"propertyNames": { "$ref": "#/definitions/studioPageKey" },
 					"properties": {
 						"applications": { "$ref": "#/definitions/studioNavigationState" },
@@ -1112,8 +1112,9 @@
 	"definitions": {
 		"studioPageKey": {
 			"type": "string",
-			"pattern": "^(?:[a-z0-9-]+|[A-Za-z0-9_-][A-Za-z0-9_.-]*\\.[a-z0-9-]+)$",
-			"description": "A built-in tab key, or <component>.<pageId>: a component's name as get_components reports it, a dot, and the id of a page it declares."
+			"maxLength": 128,
+			"pattern": "^(?:[a-z0-9-]+|[A-Za-z0-9_@-][A-Za-z0-9_@/.-]*\\.[a-z0-9-]{1,64})$",
+			"description": "A built-in tab key, or <component>.<pageId>: the component (an application's name as get_components reports it, followed for a plugin's page by .<key> for each plugin down to the one declaring it), a dot, and the id of a page it declares."
 		},
 		"studioNavigationState": {
 			"type": "string",
