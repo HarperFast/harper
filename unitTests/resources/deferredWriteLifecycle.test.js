@@ -444,6 +444,62 @@ describe('Deferred write lifecycle', function () {
 		}
 	});
 
+	it('validates a hook-delayed update after a mid-scope commit has validated its predecessor', async function () {
+		if (!isLMDB) return this.skip();
+		const Embedded = table({
+			database: 'deferred_write_lifecycle',
+			table: 'ValidatedEmbedded',
+			audit: true,
+			sealed: true,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'name' },
+				{ name: 'blob', type: 'Blob' },
+				{ name: 'embedding', type: 'Array', embed: { source: 'name', model: 'default' } },
+			],
+		});
+		let release;
+		const gate = new Promise((resolve) => {
+			release = resolve;
+		});
+		Embedded.setEmbedAttribute('embedding', async (record) => {
+			if (record.name === 'pending') await gate;
+			return [record.name.length];
+		});
+		const key = id();
+		const stream = new PassThrough();
+		const context = {};
+		try {
+			await assert.rejects(
+				transaction(context, async () => {
+					const record = await Embedded.getResource({ id: key }, context);
+					await record.update({ name: 'accepted', blob: createBlob(stream) });
+					let owner = context.transaction;
+					while (owner && !owner.writes.some((write) => write?.key === key)) owner = owner.next;
+					assert.ok(owner, 'the table write has an owner');
+					const original = owner.writes.find((write) => write?.key === key);
+					const updating = record.update({ name: 'pending', forbidden: true });
+					const committing = context.transaction.commit();
+					committing.catch(() => {});
+					try {
+						assert.ok(original.instanceClosed && !original.saved, 'validated, waiting on the real blob stream');
+						release();
+						await updating;
+					} finally {
+						release();
+						stream.end('payload');
+					}
+					await committing;
+				}),
+				/Property forbidden is not allowed/
+			);
+			assert.strictEqual(await Embedded.get(key), null);
+		} finally {
+			release();
+			stream.end();
+		}
+	});
+
 	it('save waits for pending model hooks before admitting or merging their write', async function () {
 		const Embedded = table({
 			database: 'deferred_write_lifecycle',

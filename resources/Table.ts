@@ -7961,6 +7961,15 @@ export function makeTable(options): TableResourceClass {
 							undefined,
 							options?.isNotification
 						);
+					if (previous?.instanceClosed) {
+						previous = undefined;
+						previousChanges = undefined;
+						previousRecord = undefined;
+						if (write.writeGeneration?.closed) {
+							this.#writeGeneration = undefined;
+							write.writeGeneration = this[GET_TRACKED_WRITE_GENERATION]();
+						}
+					}
 					const abandonedBlobs = previous?.savedBlobs;
 					let retainedBlobs: Set<string> | undefined;
 					if (abandonedBlobs?.some((blob) => getFileId(blob))) {
