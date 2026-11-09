@@ -2,6 +2,7 @@
 
 // Runs in a fresh process so nothing another test loaded is already in the require cache.
 const modules = [
+	'#src/server/serverHelpers/validateOperationInputSchema',
 	'#src/resources/databases',
 	'#src/resources/auditStore',
 	'#src/resources/RocksTransactionLogStore',
@@ -25,6 +26,11 @@ const modules = [
 	'#src/validation/searchValidator',
 ];
 for (const module of modules) require(module);
+const { normalizeOperationInputSchema } = require('#src/server/serverHelpers/validateOperationInputSchema');
+for (const schema of [{ type: 'object' }, { type: 'object', properties: {} }]) {
+	const result = normalizeOperationInputSchema(schema);
+	if (result.error) throw new Error(result.error);
+}
 const packages = new Set();
 for (const path of Object.keys(require.cache)) {
 	const match = path.match(/[\\/]node_modules[\\/]((?:@[^\\/]+[\\/])?[^\\/]+)[\\/](.*)$/);

@@ -1,9 +1,10 @@
 import * as serverUtilitiesRuntimeModule from '../../../server/serverHelpers/serverUtilities.ts';
 /**
  * Operations-profile tool generation. Exposes one MCP tool per Harper
- * operation that survives the `mcp.operations.allow` / `deny` filter, computed
- * *lazily* by walking Harper's live `OPERATION_FUNCTION_MAP` on each
- * `tools/list` / `tools/call`.
+ * operation that survives allow/deny and has a declared schema. Literal operator
+ * allow entries opt schema-less operations into a permissive contract; conflicting
+ * worker schemas stay hidden. Each request reads the live operation map and
+ * worker-registration bridge.
  *
  * The list is computed lazily (not snapshotted at registration) because
  * components register their operations via `server.registerOperation` during
@@ -14,9 +15,9 @@ import * as serverUtilitiesRuntimeModule from '../../../server/serverHelpers/ser
  * would silently have no effect — #1562. Walking the live map per request
  * removes the ordering dependence and stays consistent as components load.
  *
- * The default v1 allow list is read-only and intentionally narrow:
+ * The default v1 allow list requires a read-only classification and is intentionally narrow:
  * `describe_*`, `list_*`, `search_*`, plus an explicit set of safe
- * getters (`get_job`, `get_status`, `get_analytics`, `get_metrics`),
+ * getters (`get_job`, `get_status`, `get_analytics`),
  * `system_information`, `read_log`, `read_audit_log`. A `get_*` glob
  * was rejected because it would have matched `get_configuration`
  * (TLS/S3/auth secrets), `get_components` + `get_component_file` +
@@ -26,15 +27,21 @@ import * as serverUtilitiesRuntimeModule from '../../../server/serverHelpers/ser
  * `verifyPerms` still gates the actual call. Operators who want any
  * of those opt in via `mcp.operations.allow`. Destructive ops carry
  * `destructiveHint: true` so well-behaved MCP clients can surface a
- * confirmation prompt.
+ * confirmation prompt. Non-builtin operations need an owned `readOnly: true`
+ * declaration for default visibility. Worker operations require an explicit
+ * allow list, which replaces the defaults.
  *
  * Tool dispatch delegates to `chooseOperation` + `processLocalTransaction`
  * — the same path Harper's REST `/operation` endpoint uses. That means
  * `verifyPerms` runs unchanged, replication catchup runs unchanged, and
- * server-side validation errors surface as `isError: true` results without
- * the MCP layer needing to know what each operation expects.
+ * server-side validation errors surface as `isError: true` results while
+ * advertised input contracts come from operation registration metadata.
  */
 import { Readable } from 'node:stream';
+import {
+	onRemoteOperationUnregistered,
+	type RemoteOperationSchema,
+} from '../../../server/serverHelpers/registeredOperations.ts';
 import * as env from '../../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../../utility/hdbTerms.ts';
 import harperLogger from '../../../utility/logging/harper_logger.ts';
@@ -47,7 +54,6 @@ import {
 	type ToolResult,
 } from '../toolRegistry.ts';
 import { wrapToolResult } from './results.ts';
-import { OPERATION_INPUT_SCHEMAS, PERMISSIVE_SCHEMA } from './schemas/operations.ts';
 import { OPERATION_DESCRIPTIONS } from './schemas/operationDescriptions.ts';
 
 // Resolved from Harper's server-helpers graph on demand. The map is built at
@@ -55,7 +61,8 @@ import { OPERATION_DESCRIPTIONS } from './schemas/operationDescriptions.ts';
 // `startOnMainThread` — the provider below re-reads it per request rather than
 // snapshotting (#1562).
 type OperationFunction = (json: object) => unknown | Promise<unknown>;
-type OperationFunctionMap = Map<string, { operation_function: OperationFunction }>;
+type OperationFunctionEntry = { inputSchema?: object; builtin?: boolean; readOnly?: boolean };
+type OperationFunctionMap = Map<string, OperationFunctionEntry>;
 
 type ChooseOperation = (body: object) => OperationFunction;
 type ProcessLocalTransaction = (req: { body: object }, fn: OperationFunction) => Promise<unknown>;
@@ -63,15 +70,29 @@ type ProcessLocalTransaction = (req: { body: object }, fn: OperationFunction) =>
 interface OperationsConfig {
 	allow?: readonly string[];
 	deny?: readonly string[];
+	usingDefaults: boolean;
 }
 
 // Test seams replace production dispatch when exercising registry behavior.
 let _opMapOverride: OperationFunctionMap | undefined;
+let _remoteSchemasOverride: Array<[string, RemoteOperationSchema]> | undefined;
 let _chooseOperationOverride: ChooseOperation | undefined;
 let _processLocalTransactionOverride: ProcessLocalTransaction | undefined;
+const warnedMissingSchemas = new Set<string>();
+const warnedUnclassifiedOperations = new WeakSet<OperationFunctionEntry>();
+onRemoteOperationUnregistered((name) => {
+	warnedMissingSchemas.delete(`${name}:missing`);
+	warnedMissingSchemas.delete(`${name}:inconsistent`);
+});
 
 export function _setOperationFunctionMapForTest(m: OperationFunctionMap | undefined): void {
 	_opMapOverride = m;
+	warnedMissingSchemas.clear();
+}
+export function _setRemoteOperationInputSchemasForTest(
+	schemas: Array<[string, RemoteOperationSchema]> | undefined
+): void {
+	_remoteSchemasOverride = schemas;
 }
 export function _setChooseOperationForTest(fn: ChooseOperation | undefined): void {
 	_chooseOperationOverride = fn;
@@ -84,6 +105,8 @@ function loadServerUtilities():
 	| {
 			OPERATION_FUNCTION_MAP?: OperationFunctionMap;
 			chooseOperation?: ChooseOperation;
+			getRemoteOperationInputSchema?: (name: string) => RemoteOperationSchema | undefined;
+			getRemoteOperationInputSchemas?: (include?: (name: string) => boolean) => Array<[string, RemoteOperationSchema]>;
 			processLocalTransaction?: ProcessLocalTransaction;
 	  }
 	| undefined {
@@ -99,6 +122,18 @@ function getOperationFunctionMap(): OperationFunctionMap | undefined {
 	if (_opMapOverride) return _opMapOverride;
 	const utils = loadServerUtilities();
 	return utils?.OPERATION_FUNCTION_MAP;
+}
+
+function getRemoteOperationInputSchemas(include: (name: string) => boolean): Array<[string, RemoteOperationSchema]> {
+	if (_remoteSchemasOverride) return _remoteSchemasOverride.filter(([name]) => include(name));
+	if (_opMapOverride) return [];
+	return loadServerUtilities()?.getRemoteOperationInputSchemas?.(include) ?? [];
+}
+
+function getRemoteOperationInputSchema(name: string): RemoteOperationSchema | undefined {
+	if (_remoteSchemasOverride) return _remoteSchemasOverride.find(([operationName]) => operationName === name)?.[1];
+	if (_opMapOverride) return undefined;
+	return loadServerUtilities()?.getRemoteOperationInputSchema?.(name);
 }
 
 function getChooseOperation(): ChooseOperation | undefined {
@@ -126,7 +161,6 @@ export const DEFAULT_ALLOW: readonly string[] = [
 	'get_job',
 	'get_status',
 	'get_analytics',
-	'get_metrics',
 	'system_information',
 	'read_log',
 	'read_audit_log',
@@ -166,8 +200,8 @@ export const DEFAULT_EXCLUDED: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Operations that carry `destructiveHint: true` when opted into the allow
- * list. The hint lets MCP clients surface a confirmation prompt before
+ * Names that always carry `destructiveHint: true`, even with a read-only claim.
+ * The hint lets MCP clients surface a confirmation prompt before
  * calling. It is **not** an authorization check — Harper's `verifyPerms`
  * still runs at the actual dispatch site.
  */
@@ -214,7 +248,7 @@ const STREAMING_OPERATIONS: ReadonlySet<string> = new Set(['get_backup', 'get_de
  * Read-only operations carry `readOnlyHint: true`. The category is wider
  * than the default allow list (some custom-allowed ops are also read-only
  * — `system_information`, for example). Any op matching one of these
- * prefixes or names is treated as read-only.
+ * prefixes or names is treated as read-only only for a built-in registration.
  */
 const READ_ONLY_PREFIXES: readonly string[] = ['describe_', 'list_', 'search_', 'get_', 'read_'];
 const READ_ONLY_NAMES: ReadonlySet<string> = new Set(['system_information', 'status']);
@@ -273,12 +307,18 @@ function matchesAny(operation: string, patterns: readonly string[] | undefined):
 }
 
 function isOperationAllowed(operation: string, config: OperationsConfig): boolean {
-	const usingDefaultAllow = !(config.allow && config.allow.length > 0);
-	if (usingDefaultAllow && DEFAULT_EXCLUDED.has(operation)) return false;
-	const allowList = usingDefaultAllow ? DEFAULT_ALLOW : config.allow;
+	if (config.usingDefaults && DEFAULT_EXCLUDED.has(operation)) return false;
+	const allowList = config.usingDefaults ? DEFAULT_ALLOW : config.allow;
 	if (!matchesAny(operation, allowList)) return false;
 	if (matchesAny(operation, config.deny)) return false;
 	return true;
+}
+
+export function _isOperationAllowedForTest(
+	operation: string,
+	config: Pick<OperationsConfig, 'allow' | 'deny'>
+): boolean {
+	return isOperationAllowed(operation, { ...config, usingDefaults: !config.allow?.length });
 }
 
 function getOperationsConfig(): OperationsConfig {
@@ -287,17 +327,17 @@ function getOperationsConfig(): OperationsConfig {
 	return {
 		allow: Array.isArray(allow) ? (allow as readonly string[]) : undefined,
 		deny: Array.isArray(deny) ? (deny as readonly string[]) : undefined,
+		usingDefaults: !Array.isArray(allow) || allow.length === 0,
 	};
 }
 
-function buildDescription(operationName: string, hasCuratedSchema: boolean): string {
-	const curated = OPERATION_DESCRIPTIONS[operationName];
+function buildDescription(operationName: string, permissive: boolean, builtin: boolean): string {
+	const curated =
+		builtin && Object.hasOwn(OPERATION_DESCRIPTIONS, operationName) ? OPERATION_DESCRIPTIONS[operationName] : undefined;
 	if (curated) return curated;
-	const base = `Harper operation '${operationName}'.`;
-	const schemaNote = hasCuratedSchema
-		? ' Arguments validated against the curated schema below.'
-		: ' Arguments forwarded as-is; the server validates and returns a structured error on rejection.';
-	return base + schemaNote;
+	return permissive
+		? `Harper operation '${operationName}'. Arguments are forwarded as-is; the operation handler is responsible for validation.`
+		: `Harper operation '${operationName}'. Arguments are described by its registered schema; the operation handler is responsible for validation.`;
 }
 
 /**
@@ -445,29 +485,78 @@ export function makeOperationToolHandler(operationName: string) {
 	};
 }
 
-/**
- * Build the `ToolDef` for one operation. Cheap and stateless — a def is a pure
- * function of the operation name (its schema, description, annotations, RBAC
- * predicate, and handler don't depend on the allow/deny config, which only
- * decides *whether* the op is exposed, checked per request in the provider).
- * `tools/list` isn't a hot path, so the provider rebuilds defs per call rather
- * than caching (no module-level state to leak or stale-cache across tests).
- */
-function buildOperationToolDef(operationName: string): ToolDef {
-	const inputSchema = OPERATION_INPUT_SCHEMAS[operationName] ?? PERMISSIVE_SCHEMA;
+function hasReadOnlyClassification(operationName: string, operation: OperationFunctionEntry): boolean {
+	return (
+		!isDestructive(operationName) &&
+		((operation.builtin === true && isReadOnly(operationName)) || operation.readOnly === true)
+	);
+}
+
+function buildOperationToolDef(
+	operationName: string,
+	inputSchema: object,
+	operation: OperationFunctionEntry,
+	permissive = false
+): ToolDef {
+	const builtin = operation.builtin === true;
+	const destructive = isDestructive(operationName) || (!builtin && operation.readOnly !== true);
 	const annotations: { readOnlyHint?: boolean; destructiveHint?: boolean; idempotentHint?: boolean } = {};
-	if (isReadOnly(operationName)) annotations.readOnlyHint = true;
-	if (isDestructive(operationName)) annotations.destructiveHint = true;
-	if (isIdempotent(operationName)) annotations.idempotentHint = true;
+	if (hasReadOnlyClassification(operationName, operation)) {
+		annotations.readOnlyHint = true;
+	}
+	if (destructive) annotations.destructiveHint = true;
+	if (builtin && isIdempotent(operationName)) annotations.idempotentHint = true;
 	return {
 		name: operationName,
-		description: buildDescription(operationName, operationName in OPERATION_INPUT_SCHEMAS),
+		description: buildDescription(operationName, permissive, builtin),
 		inputSchema,
 		profile: 'operations',
 		...(Object.keys(annotations).length > 0 ? { annotations } : {}),
 		visibleTo: (user) => canRoleInvokeOperation(user, operationName),
 		handler: makeOperationToolHandler(operationName),
 	};
+}
+
+function buildRegisteredOperationToolDef(
+	operationName: string,
+	operation: OperationFunctionEntry,
+	config: OperationsConfig,
+	issue: RemoteOperationSchema['issue'] = 'missing'
+): ToolDef | undefined {
+	if (config.usingDefaults && !hasReadOnlyClassification(operationName, operation)) {
+		if (!warnedUnclassifiedOperations.has(operation)) {
+			warnedUnclassifiedOperations.add(operation);
+			harperLogger.warn(
+				`MCP operations profile: '${operationName}' lacks a read-only classification; declare readOnly: true on its main-thread registration only if it is read-only, or explicitly include it in mcp.operations.allow (which replaces the defaults)`
+			);
+		}
+		return undefined;
+	}
+	if (!operation.inputSchema) {
+		if (
+			issue !== 'inconsistent' &&
+			config.allow?.some((pattern) => !pattern.includes('*') && pattern === operationName)
+		) {
+			return buildOperationToolDef(operationName, { type: 'object' }, operation, true);
+		}
+		const warningKey = `${operationName}:${issue}`;
+		if (!warnedMissingSchemas.has(warningKey)) {
+			warnedMissingSchemas.add(warningKey);
+			const source = config.allow?.length ? ' matches mcp.operations.allow but' : '';
+			const defaultsNote = config.allow?.length
+				? ''
+				: '; an explicit allow list replaces the defaults, so include the default entries you still need';
+			const message =
+				issue === 'inconsistent'
+					? `MCP operations profile: '${operationName}' is registered by workers with different inputSchema values; withholding it until they agree`
+					: `MCP operations profile: '${operationName}'${source} was registered without inputSchema; ${operation.builtin ? 'name it literally in mcp.operations.allow' : 'pass inputSchema to server.registerOperation() or name it literally in mcp.operations.allow'}${defaultsNote}`;
+			harperLogger.warn(message);
+		}
+		return undefined;
+	}
+	warnedMissingSchemas.delete(`${operationName}:missing`);
+	warnedMissingSchemas.delete(`${operationName}:inconsistent`);
+	return buildOperationToolDef(operationName, operation.inputSchema, operation);
 }
 
 /**
@@ -484,17 +573,43 @@ const operationsToolProvider: ProfileToolProvider = {
 		}
 		const config = getOperationsConfig();
 		const defs: ToolDef[] = [];
-		for (const operationName of opMap.keys()) {
+		for (const [operationName, operation] of opMap) {
 			if (!isOperationAllowed(operationName, config)) continue;
-			defs.push(buildOperationToolDef(operationName));
+			const def = buildRegisteredOperationToolDef(operationName, operation, config);
+			if (def) defs.push(def);
+		}
+		// Forwarded registrations cannot make an owned read-only claim.
+		if (!config.usingDefaults) {
+			for (const [operationName, remoteSchema] of getRemoteOperationInputSchemas(
+				(name) => !opMap.has(name) && isOperationAllowed(name, config)
+			)) {
+				const def = buildRegisteredOperationToolDef(
+					operationName,
+					{ inputSchema: remoteSchema.inputSchema },
+					config,
+					remoteSchema.issue
+				);
+				if (def) defs.push(def);
+			}
 		}
 		return defs;
 	},
 	get(operationName: string): ToolDef | undefined {
 		const opMap = getOperationFunctionMap();
-		if (!opMap || !opMap.has(operationName)) return undefined;
-		if (!isOperationAllowed(operationName, getOperationsConfig())) return undefined;
-		return buildOperationToolDef(operationName);
+		if (!opMap) return undefined;
+		const config = getOperationsConfig();
+		let operation = opMap.get(operationName);
+		let issue: RemoteOperationSchema['issue'];
+		if (!operation && !config.usingDefaults) {
+			const remote = getRemoteOperationInputSchema(operationName);
+			if (remote) {
+				operation = { inputSchema: remote.inputSchema };
+				issue = remote.issue;
+			}
+		}
+		if (!operation) return undefined;
+		if (!isOperationAllowed(operationName, config)) return undefined;
+		return buildRegisteredOperationToolDef(operationName, operation, config, issue);
 	},
 };
 

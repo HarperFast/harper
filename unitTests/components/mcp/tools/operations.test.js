@@ -7,6 +7,7 @@ const {
 	MAX_OPERATION_ITERABLE_ITEMS,
 	MAX_OPERATION_ITERABLE_BYTES,
 	_setOperationFunctionMapForTest,
+	_setRemoteOperationInputSchemasForTest,
 	_setChooseOperationForTest,
 	_setProcessLocalTransactionForTest,
 } = require('#src/components/mcp/tools/operations');
@@ -21,8 +22,12 @@ const { waitFor } = require('../../../waitFor.js');
 
 function makeOpMap(entries) {
 	const m = new Map();
-	for (const [name, fn] of entries) {
-		m.set(name, { operation_function: fn ?? (async () => ({ ok: true })) });
+	for (const [name, fn, inputSchema = { type: 'object' }, builtin = true] of entries) {
+		m.set(name, {
+			builtin,
+			operation_function: fn ?? (async () => ({ ok: true })),
+			inputSchema: inputSchema === null ? undefined : inputSchema,
+		});
 	}
 	return m;
 }
@@ -43,6 +48,7 @@ describe('mcp/tools/operations — registration', () => {
 	afterEach(() => {
 		_resetRegistryForTest();
 		_setOperationFunctionMapForTest(undefined);
+		_setRemoteOperationInputSchemasForTest(undefined);
 		_setChooseOperationForTest(undefined);
 		_setProcessLocalTransactionForTest(undefined);
 		env.get = originalEnvGet;
@@ -103,11 +109,10 @@ describe('mcp/tools/operations — registration', () => {
 				['get_backup', async () => ({ backup: '' })],
 				['get_deployment', async () => ({})],
 				['get_deployment_payload', async () => ({})],
-				// These four ARE in the explicit safe list.
+				// These three ARE in the explicit safe list.
 				['get_job', async () => ({})],
 				['get_status', async () => ({})],
 				['get_analytics', async () => ({})],
-				['get_metrics', async () => ({})],
 			])
 		);
 
@@ -129,7 +134,7 @@ describe('mcp/tools/operations — registration', () => {
 			assert.ok(!names.has(sensitive), `${sensitive} must not be default-allowed`);
 		}
 		// Safe getters: IN the default surface.
-		for (const safe of ['get_job', 'get_status', 'get_analytics', 'get_metrics']) {
+		for (const safe of ['get_job', 'get_status', 'get_analytics']) {
 			assert.ok(names.has(safe), `${safe} should be default-allowed`);
 		}
 	});
@@ -252,17 +257,228 @@ describe('mcp/tools/operations — registration', () => {
 		assert.equal(dropTable.annotations?.readOnlyHint, undefined);
 	});
 
-	it('falls back to a permissive schema for ops with no hand-curated entry', () => {
-		envOverrides.mcp_operations_allow = ['nonstandard_op'];
-		_setOperationFunctionMapForTest(makeOpMap([['nonstandard_op', null]]));
+	it('does not infer safety or curated help for component names or builtin replacements', () => {
+		_setOperationFunctionMapForTest(makeOpMap([['search_by_value', null, { type: 'object' }, false]]));
+		_setRemoteOperationInputSchemasForTest([['search_and_reindex', { inputSchema: { type: 'object' } }]]);
 		registerOperationsTools();
-		const tool = getTool('nonstandard_op');
-		assert.equal(tool.inputSchema.type, 'object');
-		assert.equal(tool.inputSchema.additionalProperties, true);
+		for (const name of ['search_by_value', 'search_and_reindex']) {
+			assert.equal(getTool(name), undefined);
+		}
+		assert.deepEqual(listTools({ user: SUPER, profile: 'operations', sessionId: 's' }).tools, []);
+		envOverrides.mcp_operations_allow = ['search_*'];
+		for (const name of ['search_by_value', 'search_and_reindex']) {
+			const tool = getTool(name);
+			assert.equal(tool.annotations?.readOnlyHint, undefined);
+			assert.equal(tool.annotations?.destructiveHint, true);
+			assert.match(tool.description, /registered schema/);
+		}
+	});
+
+	it('uses the local dispatch owner despite conflicting same-named worker registrations', async () => {
+		const name = 'test_local_dispatch_schema_owner';
+		const utils = require('#src/server/serverHelpers/serverUtilities');
+		const remote = require('#src/server/serverHelpers/registeredOperations');
+		const { notifyThreadExit } = require('#src/server/threads/manageThreads');
+		const inputSchema = { type: 'object', properties: { value: { type: 'string' } } };
+		envOverrides.mcp_operations_allow = [name];
+		try {
+			server.registerOperation({ name, inputSchema, execute: async (body) => ({ owner: 'main', value: body.value }) });
+			for (const [originator, type] of [
+				[9_000_401, 'number'],
+				[9_000_402, 'boolean'],
+			]) {
+				remote.operationRegisteredHandler({
+					message: {
+						name,
+						originator,
+						inputSchema: { type: 'object', properties: { value: { type } } },
+					},
+				});
+			}
+			assert.equal(remote.getRemoteOperationInputSchema(name).issue, 'inconsistent');
+			registerOperationsTools();
+			assert.deepEqual(getTool(name).inputSchema, inputSchema);
+			const body = { operation: name, value: 'local-contract' };
+			assert.deepEqual(await utils.chooseOperation(body, true)(body), { owner: 'main', value: 'local-contract' });
+		} finally {
+			utils.OPERATION_FUNCTION_MAP.delete(name);
+			notifyThreadExit(9_000_401);
+			notifyThreadExit(9_000_402);
+		}
+	});
+
+	it('gates an unknown default-glob component operation in the agent', () => {
+		_setOperationFunctionMapForTest(makeOpMap([['search_and_purge', null, { type: 'object' }, false]]));
+		registerOperationsTools();
+		assert.equal(getTool('search_and_purge'), undefined);
+		envOverrides.mcp_operations_allow = [];
+		assert.equal(getTool('search_and_purge'), undefined);
+		envOverrides.mcp_operations_allow = ['search_*'];
+		assert.equal(getTool('search_and_purge').annotations?.destructiveHint, true);
+		const { composeRegistryTools } = require('#src/agent/registryTools');
+		const { composeToolset } = require('#src/agent/toolset');
+		const { tools } = composeToolset({
+			registryTools: composeRegistryTools(SUPER, async () => SUPER),
+			allowDestructive: false,
+			onFollowup: async () => {},
+		});
+		assert.equal(
+			tools.some((tool) => tool.def.name === 'search_and_purge'),
+			false
+		);
+	});
+
+	it('keeps the built-in agent session listing visible under defaults', () => {
+		const { buildOperations } = require('#src/agent/operations');
+		const { OPERATION_FUNCTION_MAP } = require('#src/server/serverHelpers/serverUtilities');
+		const operation = buildOperations({}).find((op) => op.name === 'list_agent_sessions');
+		const previous = OPERATION_FUNCTION_MAP.get(operation.name);
+		try {
+			server.registerOperation(operation);
+			registerOperationsTools();
+			assert.equal(getTool(operation.name)?.annotations?.readOnlyHint, true);
+			assert.ok(
+				listTools({ user: SUPER, profile: 'operations', sessionId: 's', limit: 200 }).tools.some(
+					(tool) => tool.name === operation.name
+				)
+			);
+		} finally {
+			if (previous) OPERATION_FUNCTION_MAP.set(operation.name, previous);
+			else OPERATION_FUNCTION_MAP.delete(operation.name);
+		}
+	});
+
+	it('honors a main-thread read-only declaration without weakening destructive names', () => {
+		const utils = require('#src/server/serverHelpers/serverUtilities');
+		const name = 'list_owned_read_only';
+		try {
+			server.registerOperation({ name, inputSchema: { type: 'object' }, readOnly: true, execute: async () => [] });
+			registerOperationsTools();
+			assert.equal(getTool(name).annotations?.readOnlyHint, true);
+			assert.notEqual(getTool(name).annotations?.destructiveHint, true);
+			_setOperationFunctionMapForTest(
+				new Map([
+					[
+						'remove_node',
+						{
+							inputSchema: { type: 'object' },
+							readOnly: true,
+						},
+					],
+				])
+			);
+			envOverrides.mcp_operations_allow = ['remove_node'];
+			assert.equal(getTool('remove_node').annotations?.readOnlyHint, undefined);
+			assert.equal(getTool('remove_node').annotations?.destructiveHint, true);
+		} finally {
+			utils.OPERATION_FUNCTION_MAP.delete(name);
+		}
+	});
+
+	it('keeps component destructive tools out of the agent default toolset', () => {
+		envOverrides.mcp_operations_allow = ['remove_node'];
+		_setOperationFunctionMapForTest(makeOpMap([['remove_node', null, null, false]]));
+		registerOperationsTools();
+		assert.equal(getTool('remove_node').annotations.destructiveHint, true);
+		const { composeRegistryTools } = require('#src/agent/registryTools');
+		const { composeToolset } = require('#src/agent/toolset');
+		const registryTools = composeRegistryTools(SUPER, async () => SUPER);
+		assert.equal(registryTools.find((tool) => tool.def.name === 'remove_node').destructive, true);
+		const { tools } = composeToolset({
+			registryTools,
+			allowDestructive: false,
+			onFollowup: async () => {},
+		});
+		assert.equal(
+			tools.some((tool) => tool.def.name === 'remove_node'),
+			false
+		);
+	});
+
+	it('does not expose a glob-allowed operation without registered schema metadata', () => {
+		envOverrides.mcp_operations_allow = ['nonstandard_*'];
+		_setOperationFunctionMapForTest(makeOpMap([['nonstandard_op', null, null]]));
+		registerOperationsTools();
+		assert.equal(getTool('nonstandard_op'), undefined);
+	});
+
+	it('exposes an allowed custom operation with its registered schema', () => {
+		const inputSchema = {
+			type: 'object',
+			properties: { message: { type: 'string' } },
+			required: ['message'],
+		};
+		envOverrides.mcp_operations_allow = ['nonstandard_op'];
+		_setOperationFunctionMapForTest(makeOpMap([['nonstandard_op', null, inputSchema]]));
+		registerOperationsTools();
+		assert.deepEqual(getTool('nonstandard_op').inputSchema, inputSchema);
+	});
+
+	it('exposes an allowed worker-registered operation with its mirrored schema', () => {
+		const inputSchema = { type: 'object', properties: { message: { type: 'string' } } };
+		envOverrides.mcp_operations_allow = ['worker_op'];
+		_setOperationFunctionMapForTest(new Map());
+		_setRemoteOperationInputSchemasForTest([['worker_op', { inputSchema }]]);
+		registerOperationsTools();
+
+		assert.deepEqual(getTool('worker_op').inputSchema, inputSchema);
+		assert.deepEqual(
+			listTools({ user: SUPER, profile: 'operations', sessionId: 's', limit: 200 }).tools.map(({ name }) => name),
+			['worker_op']
+		);
+	});
+
+	it('allows an operator to opt a named schema-less operation into the permissive contract', () => {
+		envOverrides.mcp_operations_allow = ['custom_op'];
+		_setOperationFunctionMapForTest(makeOpMap([['custom_op', null, null]]));
+		registerOperationsTools();
+
+		assert.deepEqual(getTool('custom_op').inputSchema, { type: 'object' });
+		assert.match(getTool('custom_op').description, /forwarded as-is/);
+	});
+
+	it('withholds default schema-less operations even when the default allow entry is literal', () => {
+		_setOperationFunctionMapForTest(makeOpMap([['get_status', null, null]]));
+		registerOperationsTools();
+		assert.equal(getTool('get_status'), undefined);
+	});
+
+	it('preserves literal schema-less opt-ins alongside globs and still applies deny', () => {
+		envOverrides.mcp_operations_allow = ['insert', 'update', 'search_*'];
+		envOverrides.mcp_operations_deny = ['update'];
+		_setOperationFunctionMapForTest(
+			makeOpMap([
+				['insert', null, null],
+				['update', null, null],
+				['search_custom', null, null],
+			])
+		);
+		registerOperationsTools();
+		assert.deepEqual(getTool('insert').inputSchema, { type: 'object' });
+		assert.equal(getTool('update'), undefined);
+		assert.equal(getTool('search_custom'), undefined);
+	});
+
+	it('preserves literal schema-less opt-ins for worker registrations', () => {
+		envOverrides.mcp_operations_allow = ['worker_op'];
+		_setOperationFunctionMapForTest(new Map());
+		_setRemoteOperationInputSchemasForTest([['worker_op', { issue: 'missing' }]]);
+		registerOperationsTools();
+		assert.deepEqual(getTool('worker_op').inputSchema, { type: 'object' });
+	});
+
+	it('does not let a literal allow entry override conflicting worker schemas', () => {
+		envOverrides.mcp_operations_allow = ['worker_op'];
+		_setOperationFunctionMapForTest(new Map());
+		_setRemoteOperationInputSchemasForTest([['worker_op', { issue: 'inconsistent' }]]);
+		registerOperationsTools();
+
+		assert.equal(getTool('worker_op'), undefined);
 	});
 
 	it('exposes hand-curated schemas with required fields', () => {
-		_setOperationFunctionMapForTest(makeOpMap([['describe_table', null]]));
+		const { OPERATION_INPUT_SCHEMAS } = require('#src/server/serverHelpers/operationInputSchemas');
+		_setOperationFunctionMapForTest(makeOpMap([['describe_table', null, OPERATION_INPUT_SCHEMAS.describe_table]]));
 		registerOperationsTools();
 		const tool = getTool('describe_table');
 		assert.equal(tool.inputSchema.type, 'object');
@@ -271,7 +487,8 @@ describe('mcp/tools/operations — registration', () => {
 	});
 
 	it('advertises the get_status components opt-in', () => {
-		_setOperationFunctionMapForTest(makeOpMap([['get_status', null]]));
+		const { OPERATION_INPUT_SCHEMAS } = require('#src/server/serverHelpers/operationInputSchemas');
+		_setOperationFunctionMapForTest(makeOpMap([['get_status', null, OPERATION_INPUT_SCHEMAS.get_status]]));
 		registerOperationsTools();
 		assert.equal(getTool('get_status').inputSchema.properties.components.type, 'boolean');
 	});
@@ -294,7 +511,6 @@ describe('mcp/tools/operations — registration', () => {
 				'get_job',
 				'get_status',
 				'get_analytics',
-				'get_metrics',
 				'system_information',
 				'read_log',
 				'read_audit_log',
@@ -330,8 +546,14 @@ describe('mcp/tools/operations — registration', () => {
 
 		// A component registers new ops after registration ran. `list_agents` is
 		// allow-listed by default via `list_*`; `agent_prompt` is opted in explicitly.
-		opMap.set('list_agents', { operation_function: async () => ({ agents: [] }) });
-		opMap.set('agent_prompt', { operation_function: async () => ({ ok: true }) });
+		opMap.set('list_agents', {
+			operation_function: async () => ({ agents: [] }),
+			inputSchema: { type: 'object' },
+		});
+		opMap.set('agent_prompt', {
+			operation_function: async () => ({ ok: true }),
+			inputSchema: { type: 'object' },
+		});
 		envOverrides.mcp_operations_allow = ['describe_*', 'list_*', 'agent_prompt'];
 
 		names = listTools({ user: SUPER, profile: 'operations', sessionId: 's', limit: 200 }).tools.map((t) => t.name);
@@ -347,7 +569,10 @@ describe('mcp/tools/operations — registration', () => {
 		assert.equal(getTool('agent_prompt'), undefined);
 
 		// Component registers it and the operator opts it in.
-		opMap.set('agent_prompt', { operation_function: async () => ({ ok: true }) });
+		opMap.set('agent_prompt', {
+			operation_function: async () => ({ ok: true }),
+			inputSchema: { type: 'object' },
+		});
 		envOverrides.mcp_operations_allow = ['describe_*', 'agent_prompt'];
 
 		const tool = getTool('agent_prompt');
@@ -394,11 +619,21 @@ describe('mcp/tools/operations — registration', () => {
 });
 
 describe('mcp/tools/operations — catalog coverage lint', () => {
-	const { OPERATION_INPUT_SCHEMAS } = require('#src/components/mcp/tools/schemas/operations');
+	const AjvModule = require('ajv');
+	const Ajv = AjvModule.default ?? AjvModule;
+	const { OPERATION_INPUT_SCHEMAS } = require('#src/server/serverHelpers/operationInputSchemas');
+	const { AGENT_OPERATION_INPUT_SCHEMAS } = require('#src/agent/operationInputSchemas');
 	const { OPERATION_DESCRIPTIONS } = require('#src/components/mcp/tools/schemas/operationDescriptions');
-	const { OPERATIONS_ENUM } = require('#src/utility/hdbTerms');
+	const { OPERATION_FUNCTION_MAP } = require('#src/server/serverHelpers/serverUtilities');
 
-	const allOpNames = Object.values(OPERATIONS_ENUM);
+	const { OPERATIONS_ENUM } = require('#src/utility/hdbTerms');
+	const allOpNames = [
+		...new Set([
+			...Object.values(OPERATIONS_ENUM),
+			...OPERATION_FUNCTION_MAP.keys(),
+			...Object.keys(AGENT_OPERATION_INPUT_SCHEMAS),
+		]),
+	];
 
 	function globToRegex(pattern) {
 		const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
@@ -412,17 +647,28 @@ describe('mcp/tools/operations — catalog coverage lint', () => {
 	);
 
 	it('expansion covers a non-trivial set of operations (sanity check)', () => {
-		// Catches the case where OPERATIONS_ENUM goes missing in a build refactor.
+		// Guard against an empty registry making coverage vacuous.
 		assert.ok(expandedAllow.length >= 5, `expected DEFAULT_ALLOW to expand to >= 5 ops, got ${expandedAllow.length}`);
 	});
 
 	it('every DEFAULT_ALLOW operation has an entry in OPERATION_INPUT_SCHEMAS', () => {
-		const missing = expandedAllow.filter((name) => !(name in OPERATION_INPUT_SCHEMAS));
+		const registeredSchemas = { ...OPERATION_INPUT_SCHEMAS, ...AGENT_OPERATION_INPUT_SCHEMAS };
+		const missing = expandedAllow.filter((name) => !Object.hasOwn(registeredSchemas, name));
 		assert.deepEqual(missing, [], `Operations on DEFAULT_ALLOW without an input schema: ${missing.join(', ')}`);
 	});
 
+	it('every built-in operation input schema is valid JSON Schema', () => {
+		const ajv = new Ajv({ addUsedSchema: false, strict: false, validateSchema: true });
+		for (const [name, schema] of Object.entries(OPERATION_INPUT_SCHEMAS)) {
+			assert.equal(schema.type, 'object', `${name} must declare an object input schema`);
+			assert.doesNotThrow(() => ajv.compile(schema), `${name} must have a valid JSON Schema`);
+		}
+	});
+
 	it('every DEFAULT_ALLOW operation has an entry in OPERATION_DESCRIPTIONS', () => {
-		const missing = expandedAllow.filter((name) => !(name in OPERATION_DESCRIPTIONS));
+		const missing = expandedAllow.filter(
+			(name) => OPERATION_FUNCTION_MAP.get(name)?.builtin && !(name in OPERATION_DESCRIPTIONS)
+		);
 		assert.deepEqual(missing, [], `Operations on DEFAULT_ALLOW without a description: ${missing.join(', ')}`);
 	});
 
@@ -935,4 +1181,91 @@ describe('mcp/tools/operations — structuredContent is a spec-legal record', ()
 		assert.match(payload.message, /aborted/i);
 		assertSpecLegal(res);
 	});
+});
+
+describe('mcp/tools/operations — remote warning lifetime', () => {
+	it('explains unclassified local defaults once per registration and accepts a read-only replacement', async () => {
+		const { OPERATION_FUNCTION_MAP } = require('#src/server/serverHelpers/serverUtilities');
+		const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
+		const name = 'list_unclassified_warning_fixture';
+		const previousAllow = env.get(CONFIG_PARAMS.MCP_OPERATIONS_ALLOW);
+		const previousDeny = env.get(CONFIG_PARAMS.MCP_OPERATIONS_DENY);
+		const restore = pinLogConfig({ level: 'warn' });
+		const logPath = harperLogger.getLogFilePath();
+		const lines = () => (existsSync(logPath) ? readFileSync(logPath, 'utf8') : '').split('\n');
+		try {
+			_resetRegistryForTest();
+			env.setProperty(CONFIG_PARAMS.MCP_OPERATIONS_ALLOW, []);
+			env.setProperty(CONFIG_PARAMS.MCP_OPERATIONS_DENY, []);
+			server.registerOperation({ name, inputSchema: { type: 'object' }, execute: async () => [] });
+			registerOperationsTools();
+			assert.equal(getTool(name), undefined);
+			listTools({ user: SUPER, profile: 'operations', sessionId: name });
+			harperLogger.warn(`${name}: listing complete`);
+			await waitFor(() => lines().some((line) => line.includes(`${name}: listing complete`)));
+			const warnings = lines().filter(
+				(line) => line.includes(`'${name}'`) && line.includes('read-only classification')
+			);
+			assert.equal(warnings.length, 1);
+			assert.match(warnings[0], /readOnly: true.*mcp.operations.allow.*replaces the defaults/);
+			server.registerOperation({ name, inputSchema: { type: 'object' }, readOnly: true, execute: async () => [] });
+			assert.equal(getTool(name).annotations.readOnlyHint, true);
+		} finally {
+			OPERATION_FUNCTION_MAP.delete(name);
+			env.setProperty(CONFIG_PARAMS.MCP_OPERATIONS_ALLOW, previousAllow);
+			env.setProperty(CONFIG_PARAMS.MCP_OPERATIONS_DENY, previousDeny);
+			_resetRegistryForTest();
+			restore();
+		}
+	});
+
+	for (const retirement of ['exit', 'failed port']) {
+		it(`deduplicates active warnings and resets them after final-owner ${retirement}`, async () => {
+			const remote = require('#src/server/serverHelpers/registeredOperations');
+			const { notifyThreadExit } = require('#src/server/threads/manageThreads');
+			const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
+			const name = `search_warning_retirement_${retirement.replace(' ', '_')}`;
+			const previousAllow = env.get(CONFIG_PARAMS.MCP_OPERATIONS_ALLOW);
+			const previousDeny = env.get(CONFIG_PARAMS.MCP_OPERATIONS_DENY);
+			const workers = retirement === 'exit' ? [9_000_460, 9_000_461, 9_000_462] : [9_000_463, 9_000_464, 9_000_465];
+			const restore = pinLogConfig({ level: 'warn' });
+			const logPath = harperLogger.getLogFilePath();
+			const lines = () => (existsSync(logPath) ? readFileSync(logPath, 'utf8') : '').split('\n');
+			const warnings = () =>
+				lines().filter((line) => line.includes(`'${name}'`) && line.includes('without inputSchema'));
+			const list = () => listTools({ user: SUPER, profile: 'operations', sessionId: name, limit: 200 });
+			try {
+				_resetRegistryForTest();
+				env.setProperty(CONFIG_PARAMS.MCP_OPERATIONS_ALLOW, ['search_warning_retirement_*']);
+				env.setProperty(CONFIG_PARAMS.MCP_OPERATIONS_DENY, []);
+				registerOperationsTools();
+				for (const originator of workers.slice(0, 2))
+					remote.operationRegisteredHandler({ message: { name, originator } });
+				assert.equal(getTool(name), undefined);
+				list();
+				await waitFor(() => warnings().length === 1);
+				notifyThreadExit(workers[0]);
+				list();
+				harperLogger.warn(`${name}: partial-owner listing complete`);
+				await waitFor(() => lines().some((line) => line.includes(`${name}: partial-owner listing complete`)));
+				assert.equal(warnings().length, 1);
+				if (retirement === 'exit') notifyThreadExit(workers[1]);
+				else
+					await assert.rejects(
+						remote.getRemoteOperationFunction(name)({ operation: name }),
+						/no worker thread is available/
+					);
+				assert.equal(remote.getRemoteOperationInputSchema(name), undefined);
+				remote.operationRegisteredHandler({ message: { name, originator: workers[2] } });
+				list();
+				await waitFor(() => warnings().length === 2);
+			} finally {
+				for (const id of workers) notifyThreadExit(id);
+				env.setProperty(CONFIG_PARAMS.MCP_OPERATIONS_ALLOW, previousAllow);
+				env.setProperty(CONFIG_PARAMS.MCP_OPERATIONS_DENY, previousDeny);
+				_resetRegistryForTest();
+				restore();
+			}
+		});
+	}
 });

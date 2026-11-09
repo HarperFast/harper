@@ -3,6 +3,7 @@
 const path = require('node:path');
 const { mkdirSync, readFileSync, writeFileSync } = require('node:fs');
 const assert = require('node:assert');
+const { waitFor } = require('../waitFor');
 
 if (require.main === module) {
 	const [rootPath, databasePath, database, tableName, markerPath, mode, logKeyArg] = process.argv.slice(2);
@@ -55,12 +56,30 @@ if (require.main === module) {
 		attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'n' }],
 	});
 
+	const saveFlushedState = async () => {
+		await Tbl.primaryStore.rootStore.flush();
+		const statePath = path.join(Tbl.primaryStore.rootStore.path, 'transaction_logs', 'local', 'txn.state');
+		await waitFor(
+			() => {
+				let state;
+				try {
+					state = readFileSync(statePath);
+				} catch (error) {
+					if (error.code === 'ENOENT') return false;
+					throw error;
+				}
+				if (state.length !== 8) return false;
+				writeFileSync(markerPath + '.state', state);
+				return true;
+			},
+			{ timeout: 10_000, message: 'the seed transaction log checkpoint was not published' }
+		);
+	};
+
 	const writeThenCrash = async () => {
 		if (mode.startsWith('write-advice')) {
 			await Tbl.put({ id: 'seed', n: -1 });
-			await Tbl.primaryStore.rootStore.flush();
-			const statePath = path.join(Tbl.primaryStore.rootStore.path, 'transaction_logs', 'local', 'txn.state');
-			writeFileSync(markerPath + '.state', readFileSync(statePath));
+			await saveFlushedState();
 			for (let n = 0; n < 3; n++) await Tbl.put({ id: String(n), n });
 			await Tbl.primaryStore.rootStore.flush();
 			if (mode === 'write-advice-tail') await Tbl.put({ id: 'tail', n: 3 });
@@ -69,9 +88,7 @@ if (require.main === module) {
 		}
 		if (mode === 'write-stale') {
 			await Tbl.put({ id: 'seed', n: -1 });
-			await Tbl.primaryStore.rootStore.flush();
-			const statePath = path.join(Tbl.primaryStore.rootStore.path, 'transaction_logs', 'local', 'txn.state');
-			writeFileSync(markerPath + '.state', readFileSync(statePath));
+			await saveFlushedState();
 			for (let n = 0; n < staleRecordCount; n++) await Tbl.put({ id: String(n), n, payload: 'x'.repeat(8192) });
 			await Tbl.primaryStore.rootStore.flush();
 			await Tbl.put({ id: 'tail', n: staleRecordCount });

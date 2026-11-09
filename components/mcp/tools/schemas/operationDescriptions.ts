@@ -24,10 +24,8 @@
  * `cluster_status`) cannot have entries here — their authoritative
  * description belongs alongside their implementation.
  *
- * Transitional status: this catalog is the in-core fill until #878
- * (introspectable operations registry) ships, at which point each
- * operation's description lives with its schema and its handler in one
- * place and this file is retired.
+ * Protocol-facing help stays in MCP; reusable input contracts belong to the
+ * operation registry; runtime validation remains authoritative.
  */
 export const OPERATION_DESCRIPTIONS: Record<string, string> = {
 	// ─── DEFAULT_ALLOW: describe_* ────────────────────────────────────────
@@ -44,10 +42,6 @@ export const OPERATION_DESCRIPTIONS: Record<string, string> = {
 	// describe_metric: resources/analytics/read.ts:242 — Metric definition for the analytics table.
 	describe_metric:
 		'Returns attribute names and types for a specific metric in the analytics table. Pair with get_analytics or list_metrics.',
-
-	// list_agent_sessions: agent/operations.ts:101 — Super-user list of running agent sessions.
-	list_agent_sessions:
-		'Lists running MCP agent sessions. Requires super_user. Use to surface what the platform is currently running on behalf of which operator.',
 
 	// ─── DEFAULT_ALLOW: list_* ────────────────────────────────────────────
 	// list_users: security/user.ts:283 — Users + roles + permissions, secrets scrubbed.
@@ -240,8 +234,4 @@ export const OPERATION_DESCRIPTIONS: Record<string, string> = {
 	// delete_transaction_logs_before: utility/logging/transactionLog.ts:43 — Prune transaction log before cutoff.
 	delete_transaction_logs_before:
 		'Deletes transaction-log entries before a timestamp for a specified table. Destructive bulk operation; pruned entries cannot be recovered.',
-
-	// get_metrics: resources/analytics/read.ts (analytics.getOp) — Alias for get_analytics.
-	get_metrics:
-		'Alias for get_analytics. Returns analytics metric values with optional attribute filtering and time windowing. Pair with list_metrics to discover available metrics.',
 };

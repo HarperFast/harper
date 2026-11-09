@@ -13,8 +13,9 @@
  * thread, so the topology, and therefore the gap, is invisible to them.
  */
 import { suite, test, before, after } from 'node:test';
-import { strictEqual, ok } from 'node:assert';
+import { deepStrictEqual, strictEqual, ok } from 'node:assert';
 import { resolve } from 'node:path';
+import { waitFor } from '../../unitTests/waitFor.js';
 
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 
@@ -64,12 +65,37 @@ suite('Component: registered-operation (#1736)', (ctx: ContextWithHarper) => {
 		return { status: response.status, body: await response.json() };
 	}
 
+	async function mcp(body: object, sessionId?: string): Promise<Response> {
+		const { username, password } = ctx.harper.admin;
+		return fetch(`${ctx.harper.operationsAPIURL}/mcp`, {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+				'Accept': 'application/json, text/event-stream',
+				'Authorization': `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`,
+				...(sessionId ? { 'Mcp-Session-Id': sessionId, 'MCP-Protocol-Version': '2025-06-18' } : {}),
+			},
+			body: JSON.stringify(body),
+		});
+	}
+
 	before(async () => {
 		// Multiple HTTP workers so the forward actually has a choice of registering threads.
 		await setupHarperWithFixture(ctx, FIXTURE_PATH, {
 			config: {
 				threads: { count: 2 },
 				logging: { console: true, level: 'error' },
+				mcp: {
+					operations: {
+						mountPath: '/mcp',
+						allow: [
+							'component_registered_echo',
+							'component_registered_error',
+							'component_registered_disagreement',
+							'component_registered_*',
+						],
+					},
+				},
 			},
 		});
 	});
@@ -88,6 +114,163 @@ suite('Component: registered-operation (#1736)', (ctx: ContextWithHarper) => {
 		// The authenticated user was forwarded across the thread boundary (#1591 attribution input).
 		strictEqual(body.username, ctx.harper.admin.username);
 	});
+
+	test('worker schemas and literal schema-less opt-ins survive MCP list and call', async () => {
+		const init = await mcp({
+			jsonrpc: '2.0',
+			id: 1,
+			method: 'initialize',
+			params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test', version: '0' } },
+		});
+		strictEqual(init.status, 200);
+		const sessionId = init.headers.get('mcp-session-id');
+		ok(sessionId);
+		await init.body.cancel();
+
+		const response = await mcp({ jsonrpc: '2.0', id: 2, method: 'tools/list' }, sessionId);
+		strictEqual(response.status, 200);
+		const body = (await response.json()) as {
+			result: {
+				tools: Array<{
+					name: string;
+					inputSchema: object;
+					annotations?: { destructiveHint?: boolean; readOnlyHint?: boolean };
+				}>;
+			};
+		};
+		const tool = body.result.tools.find(({ name }) => name === 'component_registered_echo');
+		ok(tool);
+		strictEqual(tool.annotations?.destructiveHint, true, 'worker-only readOnly claims stay conservative');
+		strictEqual(tool.annotations?.readOnlyHint, undefined);
+		deepStrictEqual(tool.inputSchema, {
+			$schema: 'https://json-schema.org/draft/2020-12/schema',
+			type: 'object',
+			properties: { value: { type: 'string' } },
+			required: ['value'],
+		});
+		strictEqual(
+			body.result.tools.some(({ name }) => name === 'component_registered_stream'),
+			false,
+			'glob-matched schema-less operations must not be advertised'
+		);
+		strictEqual(
+			body.result.tools.some(({ name }) => name === 'component_registered_bad_schema'),
+			false
+		);
+		deepStrictEqual(body.result.tools.find(({ name }) => name === 'component_registered_error')?.inputSchema, {
+			type: 'object',
+		});
+
+		const call = await mcp(
+			{
+				jsonrpc: '2.0',
+				id: 3,
+				method: 'tools/call',
+				params: { name: 'component_registered_echo', arguments: { value: 'mcp-worker-echo' } },
+			},
+			sessionId
+		);
+		strictEqual(call.status, 200);
+		const called = (await call.json()) as {
+			result: { structuredContent: { echoed: string; executedOnMainThread: boolean } };
+		};
+		strictEqual(called.result.structuredContent.echoed, 'mcp-worker-echo');
+		strictEqual(called.result.structuredContent.executedOnMainThread, false);
+
+		const errorCall = await mcp(
+			{
+				jsonrpc: '2.0',
+				id: 4,
+				method: 'tools/call',
+				params: { name: 'component_registered_error', arguments: {} },
+			},
+			sessionId
+		);
+		strictEqual(errorCall.status, 200);
+		const failed = (await errorCall.json()) as { result: { isError: boolean; content: Array<{ text: string }> } };
+		strictEqual(failed.result.isError, true);
+		ok(failed.result.content.some(({ text }) => text.includes('deliberate failure from component operation')));
+
+		const hiddenCall = await mcp(
+			{
+				jsonrpc: '2.0',
+				id: 5,
+				method: 'tools/call',
+				params: { name: 'component_registered_bad_schema', arguments: {} },
+			},
+			sessionId
+		);
+		const hidden = (await hiddenCall.json()) as { error: { message: string } };
+		ok(hidden.error.message.includes('Unknown tool'), JSON.stringify(hidden));
+		const invalidMetadata = await op({ operation: 'component_registered_bad_schema' });
+		strictEqual(invalidMetadata.status, 200);
+		deepStrictEqual(invalidMetadata.body, { ok: true });
+		strictEqual(
+			body.result.tools.find(({ name }) => name === 'component_registered_draft_06')?.inputSchema['$schema'],
+			'http://json-schema.org/draft-06/schema#'
+		);
+		const draft06 = await mcp(
+			{
+				jsonrpc: '2.0',
+				id: 6,
+				method: 'tools/call',
+				params: { name: 'component_registered_draft_06', arguments: { value: 'draft-06-echo' } },
+			},
+			sessionId
+		);
+		const draft06Body = (await draft06.json()) as { result: { structuredContent: { echoed: string } } };
+		strictEqual(draft06Body.result.structuredContent.echoed, 'draft-06-echo');
+	});
+
+	test(
+		'a literal allow never exposes conflicting worker contracts and becomes visible after agreement',
+		{ skip: process.platform === 'win32' && 'Windows supports one HTTP worker; consensus requires two' },
+		async () => {
+			const init = await mcp({
+				jsonrpc: '2.0',
+				id: 101,
+				method: 'initialize',
+				params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'rollout', version: '0' } },
+			});
+			strictEqual(init.status, 200);
+			const sessionId = init.headers.get('mcp-session-id');
+			ok(sessionId);
+			await init.body.cancel();
+			const list = async () => {
+				const response = await mcp({ jsonrpc: '2.0', id: 102, method: 'tools/list' }, sessionId);
+				strictEqual(response.status, 200);
+				const body = (await response.json()) as { result: { tools: Array<{ name: string; inputSchema: object }> } };
+				return body.result.tools;
+			};
+			const ownerTools = (await waitFor(
+				async () => {
+					const owners = (await list()).filter(({ name }) => /^component_registered_owner_\d+$/.test(name));
+					return owners.length === 2 && owners;
+				},
+				{ timeout: 15_000, interval: 50, message: 'both worker-specific controls must be registered' }
+			)) as Array<{ name: string }>;
+			const owners = new Set<number>();
+			for (const owner of ownerTools) {
+				const control = await op({ operation: owner.name });
+				strictEqual(control.status, 200, JSON.stringify(control.body));
+				strictEqual(owner.name, 'component_registered_owner_' + control.body.threadId);
+				owners.add(control.body.threadId);
+				const interleaved = await op({ operation: 'component_registered_echo', value: 'interleaved-owner-control' });
+				strictEqual(interleaved.status, 200);
+			}
+			strictEqual(owners.size, 2);
+			const listed = async () => (await list()).find(({ name }) => name === 'component_registered_disagreement');
+			strictEqual(await listed(), undefined);
+			const first = await op({ operation: ownerTools[0].name, align: true });
+			strictEqual(first.status, 200);
+			strictEqual(await listed(), undefined, 'the other worker still declares its old contract');
+			const second = await op({ operation: ownerTools[1].name, align: true });
+			strictEqual(second.status, 200);
+			ok(first.body.threadId !== second.body.threadId);
+			const tool = (await waitFor(listed, { timeout: 15_000, interval: 50 })) as { inputSchema: object };
+			deepStrictEqual(tool.inputSchema, { type: 'object', properties: { value: { type: 'string' } } });
+		}
+	);
 
 	test('repeated calls keep working (round-robin across registering workers)', async () => {
 		const threadIds = new Set<number>();
@@ -240,5 +423,71 @@ suite('Component: registered-operation (#1736)', (ctx: ContextWithHarper) => {
 			strictEqual(status, 200, JSON.stringify(body));
 			strictEqual(body.granted, true);
 		});
+	});
+});
+
+suite('Component: registered-operation default MCP safety', (ctx: ContextWithHarper) => {
+	before(async () => {
+		await setupHarperWithFixture(ctx, FIXTURE_PATH, {
+			config: {
+				threads: { count: 2 },
+				logging: { console: true, level: 'error' },
+				mcp: { operations: { mountPath: '/mcp' } },
+			},
+		});
+	});
+	after(async () => {
+		await teardownHarper(ctx);
+	});
+	test('withholds forwarded read-only claims from default tools/list and tools/call', async () => {
+		const { username, password } = ctx.harper.admin;
+		const control = await fetch(ctx.harper.operationsAPIURL, {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+				'Authorization': `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`,
+			},
+			body: JSON.stringify({ operation: 'search_registered_operation' }),
+		});
+		strictEqual(control.status, 200);
+		const controlBody: any = await control.json();
+		ok(controlBody.worker > 0, JSON.stringify(controlBody));
+		let sessionId: string | null;
+		async function request(body: object) {
+			return fetch(`${ctx.harper.operationsAPIURL}/mcp`, {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					'Accept': 'application/json, text/event-stream',
+					'Authorization': `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`,
+					...(sessionId ? { 'Mcp-Session-Id': sessionId, 'MCP-Protocol-Version': '2025-06-18' } : {}),
+				},
+				body: JSON.stringify(body),
+			});
+		}
+		const init = await request({
+			jsonrpc: '2.0',
+			id: 1,
+			method: 'initialize',
+			params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'default-safety', version: '1' } },
+		});
+		strictEqual(init.status, 200);
+		sessionId = init.headers.get('mcp-session-id');
+		await init.arrayBuffer();
+		const listed: any = await (await request({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} })).json();
+		ok(listed.result.tools.some((tool: any) => tool.name === 'describe_all'));
+		strictEqual(
+			listed.result.tools.some((tool: any) => tool.name === 'search_registered_operation'),
+			false
+		);
+		const called: any = await (
+			await request({
+				jsonrpc: '2.0',
+				id: 3,
+				method: 'tools/call',
+				params: { name: 'search_registered_operation', arguments: {} },
+			})
+		).json();
+		strictEqual(called.error?.message, 'Unknown tool: search_registered_operation');
 	});
 });

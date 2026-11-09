@@ -225,24 +225,11 @@ Consequences worth knowing:
 
 ## Operations authorization boundary
 
-Operations request bodies are untrusted data. `serverHelpers/serverHandlers.ts → handlePostRequest()` rejects
-prototype-mutating property names and strips the legacy `bypass_auth` property before dispatch.
-`serverUtilities.ts → chooseOperation()` never reads authorization control from the body: trusted
-internal callers pass bypass state as a separate argument and expose it to operation handlers only
-through `operationAuthorizationState.ts`'s async context. When an operation registered by a component
-must run on a worker, `registeredOperations.ts` carries that state in the same-process ITC envelope,
-separately from the structured-cloned body. Never attach trusted dispatch state to an operation
-payload.
+Operation bodies are untrusted. `serverHandlers.handlePostRequest()` rejects prototype-mutating keys and strips `bypass_auth`. `chooseOperation()` accepts bypass only as a separate trusted argument; `operationAuthorizationState` exposes it to handlers. Worker forwarding carries it in the ITC envelope, never the body.
 
-`server.registerOperation()` runs per-worker, so anything the **main** thread must later know about a
-registered op has to ride the OPERATION_REGISTERED announcement — a module-local registry populated
-during registration exists only in the worker that registered. The bridge carries two such facts
-today: name→thread routing (for execution forwarding) and `grantable` (so `validateOperations` on
-main will accept the name in a role's `operations` allowlist, for add_role/alter_role, impersonation,
-and OIDC trust policies). Adding a third main-thread consumer of a worker-registered fact means
-extending that message, not reading a registry that main never populated. Grantability is safe to
-mirror because it only widens what an allowlist may _name_; enforcement stays on the worker's
-`chooseOperation`.
+Component registries are worker-local. OPERATION_REGISTERED carries name→thread routing, `grantable` (role/impersonation/OIDC allowlist eligibility, not authorization), and `inputSchema` to main. Extend that message for new main-thread consumers; enforcement stays in the worker's `chooseOperation()`.
+
+Registration validates/clones owned `inputSchema` metadata; handlers must validate calls. No schema is inherited by name. MCP advertises typed contracts for forwarded operations only when their live workers agree. Defaults require schemas and read-only classification. Forwarded tools need explicit allow entries; glob matches require schemas, while literals permit mixed missing/present metadata. Conflicting declared schemas are always withheld. Local map hits execute locally; worker consensus applies only to map misses. Equal worker schemas share storage; retirement clears MCP warning dedup. Builtin hints stay verified by name. A local owner may declare `readOnly`; unknown/forwarded effects are destructive. Known destructive names override claims. Agent calls recheck live availability/safety after resolving identity.
 
 ## Resource ↔ HTTP boundary
 
