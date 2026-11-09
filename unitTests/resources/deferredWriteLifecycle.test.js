@@ -316,8 +316,10 @@ describe('Deferred write lifecycle', function () {
 			} finally {
 				suspension.release();
 			}
+			record.set('n', 3);
 			await record.save();
 			assert.strictEqual((await TestTable.get(key)).name, 'kept');
+			assert.strictEqual((await TestTable.get(key)).n, 3, 'a valid setter still edits the accepted write');
 		});
 	}
 
