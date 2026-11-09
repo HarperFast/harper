@@ -135,6 +135,71 @@ describe('Deferred write lifecycle', function () {
 		}
 	});
 
+	it('does not revive a refused deferred write discarded by an explicit abort', async function () {
+		if (isLMDB) return this.skip();
+		const key = id();
+		await TestTable.put({ id: key, n: 0 });
+		const context = {};
+		const holder = await TestTable.lock(key, { hold: true, lease: 30000 }, context);
+		const stream = new PassThrough();
+		holder.set('n', 1);
+		holder.set('blob', createBlob(stream));
+		const first = holder.save();
+		try {
+			await waitFor(() => context.transaction.writes.some((write) => write?.key === key && write.saved));
+			const pending = await TestTable.getResource({ id: key }, context);
+			await pending.update({ n: 2 });
+			await assert.rejects(pending.save(), isOverlapRefusal);
+			stream.end('payload');
+			await first;
+			const discarded = context.transaction.writes.find((write) => write?.key === key && !write.saved);
+			context.transaction.abort();
+			assert.ok(discarded?.dropped, 'the explicit abort discarded the pending operation');
+			await pending.save();
+			assert.strictEqual((await TestTable.get(key)).n, 1, 'an aborted pending write stays discarded');
+			assert.strictEqual(changesFor(key).length, 1);
+		} finally {
+			stream.end();
+			await first;
+			await holder.unlock();
+		}
+	});
+
+	it('does not revive a refused deferred write discarded by its closed explicit owner', async function () {
+		if (isLMDB) return this.skip();
+		const key = id();
+		await TestTable.put({ id: key, n: 0 });
+		const context = {};
+		let holder;
+		await transaction(async (txn) => {
+			context.transaction = txn;
+			holder = await TestTable.lock(key, { hold: true, lease: 30000 }, context);
+		});
+		assert.strictEqual(context.transaction.open, TRANSACTION_STATE.CLOSED);
+		const stream = new PassThrough();
+		holder.set('n', 1);
+		holder.set('blob', createBlob(stream));
+		const first = holder.save();
+		try {
+			await waitFor(() => context.transaction.writes.some((write) => write?.key === key && write.saved));
+			const pending = await TestTable.getResource({ id: key }, context);
+			await pending.update({ n: 2 });
+			await assert.rejects(pending.save(), isOverlapRefusal);
+			const discarded = context.transaction.writes.find((write) => write?.key === key && !write.saved);
+			context.transaction.abort();
+			assert.ok(discarded?.dropped, 'the explicit abort discarded the pending operation');
+			stream.end('payload');
+			await first;
+			await pending.save();
+			assert.strictEqual((await TestTable.get(key)).n, 1, 'an aborted pending write stays discarded');
+			assert.strictEqual(changesFor(key).length, 1);
+		} finally {
+			stream.end();
+			await first;
+			await holder.unlock();
+		}
+	});
+
 	it('retry save persists a refused deferred write before a later lock acquisition', async function () {
 		if (isLMDB) return this.skip();
 		const key = id();
@@ -377,6 +442,92 @@ describe('Deferred write lifecycle', function () {
 			const locked = await Embedded.lock(key, { timeout: 100 }, context);
 			await locked.unlock();
 		}
+	});
+
+	it('save waits for pending model hooks before admitting or merging their write', async function () {
+		const Embedded = table({
+			database: 'deferred_write_lifecycle',
+			table: 'SaveDuringEmbedded',
+			audit: true,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'name' },
+				{ name: 'embedding', type: 'Array', embed: { source: 'name', model: 'default' } },
+			],
+		});
+		let release;
+		const gate = new Promise((resolve) => {
+			release = resolve;
+		});
+		Embedded.setEmbedAttribute('embedding', async (record) => {
+			if (record.name === 'pending') await gate;
+			return [record.name.length];
+		});
+		const key = id();
+		const context = {};
+		const record = await Embedded.getResource({ id: key }, context);
+		await record.update({ name: 'accepted' });
+		const updating = record.update({ name: 'pending' });
+		const saving = record.save();
+		const prematurelySaved = context.transaction.writes.some((write) => write?.saved);
+		release();
+		await updating;
+		assert.ok(
+			context.transaction.writes.every((write) => !write || write.priorWrite !== write),
+			'no self-linked write'
+		);
+		assert.ok(!prematurelySaved, 'save must wait for the hooks before admitting the replacement');
+		await saving;
+		const result = await Embedded.get(key);
+		assert.strictEqual(result.name, 'pending');
+		assert.deepStrictEqual(result.embedding, [7]);
+		assert.strictEqual(
+			[...Embedded.auditStore.getRange({ start: 1 })].filter((entry) => entry.recordId === key).length,
+			1
+		);
+		if (!isLMDB) {
+			const locked = await Embedded.lock(key, { timeout: 100, lease: 5000 }, context);
+			await locked.unlock();
+		}
+	});
+
+	it('a queued update stages independently after the preceding model hook rejects', async function () {
+		const Embedded = table({
+			database: 'deferred_write_lifecycle',
+			table: 'QueuedEmbedded',
+			audit: true,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'name' },
+				{ name: 'embedding', type: 'Array', embed: { source: 'name', model: 'default' } },
+			],
+		});
+		let rejectHook;
+		const gate = new Promise((resolve, reject) => {
+			rejectHook = reject;
+		});
+		Embedded.setEmbedAttribute('embedding', async (record) => {
+			if (record.name === 'rejected') await gate;
+			return [record.name.length];
+		});
+		const key = id();
+		const context = {};
+		const record = await Embedded.getResource({ id: key }, context);
+		await record.update({ name: 'accepted' });
+		const rejected = record.update({ name: 'rejected' });
+		const observedRejection = assert.rejects(rejected, /Failed to compute embedding/);
+		const queued = record.update({ name: 'last' });
+		rejectHook(new Error('intentional model failure'));
+		await observedRejection;
+		await queued;
+		await record.save();
+		const result = await Embedded.get(key);
+		assert.strictEqual(result.name, 'last');
+		assert.deepStrictEqual(result.embedding, [4]);
+		assert.strictEqual(
+			[...Embedded.auditStore.getRange({ start: 1 })].filter((entry) => entry.recordId === key).length,
+			1
+		);
 	});
 
 	it('a full put replaces a pending patch without leaving an orphan', async function () {

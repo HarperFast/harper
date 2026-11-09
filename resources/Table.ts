@@ -4799,7 +4799,10 @@ export function makeTable(options): TableResourceClass {
 		update(target: RequestTarget, updates?: any);
 		update(target: any, updates?: any) {
 			const staging = this.#savingOperation?.staging;
-			if (staging) return staging.then(() => this.update(target, updates));
+			if (staging) {
+				const next = () => this.update(target, updates);
+				return staging.then(next, next);
+			}
 			let id: Id;
 			// determine if it is a legacy call
 			const directInstance =
@@ -4944,7 +4947,10 @@ export function makeTable(options): TableResourceClass {
 			}
 			return when(loading, () => {
 				const staging = this.#savingOperation?.staging;
-				if (staging) return staging.then(() => this.#stageChanges(id, target, changes, options));
+				if (staging) {
+					const next = () => this.#stageChanges(id, target, changes, options);
+					return staging.then(next, next);
+				}
 				const previous = this.#mergeableWrite(id, options);
 				const previousChanges = previous?.pendingChanges ?? this.#changes;
 				this.#changes = previous && previousChanges ? Object.assign({}, previousChanges, changes) : changes;
@@ -4957,6 +4963,11 @@ export function makeTable(options): TableResourceClass {
 		 */
 		save() {
 			const operation = this.#savingOperation;
+			if (operation?.staging) {
+				const saved = operation.staging.then(() => this.save());
+				saved.catch(noop);
+				return saved;
+			}
 			if (operation instanceof ConditionLockWait) {
 				const saved = operation.staged.then(() => this.save());
 				saved.catch(noop);
@@ -6188,7 +6199,10 @@ export function makeTable(options): TableResourceClass {
 			record: Record & RecordObject
 		): void | (Record & Partial<RecordObject>) | Promise<void | (Record & Partial<RecordObject>)> {
 			const staging = this.#savingOperation?.staging;
-			if (staging) return staging.then(() => this.put(target, record));
+			if (staging) {
+				const next = () => this.put(target, record);
+				return staging.then(next, next);
+			}
 			if (record === undefined || record instanceof URLSearchParams) {
 				// legacy argument position, shift the arguments and go through the update method for back-compat.
 				// `when` settles the embed hook before `save()` so the write is staged first.

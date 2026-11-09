@@ -231,11 +231,11 @@ RocksDB index rows store `null`, so `RocksIndexStore.getRange` reads keys only. 
 
 ## Repeat writes to the same key in one transaction carry their state forward
 
-`linkWrite` chains same-key writes; `priorStagedWrite()` supplies the staged record no engine read can refresh. Program order only breaks ties; newer stored versions merge out of order. `writeKeyId` follows store encoding (`1n` chains with `1`, `[0]` differs from `[-0]`).
+`linkWrite` chains staged state through `priorStagedWrite()`; reads cannot refresh it (harper#1968). Newer versions merge out of order; order breaks ties. `writeKeyId` uses store encoding: `1n`/`1` chain; `[0]`/`[-0]` do not.
 
-- `chainsStagedState` defers behind unrun predecessors; `save()` drains them and `stageWrite` keeps arrival order. Gap: `_writeRelocate` saves eagerly.
-- `#mergeableWrite` edits one unsaved node in place, like `set()`; fresh callbacks retain full-update mode. `addWrite` admits it once (`deferredWriteLifecycle.test.js`).
-- Self-commit refusal keeps the deferred write and generation; `#saveOperation` reattaches after owner release (`deferredWriteLifecycle.test.js`).
+- **Staging order must equal execution order** (harper#2211): `chainsStagedState` defers behind predecessors; `save()` drains them; `stageWrite` keeps order. Gap: `_writeRelocate` saves eagerly.
+- `#mergeableWrite` edits one unsaved node in place, like `set()`; callbacks retain full-update mode. `addWrite` admits it once (`deferredWriteLifecycle.test.js`).
+- Refusal keeps the write and generation; `#saveOperation` reattaches only live writes after owner release (`deferredWriteLifecycle.test.js`).
 - `_writePublish` stages the unchanged record, preserving re-delivery dedup (`publishRecordState.test.js`).
 
 ## A tracked instance commits only what it changed, as plain data
