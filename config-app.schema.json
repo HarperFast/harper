@@ -266,7 +266,7 @@
 							"description": { "type": "string" },
 							"navigation": {
 								"enum": ["visible", "tucked", "hidden"],
-								"description": "How Studio shows this page unless studio.navigation in this component, a component that loads it, or the root config says otherwise."
+								"description": "How Studio shows this page unless the studio.navigation of a component that loads this one, or the root config, names it."
 							},
 							"access": {
 								"type": "object",

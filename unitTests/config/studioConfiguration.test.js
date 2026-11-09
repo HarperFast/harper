@@ -546,6 +546,22 @@ studio:
 			assert.deepStrictEqual(pageKeys(configuration), ['app.a.page-a', 'app.a.b.page-b']);
 		});
 
+		it('reads a plugin once when symlinks inside it lead back to it', async () => {
+			const app = writeComponent('app', 'self:\n  package: self\n');
+			const self = writePlugin(app, 'self', `left:\n  package: left\nright:\n  package: right\n${pagesConfig('page')}`);
+			mkdirSync(path.join(self, 'node_modules'), { recursive: true });
+			symlinkSync(self, path.join(self, 'node_modules', 'left'), 'dir');
+			symlinkSync(self, path.join(self, 'node_modules', 'right'), 'dir');
+			let reads = 0;
+			const countingRead = (filePath, encoding) => {
+				if (path.basename(filePath) === 'config.yaml') reads++;
+				return readFile(filePath, encoding);
+			};
+			const configuration = await createStudioConfigurationReader(captureWarnings().logger, countingRead)();
+			assert.deepStrictEqual(pageKeys(configuration), ['app.self.page']);
+			assert.strictEqual(reads, 2);
+		});
+
 		it('keeps the application and its other plugins when one plugin cannot be read', async () => {
 			const app = writeComponent('app', `broken:\n  package: broken\nfine:\n  package: fine\n${pagesConfig('own')}`);
 			writePlugin(app, 'broken', `studio:\n  pages:\n    - { id: x, name: "unclosed\nsecret: ${SECRET}\n`);
@@ -566,7 +582,11 @@ studio:
 			const configuration = await createStudioConfigurationReader(logger)();
 			assert.deepStrictEqual(pageKeys(configuration), [`app.${longKey}.p`]);
 			assert.strictEqual(warnings.length, 2);
-			assert.ok(warnings.some((warning) => /plugin '\.\.\/escape' is not a name Studio can address/.test(warning)));
+			assert.ok(
+				warnings.some(
+					(warning) => /a package entry has a key Studio cannot address/.test(warning) && !warning.includes('escape')
+				)
+			);
 			assert.ok(
 				warnings.some((warning) => /its page 'page' is left out: .* is longer than 128 characters/.test(warning))
 			);
@@ -629,6 +649,27 @@ studio:
 					databases: 'hidden',
 				});
 				assert.deepStrictEqual(configuration.rootNavigation, { status: 'hidden' });
+			});
+
+			it('ranks root over the application over each plugin over the page default for one key', async () => {
+				const key = 'app.outer.inner.page';
+				const app = writeComponent('app', 'outer:\n  package: outer\n');
+				const outer = writePlugin(app, 'outer', 'inner:\n  package: inner\n');
+				writePlugin(
+					outer,
+					'inner',
+					'studio:\n  pages:\n    - { id: page, name: Page, placement: tab, navigation: tucked }\n'
+				);
+				const read = createStudioConfigurationReader(captureWarnings().logger);
+				assert.strictEqual((await read()).navigation[key], 'tucked');
+				writePlugin(app, 'outer', 'inner:\n  package: inner\nstudio:\n  navigation: { inner.page: visible }\n');
+				assert.strictEqual((await read()).navigation[key], 'visible');
+				writeComponent('app', 'outer:\n  package: outer\nstudio:\n  navigation: { outer.inner.page: hidden }\n');
+				assert.strictEqual((await read()).navigation[key], 'hidden');
+				setRootConfigEntry('studio', { navigation: { [key]: 'tucked' } });
+				const configuration = await read();
+				assert.strictEqual(configuration.navigation[key], 'tucked');
+				assert.deepStrictEqual(configuration.rootNavigation, { [key]: 'tucked' });
 			});
 
 			it("resolves an application's or plugin's dotted key under its own name, below a page's own default", async () => {

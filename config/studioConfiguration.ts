@@ -297,16 +297,15 @@ async function readComponentConfig(directory: string, readTextFile: ReadTextFile
 	return undefined;
 }
 
-function limitConcurrency(readTextFile: ReadTextFile, limit: number): ReadTextFile {
+function concurrencyLimit(limit: number) {
 	let active = 0;
 	const waiting: (() => void)[] = [];
-	return async (path, encoding) => {
+	return async <T>(work: () => Promise<T>): Promise<T> => {
 		if (active < limit) active++;
 		else await new Promise<void>((resolve) => waiting.push(resolve));
 		try {
-			return await readTextFile(path, encoding);
+			return await work();
 		} finally {
-			// A released slot passes straight to the next waiter.
 			const next = waiting.shift();
 			if (next) next();
 			else active--;
@@ -330,15 +329,14 @@ function exists(path: string): Promise<boolean> {
 interface ComponentNode {
 	where: string;
 	problems: string[];
-	realDirectory?: string;
 	pages: PageTemplate[];
 	pageDefaults: Map<string, StudioNavigationState>;
 	/** Keys as the config wrote them: a dotted one is relative to this component. */
 	navigation: [string, StudioNavigationState][];
-	plugins: { key: string; directory: string }[];
+	/** `directory` is where the loader finds the plugin; `real` is what it loads it as, once. */
+	plugins: { key: string; directory: string; real: string }[];
 }
 
-/** The package entries the loader would load from a component's config, resolved to the directories it would use. */
 async function resolvePlugins(directory: string, config: Record<string, unknown>, problems: string[]) {
 	const plugins: ComponentNode['plugins'] = [];
 	if (process.env.HARPER_SAFE_MODE) return plugins;
@@ -347,15 +345,16 @@ async function resolvePlugins(directory: string, config: Record<string, unknown>
 		if (key === 'env' || !isMap(entry) || !entry.package) continue;
 		if (entry.loadComponent === 'dev-only' && !process.env.DEV_MODE) continue;
 		if (!isPluginKey(key)) {
-			problems.push(`plugin '${key}' is not a name Studio can address, so its pages are not read`);
+			// The key itself is not quoted: a mistyped entry can be a URL with credentials in it.
+			problems.push('a package entry has a key Studio cannot address, so its pages are not read');
 			continue;
 		}
 		// Not found: `if-installed` skips it, and otherwise the loader reports the missing package itself.
 		for (const candidate of packageCandidates(directory, key, hdbBasePath)) {
-			if (await exists(candidate)) {
-				plugins.push({ key, directory: candidate });
-				break;
-			}
+			if (!(await exists(candidate))) continue;
+			const real = await realpath(candidate).catch(() => undefined);
+			if (real) plugins.push({ key, directory: candidate, real });
+			break;
 		}
 	}
 	return plugins;
@@ -364,7 +363,6 @@ async function resolvePlugins(directory: string, config: Record<string, unknown>
 async function readComponent(directory: string, where: string, readTextFile: ReadTextFile): Promise<ComponentNode> {
 	const node: ComponentNode = { where, problems: [], pages: [], pageDefaults: new Map(), navigation: [], plugins: [] };
 	try {
-		node.realDirectory = await realpath(directory);
 		const config = await readComponentConfig(directory, readTextFile);
 		if (!isMap(config)) return node;
 		const { studio } = config;
@@ -380,21 +378,25 @@ async function readComponent(directory: string, where: string, readTextFile: Rea
 	return node;
 }
 
-/** Each directory is read once, however many components load it; a plugin's read is requested once its parent's is. */
-async function readComponentGraph(sources: ComponentSource[], readTextFile: ReadTextFile) {
+/**
+ * Keyed by real path, as the loader loads a directory once: symlinks that lead back into a plugin would otherwise give
+ * it a new lexical path, and a new read, at every level.
+ */
+async function readComponentGraph(sources: (ComponentSource & { real: string })[], readTextFile: ReadTextFile) {
 	const nodes = new Map<string, ComponentNode>();
 	const reads = new Map<string, Promise<void>>();
-	const request = (directory: string, where: string) => {
-		if (reads.has(directory)) return;
+	const limit = concurrencyLimit(COMPONENT_READ_CONCURRENCY);
+	const request = (real: string, directory: string, where: string) => {
+		if (reads.has(real)) return;
 		reads.set(
-			directory,
-			readComponent(directory, where, readTextFile).then((node) => {
-				nodes.set(directory, node);
-				for (const plugin of node.plugins) request(plugin.directory, `plugin at ${plugin.directory}`);
+			real,
+			limit(() => readComponent(directory, where, readTextFile)).then((node) => {
+				nodes.set(real, node);
+				for (const plugin of node.plugins) request(plugin.real, plugin.directory, `plugin at ${plugin.directory}`);
 			})
 		);
 	};
-	for (const source of sources) request(source.directory, source.where);
+	for (const source of sources) request(source.real, source.directory, source.where);
 	for (let settled = 0; settled < reads.size;) {
 		const pending = [...reads.values()];
 		await Promise.all(pending);
@@ -403,15 +405,14 @@ async function readComponentGraph(sources: ComponentSource[], readTextFile: Read
 	return nodes;
 }
 
-/** The directories whose subtree declares a page or navigation; a use of any other adds nothing. */
 function contributingDirectories(nodes: Map<string, ComponentNode>): Set<string> {
 	const parents = new Map<string, string[]>();
 	const contributing = new Set<string>();
-	for (const [directory, node] of nodes) {
-		if (node.pages.length > 0 || node.navigation.length > 0) contributing.add(directory);
+	for (const [real, node] of nodes) {
+		if (node.pages.length > 0 || node.navigation.length > 0) contributing.add(real);
 		for (const plugin of node.plugins) {
-			if (!parents.has(plugin.directory)) parents.set(plugin.directory, []);
-			parents.get(plugin.directory).push(directory);
+			if (!parents.has(plugin.real)) parents.set(plugin.real, []);
+			parents.get(plugin.real).push(real);
 		}
 	}
 	const queue = [...contributing];
@@ -451,8 +452,13 @@ export function createStudioConfigurationReader(logger: WarningLogger, readTextF
 			[PLUGINS_SOURCE, pluginProblems],
 		]);
 		const root = readRootStudioSettings(rootProblems);
-		const sources = await componentSources(rootProblems);
-		const nodes = await readComponentGraph(sources, limitConcurrency(readTextFile, COMPONENT_READ_CONCURRENCY));
+		const sources = await Promise.all(
+			(await componentSources(rootProblems)).map(async (source) => ({
+				...source,
+				real: await realpath(source.directory).catch(() => source.directory),
+			}))
+		);
+		const nodes = await readComponentGraph(sources, readTextFile);
 		for (const node of nodes.values()) problemsBySource.set(node.where, node.problems);
 		const contributing = contributingDirectories(nodes);
 
@@ -470,8 +476,8 @@ export function createStudioConfigurationReader(logger: WarningLogger, readTextF
 			{ page: StudioPage; where: string; use: string; default?: StudioNavigationState }[]
 		>();
 		let uses = 0;
-		const expand = (directory: string, use: ComponentUse, chain: Set<string>) => {
-			const node = nodes.get(directory);
+		const expand = (real: string, use: ComponentUse, chain: Set<string>) => {
+			const node = nodes.get(real);
 			for (const template of node.pages) {
 				const key = `${use.component}.${template.id}`;
 				if (key.length > MAX_KEY_LENGTH) {
@@ -498,29 +504,27 @@ export function createStudioConfigurationReader(logger: WarningLogger, readTextF
 				else contribute(use.tier, key, state);
 			}
 			for (const plugin of node.plugins) {
-				const child = nodes.get(plugin.directory);
 				// The loader loads a directory once, so a plugin that leads back to itself adds nothing more.
-				if (!contributing.has(plugin.directory) || chain.has(child.realDirectory)) continue;
+				if (!contributing.has(plugin.real) || chain.has(plugin.real)) continue;
 				if (++uses > MAX_PLUGIN_USES) return;
 				expand(
-					plugin.directory,
+					plugin.real,
 					{
 						component: `${use.component}.${plugin.key}`,
 						application: use.application,
 						plugins: [...use.plugins, plugin.key],
 						tier: use.tier + 1,
 					},
-					new Set(chain).add(child.realDirectory)
+					new Set(chain).add(plugin.real)
 				);
 			}
 		};
 		for (const source of sources) {
-			const node = nodes.get(source.directory);
-			if (!contributing.has(source.directory)) continue;
+			if (!contributing.has(source.real)) continue;
 			expand(
-				source.directory,
+				source.real,
 				{ component: source.name, application: source.name, plugins: [], tier: APPLICATION_TIER },
-				new Set([node.realDirectory])
+				new Set([source.real])
 			);
 		}
 		if (uses > MAX_PLUGIN_USES)
@@ -540,9 +544,10 @@ export function createStudioConfigurationReader(logger: WarningLogger, readTextF
 			}
 			// The same component from two sources: the `harper dev` application, which sorts after, replaces the other.
 			for (const earlier of entries.slice(0, -1))
-				problemsBySource
-					.get(earlier.where)
-					.push(`its page '${earlier.page.id}' is replaced by the one in ${kept.where}`);
+				if (earlier.where !== kept.where)
+					problemsBySource
+						.get(earlier.where)
+						.push(`its page '${earlier.page.id}' is replaced by the one in ${kept.where}`);
 			configuration.pages.push(kept.page);
 			if (kept.default) contribute(PAGE_DEFAULT_TIER, key, kept.default);
 		}
