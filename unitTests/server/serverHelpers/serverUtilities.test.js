@@ -402,6 +402,46 @@ describe('Test serverUtilities.js module ', () => {
 		});
 	});
 
+	describe('main-thread operation names on a worker', function () {
+		const { Worker } = require('node:worker_threads');
+		const { join } = require('node:path');
+
+		it('forwards names from the spawn snapshot and from a main-thread announcement only', async function () {
+			const worker = new Worker(join(__dirname, 'fixtures', 'mainThreadOperationsWorker.js'), {
+				workerData: { mainThreadOperations: [['test_main_snapshot_op', true]] },
+			});
+			try {
+				const result = await new Promise((resolve, reject) => {
+					worker.on('error', reject);
+					worker.on('message', (message) => {
+						if (message !== 'ready') return resolve(message);
+						worker.postMessage({
+							announce: [
+								{ name: 'test_main_announced_op', grantable: false, originator: 0 },
+								{ name: 'test_sibling_announced_op', grantable: true, originator: 9_000_101 },
+							],
+							names: [
+								'test_main_snapshot_op',
+								'test_main_announced_op',
+								'test_sibling_announced_op',
+								'test_main_unknown_op',
+							],
+						});
+					});
+				});
+
+				assert.deepStrictEqual(result, {
+					test_main_snapshot_op: { forwards: true, grantable: true },
+					test_main_announced_op: { forwards: true, grantable: false },
+					test_sibling_announced_op: { forwards: false, grantable: false },
+					test_main_unknown_op: { forwards: false, grantable: false },
+				});
+			} finally {
+				await worker.terminate();
+			}
+		});
+	});
+
 	// Only main's receiving half is reachable here; integrationTests/components/registered-operation.test.ts
 	// owns the real hop.
 	describe('cross-thread grantable operation mirroring', function () {

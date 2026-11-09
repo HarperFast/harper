@@ -85,13 +85,16 @@ let nextRequestId = 1;
 let listenersAttached = false;
 
 const MAIN_THREAD_ID = 0;
-/** name -> grantable, for operations the main thread registered */
 const mainThreadOperations = new Map<string, boolean>();
-// Main loads its components before it starts workers, so the snapshot covers boot with no window
-// in which a worker serves requests without the names.
-registerWorkerDataProvider('mainThreadOperations', () => [...mainThreadOperations]);
-for (const [name, grantable] of workerData?.mainThreadOperations ?? []) {
-	recordMainThreadOperation(name, grantable);
+if (isMainThread) {
+	// Main loads its components before it starts workers, so the snapshot covers boot with no
+	// window in which a worker serves requests without the names. Main only: in a worker spawned
+	// by a worker, thread 0 addresses the parent, which could never answer.
+	registerWorkerDataProvider('mainThreadOperations', () => [...mainThreadOperations]);
+} else {
+	for (const [name, grantable] of workerData?.mainThreadOperations ?? []) {
+		recordMainThreadOperation(name, grantable);
+	}
 }
 
 function recordMainThreadOperation(name: string, grantable: boolean) {
@@ -118,9 +121,6 @@ export function announceRegisteredOperation(name: string, grantable = false) {
 	).catch((error) => operationLog.error(`Failed to announce registered operation '${name}'`, error));
 }
 
-/**
- * ITC handler (all threads receive the broadcast).
- */
 export function operationRegisteredHandler(event: {
 	message?: { name?: string; grantable?: boolean; originator?: number };
 }) {
