@@ -836,9 +836,9 @@ export function mergeUpdateChanges(
 	const merged = { ...previous, ...changes };
 	for (const name of Object.keys(changes)) {
 		const value = changes[name];
-		if (value?.__op__ !== 'add' || (!fullUpdate && !Object.hasOwn(previous, name))) continue;
+		if (!value?.__op__ || (!fullUpdate && !Object.hasOwn(previous, name))) continue;
 		const next = validateField(name, value, false);
-		if (!next) continue;
+		if (!next || value.__op__ !== 'add') continue;
 		const first = validateField(name, previous[name], true);
 		if (!first) {
 			merged[name] = previous[name];

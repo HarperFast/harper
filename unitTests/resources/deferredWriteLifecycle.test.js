@@ -312,6 +312,34 @@ describe('Deferred write lifecycle', function () {
 		}
 	}
 
+	for (const keyed of [false, true]) {
+		for (const operation of ['mul', 'invalid add']) {
+			it(`rejects ${operation} in a ${keyed ? 'keyed' : 'direct'} patch without consuming the pending replacement`, async () => {
+				const key = id();
+				await TestTable.put({ id: key, n: 0, obsolete: true });
+				const record = await TestTable.getResource({ id: key }, {});
+				await record.update({ n: 1, name: 'kept' }, true);
+				const changes = { n: operation === 'mul' ? { __op__: 'mul', value: 2 } : { __op__: 'add', value: '2' } };
+				await assert.rejects(
+					async () => (keyed ? record.update(key, changes) : record.update(changes)),
+					(error) => error.statusCode === 400
+				);
+				assert.strictEqual(record.getProperty('n'), 1);
+				assert.strictEqual(record.getProperty('name'), 'kept');
+				record.set('n', 3);
+				await record.save();
+				const result = await TestTable.get(key);
+				assert.strictEqual(result.n, 3);
+				assert.strictEqual(result.name, 'kept');
+				assert.strictEqual(result.obsolete, undefined);
+				assert.strictEqual(
+					[...TestTable.auditStore.getRange({ start: 1 })].filter((entry) => entry.recordId === key).length,
+					2
+				);
+			});
+		}
+	}
+
 	for (const state of ['loaded', 'unloaded', 'new']) {
 		it(`preserves bigint precision when composing updates on a ${state} instance`, async () => {
 			const Big = table({
