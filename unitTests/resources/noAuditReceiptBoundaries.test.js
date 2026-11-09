@@ -129,7 +129,37 @@ describe('audit:false receipts across invalidate and replacement', () => {
 		assert.equal(Table.primaryStore.getEntry('counter').value.count, 13);
 	});
 
-	it('a copied invalidation snapshot still resets receipts from the replaced body', async function () {
+	it('an ordinary received projection keeps processed receipts like an overwriting patch', async () => {
+		for (const type of ['patch', 'invalidate']) {
+			const Table = await receiptTable();
+			const nodeId = getIdOfRemoteNode('receipt-reset-origin', Table.auditStore);
+			await Table.put('counter', { count: 10 });
+			const start = Date.now() + 60_000;
+			const add = [[{ count: { __op__: 'add', value: 3 } }, false]];
+			await apply(Table, start, add);
+			const value = { id: 'counter', count: 20 };
+			if (type === 'patch') await apply(Table, start + 10, [[value, false]]);
+			else {
+				const context = { source: {}, sourceApply: true, timestamp: start + 10 };
+				await transaction(context, async () => {
+					const resource = await Table.getResource('counter', context);
+					await resource._writeInvalidate('counter', value, { nodeId, version: start + 11, isNotification: true });
+				});
+			}
+			await apply(Table, start + 20, [[{ tag: 'newer' }, false]]);
+			await apply(Table, start, add);
+			let entry = Table.primaryStore.getEntry('counter');
+			assert.equal(entry.value.count, 20, type);
+			assert.equal(entry.value.tag, 'newer', type);
+			assert.deepEqual(entry.receivedIdentityRefs, [{ version: start, nodeId }], type);
+			await apply(Table, start - 10, [[{ count: { __op__: 'add', value: 2 } }, false]]);
+			await apply(Table, start, add);
+			entry = Table.primaryStore.getEntry('counter');
+			assert.equal(entry.value.count, 22, `${type}: an unseen older add still folds once`);
+		}
+	});
+
+	it('a RocksDB copied invalidation snapshot still resets receipts from the replaced body', async function () {
 		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return this.skip();
 		const Table = await receiptTable();
 		await Table.put('counter', { count: 10 });
@@ -164,7 +194,7 @@ describe('audit:false receipts across invalidate and replacement', () => {
 		assert.equal(Table.primaryStore.getEntry('counter').value.count, 10);
 	});
 
-	it('a native recommit keeps the receipt across a replacement', async function () {
+	it('a RocksDB native recommit keeps the receipt across a replacement', async function () {
 		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return this.skip();
 		const Table = await receiptTable();
 		await Table.put('counter', { count: 10 });
