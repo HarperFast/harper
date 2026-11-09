@@ -346,7 +346,7 @@ Replay reads bases with `uncachedRead`: cached WeakRefs outlived the replay, kee
 ## Chained query conditions scope one array element; FIQL tokens always advance
 
 - `a=ge=X&=le=Y` collapses in `prepareConditions` so both paths agree; separate legs match any element; other chains 400. Array ranges dedupe (`distinctRecords`; `query-array-scoping.test.js`).
-- Values, not `target`, convert to leaf/element type, chains too; string pattern operands keep text (`coerceConditionValue`; `restConditionCoercion.test.js`, `stringPatternCoercion.test.js`). `''`→`null` bar `String`/`Any`; coercing ops `autoCast` `Any`/untyped values.
+- Values (not `target`) convert to leaf/element type, chains too; pattern strings stay text (`coerceConditionValue`; harper#3950). `''`→`null` bar `String`/`Any`; coercing `Any`/untyped ops `autoCast`: numeric/bool/date text in `[Any]`/`Any` misses `=`.
 - In `parseBlock`, a pending condition makes next token a value; only group end picks tokenizer. **Every token must advance**: 0-length match errors or regexes loop (`query-parse.test.js`).
 
 ## A table declaration lands where the application's `databases` binding points

@@ -408,7 +408,7 @@ describe('sqlEngine LIKE index conditions', () => {
 	const ATTRS = [{ name: 'v', type: 'String', indexed: true }];
 	const condition = (pattern, escape) => whereToConditions(likeExpr(pattern, escape), ATTRS).conditions[0];
 
-	for (const type of ['Int', 'Float', 'Boolean', 'Date', 'Any', 'Array', undefined]) {
+	for (const type of ['Int', 'Float', 'Boolean', 'Date', 'Any', 'Array', 'ID', undefined]) {
 		it(`leaves ${type ?? 'untyped'} LIKE patterns residual, including exact and empty patterns`, () => {
 			for (const pattern of ['05%', '%5', '%0%', '0105', '', '%']) {
 				const expr = likeExpr(pattern);

@@ -60,9 +60,11 @@ for (const engine of ['auto', 'new', 'legacy']) {
 					schema: 'data',
 					table: 'Dynamic',
 					records: [
-						{ id: 1, mixed: 105 },
-						{ id: 2, mixed: '105' },
-						{ id: 3, mixed: '05' },
+						{ id: 1, mixed: 105, marker: 'seed' },
+						{ id: 2, mixed: '105', marker: 'seed' },
+						{ id: 3, mixed: '05', marker: 'seed' },
+						{ id: 4, mixed: 'Penny', marker: 'seed' },
+						{ id: 5, mixed: 'penelope', marker: 'seed' },
 					],
 				});
 			});
@@ -112,6 +114,36 @@ for (const engine of ['auto', 'new', 'legacy']) {
 				deepStrictEqual(ids(await sql("SELECT id FROM data.Dynamic WHERE id >= 0 AND mixed LIKE '1%'")), [1, 2]);
 				if (engine !== 'new')
 					deepStrictEqual(ids(await sql("SELECT id FROM data.Dynamic WHERE mixed LIKE '1%'")), [1, 2]);
+			});
+			test('dynamic standalone LIKE follows legacy case folding under auto, including mutations', async () => {
+				const where = "mixed LIKE 'Pen%'";
+				const guarded = await sql(`SELECT id FROM data.Dynamic WHERE id >= 0 AND ${where}`);
+				deepStrictEqual(ids(guarded), engine === 'legacy' ? [4, 5] : [4]);
+				const statements = [
+					`SELECT id FROM data.Dynamic WHERE ${where}`,
+					`UPDATE data.Dynamic SET marker = 'hit' WHERE ${where}`,
+					`DELETE FROM data.Dynamic WHERE ${where}`,
+				];
+				if (engine === 'new') {
+					for (const statement of statements) {
+						const response = await client.req().send({ operation: 'sql', sql: statement }).timeout(60_000);
+						strictEqual(response.status, 400, JSON.stringify(response.body));
+					}
+					deepStrictEqual(ids(await sql('SELECT id FROM data.Dynamic WHERE id >= 0')), [1, 2, 3, 4, 5]);
+					deepStrictEqual(ids(await sql("SELECT id FROM data.Dynamic WHERE id >= 0 AND marker = 'hit'")), []);
+					return;
+				}
+				deepStrictEqual(ids(await sql(statements[0])), [4, 5]);
+				deepStrictEqual(
+					(await sql(statements[1])).update_hashes.sort((a: number, b: number) => a - b),
+					[4, 5]
+				);
+				deepStrictEqual(ids(await sql("SELECT id FROM data.Dynamic WHERE id >= 0 AND marker = 'hit'")), [4, 5]);
+				deepStrictEqual(
+					(await sql(statements[2])).deleted_hashes.sort((a: number, b: number) => a - b),
+					[4, 5]
+				);
+				deepStrictEqual(ids(await sql('SELECT id FROM data.Dynamic WHERE id >= 0')), [1, 2, 3]);
 			});
 			if (engine === 'new')
 				test('standalone non-String LIKE needs an index driver', async () => {

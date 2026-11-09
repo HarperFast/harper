@@ -153,7 +153,7 @@ These map directly to indexed storage operations:
 - **Equality and `IN` on an indexed attribute** — `WHERE status = 'active'`, `WHERE breed_id IN (1, 2, 3)`.
 - **Range predicates on an indexed attribute** — `<`, `<=`, `>`, `>=`, and `BETWEEN` (compiled to a bounded index range).
 - **`OR` of indexed predicates** — `WHERE a = 1 OR b = 2` is served as a union of index scans, provided **every** branch is an index-driving predicate on an indexed attribute.
-- **Prefix `LIKE`** — `WHERE name LIKE 'Har%'` compiles to an indexed `starts_with` scan. The new engine matches it case-sensitively; see [LIKE Pattern Matching](#like-pattern-matching).
+- **Prefix `LIKE` on an indexed scalar `String` column** — `WHERE name LIKE 'Har%'` compiles to an indexed `starts_with` scan. The new engine matches it case-sensitively; see [LIKE Pattern Matching](#like-pattern-matching).
 - **`ORDER BY` on an indexed attribute, combined with an indexed `WHERE`** — served directly from index order, with no separate in-memory sort; `LIMIT`/`OFFSET` push into the scan so only the rows you return are read. Without an index-driving `WHERE` condition, an `ORDER BY` on a _secondary_ indexed attribute runs on the legacy path — except when sorting on the table's **primary key**, which drives the scan from the primary key's natural index order even with no `WHERE` clause.
 - **`GROUP BY` on an indexed attribute, combined with an indexed `WHERE`** — aggregates stream group-by-group with O(1) memory per group (memory is bounded by the group count; every matching row is still read). Without an index-driving `WHERE` condition, a `GROUP BY` currently runs on the legacy path.
 - **`INNER`/`LEFT JOIN` on an indexed join key** — executed as an index-nested-loop join (stream the outer table, probe the inner by index). Keep the join key indexed on the inner (probed) table.
@@ -487,14 +487,14 @@ Before v5.4.0, `ESCAPE` was ignored, so `ip LIKE 't0!%' ESCAPE '!'` matched ever
 | New engine: `sql.engine: new`, and statements that `auto` runs on the new engine                        | Case-sensitive: `'t0%'` does not match `T0b`. |
 | Legacy engine: `sql.engine: legacy`, and statements that `auto` [falls back](#the-fallback-contract) on | Case-insensitive: `'t0%'` matches `T0b`.      |
 
-Under the default `sql.engine: auto`, the same pattern can be either, and the whole statement decides which. For example, with `ip` indexed and `note` not indexed:
+Under the default `sql.engine: auto`, the same pattern can be either, and the whole statement decides which. For example, with declared scalar `String` columns `ip` (indexed) and `note` (not indexed):
 
 - `ip LIKE 't0%'` is a prefix pattern on an indexed attribute, so the new engine serves it from the index, and it is case-sensitive.
 - `ip LIKE '%T0B'` is not a prefix pattern, so the index can't drive it. `auto` runs it on the legacy engine, and it matches `T0b`.
 - `note LIKE 't0%'` alone has no index to drive it, so `auto` runs it on the legacy engine, and it is case-insensitive.
 - `note LIKE 't0%'` is case-sensitive when something else keeps the statement on the new engine: an indexed condition joined with `AND`, an `ORDER BY` on the primary key, or `sql.allowFullScan: true`.
 
-This applies to `UPDATE` and `DELETE` as well: adding an index on `note` moves `DELETE FROM dev.addr WHERE note LIKE 't0%'` to the new engine, and it stops deleting `T0b`. With `logging.level` set to `info`, a statement that falls back is logged, which tells you which engine ran it (see [The fallback contract](#the-fallback-contract)).
+This applies to `UPDATE` and `DELETE` as well: adding an index on the declared `String` column `note` moves `DELETE FROM dev.addr WHERE note LIKE 't0%'` to the new engine, and it stops deleting `T0b`. With `logging.level` set to `info`, a statement that falls back is logged, which tells you which engine ran it (see [The fallback contract](#the-fallback-contract)).
 
 To match regardless of case on both engines, lower-case both the value and the pattern: `LOWER(note) LIKE 't0%'` (write the pattern in lower case, or lower-case a user-supplied pattern before sending it). `LOWER()` uses JavaScript's lower-casing, which treats a few non-ASCII characters differently from the legacy engine's case-insensitive matching. The index can't serve an expression, so combine it with an indexed condition using `AND`. Otherwise the statement scans the whole table, or is rejected with a 400 error under `sql.engine: new` with `sql.allowFullScan: false`. To keep a case-insensitive prefix search on the index, store a lower-cased copy of the value in its own indexed attribute and query that.
 
@@ -532,7 +532,7 @@ On the legacy engine, a pattern with more than 64 `_` wildcards across segments 
 }
 ```
 
-The total cost of a `LIKE` is still the number of rows it tests. On an indexed scalar `String` attribute, the index serves a prefix pattern, which is literal text followed by one `%` (`'abc%'`, or `'50!%%' ESCAPE '!'` for values starting with `50%`), and a pattern with no wildcards, which is an equality test. On other attribute types, including untyped and `Any` columns, every `LIKE` uses the stringified value as a row filter. Standalone `LIKE` queries on dynamic-schema tables therefore use legacy fallback under `auto`; under `new` they need another index driver or `sql.allowFullScan: true`. Any other `LIKE` filters the rows that the rest of the query selects, so with no indexed condition it tests every row in the table. Whether such a statement falls back to the legacy engine, scans on the new engine, or is rejected with a 400 error depends on `sql.engine`, `sql.allowFullScan` and the rest of the statement; see [The fallback contract](#the-fallback-contract) and [Query Performance](#query-performance).
+The total cost of a `LIKE` is still the number of rows it tests. On an indexed scalar `String` attribute, the index serves a prefix pattern, which is literal text followed by one `%` (`'abc%'`, or `'50!%%' ESCAPE '!'` for values starting with `50%`), and a pattern with no wildcards, which is an equality test. On other attribute types, including `ID`, untyped, and `Any` columns, every `LIKE` uses the stringified value as a row filter. Standalone `LIKE` queries on those columns therefore use case-insensitive legacy fallback under `auto`, including `UPDATE` and `DELETE` (so values differing only in case can also match); under `new` they need another index driver or `sql.allowFullScan: true`. Any other `LIKE` filters the rows that the rest of the query selects, so with no indexed condition it tests every row in the table. Whether such a statement falls back to the legacy engine, scans on the new engine, or is rejected with a 400 error depends on `sql.engine`, `sql.allowFullScan` and the rest of the statement; see [The fallback contract](#the-fallback-contract) and [Query Performance](#query-performance).
 
 ---
 

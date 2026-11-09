@@ -3,9 +3,11 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { RequestTarget } = require('#src/resources/RequestTarget');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
+const { route } = require('#src/sqlEngine/router');
+const alasql = require('alasql');
 
 describe('string pattern operands on typed attributes', () => {
-	let Item;
+	let Item, Identifiers;
 	before(async () => {
 		setupTestDBPath();
 		setMainIsWorker(true);
@@ -21,8 +23,21 @@ describe('string pattern operands on typed attributes', () => {
 		});
 		for (const [i, n] of [0, 5, 50, 105, 150, null, undefined].entries())
 			await Item.put({ id: i + 1, n, flag: false, extra: String(n) });
+		Identifiers = table({
+			database: 'test',
+			table: 'PatternIdentifiers',
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'bucket', type: 'Int', indexed: true },
+			],
+		});
+		await Identifiers.put({ id: ['tenant', '05'], bucket: 1 });
+		await Identifiers.put({ id: 'tenant05', bucket: 1 });
 	});
-	after(() => Item.dropTable());
+	after(async () => {
+		await Item?.dropTable();
+		await Identifiers?.dropTable();
+	});
 
 	async function ids(query) {
 		const found = [];
@@ -45,10 +60,40 @@ describe('string pattern operands on typed attributes', () => {
 			await assert.rejects(matching(comparator, undefined), (error) => error.statusCode === 400);
 		});
 	}
-	it('preserves text on Boolean and Any attributes', async () => {
+	it('preserves text on Boolean attributes, including boolean-looking text', async () => {
 		assert.deepStrictEqual(await matching('contains', 'alse', 'flag'), [1, 2, 3, 4, 5, 6, 7]);
 		assert.deepStrictEqual(await matching('ends_with', 'lse', 'flag'), [1, 2, 3, 4, 5, 6, 7]);
+		assert.deepStrictEqual(await matching('contains', 'FALSE', 'flag'), []);
+	});
+	it('preserves text on Any attributes, including canonical numeric text', async () => {
 		assert.deepStrictEqual(await matching('contains', '05', 'extra'), [4]);
+		assert.deepStrictEqual(await matching('contains', '5.0', 'extra'), []);
+	});
+	it('SQL LIKE stringifies tuple IDs instead of using their encoded index prefix', async () => {
+		const previousEngine = process.env.HARPER_SQL_ENGINE;
+		process.env.HARPER_SQL_ENGINE = 'new';
+		try {
+			for (const pattern of ['tenant,05%', 'tenant,05']) {
+				const statement = alasql.parse(
+					`SELECT id FROM test.PatternIdentifiers WHERE bucket = 1 AND id LIKE '${pattern}'`
+				).statements[0];
+				const rows = await new Promise((resolve, reject) =>
+					route(
+						{
+							variant: 'select',
+							jsonMessage: { bypass_auth: true },
+							statement,
+							legacy: () => reject(new Error('unexpected legacy fallback')),
+						},
+						(error, result) => (error ? reject(error) : resolve(result))
+					)
+				);
+				assert.deepStrictEqual(rows, [{ id: ['tenant', '05'] }]);
+			}
+		} finally {
+			if (previousEngine === undefined) delete process.env.HARPER_SQL_ENGINE;
+			else process.env.HARPER_SQL_ENGINE = previousEngine;
+		}
 	});
 	it('preserves REST and negated pattern operands', async () => {
 		assert.deepStrictEqual(await ids(new RequestTarget('?n=ct=05')), [4]);
