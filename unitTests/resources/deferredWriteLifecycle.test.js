@@ -293,6 +293,25 @@ describe('Deferred write lifecycle', function () {
 		});
 	}
 
+	for (const operand of ['2', Infinity, NaN]) {
+		for (const scalarFirst of [false, true]) {
+			it(`validates delta ${String(operand)} after ${scalarFirst ? 'a scalar' : 'an add'}`, async () => {
+				const key = id();
+				await TestTable.put({ id: key, n: 0 });
+				const context = {};
+				await assert.rejects(
+					transaction(context, async () => {
+						const record = await TestTable.getResource({ id: key }, context);
+						await record.update({ n: scalarFirst ? 1 : { __op__: 'add', value: 1 } });
+						await record.update({ n: { __op__: 'add', value: operand } });
+					}),
+					(error) => error.statusCode === 400 && /numeric/.test(error.message)
+				);
+				assert.strictEqual((await TestTable.get(key)).n, 0);
+			});
+		}
+	}
+
 	for (const state of ['loaded', 'unloaded', 'new']) {
 		it(`preserves bigint precision when composing updates on a ${state} instance`, async () => {
 			const Big = table({
@@ -313,6 +332,45 @@ describe('Deferred write lifecycle', function () {
 			assert.strictEqual((await Big.get(key)).n, (state === 'new' ? 0n : 10n) + 9007199254740994n);
 		});
 	}
+
+	for (const scalarFirst of [false, true]) {
+		it(`coerces BigInt strings before composing ${scalarFirst ? 'a scalar and an add' : 'two adds'}`, async () => {
+			const Big = table({
+				database: 'deferred_write_lifecycle',
+				table: 'StringBigAdds',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'n', type: 'BigInt' },
+				],
+			});
+			const key = id();
+			const record = new Big(key, {});
+			await record.update({ n: scalarFirst ? '9007199254740993' : { __op__: 'add', value: '9007199254740993' } });
+			await record.update({ n: { __op__: 'add', value: '1' } });
+			await record.save();
+			assert.strictEqual((await Big.get(key)).n, 9007199254740994n);
+		});
+	}
+
+	it('coerces a replacement field without validating absent required fields early', async () => {
+		const Big = table({
+			database: 'deferred_write_lifecycle',
+			table: 'RequiredBigAdds',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'n', type: 'BigInt' },
+				{ name: 'name', type: 'String', required: true },
+			],
+		});
+		const key = id();
+		const record = new Big(key, {});
+		await record.update({ n: '9007199254740993', name: 'kept' }, true);
+		await record.update({ n: { __op__: 'add', value: '1' } });
+		await record.save();
+		const result = await Big.get(key);
+		assert.strictEqual(result.n, 9007199254740994n);
+		assert.strictEqual(result.name, 'kept');
+	});
 
 	for (const mode of ['patch', 'keyed patch', 'replacement']) {
 		it(`restores the accepted update after ${mode} fails preflight admission`, async () => {

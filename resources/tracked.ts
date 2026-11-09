@@ -824,19 +824,31 @@ function isUpdateObject(value: any): boolean {
 	);
 }
 
-export function mergeUpdateChanges(previous, changes, getStoredValue: (name: string) => any) {
+export function mergeUpdateChanges(
+	previous,
+	changes,
+	getStoredValue: (name: string) => any,
+	validateField,
+	fullUpdate = false
+) {
 	if (changes === undefined) return previous;
 	if (!isUpdateObject(previous) || !isUpdateObject(changes)) return changes;
 	const merged = { ...previous, ...changes };
 	for (const name of Object.keys(changes)) {
 		const value = changes[name];
-		if (!value?.__op__ || !Object.hasOwn(previous, name)) continue;
-		const prior = previous[name];
-		if (value.__op__ === 'add') {
-			if (prior?.__op__ === 'add')
-				merged[name] = new Addition(addDeltas(prior.value, value.value, getStoredValue(name)));
-			else if (!prior?.__op__) merged[name] = crdtOperations.addValues(prior, value.value);
+		if (value?.__op__ !== 'add' || !Object.hasOwn(previous, name)) continue;
+		const next = validateField(name, value, false);
+		if (!next) continue;
+		const first = validateField(name, previous[name], true);
+		if (!first) {
+			merged[name] = previous[name];
+			continue;
 		}
+		const prior = first[name];
+		const delta = next[name].value;
+		if (!fullUpdate && prior?.__op__ === 'add')
+			merged[name] = new Addition(addDeltas(prior.value, delta, getStoredValue(name)));
+		else if (fullUpdate || !prior?.__op__) merged[name] = crdtOperations.addValues(prior, delta);
 	}
 	return merged;
 }

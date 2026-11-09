@@ -4905,14 +4905,31 @@ export function makeTable(options): TableResourceClass {
 		}
 		#mergeChanges(id: Id, previousChanges: any, changes: any, previous: any) {
 			let record = this.#record ?? previous?.entry?.value;
-			return mergeUpdateChanges(previousChanges, changes, (name) => {
-				record ??= primaryStore.getSync(id);
-				return (
-					record?.[name] ??
-					(attributes.find((attribute) => attribute.name === name)?.type === 'BigInt' ? 0n : undefined)
-				);
-			});
+			return mergeUpdateChanges(
+				previousChanges,
+				changes,
+				(name) => {
+					record ??= primaryStore.getSync(id);
+					return (
+						record?.[name] ??
+						(attributes.find((attribute) => attribute.name === name)?.type === 'BigInt' ? 0n : undefined)
+					);
+				},
+				(name, value, prior) => {
+					const field = { [name]: value?.__op__ ? { ...value } : value };
+					try {
+						if (!(prior && previous?.fullUpdate && value?.__op__))
+							TableResource.prototype.validate.call(this, field, true);
+						return field;
+					} catch {
+						// Keep invalid input intact for the normal commit-time validation.
+						return;
+					}
+				},
+				Boolean(previous?.fullUpdate)
+			);
 		}
+
 		#writeChanges(id: Id, changes: any, fullUpdate: boolean, options: any, previous: any, previousChanges: any) {
 			try {
 				return this.#whenStaged(this._writeUpdate(id, changes, fullUpdate, options));
