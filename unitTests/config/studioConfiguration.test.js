@@ -562,6 +562,28 @@ studio:
 			assert.strictEqual(reads, 2);
 		});
 
+		it('resolves a shared plugin from the first path in declaration order, whichever read finishes first', async () => {
+			const app = writeComponent('app', 'first:\n  package: first\nsecond:\n  package: second\n');
+			const shared = path.join(componentsRoot, '.shared');
+			mkdirSync(shared, { recursive: true });
+			writeFileSync(path.join(shared, 'config.yaml'), 'choice:\n  package: choice\n');
+			for (const parent of ['first', 'second']) {
+				const directory = writePlugin(app, parent, 'shared:\n  package: shared\n');
+				mkdirSync(path.join(directory, 'node_modules'), { recursive: true });
+				symlinkSync(shared, path.join(directory, 'node_modules', 'shared'), 'dir');
+				writePlugin(directory, 'choice', pagesConfig(`from-${parent}`));
+			}
+			const slowFirst = async (filePath, encoding) => {
+				if (filePath.includes(`${path.sep}first${path.sep}`)) await new Promise((resolve) => setTimeout(resolve, 20));
+				return readFile(filePath, encoding);
+			};
+			const configuration = await createStudioConfigurationReader(captureWarnings().logger, slowFirst)();
+			assert.deepStrictEqual(pageKeys(configuration), [
+				'app.first.shared.choice.from-first',
+				'app.second.shared.choice.from-first',
+			]);
+		});
+
 		it('keeps the application and its other plugins when one plugin cannot be read', async () => {
 			const app = writeComponent('app', `broken:\n  package: broken\nfine:\n  package: fine\n${pagesConfig('own')}`);
 			writePlugin(app, 'broken', `studio:\n  pages:\n    - { id: x, name: "unclosed\nsecret: ${SECRET}\n`);
@@ -691,6 +713,19 @@ studio:
 				});
 				assert.deepStrictEqual(configuration.rootNavigation, {});
 				assert.ok(configuration.pages.every((page) => !('navigation' in page)));
+			});
+
+			it("refuses a nested map in a component's navigation, which only an env layer may write", async () => {
+				const app = writeComponent(
+					'app',
+					'plug:\n  package: plug\nstudio:\n  navigation:\n    plug: { page: hidden }\n'
+				);
+				writePlugin(app, 'plug', pagesConfig('page'));
+				const { warnings, logger } = captureWarnings();
+				const configuration = await createStudioConfigurationReader(logger)();
+				assert.strictEqual(configuration.navigation, undefined);
+				assert.strictEqual(warnings.length, 1);
+				assert.match(warnings[0], /studio\.navigation\.plug must be visible, tucked or hidden/);
 			});
 
 			it("ignores an application's landing, and an invalid page default, with a warning", async () => {

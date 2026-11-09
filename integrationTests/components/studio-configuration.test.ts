@@ -255,5 +255,6 @@ suite('Component: get_studio_configuration', (ctx: ContextWithHarper) => {
 			[`${component}.quiet`]: 'hidden',
 		});
 		deepStrictEqual(configuration.rootNavigation, {});
+		// Left deployed: a drop straight after a restart deploy fails on Windows (harper#4137).
 	});
 });

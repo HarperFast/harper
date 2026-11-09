@@ -105,7 +105,7 @@ function navigationEntries(
 	return entries;
 }
 
-/** `acceptNested` is for reading what an env layer composed; a write takes `<component>.<pageId>` keys only. */
+/** `acceptNested` is for reading what an env layer composed; a write or a component's config takes dotted keys only. */
 export function validateStudioNavigation(
 	navigation: unknown,
 	problems: string[],
@@ -368,7 +368,7 @@ async function readComponent(directory: string, where: string, readTextFile: Rea
 		const { studio } = config;
 		node.pages = validateStudioPages(studio, node.problems, node.pageDefaults);
 		if (isMap(studio)) {
-			node.navigation = Object.entries(validateStudioNavigation(studio.navigation, node.problems) ?? {});
+			node.navigation = Object.entries(validateStudioNavigation(studio.navigation, node.problems, false) ?? {});
 			if (studio.landing != null) node.problems.push('studio.landing is read from the root config only');
 		}
 		node.plugins = await resolvePlugins(directory, config, node.problems);
@@ -380,27 +380,24 @@ async function readComponent(directory: string, where: string, readTextFile: Rea
 
 /**
  * Keyed by real path, as the loader loads a directory once: symlinks that lead back into a plugin would otherwise give
- * it a new lexical path, and a new read, at every level.
+ * it a new lexical path, and a new read, at every level. Read a level at a time, so the first path in declaration
+ * order, not the first read to finish, decides where a shared plugin's own packages resolve from.
  */
 async function readComponentGraph(sources: (ComponentSource & { real: string })[], readTextFile: ReadTextFile) {
 	const nodes = new Map<string, ComponentNode>();
-	const reads = new Map<string, Promise<void>>();
 	const limit = concurrencyLimit(COMPONENT_READ_CONCURRENCY);
-	const request = (real: string, directory: string, where: string) => {
-		if (reads.has(real)) return;
-		reads.set(
-			real,
-			limit(() => readComponent(directory, where, readTextFile)).then((node) => {
-				nodes.set(real, node);
-				for (const plugin of node.plugins) request(plugin.real, plugin.directory, `plugin at ${plugin.directory}`);
-			})
+	let level = sources.map(({ real, directory, where }) => ({ real, directory, where }));
+	while (level.length > 0) {
+		const claimed = new Map<string, (typeof level)[number]>();
+		for (const entry of level) if (!nodes.has(entry.real) && !claimed.has(entry.real)) claimed.set(entry.real, entry);
+		const read = await Promise.all(
+			[...claimed.values()].map(({ directory, where }) => limit(() => readComponent(directory, where, readTextFile)))
 		);
-	};
-	for (const source of sources) request(source.real, source.directory, source.where);
-	for (let settled = 0; settled < reads.size;) {
-		const pending = [...reads.values()];
-		await Promise.all(pending);
-		settled = pending.length;
+		const entries = [...claimed.keys()];
+		read.forEach((node, index) => nodes.set(entries[index], node));
+		level = read.flatMap((node) =>
+			node.plugins.map(({ real, directory }) => ({ real, directory, where: `plugin at ${directory}` }))
+		);
 	}
 	return nodes;
 }
