@@ -18,7 +18,7 @@ Where things are in `resources/`. The rules live in [DESIGN.md](DESIGN.md): read
 - `transactionLogAbortMarkers.ts` — the process-latched abort-marker and write-intent settings (`latchAbortMarkers`, `latchWriteIntents`)
 - `search.ts` — FIQL parsing, condition planning and estimation, index scans, joins
 - `blob.ts` — file-backed blobs: saving, compression, cleanup, reclamation
-- `tracked.ts`, `crdt.ts` — tracked-instance changes; CRDT operations and history reconstruction
+- `tracked.ts`, `crdt.ts` — tracked-instance changes (`mergeUpdateChanges` composes pending patches); CRDT operations and history reconstruction
 - `historyReader.ts` — bounded per-call audit-frame snapshots and incremental history images
 - `Resources.ts`, `RequestTarget.ts`, `jsResource.ts` — the path registry and routes; the parsed request target; registering component exports
 - `ResourceInterface.ts` — shared types (`Context`, request body parts)

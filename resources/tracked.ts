@@ -814,6 +814,22 @@ export function addToChanges(target, property: string, value: number | bigint, f
 	} else target.set(property, new Addition(value));
 }
 
+export function mergeUpdateChanges(previous, changes, getStoredValue: (name: string) => any) {
+	const merged = { ...previous, ...changes };
+	for (const name of Object.keys(changes)) {
+		const value = changes[name];
+		if (!value?.__op__ || !Object.hasOwn(previous, name)) continue;
+		const prior = previous[name];
+		if (!crdtOperations.operations[value.__op__]) merged[name] = prior;
+		else if (value.__op__ === 'add') {
+			if (prior?.__op__ === 'add')
+				merged[name] = new Addition(addDeltas(prior.value, value.value, getStoredValue(name)));
+			else if (!prior?.__op__) merged[name] = crdtOperations.addValues(prior, value.value);
+		}
+	}
+	return merged;
+}
+
 // Sum two deltas in the stored value's numeric type, so folding them gives what applying them in turn
 // would (a bigint field keeps full precision; a number field accepts a bigint then a fractional delta)
 function addDeltas(first, second, stored) {

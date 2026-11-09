@@ -207,6 +207,7 @@ import { logger } from '../utility/logging/logger.ts';
 import { isStaticResourceInstance } from './staticResourceDispatch.ts';
 import {
 	addToChanges,
+	mergeUpdateChanges,
 	applyOwnChanges,
 	assignTrackedAccessors,
 	collapseChanges,
@@ -4853,7 +4854,7 @@ export function makeTable(options): TableResourceClass {
 			const previousChanges = previous?.pendingChanges ?? this.#changes;
 			if (fullUpdate && this.#updatableAttributes) {
 				this.#changes = restrictedReplacement(id, updates, this.#updatableAttributes);
-				return this.#whenStaged(this._writeUpdate(id, this.#changes, false, RESTRICTED_REPLACEMENT));
+				return this.#writeChanges(id, this.#changes, false, RESTRICTED_REPLACEMENT, previous, previousChanges);
 			}
 			if (typeof updates === 'object' && updates) {
 				if (fullUpdate) {
@@ -4866,7 +4867,7 @@ export function makeTable(options): TableResourceClass {
 				} else if (directInstance) {
 					// incremental update with legacy arguments
 					const ownData = previous ? previousChanges : !this.#stagedWrite() ? this.#changes : undefined;
-					if (ownData) updates = Object.assign({}, ownData, updates);
+					if (ownData) updates = this.#mergeChanges(id, ownData, updates, previous);
 					this.#changes = updates;
 				} else {
 					// standard path, where we retrieve the references record and return an instance, initialized with any
@@ -4890,7 +4891,32 @@ export function makeTable(options): TableResourceClass {
 			// A supplied root must reach validation as itself, not as the staged changes (harper#1298).
 			if (updates === undefined && previous) this.#changes = previousChanges;
 			const recordRoot = updates === undefined ? this.#changes : updates;
-			return this.#whenStaged(this._writeUpdate(id, recordRoot, fullUpdate || Boolean(previous?.fullUpdate)));
+			return this.#writeChanges(
+				id,
+				recordRoot,
+				fullUpdate || Boolean(previous?.fullUpdate),
+				undefined,
+				previous,
+				previousChanges
+			);
+		}
+		#mergeChanges(id: Id, previousChanges: any, changes: any, previous: any) {
+			let record = this.#record ?? previous?.entry?.value;
+			return mergeUpdateChanges(previousChanges, changes, (name) => {
+				record ??= primaryStore.getSync(id);
+				return (
+					record?.[name] ??
+					(attributes.find((attribute) => attribute.name === name)?.type === 'BigInt' ? 0n : undefined)
+				);
+			});
+		}
+		#writeChanges(id: Id, changes: any, fullUpdate: boolean, options: any, previous: any, previousChanges: any) {
+			try {
+				return this.#whenStaged(this._writeUpdate(id, changes, fullUpdate, options));
+			} catch (error) {
+				this.#restoreUpdate(previous, previousChanges, previous, previous?.rollbackRecord);
+				throw error;
+			}
 		}
 		#mergeableWrite(id: Id, options?: any) {
 			const previous = this.#stagedWrite();
@@ -4953,8 +4979,9 @@ export function makeTable(options): TableResourceClass {
 				}
 				const previous = this.#mergeableWrite(id, options);
 				const previousChanges = previous?.pendingChanges ?? this.#changes;
-				this.#changes = previous && previousChanges ? Object.assign({}, previousChanges, changes) : changes;
-				return this.#whenStaged(this._writeUpdate(id, this.#changes, Boolean(previous?.fullUpdate), options));
+				this.#changes =
+					previous && previousChanges ? this.#mergeChanges(id, previousChanges, changes, previous) : changes;
+				return this.#writeChanges(id, this.#changes, Boolean(previous?.fullUpdate), options, previous, previousChanges);
 			});
 		}
 
@@ -7961,15 +7988,11 @@ export function makeTable(options): TableResourceClass {
 							undefined,
 							options?.isNotification
 						);
-					if (previous?.instanceClosed) {
-						previous = undefined;
-						previousChanges = undefined;
-						previousRecord = undefined;
-						if (write.writeGeneration?.closed) {
-							this.#writeGeneration = undefined;
-							write.writeGeneration = this[GET_TRACKED_WRITE_GENERATION]();
-						}
-					}
+					if (previous?.instanceClosed)
+						throw new ClientError(
+							'Can not modify an update instance after it has been saved; call update() again',
+							409
+						);
 					const abandonedBlobs = previous?.savedBlobs;
 					let retainedBlobs: Set<string> | undefined;
 					if (abandonedBlobs?.some((blob) => getFileId(blob))) {
