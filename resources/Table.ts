@@ -5012,6 +5012,8 @@ export function makeTable(options): TableResourceClass {
 					write.superseded = false;
 					const priorStagedOp = priorStagedWrite(write);
 					const existingRecord = priorStagedOp ? priorStagedOp.stagedEntry.value : existingEntry?.value;
+					const receivedIdentityRefs =
+						audit || isCopyApply ? undefined : (priorStagedOp?.stagedEntry ?? existingEntry)?.receivedIdentityRefs;
 					const residencySlot = residencyPolicy?.byAttribute
 						? retryResidencySlot(
 								write,
@@ -5119,6 +5121,7 @@ export function makeTable(options): TableResourceClass {
 											? [{ version: txnLogKey, nodeId: options?.nodeId }]
 											: undefined
 									: undefined,
+							receivedIdentityRefs,
 							localOnly: options?.localOnly,
 						},
 						'invalidate'
@@ -5126,6 +5129,7 @@ export function makeTable(options): TableResourceClass {
 					write.stagedEntry = {
 						value: partialRecord,
 						metadataFlags: INVALIDATED | (options?.localOnly ? LOCAL_ONLY : 0),
+						receivedIdentityRefs,
 						residencyId: residencyPolicy ? undefined : options?.residencyId,
 						residencySlot,
 					};
@@ -7268,9 +7272,14 @@ export function makeTable(options): TableResourceClass {
 						}
 						logger.trace?.('Rebuilt record to save:', incrementalUpdateToApply, ' is full update:', fullUpdate);
 					}
-					if (!audit && !applyAsReplacement) {
+					if (!audit) {
 						receivedIdentityRefs = (priorStaged ?? existingEntry)?.receivedIdentityRefs;
-						if (
+						if (applyAsReplacement) {
+							const receiptIndex = receivedIdentityRefs
+								? auditRefIndex(receivedIdentityRefs, receivedLogKey, options?.nodeId)
+								: -1;
+							receivedIdentityRefs = receiptIndex >= 0 ? [receivedIdentityRefs[receiptIndex]] : undefined;
+						} else if (
 							hasCommutativeOp(incrementalUpdateToApply ?? recordUpdate) &&
 							!(receivedIdentityRefs && auditRefIndex(receivedIdentityRefs, receivedLogKey, options?.nodeId) >= 0)
 						)
