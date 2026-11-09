@@ -878,6 +878,9 @@ function isSameIdAllocation(a: any, b: any): boolean {
 class ConditionLockWait {
 	fullUpdate: boolean;
 	staged: Promise<unknown>;
+	get staging() {
+		return this.staged;
+	}
 	constructor(fullUpdate: boolean) {
 		this.fullUpdate = fullUpdate;
 	}

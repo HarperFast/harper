@@ -628,6 +628,42 @@ describe('REST preconditions with real table transactions', () => {
 		}
 	});
 
+	it('coalesces increments while their conditional record lock is pending', async function () {
+		if (isLMDB) return this.skip();
+		const id = 'queued-adds';
+		await Row.put(id, { n: 0 });
+		let started = false;
+		class QueuedAdds extends Row {
+			async patch() {
+				const first = this.update({ n: { __op__: 'add', value: 1 } });
+				const second = this.update({ n: { __op__: 'add', value: 1 } });
+				started = true;
+				await Promise.all([first, second]);
+				return this.save();
+			}
+		}
+		resources.set('QueuedAdds', QueuedAdds, { rest: true });
+		const holder = await Row.lock(id, { hold: true, lease: 30000 });
+		let pending;
+		try {
+			pending = request('PATCH', `/QueuedAdds/${id}`, {}, { 'if-match': '*' });
+			await waitFor(() => started, 2000);
+			await holder.unlock();
+			const response = await pending;
+			assert.strictEqual(response.status, 204, await bodyOf(response));
+			assert.strictEqual((await Row.get(id)).n, 2);
+			assert.strictEqual(
+				[...Row.auditStore.getRange({ start: 1 })].filter(
+					(entry) => entry.tableId === Row.tableId && entry.recordId === id && entry.type === 'patch'
+				).length,
+				1
+			);
+		} finally {
+			await holder.unlock();
+			if (pending) await pending;
+		}
+	});
+
 	it('commits one audit entry per conditional mutation without a phantom lock write', async () => {
 		const id = 'audit';
 		await Row.put(id, { n: 1 });
