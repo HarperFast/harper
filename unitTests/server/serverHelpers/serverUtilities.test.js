@@ -300,8 +300,111 @@ describe('Test serverUtilities.js module ', () => {
 		});
 	});
 
-	// Only the receiving half is reachable here — announceRegisteredOperation returns early on the
-	// main thread, so integrationTests/components/registered-operation.test.ts owns the real hop.
+	describe('forwarded operation dispatch', function () {
+		const { ITC_EVENT_TYPES } = require('#src/utility/hdbTerms');
+		const REMOTE_THREAD = 9_000_091;
+		let originalThreads;
+		let sentMessages;
+
+		beforeEach(function () {
+			originalThreads = global.threads;
+			sentMessages = [];
+			global.threads = {
+				sendToThread(_threadId, message) {
+					sentMessages.push(message);
+					return true;
+				},
+			};
+		});
+
+		afterEach(function () {
+			global.threads = originalThreads;
+			registeredOperations.setLocalOperationDispatch({
+				chooseOperation: serverUtilities.chooseOperation,
+				processLocalTransaction: serverUtilities.processLocalTransaction,
+			});
+		});
+
+		it('never forwards a request that already crossed threads', function () {
+			const operationName = 'test_forwarded_stays_local';
+			registeredOperations.operationRegisteredHandler({
+				message: { name: operationName, originator: REMOTE_THREAD },
+			});
+
+			assert.strictEqual(typeof serverUtilities.chooseOperation({ operation: operationName }), 'function');
+			assert.throws(() => serverUtilities.chooseOperation({ operation: operationName }, false, true), /not found/);
+		});
+
+		it('marks the request it dispatches as forwarded', async function () {
+			const forwardedFlags = [];
+			registeredOperations.setLocalOperationDispatch({
+				chooseOperation(_body, _bypassAuth, forwarded) {
+					forwardedFlags.push(forwarded);
+					return () => {};
+				},
+				async processLocalTransaction() {
+					return {};
+				},
+			});
+
+			await registeredOperations.operationExecuteRequestHandler({
+				message: { requestId: 31, body: { operation: 'test_forwarded_flag' }, originator: 1 },
+			});
+
+			assert.deepStrictEqual(forwardedFlags, [true]);
+		});
+
+		it('carries an error code and retryable across the hop', async function () {
+			const operationName = 'test_forwarded_error_fields';
+			registeredOperations.setLocalOperationDispatch({
+				chooseOperation() {
+					return () => {};
+				},
+				async processLocalTransaction() {
+					throw Object.assign(new Error('recorded but not run'), {
+						statusCode: 409,
+						code: 'AGENT_PROMPT_NOT_RUN',
+						retryable: false,
+					});
+				},
+			});
+			await registeredOperations.operationExecuteRequestHandler({
+				message: { requestId: 32, body: { operation: operationName }, originator: 1 },
+			});
+			const responseError = sentMessages[0].message.error;
+			assert.deepStrictEqual(responseError, {
+				message: 'recorded but not run',
+				statusCode: 409,
+				code: 'AGENT_PROMPT_NOT_RUN',
+				retryable: false,
+			});
+
+			registeredOperations.operationRegisteredHandler({
+				message: { name: operationName, originator: REMOTE_THREAD },
+			});
+			const pending = registeredOperations.getRemoteOperationFunction(operationName)({ operation: operationName });
+			const request = sentMessages[1].message;
+			await manageThreads.broadcast(
+				{
+					type: ITC_EVENT_TYPES.OPERATION_EXECUTE_RESPONSE,
+					message: { requestId: request.requestId, originator: REMOTE_THREAD, error: responseError },
+				},
+				true
+			);
+
+			await assert.rejects(pending, (error) => {
+				assert.strictEqual(error.message, 'recorded but not run');
+				assert.strictEqual(error.statusCode, 409);
+				assert.strictEqual(error.code, 'AGENT_PROMPT_NOT_RUN');
+				assert.strictEqual(error.retryable, false);
+				return true;
+			});
+		});
+	});
+
+	// Only the receiving half is reachable here — on the main thread announceRegisteredOperation
+	// records and broadcasts instead, so integrationTests/components/registered-operation.test.ts owns
+	// the real hop.
 	describe('cross-thread grantable operation mirroring', function () {
 		const {
 			validateOperations,

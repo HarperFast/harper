@@ -82,6 +82,18 @@ suite('Component: operation registered on the main thread (#4134)', (ctx: Contex
 		strictEqual(result.agent.statusCode, 403, JSON.stringify(result.agent));
 	});
 
+	test('an operation error keeps its message and status across the thread boundary', async () => {
+		const result = await probe('/Probe/');
+		strictEqual(result.missingSession.ok, false, JSON.stringify(result.missingSession));
+		strictEqual(result.missingSession.statusCode, 404, JSON.stringify(result.missingSession));
+		ok(result.missingSession.error.includes('Unknown session'), JSON.stringify(result.missingSession));
+	});
+
+	test('concurrent calls from the workers each get their own answer', async () => {
+		const results = await Promise.all(Array.from({ length: 12 }, () => probe('/Probe/')));
+		for (const result of results) strictEqual(result.agent.result?.enabled, true, JSON.stringify(result.agent));
+	});
+
 	test('an operation no thread registered still fails as not found', async () => {
 		const result = await probe('/Probe/');
 		strictEqual(result.unknown.ok, false);

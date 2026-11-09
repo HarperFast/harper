@@ -1,14 +1,16 @@
-/**
- * Fixture for #4134: a component on a worker thread calls, in-process, an operation that only the
- * main thread registered (the built-in agent's).
- */
 import { isMainThread, threadId } from 'node:worker_threads';
 
 async function attempt(body, context, authorize) {
 	try {
 		return { ok: true, result: await server.operation(body, context, authorize) };
 	} catch (error) {
-		return { ok: false, error: error.message, statusCode: error.statusCode };
+		return {
+			ok: false,
+			error: error.message,
+			statusCode: error.statusCode,
+			code: error.code,
+			retryable: error.retryable,
+		};
 	}
 }
 
@@ -23,11 +25,15 @@ export class Probe extends Resource {
 			agent: await attempt({ operation: 'get_agent_config' }, { user }, true),
 			unauthorized: await attempt({ operation: 'get_agent_config' }, {}, false),
 			unknown: await attempt({ operation: 'definitely_not_registered_anywhere' }, { user }, true),
+			missingSession: await attempt(
+				{ operation: 'agent_prompt', message: 'hello', session_id: 'main-thread-operation-missing' },
+				{ user },
+				true
+			),
 		};
 	}
 }
 
-// Runs the agent operation as the user named by the id, with authorization on.
 export class ProbeAs extends Resource {
 	static loadAsInstance = false;
 	async get(target) {

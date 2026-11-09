@@ -109,7 +109,7 @@ A note lives in the `DESIGN.md` of the directory that owns the code it describes
 - [File overview](server/DESIGN.md#file-overview) — What each file in `server/` owns.
 - [Native and compiled runtime startup](server/DESIGN.md#native-and-compiled-runtime-startup) — Runtime paths stay canonical; cyclic worker registration remains synchronous, and only an HTTP worker entry starts listeners.
 - [`http.ts` — symbol map](server/DESIGN.md#httpts--symbol-map) — Symbol index for the native HTTP entry file.
-- [Operations authorization boundary](server/DESIGN.md#operations-authorization-boundary) — Operations request bodies are untrusted: trusted dispatch state rides async context, and a worker-registered fact reaches main only through `OPERATION_REGISTERED`.
+- [Operations authorization boundary](server/DESIGN.md#operations-authorization-boundary) — Operations request bodies are untrusted: trusted dispatch state rides async context, a registered-op fact crosses threads only through `OPERATION_REGISTERED`, and a forwarded request never forwards again.
 - [Resource ↔ HTTP boundary](server/DESIGN.md#resource--http-boundary) — How a request becomes a Resource call and a result becomes a response.
 - [Live subscriptions are rechecked by principal, not by sweep (`server/liveSubscriptionAuth.ts`)](server/DESIGN.md#live-subscriptions-are-rechecked-by-principal-not-by-sweep-serverlivesubscriptionauthts) — A user or role change rechecks only that principal's subscriptions; expiry is one timer; the periodic pass covers policy-dependent entries every tick and identity-only ones only when notification delivery is not certified.
 - ["Where is X" cheat sheet](server/DESIGN.md#where-is-x-cheat-sheet) — Symbol lookup for middleware, content types and upgrades.

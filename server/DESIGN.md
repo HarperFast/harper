@@ -229,20 +229,18 @@ Operations request bodies are untrusted data. `serverHelpers/serverHandlers.ts �
 prototype-mutating property names and strips the legacy `bypass_auth` property before dispatch.
 `serverUtilities.ts → chooseOperation()` never reads authorization control from the body: trusted
 internal callers pass bypass state as a separate argument and expose it to operation handlers only
-through `operationAuthorizationState.ts`'s async context. When an operation registered by a component
-must run on a worker, `registeredOperations.ts` carries that state in the same-process ITC envelope,
-separately from the structured-cloned body. Never attach trusted dispatch state to an operation
-payload.
+through `operationAuthorizationState.ts`'s async context. When an operation must run on another
+thread, `registeredOperations.ts` carries that state in the same-process ITC envelope, separately
+from the structured-cloned body. Never attach trusted dispatch state to an operation payload.
 
-`server.registerOperation()` runs per-worker, so anything the **main** thread must later know about a
-registered op has to ride the OPERATION_REGISTERED announcement — a module-local registry populated
-during registration exists only in the worker that registered. The bridge carries two such facts
-today: name→thread routing (for execution forwarding) and `grantable` (so `validateOperations` on
-main will accept the name in a role's `operations` allowlist, for add_role/alter_role, impersonation,
-and OIDC trust policies). Adding a third main-thread consumer of a worker-registered fact means
-extending that message, not reading a registry that main never populated. Grantability is safe to
-mirror because it only widens what an allowlist may _name_; enforcement stays on the worker's
-`chooseOperation`.
+Each thread has its own operation map, so a fact about a registered op reaches another thread only
+through the OPERATION_REGISTERED announcement (workers also get main's names in `workerData`),
+never a module-local registry. It carries routing and `grantable` (so `validateOperations` accepts
+the name in an `operations` allowlist); a new consumer extends that message. Mirroring grantability
+only widens what an allowlist may _name_: enforcement stays in `chooseOperation` on the registering
+thread. Main forwards a miss to a registering worker (#1736); a worker forwards a miss for a
+main-announced name to main (#4134). `operationExecuteRequestHandler` passes `forwarded`, so a
+request that crossed once dispatches locally only and the two directions cannot loop.
 
 ## Resource ↔ HTTP boundary
 
