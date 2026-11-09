@@ -457,6 +457,27 @@ describe('Deferred write lifecycle', function () {
 		assert.strictEqual(changesFor(key).length, 0);
 	});
 
+	for (const type of [undefined, 'Int']) {
+		it(`applies an add to an omitted ${type ?? 'untyped'} replacement field`, async () => {
+			const T = table({
+				database: 'deferred_write_lifecycle',
+				table: type ? 'FullTypedAdds' : 'FullUntypedAdds',
+				audit: true,
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'n', type }, { name: 'name' }],
+			});
+			const key = id();
+			await T.put({ id: key, n: 5, name: 'old' });
+			const record = await T.getResource({ id: key }, {});
+			await record.update({ name: 'kept' }, true);
+			await record.update({ n: { __op__: 'add', value: 2 } });
+			await record.save();
+			const result = await T.get(key);
+			assert.strictEqual(result.n, 2);
+			assert.strictEqual(result.name, 'kept');
+			assert.strictEqual([...T.auditStore.getRange({ start: 1 })].filter((entry) => entry.recordId === key).length, 2);
+		});
+	}
+
 	it('keeps one pending generation ahead of an intervening same-key replacement', async () => {
 		const key = id();
 		await TestTable.put({ id: key, n: 0 });
