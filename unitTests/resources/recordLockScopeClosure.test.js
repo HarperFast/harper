@@ -161,6 +161,28 @@ describe('lock() on a transaction() scope closed by its own commit', function ()
 			await lockableAfterwards(SourcedOther, recordId);
 		});
 
+		for (const upgrade of [false, true])
+			it(`is refused with 409 for ${upgrade ? 'an upgrade' : 'a re-lock'} from the commit's own hook after its first await in the final commit`, async function () {
+				const recordId = id();
+				await SourcedOther.put({ id: recordId, n: 1 });
+				let locked;
+				let relock;
+				sourcePut = async () => {
+					sourcePut = undefined;
+					await delay(1);
+					relock = await settle(upgrade ? locked.lock({ hold: true, lease: 5000 }) : locked.lock());
+				};
+				const context = {};
+				await transaction(context, async () => {
+					await Head.put({ id: id(), n: 1 }, context);
+					locked = await SourcedOther.lock(recordId, {}, context);
+					locked.set('n', 2);
+				});
+				assert.ok(isReleasedContext(relock?.error), relock?.error?.message ?? 'the re-entry was admitted');
+				assert.strictEqual((await SourcedOther.get(recordId)).n, 2);
+				await lockableAfterwards(SourcedOther, recordId);
+			});
+
 		it("is refused with 409 during the scope's final commit too", async function () {
 			const recordId = id();
 			const sourcedId = id();

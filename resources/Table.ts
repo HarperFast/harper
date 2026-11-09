@@ -1033,7 +1033,8 @@ interface TableResourceInstance<Record extends object = any> {
 	 *
 	 * Inside `transaction()`, while the scope's own `commit()` is in flight, re-locking a transaction-scoped lock
 	 * through the instance holding it, or upgrading it to a hold through any instance, is refused with 409: that
-	 * commit releases the lock, so await it, then call `Table.lock()` again (a hold stays re-entrant). A `lock()`
+	 * commit releases the lock, so await it, then call `Table.lock()` again. A hold stays re-entrant, and so does a
+	 * scoped lock for that commit's own pre-commit hook unless it asks for a hold. A `lock()`
 	 * after a mid-scope commit made while a read iterator was open is refused too, as is one from a pre-commit hook
 	 * whose commit already committed the record's database, or whose transaction's final commit released the context.
 	 */
@@ -2446,7 +2447,6 @@ export function makeTable(options): TableResourceClass {
 			}
 		}
 		[ASSERT_TRACKED_WRITABLE](generation = this.#writeGeneration): void {
-			// the write saving these changes has not applied yet, and its lock refuses any save of them from the hook
 			if (this.#lockWritable && instanceWriteInSyncCommitHook(this)) throw lockedChangeInOwnHookError();
 			if (!generation) return;
 			if (generation.internalWrites > 0) return;
@@ -5542,7 +5542,8 @@ export function makeTable(options): TableResourceClass {
 		 *
 		 * Inside `transaction()`, while the scope's own `commit()` is in flight, re-locking a transaction-scoped lock
 		 * through the instance holding it, or upgrading it to a hold through any instance, is refused with 409: that
-		 * commit releases the lock, so await it, then call `Table.lock()` again (a hold stays re-entrant). A `lock()`
+		 * commit releases the lock, so await it, then call `Table.lock()` again. A hold stays re-entrant, and so does a
+		 * scoped lock for that commit's own pre-commit hook unless it asks for a hold. A `lock()`
 		 * after a mid-scope commit made while a read iterator was open is refused too, as is one from a pre-commit hook
 		 * whose commit already committed the record's database, or whose transaction's final commit released the context.
 		 */
@@ -5596,8 +5597,12 @@ export function makeTable(options): TableResourceClass {
 				// Re-entrant: upgrade to hold if requested, then preserve staged changes.
 				const violation = scopeViolation(held, resolved, databaseName);
 				if (violation) return Promise.reject(violation);
-				// the in-flight commit releases this handle, and may already be committing its staged write
 				if (relockRefused(held)) return Promise.reject(relockDuringCommitError());
+				if (!held.hold) {
+					// a hook resuming after its transaction released the context resolves a link outside its commit
+					const closure = lockScopeClosure(link, context);
+					if (closure) return Promise.reject(closure);
+				}
 				if (resolved.hold && !held.hold) {
 					held.upgradeToHold(resolved.lease);
 					// The scoped phase eagerly staged a TransactionWrite (see #reloadLocked); hold
