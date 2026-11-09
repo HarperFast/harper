@@ -575,7 +575,9 @@ describe('Per-origin subscription checkpoints (harper-pro#922 items 3–4)', fun
 			const legacy = writeSeqRow(T, 'legacy-peer', { closedFloor: 80, relayable: true });
 			const revoked = writeSeqRow(T, 'revoked-peer', { closedFloor: 90, ...qualified, floorRevoked: true });
 			const late = writeSeqRow(T, 'late-peer', { closedFloor: 95, ...qualified, certifiedFrom: 40 });
-			const floors = readQualifiedOriginFloors(T.auditStore, T.dbisDB);
+			const epochBefore = readOriginStateEpoch(T.primaryStore.rootStore);
+			const { floors, epoch } = readQualifiedOriginFloors(T.auditStore, T.dbisDB);
+			assert.strictEqual(epoch, epochBefore);
 			assert.deepStrictEqual(floors.get(relay), { floor: 50, generation: 'peer-generation' });
 			assert.deepStrictEqual(floors.get(other), { floor: 70, generation: 'peer-generation' });
 			assert.deepStrictEqual(floors.get(relayed), { floor: 100, generation: 'peer-generation' });
