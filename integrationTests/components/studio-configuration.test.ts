@@ -11,10 +11,12 @@ import { setupHarperWithFixture, teardownHarper, targz, type ContextWithHarper }
 const FIXTURE_PATH = resolve(import.meta.dirname, 'fixtures/studio-pages');
 const PASSWORD = 'Abc1234!';
 const DEPLOYED = 'studio-deployed';
+const PLUGGED = 'studio-plugged';
 
 const FIXTURE_PAGES = [
 	{
 		component: 'studio-pages',
+		application: 'studio-pages',
 		id: 'redirects',
 		name: 'Redirects',
 		icon: 'signpost',
@@ -149,13 +151,15 @@ suite('Component: get_studio_configuration', (ctx: ContextWithHarper) => {
 			studio_landing: 'studio-pages.redirects',
 		});
 		strictEqual(written.status, 200, JSON.stringify(written.body));
+		const navigation = {
+			'applications': 'hidden',
+			'apis': 'hidden',
+			'operations': 'tucked',
+			'studio-pages.redirects': 'tucked',
+		};
 		deepStrictEqual(await studioConfiguration('studio_no_permissions_user'), {
-			navigation: {
-				'applications': 'hidden',
-				'apis': 'hidden',
-				'operations': 'tucked',
-				'studio-pages.redirects': 'tucked',
-			},
+			navigation,
+			rootNavigation: navigation,
 			landing: 'studio-pages.redirects',
 			pages: FIXTURE_PAGES,
 		});
@@ -190,6 +194,7 @@ suite('Component: get_studio_configuration', (ctx: ContextWithHarper) => {
 		await deployPages('Caching', false);
 		const deployedPage = {
 			component: DEPLOYED,
+			application: DEPLOYED,
 			id: 'caching',
 			icon: 'database-zap',
 			placement: 'config',
@@ -209,5 +214,50 @@ suite('Component: get_studio_configuration', (ctx: ContextWithHarper) => {
 		const dropped = await call({ operation: 'drop_component', project: DEPLOYED });
 		strictEqual(dropped.status, 200, JSON.stringify(dropped.body));
 		deepStrictEqual((await studioConfiguration()).pages, FIXTURE_PAGES);
+	});
+
+	test('a plugin an application loads from its node_modules adds its pages and navigation under the application', async () => {
+		const directory = join(scratch, PLUGGED);
+		const plugin = join(directory, 'node_modules', 'studio-plugin');
+		await mkdir(plugin, { recursive: true });
+		await writeFile(
+			join(directory, 'config.yaml'),
+			`studio-plugin:\n  package: studio-plugin\nstudio:\n  navigation:\n    logs: tucked\n    studio-plugin.plugged: tucked\n`
+		);
+		await writeFile(
+			join(plugin, 'config.yaml'),
+			`jsResource:\n  files: resources.js\nstudio:\n  pages:\n    - { id: plugged, name: Plugged, placement: tab, navigation: hidden }\n    - { id: quiet, name: Quiet, placement: config, navigation: hidden }\n`
+		);
+		await writeFile(
+			join(plugin, 'resources.js'),
+			`export class StudioPluginPing extends Resource {\n\tallowRead() {\n\t\treturn true;\n\t}\n\tget() {\n\t\treturn { loaded: true };\n\t}\n}\n`
+		);
+		const deployed = await call({
+			operation: 'deploy_component',
+			project: PLUGGED,
+			payload: await targz(directory),
+			restart: true,
+		});
+		strictEqual(deployed.status, 200, JSON.stringify(deployed.body));
+
+		const ping = await fetch(`${ctx.harper.httpURL}/StudioPluginPing`);
+		strictEqual(ping.status, 200, 'the loader loaded the plugin the page comes from');
+		const configuration = await studioConfiguration('studio_no_permissions_user');
+		const component = `${PLUGGED}.studio-plugin`;
+		deepStrictEqual(configuration.pages, [
+			...FIXTURE_PAGES,
+			{ component, application: PLUGGED, plugins: ['studio-plugin'], id: 'plugged', name: 'Plugged', placement: 'tab' },
+			{ component, application: PLUGGED, plugins: ['studio-plugin'], id: 'quiet', name: 'Quiet', placement: 'config' },
+		]);
+		deepStrictEqual(configuration.navigation, {
+			logs: 'tucked',
+			[`${component}.plugged`]: 'tucked',
+			[`${component}.quiet`]: 'hidden',
+		});
+		deepStrictEqual(configuration.rootNavigation, {});
+
+		const dropped = await call({ operation: 'drop_component', project: PLUGGED });
+		strictEqual(dropped.status, 200, JSON.stringify(dropped.body));
+		deepStrictEqual(await studioConfiguration(), { pages: FIXTURE_PAGES });
 	});
 });

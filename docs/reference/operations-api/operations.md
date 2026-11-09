@@ -2021,7 +2021,7 @@ Returns the full current configuration object.
 
 <VersionBadge version="v5.4.0" />
 
-Returns the Studio settings written with `set_configuration` (`studio_navigation`, `studio_landing`) and the pages components declare under `studio.pages`, and nothing else from any configuration. Every signed-in user can call it. See [Customizing Studio](../studio/customization.md#get_studio_configuration).
+Returns the Studio settings written with `set_configuration` (`studio_navigation`, `studio_landing`), merged with the navigation applications and plugins set, and the pages applications and plugins declare under `studio.pages`, and nothing else from any configuration. Every signed-in user can call it. See [Customizing Studio](../studio/customization.md#get_studio_configuration).
 
 ```json
 { "operation": "get_studio_configuration" }

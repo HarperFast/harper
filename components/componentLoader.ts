@@ -10,7 +10,7 @@ import {
 	rmSync,
 	symlinkSync,
 } from 'node:fs';
-import { join, basename, dirname, sep } from 'node:path';
+import { join, basename, dirname } from 'node:path';
 import { isMainThread } from 'node:worker_threads';
 
 import { parseDocument } from 'yaml';
@@ -47,6 +47,7 @@ import {
 	thisThreadOwnsApplication,
 } from '../server/threads/isolatedApplications.ts';
 import { toScopeMount, nestScopeMount, type ScopeMount } from './scopeMount.ts';
+import { packageCandidates } from './packageCandidates.ts';
 import { bindIsolatedApplicationGlobals, scopedImport } from '../security/jsLoader.ts';
 import { server } from '../server/Server.ts';
 import { Resources } from '../resources/Resources.ts';
@@ -1052,27 +1053,11 @@ export async function loadComponent(
 					if (isRoot) {
 						componentPath = join(componentDirectory, 'components', componentName);
 					} else {
-						let containerFolder = componentDirectory;
-						const hdbBasePath = getHdbBasePath();
-						const componentInsideHdb =
-							componentDirectory === hdbBasePath || componentDirectory.startsWith(hdbBasePath + sep);
-						componentPath = join(containerFolder, 'node_modules', componentName);
-						while (!existsSync(componentPath)) {
-							const parentFolder = dirname(containerFolder);
-							if (parentFolder === containerFolder) {
-								componentPath = null;
+						for (const candidate of packageCandidates(componentDirectory, componentName, getHdbBasePath())) {
+							if (existsSync(candidate)) {
+								componentPath = candidate;
 								break;
 							}
-							containerFolder = parentFolder;
-							if (
-								componentInsideHdb &&
-								containerFolder !== hdbBasePath &&
-								!containerFolder.startsWith(hdbBasePath + sep)
-							) {
-								componentPath = null;
-								break;
-							}
-							componentPath = join(containerFolder, 'node_modules', componentName);
 						}
 					}
 					if (componentPath) {
