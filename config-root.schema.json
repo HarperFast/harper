@@ -467,6 +467,14 @@
 					"description": "Attempt fail-over to different node when unreachable. Default: true"
 				},
 				"shard": { "type": "integer", "minimum": 0, "maximum": 65535, "description": "Shard id for this instance." },
+				"region": {
+					"type": "string",
+					"description": "This node's region. When every node has one, nodes link within their region and gateways link the regions."
+				},
+				"gateway": {
+					"type": "boolean",
+					"description": "Make this node one of its region's gateways. Without it, the two lowest-named nodes of the region are its gateways."
+				},
 				"shards": {
 					"type": "array",
 					"minItems": 1,

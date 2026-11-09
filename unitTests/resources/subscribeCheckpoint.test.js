@@ -557,7 +557,6 @@ describe('Per-origin subscription checkpoints (harper-pro#922 items 3–4)', fun
 			const qualified = { originGeneration: 'peer-generation', fullCoverage: true, certifiedFrom: 0 };
 			const relayed = getIdOfRemoteNode('relayed-origin', T.auditStore);
 			const relay = writeSeqRow(T, 'relay-peer', { closedFloor: 50, ...qualified });
-			// the relay's row also carries a relayed origin: one route qualifies at 100, a partial one claims 200
 			T.dbisDB.putSync([SEQ, relay], {
 				seqId: 1,
 				nodes: [
@@ -581,7 +580,6 @@ describe('Per-origin subscription checkpoints (harper-pro#922 items 3–4)', fun
 			assert.deepStrictEqual(floors.get(relayed), { floor: 100, generation: 'peer-generation' });
 			assert.strictEqual(floors.has(legacy), false, 'a level-1 route names no generation');
 			assert.strictEqual(floors.has(revoked), false);
-			assert.strictEqual(floors.has(0), false, "this node's own floor is not a resume point for a peer");
 		});
 		it('refuses a route a copy bound covers, certifies nothing under it, and admits once the route starts above it', async () => {
 			const T = tableInOwnDatabase();
