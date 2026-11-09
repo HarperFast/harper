@@ -170,6 +170,11 @@ describe('owner-only modes for files that can hold secrets (harper#1925)', funct
 			let restoreChown;
 			let restoreFchown;
 
+			before(function () {
+				// Fixtures a real root creates are root-owned, and root hands nothing back to root.
+				if (process.getuid() === 0) this.skip();
+			});
+
 			beforeEach(function () {
 				const getuid = process.getuid;
 				process.getuid = () => 0;
@@ -377,12 +382,15 @@ describe('owner-only modes for files that can hold secrets (harper#1925)', funct
 			assert.ok(fs.readFileSync(backupPath).equals(original), 'the backup holds the previous bytes exactly');
 		});
 
-		it('set_configuration keeps a stricter config mode', async function () {
+		it('set_configuration keeps a stricter config mode, in the config and its backup', async function () {
 			const configPath = getConfigFilePath();
 			fs.chmodSync(configPath, 0o400);
 			await setConfiguration({ operation: 'set_configuration', logging_level: 'fatal' });
 			assert.strictEqual(readRootConfig().logging?.level, 'fatal');
 			assert.strictEqual(modeOf(configPath), 0o400);
+			const backups = fs.readdirSync(backupDir()).filter((name) => !backupsBefore.has(name) && name.endsWith('.bak'));
+			assert.strictEqual(backups.length, 1, `expected one new backup, found ${backups}`);
+			assert.strictEqual(modeOf(path.join(backupDir(), backups[0])), 0o400);
 		});
 	});
 

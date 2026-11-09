@@ -153,7 +153,7 @@ type AtomicWriteOptions = RenameRetryOptions & {
 	 * replaces, or its directory's owner. Ignored on Windows, where access comes from the directory's ACL.
 	 */
 	ownerOnly?: boolean;
-	/** The file whose mode `ownerOnly` must not widen, when this write is published over it by a later rename. */
+	/** The file whose mode `ownerOnly` must not widen: one a later rename publishes this write over, or its source. */
 	replaces?: string;
 };
 
@@ -1461,7 +1461,7 @@ function backupConfigFile(configPath, hdbRoot) {
 		);
 		fs.ensureDirSync(backupDir);
 		// Not a copy: a copy takes the source's mode, and the source may predate owner-only config writes.
-		atomicWriteFile(backupFolderPath, fs.readFileSync(configPath), { ownerOnly: true });
+		atomicWriteFile(backupFolderPath, fs.readFileSync(configPath), { ownerOnly: true, replaces: configPath });
 		logger.trace(`Config file: ${configPath} backed up to: ${backupFolderPath}`);
 	} catch (err) {
 		logger.error(BACKUP_ERR);
