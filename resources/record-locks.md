@@ -117,10 +117,12 @@ Consequences that shape the code:
   lock at its first write; and, for a `lock()` from a pre-commit hook in the cascade, one whose own commit already
   landed and released its locks, so nothing would release a handle registered there. Holding the key while waiting would deadlock a pre-commit hook's own `lock()` on it. A hold waits
   only once the root reads CLOSED: it survives the commit and stages nothing until saved, so in pre-commit work
-  it is admitted as before. The instance holding a scoped handle is refused with a 409 on re-entry instead, and
-  an upgrade of it to a hold through any instance (harper#4122): that commit releases the handle (and may be committing its staged write), so
-  returning it would leave the caller unlocked; it awaits the commit and locks again
-  through `Table.lock()`, its own handle being released (harper#4081). Two more exceptions keep the earlier outcome. The
+  it is admitted as before. A re-entry onto a scoped handle while any scope commit is in flight, the final one
+  included, is refused with a 409 instead (`relockRefused`): from the instance holding it, and an upgrade of it
+  to a hold through any instance, even from the commit's own hook (harper#4081, harper#4122). The commit releases
+  the handle, and an upgrade would detach the staged write it may be committing; the caller awaits the commit and
+  locks again through `Table.lock()`, its own handle being released. The commit's own hook may still re-enter
+  without upgrading. Two more exceptions keep the earlier outcome. The
   scope's final commit (`scopeEnding`) is not waited out. A `lock()` made by the scope's own pre-commit hook
   (`operation.before`, a source write-through) while that hook runs belongs to the commit, which awaits it:
   `runCommitHook` marks the invocation in an `AsyncLocalStorage` (`currentCommitHook`) until the hook settles;

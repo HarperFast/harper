@@ -18,6 +18,7 @@ const isOwnHookRefusal = (error) =>
 describe('pre-commit hook writes to the record their own write is committing', function () {
 	this.timeout(10000);
 	let Hooked;
+	let HookedOther;
 	let nextId = 1;
 	const id = () => `hook-same-${nextId++}`;
 	const cleanups = [];
@@ -32,10 +33,18 @@ describe('pre-commit hook writes to the record their own write is committing', f
 			replicate: false,
 			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'n' }, { name: 'b' }],
 		});
+		HookedOther = table({
+			table: 'CommitHookSameRecordOther',
+			database: 'commit_hook_same_record_other',
+			audit: true,
+			replicate: false,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'n' }, { name: 'b' }],
+		});
 	});
 
 	afterEach(async function () {
 		delete Hooked.source;
+		delete HookedOther.source;
 		while (cleanups.length) await cleanups.pop()();
 	});
 
@@ -147,6 +156,29 @@ describe('pre-commit hook writes to the record their own write is committing', f
 		assert.ok(isSyncWindowRefusal(refusal), refusal?.message);
 		assert.deepStrictEqual(stored(outerId), { n: 2 });
 		assert.deepStrictEqual(stored(middleId), { n: 5 });
+	});
+
+	it("a chained database's hook is refused a synchronous write to its own write's record", async function () {
+		if (isLMDB) return this.skip();
+		const recordId = id();
+		await HookedOther.put({ id: recordId, n: 1 });
+		let refusal;
+		HookedOther.source = {
+			patch: (_id, _record, context) => {
+				delete HookedOther.source;
+				return Promise.resolve(HookedOther.patch(recordId, { b: 9 }, context)).catch((error) => {
+					refusal = error;
+				});
+			},
+		};
+		await transaction({}, async (txn) => {
+			await Hooked.put({ id: id(), n: 1 }, txn);
+			const other = await HookedOther.update(recordId, {}, txn);
+			other.set('n', 2);
+		});
+		assert.ok(isSyncWindowRefusal(refusal), refusal?.message);
+		const { id: _id, ...stored } = HookedOther.primaryStore.getEntry(recordId).value;
+		assert.deepStrictEqual(stored, { n: 2 });
 	});
 
 	// a static verb on this context runs in a transaction of its own; an instance write joins the committing one

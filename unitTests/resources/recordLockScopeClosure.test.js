@@ -144,6 +144,48 @@ describe('lock() on a transaction() scope closed by its own commit', function ()
 			await lockableAfterwards(Head, recordId);
 		});
 
+		it("is refused with 409 for an upgrade from the commit's own pre-commit hook, and the commit keeps the write", async function () {
+			const recordId = id();
+			await SourcedOther.put({ id: recordId, n: 1 });
+			let locked;
+			let upgrade;
+			sourcePut = async () => {
+				sourcePut = undefined;
+				upgrade = await settle(locked.lock({ hold: true, lease: 5000 }));
+			};
+			await transaction({}, async () => {
+				locked = await SourcedOther.lock(recordId);
+				locked.set('n', 2);
+			});
+			assert.ok(isRelockDuringCommit(upgrade?.error), upgrade?.error?.message ?? 'the upgrade was admitted');
+			assert.strictEqual((await SourcedOther.get(recordId)).n, 2);
+			await lockableAfterwards(SourcedOther, recordId);
+		});
+
+		it("is refused with 409 during the scope's final commit too", async function () {
+			const recordId = id();
+			const sourcedId = id();
+			await Head.put({ id: recordId, n: 1 });
+			await SourcedOther.put({ id: sourcedId, n: 1 });
+			let releaseHook;
+			const hookGate = new Promise((resolve) => (releaseHook = resolve));
+			let relock;
+			sourcePut = () => hookGate;
+			const scope = transaction({}, async (txn) => {
+				const locked = await Head.lock(recordId);
+				locked.set('n', 2);
+				await SourcedOther.put({ id: sourcedId, n: 2 }, txn);
+				setImmediate(() => (relock = settle(locked.lock())));
+			});
+			await waitFor(() => relock, { message: 'the re-lock should run while the final commit awaits the hook' });
+			releaseHook();
+			await scope;
+			const outcome = await relock;
+			assert.ok(isRelockDuringCommit(outcome.error), outcome.error?.message ?? 'the re-lock was admitted');
+			assert.strictEqual((await Head.get(recordId)).n, 2);
+			await lockableAfterwards(Head, recordId);
+		});
+
 		it('is still re-entrant for a hold, which outlives the commit', async function () {
 			const recordId = id();
 			await Head.put({ id: recordId, n: 1 });

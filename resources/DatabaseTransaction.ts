@@ -984,6 +984,12 @@ export function currentCommitHook(): CommitHookInvocation | undefined {
 
 // Hooks whose synchronous part is running: their write is saved but has not applied yet.
 const syncCommitHooks: CommitHookInvocation[] = [];
+let activeCommitHooks = 0;
+
+/** Whether any pre-commit hook has not settled, so the caller may be running inside one. */
+export function commitHooksRunning(): boolean {
+	return activeCommitHooks > 0;
+}
 
 function runCommitHook(link: DatabaseTransaction, write: TransactionWrite): void | Promise<void> {
 	const invocation: CommitHookInvocation = {
@@ -995,8 +1001,10 @@ function runCommitHook(link: DatabaseTransaction, write: TransactionWrite): void
 	};
 	const settled = () => {
 		invocation.active = false;
+		activeCommitHooks--;
 	};
 	let result: void | Promise<void>;
+	activeCommitHooks++;
 	syncCommitHooks.push(invocation);
 	try {
 		result = commitHookScope.run(invocation, write.before);
