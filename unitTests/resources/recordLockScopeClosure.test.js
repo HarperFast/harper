@@ -183,6 +183,28 @@ describe('lock() on a transaction() scope closed by its own commit', function ()
 				await lockableAfterwards(SourcedOther, recordId);
 			});
 
+		it("is refused with 409 for an upgrade coalesced onto the commit's own hook's lock()", async function () {
+			const recordId = id();
+			const sourcedId = id();
+			await Other.put({ id: recordId, n: 1 });
+			await SourcedOther.put({ id: sourcedId, n: 1 });
+			let outcomes;
+			sourcePut = async (_id, _record, context) => {
+				sourcePut = undefined;
+				outcomes = await Promise.all([
+					settle(Other.lock(recordId, { timeout: 500 }, context)),
+					settle(Other.lock(recordId, { hold: true, lease: 5000, timeout: 500 }, context)),
+				]);
+			};
+			await transaction({}, async (txn) => {
+				const sourced = await SourcedOther.update(sourcedId, {}, txn);
+				sourced.set('n', 2);
+			});
+			assert.ifError(outcomes[0].error);
+			assert.ok(isRelockDuringCommit(outcomes[1].error), outcomes[1].error?.message ?? 'the upgrade was admitted');
+			await lockableAfterwards(Other, recordId);
+		});
+
 		it("is refused with 409 during the scope's final commit too", async function () {
 			const recordId = id();
 			const sourcedId = id();
@@ -351,6 +373,38 @@ describe('lock() on a transaction() scope closed by its own commit', function ()
 				assert.strictEqual((await SourcedOther.get(sourcedId)).n, 2);
 				await lockableAfterwards(Locked, lockedId);
 			});
+
+		it('refuses it with 409, not 500, when a head-database read iterator holds the final commit open', async function () {
+			const headId = id();
+			const sourcedId = id();
+			await Head.put({ id: headId, n: 1 });
+			await SourcedOther.put({ id: sourcedId, n: 1 });
+			let refusal;
+			sourcePut = async (_id, _record, context) => {
+				sourcePut = undefined;
+				await delay(1);
+				await Head.lock(headId, { timeout: 500 }, context).then(
+					(locked) => locked.unlock(),
+					(error) => {
+						refusal = error;
+					}
+				);
+			};
+			const context = {};
+			let iterator;
+			await transaction(context, async () => {
+				await Head.put({ id: id(), n: 1 }, context);
+				iterator = Head.search({ conditions: [{ attribute: 'n', comparator: 'greater_than', value: 0 }] }, context)[
+					Symbol.iterator
+				]();
+				iterator.next();
+				const sourced = await SourcedOther.update(sourcedId, {}, context);
+				sourced.set('n', 2);
+			});
+			iterator.return();
+			assert.ok(isCommittedDatabase(refusal), refusal?.message ?? 'the hook lock was admitted');
+			await lockableAfterwards(Head, headId);
+		});
 
 		it("still admits the hook's lock() of a record in its own database, and releases it with the commit", async function () {
 			const otherId = id();

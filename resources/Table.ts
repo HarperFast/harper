@@ -1791,18 +1791,17 @@ function lockScopeClosure(link: DatabaseTransaction, context: unknown): Error | 
 	const scope = link.leftChain ? (link.root ?? link) : link;
 	if (scope.open !== TRANSACTION_STATE.CLOSED) return;
 	const root = link.root ?? link;
-	if (root.scopeOwned) {
-		if (root.scopeCommitsInFlight > 0 && isOwnCommitHook(root))
-			return new ClientError(
-				'A pre-commit hook can not lock a record whose database this commit has already committed; lock the record before committing',
-				409
-			);
-		if (root.closedForReadIterators)
-			return new ClientError(
-				'This transaction closed at a mid-scope commit made while a read iterator was open, so it can not take record locks; finish or close iterators before committing mid-scope, or lock in a new transaction()',
-				409
-			);
-	}
+	// ownership may already have ended with the final commit, which runs this hook
+	if (root.scopeCommitsInFlight > 0 && isOwnCommitHook(root))
+		return new ClientError(
+			'A pre-commit hook can not lock a record whose database this commit has already committed; lock the record before committing',
+			409
+		);
+	if (root.scopeOwned && root.closedForReadIterators)
+		return new ClientError(
+			'This transaction closed at a mid-scope commit made while a read iterator was open, so it can not take record locks; finish or close iterators before committing mid-scope, or lock in a new transaction()',
+			409
+		);
 	return new ServerError('Transaction was closed while waiting for a record lock', 500);
 }
 
@@ -5710,6 +5709,7 @@ export function makeTable(options): TableResourceClass {
 								databaseName
 							);
 							if (violation) throw violation;
+							if (relockRefused(acquired)) throw relockDuringCommitError();
 							const joined = this.#stagedWrite()?.lockHandle === acquired;
 							if (!joined && this.#hasStagedWriteFor(keyId)) throw pendingWriteLockError();
 							if (resolved.hold && !acquired.hold) {
