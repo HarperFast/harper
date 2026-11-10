@@ -28,9 +28,16 @@ const CASES: [string, number[]][] = [
 ];
 const ids = (rows: { id: number }[]) => rows.map((row) => row.id).sort((a, b) => a - b);
 
-for (const engine of ['auto', 'new', 'legacy']) {
+for (const [engine, fullScan] of [
+	['auto', false],
+	['new', false],
+	['legacy', false],
+	['new', true],
+] as const) {
+	// Under `new` without `sql.allowFullScan`, a statement with no index driver is rejected.
+	const rejectsUndriven = engine === 'new' && !fullScan;
 	suite(
-		`typed LIKE [sql=${engine}, storage=${process.env.HARPER_STORAGE_ENGINE ?? 'rocksdb'}]`,
+		`typed LIKE [sql=${engine}, allowFullScan=${fullScan}, storage=${process.env.HARPER_STORAGE_ENGINE ?? 'rocksdb'}]`,
 		(ctx: ContextWithHarper) => {
 			let client: ReturnType<typeof createApiClient>;
 			const operation = async (body: object) => {
@@ -50,7 +57,11 @@ for (const engine of ['auto', 'new', 'legacy']) {
 				});
 			before(async () => {
 				await setupHarperWithFixture(ctx, FIXTURE, {
-					config: { threads: { count: 1 }, logging: { console: true, level: 'error' } },
+					config: {
+						threads: { count: 1 },
+						logging: { console: true, level: 'error' },
+						sql: { allowFullScan: fullScan },
+					},
 					env: { HARPER_SQL_ENGINE: engine },
 				});
 				client = createApiClient(ctx.harper);
@@ -82,7 +93,7 @@ for (const engine of ['auto', 'new', 'legacy']) {
 					['UPDATE', 'id >= 0 AND '],
 					['DELETE', 'id >= 0 AND '],
 					// Standalone: legacy fallback under auto must not match null or omitted values either.
-					...(engine === 'new'
+					...(rejectsUndriven
 						? []
 						: [
 								['SELECT', ''],
@@ -133,9 +144,15 @@ for (const engine of ['auto', 'new', 'legacy']) {
 			});
 			test('dynamic mixed values use lexical matching', async () => {
 				deepStrictEqual(ids(await sql("SELECT id FROM data.Dynamic WHERE id >= 0 AND mixed LIKE '1%'")), [1, 2]);
-				if (engine !== 'new')
+				if (!rejectsUndriven)
 					deepStrictEqual(ids(await sql("SELECT id FROM data.Dynamic WHERE mixed LIKE '1%'")), [1, 2]);
 			});
+			if (!rejectsUndriven)
+				test('a non-String LIKE beside a non-driving String LIKE', async () => {
+					const where = "intCol LIKE '105' AND code LIKE '%1%'";
+					deepStrictEqual(ids(await sql(`SELECT id FROM data.Item WHERE ${where}`)), [4]);
+					deepStrictEqual((await sql(`DELETE FROM data.Item WHERE ${where}`)).deleted_hashes, [4]);
+				});
 			test('dynamic standalone LIKE follows legacy case folding under auto, including mutations', async () => {
 				const where = "mixed LIKE 'Pen%'";
 				const guarded = await sql(`SELECT id FROM data.Dynamic WHERE id >= 0 AND ${where}`);
@@ -145,6 +162,13 @@ for (const engine of ['auto', 'new', 'legacy']) {
 					`UPDATE data.Dynamic SET marker = 'hit' WHERE ${where}`,
 					`DELETE FROM data.Dynamic WHERE ${where}`,
 				];
+				if (fullScan) {
+					deepStrictEqual(ids(await sql(statements[0])), [4]);
+					deepStrictEqual((await sql(statements[1])).update_hashes, [4]);
+					deepStrictEqual((await sql(statements[2])).deleted_hashes, [4]);
+					deepStrictEqual(ids(await sql('SELECT id FROM data.Dynamic WHERE id >= 0')), [1, 2, 3, 5]);
+					return;
+				}
 				if (engine === 'new') {
 					for (const statement of statements) {
 						const response = await client.req().send({ operation: 'sql', sql: statement }).timeout(60_000);
@@ -166,7 +190,7 @@ for (const engine of ['auto', 'new', 'legacy']) {
 				);
 				deepStrictEqual(ids(await sql('SELECT id FROM data.Dynamic WHERE id >= 0')), [1, 2, 3]);
 			});
-			if (engine === 'new')
+			if (rejectsUndriven)
 				test('standalone non-String LIKE needs an index driver', async () => {
 					for (const statement of [
 						"SELECT id FROM data.Item WHERE intCol LIKE '1%'",
