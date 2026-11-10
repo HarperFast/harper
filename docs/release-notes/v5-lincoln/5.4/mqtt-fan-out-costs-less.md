@@ -1,0 +1,7 @@
+---
+section: 'Subscriptions'
+---
+
+### MQTT Fan-Out Costs Less
+
+Delivering a message to many MQTT subscribers takes a fraction of the CPU it did: under half for exact topics and `+` wildcards, and a tenth or less for durable QoS 1/2 subscriptions. A burst of messages to one client is written to its socket in a few writes rather than one per message, on TCP connections and on WebSocket connections served by Node, and takes under a third of the CPU to deliver. A subscription holds about a third of the memory, durable session saves share transactions, and on RocksDB, many clients subscribing or resuming at once share the records they catch up with. Because saves are batched, two latencies can rise slightly, though the work as a whole finishes sooner: a PUBREL when one QoS 2 subscriber is sent messages as fast as possible (by about half a millisecond), and the slowest SUBACKs in a burst of thousands of durable subscribes (by a few milliseconds). A subscription event's `value` is read-only and can be the same frozen record object that other subscribers and `get()` receive, now for the records a subscription catches up with as well as for live changes; copy it before changing it. See [`subscribe`](/reference/v5/resources/resource-api#subscribesubscriptionrequest-subscriptionrequest-context-promisesubscription).

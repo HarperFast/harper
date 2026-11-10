@@ -255,6 +255,8 @@ This is called for MQTT publish commands. The default behavior records the messa
 
 Called for MQTT subscribe commands. Returns a `Subscription` — an `AsyncIterable` of messages/changes.
 
+An event's `value` is read-only. It can be the same frozen record object that `get()` returns and that other subscribers receive, for live changes and for the current records and history a subscription catches up with, so copy it before changing it.
+
 #### `SubscriptionRequest` options
 
 All properties are optional:

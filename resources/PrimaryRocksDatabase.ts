@@ -199,6 +199,15 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 		});
 	}
 
+	/**
+	 * The entry the cache holds for a record, unverified: it may be older than the record's current version.
+	 * Its version still identifies its value, unless VERSION_REUSED is set.
+	 */
+	cachedEntry(id: any): Entry | undefined {
+		const cachedValue = this.#cache?.getValue(id);
+		return cachedValue != null && typeof cachedValue === 'object' ? entryMap.get(cachedValue) : undefined;
+	}
+
 	getSync(id: any, options?: any): any {
 		const entry = this.getEntry(id, options) as Entry;
 		return entry?.value;

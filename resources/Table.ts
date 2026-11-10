@@ -851,6 +851,38 @@ export function describeTtlValue(value: unknown): string {
 const TEST_WRITE_KEY_BUFFER = Buffer.allocUnsafeSlow(8192);
 const MAX_KEY_BYTES = 1978;
 const EVENT_HIGH_WATER_MARK = 100;
+/**
+ * Scans that must overlap before a row the record cache does not hold is shared: with two, the one reuse does not
+ * pay for the bookkeeping per row; from three, the later scans' hits do. A record already cached is shared at any
+ * count.
+ */
+const MIN_SHARING_SCANS = 3;
+/**
+ * Which write to each record an audit entry is, within the transaction a forward replay is reading. A transaction
+ * gives all its writes one version and log position and can write a record more than once, so this index is what
+ * tells two of them apart; every forward replay starts at a transaction boundary and reads in log order, so a write
+ * has the same index in each.
+ */
+class TransactionWrites {
+	transaction: number | undefined = undefined;
+	counts: Map<Id, number> | undefined = undefined;
+	indexOf(id: Id, transaction: number): number {
+		if (transaction !== this.transaction) {
+			this.transaction = transaction;
+			this.counts?.clear();
+		}
+		const counts = (this.counts ??= new Map());
+		const index = counts.get(id) ?? 0;
+		counts.set(id, index + 1);
+		return index;
+	}
+}
+const MAX_REMEMBERED_VERSIONS = 4096;
+function remember<T>(remembered: Map<Id, T> | undefined, id: Id, value: T): Map<Id, T> {
+	if (!remembered || remembered.size >= MAX_REMEMBERED_VERSIONS) remembered = new Map();
+	remembered.set(id, value);
+	return remembered;
+}
 const REPLAY_YIELD_INTERVAL = 100; // yield to the event loop every N records during subscription replay
 const UNREACHED_LOG_POLL_MS = 100;
 const UNREACHED_LOG_LIMIT_MS = 5000;
@@ -2175,6 +2207,12 @@ export function makeTable(options): TableResourceClass {
 	let sourceFills: Map<unknown, SourceFill> | undefined;
 	let primaryKeyAttribute: Attribute | undefined;
 	let lastEvictionCompletion: Promise<void> = Promise.resolve();
+	/** Subscription snapshot scans and history replays of this table in flight on this thread. */
+	let catchUpScans = 0;
+	// While scans overlap, the entry the first scan to reach a version the record cache does not hold shares with
+	// the rest: kept here rather than in the record cache, which a storm would otherwise fill with rows no get()
+	// asked for, and dropped once scans stop overlapping.
+	let sharedEntries: Map<Id, any> | undefined;
 	let recordExpirationCompletion: Promise<void> = Promise.resolve();
 	const maintenanceCommits = new Set<Promise<unknown>>();
 	let maintenanceClosed = false;
@@ -2260,6 +2298,9 @@ export function makeTable(options): TableResourceClass {
 	// cyclic) entity at runtime regardless of its declared scalar type, and the static edge graph can't see
 	// it, so such a table takes the guarded serialization path rather than the raw fast path.
 	let hasSurfacedComputed = false;
+	// True when serializing a record runs a resolver: a @computed attribute's may read the reader's context, and an
+	// @enumerable one's (a relationship) reads another record, whose write leaves this record's version unchanged.
+	let serializationResolves = false;
 	let runningRecordExpiration: boolean;
 	const reportedResolverCollisions = new Set<string>();
 	// Reached from record materialization, so it can never be the reason a record fails to load: the
@@ -10405,6 +10446,8 @@ export function makeTable(options): TableResourceClass {
 						includeLogName: true,
 						snapshot: false, // the live tail appended during the replay is read by it
 					});
+					const replayWrites = new TransactionWrites();
+					catchUpScans++;
 					try {
 						for (const auditRecord of replayRange) {
 							if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
@@ -10438,7 +10481,8 @@ export function makeTable(options): TableResourceClass {
 								auditRecord.txnLogKey,
 								undefined,
 								true,
-								replayReader
+								replayReader,
+								replayWrites
 							);
 							if (!event) continue;
 							event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
@@ -10450,6 +10494,7 @@ export function makeTable(options): TableResourceClass {
 						}
 						if (!recheck(replayRange)) return;
 					} finally {
+						if (--catchUpScans < MIN_SHARING_SCANS) sharedEntries = undefined;
 						state.dropDuringReplay = false;
 					}
 				} else if (isCollection) {
@@ -10487,6 +10532,8 @@ export function makeTable(options): TableResourceClass {
 						let replayIterator = replayRange[Symbol.iterator]();
 						let replayEnded = false;
 						let unreachedSince: number | undefined;
+						const replayWrites = new TransactionWrites();
+						catchUpScans++;
 						try {
 							for (;;) {
 								let next: IteratorResult<any>;
@@ -10566,7 +10613,8 @@ export function makeTable(options): TableResourceClass {
 										auditRecord.txnLogKey,
 										undefined,
 										true,
-										replayReader
+										replayReader,
+										replayWrites
 									);
 									if (event) {
 										if (state.reportingProgress) event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
@@ -10609,6 +10657,7 @@ export function makeTable(options): TableResourceClass {
 							if (handledTxnLogKey !== undefined) recordCursor(handledTxnLogKey);
 							if (checkResume && !checkResume(unreadableLogRefusal(replayRange))) return;
 						} finally {
+							if (--catchUpScans < MIN_SHARING_SCANS) sharedEntries = undefined;
 							// replay is done, we can start sending real-time messages again
 							state.dropDuringReplay = false;
 							// an LMDB range releases its cursor and read transaction here
@@ -10696,30 +10745,37 @@ export function makeTable(options): TableResourceClass {
 						// if a post-subscribe write hits a key the cursor also visits. This is
 						// idempotent for "current state then live updates" — both deliveries land at
 						// the same final state. We don't dedupe.
-						for (const { key: id, value, version, localTime, expiresAt, size } of primaryStore.getRange({
-							start: thisId ?? false,
-							end: thisId == null ? undefined : [thisId, MAXIMUM_KEY],
-							versions: true,
-							snapshot: false, // no need for a snapshot, just want the latest data
-						})) {
-							if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
-								recordsSinceYield = 0;
-								await rest();
-								if (!isActive()) return;
-								now = Date.now();
+						catchUpScans++;
+						try {
+							for (const entry of primaryStore.getRange({
+								start: thisId ?? false,
+								end: thisId == null ? undefined : [thisId, MAXIMUM_KEY],
+								versions: true,
+								snapshot: false, // no need for a snapshot, just want the latest data
+							})) {
+								if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
+									recordsSinceYield = 0;
+									await rest();
+									if (!isActive()) return;
+									now = Date.now();
+								}
+								const { key: id, version, localTime, size } = entry;
+								// Update cursorMaxTime BEFORE the !value / expiresAt checks so deletion tombstones
+								// (which have null value but a real localTime/version) and expired rows still raise the gate.
+								const t = localTime ?? version;
+								if (t > cursorMaxTime) cursorMaxTime = t;
+								if (!entry.value) continue;
+								if (isHiddenExpiry(entry.expiresAt, now)) continue;
+								const value = sharedVersionValue(id, version, entry.nodeId, entry) ?? entry.value;
+								if (!send({ id, localTime, value, version, type: 'put', size, fromScan: true })) return;
+								if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
+									// if we have too many messages, we need to pause and let the client catch up
+									if ((await subscription.waitForDrain()) === false) return;
+									now = Date.now();
+								}
 							}
-							// Update cursorMaxTime BEFORE the !value / expiresAt checks so deletion tombstones
-							// (which have null value but a real localTime/version) and expired rows still raise the gate.
-							const t = localTime ?? version;
-							if (t > cursorMaxTime) cursorMaxTime = t;
-							if (!value) continue;
-							if (isHiddenExpiry(expiresAt, now)) continue;
-							if (!send({ id, localTime, value, version, type: 'put', size, fromScan: true })) return;
-							if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
-								// if we have too many messages, we need to pause and let the client catch up
-								if ((await subscription.waitForDrain()) === false) return;
-								now = Date.now();
-							}
+						} finally {
+							if (--catchUpScans < MIN_SHARING_SCANS) sharedEntries = undefined;
 						}
 						if (includeSuperseded && !state.reportingProgress) {
 							if (cursorMaxTime) {
@@ -12062,6 +12118,7 @@ export function makeTable(options): TableResourceClass {
 			enumerableRelationDefs.clear();
 			enumerableRelationshipNames = [];
 			hasSurfacedComputed = false;
+			serializationResolves = false;
 			const resolvedAttributeNames: string[] = [];
 			for (const attribute of attributes) {
 				const name = attribute.name;
@@ -12093,6 +12150,7 @@ export function makeTable(options): TableResourceClass {
 					// regardless of its declared scalar type — the static edge graph can't see it — so route it
 					// through the guarded serialization path.
 					if (attribute.computed && !relationDef) hasSurfacedComputed = true;
+					if (attribute.computed || attribute.enumerable) serializationResolves = true;
 				}
 			}
 			this.enumerableRelationDefs = enumerableRelationDefs;
@@ -12872,7 +12930,11 @@ export function makeTable(options): TableResourceClass {
 		localTime: number,
 		beginTxn?: boolean,
 		live?: boolean,
-		history?: ReplayReader | HistoryMemo
+		history?: ReplayReader | HistoryMemo,
+		// a forward replay catching a subscriber up, which delivers merged writes as live does but, unlike a live event
+		// (one audit entry for every subscriber), reads its own entries, so shares each write's value with the other
+		// replays that read it
+		replayWrites?: TransactionWrites
 	) {
 		const { getFullRecord } = state;
 		let type = auditRecord.type;
@@ -12894,13 +12956,87 @@ export function makeTable(options): TableResourceClass {
 				type = entry?.metadataFlags & INVALIDATED ? 'invalidate' : value ? 'put' : 'delete';
 			} else value = auditRecord.getValue?.(primaryStore, false, localTime);
 		} else {
-			value =
-				history instanceof ReplayReader
-					? history.read(auditRecord, localTime)
-					: auditRecord.getValue?.(primaryStore, getFullRecord, localTime, history);
+			if (replayWrites && type === 'put' && getFullRecord && id !== undefined) {
+				// a ReplayReader carries a patch only onto the version just before it, so a put it is not given here makes the
+				// next patch rebuild rather than misapply
+				value = sharedVersionValue(id, version, auditRecord.nodeId, undefined, auditRecord, localTime, replayWrites);
+			}
+			if (value === undefined)
+				value =
+					history instanceof ReplayReader
+						? history.read(auditRecord, localTime)
+						: auditRecord.getValue?.(primaryStore, getFullRecord, localTime, history, true);
 			if (getFullRecord && type === 'patch') type = 'put';
 		}
 		return { id, localTime, value, version, type, beginTxn, size: auditRecord.size };
+	}
+	/**
+	 * The record's value at `version`, written by `nodeId`, as the record cache or an overlapping scan holds it:
+	 * overlapping snapshots and replays (a storm of subscribers catching up) then deliver one object per version,
+	 * and so share its serialization and packets. While scans overlap, a version the cache does not hold is shared
+	 * from the first scan to reach it: the `rangeEntry` a snapshot read, or the put a replay decodes from its
+	 * `auditRecord`, which `replayWrites` places among its transaction's writes. Undefined when the caller is to
+	 * decode its own.
+	 */
+	function sharedVersionValue(
+		id: Id,
+		version: number,
+		nodeId: number | undefined,
+		rangeEntry?: any,
+		auditRecord?: any,
+		localTime?: number,
+		replayWrites?: TransactionWrites
+	) {
+		// a shared value shares its serialization, which a resolver could make depend on the subscriber or on
+		// another record (see serializationResolves)
+		if (serializationResolves || !primaryStore.cachedEntry) return;
+		// the cache is keyed by identity, and a composite id is decoded afresh each time, so it is never found
+		if (typeof id === 'object') return;
+		// an invalidated or evicted entry holds part of a record, and a reused version no longer identifies one
+		if (rangeEntry && rangeEntry.metadataFlags & (INVALIDATED | EVICTED | VERSION_REUSED)) return;
+		// A transaction gives its writes one version and log position and can write a record more than once, so a
+		// replay also matches which of those writes it is. The record holds only the last of them, and marks its
+		// version reused when there are more, so neither the cache nor a snapshot serves a later one.
+		const transactionWrite = replayWrites?.indexOf(id, localTime) ?? 0;
+		let entry = sharedEntries?.get(id);
+		// a reused version names more than one write, so a replay also matches the write's log position
+		if (
+			entry?.version !== version ||
+			(localTime !== undefined && entry.localTime !== localTime) ||
+			(entry?.transactionWrite ?? 0) !== transactionWrite
+		) {
+			entry = transactionWrite === 0 ? primaryStore.cachedEntry(id) : undefined;
+			// The cache is per thread, so another thread's write can replace a version it still holds; it holds one
+			// version, so a replay's superseded ones are not it; and two nodes can write one record at the same
+			// timestamp. An entry it cannot share leaves the overlap to share the scan's own value.
+			if (
+				entry &&
+				(entry.version !== version ||
+					(entry.nodeId ?? 0) !== (nodeId ?? 0) ||
+					(localTime !== undefined && entry.localTime !== localTime) ||
+					entry.metadataFlags & (INVALIDATED | EVICTED | VERSION_REUSED))
+			)
+				entry = undefined;
+		}
+		if (!entry) {
+			if (catchUpScans < MIN_SHARING_SCANS) return;
+			if (rangeEntry) entry = rangeEntry;
+			else {
+				// a put's audit entry holds the whole record at its version, superseded or not
+				const value = auditRecord.getValue?.(primaryStore, true, localTime);
+				if (value === null || typeof value !== 'object') return value;
+				entry = { version, nodeId, value, localTime, transactionWrite };
+			}
+			if (entry.value === null || typeof entry.value !== 'object') return;
+			// the scan's own object is shared from here on, so it is frozen, as get() freezes what it returns
+			freezeRecord(entry.value);
+			sharedEntries = remember(sharedEntries, id, entry);
+			return entry.value;
+		}
+		if ((entry.nodeId ?? 0) !== (nodeId ?? 0)) return;
+		// every reader of the record shares this object, so a subscriber must not be able to change it
+		freezeRecord(entry.value);
+		return entry.value ?? undefined;
 	}
 	function sendSubscriptionEvent(state: SubscriberState, event: any, alreadyFiltered = false) {
 		const { subscription, allowsEvent } = state;

@@ -2555,6 +2555,9 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 		const usernameStart = decoder.position;
 		const usernameEnd = (decoder.position += length);
 		let value: any;
+		let recordAtTimeValue: any;
+		let recordAtTimeStore: any;
+		let recordAtTime: number | undefined;
 		const entry = {
 			// The entry type is the low nibble of the action byte (1–7 record actions, 8 reload, 9 eviction, 10–15
 			// reserved); the flag bits (HAS_RECORD, HAS_PARTIAL_RECORD, …) sit above it. `& 0xf` is
@@ -2601,7 +2604,7 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 				// only the recovered prefix is discounted; every other case keeps its existing basis
 				return (end !== undefined ? end - start : buffer.byteLength) - (entryStart - start);
 			},
-			getValue(store, fullRecord?, auditTime?, historyMemo?) {
+			getValue(store, fullRecord?, auditTime?, historyMemo?, shared?: boolean) {
 				if (action & HAS_RECORD || (action & HAS_PARTIAL_RECORD && !fullRecord)) {
 					if (decoder.position >= (end ?? buffer.byteLength)) {
 						// Entry advertises a record but has no body (minted before #2153): nothing to decode, and
@@ -2629,7 +2632,32 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 				}
 				if (action & HAS_PARTIAL_RECORD && auditTime) {
 					const recordId = this.recordId;
-					return getRecordAtTime(store.getEntry(recordId), auditTime, store, tableId, recordId, nodeId, historyMemo);
+					// one reader, such as a history read, gets a reconstruction of its own
+					if (!shared)
+						return getRecordAtTime(store.getEntry(recordId), auditTime, store, tableId, recordId, nodeId, historyMemo);
+					// every subscriber of a key reads this same entry object in one notify pass, so one
+					// reconstruction serves them all
+					if (recordAtTimeStore !== store || recordAtTime !== auditTime) {
+						recordAtTimeValue = getRecordAtTime(
+							store.getEntry(recordId),
+							auditTime,
+							store,
+							tableId,
+							recordId,
+							nodeId,
+							historyMemo
+						);
+						// shared, so read-only: no subscriber can change it under the others
+						if (
+							recordAtTimeValue !== null &&
+							typeof recordAtTimeValue === 'object' &&
+							!ArrayBuffer.isView(recordAtTimeValue)
+						)
+							Object.freeze(recordAtTimeValue);
+						recordAtTimeStore = store;
+						recordAtTime = auditTime;
+					}
+					return recordAtTimeValue;
 				} // TODO: If we store a partial and full record, may need to read both sequentially
 			},
 			getBinaryValue() {

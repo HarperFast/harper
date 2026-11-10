@@ -50,7 +50,7 @@ Where things are in `resources/`. The rules live in [DESIGN.md](DESIGN.md): read
 - sorting → `transformToOrderedSelect` in Table.ts; whether the lead already supplies the order → `scansInAttributeOrder` in search.ts
 - record TTL and eviction → `setTTLExpiration`, `_adoptCatalogExpiration`, `evict`, `scheduleCleanup` in Table.ts; `armTableCleanupScans` in databases.ts
 - cache miss to source → `getFromSource` in Table.ts
-- subscriptions and replay → `subscribe`, `eventFromAudit` in Table.ts; `addSubscription` in transactionBroadcast.ts; `ReplayReader` in historyReader.ts
+- subscriptions and replay → `subscribe`, `eventFromAudit`, `sharedVersionValue` (values shared across overlapping scans) in Table.ts; `addSubscription` in transactionBroadcast.ts; `ReplayReader` in historyReader.ts
 - history listings and full audit replay → `getHistory`, `getHistoryOfRecord`, `eventFromAudit` in Table.ts; `HistoryReader`, `HistoryMemo` in historyReader.ts; `getRecordAtTime` in crdt.ts
 - replication apply loop → `sourcedFrom` in Table.ts
 - the per-request transaction → `txnForContext` in Table.ts; `transaction()` in transaction.ts
