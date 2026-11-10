@@ -40,7 +40,7 @@ Harper supports MQTT versions **v3.1.1** and **v5**, with standard publish/subsc
 Harper supports multi-level topics for both publishing and subscribing:
 
 - **Multi-level wildcard (`#`)** — Subscribe to `my-resource/#` to receive notifications for all records in that resource, including nested paths (`my-resource/some-id`, `my-resource/nested/id`).
-- **Single-level wildcard (`+`)** — Added in v4.3.0. Subscribe to `my-resource/+/status` to match any single path segment.
+- **Single-level wildcard (`+`)** — Added in v4.3.0. Subscribe to `my-resource/+/status` to match any single path segment. <VersionBadge type="changed" version="v5.4.0" /> `my-resource/+/+/#` matches `my-resource/a/b` and every record under it, but not `my-resource/a`, which earlier versions also matched.
 
 ### QoS Levels
 

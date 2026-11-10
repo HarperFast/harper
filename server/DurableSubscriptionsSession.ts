@@ -322,7 +322,9 @@ function topicLevelFilter(matchingPath: string[], mustMatchLength: boolean) {
 				return false;
 			}
 		}
-		if (mustMatchLength && updatePath.length !== matchingPath.length) return false;
+		// a '+' needs a level, before a '#' too, as routing by pattern requires
+		if (mustMatchLength ? updatePath.length !== matchingPath.length : updatePath.length < matchingPath.length)
+			return false;
 		for (let i = 0; i < matchingPath.length; i++) {
 			if (matchingPath[i] !== '+' && matchingPath[i] !== updatePath[i]) return false;
 		}
@@ -556,6 +558,7 @@ class SubscriptionsSession {
 		let url = entry.relativeURL;
 		let isCollection;
 		let onlyChildren;
+		let idPattern;
 		let hashIndex: number;
 		if (url.indexOf('+') > -1 || (hashIndex = url.indexOf('#')) > -1) {
 			const path = url.slice(1); // remove leading slash
@@ -587,7 +590,15 @@ class SubscriptionsSession {
 					matchingPath.length--;
 					mustMatchLength = false;
 				}
-				if (needsFilter) filter = topicLevelFilter(matchingPath, mustMatchLength);
+				if (needsFilter) {
+					// routes live records to this subscription by pattern; the filter still screens the
+					// snapshot and replay, which are read from the prefix
+					idPattern = {
+						levels: matchingPath.map((level) => (level === '+' ? null : level)),
+						prefix: !mustMatchLength,
+					};
+					filter = topicLevelFilter(matchingPath, mustMatchLength);
+				}
 				const firstWildcard = matchingPath.indexOf('+');
 				url = '/' + (firstWildcard > -1 ? matchingPath.slice(0, firstWildcard) : matchingPath).concat('').join('/');
 			}
@@ -606,6 +617,7 @@ class SubscriptionsSession {
 			resume: subscriptionRequest.resume,
 			filterKey: subscriptionRequest.filterKey,
 			includeSuperseded: this instanceof DurableSubscriptionsSession && subscriptionRequest.qos > 0 ? true : undefined,
+			idPattern,
 			checkPermission: this.user?.role?.permission ?? {},
 		});
 		const resourcePath = entry.path;
