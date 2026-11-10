@@ -36,36 +36,37 @@ import { Addition } from '../../resources/tracked.ts';
 import { addValues, OPERATION_TYPES } from '../../resources/crdt.ts';
 
 /**
- * If `expr` is the target column (bare, or qualified by the target table or its alias) plus numeric
- * literals — `col + N`, `N + col`, `col - N`, nested — return those literals, signed. Anything else,
- * including `N - col` and `col + col`, returns undefined.
+ * If `expr` is the target column (bare, or qualified by the target table or its alias) plus or minus
+ * numeric literals — `col + N`, `N + col`, `col - N`, nested or grouped — return those literals,
+ * signed. Anything else, including `N - col` and `col + col`, returns undefined.
  */
 function incrementTerms(expr: ExprNode, column: string, qualifiers: ReadonlySet<string>): number[] | undefined {
 	if (expr.kind === 'column') {
 		return expr.name === column && (expr.table == null || qualifiers.has(expr.table)) ? [] : undefined;
 	}
 	if (expr.kind !== 'binop' || (expr.op !== '+' && expr.op !== '-')) return undefined;
-	const right = numericLiteral(expr.right);
-	if (right !== undefined) {
-		const terms = incrementTerms(expr.left, column, qualifiers);
-		terms?.push(expr.op === '+' ? right : -right);
-		return terms;
+	const left = incrementTerms(expr.left, column, qualifiers);
+	if (left) {
+		const right = literalTerms(expr.right);
+		return right && left.concat(expr.op === '+' ? right : right.map((term) => -term));
 	}
-	const left = expr.op === '+' ? numericLiteral(expr.left) : undefined;
-	if (left === undefined) return undefined;
-	const terms = incrementTerms(expr.right, column, qualifiers);
-	terms?.push(left);
-	return terms;
+	if (expr.op === '-') return undefined;
+	const literals = literalTerms(expr.left);
+	const right = literals && incrementTerms(expr.right, column, qualifiers);
+	return right && literals.concat(right);
 }
 
-function numericLiteral(expr: ExprNode): number | undefined {
-	return expr.kind === 'literal' && typeof expr.value === 'number' ? expr.value : undefined;
+function literalTerms(expr: ExprNode): number[] | undefined {
+	if (expr.kind === 'literal') return typeof expr.value === 'number' ? [expr.value] : undefined;
+	if (expr.kind !== 'binop' || (expr.op !== '+' && expr.op !== '-')) return undefined;
+	const left = literalTerms(expr.left);
+	const right = left && literalTerms(expr.right);
+	return right && left.concat(expr.op === '+' ? right : right.map((term) => -term));
 }
 
 interface ColumnAssignments {
 	column: string;
 	steps: Array<(row: Row) => unknown>;
-	/** Present while every step so far is `column + N`. */
 	terms?: number[];
 	delta?: number;
 	bigintDelta?: bigint;
@@ -93,11 +94,11 @@ function evaluateAssignments({ column, steps }: ColumnAssignments, row: Row): un
 	}
 }
 
-/** Whether `validate` accepts `delta` as an add operand on an attribute of this declared type. */
+// The operand ranges `validate` accepts for an add on these declared types.
 function operandAccepted(delta: number, type: string | undefined): boolean {
 	if (!Number.isFinite(delta)) return false;
 	if (type === 'Int') return delta >> 0 === delta;
-	if (type === 'Long') return Number.isSafeInteger(delta);
+	if (type === 'Long') return Number.isInteger(delta) && Math.abs(delta) <= 9007199254740992;
 	return true;
 }
 

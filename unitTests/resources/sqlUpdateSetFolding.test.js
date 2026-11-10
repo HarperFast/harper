@@ -32,6 +32,7 @@ describe('SQL UPDATE SET evaluation on the v2 engine', function () {
 				{ name: 'name', type: 'String' },
 				{ name: 'big', type: 'BigInt' },
 				{ name: 'ratio', type: 'Float' },
+				{ name: 'at', type: 'Date' },
 			],
 		});
 	});
@@ -111,6 +112,22 @@ describe('SQL UPDATE SET evaluation on the v2 engine', function () {
 			assert.strictEqual(row.ratio, Infinity);
 		});
 
+		it('stays atomic at the edge of the operand range', async () => {
+			const Long = table({
+				table: 'SqlSetFoldLong',
+				database: 'test',
+				schemaDefined: true,
+				attributes: [
+					{ name: 'id', isPrimaryKey: true, type: 'Int' },
+					{ name: 'qty', type: 'Long' },
+				],
+			});
+			const edge = 9007199254740992;
+			await seed(Long, { id: 1, qty: -edge });
+			await Promise.all([1, 2].map(() => sql(`UPDATE test.SqlSetFoldLong SET qty = qty + ${edge} WHERE id = 1`)));
+			assert.strictEqual((await Long.get(1)).qty, edge);
+		});
+
 		it('evaluates step by step where a summed increment would round differently', async () => {
 			const boundary = 2 ** 53;
 			assert.strictEqual(
@@ -152,9 +169,12 @@ describe('SQL UPDATE SET evaluation on the v2 engine', function () {
 		});
 	});
 
-	describe('a qualified reference to the target column', () => {
+	describe('a qualified or grouped increment', () => {
 		it('is an atomic increment', async () => {
 			assert.strictEqual(await concurrently(Untyped, { id: 1, qty: 0 }, 'qty = SqlSetFoldUntyped.qty + 1'), CONCURRENT);
+			for (const set of ['qty = 1 + 2 + qty', 'qty = qty + (1 + 2)', 'qty = qty - (1 - 4)']) {
+				assert.strictEqual(await concurrently(Untyped, { id: 1, qty: 0 }, set), 3 * CONCURRENT, set);
+			}
 		});
 	});
 
@@ -181,6 +201,10 @@ describe('SQL UPDATE SET evaluation on the v2 engine', function () {
 				return true;
 			});
 			assert.strictEqual((await Typed.get(1)).name, 'abc');
+		});
+
+		it('moves a Date by the evaluated milliseconds', async () => {
+			assert.strictEqual((await updated(Typed, { id: 1, at: new Date(0) }, 'at = at + 5000')).at.getTime(), 5000);
 		});
 
 		it('keeps the exact add for a bigint', async () => {
