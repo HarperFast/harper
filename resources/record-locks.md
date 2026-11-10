@@ -201,7 +201,8 @@ Consequences that shape the code:
 - **Scoped lock in an explicit `transaction()` scope.** After acquisition, when no writes have been
   staged yet (`link.writes.length === 0`), the transaction clock is pinned to `acquiredAt` so the
   holder write wins over any pre-lock concurrent write. When writes to other records are already staged,
-  ordering is best-effort — no 409 is thrown. In an `ImmediateTransaction` context (no explicit
+  the clock is left alone; if that fixed clock sits below the version floor `lock()` admitted, saving a
+  write under the lock is refused with a 409 ([harper#2712](https://github.com/HarperFast/harper/issues/2712)). In an `ImmediateTransaction` context (no explicit
   scope), a scoped lock's writes go through the same `update()`-style staging as above; each explicit
   `update()`+`save()` cycle is stamped with `holderVersionCandidate()` independently. A scoped lock acquired
   outside any explicit `transaction()` scope persists until `unlock()` or the lease expires
@@ -278,8 +279,8 @@ off-key write through the locked instance, the next operation in a retry or repl
 the lock's acquisition time, which LWW then silently drops against a newer record version. In an
 explicit OPEN transaction, when the hold is the first write (no prior staged writes), the transaction
 clock is pinned to `handle.acquiredAt`; subsequent saves reuse that pinned clock. When non-hold writes
-to other records were staged before the lock was acquired, the clock is left alone (best-effort ordering; no 409 is
-thrown for the mixed-write case). Either way the holder's writes commit at the transaction's version:
+to other records were staged before the lock was acquired, the clock is left alone (and a lock write
+whose admitted version floor exceeds that fixed clock is refused with a 409). Either way an accepted holder write commits at the transaction's version:
 `save()` stamps from the handle only a save that commits on its own handle (`saveCommits`, or
 `concurrentClosedWrite` — a write that reaches the transaction after it closed), so the conflict-retry
 and open-iterator-replay re-saves that `performCommit()` runs after closing the transaction keep each
@@ -325,7 +326,7 @@ before changing modes and can claim a deferred floor.
 The floor reaches the write through the existing stamps. An explicit transaction's clock takes it — at
 admission or when a surviving hold saves in a later or mid-scope-rotated explicit transaction — while
 nothing else would move with it (no log key reserved yet and no unlocked write staged first via
-`hasUnlockedWrite`); a hold save whose floor exceeds a fixed transaction clock is refused with a 409. An
+`hasUnlockedWrite`); a lock save whose floor exceeds a fixed transaction clock is refused with a 409. An
 `ImmediateTransaction` uses the handle's per-write stamp and reserves its log key separately. A deferred
 write takes its stamp at its own save. A holder write saved while the same context's previous commit
 is still in flight (awaiting a streamed blob) would join that commit's handle, whose log key is already
@@ -1624,13 +1625,9 @@ feature that has not yet been measured.
 >    - **(1b) a holder whose own clock cannot move.** The floor reaches a write only through its
 >      stamp. An explicit transaction that already reserved its log key, or staged an unlocked write
 >      before `lock()`, keeps its clock; state beyond `storage.maxLockClockSkew` rejects admission; and
->      a surviving hold saved in an explicit transaction whose clock is already fixed below the hold's
->      floor is refused with a 409. When a scoped lock in an already-fixed explicit transaction writes
->      at that clock on a clean handoff and the admitted state is stamped above it, the holder's write is
->      the older one, silently. What the committed record then holds is whatever ordinary resolution
->      produces from the pair — which for overlapping plain fields is not the holder's value, and for
->      disjoint patches or commutative ops may still carry it. The defense is to take the lock first
->      in its own transaction, or save the held record before unrelated writes.
+>      a lock write (scoped or held) saved in an explicit transaction whose clock is already fixed below
+>      the lock's required floor is refused with a 409 ([harper#2712](https://github.com/HarperFast/harper/issues/2712)). To avoid the 409, take the lock first or save the
+>      held record in its own transaction.
 > 2. **Successor freshness is not promised on the recovery path.** The §7.2 barrier drains streams
 >    from every _reachable_ member, so a write the predecessor committed and did not replicate is
 >    invisible to it: the barrier succeeds and the successor reads a stale value. Three routes in, and

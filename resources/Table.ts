@@ -5881,16 +5881,19 @@ export function makeTable(options): TableResourceClass {
 					throw error;
 				}
 				if (admitted)
-					handle.noteCandidateFloor(admitted.stamp, !admitted.claimed && admitted.floor > handle.acquiredAt);
+					handle.noteCandidateFloor(
+						admitted.claimed ? admitted.stamp : admitted.floor,
+						!admitted.claimed && admitted.floor > handle.acquiredAt
+					);
 				lockLink.registerRecordLock(handle);
 				if (lockLink.saveCommits && (context as any)?.timestamp) handle.noteCandidateFloor((context as any).timestamp);
 				if (lockLink.open === TRANSACTION_STATE.OPEN && !lockLink.saveCommits) {
 					// Explicit transaction() (not ImmediateTransaction): pin the clock to
 					// acquiredAt when no writes have been staged yet.  When writes already
-					// exist, leave the clock alone (ordering is best-effort; write held records
-					// in their own transaction for the guarantee).  ImmediateTransaction is
-					// excluded (saveCommits=true) — its clock is never pinned in lock();
-					// each save() stamps from the handle's committed version floor instead.
+					// exist, leave the clock alone; a fixed clock below the admitted floor is
+					// refused at save.  ImmediateTransaction is excluded (saveCommits=true) —
+					// its clock is never pinned in lock(); each save() stamps from the handle's
+					// committed version floor instead.
 					if (lockLink.writes.length === 0 && !lockLink.timestamp) {
 						previousTimestamp = lockLink.timestamp;
 						writesBeforeTimestampRaise = lockLink.writes.length;
@@ -6329,6 +6332,14 @@ export function makeTable(options): TableResourceClass {
 				}
 			};
 
+			const collapseTrackedChanges = tracksInstance
+				? () => {
+						write.captureChanges?.();
+						const collapseOwn = (this.constructor as any).loadAsInstance !== false;
+						ownKeys = collapseOwn ? Object.keys(this) : [];
+						return collapseChanges(this, instanceChanges, ownKeys);
+					}
+				: undefined;
 			const receiverId = this.getId();
 			const closesReceiver =
 				!this.isCollection &&
@@ -6355,6 +6366,7 @@ export function makeTable(options): TableResourceClass {
 				trackedInstance: tracksInstance ? this : undefined,
 				captureChanges,
 				releaseChanges,
+				stagesChange: collapseTrackedChanges ? () => collapseTrackedChanges() !== undefined : undefined,
 				validate: (txnTime, committedBy = transaction) => {
 					write.captureChanges?.();
 					const rootUpdate = tracksInstance ? instanceChanges : recordUpdate;
@@ -6384,10 +6396,8 @@ export function makeTable(options): TableResourceClass {
 					}
 					let ownMerged = false;
 					if (tracksInstance) {
-						const collapseOwn = (this.constructor as any).loadAsInstance !== false;
-						ownKeys = collapseOwn ? Object.keys(this) : [];
-						recordUpdate = collapseChanges(this, instanceChanges, ownKeys);
-						ownMerged = ownKeys.length > 0 && recordUpdate !== instanceChanges;
+						recordUpdate = collapseTrackedChanges!();
+						ownMerged = ownKeys!.length > 0 && recordUpdate !== instanceChanges;
 						// the patch is final only now (blobs can be assigned after staging, or as own properties), so its
 						// blobs are found here; before/beforeIntermediate run after validate
 						write.beforeIntermediate = preCommitBlobsForRecordBefore(write, recordUpdate);

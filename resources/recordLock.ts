@@ -88,6 +88,12 @@ export interface RecordLockHandle {
 	noteCandidateFloor(version: number, claimOnWrite?: boolean): void;
 	/** Compute the next holder-write floor from committed holder versions without claiming a local key unless requested. */
 	holderVersionFloor(floor?: number, claim?: boolean): number;
+	/**
+	 * Compute the minimum timestamp required to advance past the state the lock was admitted on and
+	 * any committed holder versions on this handle, without clamping to `acquiredAt`. Returns 0 when
+	 * neither an admission floor nor a committed holder version has been recorded.
+	 */
+	requiredVersionFloor(): number;
 	/** Compute the next holder-write version; it may consume a local key before the write commits. */
 	holderVersionCandidate(floor?: number): number;
 	/** `ts_R` of the granted cluster round; undefined while the hold is node-scoped (Phase 0). */
@@ -318,11 +324,21 @@ class KeyLockHandle implements RecordLockHandle {
 		return this.#resolveCandidate(floor, claim, this.#committedHolderVersion);
 	}
 
+	requiredVersionFloor(): number {
+		return this.#resolveCandidate(undefined, false, this.#committedHolderVersion, false);
+	}
+
 	holderVersionCandidate(floor?: number): number {
 		return this.#resolveCandidate(floor, true, this.#lastHolderVersion);
 	}
 
-	#resolveCandidate(floor: number | undefined, claim: boolean, lastVersion: number | undefined): number {
+	#resolveCandidate(
+		floor: number | undefined,
+		claim: boolean,
+		lastVersion: number | undefined,
+		includeAcquiredAt = true
+	): number {
+		const minFloor = includeAcquiredAt ? this.acquiredAt : 0;
 		const candidateFloor = Math.max(this.#candidateFloor ?? -Infinity, floor ?? -Infinity);
 		if (this.#candidateFloorToClaim != null && this.#candidateFloorToClaim > (lastVersion ?? this.acquiredAt)) {
 			const step = timestampAbove(this.#candidateFloorToClaim);
@@ -333,11 +349,11 @@ class KeyLockHandle implements RecordLockHandle {
 				this.#candidateFloor = Math.max(this.#candidateFloor ?? claimed, claimed);
 				this.#candidateFloorToClaim = undefined;
 			}
-			return Math.max(claimed, this.acquiredAt, candidateFloor);
+			return Math.max(claimed, minFloor, candidateFloor);
 		}
 		return Math.max(
-			lastVersion != null ? (claim ? this.#stepPast(lastVersion) : timestampAbove(lastVersion)) : this.acquiredAt,
-			this.acquiredAt,
+			lastVersion != null ? (claim ? this.#stepPast(lastVersion) : timestampAbove(lastVersion)) : minFloor,
+			minFloor,
 			candidateFloor
 		);
 	}

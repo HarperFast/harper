@@ -738,6 +738,7 @@ export type TransactionWrite = {
 	) => MaybePromise<void>;
 	// Once a write has been taken over, the transaction committing it is not the one that staged it, and
 	// overload accounting, the replay marker and a no-op write's removal all belong to the committer.
+	stagesChange?: () => boolean;
 	validate?: (txnTime: number, committedBy: DatabaseTransaction) => void;
 	// a tracked write that fails before it is staged stays with its instance, so its retry captures the
 	// instance's changes again
@@ -2817,7 +2818,7 @@ export class DatabaseTransaction implements Transaction {
 			const previousTimestamp = this.timestamp;
 			try {
 				if (
-					lockHandle?.hold &&
+					lockHandle &&
 					!operation.lockStamp &&
 					!operation.saved &&
 					this.open === TRANSACTION_STATE.OPEN &&
@@ -2825,8 +2826,8 @@ export class DatabaseTransaction implements Transaction {
 					!this.saveCommits &&
 					!this.sourceApply
 				) {
-					const floor = lockHandle.holderVersionFloor();
-					if (floor > lockHandle.acquiredAt && !(this.timestamp && this.timestamp >= floor)) {
+					const floor = lockHandle.requiredVersionFloor();
+					if (floor > 0 && !(txnTime && txnTime >= floor)) {
 						const rootStore = operation.store.rootStore;
 						const nativeClock = transaction.getTimestamp();
 						const effectiveClock =
@@ -2836,7 +2837,7 @@ export class DatabaseTransaction implements Transaction {
 									? nativeClock
 									: Math.max(rootStore.getMonotonicTimestamp(), localIssuanceRatchet(rootStore))
 								: nativeClock);
-						if (floor > effectiveClock) {
+						if (floor > effectiveClock && operation.stagesChange?.() !== false) {
 							if (reservedLocalKey(transaction) === undefined && !this.hasUnlockedWrite()) {
 								const claimedFloor = lockHandle.holderVersionFloor(undefined, true);
 								if (claimedFloor < (rootStore?.getMonotonicTimestamp?.() ?? 0)) {

@@ -2357,6 +2357,236 @@ describe('Record locks (harper#483)', () => {
 		});
 	});
 
+	describe('refuses a lock write when an explicit transaction clock is fixed below the admitted version (harper#2712)', function () {
+		let Unaudited;
+		const cleanups = [];
+		const EXPECTED_409 =
+			'Record lock write cannot advance past its earlier holder version in a transaction whose clock is already fixed; save the held record first or in its own transaction';
+
+		before(function () {
+			Unaudited = table({
+				table: 'RecordLockUnaudited2712',
+				database: 'test',
+				audit: false,
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'n' }, { name: 'name' }],
+			});
+		});
+
+		afterEach(async function () {
+			while (cleanups.length) await cleanups.pop()();
+		});
+
+		const outsideWriter = (fn) => {
+			let run;
+			const done = new Promise((resolve) => {
+				run = resolve;
+			}).then(fn);
+			return () => {
+				run();
+				return done;
+			};
+		};
+
+		for (const audit of [true, false]) {
+			const tableFor = () => (audit ? LockTest : Unaudited);
+
+			it(`refuses a scoped lock save after an earlier plain write fixed the clock below an interleaving write (audit: ${audit})`, async function () {
+				if (isLMDB) return this.skip();
+				const T = tableFor();
+				const idA = id();
+				const idB = id();
+				await T.put({ id: idA, n: 0 });
+				await T.put({ id: idB, n: 0 });
+				const putInterleaving = outsideWriter(() => T.put({ id: idB, n: 50 }));
+
+				await assert.rejects(
+					transaction(async () => {
+						await T.put({ id: idA, n: 1 });
+						await putInterleaving();
+						const b = await T.lock(idB);
+						assert.strictEqual(b.n, 50, 'lock() reloaded the interleaving write');
+						b.set('n', b.n + 1);
+						await b.save();
+					}),
+					(error) => error.statusCode === 409 && error.message === EXPECTED_409
+				);
+
+				assert.strictEqual((await T.get(idB)).n, 50, 'B kept the interleaving write');
+				assert.strictEqual((await T.get(idA)).n, 0, 'the aborted transaction rolled A back');
+				const next = await T.lock(idB, { hold: true, timeout: 100 });
+				await next.unlock();
+			});
+
+			it(`refuses a commit-sweep save of a modified scoped lock and releases the lock on abort (audit: ${audit})`, async function () {
+				if (isLMDB) return this.skip();
+				const T = tableFor();
+				const idA = id();
+				const idB = id();
+				await T.put({ id: idA, n: 0 });
+				await T.put({ id: idB, n: 0 });
+				const putInterleaving = outsideWriter(() => T.put({ id: idB, n: 50 }));
+
+				await assert.rejects(
+					transaction(async () => {
+						await T.put({ id: idA, n: 1 });
+						await putInterleaving();
+						const b = await T.lock(idB);
+						assert.strictEqual(b.n, 50);
+						b.set('n', b.n + 1);
+					}),
+					(error) => error.statusCode === 409 && error.message === EXPECTED_409
+				);
+
+				assert.strictEqual((await T.get(idB)).n, 50);
+				assert.strictEqual((await T.get(idA)).n, 0);
+				const next = await T.lock(idB, { hold: true, timeout: 100 });
+				await next.unlock();
+			});
+
+			it(`refuses a held lock save in a fixed-clock transaction and allows saving in its own transaction (audit: ${audit})`, async function () {
+				if (isLMDB) return this.skip();
+				const T = tableFor();
+				const idA = id();
+				const idB = id();
+				await T.put({ id: idA, n: 0 });
+				await T.put({ id: idB, n: 0 });
+				const putInterleaving = outsideWriter(() => T.put({ id: idB, n: 50 }));
+				let holder;
+
+				await transaction(async () => {
+					await T.put({ id: idA, n: 1 });
+					await putInterleaving();
+					holder = await T.lock(idB, { hold: true, lease: 5000 });
+					cleanups.push(() => holder.unlock());
+					assert.strictEqual(holder.n, 50);
+					holder.set('n', holder.n + 1);
+					await assert.rejects(
+						async () => holder.save(),
+						(error) => error.statusCode === 409 && error.message === EXPECTED_409
+					);
+				});
+
+				assert.strictEqual((await T.get(idA)).n, 1, 'catching the 409 let the earlier write commit');
+				assert.strictEqual((await T.get(idB)).n, 50, 'the refused holder write was detached before commit');
+
+				holder.set('n', 51);
+				await holder.save();
+				assert.strictEqual((await T.get(idB)).n, 51, 'saving the held record in its own transaction succeeded');
+			});
+
+			it(`refuses a static verb write joined to a lock whose admitted version exceeds the fixed clock (audit: ${audit})`, async function () {
+				if (isLMDB) return this.skip();
+				const T = tableFor();
+				const idA = id();
+				const idB = id();
+				await T.put({ id: idA, n: 0 });
+				await T.put({ id: idB, n: 0 });
+				const putInterleaving = outsideWriter(() => T.put({ id: idB, n: 50 }));
+
+				await assert.rejects(
+					transaction(async () => {
+						await T.put({ id: idA, n: 1 });
+						await putInterleaving();
+						await T.lock(idB);
+						await T.patch(idB, { n: 51 });
+					}),
+					(error) => error.statusCode === 409 && error.message === EXPECTED_409
+				);
+
+				assert.strictEqual((await T.get(idB)).n, 50);
+				assert.strictEqual((await T.get(idA)).n, 0);
+			});
+
+			it(`refuses a second lock write when an earlier lock fixed the clock below an interleaving write (audit: ${audit})`, async function () {
+				if (isLMDB) return this.skip();
+				const T = tableFor();
+				const idA = id();
+				const idB = id();
+				await T.put({ id: idA, n: 0 });
+				await T.put({ id: idB, n: 0 });
+				const putInterleaving = outsideWriter(() => T.put({ id: idB, n: 50 }));
+
+				await assert.rejects(
+					transaction(async () => {
+						const a = await T.lock(idA);
+						a.set('n', 1);
+						await a.save();
+						await putInterleaving();
+						const b = await T.lock(idB);
+						assert.strictEqual(b.n, 50);
+						b.set('n', b.n + 1);
+						await b.save();
+					}),
+					(error) => error.statusCode === 409 && error.message === EXPECTED_409
+				);
+
+				assert.strictEqual((await T.get(idB)).n, 50);
+				assert.strictEqual((await T.get(idA)).n, 0);
+			});
+
+			it(`allows a read-only scoped lock after an earlier write and interleaving write (audit: ${audit})`, async function () {
+				if (isLMDB) return this.skip();
+				const T = tableFor();
+				const idA = id();
+				const idB = id();
+				await T.put({ id: idA, n: 0 });
+				await T.put({ id: idB, n: 0 });
+				const putInterleaving = outsideWriter(() => T.put({ id: idB, n: 50 }));
+
+				await transaction(async () => {
+					await T.put({ id: idA, n: 1 });
+					await putInterleaving();
+					const b = await T.lock(idB);
+					assert.strictEqual(b.n, 50);
+				});
+
+				assert.strictEqual((await T.get(idA)).n, 1);
+				assert.strictEqual((await T.get(idB)).n, 50);
+			});
+
+			it(`control: write, then lock, with no interleaving write, succeeds and stores the locked value (audit: ${audit})`, async function () {
+				if (isLMDB) return this.skip();
+				const T = tableFor();
+				const idA = id();
+				const idB = id();
+				await T.put({ id: idA, n: 0 });
+				await T.put({ id: idB, n: 0 });
+
+				await transaction(async () => {
+					await T.put({ id: idA, n: 1 });
+					const b = await T.lock(idB);
+					b.set('n', b.n + 1);
+					await b.save();
+				});
+
+				assert.strictEqual((await T.get(idA)).n, 1);
+				assert.strictEqual((await T.get(idB)).n, 1);
+			});
+
+			it(`control: a plain write committing during the hold still wins under last-write-wins (audit: ${audit})`, async function () {
+				if (isLMDB) return this.skip();
+				const T = tableFor();
+				const idA = id();
+				const idB = id();
+				await T.put({ id: idA, n: 0 });
+				await T.put({ id: idB, n: 0 });
+				const putDuringHold = outsideWriter(() => T.put({ id: idB, n: 50 }));
+
+				await transaction(async () => {
+					await T.put({ id: idA, n: 1 });
+					const b = await T.lock(idB);
+					assert.strictEqual(b.n, 0);
+					await putDuringHold();
+					b.set('n', b.n + 1);
+					await b.save();
+				});
+
+				assert.strictEqual((await T.get(idA)).n, 1);
+				assert.strictEqual((await T.get(idB)).n, 50, 'plain write during the hold still wins under LWW');
+			});
+		}
+	});
+
 	describe('recreate-after-delete race (issue-(f))', function () {
 		// Mirrors integrationTests/database/deleteUpdateRace.test.ts subtest (f):
 		// one ImmediateTransaction context (HTTP request), seed put, then
