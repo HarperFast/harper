@@ -4964,6 +4964,7 @@ export function makeTable(options): TableResourceClass {
 		#restoreUpdate(previous: any, changes: any, failed: any, error: unknown, record?: { value: any }) {
 			if (this.#savingOperation !== failed) return;
 			if (previous) {
+				// An accepted predecessor stays saveable; a failed draft reports its latest error.
 				if (previous.stagingFailure) previous.stagingFailure = { error };
 				previous.releaseChanges?.();
 				this.#savingOperation = previous;
