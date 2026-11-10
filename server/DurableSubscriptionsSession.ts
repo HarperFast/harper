@@ -3,7 +3,7 @@ import { onStartup } from '../utility/lifecycle.ts';
 import { keyArrayToString, resources } from '../resources/Resources.ts';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
 import { warn, trace } from '../utility/logging/harper_logger.ts';
-import { transaction } from '../resources/transaction.ts';
+import { contextStorage, transaction } from '../resources/transaction.ts';
 import { getWorkerIndex } from '../server/threads/manageThreads.ts';
 import { whenComponentsLoaded } from '../server/threads/threadServer.ts';
 import { server } from '../server/Server.ts';
@@ -1149,16 +1149,94 @@ let dueCheckpoints: DurableSubscriptionsSession[] = [];
 function runDueCheckpoints() {
 	const sessions = dueCheckpoints;
 	dueCheckpoints = [];
-	for (const session of sessions) {
-		const settle = session.checkpointSettle;
-		session.checkpointScheduled = session.checkpointSettle = undefined;
-		try {
-			session.checkpoint();
-		} catch (error) {
-			warn(error);
+	try {
+		for (const session of sessions) {
+			const settle = session.checkpointSettle;
+			session.checkpointScheduled = session.checkpointSettle = undefined;
+			try {
+				session.checkpoint();
+			} catch (error) {
+				warn(error);
+			}
+			settle(session.writes);
 		}
-		settle(session.writes);
+	} finally {
+		// the saves these checkpoints started commit now, with any others waiting, unless a commit is in flight
+		commitIdleSaveGroup();
 	}
+}
+
+type GroupedSave = { session: DurableSubscriptionsSession; resolve: () => void; reject: (error: unknown) => void };
+/**
+ * A group's saves all wait for its commit, which takes longer the more records it writes, so the cap bounds how
+ * long the saves that joined it first wait.
+ */
+const MAX_GROUPED_SAVES = 32;
+let saveGroup: GroupedSave[] | undefined;
+let savesCommitting = 0;
+/**
+ * A save with no commit ahead of it commits once the code that started it has run, so it waits for no event
+ * turn; saves started while a commit is in flight wait for it and then share the next one, so a load heavy
+ * enough to keep commits in flight is saved in groups as large as that load. A full group commits at once.
+ */
+function joinSaveGroup(save: GroupedSave) {
+	if (!saveGroup) {
+		saveGroup = [];
+		// outside the context of the save that opened it, which is any session's
+		if (savesCommitting === 0) contextStorage.exit(() => queueMicrotask(commitIdleSaveGroup));
+	}
+	if (saveGroup.push(save) >= MAX_GROUPED_SAVES) commitOpenSaveGroup();
+}
+function commitIdleSaveGroup() {
+	// a commit started since (a full group's) takes this group along when it finishes
+	if (savesCommitting === 0) commitOpenSaveGroup();
+}
+function commitOpenSaveGroup() {
+	const group = saveGroup;
+	saveGroup = undefined;
+	if (!group) return;
+	savesCommitting++;
+	contextStorage.exit(() =>
+		commitSaveGroup(group).then(saveGroupCommitted, (error) => {
+			// still counted out, or every later save would wait on this one
+			warn(error);
+			saveGroupCommitted();
+		})
+	);
+}
+function saveGroupCommitted() {
+	// the saves started while this one committed go next
+	if (--savesCommitting === 0 && saveGroup) commitOpenSaveGroup();
+}
+
+/**
+ * Commits a group of saves in one transaction. If the shared commit fails, each session saves alone, so one
+ * failure cannot fail the others. Settles, never rejecting, once every save in the group has.
+ */
+function commitSaveGroup(group: GroupedSave[]): Promise<unknown> {
+	if (group.length === 1) {
+		const [{ session, resolve, reject }] = group;
+		return session.saveAlone().then(resolve, reject);
+	}
+	const context: any = { source: true };
+	const wrote = new Array<number>(group.length);
+	const stage = async () => {
+		// every write settles before the transaction ends, or one still reading could put alone after the fallback
+		const outcomes = await Promise.allSettled(group.map(({ session }) => session.write(context)));
+		for (let index = 0; index < outcomes.length; index++) {
+			const outcome = outcomes[index];
+			if (outcome.status === 'rejected') throw outcome.reason;
+			wrote[index] = outcome.value;
+		}
+	};
+	return new Promise((resolve) => resolve(transaction(context, stage))).then(
+		() =>
+			group.forEach(({ session, resolve }, index) => {
+				if (wrote[index]) session.saved(wrote[index]);
+				resolve();
+			}),
+		() => Promise.all(group.map(({ session, resolve, reject }) => session.saveAlone().then(resolve, reject)))
+	);
 }
 
 /**
@@ -2088,21 +2166,42 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			if (this.saveWaiters.length > 0) this.settleSaveWaiters(Infinity, failure ?? this.endedError());
 		}
 	}
-	async saveOnce() {
+	saveOnce(): Promise<void> {
+		return new Promise((resolve, reject) => joinSaveGroup({ session: this, resolve, reject }));
+	}
+	async saveAlone() {
+		const saveNumber = await this.write();
+		if (saveNumber) this.saved(saveNumber);
+	}
+	/**
+	 * Writes the session's record, in `context`'s transaction or one of its own, if this connection still
+	 * owns it: the save's number if it wrote, which is settled (`saved`) once that transaction commits.
+	 */
+	async write(context?: any): Promise<number> {
 		const saveNumber = ++this.savesStarted;
+		// a grouped save builds its record when its group commits, so it carries what was marked dirty meanwhile
+		this.dirty = false;
 		const record = this.recordToWrite();
 		try {
-			const stored = await getDurableSession().get(this.sessionId);
-			if (this.discarded) return this.settleSaveWaiters(saveNumber, this.endedError());
+			const stored = await getDurableSession().get(this.sessionId, context);
+			if (this.discarded) {
+				this.settleSaveWaiters(saveNumber, this.endedError());
+				return 0;
+			}
 			if (stored ? stored.incarnation !== this.incarnation : !this.mayCreate) {
 				this.settleSaveWaiters(saveNumber, this.endedError());
-				return this.supersede();
+				this.supersede();
+				return 0;
 			}
-			await getDurableSession().put(record, { source: true });
+			await getDurableSession().put(record, context ?? { source: true });
 		} catch (error) {
-			this.settleSaveWaiters(saveNumber, error);
+			// a grouped write that fails is saved again alone, which settles its waiters
+			if (!context) this.settleSaveWaiters(saveNumber, error);
 			throw error;
 		}
+		return saveNumber;
+	}
+	saved(saveNumber: number) {
 		this.mayCreate = false;
 		this.settleSaveWaiters(saveNumber);
 	}
