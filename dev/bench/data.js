@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794301527054,
+  "lastUpdate": 1794301532070,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -34297,6 +34297,53 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw read p99",
             "value": 461.2,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "f86b2919cf861ddd296e895901b663b142bb2c20",
+          "message": "Stop the Gemini Code Assist App reviewing every PR on open (#4172)\n\nSet code_review.pull_request_opened.code_review to false so the App no\nlonger posts a review when a PR opens. `/gemini review` still requests\none on demand.\n\n\nDispatch-Task: harper-gemini-app-autoreview-off\n\nCo-authored-by: Claude Sonnet 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-11-10T04:11:19Z",
+          "url": "https://github.com/HarperFast/harper/commit/f86b2919cf861ddd296e895901b663b142bb2c20"
+        },
+        "date": 1794301530711,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "value": 29851.42,
+            "unit": "MB"
+          },
+          {
+            "name": "ttl-churn final size",
+            "value": 29851.42,
+            "unit": "MB"
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "value": 182,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "value": 474.8,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "value": 616.1,
             "unit": "ms"
           }
         ]
