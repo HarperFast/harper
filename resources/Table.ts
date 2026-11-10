@@ -201,7 +201,7 @@ import {
 	addToChanges,
 	applyOwnChanges,
 	assignTrackedAccessors,
-	collapseInstanceChanges,
+	collapseChanges,
 	recordOwnBaseline,
 	releaseOwnBaseline,
 	updateAndFreeze,
@@ -6300,7 +6300,6 @@ export function makeTable(options): TableResourceClass {
 						recordUpdate = this.#changes;
 						if (tracksInstance) instanceChanges = recordUpdate;
 					}
-					return instanceChanges;
 				};
 				releaseChanges = () => {
 					captured = false;
@@ -6388,8 +6387,9 @@ export function makeTable(options): TableResourceClass {
 					}
 					let ownMerged = false;
 					if (tracksInstance) {
-						ownKeys = (this.constructor as any).loadAsInstance !== false ? Object.keys(this) : [];
-						recordUpdate = collapseInstanceChanges(this, instanceChanges, ownKeys);
+						const collapseOwn = (this.constructor as any).loadAsInstance !== false;
+						ownKeys = collapseOwn ? Object.keys(this) : [];
+						recordUpdate = collapseChanges(this, instanceChanges, ownKeys);
 						ownMerged = ownKeys.length > 0 && recordUpdate !== instanceChanges;
 						// the patch is final only now (blobs can be assigned after staging, or as own properties), so its
 						// blobs are found here; before/beforeIntermediate run after validate

@@ -15,7 +15,7 @@ import {
 	TransactionCommitConflictTimeoutError,
 } from '../utility/errors/hdbError.ts';
 import { lockNotHeldError, type RecordLockHandle } from './recordLock.ts';
-import { collapseInstanceChanges } from './tracked.ts';
+import { collapseChanges } from './tracked.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 import type { Context, Id } from './ResourceInterface.ts';
 import * as envMngr from '../utility/environment/environmentManager.ts';
@@ -740,7 +740,7 @@ export type TransactionWrite = {
 	// Once a write has been taken over, the transaction committing it is not the one that staged it, and
 	// overload accounting, the replay marker and a no-op write's removal all belong to the committer.
 	validate?: (txnTime: number, committedBy: DatabaseTransaction) => void;
-	captureChanges?: () => unknown;
+	captureChanges?: () => void;
 	// a tracked write that fails before it is staged stays with its instance, so its retry captures the
 	// instance's changes again
 	releaseChanges?: () => void;
@@ -1056,10 +1056,16 @@ function holderWriteRefusal(handle: RecordLockHandle): ClientError {
 }
 
 function stagesWriteChange(operation: TransactionWrite): boolean {
-	const instance = operation.trackedInstance;
+	const instance = operation.trackedInstance as any;
 	if (!instance) return true;
-	const changes = operation.captureChanges ? operation.captureChanges() : (instance as any).getChanges?.();
-	return collapseInstanceChanges(instance, changes) !== undefined;
+	operation.captureChanges?.();
+	return (
+		collapseChanges(
+			instance,
+			typeof instance.getChanges === 'function' ? instance.getChanges() : undefined,
+			instance.constructor?.loadAsInstance !== false
+		) !== undefined
+	);
 }
 
 function mergeRecordLocks(
