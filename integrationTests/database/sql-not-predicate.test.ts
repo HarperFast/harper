@@ -341,7 +341,6 @@ suite(
 	}
 );
 
-// The same values sit in an unindexed `v` (v2's residual filter answers) and an indexed `iv` (the index answers).
 const VALUE_TABLE = 'Mixed';
 const VALUES: Record<string, Record<string, unknown>> = {
 	truth: { zero: 0, one: 1, empty: '', blank: '   ', x: 'x', f: false, t: true, nul: null },

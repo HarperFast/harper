@@ -123,7 +123,6 @@ export function compileExpr(expr: ExprNode, qualified = false): CompiledExpr {
 				eval: (row) => {
 					const v = e.eval(row);
 					if (neverEqual(v)) return null;
-					// three-valued `v >= low AND v <= high`: a FALSE side decides it, an unknown one leaves it NULL
 					const low = lo.eval(row);
 					const fromLow = low == null ? Number.NaN : compare(v, low);
 					if (fromLow < 0) return negated;
@@ -301,7 +300,6 @@ function looseEquals(a: unknown, b: unknown): boolean {
 	return false;
 }
 
-// NaN when a and b have no order (a NaN on either side), which every comparison reads as NULL
 function compare(a: unknown, b: unknown): number {
 	if (typeof a === 'number' && typeof b === 'number') {
 		const difference = a - b;

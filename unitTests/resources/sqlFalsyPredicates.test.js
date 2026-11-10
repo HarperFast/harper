@@ -70,7 +70,6 @@ const TRUTHY = ['blank', 'one', 'str0', 't', 'x'];
 const FALSY_NOT_NULL = ['empty', 'f', 'nan', 'negzero', 'zero'];
 
 const TEXT = ['blank', 'dashx', 'empty', 'ws', 'x'];
-// `$` is the compared column; `drives` marks a predicate that can lead an index scan on its own.
 const CMP_CASES = [
 	{ where: '$ = 0', expected: ['zero'], drives: true },
 	{ where: '$ <> 0', expected: ['neg', 'one', 'two', 'inf', ...TEXT] },
@@ -87,7 +86,6 @@ const CMP_CASES = [
 	{ where: "$ > ''", expected: ['blank', 'dashx', 'ws', 'x'], drives: true },
 	{ where: "$ < 'b'", expected: ['neg', 'zero', 'one', 'two', 'inf', 'blank', 'dashx', 'empty', 'ws'], drives: true },
 ];
-// Expressions an index cannot serve, so only the residual filter answers them.
 const RESIDUAL_CASES = [
 	{ where: '0 = v', expected: ['zero'] },
 	{ where: '1 > v', expected: ['neg', 'zero'] },
