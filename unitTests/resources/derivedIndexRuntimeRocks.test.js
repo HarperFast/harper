@@ -353,51 +353,57 @@ describe('DerivedIndexRuntime with an audited RocksDB table', () => {
 				options: { maxLagMilliseconds: 30_000, maxFlushAgeMilliseconds: 10 },
 			});
 		};
-		const deliveryOf = (id) =>
-			backend.deliveries.find((batch) =>
-				batch.transactions.some((txn) => txn.mutations.some((mutation) => mutation.recordId === id))
-			);
+		const transactionOf = (id) =>
+			backend.deliveries
+				.flatMap((batch) => batch.transactions.map((transaction) => ({ batch, transaction })))
+				.find(({ transaction }) => transaction.mutations.some((mutation) => mutation.recordId === id));
 		const durableThrough = (id) =>
-			waitFor(() => deliveryOf(id) && backend.cursor === backend.accepted, { timeout: 20_000 }).then(() =>
-				deliveryOf(id)
+			waitFor(() => transactionOf(id) && backend.cursor === backend.accepted, { timeout: 20_000 }).then(() =>
+				transactionOf(id)
 			);
 		let local = 0;
-		const afterIdle = async (id) => {
+		const afterIdle = async (id, previous) => {
 			backend.barriersOpen = false;
 			await writeRemote(id);
-			await waitFor(() => deliveryOf(id), { timeout: 20_000 });
+			const read = await waitFor(() => transactionOf(id), { timeout: 20_000 });
+			assert.strictEqual(read.transaction.logName, 'remote');
+			assert.strictEqual(read.transaction.timestamp - previous.transaction.timestamp, 120_000);
 			assert.strictEqual(runtime.getMetrics(backend.id).cursorLagMilliseconds, 0);
 			assert.strictEqual(derivedIndexWriteRejection(auditStore, Product.tableId), undefined);
 			await Product.put(`local-${++local}`, { title: 'written while the barrier is pending' });
 			backend.barriersOpen = true;
 			await durableThrough(`local-${local}`);
 			assert.strictEqual(derivedIndexWriteRejection(auditStore, Product.tableId), undefined);
-			return deliveryOf(id);
+			return read;
 		};
 
 		let unregister = start();
-		await waitFor(() => backend.cursor && runtime.getReadiness(backend.id).state === 'ready', { timeout: 20_000 });
-		await writeRemote('a');
-		const first = await durableThrough('a');
-		await waitFor(() => backend.shutdownEpochs.includes(first.ownerEpoch), { timeout: 20_000 });
-		const second = await afterIdle('b');
-		assert(second.ownerEpoch > first.ownerEpoch, 'a released owner re-acquired the index');
+		try {
+			await waitFor(() => backend.cursor && runtime.getReadiness(backend.id).state === 'ready', { timeout: 20_000 });
+			await writeRemote('a');
+			const first = await durableThrough('a');
+			await waitFor(() => backend.shutdownEpochs.includes(first.batch.ownerEpoch), { timeout: 20_000 });
+			const second = await afterIdle('b', first);
+			assert(second.batch.ownerEpoch > first.batch.ownerEpoch, 'a released owner re-acquired the index');
 
-		await unregister();
-		await runtime.stop();
-		unregister = start();
-		await waitFor(
-			() => {
-				const status = runtime.getStatus(backend.id);
-				return status?.state === 'idle' && status.ownerEpoch > second.ownerEpoch;
-			},
-			{ timeout: 20_000 }
-		);
-		const third = await afterIdle('c');
-		assert(third.ownerEpoch > second.ownerEpoch, 'a restarted runtime acquired the index');
-		await unregister();
-		await runtime.stop();
-		runtime = undefined;
+			await unregister();
+			await runtime.stop();
+			unregister = start();
+			await waitFor(
+				() => {
+					const status = runtime.getStatus(backend.id);
+					return status?.state === 'idle' && status.ownerEpoch > second.batch.ownerEpoch;
+				},
+				{ timeout: 20_000 }
+			);
+			const third = await afterIdle('c', second);
+			assert(third.batch.ownerEpoch > second.batch.ownerEpoch, 'a restarted runtime acquired the index');
+		} finally {
+			backend.barriersOpen = true;
+			await unregister();
+			await runtime.stop();
+			runtime = undefined;
+		}
 	});
 
 	describe('a timestamp-anchored log that retention empties while idle', () => {
