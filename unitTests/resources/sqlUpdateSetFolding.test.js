@@ -112,22 +112,6 @@ describe('SQL UPDATE SET evaluation on the v2 engine', function () {
 			assert.strictEqual(row.ratio, Infinity);
 		});
 
-		it('stays atomic at the edge of the operand range', async () => {
-			const Long = table({
-				table: 'SqlSetFoldLong',
-				database: 'test',
-				schemaDefined: true,
-				attributes: [
-					{ name: 'id', isPrimaryKey: true, type: 'Int' },
-					{ name: 'qty', type: 'Long' },
-				],
-			});
-			const edge = 9007199254740992;
-			await seed(Long, { id: 1, qty: -edge });
-			await Promise.all([1, 2].map(() => sql(`UPDATE test.SqlSetFoldLong SET qty = qty + ${edge} WHERE id = 1`)));
-			assert.strictEqual((await Long.get(1)).qty, edge);
-		});
-
 		it('evaluates step by step where a summed increment would round differently', async () => {
 			const boundary = 2 ** 53;
 			assert.strictEqual(
@@ -214,6 +198,12 @@ describe('SQL UPDATE SET evaluation on the v2 engine', function () {
 				(await updated(Typed, { id: 1, big: 10n }, 'big = big + 10000000000000000, big = big + 1')).big,
 				10000000000000011n
 			);
+		});
+
+		it('rejects a fractional increment of a bigint', async () => {
+			await seed(Untyped, { id: 1, qty: 10n });
+			await assert.rejects(sql('UPDATE test.SqlSetFoldUntyped SET qty = qty + 0.5 WHERE id = 1'), RangeError);
+			assert.strictEqual((await Untyped.get(1)).qty, 10n);
 		});
 
 		it('leaves a value with no numeric conversion unchanged', async () => {

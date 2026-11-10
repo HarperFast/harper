@@ -36,19 +36,13 @@ import { Addition } from '../../resources/tracked.ts';
 import { addValues, OPERATION_TYPES } from '../../resources/crdt.ts';
 
 /**
- * If `expr` is a sum of numeric literals and the target column (bare, or qualified by the target table
- * or its alias), counting the column exactly once — `col + N`, `N + col`, `col - N`, nested or
- * grouped — return the literals, signed. `N - col` and `col + col` return undefined.
+ * Pushes the signed numeric literals of `expr` onto `terms` and returns the net coefficient of the
+ * target column (bare, or qualified by the target table or its alias) in it, or undefined if `expr`
+ * is not a sum of the two. `col + N`, `N + col`, `col - N`, nested or grouped, return 1.
  */
-function incrementTerms(expr: ExprNode, column: string, qualifiers: ReadonlySet<string>): number[] | undefined {
-	const terms: number[] = [];
-	return collectTerms(expr, 1, column, qualifiers, terms) === 1 ? terms : undefined;
-}
-
-/** Pushes `expr`'s literals onto `terms`, returning the column's net coefficient in it. */
 function collectTerms(
 	expr: ExprNode,
-	sign: 1 | -1,
+	sign: number,
 	column: string,
 	qualifiers: ReadonlySet<string>,
 	terms: number[]
@@ -114,11 +108,15 @@ function operandAccepted(delta: number, type: string | undefined): boolean {
  * so concurrent `SET qty = qty + 1` statements cannot lose each other's increments (F-146). Used
  * only when adding N to the value read gives exactly the evaluated result: CRDT addition treats a
  * null or non-numeric prior as absent (`addValues`), and a summed N can round differently from
- * applying each step. SQL expressions have no bigint arithmetic, so a bigint keeps the exact add.
+ * applying each step. SQL expressions have no bigint arithmetic, so a bigint keeps the add, exact when
+ * every literal is an integer.
  */
 function additionFor(assignments: ColumnAssignments, read: unknown, evaluated: unknown): Addition | undefined {
 	const { delta, bigintDelta } = assignments;
-	if (typeof read === 'bigint') return bigintDelta === undefined ? undefined : new Addition(bigintDelta);
+	if (typeof read === 'bigint') {
+		const operand = bigintDelta ?? delta;
+		return operand === undefined ? undefined : new Addition(operand);
+	}
 	if (delta === undefined || (typeof read === 'object' && read !== null && !(read instanceof Date))) return undefined;
 	return addValues(read, delta) === evaluated ? new Addition(delta) : undefined;
 }
@@ -341,8 +339,9 @@ export async function runUpdate(bound: BoundUpdate, ctx: SqlEngineContext): Prom
 	for (const { column, expr } of bound.assignments) {
 		let assignments = assignmentsByColumn.get(column);
 		if (!assignments) assignmentsByColumn.set(column, (assignments = { column, steps: [], terms: [] }));
-		const terms = assignments.terms && incrementTerms(expr, column, qualifiers);
-		assignments.terms = terms ? assignments.terms.concat(terms) : undefined;
+		if (assignments.terms && collectTerms(expr, 1, column, qualifiers, assignments.terms) !== 1) {
+			assignments.terms = undefined;
+		}
 		assignments.steps.push(compileExpr(expr, false).eval);
 		collectReferencedColumns(expr, neededColumns);
 	}
