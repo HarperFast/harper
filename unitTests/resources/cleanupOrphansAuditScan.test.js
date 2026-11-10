@@ -4,7 +4,7 @@ const { dirname, join } = require('node:path');
 const { randomBytes } = require('node:crypto');
 const { setupTestDBPath } = require('../testUtils');
 const { table, getDatabases } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { createBlob, cleanupOrphans, getFilePathForBlob, getRootBlobPathsForDB } = require('#src/resources/blob');
 
 const DATABASE = 'cleanupOrphansAuditScan';
