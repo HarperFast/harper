@@ -14,7 +14,7 @@ not checked against it** but against the database generation (next section): thi
 reconciliation, survives a restore, and absorbs at `Infinity`.
 
 **Its consumers are not resumes.** Where the out-of-order walk cannot reach a replicated write's own entry (missing
-history, the depth cap, the fully-superseded early-out), `isReDeliveredDuplicate(true)` runs the keyed duplicate
+history, the depth cap, the fully-superseded early-out), `isReDeliveredDuplicate` runs the keyed duplicate
 lookup for an origin log key at or above the floor, since no prune removed it. Elsewhere the lookup still skips a key
 below the origin log's first appended entry (`dedupVersionCouldBeRetained`), which does not bound the log: a
 late-relayed entry appends below it, and where the walk cannot reach it, skipping the lookup re-logs every
