@@ -289,6 +289,7 @@ import { actionRecorder, recordAction, recordActionBinary } from './analytics/wr
 import {
 	commutativeOpsOf,
 	hasCommutativeOp,
+	OPERATION_TYPES,
 	operations as crdtOperations,
 	rebuildUpdateBefore,
 	remainingAgainstRecord,
@@ -370,7 +371,6 @@ const NULL_WITH_TIMESTAMP = new Uint8Array(9);
 NULL_WITH_TIMESTAMP[8] = 0xc0; // null
 const sourceWriteTypes = new Set(['put', 'patch', 'delete', 'publish', 'message', 'invalidate', 'relocate']);
 const isSourceWriteType = (type: string) => sourceWriteTypes.has(type);
-const OPERATION_TYPES = new Set(['Int', 'Long', 'Float', 'Number', 'BigInt', 'Any']);
 // declared types `validate` holds to one value on validated writes: `ID` admits an array of strings
 const SCALAR_TYPES = new Set(['String', 'Int', 'Long', 'Float', 'Boolean', 'Date', 'BigInt']);
 const SOURCE_APPLY_POSITION = Symbol('sourceApplyPosition');

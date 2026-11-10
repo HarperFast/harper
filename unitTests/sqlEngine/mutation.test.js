@@ -302,6 +302,45 @@ describe('sqlEngine phase 4: mutations', () => {
 		assert.strictEqual(captured[0][1], 99);
 	});
 
+	it('UPDATE folds repeated and table-qualified increments into one Addition', async () => {
+		const captured = [];
+		const origPatch = widgets.patch.bind(widgets);
+		widgets.patch = (id, update) => {
+			captured.push(update.qty);
+			return origPatch(id, update);
+		};
+		await runSql('UPDATE dev.widget SET qty = qty + 2, qty = widget.qty + 3 WHERE id = 2');
+		assert.strictEqual(captured[0].__op__, 'add');
+		assert.strictEqual(captured[0].value, 5);
+		assert.strictEqual(widgets._store.get(2).qty, 25);
+		await runSql('UPDATE dev.widget SET qty = other.qty + 1 WHERE id = 2');
+		assert.strictEqual(captured[1], 26);
+		await runSql('UPDATE dev.widget SET qty = qty WHERE id = 2');
+		assert.strictEqual(captured[2], 26);
+		await runSql('UPDATE dev.widget SET qty = qty + 1, qty = qty - 1 WHERE id = 2');
+		assert.strictEqual(captured[3].value, 0);
+	});
+
+	it('UPDATE sends an Addition only with an operand the declared type accepts', async () => {
+		const captured = [];
+		const origPatch = widgets.patch.bind(widgets);
+		widgets.patch = (id, update) => {
+			captured.push(update.qty);
+			return origPatch(id, update);
+		};
+		const qty = widgets.attributes.find((attribute) => attribute.name === 'qty');
+		qty.type = 'Long';
+		await runSql('UPDATE dev.widget SET qty = qty + 9007199254740992 WHERE id = 2');
+		assert.strictEqual(captured[0].value, 9007199254740992);
+		await runSql('UPDATE dev.widget SET qty = qty + 9007199254740994 WHERE id = 3');
+		assert.strictEqual(captured[1], 9007199254741024);
+		qty.type = 'Int';
+		await runSql('UPDATE dev.widget SET qty = qty + 2147483647 WHERE id = 1');
+		assert.strictEqual(captured[2].value, 2147483647);
+		await runSql('UPDATE dev.widget SET qty = qty + 2147483648 WHERE id = 1');
+		assert.strictEqual(captured[3], 4294967305);
+	});
+
 	it('DELETE removes matched rows and reports deleted_hashes', async () => {
 		const res = await runSql('DELETE FROM dev.widget WHERE id = 1');
 		assert.deepStrictEqual(res.deleted_hashes, [1]);

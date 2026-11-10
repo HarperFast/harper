@@ -10,7 +10,7 @@ A note lives in the `DESIGN.md` of the directory that owns the code it describes
 
 ## sqlEngine/ — SQL engine v2
 
-- [LIKE](sqlEngine/DESIGN.md#like) — One tokenizer, linear matcher.
+- [LIKE](sqlEngine/DESIGN.md#like) — One tokenizer, linear matcher. · [UPDATE SET](sqlEngine/DESIGN.md#update-set) — Evaluated value first; `Addition` only where it agrees, or on a bigint.
 
 ## .github/ — CI workflows
 
