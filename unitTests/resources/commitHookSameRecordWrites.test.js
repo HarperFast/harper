@@ -257,8 +257,7 @@ describe('pre-commit hook writes to the record their own write is committing', f
 					assert.deepStrictEqual(stored(recordId), { n: 3 });
 				});
 
-		// update(record, true) makes the record the holder's changes, which the write stores; put(id, record) stores
-		// the record passed, and its commit clears the holder's changes
+		// the first two store the holder's changes object; put(id, record) clears it as it commits
 		const fullWrites = {
 			'put(record)': (holder, recordId) => holder.put({ id: recordId, n: 2 }),
 			'update(record, true)': (holder, recordId) => {

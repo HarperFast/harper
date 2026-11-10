@@ -1765,10 +1765,10 @@ function rescope(resolved: ResolvedRecordLockOptions, tableReplicates: boolean):
 
 const retryAfterScopeCommit = Symbol('retry after the scope commit');
 
-// a hook nested under the commit's hook, through a commit that hook started, is the commit's own too
+// The commit awaits a nested hook only through unsettled frames: work a settled hook left running is not awaited.
 function isOwnCommitHook(root: DatabaseTransaction): boolean {
-	for (let hook = currentCommitHook(); hook; hook = hook.parent) {
-		if (hook.active && hook.root === root) return true;
+	for (let hook = currentCommitHook(); hook?.active; hook = hook.parent) {
+		if (hook.root === root) return true;
 	}
 	return false;
 }

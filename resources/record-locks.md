@@ -128,9 +128,9 @@ Consequences that shape the code:
   `runCommitHook` marks the invocation in an `AsyncLocalStorage` (`currentCommitHook`) until the hook settles;
   only that follows the hook's awaits, which the two calls the marker identifies come after. So does one from a
   hook nested under it, run by a commit the hook started on another transaction (`isOwnCommitHook` walks the
-  marker's `parent` chain for an active invocation of the scope's root): the commit awaits the outer hook, which
-  awaits the nested commit. The cache-fill blob
-  save runs no user code, so it is a `beforeIntermediate` and is not wrapped (harper#4085).
+  marker's `parent` chain through unsettled invocations to one of the scope's root): the commit awaits the outer
+  hook, which awaits the nested commit. Work a settled hook left running is awaited by neither, so it waits.
+  The cache-fill blob save runs no user code, so it is a `beforeIntermediate` and is not wrapped (harper#4085).
   Outside `transaction()` the marker also names the committing link: an unlocked write made within that hook
   on that link, directly or through a commit the hook started on another link (the marker's `parent` chain), is
   staged into the commit and resolves without awaiting it, where any other unlocked write joining the parked
@@ -384,7 +384,7 @@ and a holder write is refused as above. On a self-committing link, `update()` th
 the hook is refused too: nothing would commit the deferred write, and left staged it would refuse a fresh `lock()`
 of the record on that context. A hook awaits or catches its writes: an ignored refusal is an unhandled rejection
 and the outer write still commits. An object mutated in place after it was passed to the outer write is not
-tracked and changes that write. LMDB applies writes at commit in staging order, so there the hook's write lands
+tracked and changes that write, the record of a holder's full update included. LMDB applies writes at commit in staging order, so there the hook's write lands
 after the outer one.
 
 **Hold handles and re-entrancy scope.** A hold handle stays registered on the resource instance

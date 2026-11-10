@@ -580,16 +580,99 @@ describe('lock() on a transaction() scope closed by its own commit', function ()
 				const second = await SourcedOther.update(secondId, {}, txn);
 				second.set('n', 2);
 				const committing = txn.commit();
-				await waitFor(() => secondHookRunning, { message: 'the second mid-scope commit should be in its hook' });
-				startLeftover();
-				await delay(50);
-				assert.strictEqual(leftoverSettled, false, 'the lock() waits for the in-flight commit');
-				releaseSecondHook();
-				await committing;
+				try {
+					await waitFor(() => secondHookRunning, { message: 'the second mid-scope commit should be in its hook' });
+					startLeftover();
+					await delay(50);
+					assert.strictEqual(leftoverSettled, false, 'the lock() waits for the in-flight commit');
+				} finally {
+					releaseSecondHook();
+					await committing;
+				}
 				const outcome = await leftover;
 				assert.ifError(outcome.error);
 				assert.strictEqual(outcome.value.id, otherId);
 			});
+			await lockableAfterwards(Other, otherId);
+		});
+
+		it('waits out the commit for work a settled nested hook left running under a hook that has not settled', async function () {
+			const sourcedId = id();
+			const otherId = id();
+			await SourcedOther.put({ id: sourcedId, n: 1 });
+			await Other.put({ id: otherId, n: 1 });
+			const context = {};
+			let releaseOuterHook;
+			const outerHookGate = new Promise((resolve) => (releaseOuterHook = resolve));
+			let leftoverLocking = false;
+			let leftoverSettled = false;
+			let leftover;
+			nestedPut = () => {
+				nestedPut = undefined;
+				// not awaited, so the nested hook settles and nothing the commit awaits waits for this lock()
+				leftover = delay(1)
+					.then(() => {
+						leftoverLocking = true;
+						return settle(Other.lock(otherId, { timeout: 5000 }, context));
+					})
+					.then((outcome) => {
+						leftoverSettled = true;
+						return outcome;
+					});
+			};
+			sourcePut = async () => {
+				sourcePut = undefined;
+				await Nested.put({ id: id(), n: 2 }, {});
+				await outerHookGate;
+			};
+			await transaction(context, async (txn) => {
+				const sourced = await SourcedOther.update(sourcedId, {}, txn);
+				sourced.set('n', 2);
+				const committing = txn.commit();
+				try {
+					await waitFor(() => leftoverLocking, { message: "the nested hook's leftover work should be locking" });
+					await delay(50);
+					assert.strictEqual(leftoverSettled, false, 'the lock() waits for the in-flight commit');
+				} finally {
+					releaseOuterHook();
+					await committing;
+				}
+				const outcome = await leftover;
+				assert.ifError(outcome.error);
+				assert.strictEqual(outcome.value.id, otherId);
+				assert.ok(
+					Other.primaryStore.hasLock(lockAttemptKey(Other.tableId, otherId)),
+					'the lock outlives the mid-scope commit it waited out'
+				);
+			});
+			await lockableAfterwards(Other, otherId);
+		});
+
+		it("refuses a lock() after the nested hook's first await in the final commit, which released the context", async function () {
+			const otherId = id();
+			const sourcedId = id();
+			await Other.put({ id: otherId, n: 1 });
+			await SourcedOther.put({ id: sourcedId, n: 1 });
+			let refusal;
+			const context = {};
+			nestedPut = async () => {
+				nestedPut = undefined;
+				await delay(1);
+				await Other.lock(otherId, { timeout: 500 }, context).then(
+					(locked) => locked.unlock(),
+					(error) => {
+						refusal = error;
+					}
+				);
+			};
+			nestUnderSourceHook(id());
+			await transaction(context, async () => {
+				await Head.put({ id: id(), n: 1 }, context);
+				const sourced = await SourcedOther.update(sourcedId, {}, context);
+				sourced.set('n', 2);
+			});
+			assert.ok(isReleasedContext(refusal), refusal?.message ?? 'the nested hook lock was admitted');
+			assert.strictEqual((await SourcedOther.get(sourcedId)).n, 2);
 			await lockableAfterwards(Other, otherId);
 		});
 	});
