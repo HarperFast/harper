@@ -1,7 +1,8 @@
 /**
  * WHERE row sets for a predicate under NOT or inside another expression, for SELECT, DELETE and UPDATE (#1397).
  * Covers the NULL-free parity matrix across `auto` and `legacy`, three-valued NULL/omitted-attribute exclusion
- * across `auto` and `new` (proving v2 answers directly without fallback), and `legacy`'s two-valued NULL row sets.
+ * across `auto` and `new` (proving v2 answers directly without fallback), `legacy`'s two-valued NULL row sets, and
+ * falsy and blank-string values on indexed and unindexed columns across `auto` and `new` (#3208).
  */
 
 import { suite, test, before, after } from 'node:test';
@@ -339,3 +340,109 @@ suite(
 		}
 	}
 );
+
+// harper#3208: a bare value is TRUE only when truthy, and a blank string is no number. The same values sit in an
+// unindexed `v` (answered by v2's residual filter) and an indexed `iv` (answered by the index), and both must
+// select the same rows. `new` proves v2 answered without falling back to legacy.
+const VALUE_TABLE = 'Mixed';
+const VALUES: Record<string, Record<string, unknown>> = {
+	truth: { zero: 0, one: 1, empty: '', blank: '   ', x: 'x', f: false, t: true, nul: null },
+	cmp: { neg: -1, zero: 0, one: 1, two: 2, empty: '', blank: '   ', x: 'x', dashx: '-x', nul: null },
+};
+const VALUE_SEED = Object.entries(VALUES).flatMap(([grp, values]) =>
+	Object.entries(values).map(([name, value]) => ({ id: `${grp}.${name}`, grp, v: value, iv: value, flag: 'none' }))
+);
+const ALL_VALUE_IDS = VALUE_SEED.map((row) => row.id).sort();
+const TEXT_VALUES = ['blank', 'dashx', 'empty', 'x'];
+const VALUE_CASES: { where: string; expected: string[] }[] = [
+	{ where: `grp = 'truth' AND v`, expected: ['truth.blank', 'truth.one', 'truth.t', 'truth.x'] },
+	{ where: `grp = 'truth' AND NOT v`, expected: ['truth.empty', 'truth.f', 'truth.zero'] },
+	...[
+		{ where: '$ = 0', expected: ['zero'] },
+		{ where: '$ <> 0', expected: ['neg', 'one', 'two', ...TEXT_VALUES] },
+		{ where: '$ IN (0, 2)', expected: ['two', 'zero'] },
+		{ where: '$ < 1', expected: ['neg', 'zero'] },
+		{ where: '$ <= 0', expected: ['neg', 'zero'] },
+		{ where: '$ >= 1', expected: ['one', 'two', ...TEXT_VALUES] },
+		{ where: '$ BETWEEN 0 AND 1', expected: ['one', 'zero'] },
+		{ where: '$ NOT BETWEEN 0 AND 1', expected: ['neg', 'two', ...TEXT_VALUES] },
+	].flatMap(({ where, expected }) =>
+		['v', 'iv'].map((column) => ({
+			where: `grp = 'cmp' AND ${where.replaceAll('$', column)}`,
+			expected: expected.map((name) => `cmp.${name}`).sort(),
+		}))
+	),
+];
+
+async function reseedValues(client: Client): Promise<void> {
+	await client
+		.req()
+		.send({ operation: 'upsert', schema: SCHEMA, table: VALUE_TABLE, records: VALUE_SEED })
+		.timeout(60_000)
+		.expect(200);
+}
+
+async function readValues(client: Client): Promise<{ id: string; flag: string }[]> {
+	const response = await client
+		.req()
+		.send({
+			operation: 'search_by_value',
+			schema: SCHEMA,
+			table: VALUE_TABLE,
+			search_attribute: 'id',
+			search_value: '*',
+			get_attributes: ['id', 'flag'],
+		})
+		.timeout(60_000)
+		.expect(200);
+	return response.body;
+}
+
+for (const sqlEngine of ['auto', 'new']) {
+	suite(
+		`SQL falsy and blank-string predicates [storage=${ENGINE}, sql.engine=${sqlEngine}]`,
+		{ skip: process.platform === 'win32' },
+		(ctx: ContextWithHarper) => {
+			let client: Client;
+
+			before(async () => {
+				await setupHarperWithFixture(ctx, FIXTURE_PATH, {
+					config: { threads: { count: 1 }, logging: { console: true, level: 'error' } },
+					env: { HARPER_SQL_ENGINE: sqlEngine },
+				});
+				client = createApiClient(ctx.harper);
+				await restartHttpWorkers(client, `/${VALUE_TABLE}/`, 120_000);
+				await reseedValues(client);
+			});
+
+			after(async () => {
+				await teardownHarper(ctx);
+			});
+
+			for (const { where, expected } of VALUE_CASES) {
+				test(`SELECT WHERE ${where}`, async () => {
+					await reseedValues(client);
+					const rows = await sql(client, `SELECT id FROM ${SCHEMA}.${VALUE_TABLE} WHERE ${where}`);
+					deepStrictEqual(sortedIds(rows), expected);
+				});
+
+				test(`DELETE WHERE ${where}`, async () => {
+					await reseedValues(client);
+					const result = await sql(client, `DELETE FROM ${SCHEMA}.${VALUE_TABLE} WHERE ${where}`);
+					deepStrictEqual([...result.deleted_hashes].sort(), expected);
+					deepStrictEqual(
+						sortedIds(await readValues(client)),
+						ALL_VALUE_IDS.filter((id) => !expected.includes(id))
+					);
+				});
+
+				test(`UPDATE WHERE ${where}`, async () => {
+					await reseedValues(client);
+					const result = await sql(client, `UPDATE ${SCHEMA}.${VALUE_TABLE} SET flag = 'hit' WHERE ${where}`);
+					deepStrictEqual([...result.update_hashes].sort(), expected);
+					deepStrictEqual(sortedIds((await readValues(client)).filter((row) => row.flag === 'hit')), expected);
+				});
+			}
+		}
+	);
+}
