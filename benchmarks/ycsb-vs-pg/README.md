@@ -303,7 +303,7 @@ with (`measured.harperSettings`; `meta.harperSettings` per target):
 - A cache hit is cheap only when rocksdb-js's verification table still vouches for the cached
   version. That table is process-wide, direct-mapped and overwritten by every cold read. Harper
   sizes it from `storage.recordCacheSize` and its thread count (512K slots for the stock cache on
-  4 threads, 8M for `-rc3g-4t`). A target that pins it instead loads `vtPreload.mjs` with
+  4 threads). A target that pins it instead loads `vtPreload.mjs` with
   `--import` into Harper's main thread, which sets the size before Harper opens a database and
   drops Harper's own request.
 - The controls separate the causes: `-vt128k` is B without the larger table, `harper-uws-vt16m`

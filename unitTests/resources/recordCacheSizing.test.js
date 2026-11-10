@@ -61,6 +61,14 @@ function runFixture(scenario) {
 			assert.deepStrictEqual(result.verificationTableSetsAfterUse, []);
 		});
 
+		it('sizes the table on a later open when the first attempt failed for another reason', function () {
+			const result = runFixture('config-error');
+			assert.strictEqual(result.firstOpenError, 'injected config failure');
+			const expected = Math.max(131072, nextPowerOfTwo(2 * RECORD_CACHE_SIZE * TABLE_THREADS));
+			assert.deepStrictEqual(result.verificationTableSets, [expected, expected]);
+			assert.deepStrictEqual(result.verificationTableSetsAfterUse, [expected, expected]);
+		});
+
 		it('opens normally, with the rest of its RocksDB settings, when the table was used before Harper sized it', function () {
 			const result = runFixture('preused');
 			assert.strictEqual(result.verificationTableSets.length, 1);

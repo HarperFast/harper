@@ -477,8 +477,10 @@ let verificationTableSized = false;
  */
 function sizeVerificationTable(): void {
 	if (verificationTableSized || !isMainThread) return;
-	verificationTableSized = true;
-	if (envGet(CONFIG_PARAMS.STORAGE_CACHING) === false) return;
+	if (envGet(CONFIG_PARAMS.STORAGE_CACHING) === false) {
+		verificationTableSized = true;
+		return;
+	}
 	const verificationTableEntries = resolveVerificationTableEntries({
 		recordCacheSize: resolveRecordCacheSize(envGet(CONFIG_PARAMS.STORAGE_RECORDCACHESIZE)),
 		threadCount: plannedTableThreadCount(),
@@ -492,6 +494,7 @@ function sizeVerificationTable(): void {
 		if (!/Verification table size cannot be changed/.test((error as Error)?.message)) throw error;
 		logger.warn(`Verification table keeps its size instead of ${verificationTableEntries} entries:`, error);
 	}
+	verificationTableSized = true;
 }
 
 export function openRocksDatabase(path: string, options: RocksDatabaseOptions & { dupSort?: boolean }) {

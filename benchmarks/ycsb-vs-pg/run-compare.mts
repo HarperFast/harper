@@ -93,12 +93,11 @@ type HarperTarget = {
 type StackTarget = { kind: 'stack'; cache: boolean; label: string };
 
 const MiB = 1024 ** 2;
-/** The largest storage.recordCacheSize Harper accepts. */
+const MIN_RECORD_CACHE_SIZE = 4;
 const MAX_RECORD_CACHE_SIZE = 16_777_215;
 
-/** A record cache that holds every record: the next power of two at or above the count, within Harper's maximum. */
 export function sizedRecordCacheSize(records: number): number {
-	return Math.min(2 ** Math.ceil(Math.log2(records)), MAX_RECORD_CACHE_SIZE);
+	return Math.max(MIN_RECORD_CACHE_SIZE, Math.min(2 ** Math.ceil(Math.log2(records)), MAX_RECORD_CACHE_SIZE));
 }
 /**
  * 3 GiB of decoded records in total, Redis's maxmemory in the sweep: 4 threads x 768 MiB or 2 x 1.5 GiB.
@@ -509,7 +508,7 @@ export function harperSettings(
 	return settings;
 }
 
-/** The harper-config a launch starts with; a setting left out of `settings` keeps Harper's default. */
+/** The harper-config a launch starts with. */
 export function harperConfig(settings: HarperSettings, auth: AuthMode): Record<string, unknown> {
 	const { recordCacheSize, maxHeapMemoryMb, blockCacheBytes } = settings;
 	return {

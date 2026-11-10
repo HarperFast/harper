@@ -19,7 +19,6 @@ export class CacheRecordOnWorker extends Resource {
 			exists: entry != null,
 			cached: entry?.value ?? null,
 			read: (await CacheRecord.get(id)) ?? null,
-			// a quarter of storage.recordCacheSize: the cache is four rings of that many entries
 			recordCacheLruSize: store.cache?.expirer?.lruSize ?? null,
 		};
 	}

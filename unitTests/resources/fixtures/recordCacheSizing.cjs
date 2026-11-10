@@ -30,12 +30,16 @@ function configure(root, scenario) {
 	}
 }
 
-function spyOnRocksConfig() {
+function spyOnRocksConfig(failFirstSizing = false) {
 	const calls = [];
 	const { RocksDatabase } = rocks();
 	const config = RocksDatabase.config;
 	RocksDatabase.config = function (options) {
 		calls.push({ ...options });
+		if (failFirstSizing && 'verificationTableEntries' in options) {
+			failFirstSizing = false;
+			throw new Error('injected config failure');
+		}
 		return config.call(this, options);
 	};
 	return calls;
@@ -88,7 +92,14 @@ async function main() {
 		new (await import('weak-lru-cache')).WeakLRUCache(),
 	];
 
-	const calls = spyOnRocksConfig();
+	const calls = spyOnRocksConfig(scenario === 'config-error');
+	if (scenario === 'config-error') {
+		try {
+			openCachedStores(databasePath);
+		} catch (error) {
+			result.firstOpenError = error.message;
+		}
+	}
 	const [rootStore, first, second] = openCachedStores(databasePath);
 	result.lruSizes = [first.cache.expirer.lruSize, second.cache.expirer.lruSize];
 	result.sharedExpirer = first.cache.expirer === second.cache.expirer;
@@ -97,7 +108,6 @@ async function main() {
 	const { bufferSize, allowStall } = rocks().getWriteBufferManagerStats();
 	result.writeBufferManager = { bufferSize, allowStall };
 
-	// once the table has been used, a later open must not ask again
 	first.populateVersion('used', 1);
 	const third = req('#src/resources/databases').openRocksDatabase(databasePath, { name: 'third', cache: true });
 	result.verificationTableSetsAfterUse = verificationTableSets(calls);

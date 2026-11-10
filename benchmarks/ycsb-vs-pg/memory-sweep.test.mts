@@ -116,6 +116,9 @@ test('a sized record cache holds every record, within the largest storage.record
 	strictEqual(sizedRecordCacheSize(200_000), 262_144);
 	strictEqual(sizedRecordCacheSize(262_144), 262_144);
 	strictEqual(sizedRecordCacheSize(17_179_869), 16_777_215);
+	strictEqual(sizedRecordCacheSize(1), 4);
+	strictEqual(sizedRecordCacheSize(2), 4);
+	strictEqual(sizedRecordCacheSize(5), 8);
 });
 
 test("a launch sets the record cache through Harper's config, not its environment", () => {

@@ -27,7 +27,6 @@ import { fetchOnNewConnection, observeEveryWorker } from '../utils/connectionPer
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'record-caching');
 const SKIP = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
-// not the default (32768), so the single-worker suite shows the setting reached the worker
 const RECORD_CACHE_SIZE = 65536;
 
 interface Rec {

@@ -211,11 +211,11 @@ describe('resolveVerificationTableEntries', function () {
 	}
 
 	it('gives two slots per cacheable record, rounded up to a power of two', function () {
-		assert.strictEqual(entries(32768, 3), 262144); // 196,608 wanted
-		assert.strictEqual(entries(32768, 5), 524288); // 327,680 wanted
-		assert.strictEqual(entries(65536, 4), 524288); // exactly 524,288 wanted
-		assert.strictEqual(entries(820000, 5), 8388608); // 8,200,000 wanted
-		assert.strictEqual(entries(1640000, 3), 16777216); // 9,840,000 wanted
+		assert.strictEqual(entries(32768, 3), 262144);
+		assert.strictEqual(entries(32768, 5), 524288);
+		assert.strictEqual(entries(65536, 4), 524288);
+		assert.strictEqual(entries(820000, 5), 8388608);
+		assert.strictEqual(entries(1640000, 3), 16777216);
 	});
 
 	it("is never below rocksdb-js's default of 131072", function () {
