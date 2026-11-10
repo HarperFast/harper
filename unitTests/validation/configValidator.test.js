@@ -216,6 +216,23 @@ describe('Test configValidator module', () => {
 			}
 		});
 
+		it('storage.recordCacheSize accepts an integer from 4 to 16777215 and rejects anything else', () => {
+			for (const value of [4, 32768, 65536, 16777215]) {
+				const config = testUtils.deepClone(FAKE_CONFIG);
+				config.storage.recordCacheSize = value;
+				const { error, value: validated } = configValidator(config);
+				assert.strictEqual(error, undefined, `${value} is accepted`);
+				assert.strictEqual(validated.storage.recordCacheSize, value);
+			}
+			for (const value of [1.5, 65536.5, -1, -32768, 0, 3, 16777216, 'big', true, null]) {
+				const config = testUtils.deepClone(FAKE_CONFIG);
+				config.storage.recordCacheSize = value;
+				const { error } = configValidator(config);
+				assert.ok(error, `${value} is rejected`);
+				assert.match(error.message, /storage\.recordCacheSize/);
+			}
+		});
+
 		it('Test logging in config_schema with bad values', () => {
 			let bad_config_obj = testUtils.deepClone(FAKE_CONFIG);
 			bad_config_obj.logging.file = 'sassafrass';

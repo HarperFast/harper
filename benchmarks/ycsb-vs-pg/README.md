@@ -5,7 +5,7 @@ A rough head-to-head: the same YCSB-style REST workload driven against
 | Target                      | What answers the request                                                                              |
 | --------------------------- | ----------------------------------------------------------------------------------------------------- |
 | `harper`                    | Harper core (this checkout's `dist/`), `usertable` over REST — database, cache and app in one process |
-| `harper-sized`              | Same, with `HARPER_RECORD_CACHE_SIZE` raised to the next power of two ≥ the record count              |
+| `harper-sized`              | Same, with `storage.recordCacheSize` raised to the next power of two ≥ the record count               |
 | `harper-uws`                | `harper` with its plaintext HTTP port on uWebSockets.js (`HARPER_UWS_HTTP=1`) instead of Node's HTTP  |
 | `harper-uws-sized`          | `harper-uws` with the sized record cache                                                              |
 | `harper-base`               | Another Harper build (`--base-harper=<dist/bin/harper.js>`), driven by this harness                   |
@@ -104,7 +104,7 @@ sample starts a fresh server and reloads the dataset.
   be ≥ 99% (the sample fails otherwise) and records it; run `harper` and
   `harper-sized` to see Harper with the stock and a dataset-sized record cache.
   `--cache=cold` refuses `pg-redis` (cold Postgres is `pg-only`) and runs
-  `harper` with `HARPER_RECORD_CACHE_SIZE=4`. That is reduced retention, not a
+  `harper` with `storage.recordCacheSize: 4`. That is reduced retention, not a
   true cold: the record cache cannot be disabled, and entries beyond the strong
   set stay reachable on WeakRefs until GC. Both "cold" engines still read from
   memory (RocksDB block cache, `shared_buffers`) when the dataset fits.
@@ -284,26 +284,28 @@ dataset sized as a multiple of the budget (`--ratios`, logical payload of the
 
 ## A Redis-sized record cache (`harper-uws-rc3g-*`)
 
-Harper's record cache is per worker thread and sized in entries (`HARPER_RECORD_CACHE_SIZE`,
+Harper's record cache is per worker thread and sized in entries (`storage.recordCacheSize`,
 default 32,768 ring positions, about 13k records at ~1 KiB). The tuned targets give it the
 share Redis gets in the sweep, 3 GiB, and stay inside the same 8 GiB cap and 4 cores. Each
 target's settings are in its `TARGETS` descriptor, and every row records what it launched
 with (`measured.harperSettings`; `meta.harperSettings` per target):
 
-|                                                            |     `-rc3g-4t` |     `-rc3g-2t` |         stock |
-| ---------------------------------------------------------- | -------------: | -------------: | ------------: |
-| `threads.count`                                            |              4 |              2 |             4 |
-| `HARPER_RECORD_CACHE_SIZE` (2 positions per ~1 KiB record) |        820,000 |      1,640,000 |        32,768 |
-| records held strongly per thread                           | 410k (768 MiB) | 820k (1.5 GiB) |          ~13k |
-| `threads.maxHeapMemory` (MB)                               |           1152 |           2240 | 744 (derived) |
-| `storage.rocks.blockCacheSize`                             |        512 MiB |        512 MiB |   2 GiB (25%) |
-| verification table slots                                   |            16M |            16M |          128K |
+|                                                           |     `-rc3g-4t` |     `-rc3g-2t` |          stock |
+| --------------------------------------------------------- | -------------: | -------------: | -------------: |
+| `threads.count`                                           |              4 |              2 |              4 |
+| `storage.recordCacheSize` (2 positions per ~1 KiB record) |        820,000 |      1,640,000 |         32,768 |
+| records held strongly per thread                          | 410k (768 MiB) | 820k (1.5 GiB) |           ~13k |
+| `threads.maxHeapMemory` (MB)                              |           1152 |           2240 |  744 (derived) |
+| `storage.rocks.blockCacheSize`                            |        512 MiB |        512 MiB |    2 GiB (25%) |
+| verification table slots                                  |            16M |            16M | 512K (derived) |
 
 - A cached record costs 1,965 heap bytes (measured; [PROFILE.md](PROFILE.md) has the method).
 - A cache hit is cheap only when rocksdb-js's verification table still vouches for the cached
-  version. That table is process-wide, direct-mapped and overwritten by every cold read, and
-  Harper has no setting for its size: `vtPreload.mjs`, loaded with `--import` into Harper's
-  main thread, sets it before Harper opens a database.
+  version. That table is process-wide, direct-mapped and overwritten by every cold read. Harper
+  sizes it from `storage.recordCacheSize` and its thread count (512K slots for the stock cache on
+  4 threads, 8M for `-rc3g-4t`). A target that pins it instead loads `vtPreload.mjs` with
+  `--import` into Harper's main thread, which sets the size before Harper opens a database and
+  drops Harper's own request.
 - The controls separate the causes: `-vt128k` is B without the larger table, `harper-uws-vt16m`
   is the stock cache with it, and `harper-uws-2t` is the stock cache on 2 threads.
 - `--cache=cold` refuses the tuned targets.

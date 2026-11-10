@@ -1,7 +1,12 @@
 'use strict';
 
 const assert = require('node:assert');
-const { resolveRocksMemoryConfig, resolveRocksArenaBlockSize } = require('#src/utility/rocksMemoryConfig');
+const {
+	resolveRocksMemoryConfig,
+	resolveRocksArenaBlockSize,
+	resolveRecordCacheSize,
+	resolveVerificationTableEntries,
+} = require('#src/utility/rocksMemoryConfig');
 
 const GB = 1024 * 1024 * 1024;
 
@@ -177,5 +182,64 @@ describe('resolveRocksArenaBlockSize', function () {
 		for (const value of ['65536', true, {}, [65536]]) {
 			assert.strictEqual(resolveRocksArenaBlockSize(value), undefined, String(value));
 		}
+	});
+});
+
+describe('resolveRecordCacheSize', function () {
+	it('is 32768 when not configured', function () {
+		assert.strictEqual(resolveRecordCacheSize(undefined), 32768);
+		assert.strictEqual(resolveRecordCacheSize(null), 32768);
+	});
+
+	it('passes an integer from 4 to 16777215 through', function () {
+		for (const value of [4, 5, 32768, 65536, 820000, 16777215]) {
+			assert.strictEqual(resolveRecordCacheSize(value), value, String(value));
+		}
+	});
+
+	it('is 32768 for a value weak-lru-cache would replace or reject', function () {
+		for (const value of [0, 1, 3, -4, 16777216, 65536.5, NaN, Infinity, '65536', true]) {
+			assert.strictEqual(resolveRecordCacheSize(value), 32768, String(value));
+		}
+	});
+});
+
+describe('resolveVerificationTableEntries', function () {
+	const plentyOfMemory = 2 ** 50;
+	function entries(recordCacheSize, threadCount, availableMemory = plentyOfMemory) {
+		return resolveVerificationTableEntries({ recordCacheSize, threadCount, availableMemory });
+	}
+
+	it('gives two slots per cacheable record, rounded up to a power of two', function () {
+		assert.strictEqual(entries(32768, 3), 262144); // 196,608 wanted
+		assert.strictEqual(entries(32768, 5), 524288); // 327,680 wanted
+		assert.strictEqual(entries(65536, 4), 524288); // exactly 524,288 wanted
+		assert.strictEqual(entries(820000, 5), 8388608); // 8,200,000 wanted
+		assert.strictEqual(entries(1640000, 3), 16777216); // 9,840,000 wanted
+	});
+
+	it("is never below rocksdb-js's default of 131072", function () {
+		assert.strictEqual(entries(32768, 1), 131072);
+		assert.strictEqual(entries(32768, 2), 131072);
+		assert.strictEqual(entries(4, 1), 131072);
+		assert.strictEqual(entries(16777215, 5, 32 * 1024 ** 2), 131072, 'even when 1/64 of memory is smaller');
+	});
+
+	it('holds the table to 1/64 of memory, at 8 bytes a slot', function () {
+		const memoryFor262144Slots = 262144 * 8 * 64;
+		assert.strictEqual(entries(16777215, 5, memoryFor262144Slots), 262144);
+		assert.strictEqual(entries(16777215, 5, memoryFor262144Slots - 1), 131072);
+		assert.strictEqual(entries(16777215, 5, 4 * GB), 8388608);
+	});
+
+	it('stays exact past 32-bit sizes', function () {
+		assert.strictEqual(entries(16777215, 64), 2 ** 31);
+		assert.strictEqual(entries(16777215, 1000), 2 ** 35);
+	});
+
+	it('keeps the default for a thread count or memory it cannot use', function () {
+		assert.strictEqual(entries(32768, NaN), 131072);
+		assert.strictEqual(entries(32768, 5, NaN), 131072);
+		assert.strictEqual(entries(32768, 5, 0), 131072);
 	});
 });

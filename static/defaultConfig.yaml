@@ -83,6 +83,7 @@ storage:
       maxExpensiveSearches: 8
   writeAsync: false
   caching: true
+  recordCacheSize: 32768
   compression: true
   rocks:
     compression: null

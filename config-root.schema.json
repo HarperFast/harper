@@ -735,6 +735,12 @@
 					"description": "When true, sets LMDB noSync to disable LMDB's commit disk sync for faster writes (risk of losing recent commits on OS crash or power loss); when false, LMDB keeps commit disk sync enabled (overlapped on Linux and macOS by default). Applies only to the LMDB storage engine; this setting has no effect on RocksDB, where Harper does not fsync individual commits to disk (transaction logs are synced on memtable flush rather than per commit). Default: false"
 				},
 				"caching": { "type": "boolean", "description": "Enable in-memory caching of records. Default: true" },
+				"recordCacheSize": {
+					"type": "integer",
+					"minimum": 4,
+					"maximum": 16777215,
+					"description": "RocksDB only: the size, in entries, of each thread's in-memory record cache, shared by every table in the thread. A record under 1 KB is one entry and takes about 2 KB of heap while cached; a larger record counts as about one entry per 512 bytes. Read at startup; changes take effect on restart. Default: 32768"
+				},
 				"compression": {
 					"oneOf": [
 						{ "type": "boolean" },

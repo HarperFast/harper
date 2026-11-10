@@ -72,3 +72,44 @@ export function resolveRocksArenaBlockSize(configuredArenaBlockSize: unknown): n
 		? (configuredArenaBlockSize as number)
 		: undefined;
 }
+
+// weak-lru-cache splits a cache into 4 rings of `cacheSize >> 2` positions: under 4 there are none,
+// which it silently replaces with its own default, and a ring of 0x400000 positions never wraps.
+export const MIN_RECORD_CACHE_SIZE = 4;
+export const MAX_RECORD_CACHE_SIZE = 0x3fffff * 4 + 3;
+export const DEFAULT_RECORD_CACHE_SIZE = 32_768;
+
+export function resolveRecordCacheSize(configuredRecordCacheSize: unknown): number {
+	return Number.isSafeInteger(configuredRecordCacheSize) &&
+		(configuredRecordCacheSize as number) >= MIN_RECORD_CACHE_SIZE &&
+		(configuredRecordCacheSize as number) <= MAX_RECORD_CACHE_SIZE
+		? (configuredRecordCacheSize as number)
+		: DEFAULT_RECORD_CACHE_SIZE;
+}
+
+/** rocksdb-js's default, and the floor: Harper only ever enlarges the table. */
+export const DEFAULT_VERIFICATION_TABLE_ENTRIES = 131_072;
+const VERIFICATION_TABLE_SLOT_BYTES = 8;
+
+export interface VerificationTableInput {
+	recordCacheSize: number;
+	/** The threads that open tables, each holding up to `recordCacheSize` records. */
+	threadCount: number;
+	availableMemory: number;
+}
+
+/**
+ * Two slots per record the threads' caches can hold, in a power of two. rocksdb-js allocates and zeroes
+ * the whole table when it is first used, whether or not the caches ever fill, so the table is also held
+ * to 1/64 of memory.
+ */
+export function resolveVerificationTableEntries({
+	recordCacheSize,
+	threadCount,
+	availableMemory,
+}: VerificationTableInput): number {
+	const wanted = 2 * recordCacheSize * threadCount;
+	let entries = DEFAULT_VERIFICATION_TABLE_ENTRIES;
+	while (entries < wanted && entries * 2 * VERIFICATION_TABLE_SLOT_BYTES <= availableMemory / 64) entries *= 2;
+	return entries;
+}
