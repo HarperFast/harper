@@ -67,7 +67,7 @@ Response:
 
 Every `SET` expression reads the row as it was before the `UPDATE`, so `SET a = b, b = a` swaps two columns and `SET qty = qty + 5, total = qty * 2` computes `total` from the old `qty`. <VersionBadge type="changed" version="v5.4.0" /> A column assigned more than once takes every assignment in order, each reading the value the one before it produced: `SET qty = qty + 2, qty = qty + 3` adds 5, and `SET qty = 20, qty = qty + 5` sets 25. On the legacy engine only the last assignment counts.
 
-`SET col = col + N` (or `col - N`) on a column that holds a number is applied as an atomic increment, so concurrent updates of the same row do not lose increments. On any other value the column gets the expression's result, as any other `SET` would: `NULL + 5` is `NULL`.
+`SET col = col + N` (or `col - N`) on a column that holds a number or a `BigInt` is applied as an atomic increment, so concurrent updates of the same row do not lose increments. On a value that is neither, the column gets the expression's result, as any other `SET` would: `NULL + 5` is `NULL`.
 
 ### Delete
 

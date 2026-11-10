@@ -313,7 +313,6 @@ describe('sqlEngine phase 4: mutations', () => {
 		assert.strictEqual(captured[0].__op__, 'add');
 		assert.strictEqual(captured[0].value, 5);
 		assert.strictEqual(widgets._store.get(2).qty, 25);
-		// a qualifier naming another table is not the target column
 		await runSql('UPDATE dev.widget SET qty = other.qty + 1 WHERE id = 2');
 		assert.strictEqual(captured[1], 26);
 	});

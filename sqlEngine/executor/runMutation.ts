@@ -36,37 +36,39 @@ import { Addition } from '../../resources/tracked.ts';
 import { addValues, OPERATION_TYPES } from '../../resources/crdt.ts';
 
 /**
- * If `expr` is the target column (bare, or qualified by the target table or its alias) plus a sum of
- * numeric literals — `col + N`, `N + col`, `col - N`, nested — return that sum. Anything else,
+ * If `expr` is the target column (bare, or qualified by the target table or its alias) plus numeric
+ * literals — `col + N`, `N + col`, `col - N`, nested — return those literals, signed. Anything else,
  * including `N - col` and `col + col`, returns undefined.
  */
-function deltaOf(expr: ExprNode, column: string, qualifiers: ReadonlySet<string>): number | undefined {
+function incrementTerms(expr: ExprNode, column: string, qualifiers: ReadonlySet<string>): number[] | undefined {
 	if (expr.kind === 'column') {
-		return expr.name === column && (expr.table == null || qualifiers.has(expr.table)) ? 0 : undefined;
+		return expr.name === column && (expr.table == null || qualifiers.has(expr.table)) ? [] : undefined;
 	}
 	if (expr.kind !== 'binop' || (expr.op !== '+' && expr.op !== '-')) return undefined;
 	const right = numericLiteral(expr.right);
 	if (right !== undefined) {
-		const left = deltaOf(expr.left, column, qualifiers);
-		if (left === undefined) return undefined;
-		return expr.op === '+' ? left + right : left - right;
+		const terms = incrementTerms(expr.left, column, qualifiers);
+		terms?.push(expr.op === '+' ? right : -right);
+		return terms;
 	}
 	const left = expr.op === '+' ? numericLiteral(expr.left) : undefined;
 	if (left === undefined) return undefined;
-	const rest = deltaOf(expr.right, column, qualifiers);
-	return rest === undefined ? undefined : left + rest;
+	const terms = incrementTerms(expr.right, column, qualifiers);
+	terms?.push(left);
+	return terms;
 }
 
 function numericLiteral(expr: ExprNode): number | undefined {
 	return expr.kind === 'literal' && typeof expr.value === 'number' ? expr.value : undefined;
 }
 
-/** Every SET assignment to one column, in statement order. */
 interface ColumnAssignments {
 	column: string;
 	steps: Array<(row: Row) => unknown>;
-	/** Set while every step so far is `column + N`: the summed N. */
+	/** Present while every step so far is `column + N`. */
+	terms?: number[];
 	delta?: number;
+	bigintDelta?: bigint;
 }
 
 /**
@@ -91,6 +93,14 @@ function evaluateAssignments({ column, steps }: ColumnAssignments, row: Row): un
 	}
 }
 
+/** Whether `validate` accepts `delta` as an add operand on an attribute of this declared type. */
+function operandAccepted(delta: number, type: string | undefined): boolean {
+	if (!Number.isFinite(delta)) return false;
+	if (type === 'Int') return delta >> 0 === delta;
+	if (type === 'Long') return Number.isSafeInteger(delta);
+	return true;
+}
+
 /**
  * The atomic increment for a `column + N` chain, applied by the storage layer to the committed value
  * so concurrent `SET qty = qty + 1` statements cannot lose each other's increments (F-146). Used
@@ -99,9 +109,9 @@ function evaluateAssignments({ column, steps }: ColumnAssignments, row: Row): un
  * applying each step. SQL expressions have no bigint arithmetic, so a bigint keeps the exact add.
  */
 function additionFor(assignments: ColumnAssignments, read: unknown, evaluated: unknown): Addition | undefined {
-	const { delta } = assignments;
-	if (delta === undefined) return undefined;
-	if (typeof read === 'bigint') return Number.isInteger(delta) ? new Addition(delta) : undefined;
+	const { delta, bigintDelta } = assignments;
+	if (typeof read === 'bigint') return bigintDelta === undefined ? undefined : new Addition(bigintDelta);
+	if (delta === undefined || (typeof read === 'object' && read !== null)) return undefined;
 	return addValues(read, delta) === evaluated ? new Addition(delta) : undefined;
 }
 
@@ -322,15 +332,20 @@ export async function runUpdate(bound: BoundUpdate, ctx: SqlEngineContext): Prom
 	const neededColumns = new Set<string>([pk]);
 	for (const { column, expr } of bound.assignments) {
 		let assignments = assignmentsByColumn.get(column);
-		if (!assignments) assignmentsByColumn.set(column, (assignments = { column, steps: [], delta: 0 }));
-		const delta = deltaOf(expr, column, qualifiers);
-		assignments.delta = assignments.delta === undefined || delta === undefined ? undefined : assignments.delta + delta;
+		if (!assignments) assignmentsByColumn.set(column, (assignments = { column, steps: [], terms: [] }));
+		const terms = assignments.terms && incrementTerms(expr, column, qualifiers);
+		assignments.terms = terms ? assignments.terms.concat(terms) : undefined;
 		assignments.steps.push(compileExpr(expr, false).eval);
 		collectReferencedColumns(expr, neededColumns);
 	}
 	for (const assignments of assignmentsByColumn.values()) {
+		const { terms } = assignments;
+		if (!terms) continue;
 		const type = table.attributes?.find((attribute) => attribute.name === assignments.column)?.type;
-		if (type && !OPERATION_TYPES.has(type)) assignments.delta = undefined;
+		if (type && !OPERATION_TYPES.has(type)) continue;
+		const delta = terms.reduce((sum, term) => sum + term, 0);
+		if (operandAccepted(delta, type)) assignments.delta = delta;
+		if (terms.every(Number.isInteger)) assignments.bigintDelta = terms.reduce((sum, term) => sum + BigInt(term), 0n);
 	}
 	const projection: SelectNode['projections'] = [...neededColumns].map((name) => ({
 		expr: { kind: 'column', name },

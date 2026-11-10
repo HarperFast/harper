@@ -33,7 +33,6 @@ add.reverse = function (record, property, action) {
 export const operations = Object.assign(Object.create(null), {
 	add,
 });
-// Declared attribute types an operation may target; `validate` rejects one on any other declared type.
 export const OPERATION_TYPES = new Set(['Int', 'Long', 'Float', 'Number', 'BigInt', 'Any']);
 
 /**

@@ -31,6 +31,7 @@ describe('SQL UPDATE SET evaluation on the v2 engine', function () {
 				{ name: 'qty', type: 'Int' },
 				{ name: 'name', type: 'String' },
 				{ name: 'big', type: 'BigInt' },
+				{ name: 'ratio', type: 'Float' },
 			],
 		});
 	});
@@ -98,6 +99,16 @@ describe('SQL UPDATE SET evaluation on the v2 engine', function () {
 				await concurrently(Untyped, { id: 1, qty: 0 }, 'qty = qty + 1, qty = qty + 1'),
 				2 * CONCURRENT
 			);
+		});
+
+		it('writes the evaluated value where the summed increment is not a valid operand for the type', async () => {
+			const row = await updated(
+				Typed,
+				{ id: 1, qty: -2147483648, ratio: 0 },
+				'qty = qty + 1073741824, qty = qty + 1073741824, ratio = ratio + 1e308, ratio = ratio + 1e308'
+			);
+			assert.strictEqual(row.qty, 0);
+			assert.strictEqual(row.ratio, Infinity);
 		});
 
 		it('evaluates step by step where a summed increment would round differently', async () => {
@@ -174,6 +185,15 @@ describe('SQL UPDATE SET evaluation on the v2 engine', function () {
 
 		it('keeps the exact add for a bigint', async () => {
 			assert.strictEqual((await updated(Typed, { id: 1, big: 10n }, 'big = big + 5, big = big + 1')).big, 16n);
+			assert.strictEqual(
+				(await updated(Typed, { id: 1, big: 10n }, 'big = big + 10000000000000000, big = big + 1')).big,
+				10000000000000011n
+			);
+		});
+
+		it('leaves a value with no numeric conversion unchanged', async () => {
+			const qty = { valueOf: null, toString: null };
+			assert.deepStrictEqual({ ...(await updated(Untyped, { id: 1, qty }, 'qty = qty')).qty }, qty);
 		});
 	});
 
