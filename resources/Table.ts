@@ -4972,7 +4972,6 @@ export function makeTable(options): TableResourceClass {
 			// A moved slot belongs to a later write; an older failure must leave it untouched.
 			if (this.#savingOperation !== failed) return;
 			if (previous) {
-				// An accepted predecessor stays saveable; a failed draft reports its latest error.
 				if (previous.stagingFailure) previous.stagingFailure = { error };
 				previous.releaseChanges?.();
 				this.#savingOperation = previous;
@@ -8070,7 +8069,6 @@ export function makeTable(options): TableResourceClass {
 							previous.deferSave = deferred;
 							throw error;
 						}
-						// Successful admission retires the old callbacks and preparation failure together.
 						for (const key of Object.keys(previous)) {
 							if (
 								key !== 'stagedIn' &&

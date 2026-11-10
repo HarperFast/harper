@@ -878,6 +878,10 @@ This saves the current state of the resource to the database in the current tran
 
 This method only saves data when using RocksDB storage engine, and is a no-op when using LMDB.
 
+<VersionBadge type="changed" version="v5.4.0" />
+
+On RocksDB, a deferred instance save refused with 409 because another write through its lock holder is committing stays pending; call `save()` again after that commit finishes. If the first update fails preparation, `save()` repeats that error until an explicit `update()` succeeds. This includes held drafts edited with setters after a model-hook failure.
+
 ### `addTo(property: string, value: number | bigint)` {#addtoproperty-string-value-number}
 
 Adds `value` to `property` using CRDT incrementation — safe for concurrent updates across threads and nodes.

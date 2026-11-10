@@ -678,7 +678,8 @@ describe('REST preconditions with real table transactions', () => {
 					require.resolve('mocha/lib/cli/cli.js'),
 					__filename,
 					'--grep',
-					'settles queued writes after their conditional precondition fails',
+					this.test.title,
+					'--fail-zero',
 				],
 				{
 					env: { ...process.env, HARPER_CONDITIONAL_QUEUE_CHILD: '1' },
@@ -689,6 +690,7 @@ describe('REST preconditions with real table transactions', () => {
 			);
 			assert.ifError(child.error);
 			assert.strictEqual(child.status, 0, child.stdout + child.stderr);
+			assert.match(child.stdout, /\b1 passing\b/);
 			return;
 		}
 		const unhandled = [];
