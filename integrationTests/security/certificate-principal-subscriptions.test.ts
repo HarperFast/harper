@@ -1,7 +1,3 @@
-/**
- * Live-subscription rechecks keep a certificate client whose common name has no hdb_user, on both transports where a
- * certificate names the principal (#4062); any other principal with no role is revoked.
- */
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual } from 'node:assert';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
