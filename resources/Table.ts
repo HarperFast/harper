@@ -5112,7 +5112,7 @@ export function makeTable(options): TableResourceClass {
 					if (
 						precedesExisting < 0 ||
 						(isCopyApply && precedesExisting === 0) ||
-						// re-logging a re-delivery appends an entry that every peer forwards again (harper-pro#1306)
+						// re-logging a re-delivery appends an entry that every peer forwards again
 						(precedesExisting === 0 &&
 							committedBy?.sourceApply &&
 							!committedBy.isReplay &&
