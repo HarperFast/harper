@@ -16,11 +16,11 @@ The `registerPrimitiveIdGet` getter shares `loadRecord()` with `_loadRecord`; it
 
 ## An audit record carries two clocks; identity is (nodeId, log key), never a version
 
-`AuditRecord.version` drives last-writer-wins, `@updatedTime` and ETags; `txnLogKey` drives identity, `auditStore.get(logKey, tableId, id, nodeId)` and resume cursors. When they diverge (source fills, applied writes, caller times), `additionalAuditRefs` finds the head.
+`AuditRecord.version` drives last-writer-wins, `@updatedTime` and ETags; `txnLogKey` drives identity, `auditStore.get(logKey, tableId, id, nodeId)` and resume cursors. When they diverge, `additionalAuditRefs` finds the head.
 
-- `isAuditEntryWrite` is the only identity test; `removeAuditEntry` keeps unknown-identity tombstones, as version compares let one write destroy another's.
+- `isAuditEntryWrite` is the only identity test; `removeAuditEntry` keeps unknown-identity tombstones, as version compares let one write destroy another's; an unknown predecessor is not origin 0.
 - Applied RocksDB writes store their version (`TransactionWrite.recordVersion`) at the origin log key.
-- `additionalAuditRefs` holds log keys; `receivedIdentityRefs` (bit 31, `RECEIVED_IDENTITY_REF`) holds received identities (addressing no entry, omitted from audit entries). Unaudited, it is the only re-delivery proof: a commutative patch appends, a body-replacing write restarts it, a listed patch skips before the version comparison. Walks read all non-head branches (log keys never bound versions). `identityIsNotKey` writes record the head as a log-key ref even if key == version. **Never "fix" a log key to the version** (`auditRefKinds.test.js`).
+- `additionalAuditRefs` holds log keys; `receivedIdentityRefs` (bit 31, `RECEIVED_IDENTITY_REF`) holds received identities (addressing no entry, omitted from audit entries). Unaudited, it is the only re-delivery proof: a commutative patch appends, a body-replacing write restarts it, a listed patch skips before the version comparison. Walks read all non-head branches (log keys never bound versions). `identityIsNotKey` writes record the head as a log-key ref even if key == version. **Never "fix" a log key to the version** (`auditRefKinds.test.js`). [Receipt rules](receipt-rules.md).
 - LMDB merges keep the older version (`LMDBTransaction.commit` `ifVersion`, `noAuditOutOfOrderPatch.test.js`).
 - Duplicates use committed identity (read outside the txn after a same-key relocate/publish restamps the base); only minted keys mark a retry's own staging (`readsOwnStaging`, `replicatedRetryDuplicate.test.js`).
 - RocksDB logs once; the watermark stalls at uncommitted entries, so ref walks pass `followingCommittedRef` and retries/replays add the base head and missed refs (`withRefsMissedByLoggedEntry`). History walks follow one chain and can miss a branch ([#3977](https://github.com/HarperFast/harper/issues/3977)).
@@ -248,8 +248,8 @@ If this same write (origin and log key) emptied the key, `_writeDelete` writes n
 
 ## `ImmediateTransaction` saves chain on `operation.innerCommit` and forward retries
 
-- A second `save()` outside `transaction()` commits through a nested `commit()` stored on `operation.innerCommit`. Both `Table.save()` branches must await it, or `save()` returns before the write is durable (`recordLock.test.js`).
-- During a retry, `ImmediateTransaction.save()` forwards to the retried handle; otherwise it would nest and recurse (harper#2825). A failed re-save releases the detached handle before `abort()` (`immediateTransactionConflictRetry.test.js`).
+- A second write outside `transaction()` commits through a nested `commit()` stored on `operation.innerCommit`. `ImmediateTransaction.save()` must await it, or the write returns before it is durable (`recordLock.test.js`).
+- During a retry, `save()` forwards to the retried handle; otherwise it would nest and recurse (harper#2825). A failed re-save releases the detached handle before `abort()` (`immediateTransactionConflictRetry.test.js`).
 
 ## A transaction is joinable as a scope only if it stages its writes
 
