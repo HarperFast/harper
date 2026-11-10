@@ -4939,7 +4939,7 @@ export function makeTable(options): TableResourceClass {
 			try {
 				return this.#whenStaged(this._writeUpdate(id, changes, fullUpdate, options));
 			} catch (error) {
-				this.#restoreUpdate(previous, previousChanges, previous, previous?.rollbackRecord);
+				this.#restoreUpdate(previous, previousChanges, previous, error, previous?.rollbackRecord);
 				throw error;
 			}
 		}
@@ -4961,13 +4961,15 @@ export function makeTable(options): TableResourceClass {
 			previous.captureChanges?.();
 			return previous;
 		}
-		#restoreUpdate(previous: any, changes: any, failed: any, record?: { value: any }) {
-			if (previous && this.#savingOperation === failed) {
+		#restoreUpdate(previous: any, changes: any, failed: any, error: unknown, record?: { value: any }) {
+			if (this.#savingOperation !== failed) return;
+			if (previous) {
+				if (previous.stagingFailure) previous.stagingFailure = { error };
 				previous.releaseChanges?.();
 				this.#savingOperation = previous;
 				this.#changes = changes;
 				if (record) this.#record = record.value;
-			}
+			} else if (failed && !failed.stagedIn) failed.stagingFailure = { error };
 		}
 
 		/** This instance's unsaved staged write, which reads #changes when it is saved. */
@@ -5107,6 +5109,7 @@ export function makeTable(options): TableResourceClass {
 			const transaction = txnForContext(this.getContext());
 			let holder = operation.stagedIn;
 			if (!holder && operation.deferSave && !operation.saved && !operation.dropped) {
+				if (operation.stagingFailure) throw operation.stagingFailure.error;
 				operation.priorWrite = undefined;
 				operation.pendingPriorWrite = undefined;
 				transaction.addWrite(operation);
@@ -8000,7 +8003,7 @@ export function makeTable(options): TableResourceClass {
 							)
 						: undefined;
 			} catch (err) {
-				this.#restoreUpdate(previous, previousChanges, write, previousRecord);
+				this.#restoreUpdate(previous, previousChanges, write, err, previousRecord);
 				return Promise.reject(err);
 			}
 			const proceed = (): any => {
@@ -8075,13 +8078,13 @@ export function makeTable(options): TableResourceClass {
 					if (condition) condition.consumed = true;
 					return result;
 				} catch (error) {
-					this.#restoreUpdate(previous, previousChanges, write, previousRecord);
+					this.#restoreUpdate(previous, previousChanges, write, error, previousRecord);
 					throw error;
 				}
 			};
 			if (!modelHooksBefore) return proceed();
 			const staged = modelHooksBefore((context as any)?.signal).then(proceed, (error: any) => {
-				this.#restoreUpdate(previous, previousChanges, write, previousRecord);
+				this.#restoreUpdate(previous, previousChanges, write, error, previousRecord);
 				throw error;
 			});
 			write.staging = staged.finally(() => {

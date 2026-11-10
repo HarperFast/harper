@@ -841,6 +841,7 @@ export type TransactionWrite = {
 	isolatedCommit?: boolean;
 	// a deferred write refused before admission, for its instance to retry
 	refusedDeferredWrite?: boolean;
+	stagingFailure?: { error: unknown };
 	// the commit derives stored state (folds, index diffs, residency) from its base entry, so
 	// save() must reload that base through the committing transaction's snapshot
 	reloadCommitBase?: boolean;

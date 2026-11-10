@@ -668,13 +668,14 @@ describe('REST preconditions with real table transactions', () => {
 		if (isLMDB) return this.skip();
 		this.timeout(45000);
 		if (!process.env.HARPER_CONDITIONAL_QUEUE_CHILD) {
-			// A microtask loop prevents Mocha's own timeout from firing.
+			// Bypass Mocha's forking launcher so the timeout and heap cap own the test process.
 			const { spawnSync } = require('node:child_process');
 			const child = spawnSync(
 				process.execPath,
 				[
+					...process.execArgv,
 					'--max-old-space-size=512',
-					require.resolve('mocha/bin/mocha.js'),
+					require.resolve('mocha/lib/cli/cli.js'),
 					__filename,
 					'--grep',
 					'settles queued writes after their conditional precondition fails',

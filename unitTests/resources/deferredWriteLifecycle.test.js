@@ -903,6 +903,285 @@ describe('Deferred write lifecycle', function () {
 		);
 	});
 
+	for (const mode of ['patch', 'keyed patch', 'replacement', 'restricted replacement']) {
+		for (const scoped of [false, true]) {
+			it(`requires successful preparation after a first failed ${mode} (${scoped ? 'explicit' : 'immediate'})`, async () => {
+				const tableName = `FirstFailure${mode.replaceAll(' ', '')}${scoped}`;
+				const T = table({
+					database: 'deferred_write_lifecycle',
+					table: tableName,
+					audit: true,
+					attributes: [
+						{ name: 'id', isPrimaryKey: true },
+						{ name: 'n' },
+						{ name: 'name' },
+						{ name: 'obsolete' },
+						{ name: 'embedding', type: 'Array', embed: { source: 'name', model: 'default' } },
+					],
+				});
+				let calls = 0;
+				T.setEmbedAttribute('embedding', async (record) => {
+					calls++;
+					if (record.name.startsWith('bad')) throw new Error(record.name);
+					return [record.name.length];
+				});
+				const key = id();
+				await T.put({ id: key, n: 0, name: 'base', obsolete: true });
+				calls = 0;
+				const version = T.primaryStore.getEntry(key).version;
+				const auditCount = () =>
+					[...T.auditStore.getRange({ start: 1 })].filter((entry) => entry.recordId === key).length;
+				const context = {};
+				const run = async () => {
+					const record = await T.getResource({ id: key }, context);
+					if (mode === 'restricted replacement') {
+						const user = {
+							role: {
+								permission: {
+									deferred_write_lifecycle: {
+										tables: {
+											[tableName]: {
+												update: true,
+												attribute_permissions: ['n', 'name'].map((attribute_name) => ({
+													attribute_name,
+													update: true,
+												})),
+											},
+										},
+									},
+								},
+							},
+						};
+						assert.strictEqual(record.allowUpdate(user, { n: 99 }, context), true);
+					}
+					const update = (changes, full = false) =>
+						mode === 'keyed patch' ? record.update(key, changes) : record.update(changes, full);
+					let failure;
+					await assert.rejects(update({ n: 99, name: 'bad-one' }, mode.includes('replacement')), (error) => {
+						failure = error;
+						return /Failed to compute embedding/.test(error.message);
+					});
+					for (let retry = 0; retry < 2; retry++)
+						await assert.rejects(
+							async () => record.save(),
+							(error) => error === failure
+						);
+					assert.strictEqual(calls, 1, 'bare save does not retry a failed external model call');
+					assert.strictEqual((await T.get(key)).n, 0);
+					assert.strictEqual(T.primaryStore.getEntry(key).version, version);
+					assert.strictEqual(auditCount(), 1);
+					await assert.rejects(update({ name: 'bad-two' }), (error) => {
+						assert.notStrictEqual(error, failure);
+						failure = error;
+						return /Failed to compute embedding/.test(error.message);
+					});
+					await assert.rejects(
+						async () => record.save(),
+						(error) => error === failure
+					);
+					await update({ name: 'valid' });
+					await record.save();
+				};
+				if (scoped) await transaction(context, run);
+				else await run();
+				const result = await T.get(key);
+				assert.strictEqual(result.n, 99, 'correction retains the original draft');
+				assert.strictEqual(result.name, 'valid');
+				assert.deepStrictEqual([...result.embedding], [5]);
+				assert.strictEqual(result.obsolete, mode === 'replacement' ? undefined : true);
+				assert.strictEqual(calls, 3);
+				assert.strictEqual(auditCount(), 2, 'only the successfully prepared intent is committed');
+				if (!isLMDB) {
+					const locked = await T.lock(key, { timeout: 100, lease: 5000 }, {});
+					await locked.unlock();
+				}
+			});
+		}
+	}
+
+	it('prepares a queued successor after the first model hook fails', async () => {
+		const T = table({
+			database: 'deferred_write_lifecycle',
+			table: 'FirstQueuedFailure',
+			audit: true,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'name' },
+				{ name: 'embedding', type: 'Array', embed: { source: 'name', model: 'default' } },
+			],
+		});
+		let release;
+		const gate = new Promise((resolve) => {
+			release = resolve;
+		});
+		T.setEmbedAttribute('embedding', async (record) => {
+			if (record.name === 'bad') {
+				await gate;
+				throw new Error('first hook failed');
+			}
+			return [record.name.length];
+		});
+		const key = id();
+		const record = await T.getResource({ id: key }, {});
+		const rejected = assert.rejects(record.update({ name: 'bad' }), /Failed to compute embedding/);
+		const queued = record.update({ name: 'valid' });
+		release();
+		await rejected;
+		await queued;
+		await record.save();
+		assert.deepStrictEqual([...(await T.get(key)).embedding], [5]);
+		assert.strictEqual([...T.auditStore.getRange({ start: 1 })].filter((entry) => entry.recordId === key).length, 1);
+	});
+
+	it('requires explicit update to recover a held write after failed preparation', async function () {
+		if (isLMDB) return this.skip();
+		const T = table({
+			database: 'deferred_write_lifecycle',
+			table: 'HeldFirstFailure',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'name' },
+				{ name: 'embedding', type: 'Array', embed: { source: 'name', model: 'default' } },
+			],
+		});
+		let calls = 0;
+		T.setEmbedAttribute('embedding', async (record) => {
+			calls++;
+			if (record.name === 'bad') throw new Error('failed preparation');
+			return [record.name.length];
+		});
+		const key = id();
+		await T.put({ id: key, name: 'base' });
+		calls = 0;
+		const record = await T.lock(key, { hold: true, lease: 30000 }, {});
+		try {
+			record.set('name', 'bad');
+			let failure;
+			await assert.rejects(
+				async () => record.save(),
+				(error) => {
+					failure = error;
+					return /Failed to compute embedding/.test(error.message);
+				}
+			);
+			record.set('name', 'corrected');
+			await assert.rejects(
+				async () => record.save(),
+				(error) => error === failure
+			);
+			assert.strictEqual((await T.get(key)).name, 'base');
+			assert.strictEqual(calls, 1);
+			await record.update({ name: 'corrected' });
+			await record.save();
+			assert.strictEqual((await T.get(key)).name, 'corrected');
+			assert.deepStrictEqual([...(await T.get(key)).embedding], [9]);
+			assert.strictEqual(calls, 2);
+		} finally {
+			await record.unlock();
+		}
+	});
+
+	it('retains a synchronous model-builder rejection until a valid update clears it', async () => {
+		const T = table({
+			database: 'deferred_write_lifecycle',
+			table: 'FirstDecideFailure',
+			audit: true,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'n' },
+				{ name: 'body', type: 'String' },
+				{
+					name: 'route',
+					type: 'String',
+					decide: { source: 'body', model: 'default', decision: 'routeDecision', schema: { enum: ['a', 'b'] } },
+				},
+				{ name: 'routeDecision', type: 'String' },
+			],
+		});
+		const key = id();
+		await T.put({ id: key, n: 0 });
+		const version = T.primaryStore.getEntry(key).version;
+		const record = await T.getResource({ id: key }, {});
+		let failure;
+		await assert.rejects(
+			async () => record.update({ routeDecision: 'forged' }),
+			(error) => {
+				failure = error;
+				return error.statusCode === 400;
+			}
+		);
+		await assert.rejects(
+			async () => record.save(),
+			(error) => error === failure
+		);
+		assert.strictEqual((await T.get(key)).routeDecision, undefined);
+		assert.strictEqual(T.primaryStore.getEntry(key).version, version);
+		assert.strictEqual([...T.auditStore.getRange({ start: 1 })].filter((entry) => entry.recordId === key).length, 1);
+		await record.update({ body: null, n: 1 });
+		await record.save();
+		assert.strictEqual((await T.get(key)).n, 1);
+		assert.strictEqual((await T.get(key)).routeDecision, null);
+	});
+
+	it('retains a post-hook admission failure until a new update is admitted', async () => {
+		let release, started;
+		const gate = new Promise((resolve) => {
+			release = resolve;
+		});
+		const entered = new Promise((resolve) => {
+			started = resolve;
+		});
+		const T = table({
+			database: 'deferred_write_lifecycle',
+			table: 'FirstAdmissionFailure',
+			audit: true,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'name' },
+				{ name: 'embedding', type: 'Array', embed: { source: 'name', model: 'default' } },
+			],
+		});
+		T.setEmbedAttribute('embedding', async (record) => {
+			if (record.name === 'waiting') {
+				started();
+				await gate;
+			}
+			return [record.name.length];
+		});
+		const key = id();
+		await T.put({ id: key, name: 'base' });
+		const version = T.primaryStore.getEntry(key).version;
+		const controller = new AbortController();
+		const context = { signal: controller.signal };
+		const record = await T.getResource({ id: key }, context);
+		const updating = record.update({ name: 'waiting' });
+		await entered;
+		controller.abort();
+		let failure;
+		try {
+			release();
+			await assert.rejects(updating, (error) => {
+				failure = error;
+				return error.statusCode === 499;
+			});
+		} finally {
+			release();
+		}
+		await assert.rejects(
+			async () => record.save(),
+			(error) => error === failure
+		);
+		assert.strictEqual((await T.get(key)).name, 'base');
+		assert.strictEqual(T.primaryStore.getEntry(key).version, version);
+		assert.strictEqual([...T.auditStore.getRange({ start: 1 })].filter((entry) => entry.recordId === key).length, 1);
+		delete context.signal;
+		await transaction(context, async () => {
+			await record.update({ name: 'valid' });
+			await record.save();
+		});
+		assert.deepStrictEqual([...(await T.get(key)).embedding], [5]);
+	});
+
 	it('a full put replaces a pending patch without leaving an orphan', async function () {
 		const key = id();
 		await TestTable.put({ id: key, n: 0 });
