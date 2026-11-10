@@ -19,6 +19,10 @@ const binder = require('#src/sqlEngine/binder/bind');
 const mutation = require('#src/sqlEngine/executor/runMutation');
 const configUtils = require('#src/config/configUtils');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
+const { setupTestDBPath } = require('../testUtils');
+const { table } = require('#src/resources/databases');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
+const { transaction } = require('#src/resources/transaction');
 
 function evalConditions(row, conditions, operator) {
 	const fn = operator === 'or' ? 'some' : 'every';
@@ -336,4 +340,92 @@ describe('sqlEngine phase 4: mutations', () => {
 		assert.deepStrictEqual(del.deleted_hashes, [4]);
 		assert.strictEqual(widgets._store.has(5), true);
 	});
+});
+
+describe('sqlEngine literal-on-the-left comparators (SELECT, UPDATE, DELETE)', function () {
+	this.timeout(60000);
+	const SEED_IDS = [1, 2, 3, 7, 10];
+	const CASES = [
+		['5 < id', 'id > 5', [7, 10]],
+		['7 > id', 'id < 7', [1, 2, 3]],
+		['5 <= id', 'id >= 5', [7, 10]],
+		['7 >= id', 'id <= 7', [1, 2, 3, 7]],
+		['NOT (5 >= id)', 'NOT (id <= 5)', [7, 10]],
+		['5 <= id AND id <= 7', 'id >= 5 AND id <= 7', [7]],
+	];
+
+	let T;
+	let originalEngine;
+
+	before(() => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		originalEngine = process.env.HARPER_SQL_ENGINE;
+		process.env.HARPER_SQL_ENGINE = 'auto';
+		T = table({
+			table: 'LiteralLeftComparatorItem',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true, type: 'Int' },
+				{ name: 'qty', type: 'Int' },
+			],
+		});
+		binder._setDatabasesLoader(() => ({ test: { LiteralLeftComparatorItem: T } }));
+		mutation._setTransactionRunner(transaction);
+	});
+
+	after(async () => {
+		binder._setDatabasesLoader(null);
+		mutation._setTransactionRunner(null);
+		if (originalEngine === undefined) delete process.env.HARPER_SQL_ENGINE;
+		else process.env.HARPER_SQL_ENGINE = originalEngine;
+		await T.dropTable();
+	});
+
+	const sortedNum = (arr) => [...arr].sort((a, b) => a - b);
+
+	async function reseed() {
+		for await (const { id } of T.search({ select: ['id'], allowFullScan: true })) await T.delete(id);
+		for (const id of SEED_IDS) await T.put({ id, qty: id * 10 });
+	}
+
+	async function readRows() {
+		const rows = [];
+		for await (const r of T.search({ select: ['id', 'qty'], allowFullScan: true })) rows.push({ id: r.id, qty: r.qty });
+		return rows.sort((a, b) => a.id - b.id);
+	}
+
+	for (const [litWhere, colWhere, expectedIds] of CASES) {
+		it(`SELECT WHERE ${litWhere} matches WHERE ${colWhere}`, async () => {
+			await reseed();
+			const litRows = await runSql(`SELECT id FROM test.LiteralLeftComparatorItem WHERE ${litWhere}`);
+			const colRows = await runSql(`SELECT id FROM test.LiteralLeftComparatorItem WHERE ${colWhere}`);
+			assert.deepStrictEqual(sortedNum(colRows.map((r) => r.id)), expectedIds);
+			assert.deepStrictEqual(sortedNum(litRows.map((r) => r.id)), expectedIds);
+		});
+
+		it(`UPDATE WHERE ${litWhere} affects the same rows as WHERE ${colWhere}`, async () => {
+			await reseed();
+			const colRes = await runSql(`UPDATE test.LiteralLeftComparatorItem SET qty = 99 WHERE ${colWhere}`);
+			const colState = await readRows();
+			await reseed();
+			const litRes = await runSql(`UPDATE test.LiteralLeftComparatorItem SET qty = 99 WHERE ${litWhere}`);
+			const litState = await readRows();
+			assert.deepStrictEqual(sortedNum(colRes.update_hashes), expectedIds);
+			assert.deepStrictEqual(sortedNum(litRes.update_hashes), sortedNum(colRes.update_hashes));
+			assert.deepStrictEqual(litState, colState);
+		});
+
+		it(`DELETE WHERE ${litWhere} affects the same rows as WHERE ${colWhere}`, async () => {
+			await reseed();
+			const colRes = await runSql(`DELETE FROM test.LiteralLeftComparatorItem WHERE ${colWhere}`);
+			const colState = await readRows();
+			await reseed();
+			const litRes = await runSql(`DELETE FROM test.LiteralLeftComparatorItem WHERE ${litWhere}`);
+			const litState = await readRows();
+			assert.deepStrictEqual(sortedNum(colRes.deleted_hashes), expectedIds);
+			assert.deepStrictEqual(sortedNum(litRes.deleted_hashes), sortedNum(colRes.deleted_hashes));
+			assert.deepStrictEqual(litState, colState);
+		});
+	}
 });
