@@ -5023,6 +5023,7 @@ export function makeTable(options): TableResourceClass {
 						// re-logging a re-delivery appends an entry that every peer forwards again (harper-pro#1306)
 						(precedesExisting === 0 &&
 							committedBy?.sourceApply &&
+							!committedBy.isReplay &&
 							isRocksDB &&
 							(!priorStagedOp || priorStagedOp.stagedEntry.unchanged) &&
 							isStubLeftBy(identityBase(write, existingEntry, committedBy), txnLogKey, options?.nodeId)) ||
