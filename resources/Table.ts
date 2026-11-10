@@ -4989,7 +4989,7 @@ export function makeTable(options): TableResourceClass {
 				lockHandle: undefined,
 				chainsStagedState: true,
 				reloadCommitBase: true,
-				commit: (txnTime, existingEntry, _retry, transaction: any) => {
+				commit: (txnTime, existingEntry, _retry, transaction: any, committedBy?: DatabaseTransaction) => {
 					const txnLogKey = isRocksDB
 						? (reservedLocalKey(transaction) ?? (context as any)?.timestamp ?? txnTime)
 						: txnTime;
@@ -5020,6 +5020,14 @@ export function makeTable(options): TableResourceClass {
 					if (
 						precedesExisting < 0 ||
 						(isCopyApply && precedesExisting === 0) ||
+						// re-logging a re-delivery appends an entry that every peer forwards again (harper-pro#1306)
+						(precedesExisting === 0 &&
+							committedBy?.sourceApply &&
+							isRocksDB &&
+							isAuditEntryWrite(identityBase(write, existingEntry, committedBy), {
+								txnLogKey,
+								nodeId: options?.nodeId,
+							})) ||
 						((!priorStagedOp || priorStagedOp.stagedEntry.unchanged) &&
 							precedesExisting === 0 &&
 							existingEntry?.value &&
@@ -6608,9 +6616,9 @@ export function makeTable(options): TableResourceClass {
 							// and the depth-cap check notes the lookup "can intermittently miss under load" with the
 							// authoritative full-copy record restoring exact convergence (#1148). This guard turns that
 							// tolerated miss into a deliberate skip for pre-retention versions — staying within the
-							// existing contract. (oldestRetainedAuditTime is the first physical/in-order entry's version;
-							// a transaction log appended out of timestamp order could in theory retain a smaller-versioned
-							// entry below it — but the same best-effort contract and full-copy convergence cover that.)
+							// existing contract. At or above the audit floor nothing was purged, so the lookup always runs
+							// there: a late-relayed entry sits below its log's first appended entry, and a skipped lookup
+							// re-logs it on every re-delivery, which peers forward back (harper-pro#1306).
 							// Resolve the oldest retained entry once, for the same log the dedup reads.
 							let oldestRetainedAuditTime: number | undefined;
 							let oldestRetainedAuditTimeResolved = false;
@@ -6618,6 +6626,8 @@ export function makeTable(options): TableResourceClass {
 								if (!isRocksDB) return true; // LMDB keeps its exact, unbounded lookup (keyed by local audit time)
 								// an unnamed origin's entries sit in `local` under minted keys, never at its received key
 								if (options?.nodeId && auditStore.isLocalOrigin(options.nodeId)) return false;
+								auditFloor ??= getAuditFloor(auditStore);
+								if (version >= auditFloor) return true;
 								if (!oldestRetainedAuditTimeResolved) {
 									oldestRetainedAuditTimeResolved = true;
 									// getRange yields ascending by audit-log key, so the first entry is the oldest retained.

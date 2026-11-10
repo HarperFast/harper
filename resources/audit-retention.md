@@ -13,8 +13,12 @@ pruning removed (harper#2447); it is internal, with deliberately no public acces
 not checked against it** but against the database generation (next section): this floor also steers
 reconciliation, survives a restore, and absorbs at `Infinity`.
 
-**The one consumer today is not a resume**: `Table.commit`'s out-of-order reconciliation reads the
-floor before entering the audit walk (harper#2642). The walk terminates at the incoming write only by
+**Its consumers are not resumes.** `dedupVersionCouldBeRetained` always runs the keyed duplicate lookup for
+an origin log key at or above the floor, since no prune removed it; it falls back to the log's first appended
+entry only below the floor or when the floor is unknown. That entry does not bound the log: a late-relayed
+entry appends below it, and skipping its lookup re-logs every re-delivery, which peers forward back
+(harper-pro#1306, `replicatedDeleteRedelivery.test.js`). `Table.commit`'s out-of-order reconciliation also
+reads the floor before entering the audit walk (harper#2642). The walk terminates at the incoming write only by
 reaching an audit entry at or below its version, so below the floor it cannot — it runs the whole
 retained chain, one RocksDB end-of-log scan per step, to an outcome the floor already determines.
 Two things that consumer does differently from a cursor check, and both are deliberate: it compares
