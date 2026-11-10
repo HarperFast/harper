@@ -126,7 +126,10 @@ Consequences that shape the code:
   scope's final commit (`scopeEnding`) is not waited out. A `lock()` made by the scope's own pre-commit hook
   (`operation.before`, a source write-through) while that hook runs belongs to the commit, which awaits it:
   `runCommitHook` marks the invocation in an `AsyncLocalStorage` (`currentCommitHook`) until the hook settles;
-  only that follows the hook's awaits, which the two calls the marker identifies come after. The cache-fill blob
+  only that follows the hook's awaits, which the two calls the marker identifies come after. So does one from a
+  hook nested under it, run by a commit the hook started on another transaction (`isOwnCommitHook` walks the
+  marker's `parent` chain for an active invocation of the scope's root): the commit awaits the outer hook, which
+  awaits the nested commit. The cache-fill blob
   save runs no user code, so it is a `beforeIntermediate` and is not wrapped (harper#4085).
   Outside `transaction()` the marker also names the committing link: an unlocked write made within that hook
   on that link, directly or through a commit the hook started on another link (the marker's `parent` chain), is
@@ -374,8 +377,9 @@ unlock as before.
 `before` hook, then applies it. While a hook's synchronous part runs (`syncCommitHooks`), a save of the same record
 would apply first and be overwritten, so it is refused with a 409, locked or not and on any link (only the hook
 can be saving then; a rejected promise at top level), and changing a lock-writable instance whose own write runs the hook is refused (`update()` and
-`[ASSERT_TRACKED_WRITABLE]`, which every setter passes): that write stores the instance's changes object, so a refused save of them would land
-with it. After the hook's first await the outer write has applied: an unlocked same-record write chains after it,
+`[ASSERT_TRACKED_WRITABLE]`, which every setter passes, find it as the write's `stagedBy`). That write either stores the instance's changes
+object — a patch, or a full `update(record, true)`, which makes the record those changes — so a refused save of them would land with it, or
+stores a record passed to it and clears those changes as it commits, dropping the change unreported. After the hook's first await the outer write has applied: an unlocked same-record write chains after it,
 and a holder write is refused as above. On a self-committing link, `update()` through the lock whose commit runs
 the hook is refused too: nothing would commit the deferred write, and left staged it would refuse a fresh `lock()`
 of the record on that context. A hook awaits or catches its writes: an ignored refusal is an unhandled rejection

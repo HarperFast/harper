@@ -228,6 +228,10 @@ describe('pre-commit hook writes to the record their own write is committing', f
 			'update()': (holder) => holder.update({ n: 9 }),
 			'patch()': (holder) => holder.patch({ n: 9 }),
 			'addTo()': (holder) => holder.addTo('n', 7),
+			'deleteProperty()': (holder) => holder.deleteProperty('n'),
+			'an assignment': (holder) => {
+				holder.n = 9;
+			},
 		};
 		for (const [change, makeChange] of Object.entries(changes))
 			for (const inTransaction of [false, true])
@@ -253,24 +257,67 @@ describe('pre-commit hook writes to the record their own write is committing', f
 					assert.deepStrictEqual(stored(recordId), { n: 3 });
 				});
 
-		it('after an await the hook changes the instance, its save is refused, and the change stays pending', async function () {
-			const { recordId, holder } = await holdRecord();
-			let refusal;
-			hookOnce(async () => {
-				await delay(1);
-				holder.set('n', 9);
-				await Promise.resolve(holder.save()).catch((error) => {
-					refusal = error;
+		// update(record, true) makes the record the holder's changes, which the write stores; put(id, record) stores
+		// the record passed, and its commit clears the holder's changes
+		const fullWrites = {
+			'put(record)': (holder, recordId) => holder.put({ id: recordId, n: 2 }),
+			'update(record, true)': (holder, recordId) => {
+				holder.update({ id: recordId, n: 2 }, true);
+				return holder.save();
+			},
+			'put(id, record)': (holder, recordId) => holder.put(recordId, { id: recordId, n: 2 }),
+		};
+		for (const [write, makeWrite] of Object.entries(fullWrites))
+			for (const [change, makeChange] of Object.entries(changes))
+				for (const inTransaction of [false, true])
+					it(`the hook of a full ${write} can not change the holder through ${change}, and the hold stays writable (in transaction(): ${inTransaction})`, async function () {
+						const { recordId, context, holder } = await holdRecord();
+						let hookRan = false;
+						let refusal;
+						hookOnce(() => {
+							hookRan = true;
+							try {
+								Promise.resolve(makeChange(holder)).catch((error) => {
+									refusal = error;
+								});
+							} catch (error) {
+								refusal = error;
+							}
+						});
+						if (inTransaction) await transaction(context, () => makeWrite(holder, recordId));
+						else await makeWrite(holder, recordId);
+						assert.ok(hookRan, 'premise: the full write ran its hook');
+						assert.ok(isLockedChangeRefusal(refusal), refusal?.message);
+						assert.deepStrictEqual(stored(recordId), { n: 2 });
+						holder.set('n', 3);
+						await holder.save();
+						assert.deepStrictEqual(stored(recordId), { n: 3 });
+					});
+
+		for (const [write, makeWrite] of Object.entries({
+			'a partial update': (holder) => {
+				holder.set('n', 2);
+				return holder.save();
+			},
+			'a full put(record)': (holder, recordId) => holder.put({ id: recordId, n: 2 }),
+		}))
+			it(`after an await the hook of ${write} changes the instance, its save is refused, and the change stays pending`, async function () {
+				const { recordId, holder } = await holdRecord();
+				let refusal;
+				hookOnce(async () => {
+					await delay(1);
+					holder.set('n', 9);
+					await Promise.resolve(holder.save()).catch((error) => {
+						refusal = error;
+					});
 				});
+				await makeWrite(holder, recordId);
+				assert.ok(isOwnHookRefusal(refusal), refusal?.message);
+				assert.deepStrictEqual(stored(recordId), { n: 2 });
+				assert.strictEqual(holder.n, 9);
+				await holder.save();
+				assert.deepStrictEqual(stored(recordId), { n: 9 });
 			});
-			holder.set('n', 2);
-			await holder.save();
-			assert.ok(isOwnHookRefusal(refusal), refusal?.message);
-			assert.deepStrictEqual(stored(recordId), { n: 2 });
-			assert.strictEqual(holder.n, 9);
-			await holder.save();
-			assert.deepStrictEqual(stored(recordId), { n: 9 });
-		});
 
 		it("a hook's deferred update through its own commit's lock is refused outside transaction() and leaves nothing staged", async function () {
 			const recordId = id();
