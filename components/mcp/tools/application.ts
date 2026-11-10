@@ -36,6 +36,7 @@ import {
 	snapshotProfileTools,
 	type AuthedUser,
 	type ToolCallContext,
+	type ToolDef,
 	type ToolResult,
 } from '../toolRegistry.ts';
 import {
@@ -55,6 +56,7 @@ import {
 } from '../customResourceRegistry.ts';
 import { notifyPromptsListChanged, notifyResourcesListChanged, notifyToolsListChanged } from '../listChanged.ts';
 import { decodeCursor, encodeCursor } from '../pagination.ts';
+import { resolveAttributes } from '../../../resources/jsonSchemaTypes.ts';
 import { serializesToArray, wrapToolResult } from './results.ts';
 import {
 	type AttributePermissionEntry,
@@ -90,13 +92,16 @@ interface ResourceClassLike {
 	description?: string;
 	hidden?: boolean;
 	properties?: Record<string, unknown>;
+	required?: readonly string[];
 	outputSchemas?: { [verb: string]: object };
 	/** The URL path (may carry `:param`/`*wildcard` segments), used to bind path params for contract resources. */
 	path?: string;
 	/** Present when built via `Resource.withSchema` (RFC 0001, Pillar 2) — drives typed tool schemas + binding. */
 	requestContract?: unknown;
 	/** Per-verb `{ query?, body? }` JSON-Schema fragments derived from the request contract. */
-	inputSchemas?: { [verb: string]: { query?: JsonSchemaFragmentLike; body?: JsonSchemaFragmentLike } };
+	inputSchemas?: {
+		[verb: string]: { query?: JsonSchemaFragmentLike; body?: JsonSchemaFragmentLike; bodyRequired?: boolean };
+	};
 	mcp?: { annotations?: { [verb: string]: ToolAnnotationsLike } };
 	get?: (target: unknown, request: unknown, data?: unknown) => unknown;
 	put?: (target: unknown, data: unknown, request: unknown) => unknown;
@@ -267,15 +272,16 @@ function contractInputSchema(ResourceClass: ResourceClassLike, contractVerb: str
 		properties[param] = { type: 'string', description: `Path parameter :${param}.` };
 		required.push(param);
 	}
-	const merge = (fragment: JsonSchemaFragmentLike | undefined, allowNull: boolean) => {
+	const merge = (fragment: JsonSchemaFragmentLike | undefined, allowNull: boolean, promoteRequired: boolean) => {
 		if (!fragment?.properties) return;
 		for (const [key, sub] of Object.entries(fragment.properties)) {
 			properties[key] = toJsonSchemaNullability(sub, false, allowNull);
 		}
+		if (!promoteRequired) return;
 		for (const key of fragment.required ?? []) if (!required.includes(key)) required.push(key);
 	};
-	merge(input?.query, false);
-	merge(input?.body, true);
+	merge(input?.query, false, true);
+	merge(input?.body, true, input?.bodyRequired !== false);
 	const schema: { type: string; properties: Record<string, unknown>; required?: string[] } = {
 		type: 'object',
 		properties,
@@ -322,21 +328,24 @@ function applyContractInputs(
  * contract resource those non-body keys are already bound onto the target by {@link applyContractInputs};
  * strip them here so the remaining object is the request body the contract's `additionalProperties:false`
  * body schema will accept (otherwise a bound `id`/query key poisons body validation). Non-contract
- * resources pass through unchanged.
+ * resources pass through unchanged. An `.optional` body with no keys left is omitted (`undefined`),
+ * as an unframed HTTP request would be, rather than validated as `{}`.
  */
 function contractBody(
 	a: Record<string, unknown>,
 	ResourceClass: ResourceClassLike,
 	contractVerb: string
-): Record<string, unknown> {
+): Record<string, unknown> | undefined {
 	if (!ResourceClass.requestContract) return a;
+	const input = ResourceClass.inputSchemas?.[contractVerb];
 	const exclude = new Set(pathParamNames(ResourceClass.path));
-	const queryProps = ResourceClass.inputSchemas?.[contractVerb]?.query?.properties;
-	if (queryProps) for (const key of Object.keys(queryProps)) exclude.add(key);
-	if (exclude.size === 0) return a;
-	const body: Record<string, unknown> = {};
-	for (const [key, val] of Object.entries(a)) if (!exclude.has(key)) body[key] = val;
-	return body;
+	if (input?.query?.properties) for (const key of Object.keys(input.query.properties)) exclude.add(key);
+	let body = a;
+	if (exclude.size > 0) {
+		body = {};
+		for (const [key, val] of Object.entries(a)) if (!exclude.has(key)) body[key] = val;
+	}
+	return input?.bodyRequired === false && Object.keys(body).length === 0 ? undefined : body;
 }
 
 /** A compiled parameterised route (e.g. `/widget/:id`), stored outside the base Map. */
@@ -358,11 +367,26 @@ type RequestTargetCtor = new () => Record<string, unknown> & {
 // Test seams: avoid Harper's eager graph init in unit tests.
 let _resourcesOverride: ResourcesRegistry | undefined;
 let _requestTargetCtorOverride: RequestTargetCtor | undefined;
+let warnedInvalidResourceSchemas = new WeakSet<object>();
+
+function warnInvalidResourceSchema(resource: ResourceClassLike, path: string, error: unknown): void {
+	if (warnedInvalidResourceSchemas.has(resource)) return;
+	warnedInvalidResourceSchemas.add(resource);
+	let detail = 'unknown schema error';
+	try {
+		detail = typeof error === 'object' && error !== null && 'message' in error ? String(error.message) : String(error);
+	} catch {}
+	harperLogger.warn(`MCP application skipped invalid schema for resource '/${path}': ${detail}`);
+}
+
 export function _setResourcesForTest(r: ResourcesRegistry | undefined): void {
 	_resourcesOverride = r;
 }
 export function _setRequestTargetForTest(ctor: RequestTargetCtor | undefined): void {
 	_requestTargetCtorOverride = ctor;
+}
+export function _resetInvalidSchemaWarningsForTest(): void {
+	warnedInvalidResourceSchemas = new WeakSet<object>();
 }
 
 // Cache the Resources module object (not the `resources` registry itself):
@@ -897,8 +921,8 @@ function mergeAnnotations(
  * semantics) is the only built-in default; `patch_*`/`delete_*` annotations are
  * deferred until repeat-call behavior is verified end-to-end.
  */
-function registerVerbTools(ctx: ResourceContext): number {
-	let count = 0;
+function deriveVerbTools(ctx: ResourceContext): ToolDef[] {
+	const definitions: ToolDef[] = [];
 	const { suffix, ResourceClass, attributes, verbs, tableName, databaseName, path } = ctx;
 	const tableDoc = ResourceClass.description;
 	const primaryKey = ResourceClass.primaryKey;
@@ -923,7 +947,7 @@ function registerVerbTools(ctx: ResourceContext): number {
 
 	if (verbs.get) {
 		const name = `get_${suffix}`;
-		addTool({
+		definitions.push({
 			name,
 			description: verbDescription('get', ctxForVerb),
 			inputSchema: overrideInput('get') ?? deriveGetSchema(attributes, undefined),
@@ -933,13 +957,12 @@ function registerVerbTools(ctx: ResourceContext): number {
 			visibleTo: makeVisibleTo(databaseName, tableName, 'read'),
 			handler: makeGetHandler(name, path, ResourceClass),
 		});
-		count++;
 	}
 	if (verbs.search) {
 		const name = `search_${suffix}`;
 		// search_* deliberately omits outputSchema — envelope shape (records vs
 		// data, cursor vs nextCursor) is tracked in the sibling envelope issue.
-		addTool({
+		definitions.push({
 			name,
 			description: verbDescription('search', ctxForVerb),
 			inputSchema: overrideInput('search') ?? deriveSearchSchema(attributes, undefined),
@@ -948,11 +971,10 @@ function registerVerbTools(ctx: ResourceContext): number {
 			visibleTo: makeVisibleTo(databaseName, tableName, 'read'),
 			handler: makeSearchHandler(name, path, ResourceClass),
 		});
-		count++;
 	}
 	if (verbs.create) {
 		const name = `create_${suffix}`;
-		addTool({
+		definitions.push({
 			name,
 			description: verbDescription('create', ctxForVerb),
 			inputSchema: overrideInput('create') ?? deriveCreateSchema(attributes, undefined),
@@ -962,11 +984,10 @@ function registerVerbTools(ctx: ResourceContext): number {
 			visibleTo: makeVisibleTo(databaseName, tableName, 'insert'),
 			handler: makeCreateHandler(name, path, ResourceClass),
 		});
-		count++;
 	}
 	if (verbs.updatePut) {
 		const name = `update_${suffix}`;
-		addTool({
+		definitions.push({
 			name,
 			description: verbDescription('update', ctxForVerb),
 			inputSchema: overrideInput('update') ?? deriveUpdateSchema(attributes, undefined),
@@ -978,10 +999,9 @@ function registerVerbTools(ctx: ResourceContext): number {
 			visibleTo: makeVisibleTo(databaseName, tableName, 'update'),
 			handler: makeUpdateHandler(name, path, ResourceClass, 'put'),
 		});
-		count++;
 	} else if (verbs.updatePatch) {
 		const name = `patch_${suffix}`;
-		addTool({
+		definitions.push({
 			name,
 			description: verbDescription('patch', ctxForVerb),
 			inputSchema: overrideInput('patch') ?? deriveUpdateSchema(attributes, undefined),
@@ -993,7 +1013,6 @@ function registerVerbTools(ctx: ResourceContext): number {
 			visibleTo: makeVisibleTo(databaseName, tableName, 'update'),
 			handler: makeUpdateHandler(name, path, ResourceClass, 'patch'),
 		});
-		count++;
 	}
 	if (verbs.delete) {
 		const name = `delete_${suffix}`;
@@ -1001,7 +1020,7 @@ function registerVerbTools(ctx: ResourceContext): number {
 		// `{ deleted }` so the result carries structuredContent matching the
 		// `{ deleted: boolean }` outputSchema. Authors can override the shape via
 		// `static outputSchemas.delete`.
-		addTool({
+		definitions.push({
 			name,
 			description: verbDescription('delete', ctxForVerb),
 			inputSchema: overrideInput('delete') ?? deriveDeleteSchema(attributes, undefined),
@@ -1013,9 +1032,8 @@ function registerVerbTools(ctx: ResourceContext): number {
 			visibleTo: makeVisibleTo(databaseName, tableName, 'delete'),
 			handler: makeDeleteHandler(name, path, ResourceClass),
 		});
-		count++;
 	}
-	return count;
+	return definitions;
 }
 
 /**
@@ -1437,21 +1455,37 @@ function buildApplicationTools(resources: ResourcesRegistry): void {
 		const hasCustomPrompts = Array.isArray(ResourceClass?.mcpPrompts) && ResourceClass.mcpPrompts.length > 0;
 		const hasCustomResources = Array.isArray(ResourceClass?.mcpResources) && ResourceClass.mcpResources.length > 0;
 		if (!hasVerbs && !hasCustomTools && !hasCustomPrompts && !hasCustomResources) return;
-		const databaseName = ResourceClass?.databaseName;
-		const tableName = ResourceClass?.tableName;
-		const suffix = uniqueSuffix(path, databaseName, claimedSuffixes);
+		const suffix = uniqueSuffix(path, ResourceClass?.databaseName, claimedSuffixes);
 		claimedSuffixes.add(suffix);
-		const attributes = (ResourceClass?.attributes ?? []) as HarperAttribute[];
 		if (hasVerbs) {
-			toolsRegistered += registerVerbTools({
-				path,
-				suffix,
-				ResourceClass,
-				databaseName,
-				tableName,
-				attributes,
-				verbs,
-			});
+			let attributes: HarperAttribute[] | undefined;
+			try {
+				attributes = resolveAttributes(ResourceClass) as HarperAttribute[];
+			} catch (error) {
+				warnInvalidResourceSchema(ResourceClass, path, error);
+			}
+			if (attributes) {
+				const databaseName = ResourceClass?.databaseName;
+				const tableName = ResourceClass?.tableName;
+				let definitions: ToolDef[] | undefined;
+				try {
+					definitions = deriveVerbTools({
+						path,
+						suffix,
+						ResourceClass,
+						databaseName,
+						tableName,
+						attributes,
+						verbs,
+					});
+				} catch (error) {
+					warnInvalidResourceSchema(ResourceClass, path, error);
+				}
+				if (definitions) {
+					for (const definition of definitions) addTool(definition);
+					toolsRegistered += definitions.length;
+				}
+			}
 		}
 		toolsRegistered += registerCustomMcpTools(ResourceClass, path);
 		registerCustomMcpPrompts(ResourceClass, path);

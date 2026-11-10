@@ -22,6 +22,7 @@ function pAuthorize(req?: any, resp?: any) {
 import * as serverUtilities from './serverUtilities.ts';
 import { operationErrorResponse } from './operationErrorResponse.ts';
 import { applyImpersonation } from '../../security/impersonation.ts';
+import { clientAddressOf, runWithCallerAddress } from '../../security/networkAccess.ts';
 import { createGzip, constants } from 'node:zlib';
 import { ProgressEmitter, createSSEResponseStream } from './progressEmitter.ts';
 
@@ -83,9 +84,9 @@ function serverErrorHandler(error?: any, req?: any, resp?: any) {
 }
 
 function reqBodyValidationHandler(req?: any, resp?: any, done?: any) {
-	if (!req.body || Object.keys(req.body).length === 0 || typeof req.body !== 'object') {
+	if (typeof req.body !== 'object' || req.body === null || Object.keys(req.body).length === 0) {
 		const validationErr = handleHDBError(new Error(), 'Invalid JSON.', hdbErrors.HTTP_STATUS_CODES.BAD_REQUEST);
-		done(validationErr, null);
+		return done(validationErr, null);
 	}
 	if (hdbUtil.isEmpty(req.body.operation)) {
 		const validationErr = handleHDBError(
@@ -93,7 +94,7 @@ function reqBodyValidationHandler(req?: any, resp?: any, done?: any) {
 			"Request body must include an 'operation' property.",
 			hdbErrors.HTTP_STATUS_CODES.BAD_REQUEST
 		);
-		done(validationErr, null);
+		return done(validationErr, null);
 	}
 	done();
 }
@@ -178,7 +179,10 @@ async function handlePostRequest(req?: any, res?: any, _bypassAuth: any = false)
 			return createSSEResponseStream(emitter, () => serverUtilities.processLocalTransaction(req, operation_function));
 		}
 
-		let result: any = await serverUtilities.processLocalTransaction(req, operation_function);
+		const dispatch = () => serverUtilities.processLocalTransaction(req, operation_function);
+		let result: any = await (req.body.operation === terms.OPERATIONS_ENUM.SET_NETWORK_ACCESS
+			? runWithCallerAddress(clientAddressOf(req), dispatch)
+			: dispatch());
 		if (result instanceof Readable && (result as any).headers) {
 			for (let [name, value] of (result as any).headers) {
 				res.header(name, value);

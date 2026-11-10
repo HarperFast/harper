@@ -173,7 +173,8 @@ suite(
 			equal(unowned.status, 200);
 			equal(unowned.body.servedBy, 'application-catch-all');
 			equal(unowned.body.authorization, null);
-			equal(unowned.body.harperUser, ctx.harper.admin.username);
+			// the harness authorizes loopback requests, which run as the local principal
+			equal(unowned.body.harperUser, 'local');
 		});
 
 		test('a deferred-credential response is kept out of shared caches', async () => {

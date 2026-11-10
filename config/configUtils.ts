@@ -4,8 +4,10 @@ import _logger from '../utility/logging/harper_logger.ts';
 const logger = _logger;
 import {
 	configValidator,
+	effectiveHttpConfigValidator,
 	getDomainSocketPathLengthWarning,
 	isLegacySqlApplicationEntry,
+	REQUIRED_ROOT_CONFIG_KEYS,
 } from '../validation/configValidator.ts';
 import { isReservedComponentName } from '../utility/componentNames.ts';
 import _fs from 'fs-extra';
@@ -33,7 +35,13 @@ import { server } from '../server/Server.ts';
 import { getBackupDirPath } from './configHelpers.ts';
 import { PACKAGE_ROOT } from '../utility/packageUtils.js';
 import * as env from '../utility/environment/environmentManager.ts';
-import { prepareRuntimeEnvConfig, hasPersistedEnvConfigState, discardConfigState } from './harperConfigEnvVars.ts';
+import {
+	prepareRuntimeEnvConfig,
+	hasPersistedEnvConfigState,
+	discardConfigState,
+	composeConfigFromEnv,
+	envLayerNaming,
+} from './harperConfigEnvVars.ts';
 import { warnComponentEnvConfigVars, resolveConfiguredPath } from './componentEnvPrepass.ts';
 import { formatConfigParseErrorDetails } from './parseConfigFile.ts';
 import { isStartableThreadHeapMemory } from '../server/threads/threadHeapMemory.ts';
@@ -333,14 +341,172 @@ function matchesFileContent(filePath, content): boolean {
 	}
 }
 
-/**
- * Builds the Harper config file using user inputs and default values from defaultConfig.yaml
- * @param args - any args that the user provided.
- */
-export function createConfigFile(args, skipFsValidation = false) {
-	const configDoc = parseYamlDoc(DEFAULT_CONFIG_FILE_PATH);
+// Defaults whose presence opens a listener or widens cross-origin access. Under a root section the template
+// authored, an omitted one stays omitted, so it stays off as it did before templates were backfilled.
+const NESTED_BACKFILL_OPT_IN_PATHS = [
+	'mqtt.network.port',
+	'mqtt.network.securePort',
+	'mqtt.webSocket',
+	'operationsApi.network.cors',
+	'operationsApi.network.corsAccessList',
+];
 
-	flatDefaultConfigObj = flattenConfig(configDoc.toJSON());
+function backfillMissingDefaults(
+	targetDoc: _YAML.Document,
+	defaultsDoc: _YAML.Document,
+	templateRootKeys: Set<string>,
+	prefix: string[] = [],
+	introducedRoots?: Set<string>
+): void {
+	const defaultsNode = prefix.length === 0 ? defaultsDoc.contents : defaultsDoc.getIn(prefix, true);
+	if (!YAML.isMap(defaultsNode)) return;
+	for (const pair of defaultsNode.items) {
+		const key = String((pair.key as any)?.value ?? pair.key);
+		const keyPath = [...prefix, key];
+		if (!targetDoc.hasIn(keyPath)) {
+			if (prefix.length === 0 && !REQUIRED_ROOT_CONFIG_KEYS.has(key) && !introducedRoots?.has(key)) continue;
+			const dotPath = keyPath.join('.');
+			const skipOptIn = prefix.length > 0 && templateRootKeys.has(prefix[0]);
+			if (skipOptIn && NESTED_BACKFILL_OPT_IN_PATHS.includes(dotPath)) continue;
+			const defaultNode = defaultsDoc.getIn(keyPath, true);
+			const defaultVal =
+				defaultNode && typeof (defaultNode as any).toJSON === 'function'
+					? (defaultNode as any).toJSON()
+					: defaultsDoc.getIn(keyPath);
+			if (skipOptIn) {
+				for (const optInPath of NESTED_BACKFILL_OPT_IN_PATHS) {
+					if (optInPath.startsWith(`${dotPath}.`)) {
+						const parts = optInPath.slice(dotPath.length + 1).split('.');
+						const parent = parts.slice(0, -1).reduce((node, part) => node?.[part], defaultVal);
+						if (parent && typeof parent === 'object') delete parent[parts[parts.length - 1]];
+					}
+				}
+			}
+			targetDoc.setIn(keyPath, targetDoc.createNode(defaultVal));
+		} else if (YAML.isMap(pair.value) && YAML.isMap(targetDoc.getIn(keyPath, true))) {
+			backfillMissingDefaults(targetDoc, defaultsDoc, templateRootKeys, keyPath);
+		}
+	}
+}
+
+function collectLeafDotPaths(
+	obj: any,
+	prefix: string[] = [],
+	out = new Set<string>(),
+	defaultsDoc?: _YAML.Document
+): Set<string> {
+	if (obj === null || typeof obj !== 'object' || Array.isArray(obj)) {
+		if (prefix.length > 0) out.add(prefix.join('.'));
+		return out;
+	}
+	for (const [key, val] of Object.entries(obj)) {
+		const nextPath = [...prefix, key];
+		if (val !== null && typeof val === 'object' && !Array.isArray(val)) {
+			if (Object.keys(val).length > 0) {
+				collectLeafDotPaths(val, nextPath, out, defaultsDoc);
+			} else {
+				const defaultNode = defaultsDoc?.getIn(nextPath, true);
+				if (!YAML.isMap(defaultNode) || defaultNode.items.length === 0) {
+					out.add(nextPath.join('.'));
+				}
+			}
+		} else {
+			out.add(nextPath.join('.'));
+		}
+	}
+	return out;
+}
+
+function syncObjectToYamlDoc(doc: _YAML.Document, obj: Record<string, any>, prefix: string[] = []): void {
+	const mapNode = prefix.length === 0 ? doc.contents : doc.getIn(prefix, true);
+	if (!YAML.isMap(mapNode)) {
+		if (prefix.length === 0) {
+			doc.contents = doc.createNode(obj) as any;
+		} else {
+			doc.setIn(prefix, doc.createNode(obj));
+		}
+		return;
+	}
+	for (const pair of [...mapNode.items]) {
+		const key = String((pair.key as any)?.value ?? pair.key);
+		if (!Object.prototype.hasOwnProperty.call(obj, key) || obj[key] === undefined) {
+			doc.deleteIn([...prefix, key]);
+		}
+	}
+	for (const [key, val] of Object.entries(obj)) {
+		if (val === undefined) continue;
+		const keyPath = [...prefix, key];
+		const currentNode = doc.getIn(keyPath, true);
+		if (val !== null && typeof val === 'object' && !Array.isArray(val)) {
+			if (Object.keys(val).length === 0) {
+				if (!YAML.isMap(currentNode) || currentNode.items.length !== 0) {
+					doc.setIn(keyPath, doc.createNode({}));
+				}
+			} else if (YAML.isMap(currentNode)) {
+				syncObjectToYamlDoc(doc, val, keyPath);
+			} else {
+				doc.setIn(keyPath, doc.createNode(val));
+			}
+		} else {
+			const currentVal =
+				currentNode && typeof (currentNode as any).toJSON === 'function'
+					? (currentNode as any).toJSON()
+					: doc.getIn(keyPath);
+			if (!doc.hasIn(keyPath) || !isEqual(currentVal, val)) {
+				doc.setIn(keyPath, val !== null && typeof val === 'object' ? doc.createNode(val) : val);
+			}
+		}
+	}
+}
+
+export interface StagedInstallConfig {
+	configDoc: _YAML.Document;
+	commitEnvConfigState?: () => boolean;
+	validated?: boolean;
+}
+
+function clearScalarAncestors(configDoc: _YAML.Document, splitParam: string[], userPaths?: Set<string>) {
+	for (let i = 1; i < splitParam.length; i++) {
+		const ancestorPath = splitParam.slice(0, i);
+		const ancestorVal = configDoc.getIn(ancestorPath);
+		if (ancestorVal !== undefined && (ancestorVal === null || typeof ancestorVal !== 'object')) {
+			configDoc.deleteIn(ancestorPath);
+			userPaths?.delete(ancestorPath.join('.'));
+		}
+	}
+}
+
+function composeInstallConfig(
+	args,
+	{
+		baseConfigPath,
+		defaultedArgKeys,
+		argsAreUserAuthored = true,
+	}: { baseConfigPath?: string; defaultedArgKeys?: Set<string>; argsAreUserAuthored?: boolean } = {}
+): StagedInstallConfig {
+	const defaultDoc = parseYamlDoc(DEFAULT_CONFIG_FILE_PATH);
+	flatDefaultConfigObj = flattenConfig(defaultDoc.toJSON());
+
+	let configDoc = defaultDoc;
+	const userPaths = new Set<string>();
+	let templateRootKeys: Set<string>;
+	if (baseConfigPath) {
+		configDoc = parseYamlDoc(baseConfigPath);
+		if (configDoc.errors?.length > 0) {
+			throw new ServerError(
+				`Error parsing ${baseConfigPath}: YAMLParseError ${formatConfigParseErrorDetails(configDoc.errors[0])}`
+			);
+		}
+		const threadCount = configDoc.getIn(['threads']);
+		if (typeof threadCount === 'number' && threadCount >= 0) {
+			configDoc.deleteIn(['threads']);
+			configDoc.setIn(['threads', 'count'], threadCount);
+		}
+		const templateJson = configDoc.toJSON();
+		collectLeafDotPaths(templateJson, [], userPaths, defaultDoc);
+		templateRootKeys = new Set(Object.keys(templateJson ?? {}));
+		backfillMissingDefaults(configDoc, defaultDoc, templateRootKeys);
+	}
 
 	// Loop through the user inputted args. Match them to a parameter in the default config file and update value.
 	let schemasArgs;
@@ -369,12 +535,21 @@ export function createConfigFile(args, skipFsValidation = false) {
 			let value = castConfigValue(configParam, args[arg]);
 			if (configParam === 'rootPath' && value?.endsWith('/')) value = value.slice(0, -1);
 			try {
-				// Remove parent structure if it's a boolean to avoid type conflicts when setting the new value
-				if (splitParam.length > 1 && typeof configDoc.getIn(splitParam.slice(0, -1)) === 'boolean') {
-					configDoc.deleteIn(splitParam.slice(0, -1));
-				}
+				clearScalarAncestors(configDoc, splitParam, userPaths);
 
-				configDoc.setIn([...splitParam], value);
+				configDoc.setIn(
+					[...splitParam],
+					value !== null && typeof value === 'object' ? configDoc.createNode(value) : value
+				);
+				if (
+					argsAreUserAuthored &&
+					value !== undefined &&
+					value !== null &&
+					value !== '' &&
+					!defaultedArgKeys?.has(arg)
+				) {
+					userPaths.add(splitParam.join('.'));
+				}
 			} catch (err) {
 				logger.error(err);
 			}
@@ -382,34 +557,78 @@ export function createConfigFile(args, skipFsValidation = false) {
 	}
 
 	if (schemasArgs) setSchemasConfig(configDoc, schemasArgs);
+	if (baseConfigPath) {
+		// Originals and $union must see the defaults of sections that install will keep enabled.
+		const introducedRoots = new Set(
+			Object.entries(composeConfigFromEnv())
+				.filter(([, value]) => value !== null && typeof value === 'object' && !Array.isArray(value))
+				.map(([key]) => key)
+		);
+		backfillMissingDefaults(configDoc, defaultDoc, templateRootKeys, [], introducedRoots);
+	}
 
 	// Apply HARPER_DEFAULT_CONFIG, HARPER_CONFIG and HARPER_SET_CONFIG environment variables BEFORE validation
 	// This allows runtime env vars to resolve port conflicts before validation
 	// Must be called AFTER rootPath is set in configDoc
 	// Mutates configDoc in place
-	applyRuntimeEnvVarConfig(configDoc, null, { isInstall: true });
+	const commitEnvConfigState = applyRuntimeEnvVarConfig(configDoc, null, {
+		isInstall: true,
+		userPaths,
+		deferStateCommit: true,
+	});
+	// A root section the template omitted but an arg or env layer introduced still needs its sibling defaults
+	if (baseConfigPath) backfillMissingDefaults(configDoc, defaultDoc, templateRootKeys);
+
+	return { configDoc, commitEnvConfigState };
+}
+
+// Leaves configObj unset until writeStagedInstallConfig() finishes so pre-file readers still see "uninstalled".
+export function stageInstallConfig(args, baseConfigPath?: string, defaultedArgKeys?: Set<string>): StagedInstallConfig {
+	const staged = composeInstallConfig(args, { baseConfigPath, defaultedArgKeys });
+	flatConfigObj = flattenConfig(staged.configDoc.toJSON());
+	return staged;
+}
+
+export function validateStagedInstallConfig(staged: StagedInstallConfig, skipFsValidation = false): void {
+	validateConfig(staged.configDoc, skipFsValidation);
+	staged.validated = true;
+	flatConfigObj = flattenConfig(staged.configDoc.toJSON());
+}
+
+export function writeStagedInstallConfig(
+	staged: StagedInstallConfig,
+	targetConfigPath?: string,
+	skipFsValidation = false
+): void {
+	const { configDoc, commitEnvConfigState, validated } = staged;
 
 	// Validates config doc and if required sets default values for some parameters.
-	validateConfig(configDoc, skipFsValidation);
-
-	flatConfigObj = setActiveConfig(configDoc.toJSON());
+	if (!validated) {
+		validateConfig(configDoc, skipFsValidation);
+	}
 
 	// Create new config file and write config doc to it.
 	const hdbRoot = configDoc.getIn(['rootPath']) as string;
-	const configFilePath = path.join(hdbRoot, hdbTerms.HARPER_CONFIG_FILE);
+	const configFilePath = targetConfigPath
+		? path.resolve(targetConfigPath)
+		: path.join(hdbRoot, hdbTerms.HARPER_CONFIG_FILE);
 	fs.createFileSync(configFilePath);
-	if (configDoc.errors?.length > 0) {
-		throw handleHDBError(
-			new Error(),
-			`Error parsing ${configFilePath} ${configDoc.errors}`,
-			HTTP_STATUS_CODES.BAD_REQUEST,
-			undefined,
-			undefined,
-			true
-		);
-	}
 	atomicWriteFile(configFilePath, String(configDoc));
+	flatConfigObj = setActiveConfig(configDoc.toJSON());
+	commitEnvConfigState?.();
 	logger.trace(`Config file written to ${configFilePath}`);
+}
+
+/**
+ * Builds the Harper config file using user inputs and default values from defaultConfig.yaml
+ * @param args - any args that the user provided
+ * @param skipFsValidation - when true, skips filesystem existence checks during config validation.
+ */
+export function createConfigFile(args, skipFsValidation = false) {
+	// Callers such as harper-pro's clone pass whole flattened configs, not operator choices, so
+	// HARPER_DEFAULT_CONFIG must keep ownership of the paths it supplies.
+	const staged = composeInstallConfig(args, { argsAreUserAuthored: false });
+	writeStagedInstallConfig(staged, undefined, skipFsValidation);
 }
 
 /**
@@ -710,7 +929,8 @@ export function initConfig(force = false) {
 			);
 		}
 
-		checkForUpdatedConfig(configDoc, configFilePath);
+		const installing = process.argv[2]?.toLowerCase() === hdbTerms.SERVICE_ACTIONS_ENUM.INSTALL;
+		checkForUpdatedConfig(configDoc, installing ? undefined : configFilePath);
 
 		// Config-shaping env vars delivered via component .env files (loadEnv) cannot take effect —
 		// warn loudly instead of silently no-opping (#1513; components must not shape instance config)
@@ -733,7 +953,9 @@ export function initConfig(force = false) {
 		}
 
 		// Apply HARPER_DEFAULT_CONFIG, HARPER_CONFIG and HARPER_SET_CONFIG environment variables
-		applyRuntimeEnvVarConfig(configDoc, configFilePath);
+		applyRuntimeEnvVarConfig(configDoc, installing ? null : configFilePath, {
+			deferStateCommit: installing,
+		});
 
 		// Validates config doc and if required sets default values for some parameters.
 		validateConfig(configDoc);
@@ -793,7 +1015,7 @@ function checkForUpdatedConfig(configDoc, configFilePath) {
 		updateFile = true;
 	}
 
-	if (updateFile) {
+	if (updateFile && configFilePath) {
 		logger.trace('Updating config file with missing config params');
 		persistConfigDuringBoot(configFilePath, () => atomicWriteFile(configFilePath, String(configDoc)));
 	}
@@ -875,10 +1097,11 @@ function validateConfig(configDoc, skipFsValidation = false) {
 	}
 
 	const validation = configValidator(configJson, skipFsValidation);
-	if (validation.error) {
+	const error = validation.error ?? effectiveHttpConfigValidator(flattenConfig(configDoc.toJSON())).error;
+	if (error) {
 		throw handleHDBError(
 			new Error(),
-			HDB_ERROR_MSGS.CONFIG_VALIDATION(validation.error.message),
+			HDB_ERROR_MSGS.CONFIG_VALIDATION(error.message),
 			HTTP_STATUS_CODES.BAD_REQUEST,
 			undefined,
 			undefined,
@@ -923,7 +1146,8 @@ export function updateConfigObject(param: string, value: any) {
 		return;
 	}
 
-	flatConfigObj[configObjKey.toLowerCase()] = value;
+	if (value === undefined) delete flatConfigObj[configObjKey.toLowerCase()];
+	else flatConfigObj[configObjKey.toLowerCase()] = value;
 
 	// Keep the nested config tree in sync too: componentLoader (root components) and other
 	// nested-path readers derive behavior — e.g. a component's network port/protocol — from
@@ -992,9 +1216,17 @@ function isSuffixEscapedParam(arg: string): boolean {
 	return component !== undefined && !isReservedComponentName(component);
 }
 
+// Written only by set_configuration, as whole values: kept out of CONFIG_PARAM_MAP so a bare env var or CLI arg of
+// the same name (a generic MODELS, say) is never applied at boot.
+const SET_CONFIGURATION_ONLY_PARAMS: ReadonlySet<string> = new Set([
+	'models',
+	hdbTerms.STUDIO_CONFIG_PARAMS.NAVIGATION,
+	hdbTerms.STUDIO_CONFIG_PARAMS.LANDING,
+]);
+
 function lookupConfigWriteParam(arg: string): string | undefined {
-	// Keep the generic MODELS env var out of the boot/install config allowlist.
-	if (arg.toLowerCase() === 'models') return 'models';
+	const name = arg.toLowerCase();
+	if (SET_CONFIGURATION_ONLY_PARAMS.has(name)) return name;
 	return lookupConfigParam(arg) ?? (isSuffixEscapedParam(arg) ? arg : undefined);
 }
 
@@ -1103,6 +1335,7 @@ export function updateConfigValue(
 
 		const splitParam = configParam.split('_');
 		const newValue = castConfigValue(configParam, value);
+		clearScalarAncestors(configDoc, splitParam);
 		configDoc.setIn([...splitParam], newValue);
 	} else {
 		// Loop through the user inputted args. Match them to a parameter in the default config file and update value.
@@ -1150,10 +1383,12 @@ export function updateConfigValue(
 				let newValue = castConfigValue(configParam, parsedArgs[arg]);
 				if (configParam === 'rootPath' && newValue?.endsWith('/')) newValue = newValue.slice(0, -1);
 				try {
-					if (splitParam.length > 1) {
-						if (typeof configDoc.getIn(splitParam.slice(0, -1)) === 'boolean') {
-							configDoc.deleteIn(splitParam.slice(0, -1));
-						}
+					clearScalarAncestors(configDoc, splitParam);
+					// The Studio reader ignores a `studio` that is not a map; a list survives the scalar clear and would
+					// make setIn throw, so the write replaces it rather than failing to land.
+					if (SET_CONFIGURATION_ONLY_PARAMS.has(configParam) && splitParam.length > 1) {
+						const parent = configDoc.getIn(splitParam.slice(0, -1));
+						if (parent !== undefined && !YAML.isMap(parent)) configDoc.deleteIn(splitParam.slice(0, -1));
 					}
 					configDoc.setIn([...splitParam], newValue);
 				} catch (err) {
@@ -1323,6 +1558,27 @@ export function getConfiguration() {
 	return configDoc.toJSON();
 }
 
+// A malformed Studio setting is dropped when read rather than failing a boot, so this write is where it is refused.
+async function assertStudioSettingsValid(configFields) {
+	const problems: string[] = [];
+	let studioConfiguration;
+	for (const field in configFields) {
+		const param = field.toLowerCase();
+		if (param !== hdbTerms.STUDIO_CONFIG_PARAMS.NAVIGATION && param !== hdbTerms.STUDIO_CONFIG_PARAMS.LANDING) continue;
+		// A reasserting env layer would put its own value back at the next start, so the write would silently revert.
+		const pinnedBy = envLayerNaming(param.replace('_', '.'));
+		if (pinnedBy && pinnedBy !== 'HARPER_DEFAULT_CONFIG')
+			throw new ClientError(`Cannot set ${param}: ${pinnedBy} defines it. Change that variable first.`, 409);
+		// Imported lazily: it imports this module.
+		studioConfiguration ??= await import('./studioConfiguration.ts');
+		const value = castConfigValue(param, configFields[field]);
+		if (param === hdbTerms.STUDIO_CONFIG_PARAMS.NAVIGATION)
+			studioConfiguration.validateStudioNavigation(value, problems, false);
+		else studioConfiguration.validateStudioLanding(value, problems);
+	}
+	if (problems.length > 0) throw new ClientError(`Unable to update config: ${problems.join('; ')}`, 400);
+}
+
 // `set_configuration` is the one config writer that also fans out (`replicated: true`), so a value
 // accepted here lands on every peer at once and the next rolling restart takes the whole cluster
 // down together (harper-pro#558). Boot-time writers are deliberately not gated the same way: config
@@ -1411,6 +1667,7 @@ export async function setConfiguration(setConfigJson) {
 		);
 	}
 	assertThreadHeapMemoryStartable(configFields);
+	await assertStudioSettingsValid(configFields);
 	if (Object.keys(configFields).some((field) => field.toLowerCase() === 'models')) {
 		const { envLayerNamingModels } = await import('../resources/models/bootstrap.ts');
 		const pinnedBy = envLayerNamingModels();
@@ -1488,7 +1745,15 @@ export function parseYamlDoc(filePath) {
  * @param {string} [configFilePath] - Path to config file (optional, skips file write if not provided)
  * @param {Object} [options] - Options to pass to applyRuntimeEnvConfig (e.g., {isInstall: true})
  */
-function applyRuntimeEnvVarConfig(configDoc, configFilePath, options = {}) {
+function applyRuntimeEnvVarConfig(
+	configDoc,
+	configFilePath,
+	options: {
+		isInstall?: boolean;
+		userPaths?: Iterable<string>;
+		deferStateCommit?: boolean;
+	} = {}
+): (() => boolean) | undefined {
 	const defaultEnvValue = process.env.HARPER_DEFAULT_CONFIG;
 	const configEnvValue = process.env.HARPER_CONFIG;
 	const setEnvValue = process.env.HARPER_SET_CONFIG;
@@ -1513,7 +1778,7 @@ function applyRuntimeEnvVarConfig(configDoc, configFilePath, options = {}) {
 
 	let saveEnvConfigState;
 	let confirmEnvConfigState;
-	let commitEnvConfigState;
+	let commitEnvConfigState: () => boolean;
 	try {
 		// Apply env vars with source tracking and drift detection
 		({
@@ -1533,20 +1798,8 @@ function applyRuntimeEnvVarConfig(configDoc, configFilePath, options = {}) {
 			configObj.operationsApi.network.port = null;
 		}
 
-		// Update the YAML document's contents
-		// We update only the 'contents' property to preserve the Document instance and its methods
-		const mergedDoc = YAML.parseDocument(YAML.stringify(configObj), { simpleKeys: true } as any);
-
-		// Check for YAML parsing errors
-		if (mergedDoc.errors?.length > 0) {
-			throw handleHDBError(
-				new Error(),
-				`Error parsing harperdb-config.yaml: ${mergedDoc.errors}`,
-				HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR
-			);
-		}
-
-		configDoc.contents = mergedDoc.contents;
+		// Update the YAML document's contents in place so comments are preserved
+		syncObjectToYamlDoc(configDoc, configObj);
 	} catch (error) {
 		logger.error(`Failed to apply runtime env config: ${error.message}`);
 		throw error;
@@ -1555,6 +1808,7 @@ function applyRuntimeEnvVarConfig(configDoc, configFilePath, options = {}) {
 	// Install has no config file yet and no process to keep alive, so its snapshot write stays
 	// mandatory - an install that never recorded originals should fail, not proceed.
 	if (!configFilePath) {
+		if (options.deferStateCommit) return commitEnvConfigState;
 		commitEnvConfigState();
 		return;
 	}

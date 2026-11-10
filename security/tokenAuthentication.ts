@@ -13,8 +13,9 @@ import {
 import { ClientError, ServerError, hdbErrors } from '../utility/errors/hdbError.ts';
 const { HTTP_STATUS_CODES, AUTHENTICATION_ERROR_MSGS } = hdbErrors;
 import logger from '../utility/logging/harper_logger.ts';
+import { withoutSystemGrants } from './systemRolePermissions.ts';
 import * as password from '../utility/password.ts';
-import { findAndValidateUser, type User } from './user.ts';
+import { findAndValidateUser, getSuperUser, isLocalPrincipal, type User } from './user.ts';
 import { attachScopeToToken, attachScopeToUser, hasOperationScope } from './operationScope.ts';
 import {
 	WORKLOAD_IDENTITY_CLAIM,
@@ -183,6 +184,16 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 		return createScopedToken(authObj);
 	}
 
+	const credentialFree = !authObj?.username && !authObj?.password;
+	// A token naming the local principal would be a root credential nothing can revoke. Outside the
+	// try below, which would report a missing user as invalid credentials.
+	let localMintUsername: string | undefined;
+	if (credentialFree && isLocalPrincipal(authObj?.hdb_user)) {
+		localMintUsername = (await getSuperUser())?.username;
+		if (!localMintUsername)
+			throw new ClientError(AUTHENTICATION_ERROR_MSGS.NO_USER_TO_MINT_FOR, HTTP_STATUS_CODES.CONFLICT);
+	}
+
 	let user: any;
 	try {
 		// Trusted bypass is dispatch/async-context state (set by a component calling
@@ -190,7 +201,7 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 		// caller-controlled and would let anyone mint tokens for an arbitrary username
 		// without a password (see operationAuthorizationState.ts).
 		let validatePassword: boolean = !isOperationAuthorizationBypassed();
-		if (!authObj.username && !authObj.password) {
+		if (credentialFree) {
 			// No passwordless self-mint: a scoped token's username is an unverified attribution label (a
 			// real user created later with that name would get the standing tokens), and a bearer-validator
 			// principal would trade a component's token for longer-lived Harper tokens.
@@ -198,7 +209,7 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 				throw new ClientError(AUTHENTICATION_ERROR_MSGS.INVALID_CREDENTIALS, HTTP_STATUS_CODES.UNAUTHORIZED);
 			}
 			// if the username and password are not provided, use the hdb_user making the request.
-			authObj.username = authObj.hdb_user?.username;
+			authObj.username = localMintUsername ?? authObj.hdb_user?.username;
 			// the password would have been checked by authHandler before getting here
 			validatePassword = false;
 		}
@@ -510,10 +521,10 @@ function assertUsableVerificationKey(publicKey: unknown): void {
 /**
  * Builds the request user for a verified scoped token from its embedded role. No hdb_user lookup:
  * the signed claims are the whole identity. The downgrade is re-applied here as defense-in-depth,
- * so no scoped token — whatever minted it — can ever assert super_user or cluster_user.
+ * so no scoped token — whatever minted it — can assert super_user, cluster_user or declared system grants.
  */
 function buildUserFromScopedToken(claims: JwtPayload): User {
-	const embedded = (claims.role as { permission?: Record<string, unknown> })?.permission;
+	const embedded = withoutSystemGrants(claims.role as { permission?: Record<string, unknown> }, false)?.permission;
 	if (!embedded || typeof embedded !== 'object' || Array.isArray(embedded) || typeof claims.username !== 'string') {
 		throw credentialRejectionError(AUTHENTICATION_ERROR_MSGS.INVALID_TOKEN, HTTP_STATUS_CODES.UNAUTHORIZED);
 	}

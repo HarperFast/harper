@@ -23,6 +23,12 @@ class FullTextNativeTestBinding {
 			publish() {}
 			close() {}
 			searchPage() {}
+			telemetry() {}
+			configureTelemetry() {}
+		};
+		this.NativeFullTextReader = class {
+			telemetry() {}
+			configureTelemetry() {}
 		};
 	}
 
@@ -30,11 +36,12 @@ class FullTextNativeTestBinding {
 		return {
 			packageVersion: 'test',
 			tantivyVersion: 'test',
-			nativeAbiVersion: 9,
+			nativeAbiVersion: 14,
 			queryClassIsolationMinimumSearchThreads: 2,
 			lifecycleApiVersion: 1,
 			mutationBatchApiVersion: 5,
-			queryApiVersion: 4,
+			queryApiVersion: 8,
+			telemetryApiVersion: 1,
 			storageBackends: ['native'],
 			limits: {
 				maxCommitPayloadBytes: 64 * 1024,
@@ -42,6 +49,8 @@ class FullTextNativeTestBinding {
 				maxRecordVersionBytes: 4_096,
 				maxCandidateIds: 1_024,
 				maxCandidateBytes: 1024 * 1024,
+				maxConfiguredQueryTerms: 1024,
+				maxConfiguredQueryClauses: 4096,
 				maxSearchWindow: 10_000,
 				maxSearchPageSize: 10_000,
 				maxAutocompleteResults: 100,
@@ -233,7 +242,11 @@ function validateSearchExpression(expression) {
 		validateSearchExpression(expression.clause);
 		return;
 	}
-	assertAllowedKeys(expression, ['text', 'mode', 'operator', 'fields'], 'search expression');
+	assertAllowedKeys(
+		expression,
+		['text', 'mode', 'operator', 'fields', 'fuzzyDistance', 'fuzzyTranspositions'],
+		'search expression'
+	);
 }
 
 function validateSearchRequest(request) {
@@ -246,7 +259,11 @@ function validateSearchRequest(request) {
 }
 
 function validateTraceRequest(request) {
-	assertAllowedKeys(request, ['text', 'mode', 'operator', 'fields'], 'trace request');
+	assertAllowedKeys(
+		request,
+		['text', 'mode', 'operator', 'fields', 'fuzzyDistance', 'fuzzyTranspositions'],
+		'trace request'
+	);
 }
 
 function scoreExpression(expression, fields) {

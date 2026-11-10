@@ -211,6 +211,74 @@ describe('ComponentLoader Status Integration', function () {
 			assert.equal(assignedOrigin, origin, 'scope.ensureTable should preserve the component origin');
 		});
 
+		describe('status reported by a plugin while it loads', function () {
+			const { statusForComponent } = require('#src/components/status/index');
+
+			async function loadPlugin(name, plugin) {
+				const componentDir = path.join(tempDir, name);
+				mkdirSync(componentDir);
+				writeFileSync(path.join(componentDir, 'harperdb-config.yaml'), `${name}Plugin: {}`);
+				componentLoader.TRUSTED_RESOURCE_PLUGINS[`${name}Plugin`] = plugin;
+				try {
+					await componentLoader.loadComponent(componentDir, { isWorker: true, set() {} }, 'test-origin');
+				} finally {
+					delete componentLoader.TRUSTED_RESOURCE_PLUGINS[`${name}Plugin`];
+				}
+				return statusForComponent(`${name}.${name}Plugin`).get();
+			}
+
+			for (const level of ['warning', 'unknown', 'error']) {
+				it(`keeps a ${level} set in handleApplication`, async function () {
+					const name = `reports-${level}`;
+					const status = await loadPlugin(name, {
+						handleApplication() {
+							statusForComponent(`${name}.${name}Plugin`)[level]('plugin says so');
+						},
+					});
+					assert.equal(status.status, level);
+					assert.match(status.message, /plugin says so/);
+				});
+			}
+
+			it('surfaces a plugin warning through get_components aggregation', async function () {
+				const name = 'reports-warning-aggregated';
+				await loadPlugin(name, {
+					handleApplication() {
+						statusForComponent(`${name}.${name}Plugin`).warning('plugin says so');
+					},
+				});
+
+				const result = await componentStatusRegistry.getAggregatedStatusFor(name);
+
+				assert.equal(result.status, 'warning');
+				assert.match(result.message, /plugin says so/);
+				assert.equal(result.details[`${name}.${name}Plugin`].status, 'warning');
+			});
+
+			it('keeps a warning set in the legacy start hook', async function () {
+				const name = 'reports-warning-legacy';
+				const status = await loadPlugin(name, {
+					start() {
+						statusForComponent(`${name}.${name}Plugin`).warning('legacy says so');
+					},
+				});
+				assert.equal(status.status, 'warning');
+			});
+
+			it('marks a plugin that reports nothing healthy', async function () {
+				const status = await loadPlugin('reports-nothing', { handleApplication() {} });
+				assert.equal(status.status, 'healthy');
+				assert.match(status.message, /loaded successfully/);
+			});
+
+			it('lets a retry replace an earlier failure', async function () {
+				const name = 'retried';
+				componentStatusRegistry.markFailed(`${name}.${name}Plugin`, new Error('earlier'));
+				const status = await loadPlugin(name, { handleApplication() {} });
+				assert.equal(status.status, 'healthy');
+			});
+		});
+
 		// TODO: Does the plugin API have an equivalent mechanism?
 		it.skip('should mark component as failed when it loads no functionality', async function () {
 			// Create a component directory without config
@@ -670,7 +738,7 @@ describe('ComponentLoader Status Integration', function () {
 				},
 			});
 
-			await componentLoader.loadComponent(componentDir, { isWorker: true, set: sinon.stub() }, 'test-origin');
+			await componentLoader.loadComponent(componentDir, { isWorker: true, set() {} }, 'test-origin');
 
 			assert.equal(started, true, 'the deprecated start hook should have run');
 		});

@@ -13,6 +13,8 @@ export interface PreviewMetadata {
 	sha?: string;
 	/** ISO 8601, or epoch milliseconds. */
 	expiresAt?: string | number;
+	/** The deploying identity's, stamped from its component grant; disabling previews revokes it. */
+	generation?: string;
 }
 
 /**

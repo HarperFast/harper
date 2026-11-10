@@ -26,12 +26,19 @@ import {
 	restoreShutdownDeadline,
 	beginProcessShutdown,
 	isProcessShuttingDown,
+	whenWorkersStoppedForExit,
+	runLocalShutdownListeners,
+	getProcessExitDeadline,
+	whenAllRequestsDrained,
 } from './manageThreads.ts';
 import {
 	runShutdownDrains,
 	shutdownDrainsHaveWork,
 	getShutdownDrainCeilingMs,
+	shutdownDrainDeadline,
+	tightenShutdownDrains,
 } from '../../components/shutdownDrain.ts';
+import { registerMainThreadShutdown } from './processShutdown.ts';
 import { realExit } from './workerProcessGuard.ts';
 import {
 	thisThreadsIsolatedApplication,
@@ -53,9 +60,10 @@ import { SERVERS, setPortServerMap, portServer, socketOptionDefaults } from '../
 import * as httpComponent from '../http.ts';
 import { withProxyProtocol } from '../serverHelpers/proxyProtocol.ts';
 import * as globals from '../../globals.js';
-import { whenScopesClosed } from '../../components/scopeShutdown.ts';
+import { whenScopesClosed, startDeferredScopeCloses } from '../../components/scopeShutdown.ts';
 import { getComponentName } from '../../components/componentLoader.ts';
 import { onStartup } from '../../utility/lifecycle.ts';
+import { flushAnalyticsForExit } from '../../resources/analytics/write.ts';
 
 let debugThreads = env.get(terms.CONFIG_PARAMS.THREADS_DEBUG);
 let inspectorInitialized = false;
@@ -130,25 +138,33 @@ export { listenOnPorts };
 export { startServers };
 export { closeServers };
 
+function hasUnfinishedResponse(socket: any) {
+	return socket._httpMessage && !socket._httpMessage.finished;
+}
 let serversClosing = false;
 function closeServers() {
 	serversClosing = true;
 	if (isBun) {
-		// Bun servers use .stop() for graceful shutdown
+		// Bun.serve's stop() settles when its pending requests finish
+		const stopped: Promise<unknown>[] = [];
 		for (let port in SERVERS) {
 			const server = SERVERS[port];
 			if (server?.stop) {
-				server.stop();
+				stopped.push(Promise.resolve(server.stop()).catch(() => {}));
 			} else if (server?.close) {
-				server.close();
+				stopped.push(new Promise((resolve) => server.close(resolve)));
 			}
 		}
-		// Give pending requests time to finish, then exit
-		return new Promise<any>((resolve) => setTimeout(resolve, 5000).unref());
+		return Promise.race([Promise.all(stopped), new Promise<any>((resolve) => setTimeout(resolve, 5000).unref())]);
 	}
 	const promises: any = [];
+	const requestDrains: Promise<void>[] = [];
 	for (let port in SERVERS) {
 		const server = SERVERS[port];
+		const { promise: requestsDrain, resolve: requestsDrained } = Promise.withResolvers<void>();
+		requestDrains.push(requestsDrain);
+		// It has no requests, and its connections are its own to end
+		if (server.rawSocketListener) requestsDrained();
 		if (server.closeIdleConnections) {
 			// Here we attempt to gracefully close all outstanding keep-alive connections,
 			// repeatedly closing any connections that are idle. This allows any active requests
@@ -164,6 +180,13 @@ function closeServers() {
 					clearInterval(timer);
 					return;
 				}
+				// Node's list holds no HTTP/2 session; that server's close callback signals its drain instead
+				if (
+					!server.servesHttp2 &&
+					(forceClose ||
+						!server[connectionsSymbol].all().some((connection) => hasUnfinishedResponse(connection.socket)))
+				)
+					requestsDrained();
 				const connections = server[connectionsSymbol][forceClose ? 'all' : 'idle']?.() || [];
 				if (connections.length === 0) {
 					if (forceClose) clearInterval(timer);
@@ -173,7 +196,7 @@ function closeServers() {
 				else if (forceClose) harperLogger.warn(`Forcefully closing ${connections.length} active connections`);
 				for (let i = 0, l = connections.length; i < l; i++) {
 					const socket = connections[i].socket;
-					if (socket._httpMessage && !socket._httpMessage.finished && !forceClose) {
+					if (hasUnfinishedResponse(socket) && !forceClose) {
 						continue;
 					}
 					if (forceClose) socket.destroySoon();
@@ -184,27 +207,92 @@ function closeServers() {
 		// And we tell the server not to accept any more incoming connections
 		promises.push(
 			new Promise<void>((resolve) => {
-				server.close?.(() => {
-					resolve();
-				});
 				// We hope for a graceful exit once all connections have been closed, and no
 				// more incoming connections are accepted, but if we need to, we eventually will exit
-				setTimeout(() => {
+				const forceExit = setTimeout(() => {
 					if (!server.cantCleanupProperly) harperLogger.warn('Had to forcefully exit the server', port, threadId);
+					requestsDrained();
 					resolve();
 				}, 5000).unref();
+				server.close?.(() => {
+					clearTimeout(forceExit);
+					requestsDrained();
+					resolve();
+				});
 			})
 		);
 	}
-	return Promise.all(promises);
+	serversClosed = Promise.all(promises);
+	requestsDrainedHere = Promise.all(requestDrains);
+	closeWebSocketsForExit();
+	return serversClosed.then(() => webSocketsClosedForExit);
+}
+
+const WEBSOCKET_CLOSE_WAIT_MS = 250;
+let serversClosed: Promise<unknown> | undefined;
+let requestsDrainedHere: Promise<unknown> | undefined;
+let webSocketsClosedForExit: Promise<unknown> | undefined;
+function waitAtMost(promise: Promise<unknown>, ms: number) {
+	let timer: NodeJS.Timeout | undefined;
+	return Promise.race([
+		promise,
+		new Promise<void>((resolve) => {
+			timer = setTimeout(resolve, Math.max(0, ms)).unref();
+		}),
+	]).finally(() => clearTimeout(timer));
+}
+/**
+ * Bounded after `serversClosed` by {@link WEBSOCKET_CLOSE_WAIT_MS} per step if another thread never reports or a
+ * client never finishes closing. Exit only: during a restart a retiring worker's socket may be carrying another
+ * worker's acknowledgement.
+ */
+function closeWebSocketsForExit(exitDeadline: number | undefined = getProcessExitDeadline()) {
+	if (!exitDeadline || !requestsDrainedHere || webSocketsClosedForExit) return;
+	// Each of the two bounded steps takes at most a quarter of what is left, so scope and branch close keep half.
+	const remainingMs = () => Math.min(WEBSOCKET_CLOSE_WAIT_MS, Math.max(0, (exitDeadline - Date.now()) / 4));
+	webSocketsClosedForExit = requestsDrainedHere
+		.then(() => {
+			const allDrained = whenAllRequestsDrained();
+			if (!httpComponent.hasOpenWebSockets()) {
+				return httpComponent.closeWebSockets();
+			}
+			return Promise.race([
+				allDrained,
+				// A listener whose close() threw still gets its WebSockets closed; closeServers' caller sees the error.
+				Promise.resolve(serversClosed)
+					.catch(() => {})
+					.then(() => waitAtMost(allDrained, remainingMs())),
+			]).then(() => waitAtMost(httpComponent.closeWebSockets(), remainingMs()));
+		})
+		.catch((error) => harperLogger.error('Error closing WebSockets during shutdown', threadId, error));
 }
 
 let shutdownPromise: Promise<void>;
-function shutdownServers() {
-	if (shutdownPromise) return shutdownPromise;
-	const drainDeadline = Date.now() + getShutdownDrainCeilingMs();
+let exitHold: NodeJS.Timeout | undefined;
+/**
+ * On a process exit a worker stays alive until it exits itself: scope and branch disposal can wait on
+ * unref'd work after the servers, its last ref'd handles, close. The exit deadline bounds it.
+ */
+function holdOpenForExit(exitDeadline: number | undefined) {
+	if (exitDeadline && !isMainThread) exitHold ??= setInterval(() => {}, 60_000);
+}
+/** Runs once; a later call with an `exitDeadline` only tightens the drain deadline of the run in progress. */
+function shutdownServers(exitDeadline: number | undefined = getProcessExitDeadline()) {
+	holdOpenForExit(exitDeadline);
+	if (shutdownPromise) {
+		if (exitDeadline) {
+			tightenShutdownDrains(shutdownDrainDeadline(Date.now(), getShutdownDrainCeilingMs(), exitDeadline));
+			closeWebSocketsForExit(exitDeadline);
+		}
+		return shutdownPromise;
+	}
+	const drainDeadline = shutdownDrainDeadline(Date.now(), getShutdownDrainCeilingMs(), exitDeadline);
 	const extendedForDrain = shutdownDrainsHaveWork();
 	if (extendedForDrain) extendShutdownDeadline(drainDeadline);
+	const phase = (name: string, run: () => unknown) => () =>
+		Promise.resolve()
+			.then(run)
+			.catch((error) => harperLogger.error(`Error during shutdown (${name})`, threadId, error));
 	// Wait for application scopes to finish closing before exiting — some dispose a native
 	// runtime asynchronously (e.g. @harperfast/vite's rolldown dev server), and exiting the
 	// worker while that runtime is still live crashes the process. The manageThreads backstop
@@ -213,18 +301,32 @@ function shutdownServers() {
 		.then(() => {
 			if (extendedForDrain) restoreShutdownDeadline();
 		})
-		.then(() => closeServers())
-		.then(() => whenScopesClosed())
-		.then(async () => {
-			const { branchDatabasesHaveWork, closeBranchDatabases } = databasesRuntimeModule;
-			if (!branchDatabasesHaveWork()) return closeBranchDatabases();
-			extendShutdownDeadline(Date.now() + getShutdownDrainCeilingMs());
-			try {
-				await closeBranchDatabases();
-			} finally {
-				restoreShutdownDeadline();
-			}
-		})
+		.then(phase('closing servers', closeServers))
+		.then(
+			phase('starting scope close', async () => {
+				if (isMainThread) {
+					// main's scopes and branch databases outlive every worker, and no SHUTDOWN message reaches main
+					await whenWorkersStoppedForExit();
+					runLocalShutdownListeners({ type: terms.ITC_EVENT_TYPES.SHUTDOWN, restartNumber, exitDeadline });
+				}
+				startDeferredScopeCloses();
+			})
+		)
+		.then(phase('closing scopes', whenScopesClosed))
+		.then(
+			phase('closing branch databases', async () => {
+				const { branchDatabasesHaveWork, closeBranchDatabases } = databasesRuntimeModule;
+				if (!branchDatabasesHaveWork()) return closeBranchDatabases();
+				extendShutdownDeadline(Date.now() + getShutdownDrainCeilingMs());
+				try {
+					await closeBranchDatabases();
+				} finally {
+					restoreShutdownDeadline();
+				}
+			})
+		)
+		.then(phase('flushing analytics', flushAnalyticsForExit))
+		.then(() => webSocketsClosedForExit)
 		.then(() => {
 			if (!isMainThread) realExit(0);
 		});
@@ -239,6 +341,14 @@ function shutdownServers() {
 	}
 	return shutdownPromise;
 }
+
+let componentsLoading: Promise<unknown> | undefined;
+/** After components finish loading, if they are, so no scope is created past the disposal boundary. */
+function shutdownForExit(exitDeadline: number) {
+	const shutdown = () => shutdownServers(exitDeadline);
+	return Promise.resolve(componentsLoading).then(shutdown, shutdown);
+}
+if (isMainThread) registerMainThreadShutdown(shutdownForExit);
 
 function startServers() {
 	if (isProcessShuttingDown()) return shutdownServers();
@@ -276,11 +386,13 @@ function startServers() {
 		if (message.type !== terms.ITC_EVENT_TYPES.SHUTDOWN) return;
 		beginProcessShutdown();
 		harperLogger.trace('received shutdown request', threadId);
-		void loaded
-			.then(shutdownServers, shutdownServers)
-			.catch((error) => harperLogger.error('Error shutting down HTTP worker', error));
+		holdOpenForExit(message.exitDeadline);
+		// With no listener bound there is no request to wait for, and its load may not settle soon
+		if (message.exitDeadline && !listening) whenAllRequestsDrained();
+		const shutdown = () => shutdownServers(message.exitDeadline);
+		void loaded.then(shutdown, shutdown).catch((error) => harperLogger.error('Error shutting down HTTP worker', error));
 	});
-	loaded = Promise.resolve(heldStart?.beginHeldStart(heldFor)).then(async (loadedGenerations) => {
+	loaded = componentsLoading = Promise.resolve(heldStart?.beginHeldStart(heldFor)).then(async (loadedGenerations) => {
 		await loadRootComponentsRuntimeModule.loadRootComponents(true);
 		loadRuntimeModule('components/deployLifecycle').deployLifecycle._componentsLoaded();
 		if (heldStart) {
@@ -398,6 +510,16 @@ function mirrorBindPath(socketPath?: any) {
 }
 
 const POOL_BIND_RETRY_MS = 60_000;
+/**
+ * A per-thread mirror skipped here was registered while its owning pool was still pending, so its metadata is
+ * retracted: a proxy reading the sockets directory must not route to it.
+ */
+export function bindsDomainSocketHere(port: string, server: any): boolean {
+	if (thisThreadsIsolatedApplication() && !server.isPerThreadSocket) return false;
+	if (shouldBindListenerHere(port)) return true;
+	if (server.isPerThreadSocket) httpComponent.markUdsBindFailed(port);
+	return false;
+}
 let listening;
 function listenOnPorts() {
 	if (isProcessShuttingDown()) return Promise.resolve([]);
@@ -412,8 +534,7 @@ function listenOnPorts() {
 		// ports (the kernel would hand it every application's connections) and not a global domain socket
 		// such as the operations API's, which it would take from the main thread.
 		if (port.includes?.('/')) {
-			if ((!thisThreadsIsolatedApplication() || server.isPerThreadSocket) && shouldBindListenerHere(port))
-				listening.push(listenOnDomainSocket(port, server));
+			if (bindsDomainSocketHere(port, server)) listening.push(listenOnDomainSocket(port, server));
 			continue;
 		}
 		if (thisThreadsIsolatedApplication() || !shouldBindListenerHere(port)) continue;
@@ -512,7 +633,11 @@ function listenOnPorts() {
 	if (uwsServeConfigs) {
 		for (const key in uwsServeConfigs) {
 			const cfg = uwsServeConfigs[key];
-			if (!shouldStartUwsListenerHere(cfg) || !shouldBindListenerHere(key)) continue; // dedicated worker: its own mirrors only
+			if (!shouldStartUwsListenerHere(cfg)) continue; // dedicated worker: its own mirrors only
+			if (!shouldBindListenerHere(key)) {
+				httpComponent.markUdsBindFailed(key);
+				continue;
+			}
 			if (cfg.socketPath && existsSync(cfg.socketPath)) unlinkSync(cfg.socketPath);
 			const { createUwsServer } = uwsServerRuntimeModule;
 			listening.push(
@@ -678,8 +803,7 @@ async function listenOnPortsBun() {
 				httpComponent.recordUdsBindSuccess(udsPath);
 
 				const writeMetadata = () => httpComponent.writeUdsMetadata(yamlPath, port, config.pseudoServer);
-				config.tlsSelector.ready.then(writeMetadata);
-				config.pseudoServer?.secureContextsListeners?.push(writeMetadata);
+				httpComponent.publishUdsMetadata(config.tlsSelector.ready, config.pseudoServer, writeMetadata);
 				harperLogger.info('Domain socket listening on ' + udsPath);
 			}
 		} catch (error) {
@@ -694,11 +818,10 @@ async function listenOnPortsBun() {
 		// Skip Bun servers (they're already listening) and config objects
 		if (server?.stop || bunServeConfigs[port]) continue;
 		if (server?.listen) {
-			if (!shouldBindListenerHere(port)) continue;
 			if (port.includes?.('/')) {
-				if (thisThreadsIsolatedApplication() && !server.isPerThreadSocket) continue; // as in listenOnPorts
-				rawListeners.push(listenOnDomainSocket(port, server));
+				if (bindsDomainSocketHere(port, server)) rawListeners.push(listenOnDomainSocket(port, server));
 			} else {
+				if (!shouldBindListenerHere(port)) continue;
 				const lastColon = String(port).lastIndexOf(':');
 				const rawHostname = lastColon > 0 ? String(port).slice(0, lastColon).replace(/[[\]]/g, '') : null;
 				const portNum = lastColon > 0 ? +String(port).slice(lastColon + 1) : +port;
@@ -824,6 +947,7 @@ function onSocket(listener?: any, options?: any) {
 		// them lets listenOnPorts() give an exclusive (non-reusePort) one a single deterministic
 		// owner worker, which makes any EADDRINUSE on it unambiguously an external process.
 		secureSocketServer.dedicatedListener = true;
+		secureSocketServer.rawSocketListener = true;
 		SERVERS[options.securePort] = secureSocketServer;
 
 		// Create a corresponding Unix Domain Socket mirror for the secure socket
@@ -847,13 +971,15 @@ function onSocket(listener?: any, options?: any) {
 			const udsServer: any = createSocketServer({ ...socketOptionDefaults }, withProxyProtocol(listener));
 
 			udsServer.isPerThreadSocket = true;
+			udsServer.rawSocketListener = true;
 			if (threadType) claimListener(udsPath, threadType);
 			SERVERS[udsPath] = udsServer;
 			httpComponent.registerUdsCleanupPaths(udsPath, yamlPath);
 
-			const writeMetadata = () => httpComponent.writeUdsMetadata(yamlPath, options.securePort, secureSocketServer);
-			SNICallback.ready.then(writeMetadata);
-			secureSocketServer.secureContextsListeners.push(writeMetadata);
+			const writeMetadata = () =>
+				httpComponent.isUdsBindFailed(udsPath) ||
+				httpComponent.writeUdsMetadata(yamlPath, options.securePort, secureSocketServer);
+			httpComponent.publishUdsMetadata(SNICallback.ready, secureSocketServer, writeMetadata);
 		}
 	}
 	if (options.port) {
@@ -863,6 +989,7 @@ function onSocket(listener?: any, options?: any) {
 		// accept connections for this listener elsewhere, and mark it worker-owned.
 		if (process.platform === 'darwin') socketServer.noReusePort = true;
 		socketServer.dedicatedListener = true;
+		socketServer.rawSocketListener = true;
 		SERVERS[options.port] = socketServer;
 	}
 	return socketServer;

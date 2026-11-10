@@ -39,7 +39,7 @@ const {
 	createPendingMarkerBarrier,
 	watchInProgressFile,
 	blockBlobSavesForRestore,
-	resumeBlobSavesAfterRestore,
+	resumeBlobSavesForRestore,
 	blobRestoreGeneration,
 	blobRestoreGenerationChanged,
 	getRootBlobPathsForDB,
@@ -1921,7 +1921,7 @@ describe('Blob test', () => {
 			assert.strictEqual(await cleanupOrphans(getDatabases().test), 0);
 			assert(paths.every(existsSync), 'the fenced orphan sweep must leave every skipped file in place');
 		} finally {
-			resumeBlobSavesAfterRestore(databaseName, 'restore-orphan-cleanup');
+			resumeBlobSavesForRestore('restore-orphan-cleanup');
 			for (const path of paths) if (existsSync(path)) unlinkSync(path);
 		}
 	});
@@ -1952,7 +1952,7 @@ describe('Blob test', () => {
 			// which is how this test was silently leaving its file behind for the orphan sweep to find.
 			inFlightPath = decodeFromDatabase(() => getFilePathForBlob(inFlightBlob), store);
 		} finally {
-			resumeBlobSavesAfterRestore(databaseName, 'restore-drain');
+			resumeBlobSavesForRestore('restore-drain');
 			source.destroy();
 			if (inFlightPath && existsSync(inFlightPath)) unlinkSync(inFlightPath);
 		}
@@ -1969,7 +1969,7 @@ describe('Blob test', () => {
 		await blockBlobSavesForRestore(databaseName, 'restore-A');
 		try {
 			await blockBlobSavesForRestore(databaseName, 'restore-B');
-			resumeBlobSavesAfterRestore(databaseName, 'restore-A');
+			resumeBlobSavesForRestore('restore-A');
 
 			assert.throws(
 				() => decodeFromDatabase(() => saveBlob(blocked), store),
@@ -1978,10 +1978,10 @@ describe('Blob test', () => {
 			);
 
 			// A token nobody owns releases nothing either.
-			resumeBlobSavesAfterRestore(databaseName, 'restore-unknown');
+			resumeBlobSavesForRestore('restore-unknown');
 			assert.throws(() => decodeFromDatabase(() => saveBlob(blocked), store), /while it is being restored/);
 		} finally {
-			resumeBlobSavesAfterRestore(databaseName, 'restore-B');
+			resumeBlobSavesForRestore('restore-B');
 		}
 
 		// The fence is lifted once its owner reloads: this save must be admitted rather than throw.
@@ -2009,7 +2009,7 @@ describe('Blob test', () => {
 			'the rerun still fences while it works'
 		);
 
-		resumeBlobSavesAfterRestore(databaseName, 'restore-rerun');
+		resumeBlobSavesForRestore('restore-rerun');
 		await decodeFromDatabase(() => saveBlob(blob).saving, store);
 		removeBlobFile(blob);
 	});
@@ -2038,7 +2038,7 @@ describe('Blob test', () => {
 			assert.ok(existsSync(condemnedPath), 'fenced, so not yet drained');
 
 			// The restore failed its admission checks and destroyed nothing.
-			resumeBlobSavesAfterRestore(databaseName, 'restore-aborted', false);
+			resumeBlobSavesForRestore('restore-aborted', false);
 
 			await waitFor(() => !existsSync(condemnedPath), {
 				timeout: 2000,
@@ -2063,7 +2063,7 @@ describe('Blob test', () => {
 
 		await blockBlobSavesForRestore(databaseName, 'restore-epoch');
 		assert.strictEqual(blobRestoreGenerationChanged(before), true, 'fenced right now');
-		resumeBlobSavesAfterRestore(databaseName, 'restore-epoch');
+		resumeBlobSavesForRestore('restore-epoch');
 
 		// The fence is clear again, and this is the case a fenced-right-now check misses.
 		assert.strictEqual(blobRestoreGenerationChanged(before), true, 'a restore completed since `before`');
@@ -2084,7 +2084,7 @@ describe('Blob test', () => {
 		assert.throws(() => decodeFromDatabase(() => saveBlob(blocked), store), /while it is being restored/);
 
 		// What the failure path now broadcasts on its way out.
-		resumeBlobSavesAfterRestore(databaseName, 'restore-that-failed');
+		resumeBlobSavesForRestore('restore-that-failed');
 
 		const allowed = await createBlob(Buffer.alloc(20000, 'g'));
 		await decodeFromDatabase(() => saveBlob(allowed).saving, store);
@@ -2120,7 +2120,7 @@ describe('Blob test', () => {
 
 			// Stand in for the restore rewriting that same path with the backup's bytes, then reload.
 			writeFileSync(condemnedPath, Buffer.from('restored-bytes'));
-			resumeBlobSavesAfterRestore(databaseName, 'restore-reclaim');
+			resumeBlobSavesForRestore('restore-reclaim');
 
 			// The entry is long overdue, so if the reload had merely resumed it rather than discarding it,
 			// it would fire immediately and delete what the restore wrote.
@@ -2807,7 +2807,7 @@ describe('backup of a blob root during a live write (harper#2262)', () => {
 		backupDir = mkdtempSync(join(tmpdir(), 'harper.unit-test.live-snapshot-'));
 	});
 	afterEach(() => {
-		rmSync(backupDir, { recursive: true, force: true });
+		if (backupDir) rmSync(backupDir, { recursive: true, force: true });
 	});
 
 	it('a restored substituted marker reads as retryable, not as absent or corrupt', async () => {
@@ -3002,6 +3002,7 @@ describe('watchInProgressFile (in-progress read watcher fallback)', () => {
 		});
 
 		afterEach(() => {
+			if (!recorded) return;
 			assert.deepStrictEqual(recorded.calls, { change: 0, failure: 0 });
 			assert.strictEqual(live.closeCount, 0);
 			assert.strictEqual(superseded.closeCount, 0);

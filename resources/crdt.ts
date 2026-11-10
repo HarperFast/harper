@@ -97,6 +97,14 @@ export function commutativeOpsOf(update: any) {
 	return ops;
 }
 
+/** Whether `commutativeOpsOf(update)` finds any operation, without allocating its result. */
+export function hasCommutativeOp(update: any): boolean {
+	for (const key in update) {
+		if (update[key]?.__op__) return true;
+	}
+	return false;
+}
+
 /**
  * What an out-of-order `update` still contributes to a materialized `record` that already includes
  * newer writes: commutative operations and keys the record lacks. Null when nothing remains, `update`
@@ -212,7 +220,7 @@ function reconstructForward(
 	let truncated = false;
 	let { txnLogKey: auditTime, nodeId: auditNodeId } = fromPosition;
 	while (auditTime > 0) {
-		const auditEntry = auditStore.get(auditTime, tableId, recordId, auditNodeId);
+		const auditEntry = auditStore.get(auditTime, tableId, recordId, auditNodeId, true);
 		if (!auditEntry) {
 			if (partial) {
 				truncated = true;
@@ -284,7 +292,7 @@ function resolveAuditPosition(auditStore, tableId: number, recordId: any, versio
 		const identity = `${ref.nodeId ?? 0}:${ref.version}`;
 		if (visited.has(identity)) continue;
 		visited.add(identity);
-		const entry = auditStore.get(ref.version, tableId, recordId, ref.nodeId);
+		const entry = auditStore.get(ref.version, tableId, recordId, ref.nodeId, true);
 		if (!entry) continue;
 		if (entry.version === version && (nodeId == null || (entry.nodeId ?? 0) === nodeId))
 			return { txnLogKey: ref.version, nodeId: ref.nodeId };
@@ -351,7 +359,7 @@ export function getRecordAtTime(currentEntry, timestamp, store, tableId: number,
 	const overwritten = new Set<string>();
 	let replaced = false;
 	while (auditTime > timestamp) {
-		const auditEntry = auditStore.get(auditTime, tableId, recordId, auditNodeId);
+		const auditEntry = auditStore.get(auditTime, tableId, recordId, auditNodeId, true);
 		if (!auditEntry) break;
 		switch (auditEntry.type) {
 			case 'put':
@@ -390,7 +398,7 @@ export function getRecordAtTime(currentEntry, timestamp, store, tableId: number,
 	// (A delete reached as a boundary — rather than crossed, which returns via reconstructForward —
 	// is otherwise missed, leaving `record` holding a newer re-inserted value. See issue #1330.)
 	if (auditTime > 0) {
-		const boundaryEntry = auditStore.get(auditTime, tableId, recordId, auditNodeId);
+		const boundaryEntry = auditStore.get(auditTime, tableId, recordId, auditNodeId, true);
 		if (boundaryEntry?.type === 'delete') return null;
 	}
 	for (const key of reversedAdds) {

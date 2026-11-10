@@ -4,7 +4,16 @@ const fs = require('node:fs');
 const { Worker } = require('node:worker_threads');
 const { setupTestDBPath } = require('../testUtils');
 const { waitFor } = require('../waitFor');
-const { table, resetDatabases } = require('#src/resources/databases');
+const {
+	closeDatabase,
+	closeRestoredGeneration,
+	openRestoredGeneration,
+	table,
+	resetDatabases,
+} = require('#src/resources/databases');
+const { backupDirForDatabase, createBackupOffline, restoreBackupOffline } = require('#src/dataLayer/rocksdbBackup');
+const { setAnalyticsEnabled } = require('#src/resources/analytics/write');
+const { HierarchicalNavigableSmallWorld } = require('#src/resources/indexes/HierarchicalNavigableSmallWorld');
 const { DatabaseTransaction } = require('#src/resources/DatabaseTransaction');
 const { getPlaneBinding } = require('#src/resources/indexes/hnswPlaneBinding');
 const { CandidateKeySet } = require('#src/resources/search');
@@ -37,6 +46,61 @@ const centers = Array.from({ length: 20 }, () => Array.from({ length: DIMS }, ()
 function makeVector(i) {
 	const center = centers[i % centers.length];
 	return center.map((value) => value + (rand() - 0.5) * 0.2);
+}
+function range(first, last) {
+	return Array.from({ length: last - first + 1 }, (_, offset) => first + offset);
+}
+function nativePlaneTable(tableName, database = DB) {
+	return table({
+		table: tableName,
+		database,
+		audit: true,
+		attributes: [
+			{ name: 'id', isPrimaryKey: true },
+			{ name: 'vector', indexed: { type: 'HNSW', nativePlane: true, efConstruction: 200 }, type: 'Array' },
+		],
+	});
+}
+async function waitForPublishedMappings(Table, count) {
+	await waitFor(
+		() => {
+			let published = 0;
+			for (const { value } of Table.indices.vector.getRange()) {
+				if (typeof value?.id === 'number' && !value.pending) published++;
+			}
+			return published >= count && Table.indices.vector.getSync(DERIVED_INDEX_CURSOR_KEY) !== undefined;
+		},
+		{ timeout: 15_000, message: `the native plane never published ${count} mappings behind a durable cursor` }
+	);
+}
+async function waitForKeys(Table, keys) {
+	let found = [];
+	await waitFor(
+		async () => {
+			if (!indexReady(Table)) return false;
+			try {
+				const hits = await Table.indices.vector.customIndex.search(
+					{ target: centers[0], comparator: 'sort', distance: 'cosine', ef: EF },
+					{ transaction: undefined }
+				);
+				found = [...hits].map((hit) => hit.key);
+			} catch (error) {
+				if (/rebuilding/.test(error.message) || error.code === 'DERIVED_INDEX_LAGGING') return false;
+				throw error;
+			}
+			return keys.every((key) => found.includes(key));
+		},
+		{
+			timeout: 20_000,
+			message: () => `vector search never returned all ${keys.length} keys; last returned ${JSON.stringify(found)}`,
+		}
+	);
+}
+// older than the create window, so getPlane treats it as a crashed create rather than one in progress
+function writeAbandonedCreate(planePath) {
+	fs.writeFileSync(planePath, Buffer.alloc(64, 0x5a));
+	const longAgo = new Date(Date.now() - 120_000);
+	fs.utimesSync(planePath, longAgo, longAgo);
 }
 function cosineDistance(a, b) {
 	let dot = 0;
@@ -129,6 +193,25 @@ describe('HNSW native plane file-primary delivery', function () {
 			},
 			{ timeout: 15_000, message: 'the durable cursor did not reach the committed tail of every log' }
 		);
+	}
+
+	function nativeMutations(apply) {
+		const plane = customIndex().getPlane();
+		const calls = [];
+		for (const method of ['insert', 'remove']) {
+			const native = plane[method];
+			plane[method] = function (...args) {
+				calls.push(method === 'remove' ? `remove ${args[0]}` : method);
+				return native.apply(this, args);
+			};
+		}
+		try {
+			apply();
+		} finally {
+			delete plane.insert;
+			delete plane.remove;
+		}
+		return calls;
 	}
 
 	before(async () => {
@@ -266,6 +349,61 @@ describe('HNSW native plane file-primary delivery', function () {
 		assert.ok((await nativeSearch(vector)).some((entry) => entry.key === id));
 		index.applyDerivedValue(id, undefined, 3);
 		assert.ok(!(await nativeSearch(vector)).some((entry) => entry.key === id), 'a removal is visible at once');
+		await index.flushDerived();
+		assert.equal(mapping(), undefined);
+	});
+
+	it('keeps the node of a replayed value still pending in this process', async () => {
+		const id = 50_004;
+		const index = customIndex();
+		const mapping = () => PlaneTest.indices.vector.getSync([Symbol.for('key'), id]);
+		index.applyDerivedValue(id, makeVector(id), 1);
+		await index.flushDerived();
+		const published = mapping().id;
+		const vector = makeVector(id + 1);
+		index.applyDerivedValue(id, vector, 2);
+		const staged = mapping().id;
+		const mutations = nativeMutations(() => {
+			index.applyDerivedValue(id, vector, 2);
+			index.applyDerivedValue(id, vector, 3);
+			index.applyDerivedValue(id, vector, 1);
+		});
+		assert.deepStrictEqual(mutations, [], 'an unchanged value must not replace its node');
+		assert.equal(mapping().id, staged);
+		assert.equal(mapping().previousId, published, 'replay still needs the published node to remove');
+		assert.equal(mapping().version, 3, 'the newer replay advances the version, the older one is ignored');
+		assert.equal(mapping().pending, true, 'the mapping waits for the native flush');
+		await index.flushDerived();
+		assert.equal(mapping().pending, undefined);
+		assert.equal(mapping().id, staged);
+		assert.equal((await nativeSearch(vector)).filter((entry) => entry.key === id).length, 1);
+		index.applyDerivedValue(id, undefined, 4);
+		await index.flushDerived();
+		assert.equal(mapping(), undefined);
+	});
+
+	it('re-inserts an unchanged value whose pending mapping only storage holds', async () => {
+		const id = 50_005;
+		const index = customIndex();
+		const mapping = () => PlaneTest.indices.vector.getSync([Symbol.for('key'), id]);
+		index.applyDerivedValue(id, makeVector(id), 1);
+		await index.flushDerived();
+		const published = mapping().id;
+		const vector = makeVector(id + 1);
+		index.applyDerivedValue(id, vector, 2);
+		const staged = mapping().id;
+		index.pendingDerivedMappings.clear();
+		assert.equal(mapping().pending, true);
+		const mutations = nativeMutations(() => index.applyDerivedValue(id, vector, 2));
+		assert.deepStrictEqual(
+			mutations,
+			[...new Set([published, staged])].map((nodeId) => `remove ${nodeId}`).concat('insert'),
+			'a stored pending mapping does not prove its node survived: both nodes go, then a fresh insert'
+		);
+		assert.equal(mapping().previousId, published);
+		await index.flushDerived();
+		assert.equal((await nativeSearch(vector)).filter((entry) => entry.key === id).length, 1);
+		index.applyDerivedValue(id, undefined, 3);
 		await index.flushDerived();
 		assert.equal(mapping(), undefined);
 	});
@@ -810,6 +948,68 @@ describe('HNSW native plane file-primary delivery', function () {
 		await LostFile.dropTable();
 	});
 
+	describe('a vector write that reaches a lost plane file', function () {
+		const COUNT = 10;
+
+		async function populated(tableName) {
+			const Table = nativePlaneTable(tableName);
+			await Table.indexingOperation;
+			for (let id = 1; id <= COUNT; id++) await Table.put(id, { vector: makeVector(id) });
+			await waitForPublishedMappings(Table, COUNT);
+			return Table;
+		}
+
+		// Called on the index directly, so it runs before any runtime turn could notice the loss
+		// another way: the assertion is about the create guard alone.
+		function assertCreateRefused(index) {
+			assert.throws(() => index.applyDerivedValue(COUNT + 1, makeVector(COUNT + 1), 1), /unavailable/);
+			assert.ok(!fs.existsSync(index.planeFilePath()), 'no empty plane may be created under surviving mappings');
+		}
+
+		it('refuses to create an empty plane when the file is gone, and rebuilds', async () => {
+			const Lost = await populated('PlaneLostWrite');
+			const index = Lost.indices.vector.customIndex;
+			index.plane = undefined;
+			fs.rmSync(index.planeFilePath(), { force: true });
+			assertCreateRefused(index);
+			await Lost.put(COUNT + 1, { vector: makeVector(COUNT + 1) });
+			await waitForKeys(Lost, range(1, COUNT + 1));
+			await Lost.dropTable();
+		});
+
+		it('refuses to create an empty plane after removing an unopenable file, and rebuilds', async () => {
+			const Unopenable = await populated('PlaneUnopenableWrite');
+			const index = Unopenable.indices.vector.customIndex;
+			const planePath = index.planeFilePath();
+			index.plane = undefined;
+			writeAbandonedCreate(planePath);
+			assert.equal(index.getPlane(), null);
+			assert.ok(!fs.existsSync(planePath), 'an unopenable file past the create window is removed');
+			index.planeRetryAt = 0;
+			assertCreateRefused(index);
+			await Unopenable.put(COUNT + 1, { vector: makeVector(COUNT + 1) });
+			await waitForKeys(Unopenable, range(1, COUNT + 1));
+			await Unopenable.dropTable();
+		});
+
+		it('recreates an unopenable leftover at once when no mapping survives it', async () => {
+			const Leftover = nativePlaneTable('PlaneLeftoverCreate');
+			await Leftover.indexingOperation;
+			const index = Leftover.indices.vector.customIndex;
+			await waitFor(() => indexReady(Leftover), { timeout: 15_000, message: 'the empty index never became ready' });
+			let resets = 0;
+			index.resetDerivedStorage = function () {
+				resets++;
+				return Object.getPrototypeOf(this).resetDerivedStorage.call(this);
+			};
+			writeAbandonedCreate(index.planeFilePath());
+			await Leftover.put(1, { vector: makeVector(1) });
+			await waitForKeys(Leftover, [1]);
+			assert.equal(resets, 0, 'an empty index replaces an interrupted create without a rebuild');
+			await Leftover.dropTable();
+		});
+	});
+
 	it('requires audit logging and native construction geometry', () => {
 		assert.throws(
 			() =>
@@ -893,6 +1093,121 @@ describe('HNSW native plane file-primary delivery', function () {
 		const planePath = customIndex().planeFilePath();
 		await PlaneTest.dropTable();
 		assert.ok(!fs.existsSync(planePath));
+	});
+});
+
+describe('HNSW native plane across a backup restore', function () {
+	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return; // restore_backup is RocksDB-only
+	if (!getPlaneBinding() || !('keyCap' in getPlaneBinding().prototype)) {
+		it.skip('skipped: the @harperfast/hnsw native module (0.3.0 or later) is unavailable', () => {});
+		return;
+	}
+	this.timeout(60_000);
+	const COUNT = 30;
+	let sequence = 0;
+	const databases = [];
+
+	before(() => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		// an analytics flush rescans the storage path and would hold the database a restore closes
+		setAnalyticsEnabled(false);
+	});
+	after(() => {
+		setAnalyticsEnabled(true);
+		for (const database of databases) fs.rmSync(backupDirForDatabase(database), { recursive: true, force: true });
+	});
+
+	async function restoredTables() {
+		const database = `vector_plane_restore_${++sequence}`;
+		databases.push(database);
+		const Populated = nativePlaneTable('Populated', database);
+		const Empty = nativePlaneTable('Empty', database);
+		await Promise.all([Populated.indexingOperation, Empty.indexingOperation]);
+		for (let id = 1; id <= COUNT; id++) await Populated.put(id, { vector: makeVector(id) });
+		await waitForPublishedMappings(Populated, COUNT);
+		await waitFor(() => Empty.indices.vector.getSync(DERIVED_INDEX_CURSOR_KEY) !== undefined, {
+			timeout: 15_000,
+			message: 'the empty index never wrote a durable cursor',
+		});
+		const planePath = Populated.indices.vector.customIndex.planeFilePath();
+		const databasePath = Populated.primaryStore.rootStore.path;
+		assert.ok(fs.existsSync(planePath));
+		await Populated.auditStore.rootStore.flush({ allowWriteStall: true });
+		const { backup_id: backupId } = await createBackupOffline(database);
+		assert.ok(await closeDatabase(database));
+		await restoreBackupOffline(database, backupId);
+		assert.ok(!fs.existsSync(planePath), 'precondition: the restore leaves no plane file');
+		return { database, databasePath, planePath };
+	}
+
+	function reopen(database) {
+		return { Populated: nativePlaneTable('Populated', database), Empty: nativePlaneTable('Empty', database) };
+	}
+
+	it('proves the restored generation without starting its derived indexes', async () => {
+		const { database, databasePath } = await restoredTables();
+		const generation = openRestoredGeneration(databasePath, database);
+		try {
+			assert.equal(generation.tables.Populated.derivedIndexRuntime, undefined);
+			assert.notEqual(
+				generation.tables.Populated.indices.vector.getSync(DERIVED_INDEX_CURSOR_KEY),
+				undefined,
+				"the restore child's proof left the restored cursor as the backup had it"
+			);
+		} finally {
+			assert.deepEqual(closeRestoredGeneration(databasePath, generation), []);
+		}
+	});
+
+	it('rebuilds the restored index from records before any search or write reaches it', async () => {
+		const { database, planePath } = await restoredTables();
+		const resetStores = [];
+		const prototype = HierarchicalNavigableSmallWorld.prototype;
+		const resetDerivedStorage = prototype.resetDerivedStorage;
+		prototype.resetDerivedStorage = function () {
+			resetStores.push(this.indexStore.name);
+			return resetDerivedStorage.call(this);
+		};
+		try {
+			const { Populated, Empty } = reopen(database);
+			await waitFor(() => fs.existsSync(planePath) && indexReady(Populated), {
+				timeout: 20_000,
+				message: 'the restored index stayed on its restored cursor instead of rebuilding its plane',
+			});
+			await waitForKeys(Populated, range(1, COUNT));
+			await waitFor(() => indexReady(Empty), {
+				timeout: 15_000,
+				message: 'the restored empty index never became ready',
+			});
+			assert.ok(
+				!resetStores.includes(Empty.indices.vector.name),
+				'an index with no node mappings resumes its restored cursor without a file'
+			);
+		} finally {
+			prototype.resetDerivedStorage = resetDerivedStorage;
+		}
+	});
+
+	it('keeps every restored vector when a write comes before the first search', async () => {
+		const { database } = await restoredTables();
+		const { Populated } = reopen(database);
+		await Populated.put(COUNT + 1, { vector: makeVector(COUNT + 1) });
+		// No search until the write has reached the index: a search that sees the missing file first
+		// asks for a rebuild by itself, which is the other ordering.
+		await waitFor(() => typeof Populated.indices.vector.getSync([Symbol.for('key'), COUNT + 1])?.id === 'number', {
+			timeout: 15_000,
+			message: 'the write after the restore never reached the index',
+		});
+		await waitForKeys(Populated, range(1, COUNT + 1));
+	});
+
+	it('keeps every restored vector when a search comes first', async () => {
+		const { database } = await restoredTables();
+		const { Populated } = reopen(database);
+		await waitForKeys(Populated, range(1, COUNT));
+		await Populated.put(COUNT + 1, { vector: makeVector(COUNT + 1) });
+		await waitForKeys(Populated, range(1, COUNT + 1));
 	});
 });
 
@@ -1100,5 +1415,45 @@ describe('HNSW native plane allow-set filtering (#2688)', function () {
 			results.map((record) => record.id),
 			[0, 6, 12, 18]
 		);
+	});
+
+	it('keeps every node reachable when a replay re-delivers a value still pending', async () => {
+		const Replayed = table({
+			table: 'PlaneAllowReplay',
+			database: 'vector-plane-allow',
+			audit: true,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'vector', indexed: { type: 'HNSW' }, type: 'Array' },
+			],
+		});
+		try {
+			await Replayed.indexingOperation;
+			// activates the derived index, so its first rebuild cannot reset the plane under the applies below
+			const anchor = new Array(DIMS).fill(0.01);
+			anchor[0] = -1;
+			await Replayed.put(COUNT, { vector: anchor });
+			await waitFor(() => indexReady(Replayed), { timeout: 30_000, message: 'the derived index did not activate' });
+			const index = Replayed.indices.vector.customIndex;
+			for (let i = 0; i < COUNT; i++) {
+				index.applyDerivedValue(i, allowVector(i), 1);
+				if (i === 16) index.applyDerivedValue(i, allowVector(i), 1);
+			}
+			await index.flushDerived();
+			const allowed = [];
+			for (let i = 0; i < COUNT; i += 3) allowed.push(i);
+			const entries = await index.search(
+				{ target: allowVectors.get(0), comparator: 'sort', distance: 'cosine', ef: 100 },
+				{ transaction: undefined },
+				{ filter: () => true, candidateKeys: planFor(allowed) }
+			);
+			assert.deepStrictEqual(
+				entries.map((entry) => entry.key),
+				allowed,
+				'every allowed node is reached, nearest first'
+			);
+		} finally {
+			await Replayed.dropTable();
+		}
 	});
 });

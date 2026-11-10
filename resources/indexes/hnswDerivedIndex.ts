@@ -51,6 +51,8 @@ export interface DerivedNativeIndex {
 	applyDerivedValue(primaryKey: Id, vector: number[] | undefined, version?: number): void;
 	flushDerived(): Promise<void>;
 	resetDerivedStorage(): void;
+	/** True when node mappings survive the native file they name, so no cursor over them describes it. */
+	derivedStorageLost(): boolean;
 	assertDerivedValue(vector: unknown, label: string): void;
 	attachDerivedHost(host: DerivedNativeIndexHost): void;
 }
@@ -80,6 +82,7 @@ export class HnswDerivedIndexBackend implements DerivedIndexBackend {
 	#interruptBarrierAfter = 0;
 	#resetting?: Promise<void>;
 	#unindexable = 0;
+	#checkedEpoch?: bigint;
 
 	constructor(id: string, index: DerivedNativeIndex) {
 		this.id = id;
@@ -97,9 +100,23 @@ export class HnswDerivedIndexBackend implements DerivedIndexBackend {
 		};
 	}
 
+	/**
+	 * A restore brings back the mappings and this cursor but never the plane file, so the first read under
+	 * each owner epoch checks that the file still exists. Only that read: once delivery runs, `undefined`
+	 * also means a rebuild's boundary is not durable yet, and a file lost after it is `getPlane`'s to refuse.
+	 */
 	getDurableCursor(): DerivedIndexCursor | undefined {
 		const cursor = this.#index.indexStore.getSync(DERIVED_INDEX_CURSOR_KEY);
-		return cursor === undefined ? undefined : (cursor as DerivedIndexCursor);
+		if (cursor === undefined) return undefined;
+		const host = this.#host;
+		if (this.#checkedEpoch === undefined || !host?.isOwnerEpoch(this.#checkedEpoch)) {
+			if (this.#index.derivedStorageLost()) {
+				logger.warn?.(`Derived index '${this.id}' lost its native file while its node mappings survive; rebuilding`);
+				return undefined;
+			}
+			this.#checkedEpoch = host?.getReadiness().ownerEpoch;
+		}
+		return cursor as DerivedIndexCursor;
 	}
 
 	publishCoverage(positions: DerivedIndexPositions, ownerEpoch: bigint): void {
@@ -137,10 +154,12 @@ export class HnswDerivedIndexBackend implements DerivedIndexBackend {
 	 * The cursor goes first: a crash anywhere after this line reopens cursorless and rebuilds, never
 	 * on a format-valid cursor over a destroyed graph.
 	 */
-	reset(_epoch: bigint): Promise<void> {
+	reset(epoch: bigint): Promise<void> {
 		this.#dropQueue();
 		this.#appliedCursor = undefined;
 		this.#appliedPastCoverage = false;
+		// what a rebuild writes from here on describes the file it builds
+		this.#checkedEpoch = epoch;
 		this.#resetting = (async () => {
 			await this.#flushing;
 			this.#index.indexStore.removeSync(DERIVED_INDEX_CURSOR_KEY);
@@ -261,6 +280,7 @@ export class HnswDerivedIndexBackend implements DerivedIndexBackend {
 					: (own ?? (durable && sameDerivedIndexCursorVector(durable, written) ? durable.coverage : undefined));
 				this.#index.indexStore.putSync(DERIVED_INDEX_CURSOR_KEY, coverage ? { ...vector, coverage } : vector);
 			}
+			this.#appliedPastCoverage = false;
 		})();
 		this.#flushing.then(
 			() => {

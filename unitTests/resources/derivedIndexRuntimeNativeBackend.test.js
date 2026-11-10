@@ -2111,6 +2111,33 @@ describe('DerivedIndexRuntime for native backends', () => {
 		await runtime.stop();
 	});
 
+	it('measures the cursor term from the first transaction read past the durable one, not across an idle gap', async () => {
+		const records = new Map([['1:a', { version: 120_010, value: { title: 'a' } }]]);
+		const entries = [];
+		const store = new FakeLogStore(new Map([[10, entries]]), { live: true });
+		// accepts every batch and never makes one durable until the test moves its cursor
+		const backend = new SyncBackend('idle-gap', cursor(10), () => DERIVED_INDEX_ACCEPTED);
+		// frozen, so only the cursor term can trip the policy
+		const { runtime } = runtimeFor(store, records, { idleGraceMilliseconds: 60_000, now: () => 1_000_000 });
+		runtime.register(registration(backend, { maxLagMilliseconds: 1000, maxFlushAgeMilliseconds: 5 }));
+		await waitFor(() => runtime.getStatus('idle-gap')?.state === 'idle');
+		entries.push(audit({ timestamp: 60_010, recordId: 'x', tableId: 2 }));
+		store.rootStore.emit('committed');
+		await waitFor(() => backend.deliveries.length === 1);
+		assert.strictEqual(runtime.getMetrics('idle-gap').cursorLagMilliseconds, 0);
+		assert.strictEqual(derivedIndexWriteRejection(store, 1), undefined, 'nothing read was a minute behind');
+		entries.push(audit({ timestamp: 120_010, recordId: 'a' }));
+		store.rootStore.emit('committed');
+		await waitFor(() => backend.deliveries.length === 2);
+		assert.strictEqual(runtime.getMetrics('idle-gap').cursorLagMilliseconds, 60_000);
+		assert.match(derivedIndexWriteRejection(store, 1), /more than 1000 ms behind/);
+		backend.cursor = backend.deliveries[0].through;
+		backend.stateChange('changed');
+		await waitFor(() => runtime.getMetrics('idle-gap').cursorLagMilliseconds === 0);
+		await waitFor(() => derivedIndexWriteRejection(store, 1) === undefined, { timeout: 5000 });
+		await runtime.stop();
+	});
+
 	it('keeps writes admitted when the registration sets no lag policy', async () => {
 		const records = new Map([['1:a', { version: 1, value: { title: 'a' } }]]);
 		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 5_000_000, recordId: 'a' })]]]));

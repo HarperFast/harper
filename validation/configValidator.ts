@@ -2,7 +2,8 @@
 
 import fs from 'fs-extra';
 import Joi from 'joi';
-import { resolveFullTextSearchLimits } from '../resources/indexes/fullTextSearchLimits.ts';
+import { resolveFullTextSearchLimits, resolveFullTextQueryLimits } from '../resources/indexes/fullTextSearchLimits.ts';
+import { validateHeaderValue } from 'node:http';
 import * as os from 'node:os';
 const { boolean, string, number, array } = Joi.types();
 const v8Flag = string.trim().allow('').pattern(/^--/, 'V8 flag starting with --');
@@ -15,6 +16,7 @@ import { getDomainSocketPathMaxBytes } from '../utility/domainSocket.ts';
 import { bareHostViolation } from '../utility/nodeIdentity.ts';
 import { parseMaxSize } from '../utility/logging/logRotation.ts';
 import * as validator from './validationWrapper.ts';
+import { MAX_RECORD_CACHE_SIZE, MIN_RECORD_CACHE_SIZE } from '../utility/rocksMemoryConfig.ts';
 
 const DEFAULT_LOG_FOLDER = 'log';
 const DEFAULT_COMPONENTS_FOLDER = 'components';
@@ -32,6 +34,20 @@ const INVALID_RETENTION_VALUE_MSG =
 // Units accepted for rotation durations, matching convertToMS: note capital M (months) vs lowercase m (minutes).
 const VALID_ROTATION_DURATION_UNITS = ['D', 'd', 'H', 'h', 'M', 'm'];
 const UNDEFINED_OPS_API = 'rootPath config parameter is undefined';
+
+/**
+ * Root config keys configSchema marks `.required()`. An install template that omits one of these gets it
+ * from defaultConfig.yaml; any other omitted root key stays omitted, since a root key's presence is what
+ * turns its component or capability on (componentLoader iterates the root keys).
+ */
+export const REQUIRED_ROOT_CONFIG_KEYS = new Set([
+	'http',
+	'localStudio',
+	'logging',
+	'operationsApi',
+	'rootPath',
+	'storage',
+]);
 
 /**
  * What `deploy_component` writes into a root-config entry, plus the deployment-level keys
@@ -308,6 +324,30 @@ const healthThresholds = (warningDefault: number, errorDefault: number) =>
 			(value.warning ?? warningDefault) <= (value.error ?? errorDefault) ? value : helpers.error('any.invalid')
 		);
 
+const corsAllowHeadersConstraints = Joi.custom((value, helpers) => {
+	try {
+		for (const header of Array.isArray(value) ? value : [value])
+			validateHeaderValue('Access-Control-Allow-Headers', typeof header === 'string' ? header : '' + header);
+		return value;
+	} catch {
+		return helpers.error('any.invalid');
+	}
+})
+	.allow(null)
+	.optional();
+const readRequestQueueLimitConstraints = Joi.alternatives([number.integer().min(0).allow(null), boolean.valid(false)])
+	.prefs({ convert: false })
+	.optional();
+
+export function effectiveHttpConfigValidator(flatConfig) {
+	return Joi.object({
+		http_readrequestqueuelimit: readRequestQueueLimitConstraints,
+		http_corsaccesscontrolallowheaders: corsAllowHeadersConstraints,
+	}).validate({
+		http_readrequestqueuelimit: flatConfig.http_readrequestqueuelimit,
+		http_corsaccesscontrolallowheaders: flatConfig.http_corsaccesscontrolallowheaders,
+	});
+}
 export function configValidator(configJson, skipFsValidation = false) {
 	skipFsVal = skipFsValidation;
 	hdbRoot = configJson.rootPath;
@@ -332,15 +372,21 @@ export function configValidator(configJson, skipFsValidation = false) {
 	});
 
 	// MCP — sub-issue #613 lands the config surface ahead of the transport (#614).
-	// Presence-based enablement: a profile is on iff its sub-block exists in
-	// config (same convention as `replication`). No `enabled` field.
+	// A profile is on when its sub-block exists, unless it sets `enabled: false`.
+	// `enabled: true` lets env-var config (where `{}` is dropped as "no overrides")
+	// create the block.
 	const mcpRateLimitSchema = Joi.object({
 		perToolPerSecond: number.min(0).optional(),
 		perToolBurst: number.min(0).optional(),
 		sessionConcurrency: number.min(0).optional(),
 		sessionPerSecond: number.min(0).optional(),
+		initializePerSecond: number.min(0).optional(),
+		initializeBurst: number.min(1).optional(),
 	});
 	const mcpOperationsSchema = Joi.object({
+		// `convert: false` — validateConfig() doesn't write coerced mcp values back, so a quoted
+		// "false" would pass here and still leave the profile on.
+		enabled: boolean.optional().prefs({ convert: false }),
 		mountPath: string.optional().default('/mcp'),
 		allow: array.items(string).optional(),
 		deny: array.items(string).optional(),
@@ -414,6 +460,15 @@ export function configValidator(configJson, skipFsValidation = false) {
 		analytics: Joi.object({
 			aggregatePeriod: number,
 			replicate: boolean.optional(),
+			fullText: Joi.object({
+				enabled: boolean.optional(),
+				intervalMilliseconds: number.integer().min(1000).max(2147483647).optional(),
+				histograms: boolean.optional(),
+				snapshotBytes: boolean.optional(),
+			})
+				.unknown(false)
+				.strict()
+				.optional(),
 		}),
 		replication: Joi.object({
 			hostname: bareHostConstraints,
@@ -501,6 +556,8 @@ export function configValidator(configJson, skipFsValidation = false) {
 			requireAuthentication: boolean.optional(),
 		}),
 		http: Joi.object({
+			corsAccessControlAllowHeaders: corsAllowHeadersConstraints,
+			readRequestQueueLimit: readRequestQueueLimitConstraints,
 			compressionThreshold: number.optional(),
 			cors: boolean.optional(),
 			corsAccessList: array.optional(),
@@ -557,6 +614,7 @@ export function configValidator(configJson, skipFsValidation = false) {
 				preloadRequire: Joi.alternatives([string, array.items(string)])
 					.allow(null)
 					.optional(),
+				shutdownTimeout: number.min(0).optional().empty(null),
 				v8Flags: Joi.alternatives([v8Flag, array.items(v8Flag)])
 					.allow(null)
 					.optional(),
@@ -567,6 +625,7 @@ export function configValidator(configJson, skipFsValidation = false) {
 				.custom((value, helpers) => {
 					try {
 						resolveFullTextSearchLimits(value);
+						resolveFullTextQueryLimits(value?.query);
 						return value;
 					} catch (error) {
 						return helpers.message({ custom: error instanceof Error ? error.message : String(error) });
@@ -576,6 +635,14 @@ export function configValidator(configJson, skipFsValidation = false) {
 			writeAsync: boolean.required(),
 			overlappingSync: boolean.optional(),
 			caching: boolean.optional(),
+			// `convert: false` — validateConfig() does not write this converted value back, so a quoted
+			// "65536" would pass here and the record cache would silently keep its default size.
+			recordCacheSize: number
+				.integer()
+				.min(MIN_RECORD_CACHE_SIZE)
+				.max(MAX_RECORD_CACHE_SIZE)
+				.optional()
+				.prefs({ convert: false }),
 			blobs: Joi.object({
 				compression: Joi.object()
 					.pattern(
@@ -606,6 +673,16 @@ export function configValidator(configJson, skipFsValidation = false) {
 			]),
 			compactOnStart: boolean.optional(),
 			compactOnStartKeepBackup: boolean.optional(),
+			maxLockClockSkew: Joi.alternatives([
+				number
+					.min(0)
+					.custom((value, helpers) =>
+						Number.isFinite(hdbUtils.parseDurationMs(value)) ? value : helpers.error('any.invalid')
+					),
+				string.custom((value, helpers) =>
+					Number.isFinite(hdbUtils.parseDurationMs(value)) ? value : helpers.error('any.invalid')
+				),
+			]).optional(),
 			noReadAhead: boolean.optional(),
 			path: storagePathConstraints,
 			prefetchWrites: boolean.optional(),

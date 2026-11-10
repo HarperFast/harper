@@ -83,6 +83,7 @@ storage:
       maxExpensiveSearches: 8
   writeAsync: false
   caching: true
+  recordCacheSize: 32768
   compression: true
   rocks:
     compression: null
@@ -90,6 +91,7 @@ storage:
   path: null
   backupPath: null
   prefetchWrites: true
+  maxLockClockSkew: 5s
 tls:
   privateKey: null
   certificateWatchInterval: 300000

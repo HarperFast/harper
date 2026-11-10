@@ -511,6 +511,19 @@ describe('@fullText derived-index activation', () => {
 				),
 			/full-text OR group cannot mix full-text and record conditions/
 		);
+		await assert.rejects(
+			async () =>
+				collect(
+					Product.search({
+						operator: 'or',
+						conditions: [
+							{ attribute: 'search', comparator: 'matches', value: 'shoe' },
+							{ attribute: 'price', comparator: 'greater_than', value: 100 },
+						],
+					})
+				),
+			/full-text OR group cannot mix full-text and record conditions/
+		);
 	});
 
 	rocksOnly('preserves full-text condition options through search_by_conditions', async () => {
@@ -1645,6 +1658,9 @@ describe('@fullText derived-index activation', () => {
 			applyDerivedValue() {},
 			async flushDerived() {},
 			resetDerivedStorage() {},
+			derivedStorageLost() {
+				return false;
+			},
 			propertyResolver(value) {
 				return value;
 			},
@@ -1701,6 +1717,9 @@ describe('@fullText derived-index activation', () => {
 			applyDerivedValue() {},
 			async flushDerived() {},
 			resetDerivedStorage() {},
+			derivedStorageLost() {
+				return false;
+			},
 			propertyResolver(value) {
 				return value;
 			},

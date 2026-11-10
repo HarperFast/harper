@@ -207,6 +207,172 @@ describe('dedicated worker pools', () => {
 		});
 	});
 
+	describe('plannedTableThreadCount', () => {
+		const env = () => require('#src/utility/environment/environmentManager');
+		const { getConfigObj } = require('#src/config/configUtils');
+		const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
+		const keys = [
+			CONFIG_PARAMS.THREADS_COUNT,
+			CONFIG_PARAMS.THREADS,
+			CONFIG_PARAMS.THREADS_MAXISOLATED,
+			CONFIG_PARAMS.REPLICATION_THREADS,
+			CONFIG_PARAMS.REPLICATION_PORT,
+			CONFIG_PARAMS.REPLICATION_SECUREPORT,
+			CONFIG_PARAMS.HTTP_PORT,
+			CONFIG_PARAMS.HTTP_SECUREPORT,
+			CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT,
+			CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT,
+		];
+		const saved = {};
+		const isolatedNames = ['planned-iso-a', 'planned-iso-b', 'planned-iso-c'];
+		let savedDevMode;
+		before(() => {
+			for (const key of keys) saved[key] = env().get(key);
+			savedDevMode = process.env.DEV_MODE;
+		});
+		beforeEach(() => {
+			for (const key of keys) env().setProperty(key, undefined);
+			delete process.env.DEV_MODE;
+		});
+		afterEach(() => {
+			for (const key of keys) env().setProperty(key, saved[key]);
+			if (savedDevMode === undefined) delete process.env.DEV_MODE;
+			else process.env.DEV_MODE = savedDevMode;
+			for (const name of isolatedNames) delete getConfigObj()[name];
+		});
+		const planned = () => pools().plannedTableThreadCount();
+		// Windows runs one HTTP worker whatever threads.count says
+		const http = (count) => (process.platform === 'win32' && count > 0 ? 1 : count);
+
+		it('counts main and the HTTP workers, two of them when threads.count is unset', () => {
+			assert.strictEqual(planned(), 1 + http(2));
+			env().setProperty(CONFIG_PARAMS.THREADS_COUNT, 4);
+			assert.strictEqual(planned(), 1 + http(4));
+			env().setProperty(CONFIG_PARAMS.THREADS_COUNT, 1);
+			assert.strictEqual(planned(), 2);
+		});
+
+		it('counts only main when threads.count is 0, whatever else is configured', () => {
+			env().setProperty(CONFIG_PARAMS.THREADS_COUNT, 0);
+			env().setProperty(CONFIG_PARAMS.REPLICATION_THREADS, 2);
+			env().setProperty(CONFIG_PARAMS.REPLICATION_SECUREPORT, 9933);
+			getConfigObj()['planned-iso-a'] = { isolated: true };
+			assert.strictEqual(planned(), 1);
+		});
+
+		it('counts one HTTP worker in DEV_MODE', () => {
+			process.env.DEV_MODE = 'true';
+			env().setProperty(CONFIG_PARAMS.THREADS_COUNT, 8);
+			assert.strictEqual(planned(), 2);
+		});
+
+		it('counts the replication pool only when it has a replication port of its own', () => {
+			env().setProperty(CONFIG_PARAMS.THREADS_COUNT, 4);
+			env().setProperty(CONFIG_PARAMS.REPLICATION_SECUREPORT, 9933);
+			assert.strictEqual(planned(), 1 + http(4) + Math.floor(http(4) / 2), 'defaulted pool');
+			env().setProperty(CONFIG_PARAMS.REPLICATION_THREADS, 3);
+			assert.strictEqual(planned(), 1 + http(4) + 3, 'explicit pool');
+			env().setProperty(CONFIG_PARAMS.HTTP_SECUREPORT, 9933);
+			assert.strictEqual(planned(), 1 + http(4), 'port shared with HTTP');
+			env().setProperty(CONFIG_PARAMS.HTTP_SECUREPORT, null);
+			env().setProperty(CONFIG_PARAMS.REPLICATION_SECUREPORT, null);
+			assert.strictEqual(planned(), 1 + http(4), 'no replication port');
+		});
+
+		it('counts the isolated applications configured at startup, up to threads.maxIsolated', () => {
+			env().setProperty(CONFIG_PARAMS.THREADS_COUNT, 2);
+			for (const name of isolatedNames) getConfigObj()[name] = { isolated: true };
+			assert.strictEqual(planned(), 1 + http(2) + 3);
+			env().setProperty(CONFIG_PARAMS.THREADS_MAXISOLATED, 2);
+			assert.strictEqual(planned(), 1 + http(2) + 2);
+		});
+	});
+
+	describe('a pending (defaulted) pool', () => {
+		const harperLogger = () => require('#js/utility/logging/harper_logger');
+		const capturingWarnings = (run) => {
+			const warnings = [];
+			const logger = harperLogger();
+			const originalWarn = logger.warn;
+			logger.warn = (...args) => warnings.push(args.join(' '));
+			try {
+				run();
+			} finally {
+				logger.warn = originalWarn;
+			}
+			return warnings;
+		};
+		afterEach(() => pools().setActiveWorkerPools([]));
+
+		it('counts as active on the main thread until decided', () => {
+			const { setActiveWorkerPools, isWorkerPoolActive, isWorkerPoolPending, workerPoolDecision } = pools();
+			setActiveWorkerPools(['replication'], ['replication']);
+			assert.strictEqual(isWorkerPoolActive('replication'), true);
+			assert.strictEqual(isWorkerPoolPending('replication'), true);
+			assert.ok(workerPoolDecision() instanceof Promise);
+		});
+
+		it('is admitted when the first report lists no unsupported table, and later reports change nothing', async () => {
+			const { setActiveWorkerPools, decideWorkerPools, isWorkerPoolActive, isWorkerPoolPending, workerPoolDecision } =
+				pools();
+			setActiveWorkerPools(['replication'], ['replication']);
+			const decision = workerPoolDecision();
+			assert.deepStrictEqual(
+				capturingWarnings(() => decideWorkerPools([])),
+				[]
+			);
+			await decision;
+			assert.strictEqual(isWorkerPoolActive('replication'), true);
+			assert.strictEqual(isWorkerPoolPending('replication'), false);
+			assert.strictEqual(workerPoolDecision(), undefined);
+			decideWorkerPools(['data.Late']);
+			assert.strictEqual(isWorkerPoolActive('replication'), true, 'a later report does not re-decide');
+		});
+
+		it('is declined, with one warning naming the tables, when the first report lists one', async () => {
+			const { setActiveWorkerPools, decideWorkerPools, isWorkerPoolActive, workerPoolDecision } = pools();
+			setActiveWorkerPools(['replication'], ['replication']);
+			const decision = workerPoolDecision();
+			const warnings = capturingWarnings(() => decideWorkerPools(['data.ComputedRow', 'data.Sharded']));
+			await decision;
+			assert.strictEqual(isWorkerPoolActive('replication'), false);
+			assert.strictEqual(warnings.length, 1);
+			assert.match(
+				warnings[0],
+				/Starting no replication pool: replication\.threads is not set and data\.ComputedRow, data\.Sharded/
+			);
+			assert.match(warnings[0], /replication\.threads: 0/);
+		});
+
+		it('is not yet active on a worker, which applies the admitted pools before it binds', async () => {
+			const { Worker } = require('node:worker_threads');
+			const modulePath = require.resolve('#src/server/threads/workerPools');
+			const worker = new Worker(
+				`const { parentPort } = require('node:worker_threads');
+				const pools = require(${JSON.stringify(modulePath)});
+				const before = [pools.isWorkerPoolActive('replication'), pools.isWorkerPoolPending('replication')];
+				pools.admitWorkerPools(['replication']);
+				parentPort.postMessage([before, [pools.isWorkerPoolActive('replication'), pools.isWorkerPoolPending('replication')]]);`,
+				{ eval: true, workerData: { name: 'http', workerPools: [], pendingWorkerPools: ['replication'] } }
+			);
+			const [before, after] = await new Promise((resolve, reject) => {
+				worker.once('message', resolve);
+				worker.once('error', reject);
+			});
+			await worker.terminate();
+			assert.deepStrictEqual(before, [false, true], 'pending: registration-time choices are made as if it will bind');
+			assert.deepStrictEqual(after, [true, false]);
+		});
+
+		it('never applies to an explicit pool', () => {
+			const { setActiveWorkerPools, decideWorkerPools, isWorkerPoolActive, workerPoolDecision } = pools();
+			setActiveWorkerPools(['replication']);
+			assert.strictEqual(workerPoolDecision(), undefined);
+			decideWorkerPools(['data.ComputedRow']);
+			assert.strictEqual(isWorkerPoolActive('replication'), true);
+		});
+	});
+
 	it('loads no application on a pool worker', () => {
 		const config = { shared: { package: 'x' }, isolatedApp: { package: 'x', isolated: true } };
 		assert.strictEqual(iso().shouldLoadApplicationHere('shared', undefined, config, true), false);

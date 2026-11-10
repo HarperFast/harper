@@ -1,9 +1,10 @@
 'use strict';
 
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { BackupArchiveManifest } from './backupArchiveManifest.ts';
+import { fsyncDirectory, writeFileDurably } from '../utility/durableFile.ts';
 
 /**
  * Per-backup completion manifest for RocksDB managed backups.
@@ -58,11 +59,18 @@ export async function writeBackupManifest(
 	producer?: BackupArchiveManifest
 ): Promise<void> {
 	const dir = manifestDir(backupDir);
-	await mkdir(dir, { recursive: true });
-	const manifest: BackupManifest = { backupId, blobs, completedAt: Date.now(), ...(producer ? { producer } : {}) };
-	const tempPath = join(dir, `.tmp-${backupId}.json`);
-	await writeFile(tempPath, JSON.stringify(manifest));
-	await rename(tempPath, manifestPath(backupDir, backupId)); // atomic publish
+	if (!existsSync(dir)) {
+		await mkdir(dir, { recursive: true });
+		fsyncDirectory(backupDir);
+	}
+	const manifest: BackupManifest = {
+		backupId,
+		blobs,
+		completedAt: Date.now(),
+		...(producer ? { producer } : {}),
+	};
+	// durable, not just atomic: a restore treats a manifest as proof the backup is whole
+	writeFileDurably(manifestPath(backupDir, backupId), JSON.stringify(manifest), `.tmp-${backupId}.json`);
 }
 
 /** Read a backup's completion manifest, or null when it has none (incomplete / not yet written). */

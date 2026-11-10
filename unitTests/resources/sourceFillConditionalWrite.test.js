@@ -276,8 +276,14 @@ describe('Source fill racing a local write', function () {
 		await committed(id);
 		const entry = FillTable.primaryStore.getEntry(id);
 		assert(entry.version > invalidated.version, 'the fill regressed the version the publish stored');
-		assert.notEqual(entry.value?.name, 'source ' + id);
-		assert.equal(indexCount('source ' + id), 0);
+		// the publish leaves the stub invalidated: LMDB's fill yields to it, RocksDB's completes the stub
+		if (isLMDB) {
+			assert(entry.metadataFlags & INVALIDATED);
+			assert.equal(indexCount('source ' + id), 0);
+		} else {
+			assert.equal(entry.value.name, 'source ' + id);
+			assert.equal(indexCount('source ' + id), 1);
+		}
 	});
 
 	it('fills over a write the source makes that is itself discarded as stale', async function () {

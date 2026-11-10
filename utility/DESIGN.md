@@ -2,7 +2,7 @@
 
 Cross-cutting helpers.
 
-**Read this when:** touching `watchPath.ts` or anything that arms a native file watch, adding an interactive CLI prompt (`interactivePrompts.ts`), passing an object to `handleHDBError` (`errors/hdbError.ts`), comparing which file a log descriptor is on (`logging/`), or changing `inspectForLog`'s sanitize walk (`logging/harper_logger.ts`).
+**Read this when:** touching `watchPath.ts` or anything that arms a native file watch, adding an interactive CLI prompt (`interactivePrompts.ts`), passing an object to `handleHDBError` (`errors/hdbError.ts`), comparing which file a log descriptor is on (`logging/`), changing `inspectForLog`'s sanitize walk (`logging/harper_logger.ts`), or minting times with `getNextMonotonicTime` (`lmdb/commonUtility.ts`).
 
 Index of every design note: [DESIGN.md](../DESIGN.md).
 
@@ -95,3 +95,55 @@ Startup, install, restart, stop, upgrade and status messages about the local ins
 ## Logger status dispatch uses the active runtime facade
 
 `logging/harper_logger.ts` routes `status()` through the runtime's existing public object: CommonJS `module.exports` or the native ESM default facade. Read the CJS object inside each call, after export assignment, so replaced log methods remain observable; source execution must not evaluate an unguarded `module`. Keep new status methods and the existing startup aliases on both facades. The logger completes initialization before status dispatch; `initLogSettings()` does not call `status()`. Enforced by the fresh-process source/compiled checks in `typestrip-runtime.test.mjs`.
+
+## Local times are unique across threads (`utility/lmdb/commonUtility.ts` `getNextMonotonicTime`)
+
+Every thread of a process mints from one clock word, a `SharedArrayBuffer` holding the bit pattern of the last time issued, advanced by compare-and-swap to `max(now, last + 1 ulp)`. Same-node writes with equal versions are treated as re-deliveries (`precedesExistingVersion`), and LMDB keys its audit log by that version, so two threads issuing one time would silently drop the second write. The word reaches workers through `setEnvironmentData` and the `monotonicClock` workerData provider in `server/threads/manageThreads.ts`. Environment data is inherited transitively, so only a thread lineage in which no ancestor loaded the module (never the case under Harper, whose `manageThreads.ts` loads it on the main thread) or another process has a clock of its own. Uniqueness is per process and per run, not across restarts or clock rollback. Enforced by `unitTests/utility/lmdb/monotonicTime.test.js` and `integrationTests/database/lmdb-concurrent-crdt-add.test.ts`.
+
+## RocksDB arena size and flush policy stay rocksdb-js's unless configured (`utility/rocksMemoryConfig.ts`)
+
+Harper sizes the block cache and the WriteBufferManager itself, but `storage.rocks.arenaBlockSize` and `storage.rocks.writeBufferManagerFlushPolicy` only forward an operator's value (the policy only while the WriteBufferManager is enabled): unset or malformed means the key is omitted, never replaced with a Harper default. rocksdb-js derives both from state Harper does not see — the automatic arena from the manager's budget when each column family opens, the policy from `writeBufferManagerAllowStall`, live (an `oldest` policy with stalls allowed can wedge on budget held by idle databases). The arena reaches every column family because `openRocksDatabase` is the one open path for Harper's stores; `bin/copyDb.ts` and `dataLayer/rocksdbBackup.ts` open their own handles and keep the automatic size. rocksdb-js keeps an explicit policy for the life of the process, so removing it from config needs a full restart, not a worker restart. Tests: `unitTests/utility/rocksMemoryConfig.test.js` (omission) and `unitTests/resources/rocksOpenConfig.test.js` (through the open path).
+
+## The verification table is sized once, by main, before first use (`utility/rocksMemoryConfig.ts`)
+
+rocksdb-js's verification table is one array per process, and once it has been used it rejects every `verificationTableEntries`, its current size included. So `sizeVerificationTable` in `resources/databases.ts` sets it on the main thread's first `openRocksDatabase` and workers never do: main uses its databases before it starts a worker, and a worker's set would throw. It is a `RocksDatabase.config` call of its own because native config skips the settings that follow a rejected one; only that rejection is caught. The size, `resolveVerificationTableEntries`, is two slots per record the startup threads (`plannedTableThreadCount` in `server/threads/workerPools.ts`) can cache, as a power of two, never below rocksdb-js's 131,072 and not grown past 1/64 of memory, because the table is zeroed in full at first use. It is an estimate taken at startup: threads started later are not counted. `storage.recordCacheSize` is one budget per thread because `PrimaryRocksDatabase` owns the thread's `LRFUExpirer`; weak-lru-cache's default expirer takes its size from the first cache the thread builds, lmdb's on an LMDB database. Tests: `unitTests/utility/rocksMemoryConfig.test.js` and `unitTests/resources/recordCacheSizing.test.js`.
+
+## A sealed operation runs exactly as its plaintext would, and dispatch never relays or logs its content (`components/encryptedOperation.ts`, `utility/sealedOperation.ts`)
+
+`encrypted_operation` (`components/encryptedOperation.ts`, [#3288](https://github.com/HarperFast/harper/issues/3288))
+unseals an `enc:v1` envelope through the registered custody, runs the inner operation through the same
+`chooseOperation` → `processLocalTransaction` dispatch under the outer request's principal, and seals the result
+under the client's response key; the wire format and reference client are `utility/sealedOperation.ts`.
+
+- **No widening.** The inner body may not carry `hdb_user`, `impersonate`, `bypass_auth`/`bypassAuth` or dispatcher
+  fields; its principal is assigned, and trusted bypass is the async-context state, never a body field. Both the
+  wrapper and the inner operation pass `verifyPerms`, so a role allowlist or scoped token must list both. Job
+  operations are refused: a job stores its request and result in `system.hdb_job`, where `get_job` reads them back
+  unsealed.
+- **Plaintext only before the nonce is reserved.** Admission failures answer with constant messages; everything
+  after is sealed, and an unexpected failure there is still answered sealed. Fields mode verifies the visible text's
+  hash before parsing it, and each sealed value is bound to its JSON Pointer by its AAD, so a relay can neither edit
+  visible fields nor move a sealed value.
+- **Dispatch logs no sealed content.** The inner body's log view (`server/serverHelpers/operationLogView.ts`) is
+  metadata in sealed mode and a masked copy in fields mode; `processLocalTransaction` and
+  `callOperationFunctionAsAwait` log the view, not the body or an error message, and a forwarding worker receives it
+  beside the body, never in it. A handler that logs its own input, or a result iterator whose cleanup error echoes
+  its data, is not covered ([#3338](https://github.com/HarperFast/harper/issues/3338)).
+- **Replay is refused per process, not exactly-once.** The nonce is reserved before dispatch, never released, and kept
+  until no `maxAge`, even one raised later, could admit its envelope: `ts` plus the 600 s ceiling. A restart forgets
+  the store, and a backward wall-clock step longer than that retention re-opens an aged-out envelope
+  ([#3344](https://github.com/HarperFast/harper/issues/3344)). The custody key is cluster-wide but the store is per
+  node, so each node admits a captured envelope once ([#3816](https://github.com/HarperFast/harper/issues/3816)).
+- **Replay capacity is shared by principal.** The store is bounded and answers 503 when full rather than evict. Past
+  half full, a principal may hold at most half the store divided by the number of principals holding entries, so one
+  caller flooding envelopes, even ones it may not run, leaves the other half to everyone else. A relay that carries
+  many clients as one principal (the operations socket authenticates as the super user) is therefore limited to half
+  the store, about 83 sealed requests a second sustained per node
+  ([#3810](https://github.com/HarperFast/harper/issues/3810)).
+- **What ran is said.** A result that ran but could not be delivered (a stream, over `maxSize`, or one whose
+  serialization or cursor fails mid-stream, which `streamAsJSON` ends with an error rather than a complete array)
+  answers `executed: true`; a 5xx keeps the unknown outcome it has on a direct request
+  ([#3343](https://github.com/HarperFast/harper/issues/3343)). `maxSize` bounds what is buffered and sealed, error
+  bodies included; a single value is still serialized whole before it is measured, as on the plaintext path.
+
+Enforced by `unitTests/components/encryptedOperation.test.js` and `integrationTests/security/encrypted-operation.test.ts`.

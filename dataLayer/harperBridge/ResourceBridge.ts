@@ -47,6 +47,7 @@ import { collapseData } from '../../resources/tracked.ts';
 import { errorToString } from '../../utility/logging/harper_logger.ts';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
 import { boundedAuditPruneEnd, raiseAuditFloor } from '../../resources/auditStore.ts';
+import { originFloorsDurable } from '../../resources/originClosedFloor.ts';
 import { BridgeMethods } from './BridgeMethods.ts';
 import lmdbGetBackup from './lmdbBridge/lmdbMethods/lmdbGetBackup.ts';
 import { createBackupStream, resolveSingleRootStore } from '../rocksdbBackup.ts';
@@ -94,6 +95,8 @@ export class ResourceBridge extends BridgeMethods {
 					attribute: c.attribute ?? c.search_attribute,
 					comparator: c.comparator ?? c.search_type,
 					value: c.value !== undefined ? c.value : c.search_value, // null is valid value
+					...(c.fuzzyDistance === undefined ? null : { fuzzyDistance: c.fuzzyDistance }),
+					...(c.fuzzyTranspositions === undefined ? null : { fuzzyTranspositions: c.fuzzyTranspositions }),
 					...(c.fields === undefined ? null : { fields: c.fields }),
 					...(c.includeHighlights === undefined ? null : { includeHighlights: c.includeHighlights }),
 					...(c.maxIndexLagMilliseconds === undefined ? null : { maxIndexLagMilliseconds: c.maxIndexLagMilliseconds }),
@@ -182,21 +185,8 @@ export class ResourceBridge extends BridgeMethods {
 	async dropAttribute(dropAttributeObj) {
 		const Table = getTable(dropAttributeObj);
 		await Table.removeAttributes([dropAttributeObj.attribute]);
-		if (!Table.schemaDefined) {
-			// legacy behavior of deleting all the property values
-			const property = dropAttributeObj.attribute;
-			let resolution;
-			const deleteRecord = (key, record, version): Promise<void> => {
-				record = { ...record };
-				delete record[property];
-				return Table.primaryStore.put(key, record, version);
-			};
-			for (const { key, value: record, version } of Table.primaryStore.getRange({ start: true, versions: true })) {
-				resolution = deleteRecord(key, record, version);
-				await new Promise((resolve) => setImmediate(resolve));
-			}
-			await resolution;
-		}
+		// legacy behavior of deleting all the property values
+		if (!Table.schemaDefined) await Table.stripAttributeValues([dropAttributeObj.attribute]);
 		return `successfully deleted ${dropAttributeObj.schema}.${dropAttributeObj.table}.${dropAttributeObj.attribute}`;
 	}
 
@@ -324,12 +314,18 @@ export class ResourceBridge extends BridgeMethods {
 					continue;
 				}
 				if (existingRecord) existingRecord = collapseData(existingRecord);
+				let setRecord;
 				for (const key in record) {
 					if (Object.prototype.hasOwnProperty.call(record, key)) {
 						let value = record[key];
 						if (typeof value === 'function') {
 							try {
-								const valueResults = value([[existingRecord]]);
+								// a relationship getter on the stored record would read past the caller's role
+								setRecord ??=
+									existingRecord && Table.hasRelationships && !context.user?.role?.permission?.super_user
+										? withoutRelationships(existingRecord, Table)
+										: existingRecord;
+								const valueResults = value([[setRecord]]);
 								if (Array.isArray(valueResults)) {
 									value = valueResults[0].func_val;
 									record[key] = value;
@@ -535,6 +531,7 @@ export class ResourceBridge extends BridgeMethods {
 				select: getSelect(searchObject, table),
 			} as any,
 			{
+				user: searchObject.hdb_user,
 				onlyIfCached: (searchObject as any).onlyIfCached,
 				noCacheStore: (searchObject as any).noCacheStore,
 				noCache: (searchObject as any).noCache,
@@ -626,6 +623,12 @@ export class ResourceBridge extends BridgeMethods {
 						// bound, so it cannot remove an entry the floor does not cover.
 						const pruneEnd = boundedAuditPruneEnd(table.auditStore, before);
 						raiseAuditFloor(table.auditStore, pruneEnd);
+						// the floor and purge bounds reach disk before the files they account for are unlinked
+						if (originFloorsDurable(table.primaryStore)) {
+							await table.primaryStore.syncWal();
+							// a drop or restore may have closed this handle while the sync was pending
+							if (table.primaryStore.status !== 'open') break;
+						}
 						const deleted = table.primaryStore.purgeLogs({ before: pruneEnd, includeEntryCounts: true });
 						totalResults.log_files_deleted += deleted.length;
 						totalResults.entries_deleted += deleted.reduce((acc, file) => acc + file.entries, 0);
@@ -745,11 +748,19 @@ export class ResourceBridge extends BridgeMethods {
 	}
 }
 
+function withoutRelationships(record: any, Table: any) {
+	const copy = { ...record };
+	for (const name in Table.propertyResolvers)
+		if (!Table.propertyResolvers[name]?.definition?.tableClass && !Object.hasOwn(copy, name))
+			Object.defineProperty(copy, name, { get: () => record[name], enumerable: true, configurable: true });
+	return copy;
+}
+
 function throwSearchValidationError(validationError: any): never {
 	throw typeof validationError.statusCode === 'number' ? validationError : new ClientError(validationError.message);
 }
 
-function getSelect({ get_attributes }: any, table: any) {
+function getSelect({ get_attributes, hdb_user }: any, table: any) {
 	if (get_attributes) {
 		if (get_attributes[0] === '*') {
 			const metadata = get_attributes.slice(1).filter((name) => name === '$score' || name === '$highlights');
@@ -761,6 +772,7 @@ function getSelect({ get_attributes }: any, table: any) {
 				...metadata,
 			];
 		}
+		get_attributes = table._authorizeSelectedRelationships(get_attributes, hdb_user);
 		get_attributes.forceNulls = true;
 		return get_attributes;
 	}

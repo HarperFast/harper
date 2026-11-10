@@ -2,6 +2,7 @@ import { FSWatcher } from 'chokidar';
 import { getConfigFilePath } from './configUtils.ts';
 import { readConfigFileSync } from './readConfigFileSync.ts';
 import { EventEmitter, once } from 'node:events';
+import { isDeepStrictEqual } from 'node:util';
 import { parseConfigFile } from './parseConfigFile.ts';
 import {
 	POLLING_FALLBACK_OPTIONS,
@@ -14,6 +15,9 @@ import { resolveWatchTarget } from '../utility/watchPath.ts';
 import { errorForLog, loggerWithTag } from '../utility/logging/harper_logger.ts';
 import { ConfigReadRetry } from './configReadRetry.ts';
 import { ArmGate } from './watcherArming.ts';
+
+// config/DESIGN.md: `RootConfigWatcher` schedules a trailing verify-read
+const TRAILING_VERIFY_READ_DELAY_MS = 100;
 
 function isMissingFile(error: unknown): boolean {
 	return !!error && typeof error === 'object' && (error as NodeJS.ErrnoException).code === 'ENOENT';
@@ -47,11 +51,14 @@ export class RootConfigWatcher extends EventEmitter {
 	#watchPath: string;
 	#watcher!: FSWatcher;
 	#config: any;
+	#lastData?: string;
+	#lastParsedConfig: any;
 	#usingPolling: boolean;
 	#closed: boolean;
 	#openCount: number = 0;
 	#readCount: number = 0;
 	#readRetry: ConfigReadRetry = new ConfigReadRetry();
+	#trailingReadTimer?: NodeJS.Timeout;
 	#armGate: ArmGate = new ArmGate();
 	// The gate above is chokidar's scan finishing; this is the barrier's gate. A terminal outcome
 	// opens it without claiming the watch is armed, so the arming re-read still runs afterwards.
@@ -121,6 +128,8 @@ export class RootConfigWatcher extends EventEmitter {
 		if (this.#readyEmitted) return;
 		if (discardStaged) {
 			this.#config = undefined;
+			this.#lastData = undefined;
+			this.#lastParsedConfig = undefined;
 			this.#configLoaded = false;
 		}
 		this.#readyStaged = true;
@@ -210,20 +219,40 @@ export class RootConfigWatcher extends EventEmitter {
 	}
 
 	handleChange() {
-		this.#read(true);
+		if (this.#read(true)) this.#scheduleTrailingRead();
+	}
+
+	#scheduleTrailingRead() {
+		this.#clearTrailingRead();
+		if (this.#closed || this.#readRetry.pending) return;
+		this.#trailingReadTimer = setTimeout(() => {
+			this.#trailingReadTimer = undefined;
+			this.#read(true);
+		}, TRAILING_VERIFY_READ_DELAY_MS);
+		this.#trailingReadTimer.unref();
+	}
+
+	#clearTrailingRead() {
+		if (this.#trailingReadTimer) {
+			clearTimeout(this.#trailingReadTimer);
+			this.#trailingReadTimer = undefined;
+		}
 	}
 
 	// `harper_logger.start()` awaits `ready` with no timeout and the ladder may be the only thing
 	// left to settle it, so until then its timer keeps the thread alive rather than letting it
 	// drain and exit mid-boot.
 	#schedule(): boolean {
-		return this.#readRetry.schedule(() => this.#read(false), !this.#readyEmitted);
+		this.#clearTrailingRead();
+		return this.#readRetry.schedule(() => {
+			if (this.#read(false)) this.#scheduleTrailingRead();
+		}, !this.#readyEmitted);
 	}
 
-	#read(waitForLock: boolean) {
+	#read(waitForLock: boolean): boolean {
 		// A queued chokidar callback can still land after close(), which has already discarded the
 		// config and dropped every listener.
-		if (this.#closed) return;
+		if (this.#closed) return false;
 		this.#readCount++;
 		let data: string;
 		try {
@@ -233,9 +262,10 @@ export class RootConfigWatcher extends EventEmitter {
 			// `OptionsWatcher` settles it immediately as the install window. Taking the ladder here
 			// would disagree with that and cost `harper_logger.start()` the whole budget on every
 			// boot that has no config file (an env-var-only deployment, an empty mounted rootPath).
-			if (!isMissingFile(error) && this.#schedule()) return;
+			if (!isMissingFile(error) && this.#schedule()) return false;
 			// A ladder armed by an earlier empty read is spent by the time a rung lands on ENOENT,
 			// and every other terminal path clears its deadline.
+			this.#clearTrailingRead();
 			this.#readRetry.reset();
 			logger().warn(
 				`Unable to read the Harper configuration file at ${this.#configFilePath}` +
@@ -243,14 +273,18 @@ export class RootConfigWatcher extends EventEmitter {
 				errorForLog(error)
 			);
 			this.#stageBootFallback();
-			return;
+			return false;
 		}
 		// See DESIGN.md, "An empty read is a writer mid-write, not an empty config".
 		if (!data) {
-			if (this.#schedule()) return;
+			if (this.#schedule()) return false;
 			logger().warn(`The Harper configuration file at ${this.#configFilePath} is empty`);
 			this.#stageBootFallback();
-			return;
+			return false;
+		}
+		if (this.#readyEmitted && data === this.#lastData) {
+			this.#readRetry.reset();
+			return true;
 		}
 		let config;
 		try {
@@ -260,37 +294,45 @@ export class RootConfigWatcher extends EventEmitter {
 			// `write(2)` can land a prefix of the document, and the event carrying the rest is the one
 			// chokidar throttles away. So an unparseable read rides out the same ladder as an empty
 			// one, and only a read that parses releases it.
-			if (this.#schedule()) return;
+			if (this.#schedule()) return false;
 			logger().warn((error as Error).message);
 			this.#stageBootFallback();
-			return;
+			return false;
 		}
 		// The third shape a mid-write read takes, and the only one that parses: a truncated
 		// document, a lone `\n`, a file that is nothing but comments all yield `null` rather than
 		// throwing, and adopting one hands every consumer a config with nothing in it. Same ladder
 		// as the two above, and past it the file is empty rather than mid-write.
 		if (!config || typeof config !== 'object') {
-			if (this.#schedule()) return;
+			if (this.#schedule()) return false;
 			logger().warn(`The Harper configuration file at ${this.#configFilePath} is empty`);
 			this.#stageBootFallback();
-			return;
+			return false;
 		}
 		this.#readRetry.reset();
 
 		// Before `ready` goes out there is no prior state to have changed *since*.
 		this.#configLoaded = true;
 		this.#readyStaged = true;
+		this.#lastData = data;
+		// Consumers such as `harper_logger` mutate the emitted `#config` object in place, so keep
+		// an unmutated clone for semantic comparison.
 		if (!this.#readyEmitted) {
+			this.#lastParsedConfig = structuredClone(config);
 			this.#config = config;
 			this.#emitReady();
-			return;
+			return true;
 		}
+
+		if (isDeepStrictEqual(config, this.#lastParsedConfig)) return true;
+		this.#lastParsedConfig = structuredClone(config);
 
 		try {
 			this.emit('change', (this.#config = config));
 		} catch (error) {
 			logger().warn('A Harper configuration change listener failed', errorForLog(error));
 		}
+		return true;
 	}
 
 	close() {
@@ -301,6 +343,7 @@ export class RootConfigWatcher extends EventEmitter {
 		this.#readyStaged = true;
 		this.#emitReady();
 		this.#closed = true;
+		this.#clearTrailingRead();
 		this.#readRetry.cancel();
 		this.#armGate.cancel();
 		// chokidar's close() is a promise; an unhandled teardown rejection would reach Node as one,
@@ -308,6 +351,8 @@ export class RootConfigWatcher extends EventEmitter {
 		// exhaustion-recovery close above, and as `OptionsWatcher.close`.
 		Promise.resolve(this.#watcher.close()).catch(() => {});
 		this.#config = undefined;
+		this.#lastData = undefined;
+		this.#lastParsedConfig = undefined;
 		this.emit('close');
 		this.removeAllListeners();
 		return this;

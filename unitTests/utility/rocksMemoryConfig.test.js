@@ -1,7 +1,12 @@
 'use strict';
 
 const assert = require('node:assert');
-const { resolveRocksMemoryConfig } = require('#src/utility/rocksMemoryConfig');
+const {
+	resolveRocksMemoryConfig,
+	resolveRocksArenaBlockSize,
+	resolveRecordCacheSize,
+	resolveVerificationTableEntries,
+} = require('#src/utility/rocksMemoryConfig');
 
 const GB = 1024 * 1024 * 1024;
 
@@ -11,6 +16,7 @@ function resolve(overrides) {
 		configuredWriteBufferManagerSize: undefined,
 		configuredCostToCache: undefined,
 		configuredAllowStall: undefined,
+		configuredFlushPolicy: undefined,
 		availableMemory: 8 * GB,
 		...overrides,
 	});
@@ -56,6 +62,12 @@ describe('resolveRocksMemoryConfig', function () {
 			assert.ok(!('writeBufferManagerSize' in config));
 			assert.ok(!('writeBufferManagerCostToCache' in config));
 			assert.ok(!('writeBufferManagerAllowStall' in config));
+			assert.ok(
+				!(
+					'writeBufferManagerFlushPolicy' in
+					resolve({ configuredWriteBufferManagerSize: 0, configuredFlushPolicy: 'largest' })
+				)
+			);
 		});
 
 		it('falls back to the default for non-number values', function () {
@@ -111,5 +123,123 @@ describe('resolveRocksMemoryConfig', function () {
 			assert.strictEqual(config.writeBufferManagerAllowStall, false);
 			assert.strictEqual(resolve({ configuredAllowStall: 'true' }).writeBufferManagerAllowStall, false);
 		});
+	});
+
+	describe('flush policy', function () {
+		it('is left unset when not configured, so rocksdb-js picks it', function () {
+			assert.ok(!('writeBufferManagerFlushPolicy' in resolve({})));
+			assert.ok(!('writeBufferManagerFlushPolicy' in resolve({ configuredFlushPolicy: null })));
+			assert.ok(!('writeBufferManagerFlushPolicy' in resolve({ configuredAllowStall: true })));
+		});
+
+		it('passes each supported policy through', function () {
+			for (const policy of ['oldest', 'largest', 'largestAcrossDBs']) {
+				assert.strictEqual(resolve({ configuredFlushPolicy: policy }).writeBufferManagerFlushPolicy, policy);
+			}
+		});
+
+		it('is left unset for an unknown policy name or a non-string value', function () {
+			for (const configuredFlushPolicy of [
+				'largestacrossdbs',
+				'newest',
+				'',
+				1,
+				true,
+				['oldest'],
+				{ policy: 'oldest' },
+			]) {
+				assert.ok(
+					!('writeBufferManagerFlushPolicy' in resolve({ configuredFlushPolicy })),
+					String(configuredFlushPolicy)
+				);
+			}
+		});
+	});
+});
+
+describe('resolveRocksArenaBlockSize', function () {
+	it('is undefined when not configured, so rocksdb-js sizes the arena', function () {
+		assert.strictEqual(resolveRocksArenaBlockSize(undefined), undefined);
+		assert.strictEqual(resolveRocksArenaBlockSize(null), undefined);
+	});
+
+	it('passes a positive integer through', function () {
+		assert.strictEqual(resolveRocksArenaBlockSize(65536), 65536);
+		assert.strictEqual(resolveRocksArenaBlockSize(1), 1);
+	});
+
+	it('treats 0 as automatic', function () {
+		assert.strictEqual(resolveRocksArenaBlockSize(0), undefined);
+	});
+
+	it('is undefined for values the native layer would reject', function () {
+		for (const value of [-65536, 65536.5, NaN, Infinity, -Infinity, 2 ** 53]) {
+			assert.strictEqual(resolveRocksArenaBlockSize(value), undefined, String(value));
+		}
+	});
+
+	it('is undefined for non-number values', function () {
+		for (const value of ['65536', true, {}, [65536]]) {
+			assert.strictEqual(resolveRocksArenaBlockSize(value), undefined, String(value));
+		}
+	});
+});
+
+describe('resolveRecordCacheSize', function () {
+	it('is 32768 when not configured', function () {
+		assert.strictEqual(resolveRecordCacheSize(undefined), 32768);
+		assert.strictEqual(resolveRecordCacheSize(null), 32768);
+	});
+
+	it('passes an integer from 4 to 16777215 through', function () {
+		for (const value of [4, 5, 32768, 65536, 820000, 16777215]) {
+			assert.strictEqual(resolveRecordCacheSize(value), value, String(value));
+		}
+	});
+
+	it('is 32768 for a value weak-lru-cache would replace or reject', function () {
+		for (const value of [0, 1, 3, -4, 16777216, 65536.5, NaN, Infinity, '65536', true]) {
+			assert.strictEqual(resolveRecordCacheSize(value), 32768, String(value));
+		}
+	});
+});
+
+describe('resolveVerificationTableEntries', function () {
+	const plentyOfMemory = 2 ** 50;
+	function entries(recordCacheSize, threadCount, availableMemory = plentyOfMemory) {
+		return resolveVerificationTableEntries({ recordCacheSize, threadCount, availableMemory });
+	}
+
+	it('gives two slots per cacheable record, rounded up to a power of two', function () {
+		assert.strictEqual(entries(32768, 3), 262144);
+		assert.strictEqual(entries(32768, 5), 524288);
+		assert.strictEqual(entries(65536, 4), 524288);
+		assert.strictEqual(entries(820000, 5), 8388608);
+		assert.strictEqual(entries(1640000, 3), 16777216);
+	});
+
+	it("is never below rocksdb-js's default of 131072", function () {
+		assert.strictEqual(entries(32768, 1), 131072);
+		assert.strictEqual(entries(32768, 2), 131072);
+		assert.strictEqual(entries(4, 1), 131072);
+		assert.strictEqual(entries(16777215, 5, 32 * 1024 ** 2), 131072, 'even when 1/64 of memory is smaller');
+	});
+
+	it('holds the table to 1/64 of memory, at 8 bytes a slot', function () {
+		const memoryFor262144Slots = 262144 * 8 * 64;
+		assert.strictEqual(entries(16777215, 5, memoryFor262144Slots), 262144);
+		assert.strictEqual(entries(16777215, 5, memoryFor262144Slots - 1), 131072);
+		assert.strictEqual(entries(16777215, 5, 4 * GB), 8388608);
+	});
+
+	it('stays exact past 32-bit sizes', function () {
+		assert.strictEqual(entries(16777215, 64), 2 ** 31);
+		assert.strictEqual(entries(16777215, 1000), 2 ** 35);
+	});
+
+	it('keeps the default for a thread count or memory it cannot use', function () {
+		assert.strictEqual(entries(32768, NaN), 131072);
+		assert.strictEqual(entries(32768, 5, NaN), 131072);
+		assert.strictEqual(entries(32768, 5, 0), 131072);
 	});
 });

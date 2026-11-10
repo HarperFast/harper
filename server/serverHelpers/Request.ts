@@ -373,6 +373,9 @@ export class UwsRequest {
 	#isSecure: boolean;
 	#ip: string | undefined;
 	#signal: AbortSignal | undefined;
+	// Created on the first `signal` read: most requests never subscribe to their cancellation.
+	#abortController: AbortController | undefined;
+	#transportAborted = false;
 	public _nodeRequest: any = null;
 	public _nodeResponse: any = null;
 	public method: string;
@@ -467,18 +470,25 @@ export class UwsRequest {
 		return '1.1';
 	}
 	get isAborted() {
-		return this.#signal?.aborted ?? false;
+		return this.#transportAborted || (this.#signal?.aborted ?? false);
 	}
 	get signal(): AbortSignal {
 		if (!this.#signal) {
-			this.#signal = new AbortController().signal;
+			this.#abortController = new AbortController();
+			if (this.#transportAborted) this.#abortController.abort();
+			this.#signal = this.#abortController.signal;
 			setMaxListeners(0, this.#signal);
 		}
 		return this.#signal;
 	}
+	/**
+	 * The transport is gone (uWS res.onAborted) or refused the request (an oversized body): cancel it.
+	 * A signal supplied to the constructor (WebSocket upgrades, see server/http.ts's wsHandler) is
+	 * aborted by its own owner.
+	 */
 	_abort(): void {
-		// Abort is driven externally, wired into the provided signal (uWS res.onAborted for plain HTTP,
-		// the ws adapter's 'close' event for WebSocket upgrades — see server/http.ts's wsHandler).
+		this.#transportAborted = true;
+		this.#abortController?.abort();
 	}
 	get nodeRequest() {
 		return null;

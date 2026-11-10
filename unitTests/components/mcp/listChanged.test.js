@@ -8,6 +8,8 @@ const {
 } = require('#src/components/mcp/listChanged');
 const { registerSession, _resetSessionRegistryForTest } = require('#src/components/mcp/sessionRegistry');
 const { addTool, _resetRegistryForTest } = require('#src/components/mcp/toolRegistry');
+const { localPrincipal } = require('#src/security/user');
+const { waitFor } = require('../../waitFor');
 
 const SUPER = { username: 'admin', role: { permission: { super_user: true } } };
 const ALICE = {
@@ -190,6 +192,18 @@ describe('mcp/listChanged', () => {
 		assert.equal(rec.user, aliceWithFoo, 'record.user updated to the freshly-resolved user');
 	});
 
+	it('preserves the GET credential expiry when refreshing its permissions', async () => {
+		initListChanged();
+		const authExpiresAt = Date.now() / 1000 + 60;
+		const record = registerSession('sid', 'application', { ...ALICE, authExpiresAt });
+		const fresh = { username: ALICE.username, role: { permission: {} } };
+		_setUserResolverForTest(async () => fresh);
+		fakeItc._fireUser();
+		await waitFor(() => record.user.role === fresh.role);
+		assert.equal(record.user.authExpiresAt, authExpiresAt);
+		assert.equal(fresh.authExpiresAt, undefined);
+	});
+
 	it('a scoped-token session is never re-resolved by name (no privilege substitution)', async () => {
 		// A scoped token's attribution username may later collide with a real hdb_user; re-resolving
 		// it here would advertise that user's surface. The session's embedded role must stay put.
@@ -216,6 +230,24 @@ describe('mcp/listChanged', () => {
 		await new Promise((r) => setTimeout(r, 20));
 		assert.equal(resolverCalled, false, 'scoped session must not trigger a by-name user resolve');
 		assert.equal(rec.user, scopedUser, 'record.user must remain the embedded scoped principal');
+	});
+
+	it('a local-principal session is never re-resolved by name', async () => {
+		const localUser = localPrincipal();
+		let resolverCalled = false;
+		_setUserResolverForTest(async () => {
+			resolverCalled = true;
+			return { username: 'local', role: { permission: {} } };
+		});
+
+		initListChanged();
+		const rec = registerSession('local-sid', 'operations', localUser);
+		seedSessionSnapshot('local-sid');
+
+		fakeItc._fireUser();
+		await new Promise((r) => setTimeout(r, 20));
+		assert.equal(resolverCalled, false, 'no record backs the local principal');
+		assert.equal(rec.user, localUser);
 	});
 
 	it('schema events also fan out (application profile)', async () => {

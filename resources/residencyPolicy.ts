@@ -1,6 +1,7 @@
 import { Transaction } from '@harperfast/rocksdb-js';
 import { get as envGet } from '../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
+import { resolveAbortMarkersSetting } from './transactionLogAbortMarkers.ts';
 import { createHash } from 'node:crypto';
 import { Script } from 'node:vm';
 import { writeKey } from 'ordered-binary';
@@ -35,7 +36,7 @@ export function unsupportedResidencyPolicy(policy: Partial<ResidencyPolicy>, tab
 	if (policy.byAttribute || policy.by !== undefined) {
 		if (typeof (Transaction.prototype as any).usesAbortMarkers !== 'function')
 			return `Attribute-derived sharding for ${table} requires a binding with txn.usesAbortMarkers()`;
-		if (envGet(CONFIG_PARAMS.STORAGE_ROCKS_TRANSACTIONLOGABORTMARKERS) !== true)
+		if (!resolveAbortMarkersSetting(envGet(CONFIG_PARAMS.STORAGE_ROCKS_TRANSACTIONLOGABORTMARKERS)))
 			return `Attribute-derived sharding for ${table} requires storage.rocks.transactionLogAbortMarkers enabled`;
 	}
 }

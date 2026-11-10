@@ -17,7 +17,14 @@ const assert = require('node:assert');
 const { mkdtempSync, mkdirSync, writeFileSync, realpathSync, symlinkSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
-const { mergeConfig, resolveAgentIdentity, resolveScopes, buildStaticSystemPrompt } = require('#src/agent/agent');
+const {
+	mergeConfig,
+	resolveAgentIdentity,
+	resolveOperationsApiPorts,
+	resolveScopes,
+	buildStaticSystemPrompt,
+} = require('#src/agent/agent');
+const env = require('#src/utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 const { readFileTool, listDirTool } = require('#src/agent/tools/fsTools');
 
@@ -249,5 +256,131 @@ describe('agent/agent startOnMainThread budget caps (#3040)', () => {
 
 	it('ignores a malformed cap while the agent is disabled', async () => {
 		await startOnMainThread({ server: { registerOperation: () => {} }, enabled: false, maxSessionTokens: 'lots' });
+	});
+});
+
+describe('agent/agent resolveOperationsApiPorts', () => {
+	it('reads the shipped default (plain port unset, secure port 9925) as [9925]', () => {
+		const originalPort = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT);
+		const originalSecurePort = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT);
+		try {
+			env.setProperty(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT, null);
+			env.setProperty(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT, 9925);
+			assert.deepStrictEqual(resolveOperationsApiPorts(), [9925]);
+		} finally {
+			env.setProperty(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT, originalPort);
+			env.setProperty(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT, originalSecurePort);
+		}
+	});
+});
+
+describe('agent/agent mergeConfig agent.tools (harper#3993)', () => {
+	const { resolveToolSwitches } = require('#src/agent/agent');
+	const ON = { filesystem: true, schedule: true, inspector: true, bestPractices: true };
+	const OFF = { filesystem: false, schedule: false, inspector: false, bestPractices: false };
+
+	it('defaults every group on', () => {
+		assert.deepStrictEqual(mergeConfig({ server: {} }).tools, ON);
+	});
+
+	it('takes each boolean, leaving the others on', () => {
+		assert.deepStrictEqual(mergeConfig({ server: {}, tools: { filesystem: false } }).tools, {
+			...ON,
+			filesystem: false,
+		});
+		assert.deepStrictEqual(mergeConfig({ server: {}, tools: { schedule: false, inspector: false } }).tools, {
+			...ON,
+			schedule: false,
+			inspector: false,
+		});
+		assert.deepStrictEqual(mergeConfig({ server: {}, tools: { bestPractices: false, filesystem: true } }).tools, {
+			...ON,
+			bestPractices: false,
+		});
+		assert.deepStrictEqual(mergeConfig({ server: {}, tools: {} }).tools, ON);
+		assert.deepStrictEqual(mergeConfig({ server: {}, tools: OFF }).tools, OFF);
+	});
+
+	it('turns a group off, never on, when its value is not a boolean', () => {
+		for (const value of ['false', 'true', 'yes', 1, 0, null, {}, []]) {
+			assert.deepStrictEqual(
+				resolveToolSwitches({ inspector: value }),
+				{ ...ON, inspector: false },
+				JSON.stringify(value)
+			);
+		}
+	});
+
+	it('turns every group off on an unknown key, since a misspelled key may have meant to turn one off', () => {
+		assert.deepStrictEqual(resolveToolSwitches({ filesytem: false }), OFF);
+		assert.deepStrictEqual(resolveToolSwitches({ filesystem: true, extra: true }), OFF);
+	});
+
+	it('turns every group off when agent.tools is not an object', () => {
+		for (const raw of [null, false, true, 'filesystem', 0, ['filesystem']]) {
+			assert.deepStrictEqual(resolveToolSwitches(raw), OFF, JSON.stringify(raw));
+		}
+	});
+
+	it('does not share the mutable switches between configs', () => {
+		const first = mergeConfig({ server: {}, tools: { schedule: false } }).tools;
+		first.filesystem = false;
+		assert.deepStrictEqual(mergeConfig({ server: {}, tools: { schedule: false } }).tools, { ...ON, schedule: false });
+	});
+});
+
+describe('agent/agent buildStaticSystemPrompt agent.tools (harper#3993)', () => {
+	const scopes = {
+		componentsRoot: '/h/components',
+		logDir: '/h/log',
+		configDir: '/h',
+		configFile: 'harper-config.yaml',
+		keyDirs: [],
+	};
+	const ON = { filesystem: true, schedule: true, inspector: true, bestPractices: true };
+
+	it('describes every surface and the filesystem scopes with every group on', () => {
+		const prompt = buildStaticSystemPrompt(scopes, true, 'overview text', ON);
+		assert.strictEqual(prompt, buildStaticSystemPrompt(scopes, true, 'overview text'));
+		assert.match(
+			prompt,
+			/tools provided to you: Harper database\/cluster operations, scoped filesystem tools, HTTP fetch against this server, followup scheduling, \(when available\) V8 inspector tools for debugging worker threads, and a Harper best-practices lookup\./
+		);
+		assert.match(prompt, /Filesystem scopes/);
+		assert.match(prompt, /use the filesystem tools for app source/);
+		assert.match(prompt, /consult the Harper best practices below/);
+		assert.match(prompt, /=== Harper best practices \(overview\) ===\noverview text/);
+	});
+
+	it('omits a group that is off', () => {
+		const noFs = buildStaticSystemPrompt(scopes, false, 'overview text', { ...ON, filesystem: false });
+		assert.doesNotMatch(noFs, /filesystem|Filesystem|Key material/);
+		assert.match(noFs, /Prefer the operations tools for database\/cluster actions\. When designing schemas/);
+
+		const noSchedule = buildStaticSystemPrompt(scopes, false, undefined, { ...ON, schedule: false });
+		assert.doesNotMatch(noSchedule, /followup scheduling/);
+		assert.match(noSchedule, /scoped filesystem tools, \(when available\) V8 inspector tools/);
+
+		const noInspector = buildStaticSystemPrompt(scopes, false, undefined, { ...ON, inspector: false });
+		assert.doesNotMatch(noInspector, /inspector/);
+
+		const noBestPractices = buildStaticSystemPrompt(scopes, true, 'overview text', { ...ON, bestPractices: false });
+		assert.doesNotMatch(noBestPractices, /best.practice|overview text/);
+		assert.match(noBestPractices, /use the filesystem tools for app source\. Be concise and verify your work\./);
+	});
+
+	it('names only the operations tools with every group and http_fetch off', () => {
+		const prompt = buildStaticSystemPrompt(scopes, false, 'overview text', {
+			filesystem: false,
+			schedule: false,
+			inspector: false,
+			bestPractices: false,
+		});
+		assert.match(prompt, /tools provided to you: Harper database\/cluster operations\. Consult/);
+		assert.match(
+			prompt,
+			/Prefer the operations tools for database\/cluster actions\. Be concise and verify your work\./
+		);
+		assert.doesNotMatch(prompt, /filesystem|scheduling|inspector|best.practice|HTTP fetch|overview text/);
 	});
 });

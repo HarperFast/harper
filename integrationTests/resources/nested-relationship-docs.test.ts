@@ -1,8 +1,4 @@
-/**
- * Executes the request/response examples in the nested-relationship documentation companion:
- * https://github.com/HarperFast/documentation/pull/736.
- * The offline fixtures in that repo are checked against the published Markdown by docs CI.
- */
+// unitTests/docs/nestedRelationshipExamples.test.mjs holds the published Markdown equal to this fixture.
 import { suite, test, before, after } from 'node:test';
 import assert from 'node:assert';
 import { readFileSync } from 'node:fs';
@@ -77,6 +73,74 @@ suite('documented nested relationship requests and responses', { timeout: 120_00
 			[[], [], []]
 		);
 	});
+	const productIds = (rows: { id: number; products: string[] | null }[]) =>
+		rows.map((row) => [row.id, [...(row.products ?? [])].sort()]).sort((a, b) => (a[0] as number) - (b[0] as number));
+	test('a products condition inside an OR picks brands but not which products they select', async () => {
+		for (const query of ['(products.name=Cable|id=44)', '(id=44|products.name=Cable)'])
+			assert.deepStrictEqual(productIds(await get(`/Brand/?${query}&select(id,products[select(id)])`)), [
+				[42, ['p1', 'p2', 'p3']],
+				[44, ['p5', 'p6']],
+			]);
+	});
+	test('separate products conditions may be met by different products; a products[...] group by one', async () => {
+		const brands = async (query: string) => productIds(await get(`/Brand/?${query}&select(id,products[select(id)])`));
+		assert.deepStrictEqual(await brands('products.name=Keyboard&products.name=Cable'), [[42, ['p1', 'p2']]]);
+		assert.deepStrictEqual(await brands('products.name=Cable&products.name=Keyboard'), [[42, ['p1', 'p2']]]);
+		assert.deepStrictEqual(await brands('products[name=Keyboard&name=Cable]'), []);
+		assert.deepStrictEqual(await brands('products.name=Cable&products.price=ge=number:30'), [[42, ['p1', 'p2', 'p3']]]);
+		assert.deepStrictEqual(await brands('products[name=Cable&price=ge=number:30]'), []);
+		assert.deepStrictEqual(await brands('products[name=Keyboard&price=ge=number:30]'), [[42, ['p2']]]);
+		assert.deepStrictEqual(await brands('products[price=ge=30&name=Keyboard]'), [[42, ['p2']]]);
+		assert.deepStrictEqual(await brands('products[name=Mouse|price=ge=number:100]'), [
+			[43, ['p4']],
+			[44, ['p6']],
+		]);
+		assert.deepStrictEqual(await brands('products[name=Keyboard&price=ge=number:30]&products.name=Dock'), [
+			[42, ['p2', 'p3']],
+		]);
+	});
+	test('a collection DELETE removes the same brands whichever products condition leads, under both forms', async () => {
+		let offset = 0;
+		for (const [conditions, spared] of [
+			[['products.name=Split', 'products.id=ge=s{whole}'], false],
+			[['products[name=Split&id=ge=s{whole}]'], true],
+			[['products[id=ge=s{whole}&name=Split]'], true],
+		] as [string[], boolean][]) {
+			for (const order of [conditions, [...conditions].reverse()]) {
+				const split = 901 + offset;
+				const whole = 902 + offset;
+				offset += 10;
+				const query = order.map((condition) => condition.replace('{whole}', String(whole))).join('&');
+				await insert('Brand', [
+					{ id: split, name: 'Collection delete' },
+					{ id: whole, name: 'Collection delete' },
+				]);
+				await insert('Product', [
+					{ id: `s${split}`, brandId: split, name: 'Split', price: 1 },
+					{ id: `z${split}`, brandId: split, name: 'Other', price: 2 },
+					{ id: `s${whole}`, brandId: whole, name: 'Split', price: 2 },
+				]);
+				const response = await fetch(`${ctx.harper.httpURL}/Brand/?name==Collection%20delete&${query}`, {
+					method: 'DELETE',
+					headers: { Authorization: auth },
+					signal: AbortSignal.timeout(10_000),
+				});
+				assert.strictEqual(response.status, 200, await response.text());
+				assert.deepStrictEqual(
+					(await get('/Brand/?name==Collection%20delete&select(id,)')).map((brand: { id: number }) => brand.id),
+					spared ? [split] : [],
+					query
+				);
+				await sendOperation(ctx.harper, { operation: 'delete', schema: 'data', table: 'Brand', ids: [split] });
+				await sendOperation(ctx.harper, {
+					operation: 'delete',
+					schema: 'data',
+					table: 'Product',
+					ids: [`s${split}`, `z${split}`, `s${whole}`],
+				});
+			}
+		}
+	});
 	test('both exact programmatic snippets produce their documented responses', async () => {
 		assert.deepStrictEqual(await get('/DocumentedQueries/'), {
 			single: examples.single,
@@ -102,6 +166,25 @@ suite('documented nested relationship requests and responses', { timeout: 120_00
 		);
 	});
 
+	test('untyped condition values convert with the compared attribute type', async () => {
+		assert.deepStrictEqual(await get('/Brand/?products.price=ge=30&sort(id)&select(id,)'), [{ id: 42 }, { id: 44 }]);
+		assert.deepStrictEqual(await get('/Brand/?products.price=ge=30&=le=40&sort(id)&select(id,)'), [{ id: 42 }]);
+		assert.deepStrictEqual(await get('/Brand/?products[price=ge=30&=le=40]&sort(id)&select(id,)'), [{ id: 42 }]);
+		assert.deepStrictEqual(await get('/Product/?price=ge=10&=le=30&sort(id)&select(id,)'), [
+			{ id: 'p1' },
+			{ id: 'p4' },
+		]);
+		assert.deepStrictEqual(await get('/Product/?price=le=30&=ge=10&sort(id)&select(id,)'), [
+			{ id: 'p1' },
+			{ id: 'p4' },
+		]);
+		const invalid = await fetch(ctx.harper.httpURL + '/Product/?price=ge=10&=le=abc', {
+			headers: { Authorization: auth },
+			signal: AbortSignal.timeout(10_000),
+		});
+		assert.strictEqual(invalid.status, 400, await invalid.text());
+		assert.deepStrictEqual(await get('/Product/?price=ge=100&select(id,)'), [{ id: 'p6' }]);
+	});
 	test('the unique child sort key breaks equal-price ties', async () => {
 		try {
 			await insert('Product', [{ id: 'p0', brandId: 42, name: 'Adapter', price: 35 }]);

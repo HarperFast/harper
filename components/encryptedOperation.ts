@@ -1,7 +1,7 @@
 /**
  * `encrypted_operation`: run an operation sealed to this node's secrets custody key and seal its
  * result, so a relay between the client and the node carries opaque bytes. Wire format and the
- * reference client: utility/sealedOperation.ts. Invariants: security/DESIGN.md.
+ * reference client: utility/sealedOperation.ts. Invariants: utility/DESIGN.md.
  */
 import { isMainThread } from 'node:worker_threads';
 import { performance } from 'node:perf_hooks';
@@ -105,7 +105,7 @@ class SealedRefusal extends Error {
 	}
 }
 
-// Nonce -> reservation. Per process: a restart forgets it (see security/DESIGN.md).
+// Nonce -> reservation. Per process: a restart forgets it (see utility/DESIGN.md).
 const reservedNonces = new Map<string, { expiry: number; principal: string }>();
 const reservationsByPrincipal = new Map<string, number>();
 let monotonicNow = () => performance.now();

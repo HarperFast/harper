@@ -11,7 +11,10 @@ const {
 	NativeFullTextDerivedIndexLifecycle,
 	retireNativeFullTextDerivedIndexStorage,
 } = require('#src/resources/indexes/nativeFullTextDerivedIndexLifecycle');
-const { loadFullTextNativeBinding } = require('#src/resources/indexes/fullTextNativeBinding');
+const {
+	loadFullTextNativeBinding,
+	validateFullTextNativeBinding,
+} = require('#src/resources/indexes/fullTextNativeBinding');
 const {
 	DERIVED_INDEX_ACCEPTED,
 	DERIVED_INDEX_DEFERRED,
@@ -60,6 +63,12 @@ class FakeNativeModule {
 			publish() {}
 			close() {}
 			searchPage() {}
+			telemetry() {}
+			configureTelemetry() {}
+		};
+		this.NativeFullTextReader = class {
+			telemetry() {}
+			configureTelemetry() {}
 		};
 		this.runtimeInfoCalls = 0;
 		this.inspection = { state: 'missing' };
@@ -76,11 +85,12 @@ class FakeNativeModule {
 		return {
 			packageVersion: 'test',
 			tantivyVersion: 'test',
-			nativeAbiVersion: 9,
+			nativeAbiVersion: 14,
 			queryClassIsolationMinimumSearchThreads: 2,
 			lifecycleApiVersion: 1,
 			mutationBatchApiVersion: 5,
-			queryApiVersion: 4,
+			queryApiVersion: 8,
+			telemetryApiVersion: 1,
 			storageBackends: ['native'],
 			limits: {
 				maxCommitPayloadBytes: this.maxCommitPayloadBytes,
@@ -88,6 +98,8 @@ class FakeNativeModule {
 				maxRecordVersionBytes: 4_096,
 				maxCandidateIds: 1_024,
 				maxCandidateBytes: 1024 * 1024,
+				maxConfiguredQueryTerms: 1024,
+				maxConfiguredQueryClauses: 4096,
 				maxSearchWindow: 10_000,
 				maxSearchPageSize: 10_000,
 				maxAutocompleteResults: 100,
@@ -154,6 +166,48 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		fs.mkdirSync(storePath, { recursive: true });
 	});
 
+	it('fits a traversal page of maximum-size native identities in the advertised response envelope', async function () {
+		this.timeout(60000);
+		if (!(await supportsPublishedFullTextBinding())) this.skip();
+		const binding = await loadFullTextNativeBinding();
+		const info = await binding.runtimeInfo();
+		const configuration = options(storePath, binding, { surfaceTerms: true });
+		const lifecycle = new NativeFullTextDerivedIndexLifecycle(configuration);
+		await lifecycle.initialize({ reclaimRetired: false });
+		const native = { ...upgradeNativeOptions(configuration, lifecycle), limits: readerLimits };
+		const count = Math.floor(
+			(info.limits.maxSearchResponseBytes - 93) /
+				(13 + info.limits.maxRecordIdBytes + info.limits.maxRecordVersionBytes)
+		);
+		const version = 'v'.repeat(info.limits.maxRecordVersionBytes);
+		let index = await lifecycle.open();
+		let reader;
+		try {
+			await index.applyMutationBatch({
+				upserts: Array.from({ length: count }, (_, i) => ({
+					id: String(i).padEnd(info.limits.maxRecordIdBytes, 'x'),
+					version,
+					fields: { title: 'catalog' },
+				})),
+				deletes: [],
+			});
+			await index.publish('maximum-response');
+			await index.close({ mode: 'require-clean' });
+			index = undefined;
+			reader = await binding.openNativeFullTextReader(native);
+			const result = await reader.searchPage({ text: 'catalog', limit: count });
+			assert.strictEqual(result.hits.length, count);
+			assert(
+				result.hits.every(
+					(hit) => Buffer.byteLength(hit.id) === info.limits.maxRecordIdBytes && hit.version === version
+				)
+			);
+		} finally {
+			await reader?.close();
+			await index?.close({ mode: 'rollback' });
+		}
+	});
+
 	it('loads the published registry package without unused candidate limits and persists a searchable checkpoint', async function () {
 		if (!(await supportsPublishedFullTextBinding())) this.skip();
 
@@ -161,10 +215,11 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		const runtime = await binding.runtimeInfo();
 		assert.strictEqual(runtime.packageVersion, fullTextPackageVersion);
 		assert.strictEqual(runtime.tantivyVersion, '0.27.0');
-		assert.strictEqual(runtime.nativeAbiVersion, 9);
+		assert.strictEqual(runtime.nativeAbiVersion, 14);
 		assert.strictEqual(runtime.lifecycleApiVersion, 1);
 		assert.strictEqual(runtime.mutationBatchApiVersion, 5);
-		assert.strictEqual(runtime.queryApiVersion, 4);
+		assert.strictEqual(runtime.queryApiVersion, 8);
+		assert.strictEqual(runtime.telemetryApiVersion, 1);
 		assert.strictEqual(runtime.queryClassIsolationMinimumSearchThreads, 2);
 		const compatibleBinding = {
 			...binding,
@@ -502,11 +557,12 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		binding.runtimeInfo = async () => ({
 			packageVersion: 'test',
 			tantivyVersion: 'test',
-			nativeAbiVersion: 9,
+			nativeAbiVersion: 14,
 			queryClassIsolationMinimumSearchThreads: 2,
 			lifecycleApiVersion: 2,
 			mutationBatchApiVersion: 5,
-			queryApiVersion: 4,
+			queryApiVersion: 8,
+			telemetryApiVersion: 1,
 			storageBackends: ['native'],
 			limits: {
 				maxCommitPayloadBytes: 64 * 1024,
@@ -514,6 +570,8 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 				maxRecordVersionBytes: 4_096,
 				maxCandidateIds: 1_024,
 				maxCandidateBytes: 1024 * 1024,
+				maxConfiguredQueryTerms: 1024,
+				maxConfiguredQueryClauses: 4096,
 				maxSearchWindow: 10_000,
 				maxSearchPageSize: 10_000,
 				maxAutocompleteResults: 100,
@@ -532,7 +590,7 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		binding.runtimeInfo = async () => ({
 			packageVersion: 'test',
 			tantivyVersion: 'test',
-			nativeAbiVersion: 9,
+			nativeAbiVersion: 14,
 			queryClassIsolationMinimumSearchThreads: 2,
 			lifecycleApiVersion: 1,
 			storageBackends: ['native'],
@@ -540,6 +598,8 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 				maxCommitPayloadBytes: 64 * 1024,
 				maxRecordIdBytes: 4_096,
 				maxRecordVersionBytes: 4_096,
+				maxConfiguredQueryTerms: 1024,
+				maxConfiguredQueryClauses: 4096,
 				maxSearchWindow: 10_000,
 				maxSearchPageSize: 10_000,
 				maxAutocompleteResults: 100,
@@ -552,6 +612,27 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
 		await assert.rejects(lifecycle.initialize(), /incompatible runtime capabilities/);
 	});
+
+	for (const [capability, value] of [
+		['nativeAbiVersion', 13],
+		['queryApiVersion', 7],
+		['telemetryApiVersion', undefined],
+		['telemetryApiVersion', 2],
+	])
+		it(`rejects incompatible ${capability} ${value}`, async () => {
+			const binding = new FakeNativeModule();
+			const runtimeInfo = binding.runtimeInfo.bind(binding);
+			binding.runtimeInfo = async () => ({ ...(await runtimeInfo()), [capability]: value });
+			await assert.rejects(validateFullTextNativeBinding(binding), /incompatible runtime capabilities/);
+		});
+
+	for (const className of ['NativeFullTextIndex', 'NativeFullTextReader'])
+		for (const method of ['telemetry', 'configureTelemetry'])
+			it(`rejects missing ${className}.${method}`, async () => {
+				const binding = new FakeNativeModule();
+				delete binding[className].prototype[method];
+				await assert.rejects(validateFullTextNativeBinding(binding), /required Harper binding contract/);
+			});
 
 	it('rejects an unknown mutation-batch API version', async () => {
 		const binding = new FakeNativeModule();
@@ -647,17 +728,58 @@ function upgradeNativeOptions(configuration, lifecycle) {
 	};
 }
 
-describe('published full-text 0.5.0 to 0.7.0 migration', function () {
+describe('published full-text 0.5.0, 0.7.0 and 0.8.0 to current migration', function () {
 	this.timeout(60_000);
 	let binding;
 	let rootPath;
 
 	before(async function () {
+		if (!process.env.HARPER_FULLTEXT_UPGRADE_ROOT) this.skip();
 		if (!(await supportsPublishedFullTextBinding())) this.skip();
 		rootPath = setupTestDBPath();
 		binding = await loadFullTextNativeBinding();
 		assert.strictEqual((await binding.runtimeInfo()).packageVersion, fullTextPackageVersion);
 	});
+
+	for (const previousVersion of ['0.7.0', '0.8.0'])
+		it(`reuses a genuine ${previousVersion} checkpoint through current writes and previous reopen`, async () => {
+			const configuration = options(path.join(rootPath, `native-${previousVersion}-upgrade`), binding, {
+				surfaceTerms: true,
+			});
+			const lifecycle = new NativeFullTextDerivedIndexLifecycle(configuration);
+			await lifecycle.initialize({ reclaimRetired: false });
+			const native = upgradeNativeOptions(configuration, lifecycle);
+			const payload = encodeFullTextCursorPayload({ format: 1, logs: { local: 42 } });
+			previousFullTextProcess(
+				'seed',
+				native,
+				[{ id: 'old', version: '1', fields: { title: 'catalog' } }],
+				payload,
+				previousVersion
+			);
+			assert.deepStrictEqual(lifecycle.inspect(), { state: 'checkpointed', committedPayload: payload });
+			const index = await lifecycle.open();
+			try {
+				assert.deepStrictEqual(
+					(await index.search({ text: 'catalog' })).hits.map(({ id }) => id),
+					['old']
+				);
+				await index.applyMutationBatch({
+					upserts: [{ id: 'new', version: '2', fields: { title: 'catalog' } }],
+					deletes: [],
+				});
+				await index.publish(encodeFullTextCursorPayload({ format: 1, logs: { local: 43 } }));
+			} finally {
+				await index.close({ mode: 'rollback' });
+			}
+			const reopened = previousFullTextProcess('inspect', native, undefined, undefined, previousVersion);
+			assert.deepStrictEqual(reopened.inspection, {
+				state: 'checkpointed',
+				committedPayload: encodeFullTextCursorPayload({ format: 1, logs: { local: 43 } }),
+			});
+			assert.deepStrictEqual(reopened.searchIds, ['new', 'old']);
+			assert.strictEqual(reopened.openError, undefined);
+		});
 
 	it('rejects old checkpoints, retires them and refuses unsafe downgrade opens', async () => {
 		const configuration = options(path.join(rootPath, 'native-upgrade-lifecycle'), binding, { surfaceTerms: true });

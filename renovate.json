@@ -53,10 +53,9 @@
 			"matchPackageNames": ["!alasql"]
 		},
 		{
-			"description": "Keep the historical fulltext 0.5.0 upgrade fixture fixed; remove this rule with the fixture alias.",
+			"description": "Keep the separately provisioned historical fulltext upgrade engines exact-pinned; remove each fixture when its migration support ends.",
 			"matchManagers": ["npm"],
-			"matchDepTypes": ["devDependencies"],
-			"matchDepNames": ["@harperfast/fulltext-previous"],
+			"matchFileNames": ["unitTests/resources/fixtures/fulltext-upgrade/**"],
 			"enabled": false
 		}
 	]

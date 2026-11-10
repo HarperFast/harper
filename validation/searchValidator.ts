@@ -171,6 +171,8 @@ const searchByConditionsSchema = Joi.object({
 						.valid(...SEARCH_BY_CONDITIONS_COMPARATORS)
 						.optional(),
 					fields: Joi.array().min(1).items(hdbSchemaTable).optional(),
+					fuzzyDistance: Joi.number().integer().min(0).max(2).strict().optional(),
+					fuzzyTranspositions: Joi.bool().strict().optional(),
 					includeHighlights: Joi.bool().optional(),
 					maxIndexLagMilliseconds: Joi.number().min(0).optional(),
 					waitForIndexMilliseconds: Joi.number().min(0).max(30_000).optional(),
@@ -254,7 +256,10 @@ export default function (searchObject: any, type: any) {
 			const addConditions = (condGroup) => {
 				//this is used to validate condition attributes exist in the schema
 				for (const condition of condGroup.conditions) {
-					if (condition.conditions) addConditions(condition);
+					if (condition.conditions) {
+						if (condition.attribute != null) checkAttributes.push(condition.attribute);
+						else addConditions(condition);
+					}
 					// Table.search resolves full-text names together with source-field authorization.
 					else if (!FULL_TEXT_COMPARATOR_SET.has(condition.comparator)) checkAttributes.push(condition.attribute);
 				}

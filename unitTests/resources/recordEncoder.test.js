@@ -612,7 +612,13 @@ describe('PrimaryRocksDatabase non-initStore transactional saveStructures (__dbi
 			});
 		});
 
-		await Promise.all(workers);
+		const captureErrors = harperLogger.error;
+		harperLogger.error = restoreError;
+		try {
+			await Promise.all(workers);
+		} finally {
+			harperLogger.error = captureErrors;
+		}
 
 		const reader = openDbisHandle();
 		for (let workerIdx = 0; workerIdx < workerCount; workerIdx++) {

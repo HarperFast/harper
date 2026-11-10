@@ -88,6 +88,15 @@ describe('components/mcp/index', () => {
 			}
 		});
 
+		it('registers on enabled: true (the env-var config form) and skips on enabled: false', () => {
+			const on = makeFakeFastify();
+			registerMcpProfile({ profile: 'operations', host: on, config: { mcp: { operations: { enabled: true } } } });
+			assert.equal(on.calls.length, 3);
+			const off = makeFakeFastify();
+			registerMcpProfile({ profile: 'operations', host: off, config: { mcp: { operations: { enabled: false } } } });
+			assert.equal(off.calls.length, 0);
+		});
+
 		it('honors a custom mountPath on all three methods', () => {
 			const host = makeFakeFastify();
 			registerMcpProfile({
@@ -135,6 +144,17 @@ describe('components/mcp/index', () => {
 			assert.equal(scope.calls[0].options.urlPath, '/mcp');
 			assert.equal(scope.calls[0].options.after, 'authentication');
 			assert.equal(typeof scope.calls[0].handler, 'function');
+		});
+
+		it('registers on enabled: true and skips on enabled: false', () => {
+			configReturn = { mcp: { application: { enabled: false } } };
+			const off = makeFakeScope();
+			handleApplication(off);
+			assert.equal(off.calls.length, 0);
+			configReturn = { mcp: { application: { enabled: true } } };
+			const on = makeFakeScope();
+			handleApplication(on);
+			assert.equal(on.calls.length, 1);
 		});
 
 		it('honors a custom mountPath', () => {

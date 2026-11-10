@@ -15,6 +15,7 @@ import { server } from '../../server/Server.ts';
 import * as fs from 'node:fs';
 import { getAnalyticsHostnameTable, nodeIds, stableNodeId } from './hostnames.ts';
 import { METRIC } from './metadata.ts';
+import { acceptsFullTextTelemetryRow, setFullTextAnalyticsEnabled } from './fullTextTelemetryRuntime.ts';
 import {
 	readEventLoopDelay,
 	resetEventLoopDelay,
@@ -47,15 +48,21 @@ let activeActions = new Map<string, Action>();
 let analyticsEnabled = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) > -1;
 let analyticsReadOnlyChecked = false;
 let sendAnalyticsTimeout: NodeJS.Timeout;
+let analyticsGeneration = 0;
+let analyticsExiting = false;
+let runningAnalyticsFlush: Promise<void> | undefined;
+let exitAnalyticsFlush: Promise<void> | undefined;
 
 onStartup(() => {
 	analyticsEnabled = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) > -1;
 	analyticsReadOnlyChecked = false;
+	setFullTextAnalyticsEnabled(checkAnalyticsEnabled(false));
 });
 
 // Check read-only mode lazily to avoid circular dependency at module load time. The event loop
 // sampler starts here rather than at load, so a read-only worker never runs it.
-export function checkAnalyticsEnabled(): boolean {
+export function checkAnalyticsEnabled(startSampler = true): boolean {
+	if (!startSampler) return analyticsEnabled && !isReadOnlyMode();
 	if (!analyticsReadOnlyChecked) {
 		analyticsReadOnlyChecked = true;
 		if (isReadOnlyMode()) analyticsEnabled = false;
@@ -64,15 +71,20 @@ export function checkAnalyticsEnabled(): boolean {
 	return analyticsEnabled;
 }
 
+/** Resets this thread's analytics window; other threads keep their own. */
 export function setAnalyticsEnabled(enabled: boolean) {
 	analyticsEnabled = enabled;
+	setFullTextAnalyticsEnabled(enabled);
 	if (enabled) startEventLoopDelayMonitor();
 	else stopEventLoopDelayMonitor();
 	clearTimeout(sendAnalyticsTimeout); // reset this
 	sendAnalyticsTimeout = null;
-	// The cancelled window must not stretch the next one's period or skip its histogram reset.
+	// The cancelled window must not stretch the next one's period, skip its histogram reset, or leak its samples.
 	analyticsStart = 0;
 	lastFlushAt = 0;
+	activeActions = new Map();
+	getTransactionQueueDepths(); // restarts the queue high-water marks with the window
+	analyticsGeneration++;
 }
 
 function recordExistingAction(value: Value, action: Action) {
@@ -151,6 +163,7 @@ function actionKey(metric: string, path?: string, method?: string, type?: string
 }
 
 function recordKeyedAction(key: string, value: Value, metric: string, path?: string, method?: string, type?: string) {
+	if (analyticsExiting) return;
 	const action = activeActions.get(key);
 	if (action) {
 		recordExistingAction(value, action);
@@ -176,6 +189,28 @@ const analyticsAggregateListeners = [];
 
 export function addAnalyticsListener(callback) {
 	analyticsListeners.push(callback);
+	return () => {
+		const index = analyticsListeners.indexOf(callback);
+		if (index >= 0) analyticsListeners.splice(index, 1);
+	};
+}
+
+export function requestAnalyticsFlush(): void {
+	if (!analyticsExiting && checkAnalyticsEnabled() && !sendAnalyticsTimeout) contextStorage.exit(sendAnalytics);
+}
+
+/** Deliver the last window after resource owners close, without starting new periodic work. */
+export function flushAnalyticsForExit(): Promise<void> {
+	if (exitAnalyticsFlush) return exitAnalyticsFlush;
+	analyticsExiting = true;
+	clearTimeout(sendAnalyticsTimeout);
+	sendAnalyticsTimeout = null;
+	return (exitAnalyticsFlush = contextStorage.exit(async () => {
+		await runningAnalyticsFlush?.catch(() => {});
+		if (checkAnalyticsEnabled(false)) await flushAnalytics(true);
+		else for (const listener of [...analyticsListeners]) listener([], true);
+		if (!parentPort) await RawAnalyticsTable?.primaryStore.committed;
+	}));
 }
 
 const IDEAL_PERCENTILES = [0.01, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99, 0.999, 1];
@@ -197,17 +232,33 @@ function sendAnalytics() {
 		// One more timer turn: a stall that ran past the deadline is recorded by the event loop
 		// sampler's overdue firing, which libuv runs before a timer armed now, and the read below
 		// would otherwise reset that sample away.
-		sendAnalyticsTimeout = setTimeout(flushAnalytics, 0).unref();
+		sendAnalyticsTimeout = setTimeout(flushPeriodicAnalytics, 0).unref();
 	}, analyticsDelay).unref();
 }
 
-async function flushAnalytics() {
+function flushPeriodicAnalytics(): void {
+	void flushAnalytics().catch((error) => log.error?.('Analytics flush failed', error));
+}
+
+function flushAnalytics(final = false): Promise<void> {
+	const run = () => collectAnalytics(final);
+	const result = runningAnalyticsFlush ? runningAnalyticsFlush.then(run, run) : run();
+	runningAnalyticsFlush = result;
+	const settled = () => {
+		if (runningAnalyticsFlush === result) runningAnalyticsFlush = undefined;
+	};
+	void result.then(settled, settled);
+	return result;
+}
+
+async function collectAnalytics(final: boolean) {
 	sendAnalyticsTimeout = null;
+	const generation = analyticsGeneration;
 	// Rotate before the first yield below: a sample recorded mid-flush would otherwise be added to
 	// an entry already reported, and dropped with it.
 	const reportingActions = activeActions;
 	activeActions = new Map();
-	const period = performance.now() - analyticsStart;
+	const period = analyticsStart ? performance.now() - analyticsStart : 0;
 	analyticsStart = 0;
 	// Read before the first yield too, so the event loop's samples from the rest of the flush belong
 	// to the next report.
@@ -263,6 +314,7 @@ async function flushAnalytics() {
 			);
 		}
 		await rest(); // sort's are expensive and we don't want to do two of them in the same event turn
+		if (generation !== analyticsGeneration) return;
 	}
 	const memoryUsage = process.memoryUsage();
 	metrics.push({
@@ -298,15 +350,17 @@ async function flushAnalytics() {
 		depth: queueDepths.readDepth,
 		maxDepth: queueDepths.readMaxDepth,
 	});
-	for (const listener of analyticsListeners) {
-		listener(metrics);
+	for (const listener of [...analyticsListeners]) {
+		if (generation !== analyticsGeneration) return;
+		listener(metrics, final);
 	}
+	if (generation !== analyticsGeneration) return;
 	if (parentPort)
 		parentPort.postMessage({
 			type: ANALYTICS_REPORT_TYPE,
 			report,
 		});
-	else recordAnalytics({ report });
+	else await recordAnalytics({ report });
 }
 
 export async function recordHostname() {
@@ -350,7 +404,15 @@ function storeMetric(table: Table, metric: Metric) {
 		...metric,
 	};
 	log.trace?.(`storing metric ${JSON.stringify(metricValue)}`);
-	table.put(metricValue.id, metricValue);
+	try {
+		Promise.resolve(table.put(metricValue.id, metricValue)).catch(logMetricWriteError);
+	} catch (error) {
+		logMetricWriteError(error);
+	}
+}
+
+function logMetricWriteError(error) {
+	log[error?.statusCode === 503 ? 'debug' : 'warn']?.('Unable to save analytics metric', error);
 }
 
 interface ResourceUsage extends Partial<NodeJS.ResourceUsage> {
@@ -1061,6 +1123,15 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 			// key, whose action name a request body chooses, always ends in `-operation`.
 			if (perThread) key += '\0' + threadId;
 			let action = aggregateActions.get(key);
+			if (entry.cumulative) {
+				if (!action || entry.sampledAt >= action.sampledAt) {
+					const latest = { ...entry, period: toPeriod, thread: threadId };
+					delete latest.perThread;
+					delete latest.threadId;
+					aggregateActions.set(key, latest);
+				}
+				return;
+			}
 			if (action) {
 				const byThread = Boolean(action.byThread);
 				if (byThread) {
@@ -1356,11 +1427,19 @@ function recordAnalytics(message, worker?) {
 	const report = message.report;
 	report.threadId = worker?.threadId || threadId;
 	// Add system information stats as well
-	for (const metric of report.metrics) {
+	let retained;
+	for (let i = 0; i < report.metrics.length; i++) {
+		const metric = report.metrics[i];
+		if (metric.metric === METRIC.FULL_TEXT && !acceptsFullTextTelemetryRow(metric)) {
+			retained ??= report.metrics.slice(0, i);
+			continue;
+		}
+		retained?.push(metric);
 		if (metric.metric === 'bytes-sent') {
 			totalBytesProcessed += metric.mean * metric.count;
 		}
 	}
+	if (retained) report.metrics = retained;
 	report.totalBytesProcessed = totalBytesProcessed;
 	if (worker && !isBun) {
 		report.metrics.push({
@@ -1370,9 +1449,10 @@ function recordAnalytics(message, worker?) {
 		lastUtilizations.set(worker, worker.performance.eventLoopUtilization());
 	}
 	report.id = getNextMonotonicTime();
-	getRawAnalyticsTable().primaryStore.put(report.id, report);
+	const written = getRawAnalyticsTable().primaryStore.put(report.id, report);
 	if (!scheduledTasksRunning) startScheduledTasks();
 	if (LOG_ANALYTICS) lastAppend = logAnalytics(report);
+	return written;
 }
 let lastAppend;
 let analyticsLog;

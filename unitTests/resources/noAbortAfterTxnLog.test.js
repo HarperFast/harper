@@ -1,7 +1,7 @@
 require('../testUtils');
 const assert = require('node:assert');
 const { setTimeout: delay } = require('node:timers/promises');
-const { setupTestDBPath } = require('../testUtils');
+const { setupTestDBPath, ensureSystemTables } = require('../testUtils');
 const { waitFor } = require('../waitFor');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
@@ -21,7 +21,9 @@ const {
 const { MIN_LOCK_LEASE_MS } = require('#src/resources/recordLock');
 const { publishOriginFloor, reservedLocalKey } = require('#src/resources/originClosedFloor');
 const { replayLogs } = require('#src/resources/replayLogs');
+const { setAbortMarkersForTests } = require('#src/resources/transactionLogAbortMarkers');
 const harperLogger = require('#src/utility/logging/harper_logger');
+const { storeRocksDBStatsMetrics } = require('#src/resources/analytics/write');
 const { Transaction, constants } = require('@harperfast/rocksdb-js');
 const RETRY_NOW_VALUE = constants.RETRY_NOW_VALUE;
 require('#src/server/serverHelpers/serverUtilities');
@@ -30,6 +32,7 @@ const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
 describe('Transactions are never aborted once durably written to the transaction log', function () {
 	if (isLMDB) return;
+	let priorAbortMarkers;
 
 	const MAX_RETRIES = 40;
 	const WELL_PAST_BUDGET_MS = 3_600_000;
@@ -41,6 +44,7 @@ describe('Transactions are never aborted once durably written to the transaction
 	const onUnhandled = (error) => unhandled.push(error);
 
 	before(function () {
+		priorAbortMarkers = setAbortMarkersForTests(false);
 		setupTestDBPath();
 		setMainIsWorker(true);
 		AuditedA = table({
@@ -66,6 +70,7 @@ describe('Transactions are never aborted once durably written to the transaction
 
 	after(() => {
 		process.removeListener('unhandledRejection', onUnhandled);
+		setAbortMarkersForTests(priorAbortMarkers ?? true);
 	});
 
 	afterEach(async function () {
@@ -1410,6 +1415,20 @@ describe('Transactions are never aborted once durably written to the transaction
 
 		it('releases a deferred record lock via the hold-deadline timer when a native commit wedges and never settles', async function () {
 			this.timeout(20000);
+			await ensureSystemTables();
+			const analyticsTable = table({
+				table: 'hdb_analytics',
+				database: 'system',
+				audit: true,
+				trackDeletes: false,
+				attributes: ['id', 'metric', 'path', 'method', 'type'].map((name) => ({
+					name,
+					...(name === 'id' ? { isPrimaryKey: true } : {}),
+				})),
+			});
+			const metricDatabases = { testNoAbortA: { NoAbortAuditedA: AuditedA } };
+			storeRocksDBStatsMetrics(analyticsTable, metricDatabases, Date.now(), undefined);
+			await new Promise(setImmediate);
 			const recordId = id('lock-wedged-commit');
 			await AuditedA.put({ id: recordId, writer: 'seed', count: 0 });
 
@@ -1455,10 +1474,24 @@ describe('Transactions are never aborted once durably written to the transaction
 			);
 			const contender = await AuditedA.lock(recordId, { lease: 1000, timeout: 2500 });
 			await contender.unlock();
-
-			releaseWedged();
-			await savePromise;
-			await holder.unlock();
+			try {
+				const metricId = [Date.now(), 123];
+				await assert.rejects(
+					async () => analyticsTable.put(metricId, { id: metricId, metric: 'overload-probe' }),
+					(error) => error.statusCode === 503,
+					'the wedged native commit must activate real global write shedding'
+				);
+				assert.doesNotThrow(
+					() => storeRocksDBStatsMetrics(analyticsTable, metricDatabases, Date.now(), 1000),
+					'refused background metrics must not escape the aggregation callback'
+				);
+				await new Promise(setImmediate);
+				assert.deepStrictEqual(unhandled, [], 'refused background metric writes must not leak unhandled rejections');
+			} finally {
+				releaseWedged();
+				await savePromise;
+				await holder.unlock();
+			}
 		});
 
 		it('does not re-stage an in-flight sibling write onto a fresh write when a shared ImmediateTransaction had an earlier retry', async function () {

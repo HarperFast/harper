@@ -1,8 +1,8 @@
 import { streamAsJSON, stringify, parse } from './JSONStream.ts';
-import { pack, unpack, encodeIter } from 'msgpackr';
-import { decode, Encoder, EncoderStream } from 'cbor-x';
+import { pack, unpack, Packr } from 'msgpackr';
+import { decode, Encoder } from 'cbor-x';
 import { createBrotliCompress, brotliCompress, constants } from 'node:zlib';
-import { ClientError } from '../../utility/errors/hdbError.ts';
+import { ClientError, ReadSnapshotExpiredError } from '../../utility/errors/hdbError.ts';
 import stream, { Readable, Transform } from 'node:stream';
 import { server } from '../Server.ts';
 import { _assignPackageExport } from '../../globals.js';
@@ -25,6 +25,78 @@ let JSONParse: typeof JSON.parse = parse;
 let COMPRESSION_THRESHOLD: number | undefined;
 const streamStartup = Symbol('streamStartup');
 const serializedStreamError = Symbol('serializedStreamError');
+const RELATIONSHIPS_LISTED = Symbol.for('harper.relationshipsListed');
+
+// `wildcard`: expanded from `*`, so a row holding fewer keys than the schema still gets every declared column
+export type ColumnsList = string[] & { scalar?: true; asArray?: true; wildcard?: true };
+
+export function isScalarSelect(select: any): boolean {
+	return (typeof select === 'string' && select !== '*') || (!Array.isArray(select) && select?.name !== undefined);
+}
+
+export function isTupleSelect(select: any): boolean {
+	return Array.isArray(select) && Boolean((select as any).asArray);
+}
+
+type AppliedSelect = { select: any; rows: boolean };
+// Keyed by the projected value. A primitive needs no entry: its one column is the target's select.
+const appliedSelects = new WeakMap<object, AppliedSelect>();
+const CSV_TYPE = /text\/csv/i;
+
+export function recordAppliedSelect<T>(context: any, select: any, rows: boolean, value: T): T | Promise<T> {
+	// a keyed projection sets every selected key, so its rows name their own columns
+	if (!(isScalarSelect(select) || isTupleSelect(select))) return value;
+	// the same negotiation input findBestSerializer reads; anything else never reaches the CSV serializer
+	const accept = context?.requestedContentType ?? (context?.headers?.asObject || context?.headers)?.accept;
+	if (typeof accept !== 'string' || !CSV_TYPE.test(accept)) return value;
+	if (typeof (value as any)?.then === 'function')
+		return (value as any).then((settled: T) => recordAppliedSelect(context, select, rows, settled));
+	if (value && typeof value === 'object') appliedSelects.set(value, { select, rows });
+	return value;
+}
+
+function appliedSelectFor(data: any, target: any): AppliedSelect | undefined {
+	const applied = data && typeof data === 'object' ? appliedSelects.get(data) : undefined;
+	return applied && sameColumns(applied.select, target?.select) ? applied : undefined;
+}
+
+function sameColumns(select: any, other: any): boolean {
+	if (select === other) return true;
+	if (!Array.isArray(select) || !Array.isArray(other))
+		return !Array.isArray(select) && !Array.isArray(other) && columnName(select) === columnName(other);
+	if (select.length !== other.length || isTupleSelect(select) !== isTupleSelect(other)) return false;
+	return select.every((column, index) => columnName(column) === columnName(other[index]));
+}
+
+function columnName(column: any) {
+	return column?.name ?? column;
+}
+
+export function buildSelectColumns(currentSelect: any, attributes?: any[]): ColumnsList | undefined {
+	if (currentSelect) {
+		const columns: ColumnsList = [];
+		const asArray = isTupleSelect(currentSelect);
+		for (const column of Array.isArray(currentSelect) ? currentSelect : [currentSelect]) {
+			if (column === '*' && !asArray) {
+				if (!attributes?.length) return undefined;
+				for (const attribute of attributes)
+					if (!(currentSelect[RELATIONSHIPS_LISTED] && attribute.relationship)) columns.push(attribute.name);
+				columns.wildcard = true;
+			} else columns.push((column as any).name || column);
+		}
+		if (columns.wildcard) {
+			const unique = [...new Set(columns)];
+			columns.length = 0;
+			columns.push(...unique);
+		}
+		if (isScalarSelect(currentSelect)) columns.scalar = true;
+		else if (asArray) columns.asArray = true;
+		return columns;
+	}
+	return (attributes || [])
+		.filter((attribute) => !attribute.computed && !attribute.relationship)
+		.map((attribute) => attribute.name);
+}
 
 type StreamStartup = {
 	result: Promise<{ failed?: true; error?: unknown }>;
@@ -96,34 +168,44 @@ mediaTypes.set('application/json', {
 });
 const cborEncoder = new Encoder(PUBLIC_ENCODE_OPTIONS);
 mediaTypes.set('application/cbor', {
-	serializeStream(data) {
-		if (data[Symbol.asyncIterator]) data[Symbol.iterator] = null; // choose async iteration if possible
-		return new EncoderStream(PUBLIC_ENCODE_OPTIONS).end(data);
-	},
+	serializeStream: cborStream,
 	serialize: cborEncoder.encode,
 	deserialize: cborEncoder.decode,
 	q: 1,
 });
 mediaTypes.set('application/x-msgpack', {
-	serializeStream(data: any) {
-		if ((data?.[Symbol.iterator] || data?.[Symbol.asyncIterator]) && !Array.isArray(data)) {
-			return Readable.from(encodeIter(data, PUBLIC_ENCODE_OPTIONS) as any);
-		}
-		return pack(data);
-	},
+	serializeStream: msgpackStream,
 	serialize: pack,
 	deserialize: unpack,
 	q: 0.9,
 });
+function csvColumns(data: any, target: any, resource: any) {
+	if (typeof data?.getColumns === 'function') return { columns: data.getColumns() };
+	const applied = appliedSelectFor(data, target);
+	if (applied) {
+		return { columns: buildSelectColumns(applied.select, resource?.attributes), singleRecord: !applied.rows };
+	}
+	return { fallbackColumns: target?.select ? buildSelectColumns(target.select, resource?.attributes) : undefined };
+}
+
 mediaTypes.set('text/csv', {
-	serializeStream(data: any, response: Response) {
+	serializeStream(data: any, response: Response, _request?: any, target?: any, resource?: any) {
 		response.headers.set('Content-Disposition', 'attachment; filename="data.csv"');
-		return toCsvStream(data, data?.getColumns?.());
+		const { columns, fallbackColumns, singleRecord } = csvColumns(data, target, resource);
+		if (singleRecord && data != null) return toCsvStream([data.toJSON ? data.toJSON() : data], columns);
+		return toCsvStream(data, columns, fallbackColumns);
 	},
-	serialize(data: any, response: Response) {
+	serialize(data: any, response: Response, _request?: any, target?: any, resource?: any) {
 		response.headers.set('Content-Disposition', 'attachment; filename="data.csv"');
-		if (data && !data[Symbol.iterator]) data = [data.toJSON ? data.toJSON() : data];
-		return toCsvStream(data, data?.getColumns?.());
+		const { columns, fallbackColumns, singleRecord } = csvColumns(data, target, resource);
+		if (
+			data != null &&
+			(singleRecord ||
+				(!columns && (typeof data !== 'object' || (!data[Symbol.iterator] && !data[Symbol.asyncIterator]))))
+		) {
+			data = [data.toJSON ? data.toJSON() : data];
+		}
+		return toCsvStream(data, columns, fallbackColumns);
 	},
 	q: 0.1,
 });
@@ -132,7 +214,9 @@ mediaTypes.set('text/plain', {
 		return data.toString();
 	},
 	serializeStream(data: any) {
-		return Readable.from(data.map ? data.map((d) => d.toString()) : data);
+		return Readable.from(
+			openOnFirstStep(() => (data.map ? data.map((d) => d.toString()) : data), Boolean(data[Symbol.asyncIterator]))
+		);
 	},
 	deserialize(data: Buffer) {
 		return data.toString();
@@ -304,18 +388,11 @@ export function registerContentHandlers(app) {
 			},
 			{
 				regex: /^application\/cbor$/,
-				serializer: function (data) {
-					return new EncoderStream(PUBLIC_ENCODE_OPTIONS).end(data);
-				},
+				serializer: cborStream,
 			},
 			{
 				regex: /^application\/(x-)?msgpack$/,
-				serializer: function (data) {
-					if ((data?.[Symbol.iterator] || data?.[Symbol.asyncIterator]) && !Array.isArray(data)) {
-						return Readable.from(encodeIter(data, PUBLIC_ENCODE_OPTIONS) as any);
-					}
-					return pack(data);
-				},
+				serializer: msgpackStream,
 			},
 			{
 				regex: /^text\/csv$/,
@@ -353,6 +430,20 @@ export function registerContentHandlers(app) {
 	app.addHook('onResponse', releaseUnreadUpload);
 }
 
+function recoversRowErrors(contentType: string): boolean {
+	return (
+		contentType !== 'application/x-ndjson' &&
+		contentType !== 'application/ndjson' &&
+		contentType !== 'text/event-stream'
+	);
+}
+
+/** A row's own failure becomes a row value; a lost read snapshot ends the whole read, so it must fail the stream. */
+function recoverRowError(error: any) {
+	if (error instanceof ReadSnapshotExpiredError) throw error;
+	return { error: error?.name ?? 'Error', message: error?.message ?? String(error), ...error?.partialObject };
+}
+
 const registerFastifySerializers = fp(
 	function (fastify, opts, done) {
 		fastify.addHook('preSerialization', async (request, reply) => {
@@ -380,14 +471,10 @@ const registerFastifySerializers = fp(
 					(data[Symbol.iterator] || data[Symbol.asyncIterator]) &&
 					serializer.serializeStream
 				) {
-					if (data.mapError) {
+					if (data.mapError && recoversRowErrors(type)) {
 						// indicate that we want iterator errors to be returned so we can serialize them in a meaningful way, if possible
 						const getColumns = data.getColumns;
-						data = data.mapError((error) => {
-							// make errors serializable in a descriptive way
-							error.toJSON = () => ({ error: error.name, message: error.message, ...error.partialObject });
-							return error;
-						});
+						data = data.mapError(recoverRowError);
 						data.getColumns = getColumns;
 					}
 					serialize = serializer.serializeStream;
@@ -508,7 +595,7 @@ export function isHttpPassThroughEnvelope(value: any): boolean {
  * @param responseObject
  * @returns {Uint8Array|*}
  */
-export function serialize(responseData, request, responseObject) {
+export function serialize(responseData, request, responseObject, target?, resource?) {
 	// TODO: Maybe support other compression encodings; browsers basically universally support brotli, but Node's HTTP
 	//  client itself actually (just) supports gzip/deflate
 	let canCompress = COMPRESSION_THRESHOLD && request.headers.asObject?.['accept-encoding']?.includes('br');
@@ -541,36 +628,30 @@ export function serialize(responseData, request, responseObject) {
 			(responseData[Symbol.iterator] || responseData[Symbol.asyncIterator]) &&
 			serializer.serializer.serializeStream
 		) {
-			if (
-				responseData.mapError &&
-				contentType !== 'application/x-ndjson' &&
-				contentType !== 'application/ndjson' &&
-				contentType !== 'text/event-stream'
-			) {
+			if (responseData.mapError && recoversRowErrors(contentType)) {
 				// indicate that we want iterator errors to be returned so we can serialize them in a meaningful way, if possible
 				const getColumns = responseData.getColumns;
+				const appliedSelect = contentType === 'text/csv' && appliedSelects.get(responseData);
 				responseData = responseData.mapError((error) => {
-					// make errors serializable in a descriptive way
-					error.toJSON = () => ({ error: error.name, message: error.message, ...error.partialObject });
+					const row = recoverRowError(error);
 					logger.warn?.(`Error serializing error ${request?.url || request}: ${error}`);
-					return error;
+					return row;
 				});
 				responseData.getColumns = getColumns;
+				if (appliedSelect) appliedSelects.set(responseData, appliedSelect);
 			}
-			const serialized = serializer.serializer.serializeStream(responseData, responseObject, request);
+			const serialized = serializer.serializer.serializeStream(responseData, responseObject, request, target, resource);
 			if (!canCompress) return serialized;
 			// a handler may return a complete body (msgpack does for arrays)
 			if (typeof serialized === 'string' || serialized instanceof Uint8Array) responseBody = serialized;
 			else {
 				responseObject.headers.set('Content-Encoding', 'br');
 				const source = typeof serialized.pipe === 'function' ? serialized : Readable.from(serialized);
-				// pipeline, not pipe: a source error must destroy the compressor (which the HTTP layer reports) rather
-				// than be emitted with no listener
-				const compressed = stream.pipeline(source, createBrotliCompress(brotliOptions(contentType)), () => {});
+				const compressed = pipelineOnRead(source, createBrotliCompress(brotliOptions(contentType)));
 				if (source[streamStartup]) compressed[streamStartup] = source[streamStartup];
 				return compressed;
 			}
-		} else responseBody = serializer.serializer.serialize(responseData, responseObject);
+		} else responseBody = serializer.serializer.serialize(responseData, responseObject, request, target, resource);
 	}
 	if (canCompress && responseBody?.length > COMPRESSION_THRESHOLD) {
 		// TODO: Only do this if the size is large and we can cache the result (otherwise use logic above)
@@ -807,6 +888,122 @@ function deserializerUnknownType(contentType: ContentType): Deserialize {
 	}
 }
 
+const CBOR_STREAM_OPTIONS = { ...PUBLIC_ENCODE_OPTIONS, sequential: true };
+
+function cborStream(data) {
+	// an Encoder per stream: encodeAsAsyncIterable keeps its chunking state on the instance
+	return Readable.from(
+		openOnFirstStep(() => (new Encoder(CBOR_STREAM_OPTIONS) as any).encodeAsAsyncIterable(asyncPreferred(data)), true),
+		{ objectMode: false, highWaterMark: 16384 }
+	);
+}
+
+function msgpackStream(data) {
+	if ((data?.[Symbol.iterator] || data?.[Symbol.asyncIterator]) && !Array.isArray(data)) {
+		let packr: Packr;
+		return Readable.from(
+			openOnFirstStep(
+				() => {
+					packr = new Packr(PUBLIC_ENCODE_OPTIONS);
+					return data;
+				},
+				Boolean(data[Symbol.asyncIterator]),
+				(value) => packr.pack(value)
+			)
+		);
+	}
+	return pack(data);
+}
+
+class AsyncIterableView {
+	source: any;
+	constructor(source) {
+		this.source = source;
+	}
+	[Symbol.asyncIterator]() {
+		return this.source[Symbol.asyncIterator]();
+	}
+}
+
+// cbor-x prefers Symbol.iterator, whose iteration of search results yields Promises for rows not yet loaded, and
+// encodes a plain-object async iterable as a map.
+function asyncPreferred(data) {
+	return data?.[Symbol.asyncIterator] ? new AsyncIterableView(data) : data;
+}
+
+// Readable.from() takes its source's iterator at construction; this one opens the source on the first next(). A sync
+// source keeps the sync protocol, under which Readable.from() awaits a value that is a Promise. mapValue applies to each
+// step as it comes, so an async source's steps that are already settled are not wrapped in a Promise.
+function openOnFirstStep(
+	open: () => any,
+	async: boolean,
+	mapValue?: (value: any) => any
+): Iterable<any> | AsyncIterable<any> {
+	let iterator;
+	let closed = false;
+	const mapStep =
+		mapValue &&
+		((step) => {
+			if (closed) return { value: undefined, done: true };
+			if (step.done) return step;
+			const { value } = step;
+			if (!async && typeof value?.then === 'function') {
+				return {
+					value: value.then((settled) => (closed ? settled : mapValue(settled))),
+					done: false,
+				};
+			}
+			const mapped = mapValue(value);
+			return mapped === value ? step : { value: mapped, done: false };
+		});
+	const deferred: any = {
+		[async ? Symbol.asyncIterator : Symbol.iterator]() {
+			return this;
+		},
+		next() {
+			if (closed) return { value: undefined, done: true };
+			if (!iterator) {
+				const source = open();
+				iterator = async && source[Symbol.asyncIterator] ? source[Symbol.asyncIterator]() : source[Symbol.iterator]();
+				if (closed) {
+					const closing = iterator.return?.();
+					if (typeof closing?.then === 'function')
+						closing.then(null, (error) => logger.warn?.('Error closing a discarded stream source', error));
+					return { value: undefined, done: true };
+				}
+			}
+			const step = iterator.next();
+			if (!mapStep) return step;
+			return typeof step.then === 'function' ? step.then(mapStep) : mapStep(step);
+		},
+		return(value) {
+			closed = true;
+			return iterator?.return?.(value) ?? { value, done: true };
+		},
+	};
+	return deferred;
+}
+
+// pipe() reads the source on the next tick, past a discard in this one, and pipeline() destroys the source only on a
+// later tick. So connect on the first read, destroy the source synchronously with the transform, and until then
+// handle errors as pipeline() would: a source error fails the transform, which is what the HTTP layer reports.
+function pipelineOnRead(source: Readable, transform: Transform): Transform {
+	source.once('error', (error) => transform.destroy(error));
+	transform.on('error', () => {});
+	const read = transform._read;
+	transform._read = function (size) {
+		transform._read = read;
+		stream.pipeline(source, transform, () => {});
+		return read.call(this, size);
+	};
+	const destroy = transform._destroy;
+	transform._destroy = function (error, callback) {
+		source.destroy(error ?? undefined);
+		return destroy.call(this, error, callback);
+	};
+	return transform;
+}
+
 function errorFrameStream(iterable, transform, serializeError, eager: boolean) {
 	const transformed = transformIterable(iterable, transform, serializeError, eager);
 	const readable = Readable.from(transformed);
@@ -814,6 +1011,11 @@ function errorFrameStream(iterable, transform, serializeError, eager: boolean) {
 	startup.cancel = () => readable.destroy();
 	readable[streamStartup] = startup;
 	return readable;
+}
+
+// transformIterable's return() opens and closes a source it never started, so destroying the stream closes it
+export function closesSourceOnDiscard(stream): boolean {
+	return Boolean(stream?.[streamStartup]);
 }
 
 export function discardSerializedStream(stream) {
@@ -960,48 +1162,76 @@ function transformIterable(iterable, transform, serializeError, eager) {
 	};
 }
 
+function formatCsvCell(value: any) {
+	if (value === null || value === undefined) {
+		return '';
+	}
+	// Serialize objects and arrays as JSON
+	if (typeof value === 'object') {
+		return value instanceof Date ? (value.toJSON() ?? '') : JSON.stringify(value);
+	}
+	return value;
+}
+
+function withDeclaredColumns(declared: ColumnsList | undefined, rowKeys: string[]): string[] {
+	if (!declared?.wildcard) return rowKeys;
+	const known = new Set<string>(declared);
+	return [...declared, ...rowKeys.filter((key) => !known.has(key))];
+}
+
 /**
  * Converts JS objects/arrays/iterators to a CSV stream. Should support iterators with full backpressure handling
  * @param data
  * @returns stream
  */
-export function toCsvStream(data, columns?) {
-	// ensure that we pass it an iterable
-	const readStream = stream.Readable.from(data?.[Symbol.iterator] || data?.[Symbol.asyncIterator] ? data : [data]);
+export function toCsvStream(data, columns?, fallbackColumns?) {
+	const isRowIterable =
+		typeof data === 'object' && data !== null && Boolean(data[Symbol.iterator] || data[Symbol.asyncIterator]);
+	const source = isRowIterable ? data : [data];
+	const hint = columns ?? data?.getColumns?.() ?? fallbackColumns;
+	const mapNullRow = Boolean(hint?.scalar || data == null || !hint || data?.pendingAuth);
+	// Readable.from() in object mode rejects null values with ERR_STREAM_NULL_VALUES.
+	const readStream = Readable.from(
+		openOnFirstStep(
+			() => source,
+			Boolean(source[Symbol.asyncIterator]),
+			mapNullRow ? (value) => value ?? '' : undefined
+		)
+	);
 
 	let headerWritten = false;
 	let fields = columns || null;
+	let rowToValues: ((chunk: any) => any[]) | undefined;
 
 	// Create a transform stream to convert objects to CSV
 	const csvTransform = new Transform({
 		objectMode: true,
 		transform(chunk, encoding, callback) {
 			try {
-				// Extract fields from first object if not provided
-				if (!fields && typeof chunk === 'object' && chunk !== null) {
-					fields = Object.keys(chunk);
+				if (!headerWritten) {
+					if (!fields) {
+						fields =
+							data?.getColumns?.() ||
+							(typeof chunk === 'object' && chunk !== null && !Array.isArray(chunk)
+								? withDeclaredColumns(fallbackColumns, Object.keys(chunk))
+								: fallbackColumns || (Array.isArray(chunk) ? Object.keys(chunk) : null));
+					}
+					if (fields) {
+						const scalar = Boolean(fields.scalar);
+						const asArray = Boolean(fields.asArray);
+						rowToValues = scalar
+							? (row) => [formatCsvCell(row)]
+							: asArray
+								? (row) =>
+										Array.isArray(row) ? fields.map((_, index) => formatCsvCell(row[index])) : [formatCsvCell(row)]
+								: (row) => fields.map((field) => formatCsvCell(row[field]));
+						this.push(escapeCsvRow(fields, true) + '\n');
+						headerWritten = true;
+					}
 				}
 
-				// Write header row on first chunk
-				if (!headerWritten && fields) {
-					this.push(escapeCsvRow(fields, true) + '\n');
-					headerWritten = true;
-				}
-
-				// Convert object to CSV row
-				if (fields) {
-					const values = fields.map((field) => {
-						const value = chunk[field];
-						if (value === null || value === undefined) {
-							return '';
-						}
-						// Serialize objects and arrays as JSON
-						if (typeof value === 'object') {
-							return JSON.stringify(value);
-						}
-						return value;
-					});
-					this.push(escapeCsvRow(values, false) + '\n');
+				if (rowToValues) {
+					this.push(escapeCsvRow(rowToValues(chunk), false) + '\n');
 				}
 
 				callback();
@@ -1011,8 +1241,7 @@ export function toCsvStream(data, columns?) {
 		},
 	});
 
-	// Pipe the data read stream through our CSV transform
-	return readStream.pipe(csvTransform);
+	return pipelineOnRead(readStream, csvTransform);
 }
 
 /**
@@ -1021,6 +1250,9 @@ export function toCsvStream(data, columns?) {
  * @param quoteAll - If true, quote all values. If false, only quote strings (not numbers)
  */
 function escapeCsvRow(values: any[], quoteAll: boolean = false): string {
+	if (values.length === 1 && (values[0] === '' || values[0] === null || values[0] === undefined)) {
+		return '""';
+	}
 	return values
 		.map((value) => {
 			// Handle empty/null values

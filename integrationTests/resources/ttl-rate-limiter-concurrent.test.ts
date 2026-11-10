@@ -517,17 +517,14 @@ suite(
 						id,
 						acked: hits.filter((h) => h.status === 200).length,
 						errs: hits.filter((h) => h.status === 'error').length,
+						// Observe this key before waiting for slower windows to finish and consume its TTL.
+						settled: await waitForStableGet(id),
 					};
 				})
 			);
-
-			// Poll each window for a settled value rather than a single immediate read. Concurrent,
-			// not sequential: serializing 10 polls could push
-			// later keys' reads past their own 500ms TTL and misreport a clean window as expired.
-			const settled = await Promise.all(windowResults.map(({ id }) => waitForStableGet(id)));
 			for (let i = 0; i < windowResults.length; i++) {
 				const { id, acked, errs } = windowResults[i];
-				const g = settled[i];
+				const g = windowResults[i].settled;
 				if (g.status === 404) {
 					// Burst took >500ms and window expired — inconclusive for this probe.
 					windowLogs.push(`${id}: expired(404) acked=${acked} err=${errs} [skip]`);

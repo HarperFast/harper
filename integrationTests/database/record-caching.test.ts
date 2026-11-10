@@ -27,6 +27,7 @@ import { fetchOnNewConnection, observeEveryWorker } from '../utils/connectionPer
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'record-caching');
 const SKIP = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
+const RECORD_CACHE_SIZE = 65536;
 
 interface Rec {
 	id: string;
@@ -36,6 +37,7 @@ interface Rec {
 
 interface WorkerCacheView {
 	threadId: number;
+	recordCacheLruSize: number | null;
 	exists: boolean;
 	/** The per-worker cache entry a point-GET consults. */
 	cached: Rec | null;
@@ -196,13 +198,18 @@ suite(
 
 		before(async () => {
 			await setupHarperWithFixture(ctx, FIXTURE_PATH, {
-				config: { logging: { console: true, level: 'error' } },
+				config: { logging: { console: true, level: 'error' }, storage: { recordCacheSize: RECORD_CACHE_SIZE } },
 				env: {},
 			});
 			const client = createApiClient(ctx.harper);
 			httpURL = ctx.harper.httpURL;
 			authHeader = client.headers.Authorization;
 			await waitForTable(httpURL, authHeader);
+		});
+
+		test("S4 storage.recordCacheSize sizes the worker's record cache", async () => {
+			const view = await readCacheOnWorker(httpURL, authHeader, 's4-record');
+			strictEqual(view.recordCacheLruSize, RECORD_CACHE_SIZE / 4);
 		});
 
 		after(async () => {

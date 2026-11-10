@@ -93,6 +93,13 @@ export class ServerError extends Error {
 	}
 }
 
+export class ReadSnapshotExpiredError extends ServerError {
+	constructor() {
+		super('Read scan snapshot expired; retry the read without replaying previously committed writes', 503);
+		this.name = 'ReadSnapshotExpiredError';
+	}
+}
+
 function readErrorProperty(error: any, property: string) {
 	try {
 		return error?.[property];

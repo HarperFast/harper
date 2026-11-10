@@ -872,13 +872,22 @@ class DerivedIndexRunner {
 		};
 	}
 
+	/**
+	 * Cursor distance over what this runner has read and not made durable: the commit-time span from the
+	 * oldest such transaction to the newest one read, so an idle gap before the oldest is not lag. A log
+	 * the durable cursor does not anchor yet is left to the accepted-age term.
+	 */
 	#cursorLag(): number {
 		let cursorLag = 0;
 		const durable = this.#offeredCursors[0]?.cursor;
 		if (durable) {
 			for (const [logName, latest] of this.#latestSeen) {
 				const position = durable.logs[logName];
-				if (position !== undefined && latest > position) cursorLag = Math.max(cursorLag, latest - position);
+				if (position === undefined) continue;
+				// reconciliation keeps the durable timestamp first in its log's pending list
+				const oldestUndurable = this.#pendingTimestamps.get(logName)![1];
+				if (oldestUndurable !== undefined && latest > oldestUndurable)
+					cursorLag = Math.max(cursorLag, latest - oldestUndurable);
 			}
 		}
 		return cursorLag;
@@ -907,14 +916,15 @@ class DerivedIndexRunner {
 	}
 
 	/**
-	 * Owner-only. Lag is the longest of four terms: cursor distance behind what this runner has read,
-	 * time parked on backpressure, time since the oldest commit this runner may not have read yet (a
-	 * reader too slow to reach the end of the log cannot hide), and the age of the oldest accepted
-	 * work not yet durable (a backend that accepts but never barriers cannot hide). All four are zero
-	 * for a caught-up owner sitting idle and stay within drain latency plus flush age for a runner
-	 * keeping up under sustained ingest. The trip survives discard and handoff: a successor clears it
-	 * only after proving catch-up itself — a durable advance and the end of the log both reached since
-	 * it acquired, so an inherited backlog cannot be cleared by one barrier — below half the budget.
+	 * Owner-only. Lag is the longest of four terms: cursor distance over what this runner has read and
+	 * not made durable, time parked on backpressure, time since the oldest commit this runner may
+	 * not have read yet (a reader too slow to reach the end of the log cannot hide), and the age of
+	 * the oldest accepted work not yet durable (a backend that accepts but never barriers cannot hide).
+	 * All four are zero for a caught-up owner sitting idle and stay within drain latency plus flush age
+	 * for a runner keeping up under sustained ingest. The trip survives discard and handoff: a
+	 * successor clears it only after proving catch-up itself — a durable advance and the end of the
+	 * log both reached since it acquired, so an inherited backlog cannot be cleared by one barrier —
+	 * below half the budget.
 	 */
 	#publishLag() {
 		const max = this.#lagBudget;
@@ -1773,19 +1783,23 @@ class DerivedIndexRunner {
 		this.#boundaryPending = false;
 		// A waiter that observes the covering clock must also observe this durable publication revision.
 		if (offeredIndex > 0) this.#publicationChanged();
+		let coverage: CoverageCapture | undefined;
+		let bound = true;
 		for (let i = offeredIndex; i >= 0; i--) {
-			const coverage = this.#offeredCursors[i].coverage;
-			if (coverage) {
-				this.#publishCoverage(coverage);
+			const candidate = this.#offeredCursors[i].coverage;
+			if (candidate) {
+				coverage = bound || !candidate.bound ? candidate : { time: candidate.time, positions: candidate.positions };
 				break;
 			}
+			if (this.#offeredCursors[i].mutations > 0) bound = false;
 		}
 		if (offeredIndex > 0) {
 			// The backend dropped coverage with the old vector, so the next bound capture is not throttled.
 			this.#lastPersistedCoverageTime = 0n;
 			this.#offeredCursors.splice(0, offeredIndex);
-			if (!this.#rebuilding && this.status.state !== 'needs-rebuild') this.#settleReady();
 		}
+		if (coverage) this.#publishCoverage(coverage);
+		if (offeredIndex > 0 && !this.#rebuilding && this.status.state !== 'needs-rebuild') this.#settleReady();
 		if (offeredIndex > 0 || sameCursor(cursor, this.#offered)) this.#lastCaughtUpAt = this.#options.now();
 		return true;
 	}

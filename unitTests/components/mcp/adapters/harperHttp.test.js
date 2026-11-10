@@ -14,6 +14,9 @@ function makeFakeTable() {
 		async put(record) {
 			store.set(record.id, { ...record });
 		},
+		async patch(record) {
+			store.set(record.id, { ...store.get(record.id), ...record });
+		},
 		async get(id) {
 			const r = store.get(id);
 			return r ? { ...r } : undefined;
@@ -255,6 +258,74 @@ describe('mcp/adapters/harperHttp', () => {
 		assert.equal(notifResult.body, undefined);
 		const session = await loadSession(sessionId);
 		assert.equal(session.initialized, true);
+	});
+
+	it('builds resource URIs from the request protocol + host, not the server hostname', async () => {
+		const { _setResourcesForTest } = require('#src/components/mcp/resources');
+		_setResourcesForTest(new Map());
+		try {
+			const handler = createHarperHttpHandler('application');
+			const reqBase = { user: { username: 'alice' }, protocol: 'https', host: 'public.example.com' };
+			const initResult = await handler(
+				{
+					...reqBase,
+					method: 'POST',
+					headers: makeHeaders(),
+					body: bodyStream(
+						JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18' } })
+					),
+				},
+				next
+			);
+			const sessionId = initResult.headers['Mcp-Session-Id'];
+			const res = await handler(
+				{
+					...reqBase,
+					method: 'POST',
+					headers: makeHeaders({ 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' }),
+					body: bodyStream(JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'resources/templates/list' })),
+				},
+				next
+			);
+			const templates = JSON.parse(res.body).result.resourceTemplates.map((t) => t.uriTemplate);
+			assert.ok(templates.includes('harper+rest://public.example.com/{resourcePath}'), templates.join(', '));
+		} finally {
+			_setResourcesForTest(undefined);
+		}
+	});
+
+	it('ignores a non-http(s) request protocol (uWS X-Forwarded-Proto: ws)', async () => {
+		const { _setResourcesForTest } = require('#src/components/mcp/resources');
+		_setResourcesForTest(new Map());
+		try {
+			const handler = createHarperHttpHandler('application');
+			const reqBase = { user: { username: 'alice' }, protocol: 'ws', host: 'public.example.com' };
+			const initResult = await handler(
+				{
+					...reqBase,
+					method: 'POST',
+					headers: makeHeaders(),
+					body: bodyStream(
+						JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18' } })
+					),
+				},
+				next
+			);
+			const sessionId = initResult.headers['Mcp-Session-Id'];
+			const res = await handler(
+				{
+					...reqBase,
+					method: 'POST',
+					headers: makeHeaders({ 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' }),
+					body: bodyStream(JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'resources/templates/list' })),
+				},
+				next
+			);
+			const templates = JSON.parse(res.body).result.resourceTemplates.map((t) => t.uriTemplate);
+			assert.ok(!templates.some((t) => t.startsWith('ws://')), templates.join(', '));
+		} finally {
+			_setResourcesForTest(undefined);
+		}
 	});
 
 	it('returns 400 on GET without an Mcp-Session-Id (SSE channel landed in #619)', async () => {

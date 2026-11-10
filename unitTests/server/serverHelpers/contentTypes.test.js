@@ -14,6 +14,9 @@ const {
 	isHttpPassThroughEnvelope,
 	serialize,
 	serializeMessage,
+	toCsvStream,
+	buildSelectColumns,
+	recordAppliedSelect,
 	waitForStreamStartup,
 	discardSerializedStream,
 	brotliOptions,
@@ -654,6 +657,7 @@ describe('contentTypes – a multipart upload its route answers without reading'
 	const { setTimeout: sleep } = require('node:timers/promises');
 	const { registerContentHandlers } = require('#src/server/serverHelpers/contentTypes');
 	const { buildMultipartBody } = require('#src/bin/multipartBuilder');
+	const { UNREAD_UPLOAD_GRACE_MS } = require('#src/server/serverHelpers/multipartParser');
 
 	const CHUNK = randomBytes(64 * 1024);
 	let app;
@@ -687,7 +691,7 @@ describe('contentTypes – a multipart upload its route answers without reading'
 		});
 		app.get('/health', async () => 'ok');
 		app.get('/slow', async () => {
-			await sleep(1500);
+			await sleep(UNREAD_UPLOAD_GRACE_MS + 500);
 			return 'slow';
 		});
 		await app.listen({ port: 0, host: '127.0.0.1' });
@@ -819,7 +823,11 @@ describe('contentTypes – a multipart upload its route answers without reading'
 		this.timeout(20_000);
 		const { statuses, nextAnsweredAfterMs } = await uploadOnRawSocket('/ignore', { next: '/slow' });
 		assert.deepStrictEqual(statuses, ['HTTP/1.1 200', 'HTTP/1.1 200']);
-		assert.ok(nextAnsweredAfterMs >= 1500, `the slow request was answered after ${nextAnsweredAfterMs}ms`);
+		// The grace was armed before the upload ended; the route's sleep itself can read a millisecond short
+		assert.ok(
+			nextAnsweredAfterMs > UNREAD_UPLOAD_GRACE_MS,
+			`the slow request was answered after ${nextAnsweredAfterMs}ms`
+		);
 	});
 
 	it('closes the connection when the rest of a discarded upload stops arriving, after answering', async function () {
@@ -1050,5 +1058,147 @@ describe('contentTypes – pass-through envelopes', function () {
 				assert.strictEqual(response.headers.get('Content-Type'), 'x/y');
 			}
 		});
+	});
+});
+
+describe('contentTypes – toCsvStream scalar and tuple columns (harper#1482)', function () {
+	it('formats scalar columns including null, undefined, 0, false, Date, and arrays without stream truncation', async function () {
+		const columns = Object.assign(['id'], { scalar: true });
+		const sampleDate = new Date('2026-11-03T00:00:00.000Z');
+		const invalidDate = new Date(NaN);
+		const syncOut = await streamToString(
+			toCsvStream(['z-1', null, undefined, 0, false, sampleDate, invalidDate, ['a', 'b'], 'z-2'], columns)
+		);
+		assert.strictEqual(
+			syncOut,
+			'"id"\n"z-1"\n""\n""\n0\n"false"\n"2026-11-03T00:00:00.000Z"\n""\n"[""a"",""b""]"\n"z-2"\n'
+		);
+
+		const keyedDatesOut = await streamToString(
+			toCsvStream([
+				{ id: 'z-1', at: sampleDate },
+				{ id: 'z-2', at: invalidDate },
+			])
+		);
+		assert.strictEqual(keyedDatesOut, '"id","at"\n"z-1","2026-11-03T00:00:00.000Z"\n"z-2",\n');
+
+		function* syncPromiseSource() {
+			yield Promise.resolve('z-1');
+			yield Promise.resolve(null);
+			yield Promise.resolve('z-2');
+		}
+		const syncPromiseOut = await streamToString(toCsvStream(syncPromiseSource(), columns));
+		assert.strictEqual(syncPromiseOut, '"id"\n"z-1"\n""\n"z-2"\n');
+
+		async function* asyncSource() {
+			yield 'z-1';
+			yield null;
+			yield undefined;
+			yield 'z-2';
+		}
+		const asyncOut = await streamToString(toCsvStream(asyncSource(), columns));
+		assert.strictEqual(asyncOut, '"id"\n"z-1"\n""\n""\n"z-2"\n');
+
+		const singleStringOut = await streamToString(toCsvStream('z-1', columns));
+		assert.strictEqual(singleStringOut, '"id"\n"z-1"\n');
+	});
+
+	it('formats positional tuple (asArray) columns and preserves recovered row errors', async function () {
+		const { ExtendedIterable } = require('@harperfast/extended-iterable');
+		const tupleColumns = Object.assign(['id', 'note'], { asArray: true });
+		const tupleOut = await streamToString(
+			toCsvStream(
+				[
+					['z-1', 'n1'],
+					['z-2', null],
+				],
+				tupleColumns
+			)
+		);
+		assert.strictEqual(tupleOut, '"id","note"\n"z-1","n1"\n"z-2",\n');
+
+		const scalarFailing = new ExtendedIterable(['z-1', 'z-2', 'z-3']).map((id) => {
+			if (id === 'z-2') throw Object.assign(new Error('row 2 failed'), { partialObject: { id: 'z-2' } });
+			return id;
+		});
+		scalarFailing.getColumns = () => Object.assign(['id'], { scalar: true });
+		const scalarErrOut = await streamToString(
+			serialize(scalarFailing, { headers: { accept: 'text/csv' } }, { headers: { set() {} } })
+		);
+		const scalarLines = scalarErrOut.trim().split('\n');
+		assert.strictEqual(scalarLines[0], '"id"');
+		assert.strictEqual(scalarLines[1], '"z-1"');
+		assert.match(scalarLines[2], /row 2 failed/);
+		assert.strictEqual(scalarLines[3], '"z-3"');
+
+		const tupleFailing = new ExtendedIterable([1, 2, 3]).map((n) => {
+			if (n === 2) throw Object.assign(new Error('row 2 failed'), { partialObject: { id: 'z-2' } });
+			return [`z-${n}`, `n${n}`];
+		});
+		tupleFailing.getColumns = () => Object.assign(['id', 'note'], { asArray: true });
+		const tupleErrOut = await streamToString(
+			serialize(tupleFailing, { headers: { accept: 'text/csv' } }, { headers: { set() {} } })
+		);
+		assert.strictEqual(
+			tupleErrOut,
+			'"id","note"\n"z-1","n1"\n"{""error"":""Error"",""message"":""row 2 failed"",""id"":""z-2""}"\n"z-3","n3"\n'
+		);
+	});
+});
+
+describe('contentTypes – text/csv applied select', function () {
+	const response = { headers: { set() {} } };
+	const nestedSelect = () => ({ name: 'child', select: ['id', 'label'] });
+
+	it('formats a value as one cell when its applied scalar select names the same column as the target select', async function () {
+		const request = { headers: { accept: 'text/csv' } };
+		const child = { id: 'c1', label: 'l1' };
+		recordAppliedSelect(request, nestedSelect(), false, child);
+		const body = await streamToString(serialize(child, request, response, { select: nestedSelect() }));
+		assert.strictEqual(body, '"child"\n"{""id"":""c1"",""label"":""l1""}"\n');
+	});
+
+	it('formats a value by its own keys when its applied select names another column', async function () {
+		const request = { headers: { accept: 'text/csv' } };
+		const child = { id: 'c1', label: 'l1' };
+		recordAppliedSelect(request, nestedSelect(), false, child);
+		const body = await streamToString(serialize(child, request, response, { select: { name: 'owner' } }));
+		assert.strictEqual(body, '"id","label"\n"c1","l1"\n');
+	});
+
+	it('records nothing for a request that cannot negotiate CSV', async function () {
+		const child = { id: 'c1', label: 'l1' };
+		recordAppliedSelect({ headers: { accept: 'application/json' } }, nestedSelect(), false, child);
+		const request = { headers: { accept: 'text/csv' } };
+		const body = await streamToString(serialize(child, request, response, { select: nestedSelect() }));
+		assert.strictEqual(body, '"id","label"\n"c1","l1"\n');
+	});
+});
+
+describe('contentTypes – toCsvStream wildcard columns', function () {
+	const attributes = [{ name: 'id' }, { name: 'name' }, { name: 'note' }];
+	const rows = () => [
+		{ id: '1', name: 'a', extra: 1 },
+		{ id: '2', note: 'n', extra: 2 },
+	];
+
+	it('leads the header with the declared columns of a wildcard, then adds the first row keys', async function () {
+		const out = await streamToString(toCsvStream(rows(), undefined, buildSelectColumns('*', attributes)));
+		assert.strictEqual(out, '"id","name","note","extra"\n"1","a",,1\n"2",,"n",2\n');
+	});
+
+	it('lists a column once when the select also names it', function () {
+		assert.deepStrictEqual([...buildSelectColumns(Object.assign(['*', 'note']), attributes)], ['id', 'name', 'note']);
+		assert.deepStrictEqual([...buildSelectColumns(Object.assign(['note', '*']), attributes)], ['note', 'id', 'name']);
+	});
+
+	it('keeps the first row keys for an explicit select and lets getColumns() win over a wildcard fallback', async function () {
+		const explicit = await streamToString(
+			toCsvStream(rows(), undefined, buildSelectColumns(['id', 'name'], attributes))
+		);
+		assert.strictEqual(explicit, '"id","name","extra"\n"1","a",1\n"2",,2\n');
+		const withColumns = Object.assign(rows(), { getColumns: () => ['id', 'name'] });
+		const own = await streamToString(toCsvStream(withColumns, undefined, buildSelectColumns('*', attributes)));
+		assert.strictEqual(own, '"id","name"\n"1","a"\n"2",\n');
 	});
 });

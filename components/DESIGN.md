@@ -12,7 +12,7 @@ Index of every design note: [DESIGN.md](../DESIGN.md).
 
 `startHTTPThreads()` starts main-thread health polling after listeners and workers are ready, including zero-worker mode. Importing status exports starts no OS polling. Startup reads the registered `status.healthChecks` keys; edits require restart, and re-entry is idempotent. Defaults stay in code so an upgraded config does not gain a synthetic `status` component. Poll cycles have deadlines and keep at most one pending reader per metric; a permanently wedged reader remains a warning until restart, avoiding unbounded outstanding native work. Stop suppresses late results. Disk uses the configured storage path with `getStorageSpaceStats()` quota scoping. Constrained memory uses cgroup-v2 working set (usage minus inactive file cache), with labelled process-RSS fallback; unconstrained hosts keep `systeminformation.mem().available` semantics. CPU uses per-cgroup `cpu.stat` usage deltas across polling cycles divided by `cpu.max` quota/period, capped by that group’s effective CPU set or online host capacity. Each ancestor constraint uses its own usage counter; the highest utilization wins. CPU-set-only groups use their effective CPU count; process affinity is never applied to an ancestor counter. The first sample and changed/reset accounting use a short priming interval; missing cgroup accounting falls back to labelled host CPU. `cgroupCPU.test.js` covers filesystem accounting and reader lifecycle; `healthChecks.test.js` covers fixtures, lifecycle and deadlines; `logBridge.test.js` covers expiry renewal and cancellation.
 
-The log bridge redacts complete URL credentials before its 500-character summary cap. Summaries never coerce objects or invoke Proxy traps, and native errors from other VM contexts retain their public error class. A report replaces message and error together, even at the same severity. Expiry uses a monotonic deadline and bounded timer chunks; each callback owns its map entry and registry timestamp, so an old timer cannot clear a newer report. Invalid durations remain persistent. Unrestricted worker exceptions, corrupt-record and transaction-timeout diagnostics stay in the ordinary log: their status producers report only the problem key, excluding raw bytes, decoder messages that can contain decoded data, request targets that can contain private paths or query values, and exception messages produced by arbitrary application code. The operations-handler tests verify this privacy boundary and that the diagnostic log remains available.
+The log bridge redacts complete URL credentials before its 500-character summary cap. Summaries never coerce objects or invoke Proxy traps, and native errors from other VM contexts retain their public error class. A report replaces message and error together, even at the same severity. Expiry uses a monotonic deadline and bounded timer chunks; each callback owns its map entry and registry timestamp, so an old timer cannot clear a newer report. Invalid durations remain persistent. Unrestricted worker exceptions, corrupt-record and transaction-timeout diagnostics stay in the ordinary log: their status producers report only the problem key, excluding raw bytes, decoder messages that can contain decoded data, request targets that can contain private paths or query values, and exception messages produced by arbitrary application code. The operations-handler tests verify this privacy boundary and that the diagnostic log remains available. `STATUS_PRIORITY` (`status/types.ts`) is the one severity order (error > warning > loading > unknown > healthy) for `get_status` and `get_components`; `status/hierarchy.ts` ranks the same levels in its own numeric map, so keep the two identical. The loader marks a component loaded only while its status is still `loading` or unset (`markLoadedUnlessReported`), so a warning/unknown/error a plugin reported survives; `lifecycle.loaded()` stays unconditional.
 
 ## A deploy builds off to the side, is certified, and only then goes live
 
@@ -761,18 +761,18 @@ restarts the pool. A named restart reconciles only that application's dedicated 
 
 A whole-component drop runs on the main thread under the component's lock (`dropApplication` in
 `operations.js`); a worker that receives one, as a replicated peer does, hands it over and waits, holding no lock,
-for its own node's drop and its peers' (`startBy` is the deadline after which main refuses to begin it). A component
-that has no directory and no root-config entry is not on this node: nothing is removed and nothing restarts, whatever
-`restart` says, but a dedicated worker a failed earlier drop left running is still stopped. An isolated application's
-worker is stopped with or without `restart`, through the narrowed reconcile, which shuts its slot down and removes its
-mirrors, once the peers have answered; the pool restarts only when asked and only when it may hold the application.
+for its own node's drop and its peers' (`startBy` is the deadline past which main will not begin it). A component
+with no directory or root-config entry is not on this node: nothing is removed or restarted, whatever
+`restart` says, but a dedicated worker a failed earlier drop left is still stopped. An isolated application's
+worker is stopped whatever `restart` says, via the narrowed reconcile (slot shut down, mirrors removed),
+once the peers have answered; the pool restarts only when asked and it may hold the application.
 Branched databases go last, once nothing holds them, unless `keepBranches` keeps them (refused with `restart: true`: an
 earlier peer ignores it and its restart removes them), or while the pool may hold them. Each node answers `{ node,
 componentRemoved, workerStopped, branchesRemoved }`; `replicated` (`dropPeerResults`) has its peers', `null` where one
 did not say, `error` where one failed. A worker the coming stop or restart replaces is answered first, `null` for what is
-not done (harper#3091), so the owed removal is a durable `` `removal-pending` `` file beside the branches, written before
-the drop changes anything, cleared only by a completed removal or a `keepBranches` drop. Main retries each under its lock
-and marker recheck after every drop, after a start's pool reports, and on capped backoff; redeployed or held ones wait.
+not done (harper#3091), so the owed removal is a durable `` `removal-pending` `` file beside the branches (or its crash-left temp file), written before
+the drop changes anything, cleared only by a completed removal or a `keepBranches` drop. A declared or possibly held application gets one with no fork yet (harper#3758). Main retries each under its lock
+and marker recheck after every drop, after a start's pool reports, when a worker exits or reports its load, and on capped backoff. A redeployed one waits for a drop, a held one (or an unreadable root config) a pass, one main serves as the only worker a start.
 
 ## A rolling restart job completes only if every peer restarted (`bin/restart.ts` `restartEachPeer`)
 

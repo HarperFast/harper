@@ -20,9 +20,15 @@ import { startHealthChecks } from '../../components/status/healthChecks.ts';
 import { startTransactionLogCooling } from '../transactionLogCooling.ts';
 import { applyConfiguredV8Flags } from './v8Flags.ts';
 import { startLongLivedTransactionReporting } from '../../resources/longLivedTransactions.ts';
-import { getFullTextRuntimeConfiguration } from '../../resources/indexes/fullTextRuntimeConfiguration.ts';
-import { setActiveWorkerPools } from './workerPools.ts';
-import * as env from '../../utility/environment/environmentManager.ts';
+import { initializeFullTextQueryPolicy } from '../../resources/indexes/fullTextNativeBinding.ts';
+import {
+	effectiveHttpThreadCount,
+	isWorkerPoolActive,
+	replicationPortRefusal,
+	replicationThreadCount,
+	setActiveWorkerPools,
+	workerPoolDecision,
+} from './workerPools.ts';
 import { isMainThread } from 'node:worker_threads';
 import { join } from 'node:path';
 
@@ -52,7 +58,7 @@ if (isMainThread) {
 }
 
 export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean) {
-	if (isMainThread) getFullTextRuntimeConfiguration();
+	if (isMainThread) await initializeFullTextQueryPolicy();
 	applyConfiguredV8Flags();
 	const workerSlots = [];
 	if (isProcessShuttingDown()) return [];
@@ -113,7 +119,8 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 			threadCount = effectiveHttpThreadCount(threadCount);
 			if (!dedicatedPoolsStarted) {
 				dedicatedPools = admittedWorkerPools(threadCount);
-				setActiveWorkerPools(dedicatedPools.map((pool) => pool.type));
+				const types = dedicatedPools.map((pool) => pool.type);
+				setActiveWorkerPools(types, replicationThreadCount(threadCount).explicit ? [] : types);
 			}
 			await loadRootComponents();
 			if (isProcessShuttingDown()) return [];
@@ -129,11 +136,27 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 		const isolated = admitIsolatedWorkers([...isolatedSlots.keys()], failedClosed);
 		if (dedicatedPools.length > 0) dedicatedWorkerCount = 0;
 		for (const pool of dedicatedPools) dedicatedWorkerCount += pool.count;
-		const heapShareCount = threadCount + dedicatedWorkerCount + isolated.length;
+		let heapShareCount = threadCount + dedicatedWorkerCount + isolated.length;
+		const httpSlots = [];
 		for (let i = 0; i < threadCount; i++) {
 			const slot = startWorkerSlot(i, threadCount, undefined, heapShareCount);
+			httpSlots.push(slot);
 			workerSlots.push(slot);
 			poolSlots.push(slot);
+		}
+		const poolDecision = workerPoolDecision();
+		if (poolDecision) {
+			// A worker becomes ready only once admitted, which waits on the decision; so this ends either way.
+			await Promise.race([poolDecision, Promise.all(httpSlots.map((slot) => slot.ready))]);
+			if (isProcessShuttingDown()) return [];
+			const declined = dedicatedPools.filter((pool) => !isWorkerPoolActive(pool.type));
+			if (declined.length > 0) {
+				dedicatedPools = dedicatedPools.filter((pool) => isWorkerPoolActive(pool.type));
+				for (const pool of declined) dedicatedWorkerCount -= pool.count;
+				heapShareCount = threadCount + dedicatedWorkerCount + isolated.length;
+				for (const slot of httpSlots) slot.setHeapShareCount(heapShareCount);
+			}
+			dedicatedPoolsStarted = true; // decided once per process, admitted or not
 		}
 		// Dedicated pools are numbered past the HTTP pool for the same reason isolated workers are.
 		for (const pool of dedicatedPools) {
@@ -304,27 +327,7 @@ if (isMainThread) {
 	setRunningIsolatedApplicationsGetter(() => [...isolatedSlots.keys()]);
 }
 
-export function effectiveHttpThreadCount(threadCount: number, platform: NodeJS.Platform = process.platform): number {
-	return platform === 'win32' && threadCount > 0 ? 1 : threadCount;
-}
-
-export function replicationThreadCount(httpThreadCount: number): { count: number; explicit: boolean } {
-	const configured = env.get(hdbTerms.CONFIG_PARAMS.REPLICATION_THREADS);
-	if (configured === undefined || configured === null || configured === '') {
-		return {
-			count: Number.isFinite(httpThreadCount) && httpThreadCount >= 2 ? Math.floor(httpThreadCount / 2) : 0,
-			explicit: false,
-		};
-	}
-	return { count: Number(configured), explicit: true };
-}
-
-function portNumberOf(port: unknown): number | undefined {
-	if (port == null || port === '') return undefined;
-	const text = String(port);
-	const number = Number(text.slice(text.lastIndexOf(':') + 1));
-	return Number.isInteger(number) && number > 0 ? number : undefined;
-}
+export { effectiveHttpThreadCount, replicationThreadCount };
 
 /**
  * The dedicated pools to start, refusing an explicit configuration the pool cannot serve and
@@ -338,31 +341,11 @@ export function admittedWorkerPools(httpThreadCount: number): { type: string; co
 	if (!Number.isInteger(count) || count < 0)
 		throw new Error(`replication.threads must be a non-negative integer, got ${count}`);
 	if (count === 0) return [];
-	const replicationPorts = [
-		portNumberOf(env.get(hdbTerms.CONFIG_PARAMS.REPLICATION_PORT)),
-		portNumberOf(env.get(hdbTerms.CONFIG_PARAMS.REPLICATION_SECUREPORT)),
-	].filter((port) => port !== undefined);
-	if (replicationPorts.length === 0) {
-		const reason =
-			'replication.threads requires replication.port or replication.securePort: without a dedicated replication port, replication shares the operations API port, which only the main thread binds';
-		if (explicit) throw new Error(reason);
-		harperLogger.warn(`${reason}; falling back to replication.threads: 0`);
+	const refusal = replicationPortRefusal();
+	if (refusal) {
+		if (explicit) throw new Error(refusal);
+		harperLogger.warn(`${refusal}; falling back to replication.threads: 0`);
 		return [];
-	}
-	const sharedPorts = [
-		['http.port', hdbTerms.CONFIG_PARAMS.HTTP_PORT],
-		['http.securePort', hdbTerms.CONFIG_PARAMS.HTTP_SECUREPORT],
-		['operationsApi.network.port', hdbTerms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT],
-		['operationsApi.network.securePort', hdbTerms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT],
-	];
-	for (const [label, param] of sharedPorts) {
-		const port = portNumberOf(env.get(param));
-		if (port !== undefined && replicationPorts.includes(port)) {
-			const reason = `replication.threads requires a replication port of its own, but port ${port} is also ${label}`;
-			if (explicit) throw new Error(reason);
-			harperLogger.warn(`${reason}; falling back to replication.threads: 0`);
-			return [];
-		}
 	}
 	if (count > 1 && (process.platform === 'darwin' || process.platform === 'win32'))
 		harperLogger.warn(
