@@ -65,6 +65,10 @@ Response:
 }
 ```
 
+Every `SET` expression reads the row as it was before the `UPDATE`, so `SET a = b, b = a` swaps two columns and `SET qty = qty + 5, total = qty * 2` computes `total` from the old `qty`. <VersionBadge type="changed" version="v5.4.0" /> A column assigned more than once takes every assignment in order, each reading the value the one before it produced: `SET qty = qty + 2, qty = qty + 3` adds 5, and `SET qty = 20, qty = qty + 5` sets 25. On the legacy engine only the last assignment counts.
+
+`SET col = col + N` (or `col - N`) on a column that holds a number or a `BigInt` is applied as an atomic increment, so concurrent updates of the same row do not lose increments. On a value that is neither, the column gets the expression's result, as any other `SET` would: `NULL + 5` is `NULL`.
+
 ### Delete
 
 ```json
@@ -119,7 +123,7 @@ On the new engine, comparisons and arithmetic operators do not read an empty or 
 
 - It is not equal to any number: `qty = 0` and `qty IN (0)` do not match it, and `qty <> 0` and `qty NOT IN (0)` do. Before v5.4.0, the new engine read it as `0`.
 - In `<`, `<=`, `>`, `>=` and `BETWEEN` against a number, a string that is not a number sorts after every number, as indexes and REST conditions order it, whether or not the column is indexed: `qty > 0` matches `''` and `'x'`, and `qty <= 0` matches neither.
-- Arithmetic on it is `NaN`, as it is for any other string that is not a number, so `SET total = qty * 2` stores `NaN` for `qty = ''` (returned as `null` in JSON). Functions such as `ABS` and `ROUND`, and aggregates such as `SUM` and `AVG`, still read it as `0`.
+- Arithmetic on it is `NaN`, as it is for any other string that is not a number, so `SET total = qty * 2` and `SET qty = qty + 1` store `NaN` for `qty = ''` (returned as `null` in JSON). Functions such as `ABS` and `ROUND`, and aggregates such as `SUM` and `AVG`, still read it as `0`.
 
 `NaN` has no order: on a column without an index, `<`, `<=`, `>`, `>=`, `BETWEEN` and `NOT BETWEEN` with a `NaN` value are `NULL` and match no row. An index sorts a stored `NaN` above every number, so a range the index answers, such as `score > 0` on an indexed `score`, still matches it. A `NaN` join key matches nothing. With a `NULL` bound, `NOT BETWEEN` now matches a value the other bound already excludes (`5 NOT BETWEEN NULL AND 1`), as `NOT (v >= NULL AND v <= 1)` does.
 
@@ -205,6 +209,7 @@ For queries the new engine plans (the default under `auto`), `LIKE` is case-sens
 - **`OFFSET` past the end of a result returns no rows.** The legacy engine could still return rows when the `OFFSET` exceeded the number of matches.
 - **`LIKE` is case-sensitive, and `[...]` in a pattern is literal text.** The legacy engine matches case-insensitively and reads `[...]` as a character class. Under `auto`, adding or removing an index, or changing the other conditions in a statement, can move it between engines, which changes the rows a `LIKE` matches, including the rows an `UPDATE` or `DELETE` changes. See [LIKE Pattern Matching](#like-pattern-matching).
 - **A blank string is not a number.** On the legacy engine, `qty <> 0` and `qty > 0` exclude `''` and whitespace-only strings. The new engine orders them after every number, as it does any string that is not a number, so both match them; see [Falsy, Blank and NaN Values](#falsy-blank-and-nan-values).
+- **A column assigned more than once in an `UPDATE` takes every assignment**, in order: `SET qty = qty + 2, qty = qty + 3` adds 5. The legacy engine kept only the last assignment, so under `auto` an `UPDATE` that falls back (no `WHERE`, or no index-driving condition) still does. See [Update](#update).
 - **A `NULL`-valued expression result is returned as an explicit `null`** rather than omitted from the row. A computed column or `COALESCE` that evaluates to `NULL` — or `UPPER(<null>)` — now yields `null` (the legacy engine dropped the key, and `UPPER` of a `NULL` returned the literal string `"NULL"`).
 
 These differences apply whenever the new engine serves the query — not on fallbacks. If your application depended on the legacy behavior, adjust your queries accordingly. For how `WHERE` compares `NULL` and omitted values, including the v5.4.0 change to ranges compared with `NULL`, see [NULL and Omitted Values](#null-and-omitted-values).

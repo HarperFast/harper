@@ -740,6 +740,8 @@ export const CONFIG_PARAMS = {
 	REPLICATION_SECUREPORT: 'replication_securePort',
 	REPLICATION_THREADS: 'replication_threads',
 	REPLICATION_ROUTES: 'replication_routes',
+	REPLICATION_NETWORK: 'replication_network',
+	REPLICATION_PRIVATEURLS: 'replication_privateUrls',
 	REPLICATION_DATABASES: 'replication_databases',
 	REPLICATION_ENABLEROOTCAS: 'replication_enableRootCAs',
 	REPLICATION_MTLS_CERTIFICATEVERIFICATION: 'replication_mtls_certificateVerification',

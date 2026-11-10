@@ -49,6 +49,13 @@ const BINARY_TO_COMPARATOR: Record<string, string> = {
 	'>=': 'ge',
 };
 
+const REVERSED_COMPARATOR: Record<string, string> = {
+	lt: 'gt',
+	le: 'ge',
+	gt: 'lt',
+	ge: 'le',
+};
+
 export type IndexedAttribute = { name: string; indexed: boolean; isPrimaryKey?: boolean; indexNulls?: boolean };
 
 // Single-sided range comparators, split by which bound they set, and the fused
@@ -320,10 +327,11 @@ function fuseRangeBounds(conditions: ConditionNode[], attributes?: IndexedAttrib
 function leafToCondition(expr: ExprNode): ConditionNode | undefined {
 	switch (expr.kind) {
 		case 'binop': {
-			const comparator = BINARY_TO_COMPARATOR[expr.op];
-			if (!comparator) return undefined;
+			const baseComparator = BINARY_TO_COMPARATOR[expr.op];
+			if (!baseComparator) return undefined;
 			const colLit = pickColumnAndLiteral(expr.left, expr.right);
 			if (!colLit) return undefined;
+			const comparator = colLit.reversed ? (REVERSED_COMPARATOR[baseComparator] ?? baseComparator) : baseComparator;
 			// a range against NULL is UNKNOWN for every row, where a pushed null bound would open the range; the
 			// residual's three-valued logic answers it (a NULL literal normalizes to `undefined`)
 			if (colLit.value == null && comparator !== 'equals' && comparator !== 'ne') return undefined;
@@ -434,9 +442,12 @@ function leafToCondition(expr: ExprNode): ConditionNode | undefined {
 	}
 }
 
-function pickColumnAndLiteral(a: ExprNode, b: ExprNode): { column: string; value: unknown } | undefined {
-	if (a.kind === 'column' && b.kind === 'literal') return { column: a.name, value: b.value };
-	if (b.kind === 'column' && a.kind === 'literal') return { column: b.name, value: a.value };
+function pickColumnAndLiteral(
+	a: ExprNode,
+	b: ExprNode
+): { column: string; value: unknown; reversed: boolean } | undefined {
+	if (a.kind === 'column' && b.kind === 'literal') return { column: a.name, value: b.value, reversed: false };
+	if (b.kind === 'column' && a.kind === 'literal') return { column: b.name, value: a.value, reversed: true };
 	return undefined;
 }
 

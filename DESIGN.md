@@ -10,7 +10,7 @@ A note lives in the `DESIGN.md` of the directory that owns the code it describes
 
 ## sqlEngine/ — SQL engine v2
 
-- [LIKE](sqlEngine/DESIGN.md#like) — One tokenizer, linear matcher. · [Predicates and mixed values](sqlEngine/DESIGN.md#predicates-and-mixed-values) — One truthiness rule; no order is NULL; non-numeric strings sort after numbers, as the index does.
+- [LIKE](sqlEngine/DESIGN.md#like) — One tokenizer, linear matcher. · [UPDATE SET](sqlEngine/DESIGN.md#update-set) — Evaluated value first; `Addition` only where it agrees, or on a bigint. · [Predicates and mixed values](sqlEngine/DESIGN.md#predicates-and-mixed-values) — One truthiness rule; no order is NULL; non-numeric strings sort after numbers, as the index does.
 
 ## .github/ — CI workflows
 
@@ -57,7 +57,7 @@ A note lives in the `DESIGN.md` of the directory that owns the code it describes
 
 ## resources/audit-retention.md — audit retention and cleanup
 
-- [Audit retention floor](resources/audit-retention.md#audit-retention-floor) · [Per-log purge bounds](resources/audit-retention.md#per-log-purge-bounds) — What pruning removed, per database (`Table.commit` skips walks under it) and per log.
+- [Audit retention floor](resources/audit-retention.md#audit-retention-floor) · [Per-log purge bounds](resources/audit-retention.md#per-log-purge-bounds) — What pruning removed, per database (`Table.commit` skips walks under it; an unwalkable re-delivery is looked up above it) and per log.
 - [Audit retention cleanup is a self-rearming, engine-independent lifecycle](resources/audit-retention.md#audit-retention-cleanup-is-a-self-rearming-engine-independent-lifecycle) — One `scheduleAuditCleanup` call re-arms until the root store closes; engines differ in per-pass work, not lifecycle.
 - [Audit-entry removal loops must track every `removeAuditEntry()`/`removeEntry()` promise](resources/audit-retention.md#audit-entry-removal-loops-must-track-every-removeauditentryremoveentry-promise) — Attach each removal promise's rejection handler immediately.
 

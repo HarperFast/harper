@@ -12,7 +12,7 @@ An empty or whitespace-only string is no longer read as `0`: `qty = 0` and `qty 
 
 - `qty <> 0` and `qty NOT IN (0)` now match blank strings, as they already did on an indexed column. On an unindexed column, an `UPDATE` or `DELETE` with them now also changes those rows.
 - Against a number, a string that is not a number (blank or not) sorts after every number on an unindexed column too, as indexes and REST conditions already order it. `qty > 0` and `qty >= 5` now match blank strings, and `qty <= 0` and `qty BETWEEN 0 AND 1` no longer do.
-- Arithmetic on a blank string is `NaN`, so `UPDATE t SET total = qty * 2` stores `NaN` where `qty` is `''`. Before, it stored `0`.
+- Arithmetic on a blank string is `NaN`, so `UPDATE t SET total = qty * 2` stores `NaN` where `qty` is `''`, as does `SET qty = qty + 1`. Before, they stored `0` and `1`.
 - A comparison with `NaN` on a column without an index is now `NULL`. Before, it was false against a number and compared as text against a quoted number, so `v > '0'` matched a `NaN` value. Neither that nor `v NOT BETWEEN 0 AND 1` matches it now, and `NOT (v < 1)` in a select list returns `null` for one.
 - A bare `WHERE v` no longer selects a `0n` BigInt.
 - Equal infinities are now equal in ordering comparisons: on a column without an index, `Infinity <= Infinity` and `v BETWEEN 0 AND v` are true for an `Infinity` value, where they were false.
