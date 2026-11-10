@@ -749,13 +749,14 @@ function firstLookup(user: User, name: unknown = user?.username): UserProvenance
 /**
  * A copy whose `role` and `permission` the caller may replace (verifyPerms does) without touching `user`;
  * `isCurrentUser` checks it against `provenance`, what `trackUserRecords` returned for this lookup, or else
- * against the records `user` was built from.
+ * against the records `user` was built from. `certificate` marks the copy as `certificatePrincipal` does.
  */
-function cloneUserView(user: User, provenance?: UserProvenance): User {
+function cloneUserView(user: User, provenance?: UserProvenance, certificate = false): User {
 	const clone: User = { ...user };
 	if (user.role) clone.role = { ...user.role, permission: { ...user.role.permission } };
 	provenance ??= (clone as any)[PROVENANCE] ?? firstLookup(user);
 	if (provenance) (clone as any)[PROVENANCE] = provenance;
+	if (certificate) (clone as any)[CERTIFICATE_PRINCIPAL] = true;
 	return clone;
 }
 

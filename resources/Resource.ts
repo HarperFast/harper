@@ -1181,7 +1181,6 @@ function registerLiveSubscriptionForContext(
 	// no subscription, or one already closed (a refused resume): nothing will be delivered to revoke
 	if (!subscription || typeof subscription !== 'object' || subscription.closed) return subscription;
 	const {
-		certificatePrincipal,
 		cloneUserView,
 		hasRecordProvenance,
 		isCertificatePrincipal,
@@ -1240,10 +1239,9 @@ function registerLiveSubscriptionForContext(
 				// Advance the subscription's context to the fresh user so downstream checks — context.user
 				// and getCurrentUser() (which reads the resource's context) — evaluate against current state,
 				// not the stale user captured at subscribe time. Each context gets its own view, which its
-				// code may modify.
-				viewer = cloneUserView(fresh);
-				// a later subscription on this context is admitted by the same certificate
-				if (certificate) viewer = certificatePrincipal(viewer);
+				// code may modify; a certificate principal's stays marked, so a later subscription on this
+				// context is admitted by the same certificate.
+				viewer = cloneUserView(fresh, undefined, certificate);
 				if (context) (context as any).user = viewer;
 			}
 			// Re-run the same operation-level allowRead that granted the subscription. A shared decision evaluates
