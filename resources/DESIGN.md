@@ -75,9 +75,7 @@ The synthesized target keeps the collection flag, or the batch is one null-keyed
 
 ## Historical record reconstruction (`getRecordAtTime`)
 
-`getRecordAtTime` (`crdt.ts`) undoes only patches. Past a newer put, delete or invalidate it rebuilds forward (`reconstructForward`): carrying an image back returns a future state. A reversed field survives only when the reversal is exact. An unlinked put ends the chain without implying an empty past (`crdt.test.js`). A non-key cutoff searches back to the newest retained state change (`reconstructAtTimestamp`).
-
-`getHistoryOfRecord` scans retained entries when the primary row is absent. A live row scans below an unlinked origin only when its table can evict or the row has an expiry; a non-expiring reinsertion on a non-evicting table keeps the known history gap. The generic filter also excludes reload and lock-control entries (`auditLog.test.js`).
+`getRecordAtTime` reverses patches, then rebuilds replacements; exact reversals survive. Unlinked is not absent. Frames fold one origin, then follow the first entry's predecessor. `getHistoryOfRecord` scans absent rows and evictable unlinked lives; non-expiring reinserts on non-evicting tables retain the gap (`auditLog.test.js`).
 
 ## Path routing & parameterised routes
 

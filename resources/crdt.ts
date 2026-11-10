@@ -197,9 +197,9 @@ export function applyForward(record, update, skipUnseededOps = false) {
  * (missing/evicted `currentEntry`, a reverse walk that crosses a `put` or `delete`, or a post-eviction
  * re-insert with a broken `previousVersion` chain) and when filling `unknowns` on a live record.
  *
- * `fromPosition` is the starting audit position, carrying its `entry` when the caller already read
- * it; the walk follows the previous links from there. Entries newer than `timestamp` are skipped (the
- * cutoff may fall between entries). Returns `null`
+ * `fromPosition` is the starting audit position, carrying its decoded frame when available.
+ * The walk follows previous links from there and skips entries newer than `timestamp`
+ * (the cutoff may fall between entries). Returns `null`
  * if the record did not exist at `timestamp` (the nearest in-range history boundary is a delete
  * with no surviving writes, or there is no in-range history). When a prior link leads to a pruned
  * entry, returns `undefined` without `partial` (history is incomplete for a whole-record caller);
@@ -222,45 +222,53 @@ function reconstructForward(
 	// whole-record caller and end a partial one's history.
 	const entries = [];
 	let truncated = false;
-	let { txnLogKey: auditTime, nodeId: auditNodeId, entry: auditEntry } = fromPosition;
-	while (auditTime > 0) {
-		auditEntry ??= auditStore.get(auditTime, tableId, recordId, auditNodeId, true);
-		if (!auditEntry) {
+	let { txnLogKey: auditTime, nodeId: auditNodeId, frame } = fromPosition;
+	const visitedFrames = new Set<string>();
+	frames: while (auditTime > 0) {
+		frame ??= readAuditFrame(auditStore, tableId, recordId, auditTime, auditNodeId, true);
+		const identity = `${frame[0]?.nodeId ?? auditNodeId ?? 0}:${auditTime}`;
+		if (frame.length === 0 || visitedFrames.has(identity)) {
 			if (partial) {
 				truncated = true;
 				break;
 			}
 			return entries.length === 0 ? null : undefined;
 		}
-		// a corrupt entry reads with no type and no previous link, which must not pass for the start of history
-		if (partial && auditEntry.type === undefined) {
-			truncated = true;
-			break;
-		}
-		if (auditEntry.type === 'delete') {
-			// A delete at or before `timestamp` bounds the history; the record is rebuilt from the
-			// writes collected after it (an empty base). A delete newer than `timestamp` (a later
-			// delete/re-insert cycle) is irrelevant and skipped, like any other newer entry.
-			if (auditTime <= timestamp) break;
-		} else if (auditTime <= timestamp) {
-			if (auditEntry.type === 'put') {
-				entries.push(auditEntry);
-				break; // full snapshot reached; nothing older is needed
-			} else if (auditEntry.type === 'patch') {
-				entries.push(auditEntry);
-			} else if (partial && auditEntry.type === 'invalidate') {
-				// an invalidate replaced the record with a stub (projection and indexed fields): older writes
-				// no longer describe it, and a field the stub lacks is unknown, not absent
-				partial.truncated = truncated = true;
-				break;
+		visitedFrames.add(identity);
+		for (let index = frame.length - 1; index >= 0; index--) {
+			const auditEntry = frame[index];
+			// a corrupt entry reads with no type and no previous link, which must not pass for the start of history
+			if (partial && auditEntry.type === undefined) {
+				truncated = true;
+				break frames;
 			}
+			if (auditEntry.type === 'delete') {
+				// A delete at or before `timestamp` bounds the history; the record is rebuilt from the
+				// writes collected after it (an empty base). A delete newer than `timestamp` (a later
+				// delete/re-insert cycle) is irrelevant and skipped, like any other newer entry.
+				if (auditTime <= timestamp) break frames;
+			} else if (auditTime <= timestamp) {
+				if (auditEntry.type === 'put') {
+					entries.push(auditEntry);
+					break frames; // full snapshot reached; nothing older is needed
+				} else if (auditEntry.type === 'patch') {
+					entries.push(auditEntry);
+				} else if (partial && auditEntry.type === 'invalidate') {
+					// an invalidate replaced the record with a stub (projection and indexed fields): older writes
+					// no longer describe it, and a field the stub lacks is unknown, not absent
+					partial.truncated = truncated = true;
+					break frames;
+				}
+			}
+			const previousPosition = previousAuditPosition(auditStore, tableId, recordId, auditEntry);
+			if (partial && mergesBranchBy(auditEntry.previousAdditionalAuditRefs, previousPosition, timestamp))
+				partial.truncated = true;
 		}
-		const previousPosition = previousAuditPosition(auditStore, tableId, recordId, auditEntry);
-		if (partial && mergesBranchBy(auditEntry.previousAdditionalAuditRefs, previousPosition, timestamp))
-			partial.truncated = true;
+		// Later mutations link back to this frame; only its first entry leads out.
+		const previousPosition = previousAuditPosition(auditStore, tableId, recordId, frame[0]);
 		auditTime = previousPosition.txnLogKey;
 		auditNodeId = previousPosition.nodeId;
-		auditEntry = undefined;
+		frame = undefined;
 	}
 	if (partial && truncated) partial.truncated = true;
 	if (entries.length === 0) return null; // record did not exist at `timestamp`
@@ -288,15 +296,42 @@ function reconstructForward(
 	return record;
 }
 
+function readAuditFrame(
+	auditStore,
+	tableId: number,
+	recordId: any,
+	key: number,
+	nodeId,
+	followingCommittedRef = false
+) {
+	const first = auditStore.get(key, tableId, recordId, nodeId, followingCommittedRef);
+	const matchesFirst = first?.tableId === tableId && compareKeys(first.recordId, recordId) === 0;
+	let origin = nodeId ?? (matchesFirst ? (first.nodeId ?? 0) : undefined);
+	if (matchesFirst && first.endTxn && (first.nodeId ?? 0) === origin) return [first];
+	const entries = [];
+	for (const entry of auditStore.getRange({
+		start: key,
+		end: Infinity,
+		exactStart: true,
+		log: origin,
+		readUncommitted: followingCommittedRef,
+	})) {
+		if (entry.txnLogKey !== key) break;
+		if (entry.tableId !== tableId || compareKeys(entry.recordId, recordId) !== 0) continue;
+		origin ??= entry.nodeId ?? 0;
+		if ((entry.nodeId ?? 0) === origin) entries.push(entry);
+	}
+	return entries;
+}
+
 function reconstructAtTimestamp(auditStore, store, tableId: number, recordId: any, timestamp, nodeId) {
 	const isOfRecord = (auditEntry) => auditEntry.tableId === tableId && compareKeys(auditEntry.recordId, recordId) === 0;
-	let start = auditStore.get(timestamp, tableId, recordId, nodeId);
-	// LMDB's get ignores the table and record arguments; an unlinked control entry, such as an eviction
-	// marker, reaches no state
+	let frame = readAuditFrame(auditStore, tableId, recordId, timestamp, nodeId);
+	let start = frame.at(-1);
+	// An unlinked control entry has no record image to reconstruct.
 	if (!(start && isOfRecord(start) && (STATE_TYPES.has(start.type) || start.previousVersion))) {
 		start = undefined;
-		// The log is keyed by time alone, so search back in windows that double, the first holding only
-		// `timestamp` itself (RocksDB's exact lookup misses a compound id).
+		// The log has no record-id index; disjoint windows avoid rereading entries during the backward search.
 		let windowEnd = timestamp + 0.001;
 		let windowStart = Number.isFinite(timestamp) ? timestamp : 1;
 		for (let width = 100; !start && windowEnd > 1; windowStart -= width, width *= 2) {
@@ -306,20 +341,26 @@ function reconstructAtTimestamp(auditStore, store, tableId: number, recordId: an
 					STATE_TYPES.has(auditEntry.type) &&
 					isOfRecord(auditEntry) &&
 					// two origins can write at one key; keep the requested origin's entry
-					!(nodeId != null && start?.txnLogKey === auditEntry.txnLogKey && (start.nodeId ?? 0) === nodeId)
+					!(
+						nodeId != null &&
+						start?.txnLogKey === auditEntry.txnLogKey &&
+						(start.nodeId ?? 0) === nodeId &&
+						(auditEntry.nodeId ?? 0) !== nodeId
+					)
 				)
 					start = auditEntry;
 			}
 			windowEnd = windowStart;
 		}
 		if (!start) return null;
+		frame = readAuditFrame(auditStore, tableId, recordId, start.txnLogKey, start.nodeId);
 	}
 	return reconstructForward(
 		auditStore,
 		store,
 		tableId,
 		recordId,
-		{ txnLogKey: start.txnLogKey ?? timestamp, nodeId: start.nodeId, entry: start },
+		{ txnLogKey: start.txnLogKey ?? timestamp, nodeId: start.nodeId, frame },
 		timestamp
 	);
 }
@@ -398,26 +439,33 @@ export function getRecordAtTime(currentEntry, timestamp, store, tableId: number,
 	const reversedAdds = new Set<string>();
 	const overwritten = new Set<string>();
 	let replaced = false;
+	const visitedFrames = new Set<string>();
 	while (auditTime > timestamp) {
-		const auditEntry = auditStore.get(auditTime, tableId, recordId, auditNodeId, true);
-		if (!auditEntry) break;
-		switch (auditEntry.type) {
-			case 'put':
-			case 'delete':
-			case 'invalidate': // the newer stub lacks unindexed fields, so it cannot be reversed from
-				replaced = true;
-				break;
-			case 'patch':
-				if (!replaced) {
-					const update = auditEntry.getValue(store);
-					// a patch with no readable body cannot be reversed, but the state before it does not need it
-					if (update == null) replaced = true;
-					else applyReverse(record, update, unknowns, reversedAdds, overwritten);
-				}
-				break;
+		const frame = readAuditFrame(auditStore, tableId, recordId, auditTime, auditNodeId, true);
+		const identity = `${frame[0]?.nodeId ?? auditNodeId ?? 0}:${auditTime}`;
+		if (frame.length === 0 || visitedFrames.has(identity)) break;
+		visitedFrames.add(identity);
+		for (let index = frame.length - 1; index >= 0; index--) {
+			const auditEntry = frame[index];
+			switch (auditEntry.type) {
+				case 'put':
+				case 'delete':
+				case 'invalidate': // the newer stub lacks unindexed fields, so it cannot be reversed from
+					replaced = true;
+					break;
+				case 'patch':
+					if (!replaced) {
+						const update = auditEntry.getValue(store);
+						// a patch with no readable body cannot be reversed, but the state before it does not need it
+						if (update == null) replaced = true;
+						else applyReverse(record, update, unknowns, reversedAdds, overwritten);
+					}
+					break;
+			}
+			const previousPosition = previousAuditPosition(auditStore, tableId, recordId, auditEntry);
+			branched ||= mergesBranchBy(auditEntry.previousAdditionalAuditRefs, previousPosition, timestamp);
 		}
-		const previousPosition = previousAuditPosition(auditStore, tableId, recordId, auditEntry);
-		branched ||= mergesBranchBy(auditEntry.previousAdditionalAuditRefs, previousPosition, timestamp);
+		const previousPosition = previousAuditPosition(auditStore, tableId, recordId, frame[0]);
 		auditTime = previousPosition.txnLogKey;
 		auditNodeId = previousPosition.nodeId;
 	}

@@ -2954,6 +2954,84 @@ describe('history after record eviction (issue #3164)', () => {
 			assert.deepStrictEqual(recordAt('rec-1', reinsertTime), refetched);
 		});
 
+		for (const scenario of [
+			'put-patch',
+			'put-two-patches',
+			'patch-frame',
+			'message-first',
+			'message-middle',
+			'later-link',
+			'later-put',
+		]) {
+			it(`reconstructs ${scenario} history through a complete transaction frame`, async function () {
+				if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
+				if (scenario === 'patch-frame' || scenario === 'message-first') await HistoryTable.put(initial);
+				await transaction(async () => {
+					if (scenario !== 'patch-frame' && scenario !== 'message-first') await HistoryTable.put(initial);
+					if (scenario === 'message-first' || scenario === 'message-middle')
+						await HistoryTable.publish('rec-1', { notice: true });
+					await HistoryTable.patch('rec-1', { name: 'patched' });
+					if (scenario === 'put-two-patches' || scenario === 'patch-frame')
+						await HistoryTable.patch('rec-1', { count: 7 });
+				});
+				const frameTime = headOf(HistoryTable, 'rec-1');
+				const entries = [...HistoryTable.auditStore.getRange({ start: frameTime, exactStart: true })].filter(
+					(entry) => entry.tableId === HistoryTable.tableId && entry.recordId === 'rec-1'
+				);
+				assert.strictEqual(entries.length, scenario === 'put-two-patches' || scenario === 'message-middle' ? 3 : 2);
+				assert.ok(entries.every((entry) => entry.txnLogKey === frameTime));
+				assert.strictEqual(entries.at(-1).previousVersion, frameTime);
+				const expected = { ...patched, count: scenario === 'put-two-patches' || scenario === 'patch-frame' ? 7 : 1 };
+				if (scenario === 'later-link') await HistoryTable.patch('rec-1', { count: 8 });
+				if (scenario === 'later-put') await HistoryTable.put(refetched);
+				for (const cutoff of [frameTime, frameTime + 0.001]) {
+					for (const origin of [undefined, 0])
+						assert.deepStrictEqual(
+							getRecordAtTime(
+								HistoryTable.primaryStore.getEntry('rec-1'),
+								cutoff,
+								HistoryTable.primaryStore,
+								HistoryTable.tableId,
+								'rec-1',
+								origin
+							),
+							expected
+						);
+				}
+				await evict(HistoryTable, 'rec-1');
+				for (const cutoff of [frameTime, frameTime + 0.001])
+					for (const origin of [undefined, 0])
+						assert.deepStrictEqual(
+							getRecordAtTime(undefined, cutoff, HistoryTable.primaryStore, HistoryTable.tableId, 'rec-1', origin),
+							expected
+						);
+				const history = await HistoryTable.getHistoryOfRecord('rec-1');
+				const framePatches = history.filter((entry) => entry.localTime === frameTime && entry.type === 'patch');
+				assert.ok(framePatches.length > 0);
+				for (const entry of framePatches) assert.deepStrictEqual(entry.value, expected);
+				if (scenario === 'later-link') assert.deepStrictEqual(history.at(-1).value, { ...expected, count: 8 });
+			});
+		}
+
+		it('reverses every patch in a newer RocksDB frame', async function () {
+			if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
+			await HistoryTable.put(initial);
+			const beforeFrame = headOf(HistoryTable, 'rec-1');
+			await transaction(async () => {
+				await HistoryTable.patch('rec-1', { name: 'patched' });
+				await HistoryTable.patch('rec-1', { count: 7 });
+			});
+			const afterFrame = headOf(HistoryTable, 'rec-1');
+			assert.ok(afterFrame > beforeFrame);
+			const entries = [...HistoryTable.auditStore.getRange({ start: afterFrame, exactStart: true })].filter(
+				(entry) => entry.tableId === HistoryTable.tableId && entry.recordId === 'rec-1'
+			);
+			assert.strictEqual(entries.length, 2);
+			assert.ok(entries.every((entry) => entry.txnLogKey === afterFrame));
+			assert.deepStrictEqual(recordAt('rec-1', beforeFrame), initial);
+			assert.deepStrictEqual(recordAt('rec-1', (beforeFrame + afterFrame) / 2), initial);
+		});
+
 		it('reads an exact audit key without scanning the log', async () => {
 			await HistoryTable.put(initial);
 			const putTime = headOf(HistoryTable, 'rec-1');
