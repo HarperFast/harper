@@ -108,7 +108,7 @@ Harper sizes the block cache and the WriteBufferManager itself, but `storage.roc
 
 rocksdb-js's verification table is one array per process, and once it has been used it rejects every `verificationTableEntries`, its current size included. So `sizeVerificationTable` in `resources/databases.ts` sets it on the main thread's first `openRocksDatabase` and workers never do: main uses its databases before it starts a worker, and a worker's set would throw. It is a `RocksDatabase.config` call of its own because native config skips the settings that follow a rejected one; only that rejection is caught. The size, `resolveVerificationTableEntries`, is two slots per record the startup threads (`plannedTableThreadCount` in `server/threads/workerPools.ts`) can cache, as a power of two, never below rocksdb-js's 131,072 and not grown past 1/64 of memory, because the table is zeroed in full at first use. It is an estimate taken at startup: threads started later are not counted. `storage.recordCacheSize` is one budget per thread because `PrimaryRocksDatabase` owns the thread's `LRFUExpirer`; weak-lru-cache's default expirer takes its size from the first cache the thread builds, lmdb's on an LMDB database. Tests: `unitTests/utility/rocksMemoryConfig.test.js` and `unitTests/resources/recordCacheSizing.test.js`.
 
-## A sealed operation runs exactly as its plaintext would, and dispatch never relays or logs its content (`components/encryptedOperation.ts`, `utility/sealedOperation.ts`)
+## A sealed operation runs exactly as its plaintext would, and this node's dispatch never logs its content (`components/encryptedOperation.ts`, `utility/sealedOperation.ts`)
 
 `encrypted_operation` (`components/encryptedOperation.ts`, [#3288](https://github.com/HarperFast/harper/issues/3288))
 unseals an `enc:v1` envelope through the registered custody, runs the inner operation through the same
@@ -145,6 +145,7 @@ under the client's response key; the wire format and reference client are `utili
   serialization or cursor fails mid-stream, which `streamAsJSON` ends with an error rather than a complete array)
   answers `executed: true`; a 5xx keeps the unknown outcome it has on a direct request
   ([#3343](https://github.com/HarperFast/harper/issues/3343)). `maxSize` bounds what is buffered and sealed, error
-  bodies included; a single value is still serialized whole before it is measured, as on the plaintext path.
+  bodies included; a single value is still serialized whole before it is measured, as on the plaintext path
+  ([#3769](https://github.com/HarperFast/harper/issues/3769)).
 
 Enforced by `unitTests/components/encryptedOperation.test.js` and `integrationTests/security/encrypted-operation.test.ts`.

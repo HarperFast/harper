@@ -2013,7 +2013,7 @@ The envelope is an ordinary [`enc:v1:` envelope](../security/secrets.md#envelope
 }
 ```
 
-The answer is always HTTP 200:
+Once the node has opened the request, the answer is always HTTP 200:
 
 ```json
 { "encrypted_response": { "v": 1, "iv": "<base64>", "ct": "<base64>", "tag": "<base64>" } }
