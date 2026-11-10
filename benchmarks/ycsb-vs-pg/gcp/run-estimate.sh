@@ -32,15 +32,24 @@ WORKLOADS=C,inspect,chain-4
 COMMON="--hosts=/opt/ycsb/hosts.json --targets=$TARGETS --auth=token"
 
 on_gen() { gcloud compute ssh "$YCSB_VM_USER@$RUN_ID-generator" "${P[@]}" --ssh-key-file="$KEY" --command="$1"; }
+# Fails, after three tries, if the results could not be copied: the generator holds the only copy.
 collect() {
 	mkdir -p "$RUN_DIR/results"
-	timeout 600 gcloud compute scp --recurse "${P[@]}" --ssh-key-file="$KEY" \
-		"$YCSB_VM_USER@$RUN_ID-generator:$REMOTE_RESULTS/*" "$YCSB_VM_USER@$RUN_ID-generator:/opt/ycsb/logs" \
-		"$RUN_DIR/results/" || echo "copying results from the generator failed" >&2
+	for try in 1 2 3; do
+		timeout 600 gcloud compute scp --recurse "${P[@]}" --ssh-key-file="$KEY" \
+			"$YCSB_VM_USER@$RUN_ID-generator:$REMOTE_RESULTS/*" "$YCSB_VM_USER@$RUN_ID-generator:/opt/ycsb/logs" \
+			"$RUN_DIR/results/" && return 0
+		echo "copying results from the generator failed (try $try)" >&2
+		sleep 30
+	done
+	return 1
 }
 finish() {
 	status=$?
-	collect
+	if ! collect; then
+		echo "results since the last successful copy are lost: the generator is being deleted (cost guard)" >&2
+		status=1
+	fi
 	"$YCSB_GCP_DIR/teardown.sh" "$RUN_ID" || status=1
 	exit "$status"
 }
@@ -48,35 +57,43 @@ finish() {
 "$YCSB_GCP_DIR/provision.sh" --run-id="$RUN_ID" --topology=ab "${PASS[@]}"
 trap finish EXIT
 
-# A phase runs on the generator as a user service, so a dropped ssh session does not end it; this
-# waits for it and fails with it.
+# A phase runs on the generator as a user service, so a dropped ssh session does not end it. It writes
+# its exit status to a file when it ends, which this polls; the generator unreachable for 15 polls in a
+# row ends the wait. Results are copied every 10 minutes and at the end.
 phase() {
-	local name=$1 command=$2
+	local name=$1 command=$2 status="" unreachable=0 polls=0
 	echo "=== phase $name"
-	on_gen "systemd-run --user --unit=ycsb-$name --property=StandardOutput=file:/opt/ycsb/logs/$name.log \
-		--property=StandardError=file:/opt/ycsb/logs/$name.log --working-directory=$YCSB_VM_REPO \
-		/bin/bash -c $(printf '%q' "$command")"
-	while :; do
+	on_gen "rm -f /opt/ycsb/logs/$name.status; systemd-run --user --unit=ycsb-$name \
+		--property=StandardOutput=file:/opt/ycsb/logs/$name.log --property=StandardError=file:/opt/ycsb/logs/$name.log \
+		--working-directory=$YCSB_VM_REPO /bin/bash -c $(printf '%q' "$command; echo \$? > /opt/ycsb/logs/$name.status")"
+	while [ -z "$status" ]; do
 		sleep 60
-		state=$(on_gen "systemctl --user show -P ActiveState ycsb-$name; tail -n 2 /opt/ycsb/logs/$name.log >&2" || echo unknown)
-		case "$state" in
-		active | activating | reloading | deactivating | unknown) ;;
-		*) break ;;
-		esac
+		polls=$((polls + 1))
+		if out=$(on_gen "tail -n 2 /opt/ycsb/logs/$name.log >&2; cat /opt/ycsb/logs/$name.status 2>/dev/null || true"); then
+			unreachable=0
+			status=$out
+		else
+			unreachable=$((unreachable + 1))
+			[ "$unreachable" -lt 15 ] || {
+				echo "phase $name: the generator has been unreachable for 15 minutes" >&2
+				return 1
+			}
+		fi
+		[ $((polls % 10)) -ne 0 ] || collect || true
 	done
-	result=$(on_gen "systemctl --user show -P Result ycsb-$name")
 	collect
-	[ "$result" = success ] || {
-		echo "phase $name: $result (log in $RUN_DIR/results/logs/$name.log)" >&2
+	[ "$status" = 0 ] || {
+		echo "phase $name exited $status (log in $RUN_DIR/results/logs/$name.log)" >&2
 		return 1
 	}
 }
 
 HARPER_IP=$(jq -r '.roles.harper.address' "$RUN_DIR/hosts.json")
 # The generator's own ceiling over the VPC: a fixed record served from the harper VM's 4 cores.
-gcloud compute ssh "$YCSB_VM_USER@$RUN_ID-harper" "${P[@]}" --ssh-key-file="$KEY" --command="cd $YCSB_VM_REPO && \
-	systemd-run --user --unit=ycsb-ceiling-server node benchmarks/ycsb-vs-pg/client-ceiling.mts --serve=4 --host=$HARPER_IP"
-sleep 10
+gcloud compute ssh "$YCSB_VM_USER@$RUN_ID-harper" "${P[@]}" --ssh-key-file="$KEY" --command="systemd-run --user \
+	--unit=ycsb-ceiling-server --working-directory=$YCSB_VM_REPO \
+	/usr/local/bin/node benchmarks/ycsb-vs-pg/client-ceiling.mts --serve=4 --host=$HARPER_IP"
+on_gen "for i in \$(seq 60); do curl -fsS -o /dev/null http://$HARPER_IP:9941/usertable/x && exit 0; sleep 1; done; exit 1"
 phase ceiling "node benchmarks/ycsb-vs-pg/client-ceiling.mts --base-url=http://$HARPER_IP:9941 --concurrency=64"
 gcloud compute ssh "$YCSB_VM_USER@$RUN_ID-harper" "${P[@]}" --ssh-key-file="$KEY" --command='systemctl --user stop ycsb-ceiling-server'
 

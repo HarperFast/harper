@@ -33,7 +33,6 @@ export type Topology = 'a' | 'b';
 export type Role = 'harper' | 'stack' | 'redis' | 'postgres';
 const ROLES: Role[] = ['harper', 'stack', 'redis', 'postgres'];
 
-/** What every topology b row says about itself. */
 export const B_TOPOLOGY_NOTE =
 	'topology b: Fastify, Redis and Postgres each on its own target-shaped VM (3x the cores of a), same per-component ' +
 	'memory caps; a deployment comparison, not an equal budget, and not the cost of the network hops alone';
@@ -530,16 +529,17 @@ export async function withRemoteTarget<T>(
 		);
 		started.push({ part, ...reply });
 	};
+	// A part whose stop failed stays listed: its agent still owns it and stops it again at shutdown.
 	const stopAll = async () => {
 		let first: unknown;
-		for (const { part, handle } of [...started].sort((a, b) => Number(b.part.front) - Number(a.part.front))) {
+		for (const entry of [...started].sort((a, b) => Number(b.part.front) - Number(a.part.front))) {
 			try {
-				await part.agent.call('stopTarget', { handle }, 30 * MINUTE);
+				await entry.part.agent.call('stopTarget', { handle: entry.handle }, 30 * MINUTE);
+				started.splice(started.indexOf(entry), 1);
 			} catch (error) {
 				first ??= error;
 			}
 		}
-		started.length = 0;
 		if (first) throw first;
 	};
 	try {

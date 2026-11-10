@@ -520,7 +520,7 @@ export function startHostLoad(
 	const targetCpu = async () => (targets ? await totalCpuSeconds(targets) : 0);
 	// Under bench-run this process's cgroup holds the orchestrator and the load generator's shards, which
 	// are the run's own; a target agent's is its own overhead on the target host, reported apart.
-	const selfCpu = () => cgroupCpuSeconds(processCgroup(process.pid));
+	const selfCpu = async () => cgroupCpuSeconds(processCgroup(process.pid));
 	const read = () => Promise.all([hostBusyCpuSeconds(), targetCpu(), selfCpu()]);
 	const begin = Promise.all([read(), Date.now()]);
 	// Observed by stop(); until then a failed read must not be an unhandled rejection.

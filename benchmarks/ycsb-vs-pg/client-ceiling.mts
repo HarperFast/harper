@@ -70,7 +70,6 @@ if (values.serve) {
 			.listen({ port: PORT, host: values.host, reusePort: true }, () => process.send!('ready'));
 	}
 } else if (values['base-url']) {
-	// The server runs on another host (started there with --serve); this host only drives it.
 	const topology = readTopology();
 	const driver = values.driverCpus ? parseCpuList(values.driverCpus) : topology.map((t) => t.cpu);
 	await pinPid(process.pid, driver);

@@ -25,11 +25,18 @@ import {
 import { parseCells } from './memory-sweep.mts';
 import { targetHostCpus, type CpuTopology } from './resources.mts';
 import { counterEvents, parsePerfStat } from './perfProfile.mts';
-import { alignedPeakTotal, compositeProbe, mergeHostLoads, mergeReadings, type TargetProbe } from './probe.mts';
+import {
+	alignedPeakTotal,
+	compositeProbe,
+	localProbe,
+	mergeHostLoads,
+	mergeReadings,
+	type TargetProbe,
+} from './probe.mts';
 import { RpcClient, decode, encode, parseLine, FRAME_MARKER } from './rpc.mts';
 import { park, serialQueue } from './targetAgent.mts';
 import { pingPong, rttStats, startEchoServer } from './rtt.mts';
-import type { Running, Session } from './run-compare.mts';
+import { defaultThreads, type Running, type Session } from './run-compare.mts';
 
 const execAsync = promisify(execFile);
 const DIR = import.meta.dirname;
@@ -533,4 +540,43 @@ test('provisioning refuses a bad run id or an unknown public address; teardown f
 	}
 	ok(stderr.includes('--filter=labels.ycsb-run=ycsb-test-7 OR name ~ ^ycsb-test-7-'));
 	await rejects(gcpScript('teardown.sh', ['--all'], { YCSB_GCP_PROJECT: 'p' }), /add --yes/);
+});
+
+test('teardown selects a run by its exact names, so one run id never matches a longer one', async () => {
+	const { stderr } = await gcpScript('teardown.sh', ['--dry-run', 'ycsb-check'], { YCSB_GCP_PROJECT: 'p' });
+	const filters = [...stderr.matchAll(/--filter=(.*?) --format/g)].map((m) => m[1]);
+	const regexes = filters.map((f) => new RegExp(/name ~ (\S+)/.exec(f)![1]));
+	const matched = (name: string) => regexes.some((r) => r.test(name));
+	for (const own of [
+		'ycsb-check-generator',
+		'ycsb-check-postgres',
+		'ycsb-check-net',
+		'ycsb-check-compact',
+		'ycsb-check-ssh',
+	])
+		ok(matched(own), own);
+	for (const other of ['ycsb-check-2-generator', 'ycsb-check-2-net', 'ycsb-checker-net', 'ycsb-check-netx'])
+		ok(!matched(other), other);
+	ok(
+		filters.every((f) => !f.includes('labels.') || f.includes('labels.ycsb-run=ycsb-check ')),
+		'the label is exact'
+	);
+});
+
+test('remote mode defaults Harper threads and Fastify workers to --target-cpus, not to an empty cpu list', () => {
+	strictEqual(defaultThreads([0, 2, 4, 6], []), 4);
+	strictEqual(defaultThreads([], []), 4);
+	strictEqual(defaultThreads([], ['--target-cpus=2']), 2);
+	throws(() => defaultThreads([], ['--target-cpus=0']), /positive integer/);
+});
+
+test('a probe opens one window at a time', async () => {
+	const probe = localProbe({ targets: { processes: {}, cgroups: {} }, pinned: {}, cpus: [], workDir: DIR });
+	const first = probe.beginWindow({});
+	await rejects(probe.beginWindow({}), /already open/);
+	await first;
+	await rejects(probe.beginWindow({}), /already open/);
+	// Off Linux the host reading fails (no /proc); the window must be closed after either outcome.
+	await probe.endWindow().catch(() => {});
+	await rejects(probe.endWindow(), /no measured window is open/);
 });

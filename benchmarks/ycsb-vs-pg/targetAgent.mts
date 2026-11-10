@@ -10,9 +10,9 @@
  *
  *   node benchmarks/ycsb-vs-pg/targetAgent.mts      (stdin: requests, stdout: response frames)
  */
-import { readFile, writeFile, rm, mkdir } from 'node:fs/promises';
-import { readFileSync, existsSync, rmSync } from 'node:fs';
-import { execFile } from 'node:child_process';
+import { readFile, rm, mkdir } from 'node:fs/promises';
+import { readFileSync, existsSync } from 'node:fs';
+import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
 import { hostname, release, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -20,6 +20,7 @@ import { serveRpc } from './rpc.mts';
 import { pingPong, startEchoServer } from './rtt.mts';
 import {
 	RESULTS_DIR,
+	TARGETS,
 	buildDigests,
 	gitRevision,
 	prepareTargetHost,
@@ -52,7 +53,7 @@ import { AGENT_DATA_PREFIX, type HostInfo, type PartDescriptor } from './remote.
 
 const exec = promisify(execFile);
 const REPO_ROOT = join(import.meta.dirname, '..', '..');
-/** Read before prepareTargetHost points TMPDIR into the data dir: every agent on the host must see the same file. */
+/** Read before prepareTargetHost points TMPDIR into the data dir: every agent on a host must lock the same file. */
 const LOCK_PATH = join(tmpdir(), 'ycsb-vs-pg-agent.lock');
 const UNIT_PREFIX = 'ycsb-vs-pg-agent-';
 
@@ -164,35 +165,36 @@ async function gcpMetadata(): Promise<Record<string, unknown> | undefined> {
 	}
 }
 
-const isAlive = (pid: number): boolean => {
-	try {
-		process.kill(pid, 0);
-		return true;
-	} catch (error) {
-		return (error as NodeJS.ErrnoException).code === 'EPERM';
-	}
-};
+let lockHolder: ChildProcess | undefined;
 
+/**
+ * Holds the host's agent lock for as long as this process lives: `flock` keeps it on the kernel's
+ * behalf and exits, releasing it, when this process's end of its stdin closes, however it ends.
+ */
 async function acquireLock(): Promise<void> {
-	try {
-		await writeFile(LOCK_PATH, String(process.pid), { flag: 'wx' });
-		return;
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+	const holder = spawn('flock', ['-n', '-E', '75', LOCK_PATH, '-c', 'echo locked; exec cat'], {
+		stdio: ['pipe', 'pipe', 'inherit'],
+	});
+	const outcome = await new Promise<string>((resolve) => {
+		holder.stdout!.once('data', (chunk: Buffer) => resolve(chunk.toString().trim()));
+		holder.once('exit', (code) => resolve(`exit ${code}`));
+		holder.once('error', (error) => resolve(`error ${error.message}`));
+	});
+	if (outcome !== 'locked') {
+		holder.kill();
+		throw new Error(
+			outcome === 'exit 75'
+				? `another target agent holds this host (${LOCK_PATH})`
+				: `could not take the agent lock ${LOCK_PATH}: ${outcome}`
+		);
 	}
-	const holder = Number(await readFile(LOCK_PATH, 'utf8').catch(() => '0'));
-	if (holder && holder !== process.pid && isAlive(holder)) {
-		throw new Error(`another target agent (pid ${holder}) holds this host (${LOCK_PATH})`);
-	}
-	await writeFile(LOCK_PATH, String(process.pid));
+	holder.unref();
+	lockHolder = holder;
 }
 
 function releaseLock(): void {
-	try {
-		if (readFileSync(LOCK_PATH, 'utf8') === String(process.pid)) rmSync(LOCK_PATH);
-	} catch {
-		// not held
-	}
+	lockHolder?.stdin?.end();
+	lockHolder = undefined;
 }
 
 async function agentScopes(prefix: string, states = 'active,activating,deactivating,reloading'): Promise<string[]> {
@@ -211,18 +213,19 @@ async function agentScopes(prefix: string, states = 'active,activating,deactivat
 const hasDocker = (): boolean =>
 	(process.env.PATH ?? '').split(':').some((dir) => dir && existsSync(join(dir, 'docker')));
 
-/** With the host lock held no other agent runs, so every agent scope and project container is a leftover. */
+/**
+ * With the host lock held no other agent runs, so every agent scope and project container is a
+ * leftover. Fails unless they are all gone afterwards: a host still running one must not take a sample.
+ */
 async function cleanupLeftovers(): Promise<string[]> {
-	const cleaned: string[] = [];
-	for (const unit of await agentScopes(UNIT_PREFIX)) {
-		await exec('systemctl', ['--user', 'stop', unit], { timeout: 120_000 }).catch(() => {});
-		cleaned.push(unit);
-	}
-	if (hasDocker() && (await runningProjectContainers().catch(() => [])).length > 0) {
-		await composeDownProject();
-		cleaned.push('compose project ycsb-vs-pg');
-	}
-	return cleaned;
+	const scopes = await agentScopes(UNIT_PREFIX);
+	for (const unit of scopes) await exec('systemctl', ['--user', 'stop', unit], { timeout: 120_000 }).catch(() => {});
+	const docker = hasDocker();
+	const containers = docker ? await runningProjectContainers() : [];
+	if (containers.length > 0) await composeDownProject();
+	const left = [...(await agentScopes(UNIT_PREFIX)), ...(docker ? await runningProjectContainers() : [])];
+	if (left.length > 0) throw new Error(`leftovers of an earlier agent are still running: ${left.join(', ')}`);
+	return [...scopes, ...(containers.length > 0 ? ['compose project ycsb-vs-pg'] : [])];
 }
 
 export function createAgent() {
@@ -233,6 +236,7 @@ export function createAgent() {
 	let nextHandle = 0;
 	const serial = serialQueue();
 	let echo: Awaited<ReturnType<typeof startEchoServer>> | undefined;
+	let closing = false;
 
 	const ready = (): Session => {
 		if (!session) throw new Error('the agent is not initialized');
@@ -324,9 +328,13 @@ export function createAgent() {
 
 	async function startTarget({ target, launch }: { target: TargetName; launch: LaunchOptions }) {
 		const current = ready();
+		if (closing) throw new Error('the agent is shutting down');
 		if (launch.restore) launch = { ...launch, restore: onThisHost(launch.restore) };
-		for (const bin of [current.harperBin, current.baseHarperBin]) {
-			if (bin && !existsSync(bin)) throw new Error(`${bin} not found on ${hostname()} — build it first`);
+		const spec = TARGETS[target];
+		if (spec.kind === 'harper') {
+			const bin = spec.base ? current.baseHarperBin : current.harperBin;
+			if (!bin || !existsSync(bin))
+				throw new Error(`${bin ?? '--base-harper'} not found on ${hostname()} — build it first`);
 		}
 		const parked = await park<Running>((body) => withTarget(current, target, body, launch));
 		const handle = ++nextHandle;
@@ -348,11 +356,14 @@ export function createAgent() {
 		return { handle, descriptor };
 	}
 
+	/** Keeps the part until its teardown succeeds, so a failed stop is retried at shutdown, not forgotten. */
 	async function stopTarget({ handle }: { handle: number }): Promise<void> {
 		const found = parts.get(handle);
 		if (!found) return;
-		parts.delete(handle);
+		// A window left open by a failed sample would keep a system-wide perf running past the part.
+		await found.parked.running.probe.endWindow().catch(() => {});
 		await found.parked.stop();
+		parts.delete(handle);
 	}
 
 	const handlers = {
@@ -415,13 +426,24 @@ export function createAgent() {
 		},
 	};
 
-	/** Stops every part, then the echo server; resolves once nothing this agent started still runs. */
-	async function shutdown(): Promise<void> {
-		const stopping = [...parts.keys()].map((handle) =>
-			stopTarget({ handle }).catch((error) => console.error(`stopping part ${handle}: ${(error as Error).stack}`))
-		);
-		await Promise.all(stopping);
+	/**
+	 * Refuses new launches, lets a launch already queued or in flight finish (or fail), then stops every
+	 * part. Resolves false if any part could not be stopped.
+	 */
+	async function shutdown(): Promise<boolean> {
+		closing = true;
+		await serial(async () => {});
+		let stopped = true;
+		for (const handle of [...parts.keys()]) {
+			try {
+				await stopTarget({ handle });
+			} catch (error) {
+				stopped = false;
+				console.error(`stopping part ${handle}: ${(error as Error).stack}`);
+			}
+		}
 		await echo?.close();
+		return stopped;
 	}
 
 	return { handlers, shutdown, info: () => info };
@@ -444,12 +466,13 @@ async function main(): Promise<void> {
 			releaseLock();
 			process.exit(2);
 		}, 20 * 60_000);
+		let stopped = false;
 		try {
-			await agent.shutdown();
+			stopped = await agent.shutdown();
 		} finally {
 			clearTimeout(deadline);
 			releaseLock();
-			process.exit(code);
+			process.exit(stopped ? code : 1);
 		}
 	};
 	for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP'] as const) process.on(signal, () => void exit(signal, 1));

@@ -36,7 +36,6 @@ interface Response {
 	error?: string;
 }
 
-/** Splits a stdout line into the log text before a frame and the frame's response, if any. */
 export function parseLine(line: string): { log?: string; response?: Response } {
 	const at = line.indexOf(FRAME_MARKER);
 	if (at < 0) return { log: line };
@@ -99,10 +98,6 @@ export class RpcClient {
 			if (response.ok) waiter.resolve(response.result);
 			else waiter.reject(new Error(`${name}: ${response.error}`));
 		});
-	}
-
-	get pid(): number | undefined {
-		return this.child.pid;
 	}
 
 	call<T = unknown>(method: string, params: unknown, timeoutMs: number): Promise<T> {

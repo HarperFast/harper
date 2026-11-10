@@ -215,7 +215,6 @@ export interface PgStack {
 	memoryLimits: Record<string, MemoryLimit>;
 	/** Command that prints Redis INFO stats, for cache hit-rate sampling; set when Redis runs on this host. */
 	redisExec?: string[];
-	/** Which services this host runs. */
 	services: StackService[];
 	/** Milliseconds from `compose up` to Postgres accepting connections: the snapshot copy, when restoring. */
 	startupMs: number;
@@ -226,6 +225,10 @@ export async function startPgStack(options: PgStackOptions): Promise<PgStack> {
 	if (options.restore && !SNAPSHOT_NAME.test(options.restore)) throw new Error(`bad snapshot name ${options.restore}`);
 	const services = options.services ?? STACK_SERVICES;
 	const exposed = !services.includes('fastify') && options.listen ? options.listen : undefined;
+	// The password reaches redis-cli through the environment, never argv, so a failed command's error text
+	// (which carries its argv into logs and results) cannot hold it.
+	if (options.redisPassword) process.env.REDISCLI_AUTH = options.redisPassword;
+	else delete process.env.REDISCLI_AUTH;
 	const env = composeEnv(options.serverCpus.join(','), options.memory, options.restore, {
 		pgListen: exposed ? `127.0.0.1,${exposed}` : '127.0.0.1',
 		redisBind: exposed ? `127.0.0.1 ${exposed}` : '127.0.0.1',
@@ -266,7 +269,7 @@ async function startServices(
 	const redisCli = [
 		'exec',
 		'-T',
-		...(options.redisPassword ? ['-e', `REDISCLI_AUTH=${options.redisPassword}`] : []),
+		...(options.redisPassword ? ['-e', 'REDISCLI_AUTH'] : []),
 		'redis',
 		'redis-cli',
 		'-p',

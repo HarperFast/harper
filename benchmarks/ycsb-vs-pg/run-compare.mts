@@ -871,7 +871,7 @@ async function profileWindow(
 	const { dir, ops } = session.profile!;
 	const prefix = join(dir, label);
 	// CPU is read inside each perf window, so perf's own start and stop are not charged to the ops.
-	const steadyResult = await runInWindow(running, { counters: true }, () =>
+	const steadyResult = await runInWindow(running, { counters: true, baselineAfterPerf: true }, () =>
 		driver.runWorkload(workload, distribution, ops)
 	);
 	const byComponent = steadyResult.reading.perf!;
@@ -889,7 +889,7 @@ async function profileWindow(
 			`${((t.instructionsUser + t.instructionsKernel) / steady.ops / 1000).toFixed(1)}k instructions/op, ` +
 			`IPC ${((t.instructionsUser + t.instructionsKernel) / (t.cyclesUser + t.cyclesKernel)).toFixed(2)}`
 	);
-	const recorded = await runInWindow(running, { recordPrefix: prefix }, () =>
+	const recorded = await runInWindow(running, { recordPrefix: prefix, baselineAfterPerf: true }, () =>
 		driver.runWorkload(workload, distribution, ops)
 	);
 	const { result } = recorded;
@@ -1374,6 +1374,14 @@ export async function writeJsonAtomic(path: string, value: unknown): Promise<voi
 export const argValue = (argv: string[], flag: string): string | undefined =>
 	argv.find((a) => a.startsWith(`${flag}=`))?.slice(flag.length + 1);
 
+/** One per target core: the session's target cpus, or in remote mode (where the agents pick them) --target-cpus. */
+export function defaultThreads(serverCpus: number[], argv: string[]): number {
+	if (serverCpus.length > 0) return serverCpus.length;
+	const k = Number(argValue(argv, '--target-cpus') ?? 4);
+	if (!Number.isInteger(k) || k < 1) throw new Error(`--target-cpus must be a positive integer, got ${k}`);
+	return k;
+}
+
 /**
  * Everything a comparison session shares: target validation, CPU placement, Harper's launch
  * wrapper, a clean inherited environment, the data directories and the recorded conditions.
@@ -1465,7 +1473,8 @@ export async function createSession(
 		return !name || ![...sessionFlags, ...ownFlags].includes(name);
 	});
 	// Harper threads and Fastify workers default to one per target core.
-	if (!passthrough.some((a) => a.startsWith('--threads'))) passthrough.push(`--threads=${serverCpus.length}`);
+	if (!passthrough.some((a) => a.startsWith('--threads')))
+		passthrough.push(`--threads=${defaultThreads(serverCpus, argv)}`);
 	const options = parseOptions(passthrough);
 	const sizesCache = targets.some((t) => {
 		const spec = TARGETS[t];

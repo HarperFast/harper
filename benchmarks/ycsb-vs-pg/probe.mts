@@ -33,6 +33,8 @@ export interface WindowOptions {
 	refaults?: boolean;
 	/** `perf record` the target's cpus into `<prefix>.perf.data` (a path on the host running the probe). */
 	recordPrefix?: string;
+	/** Take the CPU baseline once perf is counting (profile windows), not before it starts (measured windows). */
+	baselineAfterPerf?: boolean;
 }
 
 export interface WindowReading {
@@ -93,6 +95,7 @@ export function localProbe(spec: LocalProbeSpec): TargetProbe {
 		for (const [name, memory] of Object.entries(await cgroupMemory())) pages[name] = memory.workingsetRefaultFile;
 		return pages;
 	};
+	let opening = false;
 	let open:
 		| {
 				memory?: MemoryPeakSampler;
@@ -116,24 +119,41 @@ export function localProbe(spec: LocalProbeSpec): TargetProbe {
 		cpuSeconds: () => totalCpuSeconds(targets),
 		cgroupMemory,
 		async beginWindow(options) {
-			if (open) throw new Error('a measured window is already open');
+			if (open || opening) throw new Error('a measured window is already open');
+			opening = true;
 			const memory = options.memory ? new MemoryPeakSampler(targets) : undefined;
 			const clock = options.clock ? new ClockProbe(cpus) : undefined;
-			const before = await sampleResources(targets);
-			const host = startHostLoad(targets, { separateSelf });
 			let counters: Awaited<ReturnType<typeof startCounters>> | undefined;
 			let recorder: Awaited<ReturnType<typeof startRecord>> | undefined;
-			try {
+			const startPerf = async () => {
 				if (options.counters) counters = await startCounters(targets.cgroups, workDir);
 				if (options.recordPrefix) recorder = await startRecord(cpus, `${options.recordPrefix}.perf.data`);
+			};
+			try {
+				let before: ResourceSample;
+				let host: ReturnType<typeof startHostLoad>;
+				// A profile window's CPU baseline follows perf's start, so the ops it divides by are all counted.
+				if (options.baselineAfterPerf) {
+					await startPerf();
+					before = await sampleResources(targets);
+					host = startHostLoad(targets, { separateSelf });
+				} else {
+					before = await sampleResources(targets);
+					host = startHostLoad(targets, { separateSelf });
+					await startPerf();
+				}
+				const refaultsBefore = options.refaults ? await refaults() : undefined;
+				memory?.start();
+				clock?.start();
+				open = { memory, clock, before, host, counters, recorder, refaultsBefore };
 			} catch (error) {
+				// Nothing of a window that did not open may keep running.
 				await counters?.stop().catch(() => {});
+				await recorder?.stop().catch(() => {});
 				throw error;
+			} finally {
+				opening = false;
 			}
-			memory?.start();
-			clock?.start();
-			open = { memory, clock, before, host, counters, recorder };
-			if (options.refaults) open.refaultsBefore = await refaults();
 		},
 		async endWindow() {
 			const window = open;
