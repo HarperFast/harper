@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794295038853,
+  "lastUpdate": 1794301527054,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -28227,6 +28227,58 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw write ops",
             "value": 1252,
+            "unit": "ops"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "f86b2919cf861ddd296e895901b663b142bb2c20",
+          "message": "Stop the Gemini Code Assist App reviewing every PR on open (#4172)\n\nSet code_review.pull_request_opened.code_review to false so the App no\nlonger posts a review when a PR opens. `/gemini review` still requests\none on demand.\n\n\nDispatch-Task: harper-gemini-app-autoreview-off\n\nCo-authored-by: Claude Sonnet 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-11-10T04:11:19Z",
+          "url": "https://github.com/HarperFast/harper/commit/f86b2919cf861ddd296e895901b663b142bb2c20"
+        },
+        "date": 1794301522991,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "value": 23093,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed3",
+            "value": 14796,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed5",
+            "value": 11200,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "value": 13948416,
+            "unit": "records"
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "value": 8778,
+            "unit": "ops"
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "value": 1907,
             "unit": "ops"
           }
         ]
