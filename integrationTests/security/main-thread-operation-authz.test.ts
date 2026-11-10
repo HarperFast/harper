@@ -12,6 +12,15 @@
  * Without the forward the worker-surface arms answer 400 "not found"; with the main thread's
  * permission check made inert they answer 200 with the agent config.
  *
+ * The narrowings a worker applies to a principal are what the main thread enforces, because they
+ * are data on `hdb_user` and survive the structured-clone hop: a scoped token's `operations`
+ * allowlist and `super_user: false`, an `impersonate` downgrade applied by the legacy route before
+ * dispatch, and a component's own `server.getUser` principal (recordless; the operations API cannot
+ * authenticate it, so a worker-local super_user-only operation is its reference). `impersonate` in
+ * a `server.operation()` body is inert on a local and a forwarded operation alike, and a principal
+ * the hop cannot clone is a 500, never a grant. Impersonation errors answer the same status and
+ * text on both surfaces; the measured status is reported next to the documented one.
+ *
  * Run:
  *   npm run test:integration -- "integrationTests/security/main-thread-operation-authz.test.ts"
  */
@@ -31,6 +40,16 @@ const DELEGATE = { role: 'main_thread_op_delegate_role', username: 'main_thread_
 const GRANTED_OP = 'get_agent_config';
 const SIBLING_OP = 'list_agent_sessions';
 const UNKNOWN_OP = 'definitely_not_registered_anywhere';
+const UNSCOPED_OP = 'describe_all';
+// A worker-local operation restricted to super_user: the reference for principals the operations
+// API (main thread) cannot authenticate — a component's getUser view loads on workers only.
+const LOCAL_SU_OP = 'get_configuration';
+const INACTIVE_USERNAME = 'main_thread_op_inactive';
+const UNKNOWN_USERNAME = 'main_thread_op_nobody';
+const OVERRIDE_PASSWORD = 'Override-pw!2026';
+
+const basic = (username: string, password: string) =>
+	`Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`;
 
 interface Reply {
 	status: number;
@@ -45,10 +64,12 @@ suite(
 		let opsURL = '';
 		let appURL = '';
 		let adminAuth = '';
-		const limitedAuth = `Basic ${Buffer.from(`${LIMITED.username}:${PASS}`).toString('base64')}`;
-		const delegateAuth = `Basic ${Buffer.from(`${DELEGATE.username}:${PASS}`).toString('base64')}`;
+		const limitedAuth = basic(LIMITED.username, PASS);
+		const delegateAuth = basic(DELEGATE.username, PASS);
 		let referenceConfig: any;
 		let referenceDenial = '';
+		let scopedDenyAuth = '';
+		let scopedGrantAuth = '';
 
 		// `authorization: null` sends no Authorization header. `undefined` must not be used for that:
 		// it would take a default parameter and send the admin credentials.
@@ -78,6 +99,7 @@ suite(
 		const legacy = (body: unknown, authorization: string | null) => http(`${appURL}/ops`, authorization, body);
 		const probe = (operation: string, authorization: string | null) =>
 			http(`${appURL}/Probe/?op=${operation}`, authorization);
+		const probeWith = (query: string, authorization: string | null) => http(`${appURL}/Probe/?${query}`, authorization);
 
 		// Where one worker serves HTTP (Windows, macOS) or connections are not spread (Bun), the same
 		// assertions run a bounded number of times without the every-worker claim.
@@ -87,18 +109,27 @@ suite(
 		}
 		const legacyThread = (reply: Reply) => reply.thread;
 		const probeThread = (reply: Reply) => reply.json.threadId;
+		const workers = (replies: Reply[], by: (r: Reply) => number) =>
+			`[${[...new Set(replies.map(by))].sort().join(',')}]`;
 
-		function assertDenied(reply: Reply, context: string): void {
+		function assertDenied(reply: Reply, context: string, denial = referenceDenial): void {
 			strictEqual(reply.status, 403, `${context}: ${reply.status} ${reply.text}`);
-			strictEqual(reply.json?.error, referenceDenial, `${context}: denial text ${reply.text}`);
+			strictEqual(reply.json?.error, denial, `${context}: denial text ${reply.text}`);
 			ok(!reply.text.includes('"permission"') && !reply.text.includes('hdb_user'), `${context}: ${reply.text}`);
 		}
 
-		function assertProbeDenied(reply: Reply, context: string): void {
+		function assertProbeDenied(reply: Reply, context: string, denial = referenceDenial): void {
 			strictEqual(reply.status, 200, `${context}: ${reply.status} ${reply.text}`);
 			strictEqual(reply.json.operation.ok, false, `${context}: ${JSON.stringify(reply.json.operation)}`);
 			strictEqual(reply.json.operation.statusCode, 403, `${context}: ${JSON.stringify(reply.json.operation)}`);
-			strictEqual(reply.json.operation.error, referenceDenial, `${context}: ${JSON.stringify(reply.json.operation)}`);
+			strictEqual(reply.json.operation.error, denial, `${context}: ${JSON.stringify(reply.json.operation)}`);
+		}
+
+		function assertProbeGranted(reply: Reply, context: string): void {
+			strictEqual(reply.status, 200, `${context}: ${reply.status} ${reply.text}`);
+			strictEqual(reply.json.isMainThread, false, `${context}: ${reply.text}`);
+			strictEqual(reply.json.operation.ok, true, `${context}: ${JSON.stringify(reply.json.operation)}`);
+			deepStrictEqual(reply.json.operation.result, referenceConfig, `${context}: body`);
 		}
 
 		before(async () => {
@@ -141,6 +172,14 @@ suite(
 				});
 				strictEqual(r.status, 200, `add_user ${spec.username}: ${r.text}`);
 			}
+			const inactive = await ops({
+				operation: 'add_user',
+				role: LIMITED.role,
+				username: INACTIVE_USERNAME,
+				password: PASS,
+				active: false,
+			});
+			strictEqual(inactive.status, 200, `add_user ${INACTIVE_USERNAME}: ${inactive.text}`);
 
 			const admin = await ops({ operation: GRANTED_OP });
 			strictEqual(admin.status, 200, `admin reference call: ${admin.text}`);
@@ -150,6 +189,23 @@ suite(
 			strictEqual(limited.status, 403, `limited reference call: ${limited.status} ${limited.text}`);
 			ok(typeof limited.json?.error === 'string' && limited.json.error.length > 0, limited.text);
 			referenceDenial = limited.json.error;
+
+			// Scoped tokens minted by the admin: one whose allowlist cannot reach the agent operation and
+			// one whose allowlist names it.
+			for (const [label, operations] of [
+				['deny', [UNSCOPED_OP]],
+				['grant', [GRANTED_OP]],
+			] as const) {
+				const mint = await ops({
+					operation: 'create_authentication_tokens',
+					username: `main_thread_op_scoped_${label}`,
+					role: { permission: { super_user: false, operations } },
+				});
+				strictEqual(mint.status, 200, `scoped ${label} mint: ${mint.status} ${mint.text}`);
+				ok(typeof mint.json?.operation_token === 'string', `scoped ${label} mint body: ${mint.text}`);
+				if (label === 'deny') scopedDenyAuth = `Bearer ${mint.json.operation_token}`;
+				else scopedGrantAuth = `Bearer ${mint.json.operation_token}`;
+			}
 		});
 
 		after(async () => {
@@ -279,6 +335,225 @@ suite(
 
 			const limitedMissing = await legacy(prompt, limitedAuth);
 			strictEqual(limitedMissing.status, 403, `limited agent_prompt: ${limitedMissing.status} ${limitedMissing.text}`);
+		});
+
+		test('a scoped token keeps its allowlist across the hop on both worker surfaces', async () => {
+			const refDeny = await ops({ operation: GRANTED_OP }, scopedDenyAuth);
+			strictEqual(refDeny.status, 403, `scoped deny on ops API: ${refDeny.status} ${refDeny.text}`);
+			const scopedDenial = refDeny.json.error;
+			ok(typeof scopedDenial === 'string' && scopedDenial.length > 0, refDeny.text);
+			const refGrant = await ops({ operation: GRANTED_OP }, scopedGrantAuth);
+			strictEqual(refGrant.status, 200, `scoped grant on ops API: ${refGrant.status} ${refGrant.text}`);
+			deepStrictEqual(refGrant.json, referenceConfig);
+			const refOwnOp = await ops({ operation: UNSCOPED_OP }, scopedDenyAuth);
+			strictEqual(refOwnOp.status, 200, `scoped deny token on its own op: ${refOwnOp.status} ${refOwnOp.text}`);
+
+			const denies = await onEveryWorker(async () => {
+				const r = await legacy({ operation: GRANTED_OP }, scopedDenyAuth);
+				assertDenied(r, `scoped deny legacy (worker ${r.thread})`, scopedDenial);
+				return r;
+			}, legacyThread);
+			const grants = await onEveryWorker(async () => {
+				const r = await legacy({ operation: GRANTED_OP }, scopedGrantAuth);
+				strictEqual(r.status, 200, `scoped grant legacy (worker ${r.thread}): ${r.status} ${r.text}`);
+				deepStrictEqual(r.json, referenceConfig, `scoped grant legacy body (worker ${r.thread})`);
+				return r;
+			}, legacyThread);
+			const probeDenies = await onEveryWorker(async () => {
+				const r = await probe(GRANTED_OP, scopedDenyAuth);
+				strictEqual(r.json?.scopedToken, true, `probe principal is the scoped token: ${r.text}`);
+				assertProbeDenied(r, `scoped deny probe (worker ${r.json.threadId})`, scopedDenial);
+				return r;
+			}, probeThread);
+			const probeGrants = await onEveryWorker(async () => {
+				const r = await probe(GRANTED_OP, scopedGrantAuth);
+				strictEqual(r.json?.scopedToken, true, `probe principal is the scoped token: ${r.text}`);
+				assertProbeGranted(r, `scoped grant probe (worker ${r.json.threadId})`);
+				return r;
+			}, probeThread);
+			console.log(
+				`scoped: legacy deny ${denies.length} × 403 ${workers(denies, legacyThread)}, grant ${grants.length} × 200 ${workers(grants, legacyThread)}; ` +
+					`probe deny ${probeDenies.length} × 403 ${workers(probeDenies, probeThread)}, grant ${probeGrants.length} × ok ${workers(probeGrants, probeThread)}`
+			);
+		});
+
+		test('impersonation applied on the legacy route is what the main thread authorizes', async () => {
+			const byUsername = { operation: GRANTED_OP, impersonate: { username: LIMITED.username } };
+			const byInlineDeny = { operation: GRANTED_OP, impersonate: { role: { permission: { super_user: false } } } };
+			const byInlineGrant = {
+				operation: GRANTED_OP,
+				impersonate: { role: { permission: { super_user: false, operations: [GRANTED_OP] } } },
+			};
+
+			assertDenied(await ops(byUsername), 'impersonate username on ops API');
+			assertDenied(await ops(byInlineDeny), 'impersonate inline deny on ops API');
+			const refInlineGrant = await ops(byInlineGrant);
+			strictEqual(
+				refInlineGrant.status,
+				200,
+				`impersonate inline grant on ops API: ${refInlineGrant.status} ${refInlineGrant.text}`
+			);
+			deepStrictEqual(refInlineGrant.json, referenceConfig);
+
+			// Impersonation errors: docs/reference/security/impersonation.md documents 403 for a caller
+			// that is not super_user (:35), 404 for an unknown target and 403 for an inactive one (:59).
+			// Both surfaces share authHandler, so they must agree; the measured status is reported next
+			// to the documented one rather than assumed.
+			const errorArms = [
+				['not-super', byUsername, limitedAuth, 403],
+				['unknown-target', { operation: GRANTED_OP, impersonate: { username: UNKNOWN_USERNAME } }, adminAuth, 404],
+				['inactive-target', { operation: GRANTED_OP, impersonate: { username: INACTIVE_USERNAME } }, adminAuth, 403],
+			] as const;
+			const measured: Record<string, { status: number; error: string; documented: number }> = {};
+			for (const [label, body, authorization, documented] of errorArms) {
+				const ref = await ops(body, authorization);
+				ok(ref.status >= 400 && ref.status < 500, `${label} on ops API: ${ref.status} ${ref.text}`);
+				ok(typeof ref.json?.error === 'string', `${label} on ops API body: ${ref.text}`);
+				measured[label] = { status: ref.status, error: ref.json.error, documented };
+				// These fail inside the route's authHandler, before the handler stamps the worker id, so
+				// the replies carry no thread: repeat on fresh connections a bounded number of times.
+				await Promise.all(
+					Array.from({ length: WORKER_COUNT * 2 }, async () => {
+						const r = await legacy(body, authorization);
+						strictEqual(r.status, ref.status, `${label} legacy: ${r.status} ${r.text}`);
+						strictEqual(r.json?.error, ref.json.error, `${label} legacy text: ${r.text}`);
+					})
+				);
+			}
+			console.log(
+				`impersonation errors (ops API = legacy, ${WORKER_COUNT * 2} connections each): ${JSON.stringify(measured)}`
+			);
+
+			const users = await onEveryWorker(async () => {
+				const r = await legacy(byUsername, adminAuth);
+				assertDenied(r, `impersonate username legacy (worker ${r.thread})`);
+				return r;
+			}, legacyThread);
+			const inlineDenies = await onEveryWorker(async () => {
+				const r = await legacy(byInlineDeny, adminAuth);
+				assertDenied(r, `impersonate inline deny legacy (worker ${r.thread})`);
+				return r;
+			}, legacyThread);
+			const inlineGrants = await onEveryWorker(async () => {
+				const r = await legacy(byInlineGrant, adminAuth);
+				strictEqual(r.status, 200, `impersonate inline grant legacy (worker ${r.thread}): ${r.status} ${r.text}`);
+				deepStrictEqual(r.json, referenceConfig, `impersonate inline grant legacy body (worker ${r.thread})`);
+				return r;
+			}, legacyThread);
+			console.log(
+				`impersonate legacy: username ${users.length} × 403 ${workers(users, legacyThread)}, inline deny ${inlineDenies.length} × 403 ${workers(inlineDenies, legacyThread)}, ` +
+					`inline grant ${inlineGrants.length} × 200 ${workers(inlineGrants, legacyThread)}`
+			);
+		});
+
+		test('an impersonate field handed to server.operation() means the same on a local and a forwarded operation', async () => {
+			// Local control: user_info runs on the worker itself and reports the effective principal.
+			const local = await probeWith('op=user_info&impersonate=username', adminAuth);
+			strictEqual(local.status, 200, `local user_info transport: ${local.status} ${local.text}`);
+			strictEqual(local.json.operation.ok, true, `local user_info: ${JSON.stringify(local.json.operation)}`);
+			const effective = local.json.operation.result;
+			const applied = effective.username === LIMITED.username && effective.impersonated === true;
+			const ignored = effective.username === ctx.harper.admin.username && effective.impersonated === false;
+			ok(applied || ignored, `local user_info effective principal: ${JSON.stringify(effective)}`);
+
+			// Forwarded: the same field on the main-only operation. Applied → 403 as the limited user;
+			// ignored → 200 as the admin. Either is consistent only if it matches the local control.
+			const hops = await onEveryWorker(async () => {
+				const r = await probeWith(`op=${GRANTED_OP}&impersonate=username`, adminAuth);
+				strictEqual(r.status, 200, `hop impersonate transport: ${r.status} ${r.text}`);
+				strictEqual(r.json.username, ctx.harper.admin.username, r.text);
+				if (applied) assertProbeDenied(r, `hop impersonate username (worker ${r.json.threadId})`);
+				else assertProbeGranted(r, `hop impersonate username ignored (worker ${r.json.threadId})`);
+				return r;
+			}, probeThread);
+			await onEveryWorker(async () => {
+				const r = await probeWith(`op=${GRANTED_OP}&impersonate=inline`, adminAuth);
+				assertProbeGranted(r, `hop impersonate inline grant (worker ${r.json.threadId})`);
+				return r;
+			}, probeThread);
+			console.log(
+				`server.operation impersonate: local user_info → ${JSON.stringify(effective)} (${applied ? 'applied' : 'ignored'}); ` +
+					`hop ${hops.length} × ${applied ? '403' : '200 as admin'} ${workers(hops, probeThread)}`
+			);
+		});
+
+		test('a component getUser principal is authorized on the main thread as the worker built it', async () => {
+			const ovrLimited = basic('ovr-limited', OVERRIDE_PASSWORD);
+			const ovrSuper = basic('ovr-super', OVERRIDE_PASSWORD);
+
+			// The override authenticates on the worker, and a worker-local super_user-only operation shows
+			// the privilege the worker's own view carries. (user_info is no oracle here: it re-reads the
+			// role from hdb_role by id, which a recordless role does not have.)
+			assertDenied(await legacy({ operation: LOCAL_SU_OP }, ovrLimited), `ovr-limited local ${LOCAL_SU_OP}`);
+			const localSuper = await legacy({ operation: LOCAL_SU_OP }, ovrSuper);
+			strictEqual(localSuper.status, 200, `ovr-super local ${LOCAL_SU_OP}: ${localSuper.status} ${localSuper.text}`);
+			ok('threads' in (localSuper.json ?? {}), localSuper.text.slice(0, 200));
+			const rejected = await legacy({ operation: LOCAL_SU_OP }, basic('ovr-super', 'nope'));
+			strictEqual(rejected.status, 401, `ovr wrong password: ${rejected.status} ${rejected.text}`);
+			// The component did not load on the main thread, so the operations API cannot authenticate
+			// the override user; the worker's local operation above is its reference.
+			const opsView = await ops({ operation: LOCAL_SU_OP }, ovrSuper);
+			strictEqual(
+				opsView.status,
+				401,
+				`ops API (main) sees ovr-super: ${opsView.status} ${opsView.text.slice(0, 120)}`
+			);
+
+			const limiteds = await onEveryWorker(async () => {
+				const r = await legacy({ operation: GRANTED_OP }, ovrLimited);
+				assertDenied(r, `ovr-limited legacy (worker ${r.thread})`);
+				return r;
+			}, legacyThread);
+			const supers = await onEveryWorker(async () => {
+				const r = await legacy({ operation: GRANTED_OP }, ovrSuper);
+				strictEqual(r.status, 200, `ovr-super legacy (worker ${r.thread}): ${r.status} ${r.text}`);
+				deepStrictEqual(r.json, referenceConfig, `ovr-super legacy body (worker ${r.thread})`);
+				return r;
+			}, legacyThread);
+			const probeLimiteds = await onEveryWorker(async () => {
+				const r = await probe(GRANTED_OP, ovrLimited);
+				strictEqual(r.json?.username, 'ovr-limited', r.text);
+				assertProbeDenied(r, `ovr-limited probe (worker ${r.json.threadId})`);
+				return r;
+			}, probeThread);
+			const probeSupers = await onEveryWorker(async () => {
+				const r = await probe(GRANTED_OP, ovrSuper);
+				strictEqual(r.json?.username, 'ovr-super', r.text);
+				assertProbeGranted(r, `ovr-super probe (worker ${r.json.threadId})`);
+				return r;
+			}, probeThread);
+			console.log(
+				`getUser: legacy limited ${limiteds.length} × 403 ${workers(limiteds, legacyThread)}, super ${supers.length} × 200 ${workers(supers, legacyThread)}; ` +
+					`probe limited ${probeLimiteds.length} × 403 ${workers(probeLimiteds, probeThread)}, super ${probeSupers.length} × ok ${workers(probeSupers, probeThread)}`
+			);
+		});
+
+		test('a getUser principal whose privilege lives off its own enumerable properties gains nothing across the hop', async () => {
+			for (const name of ['ovr-proto', 'ovr-fn']) {
+				const auth = basic(name, OVERRIDE_PASSWORD);
+				const local = await legacy({ operation: LOCAL_SU_OP }, auth);
+				const hop = await legacy({ operation: GRANTED_OP }, auth);
+				const hopProbe = await probe(GRANTED_OP, auth);
+				console.log(
+					`${name}: local ${LOCAL_SU_OP} ${local.status}; hop ${hop.status} ${hop.text.slice(0, 160)}; ` +
+						`probe ${JSON.stringify(hopProbe.json?.operation).slice(0, 160)}`
+				);
+				// The hop never returns the config to a principal the worker's own view would not have
+				// granted, and a clone failure is a server error, not a grant.
+				const localSuper = local.status === 200 && 'threads' in (local.json ?? {});
+				if (hop.status === 200) {
+					ok(localSuper, `${name}: hop granted but the worker's own view is not super: ${local.text}`);
+					deepStrictEqual(hop.json, referenceConfig, `${name}: hop body`);
+				} else ok([403, 500].includes(hop.status), `${name}: hop ${hop.status} ${hop.text}`);
+				ok(!hop.text.includes('"permission"') && !hop.text.includes('hdb_user'), `${name}: ${hop.text}`);
+				strictEqual(hopProbe.status, 200, `${name} probe transport: ${hopProbe.status} ${hopProbe.text}`);
+				strictEqual(
+					hopProbe.json.operation.ok,
+					hop.status === 200,
+					`${name} probe: ${JSON.stringify(hopProbe.json.operation)}`
+				);
+				if (hop.status !== 200) strictEqual(hopProbe.json.operation.statusCode, hop.status, `${name} probe status`);
+			}
 		});
 	}
 );
