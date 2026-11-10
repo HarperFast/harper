@@ -100,8 +100,8 @@ export interface VerificationTableInput {
 
 /**
  * Two slots per record the threads' caches can hold, in a power of two. rocksdb-js allocates and zeroes
- * the whole table when it is first used, whether or not the caches ever fill, so the table is also held
- * to 1/64 of memory.
+ * the whole table when it is first used, whether or not the caches ever fill, so it is not grown past
+ * 1/64 of memory.
  */
 export function resolveVerificationTableEntries({
 	recordCacheSize,
