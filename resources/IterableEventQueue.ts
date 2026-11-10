@@ -1,13 +1,34 @@
 import { EventEmitter } from 'events';
 
+/**
+ * Set on a queue class whose end() always closes it (emitting 'close'), so a consumer that listens for
+ * 'close' need not also wrap end().
+ */
+export const CLOSES_WHEN_ENDED = Symbol('closesWhenEnded');
+
+/**
+ * Holds an emitter's listeners by event name, as Node's `_events` does. Node creates that as a
+ * `{ __proto__: null }` literal, which V8 keeps in dictionary mode; an
+ * instance of this has the same lookups (its prototype chain is empty) as an ordinary fast object,
+ * and EventEmitter's methods work on it unchanged.
+ */
+function EventSlots() {}
+EventSlots.prototype = Object.create(null);
+
 export class IterableEventQueue<Event extends object = any> extends EventEmitter {
 	resolveNext: null | ((args: IteratorResult<Event>) => void) = null;
 	queue: any[];
-	hasDataListeners: boolean;
+	// declared, not defined, so a queue that never takes the paths that set them (a live subscription's
+	// queue never does) has no slot for them
+	declare hasDataListeners: boolean;
 	closed = false;
-	closedWith: Event | undefined;
-	drainCloseListener: boolean;
-	currentDrainResolver: null | ((draining: boolean) => void) = null;
+	declare closedWith: Event | undefined;
+	declare drainCloseListener: boolean;
+	declare currentDrainResolver: null | ((draining: boolean) => void);
+	constructor() {
+		super();
+		(this as any)._events = new (EventSlots as any)();
+	}
 	[Symbol.asyncIterator](): AsyncIterator<Event> {
 		const iterator = new EventQueueIterator<Event>();
 		iterator.queue = this;

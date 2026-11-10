@@ -1,7 +1,7 @@
 import { basename } from 'node:path';
 import { warn } from '../utility/logging/harper_logger.ts';
 import { DatabaseClosingError, DatabaseGenerationChangedError } from '../utility/errors/hdbError.ts';
-import { IterableEventQueue } from './IterableEventQueue.ts';
+import { IterableEventQueue, CLOSES_WHEN_ENDED } from './IterableEventQueue.ts';
 import { ORIGIN_FLOOR_TICK_MS, localStartBound, threadStartBound } from './originClosedFloor.ts';
 import {
 	captureCertifiedFloors,
@@ -399,6 +399,9 @@ export function endSubscriptionsFromEarlierHandles(auditStore: any, tracksGenera
 	}
 }
 
+function endSubscription(this: Subscription) {
+	this.end();
+}
 /**
  * The range the broadcast reads, which a replay reads `until` so the two meet at one log position: every entry
  * below it is the replay's, every entry at or above it the broadcast's. Undefined keeps a replay on the key gate:
@@ -421,33 +424,36 @@ export function isDispatching(subscription: any): boolean {
  */
 class Subscription extends IterableEventQueue {
 	listener: (recordId: Id, auditEntry: any, txnLogKey: number, beginTxn: boolean) => void;
+	/** What the subscriber's listener, called with `this` bound to the subscription, keeps about it. */
+	state: any;
 	subscriptions: any;
 	startTime?: number;
 	databaseGeneration?: string;
-	resumeVerified?: Promise<boolean>;
-	reportsProgress?: boolean;
-	registeredThrough?: number;
+	includeDescendants?: boolean;
+	// set only for a resumed, progress-reporting, checkpointed or transactional subscription, so not defined on every one
+	declare resumeVerified?: Promise<boolean>;
+	declare reportsProgress?: boolean;
+	declare registeredThrough?: number;
 	/**
 	 * With no `registeredThrough`: an exclusive start that skips no local key reserved (LMDB: committed) when it
 	 * registered or later.
 	 */
-	localResumeStart?: number;
-	sentCount?: number;
-	lowestLateUnconsumed?: (consumed: number) => number | undefined;
-	progress?: () => number | undefined;
-	checkpoint?: (holds?: Map<number, number>) => any;
-	checkpointFloor?: (holds?: Map<number, number>) => number | undefined;
+	declare localResumeStart?: number;
+	declare sentCount?: number;
+	declare lowestLateUnconsumed?: (consumed: number) => number | undefined;
+	declare progress?: () => number | undefined;
+	declare checkpoint?: (holds?: Map<number, number>) => any;
+	declare checkpointFloor?: (holds?: Map<number, number>) => number | undefined;
 	/** A checkpoint-resumed subscription takes every live entry: its replay seeks per log, so no key gate applies. */
-	ungated?: boolean;
+	declare ungated?: boolean;
 	/** A collection replay's resume cursor (exclusive), apart from `startTime`, which gates live delivery. */
-	replayedThrough?: number;
-	includeDescendants?: boolean;
-	supportsTransactions?: boolean;
-	onlyChildren?: boolean;
+	declare replayedThrough?: number;
+	declare supportsTransactions?: boolean;
+	declare onlyChildren?: boolean;
 	constructor(listener) {
 		super();
 		this.listener = listener;
-		this.on('close', () => this.end());
+		this.on('close', endSubscription);
 	}
 	end() {
 		const subscriptions = this.subscriptions;
@@ -474,6 +480,8 @@ class Subscription extends IterableEventQueue {
 		return { name: 'subscription' };
 	}
 }
+// end() always closes the queue, which emits 'close'
+Subscription.prototype[CLOSES_WHEN_ENDED] = true;
 function endTraversal(keySubscriptions) {
 	if (--keySubscriptions.traversals === 0 && keySubscriptions.hasEnded) {
 		keySubscriptions.hasEnded = false;
