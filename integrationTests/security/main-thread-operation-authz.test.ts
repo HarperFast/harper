@@ -17,9 +17,11 @@
  * allowlist and `super_user: false`, an `impersonate` downgrade applied by the legacy route before
  * dispatch, and a component's own `server.getUser` principal (recordless; the operations API cannot
  * authenticate it, so a worker-local super_user-only operation is its reference). `impersonate` in
- * a `server.operation()` body is inert on a local and a forwarded operation alike, and a principal
- * the hop cannot clone is a 500, never a grant. Impersonation errors answer the same status and
- * text on both surfaces; the measured status is reported next to the documented one.
+ * a `server.operation()` body is inert on a local and a forwarded operation alike; a getUser
+ * principal whose privilege sits on a prototype is normalized away at authentication, before any
+ * hop; and a principal the hop cannot clone is a 500, never a grant. Impersonation errors answer
+ * the same status and text on both surfaces; the measured status is reported next to the
+ * documented one.
  *
  * Run:
  *   npm run test:integration -- "integrationTests/security/main-thread-operation-authz.test.ts"
@@ -190,8 +192,6 @@ suite(
 			ok(typeof limited.json?.error === 'string' && limited.json.error.length > 0, limited.text);
 			referenceDenial = limited.json.error;
 
-			// Scoped tokens minted by the admin: one whose allowlist cannot reach the agent operation and
-			// one whose allowlist names it.
 			for (const [label, operations] of [
 				['deny', [UNSCOPED_OP]],
 				['grant', [GRANTED_OP]],
@@ -446,34 +446,25 @@ suite(
 			);
 		});
 
-		test('an impersonate field handed to server.operation() means the same on a local and a forwarded operation', async () => {
-			// Local control: user_info runs on the worker itself and reports the effective principal.
+		test('an impersonate field in a server.operation() body is inert on a local and a forwarded operation', async () => {
+			// Impersonation is applied only by the HTTP authHandler; server.operation() never reads the field.
 			const local = await probeWith('op=user_info&impersonate=username', adminAuth);
 			strictEqual(local.status, 200, `local user_info transport: ${local.status} ${local.text}`);
 			strictEqual(local.json.operation.ok, true, `local user_info: ${JSON.stringify(local.json.operation)}`);
-			const effective = local.json.operation.result;
-			const applied = effective.username === LIMITED.username && effective.impersonated === true;
-			const ignored = effective.username === ctx.harper.admin.username && effective.impersonated === false;
-			ok(applied || ignored, `local user_info effective principal: ${JSON.stringify(effective)}`);
+			deepStrictEqual(
+				local.json.operation.result,
+				{ username: ctx.harper.admin.username, superUser: true, impersonated: false },
+				`local user_info effective principal: ${JSON.stringify(local.json.operation.result)}`
+			);
 
-			// Forwarded: the same field on the main-only operation. Applied → 403 as the limited user;
-			// ignored → 200 as the admin. Either is consistent only if it matches the local control.
 			const hops = await onEveryWorker(async () => {
 				const r = await probeWith(`op=${GRANTED_OP}&impersonate=username`, adminAuth);
-				strictEqual(r.status, 200, `hop impersonate transport: ${r.status} ${r.text}`);
 				strictEqual(r.json.username, ctx.harper.admin.username, r.text);
-				if (applied) assertProbeDenied(r, `hop impersonate username (worker ${r.json.threadId})`);
-				else assertProbeGranted(r, `hop impersonate username ignored (worker ${r.json.threadId})`);
-				return r;
-			}, probeThread);
-			await onEveryWorker(async () => {
-				const r = await probeWith(`op=${GRANTED_OP}&impersonate=inline`, adminAuth);
-				assertProbeGranted(r, `hop impersonate inline grant (worker ${r.json.threadId})`);
+				assertProbeGranted(r, `hop with an impersonate field (worker ${r.json.threadId})`);
 				return r;
 			}, probeThread);
 			console.log(
-				`server.operation impersonate: local user_info → ${JSON.stringify(effective)} (${applied ? 'applied' : 'ignored'}); ` +
-					`hop ${hops.length} × ${applied ? '403' : '200 as admin'} ${workers(hops, probeThread)}`
+				`server.operation impersonate: ignored locally; hop ${hops.length} × 200 as admin ${workers(hops, probeThread)}`
 			);
 		});
 
@@ -528,32 +519,28 @@ suite(
 			);
 		});
 
-		test('a getUser principal whose privilege lives off its own enumerable properties gains nothing across the hop', async () => {
-			for (const name of ['ovr-proto', 'ovr-fn']) {
-				const auth = basic(name, OVERRIDE_PASSWORD);
-				const local = await legacy({ operation: LOCAL_SU_OP }, auth);
-				const hop = await legacy({ operation: GRANTED_OP }, auth);
-				const hopProbe = await probe(GRANTED_OP, auth);
-				console.log(
-					`${name}: local ${LOCAL_SU_OP} ${local.status}; hop ${hop.status} ${hop.text.slice(0, 160)}; ` +
-						`probe ${JSON.stringify(hopProbe.json?.operation).slice(0, 160)}`
-				);
-				// The hop never returns the config to a principal the worker's own view would not have
-				// granted, and a clone failure is a server error, not a grant.
-				const localSuper = local.status === 200 && 'threads' in (local.json ?? {});
-				if (hop.status === 200) {
-					ok(localSuper, `${name}: hop granted but the worker's own view is not super: ${local.text}`);
-					deepStrictEqual(hop.json, referenceConfig, `${name}: hop body`);
-				} else ok([403, 500].includes(hop.status), `${name}: hop ${hop.status} ${hop.text}`);
-				ok(!hop.text.includes('"permission"') && !hop.text.includes('hdb_user'), `${name}: ${hop.text}`);
-				strictEqual(hopProbe.status, 200, `${name} probe transport: ${hopProbe.status} ${hopProbe.text}`);
-				strictEqual(
-					hopProbe.json.operation.ok,
-					hop.status === 200,
-					`${name} probe: ${JSON.stringify(hopProbe.json.operation)}`
-				);
-				if (hop.status !== 200) strictEqual(hopProbe.json.operation.statusCode, hop.status, `${name} probe status`);
-			}
+		test('a getUser principal is normalized at authentication; one the hop cannot clone is a 500, never a grant', async () => {
+			// `ovr-proto` keeps super_user on a prototype getter: authentication copies own properties only
+			// (cloneUserView), so the worker's own view is not super before any hop.
+			const protoAuth = basic('ovr-proto', OVERRIDE_PASSWORD);
+			assertDenied(await legacy({ operation: LOCAL_SU_OP }, protoAuth), `ovr-proto local ${LOCAL_SU_OP}`);
+			assertDenied(await legacy({ operation: GRANTED_OP }, protoAuth), 'ovr-proto hop');
+			assertProbeDenied(await probe(GRANTED_OP, protoAuth), 'ovr-proto probe');
+
+			// `ovr-fn` carries an own function property: super in the worker's own view, but the forward
+			// cannot structured-clone it and fails as a server error rather than granting or stripping.
+			const fnAuth = basic('ovr-fn', OVERRIDE_PASSWORD);
+			const local = await legacy({ operation: LOCAL_SU_OP }, fnAuth);
+			strictEqual(local.status, 200, `ovr-fn local ${LOCAL_SU_OP}: ${local.status} ${local.text}`);
+			const hop = await legacy({ operation: GRANTED_OP }, fnAuth);
+			strictEqual(hop.status, 500, `ovr-fn hop: ${hop.status} ${hop.text}`);
+			ok(/could not be forwarded to another thread/.test(hop.json?.error ?? ''), `ovr-fn hop text: ${hop.text}`);
+			ok(!hop.text.includes('"permission"') && !hop.text.includes('hdb_user'), `ovr-fn hop body: ${hop.text}`);
+			const hopProbe = await probe(GRANTED_OP, fnAuth);
+			strictEqual(hopProbe.status, 200, `ovr-fn probe transport: ${hopProbe.status} ${hopProbe.text}`);
+			strictEqual(hopProbe.json.operation.ok, false, `ovr-fn probe: ${JSON.stringify(hopProbe.json.operation)}`);
+			strictEqual(hopProbe.json.operation.statusCode, 500, `ovr-fn probe: ${JSON.stringify(hopProbe.json.operation)}`);
+			strictEqual(hopProbe.json.operation.result, undefined, `ovr-fn probe leaked a result: ${hopProbe.text}`);
 		});
 	}
 );

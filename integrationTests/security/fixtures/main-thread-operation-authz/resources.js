@@ -9,9 +9,6 @@ export class WhoAmI extends Resource {
 
 const LIMITED_USERNAME = 'main_thread_op_limited';
 
-// server.operation(body, { user }, true) as the request's own authenticated user. `?op=` picks the
-// operation; `?impersonate=username|inline` adds an `impersonate` body field the way an operations
-// API caller would.
 export class Probe extends Resource {
 	static loadAsInstance = false;
 	async get(target) {
@@ -20,8 +17,6 @@ export class Probe extends Resource {
 		const body = { operation };
 		const impersonate = target.get('impersonate');
 		if (impersonate === 'username') body.impersonate = { username: LIMITED_USERNAME };
-		else if (impersonate === 'inline')
-			body.impersonate = { role: { permission: { super_user: false, operations: ['get_agent_config'] } } };
 		else if (impersonate) throw new Error(`unknown impersonate form '${impersonate}'`);
 		const user = this.getContext()?.user;
 		let result;
@@ -40,7 +35,6 @@ export class Probe extends Resource {
 	}
 }
 
-// user_info returns the effective principal; keep the fields that say who ran the operation.
 function summarize(value) {
 	if (value && typeof value === 'object' && typeof value.username === 'string' && 'role' in value) {
 		return {
