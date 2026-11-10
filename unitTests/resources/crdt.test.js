@@ -5,7 +5,7 @@ const { getRecordAtTime, applyForward, addValues, remainingAgainstRecord } = req
 // { version, type: 'put'|'patch'|'delete', value, previousVersion }. The audit store resolves an
 // entry by its exact version, as the real store does for the previousVersion chain, and scans by
 // log key for a timestamp that is not one. An event belongs to the record being reconstructed unless
-// it names its own `tableId`/`recordId`; like LMDB's, `get` returns whatever entry is at the key.
+// it names its own `tableId`/`recordId`. With no origin, the mock `get` returns the last entry at a key.
 function makeStore(events) {
 	let tableId;
 	let recordId;

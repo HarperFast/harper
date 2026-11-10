@@ -198,10 +198,10 @@ export function applyForward(record, update, skipUnseededOps = false) {
  * re-insert with a broken `previousVersion` chain) and when filling `unknowns` on a live record.
  *
  * `fromPosition` is the starting audit position, carrying its decoded frame when available.
- * The walk follows previous links from there and skips entries newer than `timestamp`
- * (the cutoff may fall between entries). Returns `null`
- * if the record did not exist at `timestamp` (the nearest in-range history boundary is a delete
- * with no surviving writes, or there is no in-range history). When a prior link leads to a pruned
+ * The walk follows previous links and skips entries newer than `timestamp` (which may fall
+ * between entries). Returns `null` if the record did not exist at `timestamp` (the nearest in-range
+ * history boundary is a delete with no surviving writes, or there is no in-range history).
+ * When a prior link leads to a pruned
  * entry, returns `undefined` without `partial` (history is incomplete for a whole-record caller);
  * with `partial` (the `unknowns` fill on a live record) it replays the surviving writes and sets
  * `partial.truncated` when the history it read was incomplete.
@@ -260,9 +260,11 @@ function reconstructForward(
 					break frames;
 				}
 			}
-			const previousPosition = previousAuditPosition(auditStore, tableId, recordId, auditEntry);
-			if (partial && mergesBranchBy(auditEntry.previousAdditionalAuditRefs, previousPosition, timestamp))
-				partial.truncated = true;
+			if (partial) {
+				const previousPosition = previousAuditPosition(auditStore, tableId, recordId, auditEntry);
+				if (mergesBranchBy(auditEntry.previousAdditionalAuditRefs, previousPosition, timestamp))
+					partial.truncated = true;
+			}
 		}
 		// Later mutations link back to this frame; only its first entry leads out.
 		const previousPosition = previousAuditPosition(auditStore, tableId, recordId, frame[0]);
@@ -304,10 +306,12 @@ function readAuditFrame(
 	nodeId,
 	followingCommittedRef = false
 ) {
-	const first = auditStore.get(key, tableId, recordId, nodeId, followingCommittedRef);
-	const matchesFirst = first?.tableId === tableId && compareKeys(first.recordId, recordId) === 0;
-	let origin = nodeId ?? (matchesFirst ? (first.nodeId ?? 0) : undefined);
-	if (matchesFirst && first.endTxn && (first.nodeId ?? 0) === origin) return [first];
+	// LMDB has one entry per key; only RocksDB exposes per-origin transaction logs.
+	if (typeof auditStore.logById !== 'function') {
+		const entry = auditStore.get(key, tableId, recordId, nodeId, followingCommittedRef);
+		return entry?.tableId === tableId && compareKeys(entry.recordId, recordId) === 0 ? [entry] : [];
+	}
+	let origin = nodeId;
 	const entries = [];
 	for (const entry of auditStore.getRange({
 		start: key,
@@ -485,9 +489,11 @@ export function getRecordAtTime(currentEntry, timestamp, store, tableId: number,
 	// If the most recent entry at or before `timestamp` is a delete, the record did not exist then.
 	// (A delete reached as a boundary — rather than crossed, which returns via reconstructForward —
 	// is otherwise missed, leaving `record` holding a newer re-inserted value. See issue #1330.)
-	if (auditTime > 0) {
-		const boundaryEntry = auditStore.get(auditTime, tableId, recordId, auditNodeId, true);
-		if (boundaryEntry?.type === 'delete') return null;
+	const boundaryFrame = readAuditFrame(auditStore, tableId, recordId, auditTime, auditNodeId, true);
+	for (let index = boundaryFrame.length - 1; index >= 0; index--) {
+		const type = boundaryFrame[index].type;
+		if (type === 'delete') return null;
+		if (STATE_TYPES.has(type)) break;
 	}
 	for (const key of reversedAdds) {
 		const value = record[key];
@@ -502,7 +508,7 @@ export function getRecordAtTime(currentEntry, timestamp, store, tableId: number,
 				store,
 				tableId,
 				recordId,
-				{ txnLogKey: auditTime, nodeId: auditNodeId },
+				{ txnLogKey: auditTime, nodeId: auditNodeId, frame: boundaryFrame },
 				timestamp,
 				partial
 			) ?? {};

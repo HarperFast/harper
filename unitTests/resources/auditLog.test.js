@@ -3013,6 +3013,33 @@ describe('history after record eviction (issue #3164)', () => {
 			});
 		}
 
+		for (const deletedLast of [false, true]) {
+			it(`uses the final state of a delete frame (deleted last: ${deletedLast})`, async function () {
+				if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
+				await HistoryTable.put(initial);
+				await transaction(async () => {
+					if (!deletedLast) await HistoryTable.delete('rec-1');
+					await HistoryTable.put(refetched);
+					if (deletedLast) await HistoryTable.delete('rec-1');
+				});
+				const entries = [...HistoryTable.auditStore.getRange({ start: 1 })].filter(
+					(entry) => entry.tableId === HistoryTable.tableId && entry.recordId === 'rec-1'
+				);
+				const frameTime = entries.at(-1).txnLogKey;
+				assert.deepStrictEqual(
+					entries.filter((entry) => entry.txnLogKey === frameTime).map((entry) => entry.type),
+					deletedLast ? ['put', 'delete'] : ['delete', 'put']
+				);
+				await HistoryTable.patch('rec-1', { count: 8 });
+				assert.ok(headOf(HistoryTable, 'rec-1') > frameTime);
+				const expected = deletedLast ? null : refetched;
+				assert.deepStrictEqual(recordAt('rec-1', frameTime), expected);
+				assert.deepStrictEqual(recordAt('rec-1', frameTime + 0.001), expected);
+				await evict(HistoryTable, 'rec-1');
+				assert.deepStrictEqual(recordAt('rec-1', frameTime), expected);
+			});
+		}
+
 		it('reverses every patch in a newer RocksDB frame', async function () {
 			if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
 			await HistoryTable.put(initial);
