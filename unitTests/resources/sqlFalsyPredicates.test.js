@@ -29,6 +29,8 @@ const GROUPS = {
 		x: 'x',
 		f: false,
 		t: true,
+		bigzero: 0n,
+		bigone: 1n,
 		nul: null,
 		omitted: undefined,
 	},
@@ -66,8 +68,8 @@ const ALL_IDS = SEED.map((record) => record.id).sort();
 const sorted = (ids) => [...ids].sort();
 const idsOf = (grp, names) => sorted(names.map((name) => `${grp}.${name}`));
 
-const TRUTHY = ['blank', 'one', 'str0', 't', 'x'];
-const FALSY_NOT_NULL = ['empty', 'f', 'nan', 'negzero', 'zero'];
+const TRUTHY = ['bigone', 'blank', 'one', 'str0', 't', 'x'];
+const FALSY_NOT_NULL = ['bigzero', 'empty', 'f', 'nan', 'negzero', 'zero'];
 
 const TEXT = ['blank', 'dashx', 'empty', 'ws', 'x'];
 const CMP_CASES = [
@@ -207,8 +209,8 @@ describe('SQL predicates over falsy, blank and NaN values', function () {
 					(await sql(engine, `SELECT id FROM ${TABLE} WHERE grp = 'truth' AND v ORDER BY id ${suffix}`)).map(
 						(row) => row.id
 					);
-				assert.deepStrictEqual(await ids('LIMIT 2'), ['truth.blank', 'truth.one']);
-				assert.deepStrictEqual(await ids('LIMIT 2 OFFSET 1'), ['truth.one', 'truth.str0']);
+				assert.deepStrictEqual(await ids('LIMIT 2'), ['truth.bigone', 'truth.blank']);
+				assert.deepStrictEqual(await ids('LIMIT 2 OFFSET 1'), ['truth.blank', 'truth.one']);
 			});
 
 			it(`${engine}: HAVING drops a group whose value is 0`, async () => {
@@ -282,8 +284,9 @@ describe('SQL predicates over falsy, blank and NaN values', function () {
 			}
 
 			it(`${engine}: an indexed range still matches a stored NaN, which the index sorts above numbers`, async () => {
-				assert.deepStrictEqual(await selected(engine, `grp = 'nan' AND iv > 0`), idsOf('nan', ['inf', 'nan', 'one']));
-				assert.deepStrictEqual(await selected(engine, `grp = 'nan' AND v > 0`), idsOf('nan', ['inf', 'one']));
+				await assertMatches(engine, `grp = 'nan' AND iv > 0`, idsOf('nan', ['inf', 'nan', 'one']));
+				await reseed();
+				await assertMatches(engine, `grp = 'nan' AND v > 0`, idsOf('nan', ['inf', 'one']));
 			});
 
 			it(`${engine}: a projected comparison is NULL for NaN and agrees with the WHERE row set`, async () => {

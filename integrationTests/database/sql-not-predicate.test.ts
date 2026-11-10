@@ -1,8 +1,7 @@
 /**
  * WHERE row sets for a predicate under NOT or inside another expression, for SELECT, DELETE and UPDATE (#1397).
  * Covers the NULL-free parity matrix across `auto` and `legacy`, three-valued NULL/omitted-attribute exclusion
- * across `auto` and `new` (proving v2 answers directly without fallback), `legacy`'s two-valued NULL row sets, and
- * falsy and blank-string values on indexed and unindexed columns across `auto` and `new` (#3208).
+ * across `auto` and `new` (proving v2 answers directly without fallback), and `legacy`'s two-valued NULL row sets.
  */
 
 import { suite, test, before, after } from 'node:test';
@@ -363,6 +362,7 @@ const VALUE_CASES: { where: string; expected: string[] }[] = [
 		{ where: '$ >= 1', expected: ['one', 'two', ...TEXT_VALUES] },
 		{ where: '$ BETWEEN 0 AND 1', expected: ['one', 'zero'] },
 		{ where: '$ NOT BETWEEN 0 AND 1', expected: ['neg', 'two', ...TEXT_VALUES] },
+		{ where: '$ NOT BETWEEN NULL AND 1', expected: ['two', ...TEXT_VALUES] },
 	].flatMap(({ where, expected }) =>
 		['v', 'iv'].map((column) => ({
 			where: `grp = 'cmp' AND ${where.replaceAll('$', column)}`,
