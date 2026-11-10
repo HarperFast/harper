@@ -65,9 +65,10 @@ describe('TTL cleanup scan interval', () => {
 		});
 		try {
 			Table.setTTLExpiration(3600);
-			Table.setTTLExpiration(0.05);
+			Table.setTTLExpiration(1);
 			await Table.put(1, { id: 1 });
 			await Table.primaryStore.committed;
+			assert(stored(Table, 1));
 			await waitFor(() => !stored(Table, 1), { timeout: 5000, message: 'the expired record was never evicted' });
 		} finally {
 			Table.cleanup();
