@@ -137,7 +137,7 @@ When the Harper process receives SIGTERM, SIGINT (Ctrl+C) or SIGQUIT, it shuts d
 
 1. Harper stops accepting new connections.
 2. Requests already in flight get a few seconds to finish (see the first note below).
-3. WebSocket connections close with code `1001` as soon as no request is in flight on any thread, because a request can be waiting on a replication peer's acknowledgement over one of them. With `http2` enabled on a listener, an open HTTP/2 session or WebSocket there delays this by up to 5 seconds. Under Bun or the uWS HTTP server, they are not closed this way. MQTT clients are disconnected earlier, when shutdown starts.
+3. WebSocket connections close with code `1001` as soon as no request is in flight on any thread (or up to 0.25 seconds after the listener's own 5-second close timeout if another thread has not finished), because a request can be waiting on a replication peer's acknowledgement over one of them. With `http2` enabled on a listener, an open HTTP/2 session or WebSocket there delays this by up to 5 seconds. Under Bun or the uWS HTTP server, they are not closed this way. MQTT clients are disconnected earlier, when shutdown starts.
 4. Component scopes close. Their [`'close'` listeners](../components/plugin-api.md#cleanup-on-shutdown) run once requests in flight have had a few seconds to finish.
 5. The process exits with code `0`.
 
@@ -438,6 +438,14 @@ localStudio:
 ```
 
 - `enabled` — Enable local Studio at `http://localhost:<port>`; _Default_: `false`
+
+---
+
+## `studio`
+
+<VersionBadge version="v5.4.0" />
+
+How Studio presents itself on this node: `navigation`, a map from a tab key to `visible`, `tucked` or `hidden`, and `landing`, the tab Studio opens on. Write them with `set_configuration` as `studio_navigation` and `studio_landing`, which validates them; see [Customizing Studio](../studio/customization.md#cluster-settings). `studio` is a reserved component name.
 
 ---
 

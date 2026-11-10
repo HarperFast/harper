@@ -1996,11 +1996,19 @@ type OnWebSocketOptions = {
 };
 const websocketListeners = [],
 	websocketChains = {};
-export function closeWebSockets() {
+export function hasOpenWebSockets(): boolean {
 	for (const port in websocketServers) {
-		websocketServers[port].close(); // an upgrade still arriving gets a 503
+		if (websocketServers[port].clients.size > 0) return true;
+	}
+	return false;
+}
+export function closeWebSockets() {
+	const closed: Promise<void>[] = [];
+	for (const port in websocketServers) {
+		closed.push(new Promise<void>((resolve) => websocketServers[port].close(() => resolve()))); // an upgrade still arriving gets a 503
 		for (const ws of websocketServers[port].clients) ws.close(1001, 'Server shutting down');
 	}
+	return Promise.all(closed);
 }
 
 /**

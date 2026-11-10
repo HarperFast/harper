@@ -33,12 +33,28 @@ async function runHarness(rootPath, scenario, env = {}) {
 		env: childEnv,
 		stdio: ['ignore', 'pipe', 'inherit'],
 	});
-	const deadline = setTimeout(() => harness.kill('SIGKILL'), HARNESS_TIMEOUT_MS);
+	const started = performance.now();
+	const elapsed = () => `${Math.round(performance.now() - started)}ms`;
+	const deadline = setTimeout(() => {
+		harness.kill('SIGKILL');
+		// 'close' waits for the pipe, which a surviving descendant could still hold
+		harness.stdout.destroy();
+	}, HARNESS_TIMEOUT_MS);
 	try {
 		let output = '';
-		harness.stdout.on('data', (chunk) => (output += chunk));
+		let lastOutput = 'none';
+		let exited = 'none';
+		harness.stdout.on('data', (chunk) => {
+			output += chunk;
+			lastOutput = elapsed();
+		});
+		harness.once('exit', () => (exited = elapsed()));
 		const [code, signal] = await once(harness, 'close');
-		assert.equal(code, 0, `harness exited with ${code ?? signal}: ${output}`);
+		assert.equal(
+			code,
+			0,
+			`harness exited with ${code ?? signal}; last output at ${lastOutput}, exit at ${exited}, close at ${elapsed()}: ${output}`
+		);
 		return JSON.parse(output.trim().split('\n').at(-1));
 	} finally {
 		clearTimeout(deadline);
