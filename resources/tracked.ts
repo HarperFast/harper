@@ -774,6 +774,14 @@ export function collapseChanges(target, changes, includeOwnProperties: boolean |
 	if (keyCount === 0) return source ? undefined : patch;
 	return patch;
 }
+
+export function collapseInstanceChanges(
+	target: any,
+	changes = target.getChanges?.(),
+	ownKeys = target.constructor?.loadAsInstance !== false ? Object.keys(target) : []
+) {
+	return collapseChanges(target, changes, ownKeys);
+}
 const OMITTED = {};
 
 export function applyOwnChanges(target, patch, ownKeys = Object.keys(target)) {

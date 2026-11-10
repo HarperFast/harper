@@ -1609,11 +1609,11 @@ feature that has not yet been measured.
 >
 > 1. **A predecessor's write can outrank its successor's under last-write-wins.** LWW compares the
 >    transaction timestamp assigned when the write was _staged_ (`_writeUpdate`'s `precedesExistingVersion(txnTime, …)`), and lease
->    expiry orders admissions, not timestamps. **`lock()` changes nothing about conflict resolution**
->    — a locked write and an unlocked write resolve identically, by timestamp, per field, with CRDT
+>    expiry orders admissions, not timestamps. **`lock()` changes nothing about storage conflict resolution**
+>    — once a locked write is staged to commit, it and an unlocked write resolve identically, by timestamp, per field, with CRDT
 >    ops folded and the surviving shape depending on both writes' shapes and on whether auditing is
 >    on — so whatever the pair would have done to the record without a lock is what they do with one,
->    silently and with no error raised. That is the whole of the limitation, and the contract must not
+>    silently and with no error raised. The contract must not
 >    restate the resolution rules: they live in `Table.ts` / `crdt.ts` and are not `lock()`'s to
 >    promise. What `lock()` does add (harper#2540) is a floor: an admitted holder's writes are stamped
 >    above the version it reloaded, a tombstone's included, and above the predecessor log positions its

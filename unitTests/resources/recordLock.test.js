@@ -2570,17 +2570,53 @@ describe('Record locks (harper#483)', () => {
 			it(`refuses a lock write when an earlier deferred unlocked update() set hasUnlockedWrite() before an interleaving write (audit: ${audit})`, async function () {
 				if (isLMDB) return this.skip();
 				const T = tableFor();
-				const idA = id();
-				const idB = id();
-				await T.put({ id: idA, n: 0 });
-				await T.put({ id: idB, n: 0 });
-				const putInterleaving = outsideWriter(() => T.put({ id: idB, n: 50 }));
+				const idA1 = id();
+				const idB1 = id();
+				const idA2 = id();
+				const idB2 = id();
+				await T.put({ id: idA1, n: 0 });
+				await T.put({ id: idB1, n: 0 });
+				await T.put({ id: idA2, n: 0 });
+				await T.put({ id: idB2, n: 0 });
+				const putInterleaving1 = outsideWriter(() => T.put({ id: idB1, n: 50 }));
+				const futureTs = Date.now() + 2000;
+				const putInterleaving2 = outsideWriter(() => transaction({ timestamp: futureTs }, () => T.put({ id: idB2, n: 50 })));
 
+				// With a normal-time interleaving write and no reserved key yet: when strict issuance mode is off,
+				// effectiveClock is the native read snapshot time (below the floor) and save() rejects with 409;
+				// when strict mode is on, reserve() rejects the stale native clock and mints a fresh key above the
+				// interleaving write, so both writes commit cleanly. In neither mode is the lock write silently lost.
+				let refused1 = false;
+				try {
+					await transaction(async () => {
+						await T.update(idA1, { n: 1 });
+						await putInterleaving1();
+						const b = await T.lock(idB1);
+						assert.strictEqual(b.n, 50);
+						b.set('n', b.n + 1);
+						await b.save();
+					});
+				} catch (error) {
+					assert.strictEqual(error.statusCode, 409);
+					assert.strictEqual(error.message, EXPECTED_409);
+					refused1 = true;
+				}
+				if (refused1) {
+					assert.strictEqual((await T.get(idB1)).n, 50);
+					assert.strictEqual((await T.get(idA1)).n, 0);
+				} else {
+					assert.strictEqual((await T.get(idB1)).n, 51);
+					assert.strictEqual((await T.get(idA1)).n, 1);
+				}
+
+				// With a future-stamped interleaving write within maxLockClockSkew, hasUnlockedWrite() prevents
+				// lock() and save() from raising the transaction clock regardless of strict mode, so save()
+				// deterministically rejects with 409.
 				await assert.rejects(
 					transaction(async () => {
-						await T.update(idA, { n: 1 });
-						await putInterleaving();
-						const b = await T.lock(idB);
+						await T.update(idA2, { n: 1 });
+						await putInterleaving2();
+						const b = await T.lock(idB2);
 						assert.strictEqual(b.n, 50);
 						b.set('n', b.n + 1);
 						await b.save();
@@ -2588,8 +2624,8 @@ describe('Record locks (harper#483)', () => {
 					(error) => error.statusCode === 409 && error.message === EXPECTED_409
 				);
 
-				assert.strictEqual((await T.get(idB)).n, 50);
-				assert.strictEqual((await T.get(idA)).n, 0);
+				assert.strictEqual((await T.get(idB2)).n, 50);
+				assert.strictEqual((await T.get(idA2)).n, 0);
 			});
 
 			it(`refuses commutative addTo and disjoint-field lock writes when the clock is fixed below the admitted version (audit: ${audit})`, async function () {
@@ -2604,7 +2640,7 @@ describe('Record locks (harper#483)', () => {
 				await T.put({ id: idA2, n: 0 });
 				await T.put({ id: idB2, n: 0, name: 'before' });
 				const putInterleaving1 = outsideWriter(() => T.patch(idB1, { name: 'interleaved' }));
-				const putInterleaving2 = outsideWriter(() => T.put({ id: idB2, n: 50, name: 'before' }));
+				const putInterleaving2 = outsideWriter(() => T.patch(idB2, { n: 50 }));
 
 				await assert.rejects(
 					transaction(async () => {
