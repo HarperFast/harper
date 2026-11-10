@@ -197,6 +197,15 @@ function releaseLock(): void {
 	lockHolder = undefined;
 }
 
+/** Stops this agent's scopes and the project's containers by name; returns what is still running. */
+async function forceCleanup(unitPrefix: string): Promise<string[]> {
+	for (const unit of await agentScopes(`${unitPrefix}-`))
+		await exec('systemctl', ['--user', 'stop', unit], { timeout: 120_000 }).catch(() => {});
+	const docker = hasDocker();
+	if (docker && (await runningProjectContainers()).length > 0) await composeDownProject().catch(() => {});
+	return [...(await agentScopes(`${unitPrefix}-`)), ...(docker ? await runningProjectContainers() : [])];
+}
+
 async function agentScopes(prefix: string, states = 'active,activating,deactivating,reloading'): Promise<string[]> {
 	const { stdout } = await exec(
 		'systemctl',
@@ -237,6 +246,18 @@ export function createAgent() {
 	const serial = serialQueue();
 	let echo: Awaited<ReturnType<typeof startEchoServer>> | undefined;
 	let closing = false;
+	const underway = new Set<Promise<unknown>>();
+	/** Work on a part that shutdown waits for before it stops the parts, and refuses once it has begun. */
+	const fenced = <T,>(work: () => Promise<T>): Promise<T> => {
+		if (closing) return Promise.reject(new Error('the agent is shutting down'));
+		const running = work();
+		underway.add(running);
+		running.then(
+			() => underway.delete(running),
+			() => underway.delete(running)
+		);
+		return running;
+	};
 
 	const ready = (): Session => {
 		if (!session) throw new Error('the agent is not initialized');
@@ -372,19 +393,21 @@ export function createAgent() {
 		startTarget: (params: { target: TargetName; launch: LaunchOptions }) => serial(() => startTarget(params)),
 		stopTarget: (params: { handle: number }) => serial(() => stopTarget(params)),
 		snapshot: ({ handle, name }: { handle: number; name: string }) =>
-			serial(async () => (await part(handle).snapshot(onThisHost(name))) ?? null),
-		afterLoad: ({ handle }: { handle: number }) => part(handle).afterLoad?.(),
+			serial(() => fenced(async () => (await part(handle).snapshot(onThisHost(name))) ?? null)),
+		afterLoad: ({ handle }: { handle: number }) => fenced(async () => part(handle).afterLoad?.()),
 		checkpoints: ({ handle }: { handle: number }) => part(handle).checkpoints?.(),
 		verifyPlacement: ({ handle }: { handle: number }) => probe(handle).verifyPlacement(),
 		sample: ({ handle }: { handle: number }) => probe(handle).sample(),
 		cpuSeconds: ({ handle }: { handle: number }) => probe(handle).cpuSeconds(),
 		cgroupMemory: ({ handle }: { handle: number }) => probe(handle).cgroupMemory(),
 		beginWindow: ({ handle, options }: { handle: number; options: WindowOptions }) =>
-			probe(handle).beginWindow({
-				...options,
-				recordPrefix: options.recordPrefix ? profilePath(options.recordPrefix) : undefined,
-			}),
-		endWindow: ({ handle }: { handle: number }) => probe(handle).endWindow(),
+			fenced(() =>
+				probe(handle).beginWindow({
+					...options,
+					recordPrefix: options.recordPrefix ? profilePath(options.recordPrefix) : undefined,
+				})
+			),
+		endWindow: ({ handle }: { handle: number }) => fenced(() => probe(handle).endWindow()),
 		async fold({ handle, label }: { handle: number; label: string }) {
 			const prefix = profilePath(label);
 			const samples = await probe(handle).fold(prefix);
@@ -408,11 +431,13 @@ export function createAgent() {
 		},
 		rttProbe: ({ host, port }: { host: string; port: number }) => pingPong(host, port),
 		removeSnapshots: () =>
-			serial(async () => {
-				ready();
-				await removePgSnapshots();
-				await rm(join(dataDir(), 'snapshots'), { recursive: true, force: true });
-			}),
+			serial(() =>
+				fenced(async () => {
+					ready();
+					await removePgSnapshots();
+					await rm(join(dataDir(), 'snapshots'), { recursive: true, force: true });
+				})
+			),
 		diskBytes: ({ path }: { path: string }) => {
 			ready();
 			if (path.split('/').includes('..')) throw new Error(`bad path ${path}`);
@@ -427,12 +452,14 @@ export function createAgent() {
 	};
 
 	/**
-	 * Refuses new launches, lets a launch already queued or in flight finish (or fail), then stops every
-	 * part. Resolves false if any part could not be stopped.
+	 * Refuses new work, lets the launches, windows and snapshots already under way finish (or fail),
+	 * then stops every part. A part whose own teardown failed is cleaned up by unit name and container
+	 * instead, since its teardown cannot run twice. Resolves false unless nothing it started still runs.
 	 */
 	async function shutdown(): Promise<boolean> {
 		closing = true;
 		await serial(async () => {});
+		await Promise.allSettled([...underway]);
 		let stopped = true;
 		for (const handle of [...parts.keys()]) {
 			try {
@@ -443,7 +470,12 @@ export function createAgent() {
 			}
 		}
 		await echo?.close();
-		return stopped;
+		if (stopped || !session) return stopped;
+		const left = await forceCleanup(session.unitPrefix).catch((error) => [
+			`cleanup failed: ${(error as Error).message}`,
+		]);
+		if (left.length > 0) console.error(`still running after shutdown: ${left.join(', ')}`);
+		return left.length === 0;
 	}
 
 	return { handlers, shutdown, info: () => info };

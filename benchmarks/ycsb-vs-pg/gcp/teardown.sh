@@ -33,12 +33,13 @@ if [ "$ALL" = 1 ]; then
 		echo "--all deletes every VM labeled ycsb-bench=true and every resource named ycsb-* in $YCSB_GCP_PROJECT; add --yes" >&2
 		exit 2
 	}
-	VMS='labels.ycsb-bench=true OR name ~ ^ycsb-'
-	NAMED='name ~ ^ycsb-'
+	VMS="labels.ycsb-bench=true OR name ~ '^ycsb-'"
+	NAMED="name ~ '^ycsb-'"
 else
 	ycsb_check_run_id "$RUN_ID"
-	VMS="labels.ycsb-run=$RUN_ID OR name ~ ^$RUN_ID-($(ycsb_roles ab | tr ' ' '|'))\$"
-	NAMED="name ~ ^$RUN_ID-(net|subnet|internal|ssh|compact)\$"
+	# The regexes are quoted inside the filter: gcloud's filter grammar would read the parentheses itself.
+	VMS="labels.ycsb-run=$RUN_ID OR name ~ '^$RUN_ID-($(ycsb_roles ab | tr ' ' '|'))\$'"
+	NAMED="name ~ '^$RUN_ID-(net|subnet|internal|ssh|compact)\$'"
 fi
 
 # gcloud list, or nothing in a dry run (which prints the query).

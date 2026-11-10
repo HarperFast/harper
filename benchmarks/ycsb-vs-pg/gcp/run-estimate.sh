@@ -69,7 +69,9 @@ phase() {
 	while [ -z "$status" ]; do
 		sleep 60
 		polls=$((polls + 1))
-		if out=$(on_gen "tail -n 2 /opt/ycsb/logs/$name.log >&2; cat /opt/ycsb/logs/$name.status 2>/dev/null || true"); then
+		# No status file and no running unit: systemd ended the phase before the wrapper could write one.
+		if out=$(on_gen "s=/opt/ycsb/logs/$name.status; tail -n 2 /opt/ycsb/logs/$name.log >&2; if [ -f \$s ]; then cat \$s; \
+			elif ! systemctl --user is-active -q ycsb-$name; then if [ -f \$s ]; then cat \$s; else echo ended-without-status; fi; fi"); then
 			unreachable=0
 			status=$out
 		else

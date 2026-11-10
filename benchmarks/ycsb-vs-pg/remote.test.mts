@@ -538,14 +538,14 @@ test('provisioning refuses a bad run id or an unknown public address; teardown f
 	for (const kind of ['instances', 'resource-policies', 'firewall-rules', 'networks subnets', 'networks', 'disks']) {
 		ok(stderr.includes(`compute ${kind} list --project=p --filter=`), kind);
 	}
-	ok(stderr.includes('--filter=labels.ycsb-run=ycsb-test-7 OR name ~ ^ycsb-test-7-'));
+	ok(stderr.includes("--filter=labels.ycsb-run=ycsb-test-7 OR name ~ '^ycsb-test-7-(generator|"));
 	await rejects(gcpScript('teardown.sh', ['--all'], { YCSB_GCP_PROJECT: 'p' }), /add --yes/);
 });
 
 test('teardown selects a run by its exact names, so one run id never matches a longer one', async () => {
 	const { stderr } = await gcpScript('teardown.sh', ['--dry-run', 'ycsb-check'], { YCSB_GCP_PROJECT: 'p' });
 	const filters = [...stderr.matchAll(/--filter=(.*?) --format/g)].map((m) => m[1]);
-	const regexes = filters.map((f) => new RegExp(/name ~ (\S+)/.exec(f)![1]));
+	const regexes = filters.map((f) => new RegExp(/name ~ '([^']+)'/.exec(f)![1]));
 	const matched = (name: string) => regexes.some((r) => r.test(name));
 	for (const own of [
 		'ycsb-check-generator',

@@ -409,8 +409,10 @@ export async function connectRemote(
 					...(theirs.some((t) => t.foreign.length > 0) ? { sharedCgroup: true as const } : {}),
 				};
 			},
-			close: async () => {
-				await closeAll();
+			async close() {
+				const closed = await Promise.allSettled(agents.map((agent) => agent.rpc.close()));
+				const failed = closed.filter((c): c is PromiseRejectedResult => c.status === 'rejected');
+				if (failed.length > 0) throw new Error(failed.map((f) => (f.reason as Error).message).join('; '));
 			},
 		};
 		remote.meta = {

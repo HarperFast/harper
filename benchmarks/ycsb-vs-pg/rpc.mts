@@ -122,12 +122,16 @@ export class RpcClient {
 		}
 	}
 
-	/** Ends the agent's stdin, which makes it stop everything it started, and waits for it to exit. */
+	/**
+	 * Ends the agent's stdin, which makes it stop everything it started, and waits for it to exit.
+	 * Rejects unless it exits 0: anything else means some of what it started may still run.
+	 */
 	async close(graceMs = 15 * 60_000): Promise<void> {
 		this.child.stdin!.end();
 		const timer = setTimeout(() => this.child.kill('SIGKILL'), graceMs);
-		await this.exited;
+		const code = await this.exited;
 		clearTimeout(timer);
+		if (code !== 0) throw new Error(`agent ${this.name} exited ${code ?? 'on a signal'} when closed`);
 	}
 }
 
