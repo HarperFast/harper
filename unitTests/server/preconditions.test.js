@@ -1,5 +1,6 @@
 const assert = require('node:assert');
 const { Readable, PassThrough } = require('node:stream');
+const { resolve } = require('node:path');
 const { setImmediate: nextTurn, setTimeout: delay } = require('node:timers/promises');
 const { waitFor } = require('../waitFor.js');
 const { setupTestDBPath } = require('../testUtils.js');
@@ -682,6 +683,7 @@ describe('REST preconditions with real table transactions', () => {
 					'--fail-zero',
 				],
 				{
+					cwd: resolve(__dirname, '../..'),
 					env: { ...process.env, HARPER_CONDITIONAL_QUEUE_CHILD: '1' },
 					encoding: 'utf8',
 					timeout: 30000,
