@@ -1007,6 +1007,8 @@ describe('MQTT durable sessions resuming through the checked subscription', func
 		await first.session.persist();
 		assert.deepStrictEqual(first.closed, ['superseded']);
 		assert.strictEqual((await stored(clientId)).incarnation, second.session.incarnation);
+		// the stubbed transport closes no socket, so the superseded session's subscriptions are ended here
+		first.session.disconnect(true);
 		second.session.disconnect(true);
 	});
 
@@ -2179,9 +2181,12 @@ describe('MQTT QoS 2 exactly-once exchanges', function () {
 		await waitFor(() => published(first, 'b'));
 		first.handlers.message(generate({ cmd: 'pubrec', messageId: published(first, 'b').messageId }, v5));
 		await waitFor(() => ofCommand(first, 'pubrel').length === 1);
+		const [session] = open.sessions;
 		first.handlers.close();
-		const record = await stored(clientId);
 		await waitFor(() => !open.sessions.size || [...open.sessions].every((session) => session.sealed));
+		// the final save has landed, so the record written below is not replaced by it
+		await session.writes;
+		const record = await stored(clientId);
 		// as when the record replicated from another node, whose log keys name nothing here
 		await databases.system.hdb_durable_session.put({
 			...record,
@@ -2906,16 +2911,18 @@ describe('MQTT durable collection topics on retained delivery', function () {
 			return true;
 		});
 		await second.session.resume();
-		const rest = ids.slice(1);
+		// one drain can send the whole first batch before the listener's immediate acknowledges it
+		const acknowledged = new Set(first.received.slice(0, between.delivered).map(({ message }) => message?.value));
+		const rest = ids.filter((id) => !acknowledged.has(id));
 		await waitFor(() => rest.every((id) => delivery(second.received, id)), {
 			timeout: 20_000,
 			message: () =>
 				`missing ${rest.filter((id) => !delivery(second.received, id)).length} of the unacknowledged late records`,
 		});
-		assert.strictEqual(
-			delivery(second.received, 'late-0'),
-			undefined,
-			'the acknowledged first record is not sent again'
+		assert.deepStrictEqual(
+			ids.filter((id) => acknowledged.has(id) && delivery(second.received, id)),
+			[],
+			'the acknowledged records are not sent again'
 		);
 		second.session.disconnect(true);
 	});
