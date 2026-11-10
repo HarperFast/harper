@@ -291,7 +291,7 @@ describe(`Test callOperationFunctionAsAwait`, function () {
 		});
 
 		it('logs only the operation and status for a sealed request', async function () {
-			const { setOperationLogView } = require('#src/server/serverHelpers/operationLogView');
+			const { setOperationLogView } = require('#src/utility/operationLogView');
 			const input = new TestInputObject();
 			setOperationLogView(input, () => ({ operation: 'insert' }));
 			const sealed_failure = async function sealed_failure() {

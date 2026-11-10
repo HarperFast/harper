@@ -4,8 +4,8 @@
  * rides in the body that validators and handlers see; built lazily, so a request that is not logged
  * builds nothing.
  */
-import harperLogger from '../../utility/logging/harper_logger.ts';
-import { LOG_LEVELS } from '../../utility/hdbTerms.ts';
+import harperLogger from './logging/harper_logger.ts';
+import { LOG_LEVELS } from './hdbTerms.ts';
 
 export type OperationLogView = () => Record<string, unknown>;
 

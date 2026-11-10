@@ -30,7 +30,7 @@ import {
 } from '../utility/sealedOperation.ts';
 import { streamAsJSON } from '../server/serverHelpers/JSONStream.ts';
 import { operationErrorResponse } from '../server/serverHelpers/operationErrorResponse.ts';
-import { setOperationLogView, type OperationLogView } from '../server/serverHelpers/operationLogView.ts';
+import { setOperationLogView, type OperationLogView } from '../utility/operationLogView.ts';
 import { isOperationAuthorizationBypassed } from '../server/serverHelpers/operationAuthorizationState.ts';
 import * as validator from './operationsValidation.ts';
 
@@ -185,7 +185,7 @@ export async function encryptedOperation(req: any) {
 	if (!custody) throw new ClientError('secrets custody is not initialized on this node', 503);
 	if (!dispatch) throw new ServerError('encrypted_operation is not available in this process', 503);
 
-	const { header, kid } = openHeader(req.envelope, custody, mode);
+	const { header, kid, responseKey, operationHash } = openHeader(req.envelope, custody, mode);
 	const now = wallNow();
 	if (Math.abs(now - header.ts) > maxAge) {
 		throw new AdmissionRefusal('The sealed request is outside the accepted time window', 400, { server_time: now });
@@ -193,10 +193,9 @@ export async function encryptedOperation(req: any) {
 	// No maxAge, even one raised later, admits the envelope once the wall clock passes ts + MAX_MAX_AGE_MS.
 	reserveNonce(header.nonce, header.ts + MAX_MAX_AGE_MS - now, req.hdb_user?.username ?? '');
 
-	const responseKey = decodeBase64(header.rk, RESPONSE_KEY_BYTES);
 	let answer: { status: number; plaintext: Buffer };
 	try {
-		answer = await runSealedOperation(req, header, mode, kid, responseKey, maxSize, bypassAuth);
+		answer = await runSealedOperation(req, header, mode, kid, responseKey, operationHash, maxSize, bypassAuth);
 	} catch (error) {
 		operationLog.error(`encrypted_operation: unexpected ${error?.constructor?.name ?? typeof error} (sealed request)`);
 		answer = sealedResult({ status: 500, body: { error: 'The sealed operation failed' } }, maxSize);
@@ -231,21 +230,23 @@ function openHeader(envelope: string, custody: SecretCustody, mode: SealedMode) 
 	} catch {
 		throw new ClientError('The sealed request is malformed', 400);
 	}
+	if (!isPlainObject(header)) throw new ClientError('The sealed request is malformed', 400);
+	const responseKey = decodeBase64(header.rk, RESPONSE_KEY_BYTES);
+	const operationHash = mode === 'fields' ? decodeBase64(header.oph, OPERATION_HASH_BYTES) : undefined;
 	if (
-		!isPlainObject(header) ||
 		header.v !== SEALED_OPERATION_VERSION ||
-		!decodeBase64(header.rk, RESPONSE_KEY_BYTES) ||
+		!responseKey ||
 		!decodeBase64(header.nonce, NONCE_BYTES) ||
 		typeof header.ts !== 'number' ||
 		!Number.isFinite(header.ts) ||
 		(header.actor !== undefined && !isLoggableActor(header.actor)) ||
 		(mode === 'fields'
-			? header.op !== undefined || !decodeBase64(header.oph, OPERATION_HASH_BYTES)
+			? header.op !== undefined || !operationHash
 			: header.oph !== undefined || !isPlainObject(header.op))
 	) {
 		throw new ClientError('The sealed request is malformed', 400);
 	}
-	return { header, kid };
+	return { header, kid, responseKey, operationHash };
 }
 
 /** Reserve before anything runs and never release, so a duplicate is refused even if the first failed. */
@@ -294,6 +295,7 @@ async function runSealedOperation(
 	mode: SealedMode,
 	kid: string,
 	responseKey: Buffer,
+	operationHash: Buffer | undefined,
 	maxSize: number,
 	bypassAuth: boolean
 ): Promise<{ status: number; plaintext: Buffer }> {
@@ -303,7 +305,7 @@ async function runSealedOperation(
 	let buildView: () => Record<string, unknown>;
 	try {
 		if (mode === 'fields') {
-			inner = openFields(req.op, header, responseKey);
+			inner = openFields(req.op, header.nonce, responseKey, operationHash);
 			buildView = () => ({ ...maskSealedLeaves(JSON.parse(req.op)), encrypted_operation: metadata });
 		} else {
 			inner = header.op;
@@ -399,9 +401,8 @@ function sealedResult(result: SealedResult, maxSize: number): { status: number; 
 	return { status: result.status, plaintext: Buffer.from(json, 'utf8') };
 }
 
-function openFields(opText: string, header: SealedHeader, responseKey: Buffer): Record<string, any> {
-	const expected = decodeBase64(header.oph, OPERATION_HASH_BYTES);
-	if (!timingSafeEqual(Buffer.from(hashOperationText(opText), 'base64'), expected)) {
+function openFields(opText: string, nonce: string, responseKey: Buffer, operationHash: Buffer): Record<string, any> {
+	if (!timingSafeEqual(Buffer.from(hashOperationText(opText), 'base64'), operationHash)) {
 		throw new SealedRefusal('The visible operation does not match the sealed request');
 	}
 	let visible: unknown;
@@ -413,7 +414,7 @@ function openFields(opText: string, header: SealedHeader, responseKey: Buffer): 
 	if (!isPlainObject(visible) || typeof visible.operation !== 'string') {
 		throw new SealedRefusal("The visible operation must name its 'operation' in plaintext");
 	}
-	return visit(visible, '', 0, { sealable: true, responseKey, nonce: header.nonce, leaves: 0 });
+	return visit(visible, '', 0, { sealable: true, responseKey, nonce, leaves: 0 });
 }
 
 interface WalkContext {
@@ -426,14 +427,15 @@ interface WalkContext {
 /**
  * Depth-limited walk over a JSON value that opens sealed leaves (fields mode) and refuses the
  * prototype-poisoning shapes Fastify's body parser refuses on the plaintext path, since this JSON never
- * passed through it. An opened value is checked but not opened again: `$sealed` inside it is data.
+ * passed through it. An opened value is checked but not opened again: `$sealed` inside it is data, and
+ * the JSON Pointer is tracked only where a sealed leaf can occur.
  */
 function visit(value: any, pointer: string, depth: number, context: WalkContext): any {
 	if (value === null || typeof value !== 'object') return value;
 	if (depth > MAX_DEPTH) throw new SealedRefusal('The operation is nested too deeply');
 	if (Array.isArray(value)) {
 		for (let index = 0; index < value.length; index++) {
-			value[index] = visit(value[index], `${pointer}/${index}`, depth + 1, context);
+			value[index] = visit(value[index], context.sealable ? `${pointer}/${index}` : pointer, depth + 1, context);
 		}
 		return value;
 	}
@@ -454,7 +456,8 @@ function visit(value: any, pointer: string, depth: number, context: WalkContext)
 	for (const key of Object.keys(value)) {
 		if (key === '__proto__') throw new SealedRefusal('The operation contains a forbidden property name');
 		// checked after visiting, so a sealed leaf cannot hide `prototype` from it
-		const child = visit(value[key], `${pointer}/${pointerToken(key)}`, depth + 1, context);
+		const childPointer = context.sealable ? `${pointer}/${pointerToken(key)}` : pointer;
+		const child = visit(value[key], childPointer, depth + 1, context);
 		if (key === 'constructor' && isPlainObject(child) && Object.hasOwn(child, 'prototype')) {
 			throw new SealedRefusal('The operation contains a forbidden property name');
 		}

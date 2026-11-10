@@ -1,7 +1,7 @@
 'use strict';
 
 const assert = require('node:assert');
-const { setOperationLogView, operationLogViewOf } = require('#src/server/serverHelpers/operationLogView');
+const { setOperationLogView, operationLogViewOf } = require('#src/utility/operationLogView');
 
 describe('operationLogView', () => {
 	it('keys a view by the body object without adding anything to the body', () => {

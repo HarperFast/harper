@@ -1,7 +1,7 @@
-import { handleHDBError, hdbErrors } from '../../utility/errors/hdbError.ts';
+import { ServerError, hdbErrors } from '../../utility/errors/hdbError.ts';
 
 export function operationErrorResponse(error: any): { statusCode: number; body: unknown } {
-	error ??= handleHDBError(new Error('The request failed without an error'), undefined, 500);
+	error ??= new ServerError(hdbErrors.DEFAULT_ERROR_MSGS[500], 500);
 	let replicationUnconfirmed = false;
 	try {
 		replicationUnconfirmed = error.replicationUnconfirmed === true;

@@ -300,7 +300,7 @@ describe('Test serverUtilities.js module ', () => {
 		});
 
 		it('carries a sealed body’s log view beside the body, never in it', async function () {
-			const { setOperationLogView } = require('#src/server/serverHelpers/operationLogView');
+			const { setOperationLogView } = require('#src/utility/operationLogView');
 			const operationName = 'test_remote_log_view';
 			const sentMessages = [];
 			const originalThreads = global.threads;
@@ -343,7 +343,7 @@ describe('Test serverUtilities.js module ', () => {
 		});
 
 		it('registers the forwarded log view on the worker’s copy of the body', async function () {
-			const { operationLogViewOf } = require('#src/server/serverHelpers/operationLogView');
+			const { operationLogViewOf } = require('#src/utility/operationLogView');
 			const sentMessages = [];
 			const originalThreads = global.threads;
 			global.threads = {

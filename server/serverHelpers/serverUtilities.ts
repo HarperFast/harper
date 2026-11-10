@@ -55,7 +55,7 @@ import {
 } from './registeredOperations.ts';
 import { runWithOperationAuthorizationBypass } from './operationAuthorizationState.ts';
 import { stripSuppliedParsedSqlObject } from './requestSanitization.ts';
-import { isOperationLogEnabled, operationLogViewOf } from './operationLogView.ts';
+import { isOperationLogEnabled, operationLogViewOf } from '../../utility/operationLogView.ts';
 import * as encryptedOperation from '../../components/encryptedOperation.ts';
 
 const pSearchSearch = util.promisify(search.search);

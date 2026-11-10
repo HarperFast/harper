@@ -2,7 +2,7 @@
 
 import log, { isErrorLike, inspectForLog } from './logging/harper_logger.ts';
 import * as terms from './hdbTerms.ts';
-import { operationLogViewOf } from '../server/serverHelpers/operationLogView.ts';
+import { operationLogViewOf } from './operationLogView.ts';
 
 /**
  * Calls the operation function specified in the parameter with the input specified in the parameter.  Once complete,

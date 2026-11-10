@@ -43,7 +43,7 @@ import {
 	unregisterWorkerGrantableOperation,
 } from '../../utility/operationPermissions.ts';
 import { runWithOperationAuthorizationBypass } from './operationAuthorizationState.ts';
-import { isOperationLogEnabled, operationLogViewOf, setOperationLogView } from './operationLogView.ts';
+import { isOperationLogEnabled, operationLogViewOf, setOperationLogView } from '../../utility/operationLogView.ts';
 import { onStartup } from '../../utility/lifecycle.ts';
 
 const operationLog = harperLogger.loggerWithTag('operation');

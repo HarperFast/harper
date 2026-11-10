@@ -1,8 +1,7 @@
 'use strict';
 
-// The encrypted_operation wire format (utility/sealedOperation.ts). The WebCrypto cases build and open
-// payloads with an independent implementation (what a browser client does), so a matching bug in the
-// reference helper and the node cannot certify itself.
+// The WebCrypto cases build and open payloads with an independent implementation (what a browser
+// client does), so a matching bug in the reference helper and the node cannot certify itself.
 
 const assert = require('node:assert');
 const { generateKeyPairSync, webcrypto, createHash } = require('node:crypto');

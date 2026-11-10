@@ -1,6 +1,6 @@
 /**
- * Pure cryptography for `encrypted_operation`, free of Harper imports like
- * `secretEnvelope.ts`, so it is unit-testable alone and is the reference client.
+ * Pure cryptography for `encrypted_operation`. Its only Harper import is `secretEnvelope.ts`, itself
+ * dependency-free, so it is unit-testable alone and is the reference client.
  *
  * Request: `{ operation: 'encrypted_operation', envelope: 'enc:v1:…', mode?, op? }`. The envelope is
  * an ordinary `enc:v1` envelope sealed to the node's custody public key; its plaintext is the sealed

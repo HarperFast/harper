@@ -124,11 +124,12 @@ under the client's response key; the wire format and reference client are `utili
   after is sealed, and an unexpected failure there is still answered sealed. Fields mode verifies the visible text's
   hash before parsing it, and each sealed value is bound to its JSON Pointer by its AAD, so a relay can neither edit
   visible fields nor move a sealed value.
-- **Dispatch logs no sealed content.** The inner body's log view (`server/serverHelpers/operationLogView.ts`) is
+- **Dispatch logs no sealed content.** The inner body's log view (`utility/operationLogView.ts`) is
   metadata in sealed mode and a masked copy in fields mode; `processLocalTransaction` and
-  `callOperationFunctionAsAwait` log the view, not the body or an error message, and a forwarding worker receives it
-  beside the body, never in it. A handler that logs its own input, or a result iterator whose cleanup error echoes
-  its data, is not covered ([#3338](https://github.com/HarperFast/harper/issues/3338)).
+  `callOperationFunctionAsAwait` log the view, not the body or an error message, and the thread a request is forwarded
+  to receives it beside the body, never in it. This holds on this node only: a handler that logs its own input, a
+  result iterator whose cleanup error echoes its data, and a peer that an operation replicates to (which logs it as any
+  replicated operation) are not covered ([#3338](https://github.com/HarperFast/harper/issues/3338)).
 - **Replay is refused per process, not exactly-once.** The nonce is reserved before dispatch, never released, and kept
   until no `maxAge`, even one raised later, could admit its envelope: `ts` plus the 600 s ceiling. A restart forgets
   the store, and a backward wall-clock step longer than that retention re-opens an aged-out envelope
