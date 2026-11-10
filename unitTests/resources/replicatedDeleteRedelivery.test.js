@@ -268,6 +268,11 @@ describe('Re-delivered replicated writes (harper-pro#826, harper-pro#1306)', () 
 	});
 
 	const invalidate = (id, name, extra) => ({ type: 'invalidate', id, record: name && { id, name }, ...extra });
+	// below the audit floor an older plain patch is dropped unwalked, so the patch tests key above it
+	function recentClock() {
+		let key = Date.now();
+		return () => (key += 1000);
+	}
 
 	it('does not re-log an invalidate re-delivered onto its own stub', async function () {
 		if (isLMDB) return this.skip();
@@ -330,9 +335,8 @@ describe('Re-delivered replicated writes (harper-pro#826, harper-pro#1306)', () 
 			],
 			audit: true,
 		});
-		// below the audit floor an older patch is dropped instead of folding, so these keys sit above it
-		let recentKey = Date.now();
-		const [patchKey, invalidateKey] = [(recentKey += 1000), (recentKey += 1000)];
+		const clock = recentClock();
+		const [patchKey, invalidateKey] = [clock(), clock()];
 		const id = 'folded-stub';
 		await applyFrame(invalidateKey, [invalidate(id, 'stub')], Folded);
 		await applyFrame(patchKey, [{ type: 'patch', id, record: { name: 'folded' }, nodeId: otherPeerNodeId }], Folded);
@@ -341,6 +345,27 @@ describe('Re-delivered replicated writes (harper-pro#826, harper-pro#1306)', () 
 		const logged = invalidations();
 		for (let i = 0; i < 3; i++) await applyFrame(invalidateKey, [invalidate(id, 'stub')], Folded);
 		assert.equal(invalidations(), logged);
+	});
+
+	it('re-delivers a [delete, invalidate] transaction to the stub it left', async function () {
+		const id = 'delete-invalidate';
+		await applyFrame(originClock(), [put(id, 'resident')]);
+		const logKey = originClock();
+		const frame = [del(id), invalidate(id, 'stub-after-delete')];
+		await applyFrame(logKey, frame);
+		await applyFrame(logKey, frame);
+		const entry = Nodes.primaryStore.getEntry(id);
+		assert.equal(entry.metadataFlags & INVALIDATED, INVALIDATED);
+		assert.deepEqual(await indexedIds('stub-after-delete'), [id]);
+	});
+
+	it('applies an invalidate whose transaction committed only an earlier put to the key', async function () {
+		const id = 'put-then-invalidate';
+		const logKey = originClock();
+		await applyFrame(logKey, [put(id, 'resident-first')]);
+		await applyFrame(logKey, [invalidate(id, 'stub-second')]);
+		assert.equal(Nodes.primaryStore.getEntry(id).metadataFlags & INVALIDATED, INVALIDATED);
+		assert.deepEqual(await indexedIds('stub-second'), [id]);
 	});
 
 	it('still applies a same-version invalidate from a different origin', async function () {
@@ -360,14 +385,11 @@ describe('Re-delivered replicated writes (harper-pro#826, harper-pro#1306)', () 
 			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }, { name: 'other' }],
 			audit: true,
 		});
-		// below the audit floor the walk is skipped and a plain patch is dropped, so these keys sit above it
-		let recentKey = Date.now();
-		const clock = () => (recentKey += 1000);
+		const clock = recentClock();
 		const lateOrigin = getIdOfRemoteNode('redelivery-late-origin', auditStore);
 		const copySource = getIdOfRemoteNode('redelivery-copy-source', auditStore);
 		const id = 'late-patch';
 		const [baseKey, lateKey, firstLateOriginKey, newerKey, copyKey] = [clock(), clock(), clock(), clock(), clock()];
-		// the late origin's log already holds a newer key when its older patch is relayed in
 		await applyFrame(
 			firstLateOriginKey,
 			[{ type: 'put', id: 'late-origin-first', record: { id: 'late-origin-first' }, nodeId: lateOrigin }],
@@ -384,7 +406,6 @@ describe('Re-delivered replicated writes (harper-pro#826, harper-pro#1306)', () 
 			assert.ok(entry.txnLogKey > lateKey, 'premise: the late origin log starts above the late key');
 			break;
 		}
-		// a base copy writes the newer body with no audit entry, so the walk cannot reach the late patch's entry
 		await applyFrame(
 			copyKey,
 			[{ type: 'put', id, record: { id, name: 'copied', other: 2 }, nodeId: copySource, isCopyApply: true }],

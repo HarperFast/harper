@@ -5024,10 +5024,8 @@ export function makeTable(options): TableResourceClass {
 						(precedesExisting === 0 &&
 							committedBy?.sourceApply &&
 							isRocksDB &&
-							isAuditEntryWrite(identityBase(write, existingEntry, committedBy), {
-								txnLogKey,
-								nodeId: options?.nodeId,
-							})) ||
+							(!priorStagedOp || priorStagedOp.stagedEntry.unchanged) &&
+							isStubLeftBy(identityBase(write, existingEntry, committedBy), txnLogKey, options?.nodeId)) ||
 						((!priorStagedOp || priorStagedOp.stagedEntry.unchanged) &&
 							precedesExisting === 0 &&
 							existingEntry?.value &&
@@ -6617,8 +6615,7 @@ export function makeTable(options): TableResourceClass {
 							// authoritative full-copy record restoring exact convergence (#1148). This guard turns that
 							// tolerated miss into a deliberate skip for pre-retention versions — staying within the
 							// existing contract. At or above the audit floor nothing was purged, so the lookup always runs
-							// there: a late-relayed entry sits below its log's first appended entry, and a skipped lookup
-							// re-logs it on every re-delivery, which peers forward back (harper-pro#1306).
+							// there (resources/audit-retention.md).
 							// Resolve the oldest retained entry once, for the same log the dedup reads.
 							let oldestRetainedAuditTime: number | undefined;
 							let oldestRetainedAuditTimeResolved = false;
@@ -6630,7 +6627,7 @@ export function makeTable(options): TableResourceClass {
 								if (version >= auditFloor) return true;
 								if (!oldestRetainedAuditTimeResolved) {
 									oldestRetainedAuditTimeResolved = true;
-									// getRange yields ascending by audit-log key, so the first entry is the oldest retained.
+									// the first appended entry: a late-relayed one can sit below it, so the floor check comes first
 									// Mirror replicationConnection's retention check and the cleanup key basis (`txnLogKey`).
 									// Fall back to the nominal time-based purge floor when the log is empty/unavailable.
 									for (const entry of auditStore.getRange({ start: 1, log: options?.nodeId })) {
@@ -13372,6 +13369,14 @@ export function makeTable(options): TableResourceClass {
 			if (!prior.skipped) return;
 		}
 		if (!(existingEntry?.metadataFlags & INVALIDATED)) return existingEntry;
+	}
+
+	/**
+	 * Whether `entry` is the stub this invalidate already left. Every write of one transaction shares its identity,
+	 * so a sibling's put or delete carries it too; only a stub says the invalidate applied last.
+	 */
+	function isStubLeftBy(entry: Partial<Entry> | undefined, txnLogKey: number, nodeId: number | undefined): boolean {
+		return Boolean(entry?.metadataFlags & INVALIDATED) && isAuditEntryWrite(entry, { txnLogKey, nodeId });
 	}
 
 	// Not stagedEntry: a relocate restamps the record without staging it, and a publish's restamp counts too.
