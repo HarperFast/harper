@@ -8,7 +8,8 @@
  * patch / delete / getNewId) over an in-memory Map, plus `search` for the
  * UPDATE/DELETE selector. The transaction runner is stubbed to invoke its
  * callback once (and record that it did), so we can assert the whole batch runs
- * inside a single transaction.
+ * inside a single transaction; the literal-on-the-left suite at the bottom runs
+ * against a real table and `transaction`.
  */
 
 const assert = require('assert');
@@ -382,18 +383,15 @@ describe('sqlEngine literal-on-the-left comparators (SELECT, UPDATE, DELETE)', f
 	});
 
 	const sortedNum = (arr) => [...arr].sort((a, b) => a - b);
-
 	async function reseed() {
 		for await (const { id } of T.search({ select: ['id'], allowFullScan: true })) await T.delete(id);
 		for (const id of SEED_IDS) await T.put({ id, qty: id * 10 });
 	}
-
 	async function readRows() {
 		const rows = [];
 		for await (const r of T.search({ select: ['id', 'qty'], allowFullScan: true })) rows.push({ id: r.id, qty: r.qty });
 		return rows.sort((a, b) => a.id - b.id);
 	}
-
 	for (const [litWhere, colWhere, expectedIds] of CASES) {
 		it(`SELECT WHERE ${litWhere} matches WHERE ${colWhere}`, async () => {
 			await reseed();
