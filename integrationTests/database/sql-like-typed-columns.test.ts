@@ -34,7 +34,6 @@ for (const [engine, fullScan] of [
 	['legacy', false],
 	['new', true],
 ] as const) {
-	// Under `new` without `sql.allowFullScan`, a statement with no index driver is rejected.
 	const rejectsUndriven = engine === 'new' && !fullScan;
 	suite(
 		`typed LIKE [sql=${engine}, allowFullScan=${fullScan}, storage=${process.env.HARPER_STORAGE_ENGINE ?? 'rocksdb'}]`,
