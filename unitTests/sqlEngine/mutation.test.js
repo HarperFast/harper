@@ -315,6 +315,10 @@ describe('sqlEngine phase 4: mutations', () => {
 		assert.strictEqual(widgets._store.get(2).qty, 25);
 		await runSql('UPDATE dev.widget SET qty = other.qty + 1 WHERE id = 2');
 		assert.strictEqual(captured[1], 26);
+		await runSql('UPDATE dev.widget SET qty = qty WHERE id = 2');
+		assert.strictEqual(captured[2], 26);
+		await runSql('UPDATE dev.widget SET qty = qty + 1, qty = qty - 1 WHERE id = 2');
+		assert.strictEqual(captured[3].value, 0);
 	});
 
 	it('UPDATE sends an Addition only with an operand the declared type accepts', async () => {

@@ -35,11 +35,7 @@ import { EngineRuntimeError } from '../errors.ts';
 import { Addition } from '../../resources/tracked.ts';
 import { addValues, OPERATION_TYPES } from '../../resources/crdt.ts';
 
-/**
- * Pushes the signed numeric literals of `expr` onto `terms` and returns the net coefficient of the
- * target column (bare, or qualified by the target table or its alias) in it, or undefined if `expr`
- * is not a sum of the two. `col + N`, `N + col`, `col - N`, nested or grouped, return 1.
- */
+/** The target column's net coefficient in a sum of it and numeric literals, whose terms go to `terms`. */
 function collectTerms(
 	expr: ExprNode,
 	sign: number,
@@ -347,7 +343,7 @@ export async function runUpdate(bound: BoundUpdate, ctx: SqlEngineContext): Prom
 	}
 	for (const assignments of assignmentsByColumn.values()) {
 		const { terms } = assignments;
-		if (!terms) continue;
+		if (!terms?.length) continue;
 		const type = table.attributes?.find((attribute) => attribute.name === assignments.column)?.type;
 		if (type && !OPERATION_TYPES.has(type)) continue;
 		const delta = terms.reduce((sum, term) => sum + term, 0);
