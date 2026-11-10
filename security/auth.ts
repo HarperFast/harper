@@ -72,6 +72,7 @@ function envFlag(value: string | undefined): boolean | undefined {
 const DEFAULT_COOKIE_EXPIRES = 'Tue, 01 Oct 8307 19:33:20 GMT';
 
 let authorizationCache = new Map();
+let failedCredentials = new Set<string>();
 const validatorClaims = new WeakMap<object, BearerValidatorEntry>();
 let invalidationGeneration = 0;
 
@@ -99,9 +100,11 @@ onStartup(() => {
 		// TODO: Eventually we probably want to be able to invalidate individual users
 		invalidationGeneration++;
 		authorizationCache = new Map();
+		failedCredentials = new Set();
 	});
 	setInterval(() => {
 		authorizationCache = new Map();
+		failedCredentials = new Set();
 	}, env.get(CONFIG_PARAMS.AUTHENTICATION_CACHETTL)).unref();
 });
 let authorizeAllAsLocal = false;
@@ -374,9 +377,8 @@ export async function authentication(request, nextHandler) {
 					}
 				} catch (err) {
 					if (LOG_AUTH_FAILED) {
-						const failedAttempt = authorizationCache.get(credentials);
-						if (!failedAttempt) {
-							authorizationCache.set(credentials, credentials);
+						if (!failedCredentials.has(credentials)) {
+							failedCredentials.add(credentials);
 							authAuditLog(request, sessionId, username, AUTH_AUDIT_STATUS.FAILURE, strategy);
 						}
 					}
