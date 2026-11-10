@@ -334,6 +334,7 @@ storage:
 
 - `writeAsync` <EngineBadge engines="LMDB" /> — Disable disk sync on commit for the legacy LMDB storage engine (**disables local disk durability guarantees on LMDB**). Has no effect on RocksDB, which does not `fsync` commits; see [Storage Tuning — Durability vs. Throughput](../database/storage-tuning.md#durability-vs-throughput); _Default_: `false`
 - `caching` — In-memory record caching; _Default_: `true`
+- `recordCacheSize` <VersionBadge version="v5.4.0" /> <EngineBadge engines="RocksDB" /> — Entries each thread's in-memory record cache holds, shared by every table in the thread; also sizes RocksDB's verification table. An integer from `4` to `16777215`, read at startup. See [Storage Tuning — `storage.recordCacheSize`](../database/storage-tuning.md#storagerecordcachesize); _Default_: `32768`
 - `compression` — LZ4 record compression; _Default_: `true` (enabled by default since v4.3.0). Sub-options: `dictionary`, `threshold`
 - `compactOnStart` — Compact all non-system databases on startup; _Default_: `false` (Added in: v4.3.0)
 - `compactOnStartKeepBackup` — Retain compaction backups; _Default_: `false`

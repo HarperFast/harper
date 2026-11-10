@@ -26,6 +26,7 @@ import { compactOnStart, migrateOnStart } from './copyDb.ts';
 import minimist from 'minimist';
 import * as keys from '../security/keys.ts';
 import { startHTTPThreads } from '../server/threads/socketRouter.ts';
+import { configuredHttpThreadCount } from '../server/threads/workerPools.ts';
 import { beginProcessShutdown } from '../server/threads/manageThreads.ts';
 import { createTerminationHandler, shutdownProcess } from '../server/threads/processShutdown.ts';
 import { getProcessShutdownTimeoutMs } from '../components/shutdownDrain.ts';
@@ -267,11 +268,7 @@ async function main(calledByInstall = false) {
 
 		const isScripted = process.env.IS_SCRIPTED_SERVICE && !cmdArgs.service;
 
-		await startHTTPThreads(
-			process.env.DEV_MODE
-				? 1
-				: (env.get(hdbTerms.CONFIG_PARAMS.THREADS_COUNT) ?? env.get(hdbTerms.CONFIG_PARAMS.THREADS))
-		);
+		await startHTTPThreads(configuredHttpThreadCount());
 		// after main settled interrupted deploys and every pool worker reported what it loaded
 		import('../components/operations.ts').then(
 			({ retryPendingBranchRemovals }) => retryPendingBranchRemovals(),
