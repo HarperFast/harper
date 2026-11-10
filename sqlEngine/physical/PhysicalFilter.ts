@@ -1,6 +1,5 @@
 /**
- * PhysicalFilter: lazy residual filter on top of a child iterable. Which rows
- * pass is `compilePredicate`'s decision.
+ * PhysicalFilter: lazy residual filter on top of a child iterable.
  */
 
 import type { ExprNode } from '../parser/ast.ts';

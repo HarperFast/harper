@@ -90,12 +90,21 @@ describe('sqlEngine compiled predicate semantics', () => {
 			['5', '<', 10, true],
 			['10', '>', 9, true],
 			[new Date(5), '<', 10, true],
+			['', '>', false, true],
 		];
 		for (const [left, op, right, expected] of CASES) {
 			it(`${show(left)} ${op} ${show(right)} is ${expected}`, () => {
 				assert.strictEqual(compileExpr(bin(op, lit(left), lit(right))).eval({}), expected);
 			});
 		}
+
+		it('leaves a Date against a string in text order, which harper#4151 owns', () => {
+			const date = new Date('2020-01-01T00:00:00Z');
+			for (const op of ['<', '>']) {
+				const expected = op === '<' ? String(date) < '2025-01-01' : String(date) > '2025-01-01';
+				assert.strictEqual(compileExpr(bin(op, lit(date), lit('2025-01-01'))).eval({}), expected, op);
+			}
+		});
 
 		it('a NaN made by arithmetic on a blank string has no order', () => {
 			assert.strictEqual(evaluate(bin('>', bin('+', v, lit(0)), lit('0')), ''), null);

@@ -310,9 +310,9 @@ function compare(a: unknown, b: unknown): number {
 	const bx = numeric(b);
 	if (!Number.isNaN(ax) && !Number.isNaN(bx)) return compareNumbers(ax, bx);
 	if (Number.isNaN(a) || Number.isNaN(b)) return Number.NaN;
-	// a string with no numeric reading sorts after any value with one, as Harper's indexes order them
-	if (typeof a === 'string' && !Number.isNaN(bx)) return 1;
-	if (typeof b === 'string' && !Number.isNaN(ax)) return -1;
+	// a string with no numeric reading sorts after a number or boolean, as Harper's indexes order them
+	if (typeof a === 'string' && (typeof b === 'number' || typeof b === 'boolean')) return 1;
+	if (typeof b === 'string' && (typeof a === 'number' || typeof a === 'boolean')) return -1;
 	const as = String(a);
 	const bs = String(b);
 	return as < bs ? -1 : as > bs ? 1 : 0;
