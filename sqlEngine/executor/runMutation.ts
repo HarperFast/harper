@@ -102,7 +102,6 @@ function evaluateAssignments({ column, steps }: ColumnAssignments, row: Row): un
 	}
 }
 
-// The operand ranges `validate` accepts for an add on these declared types.
 function operandAccepted(delta: number, type: string | undefined): boolean {
 	if (!Number.isFinite(delta)) return false;
 	if (type === 'Int') return delta >> 0 === delta;
