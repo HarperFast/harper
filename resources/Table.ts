@@ -6756,7 +6756,6 @@ export function makeTable(options): TableResourceClass {
 								if (options?.nodeId && auditStore.isLocalOrigin(options.nodeId)) return false;
 								if (!oldestRetainedAuditTimeResolved) {
 									oldestRetainedAuditTimeResolved = true;
-									// the first appended entry, not the lowest key
 									// Mirror replicationConnection's retention check and the cleanup key basis (`txnLogKey`).
 									// Fall back to the nominal time-based purge floor when the log is empty/unavailable.
 									for (const entry of auditStore.getRange({ start: 1, log: options?.nodeId })) {
@@ -6927,8 +6926,7 @@ export function makeTable(options): TableResourceClass {
 							let fullySuperseded = false;
 							// A re-delivered write whose exact (version, nodeId) is already in the audit log was already
 							// applied; drop it rather than re-applying it (double-applying commutative ops) or writing a
-							// duplicate audit-only record. Used where the walk cannot reach this write's own entry: the early-out,
-							// missing history and the depth cap.
+							// duplicate audit-only record.
 							// Never a duplicate for a write that may read its own orphan (see the up-front keyed dedup above).
 							const isReDeliveredDuplicate = () => {
 								if (replaying || mayReadOwnOrphan) return false;
