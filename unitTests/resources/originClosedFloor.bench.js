@@ -3,7 +3,8 @@
  *
  * A/B in one process: the reservation and the choke-point check are swapped for no-ops through the
  * module's exports, so both sides run the same build, tables and keys. Also reports the reservation
- * pair on a raw handle and one certifier round with persistence.
+ * pair on a raw handle, one certifier round with persistence, and the pair on a fresh handle before and
+ * after a claim ahead of the clock (last: a claim leaves state behind for the rest of the process).
  *
  * Run via: npm run bench, or `npx mocha unitTests/resources/originClosedFloor.bench.js`.
  */
@@ -13,7 +14,8 @@ const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { Transaction } = require('../rocksdbBindings.mts').rocksdbBindings();
 const floor = require('#js/resources/originClosedFloor');
-const { persistOriginClosedFloor } = require('#src/resources/auditStore');
+const { persistOriginClosedFloor, readLocalIssuanceCeiling } = require('#src/resources/auditStore');
+const { setTimeout: sleep } = require('node:timers/promises');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 const WRITES = 20_000;
@@ -224,5 +226,28 @@ describe('Benchmark: origin-closed floor write overhead', function () {
 				`(${(((busyMs - idleMs) / idleMs) * 100).toFixed(1)}%, ${(((busyMs - idleMs) / writes) * 1e6).toFixed(0)} ns/write; ` +
 				`${captureRate.toFixed(0)} captures/s)`
 		);
+	});
+
+	it('reservation pair on a fresh handle, before and after a claim ahead of the clock', async () => {
+		const pairs = 50_000;
+		const measure = () => {
+			const start = performance.now();
+			for (let n = 0; n < pairs; n++) {
+				const handle = new Transaction(Tbl.primaryStore.store);
+				floor.reserveLocalKey(rootStore, handle);
+				floor.releaseLocalKey(handle);
+				handle.abort();
+			}
+			return (((performance.now() - start) / pairs) * 1e6).toFixed(0).padStart(6);
+		};
+		measure();
+		const before = measure();
+		floor.claimLocalKey(rootStore, rootStore.getMonotonicTimestamp() + 100);
+		const ceiling = readLocalIssuanceCeiling(auditStore);
+		while (rootStore.getMonotonicTimestamp() <= ceiling) await sleep(20);
+		const after = measure();
+		console.log('');
+		console.log(`  fresh handle + pair, before any claim    ${before} ns`);
+		console.log(`  fresh handle + pair, after a claim       ${after} ns`);
 	});
 });

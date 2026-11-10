@@ -32,6 +32,7 @@ const {
 	releaseLocalKey,
 	retireOriginFloorSlots,
 	seedLocalIssuance,
+	timestampAbove,
 } = require('#src/resources/originClosedFloor');
 const {
 	persistOriginClosedFloor,
@@ -587,6 +588,25 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 			seedLocalIssuance(rootStore, readLocalIssuanceCeiling(auditStore), (key) => coverLocalIssuance(auditStore, key));
 		}
 	});
+
+	for (const ahead of [true, false]) {
+		it(`a handle minted before a claim ${ahead ? 'ahead of' : 'behind'} the clock reserves above it`, async () => {
+			const id = `pre-claim-${ahead}`;
+			let handleKey;
+			let floor;
+			await transaction({}, async (txn) => {
+				await Tbl.get(id);
+				handleKey = txn.getReadTxn().getTimestamp();
+				floor = ahead ? rootStore.getMonotonicTimestamp() + 200 : timestampAbove(handleKey);
+				assert(claimLocalKey(rootStore, floor) >= floor);
+				await Tbl.put({ id, n: 1 });
+			});
+			const [entry] = entriesFor(id);
+			assert(entry.txnLogKey >= floor, `key ${entry.txnLogKey} below the claim ${floor}`);
+			assert.notEqual(entry.txnLogKey, handleKey);
+			await waitFor(() => rootStore.getMonotonicTimestamp() > readLocalIssuanceCeiling(auditStore), 30_000);
+		});
+	}
 
 	it('claims at one floor ahead of the clock are unique, and every later local key is above them', async () => {
 		const floor = rootStore.getMonotonicTimestamp() + 250;

@@ -1733,6 +1733,29 @@ describe('Record locks (harper#483)', () => {
 			}
 		});
 
+		it('measures the skew cap from wall time, so successive claims cannot compound past it', async function () {
+			if (isLMDB) return this.skip();
+			const [nearId, fartherId] = [id(), id()];
+			const previous = env.get(CONFIG_PARAMS.STORAGE_MAXLOCKCLOCKSKEW);
+			env.setProperty(CONFIG_PARAMS.STORAGE_MAXLOCKCLOCKSKEW, '200ms');
+			try {
+				const near = futureTimestamp(150);
+				await applyFromPeer(nearId, near);
+				await transaction(async () => {
+					const lock = await LockTest.lock(nearId);
+					lock.set('n', 1);
+					await lock.save();
+				});
+				assert.ok(entryOf(nearId).version > near, 'the first claim lifted the clock above its floor');
+				// within the cap of the clock the first claim lifted, but beyond it from wall time
+				const farther = futureTimestamp(300);
+				await applyFromPeer(fartherId, farther);
+				await assert.rejects(LockTest.lock(fartherId), (error) => error.name === 'LockUnavailableError');
+			} finally {
+				env.setProperty(CONFIG_PARAMS.STORAGE_MAXLOCKCLOCKSKEW, previous);
+			}
+		});
+
 		const auditOf = (recordId, version) => {
 			for (const entry of LockTest.auditStore.getRange({ start: 1 }))
 				if (entry.tableId === LockTest.tableId && entry.recordId === recordId && entry.version === version)
