@@ -5117,7 +5117,7 @@ export function makeTable(options): TableResourceClass {
 							committedBy?.sourceApply &&
 							!committedBy.isReplay &&
 							isRocksDB &&
-							(!priorStagedOp || priorStagedOp.stagedEntry.unchanged) &&
+							!followsAppliedWrite(write) &&
 							isStubLeftBy(identityBase(write, existingEntry, committedBy), txnLogKey, options?.nodeId)) ||
 						((!priorStagedOp || priorStagedOp.stagedEntry.unchanged) &&
 							precedesExisting === 0 &&

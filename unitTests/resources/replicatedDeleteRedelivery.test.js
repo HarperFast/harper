@@ -41,6 +41,7 @@ describe('Re-delivered replicated writes (harper-pro#826, harper-pro#1306)', () 
 				const resource = await TableClass.getResource(id, context);
 				if (type === 'delete') resource._writeDelete(id, { nodeId, version });
 				else if (type === 'invalidate') resource._writeInvalidate(id, record, { nodeId, version });
+				else if (type === 'relocate') resource._writeRelocate(id, { nodeId, version });
 				else resource._writeUpdate(id, record, type === 'put', { isNotification: true, nodeId, version, isCopyApply });
 			}
 		});
@@ -357,6 +358,20 @@ describe('Re-delivered replicated writes (harper-pro#826, harper-pro#1306)', () 
 		const entry = Nodes.primaryStore.getEntry(id);
 		assert.equal(entry.metadataFlags & INVALIDATED, INVALIDATED);
 		assert.deepEqual(await indexedIds('stub-after-delete'), [id]);
+	});
+
+	it('re-delivers a [relocate, invalidate] transaction whose version differs from its log key to the stub it left', async function () {
+		const id = 'relocate-invalidate';
+		await applyFrame(originClock(), [put(id, 'resident-before-relocate')]);
+		const version = originClock();
+		const logKey = originClock();
+		const frame = [{ type: 'relocate', id, version }, invalidate(id, 'stub-after-relocate', { version })];
+		await applyFrame(logKey, frame);
+		assert.equal(Nodes.primaryStore.getEntry(id).metadataFlags & INVALIDATED, INVALIDATED, 'premise');
+		await applyFrame(logKey, frame);
+		const entry = Nodes.primaryStore.getEntry(id);
+		assert.equal(entry.metadataFlags & INVALIDATED, INVALIDATED);
+		assert.deepEqual(await indexedIds('stub-after-relocate'), [id]);
 	});
 
 	it('applies an invalidate whose transaction committed only an earlier put to the key', async function () {
