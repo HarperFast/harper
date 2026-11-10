@@ -296,7 +296,7 @@ describe('DerivedIndexRuntime with an audited RocksDB table', () => {
 				});
 			});
 		};
-		// Barriers only when the test opens them, so a trip shows between acceptance and durability.
+		// A trip is published as the owner accepts a batch, so barriers wait for the test to open them.
 		const backend = {
 			id: 'idle-lag-products',
 			cursor: undefined,
@@ -362,7 +362,6 @@ describe('DerivedIndexRuntime with an audited RocksDB table', () => {
 				deliveryOf(id)
 			);
 		let local = 0;
-		// The trip, if any, is published as the owner accepts the batch; the barrier is still closed then.
 		const afterIdle = async (id) => {
 			backend.barriersOpen = false;
 			await writeRemote(id);
@@ -371,16 +370,15 @@ describe('DerivedIndexRuntime with an audited RocksDB table', () => {
 			assert.strictEqual(derivedIndexWriteRejection(auditStore, Product.tableId), undefined);
 			await Product.put(`local-${++local}`, { title: 'written while the barrier is pending' });
 			backend.barriersOpen = true;
-			const delivery = await durableThrough(id);
+			await durableThrough(`local-${local}`);
 			assert.strictEqual(derivedIndexWriteRejection(auditStore, Product.tableId), undefined);
-			return delivery;
+			return deliveryOf(id);
 		};
 
 		let unregister = start();
 		await waitFor(() => backend.cursor && runtime.getReadiness(backend.id).state === 'ready', { timeout: 20_000 });
 		await writeRemote('a');
 		const first = await durableThrough('a');
-		// the idle grace releases the owner that indexed 'a', so the next commit is read by a new acquisition
 		await waitFor(() => backend.shutdownEpochs.includes(first.ownerEpoch), { timeout: 20_000 });
 		const second = await afterIdle('b');
 		assert(second.ownerEpoch > first.ownerEpoch, 'a released owner re-acquired the index');
@@ -388,6 +386,13 @@ describe('DerivedIndexRuntime with an audited RocksDB table', () => {
 		await unregister();
 		await runtime.stop();
 		unregister = start();
+		await waitFor(
+			() => {
+				const status = runtime.getStatus(backend.id);
+				return status?.state === 'idle' && status.ownerEpoch > second.ownerEpoch;
+			},
+			{ timeout: 20_000 }
+		);
 		const third = await afterIdle('c');
 		assert(third.ownerEpoch > second.ownerEpoch, 'a restarted runtime acquired the index');
 		await unregister();
