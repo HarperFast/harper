@@ -8,8 +8,12 @@ const {
 } = require('#src/components/mcp/listChanged');
 const { registerSession, _resetSessionRegistryForTest } = require('#src/components/mcp/sessionRegistry');
 const { addTool, _resetRegistryForTest } = require('#src/components/mcp/toolRegistry');
-const { localPrincipal } = require('#src/security/user');
+const userModule = require('#src/security/user');
+const { databases } = require('#src/resources/databases');
+const testUtils = require('../../testUtils.js');
 const { waitFor } = require('../../waitFor');
+
+const { localPrincipal } = userModule;
 
 const SUPER = { username: 'admin', role: { permission: { super_user: true } } };
 const ALICE = {
@@ -309,5 +313,72 @@ describe('mcp/listChanged', () => {
 		fakeItc._fireResources();
 		const evt = await readNextEvent(rec.queue);
 		assert.equal(evt.data.method, 'notifications/tools/list_changed');
+	});
+
+	describe('sessions of principals a component resolved', () => {
+		const PRODUCT_ROLE = { permission: { super_user: false, data: { tables: { product: { read: true } } } } };
+
+		before(async () => {
+			testUtils.setupTestDBPath();
+			await testUtils.ensureSystemTables();
+		});
+
+		afterEach(() => testUtils.seedUsers());
+
+		function addProductTool() {
+			addTool({
+				name: 'get_product',
+				description: 'x',
+				inputSchema: { type: 'object' },
+				profile: 'application',
+				visibleTo: (u) => u?.role?.permission?.data?.tables?.product?.read === true,
+				handler: async () => ({ content: [{ type: 'text', text: '' }] }),
+			});
+		}
+
+		it('keeps a principal built with no hdb_user record, from before its stream is seeded', async () => {
+			const componentUser = { username: 'mcp-component-only', role: PRODUCT_ROLE };
+			userModule.trackUserRecords(componentUser, userModule.userRecordVersions(componentUser.username));
+			let resolverCalled = false;
+			_setUserResolverForTest(async (username) => {
+				resolverCalled = true;
+				return { username };
+			});
+			addProductTool();
+			initListChanged();
+			const rec = registerSession('component-sid', 'application', componentUser);
+			fakeItc._fireUser();
+			await waitFor(() => rec.lastTools !== undefined);
+			seedSessionSnapshot('component-sid');
+			fakeItc._fireUser();
+			await new Promise((resolve) => setTimeout(resolve, 20));
+
+			assert.equal(resolverCalled, false, 'no record backs it, so none is read by its name');
+			assert.equal(rec.user, componentUser);
+			assert.deepEqual(rec.lastTools, [{ name: 'get_product' }]);
+		});
+
+		it('takes the tools of a dropped record-backed user', async () => {
+			await testUtils.seedUsers([
+				{
+					username: 'mcp_record_user',
+					active: true,
+					role: { id: 'mcp_record_role', role: 'mcp_record_role', ...PRODUCT_ROLE },
+				},
+			]);
+			const recordUser = await userModule.findAndValidateUser('mcp_record_user', null, false);
+			addProductTool();
+			initListChanged();
+			const rec = registerSession('record-sid', 'application', recordUser);
+			seedSessionSnapshot('record-sid');
+			assert.deepEqual(rec.lastTools, [{ name: 'get_product' }]);
+
+			await databases.system.hdb_user.delete('mcp_record_user');
+			fakeItc._fireUser();
+			const evt = await readNextEvent(rec.queue, 2000);
+			assert.equal(evt.data.method, 'notifications/tools/list_changed');
+			assert.equal(rec.user.role, undefined);
+			assert.deepEqual(rec.lastTools, []);
+		});
 	});
 });
