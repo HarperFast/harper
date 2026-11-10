@@ -113,7 +113,14 @@ import {
 } from './recordLock.ts';
 import { getThisNodeName } from '../server/nodeName.ts';
 import * as envMngr from '../utility/environment/environmentManager.ts';
-import { addSubscription, certifiedFloors, certifiedThrough, completedReplayThrough } from './transactionBroadcast.ts';
+import {
+	addSubscription,
+	broadcastRange,
+	certifiedFloors,
+	certifiedThrough,
+	completedReplayThrough,
+	isDispatching,
+} from './transactionBroadcast.ts';
 import { keyArrayToString } from './Resources.ts';
 import {
 	ORIGIN_ID,
@@ -318,7 +325,12 @@ import {
 import { RequestTarget } from './RequestTarget.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
 import { throttle } from '../server/throttle.ts';
-import { RocksDatabase, Transaction as RocksTransaction, constants as rocksConstants } from '@harperfast/rocksdb-js';
+import {
+	RocksDatabase,
+	Transaction as RocksTransaction,
+	TransactionLogUntilUnreachedError,
+	constants as rocksConstants,
+} from '@harperfast/rocksdb-js';
 import { LMDBTransaction, ImmediateTransaction as ImmediateLMDBTransaction } from './LMDBTransaction.ts';
 import {
 	contentTypes,
@@ -803,6 +815,9 @@ const TEST_WRITE_KEY_BUFFER = Buffer.allocUnsafeSlow(8192);
 const MAX_KEY_BYTES = 1978;
 const EVENT_HIGH_WATER_MARK = 100;
 const REPLAY_YIELD_INTERVAL = 100; // yield to the event loop every N records during subscription replay
+// how long a startTime replay waits for a log it cannot read up to live delivery's position before it fails
+const UNREACHED_LOG_WAIT_MS = 100;
+const UNREACHED_LOG_WAITS = 50;
 // Cap for the out-of-order write reconciliation audit-chain walk in commit(). A pathologically deep
 // audit history (e.g. a replication full-copy of a large-history database) would otherwise walk and
 // buffer the entire backward chain per record, synchronously, on every worker — pinning the JS heap
@@ -9959,7 +9974,7 @@ export function makeTable(options): TableResourceClass {
 						? planFloor
 						: resuming
 							? collection
-								? subscription.startTime
+								? (subscription.replayedThrough ?? request.startTime)
 								: request.startTime
 							: request.startTime === undefined
 								? subscription.registeredThrough
@@ -10195,17 +10210,57 @@ export function makeTable(options): TableResourceClass {
 						// messages during this loop because the snapshot:false cursor will pick them up itself.
 						pendingRealTimeQueue = null;
 						dropDuringReplay = true;
-						// subscription.startTime is the resume cursor (exclusive) and RocksDB gives every record of a
+						// subscription.replayedThrough is the resume cursor (exclusive) and RocksDB gives every record of a
 						// transaction the same txnLogKey, so it only moves to a key once all of that key's records are
 						// handled; an early return leaves it before a partly delivered transaction.
 						let handledTxnLogKey: number | undefined;
+						const liveRange = broadcastRange(subscription);
+						// subscribed from a listener: the broadcast already stands past the entry it is walking, and may yet
+						// walk it to this subscription, so the replay starts once this dispatch has finished
+						if (liveRange && isDispatching(subscription)) {
+							await rest();
+							if (!isActive()) return;
+						}
 						const replayRange = auditStore.getRange({
 							start: startTime,
 							exclusiveStart: true,
 							snapshot: false, // no need for a snapshot, audits don't change
+							until: liveRange,
 						});
+						const recordCursor = (key: number) => {
+							// live delivery finishes a transaction the bound split, so a resume must start below it
+							const open = replayRange.openTransactionFloor?.();
+							subscription.replayedThrough = open <= key ? positionBefore(open) : key;
+							// without a position boundary the cursor is also the live gate
+							if (!liveRange) subscription.startTime = key;
+						};
+						let replayIterator = replayRange[Symbol.iterator]();
+						let unreachedWaits = 0;
 						try {
-							for (const auditRecord of replayRange) {
+							for (;;) {
+								let next: IteratorResult<any>;
+								try {
+									next = replayIterator.next();
+								} catch (error) {
+									// a log the broadcast has read past cannot be read up to it yet: ending here would hand off past it
+									if (!(error instanceof TransactionLogUntilUnreachedError)) throw error;
+									if (++unreachedWaits > UNREACHED_LOG_WAITS) {
+										throw new ServerError(
+											'The transaction log could not be read up to live delivery; resubscribe to retry',
+											503
+										);
+									}
+									if (unreachedWaits === 1) {
+										logger.warn?.(`Subscription replay on ${tableName} is waiting for a transaction log`, error);
+									}
+									await sleep(UNREACHED_LOG_WAIT_MS);
+									if (!isActive()) return;
+									if (checkResume && !checkResume(unreadableLogRefusal(replayRange))) return;
+									replayIterator = replayRange[Symbol.iterator]();
+									continue;
+								}
+								if (next.done) break;
+								const auditRecord = next.value;
 								if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
 									recordsSinceYield = 0;
 									await rest();
@@ -10234,7 +10289,7 @@ export function makeTable(options): TableResourceClass {
 									if (!(await sendCurrentScope())) return;
 								}
 								if (!reloadPending && handledTxnLogKey !== undefined && auditRecord.txnLogKey !== handledTxnLogKey) {
-									subscription!.startTime = handledTxnLogKey;
+									recordCursor(handledTxnLogKey);
 								}
 								const id = auditRecord.recordId;
 								if (checkResume && id === undefined) {
@@ -10244,7 +10299,8 @@ export function makeTable(options): TableResourceClass {
 								// a marker is table-wide, as the live broadcast delivers it
 								if (resnapshots) reloadPending = true;
 								else if (thisId == null || isReload || isDescendantId(thisId, id)) {
-									const event = eventFromAudit(id, auditRecord, auditRecord.txnLogKey);
+									// converted as the live path would, since the replay stands in for it while live entries drop
+									const event = eventFromAudit(id, auditRecord, auditRecord.txnLogKey, undefined, true);
 									if (event) {
 										if (reportingProgress) event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
 										if (!send(event)) return;
@@ -10260,16 +10316,19 @@ export function makeTable(options): TableResourceClass {
 								}
 								handledTxnLogKey = auditRecord.txnLogKey;
 							}
+							// the finished cursor reads no more commits, so live ones wait behind the scan
+							if (reloadPending) pendingRealTimeQueue = [];
+							// the turn the read reported done, so live delivery starts at the position where the replay stopped
+							dropDuringReplay = false;
 							if (reloadPending) {
 								reloadPending = false;
-								// the finished cursor reads no more commits, so live ones wait behind the scan
-								pendingRealTimeQueue = [];
-								dropDuringReplay = false;
 								if (!(await sendCurrentScope())) return;
-								const replayedThrough = handledTxnLogKey;
-								pendingRealTimeQueue = pendingRealTimeQueue.filter(
-									(event) => (event.localTime ?? event.version) > replayedThrough
-								);
+								if (!liveRange) {
+									const replayedThrough = handledTxnLogKey;
+									pendingRealTimeQueue = pendingRealTimeQueue.filter(
+										(event) => (event.localTime ?? event.version) > replayedThrough
+									);
+								}
 								if (!includeSuperseded) {
 									let kept = 0;
 									for (const event of pendingRealTimeQueue) {
@@ -10278,7 +10337,7 @@ export function makeTable(options): TableResourceClass {
 									pendingRealTimeQueue.length = kept;
 								}
 							}
-							if (handledTxnLogKey !== undefined) subscription!.startTime = handledTxnLogKey;
+							if (handledTxnLogKey !== undefined) recordCursor(handledTxnLogKey);
 							if (checkResume && !checkResume(unreadableLogRefusal(replayRange))) return;
 						} finally {
 							// replay is done, we can start sending real-time messages again

@@ -87,7 +87,7 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 			// with rocksdb-js iterator we can and should not specify a start time so we just start at the end of the txn log
 			// and still match older version numbers that may commit in the future. But we have to start
 			// immediately so we are at the right position.
-			if (auditStore.reusableIterable) auditStore.subscriptionLogRange = auditStore.getRange({});
+			if (auditStore.reusableIterable) auditStore.subscriptionLogRange = auditStore.getRange({ peekAhead: true });
 			// LMDB passes read from lastTxnTime, which no pass advanced while nothing was subscribed
 			else if (committedThrough !== undefined) databaseSubscriptions.lastTxnTime = committedThrough;
 			else if (auditStore.rootStore?.status !== 'closing' && auditStore.rootStore?.status !== 'closed')
@@ -400,6 +400,21 @@ export function endSubscriptionsFromEarlierHandles(auditStore: any, tracksGenera
 }
 
 /**
+ * The range the broadcast reads, which a replay reads `until` so the two meet at one log position: every entry
+ * below it is the replay's, every entry at or above it the broadcast's. Undefined keeps a replay on the key gate:
+ * LMDB reads by key, so a key is a position, and a same-thread registry has no shared cursor (harper#3980).
+ */
+export function broadcastRange(subscription: any): any {
+	const subscriptions = subscription.subscriptions?.tables?.envs;
+	if (!subscriptions || subscriptions.sameThread) return;
+	return subscriptions.auditStore?.subscriptionLogRange;
+}
+
+export function isDispatching(subscription: any): boolean {
+	return subscription.subscriptions?.tables?.envs?.dispatching === true;
+}
+
+/**
  * This is the class that is returned from subscribe calls and provide the interface to set a callback, end the
  * subscription and get the initial state.
  */
@@ -423,6 +438,8 @@ class Subscription extends IterableEventQueue {
 	checkpointFloor?: (holds?: Map<number, number>) => number | undefined;
 	/** A checkpoint-resumed subscription takes every live entry: its replay seeks per log, so no key gate applies. */
 	ungated?: boolean;
+	/** A collection replay's resume cursor (exclusive), apart from `startTime`, which gates live delivery. */
+	replayedThrough?: number;
 	includeDescendants?: boolean;
 	supportsTransactions?: boolean;
 	onlyChildren?: boolean;
