@@ -354,8 +354,7 @@ describe('sqlEngine literal-on-the-left comparators (SELECT, UPDATE, DELETE)', f
 		['5 <= id AND id <= 7', 'id >= 5 AND id <= 7', [7]],
 	];
 
-	let T;
-	let originalEngine;
+	let T, originalEngine;
 
 	before(() => {
 		setupTestDBPath();
@@ -379,7 +378,7 @@ describe('sqlEngine literal-on-the-left comparators (SELECT, UPDATE, DELETE)', f
 		mutation._setTransactionRunner(null);
 		if (originalEngine === undefined) delete process.env.HARPER_SQL_ENGINE;
 		else process.env.HARPER_SQL_ENGINE = originalEngine;
-		await T.dropTable();
+		await T?.dropTable();
 	});
 
 	const sortedNum = (arr) => [...arr].sort((a, b) => a - b);
@@ -403,29 +402,25 @@ describe('sqlEngine literal-on-the-left comparators (SELECT, UPDATE, DELETE)', f
 			assert.deepStrictEqual(sortedNum(colRows.map((r) => r.id)), expectedIds);
 			assert.deepStrictEqual(sortedNum(litRows.map((r) => r.id)), expectedIds);
 		});
-
 		it(`UPDATE WHERE ${litWhere} affects the same rows as WHERE ${colWhere}`, async () => {
 			await reseed();
 			const colRes = await runSql(`UPDATE test.LiteralLeftComparatorItem SET qty = 99 WHERE ${colWhere}`);
 			const colState = await readRows();
 			await reseed();
 			const litRes = await runSql(`UPDATE test.LiteralLeftComparatorItem SET qty = 99 WHERE ${litWhere}`);
-			const litState = await readRows();
 			assert.deepStrictEqual(sortedNum(colRes.update_hashes), expectedIds);
-			assert.deepStrictEqual(sortedNum(litRes.update_hashes), sortedNum(colRes.update_hashes));
-			assert.deepStrictEqual(litState, colState);
+			assert.deepStrictEqual(sortedNum(litRes.update_hashes), expectedIds);
+			assert.deepStrictEqual(await readRows(), colState);
 		});
-
 		it(`DELETE WHERE ${litWhere} affects the same rows as WHERE ${colWhere}`, async () => {
 			await reseed();
 			const colRes = await runSql(`DELETE FROM test.LiteralLeftComparatorItem WHERE ${colWhere}`);
 			const colState = await readRows();
 			await reseed();
 			const litRes = await runSql(`DELETE FROM test.LiteralLeftComparatorItem WHERE ${litWhere}`);
-			const litState = await readRows();
 			assert.deepStrictEqual(sortedNum(colRes.deleted_hashes), expectedIds);
-			assert.deepStrictEqual(sortedNum(litRes.deleted_hashes), sortedNum(colRes.deleted_hashes));
-			assert.deepStrictEqual(litState, colState);
+			assert.deepStrictEqual(sortedNum(litRes.deleted_hashes), expectedIds);
+			assert.deepStrictEqual(await readRows(), colState);
 		});
 	}
 });
