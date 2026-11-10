@@ -2,7 +2,12 @@
 // we can implement more efficient progressive buffer allocation.
 import _mqtt_packet from 'mqtt-packet';
 const { parser: makeParser, generate } = _mqtt_packet;
-import { getSession, DurableSubscriptionsSession, RECEIVE_MAXIMUM } from './DurableSubscriptionsSession.ts';
+import {
+	getSession,
+	DurableSubscriptionsSession,
+	RECEIVE_MAXIMUM,
+	SERIALIZING,
+} from './DurableSubscriptionsSession.ts';
 import { getTrackedUser, localPrincipal, type UserProvenance } from '../security/user.ts';
 import { getDeserializer } from './serverHelpers/contentTypes.ts';
 import {
@@ -22,6 +27,7 @@ import { registerShutdownDrain } from '../components/shutdownDrain.ts';
 import { onStartup } from '../utility/lifecycle.ts';
 import { toCloseReason } from './serverHelpers/webSocketCloseReason.ts';
 import { isLocalPeerAddress } from './serverHelpers/peerAddress.ts';
+import { isBun } from './serverHelpers/Request.ts';
 import { DatabaseGenerationChangedError, ResumeHistoryUnavailableError } from '../utility/errors/hdbError.ts';
 import {
 	assertNoDeferredCredentialRejection,
@@ -35,6 +41,44 @@ const authEventLog = loggerWithTag('auth-event');
 const mqttLog = loggerForComponent('mqtt');
 
 let AUTHORIZE_LOCAL = get(CONFIG_PARAMS.AUTHENTICATION_AUTHORIZELOCAL) ?? process.env.DEV_MODE;
+/** Multiplied by the QoS and added to the protocol version, the frame-cache key of a QoS 1/2 PUBLISH template. */
+const QOS_TEMPLATE_KEY = 0x100;
+/** Where a QoS 1/2 PUBLISH's packet identifier sits: after the fixed header and the length-prefixed topic. */
+function packetIdOffset(packet: Buffer): number {
+	let offset = 1;
+	while (packet[offset++] & 0x80); // the remaining-length varint
+	return offset + 2 + packet.readUInt16BE(offset);
+}
+/** The first byte of each acknowledgement packet (PUBREL's carries its required flags), by its name. */
+const ACKNOWLEDGEMENT_COMMANDS = { 0x40: 'puback', 0x50: 'pubrec', 0x62: 'pubrel', 0x70: 'pubcomp' };
+/**
+ * Whether data is nothing but whole acknowledgements (PUBACK, PUBREC, PUBREL, PUBCOMP) of the 4-byte form
+ * every protocol version shares: success, with no reason code or properties.
+ */
+function onlyAcknowledgements(data: any): boolean {
+	const length = data?.length;
+	if (!(length > 0) || length % 4 !== 0 || !Buffer.isBuffer(data)) return false;
+	for (let offset = 0; offset < length; offset += 4) {
+		if (ACKNOWLEDGEMENT_COMMANDS[data[offset]] === undefined || data[offset + 1] !== 2) return false;
+	}
+	return true;
+}
+/** The packet mqtt-packet's parser emits for a 4-byte acknowledgement; only v5 gives it a reason code. */
+function acknowledgementPacket(firstByte: number, messageId: number, protocolVersion: number) {
+	const packet: any = {
+		cmd: ACKNOWLEDGEMENT_COMMANDS[firstByte],
+		retain: false,
+		qos: (firstByte >> 1) & 3,
+		dup: false,
+		length: 2,
+		topic: null,
+		payload: null,
+		messageId,
+	};
+	if (protocolVersion === 5) packet.reasonCode = 0;
+	return packet;
+}
+
 onStartup(() => {
 	AUTHORIZE_LOCAL = get(CONFIG_PARAMS.AUTHENTICATION_AUTHORIZELOCAL) ?? process.env.DEV_MODE;
 });
@@ -103,15 +147,13 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 					const rejection = getDeferredCredentialRejection(request) ?? getAuthenticationRejectedInPlace(request);
 					ws.close(WEBSOCKET_UNAUTHORIZED_CLOSE_CODE, toCloseReason(rejection?.message ?? 'Unauthorized'));
 				});
-				const { onMessage, onClose } = onSocket(
-					ws,
-					(message) => {
-						ws.send(message);
-					},
-					request,
-					authenticated,
-					mqttSettings
-				);
+				const sendFrame = (message) => {
+					ws.send(message);
+				};
+				// held only on a Node socket: uWS's shim has no cork, and Bun's is unverified
+				const rawSocket = ws._socket;
+				const send = !isBun && typeof rawSocket?.cork === 'function' ? holdingWriter(rawSocket, sendFrame) : sendFrame;
+				const { onMessage, onClose } = onSocket(ws, send, request, authenticated, mqttSettings);
 				ws.on('message', onMessage);
 				ws.on('close', onClose);
 				ws.on('error', (error) => {
@@ -200,14 +242,9 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 						mqttLog.debug?.('Auto-authorizing local connection');
 					}
 
-					const { onMessage, onClose } = onSocket(
-						socket,
-						(message) => socket.write(message),
-						null,
-						user,
-						mqttSettings,
-						admission.provenance
-					);
+					const write = (message) => socket.write(message);
+					const send = typeof socket.cork === 'function' ? holdingWriter(socket, write) : write;
+					const { onMessage, onClose } = onSocket(socket, send, null, user, mqttSettings, admission.provenance);
 					socket.on('data', onMessage);
 					socket.on('close', onClose);
 					socket.on('error', (error) => {
@@ -343,6 +380,38 @@ function registerShutdownDisconnect() {
 	});
 }
 
+/**
+ * A writer that can hold a run of packets for one writev on `socket`, the TCP socket that `write` sends on
+ * (directly, or as WebSocket frames). The session holds its sends while one of its deliveries sends more than one
+ * message (the drain in DurableSubscriptionsSession.ts) and releases them when that turn ends, so a burst to one
+ * client costs a write syscall per turn, not per packet, and no other client's work runs between a packet and its
+ * write. The `ws` library corks around each frame's header and payload; that nests inside this hold. Past
+ * MAX_HELD_BYTES what is held goes out at once, keeping it far below the socket's high-water mark, so
+ * `writableNeedDrain`, which the delivery path waits on, still means the kernel is not taking what was written.
+ */
+const MAX_HELD_BYTES = 4096;
+function holdingWriter(socket, send: (packet: Buffer) => void) {
+	let holding = false;
+	const write = (packet: Buffer) => {
+		if (holding && socket.writableLength + packet.length > MAX_HELD_BYTES) {
+			socket.uncork();
+			socket.cork();
+		}
+		send(packet);
+	};
+	write.hold = () => {
+		if (holding) return;
+		holding = true;
+		socket.cork();
+	};
+	write.release = () => {
+		if (!holding) return;
+		holding = false;
+		socket.uncork();
+	};
+	return write;
+}
+
 let addingMetrics,
 	numberOfConnections = 0;
 function onSocket(socket, send, request, user, mqttSettings, userProvenance?: UserProvenance) {
@@ -408,8 +477,17 @@ function onSocket(socket, send, request, user, mqttSettings, userProvenance?: Us
 	let maximumPacketSize: number | undefined;
 	const mqttOptions = { protocolVersion: 4 };
 	const parser = makeParser({ protocolVersion: 5 });
+	// The parser consumes a packet's fixed header before its body arrives, so holding no bytes does not
+	// mean it is between packets; its state counter returns to 0 only once a packet is complete.
+	let parserBetweenPackets = true;
 	function onMessage(data) {
-		parser.parse(data);
+		if (parserBetweenPackets && onlyAcknowledgements(data)) {
+			for (let offset = 0; offset < data.length; offset += 4) {
+				handlePacket(acknowledgementPacket(data[offset], data.readUInt16BE(offset + 2), mqttOptions.protocolVersion));
+			}
+			return;
+		}
+		parserBetweenPackets = parser.parse(data) === 0 && (parser as any)._stateCounter === 0;
 	}
 	function onClose() {
 		numberOfConnections--;
@@ -425,7 +503,7 @@ function onSocket(socket, send, request, user, mqttSettings, userProvenance?: Us
 		}
 	}
 
-	parser.on('packet', async (packet: any) => {
+	const handlePacket = async (packet: any) => {
 		try {
 			if (user?.then) user = await user;
 		} catch (error) {
@@ -574,6 +652,10 @@ function onSocket(socket, send, request, user, mqttSettings, userProvenance?: Us
 							if (!session) return;
 							session.closeConnection = closeConnection;
 							session.userProvenance = userProvenance;
+							if (send.hold) {
+								session.holdSends = send.hold;
+								session.releaseSends = send.release;
+							}
 							// the session is used in the context, and we want to make sure we can access this
 							session.socket = socket;
 							if (request) {
@@ -605,30 +687,54 @@ function onSocket(socket, send, request, user, mqttSettings, userProvenance?: Us
 						returnCode: 0, // success
 						properties: { receiveMaximum: RECEIVE_MAXIMUM },
 					});
-					const listener = async (topic, message, messageId, subscription, version, dup) => {
+					// a failed delivery aborts the connection: ending only the session would leave the client connected
+					// and receiving nothing. An abort, unlike a graceful end, closes without waiting on the peer, and
+					// onClose ends the session.
+					const failDelivery = (error) => {
+						mqttLog.error?.(error);
+						aborted = true;
+						// what this turn sent before the failed delivery goes out, as it would had it not been held
+						send.release?.();
+						if (socket.destroy) socket.destroy();
+						else socket.terminate();
+						return false;
+					};
+					// consecutive messages under one topic string (a record's, or one fan-out's) share its first
+					// level, so it is sliced out once rather than per message
+					let lastTopic: string;
+					let lastGeneralTopic: string;
+					// returns a promise only on socket back-pressure, so a delivery costs the session no microtask
+					const deliver = (topic, payload, encoding, messageId, subscription, dup) => {
 						try {
-							if (disconnected || aborted) {
-								// a delivery already past the subscription when the client left or a failed delivery aborted
-								// the connection; onClose ends the session
-								mqttLog.debug?.(
-									`Session ${session?.sessionId} ${aborted ? 'aborted' : 'disconnected'} while trying to send message to ${topic}`
-								);
-								return false;
+							if (topic !== lastTopic) {
+								const slashIndex = topic.indexOf('/', 1);
+								lastGeneralTopic = slashIndex > 0 ? topic.slice(0, slashIndex) : topic;
+								lastTopic = topic;
 							}
-							const slashIndex = topic.indexOf('/', 1);
-							const generalTopic = slashIndex > 0 ? topic.slice(0, slashIndex) : topic;
+							const generalTopic = lastGeneralTopic;
 							const qos = subscription.qos || 0;
-							// Every subscriber of a topic serializes the same message to the same bytes, so the
-							// payload is encoded once per (message, content type) and reused across all of them.
-							const encoding = getSharedMessageEncoding(message, request, version);
-							const encoded = encoding.payload;
-							let payload: Buffer | string;
-							// only pay for a microtask when the serialization is genuinely still pending
-							if (typeof (encoded as any)?.then === 'function') {
-								payload = await resolveSharedPayload(encoding, message, request, version);
-								if (disconnected || aborted) return false;
-							} else payload = encoded as Buffer | string;
-							if (qos > 0) {
+							if (qos > 0 && messageId && !dup) {
+								// A QoS 1/2 PUBLISH differs between its subscribers only in the packet identifier, so
+								// one generated frame serves as the template and each subscriber gets a copy with its
+								// own identifier written in, rather than re-encoding the payload into a new packet.
+								// Templates share the frame cache under a key apart from the protocol versions QoS 0
+								// frames use. A resend (dup) is generated on its own.
+								const key = QOS_TEMPLATE_KEY * qos + mqttOptions.protocolVersion;
+								const template = getSharedFrame(encoding, key, topic);
+								let packet: Buffer;
+								if (template === undefined) {
+									packet = generate(
+										{ cmd: 'publish', topic, payload, messageId, qos, dup: false, retain: false },
+										mqttOptions
+									);
+									if (encoding.hits > 0) setSharedFrame(encoding, key, topic, packet);
+								} else {
+									packet = Buffer.allocUnsafe(template.length);
+									template.copy(packet);
+									packet.writeUInt16BE(messageId, packetIdOffset(template));
+								}
+								sendPacket(packet, qos === 1 ? 'publish,qos=1' : 'publish,qos=' + qos, generalTopic);
+							} else if (qos > 0) {
 								// mqtt-packet requires a numeric message identifier once qos is non-zero
 								const packetData: any = {
 									cmd: 'publish',
@@ -663,13 +769,36 @@ function onSocket(socket, send, request, user, mqttSettings, userProvenance?: Us
 							}
 							return !rawSocket.closed;
 						} catch (error) {
-							mqttLog.error?.(error);
-							// Ending only the session would leave the client connected and receiving nothing. An abort,
-							// unlike a graceful end, closes without waiting on the peer, and onClose ends the session.
-							aborted = true;
-							if (socket.destroy) socket.destroy();
-							else socket.terminate();
-							return false;
+							return failDelivery(error);
+						}
+					};
+					const listener = (topic, message, messageId, subscription, version, dup) => {
+						try {
+							if (disconnected || aborted) {
+								// a delivery already past the subscription when the client left or a failed delivery aborted
+								// the connection; onClose ends the session
+								mqttLog.debug?.(
+									`Session ${session?.sessionId} ${aborted ? 'aborted' : 'disconnected'} while trying to send message to ${topic}`
+								);
+								return false;
+							}
+							// Every subscriber of a topic serializes the same message to the same bytes, so the
+							// payload is encoded once per (message, content type) and reused across all of them.
+							const encoding = getSharedMessageEncoding(message, request, version);
+							const encoded = encoding.payload;
+							// only pay for a promise when the serialization is genuinely still pending
+							if (typeof (encoded as any)?.then === 'function') {
+								const serialized: any = resolveSharedPayload(encoding, message, request, version).then(
+									(payload) =>
+										disconnected || aborted ? false : deliver(topic, payload, encoding, messageId, subscription, dup),
+									failDelivery
+								);
+								serialized[SERIALIZING] = true;
+								return serialized;
+							}
+							return deliver(topic, encoded as Buffer | string, encoding, messageId, subscription, dup);
+						} catch (error) {
+							return failDelivery(error);
 						}
 					};
 					session.setListener(listener);
@@ -763,12 +892,15 @@ function onSocket(socket, send, request, user, mqttSettings, userProvenance?: Us
 				case 'pubrec': {
 					const failed = packet.reasonCode >= 0x80;
 					const known = await session.received(packet.messageId, failed);
-					if (!failed)
-						generateAndSendPacket({
-							cmd: 'pubrel',
-							messageId: packet.messageId,
-							reasonCode: known ? 0 : 0x92, // packet identifier not found
-						});
+					if (failed) break;
+					if (known) {
+						// a successful PUBREL is the same four bytes in every protocol version
+						const pubrel = Buffer.allocUnsafe(4);
+						pubrel[0] = 0x62;
+						pubrel[1] = 2;
+						pubrel.writeUInt16BE(packet.messageId, 2);
+						sendPacket(pubrel, 'pubrel');
+					} else generateAndSendPacket({ cmd: 'pubrel', messageId: packet.messageId, reasonCode: 0x92 }); // packet identifier not found
 					break;
 				}
 				case 'pubcomp':
@@ -864,7 +996,8 @@ function onSocket(socket, send, request, user, mqttSettings, userProvenance?: Us
 							: 0, //success
 				};
 		}
-	});
+	};
+	parser.on('packet', handlePacket);
 	parser.on('error', (error) => {
 		mqttLog.warn?.('MQTT parsing error, closing connection:', error.message);
 		if (socket?.destroy) socket.destroy();

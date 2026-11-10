@@ -25,6 +25,14 @@ export class IterableEventQueue<Event extends object = any> extends EventEmitter
 	declare closedWith: Event | undefined;
 	declare drainCloseListener: boolean;
 	declare currentDrainResolver: null | ((draining: boolean) => void);
+	/** Pending waitForDrain calls; with none, an empty read has no one to tell. */
+	drainWaiters = 0;
+	/**
+	 * A consumer that pulls with getNextMessage() rather than iterating: woken when a message is queued
+	 * while the queue was empty, and expected to read until getNextMessage() returns undefined; told when
+	 * the queue closes, after its 'close' listeners, rather than adding one more listener per queue.
+	 */
+	consumer: { wake(): void; closed(): void } | null = null;
 	constructor() {
 		super();
 		(this as any)._events = new (EventSlots as any)();
@@ -47,7 +55,7 @@ export class IterableEventQueue<Event extends object = any> extends EventEmitter
 			this.emit('data', message);
 		} else {
 			if (!this.queue) this.queue = [];
-			this.queue.push(message);
+			if (this.queue.push(message) === 1) this.consumer?.wake();
 		}
 		return true;
 	}
@@ -70,13 +78,20 @@ export class IterableEventQueue<Event extends object = any> extends EventEmitter
 					this.resolveNext({ value: undefined, done: true });
 					this.resolveNext = null;
 				}
-				this.emit('close');
+				try {
+					this.emit('close');
+				} finally {
+					this.consumer?.closed();
+				}
 			}
 		}
 	}
 	getNextMessage() {
-		const message = this.queue?.shift();
-		if (!message) this.emit('drained');
+		const queue = this.queue;
+		// a queue fed at a steady rate holds one message at a time, and V8 shifts a one-element array several
+		// times slower than it pops one
+		const message = queue?.length === 1 ? queue.pop() : queue?.shift();
+		if (!message && this.drainWaiters > 0) this.emit('drained');
 		return message;
 	}
 
@@ -91,12 +106,18 @@ export class IterableEventQueue<Event extends object = any> extends EventEmitter
 				// The queue can also empty through paths that never emit 'drained' (the on('data')
 				// attach loop and the resolveNext bypass), so a waiter relying on the event alone
 				// can hang forever on an already-empty queue. Poll as a fallback wakeup.
+				let settled = false;
 				const settle = (drained: boolean) => {
 					clearInterval(poll);
 					this.removeListener('drained', onDrained);
+					if (!settled) {
+						settled = true;
+						this.drainWaiters--;
+					}
 					resolve(drained);
 				};
 				const onDrained = () => settle(true);
+				this.drainWaiters++;
 				this.once('drained', onDrained);
 				this.currentDrainResolver = settle;
 				const poll = setInterval(() => {
