@@ -10,7 +10,7 @@ A note lives in the `DESIGN.md` of the directory that owns the code it describes
 
 ## sqlEngine/ — SQL engine v2
 
-- [LIKE](sqlEngine/DESIGN.md#like) — One tokenizer, linear matcher.
+- [LIKE](sqlEngine/DESIGN.md#like) — One tokenizer, linear matcher. · [Predicates and mixed values](sqlEngine/DESIGN.md#predicates-and-mixed-values) — One truthiness rule; no order is NULL; non-numeric strings sort after numbers, as the index does.
 
 ## .github/ — CI workflows
 

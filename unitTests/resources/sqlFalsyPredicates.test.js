@@ -347,12 +347,7 @@ describe('SQL join predicates over falsy and NaN values', function () {
 		const Outer = table({
 			table: 'SqlFalsyJoinOuter',
 			database: 'test',
-			attributes: [
-				{ name: 'id', isPrimaryKey: true },
-				{ name: 'grp', indexed: true },
-				{ name: 'k' },
-				{ name: 'none' },
-			],
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'grp', indexed: true }, { name: 'k' }, { name: 'none' }],
 		});
 		const Inner = table({
 			table: 'SqlFalsyJoinInner',

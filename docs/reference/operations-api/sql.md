@@ -109,6 +109,20 @@ ORDER BY d.dog_name
 
 Use `IS NULL` and `IS NOT NULL` to test for `NULL`. REST and Resource API conditions follow different rules: `ne` with a non-null value matches null and omitted values, and a `null` lower bound means no lower bound. See [Null and Omitted Values](../rest/querying.md#null-and-omitted-values).
 
+### Falsy, Blank and NaN Values
+
+<VersionBadge type="changed" version="v5.4.0" />
+
+A bare value used as a condition, such as `WHERE active` or `ON a.id = b.id AND b.active`, selects a row only when the value is truthy: `false`, `0`, `NaN`, an empty string and `NULL` never select it, in `SELECT`, `UPDATE` or `DELETE`. Any other string, including `'0'` and `'   '`, selects it. Before v5.4.0, the new engine also selected rows whose value was `0`, `''` or `NaN` (in a `WHERE`, `HAVING` or join `ON`), so an `UPDATE` or `DELETE` could change those rows.
+
+On the new engine, an empty or whitespace-only string is not a number:
+
+- It is not equal to any number: `qty = 0` and `qty IN (0)` do not match it, and `qty <> 0` and `qty NOT IN (0)` do. Before v5.4.0, the new engine read it as `0`.
+- In `<`, `<=`, `>`, `>=` and `BETWEEN` against a number, a string that is not a number sorts after every number, as indexes and REST conditions order it, whether or not the column is indexed: `qty > 0` matches `''` and `'x'`, and `qty <= 0` matches neither.
+- Arithmetic on it is `NaN`, as it is for any other string that is not a number, so `SET total = qty * 2` stores `NaN` for `qty = ''` (returned as `null` in JSON).
+
+`NaN` has no order: `<`, `<=`, `>`, `>=` and `BETWEEN` with a `NaN` value are `NULL` and match no row, and a `NaN` join key matches nothing. With a `NULL` bound, `NOT BETWEEN` now matches a value the other bound already excludes (`5 NOT BETWEEN NULL AND 1`), as `NOT (v >= NULL AND v <= 1)` does.
+
 ### Relationship Columns
 
 <VersionBadge type="changed" version="v5.4.0" />
@@ -190,6 +204,7 @@ For queries the new engine plans (the default under `auto`), `LIKE` is case-sens
 - **`NULL` never equals `NULL` in a join key.** Rows whose join key is `NULL` on either side no longer match each other (three-valued logic). The legacy engine incorrectly joined `NULL` to `NULL`.
 - **`OFFSET` past the end of a result returns no rows.** The legacy engine could still return rows when the `OFFSET` exceeded the number of matches.
 - **`LIKE` is case-sensitive, and `[...]` in a pattern is literal text.** The legacy engine matches case-insensitively and reads `[...]` as a character class. Under `auto`, adding or removing an index, or changing the other conditions in a statement, can move it between engines, which changes the rows a `LIKE` matches, including the rows an `UPDATE` or `DELETE` changes. See [LIKE Pattern Matching](#like-pattern-matching).
+- **A blank string is not a number.** On the legacy engine, `qty <> 0` and `qty > 0` exclude `''` and whitespace-only strings. The new engine orders them after every number, as it does any string that is not a number, so both match them; see [Falsy, Blank and NaN Values](#falsy-blank-and-nan-values).
 - **A `NULL`-valued expression result is returned as an explicit `null`** rather than omitted from the row. A computed column or `COALESCE` that evaluates to `NULL` — or `UPPER(<null>)` — now yields `null` (the legacy engine dropped the key, and `UPPER` of a `NULL` returned the literal string `"NULL"`).
 
 These differences apply whenever the new engine serves the query — not on fallbacks. If your application depended on the legacy behavior, adjust your queries accordingly. For how `WHERE` compares `NULL` and omitted values, including the v5.4.0 change to ranges compared with `NULL`, see [NULL and Omitted Values](#null-and-omitted-values).
