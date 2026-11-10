@@ -17,14 +17,14 @@ const {
 	WORD_INITIAL_CEILING,
 	WORD_PROPOSED,
 	WORD_PUBLISHED,
-	WORD_RATCHET,
+	WORD_ISSUANCE_FLOOR,
 	WORD_SLOT_LIMIT,
-	WORD_STRICT,
+	WORD_COVERED,
 	certifyOriginFloor,
 	claimLocalKey,
 	freshLocalKey,
 	forgetOriginFloorRegistry,
-	localIssuanceRatchet,
+	localIssuanceFloor,
 	getOriginClosedFloor,
 	localStartBound,
 	publishOriginFloor,
@@ -129,8 +129,8 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 		const headerWords = [
 			WORD_PROPOSED,
 			WORD_PUBLISHED,
-			WORD_RATCHET,
-			WORD_STRICT,
+			WORD_ISSUANCE_FLOOR,
+			WORD_COVERED,
 			WORD_INITIAL_CEILING,
 			WORD_SLOT_LIMIT,
 		];
@@ -573,15 +573,16 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 		assert(certify() > key, 'the terminated worker holds nothing once retired');
 	});
 
-	it('does not advance the shared ratchet when claim coverage fails', () => {
+	it('raises neither the clock nor the issuance floor when claim coverage fails', () => {
 		seedLocalIssuance(rootStore, readLocalIssuanceCeiling(auditStore), () => {
 			throw new Error('simulated ceiling write failure');
 		});
-		const before = localIssuanceRatchet(rootStore);
+		const before = localIssuanceFloor(rootStore);
 		const floor = Math.max(rootStore.getMonotonicTimestamp(), before, readLocalIssuanceCeiling(auditStore)) + 100;
 		try {
 			assert.throws(() => claimLocalKey(rootStore, floor), /simulated ceiling write failure/);
-			assert.equal(localIssuanceRatchet(rootStore), before);
+			assert.equal(localIssuanceFloor(rootStore), before);
+			assert(rootStore.getMonotonicTimestamp() < floor, 'an uncovered claim must not raise the clock');
 		} finally {
 			seedLocalIssuance(rootStore, readLocalIssuanceCeiling(auditStore), (key) => coverLocalIssuance(auditStore, key));
 		}
@@ -629,11 +630,17 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 	});
 
 	it('issuance behind a persisted floor (simulated in-process) yields unique keys at or above it', async () => {
-		// Far enough ahead that the writes below run behind it, close enough that the shared test
-		// database is back on the clock before the next file (the ratchet is process-wide state).
+		// Far enough ahead that the writes below run behind it, close enough that the process is back on
+		// the wall clock before the next file (the raise is process-wide).
 		const persisted = rootStore.getMonotonicTimestamp() + 250;
 		persistOriginClosedFloor(auditStore, persisted);
-		publishOriginFloor(rootStore, readOriginClosedFloor(auditStore));
+		// the open's restore, as after a restart behind the floor
+		seedLocalIssuance(
+			rootStore,
+			readLocalIssuanceCeiling(auditStore),
+			(key) => coverLocalIssuance(auditStore, key),
+			readOriginClosedFloor(auditStore)
+		);
 		assert.equal(getOriginClosedFloor(rootStore).floor, persisted);
 		const epoch = new Int32Array(new SharedArrayBuffer(4));
 		const { next } = startWorker({ mode: 'writer', epoch, tableName, writes: 40 });
@@ -646,7 +653,7 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 		const { results } = await next('done');
 		for (const { key } of results) keys.push(key);
 		for (const key of keys) assert(key >= persisted, `key ${key} below the recovered floor ${persisted}`);
-		assert.equal(new Set(keys).size, keys.length, 'keys issued through the ratchet are unique across threads');
+		assert.equal(new Set(keys).size, keys.length, 'keys are unique across threads');
 		assert(certify() >= persisted, 'certification resumes from the recovered floor');
 		const catchUpDeadline = Date.now() + 5000;
 		while (rootStore.getMonotonicTimestamp() <= persisted) {

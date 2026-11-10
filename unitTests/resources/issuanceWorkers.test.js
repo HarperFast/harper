@@ -9,6 +9,10 @@ const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { claimLocalKey } = require('#src/resources/originClosedFloor');
 const { readLocalIssuanceCeiling } = require('#src/resources/auditStore');
+const { waitFor } = require('../waitFor');
+
+// The claim raises the process-wide clock, so it is kept short and waited out before the next file.
+const CLAIM_LEAD_MS = 5000;
 
 describe('issuance coverage across live workers', function () {
 	this.timeout(60_000);
@@ -26,8 +30,11 @@ describe('issuance coverage across live workers', function () {
 		setMainIsWorker(true);
 		Tbl = table(definition);
 		assert.strictEqual(readLocalIssuanceCeiling(Tbl.auditStore), 0);
-		claimed = claimLocalKey(Tbl.primaryStore.rootStore, Date.now() + 60_000);
+		claimed = claimLocalKey(Tbl.primaryStore.rootStore, Date.now() + CLAIM_LEAD_MS);
 		initialCeiling = readLocalIssuanceCeiling(Tbl.auditStore);
+	});
+	after(async () => {
+		if (claimed) await waitFor(() => Date.now() > claimed + 1, CLAIM_LEAD_MS + 5000, 50);
 	});
 	afterEach(async () => {
 		for (const worker of workers) await worker.terminate();
@@ -57,9 +64,9 @@ describe('issuance coverage across live workers', function () {
 		return result;
 	}
 	it('does not consume persisted headroom when more workers open a live database', async () => {
-		for (let n = 0; n < 4; n++) {
-			const result = await run('issue');
-			assert.ok(Date.now() < claimed, 'the worker must issue before wall-clock catch-up');
+		const results = await Promise.all(Array.from({ length: 4 }, () => run('issue')));
+		assert.ok(Date.now() < claimed, 'the workers must issue before wall-clock catch-up');
+		for (const result of results) {
 			assert.ok(result.key > claimed);
 			assert.ok(result.key < initialCeiling, 'opening another worker must not promote the reserved headroom');
 			assert.ok(result.ceiling < initialCeiling + 1, 'per-worker coverage must not compound full headroom steps');

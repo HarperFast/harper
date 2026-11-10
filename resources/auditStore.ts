@@ -221,6 +221,14 @@ export function openAuditStore(rootStore) {
 	if (rootStore instanceof RocksDatabase) {
 		auditStore = new RocksTransactionLogStore(rootStore);
 		auditStore.env = {};
+		// Before the store is cached, so a refused restore leaves nothing a retried open would skip, and before
+		// any metadata pass here starts a transaction.
+		seedLocalIssuance(
+			rootStore,
+			readLocalIssuanceCeiling(auditStore),
+			(key) => coverLocalIssuance(auditStore, key),
+			readOriginClosedFloor(auditStore)
+		);
 	} else {
 		auditStore = rootStore.openDB(AUDIT_STORE_NAME, {
 			create: false,
@@ -249,10 +257,6 @@ export function openAuditStore(rootStore) {
 	establishLogPurgeBounds(auditStore);
 	establishDatabaseGeneration(auditStore);
 	establishAbortMarkedHistory(auditStore);
-	if (isRocksStore(auditStore)) {
-		publishOriginFloor(rootStore, readOriginClosedFloor(auditStore));
-		seedLocalIssuance(rootStore, readLocalIssuanceCeiling(auditStore), (key) => coverLocalIssuance(auditStore, key));
-	}
 	endSubscriptionsFromEarlierHandles(auditStore, isRocksStore(auditStore));
 	auditStore.tableStores = [];
 	const deleteCallbacks = [];

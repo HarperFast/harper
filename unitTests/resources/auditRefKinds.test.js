@@ -4,7 +4,7 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
-const { publishOriginFloor } = require('#src/resources/originClosedFloor');
+const { mintNext, setAsideTimestamps } = require('../nextLocalMints');
 const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
 const {
 	createAuditEntry,
@@ -36,11 +36,6 @@ describe('Audit references state their kind', () => {
 		if (isLMDB) this.skip();
 	});
 
-	function ulpsAbove(value, count) {
-		const scratch = new Float64Array([value]);
-		new BigInt64Array(scratch.buffer)[0] += BigInt(count);
-		return scratch[0];
-	}
 	function entriesFor(T, id, log = 0) {
 		const entries = [];
 		for (const entry of T.auditStore.getRange({ start: 1, log }))
@@ -57,32 +52,27 @@ describe('Audit references state their kind', () => {
 
 	it('a minted key equal to an earlier explicit version on the record is not that write’s receipt', async () => {
 		const T = tableInOwnDatabase();
-		// strict issuance: each mint is the next ulp above the floor, so K(n) is the nth key minted
-		const floor = Date.now() + 600_000;
-		publishOriginFloor(T.primaryStore.rootStore, floor);
-		const K = (n) => ulpsAbove(floor, n);
-
+		const root = T.primaryStore.rootStore;
 		await T.put('counter', { name: 'seed', count: 0 });
-		await T.patch('counter', { name: 'head' }, { timestamp: K(7) });
-		for (let n = 3; n <= 6; n++) await T.put(`other-${n}`, { name: 'unrelated' });
-		assert.deepEqual(
-			[entriesFor(T, 'counter').map((entry) => entry.txnLogKey), entriesFor(T, 'other-6')[0].txnLogKey],
-			[[K(1), K(2)], K(6)],
-			'the next mint is K(7), the head patch’s version'
-		);
+		const [headKey, older, head] = setAsideTimestamps(root, 3);
+		mintNext(root, headKey);
+		await T.patch('counter', { name: 'head' }, { timestamp: head });
+		const headEntry = entriesFor(T, 'counter').at(-1);
+		assert.deepEqual([headEntry.txnLogKey, headEntry.version], [headKey, head]);
 
-		await T.patch('counter', { count: { __op__: 'add', value: 1 } }, { timestamp: K(6) });
+		// the next local key lands on the head patch's version
+		mintNext(root, head);
+		await T.patch('counter', { count: { __op__: 'add', value: 1 } }, { timestamp: older });
 		assert.deepEqual(await T.get('counter'), { id: 'counter', name: 'head', count: 1 });
-		const patch = entriesFor(T, 'counter').find((entry) => entry.version === K(6));
-		assert.equal(patch?.txnLogKey, K(7));
+		const patch = entriesFor(T, 'counter').find((entry) => entry.version === older);
+		assert.equal(patch?.txnLogKey, head);
 	});
 
 	it('a retried save whose minted key equals its caller’s value recognizes its own staging', async () => {
 		const T = tableInOwnDatabase();
-		const floor = Date.now() + 600_000;
-		publishOriginFloor(T.primaryStore.rootStore, floor);
-		const K = (n) => ulpsAbove(floor, n);
+		const root = T.primaryStore.rootStore;
 		await T.put('held', { name: 'seed' });
+		const [acquired, stamp] = setAsideTimestamps(root, 2);
 		const targetDb = T.primaryStore.store.db;
 		const originalCommit = Transaction.prototype.commit;
 		let conflicted;
@@ -95,12 +85,14 @@ describe('Audit references state their kind', () => {
 				}
 				return originalCommit.apply(this, args);
 			};
-			holder = await T.lock('held', { hold: true, lease: 15_000 }, { timestamp: K(3) });
+			mintNext(root, acquired);
+			holder = await T.lock('held', { hold: true, lease: 15_000 }, { timestamp: stamp });
 			holder.set('name', 'first');
+			mintNext(root, stamp);
 			await holder.save();
 			assert.ok(conflicted, 'the first save must have been retried');
 			const first = T.primaryStore.getEntry('held');
-			assert.deepEqual([first.version, entriesFor(T, 'held').at(-1).txnLogKey], [K(3), K(3)]);
+			assert.deepEqual([first.version, entriesFor(T, 'held').at(-1).txnLogKey], [stamp, stamp]);
 			holder.set('name', 'second');
 			await holder.save();
 			const second = T.primaryStore.getEntry('held');

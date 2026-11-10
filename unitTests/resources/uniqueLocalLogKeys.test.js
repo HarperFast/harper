@@ -3,8 +3,7 @@ const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
-const { publishOriginFloor } = require('#src/resources/originClosedFloor');
-const { Transaction } = require('@harperfast/rocksdb-js');
+const { Transaction, raiseTimestampFloor } = require('@harperfast/rocksdb-js');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
@@ -185,16 +184,17 @@ describe('Every local-origin transaction has a unique log key', () => {
 			attributes,
 			audit: true,
 		});
-		// a future floor puts issuance in strict mode: minted keys come one ulp at a time above the ratchet,
-		// so an explicit value a few ulps above it is exactly where a later mint lands
-		const floor = Date.now() + 600_000;
-		publishOriginFloor(Floored.primaryStore.rootStore, floor);
-		const explicit = ulpsAbove(floor, 6);
+		// a little ahead of the clock, so the clock can be raised to land a later mint exactly on it
+		const explicit = Date.now() + 50;
 		const ids = Array.from({ length: 12 }, newId);
 		await Floored.put(ids[0], { name: 'explicit' }, { timestamp: explicit });
-		for (let n = 1; n < ids.length; n++) await Floored.put(ids[n], { name: `minted-${n}` });
+		for (let n = 1; n < ids.length; n++) {
+			if (n === 6) raiseTimestampFloor(ulpsAbove(explicit, -1));
+			await Floored.put(ids[n], { name: `minted-${n}` });
+		}
 
 		const entries = ids.map((id) => entriesFor(id, Floored)[0]);
+		assert.equal(entries[6].txnLogKey, explicit, 'a later mint landed on the explicit value');
 		assertDistinctKeys(entries);
 		assert.equal(entries[0].version, explicit);
 		for (const [index, entry] of entries.entries())

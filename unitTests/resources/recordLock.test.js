@@ -8,7 +8,7 @@ const { transaction, contextStorage } = require('#src/resources/transaction');
 const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
 const { waitFor } = require('../waitFor');
 const { coverLocalIssuance, readLocalIssuanceCeiling } = require('#src/resources/auditStore');
-const { localIssuanceRatchet, reservedLocalKey, seedLocalIssuance } = require('#src/resources/originClosedFloor');
+const { localIssuanceFloor, reservedLocalKey, seedLocalIssuance } = require('#src/resources/originClosedFloor');
 const { ImmediateTransaction } = require('#src/resources/DatabaseTransaction');
 const { PassThrough } = require('node:stream');
 const { createBlob } = require('#src/resources/blob');
@@ -1841,7 +1841,7 @@ describe('Record locks (harper#483)', () => {
 			const lockedId = id();
 			const unlockedId = id();
 			const rootStore = LockTest.primaryStore.rootStore;
-			const predecessorTimestamp = Math.max(Date.now(), localIssuanceRatchet(rootStore)) + 2_000;
+			const predecessorTimestamp = Math.max(Date.now(), localIssuanceFloor(rootStore)) + 2_000;
 			await applyFromPeer(lockedId, predecessorTimestamp);
 			const ceilingBefore = readLocalIssuanceCeiling(LockTest.auditStore);
 			const context = {};
@@ -1851,7 +1851,7 @@ describe('Record locks (harper#483)', () => {
 				await LockTest.lock(lockedId, undefined, context);
 			});
 			assert.ok(
-				localIssuanceRatchet(rootStore) < predecessorTimestamp,
+				localIssuanceFloor(rootStore) < predecessorTimestamp,
 				'the unused floor did not move the local ratchet into the future'
 			);
 			assert.strictEqual(
@@ -2131,7 +2131,6 @@ describe('Record locks (harper#483)', () => {
 			const { RocksDatabase } = require('../rocksdbBindings.mts').rocksdbBindings();
 			const { RocksTransactionLogStore } = require('#src/resources/RocksTransactionLogStore');
 			const { persistOriginClosedFloor } = require('#src/resources/auditStore');
-			const { publishOriginFloor } = require('#src/resources/originClosedFloor');
 			const directory = fs.mkdtempSync(path.join(PID_DIR_PATH, 'refused-reservation-'));
 			const failedRoot = RocksDatabase.open(directory);
 			const failedAudit = new RocksTransactionLogStore(failedRoot);
@@ -2145,18 +2144,23 @@ describe('Record locks (harper#483)', () => {
 			let coverageError;
 			try {
 				const lead =
-					Math.max(Date.now(), localIssuanceRatchet(root), readLocalIssuanceCeiling(LockTest.auditStore)) + 100;
+					Math.max(Date.now(), localIssuanceFloor(root), readLocalIssuanceCeiling(LockTest.auditStore)) + 100;
 				aheadUntil = Math.max(aheadUntil, lead + 1000);
 				persistOriginClosedFloor(LockTest.auditStore, lead);
-				publishOriginFloor(root, lead);
-				seedLocalIssuance(root, readLocalIssuanceCeiling(LockTest.auditStore), (key) => {
-					try {
-						return coverLocalIssuance(failedAudit, key);
-					} catch (error) {
-						coverageError = error;
-						throw error;
-					}
-				});
+				// restored as an open after a restart behind the floor would, so the next key is ahead of the wall
+				seedLocalIssuance(
+					root,
+					readLocalIssuanceCeiling(LockTest.auditStore),
+					(key) => {
+						try {
+							return coverLocalIssuance(failedAudit, key);
+						} catch (error) {
+							coverageError = error;
+							throw error;
+						}
+					},
+					lead
+				);
 				await transaction(context, async () => {
 					await holder.update(lockedId, { n: 2 });
 					await holder.update(lockedId, { n: 3 });
@@ -2196,7 +2200,7 @@ describe('Record locks (harper#483)', () => {
 			const context = {};
 			const holder = await LockTest.lock(lockedId, { hold: true, lease: 5000 }, context);
 			const rootStore = LockTest.primaryStore.rootStore;
-			const coverageLead = Math.max(rootStore.getMonotonicTimestamp(), localIssuanceRatchet(rootStore)) + 1000;
+			const coverageLead = Math.max(rootStore.getMonotonicTimestamp(), localIssuanceFloor(rootStore)) + 1000;
 			aheadUntil = Math.max(aheadUntil, coverageLead);
 			assert.ok(context.transaction instanceof ImmediateTransaction);
 			let failedCover = false;
