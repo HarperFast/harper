@@ -135,23 +135,14 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 		tableSubscriptions.envs = databaseSubscriptions;
 		tableSubscriptions.tableId = tableId;
 		tableSubscriptions.store = table.primaryStore;
+		tableSubscriptions.idPatterns = undefined;
 	}
 
 	key = keyArrayToString(key);
 	const subscription = new Subscription(listener);
 	subscription.startTime = startTime;
 	subscription.databaseGeneration = table.auditStore?.databaseGeneration?.id;
-	let subscriptions: any = tableSubscriptions.get(key);
-
-	if (subscriptions) subscriptions.push(subscription);
-	else {
-		tableSubscriptions.set(key, (subscriptions = [subscription]));
-		subscriptions.tables = tableSubscriptions;
-		subscriptions.key = key;
-		subscriptions.traversals = 0;
-		subscriptions.hasEnded = false;
-	}
-	subscription.subscriptions = subscriptions;
+	joinKeySubscriptions(tableSubscriptions, key, subscription);
 	databaseSubscriptions.activeCount = (databaseSubscriptions.activeCount || 0) + 1;
 	if (options?.reportProgress && table.auditStore?.reusableIterable) {
 		if (!databaseSubscriptions.progressConsumers) startProgressTracking(databaseSubscriptions, table.auditStore);
@@ -504,7 +495,247 @@ function detachKeySubscriptions(keySubscriptions) {
 	if (tableSubscriptions) {
 		// TODO: Handle cleanup of wildcard
 		tableSubscriptions.delete(keySubscriptions.key);
+		if (typeof keySubscriptions.key === 'symbol') detachIdPattern(tableSubscriptions, keySubscriptions);
 		if (tableSubscriptions.size === 0) delete tableSubscriptions.envs[tableSubscriptions.tableId];
+	}
+}
+function deliverToSubscriptions(
+	keySubscriptions: any,
+	length: number,
+	recordId: Id,
+	auditRecord: any,
+	timestamp: number,
+	txnKey: number,
+	ancestorLevel: number,
+	subscribersWithTxns: any[] | undefined
+): any[] | undefined {
+	keySubscriptions.traversals++;
+	try {
+		for (let i = 0; i < length; i++) {
+			const subscription = keySubscriptions[i];
+			if (!subscription.subscriptions) continue;
+			if (
+				ancestorLevel > 0 && // only ancestors if the subscription is for ancestors (and apply onlyChildren filtering as necessary)
+				!(subscription.includeDescendants && !(subscription.onlyChildren && ancestorLevel > 1))
+			)
+				continue;
+			if (!subscription.ungated && subscription.startTime >= timestamp) {
+				continue;
+			}
+			try {
+				let beginTxn;
+				if (subscription.supportsTransactions && subscription.txnInProgress !== txnKey) {
+					// if the subscriber supports transactions, we mark this as the beginning of a new transaction
+					// tracking the subscription so that we can delimit the transaction on next transaction
+					// (with a beginTxn flag, which may be on an endTxn event)
+					beginTxn = true;
+					if (!subscription.txnInProgress) {
+						// if first txn for subscriber of this cycle, add to the transactional subscribers that we are tracking
+						if (!subscribersWithTxns) subscribersWithTxns = [subscription];
+						else subscribersWithTxns.push(subscription);
+					}
+					subscription.txnInProgress = txnKey;
+				}
+				subscription.listener(recordId, auditRecord, timestamp, beginTxn);
+			} catch (error) {
+				warn(error);
+			}
+		}
+	} finally {
+		endTraversal(keySubscriptions);
+	}
+	return subscribersWithTxns;
+}
+
+function joinKeySubscriptions(tableSubscriptions: any, key: unknown, subscription: Subscription) {
+	let subscriptions: any = tableSubscriptions.get(key);
+	if (subscriptions) subscriptions.push(subscription);
+	else {
+		tableSubscriptions.set(key, (subscriptions = [subscription]));
+		subscriptions.tables = tableSubscriptions;
+		subscriptions.key = key;
+		subscriptions.traversals = 0;
+		subscriptions.hasEnded = false;
+	}
+	subscription.subscriptions = subscriptions;
+	return subscriptions;
+}
+
+/**
+ * Marks a table's own `subscribe()`: a subscription a resource returns from it unchanged hands on every event as
+ * the record it was stored as, which a pattern over the stored ids matches. One a resource's override returns may
+ * not (a narrowed target, a filter, rewritten events).
+ */
+export const ROUTES_BY_ID_PATTERN = Symbol('routesByIdPattern');
+/** Set on a subscription a table's `subscribe()` made for an instance whose `subscribe` is overridden. */
+export const SUBSCRIBE_OVERRIDDEN = Symbol('subscribeOverridden');
+
+/**
+ * Moves a subscription that `addSubscription` returned to delivery by an MQTT-style pattern over the levels of its
+ * record ids (`site/+/temp`, `site/+/temp/#`), so the key walk hands it only the records the pattern matches.
+ * The caller vouches that the subscription came unchanged from a table's `subscribe()` (`ROUTES_BY_ID_PATTERN`).
+ */
+export function routeByIdPattern(subscription: unknown, pattern: string): boolean {
+	// an event filter would no longer see the records the pattern skips, and could fail the stream on one
+	if (
+		!(subscription instanceof Subscription) ||
+		!subscription.includeDescendants ||
+		subscription.onlyChildren ||
+		subscription.state?.allowsEvent ||
+		subscription[SUBSCRIBE_OVERRIDDEN]
+	)
+		return false;
+	const from = subscription.subscriptions;
+	// topic levels can not contain U+0000, which keeps the bound values IdPatternGroup joins with it distinct
+	if (!from || from.traversals > 0 || pattern.includes('\0')) return false;
+	const prefixKey = patternPrefixKey(pattern);
+	if (prefixKey === undefined || (from.key ?? null) !== prefixKey) return false;
+	// a proxy passes instanceof but is not what the bucket holds
+	const index = from.indexOf(subscription);
+	if (index === -1) return false;
+	const tableSubscriptions = from.tables;
+	const groups: Map<string | null, IdPatternGroup> = (tableSubscriptions.idPatterns ??= new Map());
+	let group = groups.get(prefixKey);
+	if (!group) groups.set(prefixKey, (group = new IdPatternGroup()));
+	const key = group.keyFor(pattern);
+	const added = !tableSubscriptions.has(key);
+	const to = joinKeySubscriptions(tableSubscriptions, key, subscription);
+	if (added) group.add(pattern, to);
+	// joined first, so leaving the last bucket of the table does not drop the table's subscriptions
+	from.splice(index, 1);
+	if (from.length === 0) detachKeySubscriptions(from);
+	return true;
+}
+
+function patternPrefixKey(pattern: string): string | null | undefined {
+	const levels = pattern.split('/');
+	const firstWildcard = levels.indexOf('+');
+	if (firstWildcard === -1) return;
+	return firstWildcard === 0 ? null : levels.slice(0, firstWildcard).join('/') + '/';
+}
+
+function idLevels(id: Id): unknown[] | undefined {
+	if (Array.isArray(id)) return id;
+	if (typeof id === 'string' && id.indexOf('/') > -1) return id.split('/');
+}
+
+interface PatternShape {
+	bound: number[];
+	depth: number;
+	prefix: boolean;
+	buckets: Map<string, any>;
+}
+
+function patternShape(pattern: string) {
+	const levels = pattern.split('/');
+	const prefix = levels[levels.length - 1] === '#';
+	if (prefix) levels.length--;
+	const bound: number[] = [];
+	for (let i = 0; i < levels.length; i++) if (levels[i] !== '+') bound.push(i);
+	return {
+		name: bound.join(',') + '|' + levels.length + (prefix ? '#' : ''),
+		bound,
+		depth: levels.length,
+		prefix,
+		values: bound.map((index) => levels[index]).join('\0'),
+	};
+}
+
+/**
+ * The pattern subscriptions under one fixed prefix, which the key walk visits at that prefix's key. Patterns that
+ * leave the same levels unbound share a shape, which keys them by their bound levels' values, so a record finds the
+ * subscriptions it matches with one Map lookup per shape; filtering every subscriber under the prefix would cost
+ * every one of them per record.
+ */
+class IdPatternGroup {
+	readonly #keys = new Map<string, symbol>();
+	readonly #shapes = new Map<string, PatternShape>();
+
+	/** A Symbol, so no record id's key walk reaches the pattern's subscribers. */
+	keyFor(pattern: string): symbol {
+		let key = this.#keys.get(pattern);
+		if (!key) this.#keys.set(pattern, (key = Symbol(pattern)));
+		return key;
+	}
+
+	add(pattern: string, keySubscriptions: any) {
+		const { name, bound, depth, prefix, values } = patternShape(pattern);
+		let shape = this.#shapes.get(name);
+		if (!shape) this.#shapes.set(name, (shape = { bound, depth, prefix, buckets: new Map() }));
+		shape.buckets.set(values, keySubscriptions);
+	}
+
+	remove(pattern: string, keySubscriptions: any): boolean {
+		if (this.#keys.get(pattern) === keySubscriptions.key) this.#keys.delete(pattern);
+		const { name, values } = patternShape(pattern);
+		const shape = this.#shapes.get(name);
+		if (shape?.buckets.get(values) === keySubscriptions) {
+			shape.buckets.delete(values);
+			if (shape.buckets.size === 0) this.#shapes.delete(name);
+		}
+		return this.#keys.size === 0;
+	}
+
+	/** The buckets the record's levels match, each with its length, held from traversal; deliverMatches releases them. */
+	collect(levels: unknown[]): any[] | undefined {
+		let matched: any[] | undefined;
+		for (const shape of this.#shapes.values()) {
+			if (shape.prefix ? levels.length < shape.depth : levels.length !== shape.depth) continue;
+			let values = '';
+			let comparable = true;
+			for (let i = 0; i < shape.bound.length; i++) {
+				const level = levels[shape.bound[i]];
+				// a number never equals a topic level
+				if (typeof level !== 'string') {
+					comparable = false;
+					break;
+				}
+				values = i === 0 ? level : values + '\0' + level;
+			}
+			if (!comparable) continue;
+			const keySubscriptions = shape.buckets.get(values);
+			if (!keySubscriptions) continue;
+			keySubscriptions.traversals++;
+			(matched ??= []).push(keySubscriptions, keySubscriptions.length);
+		}
+		return matched;
+	}
+}
+
+function deliverMatches(
+	matched: any[],
+	recordId: Id,
+	auditRecord: any,
+	timestamp: number,
+	txnKey: number,
+	subscribersWithTxns: any[] | undefined
+): any[] | undefined {
+	try {
+		for (let i = 0; i < matched.length; i += 2) {
+			subscribersWithTxns = deliverToSubscriptions(
+				matched[i],
+				matched[i + 1],
+				recordId,
+				auditRecord,
+				timestamp,
+				txnKey,
+				0,
+				subscribersWithTxns
+			);
+		}
+	} finally {
+		for (let i = 0; i < matched.length; i += 2) endTraversal(matched[i]);
+	}
+	return subscribersWithTxns;
+}
+
+function detachIdPattern(tableSubscriptions: any, keySubscriptions: any) {
+	const pattern = keySubscriptions.key.description;
+	const prefixKey = patternPrefixKey(pattern) ?? null;
+	const groups: Map<string | null, IdPatternGroup> | undefined = tableSubscriptions.idPatterns;
+	if (groups?.get(prefixKey)?.remove(pattern, keySubscriptions)) {
+		groups.delete(prefixKey);
+		if (groups.size === 0) tableSubscriptions.idPatterns = undefined;
 	}
 }
 const ACTIONS_OF_INTEREST = ['put', 'patch', 'delete', 'message', 'invalidate'];
@@ -606,48 +837,43 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 					// TODO: How to handle invalidation
 					let matchingKey = keyArrayToString(recordId);
 					let ancestorLevel = 0;
+					const idPatterns: Map<string | null, IdPatternGroup> | undefined = tableSubscriptions.idPatterns;
+					let levels: unknown[] | null | undefined;
 					do {
 						// we iterate through the key hierarchy, notifying all subscribers for each key,
 						// so for an id like resource/foo/bar, we notify subscribers for resource/foo/bar, resource/foo/, resource/, and the root (null)
 						// this allows for efficient subscriptions to children ids/topics
+						// a subscriber added during this walk starts with the next record, so this key's pattern matches
+						// are taken before any of its listeners runs
+						let matched: any[] | undefined;
+						if (idPatterns !== undefined) {
+							const patternGroup = idPatterns.get(matchingKey);
+							if (patternGroup !== undefined && (levels ??= idLevels(recordId) ?? null) !== null) {
+								matched = patternGroup.collect(levels);
+							}
+						}
 						const keySubscriptions = tableSubscriptions.get(matchingKey);
 						if (keySubscriptions) {
-							keySubscriptions.traversals++;
-							try {
-								// a subscriber added during this walk starts with the next record
-								for (let i = 0, length = keySubscriptions.length; i < length; i++) {
-									const subscription = keySubscriptions[i];
-									if (!subscription.subscriptions) continue;
-									if (
-										ancestorLevel > 0 && // only ancestors if the subscription is for ancestors (and apply onlyChildren filtering as necessary)
-										!(subscription.includeDescendants && !(subscription.onlyChildren && ancestorLevel > 1))
-									)
-										continue;
-									if (!subscription.ungated && subscription.startTime >= timestamp) {
-										continue;
-									}
-									try {
-										let beginTxn;
-										if (subscription.supportsTransactions && subscription.txnInProgress !== txnKey) {
-											// if the subscriber supports transactions, we mark this as the beginning of a new transaction
-											// tracking the subscription so that we can delimit the transaction on next transaction
-											// (with a beginTxn flag, which may be on an endTxn event)
-											beginTxn = true;
-											if (!subscription.txnInProgress) {
-												// if first txn for subscriber of this cycle, add to the transactional subscribers that we are tracking
-												if (!subscribersWithTxns) subscribersWithTxns = [subscription];
-												else subscribersWithTxns.push(subscription);
-											}
-											subscription.txnInProgress = txnKey;
-										}
-										subscription.listener(recordId, auditRecord, timestamp, beginTxn);
-									} catch (error) {
-										warn(error);
-									}
-								}
-							} finally {
-								endTraversal(keySubscriptions);
-							}
+							subscribersWithTxns = deliverToSubscriptions(
+								keySubscriptions,
+								keySubscriptions.length,
+								recordId,
+								auditRecord,
+								timestamp,
+								txnKey,
+								ancestorLevel,
+								subscribersWithTxns
+							);
+						}
+						if (matched !== undefined) {
+							subscribersWithTxns = deliverMatches(
+								matched,
+								recordId,
+								auditRecord,
+								timestamp,
+								txnKey,
+								subscribersWithTxns
+							);
 						}
 						if (matchingKey == null) break;
 						const lastSlash = matchingKey.lastIndexOf?.('/', matchingKey.length - 2);

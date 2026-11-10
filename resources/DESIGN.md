@@ -245,6 +245,8 @@ A bare `<table>/` row may lack `name` and `isPrimaryKey` (#3225), so use `isPrim
 
 **Registration is the delivery boundary**, except a backlog over one batch, a subscribe inside a dispatch, or an entry behind an uncommitted transaction (#2928; `subscriptionRegistrationBoundary.test.js`). Passes never share an iterator and skip a closing store. **The ancestor key walk must strictly shrink** (#2687; `transactionBroadcastKeyWalk.test.js`). **Ending a subscription never reshapes an array a loop walks** (`transactionBroadcastEndDuringDelivery.test.js`).
 
+An MQTT `+` topic moves its subscription to a Symbol-keyed bucket no key walk reaches (`routeByIdPattern`), and the walk hands it the records its pattern matches when it reaches the pattern's fixed prefix (`IdPatternGroup.collect`). **Only a subscription from a table's own `subscribe()` moves** (`ROUTES_BY_ID_PATTERN` on the resource's method, checked by the MQTT session; `SUBSCRIBE_OVERRIDDEN` on a subscription an override, an instance field included, obtained): an override can narrow the target, add a filter or rewrite events, which a pattern over stored ids would bypass. **Routing and the MQTT topic filter (`topicLevelFilter`) accept the same ids**: the filter alone screens the snapshot and replay, read from the prefix, so a rule changed in one only delivers a record live but not on catch-up, or the reverse (`idPatternSubscription.test.js`).
+
 ## `createBlob(readable)` and `table.put()` don't synchronously drain the source
 
 `put` can resolve before the commit saves the blob: finalize source-derived state after `storageInfo.saving` settles.
