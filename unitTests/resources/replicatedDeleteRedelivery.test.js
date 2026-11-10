@@ -377,6 +377,34 @@ describe('Re-delivered replicated writes (harper-pro#826, harper-pro#1306)', () 
 		assert.deepEqual(await indexedIds('peer-b'), [id]);
 	});
 
+	it('does not re-log a late-relayed older patch that newer patches fully supersede', async function () {
+		if (isLMDB) return this.skip();
+		const Superseded = table({
+			table: 'RedeliveredSupersededPatch',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }, { name: 'other' }],
+			audit: true,
+		});
+		const clock = recentClock();
+		const lateOrigin = getIdOfRemoteNode('redelivery-superseded-origin', auditStore);
+		const id = 'superseded-patch';
+		const [baseKey, lateKey, firstLateOriginKey, newerKey] = [clock(), clock(), clock(), clock()];
+		await applyFrame(
+			firstLateOriginKey,
+			[{ type: 'put', id: 'superseded-origin-first', record: { id: 'superseded-origin-first' }, nodeId: lateOrigin }],
+			Superseded
+		);
+		await applyFrame(baseKey, [{ type: 'put', id, record: { id, name: 'base', other: 0 } }], Superseded);
+		await applyFrame(newerKey, [{ type: 'patch', id, record: { name: 'newer' } }], Superseded);
+		const latePatch = { type: 'patch', id, record: { name: 'late' }, nodeId: lateOrigin };
+		await applyFrame(lateKey, [latePatch], Superseded);
+		const lateEntries = () => entriesFor(Superseded, id, 'patch').filter((entry) => entry.txnLogKey === lateKey);
+		assert.equal(lateEntries().length, 1, 'premise: the first delivery logs the superseded patch');
+		for (let i = 0; i < 3; i++) await applyFrame(lateKey, [latePatch], Superseded);
+		assert.equal(lateEntries().length, 1);
+		assert.equal(Superseded.primaryStore.getEntry(id).value.name, 'newer');
+	});
+
 	it('does not re-log a late-relayed older patch whose record a base copy rewrote', async function () {
 		if (isLMDB) return this.skip();
 		const Patched = table({

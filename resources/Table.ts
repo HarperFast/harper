@@ -6744,8 +6744,9 @@ export function makeTable(options): TableResourceClass {
 							// and the depth-cap check notes the lookup "can intermittently miss under load" with the
 							// authoritative full-copy record restoring exact convergence (#1148). This guard turns that
 							// tolerated miss into a deliberate skip for pre-retention versions — staying within the
-							// existing contract. At or above the audit floor nothing was purged, so the lookup always runs
-							// there (resources/audit-retention.md).
+							// existing contract. The first appended entry does not bound the log: a late-relayed entry appends below
+							// it, so where the walk cannot reach this write's own entry, `isReDeliveredDuplicate(true)` looks it up
+							// anyway above the audit floor (resources/audit-retention.md).
 							// Resolve the oldest retained entry once, for the same log the dedup reads.
 							let oldestRetainedAuditTime: number | undefined;
 							let oldestRetainedAuditTimeResolved = false;
@@ -6753,11 +6754,9 @@ export function makeTable(options): TableResourceClass {
 								if (!isRocksDB) return true; // LMDB keeps its exact, unbounded lookup (keyed by local audit time)
 								// an unnamed origin's entries sit in `local` under minted keys, never at its received key
 								if (options?.nodeId && auditStore.isLocalOrigin(options.nodeId)) return false;
-								auditFloor ??= getAuditFloor(auditStore);
-								if (version >= auditFloor) return true;
 								if (!oldestRetainedAuditTimeResolved) {
 									oldestRetainedAuditTimeResolved = true;
-									// the first appended entry: a late-relayed one can sit below it, so the floor check comes first
+									// the first appended entry; a late-relayed one can sit below it
 									// Mirror replicationConnection's retention check and the cleanup key basis (`txnLogKey`).
 									// Fall back to the nominal time-based purge floor when the log is empty/unavailable.
 									for (const entry of auditStore.getRange({ start: 1, log: options?.nodeId })) {
@@ -6930,9 +6929,16 @@ export function makeTable(options): TableResourceClass {
 							// applied; drop it rather than re-applying it (double-applying commutative ops) or writing a
 							// duplicate audit-only record. Used by the early-out and the depth-cap block below.
 							// Never a duplicate for a write that may read its own orphan (see the up-front keyed dedup above).
-							const isReDeliveredDuplicate = () => {
+							// `walkMissesIt`: the walk did not reach this write's own entry, so only this lookup can stop a re-delivery
+							// from re-logging, and peers forwarding each copy back (harper-pro#1306); no prune removed a key at or
+							// above the floor, wherever it was appended
+							const isReDeliveredDuplicate = (walkMissesIt = false) => {
 								if (replaying || mayReadOwnOrphan) return false;
-								if (!dedupVersionCouldBeRetained(receivedLogKey)) return false; // pre-retention log key — skip the end-of-log scan (best-effort; see above)
+								if (!dedupVersionCouldBeRetained(receivedLogKey)) {
+									if (!walkMissesIt || (options?.nodeId && auditStore.isLocalOrigin(options.nodeId))) return false; // pre-retention log key — skip the end-of-log scan (best-effort; see above)
+									auditFloor ??= getAuditFloor(auditStore);
+									if (!(receivedLogKey >= auditFloor)) return false;
+								}
 								const duplicate = auditStore.get(receivedLogKey, tableId, id, options?.nodeId);
 								return (
 									duplicate &&
@@ -7229,7 +7235,7 @@ export function makeTable(options): TableResourceClass {
 									// writes the audit record. (A newer full put/delete on this single chain is caught above before
 									// the residual could empty, so it cannot be reached here.)
 									if (isRocksDB && fullySuperseded && auditRefsToVisit.length === 0) {
-										if (isReDeliveredDuplicate()) {
+										if (isReDeliveredDuplicate(true)) {
 											write.skipped = true;
 											return; // re-delivered duplicate already applied
 										}
@@ -7252,6 +7258,10 @@ export function makeTable(options): TableResourceClass {
 									logger.debug?.('Following additional audit ref to continue scanning', { localTime, nodeId });
 								}
 							} while (nextRef);
+							if (auditHistoryMissing && isRocksDB && isReDeliveredDuplicate(true)) {
+								write.skipped = true;
+								return;
+							}
 							if (!localTime && !auditWalkCapped) {
 								// if we reached the end of the audit trail, we can just apply the update
 								logger.debug?.(
@@ -7328,7 +7338,7 @@ export function makeTable(options): TableResourceClass {
 										fullUpdate,
 									}
 								);
-								if (isReDeliveredDuplicate()) {
+								if (isReDeliveredDuplicate(true)) {
 									write.skipped = true;
 									return; // duplicate write already applied
 								}
