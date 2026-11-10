@@ -216,6 +216,74 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 			assert.strictEqual(user.isCurrentUser(unknown), false);
 		});
 
+		it('tells a user built from an hdb_user record from one with no record', async () => {
+			const unknown = await user.findAndValidateUser('lookup_user', null, false);
+			assert.strictEqual(user.isRecordBacked(unknown), false);
+			assert.strictEqual(user.isRecordBacked(user.cloneUserView(unknown)), false, 'a role-less clone');
+			await testUtils.seedUsers([lookupUser({ role: 'missing_role' })]);
+			const roleless = await user.findAndValidateUser('lookup_user', null, false);
+			assert.strictEqual(roleless.role, undefined);
+			assert.strictEqual(user.isRecordBacked(roleless), true, 'a record whose role is missing');
+			assert.strictEqual(user.isRecordBacked({ username: 'scoped', role: { permission: {} } }), undefined);
+		});
+
+		it('marks a copy as a certificate principal, never the object server.getUser returned', async () => {
+			const unknown = await user.findAndValidateUser('lookup_user', null, false);
+			const named = user.certificatePrincipal(unknown);
+			assert.notStrictEqual(named, unknown);
+			assert.strictEqual(user.isCertificatePrincipal(named), true);
+			assert.strictEqual(user.isCertificatePrincipal(unknown), false, 'the shared object stays unmarked');
+			assert.strictEqual(user.isRecordBacked(named), false, 'the copy keeps its record provenance');
+			assert.strictEqual(user.isCertificatePrincipal(user.cloneUserView(named)), true, 'a clone keeps the mark');
+			assert.strictEqual(
+				user.isCertificatePrincipal(JSON.parse(JSON.stringify(named))),
+				false,
+				'data never carries it'
+			);
+			assert.strictEqual(user.isCertificatePrincipal(structuredClone(named)), false);
+
+			const frozen = Object.freeze({ username: 'frozen_cn' });
+			assert.strictEqual(user.isCertificatePrincipal(user.certificatePrincipal(frozen)), true);
+			for (const none of [null, undefined]) assert.strictEqual(user.certificatePrincipal(none), none);
+
+			const component = { username: 'component_cn', role: { permission: {} } };
+			user.trackUserRecords(component, user.userRecordVersions('component_cn'));
+			await testUtils.seedUsers([lookupUser({ username: 'component_cn' })]);
+			assert.strictEqual(
+				user.isCurrentUser(user.certificatePrincipal(component)),
+				false,
+				'tracked versions carry over'
+			);
+		});
+
+		it('keeps a certificate view of a record-backed user current only while its records are', async () => {
+			await testUtils.seedUsers([lookupUser()]);
+			const view = user.certificatePrincipal(await user.findAndValidateUser('lookup_user', null, false));
+			assert.strictEqual(user.isRecordBacked(view), true);
+			assert.strictEqual(user.isCurrentUser(view), true);
+			await databases.system.hdb_role.put({ id: 'lookup_role', role: 'lookup_role', permission: {} });
+			assert.strictEqual(user.isCurrentUser(view), false, 'a role change');
+		});
+
+		it('leaves a class-instance principal as it is, unmarked', () => {
+			class GetterRole {
+				username = 'getter_cn';
+				get role() {
+					return { permission: {} };
+				}
+			}
+			class PrivateName {
+				#name = 'private_cn';
+				get username() {
+					return this.#name;
+				}
+			}
+			for (const principal of [new GetterRole(), new PrivateName()]) {
+				assert.strictEqual(user.certificatePrincipal(principal), principal);
+				assert.strictEqual(user.isCertificatePrincipal(principal), false);
+			}
+		});
+
 		it('treats a user this module did not build as current', () => {
 			assert.strictEqual(user.isCurrentUser({ username: 'scoped', role: { permission: {} } }), true);
 		});

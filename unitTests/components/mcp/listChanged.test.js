@@ -13,7 +13,7 @@ const { databases } = require('#src/resources/databases');
 const testUtils = require('../../testUtils.js');
 const { waitFor } = require('../../waitFor');
 
-const { localPrincipal } = userModule;
+const { certificatePrincipal, isCertificatePrincipal, localPrincipal } = userModule;
 
 const SUPER = { username: 'admin', role: { permission: { super_user: true } } };
 const ALICE = {
@@ -206,6 +206,18 @@ describe('mcp/listChanged', () => {
 		await waitFor(() => record.user.role === fresh.role);
 		assert.equal(record.user.authExpiresAt, authExpiresAt);
 		assert.equal(fresh.authExpiresAt, undefined);
+	});
+
+	it('keeps the certificate mark when it refreshes a session a certificate named', async () => {
+		initListChanged();
+		const record = registerSession('cert-sid', 'application', certificatePrincipal({ username: 'cert_cn' }));
+		const named = record.user;
+		const fresh = { username: 'cert_cn', role: { permission: {} } };
+		_setUserResolverForTest(async () => fresh);
+		fakeItc._fireUser();
+		await waitFor(() => record.user !== named);
+		assert.equal(isCertificatePrincipal(record.user), true);
+		assert.equal(isCertificatePrincipal(fresh), false);
 	});
 
 	it('a scoped-token session is never re-resolved by name (no privilege substitution)', async () => {

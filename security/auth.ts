@@ -1,5 +1,6 @@
 import {
 	canRetryChangedUser,
+	certificatePrincipal,
 	cloneUserView,
 	getUserImpl,
 	hasReadRecordChanged,
@@ -246,7 +247,7 @@ export async function authentication(request, nextHandler) {
 					username = request.peerCertificate.subject.CN;
 				let mtlsUser;
 				try {
-					mtlsUser = await server.getUser(username, null, request);
+					mtlsUser = certificatePrincipal(await server.getUser(username, null, request));
 				} catch (error) {
 					if (LOG_AUTH_FAILED) authAuditLog(request, sessionId, username, AUTH_AUDIT_STATUS.FAILURE, 'mTLS');
 					const failureResponse = settleAuthFailure(request, error, 'mTLS');

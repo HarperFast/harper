@@ -3,7 +3,7 @@
 import _mqtt_packet from 'mqtt-packet';
 const { parser: makeParser, generate } = _mqtt_packet;
 import { getSession, DurableSubscriptionsSession, RECEIVE_MAXIMUM } from './DurableSubscriptionsSession.ts';
-import { getTrackedUser, localPrincipal, type UserProvenance } from '../security/user.ts';
+import { certificatePrincipal, getTrackedUser, localPrincipal, type UserProvenance } from '../security/user.ts';
 import { getDeserializer } from './serverHelpers/contentTypes.ts';
 import {
 	getSharedMessageEncoding,
@@ -155,7 +155,7 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 									if (username === undefined || username === 'Common Name' || username === 'CN')
 										username = (socket as any).getPeerCertificate().subject.CN;
 									try {
-										user = await getTrackedUser(username, null, null, admission, server);
+										user = certificatePrincipal(await getTrackedUser(username, null, null, admission, server));
 										if (get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGSUCCESSFUL)) {
 											authEventLog.notify?.({
 												username: user?.username,

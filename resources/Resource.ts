@@ -1178,11 +1178,24 @@ function registerLiveSubscriptionForContext(
 	if (!username || securityUser!.isLocalPrincipal(user)) return subscription;
 	// no subscription, or one already closed (a refused resume): nothing will be delivered to revoke
 	if (!subscription || typeof subscription !== 'object' || subscription.closed) return subscription;
-	const { cloneUserView, hasRecordProvenance, isCurrentUser, isRecordlessPrincipal } = securityUser!;
+	const {
+		certificatePrincipal,
+		cloneUserView,
+		hasRecordProvenance,
+		isCertificatePrincipal,
+		isCurrentUser,
+		isRecordBacked,
+		isRecordlessPrincipal,
+	} = securityUser!;
 	// a memoizing server.getUser's user does not carry what an MQTT connection's own CONNECT recorded
 	const session = (context as any)?.session;
 	const admitted = session?.user === user ? session.userProvenance : undefined;
 	const fixedPrincipal = Boolean(user._scopedToken) || isRecordlessPrincipal(user, admitted);
+	// A principal re-read by name needs a role to keep the subscription (#1414). The exception is a client certificate
+	// naming no hdb_user: allowRead alone admitted it, so allowRead alone rechecks it, until a record backs it at a
+	// recheck; then it needs a role even after that record is dropped.
+	const certificate = isCertificatePrincipal(user);
+	let roleRequired = !certificate || Boolean(isRecordBacked(user, admitted) || user.role);
 	// Without a caller's select or a condition or sort through a relationship, the default allowRead only
 	// narrows what it returns, so its verdict depends on the role's permission for this table alone.
 	const sharedDecision =
@@ -1191,7 +1204,7 @@ function registerLiveSubscriptionForContext(
 		!resource.constructor._referencesRelationship?.(admittedTarget);
 	const evaluate = (principal: any) => {
 		const reTarget: any = cloneRequestTarget(admittedTarget);
-		reTarget.checkPermission = principal.role?.permission;
+		reTarget.checkPermission = principal.role?.permission ?? {};
 		return resource.allowRead(principal, reTarget, context);
 	};
 	const handle = registerLiveSubscription({
@@ -1215,15 +1228,20 @@ function registerLiveSubscriptionForContext(
 				// Re-read current user state from hdb_user/hdb_role, once per username per pass, so a dropped
 				// or role-stripped user no longer authorizes.
 				fresh = await pass.memo(resolveUser, username, resolveUser);
-				if (!fresh?.role) return false;
+				if (!fresh) return false;
+				if (isRecordBacked(fresh)) roleRequired = true;
+				if (!fresh.role && roleRequired) return false;
 				// Advance the subscription's context to the fresh user so downstream checks — context.user
 				// and getCurrentUser() (which reads the resource's context) — evaluate against current state,
 				// not the stale user captured at subscribe time. Each context gets its own view, which its
 				// code may modify.
 				viewer = cloneUserView(fresh);
+				// a later subscription on this context is admitted by the same certificate
+				if (certificate) viewer = certificatePrincipal(viewer);
 				if (context) (context as any).user = viewer;
 			}
-			// Re-run the same operation-level allowRead that granted the subscription.
+			// Re-run the same operation-level allowRead that granted the subscription. A shared decision evaluates
+			// `fresh`, not the marked viewer: the default allowRead never reads the certificate mark.
 			return !!(await (sharedDecision ? pass.memo(fresh, resource.constructor, evaluate) : evaluate(viewer)));
 		},
 	});

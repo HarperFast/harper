@@ -28,6 +28,9 @@ export {
 	canRetryChangedUser,
 	hasRecordProvenance,
 	isRecordlessPrincipal,
+	isRecordBacked,
+	certificatePrincipal,
+	isCertificatePrincipal,
 	userRecordVersions,
 	trackUserRecords,
 	cloneUserView,
@@ -748,8 +751,9 @@ function firstLookup(user: User, name: unknown = user?.username): UserProvenance
  * `isCurrentUser` checks it against `provenance`, what `trackUserRecords` returned for this lookup, or else
  * against the records `user` was built from.
  */
-function cloneUserView(user: User & { role: UserRole }, provenance?: UserProvenance): User {
-	const clone: User = { ...user, role: { ...user.role, permission: { ...user.role.permission } } };
+function cloneUserView(user: User, provenance?: UserProvenance): User {
+	const clone: User = { ...user };
+	if (user.role) clone.role = { ...user.role, permission: { ...user.role.permission } };
 	provenance ??= (clone as any)[PROVENANCE] ?? firstLookup(user);
 	if (provenance) (clone as any)[PROVENANCE] = provenance;
 	return clone;
@@ -818,6 +822,41 @@ function hasRecordProvenance(user: User, admitted?: UserProvenance): boolean {
  */
 function isRecordlessPrincipal(user: User, admitted?: UserProvenance): boolean {
 	return recordedProvenance(user, admitted)?.recordless === true;
+}
+
+/**
+ * Whether an hdb_user record backed `user` when it was resolved, its own or the login name's that admitted it
+ * (`admitted`, as for `hasRecordProvenance`); undefined when it has no record provenance (a scoped token, or a user
+ * resolved outside this module and not tracked).
+ */
+function isRecordBacked(user: User, admitted?: UserProvenance): boolean | undefined {
+	const provenance = recordedProvenance(user, admitted);
+	return provenance && provenance.userStamp !== null;
+}
+
+const CERTIFICATE_PRINCIPAL = Symbol('certificate principal');
+
+/**
+ * A copy of `user` marked as named by a verified client certificate, which live-subscription rechecks exempt from
+ * the role requirement (#4062). Every place a certificate selects the principal must install it (security/auth.ts,
+ * server/mqtt.ts), and every by-name re-resolve that replaces such a principal must re-mark the fresh view
+ * (resources/Resource.ts rechecks, components/mcp/listChanged.ts); one that does not fails closed. The mark goes on
+ * a copy because a server.getUser override may hand the same object to a session or password lookup; a symbol, so
+ * no data can carry it. Only a plain object is copied, and its own getters are read once; a class instance (its
+ * accessors and private fields do not survive a copy) stays unmarked.
+ */
+function certificatePrincipal<T>(user: T): T {
+	if (!user || typeof user !== 'object' || Object.getPrototypeOf(user) !== Object.prototype) return user;
+	const view: any = { ...user, [CERTIFICATE_PRINCIPAL]: true };
+	if (!view[PROVENANCE]) {
+		const tracked = firstLookup(user as unknown as User);
+		if (tracked) view[PROVENANCE] = tracked;
+	}
+	return view;
+}
+
+function isCertificatePrincipal(user: unknown): boolean {
+	return (user as any)?.[CERTIFICATE_PRINCIPAL] === true;
 }
 
 /**
