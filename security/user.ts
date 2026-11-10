@@ -480,10 +480,14 @@ interface UserEntries {
 	role?: RecordEntry;
 }
 
-function systemStore(tableName: string) {
+function systemTable(tableName: string) {
 	const table = getDatabases().system?.[tableName];
 	if (!table) throw new Error(`Table system.${tableName} not found`);
-	return table.primaryStore;
+	return table;
+}
+
+function systemStore(tableName: string) {
+	return systemTable(tableName).primaryStore;
 }
 
 // hdb_user and hdb_role ids are only ever strings or numbers; anything else is malformed data.
@@ -667,10 +671,11 @@ function userRecordVersions(username: string): UserProvenance {
  * Makes `isCurrentUser` check a user resolved outside this module against the record versions read
  * before it was resolved, so a write in between shows as a change. A user under another name, when no
  * record has the login name, can only have its own name's records read after it resolved, so only a drop
- * in between shows, by its tombstone. Returns this lookup's provenance, or undefined for a user this module
- * built. A user is recordless only if no hdb_user entry, live or deleted, has its name: a tombstone outlives
- * any lookup shorter than logging.auditRetention, at the cost of re-reading by name a user whose name lost
- * its record within it (an unaudited hdb_user keeps none). A memoizing server.getUser hands one user to logins
+ * in between shows, by its tombstone; an unaudited hdb_user keeps none, so there such a user is never
+ * recordless. Returns this lookup's provenance, or undefined for a user this module built. A user is
+ * recordless only if no hdb_user entry, live or deleted, has its name: a tombstone outlives any lookup
+ * shorter than logging.auditRetention, at the cost of re-reading by name a user whose name lost its record
+ * within it. A memoizing server.getUser hands one user to logins
  * backed differently, so the first lookup that checked the user against each name is kept (`firstLookup`): a
  * name first found recordless stays so, and a record that first lookup read and that is since dropped stays
  * a change. An HTTP view carries its own lookup; an MQTT connection holds the user, so `getTrackedUser` gives
@@ -678,7 +683,8 @@ function userRecordVersions(username: string): UserProvenance {
  */
 function trackUserRecords(user: User, versions: UserProvenance): UserProvenance | undefined {
 	if (!user || typeof user !== 'object' || (user as any)[PROVENANCE]) return undefined;
-	const store = systemStore(USER_TABLE_NAME);
+	const table = systemTable(USER_TABLE_NAME);
+	const store = table.primaryStore;
 	const sameName = user.username === versions.username;
 	let firsts = trackedProvenance.get(user);
 	let provenance: UserProvenance;
@@ -693,7 +699,8 @@ function trackUserRecords(user: User, versions: UserProvenance): UserProvenance 
 		provenance.recordless = provenance.userStamp === null && !hasLiveOrDeletedEntry(store, user.username);
 	} else {
 		provenance = userRecordVersions(user.username);
-		provenance.recordless = provenance.userStamp === null && !hasLiveOrDeletedEntry(store, user.username);
+		provenance.recordless =
+			provenance.userStamp === null && Boolean(table.audit) && !hasLiveOrDeletedEntry(store, user.username);
 		// its own name is read only after it resolved, so a record there this did not read may have been dropped
 		// meanwhile; a login name's read, and the same name's, came before
 		if (provenance.userStamp === null && !provenance.recordless) provenance.userStamp = UNREAD_RECORD;

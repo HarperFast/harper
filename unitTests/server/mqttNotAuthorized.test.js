@@ -734,6 +734,34 @@ describe('mqtt.ts CONNECT through a component’s server.getUser', () => {
 		}
 	});
 
+	it('refuses such a copy on an unaudited hdb_user too, where the drop leaves no tombstone', async () => {
+		await seedUsers([
+			{
+				username: 'mqtt_unaudited',
+				active: true,
+				role: { id: 'mqtt_unaudited_role', permission: { super_user: true } },
+			},
+		]);
+		const userTable = databases.system.hdb_user;
+		const audited = userTable.audit;
+		server.getUser = async () => {
+			const copied = structuredClone(userModule.getUserWithRole('mqtt_unaudited'));
+			await userTable.delete('mqtt_unaudited');
+			userTable.primaryStore.removeSync('mqtt_unaudited');
+			return copied;
+		};
+		userTable.audit = false;
+		let client;
+		try {
+			client = await connect(open, { username: 'mqtt_unaudited_login', password: 'token' });
+			assert.strictEqual(client.session.user.username, 'mqtt_unaudited');
+			assert.deepStrictEqual((await client.subscribe(`${protectedTable()}/#`)).granted, [NOT_AUTHORIZED]);
+		} finally {
+			userTable.audit = audited;
+			client?.socket.handlers.close();
+		}
+	});
+
 	it('classes a memoized user a record-backed login reached first as recordless for a login no record admitted', async () => {
 		await seedUsers([{ username: 'mqtt_backing', active: true, role: { id: 'mqtt_backing_role', permission: {} } }]);
 		const shared = { username: 'mqtt_backed_subject', role: { permission: { super_user: true } } };

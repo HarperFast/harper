@@ -286,6 +286,33 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 			}
 		});
 
+		it('does not hold for a user under another name on an unaudited hdb_user, which keeps no tombstone', async () => {
+			const userTable = databases.system.hdb_user;
+			const audited = userTable.audit;
+			await testUtils.seedUsers([lookupUser({ username: 'lookup_unaudited_dropped' })]);
+			const getUser = server.getUser;
+			server.getUser = async () => {
+				const copied = structuredClone(user.getUserWithRole('lookup_unaudited_dropped'));
+				await userTable.delete('lookup_unaudited_dropped');
+				userTable.primaryStore.removeSync('lookup_unaudited_dropped');
+				return copied;
+			};
+			userTable.audit = false;
+			try {
+				const aliased = await user.getTrackedUser('lookup_unaudited_login', 'token');
+				assert.strictEqual(userTable.primaryStore.getEntry('lookup_unaudited_dropped'), undefined, 'no tombstone');
+				assert.strictEqual(user.isRecordlessPrincipal(aliased), false, 'dropped while it resolved, for all it shows');
+				assert.strictEqual(user.isCurrentUser(aliased), false);
+				const renamed = resolvedFor('lookup_unaudited_token', componentUser('lookup_unaudited_subject'));
+				assert.strictEqual(user.isRecordlessPrincipal(renamed), false, 'nor one whose name never had a record');
+				const unbacked = resolvedFor('lookup_unaudited_unbacked', componentUser('lookup_unaudited_unbacked'));
+				assert.strictEqual(user.isRecordlessPrincipal(unbacked), true, 'its own name was read before it resolved');
+			} finally {
+				userTable.audit = audited;
+				server.getUser = getUser;
+			}
+		});
+
 		it('does not hold for a user this module built, or one with nothing recorded', async () => {
 			assert.strictEqual(user.isRecordlessPrincipal(await user.findAndValidateUser('lookup_user', null, false)), false);
 			assert.strictEqual(user.isRecordlessPrincipal(componentUser('lookup_untracked')), false);
