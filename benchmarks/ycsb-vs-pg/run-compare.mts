@@ -1631,11 +1631,21 @@ async function main(): Promise<void> {
 		stackMemory: (target) => WARM_STACK_MEMORY[target],
 		ownFlags: ['host-quiet-cores', 'host-quiet-max-min'],
 	});
+	let failed = true;
 	try {
 		await runComparison(session, meta, targets, { hostQuietCores, hostQuietMaxMin, sharedCgroup });
+		failed = false;
 	} finally {
-		await session.remote?.close();
+		await closeRemote(session, failed);
 	}
+}
+
+/** Closes the agents after a session; a close failure after the session already failed is reported, not raised over it. */
+export async function closeRemote(session: Session, sessionFailed: boolean): Promise<void> {
+	await session.remote?.close().catch((error) => {
+		if (!sessionFailed) throw error;
+		console.error(`closing the target agents failed too: ${(error as Error).message}`);
+	});
 }
 
 /**

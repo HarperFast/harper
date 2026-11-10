@@ -31,6 +31,7 @@ import {
 	RESULTS_DIR,
 	argValue,
 	assertDependentReads,
+	closeRemote,
 	assertNoErrors,
 	createSession,
 	measureWindow,
@@ -666,10 +667,12 @@ async function main(): Promise<void> {
 		await writeJsonAtomic(join(RESULTS_DIR, 'memory-sweep-latest.json'), payload);
 	};
 
+	let failed = true;
 	try {
 		await sweep();
+		failed = false;
 	} finally {
-		await session.remote?.close();
+		await closeRemote(session, failed);
 	}
 
 	async function sweep(): Promise<void> {

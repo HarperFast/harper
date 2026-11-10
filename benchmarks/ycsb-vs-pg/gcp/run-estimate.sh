@@ -65,13 +65,13 @@ phase() {
 	echo "=== phase $name"
 	on_gen "rm -f /opt/ycsb/logs/$name.status; systemd-run --user --unit=ycsb-$name \
 		--property=StandardOutput=file:/opt/ycsb/logs/$name.log --property=StandardError=file:/opt/ycsb/logs/$name.log \
-		--working-directory=$YCSB_VM_REPO /bin/bash -c $(printf '%q' "$command; echo \$? > /opt/ycsb/logs/$name.status")"
+		--working-directory=$YCSB_VM_REPO /bin/bash -c $(printf '%q' "$command; echo \$? > /opt/ycsb/logs/$name.status.tmp && mv /opt/ycsb/logs/$name.status.tmp /opt/ycsb/logs/$name.status")"
 	while [ -z "$status" ]; do
 		sleep 60
 		polls=$((polls + 1))
 		# No status file and no running unit: systemd ended the phase before the wrapper could write one.
-		if out=$(on_gen "s=/opt/ycsb/logs/$name.status; tail -n 2 /opt/ycsb/logs/$name.log >&2; if [ -f \$s ]; then cat \$s; \
-			elif ! systemctl --user is-active -q ycsb-$name; then if [ -f \$s ]; then cat \$s; else echo ended-without-status; fi; fi"); then
+		if out=$(on_gen "s=/opt/ycsb/logs/$name.status; tail -n 2 /opt/ycsb/logs/$name.log >&2; if [ -s \$s ]; then cat \$s; \
+			elif ! systemctl --user is-active -q ycsb-$name; then if [ -s \$s ]; then cat \$s; else echo ended-without-status; fi; fi"); then
 			unreachable=0
 			status=$out
 		else
