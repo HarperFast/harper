@@ -129,7 +129,7 @@ Consequences that shape the code:
   only that follows the hook's awaits, which the two calls the marker identifies come after. So does one from a
   hook nested under it, run by a commit the hook started on another transaction (`isOwnCommitHook` walks the
   marker's `parent` chain through unsettled invocations to one of the scope's root): the commit awaits the outer
-  hook, which awaits the nested commit. Work a settled hook left running is awaited by neither, so it waits.
+  hook, which awaits the writes it makes. Work a settled hook left running is awaited by neither, so it waits.
   The cache-fill blob save runs no user code, so it is a `beforeIntermediate` and is not wrapped (harper#4085).
   Outside `transaction()` the marker also names the committing link: an unlocked write made within that hook
   on that link, directly or through a commit the hook started on another link (the marker's `parent` chain), is

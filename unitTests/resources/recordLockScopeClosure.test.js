@@ -580,6 +580,7 @@ describe('lock() on a transaction() scope closed by its own commit', function ()
 				const second = await SourcedOther.update(secondId, {}, txn);
 				second.set('n', 2);
 				const committing = txn.commit();
+				committing.catch(() => {}); // rethrown by the await in finally
 				try {
 					await waitFor(() => secondHookRunning, { message: 'the second mid-scope commit should be in its hook' });
 					startLeftover();
@@ -629,6 +630,7 @@ describe('lock() on a transaction() scope closed by its own commit', function ()
 				const sourced = await SourcedOther.update(sourcedId, {}, txn);
 				sourced.set('n', 2);
 				const committing = txn.commit();
+				committing.catch(() => {}); // rethrown by the await in finally
 				try {
 					await waitFor(() => leftoverLocking, { message: "the nested hook's leftover work should be locking" });
 					await delay(50);
