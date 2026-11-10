@@ -13,29 +13,25 @@
  * Every target, as a whole, runs on the same set of `--target-cpus` cores (see README); the load
  * generator and this process run on disjoint physical cores.
  */
-import { readFile, writeFile, mkdir, rename, rm, statfs } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, mkdtemp, cp, rename, rm, statfs } from 'node:fs/promises';
 import { statSync, existsSync, readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { createHash, createHmac, randomBytes } from 'node:crypto';
-import { join, resolve, dirname } from 'node:path';
+import { join, resolve, dirname, basename } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseOptions } from '../ycsb/harness.mts';
 import { WORKLOADS, OWNER_COUNT, formatKey, linkTarget, ownerOf, usesDependentReads } from '../ycsb/workload.mts';
 import type { DistributionName, LatencyStats, PhaseResult } from '../ycsb/workload.mts';
 import { startDriver, type DriverRun } from './shardedDriver.mts';
-import { startPgStack, dataDir, WARM_STACK_MEMORY, type StackMemory } from './pgStack.mts';
+import { startPgStack, dataDir, WARM_STACK_MEMORY, type StackMemory, type StackService } from './pgStack.mts';
 import {
-	sampleResources,
 	diffResources,
-	ClockProbe,
-	MemoryPeakSampler,
 	parseCpuList,
 	readTopology,
 	chooseCpuSets,
 	assertDisjointCores,
 	verifyAffinity,
 	verifyMemoryLimit,
-	readCgroupMemory,
 	processCgroup,
 	stopScope,
 	pinPid,
@@ -45,21 +41,30 @@ import {
 	checkOwnCgroup,
 	foreignProcessesInOwnCgroup,
 	type HostLoad,
-	type ResourceTargets,
 	type ResourceDelta,
 	type MemoryLimit,
 	type CgroupMemory,
 } from './resources.mts';
 import {
 	PERF_NODE_OPTIONS,
-	foldPerfScript,
+	detectPmu,
 	removePerfMaps,
 	perfAvailable,
-	startCounters,
-	startRecord,
 	sumCounters,
 	type Counters,
 } from './perfProfile.mts';
+import { localProbe, mergeHostLoads, type TargetProbe } from './probe.mts';
+import {
+	B_TOPOLOGY_NOTE,
+	connectRemote,
+	parsePlacedTargets,
+	placedName,
+	withRemoteTarget,
+	type BackendRtt,
+	type PlacedTarget,
+	type RemoteSession,
+	type Topology,
+} from './remote.mts';
 
 const REPO_ROOT = join(import.meta.dirname, '..', '..');
 const HARPER_APP_DIR = join(REPO_ROOT, 'benchmarks', 'ycsb', 'app');
@@ -221,6 +226,12 @@ export interface Session {
 	auth: AuthMode;
 	/** --auth=token: the stack's HS256 secret, generated per session. */
 	jwtSecret?: string;
+	/** Remote mode (--hosts): the target agents, one per target host. */
+	remote?: RemoteSession;
+	/** On a target agent's host: the address Harper and Fastify listen on instead of loopback. */
+	bindAddress?: string;
+	/** On a target agent's host: report the agent's own CPU apart from the target's and the rest of the host. */
+	separateSelf?: boolean;
 }
 
 interface Sample {
@@ -228,10 +239,15 @@ interface Sample {
 	/** 1-based position of this target within its rep's order, for drift analysis. */
 	position: number;
 	target: TargetName;
+	/** Remote mode: a, every component of the target on one host; b, Fastify, Redis and Postgres on their own. */
+	topology?: Topology;
+	/** Topology b: what the row compares (B_TOPOLOGY_NOTE) and the round trips between its hosts. */
+	note?: string;
+	rtt?: BackendRtt;
 	workload: string;
 	auth: AuthMode;
-	/** With --host-quiet-cores: the wait for a quiet host before this sample. */
-	hostGate?: { waitedMs: number; quiet: boolean; load: HostLoad };
+	/** With --host-quiet-cores: the wait for a quiet host before this sample (in remote mode, per host). */
+	hostGate?: { waitedMs: number; quiet: boolean; load: HostLoad; byHost?: Record<string, HostLoad> };
 	/** The gate ran with other processes in this run's cgroup, whose CPU it counted as the run's (see checkOwnCgroup). */
 	sharedCgroup?: true;
 	shards: number;
@@ -240,7 +256,7 @@ interface Sample {
 	measured: MeasuredWindow;
 }
 
-async function waitForRoute(url: string, deadlineMs: number, authorization?: string): Promise<void> {
+export async function waitForRoute(url: string, deadlineMs: number, authorization?: string): Promise<void> {
 	const deadline = Date.now() + deadlineMs;
 	while (Date.now() < deadline) {
 		try {
@@ -261,7 +277,7 @@ async function waitForRoute(url: string, deadlineMs: number, authorization?: str
 const TOKEN_USER = 'ycsb_reader';
 
 /** An HS256 JWT signed with `secret`: what the stack's clients would hold. */
-function mintHs256(secret: string, subject: string): string {
+export function mintHs256(secret: string, subject: string): string {
 	const part = (value: object) => Buffer.from(JSON.stringify(value)).toString('base64url');
 	const body = `${part({ alg: 'HS256', typ: 'JWT' })}.${part({ sub: subject, iat: Math.floor(Date.now() / 1000) })}`;
 	return `${body}.${createHmac('sha256', secret).update(body).digest('base64url')}`;
@@ -326,7 +342,7 @@ async function harperTokenCredentials(operationsURL: string, admin: string, tabl
 }
 
 /** Proves the target checks the credential: a request without it is refused, one with it is served. */
-async function assertCredentialChecked(url: string, authorization: string): Promise<void> {
+export async function assertCredentialChecked(url: string, authorization: string): Promise<void> {
 	const anonymous = await fetch(url, { signal: AbortSignal.timeout(10_000) });
 	await anonymous.body?.cancel();
 	if (anonymous.status !== 401 && anonymous.status !== 403) {
@@ -440,15 +456,13 @@ export async function assertDependentReads(
 }
 
 export interface Running {
+	/** Where the generator sends requests; empty on an agent host that runs only Postgres or Redis. */
 	baseUrl: string;
-	targets: ResourceTargets;
-	/** Component name -> root PID, each verified to run on the target cpuset only. */
-	pinned: Record<string, number>;
+	/** Every reading of the target's own processes, taken on the host(s) they run on. */
+	probe: TargetProbe;
 	memoryLimits: Record<string, MemoryLimit>;
 	recordCacheSize?: number;
 	harperSettings?: HarperSettings;
-	/** Harper's install directory (its RocksDB info LOGs are under it). */
-	dataRoot?: string;
 	/** Milliseconds from launch to accepting requests; a restore's copy is part of it. */
 	startupMs: number;
 	/** --auth=token: the Authorization header every generated request carries. */
@@ -472,6 +486,18 @@ export interface LaunchOptions {
 	restoreRoot?: string;
 	/** Harper's record count when sized; defaults to the session's. */
 	recordCacheSize?: number;
+	/** Remote mode: where the target's components run (default a). */
+	topology?: Topology;
+	/** The stack's part on this host when its services are split across hosts (an agent's launch). */
+	stack?: StackPart;
+}
+
+/** Which stack services a host runs, and where Fastify finds the ones it does not. */
+export interface StackPart {
+	services: StackService[];
+	pgUrl?: string;
+	redisUrl?: string;
+	redisPassword?: string;
 }
 
 /** Loaded into Harper's main thread when a target sets the verification table's size. */
@@ -567,6 +593,8 @@ async function withHarper<T>(
 		startupTimeoutMs: options.startupTimeoutMs,
 	};
 	const launchedAt = Date.now();
+	// A target agent's host binds Harper to the address the generator reaches instead of a pool loopback address.
+	const bind = session.bindAddress;
 	let started: Awaited<ReturnType<typeof startHarper>>;
 	try {
 		if (launch.restore) {
@@ -575,10 +603,21 @@ async function withHarper<T>(
 			const root = launch.restoreRoot!;
 			// Fails if it exists: a leftover from an earlier sample must never be reused.
 			await mkdir(root);
-			ctx.harper = { dataRootDir: root };
+			ctx.harper = { dataRootDir: root, ...(bind ? { hostname: bind } : {}) };
 			env.YCSB_RESTORE_FROM = launch.restore;
 			env.YCSB_RESTORE_TO = root;
 			started = await startHarper(ctx, { ...harperOptions, startupTimeoutMs: 3_600_000, startupMaxMs: 3_600_000 });
+		} else if (bind) {
+			// What setupHarperWithFixture does, minus allocating a pool address.
+			const root = await mkdtemp(
+				join(process.env.HARPER_INTEGRATION_TEST_INSTALL_PARENT_DIR!, 'harper-integration-test-')
+			);
+			ctx.harper = { dataRootDir: root, hostname: bind };
+			await cp(HARPER_APP_DIR, join(root, 'components', basename(HARPER_APP_DIR)), {
+				recursive: true,
+				dereference: true,
+			});
+			started = await startHarper(ctx, harperOptions);
 		} else {
 			// setupHarperWithFixture releases what it allocated if it fails; teardown owns it after.
 			started = await setupHarperWithFixture(ctx, HARPER_APP_DIR, harperOptions);
@@ -586,7 +625,8 @@ async function withHarper<T>(
 	} catch (error) {
 		// Scope first: a copy or a Harper still running in it would race the delete.
 		await stopScope(unit);
-		if (launch.restore && ctx.harper?.dataRootDir) await rm(ctx.harper.dataRootDir, { recursive: true, force: true });
+		if ((launch.restore || bind) && ctx.harper?.dataRootDir)
+			await rm(ctx.harper.dataRootDir, { recursive: true, force: true });
 		throw error;
 	}
 	try {
@@ -605,15 +645,20 @@ async function withHarper<T>(
 		console.log(`${target} ready at ${httpURL} (pid ${pid}, ${cgroup})`);
 		return await body({
 			baseUrl: httpURL,
-			targets: { processes: {}, cgroups: { harper: cgroup } },
-			pinned: { harper: pid },
+			probe: localProbe({
+				targets: { processes: {}, cgroups: { harper: cgroup } },
+				pinned: { harper: pid },
+				cpus: session.serverCpus,
+				workDir: RESULTS_DIR,
+				dataRoot: started.harper.dataRootDir,
+				separateSelf: session.separateSelf,
+			}),
 			memoryLimits: {
 				harper: verifyMemoryLimit('harper', cgroup, session.harperMemoryBytes, MEMORY_BUDGET_BYTES),
 			},
 			recordCacheSize,
 			harperSettings: settings,
 			...credentials,
-			dataRoot: started.harper.dataRootDir,
 			startupMs: Date.now() - launchedAt,
 			async snapshot(dir: string): Promise<string> {
 				// Long grace: RocksDB flushes its memtables on a clean shutdown.
@@ -629,7 +674,13 @@ async function withHarper<T>(
 			},
 		});
 	} finally {
-		await teardownHarper(started);
+		if (bind) {
+			// teardownHarper would return a non-pool address to the loopback pool, which throws. stopScope
+			// confirms nothing of this Harper still runs (or holds its ports) before its directory goes.
+			await killHarper(started);
+		} else {
+			await teardownHarper(started);
+		}
 		await stopScope(unit);
 		// teardownHarper swallows a failed delete; a leftover restore root would fail every later restore.
 		await rm(started.harper.dataRootDir, { recursive: true, force: true });
@@ -645,8 +696,9 @@ async function withPgStack<T>(
 	const { options } = session;
 	const useCache = (TARGETS[target] as StackTarget).cache;
 	const memory = session.stackMemory(target as 'pg-redis' | 'pg-only');
+	const part = launch.stack;
 	console.log(
-		`\n=== ${target}: starting (fastify workers=${options.threads}, cache=${useCache}` +
+		`\n=== ${target}: starting ${part ? `${part.services.join('+')} ` : ''}(fastify workers=${options.threads}, cache=${useCache}` +
 			`${launch.restore ? `, restoring ${launch.restore}` : ''}) ===`
 	);
 	const stack = await startPgStack({
@@ -660,31 +712,41 @@ async function withPgStack<T>(
 		restore: launch.restore,
 		nodeOptions: session.profile ? PERF_NODE_OPTIONS : undefined,
 		jwtSecret: session.jwtSecret,
+		services: part?.services,
+		listen: session.bindAddress,
+		pgUrl: part?.pgUrl,
+		redisUrl: part?.redisUrl,
+		redisPassword: part?.redisPassword,
 	});
 	try {
 		const secret = session.jwtSecret;
-		const authorization = secret ? `Bearer ${mintHs256(secret, TOKEN_USER)}` : undefined;
-		const callerAuthorizations = secret
-			? Object.fromEntries(OWNERS.map((owner) => [owner, `Bearer ${mintHs256(secret, owner)}`]))
-			: undefined;
-		await waitForRoute(`${stack.baseUrl}/${options.config.table}/`, 30_000, authorization);
-		if (authorization)
-			await assertCredentialChecked(`${stack.baseUrl}/${options.config.table}/auth-probe`, authorization);
-		console.log(`${target} ready at ${stack.baseUrl}`);
+		const authorization = secret && stack.baseUrl ? `Bearer ${mintHs256(secret, TOKEN_USER)}` : undefined;
+		const callerAuthorizations =
+			secret && stack.baseUrl
+				? Object.fromEntries(OWNERS.map((owner) => [owner, `Bearer ${mintHs256(secret, owner)}`]))
+				: undefined;
+		if (stack.baseUrl) {
+			await waitForRoute(`${stack.baseUrl}/${options.config.table}/`, 30_000, authorization);
+			if (authorization)
+				await assertCredentialChecked(`${stack.baseUrl}/${options.config.table}/auth-probe`, authorization);
+			console.log(`${target} ready at ${stack.baseUrl}`);
+		}
+		const hasPostgres = stack.services.includes('postgres');
 		return await body({
-			baseUrl: stack.baseUrl,
-			targets: {
-				processes: {},
-				cgroups: useCache ? stack.cgroups : { fastify: stack.cgroups.fastify, postgres: stack.cgroups.postgres },
-				redisExec: useCache ? stack.redisExec : undefined,
-			},
-			pinned: { fastify: stack.appPid },
+			baseUrl: stack.baseUrl ?? '',
+			probe: localProbe({
+				targets: { processes: {}, cgroups: stack.cgroups, redisExec: useCache ? stack.redisExec : undefined },
+				pinned: stack.appPid ? { fastify: stack.appPid } : {},
+				cpus: session.serverCpus,
+				workDir: RESULTS_DIR,
+				separateSelf: session.separateSelf,
+			}),
 			memoryLimits: stack.memoryLimits,
 			authorization,
 			callerAuthorizations,
 			startupMs: stack.startupMs,
-			afterLoad: stack.vacuum,
-			checkpoints: stack.checkpoints,
+			afterLoad: hasPostgres ? stack.vacuum : undefined,
+			checkpoints: hasPostgres ? stack.checkpoints : undefined,
 			snapshot: stack.snapshot,
 		});
 	} finally {
@@ -698,6 +760,7 @@ export async function withTarget<T>(
 	body: (running: Running) => Promise<T>,
 	launch?: LaunchOptions
 ): Promise<T> {
+	if (session.remote) return withRemoteTarget(session, target, body, launch);
 	try {
 		return TARGETS[target].kind === 'stack'
 			? await withPgStack(session, target, body, launch)
@@ -725,9 +788,8 @@ export function assertNoErrors(phase: string, result: PhaseResult): void {
 	if (result.errors > 0) throw new Error(`${phase}: ${result.errors} failed requests — sample invalid`);
 }
 
-function verifyPlacement(session: Session, running: Running, driver: DriverRun): number {
-	let threads = 0;
-	for (const [name, pid] of Object.entries(running.pinned)) threads += verifyAffinity(name, pid, session.serverCpus);
+async function verifyPlacement(session: Session, running: Running, driver: DriverRun): Promise<number> {
+	const threads = await running.probe.verifyPlacement();
 	for (const pid of driver.pids) verifyAffinity('generator', pid, session.driverCpus);
 	return threads;
 }
@@ -757,10 +819,16 @@ export interface MeasuredWindow {
 	affinityVerifiedThreads: number;
 	/** Wall clock of the measured run, epoch ms. */
 	window: { startMs: number; endMs: number };
-	/** CPU busy on the host outside this run during the window, and the 1-min load average at its end. */
+	/**
+	 * CPU busy on the host outside this run during the window, and the 1-min load average at its end. In
+	 * remote mode, the busiest of the target hosts and the generator's, each kept in `hosts`.
+	 */
 	host: HostLoad;
+	hosts?: Record<string, HostLoad>;
 	/** With --perf-counters or --profile: hardware counters over the measured window, per component and summed. */
 	perf?: { byComponent: Record<string, Counters>; total: Counters };
+	/** Counted cycles over CPU-seconds: the clock the target ran at where cpufreq is absent (a VM, turbo on). */
+	perfClockGHz?: number;
 	/** With --profile: a separate window of `ops` under `perf record`, folded per component. */
 	profile?: ProfiledWindow;
 }
@@ -803,22 +871,16 @@ async function profileWindow(
 	const { dir, ops } = session.profile!;
 	const prefix = join(dir, label);
 	// CPU is read inside each perf window, so perf's own start and stop are not charged to the ops.
-	const counters = await startCounters(running.targets.cgroups, RESULTS_DIR);
-	let steadyResult: PhaseResult;
-	let byComponent: Record<string, Counters>;
-	let steadyDelta: ResourceDelta;
-	try {
-		const steadyBefore = await sampleResources(running.targets);
-		steadyResult = await driver.runWorkload(workload, distribution, ops);
-		steadyDelta = diffResources(steadyBefore, await sampleResources(running.targets));
-	} finally {
-		byComponent = await counters.stop();
-	}
-	assertNoErrors(`steady ${workload}`, steadyResult);
+	const steadyResult = await runInWindow(running, { counters: true }, () =>
+		driver.runWorkload(workload, distribution, ops)
+	);
+	const byComponent = steadyResult.reading.perf!;
+	const steadyDelta: ResourceDelta = diffResources(steadyResult.reading.before, steadyResult.reading.after);
+	assertNoErrors(`steady ${workload}`, steadyResult.result);
 	const steady = {
-		ops: steadyResult.ops,
-		throughput: steadyResult.throughput,
-		cpuMicrosPerOp: (steadyDelta.totalCpuSeconds * 1e6) / steadyResult.ops,
+		ops: steadyResult.result.ops,
+		throughput: steadyResult.result.throughput,
+		cpuMicrosPerOp: (steadyDelta.totalCpuSeconds * 1e6) / steadyResult.result.ops,
 		perf: { byComponent, total: sumCounters(byComponent) },
 	};
 	const t = steady.perf.total;
@@ -827,22 +889,15 @@ async function profileWindow(
 			`${((t.instructionsUser + t.instructionsKernel) / steady.ops / 1000).toFixed(1)}k instructions/op, ` +
 			`IPC ${((t.instructionsUser + t.instructionsKernel) / (t.cyclesUser + t.cyclesKernel)).toFixed(2)}`
 	);
-	const recorder = await startRecord(session.serverCpus, `${prefix}.perf.data`);
-	let result: PhaseResult;
-	let delta: ResourceDelta;
-	let host: HostLoad;
-	try {
-		const before = await sampleResources(running.targets);
-		const hostLoad = startHostLoad(running.targets);
-		result = await driver.runWorkload(workload, distribution, ops);
-		host = await hostLoad.stop();
-		delta = diffResources(before, await sampleResources(running.targets));
-	} finally {
-		await recorder.stop();
-	}
+	const recorded = await runInWindow(running, { recordPrefix: prefix }, () =>
+		driver.runWorkload(workload, distribution, ops)
+	);
+	const { result } = recorded;
+	const delta = diffResources(recorded.reading.before, recorded.reading.after);
+	const host = recorded.reading.host;
 	assertNoErrors(`profiled ${workload}`, result);
 	// Folded while the target still runs: symbols come from its live JIT maps and container roots.
-	const samples = await foldPerfScript(`${prefix}.perf.data`, running.targets.cgroups, prefix);
+	const samples = await running.probe.fold(prefix);
 	const cpuMicrosPerOp = (delta.totalCpuSeconds * 1e6) / result.ops;
 	console.log(
 		`  [profile ${label}] ${result.throughput.toFixed(0)} ops/sec, ${cpuMicrosPerOp.toFixed(1)} CPU µs/op, ` +
@@ -867,6 +922,27 @@ async function profileWindow(
  * peak and mean, end-of-window detail), Redis counters and Postgres checkpoints. A component that hit
  * an OOM kill during the window invalidates it, since a recovered worker would still post numbers.
  */
+/**
+ * Runs `run` inside one target-side window: every instrument starts before it and stops after it, and
+ * a failed run still closes the window (a perf left counting would run into the next sample).
+ */
+async function runInWindow<T>(
+	running: Running,
+	options: Parameters<TargetProbe['beginWindow']>[0],
+	run: () => Promise<T>
+): Promise<{ result: T; reading: Awaited<ReturnType<TargetProbe['endWindow']>>; startMs: number }> {
+	await running.probe.beginWindow(options);
+	const startMs = Date.now();
+	let result: T;
+	try {
+		result = await run();
+	} catch (error) {
+		await running.probe.endWindow().catch(() => {});
+		throw error;
+	}
+	return { result, reading: await running.probe.endWindow(), startMs };
+}
+
 export async function measureWindow(
 	session: Session,
 	running: Running,
@@ -876,61 +952,31 @@ export async function measureWindow(
 	ops?: number,
 	label = workload
 ): Promise<MeasuredWindow> {
-	const affinityVerifiedThreads = verifyPlacement(session, running, driver);
+	const affinityVerifiedThreads = await verifyPlacement(session, running, driver);
 	const checkpointsBefore = await running.checkpoints?.();
-	const memory = new MemoryPeakSampler(running.targets);
-	const clock = new ClockProbe(session.serverCpus);
-	const before = await sampleResources(running.targets);
 	const generatorBefore = await cpuSecondsOf(driver.pids);
-	const host = startHostLoad(running.targets);
-	const counters = session.perfCounters ? await startCounters(running.targets.cgroups, RESULTS_DIR) : undefined;
-	const startMs = Date.now();
-	memory.start();
-	clock.start();
-	let result: PhaseResult;
-	let meanClockGHz: number;
-	let after: Awaited<ReturnType<typeof sampleResources>>;
-	let generatorCpuSeconds: number;
-	let peaks: Awaited<ReturnType<MemoryPeakSampler['stop']>>;
-	let perf: MeasuredWindow['perf'];
-	let countersStopped = false;
-	const refaultFilePages: Record<string, number> = {};
-	try {
-		const refaults = async () => {
-			const pages: Record<string, number> = {};
-			for (const [name, scope] of Object.entries(running.targets.cgroups))
-				pages[name] = (await readCgroupMemory(scope)).workingsetRefaultFile;
-			return pages;
-		};
-		try {
-			const refaultsBefore = await refaults();
-			result = await driver.runWorkload(workload, distribution, ops);
-			for (const [name, pages] of Object.entries(await refaults()))
-				refaultFilePages[name] = pages - refaultsBefore[name];
-		} finally {
-			meanClockGHz = clock.stop();
-		}
-		// CPU first: stopping the sampler can wait out its interval, and background work in
-		// that gap would be charged to the run.
-		after = await sampleResources(running.targets);
-		generatorCpuSeconds = (await cpuSecondsOf(driver.pids)) - generatorBefore;
-		if (counters) {
-			countersStopped = true;
-			const byComponent = await counters.stop();
-			perf = { byComponent, total: sumCounters(byComponent) };
-		}
-	} finally {
-		// A failed window must not leave a system-wide perf running into the next sample.
-		if (counters && !countersStopped) await counters.stop().catch(() => {});
-		peaks = await memory.stop();
-	}
+	// Remote mode: the generator's host, which the target hosts' readings do not cover.
+	const generatorHost = session.remote ? startHostLoad() : undefined;
+	const { result, reading, startMs } = await runInWindow(
+		running,
+		{ counters: session.perfCounters, memory: true, clock: true, refaults: true },
+		() => driver.runWorkload(workload, distribution, ops)
+	);
+	const generatorCpuSeconds = (await cpuSecondsOf(driver.pids)) - generatorBefore;
 	const window = { startMs, endMs: Date.now() };
-	const hostLoad = await host.stop();
-	const cgroupMemory: Record<string, CgroupMemory> = {};
-	for (const [name, scope] of Object.entries(running.targets.cgroups)) {
-		cgroupMemory[name] = await readCgroupMemory(scope);
+	const { before, after, cgroupMemory, meanClockGHz } = reading;
+	const refaultFilePages = reading.refaultFilePages ?? {};
+	const peaks = reading.memory!;
+	let hostLoad = reading.host;
+	let hosts = reading.hosts;
+	if (generatorHost) {
+		hosts = { ...(hosts ?? { target: reading.host }), generator: await generatorHost.stop() };
+		hostLoad = mergeHostLoads(hosts);
+	}
+	const perf: MeasuredWindow['perf'] = reading.perf && { byComponent: reading.perf, total: sumCounters(reading.perf) };
+	for (const [name, memory] of Object.entries(cgroupMemory)) {
 		// Every component's cgroup is created for this sample, so any kill belongs to it.
-		const kills = cgroupMemory[name].events.oom_kill ?? 0;
+		const kills = memory.events.oom_kill ?? 0;
 		if (kills > 0) throw new Error(`${name}: ${kills} OOM kill(s) during this sample — sample invalid`);
 	}
 	const checkpointsAfter = await running.checkpoints?.();
@@ -943,6 +989,10 @@ export async function measureWindow(
 		peakTotalMemoryBytes: peaks.peakTotalBytes,
 		meanMemoryBytes: peaks.meanBytes,
 	};
+	const perfClockGHz =
+		perf && meanClockGHz === 0 && resources.totalCpuSeconds > 0
+			? (perf.total.cyclesUser + perf.total.cyclesKernel) / (resources.totalCpuSeconds * 1e9)
+			: undefined;
 	if (
 		before.redis &&
 		after.redis &&
@@ -951,7 +1001,7 @@ export async function measureWindow(
 		throw new Error('Redis counters went backwards during the measured run (restart?) — sample invalid');
 	}
 	let redisHitRate: number | undefined;
-	if (running.targets.redisExec) {
+	if (running.probe.hasRedis) {
 		const spec = WORKLOADS[workload];
 		const lookups = resources.redisHits + resources.redisMisses;
 		const pointReads = (spec.mix.read ?? 0) + (spec.mix.rmw ?? 0) + (spec.mix.inspect ?? 0) + (spec.mix.chain ?? 0) > 0;
@@ -962,7 +1012,7 @@ export async function measureWindow(
 	const overBudget = peaks.peakTotalBytes > MEMORY_BUDGET_BYTES;
 	console.log(
 		`  [${workload}] ${result.throughput.toFixed(0)} ops/sec, ` +
-			`${cpuMicrosPerOp.toFixed(1)} server CPU µs/op @ ${meanClockGHz.toFixed(2)} GHz, ` +
+			`${cpuMicrosPerOp.toFixed(1)} server CPU µs/op @ ${(perfClockGHz ?? meanClockGHz).toFixed(2)} GHz, ` +
 			`peak ${(peaks.peakTotalBytes / 1048576).toFixed(0)} MiB` +
 			(redisHitRate !== undefined ? `, cache-hit ${(redisHitRate * 100).toFixed(2)}%` : '')
 	);
@@ -1000,7 +1050,9 @@ export async function measureWindow(
 		affinityVerifiedThreads,
 		window,
 		host: hostLoad,
+		...(hosts ? { hosts } : {}),
 		perf,
+		...(perfClockGHz === undefined ? {} : { perfClockGHz }),
 		profile,
 	};
 }
@@ -1012,73 +1064,86 @@ export async function measureWindow(
  */
 async function measureSample(
 	session: Session,
-	target: TargetName,
+	placed: PlacedTarget,
 	workload: string,
 	rep: number,
 	position: number
 ): Promise<Sample> {
 	const { config } = session.options;
+	const { target, topology } = placed;
 	const keyWidth = Math.max(10, String(config.records + config.opsPerWorkload).length);
 	const spec = WORKLOADS[workload];
 	const distribution = (config.distribution ?? spec.distribution) as DistributionName;
 
-	console.log(`\n--- rep ${rep + 1} #${position} ${target} / workload ${workload} (${spec.description}) ---`);
-	return withTarget(session, target, async (running) => {
-		const driver = await startDriver({
-			baseUrl: running.baseUrl,
-			table: config.table,
-			records: config.records,
-			opsPerWorkload: config.opsPerWorkload,
-			concurrency: config.concurrency,
-			shards: session.shards,
-			shape: { fieldCount: config.fieldCount, fieldLength: config.fieldLength },
-			keyWidth,
-			maxScanLength: config.maxScanLength,
-			authorization: running.authorization,
-			callerAuthorizations: running.callerAuthorizations,
-		});
-		try {
-			assertNoErrors('load', driver.load);
-			console.log(`  [load] ${driver.load.throughput.toFixed(0)} records/sec`);
-			await running.afterLoad?.();
-			// Every key exactly once, through the target's own read path: Redis ends up holding
-			// the whole dataset, and first-touch costs land before measuring.
-			const warm = await driver.readAll();
-			assertNoErrors('read-all pass', warm);
-			if (warm.ops !== config.records) throw new Error(`read-all pass read ${warm.ops} of ${config.records} keys`);
-			console.log(`  [read-all] ${warm.ops.toLocaleString()} keys at ${warm.throughput.toFixed(0)} reads/sec`);
-			if (usesDependentReads(spec)) await assertDependentReads(running, config, keyWidth);
-
-			const measured = await measureWindow(
-				session,
-				running,
-				driver,
-				workload,
-				distribution,
-				undefined,
-				`${target}-${workload}-${session.cache}-rep${rep + 1}`
-			);
-			if (session.cache === 'warm' && measured.redisHitRate !== undefined && measured.redisHitRate < 0.99) {
-				throw new Error(
-					`workload ${workload}: Redis hit rate ${(measured.redisHitRate * 100).toFixed(2)}% < 99% in warm mode ` +
-						`(${measured.resources.redisEvictions} evictions) — the cache is not holding the dataset`
-				);
+	console.log(`\n--- rep ${rep + 1} #${position} ${placed.name} / workload ${workload} (${spec.description}) ---`);
+	const placement = session.remote
+		? {
+				topology,
+				...(topology === 'b' ? { note: B_TOPOLOGY_NOTE, rtt: await session.remote.backendRtt() } : {}),
 			}
-			return {
-				rep,
-				position,
-				target,
-				workload,
-				auth: session.auth,
-				shards: driver.shardsUsed(workload),
-				load: driver.load,
-				warm,
-				measured,
-			};
-		} finally {
-			await driver.close();
-		}
-	});
+		: {};
+	return withTarget(
+		session,
+		target,
+		async (running) => {
+			const driver = await startDriver({
+				baseUrl: running.baseUrl,
+				table: config.table,
+				records: config.records,
+				opsPerWorkload: config.opsPerWorkload,
+				concurrency: config.concurrency,
+				shards: session.shards,
+				shape: { fieldCount: config.fieldCount, fieldLength: config.fieldLength },
+				keyWidth,
+				maxScanLength: config.maxScanLength,
+				authorization: running.authorization,
+				callerAuthorizations: running.callerAuthorizations,
+			});
+			try {
+				assertNoErrors('load', driver.load);
+				console.log(`  [load] ${driver.load.throughput.toFixed(0)} records/sec`);
+				await running.afterLoad?.();
+				// Every key exactly once, through the target's own read path: Redis ends up holding
+				// the whole dataset, and first-touch costs land before measuring.
+				const warm = await driver.readAll();
+				assertNoErrors('read-all pass', warm);
+				if (warm.ops !== config.records) throw new Error(`read-all pass read ${warm.ops} of ${config.records} keys`);
+				console.log(`  [read-all] ${warm.ops.toLocaleString()} keys at ${warm.throughput.toFixed(0)} reads/sec`);
+				if (usesDependentReads(spec)) await assertDependentReads(running, config, keyWidth);
+
+				const measured = await measureWindow(
+					session,
+					running,
+					driver,
+					workload,
+					distribution,
+					undefined,
+					`${placed.name.replace('@', '-')}-${workload}-${session.cache}-rep${rep + 1}`
+				);
+				if (session.cache === 'warm' && measured.redisHitRate !== undefined && measured.redisHitRate < 0.99) {
+					throw new Error(
+						`workload ${workload}: Redis hit rate ${(measured.redisHitRate * 100).toFixed(2)}% < 99% in warm mode ` +
+							`(${measured.resources.redisEvictions} evictions) — the cache is not holding the dataset`
+					);
+				}
+				return {
+					rep,
+					position,
+					target,
+					...placement,
+					workload,
+					auth: session.auth,
+					shards: driver.shardsUsed(workload),
+					load: driver.load,
+					warm,
+					measured,
+				};
+			} finally {
+				await driver.close();
+			}
+		},
+		{ topology }
+	);
 }
 
 /** Rep `r` runs the targets forward on even reps and reversed on odd ones. */
@@ -1103,17 +1168,18 @@ export function primaryLatency(result: PhaseResult): LatencyStats | undefined {
 }
 
 interface Summary {
-	target: TargetName;
+	/** The target, with @b for topology b. */
+	target: string;
 	workload: string;
 	throughputs: number[];
 	median: Sample;
 }
 
-function summarize(samples: Sample[], targets: TargetName[], workloads: string[]): Summary[] {
+function summarize(samples: Sample[], targets: string[], workloads: string[]): Summary[] {
 	const out: Summary[] = [];
 	for (const workload of workloads) {
 		for (const target of targets) {
-			const mine = samples.filter((s) => s.target === target && s.workload === workload);
+			const mine = samples.filter((s) => placedName(s) === target && s.workload === workload);
 			if (mine.length === 0) continue;
 			out.push({
 				target,
@@ -1130,12 +1196,18 @@ function printComparison(summaries: Summary[], session: Session): void {
 	const width = 132;
 	const out: string[] = ['', '='.repeat(width)];
 	out.push(
-		`Equal CPU budget: every target on cpus ${session.serverCpus.join(',')} (${session.serverCpus.length} cores); ` +
-			`generator on ${session.driverCpus.join(',')}; cache=${session.cache}`
+		session.remote
+			? `Remote targets: ${session.remote.describe()}; generator on ${session.driverCpus.join(',')}; cache=${session.cache}`
+			: `Equal CPU budget: every target on cpus ${session.serverCpus.join(',')} (${session.serverCpus.length} cores); ` +
+					`generator on ${session.driverCpus.join(',')}; cache=${session.cache}`
 	);
 	out.push('Median of reps by throughput; CPU µs/op, memory, hit rate and latency are from that median rep.');
-	for (const target of new Set(summaries.map((s) => s.target)))
-		out.push(`  ${target.padEnd(16)} ${TARGETS[target].label}`);
+	for (const target of new Set(summaries.map((s) => s.target))) {
+		const [name, topology] = target.split('@');
+		out.push(
+			`  ${target.padEnd(16)} ${TARGETS[name as TargetName].label}${topology === 'b' ? ` — ${B_TOPOLOGY_NOTE}` : ''}`
+		);
+	}
 	out.push('='.repeat(width));
 	const head = [
 		'workload'.padEnd(10),
@@ -1227,12 +1299,47 @@ async function prepareDataDirs(): Promise<{ base: string; harperRoot: string }> 
 	return { base, harperRoot };
 }
 
+/** Harper inherits this environment: an exported value would silently retune or re-back a target. */
+const TARGET_ENV = [
+	// Core treats any non-empty HARPER_UWS_HTTP as on, "0" included.
+	'HARPER_RECORD_CACHE_SIZE',
+	'HARPER_UWS_HTTP',
+	'HARPER_UWS_UDS',
+	'YCSB_SCOPE_UNIT',
+	'YCSB_MEMORY_MAX',
+	'YCSB_RESTORE_FROM',
+	'YCSB_RESTORE_TO',
+	'YCSB_PG_RESTORE',
+	'JWT_SECRET',
+	'AUTHENTICATION_AUTHORIZELOCAL',
+];
+
+/**
+ * What a host that runs targets needs before the first launch, in single-host mode and on a target
+ * agent's host alike: a clean inherited environment, Harper's pinned launch wrapper, the data
+ * directories on one real filesystem, and a private TMPDIR and loopback pool. Returns the data dir.
+ */
+export async function prepareTargetHost(serverCpus: number[]): Promise<string> {
+	for (const name of TARGET_ENV) delete process.env[name];
+	process.env.HARPER_RUNTIME = await writePinnedRuntime(RESULTS_DIR, serverCpus);
+	const { base } = await prepareDataDirs();
+	// The loopback pool keeps its registry in tmpdir() and indexes it by slot, so neither the file nor
+	// the addresses may be shared with Harper tests elsewhere on the host: a shared file with another
+	// range mis-maps slots, and a private file with the default range lets a test co-bind our ports.
+	// Set before @harperfast/integration-testing is first imported (withHarper), which reads both.
+	process.env.TMPDIR = join(base, 'tmp');
+	await mkdir(process.env.TMPDIR, { recursive: true });
+	process.env.HARPER_INTEGRATION_TEST_LOOPBACK_POOL_START = '240';
+	process.env.HARPER_INTEGRATION_TEST_LOOPBACK_POOL_COUNT = '8';
+	return base;
+}
+
 /** HEAD of a checkout, or the REVISION file an exported (git archive) tree carries instead. */
 /**
  * SHA-256 of the built files that the temporary record-cache probes patch in place (README, "A
  * Redis-sized record cache"): a digest that differs from a clean build's marks an instrumented session.
  */
-function buildDigests(root: string): Record<string, string> {
+export function buildDigests(root: string): Record<string, string> {
 	const digests: Record<string, string> = {};
 	for (const file of ['dist/resources/PrimaryRocksDatabase.js', 'node_modules/weak-lru-cache/dist/index.cjs']) {
 		const path = join(root, file);
@@ -1241,7 +1348,7 @@ function buildDigests(root: string): Record<string, string> {
 	return digests;
 }
 
-function gitRevision(root: string): string {
+export function gitRevision(root: string): string {
 	try {
 		return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8', stdio: 'pipe' }).trim();
 	} catch {
@@ -1249,7 +1356,7 @@ function gitRevision(root: string): string {
 	}
 }
 
-function readSysfs(path: string): string | undefined {
+export function readSysfs(path: string): string | undefined {
 	try {
 		return readFileSync(path, 'utf8').trim();
 	} catch {
@@ -1275,17 +1382,20 @@ export const argValue = (argv: string[], flag: string): string | undefined =>
 export async function createSession(
 	argv: string[],
 	{
-		targets,
+		targets: placedTargets,
 		cache,
 		stackMemory,
 		ownFlags = [],
 	}: {
-		targets: TargetName[];
+		/** With --hosts, a target may carry its topology (`pg-redis@b`). */
+		targets: PlacedTarget[];
 		cache: CacheMode;
 		stackMemory: (target: 'pg-redis' | 'pg-only') => StackMemory;
 		ownFlags?: string[];
 	}
 ): Promise<{ session: Session; meta: Record<string, unknown> }> {
+	const targets = [...new Set(placedTargets.map((p) => p.target))];
+	const hostsFile = argValue(argv, '--hosts');
 	if (argv.includes('--uws')) {
 		throw new Error('--uws is gone: the HTTP backend is part of the target (harper-uws, harper-uws-sized)');
 	}
@@ -1309,15 +1419,21 @@ export async function createSession(
 		throw new Error('harper-base needs --base-harper=<path to dist/bin/harper.js>');
 	const baseHarperBin = baseHarperArg ? resolve(baseHarperArg) : undefined;
 	const harperBin = join(REPO_ROOT, 'dist', 'bin', 'harper.js');
-	for (const bin of [harperBin, baseHarperBin])
-		if (bin && !existsSync(bin)) throw new Error(`${bin} not found — build it first`);
+	// Remote mode: each agent checks its own build; the generator needs none.
+	if (!hostsFile)
+		for (const bin of [harperBin, baseHarperBin])
+			if (bin && !existsSync(bin)) throw new Error(`${bin} not found — build it first`);
 
 	const topology = readTopology();
 	const serverArg = argValue(argv, '--serverCpus');
 	const driverArg = argValue(argv, '--driverCpus');
 	let serverCpus: number[];
 	let driverCpus: number[];
-	if (serverArg || driverArg) {
+	if (hostsFile) {
+		// The target cpus are each agent's to choose (or --serverCpus, passed to them); this host only drives.
+		serverCpus = serverArg ? parseCpuList(serverArg) : [];
+		driverCpus = driverArg ? parseCpuList(driverArg) : topology.map((t) => t.cpu);
+	} else if (serverArg || driverArg) {
 		if (!serverArg || !driverArg) throw new Error('--serverCpus and --driverCpus go together');
 		serverCpus = parseCpuList(serverArg);
 		driverCpus = parseCpuList(driverArg);
@@ -1327,7 +1443,7 @@ export async function createSession(
 			Number(argValue(argv, '--target-cpus') ?? 4)
 		));
 	}
-	assertDisjointCores(topology, serverCpus, driverCpus);
+	if (!hostsFile) assertDisjointCores(topology, serverCpus, driverCpus);
 
 	const sessionFlags = [
 		'targets',
@@ -1341,6 +1457,7 @@ export async function createSession(
 		'profile',
 		'profile-ops',
 		'auth',
+		'hosts',
 	];
 	const passthrough = argv.filter((a) => {
 		if (a === '--perf-counters') return false;
@@ -1364,28 +1481,14 @@ export async function createSession(
 		);
 	}
 
-	// Harper inherits this environment: an exported value would silently retune or re-back a target.
-	// Core treats any non-empty HARPER_UWS_HTTP as on, "0" included.
-	for (const name of [
-		'HARPER_RECORD_CACHE_SIZE',
-		'HARPER_UWS_HTTP',
-		'HARPER_UWS_UDS',
-		'YCSB_SCOPE_UNIT',
-		'YCSB_MEMORY_MAX',
-		'YCSB_RESTORE_FROM',
-		'YCSB_RESTORE_TO',
-		'YCSB_PG_RESTORE',
-		'JWT_SECRET',
-		'AUTHENTICATION_AUTHORIZELOCAL',
-	])
-		delete process.env[name];
 	// This process, and the generator shards it forks, run on the generator cores.
 	await pinPid(process.pid, driverCpus);
-	process.env.HARPER_RUNTIME = await writePinnedRuntime(RESULTS_DIR, serverCpus);
+	const base = hostsFile ? undefined : await prepareTargetHost(serverCpus);
 
 	const profileDir = argValue(argv, '--profile');
-	const perfCounters = Boolean(profileDir) || argv.includes('--perf-counters');
-	if (perfCounters) await perfAvailable();
+	// instructions/op is the stable metric where turbo cannot be turned off, so a remote session always counts.
+	const perfCounters = Boolean(profileDir) || argv.includes('--perf-counters') || Boolean(hostsFile);
+	if (perfCounters && !hostsFile) await perfAvailable();
 	let profile: Session['profile'];
 	if (profileDir) {
 		const ops = Number(argValue(argv, '--profile-ops') ?? 1_000_000);
@@ -1417,17 +1520,10 @@ export async function createSession(
 		jwtSecret: auth === 'token' ? randomBytes(32).toString('base64url') : undefined,
 	};
 
-	const { base } = await prepareDataDirs();
-	// The loopback pool keeps its registry in tmpdir() and indexes it by slot, so neither the file nor
-	// the addresses may be shared with Harper tests elsewhere on the host: a shared file with another
-	// range mis-maps slots, and a private file with the default range lets a test co-bind our ports.
-	// Set before @harperfast/integration-testing is first imported (withHarper), which reads both.
-	process.env.TMPDIR = join(base, 'tmp');
-	await mkdir(process.env.TMPDIR, { recursive: true });
-	process.env.HARPER_INTEGRATION_TEST_LOOPBACK_POOL_START = '240';
-	process.env.HARPER_INTEGRATION_TEST_LOOPBACK_POOL_COUNT = '8';
-	console.log(`Data directories under ${base} (real disk, single filesystem)`);
-	console.log(`Target cpus ${serverCpus.join(',')}, generator cpus ${driverCpus.join(',')}, cache=${cache}`);
+	if (base) {
+		console.log(`Data directories under ${base} (real disk, single filesystem)`);
+		console.log(`Target cpus ${serverCpus.join(',')}, generator cpus ${driverCpus.join(',')}, cache=${cache}`);
+	}
 	await mkdir(RESULTS_DIR, { recursive: true });
 
 	const meta = {
@@ -1464,6 +1560,7 @@ export async function createSession(
 		shards: session.shards,
 		dataDir: base,
 		harper: { bin: harperBin, revision: gitRevision(REPO_ROOT), digests: buildDigests(REPO_ROOT) },
+		perfPmu: perfCounters && !hostsFile ? detectPmu() : undefined,
 		harperBase: baseHarperBin
 			? { bin: baseHarperBin, revision: gitRevision(join(baseHarperBin, '..', '..', '..')) }
 			: undefined,
@@ -1491,12 +1588,24 @@ export async function createSession(
 					}
 				: { mode: auth },
 	};
+	if (hostsFile) {
+		session.remote = await connectRemote(session, hostsFile, placedTargets, {
+			targetCpus: Number(argValue(argv, '--target-cpus') ?? 4),
+			baseHarperBin: baseHarperArg,
+			generatorTopology: topology,
+		});
+		Object.assign(meta, { remote: session.remote.meta });
+		// Every host's facts are the agents'; this host's are the generator's.
+		console.log(`Remote targets: ${session.remote.describe()}; generator cpus ${driverCpus.join(',')}, cache=${cache}`);
+	}
 	return { session, meta };
 }
 
 async function main(): Promise<void> {
 	const argv = process.argv.slice(2);
-	const targets = parseTargets(argValue(argv, '--targets') ?? 'harper,pg-redis');
+	const targets = parsePlacedTargets(argValue(argv, '--targets') ?? 'harper,pg-redis', {
+		remote: argValue(argv, '--hosts') !== undefined,
+	});
 	const cache = (argValue(argv, '--cache') ?? 'warm') as CacheMode;
 	if (cache !== 'warm' && cache !== 'cold') throw new Error(`--cache must be warm or cold, got ${cache}`);
 	const hostQuietArg = argValue(argv, '--host-quiet-cores');
@@ -1513,13 +1622,50 @@ async function main(): Promise<void> {
 		stackMemory: (target) => WARM_STACK_MEMORY[target],
 		ownFlags: ['host-quiet-cores', 'host-quiet-max-min'],
 	});
+	try {
+		await runComparison(session, meta, targets, { hostQuietCores, hostQuietMaxMin, sharedCgroup });
+	} finally {
+		await session.remote?.close();
+	}
+}
+
+/**
+ * The host gate before a sample: this host, and in remote mode every host the target runs on (where
+ * the target agent's own CPU counts as neither the target's nor the rest of the host's).
+ */
+export async function waitForQuietHosts(
+	session: Session,
+	placed: PlacedTarget | undefined,
+	gate: { maxOtherCores: number; maxMs: number }
+): Promise<{
+	waitedMs: number;
+	quiet: boolean;
+	last: HostLoad;
+	byHost?: Record<string, HostLoad>;
+	sharedCgroup?: true;
+}> {
+	if (!session.remote) return waitForQuietHost(gate);
+	return session.remote.waitForQuietHosts(placed, gate, () => waitForQuietHost(gate));
+}
+
+async function runComparison(
+	session: Session,
+	meta: Record<string, unknown>,
+	targets: PlacedTarget[],
+	{
+		hostQuietCores,
+		hostQuietMaxMin,
+		sharedCgroup,
+	}: { hostQuietCores?: number; hostQuietMaxMin: number; sharedCgroup: boolean }
+): Promise<void> {
 	const { options } = session;
 	const file = join(RESULTS_DIR, `compare-${meta.timestamp}.json`);
 	const runMeta = { ...meta, targetOrderRule: 'forward on even reps, reversed on odd reps' };
+	const names = targets.map((t) => t.name);
 
 	const samples: Sample[] = [];
 	const persist = async (summaries?: Summary[]) => {
-		const payload = { meta: runMeta, targets, samples, summaries };
+		const payload = { meta: runMeta, targets: names, samples, summaries };
 		await writeJsonAtomic(file, payload);
 		await writeJsonAtomic(join(RESULTS_DIR, 'compare-latest.json'), payload);
 	};
@@ -1531,7 +1677,10 @@ async function main(): Promise<void> {
 				const gate =
 					hostQuietCores === undefined
 						? undefined
-						: await waitForQuietHost({ maxOtherCores: hostQuietCores, maxMs: hostQuietMaxMin * 60_000 });
+						: await waitForQuietHosts(session, order[i], {
+								maxOtherCores: hostQuietCores,
+								maxMs: hostQuietMaxMin * 60_000,
+							});
 				if (gate) {
 					console.log(
 						`  [host] ${gate.last.otherCores.toFixed(2)} cores busy elsewhere` +
@@ -1541,15 +1690,15 @@ async function main(): Promise<void> {
 				}
 				const sample = await measureSample(session, order[i], workload, rep, i + 1);
 				if (gate) {
-					sample.hostGate = { waitedMs: gate.waitedMs, quiet: gate.quiet, load: gate.last };
-					if (sharedCgroup || foreignProcessesInOwnCgroup().length > 0) sample.sharedCgroup = true;
+					sample.hostGate = { waitedMs: gate.waitedMs, quiet: gate.quiet, load: gate.last, byHost: gate.byHost };
+					if (sharedCgroup || gate.sharedCgroup || foreignProcessesInOwnCgroup().length > 0) sample.sharedCgroup = true;
 				}
 				samples.push(sample);
 				await persist();
 			}
 		}
 	}
-	const summaries = summarize(samples, targets, options.config.workloads);
+	const summaries = summarize(samples, names, options.config.workloads);
 	printComparison(summaries, session);
 	await persist(summaries);
 	console.log(`\nResults written to ${file}`);

@@ -8,6 +8,11 @@
  * workload E falls back to one shard (it inserts), so its ceiling is measured separately.
  *
  *   node benchmarks/ycsb-vs-pg/client-ceiling.mts --target-cpus=4 --concurrency=64
+ *
+ * Remote mode measures the generator VM and the VPC path to a target VM: serve there, drive from here.
+ *
+ *   (target VM)    taskset -c 0-3 node benchmarks/ycsb-vs-pg/client-ceiling.mts --serve=4 --host=<its address>
+ *   (generator VM) node benchmarks/ycsb-vs-pg/client-ceiling.mts --base-url=http://<its address>:9941
  */
 import cluster from 'node:cluster';
 import http from 'node:http';
@@ -35,6 +40,8 @@ const { values } = parseArgs({
 		'ops': { type: 'string', default: '300000' },
 		'port': { type: 'string', default: '9941' },
 		'serve': { type: 'string' },
+		'host': { type: 'string', default: '127.0.0.1' },
+		'base-url': { type: 'string' },
 	},
 });
 const PORT = Number(values.port);
@@ -60,8 +67,14 @@ if (values.serve) {
 					res.end(body);
 				});
 			})
-			.listen({ port: PORT, host: '127.0.0.1', reusePort: true }, () => process.send!('ready'));
+			.listen({ port: PORT, host: values.host, reusePort: true }, () => process.send!('ready'));
 	}
+} else if (values['base-url']) {
+	// The server runs on another host (started there with --serve); this host only drives it.
+	const topology = readTopology();
+	const driver = values.driverCpus ? parseCpuList(values.driverCpus) : topology.map((t) => t.cpu);
+	await pinPid(process.pid, driver);
+	await measure(values['base-url'], 'remote', driver);
 } else {
 	const topology = readTopology();
 	const { server, driver } =
@@ -88,38 +101,42 @@ if (values.serve) {
 			child.on('exit', (code) => reject(new Error(`ceiling server exited with ${code}`)));
 		});
 		verifyAffinity('ceiling-server', child.pid!, server);
-
-		const records = Number(values.records);
-		const driverRun = await startDriver({
-			baseUrl: `http://127.0.0.1:${PORT}`,
-			table: 'usertable',
-			records,
-			opsPerWorkload: Number(values.ops),
-			concurrency: Number(values.concurrency),
-			shards: Number(values.shards),
-			shape: { fieldCount: 10, fieldLength: 100 },
-			keyWidth: Math.max(10, String(records + Number(values.ops)).length),
-			maxScanLength: 100,
-		});
-		try {
-			for (const pid of driverRun.pids) verifyAffinity('generator', pid, driver);
-			await driverRun.runWorkload('C', 'uniform', 20_000); // sockets and JIT
-			for (const workload of ['C', 'E']) {
-				const before = cpuOf(driverRun.pids);
-				const result = await driverRun.runWorkload(workload);
-				const generatorCores = (cpuOf(driverRun.pids) - before) / (result.elapsedMs / 1000);
-				console.log(
-					`CLIENT_CEILING workload=${workload} shards=${driverRun.shardsUsed(workload)} ` +
-						`concurrency=${values.concurrency} server_cpus=${server.join(',')} generator_cpus=${driver.join(',')} ` +
-						`ops_per_sec=${result.throughput.toFixed(0)} errors=${result.errors} ` +
-						`generator_busy_cores=${generatorCores.toFixed(2)}`
-				);
-			}
-		} finally {
-			await driverRun.close();
-		}
+		await measure(`http://127.0.0.1:${PORT}`, server.join(','), driver);
 	} finally {
 		child.kill('SIGKILL');
+	}
+}
+
+/** Drives the ceiling server at `baseUrl` with the sharded driver, C on every shard and E on one. */
+async function measure(baseUrl: string, serverCpus: string, driver: number[]): Promise<void> {
+	const records = Number(values.records);
+	const driverRun = await startDriver({
+		baseUrl,
+		table: 'usertable',
+		records,
+		opsPerWorkload: Number(values.ops),
+		concurrency: Number(values.concurrency),
+		shards: Number(values.shards),
+		shape: { fieldCount: 10, fieldLength: 100 },
+		keyWidth: Math.max(10, String(records + Number(values.ops)).length),
+		maxScanLength: 100,
+	});
+	try {
+		for (const pid of driverRun.pids) verifyAffinity('generator', pid, driver);
+		await driverRun.runWorkload('C', 'uniform', 20_000); // sockets and JIT
+		for (const workload of ['C', 'E']) {
+			const before = cpuOf(driverRun.pids);
+			const result = await driverRun.runWorkload(workload);
+			const generatorCores = (cpuOf(driverRun.pids) - before) / (result.elapsedMs / 1000);
+			console.log(
+				`CLIENT_CEILING workload=${workload} shards=${driverRun.shardsUsed(workload)} ` +
+					`concurrency=${values.concurrency} server_cpus=${serverCpus} generator_cpus=${driver.join(',')} ` +
+					`ops_per_sec=${result.throughput.toFixed(0)} errors=${result.errors} ` +
+					`generator_busy_cores=${generatorCores.toFixed(2)}`
+			);
+		}
+	} finally {
+		await driverRun.close();
 	}
 }
 
