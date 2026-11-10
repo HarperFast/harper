@@ -13,3 +13,5 @@ Await an asynchronous `update()` before committing or checkpointing its transact
 If initial write preparation fails, `save()` repeats that error until an explicit `update()` succeeds. This also applies to a held lock after correcting its fields with `set()`: call `update()` to prepare the corrected draft before saving. Retrying a prepared write after the lock-overlap `409` above still requires only `save()`.
 
 After the first preparation failure, that update's changes remain in the draft and merge into the next `update()`, including the keyed form `update(id, changes)`. A later correction that also fails restores the preceding draft; fields supplied only by that rejected correction are discarded. Use a full replacement or a fresh instance to discard the retained draft.
+
+Array PUT elements remain eager writes: a refused element is discarded because no instance owns its retry. Failed authorization or replacement preparation also leaves later setters saveable. Queued conditional updates may be discarded safely when `save()` reports the precondition failure.

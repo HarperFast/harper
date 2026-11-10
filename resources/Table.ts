@@ -4803,7 +4803,7 @@ export function makeTable(options): TableResourceClass {
 			const staging = this.#savingOperation?.staging;
 			if (staging) {
 				const next = () => this.update(target, updates);
-				return staging.then(next, next);
+				return this.#queueAfterStaging(staging, next);
 			}
 			let id: Id;
 			// determine if it is a legacy call
@@ -4853,53 +4853,60 @@ export function makeTable(options): TableResourceClass {
 			}
 			const previous = this.#savingOperation ? this.#mergeableWrite(id) : undefined;
 			const previousChanges = previous?.pendingChanges ?? this.#changes;
-			if (fullUpdate && this.#updatableAttributes) {
-				this.#changes = restrictedReplacement(id, updates, this.#updatableAttributes);
-				return this.#writeChanges(id, this.#changes, false, RESTRICTED_REPLACEMENT, previous, previousChanges);
-			}
-			if (typeof updates === 'object' && updates) {
-				if (fullUpdate) {
-					// legacy full update where we need to update the entire record, but the instance needs to continue
-					// track any further changes
-					if (Object.isFrozen(updates)) updates = { ...updates };
-					if (previous) previous.rollbackRecord = { value: this.#record };
-					this.#record = {}; // clear out the existing record
-					this.#changes = updates;
-				} else if (directInstance) {
-					// incremental update with legacy arguments
-					const ownData = previous ? previousChanges : !this.#stagedWrite() ? this.#changes : undefined;
-					if (ownData) updates = this.#mergeChanges(id, ownData, updates, previous);
-					this.#changes = updates;
-				} else {
-					// standard path, where we retrieve the references record and return an instance, initialized with any
-					// updates that were passed into this method
-					let allowed: boolean | Promise<boolean> = true;
-					if (target == undefined) throw new TypeError('Can not put a record without a target');
-					if ((target as any)?.checkPermission) {
-						// requesting authorization verification
-						allowed = this.allowUpdate((context as any).user, updates, context);
-					}
-					return when(allowed, (allowed) => {
-						if (!allowed) {
-							throw new AccessViolation((context as any).user);
-						}
-						return this.#stageChanges(id, target, updates);
-					});
+			try {
+				if (fullUpdate && this.#updatableAttributes) {
+					this.#changes = restrictedReplacement(id, updates, this.#updatableAttributes);
+					return this.#writeChanges(id, this.#changes, false, RESTRICTED_REPLACEMENT, previous, previousChanges);
 				}
+				if (typeof updates === 'object' && updates) {
+					if (fullUpdate) {
+						// legacy full update where we need to update the entire record, but the instance needs to continue
+						// track any further changes
+						if (Object.isFrozen(updates)) updates = { ...updates };
+						if (previous) previous.rollbackRecord = { value: this.#record };
+						this.#record = {}; // clear out the existing record
+						this.#changes = updates;
+					} else if (directInstance) {
+						// incremental update with legacy arguments
+						const ownData = previous ? previousChanges : !this.#stagedWrite() ? this.#changes : undefined;
+						if (ownData) updates = this.#mergeChanges(id, ownData, updates, previous);
+						this.#changes = updates;
+					} else {
+						// standard path, where we retrieve the references record and return an instance, initialized with any
+						// updates that were passed into this method
+						// Authorization/loading can reject before #stageChanges owns a new capture.
+						previous?.releaseChanges?.();
+						let allowed: boolean | Promise<boolean> = true;
+						if (target == undefined) throw new TypeError('Can not put a record without a target');
+						if ((target as any)?.checkPermission) {
+							// requesting authorization verification
+							allowed = this.allowUpdate((context as any).user, updates, context);
+						}
+						return when(allowed, (allowed) => {
+							if (!allowed) {
+								throw new AccessViolation((context as any).user);
+							}
+							return this.#stageChanges(id, target, updates);
+						});
+					}
+				}
+				// Keep absent changes distinguishable from an explicit empty patch: framework-created
+				// post/publish updates do not necessarily mutate or save the instance.
+				// A supplied root must reach validation as itself, not as the staged changes (harper#1298).
+				if (updates === undefined && previous) this.#changes = previousChanges;
+				const recordRoot = updates === undefined ? this.#changes : updates;
+				return this.#writeChanges(
+					id,
+					recordRoot,
+					fullUpdate || Boolean(previous?.fullUpdate),
+					undefined,
+					previous,
+					previousChanges
+				);
+			} catch (error) {
+				previous?.releaseChanges?.();
+				throw error;
 			}
-			// Keep absent changes distinguishable from an explicit empty patch: framework-created
-			// post/publish updates do not necessarily mutate or save the instance.
-			// A supplied root must reach validation as itself, not as the staged changes (harper#1298).
-			if (updates === undefined && previous) this.#changes = previousChanges;
-			const recordRoot = updates === undefined ? this.#changes : updates;
-			return this.#writeChanges(
-				id,
-				recordRoot,
-				fullUpdate || Boolean(previous?.fullUpdate),
-				undefined,
-				previous,
-				previousChanges
-			);
 		}
 		#mergeChanges(id: Id, previousChanges: any, changes: any, previous: any) {
 			let record = this.#record ?? previous?.entry?.value;
@@ -4962,6 +4969,7 @@ export function makeTable(options): TableResourceClass {
 			return previous;
 		}
 		#restoreUpdate(previous: any, changes: any, failed: any, error: unknown, record?: { value: any }) {
+			// A moved slot belongs to a later write; an older failure must leave it untouched.
 			if (this.#savingOperation !== failed) return;
 			if (previous) {
 				// An accepted predecessor stays saveable; a failed draft reports its latest error.
@@ -4986,6 +4994,12 @@ export function makeTable(options): TableResourceClass {
 		#hasStagedWriteFor(keyId: unknown): boolean {
 			return this.#stagedWrite() !== undefined && keyId === writeKeyId(this.getId());
 		}
+		#queueAfterStaging(staging: Promise<any>, next: () => any) {
+			const queued = staging.then(next, next);
+			// save() reports conditional failures even when callers discard queued edits.
+			if (this.#savingOperation instanceof ConditionLockWait) queued.catch(noop);
+			return queued;
+		}
 		#whenStaged(staging: any) {
 			const updated = when(staging, () => this);
 			const saving = this.#savingOperation;
@@ -5003,7 +5017,7 @@ export function makeTable(options): TableResourceClass {
 				const staging = this.#savingOperation?.staging;
 				if (staging) {
 					const next = () => this.#stageChanges(id, target, changes, options);
-					return staging.then(next, next);
+					return this.#queueAfterStaging(staging, next);
 				}
 				const previous = this.#savingOperation ? this.#mergeableWrite(id, options) : undefined;
 				const previousChanges = previous?.pendingChanges ?? this.#changes;
@@ -6257,7 +6271,7 @@ export function makeTable(options): TableResourceClass {
 			const staging = this.#savingOperation?.staging;
 			if (staging) {
 				const next = () => this.put(target, record);
-				return staging.then(next, next);
+				return this.#queueAfterStaging(staging, next);
 			}
 			if (record === undefined || record instanceof URLSearchParams) {
 				// legacy argument position, shift the arguments and go through the update method for back-compat.
@@ -6309,7 +6323,11 @@ export function makeTable(options): TableResourceClass {
 								const id = element[primaryKey];
 								const writePromise = this._writeUpdate(id, element, true);
 								const operation = this.#savingOperation;
-								return when(writePromise, () => this.#saveOperation(operation));
+								return when(writePromise, () => {
+									// Array elements have no instance that can retry a deferred refusal.
+									operation.deferSave = false;
+									return this.#saveOperation(operation);
+								});
 							});
 							this.#savingOperation = null;
 							return Promise.all(writes) as any;
@@ -8052,6 +8070,7 @@ export function makeTable(options): TableResourceClass {
 							previous.deferSave = deferred;
 							throw error;
 						}
+						// Successful admission retires the old callbacks and preparation failure together.
 						for (const key of Object.keys(previous)) {
 							if (
 								key !== 'stagedIn' &&

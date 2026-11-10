@@ -3,6 +3,7 @@ const { PassThrough } = require('node:stream');
 const { setupTestDBPath } = require('../testUtils');
 const { waitFor } = require('../waitFor');
 const { table } = require('#src/resources/databases');
+const { RequestTarget } = require('#src/resources/RequestTarget');
 const { transaction } = require('#src/resources/transaction');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { createBlob, getFileId, getFilePathForBlob } = require('#src/resources/blob');
@@ -1258,6 +1259,90 @@ describe('Deferred write lifecycle', function () {
 		});
 		assert.deepStrictEqual([...(await T.get(key)).embedding], [5]);
 	});
+
+	it('drops an array PUT element that has no instance to retry after overlap refusal', async function () {
+		if (isLMDB) return this.skip();
+		class Bulk extends TestTable {
+			static loadAsInstance = false;
+		}
+		const key = id();
+		await TestTable.put({ id: key, n: 0 });
+		const context = {};
+		const holder = await TestTable.lock(key, { hold: true, lease: 30000 }, context);
+		const stream = new PassThrough();
+		holder.set('n', 1);
+		holder.set('blob', createBlob(stream));
+		const first = holder.save();
+		try {
+			await waitFor(() => context.transaction.writes.some((write) => write?.key === key && write.saved));
+			const collection = await Bulk.getResource(new RequestTarget('/'), context, { isCollection: true });
+			await assert.rejects(collection.put(new RequestTarget('/'), [{ id: key, n: 2 }]), isOverlapRefusal);
+			assert.ok(
+				context.transaction.writes.every((write) => write?.key !== key || write.saved),
+				'no ownerless pending element'
+			);
+			stream.end('payload');
+			await first;
+			await holder.unlock();
+			const next = await TestTable.lock(key, { timeout: 100, lease: 5000 }, context);
+			await next.unlock();
+			assert.strictEqual((await TestTable.get(key)).n, 1);
+			assert.strictEqual(changesFor(key).length, 1);
+		} finally {
+			stream.end();
+			await first;
+			await holder.unlock();
+		}
+	});
+
+	for (const mode of ['denied keyed update', 'async denied keyed update', 'invalid restricted replacement']) {
+		it(`releases a lazy predecessor capture after ${mode}`, async function () {
+			if (isLMDB) return this.skip();
+			const key = id();
+			await TestTable.put({ id: key, n: 0 });
+			const user = {
+				role: {
+					permission: {
+						deferred_write_lifecycle: {
+							tables: {
+								Records: {
+									update: mode === 'invalid restricted replacement',
+									attribute_permissions: [{ attribute_name: 'name', update: true }],
+								},
+							},
+						},
+					},
+				},
+			};
+			const context = { user };
+			await transaction(context, async () => {
+				class AsyncPermission extends TestTable {
+					allowUpdate(user, changes, context) {
+						return Promise.resolve(super.allowUpdate(user, changes, context));
+					}
+				}
+				const T = mode === 'async denied keyed update' ? AsyncPermission : TestTable;
+				const record = await T.lock(key, { lease: 30000 }, context);
+				if (mode.includes('denied keyed update')) {
+					const target = new RequestTarget(key);
+					target.checkPermission = true;
+					await assert.rejects(
+						async () => record.update(target, { n: 1 }),
+						(error) => error.statusCode === 403
+					);
+				} else {
+					assert.strictEqual(record.allowUpdate(user, { name: 'allowed' }, context), true);
+					await assert.rejects(
+						async () => record.update([], true),
+						(error) => error.statusCode === 400
+					);
+				}
+				record.set('name', 'kept');
+			});
+			assert.strictEqual((await TestTable.get(key)).name, 'kept');
+			assert.strictEqual((await TestTable.get(key)).n, 0);
+		});
+	}
 
 	it('a full put replaces a pending patch without leaving an orphan', async function () {
 		const key = id();

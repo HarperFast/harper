@@ -41,6 +41,7 @@ Where things are in `resources/`. The rules live in [DESIGN.md](DESIGN.md): read
 - request authorization → `transactional()` in Resource.ts; `allowRead`/`allowUpdate`/`allowCreate`/`allowDelete` in Table.ts
 - restricted replacements and implicit key grants → `getTablePermissions`, `allowTableUpdate`, `restrictedReplacement` in Table.ts; see [permission invariants](../security/DESIGN.md#resource-attribute-permissions)
 - versioning, write conflicts, out-of-order merge → `_writeUpdate` in Table.ts
+- instance ordering, retries and conditional queues → `update`, `#queueAfterStaging`, `#restoreUpdate`, `#saveOperation` in Table.ts
 - delete, invalidate, relocate, publish → `_writeDelete`, `_writeInvalidate`, `_writeRelocate`, `_writePublish` in Table.ts
 - index choice and condition order → `executeConditions`, `estimateCondition`, `searchByIndex` in search.ts
 - FIQL parsing → `parseBlock` in search.ts

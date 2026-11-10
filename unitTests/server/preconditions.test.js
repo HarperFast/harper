@@ -691,28 +691,39 @@ describe('REST preconditions with real table transactions', () => {
 			assert.strictEqual(child.status, 0, child.stdout + child.stderr);
 			return;
 		}
-		for (const verb of ['direct', 'keyed', 'put']) {
-			const id = `rejected-queue-${verb}`;
-			await Row.put(id, { n: 0 });
-			class RejectedQueue extends Row {
-				async patch(target) {
-					const first = this.update({ n: { __op__: 'add', value: 1 } });
-					const second =
-						verb === 'put'
+		const unhandled = [];
+		const onRejection = (error) => unhandled.push(error);
+		process.on('unhandledRejection', onRejection);
+		try {
+			for (const verb of ['direct', 'keyed', 'put', 'discarded direct', 'discarded keyed', 'discarded put']) {
+				const id = `rejected-queue-${verb}`;
+				await Row.put(id, { n: 0 });
+				let called = false;
+				class RejectedQueue extends Row {
+					async patch(target) {
+						called = true;
+						const first = this.update({ n: { __op__: 'add', value: 1 } });
+						const second = verb.endsWith('put')
 							? this.put(target, { n: 9 })
-							: verb === 'keyed'
+							: verb.endsWith('keyed')
 								? this.update(target, { n: 9 })
 								: this.update({ n: 9 });
-					await Promise.all([first, second]);
-					return this.save();
+						if (!verb.startsWith('discarded')) await Promise.all([first, second]);
+						return this.save();
+					}
 				}
+				const name = `RejectedQueue${verb.replaceAll(' ', '')}`;
+				resources.set(name, RejectedQueue, { rest: true });
+				const response = await request('PATCH', `/${name}/${id}`, {}, { 'if-match': '"stale"' });
+				assert.strictEqual(called, true, `${verb} handler ran`);
+				assert.strictEqual(response.status, 412, await bodyOf(response));
+				await nextTurn();
+				assert.deepStrictEqual(unhandled, [], `${verb} must not emit an unhandled rejection`);
+				assert.strictEqual((await request('GET', `/Row/${id}`)).status, 200);
+				assert.strictEqual((await Row.get(id)).n, 0);
 			}
-			resources.set('RejectedQueue', RejectedQueue, { rest: true });
-			const response = await request('PATCH', `/RejectedQueue/${id}`, {}, { 'if-match': '"stale"' });
-			assert.strictEqual(response.status, 412, await bodyOf(response));
-			await nextTurn();
-			assert.strictEqual((await request('GET', `/Row/${id}`)).status, 200);
-			assert.strictEqual((await Row.get(id)).n, 0);
+		} finally {
+			process.off('unhandledRejection', onRejection);
 		}
 	});
 

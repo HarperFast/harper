@@ -358,7 +358,7 @@ writes (`hasCommitHold()`, between `retainTransactionLockHolds` and its release)
 (`saveHolderSelfCommit`). An explicit transaction staging a holder write, or first saving a deferred one in its
 commit sweep, while that handle has a commit in flight is refused the same way, but thrown, so it fails the
 scope. A self-committing refusal is a rejected promise, so a caller aggregating it with the earlier
-write still observes that write. Eager refused writes detach; deferred ones keep their chain position and open
+write still observes that write. Eager refused writes, including array PUT elements without a retry instance, detach; deferred ones keep their chain position and open
 generation (`saveHolderSelfCommit`, `#restoreRefusedWrite`). The next awaited `save()` retries the same operation,
 attaching it to the current link if its old owner has finished. Refusal does not poison the hold. Inside
 `transaction()` a refused write is discarded with its 409, since staging it again in the commit that ran the hook
