@@ -238,16 +238,21 @@ describe('Benchmark: origin-closed floor write overhead', function () {
 				floor.releaseLocalKey(handle);
 				handle.abort();
 			}
-			return (((performance.now() - start) / pairs) * 1e6).toFixed(0).padStart(6);
+			return ((performance.now() - start) / pairs) * 1e6;
+		};
+		// the same idle gap precedes both sides, so neither is measured on a cooler core
+		const best = async () => {
+			await sleep(1200);
+			return Math.min(measure(), measure(), measure());
 		};
 		measure();
-		const before = measure();
+		const before = await best();
 		floor.claimLocalKey(rootStore, rootStore.getMonotonicTimestamp() + 100);
 		const ceiling = readLocalIssuanceCeiling(auditStore);
 		while (rootStore.getMonotonicTimestamp() <= ceiling) await sleep(20);
-		const after = measure();
+		const after = await best();
 		console.log('');
-		console.log(`  fresh handle + pair, before any claim    ${before} ns`);
-		console.log(`  fresh handle + pair, after a claim       ${after} ns`);
+		console.log(`  fresh handle + pair, before any claim    ${before.toFixed(0).padStart(6)} ns`);
+		console.log(`  fresh handle + pair, after a claim       ${after.toFixed(0).padStart(6)} ns`);
 	});
 });
