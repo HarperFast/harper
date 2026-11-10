@@ -627,7 +627,14 @@ export function configValidator(configJson, skipFsValidation = false) {
 			writeAsync: boolean.required(),
 			overlappingSync: boolean.optional(),
 			caching: boolean.optional(),
-			recordCacheSize: number.integer().min(MIN_RECORD_CACHE_SIZE).max(MAX_RECORD_CACHE_SIZE).optional(),
+			// `convert: false` — validateConfig() does not write this converted value back, so a quoted
+			// "65536" would pass here and the record cache would silently keep its default size.
+			recordCacheSize: number
+				.integer()
+				.min(MIN_RECORD_CACHE_SIZE)
+				.max(MAX_RECORD_CACHE_SIZE)
+				.optional()
+				.prefs({ convert: false }),
 			blobs: Joi.object({
 				compression: Joi.object()
 					.pattern(

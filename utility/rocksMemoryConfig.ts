@@ -77,7 +77,7 @@ export function resolveRocksArenaBlockSize(configuredArenaBlockSize: unknown): n
 // which it silently replaces with its own default, and a ring of 0x400000 positions never wraps.
 export const MIN_RECORD_CACHE_SIZE = 4;
 export const MAX_RECORD_CACHE_SIZE = 0x3fffff * 4 + 3;
-export const DEFAULT_RECORD_CACHE_SIZE = 32_768;
+const DEFAULT_RECORD_CACHE_SIZE = 32_768;
 
 export function resolveRecordCacheSize(configuredRecordCacheSize: unknown): number {
 	return Number.isSafeInteger(configuredRecordCacheSize) &&
@@ -88,7 +88,7 @@ export function resolveRecordCacheSize(configuredRecordCacheSize: unknown): numb
 }
 
 /** rocksdb-js's default, and the floor: Harper only ever enlarges the table. */
-export const DEFAULT_VERIFICATION_TABLE_ENTRIES = 131_072;
+const DEFAULT_VERIFICATION_TABLE_ENTRIES = 131_072;
 const VERIFICATION_TABLE_SLOT_BYTES = 8;
 
 export interface VerificationTableInput {

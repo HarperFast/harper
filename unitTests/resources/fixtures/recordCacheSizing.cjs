@@ -78,7 +78,6 @@ async function main() {
 	const result = {};
 
 	if (scenario === 'preused') {
-		// something outside Harper uses the table first, so Harper's request is refused
 		const { RocksDatabase } = rocks();
 		const outside = RocksDatabase.open(path.join(root, 'outside'), { verificationTable: true });
 		outside.populateVersion('key', 1);

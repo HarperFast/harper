@@ -224,7 +224,7 @@ describe('Test configValidator module', () => {
 				assert.strictEqual(error, undefined, `${value} is accepted`);
 				assert.strictEqual(validated.storage.recordCacheSize, value);
 			}
-			for (const value of [1.5, 65536.5, -1, -32768, 0, 3, 16777216, 'big', true, null]) {
+			for (const value of [1.5, 65536.5, -1, -32768, 0, 3, 16777216, '65536', 'big', true, null]) {
 				const config = testUtils.deepClone(FAKE_CONFIG);
 				config.storage.recordCacheSize = value;
 				const { error } = configValidator(config);

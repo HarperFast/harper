@@ -508,7 +508,6 @@ export function harperSettings(
 	return settings;
 }
 
-/** The harper-config a launch starts with. */
 export function harperConfig(settings: HarperSettings, auth: AuthMode): Record<string, unknown> {
 	const { recordCacheSize, maxHeapMemoryMb, blockCacheBytes } = settings;
 	return {
