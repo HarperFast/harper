@@ -137,7 +137,7 @@ When the Harper process receives SIGTERM, SIGINT (Ctrl+C) or SIGQUIT, it shuts d
 
 1. Harper stops accepting new connections.
 2. Requests already in flight get a few seconds to finish (see the first note below).
-3. WebSocket connections close with code `1001` as soon as no request is in flight on any thread, because a request can be waiting on a replication peer's acknowledgement over one of them. With `http2` enabled on a listener, an open HTTP/2 session or WebSocket there delays this by up to 5 seconds. Under Bun or the uWS HTTP server, they are not closed this way. MQTT clients are disconnected earlier, when shutdown starts.
+3. WebSocket connections close with code `1001` as soon as no request is in flight on any thread (or up to 0.25 seconds after the listener's own 5-second close timeout if another thread has not finished), because a request can be waiting on a replication peer's acknowledgement over one of them. With `http2` enabled on a listener, an open HTTP/2 session or WebSocket there delays this by up to 5 seconds. Under Bun or the uWS HTTP server, they are not closed this way. MQTT clients are disconnected earlier, when shutdown starts.
 4. Component scopes close. Their [`'close'` listeners](../components/plugin-api.md#cleanup-on-shutdown) run once requests in flight have had a few seconds to finish.
 5. The process exits with code `0`.
 
@@ -334,6 +334,7 @@ storage:
 
 - `writeAsync` <EngineBadge engines="LMDB" /> — Disable disk sync on commit for the legacy LMDB storage engine (**disables local disk durability guarantees on LMDB**). Has no effect on RocksDB, which does not `fsync` commits; see [Storage Tuning — Durability vs. Throughput](../database/storage-tuning.md#durability-vs-throughput); _Default_: `false`
 - `caching` — In-memory record caching; _Default_: `true`
+- `recordCacheSize` <VersionBadge version="v5.4.0" /> <EngineBadge engines="RocksDB" /> — Entries each thread's in-memory record cache holds, shared by every table in the thread; also sizes RocksDB's verification table. An integer from `4` to `16777215`, read at startup. See [Storage Tuning — `storage.recordCacheSize`](../database/storage-tuning.md#storagerecordcachesize); _Default_: `32768`
 - `compression` — LZ4 record compression; _Default_: `true` (enabled by default since v4.3.0). Sub-options: `dictionary`, `threshold`
 - `compactOnStart` — Compact all non-system databases on startup; _Default_: `false` (Added in: v4.3.0)
 - `compactOnStartKeepBackup` — Retain compaction backups; _Default_: `false`
@@ -438,6 +439,14 @@ localStudio:
 ```
 
 - `enabled` — Enable local Studio at `http://localhost:<port>`; _Default_: `false`
+
+---
+
+## `studio`
+
+<VersionBadge version="v5.4.0" />
+
+How Studio presents itself on this node: `navigation`, a map from a tab key to `visible`, `tucked` or `hidden`, and `landing`, the tab Studio opens on. Write them with `set_configuration` as `studio_navigation` and `studio_landing`, which validates them; see [Customizing Studio](../studio/customization.md#cluster-settings). `studio` is a reserved component name.
 
 ---
 

@@ -219,7 +219,7 @@ describe('Record locks on chained links survive a commit that drops the chain', 
 			holderPutU = trackHolder(await TableBUnaudited.lock(idPut, { hold: true, lease: 5000 }, immCtx));
 			holderDelU = trackHolder(await TableBUnaudited.lock(idDel, { hold: true, lease: 5000 }, immCtx));
 			delete immCtx.timestamp;
-			holderExp = trackHolder(await TableBAudited.lock(idExp, { hold: true, lease: 180 }, immCtx));
+			holderExp = trackHolder(await TableBAudited.lock(idExp, { hold: true, lease: 5000 }, immCtx));
 
 			// seeded through another context, so the dbB link stays write-free
 			const seedCtx = makeContext();
@@ -240,6 +240,8 @@ describe('Record locks on chained links survive a commit that drops the chain', 
 			assert.equal(dbBLinkBefore.open, 1);
 			assert.equal(dbBLinkBefore.writes?.length ?? 0, 0);
 			assert.ok(dbBLinkBefore.recordLocks?.get(TableBAudited.primaryStore)?.get(idPut));
+			const expHandle = dbBLinkBefore.recordLocks?.get(TableBAudited.primaryStore)?.get(idExp);
+			assert.ok(expHandle);
 
 			await new TableAAudited('head-1', immCtx).put('head-1', { id: 'head-1', n: 1 });
 
@@ -264,11 +266,14 @@ describe('Record locks on chained links survive a commit that drops the chain', 
 			const reentrant = await TableBAudited.lock(idPut, { hold: true, timeout: 120 }, immCtx);
 			assert.equal(reentrant?.id, idPut);
 
-			await waitFor(
-				() =>
-					TableBAudited._txnForContext(immCtx).recordLocks?.get(TableBAudited.primaryStore)?.get(idExp)?.isExpired(),
-				2000
+			assert.strictEqual(
+				TableBAudited._txnForContext(immCtx).recordLocks?.get(TableBAudited.primaryStore)?.get(idExp),
+				expHandle,
+				'the head commit and the dbB writes must hand the idExp hold lock on'
 			);
+			// Lapsed on demand: a per-write commit after a lapse drops the handle (ImmediateTransaction's
+			// releaseRecordLocks), and the write to idExp then lands, so a lease short enough to wait out races them.
+			expHandle.revokeLease();
 			await assert.rejects(
 				async () => await new TableBAudited(idExp, immCtx).put(idExp, { id: idExp, n: 999 }),
 				(err) => err?.statusCode === 409

@@ -131,6 +131,10 @@ export interface RecordLockHandle {
 	/** Defer `store.unlock(key)` until an in-flight native commit settles or `holdDeadlineMono` expires. */
 	retainForCommit?(holdDeadlineMono?: number): void;
 	releaseCommitHold?(): void;
+	/** Whether a native commit carrying this handle's writes holds it (between `retainForCommit` and its release). */
+	hasCommitHold?(): boolean;
+	/** Self-committing holder writes admitted and not yet settled; at most one (record-locks.md). */
+	selfCommits: number;
 	/**
 	 * Flip this handle to hold mode and reset its lease timer. Used during scoped→hold upgrades
 	 * so all instances that reference this handle object remain valid (no retire + replace).
@@ -267,6 +271,7 @@ class KeyLockHandle implements RecordLockHandle {
 	released = false;
 	expired = false;
 	writeRefused = false;
+	selfCommits = 0;
 	acquiredAt: number;
 	clusterTsR: number | undefined;
 	#committedHolderVersion: number | undefined;
@@ -435,6 +440,10 @@ class KeyLockHandle implements RecordLockHandle {
 			this.#holdDeadlineMono = Math.max(this.#holdDeadlineMono ?? holdDeadlineMono, holdDeadlineMono);
 			if (this.#deferredUnlock) this.#armHoldTimer();
 		}
+	}
+
+	hasCommitHold(): boolean {
+		return this.#commitHolds > 0;
 	}
 
 	releaseCommitHold(): void {

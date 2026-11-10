@@ -20,6 +20,8 @@ import {
 	primaryLatency,
 	harperSettings,
 	harperNodeOptions,
+	harperConfig,
+	sizedRecordCacheSize,
 } from './run-compare.mts';
 import { PERF_NODE_OPTIONS } from './perfProfile.mts';
 import { SWEEP_STACK_MEMORY, WARM_STACK_MEMORY } from './pgStack.mts';
@@ -92,7 +94,7 @@ test('a tuned target launches with its own threads and memory settings; the rest
 	const c = harperSettings(TARGETS['harper-uws-rc3g-2t'], { ...warm, options: { threads: 8 } });
 	strictEqual(c.threads, 2);
 	const noVt = harperSettings(TARGETS['harper-uws-rc3g-4t-vt128k'], warm);
-	strictEqual('verificationTableEntries' in noVt, false, 'left out, so rocksdb-js keeps its default');
+	strictEqual(noVt.verificationTableEntries, 131_072, "pinned to rocksdb-js's default, which Harper would enlarge");
 	deepStrictEqual(
 		{ ...noVt, verificationTableEntries: b.verificationTableEntries },
 		{ ...b },
@@ -104,10 +106,33 @@ test('a tuned target launches with its own threads and memory settings; the rest
 		if (spec.kind !== 'harper') continue;
 		const settings = harperSettings(spec, warm);
 		const { recordCacheSize = 32_768, maxHeapMemoryMb, blockCacheBytes, verificationTableEntries } = settings;
-		strictEqual(Number.isSafeInteger(recordCacheSize) && recordCacheSize <= 16_777_216, true, `${name} cache size`);
+		strictEqual(Number.isSafeInteger(recordCacheSize) && recordCacheSize <= 16_777_215, true, `${name} cache size`);
 		for (const value of [maxHeapMemoryMb, blockCacheBytes, verificationTableEntries])
 			strictEqual(value === undefined || (Number.isSafeInteger(value) && value > 0), true, `${name} tuning`);
 	}
+});
+
+test('a sized record cache holds every record, within the largest storage.recordCacheSize Harper accepts', () => {
+	strictEqual(sizedRecordCacheSize(200_000), 262_144);
+	strictEqual(sizedRecordCacheSize(262_144), 262_144);
+	strictEqual(sizedRecordCacheSize(17_179_869), 16_777_215);
+	strictEqual(sizedRecordCacheSize(1), 4);
+	strictEqual(sizedRecordCacheSize(2), 4);
+	strictEqual(sizedRecordCacheSize(5), 8);
+});
+
+test("a launch sets the record cache through Harper's config, not its environment", () => {
+	const warm = { cache: 'warm' as const, recordCacheSize: 262_144, options: { threads: 4 } };
+	deepStrictEqual(harperConfig(harperSettings(TARGETS['harper-uws-sized'], warm), 'none').storage, {
+		recordCacheSize: 262_144,
+	});
+	deepStrictEqual(harperConfig(harperSettings(TARGETS['harper-uws-rc3g-4t'], warm), 'none').storage, {
+		recordCacheSize: 820_000,
+		rocks: { blockCacheSize: 512 * 1024 ** 2 },
+	});
+	strictEqual('storage' in harperConfig(harperSettings(TARGETS['harper-uws'], warm), 'none'), false);
+	const cold = { cache: 'cold' as const, recordCacheSize: 4, options: { threads: 4 } };
+	deepStrictEqual(harperConfig(harperSettings(TARGETS['harper'], cold), 'none').storage, { recordCacheSize: 4 });
 });
 
 test("Harper's NODE_OPTIONS carry the profiler flags and the verification-table preload together", () => {

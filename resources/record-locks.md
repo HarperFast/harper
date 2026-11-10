@@ -111,16 +111,32 @@ Consequences that shape the code:
   after its native wait, its cluster round, a coalesced join or a retry — gives the key and any cluster grant
   back (`retryAfterScopeCommit`), waits on `whenCommitSettles` (drained by `endCommitAttempt` after rotation)
   and retries with its remaining budget; the root still CLOSED after that means the scope ended, and the waiter
-  gets 500 — as a later `lock()` on the head database does when a commit that left a read iterator open could
-  not reopen it (harper#4081). Holding the key while waiting would deadlock a pre-commit hook's own `lock()` on it. A hold waits
+  gets 500. Two CLOSED roots whose scope still runs answer 409 instead, without admitting the lock
+  (`lockScopeClosure`, harper#4081): one a mid-scope commit left CLOSED because a read iterator still held its
+  native handle (`closedForReadIterators`), whose later writes each commit on their own and so would release the
+  lock at its first write; and, for a `lock()` from a pre-commit hook in the cascade, one whose own commit already
+  landed and released its locks, so nothing would release a handle registered there. Holding the key while waiting would deadlock a pre-commit hook's own `lock()` on it. A hold waits
   only once the root reads CLOSED: it survives the commit and stages nothing until saved, so in pre-commit work
-  it is admitted as before. The instance holding a scoped handle is not held back on re-entry: its lock ends
-  with that commit, as for any re-lock without `unlock()`. Two more exceptions keep the earlier outcome. The
+  it is admitted as before. A re-entry onto a scoped handle while any scope commit is in flight, the final one
+  included, is refused with a 409 instead (`relockRefused`): from the instance holding it, and an upgrade of it
+  to a hold through any instance, even from the commit's own hook (harper#4081, harper#4122). The commit releases
+  the handle, and an upgrade would detach the staged write it may be committing; the caller awaits the commit and
+  locks again through `Table.lock()`, its own handle being released. The commit's own hook may still re-enter
+  without upgrading. Two more exceptions keep the earlier outcome. The
   scope's final commit (`scopeEnding`) is not waited out. A `lock()` made by the scope's own pre-commit hook
   (`operation.before`, a source write-through) while that hook runs belongs to the commit, which awaits it:
-  `runCommitHook` marks the invocation in an `AsyncLocalStorage` (`currentCommitHook`) until the hook settles.
-  Such a call otherwise keeps the earlier outcome: a chained link's hook runs after the root went CLOSED, so its
-  `lock()` of a head-database record still gets the 500 (harper#4081). A commit that awaits a `lock()` started
+  `runCommitHook` marks the invocation in an `AsyncLocalStorage` (`currentCommitHook`) until the hook settles;
+  only that follows the hook's awaits, which the two calls the marker identifies come after. The cache-fill blob
+  save runs no user code, so it is a `beforeIntermediate` and is not wrapped (harper#4085).
+  Outside `transaction()` the marker also names the committing link: an unlocked write made within that hook
+  on that link, directly or through a commit the hook started on another link (the marker's `parent` chain), is
+  staged into the commit and resolves without awaiting it, where any other unlocked write joining the parked
+  commit awaits it. Sibling-database links share the root but commit on their own, so the link, not the root,
+  decides. The marker also names the hook's write: a holder write follows "One commit in flight per lock" below.
+  A chained link's hook runs after the head committed, so its `lock()` of a head-database record gets the 409
+  above. On the scope's final commit the head releases the context first, so after the hook's first await its
+  `lock()` resolves a fresh self-committing link that would outlive the commit; `lockScopeClosure` recognizes the
+  hook's root by that context and refuses it with a 409 as well (harper#4122). A commit that awaits a `lock()` started
   outside its hook still waits until that `lock()` gives up.
 - **Release.** Every handle — scoped or hold — is registered in `link.recordLocks` and kept on the
   locked instance as `#lockHandle`; every commit or abort calls `releaseRecordLocks()`, which calls
@@ -313,17 +329,59 @@ nothing else would move with it (no log key reserved yet and no unlocked write s
 `ImmediateTransaction` uses the handle's per-write stamp and reserves its log key separately. A deferred
 write takes its stamp at its own save. A holder write saved while the same context's previous commit
 is still in flight (awaiting a streamed blob) would join that commit's handle, whose log key is already
-reserved; the joined-commit policy refuses it with a 409 before staging when that key is below
-its stamp (harper#3238). This is a local admission policy, not a replica version clamp: applied writes
-preserve an explicit record version even when it exceeds the origin log key. The caller unlocks, then
-locks and retries once
-the earlier commit settles. A hold steps one ulp past its last version,
+reserved; it is staged on its own native transaction instead ("One commit in flight per lock" below), so a
+reserved key never moves and no holder version exceeds its log key (harper#3238). This is a local admission policy, not a
+replica version clamp: applied writes preserve an explicit record version even when it exceeds the origin log
+key. A hold steps one ulp past its last version,
 which keeps advancing above 2^42 ms, where a fixed 0.000488 ms step no longer changes a double; a step
 ahead of the clock within the cap is claimed, since one ulp above the ratchet is the next key it
 issues. A step at or below the ratchet's next key is also claimed, even after clock catch-up, so it
 cannot repeat a key issued during the lead. Such a claim can advance a hold save beyond a later plain
 write rather than retain acquisition order; plain writes remain ungated. The Phase 0 ordering tradeoff
 is tracked in harper#3246.
+
+**One commit in flight per lock.** A record-lock handle has at most one self-committing commit in flight,
+and a holder write never joins a native commit already in flight. A self-committing holder write (outside
+`transaction()`, or a late write reaching a `transaction()` after it closed) issued while its handle has a commit
+in flight — another such write not yet settled (`handle.selfCommits`), or a native commit carrying the handle's
+writes (`hasCommitHold()`, between `retainTransactionLockHolds` and its release) — is refused with a 409
+(`saveHolderSelfCommit`). An explicit transaction staging a holder write, or first saving a deferred one in its
+commit sweep, while that handle has a commit in flight is refused the same way, but thrown, so it fails the
+scope. A self-committing refusal is a rejected promise, so a caller aggregating it with the earlier
+write still observes that write; it detaches only the refused write, and does not poison the hold
+(`writeRefused` stays false). On a self-committing link the instance keeps its pending changes: its refused
+deferred write is staged again (`#restageRefusedWrite`), so its next awaited `save()` commits it. Inside
+`transaction()` a refused write is discarded with its 409, since staging it again in the commit that ran the hook
+would land the write the 409 refused; the caller catches it and writes again (through a fresh `update()` on a
+scoped lock, as after any `save()`).
+Both counters move synchronously when a commit settles, before the awaiting caller resumes, so awaited
+sequential writes are never refused. Each holder write therefore stamps above the committed floor: overlapping
+holder writes can neither share a version (harper#4098) nor land out of order, which let an older publish
+rewind the row (`_writePublish` stores at its own version without a last-writer comparison). An admitted holder
+write on an OPEN `ImmediateTransaction` whose commit is in flight (a blob still streaming, an async `before`
+hook) is staged on a fresh native transaction flagged `immediateCommit` (`isolatedCommit`), so it neither joins
+that commit's reserved log key nor waits for it. A holder write whose active ancestor commit hook belongs to a
+write of the same handle (a source's `before` hook writing the record its own commit is writing) is refused
+with a 409, as a rejected promise the hook can catch, in an explicit transaction as well: the outer write read
+its base before the hook ran (harper#4109). Inside `transaction()`, a deferred write the hook leaves for the commit sweep is staged after
+the outer write and reloads its base there; the sweep saves it before the commit takes its holds and with no
+self-commit in flight, so it is not refused. Waiting instead was rejected: a queued save stages after the instance's mutable changes have
+moved on, so it would need coalesced saves, a turn deadline and queue-aware `unlock()`, for overlap no caller
+uses. `unlock()` needs nothing new: nothing is queued, and an admitted write's commit hold defers the native
+unlock as before.
+
+**A hook's synchronous part has not seen its write apply (harper#4112).** `save()` marks a write saved, runs its
+`before` hook, then applies it. While a hook's synchronous part runs (`syncCommitHooks`), a save of the same record
+would apply first and be overwritten, so it is refused with a 409, locked or not and on any link (only the hook
+can be saving then; a rejected promise at top level), and changing a lock-writable instance whose own write runs the hook is refused (`update()` and
+`[ASSERT_TRACKED_WRITABLE]`, which every setter passes): that write stores the instance's changes object, so a refused save of them would land
+with it. After the hook's first await the outer write has applied: an unlocked same-record write chains after it,
+and a holder write is refused as above. On a self-committing link, `update()` through the lock whose commit runs
+the hook is refused too: nothing would commit the deferred write, and left staged it would refuse a fresh `lock()`
+of the record on that context. A hook awaits or catches its writes: an ignored refusal is an unhandled rejection
+and the outer write still commits. An object mutated in place after it was passed to the outer write is not
+tracked and changes that write. LMDB applies writes at commit in staging order, so there the hook's write lands
+after the outer one.
 
 **Hold handles and re-entrancy scope.** A hold handle stays registered on the resource instance
 (`#lockHandle`) and on the link until `unlock()` is called. Writing through the returned record after

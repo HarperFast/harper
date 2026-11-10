@@ -1,7 +1,7 @@
-// Loaded with --import into Harper by run-compare's withHarper when a target sizes the verification
-// table. rocksdb-js sizes that table, one per process, when the first database opens, and Harper has no
-// setting for it. Harper's main thread opens its databases before it starts any worker, so setting it
-// here, before Harper's code runs, covers every thread; a worker repeating the call would throw.
+// Loaded with --import into Harper by run-compare's withHarper when a target pins the verification
+// table. rocksdb-js has one table per process, sized before it is first used. Harper sizes it itself on
+// its main thread's first open, from storage.recordCacheSize and its thread count, so this sets the
+// target's size first and drops Harper's later request: the target measures exactly this slot count.
 import { isMainThread } from 'node:worker_threads';
 import { createRequire } from 'node:module';
 
@@ -14,5 +14,13 @@ if (isMainThread) {
 	// The rocksdb-js that Harper itself loads, resolved from its entry script.
 	const { RocksDatabase } = createRequire(process.argv[1])('@harperfast/rocksdb-js');
 	RocksDatabase.config({ verificationTableEntries: entries });
-	process.stderr.write(`[ycsb] verification table sized to ${entries} slots (pid ${process.pid})\n`);
+	const config = RocksDatabase.config;
+	RocksDatabase.config = function (options) {
+		if (options && 'verificationTableEntries' in options) {
+			const { verificationTableEntries: _harperSize, ...rest } = options;
+			options = rest;
+		}
+		return config.call(this, options);
+	};
+	process.stderr.write(`[ycsb] verification table pinned to ${entries} slots (pid ${process.pid})\n`);
 }

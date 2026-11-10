@@ -10,7 +10,8 @@ const YAML = require('yaml');
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
 
-const { getConfigFilePath, getConfigPath } = require('#src/config/configUtils');
+const { getConfigFilePath, getConfigPath, setConfiguration } = require('#src/config/configUtils');
+const { getStudioConfiguration } = require('#src/config/studioConfiguration');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 const {
 	applyRootConfigEffect,
@@ -207,6 +208,25 @@ describe('root config publication', () => {
 			assert.strictEqual(await applyRootConfigEffect('web', { kind: 'remove' }), false);
 
 			assert.strictEqual(Object.hasOwn(readRootConfig(), 'web'), false);
+		});
+
+		it("removes only an application's keys from a reserved name's entry, and counts its settings as no application", async () => {
+			writeEntry('studio', {
+				package: 'npm:studio@1',
+				urlPath: '/studio',
+				navigation: { logs: 'hidden' },
+				landing: 'logs',
+			});
+
+			assert.strictEqual(await applyRootConfigEffect('studio', { kind: 'remove' }), true);
+			assert.deepStrictEqual(readRootConfig().studio, { navigation: { logs: 'hidden' }, landing: 'logs' });
+			assert.strictEqual(hasRootConfigEntry('studio'), false);
+			assert.strictEqual(await applyRootConfigEffect('studio', { kind: 'remove' }), false);
+
+			writeEntry('sql', { maxSortRows: 1000 });
+			assert.strictEqual(hasRootConfigEntry('sql'), false);
+			assert.strictEqual(await applyRootConfigEffect('sql', { kind: 'remove' }), false);
+			assert.deepStrictEqual(readRootConfig().sql, { maxSortRows: 1000 });
 		});
 
 		it('keeps the rest of the document, comments included, byte for byte outside the entry', async () => {
@@ -596,6 +616,26 @@ describe('drop_component', () => {
 
 		assert.strictEqual(readRootConfig()['drop-refresh'], undefined, 'the removal was written before the refresh');
 		assert.strictEqual(fs.existsSync(componentDir), false, 'so the tree is not put back without it');
+	});
+
+	it('keeps the Studio settings set_configuration wrote when it drops an application deployed as studio', async () => {
+		liveComponent('studio', { package: 'npm:studio-legacy' });
+		const settings = { navigation: { logs: 'hidden' }, landing: 'logs' };
+		await setConfiguration({
+			operation: 'set_configuration',
+			studio_navigation: settings.navigation,
+			studio_landing: 'logs',
+		});
+
+		await dropComponent({ project: 'studio' });
+
+		assert.strictEqual(fs.existsSync(componentDir), false, 'the application is gone');
+		assert.deepStrictEqual(readRootConfig().studio, settings, 'and so is its package');
+		const { navigation, landing } = await getStudioConfiguration();
+		assert.deepStrictEqual({ navigation, landing }, settings);
+		const { message } = await dropComponent({ project: 'studio' });
+		assert.match(message, /which was not on this node/);
+		assert.deepStrictEqual(readRootConfig().studio, settings);
 	});
 
 	it('counts the entry as still there while the document does not parse, so a failed drop keeps its tree', () => {

@@ -196,8 +196,9 @@ module. Both caches hold only modules that passed the check, which is why a repe
 before checking again. Only a compile error of a module's own CommonJS
 wrapper selects the ESM retry in `createModuleFromSource`; an error thrown while it runs propagates.
 Not covered: compartment mode's `importHook`, and what natively loaded packages require themselves.
-Enforced by the `CommonJS require` blocks in `unitTests/security/jsLoader/jsLoader.test.js` and
-`integrationTests/components/cjs-require-loader.test.ts`.
+Enforced by the `CommonJS require` blocks in `unitTests/security/jsLoader/jsLoader.test.js`,
+`integrationTests/components/cjs-require-loader.test.ts` and
+`integrationTests/components/require-confinement-parity.test.ts`.
 
 ## Authentication converts every principal-resolution failure into a decision (`security/auth.ts`)
 
