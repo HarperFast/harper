@@ -1,6 +1,6 @@
 'use strict';
 
-// harper#3208: truthiness, blank strings and ordering in compiled SQL v2 expressions
+// harper#3208
 
 const assert = require('node:assert');
 const { compileExpr, compilePredicate } = require('#src/sqlEngine/expressions/compile');
@@ -39,7 +39,7 @@ describe('sqlEngine compiled predicate semantics', () => {
 	});
 
 	describe('a blank string has no numeric value', () => {
-		const BLANKS = ['', ' ', '\t', '\n', '\r\n', ' ', ' ', '﻿'];
+		const BLANKS = ['', ' ', '\t', '\n', '\r\n', '\u00a0', '\u2028', '\ufeff'];
 		const inList = (negated) => ({ kind: 'in', expr: v, list: [lit(0)], negated });
 
 		for (const blank of BLANKS) {

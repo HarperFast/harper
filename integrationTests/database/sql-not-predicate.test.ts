@@ -341,9 +341,7 @@ suite(
 	}
 );
 
-// harper#3208: a bare value is TRUE only when truthy, and a blank string is no number. The same values sit in an
-// unindexed `v` (answered by v2's residual filter) and an indexed `iv` (answered by the index), and both must
-// select the same rows. `new` proves v2 answered without falling back to legacy.
+// The same values sit in an unindexed `v` (v2's residual filter answers) and an indexed `iv` (the index answers).
 const VALUE_TABLE = 'Mixed';
 const VALUES: Record<string, Record<string, unknown>> = {
 	truth: { zero: 0, one: 1, empty: '', blank: '   ', x: 'x', f: false, t: true, nul: null },

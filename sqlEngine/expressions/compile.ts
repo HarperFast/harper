@@ -122,10 +122,15 @@ export function compileExpr(expr: ExprNode, qualified = false): CompiledExpr {
 			return {
 				eval: (row) => {
 					const v = e.eval(row);
-					const aboveLow = applyBinaryOp('>=', v, lo.eval(row));
-					const belowHigh = applyBinaryOp('<=', v, hi.eval(row));
-					if (aboveLow === false || belowHigh === false) return negated;
-					if (aboveLow == null || belowHigh == null) return null;
+					if (neverEqual(v)) return null;
+					// three-valued `v >= low AND v <= high`: a FALSE side decides it, an unknown one leaves it NULL
+					const low = lo.eval(row);
+					const fromLow = low == null ? Number.NaN : compare(v, low);
+					if (fromLow < 0) return negated;
+					const high = hi.eval(row);
+					const toHigh = high == null ? Number.NaN : compare(v, high);
+					if (toHigh > 0) return negated;
+					if (Number.isNaN(fromLow) || Number.isNaN(toHigh)) return null;
 					return !negated;
 				},
 				type: 'boolean',
@@ -218,16 +223,13 @@ export function compileExpr(expr: ExprNode, qualified = false): CompiledExpr {
 	}
 }
 
-/**
- * Compiles a WHERE, ON or HAVING predicate: a row passes only when the
- * expression's value is TRUE by `truthy`, so FALSE and NULL both drop it.
- */
+/** The one place a WHERE, ON or HAVING value becomes a row decision; operators must not test the value themselves. */
 export function compilePredicate(expr: ExprNode, qualified = false): (row: Row) => boolean {
 	const evaluate = compileExpr(expr, qualified).eval;
 	return (row) => truthy(evaluate(row));
 }
 
-/** NULL and NaN equal no value, themselves included, so a join key holding one matches nothing. */
+// NaN matches NaN in Table.search and in a JSON hash key, so a join skips such a key
 export function neverEqual(v: unknown): boolean {
 	return v == null || Number.isNaN(v);
 }
@@ -240,16 +242,21 @@ function applyBinaryOp(op: string, a: unknown, b: unknown): unknown {
 		case '!=':
 		case '<>':
 			return !looseEquals(a, b);
-		case '<':
-		case '<=':
-		case '>':
+		case '<': {
+			const order = compare(a, b);
+			return Number.isNaN(order) ? null : order < 0;
+		}
+		case '<=': {
+			const order = compare(a, b);
+			return Number.isNaN(order) ? null : order <= 0;
+		}
+		case '>': {
+			const order = compare(a, b);
+			return Number.isNaN(order) ? null : order > 0;
+		}
 		case '>=': {
 			const order = compare(a, b);
-			if (Number.isNaN(order)) return null;
-			if (op === '<') return order < 0;
-			if (op === '<=') return order <= 0;
-			if (op === '>') return order > 0;
-			return order >= 0;
+			return Number.isNaN(order) ? null : order >= 0;
 		}
 		case '+':
 			return numeric(a) + numeric(b);
@@ -282,7 +289,7 @@ function arithmeticType(op: string): SqlType {
 	}
 }
 
-// JavaScript truthiness, as legacy AlaSQL tests a predicate: false, 0, NaN, '' and NULL are not TRUE
+// legacy AlaSQL's rule for a predicate
 function truthy(v: unknown): boolean {
 	return Boolean(v);
 }
@@ -294,9 +301,12 @@ function looseEquals(a: unknown, b: unknown): boolean {
 	return false;
 }
 
-/** Orders a and b, or returns NaN when they have no order (a NaN on either side). */
+// NaN when a and b have no order (a NaN on either side), which every comparison reads as NULL
 function compare(a: unknown, b: unknown): number {
-	if (typeof a === 'number' && typeof b === 'number') return compareNumbers(a, b);
+	if (typeof a === 'number' && typeof b === 'number') {
+		const difference = a - b;
+		return difference === difference ? difference : compareNumbers(a, b);
+	}
 	if (typeof a === 'string' && typeof b === 'string') return a < b ? -1 : a > b ? 1 : 0;
 	const ax = numeric(a);
 	const bx = numeric(b);
@@ -311,7 +321,10 @@ function compare(a: unknown, b: unknown): number {
 }
 
 function compareNumbers(x: number, y: number): number {
-	return x < y ? -1 : x > y ? 1 : x === y ? 0 : Number.NaN;
+	const difference = x - y;
+	if (difference === difference) return difference;
+	// Infinity - Infinity is NaN, but equal infinities are ordered
+	return x === y ? 0 : Number.NaN;
 }
 
 // Number('') and Number(' \n') are 0, but a blank string is no number

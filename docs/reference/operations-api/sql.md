@@ -113,7 +113,7 @@ Use `IS NULL` and `IS NOT NULL` to test for `NULL`. REST and Resource API condit
 
 <VersionBadge type="changed" version="v5.4.0" />
 
-A bare value used as a condition, such as `WHERE active` or `ON a.id = b.id AND b.active`, selects a row only when the value is truthy: `false`, `0`, `NaN`, an empty string and `NULL` never select it, in `SELECT`, `UPDATE` or `DELETE`. Any other string, including `'0'` and `'   '`, selects it. Before v5.4.0, the new engine also selected rows whose value was `0`, `''` or `NaN` (in a `WHERE`, `HAVING` or join `ON`), so an `UPDATE` or `DELETE` could change those rows.
+A bare value used as a condition, such as `WHERE active` or `ON a.id = b.id AND b.active`, selects a row only when the value is truthy: `false`, `0`, `NaN`, an empty string, a `0n` BigInt and `NULL` never select it, in `SELECT`, `UPDATE` or `DELETE`. Any other string, including `'0'` and `'   '`, selects it. Before v5.4.0, the new engine also selected rows whose value was `0`, `''` or `NaN` (in a `WHERE`, `HAVING` or join `ON`), so an `UPDATE` or `DELETE` could change those rows.
 
 On the new engine, an empty or whitespace-only string is not a number:
 
@@ -121,7 +121,7 @@ On the new engine, an empty or whitespace-only string is not a number:
 - In `<`, `<=`, `>`, `>=` and `BETWEEN` against a number, a string that is not a number sorts after every number, as indexes and REST conditions order it, whether or not the column is indexed: `qty > 0` matches `''` and `'x'`, and `qty <= 0` matches neither.
 - Arithmetic on it is `NaN`, as it is for any other string that is not a number, so `SET total = qty * 2` stores `NaN` for `qty = ''` (returned as `null` in JSON).
 
-`NaN` has no order: `<`, `<=`, `>`, `>=` and `BETWEEN` with a `NaN` value are `NULL` and match no row, and a `NaN` join key matches nothing. With a `NULL` bound, `NOT BETWEEN` now matches a value the other bound already excludes (`5 NOT BETWEEN NULL AND 1`), as `NOT (v >= NULL AND v <= 1)` does.
+`NaN` has no order: on a column without an index, `<`, `<=`, `>`, `>=`, `BETWEEN` and `NOT BETWEEN` with a `NaN` value are `NULL` and match no row. An index sorts a stored `NaN` above every number, so a range the index answers, such as `score > 0` on an indexed `score`, still matches it. A `NaN` join key matches nothing. With a `NULL` bound, `NOT BETWEEN` now matches a value the other bound already excludes (`5 NOT BETWEEN NULL AND 1`), as `NOT (v >= NULL AND v <= 1)` does.
 
 ### Relationship Columns
 

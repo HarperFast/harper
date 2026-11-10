@@ -1,9 +1,6 @@
 /**
- * PhysicalFilter: lazy residual filter on top of a child iterable.
- *
- * Keeps a row only when the predicate is TRUE (`compilePredicate`): FALSE,
- * NULL and every falsy value (0, NaN, '') drop it. Three-valued logic for the
- * predicate itself is handled inside compileExpr.
+ * PhysicalFilter: lazy residual filter on top of a child iterable. Which rows
+ * pass is `compilePredicate`'s decision.
  */
 
 import type { ExprNode } from '../parser/ast.ts';

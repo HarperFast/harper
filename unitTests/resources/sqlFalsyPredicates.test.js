@@ -1,4 +1,4 @@
-// harper#3208: which rows a SQL v2 predicate selects, updates and deletes when values are 0, '', blank, NaN or mixed
+// harper#3208
 
 require('../testUtils');
 const assert = require('node:assert');
@@ -66,11 +66,9 @@ const ALL_IDS = SEED.map((record) => record.id).sort();
 const sorted = (ids) => [...ids].sort();
 const idsOf = (grp, names) => sorted(names.map((name) => `${grp}.${name}`));
 
-// JavaScript truthiness, which legacy AlaSQL applies to a bare predicate
 const TRUTHY = ['blank', 'one', 'str0', 't', 'x'];
 const FALSY_NOT_NULL = ['empty', 'f', 'nan', 'negzero', 'zero'];
 
-// A string with no numeric reading equals no number and sorts after every number, as Harper's indexes order it.
 const TEXT = ['blank', 'dashx', 'empty', 'ws', 'x'];
 // `$` is the compared column; `drives` marks a predicate that can lead an index scan on its own.
 const CMP_CASES = [
@@ -275,6 +273,8 @@ describe('SQL predicates over falsy, blank and NaN values', function () {
 			['v <> 0', ['nan', 'one', 'inf']],
 			['v = v', ['zero', 'one', 'inf']],
 			['v <= v', ['zero', 'one', 'inf']],
+			['v BETWEEN 0 AND 1', ['zero', 'one']],
+			['v NOT BETWEEN 0 AND 1', ['inf']],
 		];
 		for (const engine of ['auto', 'new']) {
 			for (const [where, expected] of NAN_CASES) {
@@ -282,6 +282,11 @@ describe('SQL predicates over falsy, blank and NaN values', function () {
 					await assertMatches(engine, `grp = 'nan' AND ${where}`, idsOf('nan', expected));
 				});
 			}
+
+			it(`${engine}: an indexed range still matches a stored NaN, which the index sorts above numbers`, async () => {
+				assert.deepStrictEqual(await selected(engine, `grp = 'nan' AND iv > 0`), idsOf('nan', ['inf', 'nan', 'one']));
+				assert.deepStrictEqual(await selected(engine, `grp = 'nan' AND v > 0`), idsOf('nan', ['inf', 'one']));
+			});
 
 			it(`${engine}: a projected comparison is NULL for NaN and agrees with the WHERE row set`, async () => {
 				const rows = await sql(
