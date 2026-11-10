@@ -876,11 +876,13 @@ Properties declared in the schema can be assigned directly. On a table that is n
 
 This saves the current state of the resource to the database in the current transaction. This method can be called after making changes to the resource to ensure that those changes have been saved to the current transaction and can be queried within the same transaction. Any pending changes are automatically saved when the transaction commits (if `save()` has not already saved them).
 
-This method only saves data when using RocksDB storage engine, and is a no-op when using LMDB.
+Inside an explicit LMDB transaction, `save()` does not force a commit; it still waits for pending preparation and reports preparation errors.
 
 <VersionBadge type="changed" version="v5.4.0" />
 
-On RocksDB, a deferred instance save refused with 409 because another write through its lock holder is committing stays pending; call `save()` again after that commit finishes. If the first update fails preparation, `save()` repeats that error until an explicit `update()` succeeds. This includes held drafts edited with setters after a model-hook failure.
+On RocksDB, a deferred instance save refused with 409 because another write through its lock holder is committing stays pending; call `save()` again after that commit finishes.
+
+On either engine, if the first update fails preparation, `save()` repeats that error until an explicit `update()` succeeds. On RocksDB, this includes held drafts edited with setters after a model-hook failure.
 
 ### `addTo(property: string, value: number | bigint)` {#addtoproperty-string-value-number}
 
