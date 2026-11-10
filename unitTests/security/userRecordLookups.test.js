@@ -302,9 +302,12 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 				const aliased = await user.getTrackedUser('lookup_unaudited_login', 'token');
 				assert.strictEqual(userTable.primaryStore.getEntry('lookup_unaudited_dropped'), undefined, 'no tombstone');
 				assert.strictEqual(user.isRecordlessPrincipal(aliased), false, 'dropped while it resolved, for all it shows');
-				assert.strictEqual(user.isCurrentUser(aliased), false);
+				assert.strictEqual(user.hasRecordProvenance(aliased), false, 'so its holders re-read it by name each pass');
+				assert.strictEqual(user.isCurrentUser(aliased), true, 'and a Bearer login of it is not refused');
 				const renamed = resolvedFor('lookup_unaudited_token', componentUser('lookup_unaudited_subject'));
 				assert.strictEqual(user.isRecordlessPrincipal(renamed), false, 'nor one whose name never had a record');
+				assert.strictEqual(user.hasRecordProvenance(renamed), false);
+				assert.strictEqual(user.isCurrentUser(renamed), true);
 				const unbacked = resolvedFor('lookup_unaudited_unbacked', componentUser('lookup_unaudited_unbacked'));
 				assert.strictEqual(user.isRecordlessPrincipal(unbacked), true, 'its own name was read before it resolved');
 			} finally {
@@ -557,6 +560,29 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 				assert.strictEqual(user.isRecordlessPrincipal((await authenticate(header)).user), true);
 				assert.strictEqual(user.isRecordlessPrincipal((await authenticate(header)).user), true, 'from the cache');
 			} finally {
+				server.getUser = getUser;
+			}
+		});
+
+		it('caches a component principal under another name on an unaudited hdb_user, which holders re-read by name', async () => {
+			const userTable = databases.system.hdb_user;
+			const audited = userTable.audit;
+			const getUser = server.getUser;
+			let resolved = 0;
+			server.getUser = async () => {
+				resolved++;
+				return { username: 'component_renamed_subject', role: { role: 'component_role', permission: {} } };
+			};
+			userTable.audit = false;
+			try {
+				const header = basic('component_renamed_login', 'token');
+				const first = (await authenticate(header)).user;
+				assert.strictEqual(user.isRecordlessPrincipal(first), false);
+				assert.strictEqual(user.hasRecordProvenance(first), false);
+				assert.strictEqual((await authenticate(header)).user.username, 'component_renamed_subject');
+				assert.strictEqual(resolved, 1, 'the second request is served from the cache');
+			} finally {
+				userTable.audit = audited;
 				server.getUser = getUser;
 			}
 		});

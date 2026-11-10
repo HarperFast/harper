@@ -6,6 +6,7 @@ const { table } = require('#src/resources/databases');
 const Resources = require('#src/resources/Resources');
 const { Resource } = require('#src/resources/Resource');
 const { handleApplication } = require('#src/server/mqtt');
+const { _tickNow } = require('#src/server/liveSubscriptionAuth');
 const { server } = require('#src/server/Server');
 const { forComponent } = require('#src/utility/logging/harper_logger');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
@@ -734,7 +735,7 @@ describe('mqtt.ts CONNECT through a component’s server.getUser', () => {
 		}
 	});
 
-	it('refuses such a copy on an unaudited hdb_user too, where the drop leaves no tombstone', async () => {
+	it('revokes such a copy at the next pass on an unaudited hdb_user, where the drop leaves no tombstone', async () => {
 		await seedUsers([
 			{
 				username: 'mqtt_unaudited',
@@ -755,7 +756,10 @@ describe('mqtt.ts CONNECT through a component’s server.getUser', () => {
 		try {
 			client = await connect(open, { username: 'mqtt_unaudited_login', password: 'token' });
 			assert.strictEqual(client.session.user.username, 'mqtt_unaudited');
-			assert.deepStrictEqual((await client.subscribe(`${protectedTable()}/#`)).granted, [NOT_AUTHORIZED]);
+			assert.deepStrictEqual((await client.subscribe(`${protectedTable()}/#`)).granted, [1], 'nothing shows a change');
+			const subscription = client.session.subscriptions.at(-1);
+			await _tickNow();
+			assert.strictEqual(subscription.closed, true, 'its own name is re-read, and no record has it');
 		} finally {
 			userTable.audit = audited;
 			client?.socket.handlers.close();
