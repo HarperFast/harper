@@ -4855,8 +4855,17 @@ export function makeTable(options): TableResourceClass {
 			const previousChanges = previous?.pendingChanges ?? this.#changes;
 			try {
 				if (fullUpdate && this.#updatableAttributes) {
-					this.#changes = restrictedReplacement(id, updates, this.#updatableAttributes);
-					return this.#writeChanges(id, this.#changes, false, RESTRICTED_REPLACEMENT, previous, previousChanges);
+					const changes = restrictedReplacement(id, updates, this.#updatableAttributes);
+					this.#changes =
+						previous && previousChanges ? this.#mergeChanges(previousChanges, changes, previous) : changes;
+					return this.#writeChanges(
+						id,
+						this.#changes,
+						Boolean(previous?.fullUpdate),
+						RESTRICTED_REPLACEMENT,
+						previous,
+						previousChanges
+					);
 				}
 				if (typeof updates === 'object' && updates) {
 					if (fullUpdate) {
@@ -4869,7 +4878,7 @@ export function makeTable(options): TableResourceClass {
 					} else if (directInstance) {
 						// incremental update with legacy arguments
 						const ownData = previous ? previousChanges : !this.#stagedWrite() ? this.#changes : undefined;
-						if (ownData) updates = this.#mergeChanges(id, ownData, updates, previous);
+						if (ownData) updates = this.#mergeChanges(ownData, updates, previous);
 						this.#changes = updates;
 					} else {
 						// standard path, where we retrieve the references record and return an instance, initialized with any
@@ -4908,19 +4917,11 @@ export function makeTable(options): TableResourceClass {
 				throw error;
 			}
 		}
-		#mergeChanges(id: Id, previousChanges: any, changes: any, previous: any) {
-			let record = this.#record ?? previous?.entry?.value;
+		#mergeChanges(previousChanges: any, changes: any, previous: any) {
 			try {
 				return mergeUpdateChanges(
 					previousChanges,
 					changes,
-					(name) => {
-						record ??= primaryStore.getSync(id);
-						return (
-							record?.[name] ??
-							(attributes.find((attribute) => attribute.name === name)?.type === 'BigInt' ? 0n : undefined)
-						);
-					},
 					(name, value, prior) => {
 						const field = { [name]: value?.__op__ ? { ...value } : value };
 						try {
@@ -5020,8 +5021,7 @@ export function makeTable(options): TableResourceClass {
 				}
 				const previous = this.#savingOperation ? this.#mergeableWrite(id, options) : undefined;
 				const previousChanges = previous?.pendingChanges ?? this.#changes;
-				this.#changes =
-					previous && previousChanges ? this.#mergeChanges(id, previousChanges, changes, previous) : changes;
+				this.#changes = previous && previousChanges ? this.#mergeChanges(previousChanges, changes, previous) : changes;
 				return this.#writeChanges(id, this.#changes, Boolean(previous?.fullUpdate), options, previous, previousChanges);
 			});
 		}
@@ -11513,7 +11513,7 @@ export function makeTable(options): TableResourceClass {
 							addError(
 								name,
 								'type',
-								`Value ${stringify(operand)} for operation ${value.__op__} in property ${name} must be numeric`
+								`Value ${typeof operand === 'number' ? String(operand) : stringify(operand)} for operation ${value.__op__} in property ${name} must be numeric`
 							);
 						} else {
 							const coerced = validateValue(operand, attribute, name);

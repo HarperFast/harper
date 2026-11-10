@@ -341,6 +341,236 @@ describe('Deferred write lifecycle', function () {
 		}
 	}
 
+	for (const { initial, preceding, deltas, expected, label } of [
+		{ initial: 0, preceding: 0n, deltas: [9007199254740993n, 1n], expected: 9007199254740994n, label: 'large BigInt' },
+		{ initial: 0n, preceding: 0, deltas: [1n, 0.5], expected: 1.5, label: 'Number fraction' },
+		{ initial: 0n, preceding: undefined, deltas: [1, 2], expected: 3, label: 'missing Number' },
+		{ initial: 0, preceding: undefined, deltas: [1n, 2n], expected: 3n, label: 'missing BigInt' },
+	])
+		for (const scoped of [false, true])
+			it(`preserves ${label} additions after a staged base change (${scoped ? 'explicit' : 'immediate'})`, async () => {
+				const key = id();
+				await TestTable.put({ id: key, n: initial });
+				const context = {};
+				const run = async () => {
+					const earlierView = await TestTable.getResource({ id: key }, context);
+					const precedingWriter = await TestTable.getResource({ id: key }, context);
+					await precedingWriter.update({ n: preceding });
+					for (const value of deltas) await earlierView.update({ n: { __op__: 'add', value } });
+					if (!scoped) await precedingWriter.save();
+					await earlierView.save();
+				};
+				if (scoped) await transaction(context, run);
+				else await run();
+				assert.strictEqual((await TestTable.get(key)).n, expected);
+			});
+
+	it('folds Number fractions as operands before applying their integer sum to BigInt', async () => {
+		const key = id();
+		await TestTable.put({ id: key, n: 0 });
+		const context = {};
+		await transaction(context, async () => {
+			const earlierView = await TestTable.getResource({ id: key }, context);
+			const precedingWriter = await TestTable.getResource({ id: key }, context);
+			await precedingWriter.update({ n: 0n });
+			await earlierView.update({ n: { __op__: 'add', value: 0.5 } });
+			await earlierView.update({ n: { __op__: 'add', value: 0.5 } });
+		});
+		assert.strictEqual((await TestTable.get(key)).n, 1n);
+	});
+
+	for (const mode of ['update', 'addTo']) {
+		for (const sample of [
+			{ label: 'Number fraction', base: 10, deltas: [1n, 0.5], expected: 11.5 },
+			{ label: 'BigInt mixed integers', base: 0n, deltas: [1, 9007199254740992n], expected: 9007199254740993n },
+			{ label: 'missing', base: undefined, deltas: [1, 2n], expected: 3n },
+			{ label: 'null', base: null, deltas: [1, 2n], expected: 3n },
+			{ label: 'NaN', base: NaN, deltas: [1, 2n], expected: 3n },
+			{ label: 'non-numeric string', base: 'not numeric', deltas: [1, 2n], expected: 3n },
+			{
+				label: 'BigInt overflow',
+				base: 0n,
+				deltas: [Number.MAX_VALUE, Number.MAX_VALUE],
+				expected: 2n * BigInt(Number.MAX_VALUE),
+			},
+			{ label: 'Number overflow', base: 0, deltas: [Number.MAX_VALUE, Number.MAX_VALUE], expected: Infinity },
+			{
+				label: 'negative BigInt overflow',
+				base: 0n,
+				deltas: [-Number.MAX_VALUE, -Number.MAX_VALUE],
+				expected: -2n * BigInt(Number.MAX_VALUE),
+			},
+			{
+				label: 'negative Number overflow',
+				base: 0,
+				deltas: [-Number.MAX_VALUE, -Number.MAX_VALUE],
+				expected: -Infinity,
+			},
+			{
+				label: 'missing overflow',
+				base: undefined,
+				deltas: [Number.MAX_VALUE, Number.MAX_VALUE],
+				expected: 2n * BigInt(Number.MAX_VALUE),
+			},
+			{
+				label: 'finite Number rounding on BigInt',
+				base: 0n,
+				deltas: [Number.MAX_SAFE_INTEGER, 2],
+				expected: 9007199254740992n,
+			},
+		]) {
+			it(`uses operand folding for ${sample.label} through ${mode}`, async () => {
+				const Numeric = table({
+					database: 'deferred_write_lifecycle',
+					table: 'OperandFold',
+					audit: true,
+					attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'n' }],
+				});
+				const key = id();
+				await Numeric.put(key, { n: sample.base });
+				const record = await Numeric.getResource({ id: key }, {});
+				for (const value of sample.deltas) {
+					if (mode === 'update') await record.update({ n: { __op__: 'add', value } });
+					else record.addTo('n', value);
+				}
+				await record.save();
+				await record.save();
+				assert.strictEqual((await Numeric.get(key)).n, sample.expected);
+				const patches = [...Numeric.auditStore.getRange({ start: 1 })].filter(
+					(entry) => entry.tableId === Numeric.tableId && entry.recordId === key && entry.type === 'patch'
+				);
+				assert.strictEqual(patches.length, 1);
+			});
+		}
+	}
+
+	it('documents overflow cancellation against an opposite-sign Number base', async () => {
+		const Numeric = table({
+			database: 'deferred_write_lifecycle',
+			table: 'MagnitudeFold',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'n' }],
+		});
+		const initial = -1.7e308;
+		for (const merged of [false, true]) {
+			const key = id();
+			await Numeric.put(key, { n: initial });
+			const record = await Numeric.getResource({ id: key }, {});
+			for (const value of [1e308, 1e308]) {
+				await record.update({ n: { __op__: 'add', value } });
+				if (!merged) await record.save();
+			}
+			if (merged) await record.save();
+			const expected = merged ? Infinity : initial + 1e308 + 1e308;
+			assert.strictEqual((await Numeric.get(key)).n, expected);
+			assert.strictEqual(Number.isFinite(expected), !merged);
+		}
+	});
+
+	for (const base of [0, 0n]) {
+		it(`documents an out-of-range BigInt and fractional delta on a ${typeof base} base`, async () => {
+			const Numeric = table({
+				database: 'deferred_write_lifecycle',
+				table: 'MagnitudeFold',
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'n' }],
+			});
+			const huge = 10n ** 400n;
+			const orderedKey = id();
+			await Numeric.put(orderedKey, { n: base });
+			const ordered = async () => {
+				for (const value of [huge, 0.5]) {
+					const row = await Numeric.getResource({ id: orderedKey }, {});
+					await row.update({ n: { __op__: 'add', value } });
+					await row.save();
+				}
+			};
+			if (typeof base === 'bigint') await assert.rejects(ordered, /BigInt|integer/i);
+			else await ordered();
+			assert.strictEqual((await Numeric.get(orderedKey)).n, typeof base === 'bigint' ? huge : Infinity);
+			const key = id();
+			await Numeric.put(key, { n: base });
+			const record = await Numeric.getResource({ id: key }, {});
+			await record.update({ n: { __op__: 'add', value: huge } });
+			await record.update({ n: { __op__: 'add', value: 0.5 } });
+			await assert.rejects(
+				async () => record.save(),
+				(error) => error.name === 'ValidationError' && /Infinity/.test(error.message)
+			);
+			assert.strictEqual((await Numeric.get(key)).n, base);
+		});
+	}
+
+	it('documents declared Number overflow admission for update and addTo', async () => {
+		const Numeric = table({
+			database: 'deferred_write_lifecycle',
+			table: 'DeclaredNumberOverflow',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'n', type: 'Number' },
+			],
+		});
+		for (const mode of ['ordered', 'update', 'addTo']) {
+			const key = id();
+			await Numeric.put(key, { n: 0 });
+			const apply = async () =>
+				transaction(async (txn) => {
+					const record = await Numeric.getResource({ id: key }, { transaction: txn });
+					for (const value of [Number.MAX_VALUE, Number.MAX_VALUE]) {
+						if (mode === 'addTo') record.addTo('n', value);
+						else await record.update({ n: { __op__: 'add', value } });
+						if (mode === 'ordered') await record.save();
+					}
+				});
+			if (mode === 'addTo') await assert.rejects(apply, /can not be converted to one exactly/);
+			else await apply();
+			assert.strictEqual((await Numeric.get(key)).n, mode === 'addTo' ? 0 : Infinity);
+		}
+	});
+
+	for (const value of [Infinity, -Infinity, NaN]) {
+		it(`names the invalid ${String(value)} operand in validation errors`, async () => {
+			const key = id();
+			await TestTable.put(key, { n: 0 });
+			const record = await TestTable.getResource({ id: key }, {});
+			await record.update({ n: { __op__: 'add', value } });
+			await assert.rejects(
+				async () => record.save(),
+				(error) => error.message.includes(`Value ${String(value)} for operation add`)
+			);
+			assert.strictEqual((await TestTable.get(key)).n, 0);
+		});
+	}
+
+	it('keeps a null-prototype operand failure as a validation error', async () => {
+		const key = id();
+		await TestTable.put(key, { n: 0 });
+		const record = await TestTable.getResource({ id: key }, {});
+		await record.update({ n: { __op__: 'add', value: Object.create(null) } });
+		await assert.rejects(
+			async () => record.save(),
+			(error) => error.name === 'ValidationError' && /Value {} for operation add/.test(error.message)
+		);
+		assert.strictEqual((await TestTable.get(key)).n, 0);
+	});
+
+	it('normalizes declared BigInt addTo operands before folding', async () => {
+		const Big = table({
+			database: 'deferred_write_lifecycle',
+			table: 'DeclaredFold',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'n', type: 'BigInt' },
+			],
+		});
+		const key = id();
+		await Big.put(key, { n: 0n });
+		const record = await Big.getResource({ id: key }, {});
+		record.addTo('n', 9007199254740992);
+		assert.strictEqual(record.getChanges().n.value, 9007199254740992n);
+		record.addTo('n', 1);
+		await record.save();
+		assert.strictEqual((await Big.get(key)).n, 9007199254740993n);
+	});
+
 	for (const state of ['loaded', 'unloaded', 'new']) {
 		it(`preserves bigint precision when composing updates on a ${state} instance`, async () => {
 			const Big = table({
@@ -1361,44 +1591,51 @@ describe('Deferred write lifecycle', function () {
 		}
 	});
 
-	it('a restricted replacement supersedes a pending patch and retains protected fields', async function () {
-		const key = id();
-		await TestTable.put({ id: key, n: 0, obsolete: true });
-		const user = {
-			role: {
-				permission: {
-					deferred_write_lifecycle: {
-						tables: {
-							Records: {
-								read: true,
-								insert: true,
-								update: true,
-								attribute_permissions: [
-									{ attribute_name: 'n', read: true, insert: true, update: true },
-									{ attribute_name: 'name', read: true, insert: true, update: true },
-								],
+	for (const previousFull of [false, true])
+		for (const method of ['update', 'put'])
+			it(`restricted ${method} retains a pending protected field (${previousFull ? 'full' : 'patch'})`, async function () {
+				const key = id();
+				await TestTable.put({ id: key, n: 0, obsolete: true, stale: true });
+				const user = {
+					role: {
+						permission: {
+							deferred_write_lifecycle: {
+								tables: {
+									Records: {
+										read: true,
+										insert: true,
+										update: true,
+										attribute_permissions: [
+											{ attribute_name: 'n', read: true, insert: true, update: true },
+											{ attribute_name: 'name', read: true, insert: true, update: true },
+										],
+									},
+								},
 							},
 						},
 					},
-				},
-			},
-		};
-		const context = { user };
-		const record = await TestTable.getResource({ id: key }, context);
-		assert.strictEqual(record.allowUpdate(user, { n: 1 }, context), true);
-		await record.update({ n: 1 });
-		await record.update({ name: 'replacement' }, true);
-		await record.save();
-		const result = await TestTable.get(key);
-		assert.strictEqual(result.name, 'replacement');
-		assert.strictEqual(result.n, undefined);
-		assert.strictEqual(result.obsolete, true);
-		assert.strictEqual(changesFor(key).length, 1);
-		if (!isLMDB) {
-			const locked = await TestTable.lock(key, { timeout: 100 }, context);
-			await locked.unlock();
-		}
-	});
+				};
+				const context = { user };
+				const record = await TestTable.getResource({ id: key }, context);
+				await record.update({ n: 1, obsolete: false }, previousFull);
+				assert.strictEqual(record.allowUpdate(user, { name: 'replacement' }, context), true);
+				if (method === 'update') await record.update({ name: 'replacement' }, true);
+				else await record.put(key, { name: 'replacement' });
+				await record.save();
+				const result = await TestTable.get(key);
+				assert.strictEqual(result.name, 'replacement');
+				assert.strictEqual(result.n, undefined);
+				assert.strictEqual(result.obsolete, false);
+				assert.strictEqual(result.stale, previousFull ? undefined : true);
+				assert.strictEqual(
+					[...TestTable.auditStore.getRange({ start: 1 })].filter((entry) => entry.recordId === key).length,
+					2
+				);
+				if (!isLMDB) {
+					const locked = await TestTable.lock(key, { timeout: 100 }, context);
+					await locked.unlock();
+				}
+			});
 
 	it('retains the expired lease binding through another update on an ordinary instance', async function () {
 		if (isLMDB) return this.skip();

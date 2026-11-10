@@ -231,12 +231,12 @@ RocksDB index rows store `null`, so `RocksIndexStore.getRange` reads keys only. 
 
 ## Repeat writes to the same key in one transaction carry their state forward
 
-`linkWrite` chains staged state through `priorStagedWrite()`; reads cannot refresh it (harper#1968). Newer versions merge out of order; order breaks ties. `writeKeyId` uses store encoding: `1n`/`1` chain; `[0]`/`[-0]` do not.
+No engine can refresh a staged base from a read, so `addWrite` chains same-key writes (`linkWrite`) and each takes the prior write's `stagedEntry` (`priorStagedWrite()`); without it, indexes keep intermediate values (harper#1968).
 
-- **Operations execute in staging order** (harper#2211): `chainsStagedState` defers behind predecessors; `save()` drains them; `stageWrite` keeps arrival order. Gap: `_writeRelocate` saves eagerly.
-- `#mergeableWrite` edits the node; failure releases capture. `mergeUpdateChanges` coerces adds and rejects invalid replacement patches. Replacement stays; `addWrite` admits once (`deferredWriteLifecycle.test.js`).
-- Refusal keeps its generation; `#saveOperation` reattaches writes; failed staging requires `update()`.
-- `_writePublish` stages the unchanged record, preserving re-delivery dedup (`publishRecordState.test.js`).
+- Program order breaks ties only; a newer existing version still takes the out-of-order merge.
+- The chain key is the store's key encoding (`writeKeyId`): `1n` and `1` chain, but `[0]` and `[-0]` do not.
+- **Staging order must equal execution order** (harper#2211). `chainsStagedState` writes defer behind an unrun predecessor, `save()` drains predecessors, and `stageWrite` keeps arrival order. Gap: `_writeRelocate` saves eagerly.
+- `_writePublish` leaves the record unchanged and marks `stagedEntry` `unchanged`, so a re-delivery still dedups (`publishRecordState.test.js`).
 
 ## A tracked instance commits only what it changed, as plain data
 
