@@ -65,6 +65,10 @@ Response:
 }
 ```
 
+Every `SET` expression reads the row as it was before the `UPDATE`, so `SET a = b, b = a` swaps two columns and `SET qty = qty + 5, total = qty * 2` computes `total` from the old `qty`. <VersionBadge type="changed" version="v5.4.0" /> A column assigned more than once takes every assignment in order, each reading the value the one before it produced: `SET qty = qty + 2, qty = qty + 3` adds 5, and `SET qty = 20, qty = qty + 5` sets 25. On the legacy engine only the last assignment counts.
+
+`SET col = col + N` (or `col - N`) on a column that holds a number is applied as an atomic increment, so concurrent updates of the same row do not lose increments. On any other value the column gets the expression's result, as any other `SET` would: `NULL + 5` is `NULL`.
+
 ### Delete
 
 ```json
@@ -190,6 +194,7 @@ For queries the new engine plans (the default under `auto`), `LIKE` is case-sens
 - **`NULL` never equals `NULL` in a join key.** Rows whose join key is `NULL` on either side no longer match each other (three-valued logic). The legacy engine incorrectly joined `NULL` to `NULL`.
 - **`OFFSET` past the end of a result returns no rows.** The legacy engine could still return rows when the `OFFSET` exceeded the number of matches.
 - **`LIKE` is case-sensitive, and `[...]` in a pattern is literal text.** The legacy engine matches case-insensitively and reads `[...]` as a character class. Under `auto`, adding or removing an index, or changing the other conditions in a statement, can move it between engines, which changes the rows a `LIKE` matches, including the rows an `UPDATE` or `DELETE` changes. See [LIKE Pattern Matching](#like-pattern-matching).
+- **A column assigned more than once in an `UPDATE` takes every assignment**, in order: `SET qty = qty + 2, qty = qty + 3` adds 5. The legacy engine kept only the last assignment, so under `auto` an `UPDATE` that falls back (no `WHERE`, or no index-driving condition) still does. See [Update](#update).
 - **A `NULL`-valued expression result is returned as an explicit `null`** rather than omitted from the row. A computed column or `COALESCE` that evaluates to `NULL` — or `UPPER(<null>)` — now yields `null` (the legacy engine dropped the key, and `UPPER` of a `NULL` returned the literal string `"NULL"`).
 
 These differences apply whenever the new engine serves the query — not on fallbacks. If your application depended on the legacy behavior, adjust your queries accordingly. For how `WHERE` compares `NULL` and omitted values, including the v5.4.0 change to ranges compared with `NULL`, see [NULL and Omitted Values](#null-and-omitted-values).

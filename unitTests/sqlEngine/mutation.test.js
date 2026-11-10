@@ -302,6 +302,22 @@ describe('sqlEngine phase 4: mutations', () => {
 		assert.strictEqual(captured[0][1], 99);
 	});
 
+	it('UPDATE folds repeated and table-qualified increments into one Addition', async () => {
+		const captured = [];
+		const origPatch = widgets.patch.bind(widgets);
+		widgets.patch = (id, update) => {
+			captured.push(update.qty);
+			return origPatch(id, update);
+		};
+		await runSql('UPDATE dev.widget SET qty = qty + 2, qty = widget.qty + 3 WHERE id = 2');
+		assert.strictEqual(captured[0].__op__, 'add');
+		assert.strictEqual(captured[0].value, 5);
+		assert.strictEqual(widgets._store.get(2).qty, 25);
+		// a qualifier naming another table is not the target column
+		await runSql('UPDATE dev.widget SET qty = other.qty + 1 WHERE id = 2');
+		assert.strictEqual(captured[1], 26);
+	});
+
 	it('DELETE removes matched rows and reports deleted_hashes', async () => {
 		const res = await runSql('DELETE FROM dev.widget WHERE id = 1');
 		assert.deepStrictEqual(res.deleted_hashes, [1]);
