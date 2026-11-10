@@ -6332,14 +6332,6 @@ export function makeTable(options): TableResourceClass {
 				}
 			};
 
-			const collapseTrackedChanges = tracksInstance
-				? () => {
-						write.captureChanges?.();
-						const collapseOwn = (this.constructor as any).loadAsInstance !== false;
-						ownKeys = collapseOwn ? Object.keys(this) : [];
-						return collapseChanges(this, instanceChanges, ownKeys);
-					}
-				: undefined;
 			const receiverId = this.getId();
 			const closesReceiver =
 				!this.isCollection &&
@@ -6366,7 +6358,6 @@ export function makeTable(options): TableResourceClass {
 				trackedInstance: tracksInstance ? this : undefined,
 				captureChanges,
 				releaseChanges,
-				stagesChange: collapseTrackedChanges ? () => collapseTrackedChanges() !== undefined : undefined,
 				validate: (txnTime, committedBy = transaction) => {
 					write.captureChanges?.();
 					const rootUpdate = tracksInstance ? instanceChanges : recordUpdate;
@@ -6396,8 +6387,10 @@ export function makeTable(options): TableResourceClass {
 					}
 					let ownMerged = false;
 					if (tracksInstance) {
-						recordUpdate = collapseTrackedChanges!();
-						ownMerged = ownKeys!.length > 0 && recordUpdate !== instanceChanges;
+						const collapseOwn = (this.constructor as any).loadAsInstance !== false;
+						ownKeys = collapseOwn ? Object.keys(this) : [];
+						recordUpdate = collapseChanges(this, instanceChanges, ownKeys);
+						ownMerged = ownKeys.length > 0 && recordUpdate !== instanceChanges;
 						// the patch is final only now (blobs can be assigned after staging, or as own properties), so its
 						// blobs are found here; before/beforeIntermediate run after validate
 						write.beforeIntermediate = preCommitBlobsForRecordBefore(write, recordUpdate);

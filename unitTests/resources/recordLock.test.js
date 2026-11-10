@@ -2417,6 +2417,36 @@ describe('Record locks (harper#483)', () => {
 				await next.unlock();
 			});
 
+			it(`poisons a scoped lock handle after a caught 409 so a second save() does not resolve silently (audit: ${audit})`, async function () {
+				if (isLMDB) return this.skip();
+				const T = tableFor();
+				const idA = id();
+				const idB = id();
+				await T.put({ id: idA, n: 0 });
+				await T.put({ id: idB, n: 0 });
+				const putInterleaving = outsideWriter(() => T.put({ id: idB, n: 50 }));
+
+				await transaction(async () => {
+					await T.put({ id: idA, n: 1 });
+					await putInterleaving();
+					const b = await T.lock(idB);
+					b.set('n', b.n + 1);
+					await assert.rejects(
+						async () => b.save(),
+						(error) => error.statusCode === 409 && error.message === EXPECTED_409
+					);
+					await assert.rejects(
+						async () => b.save(),
+						(error) =>
+							error.statusCode === 409 &&
+							error.message === 'This lock write was refused; unlock and acquire a fresh lock before retrying'
+					);
+				});
+
+				assert.strictEqual((await T.get(idA)).n, 1);
+				assert.strictEqual((await T.get(idB)).n, 50);
+			});
+
 			it(`refuses a commit-sweep save of a modified scoped lock and releases the lock on abort (audit: ${audit})`, async function () {
 				if (isLMDB) return this.skip();
 				const T = tableFor();
@@ -2495,6 +2525,111 @@ describe('Record locks (harper#483)', () => {
 
 				assert.strictEqual((await T.get(idB)).n, 50);
 				assert.strictEqual((await T.get(idA)).n, 0);
+			});
+
+			it(`refuses static put and deferred update joined to a { hold: true } lock after an interleaving write (audit: ${audit})`, async function () {
+				if (isLMDB) return this.skip();
+				const T = tableFor();
+				const idA1 = id();
+				const idB1 = id();
+				const idA2 = id();
+				const idB2 = id();
+				await T.put({ id: idA1, n: 0 });
+				await T.put({ id: idB1, n: 0 });
+				await T.put({ id: idA2, n: 0 });
+				await T.put({ id: idB2, n: 0 });
+				const putInterleaving1 = outsideWriter(() => T.put({ id: idB1, n: 50 }));
+				const putInterleaving2 = outsideWriter(() => T.put({ id: idB2, n: 50 }));
+
+				await assert.rejects(
+					transaction(async () => {
+						await T.put({ id: idA1, n: 1 });
+						await putInterleaving1();
+						const holder = await T.lock(idB1, { hold: true, lease: 5000 });
+						cleanups.push(() => holder.unlock());
+						await T.put({ id: idB1, n: 51 });
+					}),
+					(error) => error.statusCode === 409 && error.message === EXPECTED_409
+				);
+
+				await assert.rejects(
+					transaction(async () => {
+						await T.put({ id: idA2, n: 1 });
+						await putInterleaving2();
+						const holder = await T.lock(idB2, { hold: true, lease: 5000 });
+						cleanups.push(() => holder.unlock());
+						await T.update(idB2, { n: 51 });
+					}),
+					(error) => error.statusCode === 409 && error.message === EXPECTED_409
+				);
+
+				assert.strictEqual((await T.get(idB1)).n, 50);
+				assert.strictEqual((await T.get(idB2)).n, 50);
+			});
+
+			it(`refuses a lock write when an earlier deferred unlocked update() set hasUnlockedWrite() before an interleaving write (audit: ${audit})`, async function () {
+				if (isLMDB) return this.skip();
+				const T = tableFor();
+				const idA = id();
+				const idB = id();
+				await T.put({ id: idA, n: 0 });
+				await T.put({ id: idB, n: 0 });
+				const putInterleaving = outsideWriter(() => T.put({ id: idB, n: 50 }));
+
+				await assert.rejects(
+					transaction(async () => {
+						await T.update(idA, { n: 1 });
+						await putInterleaving();
+						const b = await T.lock(idB);
+						assert.strictEqual(b.n, 50);
+						b.set('n', b.n + 1);
+						await b.save();
+					}),
+					(error) => error.statusCode === 409 && error.message === EXPECTED_409
+				);
+
+				assert.strictEqual((await T.get(idB)).n, 50);
+				assert.strictEqual((await T.get(idA)).n, 0);
+			});
+
+			it(`refuses commutative addTo and disjoint-field lock writes when the clock is fixed below the admitted version (audit: ${audit})`, async function () {
+				if (isLMDB) return this.skip();
+				const T = tableFor();
+				const idA1 = id();
+				const idB1 = id();
+				const idA2 = id();
+				const idB2 = id();
+				await T.put({ id: idA1, n: 0 });
+				await T.put({ id: idB1, n: 0, name: 'before' });
+				await T.put({ id: idA2, n: 0 });
+				await T.put({ id: idB2, n: 0, name: 'before' });
+				const putInterleaving1 = outsideWriter(() => T.patch(idB1, { name: 'interleaved' }));
+				const putInterleaving2 = outsideWriter(() => T.put({ id: idB2, n: 50, name: 'before' }));
+
+				await assert.rejects(
+					transaction(async () => {
+						await T.put({ id: idA1, n: 1 });
+						await putInterleaving1();
+						const b = await T.lock(idB1);
+						b.addTo('n', 1);
+						await b.save();
+					}),
+					(error) => error.statusCode === 409 && error.message === EXPECTED_409
+				);
+
+				await assert.rejects(
+					transaction(async () => {
+						await T.put({ id: idA2, n: 1 });
+						await putInterleaving2();
+						const b = await T.lock(idB2);
+						b.set('name', 'holder');
+						await b.save();
+					}),
+					(error) => error.statusCode === 409 && error.message === EXPECTED_409
+				);
+
+				assert.strictEqual((await T.get(idB1)).n, 0);
+				assert.strictEqual((await T.get(idB2)).name, 'before');
 			});
 
 			it(`refuses a second lock write when an earlier lock fixed the clock below an interleaving write (audit: ${audit})`, async function () {

@@ -1619,15 +1619,14 @@ feature that has not yet been measured.
 >    above the version it reloaded, a tombstone's included, and above the predecessor log positions its
 >    admission waited for. So a predecessor write that was committed and visible at admission — a
 >    clock-skewed peer's, or one stamped ahead on purpose by a caller's future `context.timestamp` —
->    no longer outranks the holder's own writes. The routes that remain:
->    - **(1a) clock skew, write in flight.** The predecessor's clock ran ahead of its successor's, and
->      its write is still in flight when the successor writes, so no admission saw it.
->    - **(1b) a holder whose own clock cannot move.** The floor reaches a write only through its
->      stamp. An explicit transaction that already reserved its log key, or staged an unlocked write
->      before `lock()`, keeps its clock; state beyond `storage.maxLockClockSkew` rejects admission; and
->      a lock write (scoped or held) saved in an explicit transaction whose clock is already fixed below
->      the lock's required floor is refused with a 409 ([harper#2712](https://github.com/HarperFast/harper/issues/2712)). To avoid the 409, take the lock first or save the
->      held record in its own transaction.
+>    no longer outranks the holder's own writes. The silent route that remains is **(1a) clock skew, write
+>    in flight** — the predecessor's clock ran ahead of its successor's, and its write is still in flight
+>    when the successor writes, so no admission saw it. **(1b) a holder whose own clock cannot move**
+>    instead fails closed: an explicit transaction that already reserved its log key, or staged an
+>    unlocked write before `lock()`, keeps its clock; state beyond `storage.maxLockClockSkew` rejects
+>    admission; and any lock write (scoped or held, including disjoint-field patches and commutative ops)
+>    saved in an explicit transaction whose clock is already fixed below the lock's required floor is
+>    refused with a 409 ([harper#2712](https://github.com/HarperFast/harper/issues/2712)). To avoid the 409, take the lock first or save the held record in its own transaction.
 > 2. **Successor freshness is not promised on the recovery path.** The §7.2 barrier drains streams
 >    from every _reachable_ member, so a write the predecessor committed and did not replicate is
 >    invisible to it: the barrier succeeds and the successor reads a stale value. Three routes in, and
@@ -1673,7 +1672,7 @@ feature that has not yet been measured.
 > _and_ the late-settling commit to be fenced rather than confirmed — which is why harper#2540's
 > quorum-confirmed arm is not a one-line header change and needs the fenced arm with it.
 
-**Both limitations ship silent, and that is a choice worth recording rather than a consequence.** A
+**Limitation (1a) and limitation (2) ship silent, and that is a choice worth recording rather than a consequence.** A
 caller whose locked write loses gets a 200, no log line and no counter, so nothing distinguishes it
 from correct behavior. Making it observable is cheap and confined to the lock path — the handle
 already carries its floor and the commit path already fences per write on `write.lockHandle`
