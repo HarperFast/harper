@@ -36,32 +36,40 @@ import { Addition } from '../../resources/tracked.ts';
 import { addValues, OPERATION_TYPES } from '../../resources/crdt.ts';
 
 /**
- * If `expr` is the target column (bare, or qualified by the target table or its alias) plus or minus
- * numeric literals — `col + N`, `N + col`, `col - N`, nested or grouped — return those literals,
- * signed. Anything else, including `N - col` and `col + col`, returns undefined.
+ * If `expr` is a sum of numeric literals and the target column (bare, or qualified by the target table
+ * or its alias), counting the column exactly once — `col + N`, `N + col`, `col - N`, nested or
+ * grouped — return the literals, signed. `N - col` and `col + col` return undefined.
  */
 function incrementTerms(expr: ExprNode, column: string, qualifiers: ReadonlySet<string>): number[] | undefined {
-	if (expr.kind === 'column') {
-		return expr.name === column && (expr.table == null || qualifiers.has(expr.table)) ? [] : undefined;
-	}
-	if (expr.kind !== 'binop' || (expr.op !== '+' && expr.op !== '-')) return undefined;
-	const left = incrementTerms(expr.left, column, qualifiers);
-	if (left) {
-		const right = literalTerms(expr.right);
-		return right && left.concat(expr.op === '+' ? right : right.map((term) => -term));
-	}
-	if (expr.op === '-') return undefined;
-	const literals = literalTerms(expr.left);
-	const right = literals && incrementTerms(expr.right, column, qualifiers);
-	return right && literals.concat(right);
+	const terms: number[] = [];
+	return collectTerms(expr, 1, column, qualifiers, terms) === 1 ? terms : undefined;
 }
 
-function literalTerms(expr: ExprNode): number[] | undefined {
-	if (expr.kind === 'literal') return typeof expr.value === 'number' ? [expr.value] : undefined;
-	if (expr.kind !== 'binop' || (expr.op !== '+' && expr.op !== '-')) return undefined;
-	const left = literalTerms(expr.left);
-	const right = left && literalTerms(expr.right);
-	return right && left.concat(expr.op === '+' ? right : right.map((term) => -term));
+/** Pushes `expr`'s literals onto `terms`, returning the column's net coefficient in it. */
+function collectTerms(
+	expr: ExprNode,
+	sign: 1 | -1,
+	column: string,
+	qualifiers: ReadonlySet<string>,
+	terms: number[]
+): number | undefined {
+	switch (expr.kind) {
+		case 'column':
+			return expr.name === column && (expr.table == null || qualifiers.has(expr.table)) ? sign : undefined;
+		case 'literal':
+			if (typeof expr.value !== 'number') return undefined;
+			terms.push(sign * expr.value);
+			return 0;
+		case 'binop': {
+			if (expr.op !== '+' && expr.op !== '-') return undefined;
+			const left = collectTerms(expr.left, sign, column, qualifiers, terms);
+			if (left === undefined) return undefined;
+			const right = collectTerms(expr.right, expr.op === '+' ? sign : -sign, column, qualifiers, terms);
+			return right === undefined ? undefined : left + right;
+		}
+		default:
+			return undefined;
+	}
 }
 
 interface ColumnAssignments {
@@ -112,7 +120,7 @@ function operandAccepted(delta: number, type: string | undefined): boolean {
 function additionFor(assignments: ColumnAssignments, read: unknown, evaluated: unknown): Addition | undefined {
 	const { delta, bigintDelta } = assignments;
 	if (typeof read === 'bigint') return bigintDelta === undefined ? undefined : new Addition(bigintDelta);
-	if (delta === undefined || (typeof read === 'object' && read !== null)) return undefined;
+	if (delta === undefined || (typeof read === 'object' && read !== null && !(read instanceof Date))) return undefined;
 	return addValues(read, delta) === evaluated ? new Addition(delta) : undefined;
 }
 

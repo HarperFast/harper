@@ -188,8 +188,9 @@ describe('SQL UPDATE SET evaluation on the v2 engine', function () {
 			assert.strictEqual((await updated(Untyped, { id: 1, qty: '7' }, 'qty = qty + 5')).qty, 12);
 		});
 
-		it('stays atomic for a numeric string', async () => {
+		it('stays atomic for a numeric string or a Date', async () => {
 			assert.strictEqual(await concurrently(Untyped, { id: 1, qty: '0' }, 'qty = qty + 1'), CONCURRENT);
+			assert.strictEqual(await concurrently(Untyped, { id: 1, qty: new Date(0) }, 'qty = qty + 1'), CONCURRENT);
 		});
 
 		it('does not apply an add operation to a String attribute', async () => {
