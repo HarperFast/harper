@@ -1,8 +1,7 @@
 /**
- * Regression test for #4181 — with `logging.auditAuthEvents.logFailed: true`, the failed-credential
- * audit dedupe marker must not live in `authorizationCache`, where a subsequent bare
- * `Authorization: <X>` header matching the marker key would resolve the string `<X>` as
- * `request.user` and pass presence-based gates (`allowRead(user) { return Boolean(user); }`,
+ * With `logging.auditAuthEvents.logFailed: true`, failed-credential audit deduplication must not
+ * write markers into `authorizationCache`, where a subsequent bare `Authorization: <X>` header
+ * would resolve the string `<X>` as `request.user` and pass presence-based gates (`allowRead`,
  * `allowCreate`, open resources checking `if (!user)`, and `WhoAmI`).
  */
 import { suite, test, before, after } from 'node:test';
@@ -26,6 +25,7 @@ interface HttpResponse {
 	status: number;
 	text: string;
 	body: any;
+	localPort: number | undefined;
 }
 
 function sendWithAgent(
@@ -56,6 +56,7 @@ function sendWithAgent(
 				headers,
 			},
 			(res) => {
+				const localPort = res.socket?.localPort;
 				const chunks: Buffer[] = [];
 				res.on('data', (chunk: Buffer) => chunks.push(chunk));
 				res.on('end', () => {
@@ -66,7 +67,7 @@ function sendWithAgent(
 					} catch {
 						body = text;
 					}
-					resolvePromise({ status: res.statusCode ?? 0, text, body });
+					resolvePromise({ status: res.statusCode ?? 0, text, body, localPort });
 				});
 			}
 		);
@@ -79,7 +80,7 @@ function sendWithAgent(
 for (const logFailed of [true, false]) {
 	for (const threads of [1, 4]) {
 		suite(
-			`#4181 failed-credential audit dedupe does not pollute authorizationCache (logFailed=${logFailed}, threads=${threads})`,
+			`failed-credential audit dedupe does not pollute authorizationCache (logFailed=${logFailed}, threads=${threads})`,
 			{ skip: skipSuite },
 			(ctx: ContextWithHarper) => {
 				let client: ReturnType<typeof createApiClient>;
@@ -87,6 +88,27 @@ for (const logFailed of [true, false]) {
 				let adminAuthorization = '';
 				let logPath = '';
 				let agent: HttpAgent;
+				let pinnedLocalPort: number | undefined;
+
+				async function send(
+					method: 'GET' | 'POST',
+					pathname: string,
+					authorization?: string,
+					jsonBody?: unknown
+				): Promise<HttpResponse> {
+					const res = await sendWithAgent(agent, restURL, method, pathname, authorization, jsonBody);
+					ok(res.localPort !== undefined, 'expected response socket to report a localPort');
+					if (pinnedLocalPort === undefined) {
+						pinnedLocalPort = res.localPort;
+					} else {
+						strictEqual(
+							res.localPort,
+							pinnedLocalPort,
+							'expected all requests in the suite to reuse the same keep-alive socket and worker'
+						);
+					}
+					return res;
+				}
 
 				function readAuthAuditEntries(): string[] {
 					if (!existsSync(logPath)) return [];
@@ -113,7 +135,7 @@ for (const logFailed of [true, false]) {
 				async function flushWorkerAuditLog(markerTag: string): Promise<void> {
 					const markerUser = `audit-flush-${markerTag}-${logFailed}-${threads}`;
 					const markerCred = Buffer.from(`${markerUser}:flush`).toString('base64');
-					const res = await sendWithAgent(agent, restURL, 'GET', '/AnyPrincipalSecret/', `Basic ${markerCred}`);
+					const res = await send('GET', '/AnyPrincipalSecret/', `Basic ${markerCred}`);
 					strictEqual(res.status, 401, res.text);
 					await waitForAuditEntry(
 						(entry) => entry.includes(`username: '${markerUser}'`) && entry.includes("status: 'failure'")
@@ -121,14 +143,14 @@ for (const logFailed of [true, false]) {
 				}
 
 				async function assertBareHeaderRejectedOnAllSurfaces(bareX: string, attemptedRowId: string): Promise<void> {
-					const readRes = await sendWithAgent(agent, restURL, 'GET', '/AnyPrincipalSecret/', bareX);
+					const readRes = await send('GET', '/AnyPrincipalSecret/', bareX);
 					strictEqual(
 						readRes.status,
 						401,
 						`GET /AnyPrincipalSecret/ with bare header must be 401, got ${readRes.status}: ${readRes.text}`
 					);
 
-					const createRes = await sendWithAgent(agent, restURL, 'POST', '/AnyPrincipalSecret/', bareX, {
+					const createRes = await send('POST', '/AnyPrincipalSecret/', bareX, {
 						id: attemptedRowId,
 						title: 'unauthenticated-write',
 					});
@@ -138,27 +160,21 @@ for (const logFailed of [true, false]) {
 						`POST /AnyPrincipalSecret/ with bare header must be 401, got ${createRes.status}: ${createRes.text}`
 					);
 
-					const checkPersisted = await sendWithAgent(
-						agent,
-						restURL,
-						'GET',
-						`/AnyPrincipalSecret/${attemptedRowId}`,
-						adminAuthorization
-					);
+					const checkPersisted = await send('GET', `/AnyPrincipalSecret/${attemptedRowId}`, adminAuthorization);
 					strictEqual(
 						checkPersisted.status,
 						404,
 						`rejected POST /AnyPrincipalSecret/ must not persist row ${attemptedRowId}: ${checkPersisted.text}`
 					);
 
-					const staticGateRes = await sendWithAgent(agent, restURL, 'GET', '/StaticGateSecret/', bareX);
+					const staticGateRes = await send('GET', '/StaticGateSecret/', bareX);
 					strictEqual(
 						staticGateRes.status,
 						401,
 						`GET /StaticGateSecret/ with bare header must be 401, got ${staticGateRes.status}: ${staticGateRes.text}`
 					);
 
-					const whoAmIRes = await sendWithAgent(agent, restURL, 'GET', '/WhoAmI/x', bareX);
+					const whoAmIRes = await send('GET', '/WhoAmI/x', bareX);
 					strictEqual(
 						whoAmIRes.status,
 						401,
@@ -185,9 +201,13 @@ for (const logFailed of [true, false]) {
 					const deadline = Date.now() + 30_000;
 					while (Date.now() < deadline) {
 						const probe = await sendWithAgent(agent, restURL, 'GET', '/AnyPrincipalSecret/', adminAuthorization);
-						if (probe.status === 200) break;
+						if (probe.status === 200) {
+							pinnedLocalPort = probe.localPort;
+							break;
+						}
 						await sleep(200);
 					}
+					ok(pinnedLocalPort !== undefined, 'expected readiness probe to establish pinnedLocalPort');
 
 					await client
 						.req()
@@ -206,61 +226,33 @@ for (const logFailed of [true, false]) {
 				});
 
 				test('positive control and cold bare header before any rejection', async () => {
-					const coldRead = await sendWithAgent(
-						agent,
-						restURL,
-						'GET',
-						'/AnyPrincipalSecret/',
-						`cold-bare-read-${logFailed}-${threads}`
-					);
+					const coldRead = await send('GET', '/AnyPrincipalSecret/', `cold-bare-read-${logFailed}-${threads}`);
 					strictEqual(coldRead.status, 401, coldRead.text);
 
 					const coldRowId = `cold-row-${logFailed}-${threads}`;
-					const coldCreate = await sendWithAgent(
-						agent,
-						restURL,
-						'POST',
-						'/AnyPrincipalSecret/',
-						`cold-bare-create-${logFailed}-${threads}`,
-						{ id: coldRowId, title: 'unauthenticated-write' }
-					);
+					const coldCreate = await send('POST', '/AnyPrincipalSecret/', `cold-bare-create-${logFailed}-${threads}`, {
+						id: coldRowId,
+						title: 'unauthenticated-write',
+					});
 					strictEqual(coldCreate.status, 401, coldCreate.text);
-					const coldCheckPersisted = await sendWithAgent(
-						agent,
-						restURL,
-						'GET',
-						`/AnyPrincipalSecret/${coldRowId}`,
-						adminAuthorization
-					);
+					const coldCheckPersisted = await send('GET', `/AnyPrincipalSecret/${coldRowId}`, adminAuthorization);
 					strictEqual(coldCheckPersisted.status, 404, coldCheckPersisted.text);
 
-					const coldStatic = await sendWithAgent(
-						agent,
-						restURL,
-						'GET',
-						'/StaticGateSecret/',
-						`cold-bare-static-${logFailed}-${threads}`
-					);
+					const coldStatic = await send('GET', '/StaticGateSecret/', `cold-bare-static-${logFailed}-${threads}`);
 					strictEqual(coldStatic.status, 401, coldStatic.text);
 
-					const coldWhoAmI = await sendWithAgent(
-						agent,
-						restURL,
-						'GET',
-						'/WhoAmI/x',
-						`cold-bare-whoami-${logFailed}-${threads}`
-					);
+					const coldWhoAmI = await send('GET', '/WhoAmI/x', `cold-bare-whoami-${logFailed}-${threads}`);
 					strictEqual(coldWhoAmI.status, 401, coldWhoAmI.text);
 
-					const adminRead = await sendWithAgent(agent, restURL, 'GET', '/AnyPrincipalSecret/', adminAuthorization);
+					const adminRead = await send('GET', '/AnyPrincipalSecret/', adminAuthorization);
 					strictEqual(adminRead.status, 200, adminRead.text);
 					deepStrictEqual(adminRead.body, [SEEDED_ROW]);
 
-					const adminStatic = await sendWithAgent(agent, restURL, 'GET', '/StaticGateSecret/', adminAuthorization);
+					const adminStatic = await send('GET', '/StaticGateSecret/', adminAuthorization);
 					strictEqual(adminStatic.status, 200, adminStatic.text);
 					strictEqual(adminStatic.body.username, ctx.harper.admin.username);
 
-					const adminWhoAmI = await sendWithAgent(agent, restURL, 'GET', '/WhoAmI/x', adminAuthorization);
+					const adminWhoAmI = await send('GET', '/WhoAmI/x', adminAuthorization);
 					strictEqual(adminWhoAmI.status, 200, adminWhoAmI.text);
 					strictEqual(adminWhoAmI.body.type, 'object');
 					strictEqual(adminWhoAmI.body.username, ctx.harper.admin.username);
@@ -270,13 +262,20 @@ for (const logFailed of [true, false]) {
 					const failedUser = `ghost-basic-${logFailed}-${threads}`;
 					const bareX = Buffer.from(`${failedUser}:wrong-password`).toString('base64');
 
-					const first = await sendWithAgent(agent, restURL, 'GET', '/AnyPrincipalSecret/', `Basic ${bareX}`);
+					const first = await send('GET', '/AnyPrincipalSecret/', `Basic ${bareX}`);
 					strictEqual(first.status, 401, first.text);
 
 					await assertBareHeaderRejectedOnAllSurfaces(bareX, `basic-row-${logFailed}-${threads}`);
 
-					const repeatBasic = await sendWithAgent(agent, restURL, 'GET', '/AnyPrincipalSecret/', `Basic ${bareX}`);
+					const repeatBasic = await send('GET', '/AnyPrincipalSecret/', `Basic ${bareX}`);
 					strictEqual(repeatBasic.status, 401, repeatBasic.text);
+
+					const preBareUser = `ghost-prebare-${logFailed}-${threads}`;
+					const bareY = Buffer.from(`${preBareUser}:wrong-password`).toString('base64');
+					const bareFirst = await send('GET', '/AnyPrincipalSecret/', bareY);
+					strictEqual(bareFirst.status, 401, bareFirst.text);
+					const basicAfterBare = await send('GET', '/AnyPrincipalSecret/', `Basic ${bareY}`);
+					strictEqual(basicAfterBare.status, 401, basicAfterBare.text);
 
 					if (logFailed) {
 						await flushWorkerAuditLog('basic');
@@ -288,8 +287,18 @@ for (const logFailed of [true, false]) {
 							1,
 							`expected failed Basic credential for ${failedUser} to be audited once within cacheTTL:\n${matching.join('\n')}`
 						);
+						const preBareMatching = readAuthAuditEntries().filter(
+							(entry) => entry.includes(`username: '${preBareUser}'`) && entry.includes("status: 'failure'")
+						);
+						strictEqual(
+							preBareMatching.length,
+							1,
+							`expected prior bare <X> not to suppress username audit entry for Basic <X> (${preBareUser}):\n${preBareMatching.join('\n')}`
+						);
 					} else {
-						const matching = readAuthAuditEntries().filter((entry) => entry.includes(`username: '${failedUser}'`));
+						const matching = readAuthAuditEntries().filter(
+							(entry) => entry.includes(`username: '${failedUser}'`) || entry.includes(`username: '${preBareUser}'`)
+						);
 						strictEqual(matching.length, 0, `expected no audit entry when logFailed is false:\n${matching.join('\n')}`);
 					}
 				});
@@ -300,12 +309,12 @@ for (const logFailed of [true, false]) {
 						(entry) => entry.includes("auth_strategy: 'Bearer'") && entry.includes("status: 'failure'")
 					).length;
 
-					const first = await sendWithAgent(agent, restURL, 'GET', '/AnyPrincipalSecret/', `Bearer ${bareX}`);
+					const first = await send('GET', '/AnyPrincipalSecret/', `Bearer ${bareX}`);
 					strictEqual(first.status, 401, first.text);
 
 					await assertBareHeaderRejectedOnAllSurfaces(bareX, `bearer-row-${logFailed}-${threads}`);
 
-					const repeatBearer = await sendWithAgent(agent, restURL, 'GET', '/AnyPrincipalSecret/', `Bearer ${bareX}`);
+					const repeatBearer = await send('GET', '/AnyPrincipalSecret/', `Bearer ${bareX}`);
 					strictEqual(repeatBearer.status, 401, repeatBearer.text);
 
 					if (logFailed) {
@@ -329,12 +338,12 @@ for (const logFailed of [true, false]) {
 					const encoded = Buffer.from(`${failedUser}:wrong-password`).toString('base64');
 					const bareX = `${encoded.slice(0, 8)} ${encoded.slice(8)}`;
 
-					const first = await sendWithAgent(agent, restURL, 'GET', '/AnyPrincipalSecret/', `Basic ${bareX}`);
+					const first = await send('GET', '/AnyPrincipalSecret/', `Basic ${bareX}`);
 					strictEqual(first.status, 401, first.text);
 
 					await assertBareHeaderRejectedOnAllSurfaces(bareX, `space-row-${logFailed}-${threads}`);
 
-					const repeatBasic = await sendWithAgent(agent, restURL, 'GET', '/AnyPrincipalSecret/', `Basic ${bareX}`);
+					const repeatBasic = await send('GET', '/AnyPrincipalSecret/', `Basic ${bareX}`);
 					strictEqual(repeatBasic.status, 401, repeatBasic.text);
 
 					if (logFailed) {
@@ -355,29 +364,24 @@ for (const logFailed of [true, false]) {
 
 				test('the same bare header sent twice is 401 across all surfaces and audited once', async () => {
 					const bareX = `bare-twice-token-${logFailed}-${threads}`;
-					// When `authorization` has no space, `spaceIndex` is -1 and `strategy` is `authorization.slice(0, -1)`.
-					const expectedStrategy = bareX.slice(0, -1);
+					const failuresBefore = readAuthAuditEntries().filter((entry) => entry.includes("status: 'failure'")).length;
 
-					const first = await sendWithAgent(agent, restURL, 'GET', '/AnyPrincipalSecret/', bareX);
+					const first = await send('GET', '/AnyPrincipalSecret/', bareX);
 					strictEqual(first.status, 401, first.text);
 
 					await assertBareHeaderRejectedOnAllSurfaces(bareX, `bare-twice-row-${logFailed}-${threads}`);
 
 					if (logFailed) {
 						await flushWorkerAuditLog('bare-twice');
-						const matching = readAuthAuditEntries().filter(
-							(entry) => entry.includes(`auth_strategy: '${expectedStrategy}'`) && entry.includes("status: 'failure'")
-						);
+						const failuresAfter = readAuthAuditEntries().filter((entry) => entry.includes("status: 'failure'")).length;
 						strictEqual(
-							matching.length,
+							failuresAfter - failuresBefore - 1,
 							1,
-							`expected repeated bare header (${expectedStrategy}) to be audited once:\n${matching.join('\n')}`
+							`expected repeated bare header to produce exactly 1 failure audit entry before flush marker`
 						);
 					} else {
-						const matching = readAuthAuditEntries().filter((entry) =>
-							entry.includes(`auth_strategy: '${expectedStrategy}'`)
-						);
-						strictEqual(matching.length, 0, `expected no audit entry when logFailed is false:\n${matching.join('\n')}`);
+						const failuresAfter = readAuthAuditEntries().filter((entry) => entry.includes("status: 'failure'")).length;
+						strictEqual(failuresAfter - failuresBefore, 0, `expected no failure audit entry when logFailed is false`);
 					}
 				});
 			}

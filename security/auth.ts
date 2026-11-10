@@ -5,6 +5,8 @@ import {
 	localPrincipal,
 	trackUserRecords,
 	userRecordVersions,
+	type User,
+	type UserRole,
 } from './user.ts';
 import { server, getBearerValidators, type BearerValidatorEntry } from '../server/Server.ts';
 import { resources } from '../resources/Resources.ts';
@@ -71,7 +73,7 @@ function envFlag(value: string | undefined): boolean | undefined {
 
 const DEFAULT_COOKIE_EXPIRES = 'Tue, 01 Oct 8307 19:33:20 GMT';
 
-let authorizationCache = new Map();
+let authorizationCache = new Map<string, User | null>();
 let failedCredentials = new Set<string>();
 const validatorClaims = new WeakMap<object, BearerValidatorEntry>();
 let invalidationGeneration = 0;
@@ -279,8 +281,8 @@ export async function authentication(request, nextHandler) {
 				// Clone so verifyPerms's `role.permission = fullRolePerms` reassignment
 				// doesn't mutate the cache entry (defense-in-depth; operations and other
 				// meta-permission fields are now preserved through translation in permissionsTranslator).
-				newUser = cloneUserView(cachedUser);
-			} else if (cachedUser) {
+				newUser = cloneUserView(cachedUser as User & { role: UserRole });
+			} else if (cachedUser && typeof cachedUser === 'object') {
 				newUser = cachedUser;
 			}
 			if (!newUser) {
@@ -377,8 +379,8 @@ export async function authentication(request, nextHandler) {
 					}
 				} catch (err) {
 					if (LOG_AUTH_FAILED) {
-						if (!failedCredentials.has(credentials)) {
-							failedCredentials.add(credentials);
+						if (!failedCredentials.has(authorization)) {
+							failedCredentials.add(authorization);
 							authAuditLog(request, sessionId, username, AUTH_AUDIT_STATUS.FAILURE, strategy);
 						}
 					}
