@@ -247,7 +247,8 @@ export async function authentication(request, nextHandler) {
 					username = request.peerCertificate.subject.CN;
 				let mtlsUser;
 				try {
-					mtlsUser = certificatePrincipal(await server.getUser(username, null, request));
+					const getUser = server.getUser;
+					mtlsUser = certificatePrincipal(await server.getUser(username, null, request), getUser);
 				} catch (error) {
 					if (LOG_AUTH_FAILED) authAuditLog(request, sessionId, username, AUTH_AUDIT_STATUS.FAILURE, 'mTLS');
 					const failureResponse = settleAuthFailure(request, error, 'mTLS');

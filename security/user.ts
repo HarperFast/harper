@@ -837,16 +837,22 @@ function isRecordBacked(user: User, admitted?: UserProvenance): boolean | undefi
 const CERTIFICATE_PRINCIPAL = Symbol('certificate principal');
 
 /**
- * A copy of `user` marked as named by a verified client certificate, which live-subscription rechecks exempt from
- * the role requirement (#4062). Every place a certificate selects the principal must install it (security/auth.ts,
- * server/mqtt.ts), and every by-name re-resolve that replaces such a principal must re-mark the fresh view
- * (resources/Resource.ts rechecks, components/mcp/listChanged.ts); one that does not fails closed. The mark goes on
- * a copy because a server.getUser override may hand the same object to a session or password lookup; a symbol, so
- * no data can carry it. Only a plain object is copied, and its own getters are read once; a class instance (its
- * accessors and private fields do not survive a copy) stays unmarked.
+ * `user` marked as named by a verified client certificate, which live-subscription rechecks exempt from the role
+ * requirement (#4062). A by-name re-resolve that replaces such a principal must re-mark the fresh view, or it fails
+ * closed. The mark is a symbol, so no data can carry it. `getUser` is the resolver that returned `user`: the built-in
+ * one builds a new view per call, which is marked in place. Any other may hand the same object to a session or
+ * password lookup, so a plain object (from any realm) is copied with the lookup that tracked it, its own getters read
+ * once; a class instance, whose accessors and private fields a copy would lose, stays unmarked.
  */
-function certificatePrincipal<T>(user: T): T {
-	if (!user || typeof user !== 'object' || Object.getPrototypeOf(user) !== Object.prototype) return user;
+function certificatePrincipal<T>(user: T, getUser?: unknown): T {
+	if (!user || typeof user !== 'object') return user;
+	if (getUser === getUserImpl && (user as any)[PROVENANCE]) {
+		(user as any)[CERTIFICATE_PRINCIPAL] = true;
+		return user;
+	}
+	// an object literal's prototype is its realm's Object.prototype; a vm module loader's context has its own
+	const prototype = Object.getPrototypeOf(user);
+	if (prototype !== null && Object.getPrototypeOf(prototype) !== null) return user;
 	const view: any = { ...user, [CERTIFICATE_PRINCIPAL]: true };
 	if (!view[PROVENANCE]) {
 		const tracked = firstLookup(user as unknown as User);

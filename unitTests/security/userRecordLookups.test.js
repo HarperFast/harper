@@ -265,6 +265,36 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 			assert.strictEqual(user.isCurrentUser(view), false, 'a role change');
 		});
 
+		it("marks the built-in lookup's new view in place, and copies what another resolver returned", async () => {
+			const { server } = require('#src/server/Server');
+			const builtIn = await server.getUser('lookup_user', null);
+			assert.strictEqual(
+				user.certificatePrincipal(builtIn, server.getUser),
+				builtIn,
+				'no copy of a view only it holds'
+			);
+			assert.strictEqual(user.isCertificatePrincipal(builtIn), true);
+
+			const fromOverride = await user.findAndValidateUser('lookup_user', null, false);
+			const named = user.certificatePrincipal(fromOverride, async () => fromOverride);
+			assert.notStrictEqual(named, fromOverride);
+			assert.strictEqual(user.isCertificatePrincipal(fromOverride), false, 'another resolver may share it');
+			assert.strictEqual(user.isCertificatePrincipal(named), true);
+		});
+
+		it('copies and marks a plain object from another realm, or with a null prototype', () => {
+			const vm = require('node:vm');
+			const otherRealm = vm.runInNewContext('({ username: "realm_cn" })');
+			assert.notStrictEqual(Object.getPrototypeOf(otherRealm), Object.prototype);
+			const bare = Object.assign(Object.create(null), { username: 'bare_cn' });
+			for (const principal of [otherRealm, bare]) {
+				const named = user.certificatePrincipal(principal);
+				assert.notStrictEqual(named, principal);
+				assert.strictEqual(user.isCertificatePrincipal(named), true);
+				assert.strictEqual(named.username, principal.username);
+			}
+		});
+
 		it('leaves a class-instance principal as it is, unmarked', () => {
 			class GetterRole {
 				username = 'getter_cn';
