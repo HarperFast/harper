@@ -77,9 +77,21 @@ for (const engine of ['auto', 'new', 'legacy']) {
 			});
 
 			for (const [pattern, expected] of CASES) {
-				for (const verb of ['SELECT', 'UPDATE', 'DELETE']) {
-					test(`${verb} intCol LIKE '${pattern}'`, async () => {
-						const where = `id >= 0 AND intCol LIKE '${pattern}'`;
+				for (const [verb, guard] of [
+					['SELECT', 'id >= 0 AND '],
+					['UPDATE', 'id >= 0 AND '],
+					['DELETE', 'id >= 0 AND '],
+					// Standalone: legacy fallback under auto must not match null or omitted values either.
+					...(engine === 'new'
+						? []
+						: [
+								['SELECT', ''],
+								['UPDATE', ''],
+								['DELETE', ''],
+							]),
+				]) {
+					test(`${verb} ${guard}intCol LIKE '${pattern}'`, async () => {
+						const where = `${guard}intCol LIKE '${pattern}'`;
 						const statement =
 							verb === 'SELECT'
 								? `SELECT id FROM data.Item WHERE ${where}`
@@ -103,10 +115,6 @@ for (const engine of ['auto', 'new', 'legacy']) {
 						);
 					});
 				}
-				if (engine === 'auto')
-					test(`unguarded auto LIKE '${pattern}'`, async () => {
-						deepStrictEqual(ids(await sql(`SELECT id FROM data.Item WHERE intCol LIKE '${pattern}'`)), expected);
-					});
 			}
 			test('a declared String prefix can drive the scan on its own', async () => {
 				deepStrictEqual(ids(await sql("SELECT id FROM data.Item WHERE code LIKE '1%'")), [4, 5]);
