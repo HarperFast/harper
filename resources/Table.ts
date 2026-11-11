@@ -9924,6 +9924,7 @@ export function makeTable(options): TableResourceClass {
 			const isActive = () => !subscription.closed && Boolean(subscription.subscriptions);
 			let progressLive = false;
 			let progressFloor: number | undefined;
+			let replayLeftEntriesToLive = false;
 			let goLive: (() => void) | undefined;
 			if (request.reportProgress && subscription.reportsProgress) {
 				reportingProgress = true;
@@ -9990,11 +9991,13 @@ export function makeTable(options): TableResourceClass {
 					if (resuming && collection && !plan) {
 						const replayThrough = progressFloor;
 						const sameThread = subscription.subscriptions.tables.envs.sameThread === true;
-						// The replay walked committed keys; only the pre-replay sample also bounds still-open writes.
+						// The replay walked committed keys; only the pre-replay sample also bounds still-open writes. One that
+						// left committed entries to the broadcast may have passed their keys, so a pass certifies its key.
+						const walked = replayLeftEntriesToLive ? request.startTime : replayThrough;
 						progressFloor =
 							sameThread || subscription.localResumeStart === undefined
 								? undefined
-								: Math.min(replayThrough, subscription.localResumeStart);
+								: Math.min(walked, subscription.localResumeStart);
 						if (!sameThread && replayThrough > request.startTime) completedReplayThrough(subscription, replayThrough);
 					}
 					progressLive = true;
@@ -10214,8 +10217,7 @@ export function makeTable(options): TableResourceClass {
 						// handled; an early return leaves it before a partly delivered transaction.
 						let handledTxnLogKey: number | undefined;
 						const liveRange = broadcastRange(subscription);
-						// subscribed from a listener: the broadcast already stands past the entry it is walking, and may yet
-						// walk it to this subscription, so the replay starts once this dispatch has finished
+						// from a listener: the entry being dispatched is already past the bound, and may still reach this subscription
 						if (liveRange && isDispatching(subscription)) {
 							await rest();
 							if (!isActive()) return;
@@ -10323,6 +10325,7 @@ export function makeTable(options): TableResourceClass {
 							if (reloadPending) pendingRealTimeQueue = [];
 							// in the turn the read reported done, so no broadcast pass runs between them
 							dropDuringReplay = false;
+							if (resuming && goLive && liveRange?.hasUnreturnedEntry()) replayLeftEntriesToLive = true;
 							if (reloadPending) {
 								reloadPending = false;
 								if (!(await sendCurrentScope())) return;

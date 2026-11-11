@@ -35,6 +35,7 @@ type TransactionLogIterator = Iterator<TransactionEntry | number> & {
 	removeLog(logName: string);
 	sourceOf(log: TransactionLog): IterableIterator<TransactionEntry> | undefined;
 	openTransactionFloor(): number | undefined;
+	hasUnreturnedEntry(): boolean;
 };
 /** A log that stopped short of the range it reads `until`: not done, and not failed. */
 type LogResult = IteratorResult<TransactionEntry> & { unreached?: TransactionLogUntilUnreachedError };
@@ -64,6 +65,8 @@ export type TransactionLogIterable = Iterable<AuditRecord> & {
 	 * its log stopped at the bound inside it.
 	 */
 	openTransactionFloor?(): number | undefined;
+	/** On a `peekAhead` range: whether any log has an entry this range has not returned yet, as of now. */
+	hasUnreturnedEntry?(): boolean;
 };
 
 const reportCorruptFrame = createCorruptFrameReporter(harperLogger);
@@ -545,7 +548,6 @@ export class RocksTransactionLogStore extends EventEmitter {
 				}
 			};
 			const read = peekAhead ? safePeek : safeNext;
-			// openTransactionFloor reads them on a bounded range
 			const trackLastEntry = attributeCorruption || bounded;
 			const pull = (i: number) => {
 				const iterator = iterators[i];
@@ -664,6 +666,11 @@ export class RocksTransactionLogStore extends EventEmitter {
 					}
 					return floor;
 				},
+				// a peeked entry stays unread, so this leaves every log's position, and any range read `until` it, in place
+				hasUnreturnedEntry: () => {
+					syncLogs();
+					return iterators.some((iterator, i) => !safePeek(iterator, logs[i]).done);
+				},
 			};
 			iterable.iterate = () => aggregateIterator;
 		}
@@ -733,6 +740,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 			mappedAggregateIterable.removeLog = aggregateIterator.removeLog;
 			mappedAggregateIterable.sourceOf = aggregateIterator.sourceOf;
 			mappedAggregateIterable.openTransactionFloor = aggregateIterator.openTransactionFloor;
+			mappedAggregateIterable.hasUnreturnedEntry = aggregateIterator.hasUnreturnedEntry;
 		}
 		mappedAggregateIterable.corruptFrameStop = corruptFrameStop;
 		mappedAggregateIterable.failedLogs = failedLogs;

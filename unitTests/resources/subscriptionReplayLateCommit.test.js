@@ -29,7 +29,7 @@ function countBy(events, id) {
 	return events.filter((event) => event.id === id).length;
 }
 
-// a write applied as a replicated origin's, which goes to that origin's own log under the given key
+// applied as a replicated origin's write, so it goes to that origin's log under the given key
 function applyFromOrigin(T, id, record, nodeId, logKey) {
 	const context = { source: {}, sourceApply: true, timestamp: logKey };
 	return transaction(context, async () => {
@@ -268,6 +268,51 @@ describe('startTime replay handoff to live delivery', () => {
 			}
 		});
 	}
+
+	it('reports no resumed progress past a committed entry it leaves to live delivery', async function () {
+		const T = freshTable(ownDatabase());
+		if (!T.auditStore.reusableIterable) return this.skip();
+		const peerId = getIdOfRemoteNode('replay-progress-peer', T.auditStore);
+		await T.put('seed', { name: 'seed' });
+		const startTime = T.primaryStore.getEntry('seed').localTime;
+		const opening = await T.subscribe({ isCollection: true });
+		const registry = opening.subscriptions.tables.envs;
+		let subscription;
+		try {
+			registry.passYielded = registry.notifyScheduled = true;
+			await applyFromOrigin(T, 'peer', { name: 'peer' }, peerId, Date.now() + 60_000);
+			const broadcast = registry.auditStore.subscriptionLogRange[Symbol.iterator]();
+			while (!broadcast.next().done);
+			// committed below the peer's key, after the broadcast passed the local log's end
+			await T.put('local', { name: 'local' });
+			const localKey = T.primaryStore.getEntry('local').localTime;
+			const events = [];
+			subscription = await T.subscribe({
+				startTime,
+				isCollection: true,
+				databaseGeneration: getDatabaseGeneration(T.auditStore).id,
+				reportProgress: true,
+				listener: (event) => events.push(event),
+			});
+			assert.equal(await subscription.resumeVerified, true);
+			assert.deepEqual(
+				events.map((event) => event.id),
+				['peer']
+			);
+			assert.ok(
+				!(subscription.progress() >= localKey),
+				`progress ${subscription.progress()} passed the undelivered entry at ${localKey}`
+			);
+			registry.passYielded = registry.notifyScheduled = false;
+			await T.put('sentinel', { name: 'sentinel' });
+			await waitFor(() => events.some((event) => event.id === 'sentinel'), { timeout: 5000 });
+			assert.equal(countBy(events, 'local'), 1);
+		} finally {
+			registry.passYielded = registry.notifyScheduled = false;
+			opening.end();
+			subscription?.end();
+		}
+	});
 
 	it('delivers a write folded into a head below the start, as live delivery does', async function () {
 		const T = freshTable();
