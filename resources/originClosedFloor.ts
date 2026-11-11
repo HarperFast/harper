@@ -507,7 +507,7 @@ export function seedLocalIssuance(
 		} catch (error) {
 			// Minting below a bound this node advertised is the loss the floor exists to prevent, so the open fails.
 			throw new ServerError(
-				`The persisted transaction-log bounds cannot be restored (origin-closed floor ${floor}, issuance ceiling ${ceiling}): ${(error as Error).message}. Correct the host clock and restart; if it is already correct, the bound was persisted while it ran ahead, and the database cannot open until wall time reaches it`
+				`The persisted transaction-log bounds cannot be restored (origin-closed floor ${floor}, issuance ceiling ${ceiling}): ${(error as Error).message}. Correct the host clock and restart; if it is already correct, the bound was persisted while it ran ahead, and the database opens only once wall time is within ten years of it, with the clock raised that far ahead`
 			);
 		}
 		storeMax(words, WORD_ISSUANCE_FLOOR, recovered);

@@ -1769,18 +1769,20 @@ describe('Record locks (harper#483)', () => {
 			const previous = env.get(CONFIG_PARAMS.STORAGE_MAXLOCKCLOCKSKEW);
 			// earlier leads must be behind the wall clock, so this test's own claim sets the clock and ceiling
 			await waitFor(() => Date.now() > Math.max(aheadUntil, localIssuedAheadThrough(rootStore)) + 1, 30_000, 20);
-			env.setProperty(CONFIG_PARAMS.STORAGE_MAXLOCKCLOCKSKEW, '200ms');
+			env.setProperty(CONFIG_PARAMS.STORAGE_MAXLOCKCLOCKSKEW, '2s');
 			try {
-				const near = Date.now() + 150;
-				aheadUntil = Math.max(aheadUntil, near + 1000);
+				const near = Date.now() + 1_500;
+				aheadUntil = Math.max(aheadUntil, near + 1_000);
 				await applyFromPeer(nearId, near);
 				await transaction(async () => {
 					const lock = await LockTest.lock(nearId);
 					lock.set('n', 1);
 					await lock.save();
 				});
-				const ahead = Date.now() + 800;
-				assert.ok(ahead < readLocalIssuanceCeiling(LockTest.auditStore), 'the step sits under the covered ceiling');
+				assert.ok(localIssuanceFloor(rootStore) >= near, 'fixture: the first admission claimed');
+				// beyond the cap from wall time, and under the ceiling the claim covered
+				const ahead = Date.now() + 2_300;
+				assert.ok(ahead < readLocalIssuanceCeiling(LockTest.auditStore), 'fixture: the step is under the ceiling');
 				await LockTest.put({ id: heldId, n: 0 });
 				const context = {};
 				const holder = await LockTest.lock(heldId, { hold: true, lease: 5000 }, context);
