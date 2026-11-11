@@ -12430,10 +12430,11 @@ export function makeTable(options): TableResourceClass {
 	defaultAllowReads.add(TableResource.prototype.allowRead);
 	try {
 		TableResource.updatedAttributes(); // on creation, update accessors as well
-		if (expirationMs || evictionMs) {
+		// anything but absent or zero is validated here: a peer's definition reaches a create unvalidated
+		if ((expirationMs !== undefined && expirationMs !== 0) || evictionMs !== 0) {
 			ttlFromLoad = true;
 			try {
-				TableResource.setTTLExpiration({ expiration: expirationMs / 1000, eviction: evictionMs / 1000 });
+				TableResource.setTTLExpiration({ expiration: (expirationMs ?? 0) / 1000, eviction: evictionMs / 1000 });
 			} finally {
 				ttlFromLoad = false;
 			}

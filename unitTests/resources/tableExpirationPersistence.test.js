@@ -224,13 +224,20 @@ describe('table-level expiration persistence (harper-pro#1179)', () => {
 		assert.strictEqual(Created.expirationMS, 3600000);
 	});
 
-	it("rejects a peer definition's negative eviction on a table it creates, as it does a negative expiration", function () {
-		const tableName = 'ExpiryPeerNegativeEviction';
-		assert.throws(
-			() => keyed(tableName, { origin: 'cluster', schemaDefined: undefined, eviction: -1 }),
-			/must be a non-negative number of seconds/
-		);
-		assert.strictEqual(databases[DATABASE][tableName], undefined);
+	it("rejects a peer definition's invalid TTL on a table it creates, naming the field", function () {
+		for (const [suffix, settings, field] of [
+			['Eviction', { expiration: 60, eviction: -1 }, 'eviction'],
+			['EvictionOnly', { eviction: -1 }, 'eviction'],
+			['NonNumeric', { expiration: 'soon' }, 'expiration'],
+		]) {
+			const tableName = `ExpiryPeerInvalid${suffix}`;
+			assert.throws(
+				() => keyed(tableName, { origin: 'cluster', schemaDefined: undefined, ...settings }),
+				new RegExp(`^Error: ${field} of '${DATABASE}.${tableName}' must be a non-negative number`),
+				suffix
+			);
+			assert.strictEqual(databases[DATABASE][tableName], undefined, suffix);
+		}
 	});
 
 	it("leaves an existing table's settings alone when a peer definition differs", async function () {

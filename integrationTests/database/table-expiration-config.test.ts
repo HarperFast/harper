@@ -170,7 +170,7 @@ async function assertRowsKept(ctx: ContextWithHarper, table: string, why: string
 	}
 }
 
-// Every check after a restart runs, so one run on a base that lacks a fix reports each check it fails.
+// Every check after a restart runs, so a failure reports all of them, not only the first.
 function softChecks() {
 	const failures: string[] = [];
 	return {
