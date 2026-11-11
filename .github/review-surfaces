@@ -51,6 +51,7 @@ critical  utility/lmdb/
 sensitive security/
 # The review gate itself: a change here moves what every later PR is held to.
 sensitive .github/review-surfaces
+sensitive .github/review-checks.md
 sensitive .github/actions/review-coverage/
 sensitive .github/workflows/review-coverage.yml
 sensitive resources/login.ts

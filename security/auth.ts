@@ -5,6 +5,8 @@ import {
 	localPrincipal,
 	trackUserRecords,
 	userRecordVersions,
+	type User,
+	type UserRole,
 } from './user.ts';
 import { server, getBearerValidators, type BearerValidatorEntry } from '../server/Server.ts';
 import { resources } from '../resources/Resources.ts';
@@ -82,7 +84,8 @@ function envFlag(value: string | undefined): boolean | undefined {
 
 const DEFAULT_COOKIE_EXPIRES = 'Tue, 01 Oct 8307 19:33:20 GMT';
 
-let authorizationCache = new Map();
+let authorizationCache = new Map<string, User | null>();
+let failedCredentials = new Set<string>();
 const validatorClaims = new WeakMap<object, BearerValidatorEntry>();
 let invalidationGeneration = 0;
 
@@ -110,9 +113,11 @@ onStartup(() => {
 		// TODO: Eventually we probably want to be able to invalidate individual users
 		invalidationGeneration++;
 		authorizationCache = new Map();
+		failedCredentials = new Set();
 	});
 	setInterval(() => {
 		authorizationCache = new Map();
+		failedCredentials = new Set();
 	}, env.get(CONFIG_PARAMS.AUTHENTICATION_CACHETTL)).unref();
 });
 let authorizeAllAsLocal = false;
@@ -294,8 +299,8 @@ export async function authentication(request, nextHandler) {
 				// Clone so verifyPerms's `role.permission = fullRolePerms` reassignment
 				// doesn't mutate the cache entry (defense-in-depth; operations and other
 				// meta-permission fields are now preserved through translation in permissionsTranslator).
-				newUser = cloneUserView(cachedUser);
-			} else if (cachedUser) {
+				newUser = cloneUserView(cachedUser as User & { role: UserRole });
+			} else if (cachedUser && typeof cachedUser === 'object') {
 				newUser = cachedUser;
 			}
 			if (!newUser) {
@@ -319,8 +324,9 @@ export async function authentication(request, nextHandler) {
 								// read first: a component's server.getUser principal carries no record versions itself
 								const versions = userRecordVersions(username);
 								newUser = await server.getUser(username, password, request);
-								// cache a copy of a component's user: a memoizing server.getUser hands it to later lookups, which re-track it
-								if (trackUserRecords(newUser, versions) && newUser.role) newUser = cloneUserView(newUser);
+								// a memoizing server.getUser hands later lookups this same user, so the cache holds a view of it
+								const provenance = trackUserRecords(newUser, versions);
+								if (provenance && newUser.role) newUser = cloneUserView(newUser, provenance);
 							} else newUser = null;
 							break;
 						case 'Bearer': {
@@ -392,9 +398,8 @@ export async function authentication(request, nextHandler) {
 					}
 				} catch (err) {
 					if (LOG_AUTH_FAILED) {
-						const failedAttempt = authorizationCache.get(credentials);
-						if (!failedAttempt) {
-							authorizationCache.set(credentials, credentials);
+						if (!failedCredentials.has(authorization)) {
+							failedCredentials.add(authorization);
 							authAuditLog(request, sessionId, username, AUTH_AUDIT_STATUS.FAILURE, strategy);
 						}
 					}

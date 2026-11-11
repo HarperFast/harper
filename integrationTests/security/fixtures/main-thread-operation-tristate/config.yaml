@@ -1,0 +1,6 @@
+jsResource:
+  files: resources.js
+rest: true
+fastifyRoutes:
+  files: 'routes/*.js'
+sqa181Ops: true

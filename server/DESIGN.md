@@ -229,20 +229,18 @@ Operations request bodies are untrusted data. `serverHelpers/serverHandlers.ts �
 prototype-mutating property names and strips the legacy `bypass_auth` property before dispatch.
 `serverUtilities.ts → chooseOperation()` never reads authorization control from the body: trusted
 internal callers pass bypass state as a separate argument and expose it to operation handlers only
-through `operationAuthorizationState.ts`'s async context. When an operation registered by a component
-must run on a worker, `registeredOperations.ts` carries that state in the same-process ITC envelope,
-separately from the structured-cloned body. Never attach trusted dispatch state to an operation
-payload.
+through `operationAuthorizationState.ts`'s async context. When an operation must run on another
+thread, `registeredOperations.ts` carries that state in the same-process ITC envelope, separately
+from the structured-cloned body. Never attach trusted dispatch state to an operation payload.
 
-`server.registerOperation()` runs per-worker, so anything the **main** thread must later know about a
-registered op has to ride the OPERATION_REGISTERED announcement — a module-local registry populated
-during registration exists only in the worker that registered. The bridge carries two such facts
-today: name→thread routing (for execution forwarding) and `grantable` (so `validateOperations` on
-main will accept the name in a role's `operations` allowlist, for add_role/alter_role, impersonation,
-and OIDC trust policies). Adding a third main-thread consumer of a worker-registered fact means
-extending that message, not reading a registry that main never populated. Grantability is safe to
-mirror because it only widens what an allowlist may _name_; enforcement stays on the worker's
-`chooseOperation`.
+Each thread has its own operation map, so a fact about a registered op reaches another thread only
+through the OPERATION_REGISTERED announcement (workers also get main's names in `workerData`),
+never a module-local registry. It carries routing and `grantable` (so `validateOperations` accepts
+the name in an `operations` allowlist); a new consumer extends that message. Mirroring grantability
+only widens what an allowlist may _name_: enforcement stays in `chooseOperation` on the registering
+thread. Main forwards a miss to a registering worker (#1736); a worker forwards a miss for a
+main-announced name to main (#4134). `operationExecuteRequestHandler` passes `forwarded`, so a
+request that crossed once dispatches locally only and the two directions cannot loop.
 
 ## Resource ↔ HTTP boundary
 
@@ -401,10 +399,7 @@ set `request.user` itself would have to re-implement, per plugin, what this path
 - **A validator names a user; Harper supplies the role.** The contract is
   `{ username, authExpiresAt?, authCacheable? }`, resolved through `server.getUser` (the Basic path's
   `userRecordVersions` → `getUser` → `trackUserRecords`), so `isCurrentUser` and the authorization
-  cache treat it like a Basic login. A component's `server.getUser` override stays authoritative at
-  login, but live-subscription rechecks and MCP session refreshes re-read `hdb_user` by name, so a
-  user only the override knows loses those at its first recheck, as a Basic login through the same
-  override already does. Any other field is refused, `role` included. Inline-permission principals (a per-token narrowed role under the scoped-token ceiling)
+  cache treat it like a Basic login. Any other field is refused, `role` included. Inline-permission principals (a per-token narrowed role under the scoped-token ceiling)
   were built and dropped: the first consumer's tokens name a Harper user and carry no permissions,
   and a principal no `hdb_user` backs needs its own revocation at every by-name rehydration site
   (`security/DESIGN.md`). Refusing `role` now keeps adding it later from changing an existing
@@ -473,7 +468,7 @@ A persisted QoS 1/2 entry is `{ qos, topic, startTime, databaseGeneration? }`, a
 
 The registry indexes each live subscription by username, and each username by the role id its `hdb_user` record names (re-read whenever that username is rechecked, so a reassignment re-indexes it). An `onUserChange` naming a username or role rechecks only those subscriptions; an unknown change, or more than 1,000 pending identities, rechecks all. Token expiry is one unref'd timer over an indexed min-heap of `authExpiresAt`, clamped to the 2^31-1 ms `setTimeout` range and re-armed, so expiry needs no pass. The 30 s tick (`HARPER_SUBSCRIPTION_REAUTH_INTERVAL_MS` overrides it and the backstop) rechecks every entry not registered `identityOnly`, because its decision may read state no notification covers (an overridden `allowRead`, a caller's `select` reaching related tables, an opaque `recheck`). An identity-only entry is rechecked by a full pass only every 5 minutes, or at the next tick once the notification epoch is 0 or differs from the one captured when the last full pass started.
 
-Within a pass, `Resource.ts` resolves each username once (`RecheckPass.memo`) and shares a default-RBAC `allowRead` result (`defaultAllowReads`, no caller-supplied `select`: one written by authorization names no relationship) per resolved user, but still gives each context its own `cloneUserView`. Passes and expiry batches yield every 256 entries. A registration admitted by a principal that is no longer current (`isCurrentUser`, or that check failing) is rechecked by `verify()` before the subscription is returned, because the notification for that change may have run before it registered. A principal with no record provenance (a component's `server.getUser` on a path that does not track it) cannot be checked that way, so it registers as a policy entry. Enforced by `unitTests/server/liveSubscriptionAuth.test.js` and `integrationTests/security/subscription-revocation.test.ts`, which runs with no periodic pass so every revocation comes from a targeted recheck or the expiry timer; `unitTests/resources/liveSubscriptionReauth.bench.js` measures it at 100k subscriptions.
+Within a pass, `Resource.ts` resolves each username once (`RecheckPass.memo`) and shares a default-RBAC `allowRead` result (`defaultAllowReads`, no caller-supplied `select`: one written by authorization names no relationship) per resolved user, but still gives each context its own `cloneUserView`. Passes and expiry batches yield every 256 entries. A registration admitted by a principal that is no longer current (`isCurrentUser`, or that check failing) is rechecked by `verify()` before the subscription is returned, because the notification for that change may have run before it registered. A principal with no record provenance (a component's `server.getUser` on a path that does not track it) cannot be checked that way, so it registers as a policy entry; a user only the override knows (`isRecordlessPrincipal`) is not re-read by name. Enforced by `unitTests/server/liveSubscriptionAuth.test.js` and `integrationTests/security/subscription-revocation.test.ts`, which runs with no periodic pass so every revocation comes from a targeted recheck or the expiry timer; `unitTests/resources/liveSubscriptionReauth.bench.js` measures it at 100k subscriptions.
 
 ## "Where is X" cheat sheet
 

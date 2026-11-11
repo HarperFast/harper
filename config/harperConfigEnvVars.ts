@@ -686,7 +686,7 @@ function saveConfigState(rootPath: string, state: ConfigState): boolean {
 
 	// Atomic write: a torn state file resets to fresh on the next load, losing every
 	// restoration record — the blast radius is user config-file content
-	return atomicWriteFile(statePath, serializeConfigState(state), { skipIfUnchanged: true });
+	return atomicWriteFile(statePath, serializeConfigState(state), { skipIfUnchanged: true, ownerOnly: true });
 }
 
 function configStateMatchesDisk(rootPath: string, state: ConfigState): boolean {
@@ -701,7 +701,10 @@ function configStateMatchesDisk(rootPath: string, state: ConfigState): boolean {
 function stageConfigState(rootPath: string, state: ConfigState): boolean {
 	const backupDir = getBackupDirPath(rootPath);
 	fs.ensureDirSync(backupDir);
-	return atomicWriteFile(path.join(backupDir, pendingStateFileName()), serializeConfigState(state));
+	return atomicWriteFile(path.join(backupDir, pendingStateFileName()), serializeConfigState(state), {
+		ownerOnly: true,
+		replaces: path.join(backupDir, STATE_FILE_NAME),
+	});
 }
 
 // A rename, so an exhausted volume cannot refuse it and leave the config file described by nothing.
@@ -1070,6 +1073,32 @@ function composeEnvLayers(below: readonly string[], base: ConfigObject, above: r
 	restoreBaseEmptyObjects(baseLayer, result);
 
 	return result;
+}
+
+/**
+ * The first config env var, in precedence order, that sets `path`, a key under it, or a value above it that replaces
+ * it. Dotted top-level keys ("models.embedding.default") compose into the nested block, so they count exactly like a
+ * nested key.
+ */
+export function envLayerNaming(path: string): string | undefined {
+	for (const name of ['HARPER_SET_CONFIG', 'HARPER_CONFIG', 'HARPER_DEFAULT_CONFIG']) {
+		const raw = process.env[name];
+		if (!raw) continue;
+		try {
+			const parsed = JSON.parse(raw);
+			if (
+				parsed &&
+				typeof parsed === 'object' &&
+				Object.keys(flattenObject(parsed, '', false)).some(
+					(key) => key === path || key.startsWith(`${path}.`) || path.startsWith(`${key}.`)
+				)
+			)
+				return name;
+		} catch {
+			// Malformed env config is reported by config loading itself.
+		}
+	}
+	return undefined;
 }
 
 /** True when any config-shaping env var (HARPER_DEFAULT_CONFIG / HARPER_CONFIG / HARPER_SET_CONFIG) is set. */

@@ -2,9 +2,18 @@ import { commitTrackedRocksTransaction, trackReadRange } from './DatabaseTransac
 import { RocksDatabase, type RocksDatabaseOptions, constants, type Store, Transaction } from '@harperfast/rocksdb-js';
 
 const FRESH_VERSION_FLAG = constants.FRESH_VERSION_FLAG;
-import { WeakLRUCache } from 'weak-lru-cache';
+import { LRFUExpirer, WeakLRUCache } from 'weak-lru-cache';
 import { when } from '../utility/when.ts';
 import { assignStoredFields, entryMap, METADATA, VERSION_REUSED, type Entry } from './RecordEncoder.ts';
+import { get as envGet } from '../utility/environment/environmentManager.ts';
+import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
+import { resolveRecordCacheSize } from '../utility/rocksMemoryConfig.ts';
+
+// The expirer is what holds a cache's entries strongly, so one per thread makes storage.recordCacheSize
+// a budget shared by every table in the thread. Harper owns it because weak-lru-cache's default
+// expirer takes its size from whichever cache the thread constructs first, which on an LMDB database is
+// one of lmdb's.
+let recordCacheExpirer: LRFUExpirer | undefined;
 
 /**
  * RocksDatabase subclass that owns all primary-store behaviour for Harper tables:
@@ -42,13 +51,10 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 		const enableCache = (options as any)?.cache === true;
 		super(pathOrStore, enableCache ? { ...options, verificationTable: true } : options);
 		if (enableCache) {
-			// weak-lru-cache holds `cacheSize` entries strongly (4 LRU generations of cacheSize/4)
-			// and lets everything beyond that live on WeakRefs until GC. The default is 32768
-			// entries, which on a table larger than that caps how much of the working set stays
-			// strongly reachable. Its expirer is a module-level singleton, so the first cache
-			// constructed in a thread fixes the size for every store in that thread.
-			const cacheSize = Number(process.env.HARPER_RECORD_CACHE_SIZE) || undefined;
-			this.#cache = new WeakLRUCache(cacheSize ? { cacheSize } : undefined);
+			recordCacheExpirer ??= new LRFUExpirer({
+				lruSize: resolveRecordCacheSize(envGet(CONFIG_PARAMS.STORAGE_RECORDCACHESIZE)) >> 2,
+			});
+			this.#cache = new WeakLRUCache({ expirer: recordCacheExpirer });
 		}
 	}
 

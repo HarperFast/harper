@@ -15,6 +15,7 @@ import {
 	TransactionCommitConflictTimeoutError,
 } from '../utility/errors/hdbError.ts';
 import { lockNotHeldError, type RecordLockHandle } from './recordLock.ts';
+import { collapseChanges } from './tracked.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 import type { Context, Id } from './ResourceInterface.ts';
 import * as envMngr from '../utility/environment/environmentManager.ts';
@@ -31,7 +32,7 @@ import {
 	constants,
 } from '@harperfast/rocksdb-js';
 import {
-	localIssuanceRatchet,
+	localIssuanceFloor,
 	rekeyLocalRetry,
 	releaseLocalKey,
 	reserveLocalKey,
@@ -726,6 +727,13 @@ export type TransactionWrite = {
 	entry?: Partial<Entry>;
 	before?: () => void | Promise<void>;
 	beforeIntermediate?: () => void | Promise<void>;
+	// the instance that staged this write: its commit stores that instance's changes or clears them
+	stagedBy?: object;
+	// set only when this write's record is that instance's tracked changes, with the changes object the write
+	// captured: a later update can replace the instance's own, so only an empty collapse of these means the write
+	// stores nothing. A write carrying a record of its own leaves both unset.
+	trackedInstance?: object;
+	trackedChanges?: object;
 	// stages the record and its audit entry before returning: staging reads what it appended (stagedAudit)
 	// as soon as it returns. A returned promise is only a completion to wait for.
 	commit?: (
@@ -738,6 +746,7 @@ export type TransactionWrite = {
 	// Once a write has been taken over, the transaction committing it is not the one that staged it, and
 	// overload accounting, the replay marker and a no-op write's removal all belong to the committer.
 	validate?: (txnTime: number, committedBy: DatabaseTransaction) => void;
+	captureChanges?: () => void;
 	// a tracked write that fails before it is staged stays with its instance, so its retry captures the
 	// instance's changes again
 	releaseChanges?: () => void;
@@ -981,6 +990,15 @@ export function currentCommitHook(): CommitHookInvocation | undefined {
 	return commitHookScope.getStore();
 }
 
+// Hooks whose synchronous part is running: their write is saved but has not applied yet.
+const syncCommitHooks: CommitHookInvocation[] = [];
+let activeCommitHooks = 0;
+
+/** Whether any pre-commit hook has not settled, so the caller may be running inside one. */
+export function commitHooksRunning(): boolean {
+	return activeCommitHooks > 0;
+}
+
 function runCommitHook(link: DatabaseTransaction, write: TransactionWrite): void | Promise<void> {
 	const invocation: CommitHookInvocation = {
 		root: link.root ?? link,
@@ -991,20 +1009,39 @@ function runCommitHook(link: DatabaseTransaction, write: TransactionWrite): void
 	};
 	const settled = () => {
 		invocation.active = false;
+		activeCommitHooks--;
 	};
 	let result: void | Promise<void>;
+	activeCommitHooks++;
+	syncCommitHooks.push(invocation);
 	try {
 		result = commitHookScope.run(invocation, write.before);
 	} catch (error) {
 		settled();
 		throw error;
+	} finally {
+		syncCommitHooks.pop();
 	}
 	if ((result as Promise<void>)?.then) (result as Promise<void>).then(settled, settled);
 	else settled();
 	return result;
 }
 
-function heldByAncestorHook(handle: RecordLockHandle): boolean {
+// on any transaction: only the hook can be saving while its synchronous part runs
+function unappliedHookWriteTo(operation: TransactionWrite): boolean {
+	for (const hook of syncCommitHooks) {
+		const write = hook.write;
+		if (write.store === operation.store && write.keyId === operation.keyId) return true;
+	}
+	return false;
+}
+
+export function instanceWriteInSyncCommitHook(instance: object): boolean {
+	for (const hook of syncCommitHooks) if (hook.write.stagedBy === instance) return true;
+	return false;
+}
+
+export function heldByAncestorHook(handle: RecordLockHandle): boolean {
 	for (let hook = commitHookScope.getStore(); hook; hook = hook.parent) {
 		if (hook.active && hook.write.lockHandle === handle) return true;
 	}
@@ -1021,6 +1058,15 @@ function holderWriteRefusal(handle: RecordLockHandle): ClientError {
 			? "A write to a locked record from its own commit's pre-commit hook is refused: the hook runs before that commit lands"
 			: 'An earlier write through this record lock is still committing; await it before writing again',
 		409
+	);
+}
+
+function stagesWriteChange(operation: TransactionWrite): boolean {
+	const instance = operation.trackedInstance as any;
+	if (!instance || operation.fullUpdate) return true;
+	operation.captureChanges?.();
+	return (
+		collapseChanges(instance, operation.trackedChanges, instance.constructor?.loadAsInstance !== false) !== undefined
 	);
 }
 
@@ -1160,6 +1206,8 @@ export class DatabaseTransaction implements Transaction {
 	// unlike `snapshotFree`, which lock() also sets on a scope that committed nothing; sticky, since a
 	// scope can end while its later segment is still committing
 	rotatedAfterCommit = false;
+	// set when open read iterators kept a mid-scope commit from reopening the scope, until it reopens or ends
+	closedForReadIterators = false;
 	// Set while commit() is parked in its pre-commit await (`before`/`beforeIntermediate` completions —
 	// in practice a blob's durable file write). The write set is sealed and the caller is awaiting the
 	// commit, so this is core's own I/O rather than an application holding a transaction open, which is
@@ -2665,6 +2713,22 @@ export class DatabaseTransaction implements Transaction {
 				throw refusal;
 			}
 		}
+		// Saved while the hook of a write to the same record runs synchronously, it would apply first and be overwritten.
+		if (
+			syncCommitHooks.length > 0 &&
+			!operation.saved &&
+			operation.key !== undefined &&
+			unappliedHookWriteTo(operation)
+		) {
+			operation.dropped = true;
+			this.detachWrite(operation);
+			const refusal = new ClientError(
+				"A pre-commit hook's write to the record its own write is committing is refused before the hook's first await: that write has not applied yet and would overwrite this one",
+				409
+			);
+			if (!transaction && !options) return Promise.reject(refusal);
+			throw refusal;
+		}
 		const concurrentClosedWrite =
 			Boolean((transaction as RocksTransactionWithRetry | undefined)?.immediateCommit) ||
 			(!transaction && this.open !== TRANSACTION_STATE.OPEN && !this.saveCommits);
@@ -2770,7 +2834,7 @@ export class DatabaseTransaction implements Transaction {
 			const previousTimestamp = this.timestamp;
 			try {
 				if (
-					lockHandle?.hold &&
+					lockHandle &&
 					!operation.lockStamp &&
 					!operation.saved &&
 					this.open === TRANSACTION_STATE.OPEN &&
@@ -2778,16 +2842,16 @@ export class DatabaseTransaction implements Transaction {
 					!this.saveCommits &&
 					!this.sourceApply
 				) {
-					const floor = lockHandle.holderVersionFloor();
-					if (floor > lockHandle.acquiredAt && !(this.timestamp && this.timestamp >= floor)) {
+					const floor = lockHandle.requiredVersionFloor();
+					if (floor > 0 && !(txnTime && txnTime >= floor)) {
 						const rootStore = operation.store.rootStore;
 						const nativeClock = transaction.getTimestamp();
 						const effectiveClock =
 							txnTime ||
 							(typeof rootStore?.getUserSharedBuffer === 'function'
-								? nativeClock > localIssuanceRatchet(rootStore)
+								? nativeClock > localIssuanceFloor(rootStore)
 									? nativeClock
-									: Math.max(rootStore.getMonotonicTimestamp(), localIssuanceRatchet(rootStore))
+									: Math.max(rootStore.getMonotonicTimestamp(), localIssuanceFloor(rootStore))
 								: nativeClock);
 						if (floor > effectiveClock) {
 							if (reservedLocalKey(transaction) === undefined && !this.hasUnlockedWrite()) {
@@ -2799,8 +2863,8 @@ export class DatabaseTransaction implements Transaction {
 								} else {
 									txnTime = this.timestamp = claimedFloor;
 								}
-							} else {
-								this.refuseLockWrites(lockHandle, operation, false);
+							} else if (stagesWriteChange(operation)) {
+								this.refuseLockWrites(lockHandle, operation, !lockHandle.hold);
 								throw new ClientError(
 									'Record lock write cannot advance past its earlier holder version in a transaction whose clock is already fixed; save the held record first or in its own transaction',
 									409
@@ -4048,6 +4112,11 @@ export class DatabaseTransaction implements Transaction {
 	protected endScopeOwnership(): void {
 		this.#scopeOwned = false;
 		this.snapshotFree = false;
+		this.closedForReadIterators = false;
+	}
+
+	get scopeOwned(): boolean {
+		return this.#scopeOwned;
 	}
 
 	private completeMidScopeCommit(options: CommitOptions, committedTransaction?: RocksTransaction | null): void {
@@ -4059,16 +4128,14 @@ export class DatabaseTransaction implements Transaction {
 
 	/** See completeMidScopeCommit, which is the only caller and carries the reasoning. */
 	private rotateAfterMidScopeCommit(options: CommitOptions): void {
-		if (
-			options.doneWriting ||
-			this.timedOut ||
-			this.disconnected ||
-			this.postSubmitPoisoned ||
-			this.transaction ||
-			!this.#scopeOwned
-		)
+		if (options.doneWriting || this.timedOut || this.disconnected || this.postSubmitPoisoned || !this.#scopeOwned)
 			return;
+		if (this.transaction) {
+			this.closedForReadIterators = true;
+			return;
+		}
 		this.open = TRANSACTION_STATE.OPEN;
+		this.closedForReadIterators = false;
 		this.snapshotFree = true;
 		this.rotatedAfterCommit = true;
 		this.writesAbandoned = false;

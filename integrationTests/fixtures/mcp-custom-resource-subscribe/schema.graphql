@@ -1,0 +1,4 @@
+type Note @table @export {
+	id: ID @primaryKey
+	text: String
+}

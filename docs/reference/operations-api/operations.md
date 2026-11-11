@@ -175,7 +175,7 @@ Drops a database and all its tables/records. **Replicates to all cluster nodes b
 
 ### `create_table`
 
-Creates a new table. Optional fields: `database` (defaults to `data`), `attributes` (array defining schema), `expiration` (TTL in seconds).
+Creates a new table. Optional fields: `database` (defaults to `data`), `attributes` (array defining schema), `expiration` (TTL in seconds), `eviction` (seconds after `expiration` before a record is removed; see [`@table`](../database/schema.md#table)). A negative or non-numeric `expiration` or `eviction` is rejected with a 400 error.
 
 ```json
 {
@@ -337,7 +337,7 @@ Returns records matching one or more conditions. Supports `operator` (`and`/`or`
 
 Full-text conditions (Added in: v5.3.0):
 
-Conditions can query a declared full-text index with the `matches`, `matches_all`, `matches_phrase`, `matches_prefix`, `matches_fuzzy`, and `matches_fuzzy_prefix` comparators and their `not_` forms. A negated full-text condition requires a non-negated condition on the same full-text index. The Operations API preserves advanced condition options such as source `fields`, `includeHighlights`, `maxIndexLagMilliseconds`, and `waitForIndexMilliseconds`. See [Querying Full-Text Indexes](../full-text-search/querying.md#operations-api).
+Conditions can query a declared full-text index with the `matches`, `matches_all`, `matches_phrase`, `matches_prefix`, `matches_fuzzy`, and `matches_fuzzy_prefix` comparators and their `not_` forms. A negated full-text condition requires a non-negated condition on the same full-text index. The Operations API preserves advanced condition options such as source `fields`, `includeHighlights`, `maxIndexLagMilliseconds`, and `waitForIndexMilliseconds`. It preserves the [v5.4 fuzzy controls](../full-text-search/querying.md#fuzzy-controls-in-v54), `fuzzyDistance` and `fuzzyTranspositions`, and the v5.4 [`should` and `boost` relevance controls](../full-text-search/querying.md#query-time-relevance-controls). See [Querying Full-Text Indexes](../full-text-search/querying.md#operations-api).
 
 ---
 
@@ -1989,16 +1989,17 @@ Operations for reading and updating Harper configuration.
 
 Detailed documentation: [Configuration Overview](../configuration/overview.md)
 
-| Operation           | Description                                   | Role Required |
-| ------------------- | --------------------------------------------- | ------------- |
-| `set_configuration` | Modifies Harper configuration file parameters | super_user    |
-| `get_configuration` | Returns the current Harper configuration      | super_user    |
+| Operation                  | Description                                           | Role Required      |
+| -------------------------- | ----------------------------------------------------- | ------------------ |
+| `set_configuration`        | Modifies Harper configuration file parameters         | super_user         |
+| `get_configuration`        | Returns the current Harper configuration              | super_user         |
+| `get_studio_configuration` | Returns Studio's cluster settings and component pages | any signed-in user |
 
 ### `set_configuration`
 
 Updates configuration parameters in `harper-config.yaml`. Most changes require a restart (`restart` or `restart_service`) to take effect. See [Set Configuration](../configuration/operations.md#set-configuration) for full-text restart requirements.
 
-Supports `"replicated": true` <VersionBadge version="v5.2.0" /> to apply the same change to all cluster nodes in one call; per-node outcomes are returned in the response's `replicated` array. Only send cluster-appropriate parameters when replicating — node-local parameters (ports, `node.hostname`, file paths, TLS material, `replication.hostname`/`url`/`routes`) would overwrite every peer's local values. To apply the change cluster-wide, follow with `restart_service` using `"replicated": true` (which restarts nodes one at a time); `restart_service` restarts only worker threads, though, so changes to [`threads.v8Flags`](../configuration/options.md#applying-v8-flags), `storage.fullText.runtime.*`, [`storage.rocks.transactionLogAbortMarkers`](../database/storage-tuning.md#storagerockstransactionlogabortmarkers) or [`storage.rocks.transactionLogWriteIntents`](../database/storage-tuning.md#storagerockstransactionlogwriteintents) take effect only after a `restart` sent to each node in turn (`restart` does not replicate). See [Configuration Operations](../configuration/operations.md#set-configuration) for details.
+Supports `"replicated": true` <VersionBadge version="v5.2.0" /> to apply the same change to all cluster nodes in one call; per-node outcomes are returned in the response's `replicated` array. Only send cluster-appropriate parameters when replicating — node-local parameters (ports, `node.hostname`, file paths, TLS material, `replication.hostname`/`url`/`routes`) would overwrite every peer's local values. To apply the change cluster-wide, follow with `restart_service` using `"replicated": true` (which restarts nodes one at a time); `restart_service` restarts only worker threads, though, so changes to [`threads.v8Flags`](../configuration/options.md#applying-v8-flags), `storage.fullText.query.*`, `storage.fullText.runtime.*`, [`storage.rocks.transactionLogAbortMarkers`](../database/storage-tuning.md#storagerockstransactionlogabortmarkers) or [`storage.rocks.transactionLogWriteIntents`](../database/storage-tuning.md#storagerockstransactionlogwriteintents) take effect only after a `restart` sent to each node in turn (`restart` does not replicate). See [Configuration Operations](../configuration/operations.md#set-configuration) for details.
 
 ```json
 {
@@ -2014,6 +2015,16 @@ Returns the full current configuration object.
 
 ```json
 { "operation": "get_configuration" }
+```
+
+### `get_studio_configuration`
+
+<VersionBadge version="v5.4.0" />
+
+Returns the Studio settings written with `set_configuration` (`studio_navigation`, `studio_landing`), merged with the navigation applications and plugins set, and the pages applications and plugins declare under `studio.pages`, and nothing else from any configuration. Every signed-in user can call it. See [Customizing Studio](../studio/customization.md#get_studio_configuration).
+
+```json
+{ "operation": "get_studio_configuration" }
 ```
 
 ---

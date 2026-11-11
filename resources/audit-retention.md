@@ -13,8 +13,13 @@ pruning removed (harper#2447); it is internal, with deliberately no public acces
 not checked against it** but against the database generation (next section): this floor also steers
 reconciliation, survives a restore, and absorbs at `Infinity`.
 
-**The one consumer today is not a resume**: `Table.commit`'s out-of-order reconciliation reads the
-floor before entering the audit walk (harper#2642). The walk terminates at the incoming write only by
+**Its consumers are not resumes.** Where the out-of-order walk cannot reach a replicated write's own entry (missing
+history, the depth cap, the fully-superseded early-out), `isReDeliveredDuplicate` runs the keyed duplicate
+lookup for an origin log key at or above the floor, since no prune removed it. Elsewhere the lookup still skips a key
+below the origin log's first appended entry (`dedupVersionCouldBeRetained`), which does not bound the log: a
+late-relayed entry appends below it, and where the walk cannot reach it, skipping the lookup re-logs every
+re-delivery, which peers forward back (harper-pro#1306, `replicatedDeleteRedelivery.test.js`). `Table.commit`'s out-of-order reconciliation also
+reads the floor before entering the audit walk (harper#2642). The walk terminates at the incoming write only by
 reaching an audit entry at or below its version, so below the floor it cannot — it runs the whole
 retained chain, one RocksDB end-of-log scan per step, to an outcome the floor already determines.
 Two things that consumer does differently from a cursor check, and both are deliberate: it compares
@@ -97,59 +102,79 @@ Things that are easy to get wrong here:
 
 A replication source must tell a follower that missed purged entries from one whose source simply
 wrote nothing: an idle RocksDB log is purged empty, and an empty log cannot say whether its entries
-never existed or were removed. `Symbol.for('log-purge-bounds')` holds
-`{ epoch, unobserved, trackedFrom, cutoff, observedAt, logs: { name: [bound, quietAt, maxKey] } }`. `getLogPurgeBounds` returns
-each named log's bound on what tracked prunes removed, and `getLogPurgeTrackedFrom` where tracking began; a resume needs both, reading `getLogPurgeTrackedFrom` second so a prune between the reads errs toward a copy, and either returning undefined means the store cannot say.
+never existed or were removed. `getLogPurgeBounds` returns each named log's bound on what any prune
+removed, and `getLogPurgeTrackedFrom` where tracking began; a resume needs both, reading
+`getLogPurgeTrackedFrom` second so a prune between the reads errs toward a copy, and either returning
+undefined means the store cannot say. A name missing from `getLogPurgeBounds`'s map is a log whose
+watermark could not be read: unknown, never 0. A pass does not read such a log either: it keeps the log's
+record entry, raising its bound to the reach, and does not advance `observedAt`; a boot purge applies the
+record rule to it.
 
+- **A log with a purge watermark answers with it** (`purgeWatermark`). rocksdb-js 2.14 raises each log's
+  `txn.purged` to the largest key of every file it deletes, and syncs it before the unlink, on `purgeLogs`
+  and on its own retention at open, so the bound is exact for keys in any order, keys ahead of this node's
+  clock included, and survives power loss. No prune path reads such a log: a log query maps the files it
+  reads, and a mapping holds a purged file's disk space until garbage collection. Call `useLog` only for a
+  listed name; it creates the log it is asked for.
+- **Every other log answers from `Symbol.for('log-purge-bounds')`**, `{ epoch, unobserved, trackedFrom,
+cutoff, observedAt, positions, logs: { name: [bound, quietAt, maxKey] } }`: a log created before
+  rocksdb-js 2.14, which it reports unknown permanently (so this rule never retires on its own), and one
+  whose deleted file it could not read. The rest of this section is that rule.
+- **A watermarked log's entry is `[max(prior, watermark, cutoff), 0, UNKNOWN_MAXIMUM]`**, written ahead of
+  the purge. Only two readers use it: this build once the log loses its watermark, and a 5.4.0-beta.1–3 build
+  after a downgrade. Both bound the log at the cutoff, so a key ahead of the clock in that last purge escapes
+  them (harper#3953, those builds' own exposure). Keep entries 3-element: those builds distrust a record of
+  any other shape and fall back to comparing the follower's merged start, which misses a relayed origin's cursor.
 - **Raised inside `raiseAuditFloor`'s transaction**, so it shares the floor's write-ahead ordering on
-  every prune path. A retention pass (`observeLogs`) probes each listed log with `readUncommitted`
-  against the furthest either purge reaches (the cutoff, or the native horizon when audit retention is
-  longer): a log with no entry at or past it is quiet, bounded by its largest key, and `quietAt` becomes
-  now; a recorded log with no files left is quiet too. Only a cutoff in the past is observed, since
+  every prune path. A retention pass (`observeLogs`) probes each listed log without a watermark with
+  `readUncommitted` against the furthest either purge reaches (the cutoff, or the native horizon when audit
+  retention is longer): a log with no entry at or past it is quiet, bounded by its largest key, and `quietAt`
+  becomes now; a recorded log with no files left is quiet too. Only a cutoff in the past is observed, since
   anything appended after the probe then lands in a segment the prune cannot remove, and nothing is
   observed while neither the cutoff nor the native horizon reaches past `unobserved` and the last pass is
-  within half the native retention. `trackedFrom` gives no such shortcut: a segment written after tracking
-  began can sit below it (a future-dated floor, a rolled-back clock), so a young node observes from its first pass. Any other prune
-  (`deleteHistory`, `delete_transaction_logs_before`, a cutoff ahead of the clock) raises `epoch` to
-  its cutoff.
-- **The boot purge reads no log** (`readLogs` false): a log query maps the files it reads, and a mapping
-  outlives the purge of its file until garbage collection, so probing logs the boot purge is about to remove
-  would keep their disk space allocated (`txnlog-restart-reclaim`). It applies the rule below from the
-  record alone, keeping `observedAt`, so each `maxKey` still describes the last pass that read the logs.
-  Every pass that observes writes a later `quietAt` (`logPurgeBoundsCover`), so an idle log's quiet time trails shutdown
-  by at most one pass interval, and a restart shorter than the retention window less that interval keeps
-  its exact bound; after a longer one, a log not seen quiet within the reach takes the reach.
+  within half the native retention. Any other prune (`deleteHistory`, `delete_transaction_logs_before`, a
+  cutoff ahead of the clock) raises `epoch` to its cutoff. `observedAt` advances on every pass that read each
+  log without a watermark, vacuously when there is none.
 - **RocksDB removes whole segments by mtime**, so a log written past the reach since its last quiet pass
   is bounded by the reach. One written since a quiet pass at or past the reach keeps its bound: every
   segment either purge can remove was last written before that pass. A key minted ahead of this node's
-  clock (a peer's skew) in a segment last written before the cutoff escapes the cutoff, as it escaped
-  the time-based rule; a margin above the cutoff would instead sit above a caught-up follower's
-  position whenever a log has just gone idle, re-forcing the copy this record exists to avoid.
-- **rocksdb-js also purges on its own** (`transactionLogRetention`, default 3 days, which core does not
-  set) when a log opens, closes or rotates, including the file being appended to. That cannot reach past
-  `bound` while `quietAt` is within the native retention; once it is not, `exposedBound` adds the native
-  horizon, or the log's largest key at the last pass if lower (every segment last written before that
-  pass held keys up to it, in whatever order they arrived), in the read and in the next pass. `scheduleAuditCleanup` runs a pass at least every quarter of
-  that retention and each pass that observes writes a later `quietAt`, so an idle log on a running node never
-  reaches the horizon. Passes skip observing while neither purge reaches past `unobserved`; a boot just after such a
-  window ends can take the reach for an idle log, which errs toward a copy.
+  clock in a segment last written before the cutoff escapes the cutoff; a margin above the cutoff would
+  instead sit above a caught-up follower's position whenever a log has just gone idle.
+- **The boot purge reads no log** (`readLogs` false) and applies the rule above from the record alone,
+  keeping `observedAt`. A log that has appended nothing since the last pass read it keeps that pass's
+  largest key as its bound after downtime longer than `auditRetention` (harper-pro#1308): `positions[name]` is
+  its `getStats().nextLogPosition`, taken before that pass read it, and an equal position at boot means every
+  key it holds was there for the pass to see, whatever the clocks did since. Any other log not seen quiet
+  within the reach takes the reach. With no pass within the native retention, or one stamped ahead of the
+  clock, the boot purge observes nothing and `trackedFrom` answers, as below.
+- **rocksdb-js also purges on its own** (`transactionLogRetention`, default 3 days, which core does not set)
+  when a database opens, including the file being appended to. That cannot reach past `bound` while
+  `quietAt` is within the native retention; once it is not, `exposedBound` adds the native horizon, or the
+  log's largest key at the last pass if lower (every segment last written before that pass held keys up to
+  it, in whatever order they arrived). `scheduleAuditCleanup` runs a pass at least every quarter of that
+  retention, so an idle log on a running node never reaches the horizon.
 - **`trackedFrom` answers for what tracking never saw**: the floor, or the native horizon if later, when
   the record was created, raised to the native horizon whenever no pass has read the logs within the native
-  retention (a node down that long resyncs each follower once; a log created and emptied in that gap is neither
-  recorded nor necessarily listed), and to the cutoff of a boot purge that observed nothing. Below it any log may have lost anything. It is a position on this node, so a replication source
-  compares it with the follower's own start here and never with a per-origin cursor: a relayed log's keys are its
-  origin's and can predate this node, and a copy cannot raise such a cursor, so that comparison would force a copy
-  on every reconnect with nothing pruned. A follower at or past it missed nothing a purge before it took: every
-  such segment was last written before that position, so its entries were delivered, unless one landed behind the
-  follower's scan (harper-pro#1251).
-- **`unobserved` bounds every log, compared with each log's own start**: the cutoff of a prune that observes no
-  log, which may have removed keys still committing near it. The stored `epoch` is the higher of this and `trackedFrom`, so a build that reads only `epoch` stays conservative after a rollback; a record from before the split reads its `epoch` as `trackedFrom`, the only way its builds compared it. A copy cannot raise a cursor past the keys a log held, so
-  while a cursor's origin stays silent, that comparison forces a copy on every reconnect.
+  retention (a node down that long resyncs each follower once: that retention can have removed what was
+  appended after the last pass), and to the cutoff of a boot purge that observed nothing. Both raises apply
+  only while a listed log has no watermark. Below it any log may have lost anything. It is a position on this
+  node, so a replication source compares it with the follower's own start here and never with a per-origin
+  cursor: a relayed log's keys are its origin's and can predate this node, and a copy cannot raise such a
+  cursor, so that comparison would force a copy on every reconnect with nothing pruned. A follower at or past
+  it missed nothing a purge before it took: every such segment was last written before that position, so its
+  entries were delivered, unless one landed behind the follower's scan (harper-pro#1251).
+- **`unobserved` bounds every log without a watermark, compared with each log's own start**: the cutoff of a
+  prune that observes no log, which may have removed keys still committing near it. The stored `epoch` is the
+  higher of this and `trackedFrom`, so a build that reads only `epoch` stays conservative after a rollback; a
+  record from before the split reads its `epoch` as `trackedFrom`, the only way its builds compared it. A copy
+  cannot raise a cursor past the keys a log held, so while a cursor's origin stays silent, that comparison
+  forces a copy on every reconnect.
 - **Trusted only while `cutoff` ≥ the floor.** A floor raised without the record (an older binary's
   prune, a log-free copy's generation stamp) means a prune it did not see; the next tracked prune
   restarts it from the floor.
-- The steady-state RocksDB pass and `delete_transaction_logs_before` sync the WAL before `purgeLogs`;
-  the synchronous boot purge does not yet, so power loss there can lose the record with the floor it shares a transaction with
+- The steady-state RocksDB pass and `delete_transaction_logs_before` sync the WAL before `purgeLogs`; the
+  boot purge must run synchronously before replay (harper#1115) and rocksdb-js has no synchronous WAL sync,
+  so power loss there can lose the floor and a boot entry of a log without a watermark
   ([harper#3947](https://github.com/HarperFast/harper/issues/3947)).
 
 ---

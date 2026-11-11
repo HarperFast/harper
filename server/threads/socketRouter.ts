@@ -21,8 +21,15 @@ import { startTransactionLogCooling } from '../transactionLogCooling.ts';
 import { applyConfiguredV8Flags } from './v8Flags.ts';
 import { startLongLivedTransactionReporting } from '../../resources/longLivedTransactions.ts';
 import { initializeFullTextQueryPolicy } from '../../resources/indexes/fullTextNativeBinding.ts';
-import { isWorkerPoolActive, setActiveWorkerPools, workerPoolDecision } from './workerPools.ts';
-import * as env from '../../utility/environment/environmentManager.ts';
+import { armTableCleanupScans } from '../../resources/databases.ts';
+import {
+	effectiveHttpThreadCount,
+	isWorkerPoolActive,
+	replicationPortRefusal,
+	replicationThreadCount,
+	setActiveWorkerPools,
+	workerPoolDecision,
+} from './workerPools.ts';
 import { isMainThread } from 'node:worker_threads';
 import { join } from 'node:path';
 
@@ -102,6 +109,10 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 				if (isProcessShuttingDown()) return [];
 				await threadServer.startServers();
 				if (isProcessShuttingDown()) return [];
+				// After the components' declarations, so a stale saved TTL never arms a scan that a schema replaces.
+				// Workers need no such pass: they have a worker index before loading components, so each table
+				// arms its own scan as it loads.
+				armTableCleanupScans();
 				// startServers() schedules listener startup after loading components; await its cached
 				// batch so a bind failure reaches bin/run.ts and exits non-zero in single-thread mode too.
 				await threadServer.listenOnPorts();
@@ -321,27 +332,7 @@ if (isMainThread) {
 	setRunningIsolatedApplicationsGetter(() => [...isolatedSlots.keys()]);
 }
 
-export function effectiveHttpThreadCount(threadCount: number, platform: NodeJS.Platform = process.platform): number {
-	return platform === 'win32' && threadCount > 0 ? 1 : threadCount;
-}
-
-export function replicationThreadCount(httpThreadCount: number): { count: number; explicit: boolean } {
-	const configured = env.get(hdbTerms.CONFIG_PARAMS.REPLICATION_THREADS);
-	if (configured === undefined || configured === null || configured === '') {
-		return {
-			count: Number.isFinite(httpThreadCount) && httpThreadCount >= 2 ? Math.floor(httpThreadCount / 2) : 0,
-			explicit: false,
-		};
-	}
-	return { count: Number(configured), explicit: true };
-}
-
-function portNumberOf(port: unknown): number | undefined {
-	if (port == null || port === '') return undefined;
-	const text = String(port);
-	const number = Number(text.slice(text.lastIndexOf(':') + 1));
-	return Number.isInteger(number) && number > 0 ? number : undefined;
-}
+export { effectiveHttpThreadCount, replicationThreadCount };
 
 /**
  * The dedicated pools to start, refusing an explicit configuration the pool cannot serve and
@@ -355,31 +346,11 @@ export function admittedWorkerPools(httpThreadCount: number): { type: string; co
 	if (!Number.isInteger(count) || count < 0)
 		throw new Error(`replication.threads must be a non-negative integer, got ${count}`);
 	if (count === 0) return [];
-	const replicationPorts = [
-		portNumberOf(env.get(hdbTerms.CONFIG_PARAMS.REPLICATION_PORT)),
-		portNumberOf(env.get(hdbTerms.CONFIG_PARAMS.REPLICATION_SECUREPORT)),
-	].filter((port) => port !== undefined);
-	if (replicationPorts.length === 0) {
-		const reason =
-			'replication.threads requires replication.port or replication.securePort: without a dedicated replication port, replication shares the operations API port, which only the main thread binds';
-		if (explicit) throw new Error(reason);
-		harperLogger.warn(`${reason}; falling back to replication.threads: 0`);
+	const refusal = replicationPortRefusal();
+	if (refusal) {
+		if (explicit) throw new Error(refusal);
+		harperLogger.warn(`${refusal}; falling back to replication.threads: 0`);
 		return [];
-	}
-	const sharedPorts = [
-		['http.port', hdbTerms.CONFIG_PARAMS.HTTP_PORT],
-		['http.securePort', hdbTerms.CONFIG_PARAMS.HTTP_SECUREPORT],
-		['operationsApi.network.port', hdbTerms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT],
-		['operationsApi.network.securePort', hdbTerms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT],
-	];
-	for (const [label, param] of sharedPorts) {
-		const port = portNumberOf(env.get(param));
-		if (port !== undefined && replicationPorts.includes(port)) {
-			const reason = `replication.threads requires a replication port of its own, but port ${port} is also ${label}`;
-			if (explicit) throw new Error(reason);
-			harperLogger.warn(`${reason}; falling back to replication.threads: 0`);
-			return [];
-		}
 	}
 	if (count > 1 && (process.platform === 'darwin' || process.platform === 'win32'))
 		harperLogger.warn(

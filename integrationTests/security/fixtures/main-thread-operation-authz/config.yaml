@@ -1,0 +1,5 @@
+jsResource:
+  files: resources.js
+rest: true
+fastifyRoutes:
+  files: 'routes/*.js'
