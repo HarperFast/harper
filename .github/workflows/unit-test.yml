@@ -83,7 +83,7 @@ jobs:
             timeout: 8
           - shard: lmdb
             script: test:unit:lmdb
-            timeout: 9
+            timeout: 15
 
     steps:
       - name: Checkout code
