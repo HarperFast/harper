@@ -16,6 +16,7 @@ import {
 	databaseDropPreparationTargets,
 	dropDatabase,
 	type Table,
+	throwIfUnloadedDatabaseHeldByRestore,
 } from '../../resources/databases.ts';
 import {
 	claimDatabaseDropPreparations,
@@ -708,6 +709,7 @@ export class ResourceBridge extends BridgeMethods {
 		const database = getDatabases()[databaseName];
 		assertDatabaseResidencyAvailable(databaseName);
 		if (!database) {
+			throwIfUnloadedDatabaseHeldByRestore(databaseName);
 			throw new ClientError(`Database '${databaseName}' does not exist`, 404);
 		}
 		const firstTable = database[Object.keys(database)[0]];

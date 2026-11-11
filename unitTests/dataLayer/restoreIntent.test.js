@@ -39,6 +39,7 @@ const blobBackupModule = require('#js/dataLayer/blobBackup');
 const { blobSnapshotDir, fsyncTree } = blobBackupModule;
 const { readBackupPins } = require('#src/dataLayer/backupRepository');
 const { dropSchema } = require('#src/dataLayer/schema');
+const { ResourceBridge } = require('#src/dataLayer/harperBridge/ResourceBridge');
 const {
 	acquireRestoreLock,
 	checkRestoreState,
@@ -430,7 +431,7 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			await restoreBackup({ ...SU, database: fixture.name, cancel: true });
 		});
 
-		it('answers drop_database and create_backup for the reserved database with the restore, not a 404', async function () {
+		it('answers drop_database, create_backup and get_backup for the reserved database with the restore, not a 404', async function () {
 			const fixture = await seededDatabase();
 			await requestRestore(fixture.name, { on_restart: true, retain_previous: false });
 			await closeDatabase(fixture.name);
@@ -439,6 +440,7 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			for (const attempt of [
 				() => dropSchema({ database: fixture.name }),
 				() => createBackup({ ...SU, database: fixture.name }),
+				() => new ResourceBridge().getBackup({ database: fixture.name }),
 			]) {
 				await assert.rejects(
 					attempt(),
