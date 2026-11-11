@@ -2253,7 +2253,15 @@ function initStores(
 			try {
 				// now load the non-primary keys, opening the dbs as necessary for indices
 				if (opensIndexStore(attribute)) {
-					if (!indices[attribute.name]) {
+					const current = indices[attribute.name];
+					// A thread that never declares the schema learns of a change between a plain and a custom
+					// index only here; keeping its old store would write entries the other kind cannot read.
+					// The superseded store stays open for any operation still using it, as indexFor leaves it.
+					if (
+						!current ||
+						(rootStore instanceof RocksDatabase &&
+							current.customIndex?.constructor !== CUSTOM_INDEXES[attribute.indexed.type])
+					) {
 						const dbi = openIndex(attribute.key, rootStore, attribute, primaryAttribute.generation, openedStores);
 						indices[attribute.name] = dbi;
 						indices[attribute.name].indexNulls = attribute.indexNulls;
