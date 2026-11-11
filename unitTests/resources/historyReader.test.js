@@ -503,6 +503,8 @@ describe('bounded history readers', function () {
 				const origins = ['a', 'b'].map((name) =>
 					getIdOfRemoteNode(`history-control-${sequence}-${name}`, T.auditStore)
 				);
+				origins.sort((a, b) => a - b);
+				if (reverseOrder) origins.reverse();
 				let previousKey, sharedKey;
 				const write = (txn, nodeId, type, n, previousVersion) =>
 					T.auditStore.put(
@@ -537,6 +539,13 @@ describe('bounded history readers', function () {
 						write(txn);
 					});
 				assert(sharedKey > previousKey);
+				const order = [...T.auditStore.getRange({ start: sharedKey, exactStart: true })]
+					.filter((entry) => entry.txnLogKey === sharedKey && entry.tableId === T.tableId && entry.recordId === 'a')
+					.map((entry) => entry.nodeId);
+				assert.deepStrictEqual(
+					order,
+					[...origins].sort((a, b) => a - b)
+				);
 				for (const cutoff of [sharedKey, sharedKey + 0.1, Infinity]) {
 					assert.deepStrictEqual(getRecordAtTime(undefined, cutoff, T.primaryStore, T.tableId, 'a', origins[0]), {
 						id: 'a',
