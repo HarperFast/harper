@@ -1,0 +1,10 @@
+# Two default-RBAC tables: one held subscription, one subscribed after the administrative change.
+type Feed @table @export {
+	id: ID @primaryKey
+	value: String
+}
+
+type Feed2 @table @export {
+	id: ID @primaryKey
+	value: String
+}
