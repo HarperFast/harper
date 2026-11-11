@@ -789,8 +789,6 @@ export class RocksTransactionLogStore extends EventEmitter {
 		return this.rootStore.path;
 	}
 
-	async remove() {
-		// TODO: this function can likely be removed once the call to purgeLogs()
-		// is added in `resources/Table.ts`
-	}
+	/** Removes nothing: a transaction log loses entries only as whole files (`purgeLogs`). */
+	async remove() {}
 }

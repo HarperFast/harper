@@ -21,8 +21,9 @@ describe('purgeAgedLogs', () => {
 		setAuditRetention(originalRetention);
 	});
 
-	// purgeAgedLogs raises the floor before purging (harper#2447); `order` records both steps, because
-	// a crash between them leaves a floor certifying purged history if the write came second.
+	// purgeAgedLogs raises the floor and makes it durable before purging (harper#2447, harper#2912); `order`
+	// records each step, because a crash or power loss between them leaves a floor certifying purged history
+	// if the write, or its barrier, came after the purge.
 	function fakeStore(purgedFiles = ['000001.txnlog', '000002.txnlog']) {
 		const calls = [];
 		const order = [];
@@ -30,6 +31,10 @@ describe('purgeAgedLogs', () => {
 			calls,
 			order,
 			floorWrites: [],
+			flushSync() {
+				order.push('flush');
+				if (failFlush) throw new Error('IO error: No space left on device');
+			},
 			purgeLogs(options) {
 				calls.push(options);
 				order.push('purge');
@@ -61,6 +66,10 @@ describe('purgeAgedLogs', () => {
 			},
 		};
 		let failFloorWrite = false;
+		let failFlush = false;
+		store.failFlush = () => {
+			failFlush = true;
+		};
 		store.failFloorWrite = () => {
 			failFloorWrite = true;
 		};
@@ -123,7 +132,11 @@ describe('purgeAgedLogs', () => {
 		const before = Date.now();
 		purgeAgedLogs(store);
 
-		assert.deepStrictEqual(store.order, ['floor', 'purge'], 'the floor must be recorded before the purge runs');
+		assert.deepStrictEqual(
+			store.order,
+			['floor', 'flush', 'purge'],
+			'the floor must be recorded, then made durable, before the purge runs'
+		);
 		assert.strictEqual(store.floorWrites.length, 1, 'exactly one floor write');
 		assert.strictEqual(
 			store.floorWrites[0],
@@ -131,6 +144,15 @@ describe('purgeAgedLogs', () => {
 			'the floor and the purge cutoff must be the same instant'
 		);
 		assert.ok(store.floorWrites[0] >= before - 60_000, 'floor should track the retention window');
+	});
+
+	it('purges behind the committed floor when only the flush that makes it durable fails (harper#2486)', () => {
+		setAuditRetention(60_000);
+		const store = fakeStore();
+		store.failFlush();
+		assert.deepStrictEqual(purgeAgedLogs(store), ['000001.txnlog', '000002.txnlog']);
+		assert.deepStrictEqual(store.order, ['floor', 'flush', 'purge'], 'the floor is still committed first');
+		assert.strictEqual(store.floorWrites[0], store.calls[0].before);
 	});
 
 	it('refuses the purge when the RocksDB floor write does not stick', () => {

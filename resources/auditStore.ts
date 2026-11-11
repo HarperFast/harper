@@ -333,8 +333,7 @@ export function openAuditStore(rootStore) {
 					if (isRocksAuditStore) {
 						const before = retentionCutoff(1 + passCleanupPriority * passCleanupPriority);
 						raiseAuditFloor(auditStore, before, true);
-						// the floor and purge bounds reach disk before the files they account for are unlinked;
-						// the synchronous boot purge does not wait yet (harper#3947)
+						// the floor and purge bounds reach disk before the files they account for are unlinked
 						if (originFloorsDurable(auditStore.rootStore)) await auditStore.rootStore.syncWal();
 						if (!cleanupStopped && !storeClosing()) auditStore.rootStore.purgeLogs({ before });
 					} else {
@@ -1970,6 +1969,27 @@ export function purgeAgedLogs(rootStore: RocksDatabase): string[] {
 	const before = retentionCutoff();
 	// The audit store is reachable this early because initStores opens it before replayLogs runs this.
 	raiseAuditFloor((rootStore as any).auditStore, before, true, false);
+	// The floor and purge bounds reach disk before the files they account for are unlinked. Replay follows
+	// synchronously (harper#1115), so this cannot await `syncWal` as the other purge paths do.
+	try {
+		rootStore.flushSync({ allowWriteStall: true });
+	} catch (error) {
+		return purgeBehindUnsyncedFloor(rootStore, before, error);
+	}
+	return rootStore.purgeLogs({ before });
+}
+
+/**
+ * The boot purge when its barrier failed but the floor's commit landed: `flushSync` writes a new SST, so on a full
+ * disk it fails where the floor's WAL append did not, and these files are what a full node has to shed to recover
+ * (harper#2486). The floor still precedes the unlink across a process crash, but not across a power loss. A
+ * synchronous WAL sync needs no new space; this branch goes when the boot purge switches to rocksdb-js `syncWalSync`.
+ */
+function purgeBehindUnsyncedFloor(rootStore: RocksDatabase, before: number, error: unknown): string[] {
+	harperLogger.warn(
+		`Purging aged transaction logs in ${(rootStore as any).databaseName} database before its audit floor is power-loss durable: the flush that makes it durable failed`,
+		error
+	);
 	return rootStore.purgeLogs({ before });
 }
 

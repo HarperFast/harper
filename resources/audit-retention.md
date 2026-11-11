@@ -36,13 +36,25 @@ is gone. Over-reporting (a floor covering more than the prune actually removed) 
 unnecessary resync; under-reporting loses its data with no signal. So `raiseAuditFloor` is called
 first and a throw from it is what stops the prune.
 
-| Prune path                                                                   | Engine                                                                      |
-| ---------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| `scheduleAuditCleanup` retention loop (`auditStore.ts`)                      | LMDB                                                                        |
-| `scheduleAuditCleanup` → `purgeLogs`                                         | RocksDB                                                                     |
-| `purgeAgedLogs` (boot/recovery, called from `replayLogs.ts`)                 | RocksDB                                                                     |
-| `Table.deleteHistory`                                                        | LMDB (`RocksTransactionLogStore.remove()` is a no-op, so it must NOT raise) |
-| `delete_transaction_logs_before` whole-database branch (`ResourceBridge.ts`) | RocksDB                                                                     |
+**On RocksDB the raise must also be durable before a log file is unlinked.** A commit reaches the WAL
+unsynced, and an unlink is not ordered behind it, so a power loss can keep the unlink and lose the raise.
+The retention pass and `delete_transaction_logs_before` await `syncWal`; `purgeAgedLogs` runs before a
+replay that runs synchronously at open (harper#1115), so it uses `flushSync`. A failed commit or barrier
+removes nothing, with one exception: when the boot purge's flush fails after its commit landed,
+`purgeBehindUnsyncedFloor` purges anyway (harper#2486). A flush needs a new SST, so a full disk fails it
+where the WAL append did not, and shedding these files is how a full node recovers; RocksDB then resumes
+writes by itself once free space reaches its reserve (the largest write buffer, 16 MiB by default). The
+floor survives a crash there but not a power loss, until the boot purge calls a synchronous WAL sync
+(harper#4261). This covers the purges Harper requests: rocksdb-js's own retention unlinks segments when a
+log loads, before any raise (harper#4262).
+
+| Prune path                                                                   | Engine                                                                    |
+| ---------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| `scheduleAuditCleanup` retention loop (`auditStore.ts`)                      | LMDB                                                                      |
+| `scheduleAuditCleanup` → `purgeLogs`                                         | RocksDB                                                                   |
+| `purgeAgedLogs` (boot/recovery, called from `replayLogs.ts`)                 | RocksDB                                                                   |
+| `Table.deleteHistory`                                                        | LMDB (RocksDB returns 0: a log every table shares loses only whole files) |
+| `delete_transaction_logs_before` whole-database branch (`ResourceBridge.ts`) | RocksDB                                                                   |
 
 Things that are easy to get wrong here:
 
@@ -172,10 +184,7 @@ cutoff, observedAt, positions, logs: { name: [bound, quietAt, maxKey] } }`: a lo
 - **Trusted only while `cutoff` ≥ the floor.** A floor raised without the record (an older binary's
   prune, a log-free copy's generation stamp) means a prune it did not see; the next tracked prune
   restarts it from the floor.
-- The steady-state RocksDB pass and `delete_transaction_logs_before` sync the WAL before `purgeLogs`; the
-  boot purge must run synchronously before replay (harper#1115) and rocksdb-js has no synchronous WAL sync,
-  so power loss there can lose the floor and a boot entry of a log without a watermark
-  ([harper#3947](https://github.com/HarperFast/harper/issues/3947)).
+- Every purge path makes the record durable with the floor before it unlinks, under the floor's rule above.
 
 ---
 
