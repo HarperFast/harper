@@ -12242,6 +12242,17 @@ export function makeTable(options): TableResourceClass {
 				// runIndexing when rebuilding from scratch), so clear() doesn't leave stale
 				// index entries pointing at records that no longer exist.
 				const promises = [];
+				// The cleared index store held a derived index's durable cursor, and no log entry records the
+				// clear, so an idle derived index would otherwise not notice until the next logged write.
+				const rebuildDerivedIndexes = () => {
+					for (const key in indices) {
+						try {
+							indices[key].customIndex?.requestDerivedRebuild?.();
+						} catch (error) {
+							logger.warn?.(`Could not request a rebuild of cleared index ${key} on ${tableName}`, error);
+						}
+					}
+				};
 				const settleStartedClears = (synchronousFailure?: { error: unknown }) =>
 					Promise.allSettled(promises)
 						.then((results) => {
@@ -12253,6 +12264,7 @@ export function makeTable(options): TableResourceClass {
 							}
 							return values;
 						})
+						.finally(rebuildDerivedIndexes)
 						.finally(releaseFullTextClearFence);
 				try {
 					promises.push(primaryStore.clear());
