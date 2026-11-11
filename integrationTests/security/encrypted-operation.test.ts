@@ -2,7 +2,9 @@
  * encrypted_operation against a running node with a test custody key: a relay carries
  * only ciphertext, the node runs the sealed operation as the caller, and neither sealed values nor the
  * result reach the node's info-level log. The unix-socket case is the Fabric relay path: the socket
- * authenticates as the super user with no credentials, and the minted token comes back sealed.
+ * authenticates as the super user with no credentials, and the minted token comes back sealed. It is
+ * skipped on Bun, which serves the operations API through Fastify inject() rather than on the socket
+ * (server/operationsServer.ts).
  *
  * Run:
  *   npm run build && npm run test:integration -- "integrationTests/security/encrypted-operation.test.ts"
@@ -121,7 +123,8 @@ suite('encrypted_operation on a running node', { skip: process.platform === 'win
 		if (socketDirectory) rmSync(socketDirectory, { recursive: true, force: true });
 	});
 
-	test('mints tokens over the operations socket with no credentials and returns them sealed', async () => {
+	test('mints tokens over the operations socket with no credentials and returns them sealed', async (t) => {
+		if (process.env.HARPER_RUNTIME === 'bun') return t.skip('Bun does not serve the operations domain socket');
 		const { request, responseKey, nonce } = sealOperation({
 			op: { operation: 'create_authentication_tokens' },
 			publicKey,
