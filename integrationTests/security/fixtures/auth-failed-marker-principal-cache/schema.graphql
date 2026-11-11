@@ -1,0 +1,4 @@
+type Secret @table @export {
+	id: ID @primaryKey
+	title: String
+}

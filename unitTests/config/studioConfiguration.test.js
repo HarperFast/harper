@@ -88,6 +88,7 @@ studio:
 			const configuration = await createStudioConfigurationReader(logger)();
 			assert.deepStrictEqual(configuration, {
 				navigation: { applications: 'hidden', logs: 'tucked', databases: 'visible' },
+				rootNavigation: { applications: 'hidden', logs: 'tucked', databases: 'visible' },
 				landing: 'harper-redirects.redirects',
 				pages: [],
 			});
@@ -109,7 +110,11 @@ studio:
 			});
 			const { warnings, logger } = captureWarnings();
 			const configuration = await createStudioConfigurationReader(logger)();
-			assert.deepStrictEqual(configuration, { navigation: { apis: 'hidden', cluster: 'tucked' }, pages: [] });
+			assert.deepStrictEqual(configuration, {
+				navigation: { apis: 'hidden', cluster: 'tucked' },
+				rootNavigation: { apis: 'hidden', cluster: 'tucked' },
+				pages: [],
+			});
 			assert.strictEqual(warnings.length, 1);
 			assert.match(warnings[0], /root config/);
 			assert.match(warnings[0], /studio\.navigation\.logs must be visible, tucked or hidden/);
@@ -167,6 +172,7 @@ studio:
 			assert.deepStrictEqual(configuration.pages, [
 				{
 					component: 'harper-redirects',
+					application: 'harper-redirects',
 					id: 'redirects',
 					name: 'Redirects',
 					icon: 'signpost',
@@ -175,7 +181,13 @@ studio:
 					access: { role: 'super_user', tables: [{ database: 'redirects', table: 'Rule', actions: ['read'] }] },
 					content: { kind: 'sections', sections: [{ kind: 'table', nested: { deep: [1, 2] } }] },
 				},
-				{ component: 'harper-redirects', id: 'rules', name: 'Rules', placement: 'config' },
+				{
+					component: 'harper-redirects',
+					application: 'harper-redirects',
+					id: 'rules',
+					name: 'Rules',
+					placement: 'config',
+				},
 			]);
 			assert.ok(!JSON.stringify(configuration).includes(SECRET));
 			assert.deepStrictEqual(warnings, []);
@@ -199,7 +211,9 @@ studio:
 			);
 			const { warnings, logger } = captureWarnings();
 			const configuration = await createStudioConfigurationReader(logger)();
-			assert.deepStrictEqual(configuration.pages, [{ component: 'mixed', id: 'good', name: 'Good', placement: 'tab' }]);
+			assert.deepStrictEqual(configuration.pages, [
+				{ component: 'mixed', application: 'mixed', id: 'good', name: 'Good', placement: 'tab' },
+			]);
 			assert.strictEqual(warnings.length, 1);
 			for (const problem of [
 				/studio\.pages\[1\]\.id must be a string matching/,
@@ -223,8 +237,8 @@ studio:
 			const { warnings, logger } = captureWarnings();
 			const configuration = await createStudioConfigurationReader(logger)();
 			assert.deepStrictEqual(configuration.pages, [
-				{ component: 'typed', id: 'page', name: 'Page', placement: 'tab' },
-				{ component: 'typed', id: 'empty', name: 'Empty', placement: 'tab' },
+				{ component: 'typed', application: 'typed', id: 'page', name: 'Page', placement: 'tab' },
+				{ component: 'typed', application: 'typed', id: 'empty', name: 'Empty', placement: 'tab' },
 			]);
 			assert.strictEqual(warnings.length, 1);
 			assert.match(warnings[0], /\('page'\) icon must be a string; it is left out/);
@@ -437,6 +451,302 @@ studio:
 		});
 	});
 
+	describe('plugins', () => {
+		function writePlugin(parentDirectory, key, config) {
+			const directory = path.join(parentDirectory, 'node_modules', ...key.split('/'));
+			mkdirSync(directory, { recursive: true });
+			writeFileSync(path.join(directory, 'config.yaml'), config);
+			return directory;
+		}
+
+		function pagesConfig(...ids) {
+			return `studio:\n  pages:\n${ids.map((id) => `    - { id: ${id}, name: ${id}, placement: tab }`).join('\n')}\n`;
+		}
+
+		const pageKeys = (configuration) => configuration.pages.map((page) => `${page.component}.${page.id}`);
+
+		afterEach(() => {
+			delete process.env.DEV_MODE;
+			delete process.env.HARPER_SAFE_MODE;
+		});
+
+		it("returns a plugin's pages under <app>.<key>, with its application and plugin chain", async () => {
+			const app = writeComponent(
+				'solution',
+				`'@harperfast/redirector':\n  package: '@harperfast/redirector'\n  apiKey: ${SECRET}\n${pagesConfig('home')}`
+			);
+			writePlugin(app, '@harperfast/redirector', pagesConfig('redirects'));
+			const { warnings, logger } = captureWarnings();
+			const configuration = await createStudioConfigurationReader(logger)();
+			assert.deepStrictEqual(configuration.pages, [
+				{ component: 'solution', application: 'solution', id: 'home', name: 'home', placement: 'tab' },
+				{
+					component: 'solution.@harperfast/redirector',
+					application: 'solution',
+					plugins: ['@harperfast/redirector'],
+					id: 'redirects',
+					name: 'redirects',
+					placement: 'tab',
+				},
+			]);
+			assert.ok(!JSON.stringify(configuration).includes(SECRET));
+			assert.deepStrictEqual(warnings, []);
+		});
+
+		it('finds a plugin installed in a parent directory, and gives each application that uses it its own pages', async () => {
+			writeComponent('alpha', 'shared:\n  package: shared\n');
+			writeComponent('beta', 'shared:\n  package: shared\n');
+			writePlugin(componentsRoot, 'shared', pagesConfig('page'));
+			const configuration = await createStudioConfigurationReader(captureWarnings().logger)();
+			assert.deepStrictEqual(pageKeys(configuration), ['alpha.shared.page', 'beta.shared.page']);
+			assert.deepStrictEqual(
+				configuration.pages.map((page) => page.application),
+				['alpha', 'beta']
+			);
+		});
+
+		it('chains the keys of a nested plugin', async () => {
+			const app = writeComponent('app', 'outer:\n  package: outer\n');
+			const outer = writePlugin(app, 'outer', `inner:\n  package: inner\n${pagesConfig('top')}`);
+			writePlugin(outer, 'inner', pagesConfig('deep'));
+			const configuration = await createStudioConfigurationReader(captureWarnings().logger)();
+			assert.deepStrictEqual(pageKeys(configuration), ['app.outer.top', 'app.outer.inner.deep']);
+			assert.deepStrictEqual(configuration.pages[1].plugins, ['outer', 'inner']);
+		});
+
+		it('reads only the plugins the loader would load', async () => {
+			const app = writeComponent(
+				'app',
+				[
+					'dev:\n  package: dev\n  loadComponent: dev-only',
+					'optional:\n  package: optional\n  loadComponent: if-installed',
+					'missing:\n  package: missing',
+					'trusted:\n  enabled: true',
+					'present:\n  package: present',
+				].join('\n') + '\n'
+			);
+			writePlugin(app, 'dev', pagesConfig('dev-page'));
+			writePlugin(app, 'trusted', pagesConfig('not-a-package'));
+			writePlugin(app, 'present', pagesConfig('page'));
+			const { warnings, logger } = captureWarnings();
+			const read = createStudioConfigurationReader(logger);
+			assert.deepStrictEqual(pageKeys(await read()), ['app.present.page']);
+			process.env.DEV_MODE = 'true';
+			assert.deepStrictEqual(pageKeys(await read()), ['app.dev.dev-page', 'app.present.page']);
+			process.env.HARPER_SAFE_MODE = 'true';
+			assert.deepStrictEqual(pageKeys(await read()), []);
+			assert.deepStrictEqual(warnings, []);
+		});
+
+		it('reads a plugin that leads back to itself once per chain', async () => {
+			const app = writeComponent('app', 'a:\n  package: a\n');
+			writePlugin(app, 'a', `b:\n  package: b\n${pagesConfig('page-a')}`);
+			writePlugin(app, 'b', `a:\n  package: a\n${pagesConfig('page-b')}`);
+			const configuration = await createStudioConfigurationReader(captureWarnings().logger)();
+			assert.deepStrictEqual(pageKeys(configuration), ['app.a.page-a', 'app.a.b.page-b']);
+		});
+
+		it('reads a plugin once when symlinks inside it lead back to it', async () => {
+			const app = writeComponent('app', 'self:\n  package: self\n');
+			const self = writePlugin(app, 'self', `left:\n  package: left\nright:\n  package: right\n${pagesConfig('page')}`);
+			mkdirSync(path.join(self, 'node_modules'), { recursive: true });
+			symlinkSync(self, path.join(self, 'node_modules', 'left'), 'dir');
+			symlinkSync(self, path.join(self, 'node_modules', 'right'), 'dir');
+			let reads = 0;
+			const countingRead = (filePath, encoding) => {
+				if (path.basename(filePath) === 'config.yaml') reads++;
+				return readFile(filePath, encoding);
+			};
+			const configuration = await createStudioConfigurationReader(captureWarnings().logger, countingRead)();
+			assert.deepStrictEqual(pageKeys(configuration), ['app.self.page']);
+			assert.strictEqual(reads, 2);
+		});
+
+		it('resolves a shared plugin from the first path in declaration order, whichever read finishes first', async () => {
+			const app = writeComponent('app', 'first:\n  package: first\nsecond:\n  package: second\n');
+			const shared = path.join(componentsRoot, '.shared');
+			mkdirSync(shared, { recursive: true });
+			writeFileSync(path.join(shared, 'config.yaml'), 'choice:\n  package: choice\n');
+			for (const parent of ['first', 'second']) {
+				const directory = writePlugin(app, parent, 'shared:\n  package: shared\n');
+				mkdirSync(path.join(directory, 'node_modules'), { recursive: true });
+				symlinkSync(shared, path.join(directory, 'node_modules', 'shared'), 'dir');
+				writePlugin(directory, 'choice', pagesConfig(`from-${parent}`));
+			}
+			const slowFirst = async (filePath, encoding) => {
+				if (filePath.includes(`${path.sep}first${path.sep}`)) await new Promise((resolve) => setTimeout(resolve, 20));
+				return readFile(filePath, encoding);
+			};
+			const configuration = await createStudioConfigurationReader(captureWarnings().logger, slowFirst)();
+			assert.deepStrictEqual(pageKeys(configuration), [
+				'app.first.shared.choice.from-first',
+				'app.second.shared.choice.from-first',
+			]);
+		});
+
+		it('keeps the application and its other plugins when one plugin cannot be read', async () => {
+			const app = writeComponent('app', `broken:\n  package: broken\nfine:\n  package: fine\n${pagesConfig('own')}`);
+			writePlugin(app, 'broken', `studio:\n  pages:\n    - { id: x, name: "unclosed\nsecret: ${SECRET}\n`);
+			writePlugin(app, 'fine', pagesConfig('page'));
+			const { warnings, logger } = captureWarnings();
+			const configuration = await createStudioConfigurationReader(logger)();
+			assert.deepStrictEqual(pageKeys(configuration), ['app.own', 'app.fine.page']);
+			assert.strictEqual(warnings.length, 1);
+			assert.match(warnings[0], /plugin at .*broken: its config could not be read/);
+			assert.ok(!warnings[0].includes(SECRET));
+		});
+
+		it('skips a plugin key Studio cannot address, and a page whose key is longer than 128 characters', async () => {
+			const longKey = 'k'.repeat(120);
+			const app = writeComponent('app', `'../escape':\n  package: x\n${longKey}:\n  package: long\n`);
+			writePlugin(app, longKey, pagesConfig('page', 'p'));
+			const { warnings, logger } = captureWarnings();
+			const configuration = await createStudioConfigurationReader(logger)();
+			assert.deepStrictEqual(pageKeys(configuration), [`app.${longKey}.p`]);
+			assert.strictEqual(warnings.length, 2);
+			assert.ok(
+				warnings.some(
+					(warning) => /a package entry has a key Studio cannot address/.test(warning) && !warning.includes('escape')
+				)
+			);
+			assert.ok(
+				warnings.some((warning) => /its page 'page' is left out: .* is longer than 128 characters/.test(warning))
+			);
+		});
+
+		it('leaves out a page key two different components produce, warning about both', async () => {
+			const app = writeComponent('app', `a.b:\n  package: a.b\na:\n  package: a\n`);
+			writePlugin(app, 'a.b', pagesConfig('page'));
+			const nested = writePlugin(app, 'a', `b:\n  package: b\n${pagesConfig('kept')}`);
+			writePlugin(nested, 'b', pagesConfig('page'));
+			const { warnings, logger } = captureWarnings();
+			const configuration = await createStudioConfigurationReader(logger)();
+			assert.deepStrictEqual(pageKeys(configuration), ['app.a.kept']);
+			assert.strictEqual(warnings.length, 2);
+			for (const warning of warnings)
+				assert.match(warning, /its page 'page' is left out: another component's page has the key app\.a\.b\.page/);
+		});
+
+		it('reads each directory once, and bounds the plugin uses a shared graph expands into', async () => {
+			// Each package lists every later one, so the uses double with each package while the directories do not.
+			const names = Array.from({ length: 12 }, (_, index) => `p${index}`);
+			const app = writeComponent('app', 'p0:\n  package: p0\n');
+			names.forEach((name, index) =>
+				writePlugin(
+					app,
+					name,
+					names
+						.slice(index + 1)
+						.map((later) => `${later}:\n  package: ${later}\n`)
+						.join('') + (index === names.length - 1 ? pagesConfig('page') : '')
+				)
+			);
+			const reads = new Map();
+			const countingRead = (filePath, encoding) => {
+				reads.set(filePath, (reads.get(filePath) ?? 0) + 1);
+				return readFile(filePath, encoding);
+			};
+			const { warnings, logger } = captureWarnings();
+			const configuration = await createStudioConfigurationReader(logger, countingRead)();
+			assert.ok(configuration.pages.length > 0 && configuration.pages.length <= 1000);
+			assert.ok([...reads.values()].every((count) => count === 1));
+			assert.strictEqual(warnings.length, 1);
+			assert.match(warnings[0], /only the first 1000 plugin uses that declare Studio settings are read/);
+		});
+
+		describe('navigation', () => {
+			it('ranks root over applications over plugins, and the most visible state between peers', async () => {
+				setRootConfigEntry('studio', { navigation: { status: 'hidden' } });
+				const alpha = writeComponent(
+					'alpha',
+					`plug:\n  package: plug\nstudio:\n  navigation: { status: visible, logs: tucked, apis: hidden }\n`
+				);
+				writeComponent('beta', 'studio:\n  navigation: { apis: tucked }\n');
+				writePlugin(alpha, 'plug', 'studio:\n  navigation: { logs: visible, databases: hidden }\n');
+				const configuration = await createStudioConfigurationReader(captureWarnings().logger)();
+				assert.deepStrictEqual(configuration.navigation, {
+					status: 'hidden',
+					logs: 'tucked',
+					apis: 'tucked',
+					databases: 'hidden',
+				});
+				assert.deepStrictEqual(configuration.rootNavigation, { status: 'hidden' });
+			});
+
+			it('ranks root over the application over each plugin over the page default for one key', async () => {
+				const key = 'app.outer.inner.page';
+				const app = writeComponent('app', 'outer:\n  package: outer\n');
+				const outer = writePlugin(app, 'outer', 'inner:\n  package: inner\n');
+				writePlugin(
+					outer,
+					'inner',
+					'studio:\n  pages:\n    - { id: page, name: Page, placement: tab, navigation: tucked }\n'
+				);
+				const read = createStudioConfigurationReader(captureWarnings().logger);
+				assert.strictEqual((await read()).navigation[key], 'tucked');
+				writePlugin(app, 'outer', 'inner:\n  package: inner\nstudio:\n  navigation: { inner.page: visible }\n');
+				assert.strictEqual((await read()).navigation[key], 'visible');
+				writeComponent('app', 'outer:\n  package: outer\nstudio:\n  navigation: { outer.inner.page: hidden }\n');
+				assert.strictEqual((await read()).navigation[key], 'hidden');
+				setRootConfigEntry('studio', { navigation: { [key]: 'tucked' } });
+				const configuration = await read();
+				assert.strictEqual(configuration.navigation[key], 'tucked');
+				assert.deepStrictEqual(configuration.rootNavigation, { [key]: 'tucked' });
+			});
+
+			it("resolves an application's or plugin's dotted key under its own name, below a page's own default", async () => {
+				const app = writeComponent(
+					'app',
+					`plug:\n  package: plug\nstudio:\n  navigation:\n    plug.shown: visible\n    plug.sub.deep: tucked\n`
+				);
+				const plug = writePlugin(
+					app,
+					'plug',
+					`sub:\n  package: sub\nstudio:\n  navigation: { sub.deep: hidden }\n  pages:\n    - { id: shown, name: Shown, placement: tab, navigation: hidden }\n    - { id: quiet, name: Quiet, placement: tab, navigation: tucked }\n`
+				);
+				writePlugin(plug, 'sub', pagesConfig('deep'));
+				const configuration = await createStudioConfigurationReader(captureWarnings().logger)();
+				assert.deepStrictEqual(configuration.navigation, {
+					'app.plug.shown': 'visible',
+					'app.plug.sub.deep': 'tucked',
+					'app.plug.quiet': 'tucked',
+				});
+				assert.deepStrictEqual(configuration.rootNavigation, {});
+				assert.ok(configuration.pages.every((page) => !('navigation' in page)));
+			});
+
+			it("refuses a nested map in a component's navigation, which only an env layer may write", async () => {
+				const app = writeComponent(
+					'app',
+					'plug:\n  package: plug\nstudio:\n  navigation:\n    plug: { page: hidden }\n'
+				);
+				writePlugin(app, 'plug', pagesConfig('page'));
+				const { warnings, logger } = captureWarnings();
+				const configuration = await createStudioConfigurationReader(logger)();
+				assert.strictEqual(configuration.navigation, undefined);
+				assert.strictEqual(warnings.length, 1);
+				assert.match(warnings[0], /studio\.navigation\.plug must be visible, tucked or hidden/);
+			});
+
+			it("ignores an application's landing, and an invalid page default, with a warning", async () => {
+				writeComponent(
+					'app',
+					`studio:\n  landing: app.page\n  pages:\n    - { id: page, name: Page, placement: tab, navigation: ${SECRET} }\n`
+				);
+				const { warnings, logger } = captureWarnings();
+				const configuration = await createStudioConfigurationReader(logger)();
+				assert.deepStrictEqual(pageKeys(configuration), ['app.page']);
+				assert.strictEqual(configuration.landing, undefined);
+				assert.strictEqual(configuration.navigation, undefined);
+				assert.strictEqual(configuration.rootNavigation, undefined);
+				assert.strictEqual(warnings.length, 1);
+				assert.match(warnings[0], /studio\.landing is read from the root config only/);
+				assert.match(warnings[0], /\('page'\) navigation must be visible, tucked or hidden; it is left out/);
+				assert.ok(!warnings[0].includes(SECRET));
+			});
+		});
+	});
+
 	describe('warnings', () => {
 		it('logs a source when its problems change, not on every call', async () => {
 			const { warnings, logger } = captureWarnings();
@@ -554,6 +864,8 @@ studio:
 				'harper-redirects.redirects': 'tucked',
 				'Dev_App-2.page': 'hidden',
 				'my.dotted.app.page': 'visible',
+				'my-app.@harperfast/redirector.redirects': 'tucked',
+				[`${'a'.repeat(63)}.${'b'.repeat(64)}`]: 'hidden',
 			};
 			await setConfiguration({
 				operation: 'set_configuration',
@@ -570,9 +882,10 @@ studio:
 			'harper redirects.redirects',
 			'harper-redirects.',
 			'.harper-redirects.redirects',
-			'app/nested.page',
+			'/app.page',
 			'harper-redirects.redirects!',
-			'@scope.page',
+			`app.${'p'.repeat(65)}`,
+			`${'a'.repeat(64)}.${'b'.repeat(64)}`,
 		]) {
 			it(`refuses the navigation key ${JSON.stringify(key)}`, async () => {
 				await assert.rejects(

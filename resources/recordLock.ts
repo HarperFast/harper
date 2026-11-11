@@ -5,7 +5,7 @@ import {
 	claimLocalKey,
 	freshLocalKey,
 	isValidFloor,
-	localIssuanceRatchet,
+	localIssuedAheadThrough,
 	timestampAbove,
 } from './originClosedFloor.ts';
 import * as envMngr from '../utility/environment/environmentManager.ts';
@@ -88,6 +88,8 @@ export interface RecordLockHandle {
 	noteCandidateFloor(version: number, claimOnWrite?: boolean): void;
 	/** Compute the next holder-write floor from committed holder versions without claiming a local key unless requested. */
 	holderVersionFloor(floor?: number, claim?: boolean): number;
+	/** The floor a write under this lock must meet or exceed, not clamped to `acquiredAt`; 0 when none. */
+	requiredVersionFloor(): number;
 	/** Compute the next holder-write version; it may consume a local key before the write commits. */
 	holderVersionCandidate(floor?: number): number;
 	/** `ts_R` of the granted cluster round; undefined while the hold is node-scoped (Phase 0). */
@@ -235,10 +237,13 @@ export function admissionStamp(
 ): { floor: number; stamp: number; claimed: boolean } {
 	if (floor <= acquiredAt) return { floor, stamp: acquiredAt, claimed: false };
 	const maxSkew = maxLockClockSkewMs();
-	const skew = floor - rootStore.getMonotonicTimestamp();
-	if (skew <= maxSkew) return { floor, stamp: claim ? claimLocalKey(rootStore, floor) : floor, claimed: claim };
+	// A floor the clock has passed lifts nothing. One ahead of it is held to the cap against wall time: a claim
+	// raises the clock, so measured from the clock each claim could lead the last.
+	const skew = floor - Date.now();
+	if (floor <= rootStore.getMonotonicTimestamp() || skew <= maxSkew)
+		return { floor, stamp: claim ? claimLocalKey(rootStore, floor) : floor, claimed: claim };
 	throw new LockUnavailableError(
-		`A record lock cannot be admitted on state stamped ${Math.round(skew)}ms ahead of this node's clock, beyond storage.maxLockClockSkew (${maxSkew}ms). The record remains unavailable until wall time catches up; check for a future context.timestamp or source peer clock skew, or wait.`
+		`A record lock cannot be admitted on state stamped ${Math.round(skew)}ms ahead of this node's wall clock, beyond storage.maxLockClockSkew (${maxSkew}ms). The record remains unavailable until wall time catches up; check for a future context.timestamp or source peer clock skew, or wait.`
 	);
 }
 
@@ -318,6 +323,13 @@ class KeyLockHandle implements RecordLockHandle {
 		return this.#resolveCandidate(floor, claim, this.#committedHolderVersion);
 	}
 
+	requiredVersionFloor(): number {
+		return Math.max(
+			this.#committedHolderVersion != null ? timestampAbove(this.#committedHolderVersion) : 0,
+			this.#candidateFloor ?? 0
+		);
+	}
+
 	holderVersionCandidate(floor?: number): number {
 		return this.#resolveCandidate(floor, true, this.#lastHolderVersion);
 	}
@@ -344,17 +356,17 @@ class KeyLockHandle implements RecordLockHandle {
 
 	/**
 	 * The smallest step past the holder's last version, claimed when it could repeat an issued key,
-	 * including after clock catch-up. Ahead of the clock it is claimed like an admission stamp:
-	 * one ulp above the ratchet is otherwise the next key the ratchet issues.
+	 * including after clock catch-up: keys issued while the clock ran ahead of the wall clock are one ulp
+	 * apart. Ahead of the clock it is claimed like an admission stamp, within the same skew of wall time.
 	 */
 	#stepPast(version: number): number {
 		const step = timestampAbove(version);
 		const rootStore = this.store.rootStore;
 		if (typeof rootStore?.getUserSharedBuffer !== 'function') return step;
-		if (step <= timestampAbove(localIssuanceRatchet(rootStore))) return claimLocalKey(rootStore, step);
-		const lead = step - rootStore.getMonotonicTimestamp();
-		if (lead <= 0) return step;
-		return lead <= maxLockClockSkewMs() ? claimLocalKey(rootStore, step) : step;
+		// only a step the clock has passed can repeat a key; one ahead of it is held to the cap
+		if (step <= rootStore.getMonotonicTimestamp())
+			return step <= timestampAbove(localIssuedAheadThrough(rootStore)) ? claimLocalKey(rootStore, step) : step;
+		return step - Date.now() <= maxLockClockSkewMs() ? claimLocalKey(rootStore, step) : step;
 	}
 
 	isExpired(): boolean {

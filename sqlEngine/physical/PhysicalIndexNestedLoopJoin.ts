@@ -17,7 +17,7 @@ import type { ExprNode } from '../parser/ast.ts';
 import type { PhysicalOp } from './op.ts';
 import type { Row, SqlEngineContext } from '../types.ts';
 import type { ConditionNode } from '../optimizer/whereToConditions.ts';
-import { compileExpr } from '../expressions/compile.ts';
+import { compileExpr, compilePredicate, neverEqual } from '../expressions/compile.ts';
 import type { SearchableTable } from './PhysicalIndexScan.ts';
 
 export interface IndexNLJoinOptions {
@@ -42,8 +42,8 @@ export interface IndexNLJoinOptions {
 export function physicalIndexNestedLoopJoin(left: PhysicalOp, opts: IndexNLJoinOptions): PhysicalOp {
 	const resource = opts.innerResource as SearchableTable;
 	const outerKeyEval = compileExpr(opts.outerKey, true).eval;
-	const innerResidual = opts.innerResidual ? compileExpr(opts.innerResidual, false) : undefined;
-	const residualOn = opts.residualOn ? compileExpr(opts.residualOn, true) : undefined;
+	const innerResidual = opts.innerResidual ? compilePredicate(opts.innerResidual, false) : undefined;
+	const residualOn = opts.residualOn ? compilePredicate(opts.residualOn, true) : undefined;
 	const prefix = `${opts.innerAlias}.`;
 
 	return {
@@ -53,19 +53,13 @@ export function physicalIndexNestedLoopJoin(left: PhysicalOp, opts: IndexNLJoinO
 			for await (const outerRow of left.execute(ctx)) {
 				const value = outerKeyEval(outerRow);
 				let matched = false;
-				if (value != null) {
+				if (!neverEqual(value)) {
 					const target = buildProbeTarget(opts, value, innerSelect);
 					for await (const innerRow of resource.search(target)) {
-						if (innerResidual) {
-							const v = innerResidual.eval(innerRow);
-							if (v == null || v === false) continue;
-						}
+						if (innerResidual && !innerResidual(innerRow)) continue;
 						const merged: Row = { ...outerRow };
 						for (const k of Object.keys(innerRow)) merged[prefix + k] = innerRow[k];
-						if (residualOn) {
-							const v = residualOn.eval(merged);
-							if (v == null || v === false) continue;
-						}
+						if (residualOn && !residualOn(merged)) continue;
 						matched = true;
 						yield merged;
 					}

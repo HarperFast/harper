@@ -118,14 +118,13 @@ async function resolveUser(
 	if (resolved.active === false) {
 		throw credentialRejectionError(AUTHENTICATION_ERROR_MSGS.USER_INACTIVE, HTTP_STATUS_CODES.UNAUTHORIZED);
 	}
-	trackUserRecords(resolved, versions);
-	if (!isCurrentUser(resolved)) {
+	const user = cloneUserView(resolved, trackUserRecords(resolved, versions));
+	if (!isCurrentUser(user)) {
 		authLogger.warn(
 			`Bearer validator's server.getUser view for '${username}' no longer matches its hdb_user/hdb_role records (user modified since lookup, or a getUser view memoized across updates)`
 		);
 		throw credentialRejectionError(AUTHENTICATION_ERROR_MSGS.GENERIC_AUTH_FAIL, HTTP_STATUS_CODES.UNAUTHORIZED);
 	}
-	const user = cloneUserView(resolved);
 	if (user.active === undefined) user.active = true;
 	return user;
 }

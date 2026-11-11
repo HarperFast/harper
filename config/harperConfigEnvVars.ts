@@ -686,7 +686,7 @@ function saveConfigState(rootPath: string, state: ConfigState): boolean {
 
 	// Atomic write: a torn state file resets to fresh on the next load, losing every
 	// restoration record — the blast radius is user config-file content
-	return atomicWriteFile(statePath, serializeConfigState(state), { skipIfUnchanged: true });
+	return atomicWriteFile(statePath, serializeConfigState(state), { skipIfUnchanged: true, ownerOnly: true });
 }
 
 function configStateMatchesDisk(rootPath: string, state: ConfigState): boolean {
@@ -701,7 +701,10 @@ function configStateMatchesDisk(rootPath: string, state: ConfigState): boolean {
 function stageConfigState(rootPath: string, state: ConfigState): boolean {
 	const backupDir = getBackupDirPath(rootPath);
 	fs.ensureDirSync(backupDir);
-	return atomicWriteFile(path.join(backupDir, pendingStateFileName()), serializeConfigState(state));
+	return atomicWriteFile(path.join(backupDir, pendingStateFileName()), serializeConfigState(state), {
+		ownerOnly: true,
+		replaces: path.join(backupDir, STATE_FILE_NAME),
+	});
 }
 
 // A rename, so an exhausted volume cannot refuse it and leave the config file described by nothing.

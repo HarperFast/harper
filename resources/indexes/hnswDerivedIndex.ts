@@ -5,6 +5,7 @@ import type { RocksTransactionLogStore } from '../RocksTransactionLogStore.ts';
 import {
 	DERIVED_INDEX_ACCEPTED,
 	DERIVED_INDEX_DEFERRED,
+	derivedIndexCursorToken,
 	readDerivedIndexReadiness,
 	sameDerivedIndexCursorVector,
 	sameDerivedIndexPositions,
@@ -117,6 +118,11 @@ export class HnswDerivedIndexBackend implements DerivedIndexBackend {
 			this.#checkedEpoch = host?.getReadiness().ownerEpoch;
 		}
 		return cursor as DerivedIndexCursor;
+	}
+
+	quietToken(): number | undefined {
+		const cursor = this.#index.indexStore.getSync(DERIVED_INDEX_CURSOR_KEY) as DerivedIndexCursor | undefined;
+		return cursor && derivedIndexCursorToken(cursor);
 	}
 
 	publishCoverage(positions: DerivedIndexPositions, ownerEpoch: bigint): void {

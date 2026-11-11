@@ -467,6 +467,34 @@ describe('Test configValidator module', () => {
 			expect(configValidator(config).error).to.be.undefined;
 		});
 
+		it('accepts replication.network and wss:// replication.privateUrls, and rejects other private URLs', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.replication = {
+				network: 'vpc-1/us-east1',
+				privateUrls: [
+					{ url: 'wss://10.0.0.5:9933', network: 'vpc-1/us-east1' },
+					{ url: 'wss://[fd00::5]:9933', network: 'vlan-7' },
+					{ url: ' WSS://10.0.0.6:9933 ', network: 'vlan-7' },
+				],
+			};
+			assert.strictEqual(configValidator(config).error, undefined);
+
+			const rejected = [
+				[{ url: 'ws://10.0.0.5:9933', network: 'a' }, 'must be a wss:// URL with a host'],
+				[{ url: 'wss:10.0.0.5:9933', network: 'a' }, 'must be a wss:// URL with a host'],
+				[{ url: 'wss://user:secret@10.0.0.5:9933', network: 'a' }, 'must not include credentials or a query'],
+				[{ url: 'wss://10.0.0.5:9933/?token=secret', network: 'a' }, 'must not include credentials or a query'],
+				[{ url: 'wss://10.0.0.5:9933/#x', network: 'a' }, 'must not include a fragment'],
+				[{ url: 'not a url', network: 'a' }, 'must be a URL'],
+				[{ url: 'wss://10.0.0.5:9933' }, "'replication.privateUrls[0].network' is required"],
+				[{ url: 'wss://10.0.0.5:9933', network: '' }, 'is not allowed to be empty'],
+			];
+			for (const [entry, reason] of rejected) {
+				config.replication = { privateUrls: [entry] };
+				assert.ok(configValidator(config).error?.message.includes(reason), JSON.stringify(entry));
+			}
+		});
+
 		it('rejects a URL-valued replication.hostname (the previously accepted string|number path) (#2218)', () => {
 			const config = testUtils.deepClone(FAKE_CONFIG);
 			config.replication = { hostname: 'http://host:9926' };

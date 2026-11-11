@@ -3,12 +3,15 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { transaction } = require('#src/resources/transaction');
 const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
-const { publishOriginFloor, reserveLocalKey, releaseLocalKey } = require('#src/resources/originClosedFloor');
+const { reserveLocalKey, releaseLocalKey } = require('#src/resources/originClosedFloor');
 const { recordUpdater } = require('#src/resources/RecordEncoder');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
+const { waitFor } = require('../waitFor');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 const add = (value) => ({ __op__: 'add', value });
+// Every later local key is above `value` once the clock has passed it; the gaps below are milliseconds.
+const clockPast = (root, value) => waitFor(() => root.getMonotonicTimestamp() > value, 1000, 1);
 
 describe('Resolved audit references fold once', function () {
 	this.timeout(30000);
@@ -91,10 +94,9 @@ describe('Resolved audit references fold once', function () {
 		it(`does not charge a visited local frame again (target ${targetFirst ? 'first' : 'last'})`, async function () {
 			if (isLMDB) return this.skip();
 			const T = createTable(`visitedAuditRefsLargeFrame${targetFirst}`);
-			publishOriginFloor(T.primaryStore.rootStore, Date.now() + 3_600_000);
 			await T.put('key-0', { count: 0, omitted: true });
 			const seed = T.primaryStore.getEntry('key-0').version;
-			publishOriginFloor(T.primaryStore.rootStore, seed + 4000);
+			await clockPast(T.primaryStore.rootStore, seed + 4);
 			await transaction({}, async () => {
 				if (targetFirst) await T.patch('key-0', { count: add(5), label: 'newest' });
 				for (let index = 1; index < 600; index++) await T.put(`filler-${index}`, { count: index });
@@ -117,9 +119,9 @@ describe('Resolved audit references fold once', function () {
 					});
 				});
 			}
-			await deliver({ count: add(3), label: 'middle' }, middleOrigin, seed + 3000, false);
+			await deliver({ count: add(3), label: 'middle' }, middleOrigin, seed + 3, false);
 			assert.strictEqual((await T.get('key-0')).count, 8);
-			await deliver({ id: 'key-0', count: 100 }, olderOrigin, seed + 2000, true);
+			await deliver({ id: 'key-0', count: 100 }, olderOrigin, seed + 2, true);
 			assert.deepStrictEqual({ ...(await T.get('key-0')) }, { id: 'key-0', count: 108, label: 'newest' });
 		});
 	}
@@ -132,13 +134,12 @@ describe('Resolved audit references fold once', function () {
 			const [historical, middle, older] = ['historical', 'middle', 'older'].map((name) =>
 				getIdOfRemoteNode(`qualified-miss-${name}`, T.auditStore)
 			);
-			publishOriginFloor(root, Date.now() + 3_600_000);
 			await T.put('key-0', { label: 'seed' });
 			const seed = T.primaryStore.getEntry('key-0');
 			let headKey;
 			let middleKey;
 			for (const isHead of [true, false]) {
-				publishOriginFloor(root, isHead ? seed.version + 4000 : headKey + 1000);
+				await clockPast(root, isHead ? seed.version + 4 : headKey + 1);
 				let handle;
 				try {
 					await root.transaction((native) => {
@@ -154,7 +155,7 @@ describe('Resolved audit references fold once', function () {
 								tableId: T.tableId,
 								recordId: 'key-0',
 								nodeId: isHead ? historical : middle,
-								version: isHead ? headKey : headKey - 1000,
+								version: isHead ? headKey : headKey - 1,
 								previousVersion: isHead ? seed.version : headKey,
 								encodedRecord: Buffer.from(
 									T.primaryStore.encoder.encode(isHead ? { label: 'newest' } : { middle: true })
@@ -193,7 +194,7 @@ describe('Resolved audit references fold once', function () {
 			assert.deepStrictEqual(T.auditStore.get(middleKey, T.tableId, 'key-0', middle).getValue(T.primaryStore), {
 				middle: true,
 			});
-			const context = { source: {}, sourceApply: true, timestamp: headKey - 2000 };
+			const context = { source: {}, sourceApply: true, timestamp: headKey - 2 };
 			assert.ok(context.timestamp > seed.version);
 			await transaction(context, async () => {
 				const resource = await T.getResource('key-0', context);
@@ -222,10 +223,9 @@ describe('Resolved audit references fold once', function () {
 				const [fillerOrigin, predecessor, protectedOrigin, older] = ['filler', 'predecessor', 'protected', 'older'].map(
 					(name) => getIdOfRemoteNode(`probe-limit-${name}`, T.auditStore)
 				);
-				publishOriginFloor(root, Date.now() + 3_600_000);
 				await T.put('victim', { label: 'seed' });
 				const seed = T.primaryStore.getEntry('victim');
-				publishOriginFloor(root, seed.version + 5000);
+				await clockPast(root, seed.version + 5);
 				await transaction({}, async () => {
 					for (let index = 0; index < 300; index++) await T.put(`local-${index}`, { value: index });
 				});
@@ -264,8 +264,8 @@ describe('Resolved audit references fold once', function () {
 						await resource._writeUpdate(id, record, fullUpdate, { isNotification: true, nodeId, version });
 					});
 				}
-				await deliver(predecessor, key + 1000, key - 2000, { middle: true });
-				const protectedContext = { source: {}, sourceApply: true, timestamp: key + 2000 };
+				await deliver(predecessor, key + 1, key - 2, { middle: true });
+				const protectedContext = { source: {}, sourceApply: true, timestamp: key + 2 };
 				await transaction(protectedContext, async () => {
 					for (let index = 1; index < knownFrameSize; index++) {
 						const id = `protected-filler-${index}`;
@@ -273,32 +273,32 @@ describe('Resolved audit references fold once', function () {
 						await resource._writeUpdate(id, { id, value: index }, true, {
 							isNotification: true,
 							nodeId: protectedOrigin,
-							version: key - 1000,
+							version: key - 1,
 						});
 					}
 					const resource = await T.getResource('victim', protectedContext);
 					await resource._writeUpdate('victim', { label: 'newest' }, false, {
 						isNotification: true,
 						nodeId: protectedOrigin,
-						version: key - 1000,
+						version: key - 1,
 					});
 				});
-				const secondKey = key + 4000;
-				await deliver(fillerOrigin, secondKey, key - 1200, { unknown: 'new' });
+				const secondKey = key + 4;
+				await deliver(fillerOrigin, secondKey, key - 1.2, { unknown: 'new' });
 				await setHead(secondKey);
-				await deliver(predecessor, secondKey + 1000, key - 1500, { second: true });
+				await deliver(predecessor, secondKey + 1, key - 1.5, { second: true });
 				await setHead(key, [
-					{ version: key + 1000, nodeId: predecessor },
+					{ version: key + 1, nodeId: predecessor },
 					{ version: secondKey, nodeId: 0 },
-					{ version: secondKey + 1000, nodeId: predecessor },
-					{ version: key + 2000, nodeId: protectedOrigin },
+					{ version: secondKey + 1, nodeId: predecessor },
+					{ version: key + 2, nodeId: protectedOrigin },
 				]);
 				assert.strictEqual(T.primaryStore.getEntry('victim').version, key);
 				assert.strictEqual(T.auditStore.get(key, T.tableId, 'victim', 0), undefined);
 				assert.strictEqual(T.auditStore.get(secondKey, T.tableId, 'victim', 0), undefined);
-				assert.strictEqual(T.auditStore.get(key + 1000, T.tableId, 'victim', predecessor).previousVersion, key);
+				assert.strictEqual(T.auditStore.get(key + 1, T.tableId, 'victim', predecessor).previousVersion, key);
 				assert.strictEqual(
-					T.auditStore.get(secondKey + 1000, T.tableId, 'victim', predecessor).previousVersion,
+					T.auditStore.get(secondKey + 1, T.tableId, 'victim', predecessor).previousVersion,
 					secondKey
 				);
 				assert.strictEqual(
@@ -313,9 +313,7 @@ describe('Resolved audit references fold once', function () {
 					).length,
 					900
 				);
-				const protectedFrame = [
-					...T.auditStore.getRange({ start: key + 2000, exactStart: true, log: protectedOrigin }),
-				];
+				const protectedFrame = [...T.auditStore.getRange({ start: key + 2, exactStart: true, log: protectedOrigin })];
 				assert.strictEqual(protectedFrame.length, knownFrameSize);
 				assert.strictEqual(protectedFrame.at(-1).recordId, 'victim');
 				const getRange = T.auditStore.getRange;
@@ -325,7 +323,7 @@ describe('Resolved audit references fold once', function () {
 					T.auditStore.getRange = function (options) {
 						const range = getRange.call(this, options);
 						const unknown = (options.start === key || options.start === secondKey) && options.log === undefined;
-						const qualified = options.start === key + 2000 && options.log === protectedOrigin;
+						const qualified = options.start === key + 2 && options.log === protectedOrigin;
 						if (!unknown && !qualified) return range;
 						const observation = { key: options.start, count: 0 };
 						(unknown ? reads : chargedReads).push(observation);
@@ -338,7 +336,7 @@ describe('Resolved audit references fold once', function () {
 							},
 						};
 					};
-					await deliver(older, secondKey + 2000, key - 3000, { id: 'victim', label: 'older', retained: true }, true);
+					await deliver(older, secondKey + 2, key - 3, { id: 'victim', label: 'older', retained: true }, true);
 				} finally {
 					T.auditStore.getRange = getRange;
 				}
@@ -360,17 +358,16 @@ describe('Resolved audit references fold once', function () {
 					{ ...(await T.get('victim')) },
 					{ id: 'victim', label: 'newest', middle: true, second: true, unknown: 'new', retained: true }
 				);
-				publishOriginFloor(root, Date.now() + 7_200_000);
 				await T.put('reset', { count: 0, omitted: true });
 				const resetSeed = T.primaryStore.getEntry('reset').version;
-				publishOriginFloor(root, resetSeed + 4000);
+				await clockPast(root, resetSeed + 4);
 				await transaction({}, async () => {
 					for (let index = 1; index < 600; index++) await T.put(`reset-filler-${index}`, { value: index });
 					await T.patch('reset', { count: add(5), label: 'newest' });
 				});
 				const resetHead = T.primaryStore.getEntry('reset').version;
-				await deliver(predecessor, resetHead - 1000, resetHead - 1000, { count: add(3) }, false, 'reset');
-				await deliver(older, resetHead - 2000, resetHead - 2000, { id: 'reset', count: 100 }, true, 'reset');
+				await deliver(predecessor, resetHead - 1, resetHead - 1, { count: add(3) }, false, 'reset');
+				await deliver(older, resetHead - 2, resetHead - 2, { id: 'reset', count: 100 }, true, 'reset');
 				assert.deepStrictEqual({ ...(await T.get('reset')) }, { id: 'reset', count: 108, label: 'newest' });
 			}
 		);
@@ -379,10 +376,9 @@ describe('Resolved audit references fold once', function () {
 	it('bounds a previously unseen unknown frame whose target is past the walk limit', async function () {
 		if (isLMDB) return this.skip();
 		const T = createTable('visitedAuditRefsUnknownCap');
-		publishOriginFloor(T.primaryStore.rootStore, Date.now() + 3_600_000);
 		await T.put('key-0', { count: 0, omitted: true });
 		const seed = T.primaryStore.getEntry('key-0').version;
-		publishOriginFloor(T.primaryStore.rootStore, seed + 4000);
+		await clockPast(T.primaryStore.rootStore, seed + 4);
 		await transaction({}, async () => {
 			for (let index = 1; index < 1100; index++) await T.put(`filler-${index}`, { count: index });
 			await T.patch('key-0', { count: add(5), label: 'middle' });
@@ -397,7 +393,7 @@ describe('Resolved audit references fold once', function () {
 				await resource._writeUpdate('key-0', record, fullUpdate, { isNotification: true, nodeId, version: timestamp });
 			});
 		}
-		await deliver({ count: add(3), label: 'newest' }, newer, seed + 5000, false);
+		await deliver({ count: add(3), label: 'newest' }, newer, largeFrame + 1, false);
 		const originalGetRange = T.auditStore.getRange;
 		let unknownEntries = 0;
 		try {
@@ -413,7 +409,7 @@ describe('Resolved audit references fold once', function () {
 					},
 				};
 			};
-			await deliver({ id: 'key-0', count: 100, label: 'older' }, older, seed + 2000, true);
+			await deliver({ id: 'key-0', count: 100, label: 'older' }, older, seed + 2, true);
 		} finally {
 			T.auditStore.getRange = originalGetRange;
 		}

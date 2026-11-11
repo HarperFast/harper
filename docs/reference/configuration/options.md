@@ -323,12 +323,17 @@ storage:
   - `maxRawHitsPerRequest` — Maximum fetched hits per request, including bounded prefix replay when traversal is needed; default `10000`.
   - `maxResultsPerRequest` — Maximum retained offset plus limit. A request must also fit the separate raw-hit budget; default `10000`.
   - `requestBudgetMilliseconds` — Execution budget across native batches, source checks and highlights, capped by the native execution limit; default `5000` ms. Reader acquisition and freshness waiting have separate bounds.
+  - `query.maxQueryTerms` — Maximum analyzed terms per full-text leaf; integer `1`–`1024`, default `64`, also bounded by the loaded native runtime.
+  - `query.maxQueryClauses` — Maximum compiled clauses, including Boolean structure and field expansion; integer `1`–`4096`, default `256`, also bounded by the loaded native runtime.
+  - `query.maxFuzzyDistance` — Maximum accepted fuzzy edit distance; integer `0`–`2`, default `1`. A cap of `0` requires explicit `fuzzyDistance: 0` on fuzzy conditions; the omitted distance still defaults to `1` and is rejected. Distance `2` requires operator opt-in and workload qualification.
   - `runtime.maxResidentIndexes` — Maximum resident native indexes; default `128`.
   - `runtime.maxIndexingThreads` — Maximum aggregate indexing-thread reservations across resident native indexes; default `128`.
   - `runtime.maxSearchThreads` — Maximum aggregate search-thread reservations across resident native indexes; default `256`.
   - `runtime.maxWriterMemoryBytes` — Aggregate writer-memory reservations across resident native indexes; default `4294967296` (4 GiB).
   - `runtime.maxQueuedBytes` — Aggregate queued-write reservations across resident native indexes; default `8589934592` (8 GiB).
   - `runtime.maxExpensiveSearches` — Maximum concurrent expensive native searches; default `8`.
+
+  The `query` policy is captured for the whole process and inherited by application and HTTP workers. A full Harper process restart is required; restarting only workers does not change it. Omitted keys keep their defaults. Requests cannot raise the policy. It changes query admission, not persisted index identity. Harper 5.4.0-alpha.1/alpha.2 reject an explicit `storage.fullText.query` block.
 
   The runtime budgets apply together and are not hard bounds on total process memory. See [Set Configuration](./operations.md#set-configuration) for when request and native runtime changes take effect. Use the usual underscore-separated parameter names, such as `storage_fullText_maxRawHitsPerRequest`. See [full-text query execution](../resources/query-optimization.md#full-text-search-work-and-paging) for costs; see [readiness and recovery](../resources/query-optimization.md#readiness-and-recovery) for failures.
 
