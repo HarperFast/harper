@@ -28,7 +28,6 @@ import { Headers, addVaryHeader, SHARED_CACHE_OPTIN, PRIVATE_SCOPE } from '../se
 import { isLocalPeerAddress } from '../server/serverHelpers/peerAddress.ts';
 import { convertToMS } from '../utility/common_utils.ts';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
-import { localIssuanceRatchet } from '../resources/originClosedFloor.ts';
 import { verifyCertificate } from './certificateVerification/index.ts';
 import {
 	authenticationChallenge,
@@ -606,14 +605,9 @@ function updateSession(this: SessionState, updatedSession, options?: { ifVersion
 				return Promise.reject(
 					new VersionConflictError(getSessionTable().tableName, ifVersion, entry.version, false, 'version reused')
 				);
-			const hasNativeClock = typeof store.getMonotonicTimestamp === 'function';
-			const nextWriteTime = hasNativeClock ? store.getMonotonicTimestamp() : getNextMonotonicTime();
-			if (
-				entry.version >= nextWriteTime &&
-				(!hasNativeClock ||
-					typeof store.rootStore?.getUserSharedBuffer !== 'function' ||
-					entry.version > localIssuanceRatchet(store.rootStore))
-			)
+			const nextWriteTime =
+				typeof store.getMonotonicTimestamp === 'function' ? store.getMonotonicTimestamp() : getNextMonotonicTime();
+			if (entry.version >= nextWriteTime)
 				return Promise.reject(
 					new VersionConflictError(
 						getSessionTable().tableName,
