@@ -4971,6 +4971,15 @@ describe('a restarted home ends its quarantine by recall (harper#3254)', () => {
 					() => recallDelegationsFromHome(cluster.database, 'gamma', 1, 2),
 					(error) => error.statusCode === 503
 				);
+				alpha.mapReason = 'apply one with record_lock_apply_homes';
+				for (const refused of [
+					() => recallDelegationsFromHome(cluster.database, 'gamma', 1, 2),
+					() => retireDelegateEpoch(cluster.database, 'gamma', 2),
+				])
+					await assert.rejects(refused, {
+						statusCode: 503,
+						message: `No agreed record lock home map for ${cluster.database}: apply one with record_lock_apply_homes`,
+					});
 				alpha.mapless = false;
 				const key = cluster.keyHomedOn('gamma');
 				const round = await alpha.coordinator.acquire(key, LEASE, WAIT);

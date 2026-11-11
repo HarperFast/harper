@@ -125,11 +125,11 @@ Content-Type: application/json
 
 Whether two requests that saw the same `ETag` can both succeed depends on the node. With [`rest.preconditionLocks`](./overview.md#configuration) at its default (`true`), on RocksDB:
 
-| Where the record is                                                                                | Concurrent conditional writes that saw the same `ETag`                             |
-| -------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| A replicated table, with cluster record locks enabled (Harper Pro `replication.recordLocks`)       | One succeeds across the cluster. The others get `412`.                             |
-| A table that is not replicated: Harper without replication, or a table declared `replicate: false` | One succeeds on that node. The others get `412`.                                   |
-| A replicated table, with cluster record locks not enabled                                          | All can succeed, and the last write wins. The condition is checked without a lock. |
+| Where the record is                                                                                | Concurrent conditional writes that saw the same `ETag`                                                                                                                                                                           |
+| -------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A replicated table, with cluster record locks enabled (Harper Pro `replication.recordLocks`)       | Checked under the record's cluster lock, one request at a time: one succeeds, and the others get `412`. Right after a home node restarts or the home map changes, the next node to take the lock may not yet see the last write. |
+| A table that is not replicated: Harper without replication, or a table declared `replicate: false` | One succeeds on that node. The others get `412`.                                                                                                                                                                                 |
+| A replicated table, with cluster record locks not enabled                                          | All can succeed, and the last write wins. The condition is checked without a lock.                                                                                                                                               |
 
 With `rest.preconditionLocks: false`, or on LMDB, every conditional write is checked without a lock. With cluster record locks enabled but no home map in place yet, a conditional write to a replicated table fails with `503`. In a cluster where only some nodes enable record locks, a conditional write on a node without them is not serialized against writes on the others.
 
