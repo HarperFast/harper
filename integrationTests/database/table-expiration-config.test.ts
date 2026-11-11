@@ -41,6 +41,14 @@ interface OperationResult {
 	body: any;
 }
 
+function parseIfJson(text: string): any {
+	try {
+		return JSON.parse(text);
+	} catch {
+		return text;
+	}
+}
+
 async function operation(ctx: ContextWithHarper, body: Record<string, unknown>): Promise<OperationResult> {
 	const response = await fetch(ctx.harper.operationsAPIURL, {
 		method: 'POST',
@@ -51,13 +59,7 @@ async function operation(ctx: ContextWithHarper, body: Record<string, unknown>):
 		body: JSON.stringify(body),
 	});
 	const text = await response.text();
-	let parsed: any = text;
-	try {
-		parsed = JSON.parse(text);
-	} catch {
-		// not JSON
-	}
-	return { status: response.status, body: parsed };
+	return { status: response.status, body: parseIfJson(text) };
 }
 
 async function ok200(ctx: ContextWithHarper, body: Record<string, unknown>) {
@@ -170,7 +172,6 @@ async function assertRowsKept(ctx: ContextWithHarper, table: string, why: string
 	}
 }
 
-// Every check after a restart runs, so a failure reports all of them, not only the first.
 function softChecks() {
 	const failures: string[] = [];
 	return {

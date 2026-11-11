@@ -348,6 +348,21 @@ describe('TTL cleanup scan interval', () => {
 		}
 	});
 
+	it('a loaded class arms the scan when a reload finds the catalog marked expiryScan', async () => {
+		const Declared = table({
+			table: 'TtlReloadExpiryScan',
+			database: databaseName,
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		const Hydrated = hydrate(Declared, 'TtlReloadExpiryScan', {});
+		try {
+			const delays = await timersArmedBy(() => Hydrated._adoptCatalogExpiration(undefined, undefined, true));
+			assert(delays.length === 1 && isNextDailySlot(delays[0]), `no daily scan armed: ${delays}`);
+		} finally {
+			Hydrated.cleanup();
+		}
+	});
+
 	it('keeps a scan for rows a cleared TTL stamped when maintenance resumes (#3934)', async () => {
 		const Table = table({
 			table: 'TtlClearedThenResumed',

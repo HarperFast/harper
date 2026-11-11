@@ -1225,7 +1225,7 @@ interface TableResourceClass {
 	getResidencyById: (id: Id) => number | void;
 	readonly residency: Readonly<ResidencyPolicy> | undefined;
 	_setResidencyPolicy(policy: ResidencyPolicy): void;
-	_adoptCatalogExpiration(expiration?: number, eviction?: number): void;
+	_adoptCatalogExpiration(expiration?: number, eviction?: number, expiryScan?: boolean): void;
 	_armCleanupScan(): void;
 	getResidencySlot(id: Id, record?: object): number;
 	getRecordResidency(entry: Partial<Entry>): readonly string[] | undefined;
@@ -2802,7 +2802,12 @@ export function makeTable(options): TableResourceClass {
 		 * load would. A TTL that this thread's own schema declaration or application code set is kept, as it is
 		 * across a restart, which re-applies it over the catalog.
 		 */
-		static _adoptCatalogExpiration(expiration?: number, eviction?: number) {
+		static _adoptCatalogExpiration(expiration?: number, eviction?: number, expiryScan?: boolean) {
+			// rows another thread stamped under a TTL it since cleared need the scan whoever owns this thread's TTL
+			if (expiryScan && !retainExpiryScan) {
+				retainExpiryScan = true;
+				scheduleCleanup();
+			}
 			if (ttlConfiguredByApplication || ttlDeclaredBySchema) return;
 			expiration ||= 0;
 			eviction ||= 0;

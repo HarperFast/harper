@@ -2376,7 +2376,7 @@ function initStores(
 			if (!destination) requestComputedIndexRepair(table);
 			if (replicaExpiration !== undefined || replicaRefreshFraction !== undefined)
 				table.setTTLExpiration({ replicaExpiration, replicaRefreshFraction, fromSchema: true });
-			table._adoptCatalogExpiration(expiration, eviction);
+			table._adoptCatalogExpiration(expiration, eviction, primaryAttribute.expiryScan === true);
 		} else {
 			if (recreateForTableIdChange) table.cleanup();
 			table = setTable(
