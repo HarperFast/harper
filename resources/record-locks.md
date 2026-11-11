@@ -126,8 +126,11 @@ Consequences that shape the code:
   scope's final commit (`scopeEnding`) is not waited out. A `lock()` made by the scope's own pre-commit hook
   (`operation.before`, a source write-through) while that hook runs belongs to the commit, which awaits it:
   `runCommitHook` marks the invocation in an `AsyncLocalStorage` (`currentCommitHook`) until the hook settles;
-  only that follows the hook's awaits, which the two calls the marker identifies come after. The cache-fill blob
-  save runs no user code, so it is a `beforeIntermediate` and is not wrapped (harper#4085).
+  only that follows the hook's awaits, which the two calls the marker identifies come after. So does one from a
+  hook nested under it, run by a commit the hook started on another transaction (`isOwnCommitHook` walks the
+  marker's `parent` chain through unsettled invocations to one of the scope's root): the commit awaits the outer
+  hook, which awaits the writes it makes. Work a settled hook left running is awaited by neither, so it waits.
+  The cache-fill blob save runs no user code, so it is a `beforeIntermediate` and is not wrapped (harper#4085).
   Outside `transaction()` the marker also names the committing link: an unlocked write made within that hook
   on that link, directly or through a commit the hook started on another link (the marker's `parent` chain), is
   staged into the commit and resolves without awaiting it, where any other unlocked write joining the parked
@@ -309,17 +312,21 @@ could read as a re-delivery — a shared counter loses an increment. Each write'
 separately at save. A floor the clock has already passed takes the
 clock's next key. A floor ahead of the clock within `storage.maxLockClockSkew` (default 5 s; a malformed
 value falls back to it with a warning) is claimed as a unique local key
-(`claimLocalKey`), which lifts every later local key on this node, locked or not, above it: the node's
-log clock never runs behind state it admitted a lock on. Past the cap, or with a cap of `0`, admission
-fails with `LockUnavailableError` before a holder write is staged or an issuance ceiling is reserved. Both a far-future replicated
+(`claimLocalKey`), which raises rocksdb-js's process-wide clock, so every later local key on this node,
+locked or not, is above it: the node's log clock never runs behind state it admitted a lock on. A floor the
+clock has already passed lifts nothing and is admitted whatever the cap; one ahead of it is held to the cap
+measured from wall time, not from the clock an earlier claim lifted, so successive claims cannot compound
+past it. Past the cap, or under a cap of `0`, a floor still ahead of the clock fails admission with
+`LockUnavailableError` before a holder write is staged or an issuance ceiling is reserved. Both a far-future replicated
 version and a local write stamped with a future `context.timestamp` can therefore leave the record unavailable until wall time catches up (callers that stamp future versions on records they also `lock()` must keep the lead within `storage.maxLockClockSkew`). Rewriting or deleting
 at normal clock time does not resolve it because those writes still lose LWW; repair the source
-peer's clock, rewrite at or above that version, or wait. A key the
-ratchet issues ahead of the clock is covered by a ceiling flushed before use, including when another
-worker stored that ceiling. Coverage reserves one second of headroom; restart seeds above that whole
-reserve, so it can add up to a second of clock lead while preventing key reuse. The initial recovery ceiling is shared in the ratchet buffer; later workers opening the live database do not consume unused headroom (resources/DESIGN.md "Origin-closed timestamp floor"). For the same
-reason a handle's `acquiredAt` and a cluster round's `tsR` come from that allocator (`freshLocalKey`),
-not a raw clock sample, which could equal an issued key once the clock catches up. Re-entry and
+peer's clock, rewrite at or above that version, or wait. A claim
+persists its ceiling, flushed, before it raises the clock, and every later key at least a millisecond ahead
+of the wall clock is covered the same way before use, including when another worker or another
+database's claim raised the clock. Coverage reserves one second of headroom; restart seeds above that whole
+reserve, so it can add up to a second of clock lead while preventing key reuse. The initial recovery ceiling is shared in the floor's buffer; later workers opening the live database do not consume unused headroom (resources/DESIGN.md "Origin-closed timestamp floor"). A
+handle's `acquiredAt` and a cluster round's `tsR` come from `freshLocalKey`, which covers a key minted
+ahead of the wall clock as a reservation does. Re-entry and
 coalesced followers do not perform a new admission. A scoped → hold upgrade primes its next version
 before changing modes and can claim a deferred floor.
 
@@ -335,9 +342,11 @@ reserved key never moves and no holder version exceeds its log key (harper#3238)
 replica version clamp: applied writes preserve an explicit record version even when it exceeds the origin log
 key. A hold steps one ulp past its last version,
 which keeps advancing above 2^42 ms, where a fixed 0.000488 ms step no longer changes a double; a step
-ahead of the clock within the cap is claimed, since one ulp above the ratchet is the next key it
-issues. A step at or below the ratchet's next key is also claimed, even after clock catch-up, so it
-cannot repeat a key issued during the lead. Such a claim can advance a hold save beyond a later plain
+ahead of the clock within the cap is claimed, since one ulp above the clock's last key is its next one.
+Keys minted while the clock runs ahead of the wall clock are one ulp apart, so a step the clock has passed
+that is at or below one ulp above the database's covered ceiling or last raise (`localIssuedAheadThrough`)
+is also claimed, even after clock catch-up, so it cannot repeat a key issued during the lead. A lead under a millisecond is not
+covered, like a burst of keys minted within one ulp of each other on the wall clock. Such a claim can advance a hold save beyond a later plain
 write rather than retain acquisition order; plain writes remain ungated. The Phase 0 ordering tradeoff
 is tracked in harper#3246.
 
@@ -375,13 +384,14 @@ unlock as before.
 `before` hook, then applies it. While a hook's synchronous part runs (`syncCommitHooks`), a save of the same record
 would apply first and be overwritten, so it is refused with a 409, locked or not and on any link (only the hook
 can be saving then; a rejected promise at top level), and changing a lock-writable instance whose own write runs the hook is refused (`update()` and
-`[ASSERT_TRACKED_WRITABLE]`, which every setter passes): that write stores the instance's changes object, so a refused save of them would land
-with it. After the hook's first await the outer write has applied: an unlocked same-record write chains after it,
+`[ASSERT_TRACKED_WRITABLE]`, which every setter passes, find it as the write's `stagedBy`). That write either stores the instance's changes
+object — a patch, or a full `update(record, true)`, which makes the record those changes — so a refused save of them would land with it, or
+stores a record passed to it and clears those changes as it commits, dropping the change unreported. After the hook's first await the outer write has applied: an unlocked same-record write chains after it,
 and a holder write is refused as above. On a self-committing link, `update()` through the lock whose commit runs
 the hook is refused too: nothing would commit the deferred write, and left staged it would refuse a fresh `lock()`
 of the record on that context. A hook awaits or catches its writes: an ignored refusal is an unhandled rejection
 and the outer write still commits. An object mutated in place after it was passed to the outer write is not
-tracked and changes that write. LMDB applies writes at commit in staging order, so there the hook's write lands
+tracked and changes that write, the record of a holder's full update included. LMDB applies writes at commit in staging order, so there the hook's write lands
 after the outer one.
 
 **Hold handles and re-entrancy scope.** A hold handle stays registered on the resource instance
@@ -1626,7 +1636,8 @@ feature that has not yet been measured.
 >    unlocked write before `lock()`, keeps its clock; state beyond `storage.maxLockClockSkew` rejects
 >    admission; and any lock write (scoped or held, including disjoint-field patches and commutative ops)
 >    saved in an explicit transaction whose clock is already fixed below the lock's required floor is
->    refused with a 409 ([harper#2712](https://github.com/HarperFast/harper/issues/2712)). To avoid the 409, take the lock first or save the held record in its own transaction.
+>    refused with a 409 ([harper#2712](https://github.com/HarperFast/harper/issues/2712)), unless it stores nothing: a tracked write whose captured
+>    changes collapse to no patch (`stagesWriteChange`), so a read-only lock still commits. To avoid the 409, take the lock first or save the held record in its own transaction.
 > 2. **Successor freshness is not promised on the recovery path.** The §7.2 barrier drains streams
 >    from every _reachable_ member, so a write the predecessor committed and did not replicate is
 >    invisible to it: the barrier succeeds and the successor reads a stale value. Three routes in, and

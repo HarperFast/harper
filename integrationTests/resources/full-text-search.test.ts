@@ -1,5 +1,6 @@
 import { suite, test, before, after } from 'node:test';
 import assert from 'node:assert';
+import { Agent, fetch as fetchWithAgent } from 'undici';
 import { readFile, writeFile, readdir } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -86,15 +87,15 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 		return text ? JSON.parse(text) : undefined;
 	}
 
-	async function operation(body: Record<string, unknown>) {
+	async function operation(body: Record<string, unknown>, auth = authorization, expectedStatus = 200) {
 		const response = await fetch(ctx.harper.operationsAPIURL, {
 			method: 'POST',
-			headers: { 'Authorization': authorization, 'Content-Type': 'application/json' },
+			headers: { 'Authorization': auth, 'Content-Type': 'application/json' },
 			body: JSON.stringify(body),
 			signal: AbortSignal.timeout(45_000),
 		});
 		const text = await response.text();
-		assert.strictEqual(response.status, 200, `operation ${body.operation}: ${text}`);
+		assert.strictEqual(response.status, expectedStatus, `operation ${body.operation}: ${text}`);
 		return JSON.parse(text);
 	}
 
@@ -329,6 +330,128 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 		const record = await request('/Product/one');
 		assert.strictEqual(record.title, 'Waterproof Trail Running Shoes');
 		assert.ok(!Object.hasOwn(record, 'catalogSearch'));
+	});
+
+	test('ranks required matches with optional clauses through HTTP QUERY and operations', async () => {
+		const baseline = await search(query('waterproof', { fields: ['title'] }, { select: ['id', 'title', '$score'] }));
+		const target = query(
+			'waterproof',
+			{
+				fields: ['title'],
+				boost: 0.5,
+				should: [{ comparator: 'matches_phrase', value: 'trail running', fields: ['title'], boost: 10 }],
+			},
+			{ select: ['id', 'title', '$score', '$highlights'] }
+		);
+		const ranked = await search(target);
+		assert.deepStrictEqual(ids(ranked), ids(baseline));
+		assert.deepStrictEqual(
+			baseline.map(({ id }) => id),
+			['two', 'one']
+		);
+		assert.notDeepStrictEqual(
+			ranked.map(({ id }) => id),
+			baseline.map(({ id }) => id)
+		);
+		const baselineById = new Map(baseline.map((record) => [record.id, record]));
+		assert.strictEqual(ranked[1].$score, Math.fround(baselineById.get('two').$score * 0.5));
+		assert(ranked[0].$score > Math.fround(baselineById.get('one').$score * 0.5));
+
+		assert.deepStrictEqual(
+			ranked.map(({ id }) => id),
+			['one', 'two']
+		);
+		assert.deepStrictEqual(
+			ranked[0].$highlights.title.flatMap(({ spans }) => spans),
+			[
+				{ start: 0, end: 10 },
+				{ start: 11, end: 24 },
+			]
+		);
+		const dispatcher = new Agent({ connections: 1, pipelining: 1 });
+		try {
+			const rest = await fetchWithAgent(`${ctx.harper.httpURL}/Product/`, {
+				dispatcher,
+				method: 'QUERY',
+				headers: { 'Authorization': authorization, 'Content-Type': 'application/json' },
+				body: JSON.stringify(target),
+			});
+			assert.strictEqual(rest.status, 200, await rest.clone().text());
+			assert.deepStrictEqual(await rest.json(), ranked);
+			const certified = await fetchWithAgent(`${ctx.harper.httpURL}/Product/`, {
+				dispatcher,
+				method: 'QUERY',
+				headers: { 'Authorization': authorization, 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					...target,
+					conditions: target.conditions.map((condition) => ({
+						...condition,
+						waitForIndexMilliseconds: 0,
+						maxIndexLagMilliseconds: 5000,
+					})),
+				}),
+			});
+			assert.strictEqual(certified.status, 200, await certified.clone().text());
+			assert.match(certified.headers.get('harper-index-coverage'), /^(current|bounded); lag=.*; tolerance=5000$/);
+			assert.deepStrictEqual(await certified.json(), ranked);
+		} finally {
+			await dispatcher.close();
+		}
+
+		const operations = await operation({
+			operation: 'search_by_conditions',
+			schema: 'data',
+			table: 'Product',
+			conditions: target.conditions,
+			get_attributes: target.select,
+		});
+		assert.deepStrictEqual(operations, ranked);
+		for (const rootControls of [{ boost: 2 }, { should: target.conditions[0].should }]) {
+			const misplaced = await fetch(ctx.harper.operationsAPIURL, {
+				method: 'POST',
+				headers: { 'Authorization': authorization, 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					operation: 'search_by_conditions',
+					schema: 'data',
+					table: 'Product',
+					...query('waterproof'),
+					...rootControls,
+				}),
+			});
+			assert.strictEqual(misplaced.status, 400, await misplaced.text());
+		}
+
+		const page = await request('/Product/', {
+			method: 'QUERY',
+			body: JSON.stringify({ ...target, offset: 1, limit: 1 }),
+		});
+		assert.deepStrictEqual(
+			page.map(({ id }) => id),
+			['two']
+		);
+		await request('/Product/', { method: 'QUERY', body: JSON.stringify(query('waterproof', { boost: '2' })) }, 400);
+		const invalid = await fetch(ctx.harper.operationsAPIURL, {
+			method: 'POST',
+			headers: { 'Authorization': authorization, 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				operation: 'search_by_conditions',
+				schema: 'data',
+				table: 'Product',
+				...query('waterproof', { should: [] }),
+			}),
+		});
+		assert.strictEqual(invalid.status, 400, await invalid.text());
+		const negated = await fetch(ctx.harper.operationsAPIURL, {
+			method: 'POST',
+			headers: { 'Authorization': authorization, 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				operation: 'search_by_conditions',
+				schema: 'data',
+				table: 'Product',
+				...query('waterproof', { negated: true, boost: 2 }),
+			}),
+		});
+		assert.strictEqual(negated.status, 400, await negated.text());
 	});
 
 	test('returns exact query-mode matches from Table.search and the REST parser', async () => {
@@ -572,6 +695,63 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 			),
 		});
 		assert.deepStrictEqual(restAllowed, allowed);
+		const scoringAllowed = query(
+			'waterproof',
+			{
+				fields: ['title'],
+				should: [{ comparator: 'matches_phrase', value: 'trail running', fields: ['title'], boost: 10 }],
+			},
+			{ select: ['id', 'title', '$score'] }
+		);
+		const scoringRest = await request('/Product/', {
+			method: 'QUERY',
+			headers: { Authorization: READER_AUTH },
+			body: JSON.stringify(scoringAllowed),
+		});
+		assert.deepStrictEqual(
+			scoringRest.map(({ id }) => id),
+			['one', 'two']
+		);
+		const scoringOperations = await operation(
+			{
+				operation: 'search_by_conditions',
+				schema: 'data',
+				table: 'Product',
+				conditions: scoringAllowed.conditions,
+				get_attributes: scoringAllowed.select,
+			},
+			READER_AUTH
+		);
+		assert.deepStrictEqual(scoringOperations, scoringRest);
+		for (const should of [
+			[{ comparator: 'matches', value: 'classified', fields: ['description'] }],
+			[{ comparator: 'matches', value: 'classified' }],
+		]) {
+			await request(
+				'/Product/',
+				{
+					method: 'QUERY',
+					headers: { Authorization: READER_AUTH },
+					body: JSON.stringify(
+						query('waterproof', { fields: ['title'], should }, { select: ['id', 'title', '$score'] })
+					),
+				},
+				403
+			);
+
+			await operation(
+				{
+					operation: 'search_by_conditions',
+					schema: 'data',
+					table: 'Product',
+					conditions: query('waterproof', { fields: ['title'], should }).conditions,
+					get_attributes: ['id', 'title', '$score'],
+				},
+				READER_AUTH,
+				403
+			);
+		}
+
 		const restHidden = await request('/Product/', {
 			method: 'QUERY',
 			headers: { Authorization: READER_AUTH },

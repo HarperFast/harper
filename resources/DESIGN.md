@@ -69,7 +69,7 @@ The synthesized target keeps the collection flag, or the batch is one null-keyed
 - A key is reserved on its thread before the first staged write (`DatabaseTransaction.save`, `reserveLocalKey`). Otherwise `RocksTransactionLogStore.put` throws: a logged violation is unrepairable.
 - A thread marks its bound pending before minting; samplers raise `proposed` before reading bounds, so one side sees the other. Compare-and-swap maxima keep concurrent certifiers safe. `localStartBound` cannot yield, so it uses the carried bound or the floor published before its sample, never a clock (harper#3599).
 - **Every `local` key is minted** (`reserve`, `freshKey`). A caller's value is only the record version (`uniqueLocalLogKeys.test.js`).
-- The floor syncs before publication where the engine has `syncWal` (`originFloorsDurable`), and the issuance ceiling is persisted before use (`coverLocalIssuance`), so a restart seeds keys above both. Once the ratchet issues a key, strict compare-and-swap admission lasts for the process. Gaps: power loss without `syncWal`, version-only re-delivery of a local explicit-timestamp write past the walk cap (harper#1148), older binaries, LMDB.
+- The floor syncs before publication where the engine has `syncWal` (`originFloorsDurable`), and the issuance ceiling is persisted before use (`coverLocalIssuance`, `noteIssued`), so a restart seeds keys above both. Gaps: power loss without `syncWal`, version-only re-delivery of a local explicit-timestamp write past the walk cap (harper#1148), older binaries, LMDB.
 - A reservation ends only at its handle's terminal settle or an abort. Worker bounds retire only on main's `worker.on('exit')`, after its commits drain.
 - `progress()` reports `certifiedThrough`. A notify pass captures `localStartBound` before it drains; a same-thread registry uses its own `threadStartBound`, runs no capture tick and certifies no scalar replay (`subscribeProgress.test.js`).
 
@@ -269,7 +269,7 @@ If this same write (origin and log key) emptied the key, `_writeDelete` writes n
 
 ## Cluster-origin table definitions are additive-only
 
-An `origin: 'cluster'` definition is a peer snapshot, so `table()` only adds from it and logs what it discards. Drops and redefinitions never converge via gossip (recover via local `create_attribute` or redeploy). Abandoned index builds still recover (`clusterSchemaMerge.test.js`). A reload keeps a thread's own TTL.
+An `origin: 'cluster'` definition is a peer snapshot, so `table()` only adds from it and logs what it discards. Drops and redefinitions never converge via gossip (recover via local `create_attribute` or redeploy). Abandoned index builds still recover (`clusterSchemaMerge.test.js`). A reload keeps a thread's own TTL. `@table` omitting a TTL clears it (`null`); `table()` omitting one keeps it.
 
 ## `drop_attribute` never removes the primary key, and a strip keeps each row's version
 
@@ -346,7 +346,7 @@ Replay reads bases with `uncachedRead`: cached WeakRefs outlived the replay, kee
 ## Chained query conditions scope one array element; FIQL tokens always advance
 
 - `a=ge=X&=le=Y` collapses in `prepareConditions` so both paths agree; separate legs match any element; other chains 400. Array ranges dedupe (`distinctRecords`; `query-array-scoping.test.js`).
-- Values (not `target`) convert to leaf/element type (`''`→`null` bar `String`/`Any`; `Any` & untyped coercing ops `autoCast`, so numeric/bool/date text in `[Any]`/`Any` misses `=`), chains too (`coerceConditionValue`; `restConditionCoercion.test.js`; harper#3950).
+- Values (not `target` or pattern text) convert to leaf/element type (`''`→`null` bar `String`/`Any`; `Any` & untyped coercing ops `autoCast`, so numeric/bool/date text in `[Any]`/`Any` misses `=`), chains too (`coerceConditionValue`; `restConditionCoercion.test.js`; harper#3950).
 - In `parseBlock`, a pending condition makes next token a value; only group end picks tokenizer. **Every token must advance**: 0-length match errors or regexes loop (`query-parse.test.js`).
 
 ## A table declaration lands where the application's `databases` binding points

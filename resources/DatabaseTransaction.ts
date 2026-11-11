@@ -32,7 +32,7 @@ import {
 	constants,
 } from '@harperfast/rocksdb-js';
 import {
-	localIssuanceRatchet,
+	localIssuanceFloor,
 	rekeyLocalRetry,
 	releaseLocalKey,
 	reserveLocalKey,
@@ -727,7 +727,13 @@ export type TransactionWrite = {
 	entry?: Partial<Entry>;
 	before?: () => void | Promise<void>;
 	beforeIntermediate?: () => void | Promise<void>;
+	// the instance that staged this write: its commit stores that instance's changes or clears them
+	stagedBy?: object;
+	// set only when this write's record is that instance's tracked changes, with the changes object the write
+	// captured: a later update can replace the instance's own, so only an empty collapse of these means the write
+	// stores nothing. A write carrying a record of its own leaves both unset.
 	trackedInstance?: object;
+	trackedChanges?: object;
 	// stages the record and its audit entry before returning: staging reads what it appended (stagedAudit)
 	// as soon as it returns. A returned promise is only a completion to wait for.
 	commit?: (
@@ -1031,7 +1037,7 @@ function unappliedHookWriteTo(operation: TransactionWrite): boolean {
 }
 
 export function instanceWriteInSyncCommitHook(instance: object): boolean {
-	for (const hook of syncCommitHooks) if (hook.write.trackedInstance === instance) return true;
+	for (const hook of syncCommitHooks) if (hook.write.stagedBy === instance) return true;
 	return false;
 }
 
@@ -1057,14 +1063,10 @@ function holderWriteRefusal(handle: RecordLockHandle): ClientError {
 
 function stagesWriteChange(operation: TransactionWrite): boolean {
 	const instance = operation.trackedInstance as any;
-	if (!instance) return true;
+	if (!instance || operation.fullUpdate) return true;
 	operation.captureChanges?.();
 	return (
-		collapseChanges(
-			instance,
-			typeof instance.getChanges === 'function' ? instance.getChanges() : undefined,
-			instance.constructor?.loadAsInstance !== false
-		) !== undefined
+		collapseChanges(instance, operation.trackedChanges, instance.constructor?.loadAsInstance !== false) !== undefined
 	);
 }
 
@@ -2847,9 +2849,9 @@ export class DatabaseTransaction implements Transaction {
 						const effectiveClock =
 							txnTime ||
 							(typeof rootStore?.getUserSharedBuffer === 'function'
-								? nativeClock > localIssuanceRatchet(rootStore)
+								? nativeClock > localIssuanceFloor(rootStore)
 									? nativeClock
-									: Math.max(rootStore.getMonotonicTimestamp(), localIssuanceRatchet(rootStore))
+									: Math.max(rootStore.getMonotonicTimestamp(), localIssuanceFloor(rootStore))
 								: nativeClock);
 						if (floor > effectiveClock) {
 							if (reservedLocalKey(transaction) === undefined && !this.hasUnlockedWrite()) {

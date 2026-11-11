@@ -113,7 +113,14 @@ import {
 } from './recordLock.ts';
 import { getThisNodeName } from '../server/nodeName.ts';
 import * as envMngr from '../utility/environment/environmentManager.ts';
-import { addSubscription, certifiedFloors, certifiedThrough, completedReplayThrough } from './transactionBroadcast.ts';
+import {
+	addSubscription,
+	broadcastRange,
+	certifiedFloors,
+	certifiedThrough,
+	completedReplayThrough,
+	isDispatching,
+} from './transactionBroadcast.ts';
 import { keyArrayToString } from './Resources.ts';
 import {
 	ORIGIN_ID,
@@ -192,6 +199,7 @@ import {
 	compileConditions,
 	fullTextComparatorMode,
 	validateFullTextFuzzyOptions,
+	validateFullTextScoringOptions,
 	ALTERNATE_COMPARATOR_NAMES,
 	keyPredicate,
 } from './search.ts';
@@ -321,7 +329,12 @@ import {
 import { RequestTarget } from './RequestTarget.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
 import { throttle } from '../server/throttle.ts';
-import { RocksDatabase, Transaction as RocksTransaction, constants as rocksConstants } from '@harperfast/rocksdb-js';
+import {
+	RocksDatabase,
+	Transaction as RocksTransaction,
+	TransactionLogUntilUnreachedError,
+	constants as rocksConstants,
+} from '@harperfast/rocksdb-js';
 import { LMDBTransaction, ImmediateTransaction as ImmediateLMDBTransaction } from './LMDBTransaction.ts';
 import {
 	contentTypes,
@@ -802,10 +815,42 @@ export function replicaExpirationMsOf(seconds: unknown): number | undefined {
 	if (!Number.isFinite(ms)) throw new Error('replicaExpiration is too large');
 	return ms;
 }
+// the scan cadence of a table with no TTL, which an expiring write arms for its per-record expiry
+const DEFAULT_CLEANUP_INTERVAL = 86_400_000;
+// the latest Date, in seconds: an expiry past it cannot be stamped on a record
+const MAX_TTL_SECONDS = 8.64e12;
+/**
+ * A table's `expiration`, `eviction` or `scanInterval` in seconds, as a declaration or `setTTLExpiration` gives
+ * it: undefined when not given, 0 for `null` (cleared), else a number or a numeric string (a create persisted it
+ * as given) that is finite and zero or more.
+ */
+export function ttlSecondsOf(table: string, field: string, value: unknown): number | undefined {
+	if (value === undefined) return undefined;
+	if (value === null) return 0;
+	const seconds =
+		typeof value === 'number' ? value : typeof value === 'string' && value.trim() !== '' ? Number(value) : NaN;
+	if (seconds >= 0 && seconds <= MAX_TTL_SECONDS) return seconds;
+	throw new ClientError(
+		`${field} of '${table}' must be a non-negative number of seconds, got ${describeTtlValue(value)}`
+	);
+}
+/** A TTL field as the catalog holds it: absent unless a valid positive number of seconds. */
+export function savedTtlSeconds(value: unknown): number | undefined {
+	const seconds = typeof value === 'number' || typeof value === 'string' ? Number(value) : NaN;
+	return seconds > 0 && seconds <= MAX_TTL_SECONDS ? seconds : undefined;
+}
+/** A rejected TTL value for a message: bounded, and never a value that cannot be rendered. */
+export function describeTtlValue(value: unknown): string {
+	if (typeof value === 'number' || typeof value === 'bigint' || typeof value === 'boolean') return String(value);
+	if (typeof value === 'string') return JSON.stringify(value.slice(0, 40));
+	return value === null ? 'null' : typeof value;
+}
 const TEST_WRITE_KEY_BUFFER = Buffer.allocUnsafeSlow(8192);
 const MAX_KEY_BYTES = 1978;
 const EVENT_HIGH_WATER_MARK = 100;
 const REPLAY_YIELD_INTERVAL = 100; // yield to the event loop every N records during subscription replay
+const UNREACHED_LOG_POLL_MS = 100;
+const UNREACHED_LOG_LIMIT_MS = 5000;
 // Cap for the out-of-order write reconciliation audit-chain walk in commit(). A pathologically deep
 // audit history (e.g. a replication full-copy of a large-history database) would otherwise walk and
 // buffer the entire backward chain per record, synchronously, on every worker — pinning the JS heap
@@ -1184,7 +1229,8 @@ interface TableResourceClass {
 	getResidencyById: (id: Id) => number | void;
 	readonly residency: Readonly<ResidencyPolicy> | undefined;
 	_setResidencyPolicy(policy: ResidencyPolicy): void;
-	_adoptCatalogExpiration(expiration?: number, eviction?: number): void;
+	_adoptCatalogExpiration(expiration?: number, eviction?: number, expiryScan?: boolean): void;
+	_armCleanupScan(): void;
 	getResidencySlot(id: Id, record?: object): number;
 	getRecordResidency(entry: Partial<Entry>): readonly string[] | undefined;
 	get expirationMS(): any;
@@ -1768,9 +1814,12 @@ function rescope(resolved: ResolvedRecordLockOptions, tableReplicates: boolean):
 
 const retryAfterScopeCommit = Symbol('retry after the scope commit');
 
+// The commit awaits a nested hook only through unsettled frames: work a settled hook left running is not awaited.
 function isOwnCommitHook(root: DatabaseTransaction): boolean {
-	const hook = currentCommitHook();
-	return hook !== undefined && hook.active && hook.root === root;
+	for (let hook = currentCommitHook(); hook?.active; hook = hook.parent) {
+		if (hook.root === root) return true;
+	}
+	return false;
 }
 
 /** A link that left the chain no longer reports its scope's state; the chain root does. */
@@ -1953,13 +2002,15 @@ export function makeTable(options): TableResourceClass {
 	// a store on any thread wakes the sweep when [1] is 0
 	let replicaSweepState: Int32Array | undefined;
 	let recordScanInterval = 0;
-	let recordCleanupInterval = 86400000;
 	const replicaRefreshInFlight = new Set<Id>();
 	const replicaRefreshInFlightComposite = new Set<string>();
 	// Set when the TTL exists only on this thread: either application code configured it at runtime, or
 	// an isolated application's schema was declared here. Hydrating persisted metadata does not set it:
 	// dedicated workers open unrelated shared tables too, whose scan remains owned by the pool.
-	let ttlConfiguredByApplication = false;
+	let ttlOwnedByThread = false;
+	// Which part of the TTL in effect application code set, rather than a schema: a declaration with no
+	// TTL keeps that part and clears the rest. The number form sets only the expiration.
+	let applicationTtl: 'none' | 'expiration' | 'all' = 'none';
 	let ttlDeclaredBySchema = false;
 	let ttlFromLoad = false; // true only around a catalog load's setTTLExpiration call
 	evictionMs ??= 0;
@@ -2025,7 +2076,7 @@ export function makeTable(options): TableResourceClass {
 	let prefetchCallbacks = [];
 	let untilNextPrefetch = 1;
 	let nonPrefetchSequence = 2;
-	let cleanupInterval = 86400000;
+	let cleanupInterval = DEFAULT_CLEANUP_INTERVAL;
 	let cleanupPriority = 0;
 	let lastCleanupInterval: number | undefined;
 	let cleanupTimer: NodeJS.Timeout | undefined;
@@ -2035,6 +2086,8 @@ export function makeTable(options): TableResourceClass {
 	let disposed = false;
 	// true once a table-level expiration/eviction/scanInterval has armed the periodic cleanup scan at setup
 	let expirationScanScheduled = false;
+	// rows stamped under a TTL since cleared keep their expiry, so their (daily) scan outlives the TTL
+	let retainExpiryScan = Boolean(options.expiryScan);
 	// set on the first expiring write so the unscheduled-expiration warning is evaluated at most once per table
 	let expirationWarningChecked = false;
 	let writerResidencyWarned = false;
@@ -2791,23 +2844,29 @@ export function makeTable(options): TableResourceClass {
 		 * load would. A TTL that this thread's own schema declaration or application code set is kept, as it is
 		 * across a restart, which re-applies it over the catalog.
 		 */
-		static _adoptCatalogExpiration(expiration?: number, eviction?: number) {
-			if (ttlConfiguredByApplication || ttlDeclaredBySchema) return;
-			const loadedExpirationMs = expiration && expiration > 0 ? expiration * 1000 : 0;
-			const loadedEvictionMs = eviction && eviction > 0 ? eviction * 1000 : 0;
-			if (!loadedExpirationMs && !loadedEvictionMs) return;
-			if (loadedExpirationMs === expirationMs && loadedEvictionMs === evictionMs) return;
-			evictionMs = loadedEvictionMs;
-			if (!loadedExpirationMs) {
-				expirationMs = 0;
-				return;
+		static _adoptCatalogExpiration(expiration?: number, eviction?: number, expiryScan?: boolean) {
+			// rows another thread stamped under a TTL it since cleared need the scan whoever owns this thread's TTL
+			if (expiryScan && !retainExpiryScan) {
+				retainExpiryScan = true;
+				scheduleCleanup();
 			}
+			if (ttlOwnedByThread || ttlDeclaredBySchema) return;
+			expiration ||= 0;
+			eviction ||= 0;
+			if (expiration * 1000 === (expirationMs || 0) && eviction * 1000 === evictionMs) return;
 			ttlFromLoad = true;
 			try {
-				TableResource.setTTLExpiration(loadedExpirationMs / 1000);
+				TableResource.setTTLExpiration({ expiration, eviction });
 			} finally {
 				ttlFromLoad = false;
 			}
+		}
+		/**
+		 * Arm the cleanup scan of a table this thread loaded before it could own the scan: under `threads: 0` the
+		 * main thread loads every table before it becomes worker 0.
+		 */
+		static _armCleanupScan() {
+			if (expirationScanScheduled || evictionMs || retainExpiryScan) scheduleCleanup();
 		}
 		static getResidencySlot(id: Id, record?: object): number {
 			return calculateResidencySlot(id, record);
@@ -3934,9 +3993,11 @@ export function makeTable(options): TableResourceClass {
 		 * @param opts Time in seconds until records expire, or an options object with `expiration`, `eviction`,
 		 * and `scanInterval` (all in seconds, all optional). Number form preserves any previously configured
 		 * eviction/scanInterval; object form replaces all three, unless it names only the replica options. An internal schema ownership-only call with
-		 * none of those values preserves the settings already loaded from the catalog.
+		 * none of those values preserves the settings already loaded from the catalog, and so does an internal
+		 * schema call with no TTL on a thread whose application code configured one.
 		 * Either form then scans for expired records every `scanInterval`, or a quarter of expiration + eviction
-		 * when none is configured.
+		 * when none is configured, or daily (for per-record expiry) when the table has no TTL. A rejected value
+		 * changes nothing.
 		 */
 		static setTTLExpiration(
 			opts:
@@ -3953,42 +4014,52 @@ export function makeTable(options): TableResourceClass {
 		) {
 			if (opts == null || (typeof opts !== 'number' && typeof opts !== 'object'))
 				throw new Error('Invalid expiration value type');
+			const qualifiedName = `${databaseName}.${tableName}`;
+			const byNumber = typeof opts === 'number';
+			const expirationSeconds = ttlSecondsOf(qualifiedName, 'expiration', byNumber ? opts : opts.expiration);
+			const evictionSeconds = byNumber ? undefined : ttlSecondsOf(qualifiedName, 'eviction', opts.eviction);
+			const scanIntervalSeconds = byNumber ? undefined : ttlSecondsOf(qualifiedName, 'scanInterval', opts.scanInterval);
+			const validatedReplicaExpirationMs = byNumber ? undefined : replicaExpirationMsOf(opts.replicaExpiration);
+			const validatedRefreshFraction = byNumber ? undefined : replicaRefreshFractionOf(opts.replicaRefreshFraction);
 			const previousReplicaExpirationMs = replicaExpirationMs;
 			const ownedCleanup = ownsCleanup();
-			if (typeof opts === 'object' && opts.replicaExpiration != null) {
-				const validated = replicaExpirationMsOf(opts.replicaExpiration);
-				replicaExpirationMs = isRocksDB ? validated : 0;
-			}
-			if (typeof opts === 'object' && opts.replicaRefreshFraction != null)
-				replicaRefreshFraction = replicaRefreshFractionOf(opts.replicaRefreshFraction);
-			const declaredHere = typeof opts === 'object' && opts.fromSchema;
+			if (validatedReplicaExpirationMs !== undefined)
+				replicaExpirationMs = isRocksDB ? validatedReplicaExpirationMs : 0;
+			if (validatedRefreshFraction !== undefined) replicaRefreshFraction = validatedRefreshFraction;
+			const declaredHere = !byNumber && opts.fromSchema;
 			const isolatedApplicationOwner = declaredHere && opts.isolatedApplicationOwner;
+			// a schema without a TTL does not clear one this thread's application code configured
+			const keepApplicationTtl =
+				declaredHere && applicationTtl !== 'none' && !expirationSeconds && !evictionSeconds && !scanIntervalSeconds;
 			const preserveLoadedConfiguration =
-				typeof opts === 'object' &&
+				!byNumber &&
 				(declaredHere || opts.replicaExpiration !== undefined || opts.replicaRefreshFraction !== undefined) &&
-				opts.expiration === undefined &&
-				opts.eviction === undefined &&
-				opts.scanInterval === undefined;
-			if (((!ttlFromLoad && !declaredHere) || isolatedApplicationOwner) && !ttlConfiguredByApplication) {
-				ttlConfiguredByApplication = true;
+				((opts.expiration === undefined && opts.eviction === undefined && opts.scanInterval === undefined) ||
+					(keepApplicationTtl && applicationTtl === 'all'));
+			if (((!ttlFromLoad && !declaredHere) || isolatedApplicationOwner) && !ttlOwnedByThread) {
+				ttlOwnedByThread = true;
 				// the scan owner may have changed with this: re-evaluate even if the interval did not
 				lastCleanupInterval = undefined;
 			}
-			if (typeof opts === 'number') {
-				expirationMs = opts * 1000;
+			if (byNumber) {
+				expirationMs = expirationSeconds * 1000;
 			} else if (!preserveLoadedConfiguration) {
-				// `??` so an explicit 0 is treated as the user's chosen value, not as "missing"
-				expirationMs = (opts.expiration ?? 0) * 1000;
-				evictionMs = (opts.eviction ?? 0) * 1000;
-				recordScanInterval = (opts.scanInterval ?? 0) * 1000;
+				// kept here means the application set only the expiration: the rest is the schema's to clear
+				if (!keepApplicationTtl) expirationMs = (expirationSeconds ?? 0) * 1000;
+				evictionMs = (evictionSeconds ?? 0) * 1000;
+				recordScanInterval = (scanIntervalSeconds ?? 0) * 1000;
 			}
-			if (expirationMs < 0) throw new Error('Expiration can not be negative');
+			if (!preserveLoadedConfiguration && !ttlFromLoad) {
+				if (keepApplicationTtl || (!declaredHere && !byNumber)) applicationTtl = 'all';
+				else if (declaredHere) applicationTtl = 'none';
+				else if (applicationTtl === 'none') applicationTtl = 'expiration';
+			}
 			if (declaredHere && !preserveLoadedConfiguration) ttlDeclaredBySchema = true;
+			const scanWasScheduled = !preserveLoadedConfiguration && (expirationScanScheduled || cleanupTimer);
 			if (!preserveLoadedConfiguration) {
-				// default to one quarter of the total expiration+eviction window
-				recordCleanupInterval = recordScanInterval || (expirationMs + evictionMs) / 4;
-				cleanupInterval = recordCleanupInterval;
-				expirationScanScheduled = true;
+				expirationScanScheduled = Boolean(recordScanInterval || expirationMs || evictionMs);
+				cleanupInterval = recordScanInterval || (expirationMs + evictionMs) / 4 || DEFAULT_CLEANUP_INTERVAL;
+				if (scanWasScheduled && !expirationScanScheduled) retainExpiryScan = true;
 			}
 			if (
 				replicaTableKnown &&
@@ -3999,7 +4070,7 @@ export function makeTable(options): TableResourceClass {
 			} else if (replicaEvictionArmed) armReplicaEviction();
 			// Re-evaluate an existing table-level scan after an ownership-only declaration, but do not
 			// create the default daily cleanup timer for a table that has only an @expiresAt field.
-			if (!preserveLoadedConfiguration || expirationScanScheduled || evictionMs) scheduleCleanup();
+			if (expirationScanScheduled || evictionMs || retainExpiryScan) scheduleCleanup();
 			// @expiresAt has its own interval rather than the cleanup timer above. Arm it whenever a live
 			// declaration introduces the attribute, including after this application already claimed TTL.
 			if (expiresAtProperty && !recordExpirationInterval) runRecordExpirationEviction();
@@ -6340,7 +6411,7 @@ export function makeTable(options): TableResourceClass {
 					if (!captured) {
 						captured = true;
 						recordUpdate = this.#changes;
-						if (tracksInstance) instanceChanges = recordUpdate;
+						if (tracksInstance) instanceChanges = write.trackedChanges = recordUpdate;
 					}
 				};
 				releaseChanges = () => {
@@ -6397,7 +6468,9 @@ export function makeTable(options): TableResourceClass {
 				recordVersion: options?.version,
 				lockHandle: undefined,
 				writeGeneration: !this.#lockWritable && closesReceiver ? this[GET_TRACKED_WRITE_GENERATION]() : undefined,
+				stagedBy: this,
 				trackedInstance: tracksInstance ? this : undefined,
+				trackedChanges: instanceChanges,
 				captureChanges,
 				releaseChanges,
 				validate: (txnTime, committedBy = transaction) => {
@@ -7730,7 +7803,14 @@ export function makeTable(options): TableResourceClass {
 						// Evaluate at most once per table (on the first expiring write); later writes short-circuit on one check.
 						if (!expirationWarningChecked) {
 							expirationWarningChecked = true;
-							if (!expirationMs && !evictionMs && !expirationScanScheduled && !expiresAtProperty && !hasSourceGet) {
+							if (
+								!expirationMs &&
+								!evictionMs &&
+								!expirationScanScheduled &&
+								!retainExpiryScan &&
+								!expiresAtProperty &&
+								!hasSourceGet
+							) {
 								logger.warn?.(
 									`A per-record expiresAt was set on table "${tableName}" which has no table-level expiration/eviction, no expiresAt attribute, and no source; expiration will not be reliably enforced (the eviction scan is only armed best-effort on write and does not survive a restart with no writes). Configure a table-level expiration/eviction or an indexed expiresAt attribute for reliable eviction.`
 								);
@@ -8913,6 +8993,7 @@ export function makeTable(options): TableResourceClass {
 				throw new AccessViolation(context?.user);
 		}
 		static _prepareQueryConditions(conditions, operator, target, context, nested = false) {
+			validateFullTextScoringOptions(target);
 			let includeFullTextHighlights = false;
 			const QueryError = nested ? ClientError : Error;
 			function prepareConditions(conditions: any[], operator: string) {
@@ -8940,6 +9021,7 @@ export function makeTable(options): TableResourceClass {
 					}
 					if (condition.conditions) {
 						validateFullTextFuzzyOptions(condition);
+						validateFullTextScoringOptions(condition);
 						condition.conditions = prepareConditions(condition.conditions, condition.operator);
 						continue;
 					}
@@ -8967,34 +9049,32 @@ export function makeTable(options): TableResourceClass {
 							? TableResource.fullTextIndexes.find((definition) => definition.name === attribute_name)
 							: undefined;
 					validateFullTextFuzzyOptions(condition, fullTextMode);
+					validateFullTextScoringOptions(condition, fullTextMode);
 					if (fullTextMode && Array.isArray(attribute_name))
 						throw new ClientError('Full-text predicates must directly name an index on the queried table', 400);
 					if (fullTextMode && !fullTextDefinition) throwUnknownFullTextIndex(context, target, attribute_name);
 					if (fullTextDefinition) {
-						const fields = condition.fields;
-						if (fields !== undefined) {
-							if (!Array.isArray(fields) || fields.length === 0 || fields.some((field) => typeof field !== 'string'))
-								throw new ClientError(`Full-text index '${attribute_name}' requires a non-empty fields list`, 400);
-							assertFullTextReadAccess(context, target, fullTextDefinition, fields);
-						} else assertFullTextReadAccess(context, target, fullTextDefinition);
-						const value = condition[1] ?? condition.value;
-						if (typeof value !== 'string' || value.length === 0)
-							throw new ClientError(
-								`Full-text index '${attribute_name}' requires a full-text comparator and non-empty string value`,
-								400
-							);
-						if (fullTextMode === 'phrase' && !fullTextDefinition.positions)
-							throw new ClientError(`Full-text index '${attribute_name}' does not store phrase positions`, 400);
-						if ((fullTextMode === 'prefix' || fullTextMode === 'fuzzy-prefix') && !fullTextDefinition.surfaceTerms)
-							throw new ClientError(`Full-text index '${attribute_name}' does not store surface terms`, 400);
-						if (fields !== undefined) {
-							const sourceNames = new Set(fullTextDefinition.fields.map(({ name }) => name));
-							if (new Set(fields).size !== fields.length || fields.some((field) => !sourceNames.has(field)))
-								throw new ClientError(
-									`Full-text index '${attribute_name}' contains an unknown or duplicate field`,
-									400
+						let sourceNames = validateFullTextLeaf(condition, fullTextMode, context, target, fullTextDefinition);
+						let defaultFields: string[] | undefined;
+						if (condition.should)
+							condition.should = condition.should.map((clause) => {
+								sourceNames = validateFullTextLeaf(
+									clause,
+									fullTextComparatorMode(clause.comparator),
+									context,
+									target,
+									fullTextDefinition,
+									sourceNames
 								);
-						}
+								return {
+									...clause,
+									fields: clause.fields
+										? [...clause.fields]
+										: defaultFields
+											? defaultFields.slice()
+											: (defaultFields = fullTextDefinition.fields.map(({ name }) => name)),
+								};
+							});
 						condition.includeHighlights =
 							condition.includeHighlights === true || selectRequestsProperty(target.select, '$highlights');
 						if (condition.includeHighlights && !fullTextDefinition.highlighting)
@@ -9057,6 +9137,7 @@ export function makeTable(options): TableResourceClass {
 				return conditions;
 			}
 			function prepareRelationshipGroup(group: any) {
+				validateFullTextScoringOptions(group);
 				const attributeName = group.attribute;
 				const path = Array.isArray(attributeName) ? attributeName : [attributeName];
 				const label = path.join('.');
@@ -9945,6 +10026,7 @@ export function makeTable(options): TableResourceClass {
 			const isActive = () => !subscription.closed && Boolean(subscription.subscriptions);
 			let progressLive = false;
 			let progressFloor: number | undefined;
+			let replayLeftEntriesToLive = false;
 			let goLive: (() => void) | undefined;
 			if (request.reportProgress && subscription.reportsProgress) {
 				reportingProgress = true;
@@ -9994,7 +10076,7 @@ export function makeTable(options): TableResourceClass {
 						? planFloor
 						: resuming
 							? collection
-								? subscription.startTime
+								? (subscription.replayedThrough ?? request.startTime)
 								: request.startTime
 							: request.startTime === undefined
 								? subscription.registeredThrough
@@ -10011,11 +10093,13 @@ export function makeTable(options): TableResourceClass {
 					if (resuming && collection && !plan) {
 						const replayThrough = progressFloor;
 						const sameThread = subscription.subscriptions.tables.envs.sameThread === true;
-						// The replay walked committed keys; only the pre-replay sample also bounds still-open writes.
+						// The replay walked committed keys; only the pre-replay sample also bounds still-open writes. One that
+						// left committed entries to the broadcast may have passed their keys, so a pass certifies its key.
+						const walked = replayLeftEntriesToLive ? request.startTime : replayThrough;
 						progressFloor =
 							sameThread || subscription.localResumeStart === undefined
 								? undefined
-								: Math.min(replayThrough, subscription.localResumeStart);
+								: Math.min(walked, subscription.localResumeStart);
 						if (!sameThread && replayThrough > request.startTime) completedReplayThrough(subscription, replayThrough);
 					}
 					progressLive = true;
@@ -10230,20 +10314,64 @@ export function makeTable(options): TableResourceClass {
 						// messages during this loop because the snapshot:false cursor will pick them up itself.
 						pendingRealTimeQueue = null;
 						dropDuringReplay = true;
-						// subscription.startTime is the resume cursor (exclusive) and RocksDB gives every record of a
+						// subscription.replayedThrough is the resume cursor (exclusive) and RocksDB gives every record of a
 						// transaction the same txnLogKey, so it only moves to a key once all of that key's records are
 						// handled; an early return leaves it before a partly delivered transaction.
 						let handledTxnLogKey: number | undefined;
 						// replays every version oldest first, so each patch extends the image built for the one before it
 						const replayFold =
 							includeSuperseded && getFullRecord ? createHistoryFold((id) => foldsHistoryOf(id, startTime)) : undefined;
+						const liveRange = broadcastRange(subscription);
+						// from a listener: the entry being dispatched is already past the bound, and may still reach this subscription
+						if (liveRange && isDispatching(subscription)) {
+							await rest();
+							if (!isActive()) return;
+						}
 						const replayRange = auditStore.getRange({
 							start: startTime,
 							exclusiveStart: true,
 							snapshot: false, // no need for a snapshot, audits don't change
+							until: liveRange,
 						});
+						const recordCursor = (key: number) => {
+							// live delivery finishes a transaction the bound split, so a resume must start below it
+							const open = replayRange.openTransactionFloor?.();
+							subscription.replayedThrough = open <= key ? positionBefore(open) : key;
+							// LMDB and same-thread replays hand off by key
+							if (!liveRange) subscription.startTime = key;
+						};
+						let replayIterator = replayRange[Symbol.iterator]();
+						let replayEnded = false;
+						let unreachedSince: number | undefined;
 						try {
-							for (const auditRecord of replayRange) {
+							for (;;) {
+								let next: IteratorResult<any>;
+								try {
+									next = replayIterator.next();
+									unreachedSince = undefined;
+								} catch (error) {
+									// a log the broadcast has read past cannot be read up to it yet: ending here would hand off past it
+									if (!(error instanceof TransactionLogUntilUnreachedError)) throw error;
+									if (unreachedSince === undefined) {
+										unreachedSince = performance.now();
+										logger.warn?.(`Subscription replay on ${tableName} is waiting for a transaction log`, error);
+									} else if (performance.now() - unreachedSince > UNREACHED_LOG_LIMIT_MS) {
+										throw new ServerError(
+											'The transaction log could not be read up to live delivery; resubscribe to retry',
+											503
+										);
+									}
+									await sleep(UNREACHED_LOG_POLL_MS);
+									if (!isActive()) return;
+									if (checkResume && !checkResume(unreadableLogRefusal(replayRange))) return;
+									replayIterator = replayRange[Symbol.iterator]();
+									continue;
+								}
+								if (next.done) {
+									replayEnded = true;
+									break;
+								}
+								const auditRecord = next.value;
 								if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
 									recordsSinceYield = 0;
 									await rest();
@@ -10272,7 +10400,7 @@ export function makeTable(options): TableResourceClass {
 									if (!(await sendCurrentScope())) return;
 								}
 								if (!reloadPending && handledTxnLogKey !== undefined && auditRecord.txnLogKey !== handledTxnLogKey) {
-									subscription!.startTime = handledTxnLogKey;
+									recordCursor(handledTxnLogKey);
 								}
 								const id = auditRecord.recordId;
 								if (checkResume && id === undefined) {
@@ -10282,14 +10410,8 @@ export function makeTable(options): TableResourceClass {
 								// a marker is table-wide, as the live broadcast delivers it
 								if (resnapshots) reloadPending = true;
 								else if (thisId == null || isReload || isDescendantId(thisId, id)) {
-									const event = eventFromAudit(
-										id,
-										auditRecord,
-										auditRecord.txnLogKey,
-										undefined,
-										undefined,
-										replayFold
-									);
+									// as live delivery converts it: a live entry dropped during the replay is delivered only here
+									const event = eventFromAudit(id, auditRecord, auditRecord.txnLogKey, undefined, true, replayFold);
 									if (event) {
 										if (reportingProgress) event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
 										if (!send(event)) return;
@@ -10305,16 +10427,20 @@ export function makeTable(options): TableResourceClass {
 								}
 								handledTxnLogKey = auditRecord.txnLogKey;
 							}
+							// the finished cursor reads no more commits, so live ones wait behind the scan
+							if (reloadPending) pendingRealTimeQueue = [];
+							// in the turn the read reported done, so no broadcast pass runs between them
+							dropDuringReplay = false;
+							if (resuming && goLive && liveRange?.hasUnreturnedEntry()) replayLeftEntriesToLive = true;
 							if (reloadPending) {
 								reloadPending = false;
-								// the finished cursor reads no more commits, so live ones wait behind the scan
-								pendingRealTimeQueue = [];
-								dropDuringReplay = false;
 								if (!(await sendCurrentScope())) return;
-								const replayedThrough = handledTxnLogKey;
-								pendingRealTimeQueue = pendingRealTimeQueue.filter(
-									(event) => (event.localTime ?? event.version) > replayedThrough
-								);
+								if (!liveRange) {
+									const replayedThrough = handledTxnLogKey;
+									pendingRealTimeQueue = pendingRealTimeQueue.filter(
+										(event) => (event.localTime ?? event.version) > replayedThrough
+									);
+								}
 								if (!includeSuperseded) {
 									let kept = 0;
 									for (const event of pendingRealTimeQueue) {
@@ -10323,11 +10449,13 @@ export function makeTable(options): TableResourceClass {
 									pendingRealTimeQueue.length = kept;
 								}
 							}
-							if (handledTxnLogKey !== undefined) subscription!.startTime = handledTxnLogKey;
+							if (handledTxnLogKey !== undefined) recordCursor(handledTxnLogKey);
 							if (checkResume && !checkResume(unreadableLogRefusal(replayRange))) return;
 						} finally {
 							// replay is done, we can start sending real-time messages again
 							dropDuringReplay = false;
+							// an LMDB range releases its cursor and read transaction here
+							if (!replayEnded) replayIterator.return?.();
 						}
 					} else if (count) {
 						const history = [];
@@ -12289,6 +12417,17 @@ export function makeTable(options): TableResourceClass {
 				// runIndexing when rebuilding from scratch), so clear() doesn't leave stale
 				// index entries pointing at records that no longer exist.
 				const promises = [];
+				// The cleared index store held a derived index's durable cursor, and no log entry records the
+				// clear, so an idle derived index would otherwise not notice until the next logged write.
+				const rebuildDerivedIndexes = () => {
+					for (const key in indices) {
+						try {
+							indices[key].customIndex?.requestDerivedRebuild?.();
+						} catch (error) {
+							logger.warn?.(`Could not request a rebuild of cleared index ${key} on ${tableName}`, error);
+						}
+					}
+				};
 				const settleStartedClears = (synchronousFailure?: { error: unknown }) =>
 					Promise.allSettled(promises)
 						.then((results) => {
@@ -12300,6 +12439,7 @@ export function makeTable(options): TableResourceClass {
 							}
 							return values;
 						})
+						.finally(rebuildDerivedIndexes)
 						.finally(releaseFullTextClearFence);
 				try {
 					promises.push(primaryStore.clear());
@@ -12355,7 +12495,7 @@ export function makeTable(options): TableResourceClass {
 			if (disposed || !maintenanceClosed) return;
 			maintenanceClosed = false;
 			lastCleanupInterval = undefined;
-			if (expirationScanScheduled || evictionMs) scheduleCleanup();
+			if (expirationScanScheduled || evictionMs || retainExpiryScan) scheduleCleanup();
 			if (replicaEvictionArmed) scheduleReplicaSweep();
 			if (expiresAtProperty && !recordExpirationInterval) runRecordExpirationEviction();
 		}
@@ -12442,14 +12582,15 @@ export function makeTable(options): TableResourceClass {
 	defaultAllowReads.add(TableResource.prototype.allowRead);
 	try {
 		TableResource.updatedAttributes(); // on creation, update accessors as well
-		if (expirationMs || evictionMs) {
+		// anything but absent or zero is validated here: a peer's definition reaches a create unvalidated
+		if ((expirationMs !== undefined && expirationMs !== 0) || evictionMs !== 0) {
 			ttlFromLoad = true;
 			try {
-				TableResource.setTTLExpiration(expirationMs / 1000);
+				TableResource.setTTLExpiration({ expiration: (expirationMs ?? 0) / 1000, eviction: evictionMs / 1000 });
 			} finally {
 				ttlFromLoad = false;
 			}
-		}
+		} else if (retainExpiryScan) scheduleCleanup();
 		if (expiresAtProperty && !recordExpirationInterval) runRecordExpirationEviction();
 	} catch (error) {
 		TableResource.cleanup();
@@ -13179,6 +13320,38 @@ export function makeTable(options): TableResourceClass {
 		}
 	}
 
+	function validateFullTextLeaf(
+		leaf: any,
+		mode: string,
+		context: Context | undefined,
+		target: RequestTarget,
+		definition: FullTextDefinition,
+		sourceNames?: ReadonlySet<string>
+	): ReadonlySet<string> | undefined {
+		const fields = leaf.fields;
+		if (fields !== undefined) {
+			if (!Array.isArray(fields) || fields.length === 0 || fields.some((field) => typeof field !== 'string'))
+				throw new ClientError(`Full-text index '${definition.name}' requires a non-empty fields list`, 400);
+			assertFullTextReadAccess(context, target, definition, fields);
+		} else assertFullTextReadAccess(context, target, definition);
+		const value = leaf[1] ?? leaf.value;
+		if (typeof value !== 'string' || value.length === 0)
+			throw new ClientError(
+				`Full-text index '${definition.name}' requires a full-text comparator and non-empty string value`,
+				400
+			);
+		if (mode === 'phrase' && !definition.positions)
+			throw new ClientError(`Full-text index '${definition.name}' does not store phrase positions`, 400);
+		if ((mode === 'prefix' || mode === 'fuzzy-prefix') && !definition.surfaceTerms)
+			throw new ClientError(`Full-text index '${definition.name}' does not store surface terms`, 400);
+		if (fields !== undefined) {
+			sourceNames ??= new Set(definition.fields.map(({ name }) => name));
+			if (new Set(fields).size !== fields.length || fields.some((field) => !sourceNames.has(field)))
+				throw new ClientError(`Full-text index '${definition.name}' contains an unknown or duplicate field`, 400);
+		}
+		return sourceNames;
+	}
+
 	function assertFullTextReadAccess(
 		context: Context | undefined,
 		target: RequestTarget,
@@ -13191,8 +13364,12 @@ export function makeTable(options): TableResourceClass {
 		if (!permission && !user) return;
 		if (permission?.isSuperUser || !permission?.attribute_permissions?.length) return;
 		const readable = attributesAsObject(permission.attribute_permissions, 'read');
-		const searched = requestedFields ?? definition.fields.map(({ name }) => name);
-		if (searched.some((name) => !readable[name])) throw new AccessViolation(user);
+		if (
+			requestedFields
+				? requestedFields.some((name) => !readable[name])
+				: definition.fields.some(({ name }) => !readable[name])
+		)
+			throw new AccessViolation(user);
 	}
 	function throwUnknownFullTextIndex(
 		context: Context | undefined,
@@ -14476,11 +14653,6 @@ export function makeTable(options): TableResourceClass {
 		if (ownsCleanup()) {
 			// run on the last thread so we aren't overloading lower-numbered threads
 			if (cleanupTimer) clearTimeout(cleanupTimer);
-			if (!cleanupInterval) {
-				// no replacement pass is being scheduled, so nothing is left to settle a superseded one
-				settlePendingCleanup();
-				return;
-			}
 			// This pass adopts the awaiters of the pass whose timer it just cleared: they settle when
 			// this pass's scan completes, so a reclamation run is never told the storage was reclaimed
 			// before any scan ran. It has to run now, though — that run blocks its whole path on the
@@ -14619,7 +14791,7 @@ export function makeTable(options): TableResourceClass {
 	function runRecordExpirationEviction() {
 		if (isReadOnlyMode()) return;
 		// Periodically evict expired records, searching for records who expiresAt timestamp is before now
-		if (ownsStoreExpiration(primaryStore.path) || (ttlConfiguredByApplication && isDedicatedWorker())) {
+		if (ownsStoreExpiration(primaryStore.path) || (ttlOwnedByThread && isDedicatedWorker())) {
 			// we want to run the pruning of expired records on only one thread so we don't have conflicts in evicting
 			recordExpirationInterval = setInterval(() => {
 				// go through each database and table and then search for expired entries
@@ -15237,7 +15409,7 @@ export function makeTable(options): TableResourceClass {
 		));
 	}
 	function ownsCleanup(): boolean {
-		return ownsStoreMaintenance(primaryStore.path) || (ttlConfiguredByApplication && isDedicatedWorker());
+		return ownsStoreMaintenance(primaryStore.path) || (ttlOwnedByThread && isDedicatedWorker());
 	}
 	// an already-armed thread may own the timer only now (the main thread under threads: 0 loads
 	// tables before it is worker 0), so the flag and the timer are settled on every wake
@@ -15616,7 +15788,7 @@ function createComputedFrom(computedFromExpression: string, attributesFallback?:
 	return script.runInThisContext()(attributesFallback);
 }
 
-// Pattern comparators (contains, starts_with, ends_with) stay out so their operand remains text.
+const STRING_PATTERN_COMPARATORS = new Set(['contains', 'starts_with', 'ends_with']);
 const ELEMENT_VALUE_COMPARATORS = new Set<string | undefined>([
 	undefined,
 	'equals',
@@ -15633,10 +15805,10 @@ const ELEMENT_VALUE_COMPARATORS = new Set<string | undefined>([
 	'gtle',
 ]);
 function coerceConditionValue(value: any, comparator: string, attribute: Attribute) {
+	const resolvedComparator = ALTERNATE_COMPARATOR_NAMES[comparator] || comparator;
+	if (typeof value === 'string' && STRING_PATTERN_COMPARATORS.has(resolvedComparator)) return value;
 	const compared =
-		attribute.elements?.type && ELEMENT_VALUE_COMPARATORS.has(ALTERNATE_COMPARATOR_NAMES[comparator] || comparator)
-			? attribute.elements
-			: attribute;
+		attribute.elements?.type && ELEMENT_VALUE_COMPARATORS.has(resolvedComparator) ? attribute.elements : attribute;
 	if (!compared.type && !COERCIBLE_OPERATORS[comparator]) return value;
 	if (Array.isArray(value)) return value.map((value) => coerceType(value, compared, attribute.name));
 	return coerceType(value, compared, attribute.name);

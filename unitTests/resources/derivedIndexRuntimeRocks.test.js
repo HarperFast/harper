@@ -730,14 +730,14 @@ describe('DerivedIndexRuntime with an audited RocksDB table', () => {
 			const state = binding.states.get(binding.opens.at(-1).generation);
 			assert(state, 'the seeded rebuild opened the native writer');
 			const initialApplications = state.applications;
-			const initialPublications = state.publications;
 			const initialSourceLogEntries = [...Product.auditStore.getRange({ start: 1 })].length;
 			await Product.put('p1', { title: 'first product' });
 			const p1Cursor = [...Product.auditStore.getRange({ start: anchor })]
 				.filter((entry) => entry.tableId === Product.tableId && entry.recordId === 'p1')
 				.at(-1).txnLogKey;
-			await waitFor(() => state.publications >= initialPublications + 1, { timeout: 10_000 });
-			await new Promise((resolve) => setImmediate(resolve));
+			await waitFor(() => decodeFullTextCursorPayload(state.committedPayload)?.logs.local === p1Cursor, {
+				timeout: 10_000,
+			});
 
 			await unregister();
 			unregister = undefined;

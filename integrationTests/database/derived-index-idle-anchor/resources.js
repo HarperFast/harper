@@ -27,3 +27,11 @@ export class IdleFlush extends Resource {
 		return { ok: true };
 	}
 }
+
+export class IdleClear extends Resource {
+	static loadAsInstance = false;
+	async post() {
+		await table().clear();
+		return { ok: true };
+	}
+}

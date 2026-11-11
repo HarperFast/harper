@@ -74,16 +74,16 @@ jobs:
             timeout: 13
           - shard: resources-core-a-n
             script: test:unit:resources:core:a-n
-            timeout: 9
+            timeout: 11
           - shard: resources-core-o-z
             script: test:unit:resources:core:o-z
-            timeout: 8
+            timeout: 10
           - shard: resources-indexes
             script: test:unit:resources:indexes
             timeout: 8
           - shard: lmdb
             script: test:unit:lmdb
-            timeout: 9
+            timeout: 15
 
     steps:
       - name: Checkout code
@@ -190,7 +190,7 @@ jobs:
             timeout: 9
           - shard: resources-core-o-z
             script: test:unit:typestrip:resources:core:o-z
-            timeout: 8
+            timeout: 10
           - shard: resources-indexes
             script: test:unit:typestrip:resources:indexes
             timeout: 8

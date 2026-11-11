@@ -113,6 +113,20 @@ ORDER BY d.dog_name
 
 Use `IS NULL` and `IS NOT NULL` to test for `NULL`. REST and Resource API conditions follow different rules: `ne` with a non-null value matches null and omitted values, and a `null` lower bound means no lower bound. See [Null and Omitted Values](../rest/querying.md#null-and-omitted-values).
 
+### Falsy, Blank and NaN Values
+
+<VersionBadge type="changed" version="v5.4.0" />
+
+A bare value used as a condition, such as `WHERE active` or `ON a.id = b.id AND b.active`, selects a row only when the value is truthy: `false`, `0`, `NaN`, an empty string, a `0n` BigInt and `NULL` never select it, in `SELECT`, `UPDATE` or `DELETE`. Any other string, including `'0'` and `'   '`, selects it. Before v5.4.0, the new engine also selected rows whose value was `0`, `''` or `NaN` (in a `WHERE`, `HAVING` or join `ON`), so an `UPDATE` or `DELETE` could change those rows.
+
+On the new engine, comparisons and arithmetic operators do not read an empty or whitespace-only string as a number:
+
+- It is not equal to any number: `qty = 0` and `qty IN (0)` do not match it, and `qty <> 0` and `qty NOT IN (0)` do. Before v5.4.0, the new engine read it as `0`.
+- In `<`, `<=`, `>`, `>=` and `BETWEEN` against a number, a string that is not a number sorts after every number, as indexes and REST conditions order it, whether or not the column is indexed: `qty > 0` matches `''` and `'x'`, and `qty <= 0` matches neither.
+- Arithmetic on it is `NaN`, as it is for any other string that is not a number, so `SET total = qty * 2` and `SET qty = qty + 1` store `NaN` for `qty = ''` (returned as `null` in JSON). Functions such as `ABS` and `ROUND`, and aggregates such as `SUM` and `AVG`, still read it as `0`.
+
+`NaN` has no order: on a column without an index, `<`, `<=`, `>`, `>=`, `BETWEEN` and `NOT BETWEEN` with a `NaN` value are `NULL` and match no row. An index sorts a stored `NaN` above every number, so a range the index answers, such as `score > 0` on an indexed `score`, still matches it. A `NaN` join key matches nothing. With a `NULL` bound, `NOT BETWEEN` now matches a value the other bound already excludes (`5 NOT BETWEEN NULL AND 1`), as `NOT (v >= NULL AND v <= 1)` does.
+
 ### Relationship Columns
 
 <VersionBadge type="changed" version="v5.4.0" />
@@ -153,7 +167,7 @@ These map directly to indexed storage operations:
 - **Equality and `IN` on an indexed attribute** — `WHERE status = 'active'`, `WHERE breed_id IN (1, 2, 3)`.
 - **Range predicates on an indexed attribute** — `<`, `<=`, `>`, `>=`, and `BETWEEN` (compiled to a bounded index range).
 - **`OR` of indexed predicates** — `WHERE a = 1 OR b = 2` is served as a union of index scans, provided **every** branch is an index-driving predicate on an indexed attribute.
-- **Prefix `LIKE`** — `WHERE name LIKE 'Har%'` compiles to an indexed `starts_with` scan. The new engine matches it case-sensitively; see [LIKE Pattern Matching](#like-pattern-matching).
+- **Prefix `LIKE` on an indexed scalar `String` column** — `WHERE name LIKE 'Har%'` compiles to an indexed `starts_with` scan. The new engine matches it case-sensitively; see [LIKE Pattern Matching](#like-pattern-matching).
 - **`ORDER BY` on an indexed attribute, combined with an indexed `WHERE`** — served directly from index order, with no separate in-memory sort; `LIMIT`/`OFFSET` push into the scan so only the rows you return are read. Without an index-driving `WHERE` condition, an `ORDER BY` on a _secondary_ indexed attribute runs on the legacy path — except when sorting on the table's **primary key**, which drives the scan from the primary key's natural index order even with no `WHERE` clause.
 - **`GROUP BY` on an indexed attribute, combined with an indexed `WHERE`** — aggregates stream group-by-group with O(1) memory per group (memory is bounded by the group count; every matching row is still read). Without an index-driving `WHERE` condition, a `GROUP BY` currently runs on the legacy path.
 - **`INNER`/`LEFT JOIN` on an indexed join key** — executed as an index-nested-loop join (stream the outer table, probe the inner by index). Keep the join key indexed on the inner (probed) table.
@@ -194,6 +208,7 @@ For queries the new engine plans (the default under `auto`), `LIKE` is case-sens
 - **`NULL` never equals `NULL` in a join key.** Rows whose join key is `NULL` on either side no longer match each other (three-valued logic). The legacy engine incorrectly joined `NULL` to `NULL`.
 - **`OFFSET` past the end of a result returns no rows.** The legacy engine could still return rows when the `OFFSET` exceeded the number of matches.
 - **`LIKE` is case-sensitive, and `[...]` in a pattern is literal text.** The legacy engine matches case-insensitively and reads `[...]` as a character class. Under `auto`, adding or removing an index, or changing the other conditions in a statement, can move it between engines, which changes the rows a `LIKE` matches, including the rows an `UPDATE` or `DELETE` changes. See [LIKE Pattern Matching](#like-pattern-matching).
+- **A blank string is not a number.** On the legacy engine, `qty <> 0` and `qty > 0` exclude `''` and whitespace-only strings. The new engine orders them after every number, as it does any string that is not a number, so both match them; see [Falsy, Blank and NaN Values](#falsy-blank-and-nan-values).
 - **A column assigned more than once in an `UPDATE` takes every assignment**, in order: `SET qty = qty + 2, qty = qty + 3` adds 5. The legacy engine kept only the last assignment, so under `auto` an `UPDATE` that falls back (no `WHERE`, or no index-driving condition) still does. See [Update](#update).
 - **A `NULL`-valued expression result is returned as an explicit `null`** rather than omitted from the row. A computed column or `COALESCE` that evaluates to `NULL` — or `UPPER(<null>)` — now yields `null` (the legacy engine dropped the key, and `UPPER` of a `NULL` returned the literal string `"NULL"`).
 
@@ -441,7 +456,7 @@ Geospatial data must be stored using the [GeoJSON standard](https://geojson.org/
 
 ## LIKE Pattern Matching
 
-`value LIKE pattern` is true when the whole value matches the pattern, and `NOT LIKE` negates it. The value is matched as a string. The pattern can contain these elements:
+`value LIKE pattern` is true when the whole value matches the pattern, and `NOT LIKE` negates it. The value is matched as a string. For example, numeric `105` matches `%05%` and `1%`, but not `0105` or `05%`. Null and omitted values do not match. The pattern can contain these elements:
 
 | Pattern element            | Matches                                                                                                                                 |
 | -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
@@ -487,14 +502,14 @@ Before v5.4.0, `ESCAPE` was ignored, so `ip LIKE 't0!%' ESCAPE '!'` matched ever
 | New engine: `sql.engine: new`, and statements that `auto` runs on the new engine                        | Case-sensitive: `'t0%'` does not match `T0b`. |
 | Legacy engine: `sql.engine: legacy`, and statements that `auto` [falls back](#the-fallback-contract) on | Case-insensitive: `'t0%'` matches `T0b`.      |
 
-Under the default `sql.engine: auto`, the same pattern can be either, and the whole statement decides which. For example, with `ip` indexed and `note` not indexed:
+Under the default `sql.engine: auto`, the same pattern can be either, and the whole statement decides which. For example, with declared scalar `String` columns `ip` (indexed) and `note` (not indexed):
 
 - `ip LIKE 't0%'` is a prefix pattern on an indexed attribute, so the new engine serves it from the index, and it is case-sensitive.
 - `ip LIKE '%T0B'` is not a prefix pattern, so the index can't drive it. `auto` runs it on the legacy engine, and it matches `T0b`.
 - `note LIKE 't0%'` alone has no index to drive it, so `auto` runs it on the legacy engine, and it is case-insensitive.
 - `note LIKE 't0%'` is case-sensitive when something else keeps the statement on the new engine: an indexed condition joined with `AND`, an `ORDER BY` on the primary key, or `sql.allowFullScan: true`.
 
-This applies to `UPDATE` and `DELETE` as well: adding an index on `note` moves `DELETE FROM dev.addr WHERE note LIKE 't0%'` to the new engine, and it stops deleting `T0b`. With `logging.level` set to `info`, a statement that falls back is logged, which tells you which engine ran it (see [The fallback contract](#the-fallback-contract)).
+This applies to `UPDATE` and `DELETE` as well: adding an index on the declared `String` column `note` moves `DELETE FROM dev.addr WHERE note LIKE 't0%'` to the new engine, and it stops deleting `T0b`. With `logging.level` set to `info`, a statement that falls back is logged, which tells you which engine ran it (see [The fallback contract](#the-fallback-contract)).
 
 To match regardless of case on both engines, lower-case both the value and the pattern: `LOWER(note) LIKE 't0%'` (write the pattern in lower case, or lower-case a user-supplied pattern before sending it). `LOWER()` uses JavaScript's lower-casing, which treats a few non-ASCII characters differently from the legacy engine's case-insensitive matching. The index can't serve an expression, so combine it with an indexed condition using `AND`. Otherwise the statement scans the whole table, or is rejected with a 400 error under `sql.engine: new` with `sql.allowFullScan: false`. To keep a case-insensitive prefix search on the index, store a lower-cased copy of the value in its own indexed attribute and query that.
 
@@ -532,7 +547,7 @@ On the legacy engine, a pattern with more than 64 `_` wildcards across segments 
 }
 ```
 
-The total cost of a `LIKE` is still the number of rows it tests. On an indexed attribute, the index serves a prefix pattern, which is literal text followed by one `%` (`'abc%'`, or `'50!%%' ESCAPE '!'` for values starting with `50%`), and a pattern with no wildcards, which is an equality test. Any other `LIKE` filters the rows that the rest of the query selects, so with no indexed condition it tests every row in the table. Whether such a statement falls back to the legacy engine, scans on the new engine, or is rejected with a 400 error depends on `sql.engine`, `sql.allowFullScan` and the rest of the statement; see [The fallback contract](#the-fallback-contract) and [Query Performance](#query-performance).
+The total cost of a `LIKE` is still the number of rows it tests. On an indexed scalar `String` attribute, the index serves a prefix pattern, which is literal text followed by one `%` (`'abc%'`, or `'50!%%' ESCAPE '!'` for values starting with `50%`), and a pattern with no wildcards, which is an equality test. On other attribute types, including `ID`, untyped, `Any`, and list columns, every `LIKE` uses the stringified value as a row filter. Lists match their comma-joined text rather than individual elements: `['news', 'sports']` matches `news,sports` and `%s,sp%`, but not `sports%`. A `Date` is stringified with JavaScript's `Date#toString()`, which depends on the server's time zone, so use a range to filter dates. With the default `sql.allowFullScan: false` and no other index driver, standalone `LIKE` queries on those columns use case-insensitive legacy fallback under `auto`, including `UPDATE` and `DELETE` (so values differing only in case can also match); under `new` they need another index driver or `sql.allowFullScan: true`. Any other `LIKE` filters the rows that the rest of the query selects, so with no indexed condition it tests every row in the table. Whether such a statement falls back to the legacy engine, scans on the new engine, or is rejected with a 400 error depends on `sql.engine`, `sql.allowFullScan` and the rest of the statement; see [The fallback contract](#the-fallback-contract) and [Query Performance](#query-performance).
 
 ---
 

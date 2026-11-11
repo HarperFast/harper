@@ -1,6 +1,7 @@
 const { getFullTextTestConfiguration, setFullTextTestConfiguration } = require('./fullTextTestConfiguration');
 require('../testUtils');
 const assert = require('node:assert');
+const { getEventListeners } = require('node:events');
 const { toBufferKey } = require('ordered-binary');
 const { waitFor } = require('../waitFor');
 const { publishDerivedIndexReadiness } = require('#src/resources/derivedIndexRuntime');
@@ -164,6 +165,10 @@ function simpleQueryIndex({
 	onTrace,
 	onGetEntry,
 	onSearch,
+	onBinding,
+	bindingReady,
+	capabilityLoadingTimeoutMilliseconds,
+	queryApiVersion,
 	entryForKey,
 	estimatedRecordCount = 20,
 	isEntryCurrent,
@@ -197,9 +202,13 @@ function simpleQueryIndex({
 		storeName,
 		sourceGeneration,
 		limits: {},
+		capabilityLoadingTimeoutMilliseconds,
 		binding: {
 			async runtimeInfo() {
+				onBinding?.();
+				if (bindingReady) await bindingReady;
 				return {
+					queryApiVersion,
 					queryClassIsolationMinimumSearchThreads: 1,
 					limits: queryLimits({ maxSearchWindow, maxTraceRecords: 10 }),
 				};
@@ -256,6 +265,65 @@ function readyQueryIndex(auditStore, readinessId, storeName) {
 	});
 	attachCurrentCoverage(fixture.index, auditStore, readinessId);
 	return fixture.index;
+}
+
+function gatedReaderIndex(auditStore, readinessId) {
+	publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+	const state = { opens: 0, reloads: 0, searches: 0, openGate: undefined, reloadGate: undefined, coverageWaits: [] };
+	const index = new FullTextQueryIndex({
+		Table: {
+			tableId: 1,
+			primaryStore: { rootStore: auditStore.rootStore, getEntry: () => ({ version: 1, value: { title: 'shoe' } }) },
+			_readTxnForContext: () => undefined,
+		},
+		definition: definition(),
+		auditStore,
+		readinessId,
+		indexId: readinessId,
+		storePath: '/unused',
+		storeName: 'unused',
+		sourceGeneration: 'generation',
+		limits: {},
+		binding: {
+			async runtimeInfo() {
+				return {
+					queryClassIsolationMinimumSearchThreads: 1,
+					limits: queryLimits({ maxSearchWindow: 10, maxTraceRecords: 10 }),
+				};
+			},
+			async openNativeFullTextReader() {
+				state.opens++;
+				await state.openGate?.promise;
+				return withTraversal({
+					committedPayload: encodeFullTextCursorPayload({ format: 1, logs: { local: 1 } }),
+					async search() {
+						state.searches++;
+						return { total: 1, totalRelation: 'exact', hits: [{ id: nativeId(1, 'one'), version: '1', score: 1 }] };
+					},
+					async reload() {
+						state.reloads++;
+						await state.reloadGate?.promise;
+					},
+					async close() {},
+				});
+			},
+		},
+	});
+	auditStore.setCoverage(readinessId, 99_000_000n);
+	index.attachDerivedHost({
+		readiness: () => ({ state: 'ready' }),
+		requestRebuild: () => true,
+		waitForCoverage: async (_started, timeout) => {
+			state.coverageWaits.push(timeout);
+		},
+	});
+	return { index, state };
+}
+
+// Outlasts a 5 ms index wait, so only an acquisition bound independent of that wait lets the search finish.
+async function releaseAfterElapsed(gate) {
+	await new Promise((resolve) => setTimeout(resolve, 20));
+	gate.resolve();
 }
 
 describe('full-text replay page protocol', () => {
@@ -928,6 +996,78 @@ describe('FullTextQueryIndex', () => {
 		await index.close();
 	});
 
+	it('waits for a reader reload or reopen on a ready index whatever the index-wait budget', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'no-wait-reader-refresh';
+		const { index, state } = gatedReaderIndex(auditStore, readinessId);
+		const query = { attribute: readinessId, comparator: 'matches', value: 'shoe' };
+		await index.search(query, {}, { minResults: 1 });
+		assert.strictEqual(state.opens, 1);
+
+		for (const [step, condition] of [
+			['explicit zero wait', { ...query, waitForIndexMilliseconds: 0 }],
+			['omitted wait', query],
+		]) {
+			auditStore.publish(readinessId, false);
+			state.reloadGate = Promise.withResolvers();
+			const pending = index.search(condition, {}, { minResults: 1 });
+			await releaseAfterElapsed(state.reloadGate);
+			assert.strictEqual((await pending).length, 1, step);
+		}
+		assert.strictEqual(state.reloads, 2);
+		assert.deepStrictEqual(state.coverageWaits, [], 'a no-wait search never waits for coverage');
+
+		auditStore.publish(readinessId, false);
+		state.reloadGate = Promise.withResolvers();
+		const waiting = index.search(
+			{ ...query, waitForIndexMilliseconds: 5 },
+			{ indexSearchStart: Promise.resolve() },
+			{ minResults: 1 }
+		);
+		await releaseAfterElapsed(state.reloadGate);
+		assert.strictEqual((await waiting).length, 1, 'a reload longer than a positive wait still completes');
+		assert.strictEqual(state.coverageWaits.length, 1);
+		assert(state.coverageWaits[0] <= 5, 'the positive wait still bounds the coverage wait');
+
+		auditStore.setEpoch(readinessId, 7n);
+		state.openGate = Promise.withResolvers();
+		const reopening = index.search({ ...query, waitForIndexMilliseconds: 0 }, {}, { minResults: 1 });
+		await releaseAfterElapsed(state.openGate);
+		assert.strictEqual((await reopening).length, 1);
+		assert.strictEqual(state.opens, 2, 'a new owner epoch replaces the reader');
+
+		auditStore.setCoverage(readinessId, 1n);
+		await assert.rejects(
+			index.search({ ...query, waitForIndexMilliseconds: 0, maxIndexLagMilliseconds: 25 }, {}, { minResults: 1 }),
+			(error) => error.code === 'DERIVED_INDEX_LAGGING'
+		);
+		assert.deepStrictEqual([state.opens, state.reloads], [2, 3], 'lag is rejected without touching the reader');
+		await index.close();
+	});
+
+	it('releases a reader acquired after its no-wait search was aborted', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'no-wait-reader-abort';
+		const { index, state } = gatedReaderIndex(auditStore, readinessId);
+		const query = { attribute: readinessId, comparator: 'matches', value: 'shoe', waitForIndexMilliseconds: 0 };
+		await index.search(query, {}, { minResults: 1 });
+
+		auditStore.publish(readinessId, false);
+		state.reloadGate = Promise.withResolvers();
+		const controller = new AbortController();
+		const reason = new Error('client went away');
+		const aborted = index.search(query, { signal: controller.signal }, { minResults: 1 });
+		await waitFor(() => state.reloads === 1);
+		controller.abort(reason);
+		await assert.rejects(aborted, (error) => error === reason);
+		state.reloadGate.resolve();
+
+		assert.strictEqual((await index.search(query, {}, { minResults: 1 })).length, 1);
+		assert.strictEqual(state.searches, 2, 'the aborted search never reaches the native reader');
+		assert.strictEqual(state.reloads, 1);
+		await index.close();
+	});
+
 	it('waits for the local query host to attach when shared readiness is already ready', async () => {
 		const auditStore = sharedStore();
 		const readinessId = 'waiting-local-query-host';
@@ -1351,6 +1491,297 @@ describe('FullTextQueryIndex', () => {
 		assert.strictEqual(rebuilds, 1);
 		await index.close();
 	});
+
+	for (const queryApiVersion of [7, 8])
+		it(`prioritizes scoring capability over unknown strict coverage on query API ${queryApiVersion}`, async () => {
+			const auditStore = sharedStore();
+			const readinessId = `strict-scoring-capability-${queryApiVersion}`;
+			publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+			let opens = 0;
+			let searches = 0;
+			const { index } = simpleQueryIndex({
+				auditStore,
+				readinessId,
+				payload: publicationPayload(),
+				hits: () => [],
+				onOpen: () => opens++,
+				onSearch: () => searches++,
+				queryApiVersion,
+			});
+			try {
+				for (let attempt = 0; attempt < 2; attempt++)
+					await assert.rejects(
+						index.search(
+							{
+								attribute: readinessId,
+								comparator: 'matches',
+								value: 'shoe',
+								maxIndexLagMilliseconds: 0,
+								waitForIndexMilliseconds: 0,
+								fullTextQuery: { operator: 'boost', boost: 2, clause: { text: 'shoe', mode: 'any' } },
+							},
+							{}
+						),
+						(error) => error.statusCode === 503 && (queryApiVersion !== 7 || /query API 8/.test(error.message))
+					);
+				if (queryApiVersion === 7) assert.strictEqual(opens, 0);
+				else await waitFor(() => opens > 0);
+				assert.strictEqual(searches, 0);
+			} finally {
+				await index.close();
+			}
+		});
+
+	it('waits for cold scoring capability loading whatever the index-wait budget', async () => {
+		const scoringQuery = { operator: 'boost', boost: 2, clause: { text: 'shoe', mode: 'any' } };
+		for (const [step, waitForIndexMilliseconds] of [
+			['explicit zero wait', 0],
+			['omitted wait', undefined],
+			['short positive wait', 5],
+		]) {
+			const auditStore = sharedStore();
+			const readinessId = `cold-scoring-wait-${waitForIndexMilliseconds ?? 'omitted'}`;
+			publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+			const bindingReady = Promise.withResolvers();
+			const coverageWaits = [];
+			const { index } = simpleQueryIndex({
+				auditStore,
+				readinessId,
+				payload: publicationPayload(),
+				hits: () => [{ id: nativeId(1, 'one'), version: '1', score: 1 }],
+				bindingReady: bindingReady.promise,
+				queryApiVersion: 8,
+			});
+			auditStore.setCoverage(readinessId, 99_000_000n);
+			index.attachDerivedHost({
+				readiness: () => ({ state: 'ready' }),
+				requestRebuild: () => true,
+				waitForCoverage: async (_started, timeout) => {
+					coverageWaits.push(timeout);
+				},
+			});
+			try {
+				const pending = index.search(
+					{
+						attribute: readinessId,
+						comparator: 'matches',
+						value: 'shoe',
+						fullTextQuery: scoringQuery,
+						...(waitForIndexMilliseconds !== undefined ? { waitForIndexMilliseconds } : null),
+					},
+					{ indexSearchStart: Promise.resolve() },
+					{ minResults: 1 }
+				);
+				await releaseAfterElapsed(bindingReady);
+				assert.strictEqual((await pending).length, 1, step);
+				if (waitForIndexMilliseconds === 5) {
+					assert.strictEqual(coverageWaits.length, 1, step);
+					assert(coverageWaits[0] > 0 && coverageWaits[0] <= 5, 'coverage wait starts after capability loading');
+				} else {
+					assert.deepStrictEqual(coverageWaits, [], step);
+				}
+			} finally {
+				bindingReady.resolve();
+				await index.close();
+			}
+		}
+	});
+
+	for (const waitForIndexMilliseconds of [0, 25])
+		for (const minResults of [0, 1])
+			it(`bounds cold scoring capability loading (wait ${waitForIndexMilliseconds}, results ${minResults})`, async () => {
+				const auditStore = sharedStore();
+				const readinessId = `cold-scoring-timeout-${waitForIndexMilliseconds}-${minResults}`;
+				publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+				const bindingReady = Promise.withResolvers();
+				let opens = 0;
+				const { index } = simpleQueryIndex({
+					auditStore,
+					readinessId,
+					payload: publicationPayload(),
+					hits: () => [],
+					onOpen: () => opens++,
+					bindingReady: bindingReady.promise,
+					capabilityLoadingTimeoutMilliseconds: 15,
+					queryApiVersion: 8,
+				});
+				attachCurrentCoverage(index, auditStore, readinessId);
+				const condition = {
+					attribute: readinessId,
+					comparator: 'matches',
+					value: 'shoe',
+					fullTextQuery: { operator: 'boost', boost: 2, clause: { text: 'shoe', mode: 'any' } },
+					waitForIndexMilliseconds,
+				};
+				const signal = minResults ? new AbortController().signal : undefined;
+				let watchdog;
+				try {
+					await assert.rejects(
+						Promise.race([
+							index.search(condition, { signal }, { minResults }),
+							new Promise((_, reject) => {
+								watchdog = setTimeout(() => reject(new Error('cold binding remained unbounded')), 1000);
+							}),
+						]),
+						(error) =>
+							error.statusCode === 503 &&
+							error.code === 'FULL_TEXT_INITIALIZATION_TIMEOUT' &&
+							error.retryable === true &&
+							error.message === 'Full-text capability loading timed out'
+					);
+					if (signal) assert.strictEqual(getEventListeners(signal, 'abort').length, 0);
+					assert.strictEqual(opens, 0);
+					bindingReady.resolve();
+					await index.search(condition, {}, { minResults: 0 });
+					assert.strictEqual(opens, 0);
+					assert.deepStrictEqual(
+						await index.search({ ...condition, waitForIndexMilliseconds: 5000 }, {}, { minResults: 1 }),
+						[]
+					);
+					assert.strictEqual(opens, 1);
+				} finally {
+					clearTimeout(watchdog);
+					bindingReady.resolve();
+					await index.close();
+				}
+			});
+
+	for (const waitForIndexMilliseconds of [0, 5000])
+		it(`rejects zero-result scoring after close during capability loading (wait ${waitForIndexMilliseconds})`, async () => {
+			const auditStore = sharedStore();
+			const readinessId = `cold-scoring-close-${waitForIndexMilliseconds}`;
+			publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+			const bindingReady = Promise.withResolvers();
+			let opens = 0;
+			let bindingStarted = false;
+			const { index } = simpleQueryIndex({
+				auditStore,
+				readinessId,
+				payload: publicationPayload(),
+				hits: () => [],
+				onOpen: () => opens++,
+				onBinding: () => (bindingStarted = true),
+				bindingReady: bindingReady.promise,
+				queryApiVersion: 8,
+			});
+			attachCurrentCoverage(index, auditStore, readinessId);
+			const pending = index.search(
+				{
+					attribute: readinessId,
+					comparator: 'matches',
+					value: 'shoe',
+					fullTextQuery: { operator: 'boost', boost: 2, clause: { text: 'shoe', mode: 'any' } },
+					waitForIndexMilliseconds,
+				},
+				{},
+				{ minResults: 0 }
+			);
+			try {
+				await waitFor(() => bindingStarted);
+				await index.close();
+				bindingReady.resolve();
+				await assert.rejects(pending, (error) => error.statusCode === 503 && /closed/.test(error.message));
+				assert.strictEqual(opens, 0);
+			} finally {
+				bindingReady.resolve();
+				await index.close();
+			}
+		});
+
+	for (const waitForIndexMilliseconds of [0, 5000])
+		it(`does not open a reader after cancellation during cold scoring capability loading (wait ${waitForIndexMilliseconds})`, async () => {
+			const auditStore = sharedStore();
+			const readinessId = `cold-scoring-abort-${waitForIndexMilliseconds}`;
+			publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+			const bindingReady = Promise.withResolvers();
+			let opens = 0;
+			let bindingStarted = false;
+			const { index } = simpleQueryIndex({
+				auditStore,
+				readinessId,
+				payload: publicationPayload(),
+				hits: () => [],
+				onOpen: () => opens++,
+				onBinding: () => (bindingStarted = true),
+				bindingReady: bindingReady.promise,
+				queryApiVersion: 8,
+			});
+			attachCurrentCoverage(index, auditStore, readinessId);
+			const controller = new AbortController();
+			const reason = new Error('cancel cold scoring');
+			try {
+				const pending = index.search(
+					{
+						attribute: readinessId,
+						comparator: 'matches',
+						value: 'shoe',
+						fullTextQuery: { operator: 'boost', boost: 2, clause: { text: 'shoe', mode: 'any' } },
+						waitForIndexMilliseconds,
+					},
+					{ signal: controller.signal }
+				);
+				await waitFor(() => bindingStarted);
+				controller.abort(reason);
+				await Promise.race([
+					assert.rejects(pending, (error) => error === reason),
+					new Promise((_, reject) => setTimeout(() => reject(new Error('abort did not settle pending binding')), 1000)),
+				]);
+			} finally {
+				bindingReady.resolve();
+				await index.close();
+			}
+			assert.strictEqual(opens, 0);
+		});
+
+	for (const timedOut of [false, true])
+		it(`observes a delayed binding failure after scoring ${timedOut ? 'timeout' : 'abort'}`, async function () {
+			this.timeout(2000);
+			const auditStore = sharedStore();
+			const readinessId = `settled-scoring-binding-${timedOut}`;
+			publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+			const bindingReady = Promise.withResolvers();
+			let opens = 0;
+			const { index } = simpleQueryIndex({
+				auditStore,
+				readinessId,
+				payload: publicationPayload(),
+				hits: () => [],
+				onOpen: () => opens++,
+				bindingReady: bindingReady.promise,
+				capabilityLoadingTimeoutMilliseconds: 15,
+				queryApiVersion: 8,
+			});
+			attachCurrentCoverage(index, auditStore, readinessId);
+			const controller = new AbortController();
+			const reason = new Error('already cancelled');
+			if (!timedOut) controller.abort(reason);
+			const unhandled = [];
+			const onUnhandled = (error) => unhandled.push(error);
+			process.on('unhandledRejection', onUnhandled);
+			try {
+				await assert.rejects(
+					index.search(
+						{
+							attribute: readinessId,
+							comparator: 'matches',
+							value: 'shoe',
+							waitForIndexMilliseconds: 25,
+							fullTextQuery: { operator: 'boost', boost: 2, clause: { text: 'shoe', mode: 'any' } },
+						},
+						{ signal: controller.signal }
+					),
+					(error) => (timedOut ? error.code === 'FULL_TEXT_INITIALIZATION_TIMEOUT' : error === reason)
+				);
+				bindingReady.reject(new Error('delayed capability failure'));
+				await new Promise((resolve) => setImmediate(resolve));
+				assert.deepStrictEqual(unhandled, []);
+				assert.strictEqual(opens, 0);
+			} finally {
+				bindingReady.resolve();
+				await index.close();
+				process.removeListener('unhandledRejection', onUnhandled);
+			}
+		});
 
 	it('does not open native storage before shared readiness is ready', async () => {
 		const auditStore = sharedStore();
