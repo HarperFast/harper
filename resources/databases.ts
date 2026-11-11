@@ -2291,7 +2291,15 @@ function initStores(
 			try {
 				// now load the non-primary keys, opening the dbs as necessary for indices
 				if (opensIndexStore(attribute)) {
-					if (!indices[attribute.name]) {
+					const current = indices[attribute.name];
+					// A thread that never declares the schema learns of a change between a plain and a custom
+					// index only here; keeping its old store would write entries the other kind cannot read.
+					// The superseded store stays open for any operation still using it, as indexFor leaves it.
+					if (
+						!current ||
+						(rootStore instanceof RocksDatabase &&
+							current.customIndex?.constructor !== CUSTOM_INDEXES[attribute.indexed.type])
+					) {
 						const dbi = openIndex(attribute.key, rootStore, attribute, primaryAttribute.generation, openedStores);
 						indices[attribute.name] = dbi;
 						indices[attribute.name].indexNulls = attribute.indexNulls;
@@ -4142,14 +4150,22 @@ function openIndex(
 		  });
 	const isCustomObjectIndex = !!(attribute.indexed?.type && CUSTOM_INDEXES[attribute.indexed.type]?.useObjectStore);
 	if (rootStore instanceof RocksDatabase) {
-		// Enable cache (WeakLRUCache + VT) for all custom-object index stores so the VT is
-		// available before resolveIndexFormat decides the format. Versioned stores need the VT
-		// for cached traversal; legacy stores pay a small per-write cache.delete() overhead only.
-		dbi = openRocksDatabase(rootStore.path, {
-			...dbiInit,
-			name: storeNameFor(dbiKey, generation),
-			cache: isCustomObjectIndex,
-		} as any) as any;
+		// Enable cache (WeakLRUCache + VT) for every custom-object index store that may opt in to the
+		// VT, so the VT is available before resolveIndexFormat decides the format. Versioned stores
+		// need the VT for cached traversal; legacy stores pay a small per-write cache.delete() overhead only.
+		const storeOptions = { ...dbiInit, name: storeNameFor(dbiKey, generation), cache: isCustomObjectIndex };
+		try {
+			dbi = openRocksDatabase(rootStore.path, { ...storeOptions } as any) as any;
+		} catch (error) {
+			// A plain index's handle on this column family, open since the attribute was a plain index,
+			// makes rocksdb-js refuse the opt-in until every such handle in the process has closed, and
+			// for a while after, until the transactions that predate the close finish.
+			if (!isCustomObjectIndex || (error as { code?: string })?.code !== 'ERR_VERIFICATION_TABLE_CONFLICT') throw error;
+			dbi = openRocksDatabase(rootStore.path, { ...storeOptions, cache: false } as any) as any;
+			logger.warn(
+				`Index ${dbiKey} reads without its record cache until Harper restarts: rocksdb-js refused its column family the verification table`
+			);
+		}
 		// before the setup below, whose failure cleanup can itself fail to close it
 		owner?.push(dbi);
 		(dbi as any).rootStore = rootStore;
