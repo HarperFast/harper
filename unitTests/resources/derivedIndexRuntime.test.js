@@ -1424,6 +1424,32 @@ describe('DerivedIndexRuntime', () => {
 			assert.strictEqual(coverage(), 'unknown', 'a mark bound to replaced storage');
 			backend.cursor = stored;
 			assert.strictEqual(coverage(), 'current');
+			const words = sharedWords(store, backend.id);
+			for (const [word, name] of [
+				[3, 'rebuild request'],
+				[4, 'lag flag'],
+			]) {
+				Atomics.store(words, word, 1);
+				const demanded = coverage();
+				Atomics.store(words, word, 0);
+				assert.strictEqual(demanded, 'unknown', `a raised ${name}`);
+			}
+			const epoch = new BigInt64Array(words.buffer, READINESS_BYTES - 16, 1);
+			const position = store.committedPosition;
+			let reads = 0;
+			Object.defineProperty(store, 'committedPosition', {
+				configurable: true,
+				get() {
+					if (reads++ === 0) Atomics.add(epoch, 0, 1n);
+					return position;
+				},
+			});
+			const raced = coverage();
+			Atomics.sub(epoch, 0, 1n);
+			delete store.committedPosition;
+			store.committedPosition = position;
+			assert.strictEqual(raced, 'unknown', 'an owner epoch minted while the positions are read');
+			assert.strictEqual(coverage(), 'current');
 			store.committedPosition = { sequence: 1, offset: 64 };
 			assert.strictEqual(coverage(), 'unknown', 'a log that moved past the mark');
 			await runtime.stop();
