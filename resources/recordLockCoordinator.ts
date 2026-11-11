@@ -333,8 +333,9 @@ export interface DelegationRecall {
  */
 export interface ClusterLockTransport {
 	/**
-	 * True on the stand-in registered while this node runs with cluster record locks turned off; fixed for
-	 * the transport object's lifetime. It does not relax `lock()`: a default-scope lock still reaches the
+	 * True on the stand-in registered while this node runs with cluster record locks turned off. It must not
+	 * change while the process runs: a conditional write reads it once, when it binds to its table, and keeps
+	 * that answer through its write. It does not relax `lock()`: a default-scope lock still reaches the
 	 * stand-in and is refused. Only a caller with a defined unlocked fallback for that state reads it:
 	 * a conditional REST write then checks its precondition without a lock. Only `true` counts; absent,
 	 * the node is treated as having cluster record locks enabled.
@@ -343,7 +344,7 @@ export interface ClusterLockTransport {
 	/**
 	 * Why `homeMap()` is returning undefined, appended to the refusal a cluster `lock()` gives for a missing
 	 * map — for example the operation that establishes one. Undefined when the transport does not know
-	 * why. Synchronous, must not throw, and safe to show a client.
+	 * why. Synchronous and safe to show a client; a throw is logged and the refusal keeps its own text.
 	 */
 	homeMapUnavailableReason?(database: string): string | undefined;
 	/**
@@ -3755,7 +3756,12 @@ function describeExhaustedWait(terminal: DelegationReply | undefined, hasCurrent
 }
 
 function missingMapReason(transport: ClusterLockTransport, database: string): string {
-	const reason = transport.homeMapUnavailableReason?.(database);
+	let reason: string | undefined;
+	try {
+		reason = transport.homeMapUnavailableReason?.(database);
+	} catch (error) {
+		warnOnce('a record lock transport could not say why it has no home map', error);
+	}
 	return reason ? `: ${reason}` : '';
 }
 

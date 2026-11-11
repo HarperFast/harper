@@ -159,7 +159,6 @@ class FakeCluster {
 			mapless: false,
 			/** Set to make this node's map read below a generation it already acted under: refused at once, never ridden through. */
 			staleMap: false,
-			/** What this node's transport says about a missing map (`homeMapUnavailableReason`). */
 			mapReason: undefined,
 			written: [],
 		};
@@ -1436,6 +1435,13 @@ describe('record lock delegations', () => {
 			await assert.rejects(alpha.coordinator.acquire(key, LEASE, 50), refusal(/until one is established$/));
 			alpha.mapReason = '';
 			await assert.rejects(alpha.coordinator.acquire(key, LEASE, 50), refusal(/until one is established$/));
+			const { transport } = alpha.coordinator;
+			const reason = transport.homeMapUnavailableReason;
+			transport.homeMapUnavailableReason = () => {
+				throw new Error('the transport could not read its own state');
+			};
+			await assert.rejects(alpha.coordinator.acquire(key, LEASE, 50), refusal(/until one is established$/));
+			transport.homeMapUnavailableReason = reason;
 			alpha.mapReason = 'apply one with record_lock_apply_homes';
 			await assert.rejects(
 				alpha.coordinator.acquire(key, LEASE, 50),
