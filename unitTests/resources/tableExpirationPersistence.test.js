@@ -304,6 +304,33 @@ describe('table-level expiration persistence (harper-pro#1179)', () => {
 		assert.strictEqual(Declared.evictionMS, 3600000);
 	});
 
+	it('keeps the omitted setting as the row it writes holds it, not as an earlier read saw it', async function () {
+		const tableName = 'ExpiryInheritedUnderLock';
+		const Declared = keyed(tableName, { expiration: 60, eviction: 300 });
+		await commitCatalog(Declared);
+		const { key } = primaryRow(Declared);
+		const catalog = Declared.dbisDB;
+		const originalGetSync = catalog.getSync;
+		let raced = false;
+		catalog.getSync = function (readKey, ...rest) {
+			const value = originalGetSync.call(this, readKey, ...rest);
+			if (readKey === key && !raced) {
+				raced = true;
+				// another thread saves a new eviction right after this declaration's first read of the row
+				catalog.putSync(key, { ...value, eviction: 3600 });
+			}
+			return value;
+		};
+		try {
+			keyed(tableName, { expiration: 120 });
+		} finally {
+			catalog.getSync = originalGetSync;
+		}
+		await commitCatalog(Declared);
+		assert.deepStrictEqual(catalogExpiration(Declared), { expiration: 120, eviction: 3600 });
+		assert.strictEqual(Declared.evictionMS, 3600000);
+	});
+
 	it('does not clear a TTL application code configured when the schema declares none', async function () {
 		const tableName = 'ExpiryApplicationKept';
 		const Configured = keyed(tableName);
@@ -316,7 +343,7 @@ describe('table-level expiration persistence (harper-pro#1179)', () => {
 	it('loads a saved value no declaration could save now as absent', async function () {
 		const tableName = 'ExpiryLegacyInvalid';
 		const Legacy = keyed(tableName);
-		await writeCatalogSettings(Legacy, { expiration: 'soon', eviction: -1 });
+		await writeCatalogSettings(Legacy, { expiration: { legacy: 1n }, eviction: -1 });
 		delete databases[DATABASE][tableName];
 		resetDatabases();
 		const Restarted = getDatabases()[DATABASE][tableName];

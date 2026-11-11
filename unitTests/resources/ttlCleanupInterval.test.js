@@ -7,8 +7,7 @@ const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { waitFor } = require('../waitFor');
 const { setTimeout: sleep } = require('node:timers/promises');
 
-// the delays of the timers armed while `run` executes
-function timersArmedBy(run) {
+async function timersArmedBy(run, settleMs = 0) {
 	const originalSetTimeout = global.setTimeout;
 	const delays = [];
 	global.setTimeout = (callback, delay, ...args) => {
@@ -17,26 +16,7 @@ function timersArmedBy(run) {
 	};
 	try {
 		run();
-	} finally {
-		global.setTimeout = originalSetTimeout;
-	}
-	return delays;
-}
-
-// The cleanup scan is what removes an expired record: reads return it until then. Its interval has to come
-// from the table's TTL whichever way the TTL was set. A worker that learns of a table from the catalog (a
-// table created at runtime on another thread, or any table after a restart) arms it with the number form.
-// the timers armed while `run` and what it starts within `settleMs` execute
-async function timersArmedWithin(run, settleMs) {
-	const originalSetTimeout = global.setTimeout;
-	const delays = [];
-	global.setTimeout = (callback, delay, ...args) => {
-		delays.push(delay);
-		return originalSetTimeout(callback, delay, ...args);
-	};
-	try {
-		run();
-		await sleep(settleMs);
+		if (settleMs) await sleep(settleMs);
 	} finally {
 		global.setTimeout = originalSetTimeout;
 	}
@@ -45,6 +25,9 @@ async function timersArmedWithin(run, settleMs) {
 // a rescheduled scan runs once at once, then at its interval; the daily default is the only one over an hour here
 const isDailyCadence = (delay) => delay > 3_600_000 && delay <= 86_400_000;
 
+// The cleanup scan is what removes an expired record: reads return it until then. Its interval has to come
+// from the table's TTL whichever way the TTL was set. A worker that learns of a table from the catalog (a
+// table created at runtime on another thread, or any table after a restart) arms it with the number form.
 describe('TTL cleanup scan interval', () => {
 	before(function () {
 		setupTestDBPath();
@@ -197,7 +180,7 @@ describe('TTL cleanup scan interval', () => {
 		});
 		const Hydrated = hydrate(Declared, 'TtlAdoptedEvictionOnly', {});
 		try {
-			const delays = timersArmedBy(() => Hydrated._adoptCatalogExpiration(0, 0.05));
+			const delays = await timersArmedBy(() => Hydrated._adoptCatalogExpiration(0, 0.05));
 			assert.strictEqual(Hydrated.expirationMS, 0);
 			assert.strictEqual(Hydrated.evictionMS, 50);
 			assert.strictEqual(delays.length, 1, 'adopting an eviction-only TTL must arm the scan');
@@ -217,7 +200,7 @@ describe('TTL cleanup scan interval', () => {
 		});
 		const Hydrated = hydrate(Declared, 'TtlAdoptedClear', { expirationMS: 60_000 });
 		try {
-			const delays = await timersArmedWithin(() => Hydrated._adoptCatalogExpiration(undefined, undefined), 200);
+			const delays = await timersArmedBy(() => Hydrated._adoptCatalogExpiration(undefined, undefined), 200);
 			assert.strictEqual(Hydrated.expirationMS, 0);
 			assert.strictEqual(Hydrated.evictionMS, 0);
 			// the armed scan moves to the daily cadence a table with no TTL keeps for per-record expiry
@@ -235,7 +218,7 @@ describe('TTL cleanup scan interval', () => {
 		});
 		try {
 			Table.setTTLExpiration({ expiration: 60 });
-			const delays = await timersArmedWithin(() => Table.setTTLExpiration({ expiration: 0, eviction: 0 }), 200);
+			const delays = await timersArmedBy(() => Table.setTTLExpiration({ expiration: 0, eviction: 0 }), 200);
 			assert(delays.some(isDailyCadence), `the scan was disabled instead of moved to the daily default: ${delays}`);
 		} finally {
 			Table.cleanup();
@@ -304,17 +287,14 @@ describe('TTL cleanup scan interval', () => {
 		}
 	});
 
-	it('arms no scan for a table with no TTL', () => {
+	it('arms no scan for a table with no TTL', async () => {
 		const Table = table({
 			table: 'TtlNoneToArm',
 			database: databaseName,
 			attributes: [{ name: 'id', isPrimaryKey: true }],
 		});
 		try {
-			assert.deepStrictEqual(
-				timersArmedBy(() => Table._armCleanupScan()),
-				[]
-			);
+			assert.deepStrictEqual(await timersArmedBy(() => Table._armCleanupScan()), []);
 		} finally {
 			Table.cleanup();
 		}

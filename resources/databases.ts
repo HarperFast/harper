@@ -44,6 +44,7 @@ import {
 	makeTable,
 	replicaExpirationMsOf,
 	replicaRefreshFractionOf,
+	describeTtlValue,
 	savedTtlSeconds,
 	ttlSecondsOf,
 	ignoreAlreadyDropped,
@@ -1139,6 +1140,9 @@ export function catalogCreatedTime(table: { dbisDB: any; tableName: string; prim
 	const createdTime = primaryCatalogRowFor(table)?.value?.createdTime;
 	return Number.isFinite(createdTime) ? createdTime : undefined;
 }
+function savedTtlOf(row: any): { expiration?: number; eviction?: number } {
+	return { expiration: savedTtlSeconds(row.expiration), eviction: savedTtlSeconds(row.eviction) };
+}
 /** Whether a declared TTL field (undefined = not declared, 0 = cleared) differs from the catalog's. */
 function ttlChanged(declared: number | undefined, saved: unknown): boolean {
 	if (declared === undefined) return false;
@@ -1153,10 +1157,10 @@ function loadedTtlSeconds(databaseName: string, tableName: string, field: string
 	const seconds = savedTtlSeconds(saved);
 	const key = `${databaseName}.${tableName}.${field}`;
 	if (seconds === undefined && saved !== undefined && saved !== 0 && !warnedInvalidSavedTtl.has(key)) {
-		warnedInvalidSavedTtl.add(key);
 		logger.warn(
-			`Ignoring the saved ${field} ${JSON.stringify(saved)} of ${databaseName}.${tableName}: not a valid TTL`
+			`Ignoring the saved ${field} ${describeTtlValue(saved)} of ${databaseName}.${tableName}: not a valid TTL`
 		);
+		warnedInvalidSavedTtl.add(key);
 	}
 	return seconds;
 }
@@ -4407,11 +4411,9 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	const tables = target.tables(databaseName);
 	logger.trace(`Defining ${tableName} in ${databaseName}`);
 	let Table = tables?.[tableName];
-	// what a declaration naming only one of expiration and eviction keeps for the other
-	const savedTtl =
-		Table && origin !== 'cluster' && (expiration === undefined) !== (eviction === undefined)
-			? catalogExpiration(Table)
-			: undefined;
+	const namesOneTtlField = origin !== 'cluster' && (expiration === undefined) !== (eviction === undefined);
+	// the saved value of the field such a declaration omits, from the row persistTableSettings writes
+	let inheritedTtl: { expiration?: number; eviction?: number } | undefined;
 	if (rootStore.status === 'closed') {
 		throw new Error(`Can not use a closed data store for ${tableName}`);
 	}
@@ -5832,9 +5834,9 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	// A peer's expiration reaches a table this call created through makeTable, as a catalog load. It never
 	// configures an existing table, and applying it here would mark the TTL as this thread's own declaration.
 	if (origin === 'cluster') expiration = eviction = scanInterval = undefined;
-	if (savedTtl) {
-		expiration ??= savedTtl.expiration ?? 0;
-		eviction ??= savedTtl.eviction ?? 0;
+	if (inheritedTtl) {
+		expiration ??= inheritedTtl.expiration ?? 0;
+		eviction ??= inheritedTtl.eviction ?? 0;
 	}
 	if (
 		expiration ||
@@ -5870,6 +5872,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	}
 	function persistTableSettings(attribute: any, dbiKey: string) {
 		const attributeDescriptor = attributesDbi.getSync(dbiKey) || {};
+		if (namesOneTtlField) inheritedTtl = savedTtlOf(attributeDescriptor);
 		// Persist schemaDefined when the explicit live value disagrees with disk. Without this,
 		// a stale `false` (from a v4-era write or replicated event) survives every reload: the
 		// in-memory re-assert in the existing-Table branch only fixes the worker that ran @table,
@@ -5893,6 +5896,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			exclusiveLock();
 			const currentPrimaryAttribute = attributesDbi.getSync(dbiKey);
 			if (!currentPrimaryAttribute || tableIsDropping(currentPrimaryAttribute, dbiKey)) return;
+			if (namesOneTtlField) inheritedTtl = savedTtlOf(currentPrimaryAttribute);
 			const updatedPrimaryAttribute = { ...currentPrimaryAttribute };
 			if (typeof audit === 'boolean') {
 				if (audit) Table.enableAuditing();

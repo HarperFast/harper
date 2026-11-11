@@ -826,18 +826,20 @@ export function ttlSecondsOf(table: string, field: string, value: unknown): numb
 	const seconds =
 		typeof value === 'number' ? value : typeof value === 'string' && value.trim() !== '' ? Number(value) : NaN;
 	if (seconds >= 0 && seconds <= MAX_TTL_SECONDS) return seconds;
-	const shown =
-		typeof value === 'number'
-			? String(value)
-			: typeof value === 'string'
-				? JSON.stringify(value.slice(0, 40))
-				: typeof value;
-	throw new ClientError(`${field} of '${table}' must be a non-negative number of seconds, got ${shown}`);
+	throw new ClientError(
+		`${field} of '${table}' must be a non-negative number of seconds, got ${describeTtlValue(value)}`
+	);
 }
 /** A TTL field as the catalog holds it: absent unless a valid positive number of seconds. */
 export function savedTtlSeconds(value: unknown): number | undefined {
-	const seconds = Number(value);
+	const seconds = typeof value === 'number' || typeof value === 'string' ? Number(value) : NaN;
 	return seconds > 0 && seconds <= MAX_TTL_SECONDS ? seconds : undefined;
+}
+/** A rejected TTL value for a message: bounded, and never a value that cannot be rendered. */
+export function describeTtlValue(value: unknown): string {
+	if (typeof value === 'number' || typeof value === 'bigint' || typeof value === 'boolean') return String(value);
+	if (typeof value === 'string') return JSON.stringify(value.slice(0, 40));
+	return value === null ? 'null' : typeof value;
 }
 const TEST_WRITE_KEY_BUFFER = Buffer.allocUnsafeSlow(8192);
 const MAX_KEY_BYTES = 1978;

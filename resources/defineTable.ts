@@ -392,8 +392,7 @@ function compileTypeDef(name: string, shape: Shape, options: DefineTableOptions)
 
 	const { database, ...tableOptions } = options;
 	// `schemaDefined: true` matches @table so the existing-Table re-assert in `table()` fires on
-	// every reload (DDL parity: added/removed attributes and index changes are applied), and so does
-	// clearing an expiration or eviction the options no longer declare.
+	// every reload (DDL parity: added/removed attributes and index changes are applied).
 	return {
 		table: name,
 		type: name,

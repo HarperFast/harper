@@ -222,7 +222,6 @@ async function descTable(describeTableObject: any, attrPerms?: any) {
 		db_size,
 	};
 	if (tableObj.replicate !== undefined) tableResult.replicate = tableObj.replicate;
-	// an eviction-only table reports 0s; a cleared one, like one that never had a TTL, reports none
 	if (tableObj.expirationMS || tableObj.evictionMS) tableResult.expiration = tableObj.expirationMS / 1000 + 's';
 	if (tableObj.sealed !== undefined) tableResult.sealed = tableObj.sealed;
 	if (tableObj.cacheControl != null) tableResult.cacheControl = tableObj.cacheControl;

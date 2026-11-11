@@ -71,7 +71,6 @@ async function storedRows(ctx: ContextWithHarper, table: string): Promise<number
 	return (await ok200(ctx, { operation: 'describe_table', database: DATABASE, table })).record_count;
 }
 
-// Polls past the moment the rows become evictable (expiry + eviction) by a few scans of the runtime cadence.
 async function waitForReclaim(ctx: ContextWithHarper, table: string, dueAt: number, why: string) {
 	const deadline = dueAt + RECLAIM_MARGIN_MS;
 	let count: number;
@@ -219,7 +218,6 @@ async function createRuntimeTtl(ctx: ContextWithHarper) {
 	});
 }
 
-// The restarted process loads every table from the catalog; the fixture schema re-declares Declared without a TTL.
 async function restartWithoutDeclaredTtl(ctx: ContextWithHarper, options: Record<string, unknown>, dueAt: number) {
 	await killHarper(ctx);
 	await dropDeclaredTtl(ctx);
