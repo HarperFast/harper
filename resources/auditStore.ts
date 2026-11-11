@@ -254,6 +254,7 @@ export function openAuditStore(rootStore) {
 	}
 	rootStore.auditStore = auditStore;
 	auditStore.rootStore = rootStore;
+	auditStore.getAuditFloor = () => getAuditFloor(auditStore);
 	establishAuditFloor(auditStore);
 	establishLogPurgeBounds(auditStore);
 	establishDatabaseGeneration(auditStore);

@@ -75,7 +75,7 @@ The synthesized target keeps the collection flag, or the batch is one null-keyed
 
 ## Historical record reconstruction (`getRecordAtTime`)
 
-`getRecordAtTime` reverses patches or rebuilds replacements, folding one origin before a frame's oldest predecessor. `HistoryMemo` bounds detached entries per call; unsafe reads rebuild. `HistoryReader` carries straight chains. Absent/evictable unlinked history scans; other non-expiring reinserts keep the gap.
+`getRecordAtTime` reads matching-origin frames and follows their first predecessor; reversals must be exact. Unlinked puts don't prove absence. `HistoryMemo` bounds per-call reuse; unsafe chains rebuild. Non-evicting reinserts retain a gap (`crdt.test.js`, `auditLog.test.js`, `historyReader.test.js`).
 
 ## Path routing & parameterised routes
 

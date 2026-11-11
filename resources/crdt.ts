@@ -387,25 +387,40 @@ function reconstructAtTimestamp(
 	// An unlinked control entry has no record image to reconstruct.
 	if (!(start && isOfRecord(start) && (STATE_TYPES.has(start.type) || start.previousVersion))) {
 		start = undefined;
-		// The log has no record-id index; disjoint windows avoid rereading entries during the backward search.
-		let windowEnd = timestamp + 0.001;
-		let windowStart = Number.isFinite(timestamp) ? timestamp : 1;
-		for (let width = 100; !start && windowEnd > 1; windowStart -= width, width *= 2) {
-			for (const auditEntry of auditStore.getRange({ start: Math.max(windowStart, 1), end: windowEnd })) {
-				if (
-					auditEntry.txnLogKey <= timestamp &&
-					STATE_TYPES.has(auditEntry.type) &&
-					isOfRecord(auditEntry) &&
-					// two origins can write at one key; keep the requested origin's entry
-					!(
-						nodeId != null &&
-						start?.txnLogKey === auditEntry.txnLogKey &&
-						(start.nodeId ?? 0) === nodeId &&
-						(auditEntry.nodeId ?? 0) !== nodeId
-					)
-				)
-					start = auditEntry;
+		let lowerBound = auditStore.getAuditFloor?.() ?? 1;
+		if (lowerBound > 1) {
+			// Native logs can append older keys later; the first yielded key is not a lower bound.
+			for (const retained of auditStore.getRange({ start: 1, end: Math.min(lowerBound, timestamp + 0.001) })) {
+				if (retained.txnLogKey > 0 && Number.isFinite(retained.txnLogKey))
+					lowerBound = Math.min(lowerBound, retained.txnLogKey);
 			}
+		}
+		lowerBound = Math.max(1, lowerBound);
+		let windowEnd = timestamp + 0.001;
+		let windowStart = Number.isFinite(timestamp) ? timestamp : lowerBound;
+		for (let width = 100; !start && windowEnd > lowerBound; windowStart -= width, width *= 2) {
+			let key,
+				candidate,
+				preferred = false;
+			const finishKey = () => {
+				if (candidate) start = candidate;
+			};
+			for (const auditEntry of auditStore.getRange({ start: Math.max(windowStart, lowerBound), end: windowEnd })) {
+				if (auditEntry.txnLogKey > timestamp || !isOfRecord(auditEntry)) continue;
+				if (auditEntry.txnLogKey !== key) {
+					finishKey();
+					key = auditEntry.txnLogKey;
+					candidate = undefined;
+					preferred = false;
+				}
+				const hasState = STATE_TYPES.has(auditEntry.type) || auditEntry.previousVersion;
+				if (nodeId != null && (auditEntry.nodeId ?? 0) === nodeId && (hasState || auditEntry.type === 'invalidate')) {
+					if (!preferred) candidate = undefined;
+					preferred = true;
+					if (hasState) candidate = auditEntry;
+				} else if (hasState && !preferred) candidate = auditEntry;
+			}
+			finishKey();
 			windowEnd = windowStart;
 		}
 		if (!start) return null;

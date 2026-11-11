@@ -482,6 +482,143 @@ describe('bounded history readers', function () {
 		}
 	});
 
+	for (const initial of ['5', true]) {
+		it(`matches the plain oracle across a coercive add from ${JSON.stringify(initial)}`, async () => {
+			const T = newTable();
+			await T.put({ id: 'a', n: initial, name: 'start' });
+			await T.patch('a', { name: 'first' });
+			await T.patch('a', { name: 'second' });
+			await T.patch('a', { n: { __op__: 'add', value: 1 } });
+			assert.deepStrictEqual(values(await Array.fromAsync(T.getHistory())), plainHistory(T));
+			assert.deepStrictEqual(values(await T.getHistoryOfRecord('a')), plainHistory(T, 'a'));
+		});
+	}
+
+	for (const linked of [false, true]) {
+		for (const reverseOrder of [false, true]) {
+			it(`keeps the requested origin's ${linked ? 'linked' : 'unlinked'} invalidate (reverse: ${reverseOrder})`, async function () {
+				if (lmdb) this.skip();
+				const T = newTable();
+				await T.put({ id: 'seed', n: 0 });
+				const origins = ['a', 'b'].map((name) =>
+					getIdOfRemoteNode(`history-control-${sequence}-${name}`, T.auditStore)
+				);
+				let previousKey, sharedKey;
+				const write = (txn, nodeId, type, n, previousVersion) =>
+					T.auditStore.put(
+						undefined,
+						{
+							tableId: T.tableId,
+							recordId: 'a',
+							type,
+							nodeId,
+							version: txn.getTimestamp(),
+							previousVersion,
+							previousAdditionalAuditRefs: previousVersion
+								? [{ version: previousVersion, nodeId: origins[0] }]
+								: undefined,
+							encodedRecord: Buffer.from(T.primaryStore.encoder.encode({ id: 'a', n })),
+						},
+						{ transaction: txn, nodeId }
+					);
+				T.primaryStore.rootStore.transactionSync((txn) => {
+					previousKey = txn.getTimestamp();
+					write(txn, origins[0], 'put', 7);
+				});
+				const writers = [
+					(txn) => write(txn, origins[0], 'invalidate', 0, linked ? previousKey : undefined),
+					(txn) => write(txn, origins[1], 'put', 99),
+				];
+				if (reverseOrder) writers.reverse();
+				for (const write of writers)
+					T.primaryStore.rootStore.transactionSync((txn) => {
+						if (sharedKey) txn.setTimestamp(sharedKey);
+						else sharedKey = txn.getTimestamp();
+						write(txn);
+					});
+				assert(sharedKey > previousKey);
+				for (const cutoff of [sharedKey, sharedKey + 0.1, Infinity]) {
+					assert.deepStrictEqual(getRecordAtTime(undefined, cutoff, T.primaryStore, T.tableId, 'a', origins[0]), {
+						id: 'a',
+						n: 7,
+					});
+					assert.deepStrictEqual(getRecordAtTime(undefined, cutoff, T.primaryStore, T.tableId, 'a', origins[1]), {
+						id: 'a',
+						n: 99,
+					});
+				}
+			});
+		}
+	}
+
+	it('retains out-of-order log keys below the reported audit floor', async function () {
+		if (lmdb) this.skip();
+		const T = newTable({ database: `${database}_out_of_order_floor` });
+		const origin = getIdOfRemoteNode('history-lower-key-origin', T.auditStore);
+		const base = Date.now() + 10000;
+		for (const [offset, n] of [
+			[200, 2],
+			[100, 1],
+		]) {
+			T.primaryStore.rootStore.transactionSync((txn) => {
+				txn.setTimestamp(base + offset);
+				T.auditStore.put(
+					undefined,
+					{
+						type: 'put',
+						tableId: T.tableId,
+						recordId: 'a',
+						nodeId: origin,
+						version: base + offset,
+						encodedRecord: Buffer.from(T.primaryStore.encoder.encode({ id: 'a', n })),
+					},
+					{ transaction: txn, nodeId: origin }
+				);
+			});
+		}
+		raiseAuditFloor(T.auditStore, base + 300);
+		assert.deepStrictEqual(getRecordAtTime(undefined, base + 150, T.primaryStore, T.tableId, 'a', origin), {
+			id: 'a',
+			n: 1,
+		});
+	});
+
+	it('stops search windows at the lower retained-log boundary', async () => {
+		const T = newTable();
+		await T.put({ id: 'a', n: 0 });
+		const first = [...T.auditStore.getRange({ start: 1 })][0].txnLogKey;
+		const key = entries(T).at(-1).txnLogKey;
+		raiseAuditFloor(T.auditStore, first + 0.001);
+		const counter = meter(T);
+		try {
+			assert.strictEqual(getRecordAtTime(undefined, key + 50, T.primaryStore, T.tableId, 'missing'), null);
+			assert(counter.windows <= 8, `${counter.windows} windows below the retained boundary`);
+			assert.strictEqual(getRecordAtTime(undefined, key + 0.1, T.primaryStore, T.tableId, 'a').n, 0);
+		} finally {
+			counter.close();
+		}
+	});
+
+	it('abandons carried images when a new coercive write changes the oracle between yields', async () => {
+		const T = newTable();
+		await T.put({ id: 'a', n: '5', name: 'start' });
+		await T.patch('a', { name: 'first' });
+		await T.patch('a', { name: 'second' });
+		const iterator = T.getHistory();
+		try {
+			assert.strictEqual((await iterator.next()).value.type, 'put');
+			assert.strictEqual((await iterator.next()).value.value.n, '5');
+			await T.patch('a', { n: { __op__: 'add', value: 1 } });
+			const second = (await iterator.next()).value;
+			const audited = entries(T).find(
+				(entry) => entry.type === 'patch' && entry.getValue(T.primaryStore, false).name === 'second'
+			);
+			assert.deepStrictEqual(second.value, audited.getValue(T.primaryStore, true, audited.txnLogKey));
+		} finally {
+			await iterator.return();
+		}
+	});
+
 	it('uses independent contexts after writes between streaming yields', async () => {
 		const T = newTable();
 		await T.put({ id: 'a', n: 0 });
@@ -494,7 +631,6 @@ describe('bounded history readers', function () {
 	});
 
 	it('abandons copied frames when retention advances during a read', async function () {
-		if (!lmdb) this.skip();
 		const T = newTable();
 		await T.put({ id: 'a', n: 0 });
 		await T.patch('a', { n: 1 });
@@ -507,11 +643,13 @@ describe('bounded history readers', function () {
 		try {
 			const before = atTime(memo);
 			assert.strictEqual(before.n, 1);
-			await removeAuditEntry(T.auditStore, firstPatch);
+			if (lmdb) await removeAuditEntry(T.auditStore, firstPatch);
 			raiseAuditFloor(T.auditStore, key + 0.001);
-			assert.strictEqual(T.auditStore.get(key), undefined);
+			assert.strictEqual(memo.checkState(), false);
+			assert.strictEqual(memo.stats.entries, 0);
+			if (lmdb) assert.strictEqual(T.auditStore.get(key), undefined);
 			const expected = atTime();
-			assert.notDeepStrictEqual(expected, before);
+			if (lmdb) assert.notDeepStrictEqual(expected, before);
 			assert.deepStrictEqual(atTime(memo), expected);
 		} finally {
 			memo.close();

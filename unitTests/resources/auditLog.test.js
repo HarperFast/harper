@@ -2935,10 +2935,10 @@ describe('history after record eviction (issue #3164)', () => {
 			await pastAuditWindow(patchTime);
 			const between = patchTime + 50;
 
-			const scans = countLogScans(HistoryTable);
+			const scans = countLogScans(HistoryTable, (options) => !options.exactStart && options.snapshot !== false);
 			try {
 				assert.deepStrictEqual(recordAt('rec-1', between), patched, 'evicted: no current entry to walk back from');
-				assert.strictEqual(scans.count, 0, 'the search back stops at the nearest entry');
+				assert(scans.count <= 3, 'at most two search windows plus the retained-boundary probe');
 			} finally {
 				scans.restore();
 			}

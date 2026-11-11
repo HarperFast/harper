@@ -338,6 +338,7 @@ export class HistoryReader {
 
 	#canCarry(id) {
 		const current = this.memo.store.getEntry(id);
+		if (current?.additionalAuditRefs?.length) return false;
 		if (current?.size > this.memo.maxBytes) {
 			this.memo.stopOptimizing();
 			return false;
@@ -345,6 +346,10 @@ export class HistoryReader {
 		const stamp = `${current?.version}|${current?.localTime}|${current?.nodeId}|${current?.metadataFlags}|${current?.size}`;
 		const key = this.memo.key('eligible', id);
 		let answer = this.memo.get(key);
+		if (answer && answer.stamp !== stamp) {
+			this.memo.stopOptimizing();
+			return false;
+		}
 		if (answer?.stamp !== stamp) {
 			answer = { stamp, allowed: this.#eligible(id, current, this.memo) };
 			if (!this.memo.keep(key, 'eligible', answer, stamp.length * 2)) return false;
