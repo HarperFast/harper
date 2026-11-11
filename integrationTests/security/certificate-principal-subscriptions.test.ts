@@ -219,6 +219,7 @@ suite('Subscriptions of principals with no hdb_user (#4062)', { skip: skipSuite 
 			// admitted and then revoked by a recheck, or refused at admission (#4124): either way none survives
 			for (const [credential, stream] of Object.entries(streams)) {
 				ok(await waitFor(() => stream.ended, RECHECK_MS * 10), `the ${credential} subscription survived rechecks`);
+				ok([200, 401, 403].includes(stream.status), `the ${credential} stream ended with status ${stream.status}`);
 			}
 		} finally {
 			for (const stream of Object.values(streams)) stream.destroy();

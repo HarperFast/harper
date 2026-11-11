@@ -852,15 +852,32 @@ function certificatePrincipal<T>(user: T, getUser?: unknown): T {
 		(user as any)[CERTIFICATE_PRINCIPAL] = true;
 		return user;
 	}
-	// an object literal's prototype is its realm's Object.prototype; a vm module loader's context has its own
-	const prototype = Object.getPrototypeOf(user);
-	if (prototype !== null && Object.getPrototypeOf(prototype) !== null) return user;
+	if (!isPlainObject(user)) return user;
 	const view: any = { ...user, [CERTIFICATE_PRINCIPAL]: true };
 	if (!view[PROVENANCE]) {
 		const tracked = firstLookup(user as unknown as User);
 		if (tracked) view[PROVENANCE] = tracked;
 	}
 	return view;
+}
+
+const nativeObjectSource = Function.prototype.toString.call(Object);
+
+/**
+ * An object literal, or an object with a null prototype. A literal's prototype is its realm's Object.prototype, and a
+ * vm module loader's context has its own, recognized by its native Object constructor; a class's prototype, even one
+ * that extends null, has its own constructor.
+ */
+function isPlainObject(value: object): boolean {
+	const prototype = Object.getPrototypeOf(value);
+	if (prototype === null || prototype === Object.prototype) return true;
+	if (Object.getPrototypeOf(prototype) !== null || !Object.hasOwn(prototype, 'constructor')) return false;
+	const constructor = prototype.constructor;
+	return (
+		typeof constructor === 'function' &&
+		constructor.prototype === prototype &&
+		Function.prototype.toString.call(constructor) === nativeObjectSource
+	);
 }
 
 function isCertificatePrincipal(user: unknown): boolean {

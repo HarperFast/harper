@@ -295,6 +295,25 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 			}
 		});
 
+		it('leaves an object on any other null-rooted prototype as it is, unmarked', () => {
+			class Detached extends null {
+				constructor() {
+					return Object.create(Detached.prototype);
+				}
+				get authExpiresAt() {
+					return 1;
+				}
+			}
+			const detached = new Detached();
+			detached.username = 'detached_cn';
+			const prototype = Object.create(null, { authExpiresAt: { get: () => 1 } });
+			const custom = Object.assign(Object.create(prototype), { username: 'custom_cn' });
+			for (const principal of [detached, custom]) {
+				assert.strictEqual(user.certificatePrincipal(principal), principal, 'a copy would drop its getters');
+				assert.strictEqual(user.isCertificatePrincipal(principal), false);
+			}
+		});
+
 		it('leaves a class-instance principal as it is, unmarked', () => {
 			class GetterRole {
 				username = 'getter_cn';
