@@ -4,11 +4,11 @@ Invariants the code cannot state, why, and what enforces them; [MAP.md](MAP.md) 
 
 ## Full-text declarations and reader snapshots
 
-Declarations compile to `fullTextIndexes`, never `attributes` (no stored value). One reader lease per search; only an idle reader reloads (`#acquireSearchReader`, `fullTextQueryIndex.test.js`). A native snapshot is not a record snapshot: hydration re-checks versions. Native budgets fix before `startHTTPThreads()`.
+Declarations compile to `fullTextIndexes`, never `attributes` (no stored value). One reader lease per search; only an idle reader reloads (`fullTextQueryIndex.test.js`). A native snapshot is not a record snapshot: hydration re-checks versions. Native budgets fix before `startHTTPThreads()`.
 
 ## A bare nullish id is never a collection target for `get` or `delete`
 
-`transactional()` 400s a bare `null`/`undefined` id (a bare-null delete removed every record). Gaps: `{ id: undefined }`, function-form `defineResource` (`deleteNullResourceApi.test.js`).
+`transactional()` 400s a bare `null`/`undefined` id (a bare-null delete once emptied a table). Gaps: `{ id: undefined }`, function-form `defineResource` (`deleteNullResourceApi.test.js`).
 
 ## A primitive-id static get skips instance dispatch only behind its gate
 
@@ -37,7 +37,7 @@ Each element gets its own target (`elementTargetFactory`) without `checkPermissi
 
 ## Sharding resolves fixed slots through an authoritative database map
 
-- `@sharded` hashes primary keys; `by`/`slotFrom` are test-only (`replication.experimentalAttributeSlots`, harper-pro#1178). Needs RocksDB, auditing, replication.
+- `@sharded` hashes primary keys; `by`/`slotFrom` are test-only (harper-pro#1178). Needs RocksDB, auditing, replication.
 - The slot map is never rebuilt from config; map writes serialize on `acquireResidencyMapFence`. `installResidencyMap` imports lazily: an eager import reorders boot.
 - `captureResidencyOwners` pins owners for a commit and its retries; replicas never own.
 - Quarantines clear only on restart; live holds are retryable (`DatabaseShardingHeldError`) and replay bypasses them.
@@ -49,7 +49,7 @@ Each element gets its own target (`elementTargetFactory`) without `checkPermissi
 
 ## Database generation and resumable positions
 
-**No readable copy keeps its source's generation; a collection position resumes only in the current generation, with a finite cursor >= the resume floor** (`isResumablePosition`, RocksDB); a single-record resume checks only the generation. Rechecked at each replay yield (pruning raises the floor before deleting); checkpoint only after `resumeVerified`. Gaps: filesystem copies, base-copy back-fill before `reload`, commits below a recorded position (#2928; `databaseGeneration.test.js`).
+**No readable copy keeps its source's generation; a collection position resumes only in the current generation, with a finite cursor >= the resume floor** (`isResumablePosition`, RocksDB); below the floor a single-record resume needs a complete history walk. Rechecked at each replay yield (pruning raises the floor before deleting); checkpoint only after `resumeVerified`. Gaps: filesystem copies, base-copy back-fill before `reload`, commits below a recorded position (#2928; `databaseGeneration.test.js`).
 
 ## Origin-closed timestamp floor
 
@@ -58,7 +58,7 @@ Each element gets its own target (`elementTargetFactory`) without `checkPermissi
 - A key is reserved before the first staged write (`reserveLocalKey`), else `RocksTransactionLogStore.put` throws (a logged violation is unrepairable). **Every `local` key is minted**; a caller's value is only the record version (`uniqueLocalLogKeys.test.js`).
 - A thread marks its bound pending before minting; samplers raise `proposed` before reading bounds. `localStartBound` never reads a clock (#3599).
 - The floor syncs before publication where `syncWal` exists (`originFloorsDurable`). Gaps: power loss without `syncWal`, version-only re-delivery past the walk cap (#1148), older binaries, LMDB.
-- Worker bounds retire only on main's `worker.on('exit')`, after its commits drain (`subscribeProgress.test.js`).
+- Worker bounds retire only on main's `worker.on('exit')`, after its commits drain; notify passes capture `localStartBound` before draining (`subscribeProgress.test.js`).
 
 ## Historical record reconstruction (`getRecordAtTime`)
 
@@ -88,12 +88,12 @@ The operations thread loads no schema; `table()` stores `@relationship` targets 
 - **`relationship.from` accessors are synchronous** (v4 parity: `getSync`, never `get()`; `query.test.js`) and mark the request uncacheable, else a stale ETag 304s (gap: unselected `@enumerable` links).
 - **Async query iteration reads related records via `loadEntries`**, checking `getReadTransactionGuard` after each await (`relationshipAsyncReads.test.js`; gaps: `.to` `asArray` on a caching table, #3588; the index switch uses `getSync`).
 - **Each AND condition on a to-many relationship is existential**; a `rel[...]` group (`isRelationshipGroup`) binds to one related record. `select()` keeps what an AND matched, never an OR (`relationshipSameRecordGroup.test.js`; gap: #3762).
-- **`@relationship(from, to)` joins `related[to] == local[from]`** on every path (`joinTo`, `filterByType`).
+- **`@relationship(from, to)` joins `related[to] == local[from]`** on every path.
 - New `_writeUpdate` early returns follow the blob protocol; new public members go in `TableResourceClass`/`TableResourceInstance` (`_TableResourceMatchesItsDeclaredTypes`).
 
 ## RecordObject prototype and entryMap
 
-Each encoder has its own `StoreRecordObject` prototype, so getters stay per table (`lmdbPrefetchComputed.test.js`). Test `instanceof RecordObject`, never `entryMap.has`; never copy a record others mutate.
+Each encoder has its own `StoreRecordObject` prototype, so getters stay per table; LMDB promotes before lmdb-js caches (`lmdbPrefetchComputed.test.js`). Test `instanceof RecordObject`, never `entryMap.has`; never copy a record others mutate.
 
 ## Struct mode is gated to primary DBIs (downgrade compatibility)
 
@@ -121,7 +121,7 @@ A source's `lastModified` caps at local time: the version is the last-writer-win
 
 ## getFromSource() record locks outlive neither their handle nor a close
 
-Closing the owning handle releases the fill's lock (`releaseRecordLock` ignores closed stores); waiters wake on `LOCK_TIMEOUT`, as a close notifies no other thread (`cacheFillClose.test.js`).
+Closing the owning handle releases the fill's lock (`releaseRecordLock` ignores closed stores); waiters wake on `LOCK_TIMEOUT` (a close notifies no other thread) (`cacheFillClose.test.js`).
 
 ## Blob orphan cleanup: pre-saved files outlive cancelled commits
 
@@ -136,7 +136,7 @@ Closing the owning handle releases the fill's lock (`releaseRecordLock` ignores 
 
 ## Over-time transactions are aborted, not force-committed
 
-`startMonitoringTxns` acts past `STORAGE_MAXTRANSACTIONOPENTIME`; code committing a native handle itself opens it raw, never via `getReadTxn`.
+`startMonitoringTxns` enforces the open-time limit; code committing a native handle itself opens it raw, never via `getReadTxn`.
 
 - **A write-bearing transaction is aborted and poisoned** (422): a partial force-commit breaks atomicity. Read-only, `sourceApply` and `isReplay` ones force-commit: they cannot resume (harper-pro#348).
 - The pre-commit phase gets `COMMIT_PHASE_GRACE` (its writes are sealed). **The monitor never aborts a submitted native commit.**
@@ -145,7 +145,7 @@ Closing the owning handle releases the fill's lock (`releaseRecordLock` ignores 
 
 ## A client disconnect cancels the request's writes
 
-After `context.signal` aborts, `transaction.ts` stages no more writes on that context: orphan intents wedge other commits (#2001). Background work uses `contextStorage.exit()` (`contextStorageExit.test.js`). **The point of no return is native submission**: a poison mid-submission aborts nothing (#1407). MQTT carries no signal (`transactionCommitBoundary.test.js`).
+After `context.signal` aborts, `transaction.ts` stages no more of its writes: orphan intents wedge other commits (#2001). Background work uses `contextStorage.exit()` (`contextStorageExit.test.js`). **The point of no return is native submission**: a poison mid-submission aborts nothing (#1407). MQTT carries no signal (`transactionCommitBoundary.test.js`).
 
 ## Replication directives are super-user only, gated where they enter
 
@@ -157,7 +157,7 @@ Every write producer passes `DatabaseTransaction.admitRequestWrite()` (405); pro
 
 ## A past-expiry record stays queryable until eviction
 
-Eviction trails expiry (`ttlCleanupInterval.test.js`): search returns expired rows; with no source get, get, only-if-cached (504) and subscribe hide them (`isHiddenExpiry`, `onlyIfCachedExpiry.test.js`).
+Eviction trails expiry (`ttlCleanupInterval.test.js`): search returns expired rows (caching tables' loaded selects refresh); with no source get, get, only-if-cached (504) and subscribe hide them (`isHiddenExpiry`, `onlyIfCachedExpiry.test.js`).
 
 ## RocksDB range activity and snapshot expiration
 
@@ -233,7 +233,7 @@ A bare `<table>/` row may lack `name` and `isPrimaryKey` (#3225), so use `isPrim
 
 ## Per-origin subscription checkpoints
 
-`checkpoint()` encodes one boundary per origin. **If any known origin lacks a qualifying floor, there is no checkpoint.** A floor publishes only after its pass drains (`passCapture`); a live certified subscription is `ungated`: the `startTime` gate drops late lower-key commits. Only `updateRecordedSequenceId` writes `[seq, P]` rows (`subscribeCheckpoint.test.js`).
+`checkpoint()` encodes one boundary per origin. **If any known origin lacks a qualifying floor, there is no checkpoint.** A floor publishes only after its pass drains; a live certified subscription is `ungated`: the `startTime` gate drops late lower-key commits. Only `updateRecordedSequenceId` writes `[seq, P]` rows (`subscribeCheckpoint.test.js`).
 
 ## Subscription version selection
 
@@ -241,7 +241,7 @@ A bare `<table>/` row may lack `name` and `isPrimaryKey` (#3225), so use `isPrim
 
 ## Audit-store `'committed'` notification batching (`transactionBroadcast.ts`)
 
-**Registration is the delivery boundary**, except a backlog over one batch, a subscribe inside a dispatch, or an entry behind an uncommitted transaction (#2928; `subscriptionRegistrationBoundary.test.js`). Passes never share an iterator (`notifyScheduled`) and skip a closing store. **The ancestor key walk must strictly shrink** (#2687; `transactionBroadcastKeyWalk.test.js`). **Ending a subscription never reshapes an array a loop walks** (`transactionBroadcastEndDuringDelivery.test.js`).
+**Registration is the delivery boundary**, except a backlog over one batch, a subscribe inside a dispatch, or an entry behind an uncommitted transaction (#2928; `subscriptionRegistrationBoundary.test.js`). Passes never share an iterator and skip a closing store. **The ancestor key walk must strictly shrink** (#2687; `transactionBroadcastKeyWalk.test.js`). **Ending a subscription never reshapes an array a loop walks** (`transactionBroadcastEndDuringDelivery.test.js`).
 
 ## `createBlob(readable)` and `table.put()` don't synchronously drain the source
 
@@ -267,7 +267,7 @@ Replay reads bases with `uncachedRead`: cached WeakRefs kept the backlog alive (
 
 - **The estimated range is the executed range**: `getRange` and `estimateCount` share `translateIndexBounds` (`searchBooleanFalseIndex.test.js`).
 - An AND ignores non-finite legs (`estimateFilterOnlySibling.test.js`; gap: `intersectionEstimate` multiplies `Infinity` into the row hint).
-- **Null and omitted values match alike on every path** (`nullOmittedScanFilterParity.test.js`); a non-null `ne` therefore reads the primary store.
+- **Null and omitted values match alike on every path** (`nullOmittedScanFilterParity.test.js`).
 - **An AND leads with its narrowest index-driving condition** (`conditionDrivesIndex`). Only a lead in sort order (`scansInAttributeOrder`) streams the sort.
 
 ## Chained query conditions scope one array element; FIQL tokens always advance
@@ -300,7 +300,7 @@ Each reused wrapper is recorded in `ownedRocksStores` and closed before the root
 
 ## A local-only write marks its record and audit entry, and replay keeps the mark
 
-`LOCAL_ONLY` sits in the entry's `extendedType` and the record's flags; replay re-derives it from the entry, since it never re-appends (`localOnly.test.js`).
+`LOCAL_ONLY` sits in the entry's `extendedType` and the record's flags; replay, which never re-appends, re-derives it from the entry (`localOnly.test.js`).
 
 ## Legacy residency includes the writer, and a patch over a stub stays a stub
 
@@ -308,7 +308,7 @@ Each reused wrapper is recorded in `ownedRocksStores` and closed before the root
 
 ## A read keeps a fetched record as a local replica and never relocates it
 
-Replicas are RocksDB-only audit-free `REPLICA` rows with the stub's identity (`_storeReplica`, harper-pro#436). **Admission keeps only the stub's own head write, and only when no later fold can change it** (`answersStub`, #3640). Demote all replicas before a downgrade (`residencyReplicas.test.js`, `replicaStorageReclamation.test.js`).
+Replicas are RocksDB-only audit-free `REPLICA` rows with the stub's identity (`_storeReplica`, harper-pro#436). **Admission keeps only the stub's own head write, and only when no later fold can change it** (`answersStub`, #3640). Demote all replicas before a downgrade (`residencyReplicas.test.js`); window and budget bound reclamation (`replicaStorageReclamation.test.js`).
 
 ## `replicatedConfirmation` counts only the residents of each written record
 
