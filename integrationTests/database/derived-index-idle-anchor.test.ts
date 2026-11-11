@@ -178,7 +178,7 @@ const DEFAULT_RETENTION_OPTIONS = {
 };
 
 suite('a derived index at the default retention cadence', { skip: skipSuite }, (ctx: ContextWithHarper) => {
-	const { status, nearest, put, caughtUp } = idleIndexHelpers(ctx);
+	const { request, status, nearest, put, caughtUp } = idleIndexHelpers(ctx);
 
 	before(async () => {
 		await setupHarperWithFixture(ctx, FIXTURE_PATH, DEFAULT_RETENTION_OPTIONS);
@@ -202,5 +202,21 @@ suite('a derived index at the default retention cadence', { skip: skipSuite }, (
 		await waitFor(async () => (await nearest(100)) === 100, { timeout: 60_000 });
 		ok(BigInt((await status()).readiness.ownerEpoch) > epoch, 'the idle runner released and a new owner acquired');
 		await caughtUp();
+	});
+
+	test('rebuilds an idle index that Table.clear() emptied, with no write after it', { timeout: 300_000 }, async () => {
+		await caughtUp();
+		await new Promise((resolve) => setTimeout(resolve, 35_000));
+		const epoch = BigInt((await status()).readiness.ownerEpoch);
+		ok((await request('/IdleClear/', 'POST')).status < 300);
+		// The clear removed the durable cursor without a log entry; only the clear's own rebuild request restores it.
+		await waitFor(
+			async () => {
+				const { cursor, readiness } = await status();
+				return readiness.state === 'ready' && cursor !== undefined && BigInt(readiness.ownerEpoch) > epoch;
+			},
+			{ timeout: 60_000, message: 'the cleared index was never rebuilt' }
+		);
+		strictEqual(await nearest(100), undefined);
 	});
 });

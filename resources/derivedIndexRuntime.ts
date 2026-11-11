@@ -299,8 +299,6 @@ const READINESS_REASON = 1;
 const READINESS_ATTEMPTS = 2;
 const READINESS_REBUILD_REQUEST = 3;
 const READINESS_LAG_EXCEEDED = 4;
-// The positions an idle release published (`#quietSinceRelease`), in an allocation of their own: the
-// releasing owner epoch and the positions' sum, then the log count and the table id.
 const QUIET_EPOCH = 0;
 const QUIET_SUM = 1;
 const QUIET_LOGS = 0;
@@ -329,7 +327,8 @@ export class DerivedIndexRuntime {
 		this.#logMark = undefined;
 		this.wake();
 	};
-	// A `committed` event arrives after its positions are visible, so dropping the memo there keeps it current.
+	// A `committed` event arrives after its positions are visible, so dropping the memo there keeps it current
+	// while the listener is attached; attaching and detaching drop it too.
 	#logMark?: { mark: LogMark | undefined };
 	#currentLogMark = (): LogMark | undefined => {
 		if (!this.#logMark) {
@@ -386,6 +385,7 @@ export class DerivedIndexRuntime {
 		);
 		this.#runners.set(registration.backend.id, runner);
 		if (!this.#listening) {
+			this.#logMark = undefined;
 			this.#logStore.rootStore.on('committed', this.#onCommit);
 			this.#listening = true;
 		}
@@ -557,6 +557,7 @@ export class DerivedIndexRuntime {
 	}
 
 	#stopListening() {
+		this.#logMark = undefined;
 		if (!this.#listening) return;
 		try {
 			this.#logStore.rootStore.off?.('committed', this.#onCommit);
@@ -867,6 +868,9 @@ class DerivedIndexRunner {
 	stop(): Promise<void> {
 		if (this.#stopResult) return this.#stopResult;
 		this.#stopped = true;
+		// A successor under this readiness id can index other storage (an HNSW index dropped and declared again
+		// keeps its id), so it must not inherit the idle positions this generation published.
+		Atomics.store(this.#quiet.marks, QUIET_EPOCH, 0n);
 		this.status = { state: 'stopped', ownerEpoch: this.#ownerEpoch };
 		if (this.#idleTimer) clearTimeout(this.#idleTimer);
 		if (this.#rebuildTimer) clearTimeout(this.#rebuildTimer);
@@ -2684,7 +2688,8 @@ type LogMark = { logs: number; sum: bigint };
 
 /**
  * A log's committed position only moves forward (commits, rotation and purge all advance it) and its offset
- * fits 32 bits, so over the same logs an equal sum means no log moved.
+ * fits 32 bits, so over the same logs an equal sum means no log moved. A sum past 2^63 (sequence numbers
+ * summing past 2^31) gives no mark, so runners acquire as they would without one.
  */
 function logMark(positions: DerivedIndexPositions | undefined): LogMark | undefined {
 	if (!positions) return;

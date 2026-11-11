@@ -64,7 +64,6 @@ function queryLimits() {
 	};
 }
 
-// What one HTTP worker's search path does: a reader per owner epoch, counted where the native reader opens.
 function queryIndex(Table, id, shared) {
 	const index = new FullTextQueryIndex({
 		Table: { tableId: Table.tableId, primaryStore: Table.primaryStore, _readTxnForContext: () => undefined },
@@ -172,7 +171,6 @@ describe('A derived index whose table receives no writes', () => {
 		try {
 			await waitFor(() => readDerivedIndexReadiness(auditStore, id).state === 'ready', { timeout: 10_000 });
 			await Product.put('first', { title: 'first' });
-			// indexed, then the idle pass's coverage published, then released once idle
 			await waitFor(
 				() =>
 					shared.applied.length === 1 &&

@@ -1188,7 +1188,7 @@ describe('DerivedIndexRuntime', () => {
 			waitFor(() => backend.shutdowns > shutdownsBefore && store.locks.size === 0, {
 				message: 'the owner must release once idle',
 			});
-		// Each pass outlasts the idle grace and the lock-retry cadence.
+		// 15 ms outlasts the 5 ms idle grace and the 10 ms lock retry, so every wake source fires each pass.
 		const quietCommits = async (store) => {
 			for (let i = 0; i < 5; i++) {
 				store.rootStore.emit('committed');
@@ -1276,7 +1276,6 @@ describe('DerivedIndexRuntime', () => {
 			await waitFor(() => runtime.getReadiness(backend.id).ownerEpoch > epoch, {
 				message: 'unproven positions must not keep the index ownerless',
 			});
-			// the pending transaction commits: its own commit wake finds the log moved and acquires
 			const shutdowns = backend.shutdowns;
 			store.writtenPosition = undefined;
 			store.committedPosition = { sequence: 1, offset: 96 };
@@ -1321,27 +1320,58 @@ describe('DerivedIndexRuntime', () => {
 
 		it('lets only a registration over the same table skip on the published positions', async () => {
 			const store = quietStore();
-			const first = runtimeFor(store, new Map(), options).runtime;
 			const backend = coverageBackend('quiet-table');
+			const first = runtimeFor(store, new Map(), options).runtime;
 			first.register(registration(backend));
 			await released(store, backend);
-			await first.stop();
 			const epoch = first.getReadiness(backend.id).ownerEpoch;
 
 			const same = runtimeFor(store, new Map(), options).runtime;
-			same.register(registration(coverageBackend('quiet-table')));
+			same.register(registration(coverageBackend(backend.id)));
 			await quietCommits(store);
-			assert.strictEqual(same.getReadiness('quiet-table').ownerEpoch, epoch);
-			await same.stop();
+			assert.strictEqual(same.getReadiness(backend.id).ownerEpoch, epoch);
 
-			// an index recreated under the same id over a new table
-			const recreated = runtimeFor(store, new Map(), options).runtime;
-			recreated.register({
-				backend: coverageBackend('quiet-table'),
+			const otherTable = runtimeFor(store, new Map(), options).runtime;
+			otherTable.register({
+				backend: coverageBackend(backend.id),
 				projections: new Map([[2, (record) => ({ title: record.title })]]),
 			});
-			await waitFor(() => recreated.getReadiness('quiet-table').ownerEpoch > epoch);
-			await recreated.stop();
+			await waitFor(() => otherTable.getReadiness(backend.id).ownerEpoch > epoch);
+			await Promise.all([first.stop(), same.stop(), otherTable.stop()]);
+		});
+
+		it('does not let a registration inherit the idle positions of a stopped predecessor', async () => {
+			const store = quietStore();
+			const backend = coverageBackend('quiet-successor');
+			const first = runtimeFor(store, new Map(), options).runtime;
+			first.register(registration(backend));
+			await released(store, backend);
+			const epoch = first.getReadiness(backend.id).ownerEpoch;
+			await first.stop();
+
+			const successor = runtimeFor(store, new Map(), options).runtime;
+			successor.register(registration(coverageBackend(backend.id)));
+			await waitFor(() => successor.getReadiness(backend.id).ownerEpoch > epoch, {
+				message: 'a successor can index other storage under the same id, so it must acquire',
+			});
+			await successor.stop();
+		});
+
+		it('catches up when the same runtime re-registers after its commit listener was detached', async () => {
+			const entries = new Map([[10, []]]);
+			const store = quietStore(entries);
+			const backend = coverageBackend('quiet-reregister');
+			const { runtime } = runtimeFor(store, new Map([['1:a', { version: 20, value: { title: 'a' } }]]), options);
+			const unregister = runtime.register(registration(backend));
+			await released(store, backend);
+			await unregister();
+
+			entries.set(10, [audit({ timestamp: 20, recordId: 'a' })]);
+			store.committedPosition = { sequence: 1, offset: 64 };
+			store.rootStore.emit('committed');
+			runtime.register(registration(backend));
+			await waitFor(() => backend.deliveries.length === 1);
+			await runtime.stop();
 		});
 	});
 
