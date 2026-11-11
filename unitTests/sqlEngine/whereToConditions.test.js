@@ -21,7 +21,7 @@ const col = (name) => ({ kind: 'column', name });
 const lit = (value) => ({ kind: 'literal', value });
 const binop = (op, name, v) => ({ kind: 'binop', op, left: col(name), right: lit(v) });
 const ATTRS = [
-	{ name: 'status', indexed: true },
+	{ name: 'status', type: 'String', indexed: true },
 	{ name: 'createdAt', indexed: false },
 ];
 
