@@ -146,10 +146,10 @@ describe('TTL cleanup scan interval', () => {
 		const Table = table({ table: definition.table, database: databaseName, attributes: definition.attributes });
 		const isolatedTable = scopedTableFactory(undefined, true);
 		try {
-			Table.sourcedFrom({ get: (id) => ({ id }) }, { expiration: 0.05 });
+			Table.sourcedFrom({ get: (id) => ({ id }) }, { expiration: 0.5 });
 			isolatedTable(definition);
 			isolatedTable(definition);
-			assert.strictEqual(Table.expirationMS, 50);
+			assert.strictEqual(Table.expirationMS, 500);
 			await Table.put(1, { id: 1 });
 			await Table.primaryStore.committed;
 			assert(stored(Table, 1));

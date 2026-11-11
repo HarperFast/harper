@@ -4011,7 +4011,6 @@ export function makeTable(options): TableResourceClass {
 				recordScanInterval = (scanIntervalSeconds ?? 0) * 1000;
 			}
 			if (!preserveLoadedConfiguration && !ttlFromLoad) {
-				// kept, the application's expiration is all that remains
 				if (keepApplicationTtl || (!declaredHere && !byNumber)) applicationTtl = 'all';
 				else if (declaredHere) applicationTtl = 'none';
 				else if (applicationTtl === 'none') applicationTtl = 'expiration';
