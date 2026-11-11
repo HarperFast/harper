@@ -178,7 +178,7 @@ const DEFAULT_RETENTION_OPTIONS = {
 };
 
 suite('a derived index at the default retention cadence', { skip: skipSuite }, (ctx: ContextWithHarper) => {
-	const { status, nearest, put, caughtUp } = idleIndexHelpers(ctx);
+	const { request, status, nearest, put, caughtUp } = idleIndexHelpers(ctx);
 
 	before(async () => {
 		await setupHarperWithFixture(ctx, FIXTURE_PATH, DEFAULT_RETENTION_OPTIONS);
@@ -194,11 +194,30 @@ suite('a derived index at the default retention cadence', { skip: skipSuite }, (
 		await waitFor(async () => (await nearest(9)) === 9, { timeout: 60_000 });
 		await caughtUp();
 		const epoch = BigInt((await status()).readiness.ownerEpoch);
-		// Past the runner's default 30 s idle grace; the release itself is only observable through the next owner.
+		// Past the runner's default 30 s idle grace, with the audit-metadata commits a live server makes; the
+		// release itself is only observable through the next owner.
 		await new Promise((resolve) => setTimeout(resolve, 35_000));
+		strictEqual(BigInt((await status()).readiness.ownerEpoch), epoch, 'an index with nothing to do kept its owner');
 		await put(100);
 		await waitFor(async () => (await nearest(100)) === 100, { timeout: 60_000 });
 		ok(BigInt((await status()).readiness.ownerEpoch) > epoch, 'the idle runner released and a new owner acquired');
 		await caughtUp();
+	});
+
+	test('rebuilds an idle index that Table.clear() emptied, with no write after it', { timeout: 300_000 }, async () => {
+		await caughtUp();
+		await new Promise((resolve) => setTimeout(resolve, 35_000));
+		const epoch = BigInt((await status()).readiness.ownerEpoch);
+		ok((await request('/IdleClear/', 'POST')).status < 300);
+		// The clear removes the durable cursor without a log entry: the clear's rebuild request restores it at
+		// once, and otherwise the next commit wake would find the stored cursor's fingerprint gone.
+		await waitFor(
+			async () => {
+				const { cursor, readiness } = await status();
+				return readiness.state === 'ready' && cursor !== undefined && BigInt(readiness.ownerEpoch) > epoch;
+			},
+			{ timeout: 60_000, message: 'the cleared index was never rebuilt' }
+		);
+		strictEqual(await nearest(100), undefined);
 	});
 });

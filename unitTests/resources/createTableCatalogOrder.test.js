@@ -191,7 +191,11 @@ describe('create table catalog write order', () => {
 				'a create that fails before makeTable must not register the class'
 			);
 			assert.strictEqual(releasedReclamationHandlers.length, 0, 'nothing was registered before makeTable');
-			assert.throws(() => table({ ...definition(), expiration: -1 }), /Expiration can not be negative/);
+			// a peer's definition is not validated at the declaration boundary, so its bad value fails in makeTable
+			assert.throws(
+				() => table({ ...definition(), origin: 'cluster', expiration: -1 }),
+				/must be a non-negative number of seconds/
+			);
 			assert.strictEqual(
 				databases.test[tableName],
 				undefined,

@@ -237,6 +237,15 @@
 			"type": "object",
 			"description": "What this component adds to Harper Studio for the cluster it is deployed to, returned to every authenticated role by get_studio_configuration. An invalid page is dropped with a logged warning; the component still loads.",
 			"properties": {
+				"navigation": {
+					"type": "object",
+					"description": "How Studio shows built-in tabs and the pages of the plugins this component loads. A bare key is a built-in tab; a dotted key is relative to this component, <key>.<pageId> for a plugin's page. The root config beats an application, an application beats its plugins, and between peers the most visible state wins.",
+					"propertyNames": {
+						"maxLength": 128,
+						"pattern": "^(?:[a-z0-9-]+|[A-Za-z0-9_@-][A-Za-z0-9_@/.-]*\\.[a-z0-9-]{1,64})$"
+					},
+					"additionalProperties": { "enum": ["visible", "tucked", "hidden"] }
+				},
 				"pages": {
 					"type": "array",
 					"items": {
@@ -245,8 +254,8 @@
 						"properties": {
 							"id": {
 								"type": "string",
-								"pattern": "^[a-z0-9-]+$",
-								"description": "Unique within the component; Studio addresses the page as <component>.<id>."
+								"pattern": "^[a-z0-9-]{1,64}$",
+								"description": "Unique within the component; Studio addresses the page as <component>.<id>, for a plugin's page <application>.<key>.<id>."
 							},
 							"name": { "type": "string", "minLength": 1 },
 							"icon": { "type": "string", "description": "A Lucide icon name." },
@@ -255,6 +264,10 @@
 								"description": "tab: a top Studio tab; config: an entry in the Config page menu."
 							},
 							"description": { "type": "string" },
+							"navigation": {
+								"enum": ["visible", "tucked", "hidden"],
+								"description": "How Studio shows this page unless the studio.navigation of a component that loads this one, or the root config, names it."
+							},
 							"access": {
 								"type": "object",
 								"description": "Who Studio shows the page to, evaluated by Studio against the viewer's role. Not a server permission. Like content, Harper returns it unvalidated to every signed-in role.",

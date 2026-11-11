@@ -25,7 +25,12 @@ const {
 	getRegisteredSession,
 	_resetSessionRegistryForTest,
 } = require('#src/components/mcp/sessionRegistry');
-const { _setResourcesForTest, _setSubscribeImplForTest } = require('#src/components/mcp/resources');
+const {
+	_setResourcesForTest,
+	_setSubscribeImplForTest,
+	_setCustomSubscribeTimeoutForTest,
+} = require('#src/components/mcp/resources');
+const { addCustomResource, clearProfileCustomResources } = require('#src/components/mcp/customResourceRegistry');
 const { _liveSubscriptionCount, _resetSubscriptionsForTest } = require('#src/components/mcp/subscriptions');
 const { AccessViolation } = require('#src/utility/errors/hdbError');
 
@@ -80,9 +85,11 @@ describe('MCP persisted subscription state', function () {
 		_resetSessionRegistryForTest();
 		if (session) await waitFor(async () => !(await loadSession(session.id))?.streamToken);
 		_resetSubscriptionsForTest();
+		clearProfileCustomResources('application');
 		_setSubscribeImplForTest(undefined);
 		_setResourcesForTest(undefined);
 		_setSubscriptionTimeoutForTest(undefined);
+		_setCustomSubscribeTimeoutForTest(undefined);
 		assert.equal(_pendingSubscriptionRouteCount(), 0);
 	});
 	after(() => _setSessionTableForTest(undefined));
@@ -677,5 +684,93 @@ describe('MCP persisted subscription state', function () {
 		await sessions.delete(session.id);
 		await waitFor(() => !getRegisteredSession(session.id));
 		assert.equal(_liveSubscriptionCount(session.id), 0);
+	});
+
+	it('keeps a custom restore failure sticky for its generation without stalling unrelated subscribes, and retries on same-URI re-subscribe or reconnect', async () => {
+		let faultedAttempts = 0;
+		addCustomResource({
+			uriTemplate: 'notes:///{id}',
+			name: 'note',
+			profile: 'application',
+			read: async () => 'x',
+			subscribe: async (params) => {
+				if (params.id === 'vanished') return null;
+				if (params.id === 'faulted' && ++faultedAttempts <= 2) throw new Error('transient custom failure');
+				return changeStream();
+			},
+		});
+		await patchSession(session.id, { subscriptions: ['notes:///faulted', 'notes:///vanished'] });
+		const record = await open();
+		assert.equal(getRegisteredSession(session.id), record);
+		assert.equal(_liveSubscriptionCount(session.id), 0);
+		assert.deepEqual((await loadSession(session.id)).subscriptions, ['notes:///faulted']);
+		assert.equal(await subscribe(URI), 'success');
+		assert.equal(faultedAttempts, 1, 'unrelated subscribe does not re-invoke a sticky custom failure');
+		assert.equal(_liveSubscriptionCount(session.id), 1);
+		const reconnected = await open();
+		assert.equal(getRegisteredSession(session.id), reconnected);
+		assert.equal(faultedAttempts, 2, 'reconnect retries the retained custom URI');
+		assert.equal(_liveSubscriptionCount(session.id), 1);
+		assert.equal(await subscribe('notes:///faulted'), 'success');
+		assert.equal(faultedAttempts, 3, 'same-URI re-subscribe creates a new generation and retries');
+		assert.equal(_liveSubscriptionCount(session.id), 2);
+	});
+
+	it('closes the GET and stops custom subscriptions in the same batch when a row-backed restore fails', async () => {
+		addCustomResource({
+			uriTemplate: 'notes:///{id}',
+			name: 'note',
+			profile: 'application',
+			read: async () => 'x',
+			subscribe: async () => changeStream(),
+		});
+		_setSubscribeImplForTest(async () => {
+			throw new Error('transient row-backed failure');
+		});
+		await patchSession(session.id, { subscriptions: ['notes:///ok', URI] });
+		const first = registerSession(session.id, 'application', USER);
+		assert.equal(await claimSubscriptionOwner(session.id, first.streamToken), false);
+		assert.equal(getRegisteredSession(session.id), undefined);
+		assert.equal(_liveSubscriptionCount(session.id), 0);
+		assert.deepEqual((await loadSession(session.id)).subscriptions, ['notes:///ok', URI]);
+	});
+
+	it('restores multiple hanging custom URIs in bounded batches of 8 without listener warnings', async () => {
+		_setCustomSubscribeTimeoutForTest(25);
+		_setSubscriptionTimeoutForTest(200);
+		let started = 0;
+		const firstBatchStarted = deferred();
+		addCustomResource({
+			uriTemplate: 'notes:///{id}',
+			name: 'note',
+			profile: 'application',
+			read: async () => 'x',
+			subscribe: () => {
+				if (++started === 8) firstBatchStarted.resolve();
+				return new Promise(() => {});
+			},
+		});
+		const warnings = [];
+		const onWarning = (warning) => warnings.push(warning);
+		process.on('warning', onWarning);
+		try {
+			const uris = Array.from({ length: 10 }, (_, index) => `notes:///h${index}`);
+			await patchSession(session.id, { subscriptions: uris });
+			const record = registerSession(session.id, 'application', USER);
+			const claiming = claimSubscriptionOwner(session.id, record.streamToken);
+			await firstBatchStarted.promise;
+			await new Promise((resolve) => setImmediate(resolve));
+			assert.equal(started, 8, 'first batch holds the 9th custom URI until the first 8 time out');
+			assert.equal(await claiming, true);
+			assert.equal(started, 10);
+			assert.equal(getRegisteredSession(session.id), record);
+			assert.deepEqual((await loadSession(session.id)).subscriptions, uris);
+			assert.deepEqual(
+				warnings.filter((w) => w.name === 'MaxListenersExceededWarning'),
+				[]
+			);
+		} finally {
+			process.off('warning', onWarning);
+		}
 	});
 });

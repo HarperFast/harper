@@ -149,7 +149,7 @@ type Document @table(audit: true) {
 
 ## Schema changes and rebuilds
 
-The `english@2` name remains unchanged in v5.4, but Tantivy 0.27 changes some English stems. Existing indexes must rebuild, and matching or ranking can change. See [upgrading existing indexes](./overview.md#upgrading-existing-indexes).
+The `english@2` name remains unchanged in v5.4, but Tantivy 0.27 changes some English stems. Indexes from fulltext 0.5.0 or prerelease 0.6 must rebuild, and matching or ranking can change. Current Harper indexes written by fulltext 0.7.0 or 0.8.0 already use Tantivy 0.27 and can reuse compatible checkpoints with 0.9.0. See [upgrading existing indexes](./overview.md#upgrading-existing-indexes).
 
 Changes that affect indexed storage create a new local index generation and rebuild from source data. These include source membership, source order, media types, analyzer settings, stop-word handling, positions, surface terms, and synonyms. Keep the `fields` list in a stable order when its meaning has not changed.
 
