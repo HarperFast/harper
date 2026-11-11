@@ -15,7 +15,7 @@
 import { parseArgs } from 'node:util';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { startGenerator, type GeneratorName } from './run-compare.mts';
+import { startDriver } from './shardedDriver.mts';
 import { startPgStack, dataDir, WARM_STACK_MEMORY } from './pgStack.mts';
 import {
 	sampleResources,
@@ -42,7 +42,6 @@ const { values } = parseArgs({
 		'records': { type: 'string', default: '200000' },
 		'ops': { type: 'string', default: '300000' },
 		'concurrency': { type: 'string', default: '128' },
-		'generator': { type: 'string', default: 'node' },
 		'shards': { type: 'string', default: '6' },
 		'reps': { type: 'string', default: '2' },
 		// Same placement rules as run-compare.mts: K target cores, generator on disjoint cores.
@@ -87,20 +86,17 @@ async function measureRatio(ratio: number): Promise<{ throughput: number; cpu: n
 	const mix: Record<string, number> = ratio === 0 ? { read: 1 } : { read: 1 - ratio, update: ratio };
 	const run = async (baseUrl: string, targets: ResourceTargets, pinned: Record<string, number>) => {
 		for (const [name, pid] of Object.entries(pinned)) verifyAffinity(name, pid, SERVER_CPUS);
-		const driver = await startGenerator(
-			values.generator as GeneratorName,
-			{
-				baseUrl,
-				table: 'usertable',
-				records: RECORDS,
-				opsPerWorkload: OPS,
-				concurrency: CONCURRENCY,
-				shape: { fieldCount: 10, fieldLength: 100 },
-				keyWidth: 10,
-				maxScanLength: 100,
-			},
-			SHARDS
-		);
+		const driver = await startDriver({
+			baseUrl,
+			table: 'usertable',
+			records: RECORDS,
+			opsPerWorkload: OPS,
+			concurrency: CONCURRENCY,
+			shards: SHARDS,
+			shape: { fieldCount: 10, fieldLength: 100 },
+			keyWidth: 10,
+			maxScanLength: 100,
+		});
 		try {
 			await driver.runWorkload('C', 'uniform', RECORDS * 2);
 			const reps: { throughput: number; cpu: number }[] = [];

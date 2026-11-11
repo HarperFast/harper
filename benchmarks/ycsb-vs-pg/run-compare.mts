@@ -22,17 +22,7 @@ import { pathToFileURL } from 'node:url';
 import { parseOptions } from '../ycsb/harness.mts';
 import { WORKLOADS, OWNER_COUNT, formatKey, linkTarget, ownerOf, usesDependentReads } from '../ycsb/workload.mts';
 import type { DistributionName, LatencyStats, PhaseResult } from '../ycsb/workload.mts';
-import {
-	K6_LATENCY_BASIS,
-	k6GoEnv,
-	NODE_LATENCY_BASIS,
-	k6Version,
-	startDriver as startK6Driver,
-	type DriverConfig,
-	type DriverRun,
-	type PhaseWindow,
-} from './k6Driver.mts';
-import { startDriver as startNodeDriver } from './shardedDriver.mts';
+import { defaultShards, startDriver, type DriverRun, type PhaseWindow } from './shardedDriver.mts';
 import { startPgStack, dataDir, WARM_STACK_MEMORY, type StackMemory, type StackService } from './pgStack.mts';
 import {
 	diffResources,
@@ -220,29 +210,10 @@ type CacheMode = 'warm' | 'cold';
 export type AuthMode = 'none' | 'token';
 type Options = ReturnType<typeof parseOptions>;
 
-export type GeneratorName = 'k6' | 'node';
-
-/**
- * k6 where the generator has a host of its own (--hosts), sized for it; the Node driver (shardedDriver.mts)
- * where it shares one with the target: there k6 with this harness's script topped out below a 4-core target
- * (README, "Load generator").
- */
-export const defaultGenerator = (remote: boolean): GeneratorName => (remote ? 'k6' : 'node');
-
-/** The line above a results table: which generator ran, and so what its latency columns measure. */
-export const generatorLine = (generator: GeneratorName): string =>
-	`Generator ${generator}; p50/p99 are ${generator === 'k6' ? K6_LATENCY_BASIS : NODE_LATENCY_BASIS}`;
-
-/** k6 (k6Driver.mts), or the Node driver (shardedDriver.mts, `shards` processes). */
-export function startGenerator(generator: GeneratorName, config: DriverConfig, shards = 4): Promise<DriverRun> {
-	return generator === 'node' ? startNodeDriver({ ...config, shards }) : startK6Driver(config);
-}
-
 export interface Session {
 	options: Options;
 	cache: CacheMode;
-	generator: GeneratorName;
-	/** --generator=node: its processes. */
+	/** Load-generator processes (shardedDriver.mts). */
 	shards: number;
 	serverCpus: number[];
 	driverCpus: number[];
@@ -288,7 +259,7 @@ interface Sample {
 	hostGate?: { waitedMs: number; quiet: boolean; load: HostLoad; byHost?: Record<string, HostLoad> };
 	/** The gate ran with other processes in this run's cgroup, whose CPU it counted as the run's (see checkOwnCgroup). */
 	sharedCgroup?: true;
-	generator: GeneratorName;
+	shards: number;
 	load: PhaseResult;
 	warm: PhaseResult;
 	measured: MeasuredWindow;
@@ -1142,23 +1113,20 @@ async function measureSample(
 		session,
 		target,
 		async (running) => {
-			const driver = await startGenerator(
-				session.generator,
-				{
-					baseUrl: running.baseUrl,
-					table: config.table,
-					records: config.records,
-					opsPerWorkload: config.opsPerWorkload,
-					concurrency: config.concurrency,
-					shape: { fieldCount: config.fieldCount, fieldLength: config.fieldLength },
-					keyWidth,
-					maxScanLength: config.maxScanLength,
-					authorization: running.authorization,
-					callerAuthorizations: running.callerAuthorizations,
-					cpus: session.driverCpus,
-				},
-				session.shards
-			);
+			const driver = await startDriver({
+				baseUrl: running.baseUrl,
+				table: config.table,
+				records: config.records,
+				opsPerWorkload: config.opsPerWorkload,
+				concurrency: config.concurrency,
+				shards: session.shards,
+				shape: { fieldCount: config.fieldCount, fieldLength: config.fieldLength },
+				keyWidth,
+				maxScanLength: config.maxScanLength,
+				authorization: running.authorization,
+				callerAuthorizations: running.callerAuthorizations,
+				cpus: session.driverCpus,
+			});
 			try {
 				assertNoErrors('load', driver.load);
 				console.log(`  [load] ${driver.load.throughput.toFixed(0)} records/sec`);
@@ -1193,7 +1161,7 @@ async function measureSample(
 					...placement,
 					workload,
 					auth: session.auth,
-					generator: session.generator,
+					shards: driver.shardsUsed(workload),
 					load: driver.load,
 					warm,
 					measured,
@@ -1261,7 +1229,6 @@ function printComparison(summaries: Summary[], session: Session): void {
 			: `Equal CPU budget: every target on cpus ${session.serverCpus.join(',')} (${session.serverCpus.length} cores); ` +
 					`generator on ${session.driverCpus.join(',')}; cache=${session.cache}`
 	);
-	out.push(generatorLine(session.generator));
 	out.push('Median of reps by throughput; CPU µs/op, memory, hit rate and latency are from that median rep.');
 	for (const target of new Set(summaries.map((s) => s.target))) {
 		const [name, topology] = target.split('@');
@@ -1477,8 +1444,6 @@ export async function createSession(
 		});
 		if (refused.length > 0) throw new Error(`--cache=cold does not support ${refused.join(', ')}`);
 	}
-	const generator = (argValue(argv, '--generator') ?? defaultGenerator(Boolean(hostsFile))) as GeneratorName;
-	if (generator !== 'k6' && generator !== 'node') throw new Error(`--generator must be k6 or node, got ${generator}`);
 	const auth = (argValue(argv, '--auth') ?? 'none') as AuthMode;
 	if (auth !== 'none' && auth !== 'token') throw new Error(`--auth must be none or token, got ${auth}`);
 	const harperMemory = argValue(argv, '--harper-memory') ?? 'capped';
@@ -1518,7 +1483,6 @@ export async function createSession(
 
 	const sessionFlags = [
 		'targets',
-		'generator',
 		'shards',
 		'serverCpus',
 		'driverCpus',
@@ -1577,9 +1541,8 @@ export async function createSession(
 	const session: Session = {
 		options,
 		cache,
-		generator,
-		// One Node process per generator CPU: the old default of 4 held harper-uws warm C below its peak (README, "Load generator").
-		shards: Number(argValue(argv, '--shards') ?? Math.min(driverCpus.length, options.config.concurrency)),
+		// The old default of 4 held harper-uws warm C below its peak (README, "Load generator").
+		shards: Number(argValue(argv, '--shards') ?? defaultShards(driverCpus.length, options.config.concurrency)),
 		serverCpus,
 		driverCpus,
 		harperBin,
@@ -1632,10 +1595,7 @@ export async function createSession(
 		},
 		cache,
 		recordCacheSize: sizesCache ? session.recordCacheSize : undefined,
-		generator:
-			generator === 'k6'
-				? { name: 'k6', version: k6Version(), latency: K6_LATENCY_BASIS, goEnv: k6GoEnv() }
-				: { name: 'node', shards: session.shards, latency: NODE_LATENCY_BASIS },
+		shards: session.shards,
 		dataDir: base,
 		harper: { bin: harperBin, revision: gitRevision(REPO_ROOT), digests: buildDigests(REPO_ROOT) },
 		perfPmu: perfCounters && !hostsFile ? detectPmu() : undefined,

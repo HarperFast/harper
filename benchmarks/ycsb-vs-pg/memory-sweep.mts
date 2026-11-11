@@ -21,7 +21,7 @@ import { promisify } from 'node:util';
 import { join } from 'node:path';
 import { WORKLOADS, assertLinksFit, formatKey, recordReadsPerOp, usesDependentReads } from '../ycsb/workload.mts';
 import type { PhaseResult } from '../ycsb/workload.mts';
-import type { DriverConfig, DriverRun } from './k6Driver.mts';
+import { startDriver, type DriverRun } from './shardedDriver.mts';
 import { SWEEP_STACK_MEMORY, dataDirBytes, removePgSnapshots, dataDir } from './pgStack.mts';
 import { foreignProcessesInOwnCgroup, checkOwnCgroup, waitForQuiet, type HostLoad } from './resources.mts';
 import { summarizeEvents, type RocksdbActivity, type RocksdbEvent } from './rocksdbLog.mts';
@@ -36,10 +36,7 @@ import {
 	createSession,
 	measureWindow,
 	primaryLatency,
-	generatorLine,
 	sizedRecordCacheSize,
-	startGenerator,
-	type GeneratorName,
 	targetOrder,
 	waitForQuietHosts,
 	withTarget,
@@ -267,7 +264,7 @@ async function prepareSnapshot(session: Session, key: SnapshotKey, keyWidth: num
 
 function startSweepDriver(session: Session, running: Running, keyWidth: number, load: boolean): Promise<DriverRun> {
 	const { config } = session.options;
-	const driverConfig: DriverConfig = {
+	return startDriver({
 		baseUrl: running.baseUrl,
 		table: config.table,
 		records: config.records,
@@ -280,8 +277,8 @@ function startSweepDriver(session: Session, running: Running, keyWidth: number, 
 		authorization: running.authorization,
 		callerAuthorizations: running.callerAuthorizations,
 		cpus: session.driverCpus,
-	};
-	return startGenerator(session.generator, driverConfig, session.shards);
+		shards: session.shards,
+	});
 }
 
 /** Fails unless the first and last loaded records came back with the restore, intact. */
@@ -474,10 +471,9 @@ function printSweep(
 	points: PointResult[],
 	samples: SweepSample[],
 	harperMemoryBytes: number,
-	chunkReads: number,
-	generator: GeneratorName
+	chunkReads: number
 ): void {
-	const out: string[] = ['', '='.repeat(150), generatorLine(generator)];
+	const out: string[] = ['', '='.repeat(150)];
 	out.push(
 		`Budget per target: 4 cores, ${MEMORY_BUDGET_BYTES / 1024 ** 3} GiB (hard caps, page cache included, swap off)` +
 			(Number.isFinite(harperMemoryBytes) ? '' : ' — EXCEPT Harper, uncapped (--harper-memory=measured)')
@@ -770,7 +766,7 @@ async function main(): Promise<void> {
 		} finally {
 			await removeSnapshots(session).catch(() => {});
 		}
-		printSweep(points, samples, session.harperMemoryBytes, chunkReads, session.generator);
+		printSweep(points, samples, session.harperMemoryBytes, chunkReads);
 		console.log(`\nResults written to ${file}`);
 	}
 }

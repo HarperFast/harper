@@ -97,8 +97,26 @@ gcloud compute ssh "$YCSB_VM_USER@$RUN_ID-harper" "${P[@]}" --ssh-key-file="$KEY
 	--unit=ycsb-ceiling-server --working-directory=$YCSB_VM_REPO \
 	/usr/local/bin/node benchmarks/ycsb-vs-pg/client-ceiling.mts --serve=4 --host=$HARPER_IP"
 on_gen "for i in \$(seq 60); do curl -fsS -o /dev/null http://$HARPER_IP:9941/usertable/x && exit 0; sleep 1; done; exit 1"
-phase ceiling "node benchmarks/ycsb-vs-pg/client-ceiling.mts --base-url=http://$HARPER_IP:9941 --concurrency=64 --max-generator-busy=0.5"
+# One shard per generator vCPU, and half that. The measured cells use whichever served more on C without the
+# driver being the limit (over half its capacity busy); with neither, nothing is measured.
+GEN_CPUS=$(on_gen nproc)
+best="" best_ops=0
+for shards in "$GEN_CPUS" $((GEN_CPUS / 2)); do
+	phase "ceiling-$shards" "node benchmarks/ycsb-vs-pg/client-ceiling.mts --base-url=http://$HARPER_IP:9941 \
+		--concurrency=64 --shards=$shards --max-generator-busy=0.5" || true
+	log="$RUN_DIR/logs/ceiling-$shards.log"
+	ops=$(sed -n 's/.*CLIENT_CEILING workload=C .*ops_per_sec=\([0-9]*\).*/\1/p' "$log" 2>/dev/null | tail -1)
+	if [ -n "$ops" ] && ! grep -q CLIENT_CEILING_FAILED "$log" && [ "$ops" -gt "$best_ops" ]; then
+		best=$shards best_ops=$ops
+	fi
+done
 gcloud compute ssh "$YCSB_VM_USER@$RUN_ID-harper" "${P[@]}" --ssh-key-file="$KEY" --command='systemctl --user stop ycsb-ceiling-server'
+[ -n "$best" ] || {
+	echo "the generator was the limit at every shard count tried; raise YCSB_GEN_MACHINE_TYPE" >&2
+	exit 1
+}
+echo "measured cells run with --shards=$best (client-ceiling: $best_ops ops/s on C)"
+COMMON="$COMMON --shards=$best"
 
 # Every code path once, at a size that takes minutes: both topologies, dependent reads, a write, a snapshot.
 phase smoke-compare "node benchmarks/ycsb-vs-pg/run-compare.mts $COMMON --scale=quick --workloads=C,B,chain-4 --reps=1"

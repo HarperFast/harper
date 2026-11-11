@@ -6,9 +6,9 @@ YCSB_GCP_REGION="${YCSB_GCP_ZONE%-*}"
 # 4 physical cores with SMT off (--threads-per-core=1): the target gets every core of its VM. C4 is the
 # series with a virtual PMU at this size, and one 375 GiB Titanium local SSD per -lssd VM.
 YCSB_TARGET_MACHINE_TYPE="${YCSB_TARGET_MACHINE_TYPE:-c4-standard-8-lssd}"
-# k6 with this harness's script spent about 151 us of CPU per op on the XPS (README, "Load generator"), so the
-# generator has 6x the target's vCPUs; client-ceiling.mts checks it is not the ceiling before anything is measured.
-YCSB_GEN_MACHINE_TYPE="${YCSB_GEN_MACHINE_TYPE:-c4-standard-48}"
+# The Node driver spent 70-100 us of CPU per op on the XPS (README, "Load generator"), so a 4-core target serving
+# 60-80k ops/s needs up to ~8 of the generator's cores; run-estimate.sh checks it is not the ceiling first.
+YCSB_GEN_MACHINE_TYPE="${YCSB_GEN_MACHINE_TYPE:-c4-standard-32}"
 YCSB_IMAGE_FAMILY="${YCSB_IMAGE_FAMILY:-ubuntu-2404-lts-amd64}"
 YCSB_IMAGE_PROJECT="${YCSB_IMAGE_PROJECT:-ubuntu-os-cloud}"
 # GCE deletes every VM of a run this long after it starts, whatever happens to the script that made it.
@@ -18,9 +18,6 @@ YCSB_SUBNET_RANGE="${YCSB_SUBNET_RANGE:-10.77.0.0/24}"
 YCSB_REPO_URL="${YCSB_REPO_URL:-https://github.com/HarperFast/harper.git}"
 # CI's .node-version holds the major; the startup script installs its latest release.
 YCSB_NODE_MAJOR="${YCSB_NODE_MAJOR:-26}"
-# The load generator on the generator VM: a k6 release, checked against its published SHA-256.
-YCSB_K6_VERSION="${YCSB_K6_VERSION:-2.3.0}"
-YCSB_K6_SHA256="${YCSB_K6_SHA256:-39c3117b6af817592dcd0ce4242105c0a7af10948c2a425306f0be8f7a8a8ab1}"
 # Documented limits of one Titanium SSD on a C4 VM (cloud.google.com/compute/docs/disks/local-ssd), for
 # the run record: local SSD has no provisioned IOPS.
 YCSB_DATA_DISK='{"type":"local-ssd (Titanium)","count":1,"sizeGiB":375,"provisionedIops":null,"documented":{"readIops":150000,"writeIops":75000,"readMiBps":625,"writeMiBps":330}}'

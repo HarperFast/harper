@@ -494,7 +494,6 @@ test('every VM a run creates is labeled, placed compactly and deleted by GCE aft
 			'--project=test-project',
 			'nic-type=GVNIC',
 			'--no-service-account --no-scopes',
-			'ycsb-k6-version=2.3.0,ycsb-k6-sha256=39c3117b6af817592dcd0ce4242105c0a7af10948c2a425306f0be8f7a8a8ab1',
 		]) {
 			ok(create.includes(flag), `${role}: ${flag}`);
 		}
@@ -502,7 +501,7 @@ test('every VM a run creates is labeled, placed compactly and deleted by GCE aft
 		strictEqual(create.includes('--threads-per-core=1'), target, `${role}: SMT off on targets only`);
 		strictEqual(create.includes('--performance-monitoring-unit=architectural'), target, `${role}: vPMU on targets`);
 		strictEqual(create.includes('--machine-type=c4-standard-8-lssd'), target);
-		strictEqual(create.includes('--machine-type=c4-standard-48'), !target, `${role}: sized for k6`);
+		strictEqual(create.includes('--machine-type=c4-standard-32'), !target, `${role}: the generator's shape`);
 	}
 	ok(commands.some((c) => /firewall-rules create ycsb-test-7-ssh .*--source-ranges=203\.0\.113\.7\/32/.test(c)));
 	ok(

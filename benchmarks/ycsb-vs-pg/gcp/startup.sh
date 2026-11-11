@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # GCE startup script for a ycsb-vs-pg VM (provision.sh sets it). Runs as root at boot. Mounts the local
-# SSD at /mnt/ycsb, installs Docker, Node (CI's major), perf, git and (generator) k6, prepares user ycsb (docker, user
+# SSD at /mnt/ycsb, installs Docker, Node (CI's major), perf and git, prepares user ycsb (docker, user
 # systemd with the memory controller delegated, linger), checks out the harness at the run's commit and
 # builds what the VM's role runs. Reports ready or failed:<line>:<status> as guest attribute ycsb/state,
 # which provision.sh polls.
@@ -40,14 +40,6 @@ VERSION=$(curl -fsS https://nodejs.org/dist/index.json | jq -r --arg m "v$NODE_M
 curl -fsSL "https://nodejs.org/dist/$VERSION/node-$VERSION-linux-x64.tar.xz" | tar -xJ -C /opt
 ln -sfn "/opt/node-$VERSION-linux-x64" /opt/node
 for bin in node npm npx; do ln -sf "/opt/node/bin/$bin" "/usr/local/bin/$bin"; done
-if [ "$ROLE" = generator ]; then
-	K6_VERSION=$(attr ycsb-k6-version)
-	curl -fsSL -o /tmp/k6.tgz "https://github.com/grafana/k6/releases/download/v$K6_VERSION/k6-v$K6_VERSION-linux-amd64.tar.gz"
-	echo "$(attr ycsb-k6-sha256)  /tmp/k6.tgz" | sha256sum -c --quiet
-	tar -xzf /tmp/k6.tgz -C /opt
-	ln -sf "/opt/k6-v$K6_VERSION-linux-amd64/k6" /usr/local/bin/k6
-	rm /tmp/k6.tgz
-fi
 
 id ycsb >/dev/null 2>&1 || useradd -m -s /bin/bash ycsb
 if [ "$ROLE" != generator ]; then usermod -aG docker ycsb; fi

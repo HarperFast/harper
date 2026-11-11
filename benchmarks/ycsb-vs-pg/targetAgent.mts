@@ -301,7 +301,6 @@ function createAgent() {
 		session = {
 			options: params.options,
 			cache: params.cache,
-			generator: 'k6',
 			shards: 1,
 			serverCpus: server,
 			driverCpus: [],

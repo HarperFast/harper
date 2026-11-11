@@ -16,16 +16,60 @@ import { fork } from 'node:child_process';
 import { join } from 'node:path';
 import type { ChildProcess } from 'node:child_process';
 import { WORKLOADS } from '../ycsb/workload.mts';
-import type { LatencyStats, OperationType, PhaseResult } from '../ycsb/workload.mts';
+import type { DistributionName, LatencyStats, OperationType, PhaseResult, RecordShape } from '../ycsb/workload.mts';
 import type { ShardCommand } from './shardWorker.mts';
-import type { DriverConfig as K6DriverConfig, DriverRun, GeneratorResult, PhaseWindow } from './k6Driver.mts';
 import { cpuSecondsOf, verifyAffinity } from './resources.mts';
 
 const WORKER_PATH = join(import.meta.dirname, 'shardWorker.mts');
 
-export interface DriverConfig extends K6DriverConfig {
+export interface DriverConfig {
+	baseUrl: string;
+	table: string;
+	records: number;
+	opsPerWorkload: number;
+	concurrency: number;
 	shards: number;
+	shape: RecordShape;
+	keyWidth: number;
+	maxScanLength: number;
+	/** false attaches to an already-loaded dataset (a restored snapshot) instead of inserting it. */
+	load?: boolean;
+	authorization?: string;
+	callerAuthorizations?: Record<string, string>;
+	/** The generator's CPUs: every shard thread must run on them (checked as each phase starts). */
+	cpus?: number[];
 }
+
+/** Opens and closes a measured window around a phase's requests. */
+export interface PhaseWindow {
+	begin(): Promise<void>;
+	end(): Promise<void>;
+}
+
+export interface GeneratorResult extends PhaseResult {
+	/** The shards' CPU over the phase. */
+	generatorCpuSeconds: number;
+}
+
+export interface DriverRun {
+	load: GeneratorResult;
+	/** Reads every loaded key exactly once, split across shards by key range. */
+	readAll(): Promise<GeneratorResult>;
+	runWorkload(
+		name: string,
+		distribution?: DistributionName,
+		opsOverride?: number,
+		mix?: Record<string, number>,
+		window?: PhaseWindow
+	): Promise<GeneratorResult>;
+	/** Shards a workload runs on: 1 for one that inserts. */
+	shardsUsed(name: string): number;
+	close(): Promise<void>;
+}
+
+/** One shard per generator CPU, as many as the in-flight requests allow. */
+export const defaultShards = (generatorCpus: number, concurrency: number): number =>
+	Math.max(1, Math.min(generatorCpus, concurrency));
 
 class ShardPool {
 	private children: ChildProcess[] = [];
@@ -193,6 +237,7 @@ async function drive(pool: ShardPool, config: DriverConfig): Promise<DriverRun> 
 	return {
 		load,
 		readAll: () => measured(rangeCommands('readAll')),
+		shardsUsed: shardsFor,
 		async runWorkload(name, distribution, opsOverride, mix, window) {
 			const shards = shardsFor(name);
 			const ops = split(opsOverride ?? config.opsPerWorkload, shards);

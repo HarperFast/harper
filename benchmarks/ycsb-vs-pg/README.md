@@ -53,8 +53,7 @@ All `benchmarks/ycsb` flags apply, plus:
 | `--serverCpus`, `--driverCpus` | derived           | Explicit CPU lists instead of `--target-cpus`                                                               |
 | `--cache`                      | `warm`            | `warm` or `cold` (below)                                                                                    |
 | `--base-harper`                | —                 | `dist/bin/harper.js` of the build `harper-base` runs                                                        |
-| `--generator`                  | below             | `k6` or `node`: the load generator (below)                                                                  |
-| `--shards`                     | generator CPUs    | `--generator=node`: its processes (one per generator CPU, at most `--concurrency`)                          |
+| `--shards`                     | generator CPUs    | Load-generator processes: one per generator CPU, at most `--concurrency` (below)                            |
 | `--reps`                       | `1`               | Independent samples per target × workload                                                                   |
 | `--perf-counters`              | off               | `perf stat` per component over each measured run                                                            |
 | `--profile=<dir>`              | off               | Counters, then a sampled profile window (below)                                                             |
@@ -69,67 +68,26 @@ Results land in `benchmarks/ycsb-vs-pg/results/`, written after every sample, wi
 a printed table at the end. Runtime scales with reps × workloads × targets: every
 sample starts a fresh server and reloads the dataset.
 
-### Load generator (`--generator`)
+### Load generator
 
-Both generators keep `--concurrency` requests in flight and take every key, op, record and link from
-`../ycsb/workload.mts`. Each row records which one ran (`generator`), and `meta.generator` its version.
+`shardedDriver.mts` keeps `--concurrency` requests in flight from `--shards` Node processes, each with its
+own `KeyState` and REST client. Every key, op, record and link comes from `../ycsb/workload.mts`, and
+`--shards` defaults to one process per generator CPU (at most `--concurrency`). A measured window opens
+as the shards start a phase's requests and closes as they finish, and the shards' CPU over it is the
+row's generator CPU.
 
-- **`k6`, the default with `--hosts`.** It needs [k6](https://grafana.com/docs/k6/) on `PATH` (or `YCSB_K6`);
-  it was checked with v2.3.0. `k6Driver.mts` runs each phase as one `k6 run` of `k6Workload.mjs`: the
-  load, the read-all pass, each warmup chunk and each measured run. Each run has `--concurrency` VUs
-  and `shared-iterations`, so every key or op runs exactly once.
-  - Node strips the types from `workload.mts` and pipes it to k6 with the script, so k6 runs the same
-    source.
-  - A measured window opens when k6's `setup()` reports in and closes when `teardown()` does. k6's
-    startup, VU initialization and summary therefore stay outside the window. Its CPU and thread
-    affinity are read at those two points.
-  - An op's latency is its requests' send, wait and receive time (k6's `timings.duration`). Timing it in
-    k6's JavaScript would add the interpreter's own tens of µs per op.
-  - k6 runs with `GOGC=400` unless the environment sets it; `meta.generator.goEnv` records the setting.
-- **`node`, the default on one host.** `shardedDriver.mts` runs `--shards` Node processes, each with its
-  own `KeyState` and REST client.
+**Shards matter.** Measured on the XPS (i7-12700H) at turbo off, with the generator on 8 CPUs (two
+P-cores with their SMT siblings, plus four E-cores), 64 requests in flight and `--auth=token`, 2 runs each:
 
-**What each costs here.** These numbers come from the XPS (i7-12700H) at turbo off. The generator ran on
-8 CPUs (two P-cores with their SMT siblings, plus four E-cores) against `client-ceiling.mts`'s
-fixed-record server on 4 other cores, with 64 requests in flight, workload C, k6 v2.3.0 (release binary).
-They describe this harness on this host, not k6 or Node in general.
+| shards |         client-ceiling C | harper-uws warm C | pg-redis warm C |
+| ------ | -----------------------: | ----------------: | --------------: |
+| 4      | 56k ops/s, 3.7 CPUs busy |               50k |             49k |
+| 8      | 66k ops/s, 6.7 CPUs busy |               59k |             52k |
 
-| generator                            | ops/s | CPU µs/op | busy CPUs |
-| ------------------------------------ | ----: | --------: | --------: |
-| Node driver, 4 shards                |   51k |        70 |  3.6 of 8 |
-| Node driver, 8 shards                |   66k |       101 |  6.7 of 8 |
-| k6, one fixed GET, nothing else      |   78k |       101 |  7.8 of 8 |
-| the same, `GOMAXPROCS=4`             |   55k |        72 |  4.0 of 4 |
-| the same, `GOGC=400`                 |   95k |        84 |  7.9 of 8 |
-| k6 with `k6Workload.mjs`, `GOGC=400` |   52k |       151 |  7.9 of 8 |
-
-- **k6's HTTP path** costs about what the Node driver does per request: 72 µs on 4 Go Ps against 70.
-  Spread over 8 Ps it costs about 28 µs more (Go scheduler and cross-core work), and the default GC
-  adds about 17 µs.
-- **The workload in k6's JavaScript interpreter** adds about 70 µs/op on top: about 50 µs to choose a key
-  (scrambled zipfian with FNV-1a, `KeyState`) and about 25 µs for `executeOp`, the response timings and
-  the latency `Trend`. Node's JIT chooses a key in about 1 µs. Precomputing keys in Node and having k6 only
-  read them cut 25–30 µs/op (126 µs/op, 63k ops/s), a third of the gap, so the harness does not do it.
-
-What that means for each mode:
-
-- **On one host**, the generator and the target share a socket. k6 with this script tops out at 52k ops/s
-  on those 8 CPUs, below harper-uws on 4 cores (59k on warm C, measured with the Node driver at 8 shards).
-  That is why single-host runs default to the Node driver.
-- **The Node driver's shard count matters.** At 4 shards it held harper-uws C to 50k, against 59k at 8
-  shards, and pg-redis to 49k against 52k. That moved the warm-C ratio from about 1.02 to 1.13 (turbo off,
-  `--auth=token`, 2 reps each). Single-host results recorded with 4 shards (`meta.generator.shards`)
-  understate Harper on read-only workloads.
-- **k6 against the Node driver.** With 2 target cores and 12 generator CPUs, neither generator was the
-  ceiling. The target's instructions/op were then equal under both (within 1.5%). k6's ops/s were up to 9%
-  lower and the target's cycles/op 1–4.6% higher, both rising with k6's busy cores on the shared socket.
-- **On a host of its own** (GCP, below) the socket is not shared, and `client-ceiling.mts
---max-generator-busy` checks the generator's headroom before anything is measured.
-
-Insert workloads differ between the two. k6's VUs share no state, so each VU inserts its own keys
-(YCSB's per-client insert ranges): VU v's n-th insert is key `records + v + vus × n`. Its "latest" reads
-cover the loaded keys and its own acknowledged inserts. The Node driver runs D and E in one process,
-whose workers share one insert frontier.
+Four shards, the old default, held harper-uws on 4 target cores below what it serves, and moved the
+warm-C harper-uws/pg-redis ratio from 1.13 to about 1.02. Rows recorded with 4 shards (`meta.shards`)
+understate Harper on read-only workloads. Run `client-ceiling.mts` on the generator's CPUs before trusting
+a cell that comes within reach of its ceiling.
 
 ## Method
 
@@ -229,11 +187,12 @@ whose workers share one insert frontier.
   ```
 
   It serves a fixed in-memory record from a `node:http` cluster on the target
-  CPUs and drives it with the same generator (`--generator`) on the same
-  generator CPUs, for workloads C and E. Every route returns one ~1 KB record,
-  so it bounds the generator's request rate, not the cost of receiving E's
-  multi-record scan bodies. Each line reports the generator's busy cores;
-  `--max-generator-busy=<fraction>` exits 1 when they exceed that share of its CPUs.
+  CPUs and drives it with the same sharded driver on the same generator CPUs,
+  for workload C (all shards) and E (one shard, since it inserts). Every route
+  returns one ~1 KB record, so it bounds the generator's request rate, not the
+  cost of receiving E's multi-record scan bodies. Each line reports the shards'
+  busy cores; `--max-generator-busy=<fraction>` exits 1 when C kept more than
+  that share of the driver's capacity busy (one core per shard, at most one per CPU).
 
 ## Authentication (`--auth`)
 
@@ -452,15 +411,16 @@ this harness does not run.
   `--max-run-duration` (12 h) and `--instance-termination-action=DELETE`, so GCE deletes it even if no script
   ever runs again. A failure part way tears the run down. `--dry-run` prints the gcloud commands.
 - `startup.sh` (the VMs' startup script) mounts the local SSD at `/mnt/ycsb`, installs Docker, the
-  latest Node of CI's major, perf for the running kernel, git and (on the generator) k6. It sets up user `ycsb` (docker, user
+  latest Node of CI's major, perf for the running kernel and git. It sets up user `ycsb` (docker, user
   systemd with the memory controller delegated, linger), checks out the harness at the run's commit and
   builds what the role runs.
 - `teardown.sh <id>` deletes the run's VMs by label, then its placement policy, firewall rules,
   subnet, network and disks by name (none of those take labels). It fails unless none is left.
   `teardown.sh --all --yes` does the same for every run.
 - `run-estimate.sh` is the short estimate. It provisions both topologies, checks the generator's
-  ceiling over the VPC (`client-ceiling.mts --serve` on the harper VM, `--base-url` from the generator,
-  failing if k6 kept over half its vCPUs busy),
+  ceiling over the VPC (`client-ceiling.mts --serve` on the harper VM, `--base-url` from the generator)
+  at one shard per generator vCPU and at half that. The measured cells take whichever served more on C
+  without the driver passing half its capacity, and nothing is measured if neither qualifies. It then
   runs a smoke pass, then harper-uws, pg-redis and pg-redis@b on C, inspect and chain-4, warm and 2x,
   `--auth=token`, 3 reps. Results come back to `gcp/runs/<id>/results/` (phase logs to `logs/`) after every phase. Teardown
   runs on exit, after one last copy.
@@ -477,9 +437,9 @@ Choices, recorded per run in `gcp/runs/<id>/manifest.json` and in every results 
   network disk, it adds no network round trip to each page-cache miss, which would mix a disk-latency
   term into the dependent-read chains the 2x and 8x points measure. 375 GiB holds 8x on per-engine VMs
   (Harper 138 GiB snapshot plus its restored copy). Documented limits: 150k read IOPS, 625 MiB/s read.
-- **Generator: `c4-standard-48`** (24 cores, SMT on), running k6 (pinned release, SHA-256 checked by
-  `startup.sh`). That is 6x the target's vCPUs: with this harness's script, k6 spent about 151 µs of CPU
-  per op on the XPS (above), so a 4-core target serving 60–80k ops/s could need 10–12 of them. The ceiling check is the gate; `YCSB_GEN_MACHINE_TYPE` changes the shape. No VM gets a
+- **Generator: `c4-standard-32`** (16 cores, SMT on). The sharded driver spent 70–100 µs of CPU per op on
+  the XPS (above), so a 4-core target serving 60–80k ops/s needs up to about 8 of its cores. The ceiling
+  check is the gate; `YCSB_GEN_MACHINE_TYPE` changes the shape. No VM gets a
   service account: none calls a GCP API, and the guest attributes go through the metadata server.
 - **Turbo stays on** (GCP has no control for it). Targets interleave within a session, forward and
   reversed per rep, 3 reps per cell, and perf counts the cycles each window ran.
