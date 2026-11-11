@@ -1769,7 +1769,8 @@ describe('Record locks (harper#483)', () => {
 			const previous = env.get(CONFIG_PARAMS.STORAGE_MAXLOCKCLOCKSKEW);
 			// earlier leads must be behind the wall clock, so this test's own claim sets the clock and ceiling
 			await waitFor(() => Date.now() > Math.max(aheadUntil, localIssuedAheadThrough(rootStore)) + 1, 30_000, 20);
-			env.setProperty(CONFIG_PARAMS.STORAGE_MAXLOCKCLOCKSKEW, '2s');
+			// the claim's ceiling is 1 s above it: the step sits midway between the cap and that ceiling
+			env.setProperty(CONFIG_PARAMS.STORAGE_MAXLOCKCLOCKSKEW, '1500ms');
 			try {
 				const near = Date.now() + 1_500;
 				aheadUntil = Math.max(aheadUntil, near + 1_000);
@@ -1781,7 +1782,7 @@ describe('Record locks (harper#483)', () => {
 				});
 				assert.ok(localIssuanceFloor(rootStore) >= near, 'fixture: the first admission claimed');
 				// beyond the cap from wall time, and under the ceiling the claim covered
-				const ahead = Date.now() + 2_300;
+				const ahead = Date.now() + 2_000;
 				assert.ok(ahead < readLocalIssuanceCeiling(LockTest.auditStore), 'fixture: the step is under the ceiling');
 				await LockTest.put({ id: heldId, n: 0 });
 				const context = {};
