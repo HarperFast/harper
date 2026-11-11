@@ -1195,7 +1195,8 @@ function registerLiveSubscriptionForContext(
 	const fixedPrincipal = Boolean(user._scopedToken) || isRecordlessPrincipal(user, admitted);
 	// A principal re-read by name needs a role to keep the subscription (#1414). The exception is a client certificate
 	// naming no hdb_user: allowRead alone admitted it, so allowRead alone rechecks it, until a record backs it at a
-	// recheck; then it, and later subscriptions on its context, need a role even after that record is dropped.
+	// recheck; then it, and later subscriptions on its context or connection, need a role even after that record is
+	// dropped.
 	const certificate = isCertificatePrincipal(user);
 	let roleRequired =
 		!certificate ||
