@@ -2537,11 +2537,9 @@ function getQuietViews(logStore: RocksTransactionLogStore, readinessId: string):
 }
 
 /**
- * Whether the mark an idle release published still describes the logs: no runner has acquired since, the
- * index is ready with no rebuild or lag demand, and `current`, read after the mark, equals it. Only the owner
- * of an epoch writes the mark, once, storing that epoch last, so an owner epoch unchanged across the reads
- * makes them one mark. Certifying coverage needs no runner-local demand: a rebuild requested without the
- * shared word is requested under the lock, so under a newer epoch than the mark's.
+ * Only the owner of an epoch writes the mark, once, storing that epoch last, so an owner epoch unchanged
+ * across the reads makes them one mark. Certifying coverage needs no runner-local demand: a rebuild
+ * requested without the shared word is requested under the lock, so under a newer epoch than the mark's.
  */
 function quietMarkHolds(
 	shared: SharedViews,
@@ -2779,7 +2777,6 @@ export function sameDerivedIndexPositions(left: DerivedIndexPositions, right: De
 	return true;
 }
 
-/** The table and `quietToken` a backend's idle-release mark is bound to; see `readDerivedIndexCoverage`. */
 export type DerivedIndexQuietIdentity = { tableId: number; token: () => number | undefined };
 
 /**

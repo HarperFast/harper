@@ -1,4 +1,3 @@
-// Whether each full-text index's runner lock is free: no owner holds it, so its idle owner has released.
 export class IdleRunners extends Resource {
 	static loadAsInstance = false;
 	get() {
