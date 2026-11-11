@@ -33,33 +33,88 @@ import { runSelect } from './runSelect.ts';
 import { compileExpr } from '../expressions/compile.ts';
 import { EngineRuntimeError } from '../errors.ts';
 import { Addition } from '../../resources/tracked.ts';
+import { addValues, OPERATION_TYPES } from '../../resources/crdt.ts';
+
+/** The target column's net coefficient in a sum of it and numeric literals, whose terms go to `terms`. */
+function collectTerms(
+	expr: ExprNode,
+	sign: number,
+	column: string,
+	qualifiers: ReadonlySet<string>,
+	terms: number[]
+): number | undefined {
+	switch (expr.kind) {
+		case 'column':
+			return expr.name === column && (expr.table == null || qualifiers.has(expr.table)) ? sign : undefined;
+		case 'literal':
+			if (typeof expr.value !== 'number') return undefined;
+			terms.push(sign * expr.value);
+			return 0;
+		case 'binop': {
+			if (expr.op !== '+' && expr.op !== '-') return undefined;
+			const left = collectTerms(expr.left, sign, column, qualifiers, terms);
+			if (left === undefined) return undefined;
+			const right = collectTerms(expr.right, expr.op === '+' ? sign : -sign, column, qualifiers, terms);
+			return right === undefined ? undefined : left + right;
+		}
+		default:
+			return undefined;
+	}
+}
+
+interface ColumnAssignments {
+	column: string;
+	steps: Array<(row: Row) => unknown>;
+	terms?: number[];
+	delta?: number;
+	bigintDelta?: bigint;
+}
 
 /**
- * If a SET assignment is a self-referential increment/decrement by a numeric
- * literal — `col = col + N`, `col = N + col`, or `col = col - N` — return the
- * signed delta. Such an assignment MUST be applied as an atomic CRDT `Addition`
- * (the same primitive REST/ops `addTo` uses), not as a read-compute-write of an
- * absolute value: two concurrent `SET qty = qty + 1` statements that both read
- * the same pre-value would otherwise clobber each other and silently lose an
- * increment (F-146). Returns undefined for any other shape (including
- * `col = col + col` or `col = otherCol + N`), which stays on the absolute path.
+ * The value the column's assignments produce for `row`. Each step reads the pre-update row except
+ * for the column itself, which reads the previous step's result. `row` is the selector's own
+ * projected object, so the column is advanced in place and restored for the other columns.
  */
-function selfIncrementDelta(column: string, expr: ExprNode): number | bigint | undefined {
-	if (expr.kind !== 'binop' || (expr.op !== '+' && expr.op !== '-')) return undefined;
-	const isThisColumn = (n: ExprNode): boolean => n.kind === 'column' && n.name === column && n.table == null;
-	const numericLiteral = (n: ExprNode): number | bigint | undefined =>
-		n.kind === 'literal' && (typeof n.value === 'number' || typeof n.value === 'bigint') ? n.value : undefined;
-	if (expr.op === '+') {
-		// col + N  or  N + col (addition commutes)
-		if (isThisColumn(expr.left)) return numericLiteral(expr.right);
-		if (isThisColumn(expr.right)) return numericLiteral(expr.left);
-		return undefined;
+function evaluateAssignments({ column, steps }: ColumnAssignments, row: Row): unknown {
+	if (steps.length === 1) return steps[0](row);
+	const present = Object.hasOwn(row, column);
+	const original = row[column];
+	try {
+		let value = steps[0](row);
+		for (let i = 1; i < steps.length; i++) {
+			row[column] = value;
+			value = steps[i](row);
+		}
+		return value;
+	} finally {
+		if (present) row[column] = original;
+		else delete row[column];
 	}
-	// col - N only (N - col is not an accumulator)
-	if (!isThisColumn(expr.left)) return undefined;
-	const n = numericLiteral(expr.right);
-	if (n === undefined) return undefined;
-	return -n;
+}
+
+function operandAccepted(delta: number, type: string | undefined): boolean {
+	if (!Number.isFinite(delta)) return false;
+	if (type === 'Int') return delta >> 0 === delta;
+	if (type === 'Long') return Number.isInteger(delta) && Math.abs(delta) <= 9007199254740992;
+	return true;
+}
+
+/**
+ * The atomic increment for a `column + N` chain, applied by the storage layer to the committed value
+ * so concurrent `SET qty = qty + 1` statements cannot lose each other's increments (F-146). Used
+ * only when adding N to the value read gives exactly the evaluated result: CRDT addition treats a
+ * null or non-numeric prior as absent (`addValues`), and a summed N can round differently from
+ * applying each step. SQL expressions have no bigint arithmetic, so a bigint keeps the add, exact when
+ * every literal is an integer.
+ */
+function additionFor(assignments: ColumnAssignments, read: unknown, evaluated: unknown): Addition | undefined {
+	const { delta, bigintDelta } = assignments;
+	if (typeof read === 'bigint') {
+		const operand = bigintDelta ?? delta;
+		return operand === undefined ? undefined : new Addition(operand);
+	}
+	if (delta === undefined || (typeof read === 'object' && read !== null && !(read instanceof Date))) return undefined;
+	return addValues(read, delta) === evaluated ? new Addition(delta) : undefined;
 }
 
 /**
@@ -118,7 +173,7 @@ interface WritableTable {
 	primaryKey?: string;
 	/** false/undefined for a dynamic-schema table whose columns evolve on write. */
 	schemaDefined?: boolean;
-	attributes?: Array<{ name: string }>;
+	attributes?: Array<{ name: string; type?: string }>;
 	getNewId?: () => unknown;
 	get(id: unknown, context: unknown): unknown;
 	put(record: unknown, context: unknown): unknown;
@@ -271,27 +326,30 @@ export async function runInsert(bound: BoundInsert, ctx: SqlEngineContext): Prom
 export async function runUpdate(bound: BoundUpdate, ctx: SqlEngineContext): Promise<unknown> {
 	const table = tableOf(bound);
 	const pk = primaryKeyOf(bound.boundTable);
-	// A `col = col ± N` assignment is applied as an atomic Addition delta (see
-	// selfIncrementDelta); every other assignment is evaluated against the matched
-	// row and written as an absolute value.
-	const assignments = bound.assignments.map((a) => {
-		const delta = selfIncrementDelta(a.column, a.expr);
-		return delta === undefined
-			? { column: a.column, eval: compileExpr(a.expr, false).eval }
-			: { column: a.column, delta };
-	});
-
-	// Plan the selector before opening the transaction (clean fallback on reject).
-	// Project only the primary key plus whatever columns a row-dependent assignment
-	// actually reads (e.g. `total = price * qty`) — not the whole row. A `col = col
-	// ± N` delta reads nothing (it's applied as an Addition, never evaluated against
-	// the row), and most SET clauses are plain literals, so the common case needs
-	// only the primary key — the same minimal read legacy's SQL UPDATE and this
-	// module's own runDelete already use.
+	const qualifiers = new Set([bound.boundTable.table, bound.boundTable.effectiveAlias]);
+	const assignmentsByColumn = new Map<string, ColumnAssignments>();
+	// Plan the selector before opening the transaction (clean fallback on reject). Project the primary
+	// key plus what the assignments read, not the whole row; a `col = col + N` reads col to decide
+	// whether its Addition matches the evaluated value.
 	const neededColumns = new Set<string>([pk]);
-	bound.assignments.forEach((a, i) => {
-		if (!('delta' in assignments[i])) collectReferencedColumns(a.expr, neededColumns);
-	});
+	for (const { column, expr } of bound.assignments) {
+		let assignments = assignmentsByColumn.get(column);
+		if (!assignments) assignmentsByColumn.set(column, (assignments = { column, steps: [], terms: [] }));
+		if (assignments.terms && collectTerms(expr, 1, column, qualifiers, assignments.terms) !== 1) {
+			assignments.terms = undefined;
+		}
+		assignments.steps.push(compileExpr(expr, false).eval);
+		collectReferencedColumns(expr, neededColumns);
+	}
+	for (const assignments of assignmentsByColumn.values()) {
+		const { terms } = assignments;
+		if (!terms?.length) continue;
+		const type = table.attributes?.find((attribute) => attribute.name === assignments.column)?.type;
+		if (type && !OPERATION_TYPES.has(type)) continue;
+		const delta = terms.reduce((sum, term) => sum + term, 0);
+		if (operandAccepted(delta, type)) assignments.delta = delta;
+		if (terms.every(Number.isInteger)) assignments.bigintDelta = terms.reduce((sum, term) => sum + BigInt(term), 0n);
+	}
 	const projection: SelectNode['projections'] = [...neededColumns].map((name) => ({
 		expr: { kind: 'column', name },
 	}));
@@ -312,10 +370,7 @@ export async function runUpdate(bound: BoundUpdate, ctx: SqlEngineContext): Prom
 	return transaction(context, async () => {
 		// Auto-create + validate any new columns the SET clause introduces
 		// (legacy parity + attribute-name validation), before any row write.
-		await ensureAttributes(
-			table,
-			assignments.map((a) => a.column)
-		);
+		await ensureAttributes(table, [...assignmentsByColumn.keys()]);
 		const rows = await runSelect(selector, selectCtx);
 		const update_hashes: unknown[] = [];
 		const skipped_hashes: unknown[] = [];
@@ -326,8 +381,9 @@ export async function runUpdate(bound: BoundUpdate, ctx: SqlEngineContext): Prom
 				continue;
 			}
 			const patch: Row = {};
-			for (const a of assignments) {
-				patch[a.column] = 'delta' in a ? new Addition(a.delta) : a.eval(row);
+			for (const assignments of assignmentsByColumn.values()) {
+				const value = evaluateAssignments(assignments, row);
+				patch[assignments.column] = additionFor(assignments, row[assignments.column], value) ?? value;
 			}
 			await table.patch(id, patch, context);
 			update_hashes.push(id);

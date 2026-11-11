@@ -195,9 +195,9 @@ describe('Subscription replay', () => {
 			assertChronological(events, 'startTime branch with concurrent writes out of order');
 		});
 
-		// subscription.startTime is the cursor a durable session persists and resumes from with
-		// exclusiveStart, so after replay stops early it must not cover a record that was not
-		// delivered. These subscribe as a durable QoS>0 MQTT session does (includeSuperseded).
+		// subscription.replayedThrough is the cursor a resume starts after (exclusiveStart), so after
+		// replay stops early it must not cover a record that was not delivered. These subscribe as a
+		// durable QoS>0 MQTT session does (includeSuperseded).
 		describe('cursor after replay stops early', () => {
 			let tableSequence = 0;
 			function freshTable() {
@@ -221,7 +221,7 @@ describe('Subscription replay', () => {
 					},
 				});
 				await waitFor(() => subscription.closed);
-				return { cursor: subscription.startTime, delivered };
+				return { cursor: subscription.replayedThrough, delivered };
 			}
 			async function resume(T, cursor, expectedIds) {
 				const subscription = await subscribe(T, { startTime: cursor, isCollection: true, includeSuperseded: true });
@@ -289,7 +289,7 @@ describe('Subscription replay', () => {
 					events.map((event) => event.id),
 					[0, 1]
 				);
-				assert.equal(subscription.startTime, lastKey);
+				assert.equal(subscription.replayedThrough, lastKey);
 			});
 
 			it('stays before a transaction when the subscription closes at a replay yield inside it', async () => {
@@ -324,7 +324,7 @@ describe('Subscription replay', () => {
 				const lastSent = subscription.queue.at(-1).id;
 				subscription.end();
 				const expected = idsFrom(lastSent, size);
-				const resumed = await resume(T, subscription.startTime, expected);
+				const resumed = await resume(T, subscription.replayedThrough, expected);
 				const missing = expected.filter((id) => !resumed.includes(id));
 				assert.deepStrictEqual(missing, [], 'records from the last sent one on were skipped by the resume');
 			});
