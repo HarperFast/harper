@@ -143,4 +143,30 @@ suite('New SQL engine — mutations (phase 4)', (ctx) => {
 		assert.deepEqual(statusCounts, { 200: N }, `every increment must be acknowledged; ${outcome}`);
 		assert.equal(read.body[0].qty, N, `expected all ${N} increments to apply; ${outcome}`);
 	});
+
+	test('UPDATE takes every assignment to a column while other columns read the pre-update row', async () => {
+		await client
+			.req()
+			.send({ operation: 'insert', schema: 'dev', table: 'widget', records: [{ id: 43, qty: 7 }] })
+			.expect(200);
+		await sql('UPDATE dev.widget SET qty = 20, qty = qty + 5, name = qty WHERE id = 43').expect(200);
+		const read = await byHash('widget', [43]).expect(200);
+		assert.equal(read.body[0].qty, 25);
+		assert.equal(read.body[0].name, 7);
+	});
+
+	test('concurrent repeated and table-qualified increments lose none', async () => {
+		await client
+			.req()
+			.send({ operation: 'insert', schema: 'dev', table: 'widget', records: [{ id: 44, qty: 0 }] })
+			.expect(200);
+		const N = 30;
+		await Promise.all(
+			Array.from({ length: N }, () =>
+				sql('UPDATE dev.widget SET qty = widget.qty + 1, qty = qty + 1 WHERE id = 44').timeout(60_000).expect(200)
+			)
+		);
+		const read = await byHash('widget', [44]).expect(200);
+		assert.equal(read.body[0].qty, 2 * N);
+	});
 });

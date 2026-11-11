@@ -101,6 +101,17 @@ const portConstraints = Joi.alternatives([number.min(0), string])
 // `Joi.any` (not `string`) so validateBareHost reports a non-string with its own reason.
 const bareHostConstraints = Joi.any().custom(validateBareHost).optional().empty(null);
 const nodeUrlConstraints = string.custom(validateNodeUrl).optional().empty(null);
+// Peers identify a TLS dialer by its certificate; a plain-ws dialer by its source address, which a private
+// network changes. The URL reaches hdb_nodes and cluster_status, so it must not carry credentials (userinfo or a query).
+const privateUrlConstraints = array
+	.items(
+		Joi.object({
+			url: string.custom(validatePrivateUrl).required(),
+			network: string.required(),
+		})
+	)
+	.optional()
+	.empty(null);
 // Controlled-flow ("directional") replication fields. A route's `replicates` is either a boolean
 // (full replication on/off) or an object describing per-direction flow; `sends`/`receives` and
 // `sendsTo`/`receivesFrom` are also accepted as top-level route keys (iterateRoutes normalizes both
@@ -477,6 +488,8 @@ export function configValidator(configJson, skipFsValidation = false) {
 			securePort: portConstraints,
 			threads: number.integer().min(0).optional().empty(null),
 			routes: array.optional().empty(null),
+			network: string.optional().empty(null),
+			privateUrls: privateUrlConstraints,
 			databases: Joi.alternatives(string, array),
 			enableRootCAs: boolean.optional(),
 			copyTablesToCatchUp: boolean.optional(),
@@ -738,6 +751,22 @@ function validateNodeUrl(value, helpers) {
 		return value; // unparseable — skipped at runtime, not worth failing the boot over
 	}
 	if (!host) return helpers.message('{{#label}} must be a URL with a host (e.g. "wss://node1.example.com:9933")');
+	return value;
+}
+
+function validatePrivateUrl(value, helpers) {
+	let url: URL;
+	try {
+		url = new URL(value);
+	} catch {
+		return helpers.message('{{#label}} must be a URL (e.g. "wss://10.0.0.5:9933")');
+	}
+	// Pro uses only a literal `wss://` prefix; the URL parser also accepts `wss:host`
+	if (url.protocol !== 'wss:' || !/^wss:\/\//i.test(value.trim()) || !url.hostname)
+		return helpers.message('{{#label}} must be a wss:// URL with a host');
+	if (url.username || url.password || url.search)
+		return helpers.message('{{#label}} must not include credentials or a query');
+	if (url.hash) return helpers.message('{{#label}} must not include a fragment');
 	return value;
 }
 

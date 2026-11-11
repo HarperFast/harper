@@ -1089,13 +1089,6 @@ describe('install storage.engine resolution', () => {
 		fs.writeFileSync(rootConfigPath, originalContent, 'utf8');
 		process.env.HDB_CONFIG = rootConfigPath;
 
-		const origCopyFileSync = fs.copyFileSync;
-		sandbox.stub(fs, 'copyFileSync').callsFake((src, dest, ...rest) => {
-			if (String(dest).includes('.install-backup-')) {
-				throw Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' });
-			}
-			return origCopyFileSync.call(fs, src, dest, ...rest);
-		});
 		sandbox.stub(config_utils, 'writeStagedInstallConfig').callsFake(() => {
 			fs.writeFileSync(rootConfigPath, 'corrupted: true\n', 'utf8');
 			throw new Error('simulated writeStagedInstallConfig failure');
@@ -1172,13 +1165,17 @@ describe('install storage.engine resolution', () => {
 		});
 		const origRenameSync = fs.renameSync;
 		sandbox.stub(fs, 'renameSync').callsFake((src, dest) => {
-			if (String(src).includes('.install-backup-')) {
+			if (dest === rootConfigPath && String(src).includes('.install-backup-')) {
 				throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
 			}
 			return origRenameSync.call(fs, src, dest);
 		});
 		const enospcErr = Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' });
-		sandbox.stub(config_utils, 'atomicWriteFile').throws(enospcErr);
+		const origAtomicWriteFile = config_utils.atomicWriteFile;
+		sandbox.stub(config_utils, 'atomicWriteFile').callsFake((target, ...rest) => {
+			if (target === rootConfigPath) throw enospcErr;
+			return origAtomicWriteFile(target, ...rest);
+		});
 		const origWriteFileSync = fs.writeFileSync;
 		sandbox.stub(fs, 'writeFileSync').callsFake((file, data, ...rest) => {
 			if (file === rootConfigPath && data === originalContent) {
@@ -1201,6 +1198,13 @@ describe('install storage.engine resolution', () => {
 			originalContent,
 			'Expected retained .install-backup file to contain intact original HDB_CONFIG content'
 		);
+		if (process.platform !== 'win32') {
+			assert.strictEqual(
+				fs.statSync(path.join(rootPath, backupFile)).mode & 0o077,
+				0,
+				'Expected the retained copy of the config to be owner-only (harper#1925)'
+			);
+		}
 	});
 
 	it('preserves an existing ~/.harperdb boot properties directory on rollback when shouldWriteBootProps is false', async () => {

@@ -15,6 +15,7 @@ import {
 	TransactionCommitConflictTimeoutError,
 } from '../utility/errors/hdbError.ts';
 import { lockNotHeldError, type RecordLockHandle } from './recordLock.ts';
+import { collapseChanges } from './tracked.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 import type { Context, Id } from './ResourceInterface.ts';
 import * as envMngr from '../utility/environment/environmentManager.ts';
@@ -31,7 +32,7 @@ import {
 	constants,
 } from '@harperfast/rocksdb-js';
 import {
-	localIssuanceRatchet,
+	localIssuanceFloor,
 	rekeyLocalRetry,
 	releaseLocalKey,
 	reserveLocalKey,
@@ -739,6 +740,7 @@ export type TransactionWrite = {
 	// Once a write has been taken over, the transaction committing it is not the one that staged it, and
 	// overload accounting, the replay marker and a no-op write's removal all belong to the committer.
 	validate?: (txnTime: number, committedBy: DatabaseTransaction) => void;
+	captureChanges?: () => void;
 	// a tracked write that fails before it is staged stays with its instance, so its retry captures the
 	// instance's changes again
 	releaseChanges?: () => void;
@@ -1050,6 +1052,19 @@ function holderWriteRefusal(handle: RecordLockHandle): ClientError {
 			? "A write to a locked record from its own commit's pre-commit hook is refused: the hook runs before that commit lands"
 			: 'An earlier write through this record lock is still committing; await it before writing again',
 		409
+	);
+}
+
+function stagesWriteChange(operation: TransactionWrite): boolean {
+	const instance = operation.trackedInstance as any;
+	if (!instance) return true;
+	operation.captureChanges?.();
+	return (
+		collapseChanges(
+			instance,
+			typeof instance.getChanges === 'function' ? instance.getChanges() : undefined,
+			instance.constructor?.loadAsInstance !== false
+		) !== undefined
 	);
 }
 
@@ -2817,7 +2832,7 @@ export class DatabaseTransaction implements Transaction {
 			const previousTimestamp = this.timestamp;
 			try {
 				if (
-					lockHandle?.hold &&
+					lockHandle &&
 					!operation.lockStamp &&
 					!operation.saved &&
 					this.open === TRANSACTION_STATE.OPEN &&
@@ -2825,16 +2840,16 @@ export class DatabaseTransaction implements Transaction {
 					!this.saveCommits &&
 					!this.sourceApply
 				) {
-					const floor = lockHandle.holderVersionFloor();
-					if (floor > lockHandle.acquiredAt && !(this.timestamp && this.timestamp >= floor)) {
+					const floor = lockHandle.requiredVersionFloor();
+					if (floor > 0 && !(txnTime && txnTime >= floor)) {
 						const rootStore = operation.store.rootStore;
 						const nativeClock = transaction.getTimestamp();
 						const effectiveClock =
 							txnTime ||
 							(typeof rootStore?.getUserSharedBuffer === 'function'
-								? nativeClock > localIssuanceRatchet(rootStore)
+								? nativeClock > localIssuanceFloor(rootStore)
 									? nativeClock
-									: Math.max(rootStore.getMonotonicTimestamp(), localIssuanceRatchet(rootStore))
+									: Math.max(rootStore.getMonotonicTimestamp(), localIssuanceFloor(rootStore))
 								: nativeClock);
 						if (floor > effectiveClock) {
 							if (reservedLocalKey(transaction) === undefined && !this.hasUnlockedWrite()) {
@@ -2846,8 +2861,8 @@ export class DatabaseTransaction implements Transaction {
 								} else {
 									txnTime = this.timestamp = claimedFloor;
 								}
-							} else {
-								this.refuseLockWrites(lockHandle, operation, false);
+							} else if (stagesWriteChange(operation)) {
+								this.refuseLockWrites(lockHandle, operation, !lockHandle.hold);
 								throw new ClientError(
 									'Record lock write cannot advance past its earlier holder version in a transaction whose clock is already fixed; save the held record first or in its own transaction',
 									409

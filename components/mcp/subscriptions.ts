@@ -5,8 +5,7 @@
  * session + URI; the durable list of subscribed URIs lives on the `mcp_session`
  * record and is reconciled by `subscriptionState.ts` on changes and reconnect. Each
  * change pushes a `notifications/resources/updated` frame onto the session's
- * GET-stream queue. Row-backed URIs only — `subscribeToResource` returns null
- * for anything that isn't a subscribable application resource.
+ * GET-stream queue. Resource eligibility is decided by `subscribeToResource`.
  *
  * Per-worker, like the session registry: a subscription is bound to the worker
  * holding the session's SSE stream; the audit-log broadcast delivers changes
@@ -28,29 +27,39 @@ const live = new Map<string, Map<string, ResourceSubscription>>();
 export async function addResourceSubscription(sessionId: string, uri: string, user: AuthedUser): Promise<boolean> {
 	const owner = getRegisteredSession(sessionId);
 	if (!owner) return false;
-	const subscription = await subscribeToResource(uri, user, () => {
+	const subscription = await subscribeToResource(uri, user, owner.profile);
+	if (!subscription) return false;
+	if (getRegisteredSession(sessionId) !== owner) {
+		subscription.stop();
+		return false;
+	}
+	const frame = {
+		event: 'message' as const,
+		data: { jsonrpc: '2.0', method: 'notifications/resources/updated', params: { uri } },
+	};
+	subscription.start(() => {
 		if (Date.now() >= Math.min(user.authExpiresAt ?? Infinity, owner.user.authExpiresAt ?? Infinity) * 1000) {
 			owner.queue.close();
 			return;
 		}
 		const record = getRegisteredSession(sessionId);
 		if (record === owner) {
-			pushSessionFrame(record, {
-				event: 'message',
-				data: { jsonrpc: '2.0', method: 'notifications/resources/updated', params: { uri } },
-			});
+			pushSessionFrame(record, frame);
 		}
 	});
-	if (!subscription) return false;
-	if (getRegisteredSession(sessionId) !== owner) {
-		subscription.stop();
-		return false;
-	}
 	let bySession = live.get(sessionId);
 	if (!bySession) live.set(sessionId, (bySession = new Map()));
-	// Replace any existing subscription for the same URI (idempotent re-subscribe).
-	bySession.get(uri)?.stop();
+	// Publish the replacement before stopping its predecessor, whose onStop would otherwise empty the map.
+	const previous = bySession.get(uri);
 	bySession.set(uri, subscription);
+	previous?.stop();
+	subscription.onStop(() => {
+		const entries = live.get(sessionId);
+		if (entries?.get(uri) === subscription) {
+			entries.delete(uri);
+			if (entries.size === 0) live.delete(sessionId);
+		}
+	});
 	return true;
 }
 
@@ -59,9 +68,9 @@ export function removeResourceSubscription(sessionId: string, uri: string): bool
 	const bySession = live.get(sessionId);
 	const subscription = bySession?.get(uri);
 	if (!subscription) return false;
-	subscription.stop();
 	bySession!.delete(uri);
 	if (bySession!.size === 0) live.delete(sessionId);
+	subscription.stop();
 	return true;
 }
 
@@ -69,14 +78,14 @@ export function removeResourceSubscription(sessionId: string, uri: string): bool
 export function dropSessionSubscriptions(sessionId: string): void {
 	const bySession = live.get(sessionId);
 	if (!bySession) return;
+	live.delete(sessionId);
 	for (const subscription of bySession.values()) {
 		try {
 			subscription.stop();
 		} catch (err) {
-			harperLogger.trace(`MCP subscription drop for ${sessionId}: ${(err as Error).message}`);
+			harperLogger.trace(`MCP subscription drop: ${(err as Error).message}`);
 		}
 	}
-	live.delete(sessionId);
 }
 
 /** Test seam — count of live subscriptions for a session. */

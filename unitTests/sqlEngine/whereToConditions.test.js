@@ -116,3 +116,36 @@ describe('sqlEngine whereToConditions: index-aware residualization', () => {
 		assert.strictEqual(conditionIsPushable({ attribute: 'createdAt', comparator: 'lt', value: 1 }, ATTRS), false);
 	});
 });
+
+describe('sqlEngine whereToConditions: literal-on-the-left comparisons', () => {
+	const PK_ATTRS = [{ name: 'id', indexed: true, isPrimaryKey: true }];
+	const litBinop = (op, v, name) => ({ kind: 'binop', op, left: lit(v), right: col(name) });
+	it('flips asymmetric comparators (lt<->gt, le<->ge) when the literal is on the left', () => {
+		for (const [litOp, colOp, value, expectedComparator] of [
+			['<', '>', 5, 'gt'],
+			['>', '<', 7, 'lt'],
+			['<=', '>=', 5, 'ge'],
+			['>=', '<=', 7, 'le'],
+			['=', '=', 5, 'equals'],
+		]) {
+			const litLeft = whereToConditions(litBinop(litOp, value, 'id'), PK_ATTRS);
+			const colLeft = whereToConditions(binop(colOp, 'id', value), PK_ATTRS);
+			assert.deepStrictEqual(litLeft, colLeft, `${value} ${litOp} id`);
+			assert.deepStrictEqual(litLeft.conditions, [{ attribute: 'id', comparator: expectedComparator, value }]);
+			assert.strictEqual(litLeft.residual, undefined);
+		}
+	});
+	it('fuses a two-sided PK range when a bound has the literal on the left', () => {
+		const pred = { kind: 'logical', op: 'and', args: [litBinop('<=', 5, 'id'), binop('<=', 'id', 7)] };
+		const { conditions, residual } = whereToConditions(pred, PK_ATTRS);
+		assert.deepStrictEqual(conditions, [{ attribute: 'id', comparator: 'gele', value: [5, 7] }]);
+		assert.strictEqual(residual, undefined);
+	});
+	it('leaves NULL-literal range comparisons residualized regardless of operand order', () => {
+		for (const op of ['<', '<=', '>', '>=']) {
+			const litLeft = whereToConditions(litBinop(op, null, 'id'), PK_ATTRS);
+			assert.deepStrictEqual(litLeft.conditions, []);
+			assert.ok(litLeft.residual);
+		}
+	});
+});

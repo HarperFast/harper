@@ -189,10 +189,19 @@ export function isMidLogBreak(error: CorruptFrameError): boolean {
  * rather than as a truncated tail.
  */
 export function endIteratorOnCorruptFrame<T>(
-	iterator: Iterator<T>,
+	iterator: Iterator<T> & { peek?(): IteratorResult<T>; close?(): void },
 	onCorruptFrame: (error: CorruptFrameError) => void
-): IterableIterator<T> {
+): IterableIterator<T> & { peek(): IteratorResult<T>; close(): void } {
 	let stopped = false;
+	const stopOnBreak = (error: unknown): IteratorResult<T> => {
+		// Key on the class, not the message: the framing RangeError's wording is
+		// version-dependent (1.4.2 added hex offsets). Anything else re-throws.
+		if (!(error instanceof RangeError)) throw error;
+		stopped = true;
+		iterator.close?.();
+		onCorruptFrame(error as CorruptFrameError);
+		return { done: true, value: undefined };
+	};
 	return {
 		[Symbol.iterator]() {
 			return this;
@@ -202,13 +211,20 @@ export function endIteratorOnCorruptFrame<T>(
 			try {
 				return iterator.next();
 			} catch (error) {
-				// Key on the class, not the message: the framing RangeError's wording is
-				// version-dependent (1.4.2 added hex offsets). Anything else re-throws.
-				if (!(error instanceof RangeError)) throw error;
-				stopped = true;
-				onCorruptFrame(error as CorruptFrameError);
-				return { done: true, value: undefined };
+				return stopOnBreak(error);
 			}
+		},
+		peek(): IteratorResult<T> {
+			if (stopped) return { done: true, value: undefined };
+			try {
+				return iterator.peek!();
+			} catch (error) {
+				return stopOnBreak(error);
+			}
+		},
+		close() {
+			stopped = true;
+			iterator.close?.();
 		},
 		// Forward early termination (for-of break/return/throw) so the source's cleanup runs;
 		// mark stopped first. Current rocksdb-js implements neither — hence the protocol defaults.

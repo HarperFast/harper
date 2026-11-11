@@ -33,6 +33,7 @@ add.reverse = function (record, property, action) {
 export const operations = Object.assign(Object.create(null), {
 	add,
 });
+export const OPERATION_TYPES = new Set(['Int', 'Long', 'Float', 'Number', 'BigInt', 'Any']);
 
 /**
  * Rebuild a record update that has a timestamp before the provided newer update
