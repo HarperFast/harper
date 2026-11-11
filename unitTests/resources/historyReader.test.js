@@ -6,7 +6,7 @@ const { table } = require('#src/resources/databases');
 const { transaction } = require('#src/resources/transaction');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { HistoryMemo, HistoryReader } = require('#src/resources/historyReader');
-const { getRecordAtTime } = require('#src/resources/crdt');
+const { getRecordAtTime, readAuditFrame } = require('#src/resources/crdt');
 const {
 	createAuditEntry,
 	readAuditEntry,
@@ -321,6 +321,51 @@ describe('bounded history readers', function () {
 			assert.strictEqual(memo.frame(memo.key('frame', 'a', first.txnLogKey, 0)), undefined);
 			assert.strictEqual(memo.stats.entries, 0);
 		} finally {
+			memo.close();
+		}
+	});
+
+	it('reuses the first observed origin only after the complete key boundary', function () {
+		if (lmdb) this.skip();
+		const T = newTable();
+		const origins = ['z', 'a'].map((name) => getIdOfRemoteNode(`history-first-${sequence}-${name}`, T.auditStore));
+		const memo = new HistoryMemo(T.primaryStore, T.tableId, {}, 'a');
+		const frame = origins.map((nodeId, n) => {
+			const entry = readAuditEntry(
+				Buffer.from(
+					createAuditEntry({
+						type: 'put',
+						tableId: T.tableId,
+						recordId: 'a',
+						nodeId,
+						version: 1234,
+						encodedRecord: Buffer.from(T.primaryStore.encoder.encode({ id: 'a', n })),
+					})
+				)
+			);
+			entry.txnLogKey = 1234;
+			entry.endTxn = true;
+			return entry;
+		});
+		const counter = meter(T);
+		try {
+			memo.beginRange();
+			memo.observe(frame[0]);
+			assert.strictEqual(memo.frame(memo.key('frame', 'a', 1234, origins[0])), undefined);
+			assert.strictEqual(memo.frame(memo.key('frame', 'a', 1234)), undefined);
+			memo.observe(frame[1]);
+			memo.finishRange();
+			for (const committedRef of [false, true]) {
+				const selected = readAuditFrame(T.auditStore, T.tableId, 'a', 1234, undefined, committedRef, memo);
+				assert.strictEqual(selected[0].nodeId, origins[0]);
+				assert.strictEqual(selected[0].getValue(T.primaryStore).n, 0);
+			}
+			const other = readAuditFrame(T.auditStore, T.tableId, 'a', 1234, origins[1], true, memo);
+			assert.strictEqual(other[0].nodeId, origins[1]);
+			assert.strictEqual(other[0].getValue(T.primaryStore).n, 1);
+			assert.strictEqual(counter.reads, 0);
+		} finally {
+			counter.close();
 			memo.close();
 		}
 	});

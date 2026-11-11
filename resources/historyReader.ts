@@ -159,9 +159,18 @@ export class HistoryMemo {
 		return entry;
 	}
 
+	#frameAt(key: string) {
+		const item = this.#retained.get(key);
+		return item?.kind === 'frame' ? item.value : undefined;
+	}
+
 	frame(key: string) {
 		if (this.closed || this.exhausted) this.unavailable();
-		const frame = this.get(key) ?? (key.endsWith('|1') ? this.get(`${key.slice(0, -1)}0`) : undefined);
+		let frame = this.#frameAt(key) ?? (key.endsWith('|1') ? this.#frameAt(`${key.slice(0, -1)}0`) : undefined);
+		if (!frame && key.split('|')[3] === '*') {
+			const selected = this.get(`first|${key.slice(6, -1)}0`);
+			if (selected) frame = this.#frameAt(selected);
+		}
 		return frame?.complete ? frame.snapshots.map((snapshot) => this.restore(snapshot)) : undefined;
 	}
 
@@ -184,6 +193,9 @@ export class HistoryMemo {
 			if (item.value.complete && !this.#tainted && !item.value.tainted) item.kind = 'frame';
 			else this.forget(key);
 		}
+		const firstKey = this.#active.values().next().value;
+		if (firstKey && !this.#tainted && this.#frameAt(firstKey))
+			this.keep(this.key('first', this.recordId, this.#streamKey), 'first', firstKey, firstKey.length * 2);
 		this.#building.clear();
 		this.#active.clear();
 		this.#ended.clear();
