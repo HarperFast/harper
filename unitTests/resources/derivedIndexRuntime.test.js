@@ -620,12 +620,17 @@ describe('DerivedIndexRuntime', () => {
 
 	it('lets a successor full-text backend acquire from the checkpoint published by the prior owner', async () => {
 		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 20, recordId: 'a' })]]]));
+		// An unfinished transaction keeps the positions unproven, so the idle release publishes none and the
+		// parked successor takes the lock the moment it is released.
+		store.writtenPosition = { sequence: 1, offset: 96 };
 		const shared = { payload: encodeFullTextCursorPayload(cursor(10)) };
 		const lifecycle = () => ({
 			inspectCalls: 0,
 			resetCalls: 0,
+			inspected: [],
 			inspect() {
 				this.inspectCalls++;
+				this.inspected.push(shared.payload);
 				return { state: 'checkpointed', committedPayload: shared.payload };
 			},
 			async open() {
@@ -663,20 +668,16 @@ describe('DerivedIndexRuntime', () => {
 		first.register(registration(firstBackend));
 		second.register(registration(secondBackend));
 
-		await waitFor(() => decodeFullTextCursorPayload(shared.payload).logs.local === 20 && store.locks.size === 0, {
-			message: 'the first owner must publish and then release once idle',
-		});
-		for (let i = 0; i < 4; i++) await new Promise(setImmediate);
-		assert.strictEqual(secondLifecycle.inspectCalls, 0, 'an idle release with no log movement hands nothing over');
-
-		await first.stop();
-		store.committedPosition = { sequence: 1, offset: 64 };
-		store.rootStore.emit('committed');
 		await waitFor(() => secondLifecycle.inspectCalls === 1, {
-			message: 'the successor must inspect the published checkpoint once the log moves',
+			message: 'the waiting backend must inspect after the first owner publishes and releases',
 		});
+		assert.deepStrictEqual(
+			{ ...decodeFullTextCursorPayload(secondLifecycle.inspected[0]).logs },
+			cursor(20).logs,
+			'the first owner must publish before the successor acquires'
+		);
 		assert.strictEqual(secondLifecycle.resetCalls, 0);
-		await second.stop();
+		await Promise.all([first.stop(), second.stop()]);
 	});
 
 	it('settles runtime stop when a full-text native open does not settle', async () => {

@@ -157,8 +157,9 @@ export interface DerivedIndexBackend {
 	publishCoverage?(positions: DerivedIndexPositions, ownerEpoch: bigint): void;
 	/**
 	 * A fingerprint of the durable state, readable without the lock and without side effects, or `undefined`
-	 * when there is none. Needed when the readiness id outlives the storage (an HNSW index dropped and declared
-	 * again keeps its id): an idle release's positions bind to it, so a runner over replaced storage acquires.
+	 * when there is none. An idle release's positions bind to it, so a runner over replaced storage acquires.
+	 * Required when the readiness id outlives the storage (an HNSW index dropped and declared again keeps its
+	 * id). A backend that omits it must give each storage generation its own readiness id, as full-text does.
 	 */
 	quietToken?(): number | undefined;
 	deliver(batch: DerivedIndexBatch): DerivedIndexDeliveryResult;
@@ -1142,15 +1143,15 @@ class DerivedIndexRunner {
 				Atomics.load(words, READINESS_STATE) !== READINESS_STATES.indexOf('ready') ||
 				Atomics.load(words, READINESS_REBUILD_REQUEST) !== 0 ||
 				Atomics.load(words, READINESS_LAG_EXCEEDED) !== 0 ||
-				Atomics.load(quiet.words, QUIET_TABLE) !== this.#quietTable ||
-				Atomics.load(quiet.words, QUIET_TOKEN) !== this.#quietToken()
+				Atomics.load(quiet.words, QUIET_TABLE) !== this.#quietTable
 			)
 				return false;
 			const names = Atomics.load(quiet.words, QUIET_NAMES);
 			const sum = Atomics.load(quiet.marks, QUIET_SUM);
+			const token = Atomics.load(quiet.words, QUIET_TOKEN);
 			if (Atomics.load(epoch, 0) !== releasedEpoch) return false;
 			const current = this.#admission.currentLogMark();
-			return current !== undefined && current.names === names && current.sum === sum;
+			return current !== undefined && current.names === names && current.sum === sum && this.#quietToken() === token;
 		} catch {
 			return false;
 		}
@@ -2395,7 +2396,6 @@ class DerivedIndexRunner {
 		Atomics.store(words, READINESS_STATE, READINESS_STATES.indexOf(state));
 	}
 
-	/** `quiet` is the mark an idle release publishes once the backend has quiesced. */
 	#release(quiet?: LogMark) {
 		if (!this.#owned) return;
 		if (this.#idleTimer) {
@@ -2719,7 +2719,6 @@ function logMark(positions: DerivedIndexPositions | undefined): LogMark | undefi
 	return sum < 1n << 63n ? { names, sum } : undefined;
 }
 
-/** A 32-bit FNV-1a of a cursor's vector, for `DerivedIndexBackend.quietToken`. */
 export function derivedIndexCursorToken(cursor: DerivedIndexCursor): number {
 	const text = JSON.stringify([cursor.logs, cursor.floors ?? null]);
 	let hash = 0x811c9dc5;

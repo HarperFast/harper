@@ -12242,7 +12242,7 @@ export function makeTable(options): TableResourceClass {
 				const rebuildDerivedIndexes = () => {
 					for (const key in indices) {
 						try {
-							indices[key].customIndex?.derivedHost?.requestRebuild();
+							indices[key].customIndex?.requestDerivedRebuild?.();
 						} catch (error) {
 							logger.warn?.(`Could not request a rebuild of cleared index ${key} on ${tableName}`, error);
 						}
