@@ -104,7 +104,7 @@ A note lives in the `DESIGN.md` of the directory that owns the code it describes
 
 ## server/ — HTTP stacks, threads, operation dispatch
 
-- [HTTP request preconditions (`REST.ts`, `Table.ts`)](server/DESIGN.md#http-request-preconditions-restts-tablets) — Conditional reads follow validator precedence; conditional table writes evaluate once under a default-scope hold lock (one conditional winner cluster-wide when cluster record locks are available, node-local without replication, as `preconditionLocks: false` on `harper-pro` unless `recordLocks`; plain writes stay ungated) and never on commit retry; non-error replies require the applied condition.
+- [HTTP request preconditions (`REST.ts`, `Table.ts`)](server/DESIGN.md#http-request-preconditions-restts-tablets) — Conditional reads follow validator precedence; conditional table writes evaluate once under a default-scope hold lock (one conditional winner cluster-wide when cluster record locks are available, node-local without replication; plain writes stay ungated) and never on commit retry; non-error replies require the applied condition.
 - [Three HTTP stacks coexist — know which one](server/DESIGN.md#three-http-stacks-coexist--know-which-one) — The native `http.ts` stack, the Fastify operations API and the legacy Fastify custom-functions server, and which one a request lands on.
 - [File overview](server/DESIGN.md#file-overview) — What each file in `server/` owns.
 - [Native and compiled runtime startup](server/DESIGN.md#native-and-compiled-runtime-startup) — Runtime paths stay canonical; cyclic worker registration remains synchronous, and only an HTTP worker entry starts listeners.
