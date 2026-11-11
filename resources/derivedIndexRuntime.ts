@@ -156,10 +156,10 @@ export interface DerivedIndexBackend {
 	/** Persist coverage only after its offered cursor is durable; reset must remove it with the cursor. */
 	publishCoverage?(positions: DerivedIndexPositions, ownerEpoch: bigint): void;
 	/**
-	 * A fingerprint of the durable state, readable without the lock and without side effects, or `undefined`
-	 * when there is none. An idle release's positions bind to it, so a runner over replaced storage acquires.
-	 * Required when the readiness id outlives the storage (an HNSW index dropped and declared again keeps its
-	 * id). A backend that omits it must give each storage generation its own readiness id, as full-text does.
+	 * Opts the backend into idle admission: a fingerprint of the durable state, readable without the lock and
+	 * without side effects, or `undefined` when there is none. An idle release's positions bind to it, so a
+	 * runner over replaced storage acquires. A backend whose readiness id changes with its storage generation
+	 * may return a constant. Without it, a runner acquires a free lock on every wake.
 	 */
 	quietToken?(): number | undefined;
 	deliver(batch: DerivedIndexBatch): DerivedIndexDeliveryResult;
@@ -771,7 +771,11 @@ class DerivedIndexRunner {
 		this.#registration = registration;
 		this.#options = options;
 		this.#admission = admission;
-		if (registration.projections.size === 1 && registration.backend.publishCoverage) {
+		if (
+			registration.projections.size === 1 &&
+			registration.backend.publishCoverage &&
+			registration.backend.quietToken
+		) {
 			const [tableId] = registration.projections.keys();
 			if ((tableId | 0) === tableId) this.#quietTable = tableId;
 		}
@@ -1125,7 +1129,7 @@ class DerivedIndexRunner {
 	 * log entry, such as an audit-metadata update, wakes every runner but moves none), or a demand the log
 	 * does not carry. Only the owner of an epoch writes the mark, once, storing that epoch last, so an
 	 * owner epoch unchanged across the reads makes them one mark. A registration over several tables, or
-	 * whose backend captures no coverage, has no mark and acquires on every wake as before.
+	 * whose backend captures no coverage or has no `quietToken`, has no mark and acquires on every wake.
 	 */
 	#quietSinceRelease(): boolean {
 		if (
@@ -1158,8 +1162,7 @@ class DerivedIndexRunner {
 	}
 
 	#quietToken(): number | undefined {
-		const backend = this.#registration.backend;
-		return backend.quietToken ? backend.quietToken() : 0;
+		return this.#registration.backend.quietToken!();
 	}
 
 	#publishQuiet(epoch: bigint, mark: LogMark) {
