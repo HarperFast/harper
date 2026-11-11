@@ -1534,6 +1534,16 @@ describe('MQTT QoS 2 exactly-once exchanges', function () {
 		await waitFor(() => values(watcher.received).includes(value));
 	}
 
+	it('keeps a packet id one session reserves out of the sessions that reserved none', async () => {
+		const first = await connect(`reserved-ids-first-${++sequence}`);
+		const second = await connect(`reserved-ids-second-${sequence}`);
+		first.session.reserveId(4242);
+		assert(first.session.messageIdInUse(4242));
+		assert(!second.session.messageIdInUse(4242), 'a session that reserved no id has none in use');
+		first.session.disconnect(true);
+		second.session.disconnect(true);
+	});
+
 	it('publishes a retransmitted QoS 2 PUBLISH once, and completes its release once', async () => {
 		const { T, name } = topicTable();
 		await T.put('seed', { value: 0 });

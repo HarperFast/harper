@@ -14,7 +14,7 @@ import { IterableEventQueue } from '../resources/IterableEventQueue.ts';
 import { auditRetention, getDatabaseGeneration, isResumablePosition } from '../resources/auditStore.ts';
 import { exportIdMapping, getNodeNameForId } from '../resources/nodeIdMapping.ts';
 import { getThisNodeName } from './nodeName.ts';
-import { ClientError } from '../utility/errors/hdbError.ts';
+import { ClientError, ServerError } from '../utility/errors/hdbError.ts';
 import { isLocalPrincipal, localPrincipal, type UserProvenance } from '../security/user.ts';
 import {
 	ORIGIN_ID,
@@ -1117,7 +1117,10 @@ type TopicState = {
 	highestKey?: number;
 	/** Each event has its own log key, as on LMDB; a RocksDB transaction's events share one. */
 	keysPerEntry?: boolean;
-	/** In delivery order: `needsAcknowledge` is its only writer and runs as each message is sent. */
+	/**
+	 * In delivery order: `needsAcknowledge` is its only writer and runs as each message is sent. NOTHING_UNACKED
+	 * while it is empty.
+	 */
 	unacked: Map<
 		number,
 		{ key: number; ordinal: number; id: unknown; previousKey?: number; late?: boolean; origin?: number }
@@ -1136,6 +1139,24 @@ type TopicState = {
 	/** At or below this a receipt may be missing (pruned, never kept, or before the topic's start). */
 	prunedThrough?: number;
 };
+/**
+ * The empty Map or Set every idle topic or session shares, so it keeps none of its own. A write to one would reach every
+ * holder, so it throws: each writer takes a collection of its own first.
+ */
+class SharedEmptyMap<K, V> extends Map<K, V> {
+	set(): this {
+		throw new ServerError('A durable session wrote to the empty Map its idle topics share');
+	}
+}
+class SharedEmptySet<T> extends Set<T> {
+	add(): this {
+		throw new ServerError('A durable session wrote to the empty Set its idle sessions share');
+	}
+}
+/** The `unacked` of every topic with nothing unacknowledged, so an idle topic keeps no Map of its own. */
+const NOTHING_UNACKED: TopicState['unacked'] = new SharedEmptyMap();
+/** The `reservedIds` of every session that has reserved none, so most keep no Set of their own. */
+const NO_RESERVED_IDS: Set<number> = new SharedEmptySet<number>();
 
 /** Only pruned history resets a session: a position from another generation resumes unchecked instead. */
 const RESETTING_REFUSALS = new Set(['RESUME_HISTORY_UNAVAILABLE']);
@@ -1348,7 +1369,8 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	checkpointTimer: any;
 	/** Packets are handled concurrently, so SUBSCRIBE, UNSUBSCRIBE and resume change `topics` one at a time. */
 	changes: Promise<unknown> = Promise.resolve();
-	reservedIds = new Set<number>();
+	/** NO_RESERVED_IDS until the session first reserves one (`reserveId`). */
+	reservedIds = NO_RESERVED_IDS;
 	receivedCount = 0;
 	inFlightChanged = false;
 	/** Bumped per `advancePositions`, so each topic computes its checkpoint once per pass. */
@@ -1396,7 +1418,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 				for (const identity of entry.received || []) this.addReceived(state, identity);
 				for (const delivery of entry.inFlight || []) {
 					(state.resend ??= new Map()).set(slotOf(delivery[0], delivery[1]), delivery);
-					this.reservedIds.add(delivery[3]);
+					this.reserveId(delivery[3]);
 				}
 			}
 			this.topics.set(topic, state);
@@ -1488,7 +1510,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 							? [sent.key, sent.ordinal, sent.id, messageId]
 							: [sent.key, sent.ordinal, sent.id, messageId, originName]
 					);
-					this.reservedIds.add(messageId);
+					this.reserveId(messageId);
 				}
 			} else if (replaced.entry.qos === 1) {
 				state.received = replaced.received;
@@ -1518,6 +1540,10 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	}
 	messageIdInUse(messageId: number): boolean {
 		return super.messageIdInUse(messageId) || this.reservedIds.has(messageId);
+	}
+	reserveId(messageId: number) {
+		if (this.reservedIds === NO_RESERVED_IDS) this.reservedIds = new Set();
+		this.reservedIds.add(messageId);
 	}
 	addReceived(state: TopicState, identity: DeliveryIdentity) {
 		const [key, ordinal] = identity;
@@ -1649,6 +1675,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			const late = key < state.highestKey;
 			if (late) state.lateUnacked++;
 			else state.highestKey = key;
+			if (state.unacked === NOTHING_UNACKED) state.unacked = new Map();
 			state.unacked.set(messageId, {
 				key,
 				ordinal: state.ordinal,
@@ -1669,6 +1696,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		const sent = state?.unacked.get(messageId);
 		if (sent?.late) state.lateUnacked--;
 		state?.unacked.delete(messageId);
+		if (sent && state.unacked.size === 0) state.unacked = NOTHING_UNACKED;
 		if (sent && update.qos === 1) {
 			if (this.receivedCount >= QOS1_RECEIVED_LIMIT && this.receiptsReclaimedAt !== this.advanceCount)
 				this.reclaimQoS1Receipts();
@@ -2331,7 +2359,7 @@ function newTopicState(entry: DurableEntry): TopicState {
 		entry,
 		prunedThrough: entry.startTime,
 		verified: true,
-		unacked: new Map(),
+		unacked: NOTHING_UNACKED,
 		ordinal: 0,
 		lateUnacked: 0,
 		consumed: 0,
