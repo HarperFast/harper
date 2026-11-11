@@ -24,6 +24,7 @@ import {
 	type SubscriptionCheckpoint,
 } from '../resources/subscriptionCheckpoint.ts';
 
+const SETTLED: Promise<void> = Promise.resolve();
 const AWAITING_ACKS_HIGH_WATER_MARK = 100;
 /** Inbound QoS 2 exchanges a client may hold open, advertised in the v5 CONNACK. */
 export const RECEIVE_MAXIMUM = 1000;
@@ -1166,8 +1167,40 @@ function logKeysPerEntry(topic: string): boolean {
 	return Boolean(auditStore) && !auditStore.reusableIterable;
 }
 
+let checkpointIntervalOverride: number | undefined;
+export function setCheckpointIntervalForTests(milliseconds: number | undefined): number | undefined {
+	const previous = checkpointIntervalOverride;
+	checkpointIntervalOverride = milliseconds;
+	return previous;
+}
 function checkpointInterval(): number {
-	return Math.min(auditRetention / 10, 3_600_000);
+	return checkpointIntervalOverride ?? Math.min(auditRetention / 10, 3_600_000);
+}
+
+/**
+ * Durable sessions with positions to checkpoint: one interval on the thread checkpoints them all, in batches
+ * across turns, rather than one timer per session.
+ */
+const checkpointing = new Set<DurableSubscriptionsSession>();
+let checkpointSweep: NodeJS.Timeout | undefined;
+let sweepInterval: number | undefined;
+const CHECKPOINT_SWEEP_BATCH = 500;
+function sweepCheckpoints() {
+	const sessions = [...checkpointing];
+	let index = 0;
+	const next = () => {
+		for (const end = Math.min(index + CHECKPOINT_SWEEP_BATCH, sessions.length); index < end; index++) {
+			const session = sessions[index];
+			if (!checkpointing.has(session)) continue;
+			try {
+				session.checkpoint();
+			} catch (error) {
+				warn(error);
+			}
+		}
+		if (index < sessions.length) setImmediate(next);
+	};
+	next();
 }
 
 /** Sessions whose acknowledgements call for a checkpoint this turn; one immediate runs them all. */
@@ -1361,14 +1394,13 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	sealed = false;
 	topics = new Map<string, TopicState>();
 	/** Settles once the latest save or deletion has, and never rejects. */
-	writes: Promise<void> = Promise.resolve();
+	writes: Promise<void> = SETTLED;
 	saving: Promise<void> | undefined;
 	dirty = false;
 	checkpointScheduled: Promise<void> | undefined;
 	declare checkpointSettle: ((writes: Promise<void>) => void) | undefined;
-	checkpointTimer: any;
 	/** Packets are handled concurrently, so SUBSCRIBE, UNSUBSCRIBE and resume change `topics` one at a time. */
-	changes: Promise<unknown> = Promise.resolve();
+	changes: Promise<unknown> = SETTLED;
 	/** NO_RESERVED_IDS until the session first reserves one (`reserveId`). */
 	reservedIds = NO_RESERVED_IDS;
 	receivedCount = 0;
@@ -2120,9 +2152,29 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			this.persist().catch(() => {});
 	}
 	startCheckpoints() {
-		if (this.checkpointTimer || this.terminated) return;
-		this.checkpointTimer = setInterval(() => this.checkpoint(), checkpointInterval());
-		this.checkpointTimer.unref?.();
+		if (this.terminated || checkpointing.has(this)) return;
+		// the interval follows the audit retention, which can change while the sweep runs
+		const interval = checkpointInterval();
+		if (checkpointSweep && sweepInterval !== interval) {
+			// a restarted sweep's next tick is a whole interval away, so the sessions it holds checkpoint now
+			clearInterval(checkpointSweep);
+			checkpointSweep = undefined;
+			sweepCheckpoints();
+		}
+		checkpointing.add(this);
+		if (checkpointSweep) return;
+		sweepInterval = interval;
+		checkpointSweep = setInterval(sweepCheckpoints, interval);
+		checkpointSweep.unref?.();
+	}
+	stopCheckpoints() {
+		if (checkpointing.delete(this) && checkpointing.size === 0 && checkpointSweep) {
+			clearInterval(checkpointSweep);
+			checkpointSweep = undefined;
+		}
+	}
+	get checkpointing(): boolean {
+		return checkpointing.has(this);
 	}
 	recordToWrite() {
 		const subscriptions = [];
@@ -2256,7 +2308,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		if (!this.terminated) {
 			const changed = this.advancePositions();
 			this.terminated = true;
-			clearInterval(this.checkpointTimer);
+			this.stopCheckpoints();
 			this.seal(changed || this.dirty || this.hasInFlight() || this.receivedCount > 0);
 			this.closeConnection?.();
 		} else this.seal(false);
@@ -2266,13 +2318,13 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		this.terminated = true;
 		// the record is another connection's now, or a clean start deleted it
 		this.discarded = true;
-		clearInterval(this.checkpointTimer);
+		this.stopCheckpoints();
 		this.closeConnection?.();
 	}
 	subscriptionFailed(subscription, error) {
 		if (this.terminated || subscription.failed) return;
 		subscription.failed = true;
-		clearInterval(this.checkpointTimer);
+		this.stopCheckpoints();
 		if (!RESETTING_REFUSALS.has(error?.code)) {
 			// the client can reconnect and resume from what this session saves now
 			this.advancePositions();
@@ -2307,7 +2359,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		);
 	}
 	disconnect(clientTerminated) {
-		clearInterval(this.checkpointTimer);
+		this.stopCheckpoints();
 		// ending a subscription clears its queue, which would read as idle, so positions are taken first
 		const changed = !this.terminated && this.advancePositions();
 		this.terminated = true;

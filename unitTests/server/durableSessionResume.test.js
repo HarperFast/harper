@@ -5,7 +5,7 @@ const Resources = require('#src/resources/Resources');
 const { Resource } = require('#src/resources/Resource');
 const { raiseAuditFloor, getDatabaseGeneration } = require('#src/resources/auditStore');
 const { transaction } = require('#src/resources/transaction');
-const { getSession } = require('#src/server/DurableSubscriptionsSession');
+const { getSession, setCheckpointIntervalForTests } = require('#src/server/DurableSubscriptionsSession');
 const { handleApplication, setTakeoverTimeoutForTests } = require('#src/server/mqtt');
 const { generate } = require('mqtt-packet');
 const { EventEmitter } = require('node:events');
@@ -651,6 +651,61 @@ describe('MQTT durable sessions resuming through the checked subscription', func
 		session.disconnect(true);
 	});
 
+	// one interval on the thread checkpoints every durable session, rather than a timer per session
+	it('saves a quiet topic’s advance on the thread’s checkpoint sweep, with no acknowledgement to prompt it', async () => {
+		const restore = setCheckpointIntervalForTests(50);
+		const { T, name } = topicTable();
+		const Other = table({
+			table: `${name}Other`,
+			database: `durable_${name}`,
+			audit: true,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'value' }],
+		});
+		await T.put('seed', { value: 0 });
+		const clientId = `swept-${name}`;
+		const { session } = await connect(clientId);
+		try {
+			await session.addSubscription({ topic: `${name}/#`, qos: 1, rh: 2 }, true);
+			assert.strictEqual(session.checkpointing, true);
+			await Other.put('noise', { value: 1 });
+			const first = await storedEntry(clientId, (entry) => entry.databaseGeneration !== undefined);
+			await Other.put('noise', { value: 2 });
+			await storedEntry(clientId, (entry) => entry.startTime > first.startTime);
+		} finally {
+			session.disconnect(true);
+			setCheckpointIntervalForTests(restore);
+		}
+		assert.strictEqual(session.checkpointing, false);
+	});
+
+	it('checkpoints its sessions when another interval restarts the sweep, rather than putting them off', async () => {
+		const restore = setCheckpointIntervalForTests(600_000);
+		const { T, name } = topicTable();
+		const Other = table({
+			table: `${name}Other`,
+			database: `durable_${name}`,
+			audit: true,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'value' }],
+		});
+		await T.put('seed', { value: 0 });
+		const clientId = `restarted-${name}`;
+		const { session } = await connect(clientId);
+		let joiner;
+		try {
+			await session.addSubscription({ topic: `${name}/#`, qos: 1, rh: 2 }, true);
+			await Other.put('noise', { value: 1 });
+			// a session started after the audit retention changes runs on another interval, which restarts the sweep
+			setCheckpointIntervalForTests(300_000);
+			({ session: joiner } = await connect(`restarted-joiner-${name}`));
+			await joiner.addSubscription({ topic: `${name}/x`, qos: 1, rh: 2 }, true);
+			await storedEntry(clientId, (entry) => entry.databaseGeneration !== undefined);
+		} finally {
+			session.disconnect(true);
+			joiner?.disconnect(true);
+			setCheckpointIntervalForTests(restore);
+		}
+	});
+
 	it('keeps each topic its own position when another topic is added', async () => {
 		const { T, name } = topicTable();
 		await T.put('seed', { value: 0 });
@@ -850,7 +905,7 @@ describe('MQTT durable sessions resuming through the checked subscription', func
 		const subscribing = session.addSubscription({ topic: `${name}/#`, qos: 1, rh: 2 }, true);
 		session.disconnect(true);
 		await assert.rejects(subscribing, { name: 'SessionEndedError', statusCode: 409, message: /has ended/ });
-		assert.strictEqual(session.checkpointTimer, undefined);
+		assert.strictEqual(session.checkpointing, false);
 	});
 
 	it('reports an UNSUBSCRIBE whose save failed as failed again on a retry, until the removal is saved', async () => {
