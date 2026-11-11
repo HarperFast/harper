@@ -1186,18 +1186,18 @@ function observeLogPurgeBounds(
 		return undefined;
 	}
 	const unaccounted: string[] = [];
+	const unreadable: string[] = [];
 	for (const name of names) {
 		const watermark = purgeWatermark(rootStore, name);
 		if (watermark === null) unaccounted.push(name);
+		else if (watermark === undefined) unreadable.push(name);
 		else {
-			// one whose watermark cannot be read is not read either: the reader refuses it until it can be, and it
-			// counts as unaccounted for `trackedFrom`
-			if (watermark === undefined) observation.unaccounted = observation.unreadable = true;
-			observation.entries.set(name, [Math.max(watermark ?? 0, cutoff), 0, UNKNOWN_MAXIMUM]);
+			observation.entries.set(name, [Math.max(watermark, cutoff), 0, UNKNOWN_MAXIMUM]);
 			observation.watermarked.add(name);
 		}
 	}
-	if (unaccounted.length > 0) observation.unaccounted = true;
+	observation.unreadable = unreadable.length > 0;
+	observation.unaccounted = unaccounted.length > 0 || observation.unreadable;
 	// the furthest either purge reaches: this prune's cutoff, or rocksdb-js's own retention when it reaches further
 	const reach = Math.max(cutoff, nativeHorizon);
 	if (!readLogs) {
@@ -1206,7 +1206,7 @@ function observeLogPurgeBounds(
 			observation.unobserved = observation.unaccounted;
 			return observation;
 		}
-		for (const name of unaccounted) {
+		for (const name of [...unaccounted, ...unreadable]) {
 			const [, quietAt, maxKey] = recordedEntry(recorded, name);
 			const known = exposedBound(recorded, name, nativeHorizon);
 			let bound = Math.max(known, reach);
@@ -1235,6 +1235,13 @@ function observeLogPurgeBounds(
 				warnContained(`Error reading transaction log ${name} to bound a prune`, error);
 				observation.entries.set(name, [quietAt >= reach ? known : Math.max(known, reach), quietAt, UNKNOWN_MAXIMUM]);
 			}
+		}
+		// not read either, and refused by the reader until its watermark can be: bounded by the reach, keeping what the
+		// record knew of it
+		for (const name of unreadable) {
+			const [, quietAt, maxKey] = recordedEntry(recorded, name);
+			observation.entries.set(name, [Math.max(exposedBound(recorded, name, nativeHorizon), reach), quietAt, maxKey]);
+			if (Object.hasOwn(recorded.positions, name)) observation.positions[name] = recorded.positions[name];
 		}
 	}
 	// a recorded log with no files left is empty, so quiet

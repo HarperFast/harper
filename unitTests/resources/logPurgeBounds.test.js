@@ -1029,6 +1029,31 @@ describe('per-log purge bounds', function () {
 			assert.ok(getLogPurgeBound(Table.auditStore, ['local']) >= Math.max(newest, bootedAt));
 		});
 
+		it('keeps what the record knew of a log whose watermark cannot be read, bounding it by the reach', async function () {
+			if (isLMDB) return this.skip();
+			const Table = backdatedTable();
+			await Table.put('known-then-unreadable', { name: 'x' });
+			await tick();
+			raiseAuditFloor(Table.auditStore, Date.now(), true);
+			const [, quietAt, maxKey] = recordedLogs(Table.auditStore).local;
+			const { positions } = unpack(Table.auditStore.getBinary(LOG_PURGE_BOUNDS_KEY));
+			const local = Table.auditStore.rootStore.useLog('local');
+			overrideWatermark(local, () => {
+				throw new Error('cannot read the watermark');
+			});
+			await tick();
+			const cutoff = Date.now();
+			try {
+				raiseAuditFloor(Table.auditStore, cutoff, true);
+			} finally {
+				overrideWatermark(local, () => ({ known: false }));
+			}
+			const record = unpack(Table.auditStore.getBinary(LOG_PURGE_BOUNDS_KEY));
+			assert.ok(record.logs.local[0] >= cutoff);
+			assert.deepStrictEqual(record.logs.local.slice(1), [quietAt, maxKey]);
+			assert.deepStrictEqual(record.positions.local, positions.local);
+		});
+
 		it('writes a later quiet time on every pass, even when nothing else changes', async function () {
 			if (isLMDB) return this.skip();
 			const Table = backdatedTable();
