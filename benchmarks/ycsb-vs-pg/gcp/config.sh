@@ -6,13 +6,13 @@ YCSB_GCP_REGION="${YCSB_GCP_ZONE%-*}"
 # 4 physical cores with SMT off (--threads-per-core=1): the target gets every core of its VM. C4 is the
 # series with a virtual PMU at this size, and one 375 GiB Titanium local SSD per -lssd VM.
 YCSB_TARGET_MACHINE_TYPE="${YCSB_TARGET_MACHINE_TYPE:-c4-standard-8-lssd}"
-# k6 spends about 3x the Node generator's CPU per request (measured on the XPS: ~170 us/op against ~60), so the
-# generator has 4x the target's vCPUs; client-ceiling.mts checks it is not the ceiling before anything is measured.
-YCSB_GEN_MACHINE_TYPE="${YCSB_GEN_MACHINE_TYPE:-c4-standard-32}"
+# k6 spends about 3x the Node generator's CPU per request (measured on the XPS), so the generator has 6x the
+# target's vCPUs; client-ceiling.mts checks it is not the ceiling before anything is measured.
+YCSB_GEN_MACHINE_TYPE="${YCSB_GEN_MACHINE_TYPE:-c4-standard-48}"
 YCSB_IMAGE_FAMILY="${YCSB_IMAGE_FAMILY:-ubuntu-2404-lts-amd64}"
 YCSB_IMAGE_PROJECT="${YCSB_IMAGE_PROJECT:-ubuntu-os-cloud}"
 # GCE deletes every VM of a run this long after it starts, whatever happens to the script that made it.
-YCSB_MAX_RUN_DURATION="${YCSB_MAX_RUN_DURATION:-8h}"
+YCSB_MAX_RUN_DURATION="${YCSB_MAX_RUN_DURATION:-12h}"
 YCSB_BOOT_DISK_SIZE="${YCSB_BOOT_DISK_SIZE:-50GB}"
 YCSB_SUBNET_RANGE="${YCSB_SUBNET_RANGE:-10.77.0.0/24}"
 YCSB_REPO_URL="${YCSB_REPO_URL:-https://github.com/HarperFast/harper.git}"

@@ -418,7 +418,7 @@ this harness does not run.
   (internal traffic between the run's VMs, SSH only from this host's address), one compact
   placement policy, and VMs `generator`, `harper`, `stack` (plus `redis` and `postgres` for ab).
   Every VM is labeled `ycsb-bench=true,ycsb-run=<id>,ycsb-role=<role>` and created with
-  `--max-run-duration` (8 h) and `--instance-termination-action=DELETE`, so GCE deletes it even if no script
+  `--max-run-duration` (12 h) and `--instance-termination-action=DELETE`, so GCE deletes it even if no script
   ever runs again. A failure part way tears the run down. `--dry-run` prints the gcloud commands.
 - `startup.sh` (the VMs' startup script) mounts the local SSD at `/mnt/ycsb`, installs Docker, the
   latest Node of CI's major, perf for the running kernel, git and (on the generator) k6. It sets up user `ycsb` (docker, user
@@ -446,8 +446,8 @@ Choices, recorded per run in `gcp/runs/<id>/manifest.json` and in every results 
   network disk, it adds no network round trip to each page-cache miss, which would mix a disk-latency
   term into the dependent-read chains the 2x and 8x points measure. 375 GiB holds 8x on per-engine VMs
   (Harper 138 GiB snapshot plus its restored copy). Documented limits: 150k read IOPS, 625 MiB/s read.
-- **Generator: `c4-standard-32`** (16 cores, SMT on), running k6 (pinned release, SHA-256 checked by
-  `startup.sh`). That is 4x the target's vCPUs, because k6 needs about 3x the Node driver's CPU per op
+- **Generator: `c4-standard-48`** (24 cores, SMT on), running k6 (pinned release, SHA-256 checked by
+  `startup.sh`). That is 6x the target's vCPUs, because k6 needs about 3x the Node driver's CPU per op
   (above). The ceiling check is the gate; `YCSB_GEN_MACHINE_TYPE` changes the shape. No VM gets a
   service account: none calls a GCP API, and the guest attributes go through the metadata server.
 - **Turbo stays on** (GCP has no control for it). Targets interleave within a session, forward and

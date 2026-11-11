@@ -502,7 +502,7 @@ test('every VM a run creates is labeled, placed compactly and deleted by GCE aft
 		strictEqual(create.includes('--threads-per-core=1'), target, `${role}: SMT off on targets only`);
 		strictEqual(create.includes('--performance-monitoring-unit=architectural'), target, `${role}: vPMU on targets`);
 		strictEqual(create.includes('--machine-type=c4-standard-8-lssd'), target);
-		strictEqual(create.includes('--machine-type=c4-standard-32'), !target, `${role}: k6 needs 4x the target's vCPUs`);
+		strictEqual(create.includes('--machine-type=c4-standard-48'), !target, `${role}: sized for k6`);
 	}
 	ok(commands.some((c) => /firewall-rules create ycsb-test-7-ssh .*--source-ranges=203\.0\.113\.7\/32/.test(c)));
 	ok(
