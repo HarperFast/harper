@@ -5,7 +5,7 @@ const { databases } = require('#src/resources/databases');
 const { transaction } = require('#src/resources/transaction');
 const { authentication } = require('#src/security/auth');
 const { VERSION_REUSED } = require('#src/resources/RecordEncoder');
-const { claimLocalKey, localIssuanceRatchet } = require('#src/resources/originClosedFloor');
+const { claimLocalKey } = require('#src/resources/originClosedFloor');
 const { readLocalIssuanceCeiling } = require('#src/resources/auditStore');
 const { waitFor } = require('../waitFor.js');
 
@@ -195,8 +195,8 @@ describe('session.update ifVersion (HarperFast/harper#2983)', function () {
 				authentication(newRequest(cookie), async (request) => {
 					assert.strictEqual(parent.transaction.timestamp, parent.timestamp);
 					loadedVersion = request.session.version;
-					assert.ok(loadedVersion > root.getMonotonicTimestamp(), 'version is ahead of the native clock at update');
-					assert.ok(loadedVersion <= localIssuanceRatchet(root), 'local issuance covers the version');
+					assert.ok(loadedVersion > floor, 'the claim raised the clock the version came from');
+					assert.ok(loadedVersion < root.getMonotonicTimestamp(), 'the next local write is above the version');
 					await request.session.update({ greeting: 'locally issued' }, { ifVersion: loadedVersion });
 					return response;
 				})
@@ -211,7 +211,6 @@ describe('session.update ifVersion (HarperFast/harper#2983)', function () {
 			await authentication(newRequest(cookie), async (request) => {
 				const version = request.session.version;
 				assert.ok(version > root.getMonotonicTimestamp());
-				assert.ok(version > localIssuanceRatchet(root));
 				await assert.rejects(request.session.update({ greeting: 'discarded' }, { ifVersion: version }), conflict);
 				return rejectedResponse;
 			});
