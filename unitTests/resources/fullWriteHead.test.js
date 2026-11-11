@@ -525,7 +525,7 @@ describe('A record bit for a full-write head (harper#3532)', () => {
 			const late = getIdOfRemoteNode('full-write-head-b', Floor.auditStore);
 			const now = Date.now();
 			await copiedDelete(Floor, 'copied', { version: now + 10 * DAY, nodeId: origin });
-			// an audited delete whose log key sits below the floor: the floor shortcut cannot vouch for it
+			// its log key sits below the floor, so the floor shortcut cannot vouch for it
 			await apply(
 				Floor,
 				'audited',
@@ -578,7 +578,7 @@ describe('A record bit for a full-write head (harper#3532)', () => {
 			assert.equal(T.primaryStore.getEntry(id).value?.name, 'between');
 		});
 
-		it('leaves the replaced row’s blob files in place, since the tombstone is durable only at the copy’s flush', async function () {
+		it('reclaims the replaced row’s blob files, as a copied put does', async function () {
 			if (isLMDB) return this.skip();
 			const Blobs = table({
 				table: 'CopiedDeleteBlobs',
@@ -600,11 +600,11 @@ describe('A record bit for a full-write head (harper#3532)', () => {
 			try {
 				await copiedDelete(Blobs, 'copied', { version: version + 1, nodeId: origin });
 				await remove(Blobs, 'deleted', { version: version + 1, nodeId: origin });
-				await waitFor(() => !existsSync(paths.deleted), {
+				await waitFor(() => !existsSync(paths.deleted) && !existsSync(paths.copied), {
 					timeout: 5000,
-					message: 'premise: an audited delete reclaims an unreferenced file',
+					message: () =>
+						`reclaimed: audited delete ${!existsSync(paths.deleted)}, copied delete ${!existsSync(paths.copied)}`,
 				});
-				assert.ok(existsSync(paths.copied), 'a copied delete leaves the file for orphan cleanup');
 			} finally {
 				setDeletionDelay(undefined);
 			}

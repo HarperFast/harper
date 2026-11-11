@@ -6877,8 +6877,7 @@ export function makeTable(options): TableResourceClass {
 							// entry is retained and this write is above the floor; otherwise that reconciliation decides.
 							const headKey = fullWriteHeadKey(existingEntry.metadataFlags, existingEntry);
 							if (headKey !== undefined) {
-								// A flagged head holding no record is a delete, which supersedes every older write whatever
-								// the floor; a base-copied one has no audit entry for the walk to reach.
+								// A delete supersedes every older write; a base-copied one has no audit entry for the walk to reach.
 								if (existingEntry.value == null && !(existingEntry.metadataFlags & (INVALIDATED | REPLICA))) {
 									write.skipped = true;
 									return;
@@ -8277,7 +8276,7 @@ export function makeTable(options): TableResourceClass {
 					// transaction can never trip this guard — it shares this transaction's timestamp and
 					// compares as a tie (0), not < 0 — so a negative result always means a genuinely newer
 					// write (a concurrent transaction observed on a retry round, or an out-of-order delivery)
-					// that a chained delete must not destroy. A base-copy tombstone also yields to an equal head.
+					// that a chained delete must not destroy.
 					const precedesExisting = precedesExistingVersion(txnTime, existingEntry, options?.nodeId);
 					if (precedesExisting < 0 || (isCopyApply && precedesExisting === 0)) {
 						write.skipped = true;
@@ -8329,9 +8328,7 @@ export function makeTable(options): TableResourceClass {
 						updateRecord(
 							id,
 							null,
-							// A copied tombstone is durable only at the copy's flush, so a crash can restore the row it
-							// replaced: leave that row's blob files to orphan cleanup instead of unlinking them.
-							isCopyApply && existingEntry ? { ...existingEntry, value: undefined } : existingEntry,
+							existingEntry,
 							txnTime,
 							isRocksDB && audit ? FULL_WRITE_HEAD : 0,
 							isCopyApply ? false : audit,
