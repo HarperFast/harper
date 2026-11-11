@@ -1185,12 +1185,14 @@ function observeLogPurgeBounds(
 		const watermark = purgeWatermark(rootStore, name);
 		if (watermark === null) unaccounted.push(name);
 		else {
-			// one whose watermark cannot be read is not read either: the reader refuses it until it can be
+			// one whose watermark cannot be read is not read either: the reader refuses it until it can be, and it
+			// counts as unaccounted for `trackedFrom`
+			if (watermark === undefined) observation.unaccounted = true;
 			observation.entries.set(name, [Math.max(watermark ?? 0, cutoff), 0, UNKNOWN_MAXIMUM]);
 			observation.watermarked.add(name);
 		}
 	}
-	observation.unaccounted = unaccounted.length > 0;
+	if (unaccounted.length > 0) observation.unaccounted = true;
 	// the furthest either purge reaches: this prune's cutoff, or rocksdb-js's own retention when it reaches further
 	const reach = Math.max(cutoff, nativeHorizon);
 	if (!readLogs) {
@@ -1408,7 +1410,8 @@ function logPurgeBoundReader(auditStore: any):
 		listed: () => [...listed()],
 		trackedFrom: () => {
 			if (recorded.observedAt >= nativeHorizon) return recorded.trackedFrom;
-			for (const name of listed()) if (watermarkOf(name) === null) return Math.max(recorded.trackedFrom, nativeHorizon);
+			for (const name of listed())
+				if (typeof watermarkOf(name) !== 'number') return Math.max(recorded.trackedFrom, nativeHorizon);
 			return recorded.trackedFrom;
 		},
 		boundOf: (name) => {

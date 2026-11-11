@@ -452,6 +452,23 @@ describe('per-log purge bounds', function () {
 			assert.strictEqual(getLogPurgeTrackedFrom(Table.auditStore), trackedFrom);
 		});
 
+		it('fences where tracking began for a log whose watermark cannot be read', async () => {
+			const Table = backdatedTable(400 * DAY_MS);
+			await Table.put('fenced', { name: 'x' });
+			const trackedFrom = getLogPurgeTrackedFrom(Table.auditStore);
+			const horizon = Date.now() - nativeRetention(Table.auditStore);
+			const local = Table.auditStore.rootStore.useLog('local');
+			overrideWatermark(local, () => {
+				throw new Error('cannot read the watermark');
+			});
+			try {
+				assert.ok(getLogPurgeTrackedFrom(Table.auditStore) >= horizon);
+			} finally {
+				delete local.getPurgeWatermark;
+			}
+			assert.strictEqual(getLogPurgeTrackedFrom(Table.auditStore), trackedFrom);
+		});
+
 		it('reads where tracking began without listing the logs while a pass is recent', async () => {
 			const Table = backdatedTable();
 			await tick();
@@ -1206,12 +1223,10 @@ describe('per-log purge bounds', function () {
 			await written.put('last-write', { name: 'x' });
 			const newest = Math.max(...localLogKeys(written.auditStore));
 			await tick();
-			// the last pass before the node went down read the log
 			raiseAuditFloor(written.auditStore, Date.now(), true);
 			assert.ok(await closeDatabase(database));
 			const Table = open();
 			await tick();
-			// the boot after downtime past the retention: its cutoff is past that pass
 			assert.strictEqual(bootPurge(Table, 0), 0);
 			assert.strictEqual(getLogPurgeBounds(Table.auditStore, 'local').get('local'), newest);
 		});
