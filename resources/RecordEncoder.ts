@@ -113,7 +113,7 @@ export type Entry = {
 	receivedIdentityRefs?: Array<{ version: number; nodeId: number }>;
 	/**
 	 * A delete this node received by base copy, so with no audit entry: every write it precedes loses (Table.ts
-	 * `_writeUpdate`). Kept by later writes until an audited put or delete, whose own entry ends the walk.
+	 * `_writeUpdate`). Kept by later writes until an audited put or delete above it, whose own entry ends the walk.
 	 */
 	copiedDeleteBoundary?: { version: number; nodeId: number };
 };
@@ -1122,7 +1122,6 @@ export function recordUpdater(
 			const receivedIdentityRefs = options?.receivedIdentityRefs;
 			additionalAuditRefsNextEncoding = additionalAuditRefs?.length > 0 ? additionalAuditRefs : undefined;
 			receivedIdentityRefsNextEncoding = receivedIdentityRefs?.length > 0 ? receivedIdentityRefs : undefined;
-			// an audited put or delete above it appends its own entry, which then stops every walk
 			const existingBoundary = existingEntry?.copiedDeleteBoundary;
 			const copiedDeleteBoundary =
 				options?.copiedDeleteBoundary ??

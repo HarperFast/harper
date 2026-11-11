@@ -8286,7 +8286,6 @@ export function makeTable(options): TableResourceClass {
 					// that a chained delete must not destroy.
 					const precedesExisting = precedesExistingVersion(txnTime, existingEntry, options?.nodeId);
 					if (precedesExisting < 0 || (isCopyApply && precedesExisting === 0)) {
-						// A newer write reached this node before the copy's delete, which still bounds older writes.
 						if (
 							isCopyApply &&
 							audit &&
@@ -8367,7 +8366,6 @@ export function makeTable(options): TableResourceClass {
 										? [{ version: txnLogKey, nodeId: options?.nodeId }]
 										: undefined,
 								localOnly: options?.localOnly,
-								// an older publish can leave a stronger boundary under this head
 								copiedDeleteBoundary:
 									isCopyApply && audit
 										? outranksBoundary(txnTime, options?.nodeId, existingEntry?.copiedDeleteBoundary)
