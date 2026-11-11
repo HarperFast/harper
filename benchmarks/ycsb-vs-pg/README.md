@@ -53,7 +53,8 @@ All `benchmarks/ycsb` flags apply, plus:
 | `--serverCpus`, `--driverCpus` | derived           | Explicit CPU lists instead of `--target-cpus`                                                               |
 | `--cache`                      | `warm`            | `warm` or `cold` (below)                                                                                    |
 | `--base-harper`                | —                 | `dist/bin/harper.js` of the build `harper-base` runs                                                        |
-| `--shards`                     | `4`               | Load-generator processes                                                                                    |
+| `--generator`                  | below             | `k6` or `node`: the load generator (below)                                                                  |
+| `--shards`                     | `4`               | `--generator=node`: its processes                                                                           |
 | `--reps`                       | `1`               | Independent samples per target × workload                                                                   |
 | `--perf-counters`              | off               | `perf stat` per component over each measured run                                                            |
 | `--profile=<dir>`              | off               | Counters, then a sampled profile window (below)                                                             |
@@ -67,6 +68,37 @@ All `benchmarks/ycsb` flags apply, plus:
 Results land in `benchmarks/ycsb-vs-pg/results/`, written after every sample, with
 a printed table at the end. Runtime scales with reps × workloads × targets: every
 sample starts a fresh server and reloads the dataset.
+
+### Load generator (`--generator`)
+
+Both generators keep `--concurrency` requests in flight and take every key, op, record and link from
+`../ycsb/workload.mts`. Each row records which one ran (`generator`), and `meta.generator` its version.
+
+- **`k6`, the default with `--hosts`.** It needs [k6](https://grafana.com/docs/k6/) on `PATH` (or `YCSB_K6`);
+  it was checked with v2.3.0. `k6Driver.mts` runs each phase as one `k6 run` of `k6Workload.mjs`: the
+  load, the read-all pass, each warmup chunk and each measured run. Each run has `--concurrency` VUs
+  and `shared-iterations`, so every key or op runs exactly once.
+  - Node strips the types from `workload.mts` and pipes it to k6 with the script, so k6 runs the same
+    source.
+  - A measured window opens when k6's `setup()` reports in and closes when `teardown()` does. k6's
+    startup, VU initialization and summary therefore stay outside the window. Its CPU and thread
+    affinity are read at those two points.
+  - An op's latency is its requests' send, wait and receive time (k6's `timings.duration`). Timing it in
+    k6's JavaScript would add the interpreter's own tens of µs per op.
+- **`node`, the default on one host.** `shardedDriver.mts` runs `--shards` Node processes, each with its
+  own `KeyState` and REST client.
+
+k6 costs about 3x the CPU per op of the Node driver. Measured on this host at turbo off, it saturates
+its 8 generator CPUs at 33k ops/s, where the Node driver delivers 52k on 3.3 of them. In single-host
+mode that cost competes with the target for the same socket. With 2 target cores and 12 generator CPUs
+the target's instructions/op were equal under both generators (within 1.5%). k6's ops/s were up to 9%
+lower, and its cycles/op 1–4.6% higher, both scaling with k6's busy cores. On a host of its own (GCP,
+below) none of that applies, and `client-ceiling.mts --max-generator-busy` checks the headroom.
+
+Insert workloads differ between the two. k6's VUs share no state, so each VU inserts its own keys
+(YCSB's per-client insert ranges): VU v's n-th insert is key `records + v + vus × n`. Its "latest" reads
+cover the loaded keys and its own acknowledged inserts. The Node driver runs D and E in one process,
+whose workers share one insert frontier.
 
 ## Method
 
@@ -166,10 +198,11 @@ sample starts a fresh server and reloads the dataset.
   ```
 
   It serves a fixed in-memory record from a `node:http` cluster on the target
-  CPUs and drives it with the same sharded driver on the same generator CPUs,
-  for workload C (all shards) and E (one shard, since it inserts). Every route
-  returns one ~1 KB record, so it bounds the generator's request rate, not the
-  cost of receiving E's multi-record scan bodies.
+  CPUs and drives it with the same generator (`--generator`) on the same
+  generator CPUs, for workloads C and E. Every route returns one ~1 KB record,
+  so it bounds the generator's request rate, not the cost of receiving E's
+  multi-record scan bodies. Each line reports the generator's busy cores;
+  `--max-generator-busy=<fraction>` exits 1 when they exceed that share of its CPUs.
 
 ## Authentication (`--auth`)
 
@@ -385,17 +418,18 @@ this harness does not run.
   (internal traffic between the run's VMs, SSH only from this host's address), one compact
   placement policy, and VMs `generator`, `harper`, `stack` (plus `redis` and `postgres` for ab).
   Every VM is labeled `ycsb-bench=true,ycsb-run=<id>,ycsb-role=<role>` and created with
-  `--max-run-duration` and `--instance-termination-action=DELETE`, so GCE deletes it even if no script
+  `--max-run-duration` (8 h) and `--instance-termination-action=DELETE`, so GCE deletes it even if no script
   ever runs again. A failure part way tears the run down. `--dry-run` prints the gcloud commands.
 - `startup.sh` (the VMs' startup script) mounts the local SSD at `/mnt/ycsb`, installs Docker, the
-  latest Node of CI's major, perf for the running kernel and git. It sets up user `ycsb` (docker, user
+  latest Node of CI's major, perf for the running kernel, git and (on the generator) k6. It sets up user `ycsb` (docker, user
   systemd with the memory controller delegated, linger), checks out the harness at the run's commit and
   builds what the role runs.
 - `teardown.sh <id>` deletes the run's VMs by label, then its placement policy, firewall rules,
   subnet, network and disks by name (none of those take labels). It fails unless none is left.
   `teardown.sh --all --yes` does the same for every run.
 - `run-estimate.sh` is the short estimate. It provisions both topologies, checks the generator's
-  ceiling over the VPC (`client-ceiling.mts --serve` on the harper VM, `--base-url` from the generator),
+  ceiling over the VPC (`client-ceiling.mts --serve` on the harper VM, `--base-url` from the generator,
+  failing if k6 kept over half its vCPUs busy),
   runs a smoke pass, then harper-uws, pg-redis and pg-redis@b on C, inspect and chain-4, warm and 2x,
   `--auth=token`, 3 reps. Results come back to `gcp/runs/<id>/results/` after every phase. Teardown
   runs on exit, after one last copy.
@@ -412,8 +446,10 @@ Choices, recorded per run in `gcp/runs/<id>/manifest.json` and in every results 
   network disk, it adds no network round trip to each page-cache miss, which would mix a disk-latency
   term into the dependent-read chains the 2x and 8x points measure. 375 GiB holds 8x on per-engine VMs
   (Harper 138 GiB snapshot plus its restored copy). Documented limits: 150k read IOPS, 625 MiB/s read.
-- **Generator: `c4-standard-16`** (8 cores, SMT on). `client-ceiling.mts` on that shape decides whether
-  it is enough; `YCSB_GEN_MACHINE_TYPE` raises it.
+- **Generator: `c4-standard-32`** (16 cores, SMT on), running k6 (pinned release, SHA-256 checked by
+  `startup.sh`). That is 4x the target's vCPUs, because k6 needs about 3x the Node driver's CPU per op
+  (above). The ceiling check is the gate; `YCSB_GEN_MACHINE_TYPE` changes the shape. No VM gets a
+  service account: none calls a GCP API, and the guest attributes go through the metadata server.
 - **Turbo stays on** (GCP has no control for it). Targets interleave within a session, forward and
   reversed per rep, 3 reps per cell, and perf counts the cycles each window ran.
 - Every results file records each host's machine type, zone and CPU platform (GCP metadata

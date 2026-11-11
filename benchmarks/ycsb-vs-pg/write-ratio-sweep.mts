@@ -42,7 +42,7 @@ const { values } = parseArgs({
 		'records': { type: 'string', default: '200000' },
 		'ops': { type: 'string', default: '300000' },
 		'concurrency': { type: 'string', default: '128' },
-		'generator': { type: 'string', default: 'k6' },
+		'generator': { type: 'string', default: 'node' },
 		'shards': { type: 'string', default: '6' },
 		'reps': { type: 'string', default: '2' },
 		// Same placement rules as run-compare.mts: K target cores, generator on disjoint cores.

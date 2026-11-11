@@ -219,7 +219,13 @@ type Options = ReturnType<typeof parseOptions>;
 
 export type GeneratorName = 'k6' | 'node';
 
-/** k6 (k6Driver.mts), or the Node driver it is checked against (shardedDriver.mts, `shards` processes). */
+/**
+ * k6 where the generator has a host of its own (--hosts), sized for k6's cost per request; the Node driver
+ * (shardedDriver.mts) where it shares one with the target, whose spare cores k6 cannot saturate a target from.
+ */
+export const defaultGenerator = (remote: boolean): GeneratorName => (remote ? 'k6' : 'node');
+
+/** k6 (k6Driver.mts), or the Node driver (shardedDriver.mts, `shards` processes). */
 export function startGenerator(generator: GeneratorName, config: DriverConfig, shards = 4): Promise<DriverRun> {
 	return generator === 'node' ? startNodeDriver({ ...config, shards }) : startK6Driver(config);
 }
@@ -1460,7 +1466,7 @@ export async function createSession(
 		});
 		if (refused.length > 0) throw new Error(`--cache=cold does not support ${refused.join(', ')}`);
 	}
-	const generator = (argValue(argv, '--generator') ?? 'k6') as GeneratorName;
+	const generator = (argValue(argv, '--generator') ?? defaultGenerator(Boolean(hostsFile))) as GeneratorName;
 	if (generator !== 'k6' && generator !== 'node') throw new Error(`--generator must be k6 or node, got ${generator}`);
 	const auth = (argValue(argv, '--auth') ?? 'none') as AuthMode;
 	if (auth !== 'none' && auth !== 'token') throw new Error(`--auth must be none or token, got ${auth}`);

@@ -85,11 +85,12 @@ for role in $ROLES; do
 		--network-interface="subnet=$SUBNET,nic-type=GVNIC" \
 		--resource-policies="$POLICY" \
 		--maintenance-policy=TERMINATE --provisioning-model=STANDARD \
+		--no-service-account --no-scopes \
 		--max-run-duration="$YCSB_MAX_RUN_DURATION" --instance-termination-action=DELETE \
 		--labels="ycsb-bench=true,ycsb-run=$RUN_ID,ycsb-role=$role" \
 		--image-family="$YCSB_IMAGE_FAMILY" --image-project="$YCSB_IMAGE_PROJECT" \
 		--boot-disk-size="$YCSB_BOOT_DISK_SIZE" --boot-disk-type=hyperdisk-balanced \
-		--metadata="ycsb-role=$role,ycsb-commit=$COMMIT,ycsb-repo=$YCSB_REPO_URL,ycsb-node-major=$YCSB_NODE_MAJOR,enable-oslogin=FALSE,enable-guest-attributes=TRUE" \
+		--metadata="ycsb-role=$role,ycsb-commit=$COMMIT,ycsb-repo=$YCSB_REPO_URL,ycsb-node-major=$YCSB_NODE_MAJOR,ycsb-k6-version=$YCSB_K6_VERSION,ycsb-k6-sha256=$YCSB_K6_SHA256,enable-oslogin=FALSE,enable-guest-attributes=TRUE" \
 		--metadata-from-file="startup-script=$YCSB_GCP_DIR/startup.sh,ssh-keys=$RUN_DIR/ssh-keys"
 done
 if [ "$DRY" = 1 ]; then exit 0; fi

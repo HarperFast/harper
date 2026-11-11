@@ -4,7 +4,8 @@
  *
  * Serves a fixed, pre-serialized YCSB-shaped record from memory over a node:http cluster on the
  * target cores (nothing to look up, no database), then drives it with the SAME generator, on the
- * same generator cores, that run-compare.mts uses (k6, or --generator=node). It reports workload C
+ * same generator cores, that run-compare.mts uses (its default: k6 with --base-url, else the Node driver;
+ * --generator picks one). It reports workload C
  * (reads) and E (scans and inserts).
  *
  *   node benchmarks/ycsb-vs-pg/client-ceiling.mts --target-cpus=4 --concurrency=64
@@ -13,12 +14,15 @@
  *
  *   (target VM)    taskset -c 0-3 node benchmarks/ycsb-vs-pg/client-ceiling.mts --serve=4 --host=<its address>
  *   (generator VM) node benchmarks/ycsb-vs-pg/client-ceiling.mts --base-url=http://<its address>:9941
+ *
+ * --max-generator-busy=<fraction> exits 1 when the generator kept more than that fraction of its CPUs
+ * busy on any workload: it, not the server, was the limit.
  */
 import cluster from 'node:cluster';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { parseArgs } from 'node:util';
-import { startGenerator, type GeneratorName } from './run-compare.mts';
+import { defaultGenerator, startGenerator, type GeneratorName } from './run-compare.mts';
 import {
 	readTopology,
 	chooseCpuSets,
@@ -34,7 +38,7 @@ const { values } = parseArgs({
 		'target-cpus': { type: 'string', default: '4' },
 		'serverCpus': { type: 'string' },
 		'driverCpus': { type: 'string' },
-		'generator': { type: 'string', default: 'k6' },
+		'generator': { type: 'string' },
 		'shards': { type: 'string', default: '4' },
 		'records': { type: 'string', default: '200000' },
 		'ops': { type: 'string', default: '300000' },
@@ -42,6 +46,7 @@ const { values } = parseArgs({
 		'serve': { type: 'string' },
 		'host': { type: 'string', default: '127.0.0.1' },
 		'base-url': { type: 'string' },
+		'max-generator-busy': { type: 'string' },
 	},
 });
 const PORT = Number(values.port);
@@ -109,7 +114,7 @@ if (values.serve) {
 /** Drives the ceiling server at `baseUrl` with the session's generator: C, then E. */
 async function measure(baseUrl: string, serverCpus: string, driver: number[]): Promise<void> {
 	const records = Number(values.records);
-	const generator = values.generator as GeneratorName;
+	const generator = (values.generator ?? defaultGenerator(Boolean(values['base-url']))) as GeneratorName;
 	const driverRun = await startGenerator(
 		generator,
 		{
@@ -125,6 +130,7 @@ async function measure(baseUrl: string, serverCpus: string, driver: number[]): P
 		},
 		Number(values.shards)
 	);
+	const maxBusy = values['max-generator-busy'] === undefined ? undefined : Number(values['max-generator-busy']);
 	try {
 		await driverRun.runWorkload('C', 'uniform', 20_000); // sockets, and JIT for the node generator
 		for (const workload of ['C', 'E']) {
@@ -136,6 +142,14 @@ async function measure(baseUrl: string, serverCpus: string, driver: number[]): P
 					`ops_per_sec=${result.throughput.toFixed(0)} errors=${result.errors} ` +
 					`generator_busy_cores=${generatorCores.toFixed(2)}`
 			);
+			if (result.errors > 0) process.exitCode = 1;
+			if (maxBusy !== undefined && generatorCores > maxBusy * driver.length) {
+				console.error(
+					`CLIENT_CEILING_FAILED the generator kept ${generatorCores.toFixed(2)} of ${driver.length} CPUs busy ` +
+						`(over ${maxBusy}) on ${workload}: it is the limit, not the server`
+				);
+				process.exitCode = 1;
+			}
 		}
 	} finally {
 		await driverRun.close();

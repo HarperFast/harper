@@ -96,7 +96,7 @@ gcloud compute ssh "$YCSB_VM_USER@$RUN_ID-harper" "${P[@]}" --ssh-key-file="$KEY
 	--unit=ycsb-ceiling-server --working-directory=$YCSB_VM_REPO \
 	/usr/local/bin/node benchmarks/ycsb-vs-pg/client-ceiling.mts --serve=4 --host=$HARPER_IP"
 on_gen "for i in \$(seq 60); do curl -fsS -o /dev/null http://$HARPER_IP:9941/usertable/x && exit 0; sleep 1; done; exit 1"
-phase ceiling "node benchmarks/ycsb-vs-pg/client-ceiling.mts --base-url=http://$HARPER_IP:9941 --concurrency=64"
+phase ceiling "node benchmarks/ycsb-vs-pg/client-ceiling.mts --base-url=http://$HARPER_IP:9941 --concurrency=64 --max-generator-busy=0.5"
 gcloud compute ssh "$YCSB_VM_USER@$RUN_ID-harper" "${P[@]}" --ssh-key-file="$KEY" --command='systemctl --user stop ycsb-ceiling-server'
 
 # Every code path once, at a size that takes minutes: both topologies, dependent reads, a write, a snapshot.
