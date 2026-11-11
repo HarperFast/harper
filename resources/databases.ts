@@ -4118,11 +4118,12 @@ function openIndex(
 			dbi = openRocksDatabase(rootStore.path, { ...storeOptions } as any) as any;
 		} catch (error) {
 			// A plain index's handle on this column family, open since the attribute was a plain index,
-			// makes rocksdb-js refuse the opt-in until every such handle in the process has closed.
+			// makes rocksdb-js refuse the opt-in until every such handle in the process has closed, and
+			// for a while after, until the transactions that predate the close finish.
 			if (!isCustomObjectIndex || (error as { code?: string })?.code !== 'ERR_VERIFICATION_TABLE_CONFLICT') throw error;
 			dbi = openRocksDatabase(rootStore.path, { ...storeOptions, cache: false } as any) as any;
 			logger.warn(
-				`Index ${dbiKey} reads without its record cache until Harper fully restarts: its column family is still open as a plain index in this process`
+				`Index ${dbiKey} reads without its record cache until Harper restarts: rocksdb-js refused its column family the verification table`
 			);
 		}
 		// before the setup below, whose failure cleanup can itself fail to close it
