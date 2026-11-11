@@ -147,9 +147,12 @@ export const HAS_ADDITIONAL_AUDIT_REFS = 0x80;
 // small mapping indexes (nodeIdMapping.ts), so the bit is never part of one. Released builds before it
 // wrote log keys only.
 export const RECEIVED_IDENTITY_REF = 0x80000000;
-// Marks the persisted ref that is the record's copied-delete boundary (bit 30 of its node-id word). A reader
-// before it decodes the ref as a log key whose lookup misses, which a walk already treats as missing history.
-export const COPIED_DELETE_REF = 0x40000000;
+// Marks the persisted ref that is the record's copied-delete boundary (bit 30 of its node-id word). A reader before
+// it (5.3, 5.4 betas) decodes the row correctly but files the ref as a log key under node id `origin | bit 30`, which
+// names no log: a walk that follows it misses and merges, an in-order write drops it, and an out-of-order write can
+// copy it into an audit entry's previous refs, where it later reads as missing history. Each degrades that row to
+// the behavior before boundaries existed, and only rows that held a copied delete carry one.
+const COPIED_DELETE_REF = 0x40000000;
 // A resequenced write keeps the (newer) version it merged onto, so one version identifies two
 // different stored values and version equality proves nothing. The metadata word this is set in is
 // the same header word the VerificationTable reads at value offset 8 — ACTION_32_BIT is the tag
@@ -1119,7 +1122,7 @@ export function recordUpdater(
 			const receivedIdentityRefs = options?.receivedIdentityRefs;
 			additionalAuditRefsNextEncoding = additionalAuditRefs?.length > 0 ? additionalAuditRefs : undefined;
 			receivedIdentityRefsNextEncoding = receivedIdentityRefs?.length > 0 ? receivedIdentityRefs : undefined;
-			// Kept until an audited put or delete replaces the row: that write's own entry then stops every walk.
+			// an audited put or delete appends its own entry, which then stops every walk
 			const copiedDeleteBoundary =
 				options?.copiedDeleteBoundary ??
 				(existingEntry?.copiedDeleteBoundary &&

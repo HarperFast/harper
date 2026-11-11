@@ -6856,8 +6856,8 @@ export function makeTable(options): TableResourceClass {
 						}
 					}
 
-					// A delete supersedes every write it precedes, and a base-copied one has no audit entry for a walk to
-					// reach. Compared whatever the head's order: an older publish can leave the head below it.
+					// Whatever the head's order (an older publish can leave it below the boundary) and residency: unlike a
+					// null stub, the boundary is a delete, and a write it precedes would otherwise fold into a stub.
 					const deleteBoundary = existingEntry?.copiedDeleteBoundary;
 					if (deleteBoundary && precedesExistingVersion(txnTime, deleteBoundary, options?.nodeId) < 0) {
 						write.skipped = true;
