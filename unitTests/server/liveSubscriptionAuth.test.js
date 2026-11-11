@@ -1567,6 +1567,43 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 			);
 		});
 
+		it('requires a role of a later SUBSCRIBE once an inactive record appeared for its principal', async () => {
+			const user = await certificate('inactive_latch_cn');
+			const first = grantingByUsername('inactive_latch_cn');
+			const firstSubscription = await first.Resource.subscribe('topic', undefined, { user, authorize: true });
+			handles.push({ unregister: () => firstSubscription.end() });
+			await testUtils.seedUsers([{ username: 'inactive_latch_cn', active: false, role: 'missing_role' }]);
+			await _sweepNow();
+			assert.strictEqual(first.end.calls.length, 1, 'an inactive record revokes it');
+
+			await testUtils.seedUsers();
+			const later = grantingByUsername('inactive_latch_cn');
+			await assert.rejects(later.Resource.subscribe('topic', undefined, { user, authorize: true }), {
+				statusCode: 403,
+			});
+			assert.strictEqual(_liveSubscriptionCount(), 0, 'a later SUBSCRIBE with that principal needs a role');
+		});
+
+		it('requires a role of a subscription by the view a recheck installed before the principal was latched', async () => {
+			const context = { user: await certificate('view_latch_cn'), authorize: true };
+			const first = grantingByUsername('view_latch_cn');
+			const firstSubscription = await first.Resource.subscribe('topic', undefined, context);
+			handles.push({ unregister: () => firstSubscription.end() });
+			await _sweepNow();
+			const view = context.user;
+			assert.strictEqual(userModule.isCertificatePrincipal(view), true, 'a recheck installed a marked view');
+			await testUtils.seedUsers([{ username: 'view_latch_cn', active: true, role: 'missing_role' }]);
+			await _sweepNow();
+			assert.strictEqual(first.end.calls.length, 1, 'a record with no role revokes it');
+
+			await testUtils.seedUsers();
+			const later = grantingByUsername('view_latch_cn');
+			await assert.rejects(later.Resource.subscribe('topic', undefined, { user: view, authorize: true }), {
+				statusCode: 403,
+			});
+			assert.strictEqual(_liveSubscriptionCount(), 0, 'a subscription by that view needs a role');
+		});
+
 		it('keeps the CONNECT lookup of a certificate principal a component built with no hdb_user', async () => {
 			const built = { username: 'component_cert_cn', active: true };
 			const admission = {};
@@ -1576,7 +1613,6 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 			assert.notStrictEqual(user, built);
 			assert.strictEqual(userModule.isRecordlessPrincipal(user), true, 'the copy keeps the lookup that tracked it');
 			const gate = grantingByUsername('component_cert_cn');
-			// as an MQTT connection holds it: the session's user, with what its CONNECT recorded
 			const context = { user, authorize: true, session: { user, userProvenance: admission.provenance } };
 			const subscription = await gate.Resource.subscribe('topic', undefined, context);
 			handles.push({ unregister: () => subscription.end() });

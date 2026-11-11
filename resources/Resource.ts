@@ -1158,9 +1158,16 @@ function hasPermissionControl(value: any, seen = new WeakSet<object>()): boolean
 }
 
 let securityUser: typeof import('../security/user.ts') | undefined;
-// contexts, and principals an MQTT session reuses for each SUBSCRIBE, where a recheck found a record backing a
-// certificate principal; later subscriptions there need a role too
+// Outlives the subscription whose recheck found a record behind a certificate principal, so later ones by that
+// principal (an MQTT session reuses it for every SUBSCRIBE), on that context or by its view need a role too.
 const recordBacked = new WeakSet<object>();
+
+function latchRecordBacked(user: object, context: any): void {
+	recordBacked.add(user);
+	if (!context) return;
+	recordBacked.add(context);
+	if (context.user && typeof context.user === 'object') recordBacked.add(context.user);
+}
 
 const resolveUser = (_scope: unknown, username: string) =>
 	securityUser!.findAndValidateUser(username, undefined, false);
@@ -1188,15 +1195,13 @@ function registerLiveSubscriptionForContext(
 		isCurrentUser,
 		isRecordBacked,
 		isRecordlessPrincipal,
+		userRecordVersions,
 	} = securityUser!;
 	// a memoizing server.getUser's user does not carry what an MQTT connection's own CONNECT recorded
 	const session = (context as any)?.session;
 	const admitted = session?.user === user ? session.userProvenance : undefined;
 	const fixedPrincipal = Boolean(user._scopedToken) || isRecordlessPrincipal(user, admitted);
-	// A principal re-read by name needs a role to keep the subscription (#1414). The exception is a client certificate
-	// naming no hdb_user: allowRead alone admitted it, so allowRead alone rechecks it, until a record backs it at a
-	// recheck; then it, and later subscriptions on its context or connection, need a role even after that record is
-	// dropped.
+	// #1414 requires a role of a principal re-read by name; #4062 exempts a certificate naming no hdb_user
 	const certificate = isCertificatePrincipal(user);
 	const latched = certificate && (recordBacked.has(user) || recordBacked.has(context));
 	let roleRequired = !certificate || latched || Boolean(isRecordBacked(user, admitted) || user.role);
@@ -1231,13 +1236,21 @@ function registerLiveSubscriptionForContext(
 			} else {
 				// Re-read current user state from hdb_user/hdb_role, once per username per pass, so a dropped
 				// or role-stripped user no longer authorizes.
-				fresh = await pass.memo(resolveUser, username, resolveUser);
+				try {
+					fresh = await pass.memo(resolveUser, username, resolveUser);
+				} catch (error) {
+					// an inactive record still backs the name
+					if (!roleRequired && userRecordVersions(username).userStamp !== null) {
+						roleRequired = true;
+						latchRecordBacked(user, context);
+					}
+					throw error;
+				}
 				if (!fresh) return false;
 				// another subscription's recheck may have latched this principal or context since it registered
 				if (!roleRequired && (isRecordBacked(fresh) || recordBacked.has(user) || recordBacked.has(context))) {
 					roleRequired = true;
-					recordBacked.add(user);
-					if (context) recordBacked.add(context);
+					latchRecordBacked(user, context);
 				}
 				if (!fresh.role && roleRequired) return false;
 				// Advance the subscription's context to the fresh user so downstream checks — context.user
@@ -1248,8 +1261,7 @@ function registerLiveSubscriptionForContext(
 				viewer = cloneUserView(fresh, undefined, certificate);
 				if (context) (context as any).user = viewer;
 			}
-			// Re-run the same operation-level allowRead that granted the subscription. A shared decision evaluates
-			// `fresh`, not the marked viewer: the default allowRead never reads the certificate mark.
+			// Re-run the same operation-level allowRead that granted the subscription.
 			return !!(await (sharedDecision ? pass.memo(fresh, resource.constructor, evaluate) : evaluate(viewer)));
 		},
 	});
