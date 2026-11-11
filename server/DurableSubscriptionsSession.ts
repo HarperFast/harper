@@ -626,6 +626,11 @@ class SubscriptionsSession {
 			}
 			subscription.topic = topic;
 			subscription.qos = subscriptionRequest.qos;
+			// The session reads an event only in sendUpdate, and its one write there (topic, for the acknowledgement)
+			// is read back before sendUpdate returns, so a table's live listener may hand it the event object it
+			// built for the record's other sessions. Set on the subscription the resource returned: a resource that
+			// wraps the table's subscription consumes the events itself, and its table subscription keeps its own.
+			subscription.sharesLiveEvents = true;
 			this.subscriptions.push(subscription);
 			this.subscribed(subscription);
 			this.startDelivery(subscription, subscriptionRequest, topic, resourcePath, needsAck, filter);
@@ -782,13 +787,13 @@ class SubscriptionsSession {
 		let messageId;
 		let dup = false;
 		if (delivery.needsAck) {
-			update.topic = delivery.topic;
-			const priorMessageId = this.priorDelivery(update);
+			// the topic goes alongside: the event may be shared with other sessions' subscriptions (sharesLiveEvents)
+			const priorMessageId = this.priorDelivery(update, delivery.topic);
 			if (priorMessageId === ALREADY_RECEIVED) {
 				update.acknowledge?.();
 				return SKIPPED;
 			}
-			messageId = this.needsAcknowledge(update, delivery.qos, priorMessageId);
+			messageId = this.needsAcknowledge(update, delivery.qos, priorMessageId, delivery.topic);
 			dup = priorMessageId !== undefined;
 		} else {
 			// There is no ack to wait for. We can immediately notify any interested source
@@ -855,10 +860,10 @@ class SubscriptionsSession {
 	pendingDeliveries(): number {
 		return (this.awaitingAcks?.size ?? 0) + (this.awaitingCompletion?.size ?? 0);
 	}
-	priorDelivery(_update): number | undefined {
+	priorDelivery(_update, _topic?: string): number | undefined {
 		return undefined;
 	}
-	needsAcknowledge(update, qos: number, messageId = this.newMessageId()) {
+	needsAcknowledge(update, qos: number, messageId = this.newMessageId(), _topic?: string) {
 		if (update.acknowledge || qos === 2) {
 			if (!this.awaitingAcks) this.awaitingAcks = new Map();
 			this.awaitingAcks.set(messageId, { qos, acknowledge: update.acknowledge });
@@ -1543,8 +1548,8 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		this.receivedCount -= (state.received?.size ?? 0) + (state.receivedRuns?.size ?? 0);
 		for (const delivery of state.resend?.values() ?? []) this.reservedIds.delete(delivery[3]);
 	}
-	priorDelivery(update) {
-		const state = this.topics.get(update.topic);
+	priorDelivery(update, topic = update.topic) {
+		const state = this.topics.get(topic);
 		if (!(state?.entry.qos > 0) || update.fromScan || typeof update.localTime !== 'number') return;
 		const key = update.localTime;
 		// a transaction's events arrive together and in the same order when replayed
@@ -1617,16 +1622,16 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		}
 		state.receivedThrough = through;
 	}
-	needsAcknowledge(update, qos: number, messageId = this.newMessageId()) {
+	needsAcknowledge(update, qos: number, messageId = this.newMessageId(), topic = update.topic) {
 		if (!this.awaitingAcks) this.awaitingAcks = new Map();
 		const ackInfo: Acknowledgement = {
 			qos,
-			topic: update.topic,
+			topic,
 			timestamp: update.localTime,
 		};
 		if (update.acknowledge) ackInfo.acknowledge = update.acknowledge;
 		this.awaitingAcks.set(messageId, ackInfo);
-		const state = this.topics.get(update.topic);
+		const state = this.topics.get(topic);
 		// scan deliveries are state, not history: their keys follow no transaction order
 		if (state && !update.fromScan && typeof update.localTime === 'number') {
 			const key = update.localTime;

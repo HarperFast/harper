@@ -450,6 +450,11 @@ class Subscription extends IterableEventQueue {
 	declare replayedThrough?: number;
 	declare supportsTransactions?: boolean;
 	declare onlyChildren?: boolean;
+	/**
+	 * Set by a consumer that never writes to an event (the MQTT session): a table's live listener then hands it the
+	 * event object it built for the record's other such subscriptions, rather than building one of its own.
+	 */
+	declare sharesLiveEvents?: boolean;
 	constructor(listener) {
 		super();
 		this.listener = listener;
