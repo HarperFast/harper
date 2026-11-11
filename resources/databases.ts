@@ -4113,6 +4113,7 @@ function openIndex(
 		// Enable cache (WeakLRUCache + VT) for all custom-object index stores so the VT is
 		// available before resolveIndexFormat decides the format. Versioned stores need the VT
 		// for cached traversal; legacy stores pay a small per-write cache.delete() overhead only.
+		// The one exception is the uncached reopen below.
 		const storeOptions = { ...dbiInit, name: storeNameFor(dbiKey, generation), cache: isCustomObjectIndex };
 		try {
 			dbi = openRocksDatabase(rootStore.path, { ...storeOptions } as any) as any;
