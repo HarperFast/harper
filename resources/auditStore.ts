@@ -2010,7 +2010,6 @@ const RESUMABLE_FREE_SPACE = 16 * 1024 * 1024;
 const RESUME_AFTER_FAILED_FLUSH_MS = 10_000;
 const PAUSE_CELL = new Int32Array(new SharedArrayBuffer(4));
 
-/** Flushes the floor's commit to an SST, or returns why it did not. */
 function flushBootFloor(rootStore: RocksDatabase): unknown {
 	let available = Infinity;
 	try {
