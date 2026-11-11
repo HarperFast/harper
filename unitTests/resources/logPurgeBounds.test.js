@@ -425,6 +425,21 @@ describe('per-log purge bounds', function () {
 			}
 		});
 
+		it('takes the record rule on a rocksdb-js with no purge watermark, refusing no log', async () => {
+			const Table = backdatedTable();
+			for (let i = 0; i < 3; i++) await Table.put(`no-watermark-api-${i}`, { name: 'x' });
+			const newest = Math.max(...localLogKeys(Table.auditStore));
+			const local = Table.auditStore.rootStore.useLog('local');
+			overrideWatermark(local, undefined);
+			try {
+				await tick();
+				raiseAuditFloor(Table.auditStore, Date.now(), true);
+				assert.strictEqual(getLogPurgeBounds(Table.auditStore, 'local').get('local'), newest);
+			} finally {
+				delete local.getPurgeWatermark;
+			}
+		});
+
 		it('bounds a log that loses its watermark by the cutoff of the last pass', async () => {
 			const Table = backdatedTable();
 			await Table.put('later-unaccounted', { name: 'x' });

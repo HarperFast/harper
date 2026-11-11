@@ -1053,13 +1053,15 @@ function exposedBound(recorded: LogPurgeBounds, name: string, nativeHorizon: num
 }
 
 /**
- * A listed log's purge watermark: the bound rocksdb-js vouches for, null when it reports it cannot, and undefined
- * when it cannot be read, which must never read as a bound of 0. Call only for a listed name: `useLog` creates the
- * log it is asked for.
+ * A listed log's purge watermark: the bound rocksdb-js vouches for, null when it reports it cannot (or, before
+ * 2.14, has no watermark at all), and undefined when it cannot be read, which must never read as a bound of 0.
+ * Call only for a listed name: `useLog` creates the log it is asked for.
  */
 function purgeWatermark(rootStore: any, name: string): number | null | undefined {
 	try {
-		const watermark = rootStore.useLog(name).getPurgeWatermark();
+		const log = rootStore.useLog(name);
+		if (typeof log.getPurgeWatermark !== 'function') return null;
+		const watermark = log.getPurgeWatermark();
 		if (!watermark.known) return null;
 		if (isPurgeBoundValue(watermark.purgedThrough)) return watermark.purgedThrough;
 		throw new Error(`invalid purge watermark ${String(watermark.purgedThrough)}`);
