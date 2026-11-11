@@ -7,7 +7,7 @@ import { commonValidators } from '../validation/common_validators.ts';
 import * as env from '../utility/environment/environmentManager.ts';
 import { copyTree } from '../dataLayer/blobBackup.ts';
 import { getBlobPathsForDatabaseName, getRootBlobPathsForDB } from './blob.ts';
-import { getRegistryStatus, type RocksDatabase } from '@harperfast/rocksdb-js';
+import type { RocksDatabase } from '@harperfast/rocksdb-js';
 import {
 	BRANCH_REMOVING_SUFFIX,
 	BRANCH_ROOT_DIR,
@@ -19,6 +19,7 @@ import {
 	isReadOnlyMode,
 	openBranchDatabase,
 	quarantineBranchIdentity,
+	registryEntryAt,
 	releaseBranchIdentity,
 	reserveBranchIdentity,
 	resolveBranchPath,
@@ -595,18 +596,7 @@ function branchReferenceCount(branchPath: string): number {
 		if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 0;
 		throw error;
 	}
-	return (
-		getRegistryStatus().find((entry: any) => entry.path === resolved || canonicalOrSelf(entry.path) === resolved)
-			?.refCount ?? 0
-	);
-}
-
-function canonicalOrSelf(path: string): string {
-	try {
-		return realpathSync(path);
-	} catch {
-		return path;
-	}
+	return registryEntryAt(resolved)?.refCount ?? 0;
 }
 
 /**

@@ -2782,6 +2782,7 @@ export function openBranchDatabase(
 	}
 	let closing: Promise<void> | undefined;
 	let handleTeardownStarted = false;
+	let closeFailed = false;
 	const unregisterBranch = () => {
 		if (openBranches.get(path) === branch) openBranches.delete(path);
 		releaseBranchIdentity(storeName);
@@ -2790,8 +2791,21 @@ export function openBranchDatabase(
 	};
 	const closeRemainingHandles = () => {
 		const closeFailures = closeBranchHandles(path, rootStore, openedStores, tables);
-		if (closeFailures.length) {
-			throw new AggregateError(closeFailures, `Could not close branch database '${databaseName}'`);
+		if (closeFailures.length) closeFailed = true;
+		// rocksdb-js reports RocksDB's own final close failing only after releasing the database, which leaves nothing
+		// to retry. A failed close holds the branch only while a store is still open, or while rocksdb-js keeps the
+		// directory quarantined (its close-time flush failed) until `shutdown()`.
+		if (closeFailed) {
+			const quarantined = registryEntryAt(path)?.closeError;
+			const storeLeftOpen = [rootStore, (rootStore as any).dbisDb, ...openedStores].some(
+				(store) => store?.status === 'open'
+			);
+			if (quarantined || storeLeftOpen) {
+				throw new AggregateError(
+					closeFailures.length ? closeFailures : [new Error(quarantined)],
+					`Could not close branch database '${databaseName}'`
+				);
+			}
 		}
 		unregisterBranch();
 	};
@@ -2903,6 +2917,21 @@ function closeBranchHandles(
 	if (rootStore) databasePaths.delete(rootStore as RootDatabase);
 	for (const reclamationPath of reclamationPaths) removeStorageReclamation(reclamationPath);
 	return closeFailures;
+}
+
+/** rocksdb-js's registry entry, which spans every thread of the process, for the database at a canonical directory. */
+export function registryEntryAt(canonicalPath: string): ReturnType<typeof getRegistryStatus>[number] | undefined {
+	return getRegistryStatus().find(
+		(entry) => entry.path === canonicalPath || canonicalOrSelf(entry.path) === canonicalPath
+	);
+}
+
+function canonicalOrSelf(path: string): string {
+	try {
+		return realpathSync(path);
+	} catch {
+		return path;
+	}
 }
 
 async function settleBranchDerivedIndexes(tables: Tables): Promise<void> {

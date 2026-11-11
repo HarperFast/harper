@@ -1291,6 +1291,20 @@ describeUnlessLmdb('branch blob-root safety (harper#644)', () => {
 		for (const root of getBlobPathsForDatabaseName(STORE)) rmSync(root, { recursive: true, force: true });
 	});
 
+	/**
+	 * Remove the open branch, then put its directory back without the blob roots the removal deleted. The copy kept
+	 * aside is a checkpoint plus the completion marker, which is what `readBranchState` reads: the open directory
+	 * itself may be mid-compaction, and a plain copy races the files it deletes.
+	 */
+	async function putBackWithoutBlobRoots(branch, branchPath) {
+		const saved = `${branchPath}.savedforTest`;
+		await branch.rootStore.createCheckpoint(saved);
+		cpSync(join(branchPath, '.branch-complete'), join(saved, '.branch-complete'));
+		await removeBranches();
+		cpSync(saved, branchPath, { recursive: true });
+		rmSync(saved, { recursive: true, force: true });
+	}
+
 	it('refuses an identity a real database already answers to, before removing anything', async function () {
 		this.timeout(30000);
 		// A branch's blob root is `<blobs>/<identity>` and materialization REMOVES and replaces it, so a
@@ -1310,17 +1324,11 @@ describeUnlessLmdb('branch blob-root safety (harper#644)', () => {
 
 	it('refuses to serve or rebuild a branch that lost a blob root, rather than silently re-forking', async function () {
 		this.timeout(30000);
-		await getOrCreateBranch('safebase', 'safeApp');
 		const branchPath = resolveBranchPath('safebase', 'safeApp');
 
-		// Keep a real, complete branch aside, tear the live one down so nothing is cached, then put back
-		// the directory WITHOUT its blob roots. That is the state a power loss can leave, since the
-		// directory and the roots live on different volumes and neither rename is fsynced.
-		const saved = `${branchPath}.savedforTest`;
-		cpSync(branchPath, saved, { recursive: true });
-		await removeBranches();
-		cpSync(saved, branchPath, { recursive: true });
-		rmSync(saved, { recursive: true, force: true });
+		// The directory WITHOUT its blob roots is the state a power loss can leave, since the directory and
+		// the roots live on different volumes and neither rename is fsynced.
+		await putBackWithoutBlobRoots(await getOrCreateBranch('safebase', 'safeApp'), branchPath);
 		assert.ok(
 			getBlobPathsForDatabaseName(STORE).every((root) => !existsSync(root)),
 			'sanity: directory present, blob roots gone'
@@ -1410,13 +1418,8 @@ describeUnlessLmdb('branch blob-root safety (harper#644)', () => {
 
 	it('refuses a branch whose recorded blob roots no longer match the configuration', async function () {
 		this.timeout(30000);
-		await getOrCreateBranch('safebase', 'safeApp');
 		const branchPath = resolveBranchPath('safebase', 'safeApp');
-		const saved = `${branchPath}.savedforTest`;
-		cpSync(branchPath, saved, { recursive: true });
-		await removeBranches();
-		cpSync(saved, branchPath, { recursive: true });
-		rmSync(saved, { recursive: true, force: true });
+		await putBackWithoutBlobRoots(await getOrCreateBranch('safebase', 'safeApp'), branchPath);
 
 		// `storageIndex` on a row is a position in this list, so a reordered or resized blobPaths would
 		// resolve rows through the wrong root. The marker records what was published, which is exactly
@@ -1527,6 +1530,104 @@ describeUnlessLmdb('branch blob-root safety (harper#644)', () => {
 		}
 		await removal;
 		assert.ok(sawTheWindow, 'sanity: the test must observe the window it guards');
+	});
+});
+
+describeUnlessLmdb('a branch close rocksdb-js reports failing (harper#4252)', () => {
+	const { chmodSync } = require('node:fs');
+	const { fork } = require('node:child_process');
+	const { dirname } = require('node:path');
+	const { waitFor } = require('../waitFor.js');
+	const { getBlobPathsForDatabaseName, createBlob } = require('#src/resources/blob');
+	const { openBranchDatabase, registryEntryAt } = require('#src/resources/databases');
+	const STORE = `${'closeApp'.length}_closeApp__closebase`;
+
+	before(async function () {
+		if (process.platform === 'win32' || process.getuid?.() === 0) return this.skip(); // root traverses it anyway
+		this.timeout(30000);
+		setupTestDBPath();
+		setMainIsWorker(true);
+		table({
+			table: 'Rows',
+			database: 'closebase',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'payload', type: 'Blob' },
+			],
+		});
+		await databases.closebase.Rows.put({ id: 'seed', payload: await createBlob(Buffer.alloc(64 * 1024, 'x')) });
+	});
+
+	afterEach(() => removeBranches());
+
+	it('releases a branch rocksdb-js finished closing, so this thread can open and remove it again', async function () {
+		this.timeout(30000);
+		const branchPath = resolveBranchPath('closebase', 'closeApp');
+		const first = await getOrCreateBranch('closebase', 'closeApp');
+		await first.tables.Rows.put({ id: 'mine' });
+		// flushes it, so the next close has nothing to flush and fails only in RocksDB's own close
+		await closeBranchAt(branchPath);
+		const held = await getOrCreateBranch('closebase', 'closeApp');
+		const failedPaths = [];
+		const onCloseFailed = (path) => failedPaths.push(path);
+		RocksDatabase.on('database:closeFailed', onCloseFailed);
+		// RocksDB cannot write its MANIFEST into a directory it cannot traverse
+		const appDirectory = dirname(branchPath);
+		chmodSync(appDirectory, 0o000);
+		try {
+			await closeBranchAt(branchPath);
+		} finally {
+			chmodSync(appDirectory, 0o755);
+		}
+		try {
+			await waitFor(() => failedPaths.includes(held.path), { timeout: 5_000, message: 'RocksDB reported no failure' });
+		} finally {
+			RocksDatabase.off('database:closeFailed', onCloseFailed);
+		}
+		assert.strictEqual(registryEntryAt(held.path), undefined, 'rocksdb-js released the database');
+
+		const reopened = await getOrCreateBranch('closebase', 'closeApp');
+		assert.ok(await reopened.tables.Rows.get('mine'));
+		await held.close();
+		assert.throws(
+			() => openBranchDatabase(branchPath, 'closebase', STORE),
+			/already open/,
+			'closing the old handle again leaves the reopened one registered'
+		);
+
+		await removeBranches();
+		assert.strictEqual(existsSync(branchPath), false);
+		assert.ok(
+			getBlobPathsForDatabaseName(STORE).every((root) => !existsSync(root)),
+			'its blob roots go with it'
+		);
+	});
+
+	it('keeps a branch rocksdb-js holds quarantined registered, through a retried close', async function () {
+		this.timeout(60000);
+		const child = fork(join(__dirname, 'fixtures', 'branchCloseQuarantine.cjs'), {
+			stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
+		});
+		let stderr = '';
+		child.stderr.on('data', (chunk) => (stderr = (stderr + chunk).slice(-8192)));
+		const exited = new Promise((resolve) => child.once('exit', resolve));
+		try {
+			const result = await new Promise((resolve, reject) => {
+				child.once('message', (message) =>
+					message.type === 'error' ? reject(new Error(message.message)) : resolve(message.result)
+				);
+				child.once('exit', (code, signal) => reject(new Error(`child exited ${code}/${signal}: ${stderr}`)));
+			});
+			const flushFailed = /Failed to flush database during close/;
+			assert.match(result.close, flushFailed);
+			assert.match(result.closeError ?? '', flushFailed, 'rocksdb-js holds it quarantined');
+			assert.strictEqual(result.identityHeld, true, 'its store identity stays reserved');
+			assert.match(result.retry, flushFailed, 'a retried close fails while it is quarantined');
+			assert.strictEqual(result.identityHeldAfterRetry, true, 'and still keeps the identity');
+		} finally {
+			if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+			await exited;
+		}
 	});
 });
 
