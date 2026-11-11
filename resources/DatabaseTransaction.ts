@@ -729,6 +729,9 @@ export type TransactionWrite = {
 	beforeIntermediate?: () => void | Promise<void>;
 	// the instance that staged this write: its commit stores that instance's changes or clears them
 	stagedBy?: object;
+	// set only when this write's record is that instance's tracked changes object, so an empty collapse means
+	// it stores nothing; a write carrying a record of its own leaves it unset
+	trackedInstance?: object;
 	// stages the record and its audit entry before returning: staging reads what it appended (stagedAudit)
 	// as soon as it returns. A returned promise is only a completion to wait for.
 	commit?: (

@@ -6381,6 +6381,7 @@ export function makeTable(options): TableResourceClass {
 				lockHandle: undefined,
 				writeGeneration: !this.#lockWritable && closesReceiver ? this[GET_TRACKED_WRITE_GENERATION]() : undefined,
 				stagedBy: this,
+				trackedInstance: tracksInstance ? this : undefined,
 				captureChanges,
 				releaseChanges,
 				validate: (txnTime, committedBy = transaction) => {
