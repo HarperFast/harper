@@ -93,6 +93,14 @@ export function bypassAuth(): () => void {
 
 const authorizeLocal = (remoteAddress: string) => AUTHORIZE_LOCAL && isLocalPeerAddress(remoteAddress);
 
+// shared by every connection, rather than a closure each connection keeps
+function logWebSocketError(error) {
+	mqttLog.info?.('WebSocket error', error);
+}
+function logSocketError(error) {
+	mqttLog.info?.('Socket error', error);
+}
+
 export function handleApplication(scope: import('../components/Scope.ts').Scope) {
 	const { network, webSocket, requireAuthentication } = scope.options.getAll() as {
 		network?: any;
@@ -156,9 +164,7 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 				const { onMessage, onClose } = onSocket(ws, send, request, authenticated, mqttSettings);
 				ws.on('message', onMessage);
 				ws.on('close', onClose);
-				ws.on('error', (error) => {
-					mqttLog.info?.('WebSocket error', error);
-				});
+				ws.on('error', logWebSocketError);
 			},
 			{ ...webSocket, after: 'authentication' }
 		); // if there is no port, we are piggy-backing off of default app http server
@@ -247,9 +253,7 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 					const { onMessage, onClose } = onSocket(socket, send, null, user, mqttSettings, admission.provenance);
 					socket.on('data', onMessage);
 					socket.on('close', onClose);
-					socket.on('error', (error) => {
-						mqttLog.info?.('Socket error', error);
-					});
+					socket.on('error', logSocketError);
 				},
 				{ port, securePort, mtls, usageType: 'mqtt' }
 			)
@@ -297,11 +301,14 @@ function boundedReasonString(message: unknown): string {
  * Every live MQTT connection on this worker, so a shutdown can announce itself: a bare socket close
  * is indistinguishable to the client from a network failure.
  */
-const liveConnections = new Set<{ protocolVersion: () => number; send: (data: any) => void; close: () => void }>();
+const liveConnections = new Set<{ mqttOptions: { protocolVersion: number }; send: (data: any) => void; socket: any }>();
 /** Settles once every CONNECT so far for each client id on this thread has finished or given up its turn. */
 const connecting = new Map<string, Promise<void>>();
-/** Each client id's sessions on this thread, kept until their last save settles so a takeover can wait for it. */
-const clientSessions = new Map<string, Set<DurableSubscriptionsSession>>();
+/**
+ * Each client id's sessions on this thread, kept until their last save settles so a takeover can wait for it: the
+ * session itself while it is the only one, as it is for nearly every client, and a set only while connections overlap.
+ */
+const clientSessions = new Map<string, DurableSubscriptionsSession | Set<DurableSubscriptionsSession>>();
 let takeoverTimeout = 10_000;
 
 export function setTakeoverTimeoutForTests(milliseconds: number): number {
@@ -310,22 +317,34 @@ export function setTakeoverTimeoutForTests(milliseconds: number): number {
 	return previous;
 }
 
+function clientSessionsOf(clientId: string): DurableSubscriptionsSession[] {
+	const held = clientSessions.get(clientId);
+	return held === undefined ? [] : held instanceof Set ? [...held] : [held];
+}
+
 function addClientSession(session: DurableSubscriptionsSession) {
-	if (!session.sessionId) return;
-	let sessions = clientSessions.get(session.sessionId);
-	if (!sessions) clientSessions.set(session.sessionId, (sessions = new Set()));
-	sessions.add(session);
+	const clientId = session.sessionId;
+	if (!clientId) return;
+	const held = clientSessions.get(clientId);
+	if (held === undefined) clientSessions.set(clientId, session);
+	else if (held instanceof Set) held.add(session);
+	else if (held !== session) clientSessions.set(clientId, new Set([held, session]));
+}
+
+function holdsClientSession(session: DurableSubscriptionsSession): boolean {
+	if (!session) return false;
+	const held = clientSessions.get(session.sessionId);
+	return held === session || (held instanceof Set && held.has(session));
 }
 
 function releaseClientSession(session: DurableSubscriptionsSession) {
-	const sessions = clientSessions.get(session?.sessionId);
-	if (!sessions?.has(session)) return;
+	if (!holdsClientSession(session)) return;
 	const writes = session.writes;
 	Promise.resolve(writes).then(() => {
 		if (session.writes !== writes) return releaseClientSession(session);
-		sessions.delete(session);
-		if (sessions.size === 0 && clientSessions.get(session.sessionId) === sessions)
-			clientSessions.delete(session.sessionId);
+		const held = clientSessions.get(session.sessionId);
+		if (held === session) clientSessions.delete(session.sessionId);
+		else if (held instanceof Set && held.delete(session) && held.size === 0) clientSessions.delete(session.sessionId);
 	});
 }
 
@@ -356,12 +375,12 @@ export function disconnectClientsForShutdown() {
 	});
 	for (const connection of liveConnections) {
 		try {
-			if (connection.protocolVersion() >= 5) connection.send(disconnectPacket);
+			if (connection.mqttOptions.protocolVersion >= 5) connection.send(disconnectPacket);
 		} catch (error) {
 			mqttLog.debug?.('Could not notify MQTT connection of shutdown', error);
 		} finally {
 			try {
-				connection.close();
+				closeSocket(connection.socket);
 			} catch (error) {
 				mqttLog.debug?.('Could not close MQTT connection during shutdown', error);
 			}
@@ -378,6 +397,37 @@ function registerShutdownDisconnect() {
 		hasWork: () => false,
 		drain: async () => disconnectClientsForShutdown(),
 	});
+}
+
+/**
+ * mqtt-packet's parser buffers a packet's bytes in a stream of its own and is stateless between packets, so the
+ * parsers here serve every connection on this thread that is between packets. A connection holds one of its own
+ * while a packet it began is incomplete, and while it streams packets across reads: it gives the parser back
+ * once two reads in a row end between packets, so a quiet client holds none, and one whose packets straddle
+ * reads does not take a parser for each.
+ */
+const idleParsers: any[] = [];
+const MAX_IDLE_PARSERS = 64;
+function newParser() {
+	const parser: any = makeParser({ protocolVersion: 5 });
+	parser.target = null;
+	// the socket of the connection parsing with it, which a parse error closes
+	parser.socket = null;
+	parser.on('packet', (packet) => parser.target(packet));
+	parser.on('error', (error) => parseFailed(parser.socket, error));
+	return parser;
+}
+/** What mqtt-packet's parser reads its settings for: the protocol version, and whether a client is a bridge. */
+const PARSER_SETTINGS = {
+	3: Object.freeze({ protocolVersion: 3 }),
+	4: Object.freeze({ protocolVersion: 4 }),
+	5: Object.freeze({ protocolVersion: 5 }),
+};
+/** A CONNECT becomes the parser's settings: what the next packets parse by is kept, not the packet itself. */
+function parserSettingsFor(settings: any) {
+	if (!settings.bridgeMode && PARSER_SETTINGS[settings.protocolVersion] === settings) return settings;
+	if (settings.bridgeMode) return { protocolVersion: settings.protocolVersion, bridgeMode: true };
+	return PARSER_SETTINGS[settings.protocolVersion] ?? { protocolVersion: settings.protocolVersion };
 }
 
 /**
@@ -412,6 +462,34 @@ function holdingWriter(socket, send: (packet: Buffer) => void) {
 	return write;
 }
 
+/** Analytics stay per subscriber even when the packet itself is shared across them. */
+function sendPacket(send: (packet: Buffer) => void, packet: Buffer, methodName: string, path?: string) {
+	send(packet);
+	recordAction(packet.length, 'bytes-sent', path, methodName, 'mqtt');
+}
+function packetMethodName(packet) {
+	return packet.qos > 0 ? packet.cmd + ',qos=' + packet.qos : packet.cmd;
+}
+function emitMqttEvent(mqttSettings, type: string, ...args: any[]) {
+	try {
+		mqttSettings.events.emit(type, ...args);
+	} catch (error) {
+		mqttLog.warn?.(`Error emitting MQTT event '${type}':`, error);
+	}
+}
+function closeSocket(socket) {
+	return socket.close ? socket.close() : socket.end();
+}
+function parseFailed(socket, error) {
+	mqttLog.warn?.('MQTT parsing error, closing connection:', error.message);
+	if (socket?.destroy) socket.destroy();
+	else socket?.terminate();
+}
+function releaseParser(reading) {
+	reading.target = reading.socket = null;
+	if (idleParsers.length < MAX_IDLE_PARSERS) idleParsers.push(reading);
+}
+
 let addingMetrics,
 	numberOfConnections = 0;
 function onSocket(socket, send, request, user, mqttSettings, userProvenance?: UserProvenance) {
@@ -426,22 +504,14 @@ function onSocket(socket, send, request, user, mqttSettings, userProvenance?: Us
 				});
 		});
 	}
-	function emitEvent(type: string, ...args: any[]) {
-		try {
-			mqttSettings.events.emit(type, ...args);
-		} catch (error) {
-			mqttLog.warn?.(`Error emitting MQTT event '${type}':`, error);
-		}
-	}
+	// What a connection keeps lives in this scope for as long as it is open, so helpers that need nothing of it are
+	// module functions, and what only some connections need (a stall timer's callback) is built when they do.
 	let disconnected;
 	// set by a failed delivery, so sibling subscriptions stop writing before the aborted socket's 'close' arrives
 	let aborted = false;
 	numberOfConnections++;
-	const connection = {
-		protocolVersion: () => mqttOptions.protocolVersion,
-		send,
-		close: () => (socket.close ? socket.close() : socket.end()),
-	};
+	const mqttOptions = { protocolVersion: 4 };
+	const connection = { mqttOptions, send, socket };
 	liveConnections.add(connection);
 	let session: DurableSubscriptionsSession;
 	function closeConnection(error?: Error) {
@@ -468,26 +538,55 @@ function onSocket(socket, send, request, user, mqttSettings, userProvenance?: Us
 		} catch (sendError) {
 			mqttLog.warn?.('Could not send DISCONNECT before closing the connection', sendError);
 		} finally {
-			connection.close();
+			closeSocket(socket);
 		}
 	}
 	// [MQTT-3.1.2-29]: a client that asks for no problem information must not be sent a reason
 	// string on a PUBACK/PUBREC, and [MQTT-3.1.2-24] caps what it will accept at all.
 	let sendProblemInformation = true;
 	let maximumPacketSize: number | undefined;
-	const mqttOptions = { protocolVersion: 4 };
-	const parser = makeParser({ protocolVersion: 5 });
-	// The parser consumes a packet's fixed header before its body arrives, so holding no bytes does not
-	// mean it is between packets; its state counter returns to 0 only once a packet is complete.
-	let parserBetweenPackets = true;
+	let parser: any;
+	let midPacket = false;
+	let lastReadStraddled = false;
+	let parserSettings = PARSER_SETTINGS[5];
 	function onMessage(data) {
-		if (parserBetweenPackets && onlyAcknowledgements(data)) {
+		if (!midPacket && onlyAcknowledgements(data)) {
+			// a second read in a row that ends between packets: a parser kept for a stream goes back
+			if (parser) {
+				releaseParser(parser);
+				parser = undefined;
+			}
 			for (let offset = 0; offset < data.length; offset += 4) {
 				handlePacket(acknowledgementPacket(data[offset], data.readUInt16BE(offset + 2), mqttOptions.protocolVersion));
 			}
 			return;
 		}
-		parserBetweenPackets = parser.parse(data) === 0 && (parser as any)._stateCounter === 0;
+		// taken out of the idle ones while it parses, since a packet it emits can lead, in the same turn, to data
+		// for another connection
+		let reading = parser;
+		if (!reading) {
+			reading = idleParsers.pop() ?? newParser();
+			reading.target = handlePacket;
+			reading.socket = socket;
+			reading.settings = parserSettings;
+		}
+		let remaining: number;
+		try {
+			remaining = reading.parse(data);
+		} finally {
+			// parsing a CONNECT makes its packet, credentials included, the parser's settings: what the next packets
+			// parse by is kept instead
+			if (reading.settings !== parserSettings) reading.settings = parserSettings = parserSettingsFor(reading.settings);
+		}
+		// The parser consumes a packet's fixed header before its body arrives, so holding no bytes does not
+		// mean it is between packets; its state counter returns to 0 only once a packet is complete.
+		midPacket = !(remaining === 0 && reading._stateCounter === 0 && !reading.error);
+		if (midPacket || lastReadStraddled) parser = reading;
+		else {
+			releaseParser(reading);
+			parser = undefined;
+		}
+		lastReadStraddled = midPacket;
 	}
 	function onClose() {
 		numberOfConnections--;
@@ -495,13 +594,128 @@ function onSocket(socket, send, request, user, mqttSettings, userProvenance?: Us
 		if (!disconnected) {
 			disconnected = true;
 			session?.disconnect?.(false);
-			emitEvent('disconnected', session, socket);
+			emitMqttEvent(mqttSettings, 'disconnected', session, socket);
 			mqttSettings.sessions.delete(session);
 			releaseClientSession(session);
 			recordActionBinary(false, 'connection', 'mqtt', 'disconnect');
 			mqttLog.debug?.('MQTT connection was closed', socket.remoteAddress);
 		}
 	}
+
+	// The delivery path is built here rather than where the CONNECT installs it, so what a connection keeps for its
+	// deliveries is this scope, not that packet's handling: the CONNECT packet (its credentials included) and the
+	// helpers of that call would otherwise live as long as the connection.
+	// A failed delivery aborts the connection: ending only the session would leave the client connected
+	// and receiving nothing. An abort, unlike a graceful end, closes without waiting on the peer, and
+	// onClose ends the session.
+	const failDelivery = (error) => {
+		mqttLog.error?.(error);
+		aborted = true;
+		// what this turn sent before the failed delivery goes out, as it would had it not been held
+		send.release?.();
+		if (socket.destroy) socket.destroy();
+		else socket.terminate();
+		return false;
+	};
+	// consecutive messages under one topic string (a record's, or one fan-out's) share its first
+	// level, so it is sliced out once rather than per message
+	let lastTopic: string;
+	let lastGeneralTopic: string;
+	// returns a promise only on socket back-pressure, so a delivery costs the session no microtask
+	const deliver = (topic, payload, encoding, messageId, subscription, dup) => {
+		try {
+			if (topic !== lastTopic) {
+				const slashIndex = topic.indexOf('/', 1);
+				lastGeneralTopic = slashIndex > 0 ? topic.slice(0, slashIndex) : topic;
+				lastTopic = topic;
+			}
+			const generalTopic = lastGeneralTopic;
+			const qos = subscription.qos || 0;
+			if (qos > 0 && messageId && !dup) {
+				// A QoS 1/2 PUBLISH differs between its subscribers only in the packet identifier, so
+				// one generated frame serves as the template and each subscriber gets a copy with its
+				// own identifier written in, rather than re-encoding the payload into a new packet.
+				// Templates share the frame cache under a key apart from the protocol versions QoS 0
+				// frames use. A resend (dup) is generated on its own.
+				const key = QOS_TEMPLATE_KEY * qos + mqttOptions.protocolVersion;
+				const template = getSharedFrame(encoding, key, topic);
+				let packet: Buffer;
+				if (template === undefined) {
+					packet = generate({ cmd: 'publish', topic, payload, messageId, qos, dup: false, retain: false }, mqttOptions);
+					if (encoding.hits > 0) setSharedFrame(encoding, key, topic, packet);
+				} else {
+					packet = Buffer.allocUnsafe(template.length);
+					template.copy(packet);
+					packet.writeUInt16BE(messageId, packetIdOffset(template));
+				}
+				sendPacket(send, packet, qos === 1 ? 'publish,qos=1' : 'publish,qos=' + qos, generalTopic);
+			} else if (qos > 0) {
+				// mqtt-packet requires a numeric message identifier once qos is non-zero
+				const packetData: any = {
+					cmd: 'publish',
+					topic,
+					payload,
+					messageId: messageId || Math.floor(Math.random() * 100000000),
+					qos,
+					dup,
+				};
+				sendPacket(send, generate(packetData, mqttOptions), packetMethodName(packetData), generalTopic);
+			} else {
+				// A QoS 0 PUBLISH carries no message identifier, so the whole packet depends only on
+				// the payload, the topic, and the protocol version (v5 emits a properties field that
+				// v3.1.1 omits) — share it across every QoS 0 subscriber that matches on those.
+				// The frame also varies on dup/retain/properties, which are fixed below; anything
+				// that starts varying them per subscriber (RETAIN propagation, v5 subscription
+				// identifiers) has to join the key or subscribers will be served the wrong flags.
+				const protocolVersion = mqttOptions.protocolVersion;
+				let packet = getSharedFrame(encoding, protocolVersion, topic);
+				if (packet === undefined) {
+					packet = generate({ cmd: 'publish', topic, payload, qos: 0, dup: false, retain: false }, mqttOptions);
+					// only worth retaining once a second subscriber has shown up; caching a packet
+					// for a fan-out of one just pins a whole buffer nothing will read
+					if (encoding.hits > 0) setSharedFrame(encoding, protocolVersion, topic, packet);
+				}
+				sendPacket(send, packet, 'publish', generalTopic);
+			}
+			// wait if there is back-pressure
+			const rawSocket = socket._socket ?? socket;
+			if (rawSocket.writableNeedDrain) {
+				return new Promise((resolve) => rawSocket.once('drain', resolve));
+			}
+			return !rawSocket.closed;
+		} catch (error) {
+			return failDelivery(error);
+		}
+	};
+	const listener = (topic, message, messageId, subscription, version, dup) => {
+		try {
+			if (disconnected || aborted) {
+				// a delivery already past the subscription when the client left or a failed delivery aborted
+				// the connection; onClose ends the session
+				mqttLog.debug?.(
+					`Session ${session?.sessionId} ${aborted ? 'aborted' : 'disconnected'} while trying to send message to ${topic}`
+				);
+				return false;
+			}
+			// Every subscriber of a topic serializes the same message to the same bytes, so the
+			// payload is encoded once per (message, content type) and reused across all of them.
+			const encoding = getSharedMessageEncoding(message, request, version);
+			const encoded = encoding.payload;
+			// only pay for a promise when the serialization is genuinely still pending
+			if (typeof (encoded as any)?.then === 'function') {
+				const serialized: any = resolveSharedPayload(encoding, message, request, version).then(
+					(payload) =>
+						disconnected || aborted ? false : deliver(topic, payload, encoding, messageId, subscription, dup),
+					failDelivery
+				);
+				serialized[SERIALIZING] = true;
+				return serialized;
+			}
+			return deliver(topic, encoded as Buffer | string, encoding, messageId, subscription, dup);
+		} catch (error) {
+			return failDelivery(error);
+		}
+	};
 
 	const handlePacket = async (packet: any) => {
 		try {
@@ -565,7 +779,7 @@ function onSocket(socket, send, request, user, mqttSettings, userProvenance?: Us
 									remoteAddress: socket.remoteAddress,
 								});
 							}
-							emitEvent('auth-failed', packet, socket, error);
+							emitMqttEvent(mqttSettings, 'auth-failed', packet, socket, error);
 							recordActionBinary(false, 'connection', 'mqtt', 'connect');
 							return generateAndSendPacket({
 								// Send a connection acknowledgment with indication of auth failure
@@ -575,7 +789,7 @@ function onSocket(socket, send, request, user, mqttSettings, userProvenance?: Us
 						}
 					}
 					if (!user && mqttSettings.requireAuthentication) {
-						emitEvent('auth-failed', packet, socket);
+						emitMqttEvent(mqttSettings, 'auth-failed', packet, socket);
 						recordActionBinary(false, 'connection', 'mqtt', 'connect');
 						return generateAndSendPacket({
 							// Send a connection acknowledgment with indication of auth failure
@@ -585,7 +799,7 @@ function onSocket(socket, send, request, user, mqttSettings, userProvenance?: Us
 					}
 					const refuseConnect = (error, fallback?) => {
 						mqttLog.error?.(error);
-						emitEvent('auth-failed', packet, socket, error);
+						emitMqttEvent(mqttSettings, 'auth-failed', packet, socket, error);
 						recordActionBinary(false, 'connection', 'mqtt', 'connect');
 						return generateAndSendPacket({
 							// Send a connection acknowledgment with indication of auth failure
@@ -632,7 +846,7 @@ function onSocket(socket, send, request, user, mqttSettings, userProvenance?: Us
 									if (disconnected) return;
 									// a durable session has one owner: an older connection for this client on this thread gives
 									// way, to a clean start too, and its last save lands before this one reads or deletes
-									const older = [...(clientSessions.get(clientId) ?? [])];
+									const older = clientSessionsOf(clientId);
 									for (const other of older) other.yieldTo?.();
 									if (older.length > 0) {
 										await beforeDeadline(
@@ -677,7 +891,7 @@ function onSocket(socket, send, request, user, mqttSettings, userProvenance?: Us
 					} catch (error) {
 						return refuseConnect(error);
 					}
-					emitEvent('connected', session, socket);
+					emitMqttEvent(mqttSettings, 'connected', session, socket);
 					recordActionBinary(true, 'connection', 'mqtt', 'connect');
 					generateAndSendPacket({
 						// Send a connection acknowledgment
@@ -687,120 +901,6 @@ function onSocket(socket, send, request, user, mqttSettings, userProvenance?: Us
 						returnCode: 0, // success
 						properties: { receiveMaximum: RECEIVE_MAXIMUM },
 					});
-					// a failed delivery aborts the connection: ending only the session would leave the client connected
-					// and receiving nothing. An abort, unlike a graceful end, closes without waiting on the peer, and
-					// onClose ends the session.
-					const failDelivery = (error) => {
-						mqttLog.error?.(error);
-						aborted = true;
-						// what this turn sent before the failed delivery goes out, as it would had it not been held
-						send.release?.();
-						if (socket.destroy) socket.destroy();
-						else socket.terminate();
-						return false;
-					};
-					// consecutive messages under one topic string (a record's, or one fan-out's) share its first
-					// level, so it is sliced out once rather than per message
-					let lastTopic: string;
-					let lastGeneralTopic: string;
-					// returns a promise only on socket back-pressure, so a delivery costs the session no microtask
-					const deliver = (topic, payload, encoding, messageId, subscription, dup) => {
-						try {
-							if (topic !== lastTopic) {
-								const slashIndex = topic.indexOf('/', 1);
-								lastGeneralTopic = slashIndex > 0 ? topic.slice(0, slashIndex) : topic;
-								lastTopic = topic;
-							}
-							const generalTopic = lastGeneralTopic;
-							const qos = subscription.qos || 0;
-							if (qos > 0 && messageId && !dup) {
-								// A QoS 1/2 PUBLISH differs between its subscribers only in the packet identifier, so
-								// one generated frame serves as the template and each subscriber gets a copy with its
-								// own identifier written in, rather than re-encoding the payload into a new packet.
-								// Templates share the frame cache under a key apart from the protocol versions QoS 0
-								// frames use. A resend (dup) is generated on its own.
-								const key = QOS_TEMPLATE_KEY * qos + mqttOptions.protocolVersion;
-								const template = getSharedFrame(encoding, key, topic);
-								let packet: Buffer;
-								if (template === undefined) {
-									packet = generate(
-										{ cmd: 'publish', topic, payload, messageId, qos, dup: false, retain: false },
-										mqttOptions
-									);
-									if (encoding.hits > 0) setSharedFrame(encoding, key, topic, packet);
-								} else {
-									packet = Buffer.allocUnsafe(template.length);
-									template.copy(packet);
-									packet.writeUInt16BE(messageId, packetIdOffset(template));
-								}
-								sendPacket(packet, qos === 1 ? 'publish,qos=1' : 'publish,qos=' + qos, generalTopic);
-							} else if (qos > 0) {
-								// mqtt-packet requires a numeric message identifier once qos is non-zero
-								const packetData: any = {
-									cmd: 'publish',
-									topic,
-									payload,
-									messageId: messageId || Math.floor(Math.random() * 100000000),
-									qos,
-									dup,
-								};
-								sendPacket(generate(packetData, mqttOptions), packetMethodName(packetData), generalTopic);
-							} else {
-								// A QoS 0 PUBLISH carries no message identifier, so the whole packet depends only on
-								// the payload, the topic, and the protocol version (v5 emits a properties field that
-								// v3.1.1 omits) — share it across every QoS 0 subscriber that matches on those.
-								// The frame also varies on dup/retain/properties, which are fixed below; anything
-								// that starts varying them per subscriber (RETAIN propagation, v5 subscription
-								// identifiers) has to join the key or subscribers will be served the wrong flags.
-								const protocolVersion = mqttOptions.protocolVersion;
-								let packet = getSharedFrame(encoding, protocolVersion, topic);
-								if (packet === undefined) {
-									packet = generate({ cmd: 'publish', topic, payload, qos: 0, dup: false, retain: false }, mqttOptions);
-									// only worth retaining once a second subscriber has shown up; caching a packet
-									// for a fan-out of one just pins a whole buffer nothing will read
-									if (encoding.hits > 0) setSharedFrame(encoding, protocolVersion, topic, packet);
-								}
-								sendPacket(packet, 'publish', generalTopic);
-							}
-							// wait if there is back-pressure
-							const rawSocket = socket._socket ?? socket;
-							if (rawSocket.writableNeedDrain) {
-								return new Promise((resolve) => rawSocket.once('drain', resolve));
-							}
-							return !rawSocket.closed;
-						} catch (error) {
-							return failDelivery(error);
-						}
-					};
-					const listener = (topic, message, messageId, subscription, version, dup) => {
-						try {
-							if (disconnected || aborted) {
-								// a delivery already past the subscription when the client left or a failed delivery aborted
-								// the connection; onClose ends the session
-								mqttLog.debug?.(
-									`Session ${session?.sessionId} ${aborted ? 'aborted' : 'disconnected'} while trying to send message to ${topic}`
-								);
-								return false;
-							}
-							// Every subscriber of a topic serializes the same message to the same bytes, so the
-							// payload is encoded once per (message, content type) and reused across all of them.
-							const encoding = getSharedMessageEncoding(message, request, version);
-							const encoded = encoding.payload;
-							// only pay for a promise when the serialization is genuinely still pending
-							if (typeof (encoded as any)?.then === 'function') {
-								const serialized: any = resolveSharedPayload(encoding, message, request, version).then(
-									(payload) =>
-										disconnected || aborted ? false : deliver(topic, payload, encoding, messageId, subscription, dup),
-									failDelivery
-								);
-								serialized[SERIALIZING] = true;
-								return serialized;
-							}
-							return deliver(topic, encoded as Buffer | string, encoding, messageId, subscription, dup);
-						} catch (error) {
-							return failDelivery(error);
-						}
-					};
 					session.setListener(listener);
 					if (session.sessionWasPresent) {
 						// [MQTT-4.4.0-1] a PUBREL the client never completed is sent again before anything new
@@ -823,7 +923,7 @@ function onSocket(socket, send, request, user, mqttSettings, userProvenance?: Us
 									? 0x80 // only error code in v3.1.1
 									: 0x8f; // invalid topic indicated
 						} catch (error) {
-							emitEvent('error', error, socket, subscription, session);
+							emitMqttEvent(mqttSettings, 'error', error, socket, subscription, session);
 							if (error.statusCode) {
 								if (error.statusCode === 500) mqttLog.warn?.(error);
 								else mqttLog.info?.(error);
@@ -851,7 +951,7 @@ function onSocket(socket, send, request, user, mqttSettings, userProvenance?: Us
 						delete subackPacket.properties;
 						suback = generate(subackPacket, mqttOptions);
 					}
-					sendPacket(suback, 'suback');
+					sendPacket(send, suback, 'suback');
 					break;
 				case 'unsubscribe': {
 					const granted = [];
@@ -899,17 +999,17 @@ function onSocket(socket, send, request, user, mqttSettings, userProvenance?: Us
 						pubrel[0] = 0x62;
 						pubrel[1] = 2;
 						pubrel.writeUInt16BE(packet.messageId, 2);
-						sendPacket(pubrel, 'pubrel');
+						sendPacket(send, pubrel, 'pubrel');
 					} else generateAndSendPacket({ cmd: 'pubrel', messageId: packet.messageId, reasonCode: 0x92 }); // packet identifier not found
 					break;
 				}
 				case 'pubcomp':
 					await session.completed(packet.messageId);
-					emitEvent('acknowledged', session, packet);
+					emitMqttEvent(mqttSettings, 'acknowledged', session, packet);
 					break;
 				case 'puback':
 					await session.acknowledge(packet.messageId);
-					emitEvent('acknowledged', session, packet);
+					emitMqttEvent(mqttSettings, 'acknowledged', session, packet);
 					break;
 				case 'pingreq':
 					generateAndSendPacket({ cmd: 'pingresp' });
@@ -917,7 +1017,7 @@ function onSocket(socket, send, request, user, mqttSettings, userProvenance?: Us
 				case 'disconnect':
 					disconnected = true;
 					session?.disconnect(true);
-					emitEvent('disconnected', session, socket);
+					emitMqttEvent(mqttSettings, 'disconnected', session, socket);
 					mqttSettings.sessions.delete(session);
 					releaseClientSession(session);
 					recordActionBinary(true, 'connection', 'mqtt', 'disconnect');
@@ -927,7 +1027,7 @@ function onSocket(socket, send, request, user, mqttSettings, userProvenance?: Us
 					break;
 			}
 		} catch (error) {
-			emitEvent('error', error, socket, packet, session);
+			emitMqttEvent(mqttSettings, 'error', error, socket, packet, session);
 			mqttLog.error?.(error);
 			if (error?.mqttReasonCode) closeConnection(error);
 			else
@@ -936,16 +1036,8 @@ function onSocket(socket, send, request, user, mqttSettings, userProvenance?: Us
 					cmd: 'disconnect',
 				});
 		}
-		// analytics stay per subscriber even when the packet itself is shared across them
-		function sendPacket(packet, methodName, path?) {
-			send(packet);
-			recordAction(packet.length, 'bytes-sent', path, methodName, 'mqtt');
-		}
 		function generateAndSendPacket(packetData, path?) {
-			sendPacket(generate(packetData, mqttOptions), packetMethodName(packetData), path);
-		}
-		function packetMethodName(packet) {
-			return packet.qos > 0 ? packet.cmd + ',qos=' + packet.qos : packet.cmd;
+			sendPacket(send, generate(packetData, mqttOptions), packetMethodName(packetData), path);
 		}
 		async function publish(packet) {
 			const responseCmd = packet.qos === 2 ? 'pubrec' : 'puback';
@@ -958,7 +1050,7 @@ function onSocket(socket, send, request, user, mqttSettings, userProvenance?: Us
 			try {
 				published = await session.publish(packet, data);
 			} catch (error) {
-				emitEvent('error', error, socket, packet, session);
+				emitMqttEvent(mqttSettings, 'error', error, socket, packet, session);
 				mqttLog.warn?.(error);
 				if (!(packet.qos > 0)) return;
 				// A publish to a topic no resource handles is the same miss addSubscription already
@@ -997,11 +1089,5 @@ function onSocket(socket, send, request, user, mqttSettings, userProvenance?: Us
 				};
 		}
 	};
-	parser.on('packet', handlePacket);
-	parser.on('error', (error) => {
-		mqttLog.warn?.('MQTT parsing error, closing connection:', error.message);
-		if (socket?.destroy) socket.destroy();
-		else socket?.terminate();
-	});
 	return { onMessage, onClose };
 }
