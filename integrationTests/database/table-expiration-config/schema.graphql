@@ -1,0 +1,5 @@
+# The test rewrites this file between restarts to drop the TTL arguments.
+type Declared @table(database: "ttl_config", expiration: 2, eviction: 2) @export {
+	id: ID @primaryKey
+	value: String
+}
