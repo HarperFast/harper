@@ -4,9 +4,9 @@
 // the index and the notes resolves; each DESIGN.md and MAP.md stays within its byte budget, or between its
 // ceiling in CEILINGS_FILE and that ceiling's floor, CEILING_HEADROOM percent under it; and each MAP.md has a
 // `@MAP.md` CLAUDE.md, is listed in AGENTS.md and names only symbols and files that exist.
-//   --base <ref>       also reject a raised or new ceiling, hold only files changed since <ref> or whose ceiling
-//                      entry changed to their budget, and hold a change whose new text alone would pass a ceiling
-//                      to cutting that file to the floor
+//   --base <ref>       also reject a raised or new ceiling, hold to their budget only files changed since <ref> or
+//                      whose ceiling entry the change edits, and hold a change whose new text alone would pass a
+//                      ceiling to cutting that file to the floor
 //   --push             <ref> is the tip a push replaced, so the range can hold changes made against other bases:
 //                      skip the floor rule, which judges one change
 //   --update-ceilings  rewrite CEILINGS_FILE from current sizes
