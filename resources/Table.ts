@@ -6376,7 +6376,7 @@ export function makeTable(options): TableResourceClass {
 					if (!captured) {
 						captured = true;
 						recordUpdate = this.#changes;
-						if (tracksInstance) instanceChanges = recordUpdate;
+						if (tracksInstance) instanceChanges = write.trackedChanges = recordUpdate;
 					}
 				};
 				releaseChanges = () => {
@@ -6434,6 +6434,8 @@ export function makeTable(options): TableResourceClass {
 				lockHandle: undefined,
 				writeGeneration: !this.#lockWritable && closesReceiver ? this[GET_TRACKED_WRITE_GENERATION]() : undefined,
 				stagedBy: this,
+				trackedInstance: tracksInstance ? this : undefined,
+				trackedChanges: instanceChanges,
 				captureChanges,
 				releaseChanges,
 				validate: (txnTime, committedBy = transaction) => {
