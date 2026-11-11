@@ -1649,7 +1649,6 @@ describe('conditional write lock scope', () => {
 		}
 		assert.strictEqual(locks, 0, 'a conditional write must not take the lock the disabled transport refuses');
 		assert.strictEqual(calls.homeMap, 0);
-		// The flag relaxes no lock(): the stand-in still refuses a default-scope one.
 		await assert.rejects(Row.lock('disabled-default', { hold: true, timeout: 100 }), {
 			statusCode: 503,
 			message: DISABLED_MESSAGE,

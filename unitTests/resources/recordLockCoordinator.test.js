@@ -1478,7 +1478,6 @@ describe('record lock delegations', () => {
 				);
 				return true;
 			});
-			// with the map in place the home's answer is the description, so contention stays a 423
 			alpha.mapless = false;
 			await assert.rejects(alpha.coordinator.acquire(key, LEASE, 50), { statusCode: 423 });
 			gamma.release(key, held.admissionId);

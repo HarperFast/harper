@@ -987,7 +987,7 @@ record.addTo('counter', 1); // increment
 record.subtractFrom('stock', 1); // decrement
 ```
 
-Read-then-write patterns — "compare-and-set" — are not safe under concurrency. This includes version-guarded updates (`ifVersion`), create-only "first write wins", reading a value to decide and then writing it back, and HTTP `If-Match` / conditional writes checked without a record lock. A conditional write checked under a cluster record lock is safe except in the recovery cases [Conditional Writes](../rest/headers.md#conditional-writes) lists. All of these read a value _before_ commit and are not re-validated _at_ commit, so two concurrent writers can both pass the check. Modeling state as commutative deltas avoids the problem entirely.
+Read-then-write patterns — "compare-and-set" — are not safe under concurrency. This includes version-guarded updates (`ifVersion`), create-only "first write wins", reading a value to decide and then writing it back, and HTTP `If-Match` / conditional writes checked without a record lock. All of these read a value _before_ commit and are not re-validated _at_ commit, so two concurrent writers can both pass the check. A REST conditional write checked under the record's lock excludes other conditional writes to that record, within the limits [Conditional Writes](../rest/headers.md#conditional-writes) lists, but not plain writes. Modeling state as commutative deltas avoids the problem entirely.
 
 A few limitations to design around:
 
