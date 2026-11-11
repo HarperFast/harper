@@ -2033,23 +2033,31 @@ function flushBootFloor(rootStore: RocksDatabase): unknown {
  * writes until it recovers, and replay writes next, synchronously, so this waits for writes to resume (harper#4261).
  */
 function purgeBehindUnsyncedFloor(rootStore: RocksDatabase, before: number, reason: unknown): string[] {
-	const purged = rootStore.purgeLogs({ before });
-	harperLogger.warn(
-		`Purged ${purged.length} aged transaction-log file(s) in ${rootStore.path} behind an audit floor that is not yet power-loss durable`,
-		reason
-	);
+	try {
+		const purged = rootStore.purgeLogs({ before });
+		harperLogger.warn(
+			`Purged ${purged.length} aged transaction-log file(s) in ${rootStore.path} behind an audit floor that is not yet power-loss durable`,
+			reason
+		);
+		return purged;
+	} finally {
+		awaitResumedWrites(rootStore);
+	}
+}
+
+function awaitResumedWrites(rootStore: RocksDatabase): void {
 	const deadline = Date.now() + RESUME_AFTER_FAILED_FLUSH_MS;
 	for (;;) {
 		try {
 			rootStore.resume();
-			return purged;
-		} catch (resumeError) {
+			return;
+		} catch (error) {
 			if (Date.now() >= deadline) {
-				harperLogger.warn(
-					`RocksDB in ${rootStore.path} has not resumed writes; replay writes fail until it does`,
-					resumeError
+				harperLogger.error(
+					`RocksDB in ${rootStore.path} still refuses writes, so replay cannot apply the transaction log until space is freed`,
+					error
 				);
-				return purged;
+				return;
 			}
 			Atomics.wait(PAUSE_CELL, 0, 0, 100);
 		}

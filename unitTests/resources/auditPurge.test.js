@@ -47,6 +47,7 @@ describe('purgeAgedLogs', () => {
 			purgeLogs(options) {
 				calls.push(options);
 				order.push('purge');
+				if (failPurge) throw new Error('could not sync txn.purged');
 				return purgedFiles;
 			},
 		};
@@ -76,6 +77,10 @@ describe('purgeAgedLogs', () => {
 		};
 		let failFloorWrite = false;
 		let failFlush = false;
+		let failPurge = false;
+		store.failPurge = () => {
+			failPurge = true;
+		};
 		store.failFlush = () => {
 			failFlush = true;
 		};
@@ -166,6 +171,15 @@ describe('purgeAgedLogs', () => {
 			'the floor is still committed first, and writes resume before replay'
 		);
 		assert.strictEqual(store.floorWrites[0], store.calls[0].before);
+	});
+
+	it('still waits for writes to resume when the purge behind a failed flush throws', () => {
+		setAuditRetention(60_000);
+		const store = fakeStore();
+		store.failFlush();
+		store.failPurge();
+		assert.throws(() => purgeAgedLogs(store), /could not sync txn.purged/);
+		assert.deepStrictEqual(store.order, ['floor', 'flush', 'purge', 'resume']);
 	});
 
 	it('writes no barrier and purges nothing when no log file is old enough to purge', () => {
