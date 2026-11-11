@@ -155,6 +155,12 @@ export interface DerivedIndexBackend {
 	getDurableCursor(): DerivedIndexCursor | undefined;
 	/** Persist coverage only after its offered cursor is durable; reset must remove it with the cursor. */
 	publishCoverage?(positions: DerivedIndexPositions, ownerEpoch: bigint): void;
+	/**
+	 * A fingerprint of the durable state, readable without the lock and without side effects, or `undefined`
+	 * when there is none. Needed when the readiness id outlives the storage (an HNSW index dropped and declared
+	 * again keeps its id): an idle release's positions bind to it, so a runner over replaced storage acquires.
+	 */
+	quietToken?(): number | undefined;
 	deliver(batch: DerivedIndexBatch): DerivedIndexDeliveryResult;
 	/** Request a durability barrier; the backend completes it and wakes through `onStateChange`. */
 	flush(reason: DerivedIndexFlushReason): void | Promise<void>;
@@ -303,7 +309,8 @@ const QUIET_EPOCH = 0;
 const QUIET_SUM = 1;
 const QUIET_NAMES = 0;
 const QUIET_TABLE = 1;
-const QUIET_BYTES = 24;
+const QUIET_TOKEN = 2;
+const QUIET_BYTES = 32;
 
 /** A failure raised inside the collector that already knows its shareable reason. */
 class RunnerError extends Error {
@@ -868,9 +875,6 @@ class DerivedIndexRunner {
 	stop(): Promise<void> {
 		if (this.#stopResult) return this.#stopResult;
 		this.#stopped = true;
-		// A successor under this readiness id can index other storage (an HNSW index dropped and declared again
-		// keeps its id), so it must not inherit the idle positions this generation published.
-		Atomics.store(this.#quiet.marks, QUIET_EPOCH, 0n);
 		this.status = { state: 'stopped', ownerEpoch: this.#ownerEpoch };
 		if (this.#idleTimer) clearTimeout(this.#idleTimer);
 		if (this.#rebuildTimer) clearTimeout(this.#rebuildTimer);
@@ -1138,7 +1142,8 @@ class DerivedIndexRunner {
 				Atomics.load(words, READINESS_STATE) !== READINESS_STATES.indexOf('ready') ||
 				Atomics.load(words, READINESS_REBUILD_REQUEST) !== 0 ||
 				Atomics.load(words, READINESS_LAG_EXCEEDED) !== 0 ||
-				Atomics.load(quiet.words, QUIET_TABLE) !== this.#quietTable
+				Atomics.load(quiet.words, QUIET_TABLE) !== this.#quietTable ||
+				Atomics.load(quiet.words, QUIET_TOKEN) !== this.#quietToken()
 			)
 				return false;
 			const names = Atomics.load(quiet.words, QUIET_NAMES);
@@ -1151,10 +1156,18 @@ class DerivedIndexRunner {
 		}
 	}
 
+	#quietToken(): number | undefined {
+		const backend = this.#registration.backend;
+		return backend.quietToken ? backend.quietToken() : 0;
+	}
+
 	#publishQuiet(epoch: bigint, mark: LogMark) {
+		const token = this.#quietToken();
+		if (token === undefined) return;
 		const { marks, words } = this.#quiet;
 		Atomics.store(words, QUIET_NAMES, mark.names);
 		Atomics.store(words, QUIET_TABLE, this.#quietTable!);
+		Atomics.store(words, QUIET_TOKEN, token);
 		Atomics.store(marks, QUIET_SUM, mark.sum);
 		Atomics.store(marks, QUIET_EPOCH, epoch);
 	}
@@ -2520,7 +2533,7 @@ type QuietViews = { marks: BigInt64Array; words: Int32Array };
 
 function quietViews(logStore: RocksTransactionLogStore, readinessId: string): QuietViews {
 	const buffer = logStore.getUserSharedBuffer(`derived-index:${readinessId}:quiet`, new ArrayBuffer(QUIET_BYTES));
-	return { marks: new BigInt64Array(buffer, 0, 2), words: new Int32Array(buffer, 16, 2) };
+	return { marks: new BigInt64Array(buffer, 0, 2), words: new Int32Array(buffer, 16, 4) };
 }
 
 const readinessViews = new WeakMap<object, Map<string, SharedViews>>();
@@ -2704,6 +2717,14 @@ function logMark(positions: DerivedIndexPositions | undefined): LogMark | undefi
 		if (position) sum += (BigInt(position.sequence) << 32n) + BigInt(position.offset);
 	}
 	return sum < 1n << 63n ? { names, sum } : undefined;
+}
+
+/** A 32-bit FNV-1a of a cursor's vector, for `DerivedIndexBackend.quietToken`. */
+export function derivedIndexCursorToken(cursor: DerivedIndexCursor): number {
+	const text = JSON.stringify([cursor.logs, cursor.floors ?? null]);
+	let hash = 0x811c9dc5;
+	for (let i = 0; i < text.length; i++) hash = Math.imul(hash ^ text.charCodeAt(i), 0x01000193);
+	return hash;
 }
 
 export function sameDerivedIndexPositions(left: DerivedIndexPositions, right: DerivedIndexPositions): boolean {

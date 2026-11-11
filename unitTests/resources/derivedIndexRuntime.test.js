@@ -6,6 +6,7 @@ const {
 	DERIVED_INDEX_DEFERRED,
 	READINESS_BYTES,
 	DerivedIndexRuntime,
+	derivedIndexCursorToken,
 	derivedIndexTime,
 	publishDerivedIndexReadiness,
 	publishDerivedIndexUnavailableIfUnknown,
@@ -1176,6 +1177,7 @@ describe('DerivedIndexRuntime', () => {
 				backend.shutdowns++;
 			};
 			backend.publishCoverage = (positions) => (backend.cursor = { ...backend.cursor, coverage: positions });
+			backend.quietToken = () => backend.cursor && derivedIndexCursorToken(backend.cursor);
 			return backend;
 		};
 		const options = { idleGraceMilliseconds: 5, lockRetryMilliseconds: 10, maxFlushAgeMilliseconds: 5 };
@@ -1357,21 +1359,46 @@ describe('DerivedIndexRuntime', () => {
 			await Promise.all([first.stop(), same.stop(), otherTable.stop()]);
 		});
 
-		it('does not let a registration inherit the idle positions of a stopped predecessor', async () => {
+		it('keeps its owner epoch when a dormant peer stops', async () => {
 			const store = quietStore();
-			const backend = coverageBackend('quiet-successor');
-			const first = runtimeFor(store, new Map(), options).runtime;
-			first.register(registration(backend));
+			const backend = coverageBackend('quiet-peer-stop');
+			const owner = runtimeFor(store, new Map(), options).runtime;
+			const peer = runtimeFor(store, new Map(), options).runtime;
+			owner.register(registration(backend));
+			peer.register(registration(coverageBackend(backend.id)));
 			await released(store, backend);
-			const epoch = first.getReadiness(backend.id).ownerEpoch;
-			await first.stop();
+			const epoch = owner.getReadiness(backend.id).ownerEpoch;
+			await peer.stop();
 
-			const successor = runtimeFor(store, new Map(), options).runtime;
-			successor.register(registration(coverageBackend(backend.id)));
-			await waitFor(() => successor.getReadiness(backend.id).ownerEpoch > epoch, {
-				message: 'a successor can index other storage under the same id, so it must acquire',
+			await quietCommits(store);
+			assert.strictEqual(owner.getReadiness(backend.id).ownerEpoch, epoch, 'a job worker exiting costs no epoch');
+			await owner.stop();
+		});
+
+		it('acquires for a registration over replaced storage, even one that waited out the release', async () => {
+			const store = quietStore();
+			const backend = coverageBackend('quiet-replaced-storage');
+			let finishShutdown;
+			const shutdown = backend.shutdown;
+			backend.shutdown = () => {
+				shutdown();
+				return new Promise((resolve) => (finishShutdown = resolve));
+			};
+			const owner = runtimeFor(store, new Map(), options).runtime;
+			owner.register(registration(backend));
+			await waitFor(() => backend.shutdowns === 1);
+			const epoch = owner.getReadiness(backend.id).ownerEpoch;
+
+			// declared again under the same id, with no durable state yet, while the owner is still releasing
+			const replacement = runtimeFor(store, new Map(), options).runtime;
+			const replaced = coverageBackend(backend.id);
+			replaced.cursor = undefined;
+			replacement.register(registration(replaced));
+			finishShutdown();
+			await waitFor(() => replacement.getReadiness(backend.id).ownerEpoch > epoch, {
+				message: 'positions published for other storage must not keep a replacement ownerless',
 			});
-			await successor.stop();
+			await Promise.all([owner.stop(), replacement.stop()]);
 		});
 
 		it('catches up when the same runtime re-registers after its commit listener was detached', async () => {
