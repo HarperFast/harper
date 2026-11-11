@@ -195,9 +195,9 @@ const AUDIT_RESUME_FLOOR_KEY = Symbol.for('audit-resume-floor');
  */
 const ORIGIN_CLOSED_FLOOR_KEY = Symbol.for('origin-closed-floor');
 /**
- * Above every local key the issuance ratchet handed out ahead of the clock (a record-lock claim, or
- * keys behind a recovered floor). Written before such a key is used and read at open to seed issuance,
- * so a restart before the clock passes them cannot issue them again. RocksDB only.
+ * Above every local key issued at least a millisecond ahead of the wall clock (a record-lock claim, or a
+ * clock raised past a recovered bound). Written before such a key is used and read at open to raise the
+ * clock, so a restart before the wall clock passes them cannot issue them again. RocksDB only.
  */
 const LOCAL_ISSUANCE_CEILING_KEY = Symbol.for('local-issuance-ceiling');
 const ABORT_MARKED_RECHECK_MS = 60_000;
@@ -507,7 +507,7 @@ export function openAuditStore(rootStore) {
 					if (floor === undefined) return;
 					persistOriginClosedFloor(auditStore, floor);
 					// Readers consume only the published value, so a floor is advertised only once its record is
-					// on disk: a restart after power loss then still seeds the ratchet above it.
+					// on disk: a restart after power loss then still raises the clock above it.
 					const sync = originFloorsDurable(rootStore) ? rootStore.syncWal() : undefined;
 					if (!sync) {
 						publishOriginFloor(rootStore, floor);

@@ -217,7 +217,6 @@ class ThreadRegistry {
 		Atomics.store(this.words, boundIndex(this.slot), toBits(bound));
 	}
 
-	/** A fresh native key: above every value the clock was raised to, and covered when it is ahead of the wall. */
 	freshKey(): number {
 		const key = this.rootStore.getMonotonicTimestamp();
 		this.noteIssued(key);
@@ -251,7 +250,6 @@ class ThreadRegistry {
 		storeMax(this.words, WORD_COVERED, this.coveredThrough);
 	}
 
-	/** Persist a claim's ceiling before the clock is raised to it. */
 	coverBeforeClaim(floor: number): void {
 		this.covered(floor, false);
 	}
@@ -453,7 +451,6 @@ export function localIssuedAheadThrough(rootStore: RocksDatabase): number {
 	return Math.max(fromBits(Atomics.load(words, WORD_ISSUANCE_FLOOR)), fromBits(Atomics.load(words, WORD_COVERED)));
 }
 
-/** A fresh local key, covered for a restart when it is ahead of the wall clock. */
 export function freshLocalKey(rootStore: any): number {
 	return typeof rootStore?.getUserSharedBuffer === 'function'
 		? registryFor(rootStore).freshKey()
