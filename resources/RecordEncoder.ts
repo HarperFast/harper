@@ -1071,7 +1071,14 @@ export function recordUpdater(
 		const auditExpiresAt = options?.auditExpiresAt ?? expiresAt;
 		// Math.max normalizes the -1 "no metadata word" sentinel to 0 first: OR-ing the flag into
 		// -1 directly would stay -1 and silently drop the metadata word (and the flag with it).
-		if (isRocksDB && record !== undefined && versionIsReused(newVersion, existingEntry))
+		// A rewrite of the unchanged value keeps the row's own answer: its version still identifies that value.
+		if (
+			isRocksDB &&
+			record !== undefined &&
+			(options?.unchangedValue
+				? existingEntry?.metadataFlags & VERSION_REUSED
+				: versionIsReused(newVersion, existingEntry))
+		)
 			metadataInNextEncoding = Math.max(metadataInNextEncoding, 0) | VERSION_REUSED;
 		const putOptions: {
 			version: number;

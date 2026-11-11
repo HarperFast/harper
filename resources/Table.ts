@@ -15625,6 +15625,7 @@ export function makeTable(options): TableResourceClass {
 				additionalAuditRefs: entry.additionalAuditRefs,
 				receivedIdentityRefs: entry.receivedIdentityRefs,
 				copiedDeleteBoundary,
+				unchangedValue: true,
 				transaction,
 			},
 			'put'

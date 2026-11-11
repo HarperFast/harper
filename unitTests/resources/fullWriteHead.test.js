@@ -6,6 +6,7 @@ const { replayLogs } = require('#src/resources/replayLogs');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const { FULL_WRITE_HEAD, fullWriteHeadKey } = require('#src/resources/Table');
+const { VERSION_REUSED } = require('#src/resources/RecordEncoder');
 const { raiseAuditFloor, getAuditFloor, COPIED_RECORD } = require('#src/resources/auditStore');
 const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
 const { server } = require('#src/server/Server');
@@ -751,6 +752,7 @@ describe('A record bit for a full-write head (harper#3532)', () => {
 				await copiedDelete(T, id, { version });
 				const head = T.primaryStore.getEntry(id);
 				assert.equal(head.version, version + 2000, 'the newer write keeps the row');
+				assert.equal(head.metadataFlags & VERSION_REUSED, 0, 'the unchanged value keeps its version');
 				assert.deepEqual(head.copiedDeleteBoundary, { version, nodeId: headOrigin });
 				await apply(T, id, { extra: 'old' }, { version: version - 1000, nodeId: lateOrigin });
 				await apply(T, id, { extra: 'between' }, { version: version + 1000, nodeId: lateOrigin });
