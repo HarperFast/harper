@@ -749,7 +749,7 @@ function firstLookup(user: User, name: unknown = user?.username): UserProvenance
 /**
  * A copy whose `role` and `permission` the caller may replace (verifyPerms does) without touching `user`;
  * `isCurrentUser` checks it against `provenance`, what `trackUserRecords` returned for this lookup, or else
- * against the records `user` was built from. `certificate` marks the copy as `certificatePrincipal` does.
+ * against the records `user` was built from.
  */
 function cloneUserView(user: User, provenance?: UserProvenance, certificate = false): User {
 	const clone: User = { ...user };
@@ -839,12 +839,9 @@ const CERTIFICATE_PRINCIPAL = Symbol('certificate principal');
 
 /**
  * `user` marked as named by a verified client certificate, which live-subscription rechecks exempt from the role
- * requirement (#4062). A by-name re-resolve that replaces such a principal must re-mark the fresh view, or it fails
- * closed. The mark is a symbol, so no data can carry it. `getUser` is the resolver that returned `user`: the built-in
- * one builds a new view per call, which is marked in place. Any other may hand the same object to a session or
- * password lookup, so a plain object (from any realm) is copied with the lookup that tracked it, its own getters read
- * once. Any other object stays unmarked, such as a class instance, whose accessors and private fields a copy would
- * lose.
+ * requirement (#4062); a by-name re-resolve that replaces such a principal must re-mark the fresh view, or it fails
+ * closed. Only the built-in resolver's view, new per call, is marked in place: an override may hand the same object
+ * to a session or password lookup, so its result is copied, and only when a copy loses nothing (`isPlainObject`).
  */
 function certificatePrincipal<T>(user: T, getUser?: unknown): T {
 	if (!user || typeof user !== 'object') return user;
@@ -855,7 +852,7 @@ function certificatePrincipal<T>(user: T, getUser?: unknown): T {
 	if (!isPlainObject(user)) return user;
 	const view: any = { ...user, [CERTIFICATE_PRINCIPAL]: true };
 	if (!view[PROVENANCE]) {
-		const tracked = firstLookup(user as unknown as User);
+		const tracked = firstLookup(user as unknown as User, view.username);
 		if (tracked) view[PROVENANCE] = tracked;
 	}
 	return view;

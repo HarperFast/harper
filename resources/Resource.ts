@@ -1158,8 +1158,9 @@ function hasPermissionControl(value: any, seen = new WeakSet<object>()): boolean
 }
 
 let securityUser: typeof import('../security/user.ts') | undefined;
-// contexts where a recheck found a record backing a certificate principal; later subscriptions there need a role too
-const recordBackedContexts = new WeakSet<object>();
+// contexts, and principals an MQTT session reuses for each SUBSCRIBE, where a recheck found a record backing a
+// certificate principal; later subscriptions there need a role too
+const recordBacked = new WeakSet<object>();
 
 const resolveUser = (_scope: unknown, username: string) =>
 	securityUser!.findAndValidateUser(username, undefined, false);
@@ -1197,7 +1198,10 @@ function registerLiveSubscriptionForContext(
 	// recheck; then it, and later subscriptions on its context, need a role even after that record is dropped.
 	const certificate = isCertificatePrincipal(user);
 	let roleRequired =
-		!certificate || Boolean(isRecordBacked(user, admitted) || user.role) || recordBackedContexts.has(context);
+		!certificate ||
+		Boolean(isRecordBacked(user, admitted) || user.role) ||
+		recordBacked.has(user) ||
+		recordBacked.has(context);
 	// Without a caller's select or a condition or sort through a relationship, the default allowRead only
 	// narrows what it returns, so its verdict depends on the role's permission for this table alone.
 	const sharedDecision =
@@ -1233,7 +1237,8 @@ function registerLiveSubscriptionForContext(
 				if (!fresh) return false;
 				if (!roleRequired && isRecordBacked(fresh)) {
 					roleRequired = true;
-					if (context) recordBackedContexts.add(context);
+					recordBacked.add(user);
+					if (context) recordBacked.add(context);
 				}
 				if (!fresh.role && roleRequired) return false;
 				// Advance the subscription's context to the fresh user so downstream checks — context.user

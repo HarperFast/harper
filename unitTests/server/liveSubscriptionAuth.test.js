@@ -1515,6 +1515,23 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 			assert.strictEqual(later.end.calls.length, 1, 'a later subscription on that context needs a role too');
 		});
 
+		it('requires a role of a later SUBSCRIBE that reuses the principal a record backed, as an MQTT session does', async () => {
+			const user = await certificate('session_latch_cn');
+			const first = grantingByUsername('session_latch_cn');
+			const firstSubscription = await first.Resource.subscribe('topic', undefined, { user, authorize: true });
+			handles.push({ unregister: () => firstSubscription.end() });
+			await testUtils.seedUsers([{ username: 'session_latch_cn', active: true, role: 'missing_role' }]);
+			await _sweepNow();
+			assert.strictEqual(first.end.calls.length, 1, 'a record with no role revokes it');
+
+			await testUtils.seedUsers();
+			const later = grantingByUsername('session_latch_cn');
+			const laterSubscription = await later.Resource.subscribe('topic', undefined, { user, authorize: true });
+			handles.push({ unregister: () => laterSubscription.end() });
+			await _sweepNow();
+			assert.strictEqual(later.end.calls.length, 1, 'a later SUBSCRIBE with that principal needs a role too');
+		});
+
 		it('keeps the CONNECT lookup of a certificate principal a component built with no hdb_user', async () => {
 			const built = { username: 'component_cert_cn', active: true };
 			const admission = {};
