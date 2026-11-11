@@ -32,7 +32,7 @@ import {
 	constants,
 } from '@harperfast/rocksdb-js';
 import {
-	localIssuanceRatchet,
+	localIssuanceFloor,
 	rekeyLocalRetry,
 	releaseLocalKey,
 	reserveLocalKey,
@@ -2847,9 +2847,9 @@ export class DatabaseTransaction implements Transaction {
 						const effectiveClock =
 							txnTime ||
 							(typeof rootStore?.getUserSharedBuffer === 'function'
-								? nativeClock > localIssuanceRatchet(rootStore)
+								? nativeClock > localIssuanceFloor(rootStore)
 									? nativeClock
-									: Math.max(rootStore.getMonotonicTimestamp(), localIssuanceRatchet(rootStore))
+									: Math.max(rootStore.getMonotonicTimestamp(), localIssuanceFloor(rootStore))
 								: nativeClock);
 						if (floor > effectiveClock) {
 							if (reservedLocalKey(transaction) === undefined && !this.hasUnlockedWrite()) {

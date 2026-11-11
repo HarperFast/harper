@@ -8,13 +8,20 @@ const { transaction, contextStorage } = require('#src/resources/transaction');
 const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
 const { waitFor } = require('../waitFor');
 const { coverLocalIssuance, readLocalIssuanceCeiling } = require('#src/resources/auditStore');
-const { localIssuanceRatchet, reservedLocalKey, seedLocalIssuance } = require('#src/resources/originClosedFloor');
+const {
+	localIssuanceFloor,
+	localIssuedAheadThrough,
+	reservedLocalKey,
+	seedLocalIssuance,
+	timestampAbove,
+} = require('#src/resources/originClosedFloor');
 const { ImmediateTransaction } = require('#src/resources/DatabaseTransaction');
 const { PassThrough } = require('node:stream');
 const { createBlob } = require('#src/resources/blob');
 const {
 	MIN_LOCK_LEASE_MS,
 	admissionFloor,
+	admissionStamp,
 	makeKeyLockHandle,
 	lockAttemptKey,
 	resolveLockOptions,
@@ -1725,9 +1732,87 @@ describe('Record locks (harper#483)', () => {
 					(error) =>
 						error.name === 'LockUnavailableError' &&
 						error.statusCode === 503 &&
-						error.message.includes("ahead of this node's clock") &&
+						error.message.includes("ahead of this node's wall clock") &&
 						error.message.includes('context.timestamp')
 				);
+			} finally {
+				env.setProperty(CONFIG_PARAMS.STORAGE_MAXLOCKCLOCKSKEW, previous);
+			}
+		});
+
+		it('measures the skew cap from wall time, so successive claims cannot compound past it', async function () {
+			if (isLMDB) return this.skip();
+			const [nearId, fartherId] = [id(), id()];
+			const rootStore = LockTest.primaryStore.rootStore;
+			const previous = env.get(CONFIG_PARAMS.STORAGE_MAXLOCKCLOCKSKEW);
+			env.setProperty(CONFIG_PARAMS.STORAGE_MAXLOCKCLOCKSKEW, '2s');
+			try {
+				const near = futureTimestamp(1_500);
+				await applyFromPeer(nearId, near);
+				await transaction(async () => {
+					const lock = await LockTest.lock(nearId);
+					lock.set('n', 1);
+					await lock.save();
+				});
+				assert.ok(localIssuanceFloor(rootStore) >= near, 'the first admission claimed and raised the clock');
+				// within the cap of the raised clock, beyond it from wall time
+				const farther = futureTimestamp(3_000);
+				await applyFromPeer(fartherId, farther);
+				await assert.rejects(LockTest.lock(fartherId), (error) => error.name === 'LockUnavailableError');
+			} finally {
+				env.setProperty(CONFIG_PARAMS.STORAGE_MAXLOCKCLOCKSKEW, previous);
+			}
+		});
+
+		it('admits a floor the clock has passed whatever the cap, since claiming it lifts nothing', function () {
+			if (isLMDB) return this.skip();
+			const rootStore = LockTest.primaryStore.rootStore;
+			const previous = env.get(CONFIG_PARAMS.STORAGE_MAXLOCKCLOCKSKEW);
+			env.setProperty(CONFIG_PARAMS.STORAGE_MAXLOCKCLOCKSKEW, '0ms');
+			try {
+				const acquiredAt = rootStore.getMonotonicTimestamp();
+				// within the wall clock's current millisecond, so past what a cap of 0 admits against wall time
+				const floor = timestampAbove(acquiredAt);
+				const { stamp, claimed } = admissionStamp(rootStore, floor, acquiredAt);
+				assert.ok(claimed && stamp >= floor, 'a floor the clock has passed is admitted');
+			} finally {
+				env.setProperty(CONFIG_PARAMS.STORAGE_MAXLOCKCLOCKSKEW, previous);
+			}
+		});
+
+		it('holds a hold step ahead of the clock to the skew cap, though it is under the covered ceiling', async function () {
+			if (isLMDB) return this.skip();
+			const [nearId, heldId] = [id(), id()];
+			const rootStore = LockTest.primaryStore.rootStore;
+			const previous = env.get(CONFIG_PARAMS.STORAGE_MAXLOCKCLOCKSKEW);
+			// earlier leads must be behind the wall clock, so this test's own claim sets the clock and ceiling
+			await waitFor(() => Date.now() > Math.max(aheadUntil, localIssuedAheadThrough(rootStore)) + 1, 30_000, 20);
+			// the claim's ceiling is 1 s above it: the step sits midway between the cap and that ceiling
+			env.setProperty(CONFIG_PARAMS.STORAGE_MAXLOCKCLOCKSKEW, '1500ms');
+			try {
+				const near = Date.now() + 1_400;
+				aheadUntil = Math.max(aheadUntil, near + 1_000);
+				await applyFromPeer(nearId, near);
+				await transaction(async () => {
+					const lock = await LockTest.lock(nearId);
+					lock.set('n', 1);
+					await lock.save();
+				});
+				assert.ok(localIssuanceFloor(rootStore) >= near, 'fixture: the first admission claimed');
+				// beyond the cap from wall time, and under the ceiling the claim covered
+				const ahead = Date.now() + 1_950;
+				assert.ok(ahead < readLocalIssuanceCeiling(LockTest.auditStore), 'fixture: the step is under the ceiling');
+				await LockTest.put({ id: heldId, n: 0 });
+				const context = {};
+				const holder = await LockTest.lock(heldId, { hold: true, lease: 5000 }, context);
+				try {
+					handleOf(context.transaction).noteHolderVersion(ahead);
+					holder.set('n', 1);
+					await holder.save();
+					assert.ok(rootStore.getMonotonicTimestamp() < ahead, 'the step did not raise the clock past the cap');
+				} finally {
+					await holder.unlock();
+				}
 			} finally {
 				env.setProperty(CONFIG_PARAMS.STORAGE_MAXLOCKCLOCKSKEW, previous);
 			}
@@ -1841,7 +1926,7 @@ describe('Record locks (harper#483)', () => {
 			const lockedId = id();
 			const unlockedId = id();
 			const rootStore = LockTest.primaryStore.rootStore;
-			const predecessorTimestamp = Math.max(Date.now(), localIssuanceRatchet(rootStore)) + 2_000;
+			const predecessorTimestamp = Math.max(Date.now(), localIssuanceFloor(rootStore)) + 2_000;
 			await applyFromPeer(lockedId, predecessorTimestamp);
 			const ceilingBefore = readLocalIssuanceCeiling(LockTest.auditStore);
 			const context = {};
@@ -1851,7 +1936,7 @@ describe('Record locks (harper#483)', () => {
 				await LockTest.lock(lockedId, undefined, context);
 			});
 			assert.ok(
-				localIssuanceRatchet(rootStore) < predecessorTimestamp,
+				localIssuanceFloor(rootStore) < predecessorTimestamp,
 				'the unused floor did not move the local ratchet into the future'
 			);
 			assert.strictEqual(
@@ -2131,7 +2216,6 @@ describe('Record locks (harper#483)', () => {
 			const { RocksDatabase } = require('../rocksdbBindings.mts').rocksdbBindings();
 			const { RocksTransactionLogStore } = require('#src/resources/RocksTransactionLogStore');
 			const { persistOriginClosedFloor } = require('#src/resources/auditStore');
-			const { publishOriginFloor } = require('#src/resources/originClosedFloor');
 			const directory = fs.mkdtempSync(path.join(PID_DIR_PATH, 'refused-reservation-'));
 			const failedRoot = RocksDatabase.open(directory);
 			const failedAudit = new RocksTransactionLogStore(failedRoot);
@@ -2145,18 +2229,22 @@ describe('Record locks (harper#483)', () => {
 			let coverageError;
 			try {
 				const lead =
-					Math.max(Date.now(), localIssuanceRatchet(root), readLocalIssuanceCeiling(LockTest.auditStore)) + 100;
+					Math.max(Date.now(), localIssuanceFloor(root), readLocalIssuanceCeiling(LockTest.auditStore)) + 100;
 				aheadUntil = Math.max(aheadUntil, lead + 1000);
 				persistOriginClosedFloor(LockTest.auditStore, lead);
-				publishOriginFloor(root, lead);
-				seedLocalIssuance(root, readLocalIssuanceCeiling(LockTest.auditStore), (key) => {
-					try {
-						return coverLocalIssuance(failedAudit, key);
-					} catch (error) {
-						coverageError = error;
-						throw error;
-					}
-				});
+				seedLocalIssuance(
+					root,
+					readLocalIssuanceCeiling(LockTest.auditStore),
+					(key) => {
+						try {
+							return coverLocalIssuance(failedAudit, key);
+						} catch (error) {
+							coverageError = error;
+							throw error;
+						}
+					},
+					lead
+				);
 				await transaction(context, async () => {
 					await holder.update(lockedId, { n: 2 });
 					await holder.update(lockedId, { n: 3 });
@@ -2196,7 +2284,7 @@ describe('Record locks (harper#483)', () => {
 			const context = {};
 			const holder = await LockTest.lock(lockedId, { hold: true, lease: 5000 }, context);
 			const rootStore = LockTest.primaryStore.rootStore;
-			const coverageLead = Math.max(rootStore.getMonotonicTimestamp(), localIssuanceRatchet(rootStore)) + 1000;
+			const coverageLead = Math.max(rootStore.getMonotonicTimestamp(), localIssuanceFloor(rootStore)) + 1000;
 			aheadUntil = Math.max(aheadUntil, coverageLead);
 			assert.ok(context.transaction instanceof ImmediateTransaction);
 			let failedCover = false;

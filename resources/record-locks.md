@@ -309,17 +309,21 @@ could read as a re-delivery — a shared counter loses an increment. Each write'
 separately at save. A floor the clock has already passed takes the
 clock's next key. A floor ahead of the clock within `storage.maxLockClockSkew` (default 5 s; a malformed
 value falls back to it with a warning) is claimed as a unique local key
-(`claimLocalKey`), which lifts every later local key on this node, locked or not, above it: the node's
-log clock never runs behind state it admitted a lock on. Past the cap, or with a cap of `0`, admission
-fails with `LockUnavailableError` before a holder write is staged or an issuance ceiling is reserved. Both a far-future replicated
+(`claimLocalKey`), which raises rocksdb-js's process-wide clock, so every later local key on this node,
+locked or not, is above it: the node's log clock never runs behind state it admitted a lock on. A floor the
+clock has already passed lifts nothing and is admitted whatever the cap; one ahead of it is held to the cap
+measured from wall time, not from the clock an earlier claim lifted, so successive claims cannot compound
+past it. Past the cap, or under a cap of `0`, a floor still ahead of the clock fails admission with
+`LockUnavailableError` before a holder write is staged or an issuance ceiling is reserved. Both a far-future replicated
 version and a local write stamped with a future `context.timestamp` can therefore leave the record unavailable until wall time catches up (callers that stamp future versions on records they also `lock()` must keep the lead within `storage.maxLockClockSkew`). Rewriting or deleting
 at normal clock time does not resolve it because those writes still lose LWW; repair the source
-peer's clock, rewrite at or above that version, or wait. A key the
-ratchet issues ahead of the clock is covered by a ceiling flushed before use, including when another
-worker stored that ceiling. Coverage reserves one second of headroom; restart seeds above that whole
-reserve, so it can add up to a second of clock lead while preventing key reuse. The initial recovery ceiling is shared in the ratchet buffer; later workers opening the live database do not consume unused headroom (resources/DESIGN.md "Origin-closed timestamp floor"). For the same
-reason a handle's `acquiredAt` and a cluster round's `tsR` come from that allocator (`freshLocalKey`),
-not a raw clock sample, which could equal an issued key once the clock catches up. Re-entry and
+peer's clock, rewrite at or above that version, or wait. A claim
+persists its ceiling, flushed, before it raises the clock, and every later key at least a millisecond ahead
+of the wall clock is covered the same way before use, including when another worker or another
+database's claim raised the clock. Coverage reserves one second of headroom; restart seeds above that whole
+reserve, so it can add up to a second of clock lead while preventing key reuse. The initial recovery ceiling is shared in the floor's buffer; later workers opening the live database do not consume unused headroom (resources/DESIGN.md "Origin-closed timestamp floor"). A
+handle's `acquiredAt` and a cluster round's `tsR` come from `freshLocalKey`, which covers a key minted
+ahead of the wall clock as a reservation does. Re-entry and
 coalesced followers do not perform a new admission. A scoped → hold upgrade primes its next version
 before changing modes and can claim a deferred floor.
 
@@ -335,9 +339,11 @@ reserved key never moves and no holder version exceeds its log key (harper#3238)
 replica version clamp: applied writes preserve an explicit record version even when it exceeds the origin log
 key. A hold steps one ulp past its last version,
 which keeps advancing above 2^42 ms, where a fixed 0.000488 ms step no longer changes a double; a step
-ahead of the clock within the cap is claimed, since one ulp above the ratchet is the next key it
-issues. A step at or below the ratchet's next key is also claimed, even after clock catch-up, so it
-cannot repeat a key issued during the lead. Such a claim can advance a hold save beyond a later plain
+ahead of the clock within the cap is claimed, since one ulp above the clock's last key is its next one.
+Keys minted while the clock runs ahead of the wall clock are one ulp apart, so a step the clock has passed
+that is at or below one ulp above the database's covered ceiling or last raise (`localIssuedAheadThrough`)
+is also claimed, even after clock catch-up, so it cannot repeat a key issued during the lead. A lead under a millisecond is not
+covered, like a burst of keys minted within one ulp of each other on the wall clock. Such a claim can advance a hold save beyond a later plain
 write rather than retain acquisition order; plain writes remain ungated. The Phase 0 ordering tradeoff
 is tracked in harper#3246.
 
