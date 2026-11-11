@@ -403,6 +403,7 @@ export function endSubscriptionsFromEarlierHandles(auditStore: any, tracksGenera
  * The range the broadcast reads, which a replay reads `until` so the two meet at one log position: every entry
  * below it is the replay's, every entry at or above it the broadcast's. Undefined keeps a replay on the key gate:
  * LMDB reads by key, so a key is a position, and a same-thread registry has no shared cursor (harper#3980).
+ * Destroying a log (`purgeLogs({ destroy: true })`, which nothing in Harper calls) would void its bounds.
  */
 export function broadcastRange(subscription: any): any {
 	const subscriptions = subscription.subscriptions?.tables?.envs;
