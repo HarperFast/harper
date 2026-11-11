@@ -9,6 +9,7 @@ const assert = require('node:assert');
 const auditStore = require('#src/resources/auditStore');
 const { purgeAgedLogs, setAuditRetention } = auditStore;
 const { RocksTransactionLogStore } = require('#src/resources/RocksTransactionLogStore');
+const harperLogger = require('#js/utility/logging/harper_logger');
 
 describe('purgeAgedLogs', () => {
 	let originalRetention;
@@ -43,6 +44,7 @@ describe('purgeAgedLogs', () => {
 			},
 			resume() {
 				order.push('resume');
+				if (refuseWrites) throw new Error('Resume failed: Resource busy: Recovery in progress');
 			},
 			purgeLogs(options) {
 				calls.push(options);
@@ -78,6 +80,10 @@ describe('purgeAgedLogs', () => {
 		let failFloorWrite = false;
 		let failFlush = false;
 		let failPurge = false;
+		let refuseWrites = false;
+		store.refuseWrites = () => {
+			refuseWrites = true;
+		};
 		store.failPurge = () => {
 			failPurge = true;
 		};
@@ -180,6 +186,23 @@ describe('purgeAgedLogs', () => {
 		store.failPurge();
 		assert.throws(() => purgeAgedLogs(store), /could not sync txn.purged/);
 		assert.deepStrictEqual(store.order, ['floor', 'flush', 'purge', 'resume']);
+	});
+
+	it('stops waiting for writes to resume after its deadline, and reports it as an error', () => {
+		setAuditRetention(60_000);
+		const store = fakeStore();
+		store.failFlush();
+		store.refuseWrites();
+		const errors = [];
+		const { error } = harperLogger;
+		harperLogger.error = (...args) => errors.push(args);
+		try {
+			assert.deepStrictEqual(purgeAgedLogs(store), ['000001.txnlog', '000002.txnlog']);
+		} finally {
+			harperLogger.error = error;
+		}
+		assert.ok(store.order.filter((step) => step === 'resume').length > 1, 'it retried before giving up');
+		assert.match(errors[0]?.[0], /still refuses writes/);
 	});
 
 	it('writes no barrier and purges nothing when no log file is old enough to purge', () => {
