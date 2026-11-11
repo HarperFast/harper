@@ -104,6 +104,20 @@ The response also includes the table's ordinary schema and storage metadata. The
 }
 ```
 
+#### Replicas
+
+<VersionBadge version="v5.4.0" />
+
+A table that has kept [local replicas](../database/schema.md#replicaexpiration-and-replicarefreshfraction) on this node reports how much of it is cache. The fields are absent on a table that never kept one, on LMDB, and when the request sets `skip_record_count`.
+
+| Field                     | Description                                                                                                                                                                                                                                    |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `replica_count`           | Replicas this node holds of the table's records, counted from their deadlines, so one whose row was lost in a crash can count until its deadline passes. Estimated on large tables, like `record_count`; `"exact_count": true` counts them all |
+| `estimated_replica_range` | The range of an estimated `replica_count`; absent when the count is exact                                                                                                                                                                      |
+| `replica_size_estimate`   | Estimated bytes of those replicas: the average size of up to 100 of their rows, blobs included, times the count. A rough figure, since the rows sampled are the first by key                                                                   |
+
+See [Local replicas under storage pressure](../database/storage-tuning.md#local-replicas-under-storage-pressure).
+
 #### Record-structure dictionaries
 
 <VersionBadge type="changed" version="v5.2.5" />
@@ -1975,10 +1989,11 @@ Operations for reading and updating Harper configuration.
 
 Detailed documentation: [Configuration Overview](../configuration/overview.md)
 
-| Operation           | Description                                   | Role Required |
-| ------------------- | --------------------------------------------- | ------------- |
-| `set_configuration` | Modifies Harper configuration file parameters | super_user    |
-| `get_configuration` | Returns the current Harper configuration      | super_user    |
+| Operation                  | Description                                           | Role Required      |
+| -------------------------- | ----------------------------------------------------- | ------------------ |
+| `set_configuration`        | Modifies Harper configuration file parameters         | super_user         |
+| `get_configuration`        | Returns the current Harper configuration              | super_user         |
+| `get_studio_configuration` | Returns Studio's cluster settings and component pages | any signed-in user |
 
 ### `set_configuration`
 
@@ -2000,6 +2015,16 @@ Returns the full current configuration object.
 
 ```json
 { "operation": "get_configuration" }
+```
+
+### `get_studio_configuration`
+
+<VersionBadge version="v5.4.0" />
+
+Returns the Studio settings written with `set_configuration` (`studio_navigation`, `studio_landing`), merged with the navigation applications and plugins set, and the pages applications and plugins declare under `studio.pages`, and nothing else from any configuration. Every signed-in user can call it. See [Customizing Studio](../studio/customization.md#get_studio_configuration).
+
+```json
+{ "operation": "get_studio_configuration" }
 ```
 
 ---

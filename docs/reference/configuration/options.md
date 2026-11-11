@@ -137,7 +137,7 @@ When the Harper process receives SIGTERM, SIGINT (Ctrl+C) or SIGQUIT, it shuts d
 
 1. Harper stops accepting new connections.
 2. Requests already in flight get a few seconds to finish (see the first note below).
-3. WebSocket connections close with code `1001` as soon as no request is in flight on any thread, because a request can be waiting on a replication peer's acknowledgement over one of them. With `http2` enabled on a listener, an open HTTP/2 session or WebSocket there delays this by up to 5 seconds. Under Bun or the uWS HTTP server, they are not closed this way. MQTT clients are disconnected earlier, when shutdown starts.
+3. WebSocket connections close with code `1001` as soon as no request is in flight on any thread (or up to 0.25 seconds after the listener's own 5-second close timeout if another thread has not finished), because a request can be waiting on a replication peer's acknowledgement over one of them. With `http2` enabled on a listener, an open HTTP/2 session or WebSocket there delays this by up to 5 seconds. Under Bun or the uWS HTTP server, they are not closed this way. MQTT clients are disconnected earlier, when shutdown starts.
 4. Component scopes close. Their [`'close'` listeners](../components/plugin-api.md#cleanup-on-shutdown) run once requests in flight have had a few seconds to finish.
 5. The process exits with code `0`.
 
@@ -334,6 +334,7 @@ storage:
 
 - `writeAsync` <EngineBadge engines="LMDB" /> — Disable disk sync on commit for the legacy LMDB storage engine (**disables local disk durability guarantees on LMDB**). Has no effect on RocksDB, which does not `fsync` commits; see [Storage Tuning — Durability vs. Throughput](../database/storage-tuning.md#durability-vs-throughput); _Default_: `false`
 - `caching` — In-memory record caching; _Default_: `true`
+- `recordCacheSize` <VersionBadge version="v5.4.0" /> <EngineBadge engines="RocksDB" /> — Entries each thread's in-memory record cache holds, shared by every table in the thread; also sizes RocksDB's verification table. An integer from `4` to `16777215`, read at startup. See [Storage Tuning — `storage.recordCacheSize`](../database/storage-tuning.md#storagerecordcachesize); _Default_: `32768`
 - `compression` — LZ4 record compression; _Default_: `true` (enabled by default since v4.3.0). Sub-options: `dictionary`, `threshold`
 - `compactOnStart` — Compact all non-system databases on startup; _Default_: `false` (Added in: v4.3.0)
 - `compactOnStartKeepBackup` — Retain compaction backups; _Default_: `false`
@@ -346,7 +347,7 @@ storage:
 - `backupPath` — Directory for managed database backups (created by [`create_backup`](../backups/operations.md#create_backup)), one subdirectory per database; _Default_: `<rootPath>/backup` (Added in: v5.2.0)
 - `blobPaths` — Blob storage directory or directories; _Default_: `<rootPath>/blobs` (Added in: v4.5.0)
 - `pageSize` — Database page size (bytes); _Default_: OS default
-- `reclamation.threshold` — Free-space ratio below which reclamation begins evicting from caching tables; _Default_: `0.4` (Added in: v4.5.0)
+- `reclamation.threshold` — Free-space ratio below which reclamation begins evicting from caching tables and [demoting local replicas](../database/storage-tuning.md#local-replicas-under-storage-pressure); _Default_: `0.4` (Added in: v4.5.0)
 - `reclamation.interval` — Free-space check interval; _Default_: `1h`
 - `reclamation.evictionFactor` — Heuristic factor for early eviction under disk pressure; _Default_: `100000`. See [Storage Tuning — Reclamation](../database/storage-tuning.md#storage-reclamation)
 - `rocks.blockCacheSize` — RocksDB shared block cache size in bytes; _Default_: 25% of constrained memory. See [Storage Tuning — RocksDB Memory](../database/storage-tuning.md#rocksdb-memory) (Added in: v5.1.0)
@@ -438,6 +439,14 @@ localStudio:
 ```
 
 - `enabled` — Enable local Studio at `http://localhost:<port>`; _Default_: `false`
+
+---
+
+## `studio`
+
+<VersionBadge version="v5.4.0" />
+
+How Studio presents itself on this node: `navigation`, a map from a tab key to `visible`, `tucked` or `hidden`, and `landing`, the tab Studio opens on. Write them with `set_configuration` as `studio_navigation` and `studio_landing`, which validates them; see [Customizing Studio](../studio/customization.md#cluster-settings). `studio` is a reserved component name.
 
 ---
 

@@ -206,6 +206,27 @@ Default: `true`
 
 In-memory record caching of decoded records. Disable to reduce heap usage when records are large and unlikely to be re-read in the same process.
 
+### `storage.recordCacheSize`
+
+<VersionBadge version="v5.4.0" /> <EngineBadge engines="RocksDB" />
+
+Type: `number` (entries)
+
+Default: `32768`
+
+How many entries each thread's in-memory record cache holds. The count is per thread: the main thread and every worker thread that opens tables has a cache of this size, and all the tables a thread opens share it, vector indexes included. A record under 1 KB is one entry; a larger record counts as about one entry per 512 bytes, so fewer large records fit. Records past the limit stay readable from the cache until garbage collection reclaims them, but only the limit is protected from collection.
+
+Each cached record costs JavaScript heap on its thread: roughly 2 KB for a small record (about 1,965 bytes per cached 1 KB record, measured with YCSB). `65536` on 4 worker threads and the main thread can hold about 330,000 records, about 640 MB of heap, so leave room for it in [`threads.maxHeapMemory`](../configuration/options.md#threads). A larger cache helps when the records it adds are re-read often. Memory it takes from the RocksDB block cache and the OS page cache can instead make disk reads rise when the data is larger than memory.
+
+The value also sizes RocksDB's verification table, which is what lets a cache hit return without reading RocksDB. Harper sizes the table once, at startup: two slots for each record the threads it starts can cache, rounded up to a power of two. The table is never smaller than RocksDB's default of 131,072 slots, and Harper does not grow it past 1/64 of memory. A slot is 8 bytes, and the whole table is allocated when it is first used, before the caches fill: the default cache on 4 worker threads gets 524,288 slots (4 MB). The threads counted are the main thread, the HTTP worker threads, the replication worker threads and the isolated applications configured at startup. Threads started later, such as job workers or an application later deployed as isolated, are not counted. When [`storage.caching`](#storagecaching) is `false`, the table keeps RocksDB's default size.
+
+The value must be an integer from `4` to `16777215`. Each thread reads it when it opens its first table, so a change takes effect on [restart](../operations-api/operations.md#restart). `restart_service` gives restarted worker threads the new size, but the main thread and the verification table keep theirs until a full restart.
+
+```yaml
+storage:
+  recordCacheSize: 65536
+```
+
 ## Record Encoding
 
 ### `storage.randomAccessFields`
@@ -447,7 +468,7 @@ storage:
 
 ## Storage Reclamation
 
-`storage.reclamation` controls how Harper evicts data from caching tables (tables with [`sourcedFrom`](../resources/resource-api.md#sourcedfromresource-options)) when disk usage runs high. Reclamation does **not** affect non-caching tables — those rely on explicit deletion, TTL expiration, or [compaction](./compaction.md).
+`storage.reclamation` controls how Harper evicts data from caching tables (tables with [`sourcedFrom`](../resources/resource-api.md#sourcedfromresource-options)) and demotes [local replicas](./schema.md#replicaexpiration-and-replicarefreshfraction) when disk usage runs high. Reclamation does **not** affect other records — those rely on explicit deletion, TTL expiration, or [compaction](./compaction.md).
 
 ### `storage.reclamation.threshold`
 
@@ -455,7 +476,7 @@ Type: `number` (ratio)
 
 Default: `0.4`
 
-Minimum fraction of the volume that should remain free. When free space falls below this ratio, reclamation begins evicting expired and lightly-used entries from caching tables. A larger value reclaims earlier and more aggressively; a smaller value defers reclamation closer to the volume filling.
+Minimum fraction of the volume that should remain free. When free space falls below this ratio, reclamation begins evicting expired and lightly-used entries from caching tables and demoting local replicas. A larger value reclaims earlier and more aggressively; a smaller value defers reclamation closer to the volume filling.
 
 ### `storage.reclamation.interval`
 
@@ -482,6 +503,22 @@ storage:
 ```
 
 For a deeper discussion of how `sourcedFrom` interacts with reclamation, see [Resource API — `sourcedFrom`](../resources/resource-api.md#sourcedfromresource-options).
+
+### Local replicas under storage pressure
+
+<VersionBadge version="v5.4.0" />
+
+<EngineBadge engines="RocksDB" />
+
+A [local replica](./schema.md#replicaexpiration-and-replicarefreshfraction) is a copy of a record owned by another node, so dropping one loses nothing: the next read fetches the record again. When free space is below the threshold, each reclamation check demotes replicas back to their indexed stubs, oldest deadline first, instead of waiting for `replicaExpiration` to pass.
+
+The _priority_ is the threshold divided by the free-space ratio. At priority `p`, a replica is kept for about `replicaExpiration / p`. With a threshold of `0.4` and 20% free, the priority is `2`, so a one-hour lifetime becomes about 30 minutes; on a full volume every replica older than 30 seconds is demoted. A record written in the last 30 seconds stays at any pressure, because it may be this node's own write that its owner has not received yet, and a `replicaExpiration` of 30 seconds or less is not shortened. A replica whose deadline is left from a longer earlier `replicaExpiration` goes last, at any pressure. Records this node owns and existing stubs are not touched. When free space is back above the threshold, replicas expire at their normal deadlines.
+
+Replicas are only demoted when `storage.reclamation.interval` runs a check, and each check spends about a minute at most on a table (one batch at least, however long it takes), then moves on; what is left waits for the next check. A check also waits for a sweep already running on the table, and the first check after a restart can walk the table's rows once, if the normal sweep has not done so yet. Lower the interval if replicas accumulate faster than one run per interval can demote them.
+
+Demoting a replica does not free disk at once. It replaces the row with a smaller stub, and RocksDB returns the space when compaction rewrites the old version, which ongoing writes trigger over time. Free space may not rise during a check, and on a volume with no room left the demotions themselves can fail to write. Reclamation slows the growth of a node's cache and shrinks it over time; it does not replace keeping enough free space for the data the node owns.
+
+To see how much of a table is cache, use the `replica_count` and `replica_size_estimate` fields of [`describe_table`](../operations-api/operations.md#replicas).
 
 ## Compaction on Start
 

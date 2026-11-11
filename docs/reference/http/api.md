@@ -411,6 +411,15 @@ server.operation(operation: object, context?: { username: string }, authorize?: 
 | `context`   | `{ username: string }` | Optional: execute as this user                       |
 | `authorize` | boolean                | Whether to apply authorization. Defaults to `false`. |
 
+An operation runs on the thread that registered it. Built-in operations run on the calling thread. An operation registered only on the main thread, such as the [built-in agent's](../operations-api/operations.md#agent), is sent there from a worker thread and its result is returned to the caller, so application code can call it in-process. The main thread applies the operation's permission check to the `context` user when `authorize` is `true`.
+
+A call that runs on another thread differs from a local one in these ways:
+
+- It does not join the caller's transaction. What it commits stays committed if the caller's transaction later aborts, and it cannot see the caller's uncommitted writes.
+- The request and the result are copied between threads, so they must be structured-cloneable. A streamed result is refused with status `501`.
+- It fails with status `503` if no answer arrives within `operationsApi.network.timeout` (120 seconds by default). The operation may still have run, so do not repeat a call that is not safe to repeat.
+- A failure arrives as an error with the operation's message, `statusCode`, and its `code` and `retryable` fields when the operation set them.
+
 ---
 
 ## `server.recordAnalytics(value, metric, path?, method?, type?)`

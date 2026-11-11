@@ -8,6 +8,7 @@ const { transaction } = require('#src/resources/transaction');
 const { waitFor } = require('../waitFor');
 const { LOCAL_ONLY } = require('#src/resources/auditStore');
 const { DERIVED_INDEX_ACCEPTED, DerivedIndexRuntime } = require('#src/resources/derivedIndexRuntime');
+const { derivedIndexWriteRejection } = require('#src/resources/derivedIndexRegistry');
 const { decodeFullTextCursorPayload } = require('#src/resources/indexes/fullTextDerivedIndex');
 const {
 	createNativeFullTextDerivedIndexBackend,
@@ -269,6 +270,140 @@ describe('DerivedIndexRuntime with an audited RocksDB table', () => {
 		await unregister();
 		await runtime.stop();
 		runtime = undefined;
+	});
+
+	it('reports no lag when a peer commit reaches an idle index re-acquired after release or restart', async function () {
+		this.timeout(60_000);
+		const Product = table({
+			database: 'derived-index-idle-lag-rocks',
+			table: 'Product',
+			audit: true,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'title' }],
+		});
+		const auditStore = Product.auditStore;
+		const remoteNodeId = auditStore.ensureLogExists('remote');
+		// A peer's log carries the peer's commit times: two minutes apart is a nearly idle cluster database.
+		let peerTime = Date.now() - 600_000;
+		const writeRemote = async (id) => {
+			peerTime += 120_000;
+			const context = { source: {}, sourceApply: true, timestamp: peerTime };
+			await transaction(context, async () => {
+				const resource = await Product.getResource(id, context);
+				return resource._writeUpdate(id, { title: id }, true, {
+					isNotification: true,
+					nodeId: remoteNodeId,
+					version: peerTime,
+				});
+			});
+		};
+		// A trip is published as the owner accepts a batch, so barriers wait for the test to open them.
+		const backend = {
+			id: 'idle-lag-products',
+			cursor: undefined,
+			accepted: undefined,
+			barriersOpen: true,
+			deliveries: [],
+			shutdownEpochs: [],
+			attach() {},
+			flush() {
+				if (!this.barriersOpen || !this.accepted || this.cursor === this.accepted) return;
+				this.cursor = this.accepted;
+				setImmediate(() => this.wake?.('changed'));
+			},
+			shutdown(epoch) {
+				this.shutdownEpochs.push(epoch);
+			},
+			reset() {
+				this.cursor = this.accepted = undefined;
+			},
+			getDurableCursor() {
+				return this.cursor;
+			},
+			deliver(batch) {
+				this.deliveries.push(batch);
+				if (batch.through) this.accepted = batch.through;
+				return DERIVED_INDEX_ACCEPTED;
+			},
+			onStateChange(wake) {
+				this.wake = wake;
+				return () => (this.wake = undefined);
+			},
+		};
+		const start = () => {
+			runtime = new DerivedIndexRuntime(
+				auditStore,
+				(tableId, recordId) => {
+					const entry = Product.primaryStore.getEntry(recordId);
+					return entry?.value ? { version: entry.version, value: entry.value } : undefined;
+				},
+				{
+					idleGraceMilliseconds: 50,
+					scanRecords: () =>
+						Product.primaryStore.getRange({ versions: true }).map((entry) => ({
+							recordId: entry.key,
+							version: entry.version,
+							value: entry.value,
+						})),
+				}
+			);
+			return runtime.register({
+				backend,
+				projections: new Map([[Product.tableId, (record) => ({ title: record.title })]]),
+				// the native HNSW default budget
+				options: { maxLagMilliseconds: 30_000, maxFlushAgeMilliseconds: 10 },
+			});
+		};
+		const transactionOf = (id) =>
+			backend.deliveries
+				.flatMap((batch) => batch.transactions.map((transaction) => ({ batch, transaction })))
+				.find(({ transaction }) => transaction.mutations.some((mutation) => mutation.recordId === id));
+		const durableThrough = (id) =>
+			waitFor(() => transactionOf(id) && backend.cursor === backend.accepted, { timeout: 20_000 }).then(() =>
+				transactionOf(id)
+			);
+		let local = 0;
+		const afterIdle = async (id, previous) => {
+			backend.barriersOpen = false;
+			await writeRemote(id);
+			const read = await waitFor(() => transactionOf(id), { timeout: 20_000 });
+			assert.strictEqual(read.transaction.logName, 'remote');
+			assert.strictEqual(read.transaction.timestamp - previous.transaction.timestamp, 120_000);
+			assert.strictEqual(runtime.getMetrics(backend.id).cursorLagMilliseconds, 0);
+			assert.strictEqual(derivedIndexWriteRejection(auditStore, Product.tableId), undefined);
+			await Product.put(`local-${++local}`, { title: 'written while the barrier is pending' });
+			backend.barriersOpen = true;
+			await durableThrough(`local-${local}`);
+			assert.strictEqual(derivedIndexWriteRejection(auditStore, Product.tableId), undefined);
+			return read;
+		};
+
+		let unregister = start();
+		try {
+			await waitFor(() => backend.cursor && runtime.getReadiness(backend.id).state === 'ready', { timeout: 20_000 });
+			await writeRemote('a');
+			const first = await durableThrough('a');
+			await waitFor(() => backend.shutdownEpochs.includes(first.batch.ownerEpoch), { timeout: 20_000 });
+			const second = await afterIdle('b', first);
+			assert(second.batch.ownerEpoch > first.batch.ownerEpoch, 'a released owner re-acquired the index');
+
+			await unregister();
+			await runtime.stop();
+			unregister = start();
+			await waitFor(
+				() => {
+					const status = runtime.getStatus(backend.id);
+					return status?.state === 'idle' && status.ownerEpoch > second.batch.ownerEpoch;
+				},
+				{ timeout: 20_000 }
+			);
+			const third = await afterIdle('c', second);
+			assert(third.batch.ownerEpoch > second.batch.ownerEpoch, 'a restarted runtime acquired the index');
+		} finally {
+			backend.barriersOpen = true;
+			await unregister();
+			await runtime.stop();
+			runtime = undefined;
+		}
 	});
 
 	describe('a timestamp-anchored log that retention empties while idle', () => {

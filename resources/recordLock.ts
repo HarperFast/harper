@@ -88,6 +88,8 @@ export interface RecordLockHandle {
 	noteCandidateFloor(version: number, claimOnWrite?: boolean): void;
 	/** Compute the next holder-write floor from committed holder versions without claiming a local key unless requested. */
 	holderVersionFloor(floor?: number, claim?: boolean): number;
+	/** The floor a write under this lock must meet or exceed, not clamped to `acquiredAt`; 0 when none. */
+	requiredVersionFloor(): number;
 	/** Compute the next holder-write version; it may consume a local key before the write commits. */
 	holderVersionCandidate(floor?: number): number;
 	/** `ts_R` of the granted cluster round; undefined while the hold is node-scoped (Phase 0). */
@@ -131,6 +133,10 @@ export interface RecordLockHandle {
 	/** Defer `store.unlock(key)` until an in-flight native commit settles or `holdDeadlineMono` expires. */
 	retainForCommit?(holdDeadlineMono?: number): void;
 	releaseCommitHold?(): void;
+	/** Whether a native commit carrying this handle's writes holds it (between `retainForCommit` and its release). */
+	hasCommitHold?(): boolean;
+	/** Self-committing holder writes admitted and not yet settled; at most one (record-locks.md). */
+	selfCommits: number;
 	/**
 	 * Flip this handle to hold mode and reset its lease timer. Used during scoped→hold upgrades
 	 * so all instances that reference this handle object remain valid (no retire + replace).
@@ -267,6 +273,7 @@ class KeyLockHandle implements RecordLockHandle {
 	released = false;
 	expired = false;
 	writeRefused = false;
+	selfCommits = 0;
 	acquiredAt: number;
 	clusterTsR: number | undefined;
 	#committedHolderVersion: number | undefined;
@@ -311,6 +318,13 @@ class KeyLockHandle implements RecordLockHandle {
 
 	holderVersionFloor(floor?: number, claim = false): number {
 		return this.#resolveCandidate(floor, claim, this.#committedHolderVersion);
+	}
+
+	requiredVersionFloor(): number {
+		return Math.max(
+			this.#committedHolderVersion != null ? timestampAbove(this.#committedHolderVersion) : 0,
+			this.#candidateFloor ?? 0
+		);
 	}
 
 	holderVersionCandidate(floor?: number): number {
@@ -435,6 +449,10 @@ class KeyLockHandle implements RecordLockHandle {
 			this.#holdDeadlineMono = Math.max(this.#holdDeadlineMono ?? holdDeadlineMono, holdDeadlineMono);
 			if (this.#deferredUnlock) this.#armHoldTimer();
 		}
+	}
+
+	hasCommitHold(): boolean {
+		return this.#commitHolds > 0;
 	}
 
 	releaseCommitHold(): void {

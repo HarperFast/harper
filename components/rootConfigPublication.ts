@@ -14,6 +14,8 @@ import logger, { errorForLog } from '../utility/logging/harper_logger.ts';
 import { ServerError } from '../utility/errors/hdbError.ts';
 import { ComponentPreparationLockTimeoutError, withComponentPreparationLock } from './componentPreparationLock.ts';
 import { isThreadRunning } from '../server/threads/manageThreads.ts';
+import { CONFIG_PARAMS, STUDIO_CONFIG_PARAMS } from '../utility/hdbTerms.ts';
+import { RESERVED_COMPONENT_NAMES } from '../utility/componentNames.ts';
 
 /**
  * What an activation does to the component's entry in the root config, recorded in the activation journal
@@ -39,12 +41,39 @@ export type PayloadRouting = Partial<Record<(typeof PAYLOAD_ROUTING_KEYS)[number
 
 const ROOT_CONFIG_EFFECT_KINDS = new Set(['keep', 'set', 'unset-package', 'remove']);
 const PACKAGE_INSTALL_KEYS = ['package', 'install', 'credentials'];
+// A reserved name's root entry is Harper's settings section, whose keys its config params name. An application
+// deployed under the name before it was reserved shares the entry and owns only the other keys, so dropping it
+// leaves the settings, and an entry of settings alone is no application's.
+const SECTION_KEYS: ReadonlyMap<string, ReadonlySet<string>> = new Map(
+	[...RESERVED_COMPONENT_NAMES].map((name) => [
+		name,
+		new Set(
+			[...Object.values(CONFIG_PARAMS), ...Object.values(STUDIO_CONFIG_PARAMS)]
+				.filter((param) => param.startsWith(`${name}_`))
+				.map((param) => param.slice(name.length + 1).split('_')[0])
+		),
+	])
+);
 // Every holder is one parse-and-rewrite of a small file, so a wait this long means the holder is wedged, not
 // busy. Not renewed for a live holder: a config write is not an `npm install`.
 const ROOT_CONFIG_LOCK_WAIT_MS = 30_000;
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** The keys of a root entry its application owns, or `undefined` for all of them. */
+function applicationKeys(component: string, entry: unknown): string[] | undefined {
+	const sectionKeys = SECTION_KEYS.get(component);
+	return sectionKeys && isPlainObject(entry) ? Object.keys(entry).filter((key) => !sectionKeys.has(key)) : undefined;
+}
+
+function applicationEntry(component: string, entry: unknown): unknown {
+	const owned = applicationKeys(component, entry);
+	if (!owned) return entry;
+	return owned.length > 0
+		? Object.fromEntries(owned.map((key) => [key, (entry as Record<string, unknown>)[key]]))
+		: undefined;
 }
 
 /** Shape only. A `set` entry is additionally validated as an application config by whoever journals or reads it. */
@@ -140,7 +169,7 @@ export async function applyRootConfigEffect(component: string, effect: RootConfi
 	return withRootConfigPublicationLock(async () => {
 		const { configFilePath, configDoc, changed } = readRootConfigChange(component, effect);
 		assertEnvLayersKeepEffect(component, effect, configDoc.toJSON() ?? {});
-		if (changed) atomicWriteFile(configFilePath, String(configDoc), { durable: true });
+		if (changed) atomicWriteFile(configFilePath, String(configDoc), { durable: true, ownerOnly: true });
 		else syncFileToStorageSync(configFilePath);
 		// Inside the lock: on the main thread a refresh re-applies the env config layers and can rewrite the file.
 		env.initSync(true);
@@ -164,21 +193,21 @@ export async function applyRootConfigEffect(component: string, effect: RootConfi
 }
 
 /**
- * Whether the root config file on disk names an entry for the component — true when it cannot tell, since a caller
- * deciding whether the entry is gone must not guess that it is.
+ * Whether the root config file on disk names an entry for the component's application — true when it cannot tell,
+ * since a caller deciding whether the entry is gone must not guess that it is.
  */
 export function hasRootConfigEntry(component: string): boolean {
 	try {
 		const configDoc = parseYamlDoc(getRootConfigFilePath());
-		return configDoc.errors?.length > 0 || configDoc.toJSON()?.[component] !== undefined;
+		return configDoc.errors?.length > 0 || applicationEntry(component, configDoc.toJSON()?.[component]) !== undefined;
 	} catch {
 		return true;
 	}
 }
 
-/** The component's entry as the root config file on disk has it, which is what an effect is applied to. */
+/** The component's entry as the root config file on disk has it, without a reserved name's settings. */
 export function readRootConfigEntry(component: string): unknown {
-	return readRootConfigChange(component, { kind: 'keep' }).configDoc.toJSON()?.[component];
+	return applicationEntry(component, readRootConfigChange(component, { kind: 'keep' }).configDoc.toJSON()?.[component]);
 }
 
 /**
@@ -348,9 +377,15 @@ function applyEffectToDocument(configDoc: any, component: string, effect: RootCo
 			}
 			return true;
 		}
-		case 'remove':
+		case 'remove': {
 			if (!configDoc.hasIn([component])) return false;
-			configDoc.deleteIn([component]);
-			return true;
+			const owned = applicationKeys(component, current);
+			if (!owned || owned.length === Object.keys(current).length) {
+				configDoc.deleteIn([component]);
+				return true;
+			}
+			for (const key of owned) configDoc.deleteIn([component, key]);
+			return owned.length > 0;
+		}
 	}
 }

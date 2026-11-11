@@ -677,13 +677,6 @@ export class HierarchicalNavigableSmallWorld {
 					}
 					logger.warn?.('deleting an unopenable HNSW plane file left by an interrupted create', openError);
 					unlinkSync(filePath);
-					if (this.filePrimary) {
-						// The surviving mappings still name node ids from the file just removed.
-						// Creating a fresh plane here would resolve them against an empty graph;
-						// only reconstruction, which clears the mappings first, is safe.
-						this.planeRetryAt = now + PLANE_ATTACH_RETRY_MS;
-						return null;
-					}
 				}
 			}
 			if (!dims) return null; // open-only call and no file: nothing to attach yet
@@ -692,6 +685,13 @@ export class HierarchicalNavigableSmallWorld {
 			// rather than creating and unlinking — a concurrent insert that saw the empty file would
 			// read it as another worker's in-progress create and 503 for PLANE_STALE_CREATE_MS.
 			if (!dimsFromVector) return null;
+			// Surviving mappings name node ids of a file that is gone (a restore, an unopenable file
+			// removed above, a hand deletion). A fresh plane would reuse those ids and hide every one of
+			// their vectors from search; only reconstruction, which clears the mappings first, may create.
+			if (this.filePrimary && this.hasNodeMappings()) {
+				logger.error?.(`${this.indexStore.name} lost its native file while its node mappings survive`);
+				return null;
+			}
 			let fd: number;
 			try {
 				fd = openSync(filePath, 'wx');
@@ -777,6 +777,11 @@ export class HierarchicalNavigableSmallWorld {
 				this.invalidatePlaneFile(filePath, attached);
 			}
 		}
+	}
+
+	derivedStorageLost(): boolean {
+		const filePath = this.planeFilePath();
+		return filePath !== undefined && !existsSync(filePath) && this.hasNodeMappings();
 	}
 
 	/** True while any primary-key mapping survives, which is the only proof this index holds nodes. */

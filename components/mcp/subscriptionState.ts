@@ -11,12 +11,14 @@ import {
 	type McpSessionRecord,
 } from './session.ts';
 import { getRegisteredSession } from './sessionRegistry.ts';
+import { isCustomSubscribeError } from './resources.ts';
 import { addResourceSubscription, dropSessionSubscriptions, removeResourceSubscription } from './subscriptions.ts';
 import type { AuthedUser } from './toolRegistry.ts';
 
 const DEFAULT_RESPONSE_TIMEOUT_MS = 30_000;
 const MAX_PENDING = 100;
 const MAX_PENDING_PER_SESSION = 25;
+const RESTORE_CONCURRENCY = 8;
 const pendingBySession = new Map<string, number>();
 let responseTimeoutMs = DEFAULT_RESPONSE_TIMEOUT_MS;
 let pending = 0;
@@ -113,11 +115,15 @@ export async function claimSubscriptionOwner(sessionId: string, streamToken: str
 	const installed = new Map<string, string>();
 	const initialGenerations = new Map<string, string>();
 	const rejected: Rejected = Object.create(null);
+	const stickyCustom = new Set<string>();
 	const reconnectScope = record.user._scopedToken ? subscriptionScope(record.user) : undefined;
 	const restoredScopes = new Map<string, string>();
+	const pendingCloses = new Set<() => void>();
 	const close = () => {
 		if (stopped) return;
 		stopped = true;
+		for (const onClose of pendingCloses) onClose();
+		pendingCloses.clear();
 		watcher?.end();
 		dropSessionSubscriptions(sessionId);
 		void withSessionSubscriptionLock(sessionId, async (session) => {
@@ -128,17 +134,18 @@ export async function claimSubscriptionOwner(sessionId: string, streamToken: str
 	const fail = () => record.queue.close();
 	const current = () => !stopped && getRegisteredSession(sessionId) === record;
 	async function install(uri: string, user: AuthedUser): Promise<boolean> {
+		const timer = setTimeout(fail, responseTimeoutMs);
 		let onClose!: () => void;
 		const closed = new Promise<boolean>((resolve) => {
 			onClose = () => resolve(false);
-			record.queue.once('close', onClose);
+			if (stopped) resolve(false);
+			else pendingCloses.add(onClose);
 		});
-		const timer = setTimeout(fail, responseTimeoutMs);
 		try {
 			return await Promise.race([addResourceSubscription(sessionId, uri, user), closed]);
 		} finally {
 			clearTimeout(timer);
-			record.queue.off('close', onClose);
+			pendingCloses.delete(onClose);
 		}
 	}
 	const schedule = () => {
@@ -178,57 +185,70 @@ export async function claimSubscriptionOwner(sessionId: string, streamToken: str
 			const generationOf = (uri: string) => session.subscriptionGenerations?.[uri] ?? '';
 			for (const uri of installed.keys()) {
 				if (!uris.has(uri)) {
-					removeResourceSubscription(sessionId, uri);
 					installed.delete(uri);
+					removeResourceSubscription(sessionId, uri);
 				}
 			}
 			for (const uri of Object.keys(rejected)) {
 				if (
 					!uris.has(uri) ||
 					rejected[uri].generation !== generationOf(uri) ||
-					rejected[uri].result === 'internal-error'
-				)
+					(rejected[uri].result === 'internal-error' && !stickyCustom.has(uri))
+				) {
+					stickyCustom.delete(uri);
 					delete rejected[uri];
-			}
-			for (const uri of uris) {
-				const generation = generationOf(uri);
-				const restoring = initialGenerations.get(uri) === generation;
-				if (installed.get(uri) === generation || rejected[uri]) continue;
-				const principalId = session.subscriptionPrincipalIds?.[uri];
-				const user =
-					localPrincipals.get(generation) ??
-					(principalId ? restorePrincipal(session.subscriptionPrincipals?.[principalId], record.user) : record.user);
-				try {
-					let differentScopedGrant = false;
-					if (restoring && user && reconnectScope === undefined) {
-						differentScopedGrant = user._scopedToken === true;
-					} else if (restoring && user) {
-						let scope =
-							user === record.user ? reconnectScope : principalId ? restoredScopes.get(principalId) : undefined;
-						if (scope === undefined) {
-							scope = subscriptionScope(user);
-							if (principalId) restoredScopes.set(principalId, scope);
-						}
-						differentScopedGrant = scope !== reconnectScope;
-					}
-					if (
-						!user ||
-						differentScopedGrant ||
-						(user.authExpiresAt !== undefined && Date.now() >= user.authExpiresAt * 1000)
-					) {
-						rejected[uri] = { generation, result: 'permission-denied' };
-					} else if (await install(uri, user)) installed.set(uri, generation);
-					else rejected[uri] = { generation, result: 'not-subscribable' };
-				} catch (error) {
-					rejected[uri] = {
-						generation,
-						result: error instanceof AccessViolation ? 'permission-denied' : 'internal-error',
-					};
-					if (restoring && rejected[uri].result === 'internal-error') {
-						fail();
-						return;
-					}
 				}
+			}
+			const pending = Array.from(uris).filter((uri) => installed.get(uri) !== generationOf(uri) && !rejected[uri]);
+			for (let i = 0; i < pending.length; i += RESTORE_CONCURRENCY) {
+				await Promise.all(
+					pending.slice(i, i + RESTORE_CONCURRENCY).map(async (uri) => {
+						const generation = generationOf(uri);
+						const restoring = initialGenerations.get(uri) === generation;
+						const principalId = session.subscriptionPrincipalIds?.[uri];
+						const user =
+							localPrincipals.get(generation) ??
+							(principalId
+								? restorePrincipal(session.subscriptionPrincipals?.[principalId], record.user)
+								: record.user);
+						try {
+							let differentScopedGrant = false;
+							if (restoring && user && reconnectScope === undefined) {
+								differentScopedGrant = user._scopedToken === true;
+							} else if (restoring && user) {
+								let scope =
+									user === record.user ? reconnectScope : principalId ? restoredScopes.get(principalId) : undefined;
+								if (scope === undefined) {
+									scope = subscriptionScope(user);
+									if (principalId) restoredScopes.set(principalId, scope);
+								}
+								differentScopedGrant = scope !== reconnectScope;
+							}
+							if (
+								!user ||
+								differentScopedGrant ||
+								(user.authExpiresAt !== undefined && Date.now() >= user.authExpiresAt * 1000)
+							) {
+								rejected[uri] = { generation, result: 'permission-denied' };
+							} else if (await install(uri, user)) {
+								installed.set(uri, generation);
+							} else if (current()) {
+								rejected[uri] = { generation, result: 'not-subscribable' };
+							}
+						} catch (error) {
+							if (error instanceof AccessViolation) {
+								rejected[uri] = { generation, result: 'permission-denied' };
+							} else {
+								rejected[uri] = { generation, result: 'internal-error' };
+								if (isCustomSubscribeError(error)) {
+									stickyCustom.add(uri);
+								} else if (restoring) {
+									fail();
+								}
+							}
+						}
+					})
+				);
 				if (!current()) return;
 				const latest = await loadSession(sessionId);
 				if (!current()) return;
@@ -255,8 +275,8 @@ export async function claimSubscriptionOwner(sessionId: string, streamToken: str
 					latest.subscriptionPrincipalIds
 				);
 				for (const uri of terminal) {
-					removeResourceSubscription(sessionId, uri);
 					installed.delete(uri);
+					removeResourceSubscription(sessionId, uri);
 					delete generations[uri];
 					delete principalIds[uri];
 				}

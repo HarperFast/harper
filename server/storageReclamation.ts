@@ -104,12 +104,13 @@ export async function getQuotaStatus(): Promise<QuotaStatusData | undefined> {
  * @param path
  * @param handler
  * @param skipThreadCheck
+ * @returns whether this thread registered the handler
  */
 export function onStorageReclamation(
 	path: string,
 	handler: (priority: number) => Promise<void> | void,
 	skipThreadCheck?: boolean
-) {
+): boolean {
 	if (skipThreadCheck || ownsStoreMaintenance(path)) {
 		// only run on one thread (last one)
 		if (!path) {
@@ -120,7 +121,9 @@ export function onStorageReclamation(
 		}
 		reclamationHandlers.get(path).push({ priority: 0, handler });
 		if (!reclamationTimer) reclamationTimer = setTimeout(runReclamationHandlers, RECLAMATION_INTERVAL).unref();
+		return true;
 	}
+	return false;
 }
 
 /**
@@ -205,14 +208,18 @@ const defaultGetAvailableSpaceRatio = async (path: string): Promise<number> => {
 };
 let getAvailableSpaceRatio: (path: string) => Promise<number> = defaultGetAvailableSpaceRatio;
 
+/** The ratio of the threshold to a path's available space ratio; above 1 means reclamation is needed. */
+export async function getStorageReclamationPriority(path: string): Promise<number> {
+	return RECLAMATION_THRESHOLD / (await getAvailableSpaceRatio(path));
+}
+
 /**
  * Run the registered reclamation handlers, if any disk drives are below the threshold
  */
 export async function runReclamationHandlers() {
 	for (const [path, handlers] of reclamationHandlers) {
 		try {
-			const availableRatio = await getAvailableSpaceRatio(path);
-			const priority = RECLAMATION_THRESHOLD / availableRatio;
+			const priority = await getStorageReclamationPriority(path);
 			for (const entry of handlers) {
 				const { priority: previousPriority, handler } = entry;
 				entry.priority = priority;

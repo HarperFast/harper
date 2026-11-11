@@ -27,6 +27,7 @@ import * as jobRunner from '../jobs/jobRunner.ts';
 import * as tokenAuthentication from '../../security/tokenAuthentication.ts';
 import * as auth from '../../security/auth.ts';
 import * as configUtils from '../../config/configUtils.ts';
+import { getStudioConfiguration } from '../../config/studioConfiguration.ts';
 import * as transactionLog from '../../utility/logging/transactionLog.ts';
 import * as npmUtilities from '../../utility/npmUtilities.ts';
 import { _assignPackageExport } from '../../globals.js';
@@ -47,7 +48,6 @@ import * as networkAccess from '../../security/networkAccess.ts';
 import * as tokenExchange from '../../security/authn/oidc/tokenExchange.ts';
 import * as previewOperations from '../../components/previewOperations.ts';
 import { contextStorage } from '../../resources/transaction.ts';
-import { isMainThread } from 'node:worker_threads';
 import {
 	announceRegisteredOperation,
 	getRemoteOperationFunction,
@@ -120,7 +120,7 @@ export const UNLOGGABLE_OPERATION_FIELDS = [
 ];
 
 const UNLOGGABLE_FIELDS_BY_OPERATION = new Map<string, ReadonlySet<string>>([
-	['set_configuration', new Set(['models'])],
+	['set_configuration', new Set(['models', terms.STUDIO_CONFIG_PARAMS.NAVIGATION, terms.STUDIO_CONFIG_PARAMS.LANDING])],
 	['add_ssh_key', new Set(['key'])],
 	['update_ssh_key', new Set(['key'])],
 ]);
@@ -237,11 +237,11 @@ function registerOperation(operationDefinition: OperationDefinition) {
 		declaredPermissionNames.add(name);
 	}
 	OPERATION_FUNCTION_MAP.set(name as any, new OperationFunctionObject(handler));
-	// Components load per-worker, so a registration made there is invisible to the main-thread
-	// ops-API dispatcher (each thread has its own OPERATION_FUNCTION_MAP instance). Announce it
-	// so the main thread can forward calls here (#1736), and can mirror the role-allowlist mark that
-	// registerOperationPermission above made only in this thread's scope.
-	if (!isMainThread) announceRegisteredOperation(name, requiresSuperUser !== undefined);
+	// Each thread has its own OPERATION_FUNCTION_MAP, so a registration made here is invisible to
+	// the other side: a worker's to the main-thread ops-API dispatcher (#1736), the main thread's to
+	// components on workers (#4134). Announce it so that side can forward calls here, and can mirror
+	// the role-allowlist mark that registerOperationPermission above made only in this thread's scope.
+	announceRegisteredOperation(name, requiresSuperUser !== undefined);
 }
 
 // Register the durable MCP quota policy as a function (see components/mcp/quota.ts). Worker-local,
@@ -261,17 +261,17 @@ const EXPORT_SEARCH_OPERATIONS = new Set<string>([
 	terms.OPERATIONS_ENUM.SQL,
 ]);
 
-export function chooseOperation(json: OperationRequestBody, bypassAuth = false) {
+export function chooseOperation(json: OperationRequestBody, bypassAuth = false, forwarded = false) {
 	let getOpResult: OperationFunctionObject;
 	try {
 		getOpResult = getOperationFunction(json);
 	} catch (err) {
-		// Not in this thread's map — a component may have registered it on a worker thread
-		// (components load per-worker). Forward there for execution; the worker runs the
-		// full permission check (with the forwarded hdb_user) where the operation function
-		// and its metadata actually exist, so no perm check is skipped by returning early
-		// here (#1736). Workers never re-forward, so an unknown op can't loop.
-		if (isMainThread) {
+		// Not in this thread's map — the other side of the bridge may have registered it: a component
+		// on a worker (#1736), or the main thread alone (#4134). Forward there for execution; that
+		// thread runs the full permission check (with the forwarded hdb_user) where the operation
+		// function and its metadata actually exist, so no perm check is skipped by returning early
+		// here. A request that was itself forwarded stays local, so an unknown op can't loop.
+		if (!forwarded) {
 			const remoteOperationFunction = getRemoteOperationFunction(json.operation, bypassAuth);
 			if (remoteOperationFunction) return remoteOperationFunction;
 		}
@@ -709,6 +709,7 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 	opFuncMap.set(terms.OPERATIONS_ENUM.LOGOUT, new OperationFunctionObject(auth.logout));
 
 	opFuncMap.set(terms.OPERATIONS_ENUM.GET_CONFIGURATION, new OperationFunctionObject(configUtils.getConfiguration));
+	opFuncMap.set(terms.OPERATIONS_ENUM.GET_STUDIO_CONFIGURATION, new OperationFunctionObject(getStudioConfiguration));
 	opFuncMap.set(
 		terms.OPERATIONS_ENUM.CUSTOM_FUNCTIONS_STATUS,
 		new OperationFunctionObject(customFunctionOperations.customFunctionsStatus)

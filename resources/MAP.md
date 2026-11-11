@@ -54,7 +54,7 @@ Where things are in `resources/`. The rules live in [DESIGN.md](DESIGN.md): read
 - the per-request transaction → `txnForContext` in Table.ts; `transaction()` in transaction.ts
 - transaction timeouts and long-held handles → `startMonitoringTxns` in DatabaseTransaction.ts; longLivedTransactions.ts
 - conflict retry cap, deadline, aborting a logged commit → `noteRetryBoundary`, `mustRetryLoggedCommit` in DatabaseTransaction.ts
-- residency, stubs, replicas → `getResidency`, `_storeReplica` in Table.ts; residencyMaps.ts
+- residency, stubs, replicas → `getResidency`, `_storeReplica`, `reclaimReplicaSpace` in Table.ts; residencyMaps.ts
 - table create, schema change, drop → `table()`, `runIndexing` in databases.ts; `dropTable`, `updatedAttributes` in Table.ts
 - when a `@computed` index rebuilds (re-declare, late resolver) → `declareTable`, `requestComputedIndexRepair` in databases.ts
 - relationships → the resolvers built in `updatedAttributes`; `_prepareRelationshipSelection` and `_readDenial` in Table.ts

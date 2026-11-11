@@ -124,7 +124,13 @@ import {
 } from './derivedIndexRegistry.ts';
 import { totalmem } from 'node:os';
 import { RocksIndexStore } from './RocksIndexStore.ts';
-import { resolveRocksArenaBlockSize, resolveRocksMemoryConfig } from '../utility/rocksMemoryConfig.ts';
+import {
+	resolveRecordCacheSize,
+	resolveRocksArenaBlockSize,
+	resolveRocksMemoryConfig,
+	resolveVerificationTableEntries,
+} from '../utility/rocksMemoryConfig.ts';
+import { plannedTableThreadCount } from '../server/threads/workerPools.ts';
 import { isProcessRunning } from '../utility/processManagement/processManagement.ts';
 import {
 	compileFullTextDefinitions,
@@ -461,8 +467,39 @@ export function toRocksCompression(compression: unknown): unknown {
 	return compression;
 }
 
+let verificationTableSized = false;
+
+/**
+ * rocksdb-js's verification table is one per process, and once it has been used it refuses any size,
+ * even the one it has. Main uses its databases before it starts a worker, so main sizes the table on its
+ * first open and no worker does. It is a call of its own because a rejected call can skip the other
+ * settings it carries.
+ */
+function sizeVerificationTable(): void {
+	if (verificationTableSized || !isMainThread) return;
+	if (envGet(CONFIG_PARAMS.STORAGE_CACHING) === false) {
+		verificationTableSized = true;
+		return;
+	}
+	const verificationTableEntries = resolveVerificationTableEntries({
+		recordCacheSize: resolveRecordCacheSize(envGet(CONFIG_PARAMS.STORAGE_RECORDCACHESIZE)),
+		threadCount: plannedTableThreadCount(),
+		availableMemory: Math.min(process.constrainedMemory?.() || Infinity, totalmem()),
+	});
+	try {
+		RocksDatabase.config({ verificationTableEntries });
+		logger.trace(`Verification table sized to ${verificationTableEntries} entries`);
+	} catch (error) {
+		// something else in this process used the table before Harper's first open
+		if (!/Verification table size cannot be changed/.test((error as Error)?.message)) throw error;
+		logger.warn(`Verification table keeps its size instead of ${verificationTableEntries} entries:`, error);
+	}
+	verificationTableSized = true;
+}
+
 export function openRocksDatabase(path: string, options: RocksDatabaseOptions & { dupSort?: boolean }) {
 	options.disableWAL ??= true;
+	sizeVerificationTable();
 	const legacyOptions = options as { compression?: unknown };
 	// A configured codec applies to every column family, overriding whatever per-table metadata
 	// carries — that metadata records the LMDB-era boolean, so without this there is no way to
@@ -1928,6 +1965,9 @@ export function openRestoredGeneration(path: string, databaseName: string): Rest
 		throw new Error(`No restored ${databaseName} database was found at ${path}`);
 	}
 	const rootStore = openRocksDatabase(path, { disableWAL: false, enableStats: true }) as RocksRootDatabase;
+	// A proof has no use for derived indexes, and a runtime started here would rebuild or apply into the
+	// generation being proven and still be running when `closeRestoredGeneration` closes its stores.
+	permanentlySuspendDerivedIndexActivation(rootStore);
 	const openedStores: any[] = [];
 	const tables: Tables = {};
 	try {
