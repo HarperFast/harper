@@ -389,9 +389,7 @@ export async function checkDesignDocs({ root, base, push } = {}) {
 	const baseline = base ? baseState(root, base) : undefined;
 	const ceilingsChanged = baseline?.changed.has(CEILINGS_FILE);
 	const inScope = (file) =>
-		!baseline ||
-		baseline.changed.has(file) ||
-		(ceilingsChanged && (file in ceilings || file in (baseline.ceilings ?? {})));
+		!baseline || baseline.changed.has(file) || (ceilingsChanged && ceilings[file] !== baseline.ceilings?.[file]);
 	const report = (file, message) => {
 		if (inScope(file)) errors.push(message);
 		else warnings.push(`${message} (unchanged since ${base}, so not failing this change)`);
