@@ -2,7 +2,6 @@ import {
 	TransactionLog,
 	TransactionLogUntilUnreachedError,
 	RocksDatabase,
-	shutdown,
 	type TransactionEntry,
 } from '@harperfast/rocksdb-js';
 import { isReservedForLocalAppend } from './originClosedFloor.ts';
@@ -16,15 +15,12 @@ import {
 	isMidLogBreak,
 	type CorruptFrameStop,
 } from './replayLogsGuards.ts';
-import { isMainThread } from 'node:worker_threads';
 import { EventEmitter } from 'node:events';
 import { asBinary } from './asBinary.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 
-if (!process.env.HARPER_NO_FLUSH_ON_EXIT && isMainThread) {
-	// we want to be able to test log replay
-	process.on('exit', () => shutdown());
-}
+// rocksdb-js flushes and closes every database on process.exit(); log replay tests opt out
+if (process.env.HARPER_NO_FLUSH_ON_EXIT) RocksDatabase.config({ shutdownOnExit: false });
 
 // reserving 0x80000000 for future use if we need a flag to indicate 64-bits of flag bits for more flags
 const HAS_PREVIOUS_RESIDENCY_ID = 0x40000000;
