@@ -61,12 +61,9 @@ describe('full-text scoring contract', () => {
 
 	it('accepts only supported ABI and query API pairs', () => {
 		const stable = { lifecycleApiVersion: 1, mutationBatchApiVersion: 5 };
+		validateFullTextRuntimeVersions({ ...stable, nativeAbiVersion: 14, queryApiVersion: 8 });
 		for (const [nativeAbiVersion, queryApiVersion] of [
 			[13, 7],
-			[14, 8],
-		])
-			validateFullTextRuntimeVersions({ ...stable, nativeAbiVersion, queryApiVersion });
-		for (const [nativeAbiVersion, queryApiVersion] of [
 			[13, 8],
 			[14, 7],
 			[15, 8],

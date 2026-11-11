@@ -167,6 +167,7 @@ function simpleQueryIndex({
 	onSearch,
 	onBinding,
 	bindingReady,
+	capabilityLoadingTimeoutMilliseconds,
 	queryApiVersion,
 	entryForKey,
 	estimatedRecordCount = 20,
@@ -201,6 +202,7 @@ function simpleQueryIndex({
 		storeName,
 		sourceGeneration,
 		limits: {},
+		capabilityLoadingTimeoutMilliseconds,
 		binding: {
 			async runtimeInfo() {
 				onBinding?.();
@@ -1530,6 +1532,61 @@ describe('FullTextQueryIndex', () => {
 			}
 		});
 
+	it('waits for cold scoring capability loading whatever the index-wait budget', async () => {
+		const scoringQuery = { operator: 'boost', boost: 2, clause: { text: 'shoe', mode: 'any' } };
+		for (const [step, waitForIndexMilliseconds] of [
+			['explicit zero wait', 0],
+			['omitted wait', undefined],
+			['short positive wait', 5],
+		]) {
+			const auditStore = sharedStore();
+			const readinessId = `cold-scoring-wait-${waitForIndexMilliseconds ?? 'omitted'}`;
+			publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+			const bindingReady = Promise.withResolvers();
+			const coverageWaits = [];
+			const { index } = simpleQueryIndex({
+				auditStore,
+				readinessId,
+				payload: publicationPayload(),
+				hits: () => [{ id: nativeId(1, 'one'), version: '1', score: 1 }],
+				bindingReady: bindingReady.promise,
+				queryApiVersion: 8,
+			});
+			auditStore.setCoverage(readinessId, 99_000_000n);
+			index.attachDerivedHost({
+				readiness: () => ({ state: 'ready' }),
+				requestRebuild: () => true,
+				waitForCoverage: async (_started, timeout) => {
+					coverageWaits.push(timeout);
+				},
+			});
+			try {
+				const pending = index.search(
+					{
+						attribute: readinessId,
+						comparator: 'matches',
+						value: 'shoe',
+						fullTextQuery: scoringQuery,
+						...(waitForIndexMilliseconds !== undefined ? { waitForIndexMilliseconds } : null),
+					},
+					{ indexSearchStart: Promise.resolve() },
+					{ minResults: 1 }
+				);
+				await releaseAfterElapsed(bindingReady);
+				assert.strictEqual((await pending).length, 1, step);
+				if (waitForIndexMilliseconds === 5) {
+					assert.strictEqual(coverageWaits.length, 1, step);
+					assert(coverageWaits[0] > 0 && coverageWaits[0] <= 5, 'coverage wait starts after capability loading');
+				} else {
+					assert.deepStrictEqual(coverageWaits, [], step);
+				}
+			} finally {
+				bindingReady.resolve();
+				await index.close();
+			}
+		}
+	});
+
 	for (const waitForIndexMilliseconds of [0, 25])
 		for (const minResults of [0, 1])
 			it(`bounds cold scoring capability loading (wait ${waitForIndexMilliseconds}, results ${minResults})`, async () => {
@@ -1545,6 +1602,7 @@ describe('FullTextQueryIndex', () => {
 					hits: () => [],
 					onOpen: () => opens++,
 					bindingReady: bindingReady.promise,
+					capabilityLoadingTimeoutMilliseconds: 15,
 					queryApiVersion: 8,
 				});
 				attachCurrentCoverage(index, auditStore, readinessId);
@@ -1569,7 +1627,7 @@ describe('FullTextQueryIndex', () => {
 							error.statusCode === 503 &&
 							error.code === 'FULL_TEXT_INITIALIZATION_TIMEOUT' &&
 							error.retryable === true &&
-							/capability.*index-wait budget/.test(error.message)
+							error.message === 'Full-text capability loading timed out'
 					);
 					if (signal) assert.strictEqual(getEventListeners(signal, 'abort').length, 0);
 					assert.strictEqual(opens, 0);
@@ -1690,6 +1748,7 @@ describe('FullTextQueryIndex', () => {
 				hits: () => [],
 				onOpen: () => opens++,
 				bindingReady: bindingReady.promise,
+				capabilityLoadingTimeoutMilliseconds: 15,
 				queryApiVersion: 8,
 			});
 			attachCurrentCoverage(index, auditStore, readinessId);

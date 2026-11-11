@@ -73,6 +73,7 @@ const MAX_RELOAD_FAILURES_BEFORE_REOPEN = 3;
 const HIGHLIGHT_BLOB_READ_TIMEOUT_MILLISECONDS = 5_000;
 const READER_DRAIN_GRACE_MILLISECONDS = 1_000;
 const READER_ACQUISITION_TIMEOUT_MILLISECONDS = 30_000;
+const CAPABILITY_LOADING_TIMEOUT_MILLISECONDS = 30_000;
 const UTF8_DECODER = new TextDecoder('utf-8', { fatal: true });
 const logger = loggerWithTag('fulltext-query-index');
 
@@ -140,6 +141,7 @@ export type FullTextQueryIndexOptions = {
 	telemetryLabel?: string;
 	limits: NativeFullTextIndexConfiguration['limits'];
 	binding?: NativeFullTextModule | (() => Promise<NativeFullTextModule>);
+	capabilityLoadingTimeoutMilliseconds?: number;
 };
 
 export class FullTextQueryIndex {
@@ -260,7 +262,11 @@ export class FullTextQueryIndex {
 			if (waiting) {
 				if (scoring) {
 					if (!this.#binding) {
-						await waitForBinding(this.#getBinding(), readerAcquisitionTimeout(condition), context?.signal);
+						await waitForBinding(
+							this.#getBinding(),
+							this.#options.capabilityLoadingTimeoutMilliseconds ?? CAPABILITY_LOADING_TIMEOUT_MILLISECONDS,
+							context?.signal
+						);
 						context?.signal?.throwIfAborted();
 					}
 					if (this.#closed) throw new ServerError('Full-text index is closed', 503);
@@ -306,7 +312,11 @@ export class FullTextQueryIndex {
 					coverageError = error;
 				}
 				if (!this.#binding) {
-					await waitForBinding(this.#getBinding(), readerAcquisitionTimeout(condition), context?.signal);
+					await waitForBinding(
+						this.#getBinding(),
+						this.#options.capabilityLoadingTimeoutMilliseconds ?? CAPABILITY_LOADING_TIMEOUT_MILLISECONDS,
+						context?.signal
+					);
 					context?.signal?.throwIfAborted();
 					validateFullTextScoringRuntime(this.#queryApiVersion);
 				}
@@ -1540,13 +1550,6 @@ function assertQueryPolicy(expression: NativeFullTextSearchExpression, maximum: 
 	return scoring;
 }
 
-function readerAcquisitionTimeout(condition: FullTextCondition): number {
-	return Math.min(
-		MAX_WAIT_FOR_INDEX_MILLISECONDS,
-		Math.max(1, condition.waitForIndexMilliseconds ?? MAX_WAIT_FOR_INDEX_MILLISECONDS)
-	);
-}
-
 async function waitForBinding<T>(binding: Promise<T>, milliseconds: number, signal?: AbortSignal): Promise<T> {
 	let abort: (() => void) | undefined;
 	const cancelled = signal
@@ -1558,7 +1561,7 @@ async function waitForBinding<T>(binding: Promise<T>, milliseconds: number, sign
 		: undefined;
 	try {
 		return await withTimeout(cancelled ? Promise.race([binding, cancelled]) : binding, milliseconds, () =>
-			Object.assign(new ServerError('Full-text capability loading exceeded the index-wait budget', 503), {
+			Object.assign(new ServerError('Full-text capability loading timed out', 503), {
 				code: 'FULL_TEXT_INITIALIZATION_TIMEOUT',
 				retryable: true,
 			})

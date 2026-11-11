@@ -1,4 +1,3 @@
-import { FULLTEXT_SCORING_NATIVE_ABI_VERSION, FULLTEXT_SCORING_QUERY_API_VERSION } from './fullTextQueryProtocol.ts';
 import type { FullTextDerivedIndexEngine } from './fullTextDerivedIndex.ts';
 import * as env from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
@@ -10,10 +9,10 @@ import {
 import { getFullTextRuntimeConfiguration, FullTextWorkerInitializationError } from './fullTextRuntimeConfiguration.ts';
 import { loggerWithTag } from '../../utility/logging/logger.ts';
 
-const FULLTEXT_LEGACY_NATIVE_ABI_VERSION = 13;
+const FULLTEXT_NATIVE_ABI_VERSION = 14;
 const FULLTEXT_LIFECYCLE_API_VERSION = 1;
 const FULLTEXT_MUTATION_BATCH_API_VERSION = 5;
-const FULLTEXT_LEGACY_QUERY_API_VERSION = 7;
+const FULLTEXT_QUERY_API_VERSION = 8;
 const FULLTEXT_TELEMETRY_API_VERSION = 1;
 const logger = loggerWithTag('fulltext-derived-index');
 
@@ -416,12 +415,8 @@ export function validateFullTextRuntimeVersions(
 ): void {
 	if (
 		!info ||
-		!(
-			(info.nativeAbiVersion === FULLTEXT_LEGACY_NATIVE_ABI_VERSION &&
-				info.queryApiVersion === FULLTEXT_LEGACY_QUERY_API_VERSION) ||
-			(info.nativeAbiVersion === FULLTEXT_SCORING_NATIVE_ABI_VERSION &&
-				info.queryApiVersion === FULLTEXT_SCORING_QUERY_API_VERSION)
-		) ||
+		info.nativeAbiVersion !== FULLTEXT_NATIVE_ABI_VERSION ||
+		info.queryApiVersion !== FULLTEXT_QUERY_API_VERSION ||
 		info.lifecycleApiVersion !== FULLTEXT_LIFECYCLE_API_VERSION ||
 		info.mutationBatchApiVersion !== FULLTEXT_MUTATION_BATCH_API_VERSION
 	)
