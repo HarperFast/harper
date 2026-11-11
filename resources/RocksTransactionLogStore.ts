@@ -19,7 +19,7 @@ import { EventEmitter } from 'node:events';
 import { asBinary } from './asBinary.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 
-// rocksdb-js flushes and closes every database on process.exit(); log replay tests opt out
+// rocksdb-js flushes and closes every database on process.exit()
 if (process.env.HARPER_NO_FLUSH_ON_EXIT) RocksDatabase.config({ shutdownOnExit: false });
 
 // reserving 0x80000000 for future use if we need a flag to indicate 64-bits of flag bits for more flags
