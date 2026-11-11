@@ -58,14 +58,17 @@ function refuseMapping(log) {
 
 describe('startTime replay handoff to live delivery', () => {
 	let tableSequence = 0;
-	function freshTable() {
+	function freshTable(database = 'test') {
 		return table({
 			table: `SubReplayLateCommit${++tableSequence}`,
-			database: 'test',
+			database,
 			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
 			audit: true,
 		});
 	}
+	// a test that holds the broadcast uses its own database, where no other test's commit schedules a pass
+	let databaseSequence = 0;
+	const ownDatabase = () => `subReplayLateCommit${++databaseSequence}`;
 	before(() => {
 		setupTestDBPath();
 		setMainIsWorker(true);
@@ -144,9 +147,7 @@ describe('startTime replay handoff to live delivery', () => {
 	});
 
 	it('splits a transaction exactly once when the replay meets the broadcast inside it', async function () {
-		// a pass another test's commit had already scheduled can still run, and it ends the hold below
-		this.retries(3);
-		const T = freshTable();
+		const T = freshTable(ownDatabase());
 		if (!T.auditStore.reusableIterable) return this.skip();
 		const startTime = Date.now() - 1;
 		const opening = await T.subscribe({ isCollection: true });
@@ -216,11 +217,10 @@ describe('startTime replay handoff to live delivery', () => {
 
 	for (const otherTable of [false, true]) {
 		it(`keeps the resume cursor below a transaction the boundary splits, when a later transaction from another log follows it${otherTable ? ' on another table' : ''}`, async function () {
-			// a pass another test's commit had already scheduled can still run, and it ends the hold below
-			this.retries(3);
-			const T = freshTable();
+			const database = ownDatabase();
+			const T = freshTable(database);
 			if (!T.auditStore.reusableIterable) return this.skip();
-			const Other = otherTable ? freshTable() : T;
+			const Other = otherTable ? freshTable(database) : T;
 			const peerId = getIdOfRemoteNode('replay-handoff-peer', T.auditStore);
 			const startTime = Date.now() - 1;
 			const total = 8;
@@ -305,19 +305,8 @@ describe('startTime replay handoff to live delivery', () => {
 	});
 
 	describe('a log that cannot be read up to the broadcast yet', () => {
-		let sequence = 0;
-		function ownTable() {
-			const name = `SubReplayUnreached${++sequence}`;
-			return table({
-				table: name,
-				database: `subReplayUnreached${sequence}`,
-				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
-				audit: true,
-			});
-		}
-
 		it('keeps every log in place, then resumes and returns each entry once', async function () {
-			const T = ownTable();
+			const T = freshTable(ownDatabase());
 			const store = T.auditStore;
 			if (!store.reusableIterable) return this.skip();
 			const start = Date.now() - 1;
@@ -349,7 +338,7 @@ describe('startTime replay handoff to live delivery', () => {
 		});
 
 		it('holds the replay until the log can be read, then delivers each write once', async function () {
-			const T = ownTable();
+			const T = freshTable(ownDatabase());
 			if (!T.auditStore.reusableIterable) return this.skip();
 			const startTime = Date.now() - 1;
 			const dispatched = [];
@@ -382,7 +371,7 @@ describe('startTime replay handoff to live delivery', () => {
 		});
 
 		it('refuses a checked resume whose history is pruned while it waits', async function () {
-			const T = ownTable();
+			const T = freshTable(ownDatabase());
 			if (!T.auditStore.reusableIterable) return this.skip();
 			const positions = [];
 			const opening = await T.subscribe({ isCollection: true, listener: (event) => positions.push(event.localTime) });

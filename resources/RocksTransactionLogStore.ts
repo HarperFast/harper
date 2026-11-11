@@ -545,7 +545,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 				}
 			};
 			const read = peekAhead ? safePeek : safeNext;
-			// a bounded range records each log's last returned entry, so a transaction its bound splits is known
+			// openTransactionFloor reads them on a bounded range
 			const trackLastEntry = attributeCorruption || bounded;
 			const pull = (i: number) => {
 				const iterator = iterators[i];

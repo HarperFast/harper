@@ -815,9 +815,8 @@ const TEST_WRITE_KEY_BUFFER = Buffer.allocUnsafeSlow(8192);
 const MAX_KEY_BYTES = 1978;
 const EVENT_HIGH_WATER_MARK = 100;
 const REPLAY_YIELD_INTERVAL = 100; // yield to the event loop every N records during subscription replay
-// how long a startTime replay waits for a log it cannot read up to live delivery's position before it fails
-const UNREACHED_LOG_WAIT_MS = 100;
-const UNREACHED_LOG_WAITS = 50;
+const UNREACHED_LOG_POLL_MS = 100;
+const UNREACHED_LOG_LIMIT_MS = 5000;
 // Cap for the out-of-order write reconciliation audit-chain walk in commit(). A pathologically deep
 // audit history (e.g. a replication full-copy of a large-history database) would otherwise walk and
 // buffer the entire backward chain per record, synchronously, on every worker — pinning the JS heap
@@ -10231,11 +10230,12 @@ export function makeTable(options): TableResourceClass {
 							// live delivery finishes a transaction the bound split, so a resume must start below it
 							const open = replayRange.openTransactionFloor?.();
 							subscription.replayedThrough = open <= key ? positionBefore(open) : key;
-							// without a position boundary the cursor is also the live gate
+							// LMDB and same-thread replays hand off by key
 							if (!liveRange) subscription.startTime = key;
 						};
 						let replayIterator = replayRange[Symbol.iterator]();
-						let unreachedWaits = 0;
+						let replayEnded = false;
+						let unreachedSince: number | undefined;
 						try {
 							for (;;) {
 								let next: IteratorResult<any>;
@@ -10244,22 +10244,25 @@ export function makeTable(options): TableResourceClass {
 								} catch (error) {
 									// a log the broadcast has read past cannot be read up to it yet: ending here would hand off past it
 									if (!(error instanceof TransactionLogUntilUnreachedError)) throw error;
-									if (++unreachedWaits > UNREACHED_LOG_WAITS) {
+									if (unreachedSince === undefined) {
+										unreachedSince = performance.now();
+										logger.warn?.(`Subscription replay on ${tableName} is waiting for a transaction log`, error);
+									} else if (performance.now() - unreachedSince > UNREACHED_LOG_LIMIT_MS) {
 										throw new ServerError(
 											'The transaction log could not be read up to live delivery; resubscribe to retry',
 											503
 										);
 									}
-									if (unreachedWaits === 1) {
-										logger.warn?.(`Subscription replay on ${tableName} is waiting for a transaction log`, error);
-									}
-									await sleep(UNREACHED_LOG_WAIT_MS);
+									await sleep(UNREACHED_LOG_POLL_MS);
 									if (!isActive()) return;
 									if (checkResume && !checkResume(unreadableLogRefusal(replayRange))) return;
 									replayIterator = replayRange[Symbol.iterator]();
 									continue;
 								}
-								if (next.done) break;
+								if (next.done) {
+									replayEnded = true;
+									break;
+								}
 								const auditRecord = next.value;
 								if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
 									recordsSinceYield = 0;
@@ -10299,7 +10302,7 @@ export function makeTable(options): TableResourceClass {
 								// a marker is table-wide, as the live broadcast delivers it
 								if (resnapshots) reloadPending = true;
 								else if (thisId == null || isReload || isDescendantId(thisId, id)) {
-									// converted as the live path would, since the replay stands in for it while live entries drop
+									// as live delivery converts it: a live entry dropped during the replay is delivered only here
 									const event = eventFromAudit(id, auditRecord, auditRecord.txnLogKey, undefined, true);
 									if (event) {
 										if (reportingProgress) event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
@@ -10318,7 +10321,7 @@ export function makeTable(options): TableResourceClass {
 							}
 							// the finished cursor reads no more commits, so live ones wait behind the scan
 							if (reloadPending) pendingRealTimeQueue = [];
-							// the turn the read reported done, so live delivery starts at the position where the replay stopped
+							// in the turn the read reported done, so no broadcast pass runs between them
 							dropDuringReplay = false;
 							if (reloadPending) {
 								reloadPending = false;
@@ -10342,6 +10345,8 @@ export function makeTable(options): TableResourceClass {
 						} finally {
 							// replay is done, we can start sending real-time messages again
 							dropDuringReplay = false;
+							// an LMDB range releases its cursor and read transaction here
+							if (!replayEnded) replayIterator.return?.();
 						}
 					} else if (count) {
 						const history = [];
