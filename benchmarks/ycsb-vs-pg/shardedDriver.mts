@@ -16,25 +16,15 @@ import { fork } from 'node:child_process';
 import { join } from 'node:path';
 import type { ChildProcess } from 'node:child_process';
 import { WORKLOADS } from '../ycsb/workload.mts';
-import type { LatencyStats, OperationType, PhaseResult, RecordShape } from '../ycsb/workload.mts';
+import type { LatencyStats, OperationType, PhaseResult } from '../ycsb/workload.mts';
 import type { ShardCommand } from './shardWorker.mts';
+import type { DriverConfig as K6DriverConfig, DriverRun, GeneratorResult, PhaseWindow } from './k6Driver.mts';
+import { cpuSecondsOf, verifyAffinity } from './resources.mts';
 
 const WORKER_PATH = join(import.meta.dirname, 'shardWorker.mts');
 
-export interface DriverConfig {
-	baseUrl: string;
-	table: string;
-	records: number;
-	opsPerWorkload: number;
-	concurrency: number;
+export interface DriverConfig extends K6DriverConfig {
 	shards: number;
-	shape: RecordShape;
-	keyWidth: number;
-	maxScanLength: number;
-	/** false attaches to an already-loaded dataset (a restored snapshot) instead of inserting it. */
-	load?: boolean;
-	authorization?: string;
-	callerAuthorizations?: Record<string, string>;
 }
 
 class ShardPool {
@@ -141,22 +131,6 @@ function split(total: number, parts: number): number[] {
 	return Array.from({ length: parts }, (_, i) => base + (i < total % parts ? 1 : 0));
 }
 
-export interface DriverRun {
-	load: PhaseResult;
-	/** Generator process PIDs, for CPU accounting and affinity checks. */
-	pids: number[];
-	/** Reads every loaded key exactly once, split across shards by key range. */
-	readAll(): Promise<PhaseResult>;
-	runWorkload(
-		name: string,
-		distribution?: 'uniform' | 'zipfian' | 'latest',
-		opsOverride?: number,
-		mix?: Record<string, number>
-	): Promise<PhaseResult>;
-	shardsUsed(name: string): number;
-	close(): Promise<void>;
-}
-
 export async function startDriver(config: DriverConfig): Promise<DriverRun> {
 	// A shard given zero connections runs nothing yet reports its key range complete.
 	if (!(config.concurrency >= config.shards && config.shards >= 1)) {
@@ -193,20 +167,33 @@ async function drive(pool: ShardPool, config: DriverConfig): Promise<DriverRun> 
 			return { ...base, phase, concurrency: split(config.concurrency, config.shards)[i], from, to: cursor };
 		});
 	};
+	/** Runs shard commands between the window's begin and end, with the shards' CPU across them. */
+	const measured = async (commands: ShardCommand[], window?: PhaseWindow): Promise<GeneratorResult> => {
+		if (config.cpus) for (const pid of pool.pids) verifyAffinity('generator', pid, config.cpus);
+		const cpuBefore = await cpuSecondsOf(pool.pids);
+		await window?.begin();
+		let result: PhaseResult;
+		try {
+			result = mergeShardResults(await pool.dispatch(commands));
+		} catch (error) {
+			await window?.end().catch(() => {});
+			throw error;
+		}
+		await window?.end();
+		return { ...result, generatorCpuSeconds: (await cpuSecondsOf(pool.pids)) - cpuBefore };
+	};
 	const load =
 		config.load === false
-			? { ops: 0, errors: 0, elapsedMs: 0, throughput: 0, latency: {} }
-			: mergeShardResults(await pool.dispatch(rangeCommands('load')));
+			? { ops: 0, errors: 0, elapsedMs: 0, throughput: 0, latency: {}, generatorCpuSeconds: 0 }
+			: await measured(rangeCommands('load'));
 
 	// Inserting workloads can't be split without cross-shard key coordination.
 	const shardsFor = (name: string) => (WORKLOADS[name].mix.insert ? 1 : config.shards);
 
 	return {
 		load,
-		pids: pool.pids,
-		readAll: async () => mergeShardResults(await pool.dispatch(rangeCommands('readAll'))),
-		shardsUsed: shardsFor,
-		async runWorkload(name, distribution, opsOverride, mix) {
+		readAll: () => measured(rangeCommands('readAll')),
+		async runWorkload(name, distribution, opsOverride, mix, window) {
 			const shards = shardsFor(name);
 			const ops = split(opsOverride ?? config.opsPerWorkload, shards);
 			const conc = split(config.concurrency, shards);
@@ -219,7 +206,7 @@ async function drive(pool: ShardPool, config: DriverConfig): Promise<DriverRun> 
 				distribution,
 				mix,
 			}));
-			return mergeShardResults(await pool.dispatch(commands));
+			return measured(commands, window);
 		},
 		close: () => pool.stop(),
 	};

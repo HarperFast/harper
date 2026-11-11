@@ -21,7 +21,7 @@ import { promisify } from 'node:util';
 import { join } from 'node:path';
 import { WORKLOADS, assertLinksFit, formatKey, recordReadsPerOp, usesDependentReads } from '../ycsb/workload.mts';
 import type { PhaseResult } from '../ycsb/workload.mts';
-import { startDriver, type DriverRun } from './shardedDriver.mts';
+import type { DriverConfig, DriverRun } from './k6Driver.mts';
 import { SWEEP_STACK_MEMORY, dataDirBytes, removePgSnapshots, dataDir } from './pgStack.mts';
 import { foreignProcessesInOwnCgroup, checkOwnCgroup, waitForQuiet, type HostLoad } from './resources.mts';
 import { summarizeEvents, type RocksdbActivity, type RocksdbEvent } from './rocksdbLog.mts';
@@ -37,6 +37,7 @@ import {
 	measureWindow,
 	primaryLatency,
 	sizedRecordCacheSize,
+	startGenerator,
 	targetOrder,
 	waitForQuietHosts,
 	withTarget,
@@ -231,7 +232,7 @@ async function prepareSnapshot(session: Session, key: SnapshotKey, keyWidth: num
 		session,
 		target,
 		async (running) => {
-			const driver = await startDriver(driverConfig(session, running, keyWidth, true));
+			const driver = await startSweepDriver(session, running, keyWidth, true);
 			let load: PhaseResult;
 			try {
 				load = driver.load;
@@ -262,22 +263,23 @@ async function prepareSnapshot(session: Session, key: SnapshotKey, keyWidth: num
 	);
 }
 
-function driverConfig(session: Session, running: Running, keyWidth: number, load: boolean) {
+function startSweepDriver(session: Session, running: Running, keyWidth: number, load: boolean): Promise<DriverRun> {
 	const { config } = session.options;
-	return {
+	const driverConfig: DriverConfig = {
 		baseUrl: running.baseUrl,
 		table: config.table,
 		records: config.records,
 		opsPerWorkload: config.opsPerWorkload,
 		concurrency: config.concurrency,
-		shards: session.shards,
 		shape: { fieldCount: config.fieldCount, fieldLength: config.fieldLength },
 		keyWidth,
 		maxScanLength: config.maxScanLength,
 		load,
 		authorization: running.authorization,
 		callerAuthorizations: running.callerAuthorizations,
+		cpus: session.driverCpus,
 	};
+	return startGenerator(session.generator, driverConfig, session.shards);
 }
 
 /** Fails unless the first and last loaded records came back with the restore, intact. */
@@ -394,7 +396,7 @@ async function measureSweepSample(
 			async (running) => {
 				sample.startupMs = running.startupMs;
 				phase = 'verify';
-				const driver = await startDriver(driverConfig(session, running, keyWidth, false));
+				const driver = await startSweepDriver(session, running, keyWidth, false);
 				try {
 					await verifyRestoredData(running, session, keyWidth);
 					if (usesDependentReads(WORKLOADS[workload])) {

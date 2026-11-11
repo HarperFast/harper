@@ -17,6 +17,7 @@ import {
 	KeyState,
 	LatencyRecorder,
 	ZipfianGenerator,
+	fnv64Mod,
 	runOperations,
 	type OpExecutor,
 	type OperationType,
@@ -155,6 +156,65 @@ test('KeyState.keyCount tracks the acknowledged frontier so reps can carry the k
 	strictEqual(keys.keyCount, 100, 'a gap at 100 holds the frontier despite 101 being acked');
 	keys.acknowledgeInsert(a.index);
 	strictEqual(keys.keyCount, 102, 'contiguous acks advance the frontier — next rep seeds from here');
+});
+
+test('KeyState insert ranges: clients insert disjoint keys and each reads only its own acknowledged ones', () => {
+	const clients = 4;
+	const states = Array.from(
+		{ length: clients },
+		(_, offset) =>
+			new KeyState({
+				distribution: 'latest',
+				initialKeyCount: 100,
+				keyWidth: 8,
+				shape: { fieldCount: 1, fieldLength: 30 },
+				maxScanLength: 10,
+				insertRange: { offset, stride: clients },
+			})
+	);
+	const inserted = states.map((keys) => [keys.nextInsert(), keys.nextInsert(), keys.nextInsert()]);
+	const indices = inserted.flat().map((i) => i.index);
+	strictEqual(new Set(indices).size, indices.length, 'no key is any two clients');
+	strictEqual(Math.min(...indices), 100);
+	strictEqual(Math.max(...indices), 100 + clients * 3 - 1, 'the clients together fill the range');
+	const [first, second] = inserted[2];
+	strictEqual(first.index, 102);
+	strictEqual(second.index, 106);
+	const keys = states[2];
+	keys.acknowledgeInsert(second.index);
+	for (let i = 0; i < 2000; i++) ok(keys.existingIndex() < 100, 'an ack past a gap exposes nothing');
+	keys.acknowledgeInsert(first.index);
+	strictEqual(keys.keyCount, 102);
+	const seen = new Set<number>();
+	for (let i = 0; i < 5000; i++) seen.add(keys.existingIndex());
+	ok(seen.has(102) && seen.has(106), 'both acknowledged inserts are readable');
+	ok(![...seen].some((index) => index >= 100 && index !== 102 && index !== 106), "and no other client's keys");
+	// A record's link and owner follow its key index, so every client writes the same content for a key.
+	strictEqual(
+		ownerOf(106),
+		buildRecord({ fieldCount: 1, fieldLength: 30 }, { index: 106, keyCount: 100, keyWidth: 8 }).field0.split(':')[1]
+	);
+	strictEqual(keys.record(106).field0.split(':')[1], ownerOf(106));
+});
+
+test('fnv64Mod matches the BigInt reference FNV-1a for every key and keyspace size it sees', () => {
+	const reference = (value: number, modulus: number): number => {
+		let hash = 0xcbf29ce484222325n;
+		let v = BigInt(value);
+		for (let i = 0; i < 8; i++) {
+			hash ^= v & 0xffn;
+			v >>= 8n;
+			hash = (hash * 0x100000001b3n) & ((1n << 64n) - 1n);
+		}
+		return Number(hash % BigInt(modulus));
+	};
+	const values = [0, 1, 255, 256, 65_535, 2 ** 32 - 1, 2 ** 32, 9_999_999_999];
+	for (let i = 0; i < 5_000; i++) values.push(Math.floor(Math.random() * 10_000_000_000));
+	const moduli = [1, 7, 200_000, 17_179_869, 68_719_476, 2 ** 31 - 1, 2 ** 36 + 5];
+	for (const value of values) {
+		for (const modulus of moduli)
+			strictEqual(fnv64Mod(value, modulus), reference(value, modulus), `${value} % ${modulus}`);
+	}
 });
 
 test('LatencyRecorder computes ordered percentiles', () => {

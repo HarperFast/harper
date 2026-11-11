@@ -13,7 +13,7 @@
  * Every target, as a whole, runs on the same set of `--target-cpus` cores (see README); the load
  * generator and this process run on disjoint physical cores.
  */
-import { readFile, writeFile, mkdir, mkdtemp, cp, rename, rm, statfs } from 'node:fs/promises';
+import { writeFile, mkdir, mkdtemp, cp, rename, rm, statfs } from 'node:fs/promises';
 import { statSync, existsSync, readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { createHash, createHmac, randomBytes } from 'node:crypto';
@@ -22,7 +22,14 @@ import { pathToFileURL } from 'node:url';
 import { parseOptions } from '../ycsb/harness.mts';
 import { WORKLOADS, OWNER_COUNT, formatKey, linkTarget, ownerOf, usesDependentReads } from '../ycsb/workload.mts';
 import type { DistributionName, LatencyStats, PhaseResult } from '../ycsb/workload.mts';
-import { startDriver, type DriverRun } from './shardedDriver.mts';
+import {
+	k6Version,
+	startDriver as startK6Driver,
+	type DriverConfig,
+	type DriverRun,
+	type PhaseWindow,
+} from './k6Driver.mts';
+import { startDriver as startNodeDriver } from './shardedDriver.mts';
 import { startPgStack, dataDir, WARM_STACK_MEMORY, type StackMemory, type StackService } from './pgStack.mts';
 import {
 	diffResources,
@@ -30,7 +37,6 @@ import {
 	readTopology,
 	chooseCpuSets,
 	assertDisjointCores,
-	verifyAffinity,
 	verifyMemoryLimit,
 	processCgroup,
 	stopScope,
@@ -211,9 +217,18 @@ type CacheMode = 'warm' | 'cold';
 export type AuthMode = 'none' | 'token';
 type Options = ReturnType<typeof parseOptions>;
 
+export type GeneratorName = 'k6' | 'node';
+
+/** k6 (k6Driver.mts), or the Node driver it is checked against (shardedDriver.mts, `shards` processes). */
+export function startGenerator(generator: GeneratorName, config: DriverConfig, shards = 4): Promise<DriverRun> {
+	return generator === 'node' ? startNodeDriver({ ...config, shards }) : startK6Driver(config);
+}
+
 export interface Session {
 	options: Options;
 	cache: CacheMode;
+	generator: GeneratorName;
+	/** --generator=node: its processes. */
 	shards: number;
 	serverCpus: number[];
 	driverCpus: number[];
@@ -259,7 +274,7 @@ interface Sample {
 	hostGate?: { waitedMs: number; quiet: boolean; load: HostLoad; byHost?: Record<string, HostLoad> };
 	/** The gate ran with other processes in this run's cgroup, whose CPU it counted as the run's (see checkOwnCgroup). */
 	sharedCgroup?: true;
-	shards: number;
+	generator: GeneratorName;
 	load: PhaseResult;
 	warm: PhaseResult;
 	measured: MeasuredWindow;
@@ -790,28 +805,13 @@ export async function withTarget<T>(
 	}
 }
 
-async function cpuSecondsOf(pids: number[]): Promise<number> {
-	let total = 0;
-	for (const pid of pids) {
-		try {
-			const stat = await readFile(`/proc/${pid}/stat`, 'utf8');
-			const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
-			total += (Number(fields[11]) + Number(fields[12])) / 100;
-		} catch {
-			// exited
-		}
-	}
-	return total;
-}
-
 export function assertNoErrors(phase: string, result: PhaseResult): void {
 	if (result.errors > 0) throw new Error(`${phase}: ${result.errors} failed requests — sample invalid`);
 }
 
-async function verifyPlacement(session: Session, running: Running, driver: DriverRun): Promise<number> {
-	const threads = await running.probe.verifyPlacement();
-	for (const pid of driver.pids) verifyAffinity('generator', pid, session.driverCpus);
-	return threads;
+/** The target's threads; the generator checks its own as each phase starts (DriverConfig.cpus). */
+function verifyPlacement(running: Running): Promise<number> {
+	return running.probe.verifyPlacement();
 }
 
 export interface MeasuredWindow {
@@ -891,8 +891,8 @@ async function profileWindow(
 	const { dir, ops } = session.profile!;
 	const prefix = join(dir, label);
 	// CPU is read inside each perf window, so perf's own start and stop are not charged to the ops.
-	const steadyResult = await runInWindow(running, { counters: true, baselineAfterPerf: true }, () =>
-		driver.runWorkload(workload, distribution, ops)
+	const steadyResult = await runInWindow(session, running, { counters: true, baselineAfterPerf: true }, (window) =>
+		driver.runWorkload(workload, distribution, ops, undefined, window)
 	);
 	const byComponent = steadyResult.reading.perf!;
 	const steadyDelta: ResourceDelta = diffResources(steadyResult.reading.before, steadyResult.reading.after);
@@ -909,8 +909,8 @@ async function profileWindow(
 			`${((t.instructionsUser + t.instructionsKernel) / steady.ops / 1000).toFixed(1)}k instructions/op, ` +
 			`IPC ${((t.instructionsUser + t.instructionsKernel) / (t.cyclesUser + t.cyclesKernel)).toFixed(2)}`
 	);
-	const recorded = await runInWindow(running, { recordPrefix: prefix, baselineAfterPerf: true }, () =>
-		driver.runWorkload(workload, distribution, ops)
+	const recorded = await runInWindow(session, running, { recordPrefix: prefix, baselineAfterPerf: true }, (window) =>
+		driver.runWorkload(workload, distribution, ops, undefined, window)
 	);
 	const { result } = recorded;
 	const delta = diffResources(recorded.reading.before, recorded.reading.after);
@@ -943,24 +943,47 @@ async function profileWindow(
  * an OOM kill during the window invalidates it, since a recovered worker would still post numbers.
  */
 /**
- * Runs `run` inside one target-side window: every instrument starts before it and stops after it, and
- * a failed run still closes the window (a perf left counting would run into the next sample).
+ * Runs `run` with one target-side window, which the generator opens as its iterations start and closes
+ * as they end. A failed run still closes an open window (a perf left counting would run into the next
+ * sample). In remote mode the window also covers the generator's own host.
  */
 async function runInWindow<T>(
+	session: Session,
 	running: Running,
 	options: Parameters<TargetProbe['beginWindow']>[0],
-	run: () => Promise<T>
-): Promise<{ result: T; reading: Awaited<ReturnType<TargetProbe['endWindow']>>; startMs: number }> {
-	await running.probe.beginWindow(options);
-	const startMs = Date.now();
-	let result: T;
+	run: (window: PhaseWindow) => Promise<T>
+): Promise<{
+	result: T;
+	reading: Awaited<ReturnType<TargetProbe['endWindow']>>;
+	window: { startMs: number; endMs: number };
+	generatorHost?: HostLoad;
+}> {
+	let open = false;
+	let reading: Awaited<ReturnType<TargetProbe['endWindow']>> | undefined;
+	let generatorHost: ReturnType<typeof startHostLoad> | undefined;
+	let generatorLoad: HostLoad | undefined;
+	const window = { startMs: 0, endMs: 0 };
 	try {
-		result = await run();
-	} catch (error) {
-		await running.probe.endWindow().catch(() => {});
-		throw error;
+		const result = await run({
+			async begin() {
+				await running.probe.beginWindow(options);
+				open = true;
+				window.startMs = Date.now();
+				// Remote mode: the generator's host, which the target hosts' readings do not cover.
+				if (session.remote) generatorHost = startHostLoad();
+			},
+			async end() {
+				open = false;
+				window.endMs = Date.now();
+				generatorLoad = await generatorHost?.stop();
+				reading = await running.probe.endWindow();
+			},
+		});
+		if (!reading) throw new Error('the generator ran without opening and closing its window');
+		return { result, reading, window, generatorHost: generatorLoad };
+	} finally {
+		if (open) await running.probe.endWindow().catch(() => {});
 	}
-	return { result, reading: await running.probe.endWindow(), startMs };
 }
 
 export async function measureWindow(
@@ -972,25 +995,22 @@ export async function measureWindow(
 	ops?: number,
 	label = workload
 ): Promise<MeasuredWindow> {
-	const affinityVerifiedThreads = await verifyPlacement(session, running, driver);
+	const affinityVerifiedThreads = await verifyPlacement(running);
 	const checkpointsBefore = await running.checkpoints?.();
-	const generatorBefore = await cpuSecondsOf(driver.pids);
-	// Remote mode: the generator's host, which the target hosts' readings do not cover.
-	const generatorHost = session.remote ? startHostLoad() : undefined;
-	const { result, reading, startMs } = await runInWindow(
+	const { result, reading, window, generatorHost } = await runInWindow(
+		session,
 		running,
 		{ counters: session.perfCounters, memory: true, clock: true, refaults: true },
-		() => driver.runWorkload(workload, distribution, ops)
+		(phaseWindow) => driver.runWorkload(workload, distribution, ops, undefined, phaseWindow)
 	);
-	const generatorCpuSeconds = (await cpuSecondsOf(driver.pids)) - generatorBefore;
-	const window = { startMs, endMs: Date.now() };
+	const { generatorCpuSeconds } = result;
 	const { before, after, cgroupMemory, meanClockGHz } = reading;
 	const refaultFilePages = reading.refaultFilePages ?? {};
 	const peaks = reading.memory!;
 	let hostLoad = reading.host;
 	let hosts = reading.hosts;
 	if (generatorHost) {
-		hosts = { ...(hosts ?? { target: reading.host }), generator: await generatorHost.stop() };
+		hosts = { ...(hosts ?? { target: reading.host }), generator: generatorHost };
 		hostLoad = mergeHostLoads(hosts);
 	}
 	const perf: MeasuredWindow['perf'] = reading.perf && { byComponent: reading.perf, total: sumCounters(reading.perf) };
@@ -1106,19 +1126,23 @@ async function measureSample(
 		session,
 		target,
 		async (running) => {
-			const driver = await startDriver({
-				baseUrl: running.baseUrl,
-				table: config.table,
-				records: config.records,
-				opsPerWorkload: config.opsPerWorkload,
-				concurrency: config.concurrency,
-				shards: session.shards,
-				shape: { fieldCount: config.fieldCount, fieldLength: config.fieldLength },
-				keyWidth,
-				maxScanLength: config.maxScanLength,
-				authorization: running.authorization,
-				callerAuthorizations: running.callerAuthorizations,
-			});
+			const driver = await startGenerator(
+				session.generator,
+				{
+					baseUrl: running.baseUrl,
+					table: config.table,
+					records: config.records,
+					opsPerWorkload: config.opsPerWorkload,
+					concurrency: config.concurrency,
+					shape: { fieldCount: config.fieldCount, fieldLength: config.fieldLength },
+					keyWidth,
+					maxScanLength: config.maxScanLength,
+					authorization: running.authorization,
+					callerAuthorizations: running.callerAuthorizations,
+					cpus: session.driverCpus,
+				},
+				session.shards
+			);
 			try {
 				assertNoErrors('load', driver.load);
 				console.log(`  [load] ${driver.load.throughput.toFixed(0)} records/sec`);
@@ -1153,7 +1177,7 @@ async function measureSample(
 					...placement,
 					workload,
 					auth: session.auth,
-					shards: driver.shardsUsed(workload),
+					generator: session.generator,
 					load: driver.load,
 					warm,
 					measured,
@@ -1436,6 +1460,8 @@ export async function createSession(
 		});
 		if (refused.length > 0) throw new Error(`--cache=cold does not support ${refused.join(', ')}`);
 	}
+	const generator = (argValue(argv, '--generator') ?? 'k6') as GeneratorName;
+	if (generator !== 'k6' && generator !== 'node') throw new Error(`--generator must be k6 or node, got ${generator}`);
 	const auth = (argValue(argv, '--auth') ?? 'none') as AuthMode;
 	if (auth !== 'none' && auth !== 'token') throw new Error(`--auth must be none or token, got ${auth}`);
 	const harperMemory = argValue(argv, '--harper-memory') ?? 'capped';
@@ -1475,6 +1501,7 @@ export async function createSession(
 
 	const sessionFlags = [
 		'targets',
+		'generator',
 		'shards',
 		'serverCpus',
 		'driverCpus',
@@ -1533,6 +1560,7 @@ export async function createSession(
 	const session: Session = {
 		options,
 		cache,
+		generator,
 		shards: Number(argValue(argv, '--shards') ?? 4),
 		serverCpus,
 		driverCpus,
@@ -1586,7 +1614,7 @@ export async function createSession(
 		},
 		cache,
 		recordCacheSize: sizesCache ? session.recordCacheSize : undefined,
-		shards: session.shards,
+		generator: generator === 'k6' ? { name: 'k6', version: k6Version() } : { name: 'node', shards: session.shards },
 		dataDir: base,
 		harper: { bin: harperBin, revision: gitRevision(REPO_ROOT), digests: buildDigests(REPO_ROOT) },
 		perfPmu: perfCounters && !hostsFile ? detectPmu() : undefined,

@@ -12,6 +12,9 @@
  * `chain-N` (N dependent reads following each record's link). Every record whose `field0` can hold
  * it carries that link and its owner at the start of `field0` (see `buildRecord`).
  *
+ * k6 runs this module too, type-stripped (ycsb-vs-pg/k6Driver.mts): keep it free of imports and of
+ * globals k6 lacks; only `runOperations`, which k6 does not call, uses `performance`.
+ *
  * The distribution generators are ports of the reference YCSB Java generators
  * (Apache-2.0): ZipfianGenerator + ScrambledZipfianGenerator for hotspot
  * skew, and a Latest generator for read-recently-inserted workloads.
@@ -188,24 +191,35 @@ export class ScrambledZipfianGenerator {
 	}
 
 	fromUniform(u: number, itemCount: number): number {
-		return Number(fnv64(this.gen.fromUniform(u, SCRAMBLE_ITEM_COUNT)) % BigInt(itemCount));
+		return fnv64Mod(this.gen.fromUniform(u, SCRAMBLE_ITEM_COUNT), itemCount);
 	}
 }
 
-const FNV_OFFSET_BASIS_64 = 0xcbf29ce484222325n;
-const FNV_PRIME_64 = 0x100000001b3n;
-const MASK_64 = (1n << 64n) - 1n;
+const TWO_32 = 0x1_0000_0000;
 
-function fnv64(value: number): bigint {
-	let hash = FNV_OFFSET_BASIS_64;
-	let v = BigInt(value);
+/**
+ * FNV-1a (64-bit) of `value`'s eight low octets, modulo `modulus` (< 2^37): the reference YCSB hash on
+ * 32-bit halves instead of BigInt, in exact integer steps (no Math.floor, no iterator), which k6's
+ * interpreter runs about twice as fast. Every intermediate stays below 2^53.
+ */
+export function fnv64Mod(value: number, modulus: number): number {
+	let hi = 0xcbf29ce4;
+	let lo = 0x84222325;
+	let v = value;
 	for (let i = 0; i < 8; i++) {
-		const octet = v & 0xffn;
-		v >>= 8n;
-		hash ^= octet;
-		hash = (hash * FNV_PRIME_64) & MASK_64;
+		const octet = v % 256;
+		v = (v - octet) / 256;
+		lo = (lo ^ octet) >>> 0;
+		// hash * 0x100000001b3 mod 2^64 = hash * 0x1b3 + (lo << 40)
+		const loProduct = lo * 0x1b3;
+		const nextLo = loProduct % TWO_32;
+		hi = (hi * 0x1b3 + (loProduct - nextLo) / TWO_32 + ((lo << 8) >>> 0)) % TWO_32;
+		lo = nextLo;
 	}
-	return hash;
+	let rest = (hi >>> 16) % modulus;
+	rest = (rest * 0x10000 + (hi & 0xffff)) % modulus;
+	rest = (rest * 0x10000 + (lo >>> 16)) % modulus;
+	return (rest * 0x10000 + (lo & 0xffff)) % modulus;
 }
 
 export interface KeyChooser {
@@ -256,7 +270,7 @@ const CHARSET = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
 const VALUE_POOL_SIZE = 1 << 20;
 let valuePool: string | undefined;
 
-function getValuePool(): string {
+export function getValuePool(): string {
 	if (valuePool === undefined) {
 		const chars = new Array<string>(VALUE_POOL_SIZE);
 		for (let i = 0; i < VALUE_POOL_SIZE; i++) {
@@ -265,6 +279,11 @@ function getValuePool(): string {
 		valuePool = chars.join('');
 	}
 	return valuePool;
+}
+
+/** Makes `pool` (another runtime's `getValuePool()`) this one's, so k6's VUs share one instead of each building it. */
+export function useValuePool(pool: string): void {
+	valuePool = pool;
 }
 
 function randomValue(length: number): string {
@@ -390,6 +409,9 @@ export class KeyState {
 	private insertCursor: number;
 	private readonly pendingAcks = new Set<number>();
 	private readonly linkKeyCount: number;
+	private readonly initialKeyCount: number;
+	private readonly insertOffset: number;
+	private readonly insertStride: number;
 	private inspects = 0;
 
 	constructor(opts: {
@@ -400,10 +422,19 @@ export class KeyState {
 		keyWidth: number;
 		shape: RecordShape;
 		maxScanLength: number;
+		/**
+		 * This client's share of the inserted keys when several clients insert without coordinating
+		 * (YCSB's per-client insert ranges): its n-th insert is key `initialKeyCount + offset + stride * n`.
+		 * Reads see the loaded keys and this client's own acknowledged inserts. Default: every insert.
+		 */
+		insertRange?: { offset: number; stride: number };
 	}) {
 		this.chooser = makeKeyChooser(opts.distribution);
 		this.readableCount = opts.initialKeyCount;
 		this.insertCursor = opts.initialKeyCount;
+		this.initialKeyCount = opts.initialKeyCount;
+		this.insertOffset = opts.insertRange?.offset ?? 0;
+		this.insertStride = opts.insertRange?.stride ?? 1;
 		this.linkKeyCount = opts.linkKeyCount ?? opts.initialKeyCount;
 		this.width = opts.keyWidth;
 		this.shape = opts.shape;
@@ -414,7 +445,18 @@ export class KeyState {
 		if (this.readableCount === 0) {
 			throw new Error('no readable keys — the load phase inserted/acknowledged 0 records');
 		}
-		return this.chooser.next(this.readableCount);
+		return this.physical(this.chooser.next(this.readableCount));
+	}
+
+	/** The key index of this client's `logical`-th key: loaded keys first, then its own inserts. */
+	private physical(logical: number): number {
+		if (logical < this.initialKeyCount) return logical;
+		return this.initialKeyCount + this.insertOffset + (logical - this.initialKeyCount) * this.insertStride;
+	}
+
+	private logical(index: number): number {
+		if (index < this.initialKeyCount) return index;
+		return this.initialKeyCount + (index - this.initialKeyCount - this.insertOffset) / this.insertStride;
 	}
 
 	existingKey(): string {
@@ -437,13 +479,13 @@ export class KeyState {
 
 	/** Allocate a new key beyond the loaded range. Not readable until acknowledged. */
 	nextInsert(): { index: number; key: string } {
-		const index = this.insertCursor++;
+		const index = this.physical(this.insertCursor++);
 		return { index, key: formatKey(index, this.width) };
 	}
 
 	/** Mark an insert complete; advances the readable frontier over the contiguous prefix. */
 	acknowledgeInsert(index: number): void {
-		this.pendingAcks.add(index);
+		this.pendingAcks.add(this.logical(index));
 		while (this.pendingAcks.delete(this.readableCount)) {
 			this.readableCount++;
 		}
@@ -465,12 +507,12 @@ export class KeyState {
 	}
 }
 
-interface WeightedOp {
+export interface WeightedOp {
 	type: OperationType;
 	cumulative: number;
 }
 
-function buildPicker(mix: OpMix): WeightedOp[] {
+export function buildPicker(mix: OpMix): WeightedOp[] {
 	const total = Object.values(mix).reduce((a, b) => a + (b ?? 0), 0);
 	const picker: WeightedOp[] = [];
 	let cumulative = 0;
@@ -484,7 +526,8 @@ function buildPicker(mix: OpMix): WeightedOp[] {
 	return picker;
 }
 
-function pickOp(picker: WeightedOp[]): OperationType {
+export function pickOp(picker: WeightedOp[]): OperationType {
+	if (picker.length === 1) return picker[0].type;
 	const r = Math.random();
 	for (const op of picker) {
 		if (r < op.cumulative) return op.type;
@@ -492,7 +535,12 @@ function pickOp(picker: WeightedOp[]): OperationType {
 	return picker[picker.length - 1].type;
 }
 
-async function executeOp(type: OperationType, executor: OpExecutor, keys: KeyState, chainHops: number): Promise<void> {
+export async function executeOp(
+	type: OperationType,
+	executor: OpExecutor,
+	keys: KeyState,
+	chainHops: number
+): Promise<void> {
 	switch (type) {
 		case 'read':
 			return executor.read(keys.existingKey());

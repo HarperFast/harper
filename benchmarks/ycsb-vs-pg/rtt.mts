@@ -58,7 +58,7 @@ export async function pingPong(
 		await once(socket, 'connect');
 		const byte = Buffer.from([0x2a]);
 		const samples: number[] = [];
-		let pending: ((error?: Error) => void) | undefined;
+		let pending: (() => void) | undefined;
 		socket.on('data', () => pending?.());
 		const failed = new Promise<never>((_, reject) => {
 			socket.once('error', reject);

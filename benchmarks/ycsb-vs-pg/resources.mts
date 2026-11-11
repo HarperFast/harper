@@ -84,6 +84,21 @@ async function processCpuSeconds(root: number): Promise<number> {
 	return total;
 }
 
+/** User plus system CPU-seconds of these processes (all their threads); an exited one counts 0. */
+export async function cpuSecondsOf(pids: number[]): Promise<number> {
+	let total = 0;
+	for (const pid of pids) {
+		try {
+			const stat = await readFile(`/proc/${pid}/stat`, 'utf8');
+			const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+			total += (Number(fields[11]) + Number(fields[12])) / 100;
+		} catch {
+			// exited
+		}
+	}
+	return total;
+}
+
 /**
  * Fails unless every thread of every process in `root`'s tree is allowed exactly `cpus`.
  *

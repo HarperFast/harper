@@ -3,9 +3,9 @@
  * as "the server's limit" rather than "the client's limit".
  *
  * Serves a fixed, pre-serialized YCSB-shaped record from memory over a node:http cluster on the
- * target cores (nothing to look up, no database), then drives it with the SAME sharded driver,
- * on the same generator cores, that run-compare.mts uses. Workload C runs on every shard;
- * workload E falls back to one shard (it inserts), so its ceiling is measured separately.
+ * target cores (nothing to look up, no database), then drives it with the SAME generator, on the
+ * same generator cores, that run-compare.mts uses (k6, or --generator=node). It reports workload C
+ * (reads) and E (scans and inserts).
  *
  *   node benchmarks/ycsb-vs-pg/client-ceiling.mts --target-cpus=4 --concurrency=64
  *
@@ -17,9 +17,8 @@
 import cluster from 'node:cluster';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
-import { readFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
-import { startDriver } from './shardedDriver.mts';
+import { startGenerator, type GeneratorName } from './run-compare.mts';
 import {
 	readTopology,
 	chooseCpuSets,
@@ -35,6 +34,7 @@ const { values } = parseArgs({
 		'target-cpus': { type: 'string', default: '4' },
 		'serverCpus': { type: 'string' },
 		'driverCpus': { type: 'string' },
+		'generator': { type: 'string', default: 'k6' },
 		'shards': { type: 'string', default: '4' },
 		'records': { type: 'string', default: '200000' },
 		'ops': { type: 'string', default: '300000' },
@@ -106,29 +106,32 @@ if (values.serve) {
 	}
 }
 
-/** Drives the ceiling server at `baseUrl` with the sharded driver, C on every shard and E on one. */
+/** Drives the ceiling server at `baseUrl` with the session's generator: C, then E. */
 async function measure(baseUrl: string, serverCpus: string, driver: number[]): Promise<void> {
 	const records = Number(values.records);
-	const driverRun = await startDriver({
-		baseUrl,
-		table: 'usertable',
-		records,
-		opsPerWorkload: Number(values.ops),
-		concurrency: Number(values.concurrency),
-		shards: Number(values.shards),
-		shape: { fieldCount: 10, fieldLength: 100 },
-		keyWidth: Math.max(10, String(records + Number(values.ops)).length),
-		maxScanLength: 100,
-	});
+	const generator = values.generator as GeneratorName;
+	const driverRun = await startGenerator(
+		generator,
+		{
+			baseUrl,
+			table: 'usertable',
+			records,
+			opsPerWorkload: Number(values.ops),
+			concurrency: Number(values.concurrency),
+			shape: { fieldCount: 10, fieldLength: 100 },
+			keyWidth: Math.max(10, String(records + Number(values.ops)).length),
+			maxScanLength: 100,
+			cpus: driver,
+		},
+		Number(values.shards)
+	);
 	try {
-		for (const pid of driverRun.pids) verifyAffinity('generator', pid, driver);
-		await driverRun.runWorkload('C', 'uniform', 20_000); // sockets and JIT
+		await driverRun.runWorkload('C', 'uniform', 20_000); // sockets, and JIT for the node generator
 		for (const workload of ['C', 'E']) {
-			const before = cpuOf(driverRun.pids);
 			const result = await driverRun.runWorkload(workload);
-			const generatorCores = (cpuOf(driverRun.pids) - before) / (result.elapsedMs / 1000);
+			const generatorCores = result.generatorCpuSeconds / (result.elapsedMs / 1000);
 			console.log(
-				`CLIENT_CEILING workload=${workload} shards=${driverRun.shardsUsed(workload)} ` +
+				`CLIENT_CEILING generator=${generator} workload=${workload} ` +
 					`concurrency=${values.concurrency} server_cpus=${serverCpus} generator_cpus=${driver.join(',')} ` +
 					`ops_per_sec=${result.throughput.toFixed(0)} errors=${result.errors} ` +
 					`generator_busy_cores=${generatorCores.toFixed(2)}`
@@ -137,18 +140,4 @@ async function measure(baseUrl: string, serverCpus: string, driver: number[]): P
 	} finally {
 		await driverRun.close();
 	}
-}
-
-function cpuOf(pids: number[]): number {
-	let total = 0;
-	for (const pid of pids) {
-		try {
-			const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
-			const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
-			total += (Number(fields[11]) + Number(fields[12])) / 100;
-		} catch {
-			// exited
-		}
-	}
-	return total;
 }
