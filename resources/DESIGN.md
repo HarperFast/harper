@@ -75,7 +75,7 @@ The synthesized target keeps the collection flag, or the batch is one null-keyed
 
 ## Historical record reconstruction (`getRecordAtTime`)
 
-`getRecordAtTime` reverses patches or rebuilds replacements, folding one origin before a frame's oldest predecessor. `HistoryMemo` bounds complete detached entries per call; unsafe reads rebuild. `HistoryReader` carries straight chains. Absent/evictable unlinked history scans; other non-expiring reinserts keep the gap.
+`getRecordAtTime` reverses patches or rebuilds replacements, folding one origin before a frame's oldest predecessor. `HistoryMemo` bounds detached entries per call; unsafe reads rebuild. `HistoryReader` carries straight chains. Absent/evictable unlinked history scans; other non-expiring reinserts keep the gap.
 
 ## Path routing & parameterised routes
 
