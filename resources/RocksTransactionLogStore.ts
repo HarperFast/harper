@@ -58,7 +58,10 @@ export type TransactionLogIterable = Iterable<AuditRecord> & {
 	failedLogs: Set<string>;
 	/** Physical logs whose requested exact transaction could not form one unambiguous resume boundary. */
 	exactStartFailures: Map<string, ExactStartFailure>;
-	/** A log's own iterator in this range, for another range to read `until`; only on a range over every log. */
+	/**
+	 * A log's own iterator in this range, for another range to read `until`; only on a range over every log. A log
+	 * this range has not read yet is added first, and read from its start.
+	 */
 	sourceOf?(log: TransactionLog): IterableIterator<TransactionEntry> | undefined;
 	/**
 	 * On an `until` range: the lowest key of a transaction whose entries this range returned only in part, because
@@ -525,7 +528,6 @@ export class RocksTransactionLogStore extends EventEmitter {
 								queryOptions = { ...options, start: options.start ?? 0 };
 							}
 							if (options.until) {
-								// sourceOf first adds a log that range has not read yet; it reads such a log from its start
 								queryOptions = { ...queryOptions, until: options.until.sourceOf(log) } as any;
 							}
 							iterators.push(trackCorruptFrames(log, queryOptions));

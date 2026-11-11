@@ -29,7 +29,6 @@ function countBy(events, id) {
 	return events.filter((event) => event.id === id).length;
 }
 
-// applied as a replicated origin's write, so it goes to that origin's log under the given key
 function applyFromOrigin(T, id, record, nodeId, logKey) {
 	const context = { source: {}, sourceApply: true, timestamp: logKey };
 	return transaction(context, async () => {
@@ -87,7 +86,6 @@ describe('startTime replay handoff to live delivery', () => {
 				const events = [];
 				subscription.on('data', (event) => events.push(event));
 				await waitFor(() => events.some((event) => event.id === 'newer'), { timeout: 5000 });
-				// the resume cursor moves past the start once the replay has finished its one key
 				await waitFor(() => subscription.replayedThrough > startTime, { timeout: 5000 });
 				older.release();
 				await older.committed;

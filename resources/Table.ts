@@ -10243,6 +10243,7 @@ export function makeTable(options): TableResourceClass {
 								let next: IteratorResult<any>;
 								try {
 									next = replayIterator.next();
+									unreachedSince = undefined;
 								} catch (error) {
 									// a log the broadcast has read past cannot be read up to it yet: ending here would hand off past it
 									if (!(error instanceof TransactionLogUntilUnreachedError)) throw error;
