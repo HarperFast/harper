@@ -376,7 +376,6 @@ for (const engine of ['rocksdb', 'lmdb']) {
 				await checks.check(() =>
 					waitForWorkerTtl(ctx, 'RuntimeEviction', 0, { expirationMS: 0, evictionMS: RUNTIME_EVICTION * 1000 })
 				);
-				// last before the restart, so the rows only become evictable after it
 				await insertRows(ctx, 'RuntimeTtl');
 				const expiresInMs = RUNTIME_EXPIRATION * 1000;
 				await untilServed(ctx, { op: 'write', table: 'RuntimeEviction', count: ROWS, expiresInMs });

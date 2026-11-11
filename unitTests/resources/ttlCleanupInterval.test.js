@@ -22,8 +22,8 @@ async function timersArmedBy(run, settleMs = 0) {
 	}
 	return delays;
 }
-// a rescheduled scan runs once at once, then at its interval; the daily default is the only one over an hour here
-const isDailyCadence = (delay) => delay > 3_600_000 && delay <= 86_400_000;
+// the TTLs these tests clear scan every 15 s or less
+const isDailyCadence = (delay) => delay > 60_000 && delay <= 86_400_000;
 
 // The cleanup scan is what removes an expired record: reads return it until then. Its interval has to come
 // from the table's TTL whichever way the TTL was set. A worker that learns of a table from the catalog (a
@@ -203,7 +203,6 @@ describe('TTL cleanup scan interval', () => {
 			const delays = await timersArmedBy(() => Hydrated._adoptCatalogExpiration(undefined, undefined), 200);
 			assert.strictEqual(Hydrated.expirationMS, 0);
 			assert.strictEqual(Hydrated.evictionMS, 0);
-			// the armed scan moves to the daily cadence a table with no TTL keeps for per-record expiry
 			assert(delays.some(isDailyCadence), `no daily scan armed: ${delays}`);
 		} finally {
 			Hydrated.cleanup();
@@ -284,6 +283,31 @@ describe('TTL cleanup scan interval', () => {
 			await waitFor(() => !stored(Loaded, 1), { timeout: 5000, message: 'the expired record was never evicted' });
 		} finally {
 			Loaded.cleanup();
+		}
+	});
+
+	it('a TTL cleared once the main thread is a worker still scans the rows it stamped (#2831, #3934)', async () => {
+		const Declared = table({
+			table: 'TtlClearedAfterPromotion',
+			database: databaseName,
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		let Hydrated;
+		try {
+			// threads: 0 loads the table before the main thread owns any scan, then the schema clears its TTL
+			setMainIsWorker(false);
+			Hydrated = hydrate(Declared, 'TtlClearedAfterPromotion', { expirationMS: 60_000 });
+		} finally {
+			setMainIsWorker(true);
+		}
+		try {
+			const delays = await timersArmedBy(
+				() => Hydrated.setTTLExpiration({ expiration: 0, eviction: 0, fromSchema: true }),
+				200
+			);
+			assert(delays.some(isDailyCadence), `no scan armed for the rows the cleared TTL stamped: ${delays}`);
+		} finally {
+			Hydrated.cleanup();
 		}
 	});
 

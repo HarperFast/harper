@@ -4003,6 +4003,8 @@ export function makeTable(options): TableResourceClass {
 				recordScanInterval = (scanIntervalSeconds ?? 0) * 1000;
 			}
 			if (declaredHere && !preserveLoadedConfiguration) ttlDeclaredBySchema = true;
+			// rows written under a TTL this call clears keep their expiry, so they still need a scan
+			const scanWasScheduled = !preserveLoadedConfiguration && (expirationScanScheduled || cleanupTimer);
 			if (!preserveLoadedConfiguration) {
 				expirationScanScheduled = Boolean(recordScanInterval || expirationMs || evictionMs);
 				cleanupInterval = recordScanInterval || (expirationMs + evictionMs) / 4 || DEFAULT_CLEANUP_INTERVAL;
@@ -4015,9 +4017,8 @@ export function makeTable(options): TableResourceClass {
 				if (replicaExpirationMs) armReplicaEviction();
 			} else if (replicaEvictionArmed) armReplicaEviction();
 			// Re-evaluate an existing table-level scan after an ownership-only declaration, but do not
-			// create the default daily cleanup timer for a table that has only an @expiresAt field. A
-			// cleared TTL moves an armed scan to the daily default rather than leaving its old cadence.
-			if (expirationScanScheduled || evictionMs || (!preserveLoadedConfiguration && cleanupTimer)) scheduleCleanup();
+			// create the default daily cleanup timer for a table that has only an @expiresAt field.
+			if (expirationScanScheduled || evictionMs || scanWasScheduled) scheduleCleanup();
 			// @expiresAt has its own interval rather than the cleanup timer above. Arm it whenever a live
 			// declaration introduces the attribute, including after this application already claimed TTL.
 			if (expiresAtProperty && !recordExpirationInterval) runRecordExpirationEviction();
@@ -12432,7 +12433,7 @@ export function makeTable(options): TableResourceClass {
 		if (expirationMs || evictionMs) {
 			ttlFromLoad = true;
 			try {
-				TableResource.setTTLExpiration(expirationMs / 1000);
+				TableResource.setTTLExpiration({ expiration: expirationMs / 1000, eviction: evictionMs / 1000 });
 			} finally {
 				ttlFromLoad = false;
 			}
