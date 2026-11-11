@@ -2792,9 +2792,8 @@ export function openBranchDatabase(
 	const closeRemainingHandles = () => {
 		const closeFailures = closeBranchHandles(path, rootStore, openedStores, tables);
 		if (closeFailures.length) closeFailed = true;
-		// rocksdb-js reports RocksDB's own final close failing only after releasing the database, which leaves nothing
-		// to retry. A failed close holds the branch only while a store is still open, or while rocksdb-js keeps the
-		// directory quarantined (its close-time flush failed) until `shutdown()`.
+		// rocksdb-js reports RocksDB's own final close failing only after releasing the database, leaving nothing to
+		// retry; a database whose close-time flush failed it keeps quarantined until `shutdown()`.
 		if (closeFailed) {
 			const quarantined = registryEntriesAt(path).find((entry) => entry.closeError)?.closeError;
 			const storeLeftOpen = [rootStore, (rootStore as any).dbisDb, ...openedStores].some(
