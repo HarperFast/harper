@@ -209,7 +209,8 @@ suite('a derived index at the default retention cadence', { skip: skipSuite }, (
 		await new Promise((resolve) => setTimeout(resolve, 35_000));
 		const epoch = BigInt((await status()).readiness.ownerEpoch);
 		ok((await request('/IdleClear/', 'POST')).status < 300);
-		// The clear removed the durable cursor without a log entry; only the clear's own rebuild request restores it.
+		// The clear removes the durable cursor without a log entry: the clear's rebuild request restores it at
+		// once, and otherwise the next commit wake would find the stored cursor's fingerprint gone.
 		await waitFor(
 			async () => {
 				const { cursor, readiness } = await status();

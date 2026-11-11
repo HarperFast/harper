@@ -1390,7 +1390,6 @@ describe('DerivedIndexRuntime', () => {
 			await waitFor(() => backend.shutdowns === 1);
 			const epoch = owner.getReadiness(backend.id).ownerEpoch;
 
-			// declared again under the same id, with no durable state yet, while the owner is still releasing
 			const replacement = runtimeFor(store, new Map(), options).runtime;
 			const replaced = coverageBackend(backend.id);
 			replaced.cursor = undefined;
