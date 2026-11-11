@@ -6856,6 +6856,13 @@ export function makeTable(options): TableResourceClass {
 						}
 					}
 
+					// A delete supersedes every write it precedes, and a base-copied one has no audit entry for a walk to
+					// reach. Compared whatever the head's order: an older publish can leave the head below it.
+					const deleteBoundary = existingEntry?.copiedDeleteBoundary;
+					if (deleteBoundary && precedesExistingVersion(txnTime, deleteBoundary, options?.nodeId) < 0) {
+						write.skipped = true;
+						return;
+					}
 					if (
 						precedesExisting <= 0 &&
 						!(isCopyApply && precedesExisting === 0 && fullUpdate && needsOwnerBody(id, existingEntry))
@@ -8279,6 +8286,20 @@ export function makeTable(options): TableResourceClass {
 					// that a chained delete must not destroy.
 					const precedesExisting = precedesExistingVersion(txnTime, existingEntry, options?.nodeId);
 					if (precedesExisting < 0 || (isCopyApply && precedesExisting === 0)) {
+						// A newer write reached this node before the copy's delete, which still bounds older writes.
+						if (
+							isCopyApply &&
+							audit &&
+							precedesExisting < 0 &&
+							!priorStaged &&
+							!(existingEntry.copiedDeleteBoundary?.version >= txnTime)
+						)
+							stampCopiedDeleteBoundary(
+								id,
+								existingEntry,
+								{ version: txnTime, nodeId: options?.nodeId ?? 0 },
+								transaction
+							);
 						write.skipped = true;
 						return;
 					}
@@ -8346,6 +8367,8 @@ export function makeTable(options): TableResourceClass {
 										? [{ version: txnLogKey, nodeId: options?.nodeId }]
 										: undefined,
 								localOnly: options?.localOnly,
+								copiedDeleteBoundary:
+									isCopyApply && audit ? { version: txnTime, nodeId: options?.nodeId ?? 0 } : undefined,
 							},
 							'delete'
 						);
@@ -15579,6 +15602,32 @@ export function makeTable(options): TableResourceClass {
 			},
 			'put',
 			true // on LMDB, keeps the local time while its audit entry exists
+		);
+	}
+	// Rewrites a row unchanged but for its copied-delete boundary: no new version and no audit entry.
+	function stampCopiedDeleteBoundary(
+		key: Id,
+		entry: Entry,
+		copiedDeleteBoundary: { version: number; nodeId: number },
+		transaction: any
+	) {
+		updateRecord(
+			key,
+			entry.value,
+			withoutBlobRelease(entry),
+			entry.version,
+			entry.metadataFlags & (INVALIDATED | REPLICA | EVICTED | LOCAL_ONLY | FULL_WRITE_HEAD),
+			false,
+			{
+				expiresAt: entry.expiresAt,
+				residencyId: entry.residencyId,
+				recordNodeId: entry.nodeId,
+				additionalAuditRefs: entry.additionalAuditRefs,
+				receivedIdentityRefs: entry.receivedIdentityRefs,
+				copiedDeleteBoundary,
+				transaction,
+			},
+			'put'
 		);
 	}
 	function withoutBlobRelease(entry: Entry): Entry {
