@@ -310,6 +310,14 @@ export class RecordEncoder extends StructonEncoder {
 	// enabling race-safe cache verification of graph nodes during traversal. Unlike primary-record
 	// writes, this never reads or clears the shared timestampNextEncoding global (harper#1307).
 	autoVersion = false;
+	/**
+	 * Set by a range scan around one step (`PrimaryRocksDatabase.getRange`'s `deferValues`): a versioned value is
+	 * returned with its metadata but undecoded, its bytes copied to `deferredValue` (the iterator reuses its
+	 * buffer), so the scan can find the version already decoded before paying for a decode.
+	 */
+	deferValues = false;
+	/** Metadata flags whose rows are decoded at once though `deferValues` is set: they are never shared. */
+	deferExcept = 0;
 	constructor(options) {
 		options.useBigIntExtension = true;
 		// Bound the per-encoder typed-structure dictionary. It is append-only and pinned on the
@@ -716,13 +724,16 @@ export class RecordEncoder extends StructonEncoder {
 					}
 				}
 
-				const value = decodeFromDatabase(
-					() =>
-						options?.valueAsBuffer
-							? buffer.subarray(position, end)
-							: super.decode(buffer.subarray(position, end), end - position),
-					this.rootStore
-				);
+				const deferred = this.deferValues && !options?.valueAsBuffer && !(metadataFlags & this.deferExcept);
+				const value = deferred
+					? undefined
+					: decodeFromDatabase(
+							() =>
+								options?.valueAsBuffer
+									? buffer.subarray(position, end)
+									: super.decode(buffer.subarray(position, end), end - position),
+							this.rootStore
+						);
 				lastMetadata = {
 					localTime,
 					version: localTime,
@@ -736,37 +747,50 @@ export class RecordEncoder extends StructonEncoder {
 					value,
 				} as any;
 				if (residencySlot !== undefined) lastMetadata.residencySlot = residencySlot;
+				if (deferred) (lastMetadata as any).deferredValue = Buffer.from(buffer.subarray(position, end));
 				if (this.isRocksDB) return lastMetadata;
 				return value;
 			} // else a normal entry
 			return options?.valueAsBuffer ? buffer : decodeFromDatabase(() => super.decode(buffer, options), this.rootStore);
 		} catch (error) {
-			if (strictDecodeDepth > 0) throw error;
-			const hexPreview = buffer.slice(0, 40).toString('hex');
-			if (isMissingStructureError(error)) {
-				// This record references a shared structure that is genuinely absent on this node — the
-				// dependency already reloaded from durable storage and retried before throwing (typically a
-				// replica that received the record but not the structure-buffer update; see
-				// HarperFast/harper#1163). We still return null so internal reads (e.g. the metadata/__dbis__
-				// scan during initialization) remain non-fatal, but surface the otherwise-silent condition
-				// distinctly — a dedicated warning plus an analytics counter — so the dropped record is
-				// detectable and alertable rather than laundered as legitimate emptiness into query results,
-				// caches, and downstream consumers.
-				// this.name is set on the RocksDB encoder; for LMDB fall back to the root store's name so
-				// the metric/warning still attribute the dropped record to a store.
-				const storeName = this.name ?? this.rootStore?.name;
-				recordAction(true, MISSING_STRUCTURE_METRIC, storeName);
-				harperLogger.warn(
-					'Record references a shared structure missing on this node; decoded as null (see HarperFast/harper#1163)',
-					error,
-					'store: ' + storeName,
-					'data: ' + hexPreview
-				);
-				return null;
-			}
-			harperLogger.status({ problem: 'database.record-decode', expires: 120 });
-			harperLogger.error('Error decoding record', error, 'data: ' + hexPreview);
+			return this.decodeFailed(error, buffer);
+		}
+	}
+	/** A record that can not be decoded reads as null, and is reported; under `strictDecodeDepth` the error is thrown. */
+	decodeFailed(error: any, buffer: Buffer) {
+		if (strictDecodeDepth > 0) throw error;
+		const hexPreview = buffer.slice(0, 40).toString('hex');
+		if (isMissingStructureError(error)) {
+			// This record references a shared structure that is genuinely absent on this node — the
+			// dependency already reloaded from durable storage and retried before throwing (typically a
+			// replica that received the record but not the structure-buffer update; see
+			// HarperFast/harper#1163). We still return null so internal reads (e.g. the metadata/__dbis__
+			// scan during initialization) remain non-fatal, but surface the otherwise-silent condition
+			// distinctly — a dedicated warning plus an analytics counter — so the dropped record is
+			// detectable and alertable rather than laundered as legitimate emptiness into query results,
+			// caches, and downstream consumers.
+			// this.name is set on the RocksDB encoder; for LMDB fall back to the root store's name so
+			// the metric/warning still attribute the dropped record to a store.
+			const storeName = this.name ?? this.rootStore?.name;
+			recordAction(true, MISSING_STRUCTURE_METRIC, storeName);
+			harperLogger.warn(
+				'Record references a shared structure missing on this node; decoded as null (see HarperFast/harper#1163)',
+				error,
+				'store: ' + storeName,
+				'data: ' + hexPreview
+			);
 			return null;
+		}
+		harperLogger.status({ problem: 'database.record-decode', expires: 120 });
+		harperLogger.error('Error decoding record', error, 'data: ' + hexPreview);
+		return null;
+	}
+	/** Decodes the bytes a deferred read kept (see `deferValues`), as `decode` would have. */
+	decodeDeferred(bytes: Buffer) {
+		try {
+			return decodeFromDatabase(() => super.decode(bytes, bytes.length), this.rootStore);
+		} catch (error) {
+			return this.decodeFailed(error, bytes);
 		}
 	}
 }

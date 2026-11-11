@@ -10746,12 +10746,16 @@ export function makeTable(options): TableResourceClass {
 						// idempotent for "current state then live updates" — both deliveries land at
 						// the same final state. We don't dedupe.
 						catchUpScans++;
+						let sharesIds = true;
 						try {
 							for (const entry of primaryStore.getRange({
 								start: thisId ?? false,
 								end: thisId == null ? undefined : [thisId, MAXIMUM_KEY],
 								versions: true,
 								snapshot: false, // no need for a snapshot, just want the latest data
+								// while scans share values, a row is decoded only if no other scan has decoded its version
+								deferValues: () => sharesIds && deferWhileSharing(),
+								deferExcept: INVALIDATED | EVICTED | VERSION_REUSED,
 							})) {
 								if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
 									recordsSinceYield = 0;
@@ -10760,13 +10764,19 @@ export function makeTable(options): TableResourceClass {
 									now = Date.now();
 								}
 								const { key: id, version, localTime, size } = entry;
+								// a composite id is never shared (sharedVersionValue), so its rows are not deferred
+								if (typeof id === 'object') sharesIds = false;
 								// Update cursorMaxTime BEFORE the !value / expiresAt checks so deletion tombstones
 								// (which have null value but a real localTime/version) and expired rows still raise the gate.
 								const t = localTime ?? version;
 								if (t > cursorMaxTime) cursorMaxTime = t;
-								if (!entry.value) continue;
 								if (isHiddenExpiry(entry.expiresAt, now)) continue;
-								const value = sharedVersionValue(id, version, entry.nodeId, entry) ?? entry.value;
+								// the shared value first: reading entry.value decodes a deferred row
+								let value = sharedVersionValue(id, version, entry.nodeId, entry);
+								if (value === undefined) {
+									value = entry.value;
+									if (!value) continue;
+								}
 								if (!send({ id, localTime, value, version, type: 'put', size, fromScan: true })) return;
 								if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
 									// if we have too many messages, we need to pause and let the client catch up
@@ -13037,6 +13047,21 @@ export function makeTable(options): TableResourceClass {
 		// every reader of the record shares this object, so a subscriber must not be able to change it
 		freezeRecord(entry.value);
 		return entry.value ?? undefined;
+	}
+	/**
+	 * Whether a snapshot scan's next row waits to be decoded until no overlapping scan is found to share it. A
+	 * deferred row is decoded at most once across the scans that share its version, and otherwise exactly as
+	 * getRange decodes it. That holds because:
+	 * - deferral runs only while scans share values (MIN_SHARING_SCANS overlap, no resolver making a
+	 *   serialization depend on its subscriber), never for a row sharing can not use (the flags sharedVersionValue
+	 *   rejects, passed as deferExcept, or a composite id);
+	 * - the encoder's flag covers one synchronous iterator step (PrimaryRocksDatabase.getRange sets it before
+	 *   next() and clears it in a finally), so no other read of the store sees it;
+	 * - a deferred row's bytes are copied, as the iterator reuses its buffer, and kept until a decode succeeds,
+	 *   which goes through decode's own handling (decodeFailed), so a row that can not be decoded reads as null.
+	 */
+	function deferWhileSharing() {
+		return catchUpScans >= MIN_SHARING_SCANS && !serializationResolves;
 	}
 	function sendSubscriptionEvent(state: SubscriberState, event: any, alreadyFiltered = false) {
 		const { subscription, allowsEvent } = state;

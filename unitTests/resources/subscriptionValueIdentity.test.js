@@ -1,6 +1,7 @@
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils.js');
 const { table } = require('#src/resources/databases');
+const { INVALIDATED } = require('#src/resources/Table');
 const { transaction } = require('#src/resources/transaction');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { waitFor } = require('../waitFor.js');
@@ -144,6 +145,78 @@ describe('subscription value identity across subscribers', () => {
 		// the scans shared among themselves, leaving the record cache to what get() reads
 		assert.strictEqual(SnapshotTable.primaryStore.cachedEntry(ids[150]), undefined, 'a scan cached a row');
 		for (const { subscription } of snapshots) subscription.end();
+	});
+
+	// While scans share values, a row is decoded only when no overlapping scan has decoded its version, so the
+	// tombstone check runs after the shared lookup: deleted rows must still be skipped and live ones arrive as stored.
+	it('delivers every live row and no deleted one to overlapping snapshots that share values', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return this.skip();
+		const TombstoneTable = table({
+			database: 'data',
+			table: 'SubscriptionSnapshotTombstones',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'reading' }],
+			audit: true,
+		});
+		const ids = Array.from({ length: 300 }, (_, i) => `t${String(i).padStart(3, '0')}`);
+		for (const [i, id] of ids.entries()) await TombstoneTable.put({ id, reading: i });
+		const deleted = new Set(ids.filter((_, i) => i % 7 === 3));
+		for (const id of deleted) await TombstoneTable.delete(id);
+		const live = ids.filter((id) => !deleted.has(id));
+		const snapshot = async () => {
+			const values = new Map();
+			const subscription = await TombstoneTable.subscribe({ isCollection: true });
+			subscription.on('data', (event) => event.type === 'put' && values.set(event.id, event.value));
+			return { subscription, values };
+		};
+		const snapshots = await Promise.all([snapshot(), snapshot(), snapshot(), snapshot()]);
+		await waitFor(() => snapshots.every(({ values }) => values.has(live.at(-1))), {
+			message: 'the snapshots complete',
+		});
+		for (const { values } of snapshots) {
+			assert.strictEqual(values.size, live.length, 'each snapshot delivers every live row once');
+			for (const [i, id] of ids.entries()) {
+				if (deleted.has(id)) assert.ok(!values.has(id), `${id} was deleted`);
+				else assert.strictEqual(values.get(id).reading, i);
+			}
+		}
+		const middleObjects = new Set(snapshots.map(({ values }) => values.get(live[150])));
+		assert.ok(middleObjects.size < snapshots.length, 'the scans share the record object');
+		for (const { subscription } of snapshots) subscription.end();
+	});
+
+	// A deferred row is decoded as `decode` would have, so one that can not be is skipped, not a failed scan.
+	it('reads an undecodable deferred row as null, as an undecodable row is read', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return this.skip();
+		const Undecodable = table({
+			database: 'data',
+			table: 'SubscriptionUndecodableRow',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'reading' }],
+		});
+		// an array of two whose second element is missing
+		assert.strictEqual(Undecodable.primaryStore.encoder.decodeDeferred(Buffer.from([0x92, 0x01])), null);
+	});
+
+	// A row whose flags rule it out of sharing would be decoded anyway, so it is not kept undecoded.
+	it('decodes at once a row whose metadata flags rule it out of sharing', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return this.skip();
+		const Flagged = table({
+			database: 'data',
+			table: 'SubscriptionFlaggedRows',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'reading' }],
+		});
+		await Flagged.put({ id: 'plain', reading: 1 });
+		await Flagged.put({ id: 'invalidated', reading: 2 });
+		await Flagged.invalidate('invalidated');
+		const entries = new Map();
+		for (const entry of Flagged.primaryStore.getRange({
+			versions: true,
+			deferValues: () => true,
+			deferExcept: INVALIDATED,
+		}))
+			entries.set(entry.key, entry);
+		assert.strictEqual(entries.get('plain').constructor.name, 'DeferredRangeEntry', 'precondition: rows are deferred');
+		assert.notStrictEqual(entries.get('invalidated').constructor.name, 'DeferredRangeEntry');
+		assert.strictEqual(entries.get('plain').value.reading, 1);
 	});
 
 	// A computed attribute's resolver may read the subscriber's context while the value is serialized, so
