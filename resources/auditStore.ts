@@ -2556,7 +2556,7 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 				// only the recovered prefix is discounted; every other case keeps its existing basis
 				return (end !== undefined ? end - start : buffer.byteLength) - (entryStart - start);
 			},
-			getValue(store, fullRecord?, auditTime?) {
+			getValue(store, fullRecord?, auditTime?, historyMemo?) {
 				if (action & HAS_RECORD || (action & HAS_PARTIAL_RECORD && !fullRecord)) {
 					if (decoder.position >= (end ?? buffer.byteLength)) {
 						// Entry advertises a record but has no body (minted before #2153): nothing to decode, and
@@ -2584,7 +2584,7 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 				}
 				if (action & HAS_PARTIAL_RECORD && auditTime) {
 					const recordId = this.recordId;
-					return getRecordAtTime(store.getEntry(recordId), auditTime, store, tableId, recordId, nodeId);
+					return getRecordAtTime(store.getEntry(recordId), auditTime, store, tableId, recordId, nodeId, historyMemo);
 				} // TODO: If we store a partial and full record, may need to read both sequentially
 			},
 			getBinaryValue() {

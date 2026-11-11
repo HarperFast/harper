@@ -75,7 +75,7 @@ The synthesized target keeps the collection flag, or the batch is one null-keyed
 
 ## Historical record reconstruction (`getRecordAtTime`)
 
-`getRecordAtTime` reverses patches, then rebuilds replacements; exact reversals survive. Unlinked is not absent. Frames fold one origin, then follow the first entry's predecessor. `getHistoryOfRecord` scans absent rows and evictable unlinked lives; non-expiring reinserts on non-evicting tables retain the gap (`auditLog.test.js`).
+`getRecordAtTime` reverses patches or rebuilds replacements, folding one origin before a frame's oldest predecessor. `HistoryMemo` bounds complete detached entries per call; unsafe reads rebuild. `HistoryReader` carries straight chains. Absent/evictable unlinked history scans; other non-expiring reinserts keep the gap.
 
 ## Path routing & parameterised routes
 

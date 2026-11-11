@@ -1,4 +1,5 @@
 import { compareKeys } from 'ordered-binary';
+import type { HistoryMemo } from './historyReader.ts';
 
 // Single definition of the numeric `add` fold, shared by the storage-time merge (crdt.add, via
 // updateAndFreeze) and the read/serialize path (tracked.ts Addition.update). One implementation
@@ -201,10 +202,8 @@ export function applyForward(record, update, skipUnseededOps = false) {
  * The walk follows previous links and skips entries newer than `timestamp` (which may fall
  * between entries). Returns `null` if the record did not exist at `timestamp` (the nearest in-range
  * history boundary is a delete with no surviving writes, or there is no in-range history).
- * When a prior link leads to a pruned
- * entry, returns `undefined` without `partial` (history is incomplete for a whole-record caller);
- * with `partial` (the `unknowns` fill on a live record) it replays the surviving writes and sets
- * `partial.truncated` when the history it read was incomplete.
+ * Incomplete whole-record history can return `undefined`. Partial reconstruction replays surviving
+ * writes and marks `partial.truncated` so the caller preserves unresolved fields.
  */
 function reconstructForward(
 	auditStore,
@@ -213,7 +212,8 @@ function reconstructForward(
 	recordId: any,
 	fromPosition,
 	timestamp,
-	partial?: { truncated: boolean }
+	partial?: { truncated: boolean },
+	memo?: HistoryMemo
 ) {
 	// Collect the in-range entries (at or before `timestamp`) back to a base boundary, newest-first.
 	// The boundary is a full `put` (snapshot) or a `delete` (everything older is erased); a record
@@ -225,7 +225,7 @@ function reconstructForward(
 	let { txnLogKey: auditTime, nodeId: auditNodeId, frame } = fromPosition;
 	const visitedFrames = new Set<string>();
 	frames: while (auditTime > 0) {
-		frame ??= readAuditFrame(auditStore, tableId, recordId, auditTime, auditNodeId, true);
+		frame ??= readAuditFrame(auditStore, tableId, recordId, auditTime, auditNodeId, true, memo);
 		const identity = `${frame[0]?.nodeId ?? auditNodeId ?? 0}:${auditTime}`;
 		if (frame.length === 0 || visitedFrames.has(identity)) {
 			if (partial) {
@@ -298,39 +298,91 @@ function reconstructForward(
 	return record;
 }
 
-function readAuditFrame(
+export function readAuditFrame(
 	auditStore,
 	tableId: number,
 	recordId: any,
 	key: number,
 	nodeId,
-	followingCommittedRef = false
+	followingCommittedRef = false,
+	memo?: HistoryMemo
 ) {
-	// LMDB has one entry per key; only RocksDB exposes per-origin transaction logs.
+	if (memo && (memo.tableId !== tableId || memo.store.rootStore.auditStore !== auditStore)) memo = undefined;
+	const cacheKey = memo?.key('frame', recordId, key, nodeId, followingCommittedRef);
+	const cached = memo?.frame(cacheKey);
+	if (cached) return cached;
 	if (typeof auditStore.logById !== 'function') {
 		const entry = auditStore.get(key, tableId, recordId, nodeId, followingCommittedRef);
-		return entry?.tableId === tableId && compareKeys(entry.recordId, recordId) === 0 ? [entry] : [];
+		const entries = entry?.tableId === tableId && compareKeys(entry.recordId, recordId) === 0 ? [entry] : [];
+		return memo
+			? memo.rememberFrame(
+					cacheKey,
+					entries.map((entry) => ({ ...memo.snapshot(entry), txnLogKey: key })),
+					entries.length > 0
+				)
+			: entries;
 	}
 	let origin = nodeId;
 	const entries = [];
-	for (const entry of auditStore.getRange({
+	const snapshots = [];
+	const ended = memo ? new Set<number>() : undefined;
+	let bad = false;
+	let bytes = 0;
+	const range = auditStore.getRange({
 		start: key,
 		end: Infinity,
 		exactStart: true,
 		log: origin,
 		readUncommitted: followingCommittedRef,
-	})) {
+	});
+	for (const entry of range) {
 		if (entry.txnLogKey !== key) break;
-		if (entry.tableId !== tableId || compareKeys(entry.recordId, recordId) !== 0) continue;
-		origin ??= entry.nodeId ?? 0;
-		if ((entry.nodeId ?? 0) === origin) entries.push(entry);
+		const entryOrigin = entry.nodeId ?? 0;
+		if (memo && (entry.type === undefined || (origin != null && entryOrigin === origin && ended.has(origin))))
+			bad = true;
+		const entryId = entry.tableId === tableId ? entry.recordId : undefined;
+		if (
+			memo &&
+			entry.tableId === tableId &&
+			entryId === undefined &&
+			(STATE_TYPES.has(entry.type) || entry.type === 'invalidate')
+		)
+			bad = true;
+		if (entry.tableId === tableId && compareKeys(entryId, recordId) === 0) {
+			origin ??= entryOrigin;
+			if (entryOrigin === origin) {
+				if (memo) {
+					if (ended.has(origin)) bad = true;
+					const snapshot = memo.snapshot(entry);
+					bytes += snapshot.encoded.byteLength + 64;
+					if (!memo.canFit(bytes + cacheKey.length * 2 + 128, snapshots.length + 1)) memo.unavailable();
+					snapshots.push(snapshot);
+				} else entries.push(entry);
+			}
+		}
+		if (memo && entry.endTxn) {
+			if (ended.size >= 32) bad = true;
+			else ended.add(entryOrigin);
+		}
+	}
+	if (memo) {
+		const complete = !bad && ended.has(origin) && !range.failedLogs?.size && !range.corruptFrameStop?.breaks;
+		return memo.rememberFrame(cacheKey, snapshots, complete);
 	}
 	return entries;
 }
 
-function reconstructAtTimestamp(auditStore, store, tableId: number, recordId: any, timestamp, nodeId) {
+function reconstructAtTimestamp(
+	auditStore,
+	store,
+	tableId: number,
+	recordId: any,
+	timestamp,
+	nodeId,
+	memo?: HistoryMemo
+) {
 	const isOfRecord = (auditEntry) => auditEntry.tableId === tableId && compareKeys(auditEntry.recordId, recordId) === 0;
-	let frame = readAuditFrame(auditStore, tableId, recordId, timestamp, nodeId);
+	let frame = readAuditFrame(auditStore, tableId, recordId, timestamp, nodeId, false, memo);
 	let start = frame.at(-1);
 	// An unlinked control entry has no record image to reconstruct.
 	if (!(start && isOfRecord(start) && (STATE_TYPES.has(start.type) || start.previousVersion))) {
@@ -357,7 +409,7 @@ function reconstructAtTimestamp(auditStore, store, tableId: number, recordId: an
 			windowEnd = windowStart;
 		}
 		if (!start) return null;
-		frame = readAuditFrame(auditStore, tableId, recordId, start.txnLogKey, start.nodeId);
+		frame = readAuditFrame(auditStore, tableId, recordId, start.txnLogKey, start.nodeId, false, memo);
 	}
 	return reconstructForward(
 		auditStore,
@@ -365,7 +417,9 @@ function reconstructAtTimestamp(auditStore, store, tableId: number, recordId: an
 		tableId,
 		recordId,
 		{ txnLogKey: start.txnLogKey ?? timestamp, nodeId: start.nodeId, frame },
-		timestamp
+		timestamp,
+		undefined,
+		memo
 	);
 }
 const STATE_TYPES = new Set(['put', 'patch', 'delete']);
@@ -418,9 +472,37 @@ function previousAuditPosition(auditStore, tableId: number, recordId: any, audit
  * @param store
  * @returns
  */
-export function getRecordAtTime(currentEntry, timestamp, store, tableId: number, recordId: any, nodeId?: number) {
+export function getRecordAtTime(
+	currentEntry,
+	timestamp,
+	store,
+	tableId: number,
+	recordId: any,
+	nodeId?: number,
+	memo?: HistoryMemo
+) {
+	if (memo && memo.store === store && memo.tableId === tableId && memo.checkState()) {
+		try {
+			return recordAtTime(currentEntry, timestamp, store, tableId, recordId, nodeId, memo);
+		} catch {
+			memo.fallbacks++;
+			memo.stopOptimizing();
+		}
+	}
+	return recordAtTime(currentEntry, timestamp, store, tableId, recordId, nodeId);
+}
+
+function recordAtTime(
+	currentEntry,
+	timestamp,
+	store,
+	tableId: number,
+	recordId: any,
+	nodeId?: number,
+	memo?: HistoryMemo
+) {
 	const auditStore = store.rootStore.auditStore;
-	if (!currentEntry) return reconstructAtTimestamp(auditStore, store, tableId, recordId, timestamp, nodeId);
+	if (!currentEntry) return reconstructAtTimestamp(auditStore, store, tableId, recordId, timestamp, nodeId, memo);
 	let record = { ...currentEntry.value };
 	// `localTime` is the record's audit head on both engines: the audit-store key on LMDB, where it
 	// is a different clock than the record version, and the transaction-log key on RocksDB. Only a
@@ -445,7 +527,7 @@ export function getRecordAtTime(currentEntry, timestamp, store, tableId: number,
 	let replaced = false;
 	const visitedFrames = new Set<string>();
 	while (auditTime > timestamp) {
-		const frame = readAuditFrame(auditStore, tableId, recordId, auditTime, auditNodeId, true);
+		const frame = readAuditFrame(auditStore, tableId, recordId, auditTime, auditNodeId, true, memo);
 		const identity = `${frame[0]?.nodeId ?? auditNodeId ?? 0}:${auditTime}`;
 		if (frame.length === 0 || visitedFrames.has(identity)) break;
 		visitedFrames.add(identity);
@@ -474,7 +556,7 @@ export function getRecordAtTime(currentEntry, timestamp, store, tableId: number,
 		auditNodeId = previousPosition.nodeId;
 	}
 	if (!(auditTime > 0 && auditTime <= timestamp)) {
-		return reconstructAtTimestamp(auditStore, store, tableId, recordId, timestamp, nodeId);
+		return reconstructAtTimestamp(auditStore, store, tableId, recordId, timestamp, nodeId, memo);
 	}
 	if (replaced) {
 		return reconstructForward(
@@ -483,13 +565,15 @@ export function getRecordAtTime(currentEntry, timestamp, store, tableId: number,
 			tableId,
 			recordId,
 			{ txnLogKey: auditTime, nodeId: auditNodeId },
-			timestamp
+			timestamp,
+			undefined,
+			memo
 		);
 	}
 	// If the most recent entry at or before `timestamp` is a delete, the record did not exist then.
 	// (A delete reached as a boundary — rather than crossed, which returns via reconstructForward —
 	// is otherwise missed, leaving `record` holding a newer re-inserted value. See issue #1330.)
-	const boundaryFrame = readAuditFrame(auditStore, tableId, recordId, auditTime, auditNodeId, true);
+	const boundaryFrame = readAuditFrame(auditStore, tableId, recordId, auditTime, auditNodeId, true, memo);
 	for (let index = boundaryFrame.length - 1; index >= 0; index--) {
 		const type = boundaryFrame[index].type;
 		if (type === 'delete') return null;
@@ -510,7 +594,8 @@ export function getRecordAtTime(currentEntry, timestamp, store, tableId: number,
 				recordId,
 				{ txnLogKey: auditTime, nodeId: auditNodeId, frame: boundaryFrame },
 				timestamp,
-				partial
+				partial,
+				memo
 			) ?? {};
 		for (const key of unknowns) {
 			// Object.hasOwn, not `in`: an unknown field named like a prototype member (toString,
