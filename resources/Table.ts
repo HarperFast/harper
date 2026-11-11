@@ -13307,7 +13307,9 @@ export function makeTable(options): TableResourceClass {
 		return !hasSourceGet && expiresAt != undefined && expiresAt < (now ?? Date.now());
 	}
 	function evictsRecords() {
-		return Boolean(expirationMs || evictionMs || expirationScanScheduled || retainExpiryScan || expiresAtProperty || hasSourceGet);
+		return Boolean(
+			expirationMs || evictionMs || expirationScanScheduled || retainExpiryScan || expiresAtProperty || hasSourceGet
+		);
 	}
 	function isHistoryEntry(auditRecord): boolean {
 		return auditRecord.tableId === tableId && !isNonHistoryType(auditRecord.type);
