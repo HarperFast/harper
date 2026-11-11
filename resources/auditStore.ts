@@ -936,11 +936,15 @@ type LogPurgeBounds = {
 	logs: Record<string, LogPurgeEntry>;
 	positions: Record<string, LogPosition>;
 };
-/** `unaccounted`: a listed log has no watermark. `unobserved`: a boot purge could observe none of them. */
+/**
+ * `unaccounted`: a listed log has no watermark. `unreadable`: one's could not be read, so this pass did not
+ * account for every log. `unobserved`: a boot purge could observe none of them.
+ */
 type LogObservation = {
 	entries: Map<string, LogPurgeEntry>;
 	watermarked: Set<string>;
 	unaccounted: boolean;
+	unreadable: boolean;
 	read: boolean;
 	unobserved: boolean;
 	positions: Record<string, LogPosition>;
@@ -1155,6 +1159,7 @@ function observeLogPurgeBounds(
 		entries: new Map(),
 		watermarked: new Set(),
 		unaccounted: false,
+		unreadable: false,
 		read: readLogs,
 		unobserved: false,
 		positions: Object.create(null),
@@ -1187,7 +1192,7 @@ function observeLogPurgeBounds(
 		else {
 			// one whose watermark cannot be read is not read either: the reader refuses it until it can be, and it
 			// counts as unaccounted for `trackedFrom`
-			if (watermark === undefined) observation.unaccounted = true;
+			if (watermark === undefined) observation.unaccounted = observation.unreadable = true;
 			observation.entries.set(name, [Math.max(watermark ?? 0, cutoff), 0, UNKNOWN_MAXIMUM]);
 			observation.watermarked.add(name);
 		}
@@ -1331,7 +1336,7 @@ function raisedLogPurgeBounds(
 		unobserved: epoch,
 		trackedFrom,
 		cutoff: Math.max(base.cutoff, cutoff),
-		observedAt: read ? now : base.observedAt,
+		observedAt: read && !observation.unreadable ? now : base.observedAt,
 		positions: read ? observation.positions : base.positions,
 		logs,
 	});

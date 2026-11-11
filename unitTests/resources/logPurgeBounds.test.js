@@ -102,7 +102,6 @@ function interceptQueries(rootStore, query) {
 	return () => (rootStore.useLog = useLog);
 }
 
-// a purge removes only flushed files
 async function ageLogFiles(Table, name, mtime) {
 	const rootStore = Table.auditStore.rootStore;
 	await rootStore.flush();
@@ -111,7 +110,6 @@ async function ageLogFiles(Table, name, mtime) {
 		if (file.endsWith('.txnlog')) fs.utimesSync(path.join(directory, file), mtime / 1000, mtime / 1000);
 }
 
-// as `scheduleAuditCleanup` does on RocksDB
 function retentionPass(Table, cutoff) {
 	raiseAuditFloor(Table.auditStore, cutoff, true);
 	return Table.auditStore.rootStore.purgeLogs({ before: cutoff });
@@ -450,6 +448,11 @@ describe('per-log purge bounds', function () {
 			assert.strictEqual(queries, 0);
 			assert.ok(recordedLogs(Table.auditStore).local[0] >= cutoff);
 			assert.strictEqual(getLogPurgeTrackedFrom(Table.auditStore), trackedFrom);
+			assert.strictEqual(
+				unpack(Table.auditStore.getBinary(LOG_PURGE_BOUNDS_KEY)).observedAt,
+				0,
+				'not a pass that read every log'
+			);
 		});
 
 		it('fences where tracking began for a log whose watermark cannot be read', async () => {
@@ -463,10 +466,12 @@ describe('per-log purge bounds', function () {
 			});
 			try {
 				assert.ok(getLogPurgeTrackedFrom(Table.auditStore) >= horizon);
+				raiseAuditFloor(Table.auditStore, Date.now() - 60_000, true);
+				assert.ok(getLogPurgeTrackedFrom(Table.auditStore) >= horizon, 'a pass that could not read it keeps the fence');
 			} finally {
 				delete local.getPurgeWatermark;
 			}
-			assert.strictEqual(getLogPurgeTrackedFrom(Table.auditStore), trackedFrom);
+			assert.ok(trackedFrom < horizon, 'precondition: nothing else raised it');
 		});
 
 		it('reads where tracking began without listing the logs while a pass is recent', async () => {
