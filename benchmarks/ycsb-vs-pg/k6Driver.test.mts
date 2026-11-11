@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { DENY_EVERY, formatKey, linkPrefix, ownerOf } from '../ycsb/workload.mts';
-import { k6Binary, parseSummary, startDriver, type DriverConfig, type PhaseWindow } from './k6Driver.mts';
+import { k6Binary, k6GoEnv, parseSummary, startDriver, type DriverConfig, type PhaseWindow } from './k6Driver.mts';
 
 const hasK6 = (() => {
 	try {
@@ -101,6 +101,23 @@ const recordingWindow = (state: { open: boolean }) => {
 	};
 	return { window, calls };
 };
+
+test('k6 runs with GOGC=400 unless the environment sets it, and leaves GOMAXPROCS to Go unless set', () => {
+	const saved = { GOGC: process.env.GOGC, GOMAXPROCS: process.env.GOMAXPROCS };
+	try {
+		delete process.env.GOGC;
+		delete process.env.GOMAXPROCS;
+		deepStrictEqual(k6GoEnv(), { GOGC: '400' });
+		process.env.GOGC = '200';
+		process.env.GOMAXPROCS = '6';
+		deepStrictEqual(k6GoEnv(), { GOGC: '200', GOMAXPROCS: '6' });
+	} finally {
+		for (const [name, value] of Object.entries(saved)) {
+			if (value === undefined) delete process.env[name];
+			else process.env[name] = value;
+		}
+	}
+});
 
 test('parseSummary takes the last summary line and refuses a short, foreign or non-finite one', () => {
 	const line = (summary: object) => `YCSB_K6_SUMMARY ${JSON.stringify(summary)}`;

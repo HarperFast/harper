@@ -109,7 +109,8 @@ function failed(error) {
 // Per VU, built on its first iteration: its id, which picks its insert range, is unknown at init.
 let keys;
 
-export default async function () {
+// Synchronous: k6's HTTP calls block the VU, and an async iteration would cost a promise per op.
+export default function () {
 	if (phase.phase !== 'run') {
 		const index = phase.from + exec.scenario.iterationInTest;
 		const key = formatKey(index, phase.keyWidth);
@@ -136,7 +137,7 @@ export default async function () {
 	const type = pickOp(picker);
 	opMs = 0;
 	try {
-		await executeOp(type, executor, keys, workload.chainHops ?? 0);
+		executeOp(type, executor, keys, workload.chainHops ?? 0);
 		opLatency[type].add(opMs);
 	} catch (error) {
 		failed(error);

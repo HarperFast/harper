@@ -381,19 +381,19 @@ export function formatKey(index: number, width: number): string {
 // Operation execution
 // ---------------------------------------------------------------------------
 
-/** Transport binding the runner drives. Implemented by restClient.mts. */
+/** Transport binding the runner drives: asynchronous in Node (restClient.mts), synchronous in k6. */
 export interface OpExecutor {
-	read(key: string): Promise<void>;
-	insert(key: string, record: Record<string, string>): Promise<void>;
-	update(key: string, record: Record<string, string>): Promise<void>;
+	read(key: string): Promise<void> | void;
+	insert(key: string, record: Record<string, string>): Promise<void> | void;
+	update(key: string, record: Record<string, string>): Promise<void> | void;
 	/** Read the record, then write it back (full replace). */
-	readModifyWrite(key: string, record: Record<string, string>): Promise<void>;
+	readModifyWrite(key: string, record: Record<string, string>): Promise<void> | void;
 	/** Scan up to `count` records starting at `startKey` (inclusive). */
-	scan(startKey: string, count: number): Promise<void>;
+	scan(startKey: string, count: number): Promise<void> | void;
 	/** GET /inspect/<key> as `caller`; must answer 403 when `forbidden`, 200 otherwise. */
-	inspect(key: string, caller: string, forbidden: boolean): Promise<void>;
+	inspect(key: string, caller: string, forbidden: boolean): Promise<void> | void;
 	/** GET /chain/<key>?hops=<hops>. */
-	chain(key: string, hops: number): Promise<void>;
+	chain(key: string, hops: number): Promise<void> | void;
 }
 
 /** Live keyspace state shared by the workers driving a single workload run. */
@@ -535,12 +535,13 @@ export function pickOp(picker: WeightedOp[]): OperationType {
 	return picker[picker.length - 1].type;
 }
 
-export async function executeOp(
+/** Runs one op: a promise when the executor is asynchronous, so a synchronous one (k6) pays for none. */
+export function executeOp(
 	type: OperationType,
 	executor: OpExecutor,
 	keys: KeyState,
 	chainHops: number
-): Promise<void> {
+): Promise<void> | void {
 	switch (type) {
 		case 'read':
 			return executor.read(keys.existingKey());
@@ -554,14 +555,19 @@ export async function executeOp(
 		}
 		case 'insert': {
 			const { index, key } = keys.nextInsert();
+			// Always advance the frontier, even on failure — otherwise one failed insert
+			// permanently stalls readableCount and leaks pendingAcks. A failed key may then
+			// 404 on a later read (counted as an error), proportionate to the failure rate.
+			const acknowledge = () => keys.acknowledgeInsert(index);
+			let pending: Promise<void> | void;
 			try {
-				await executor.insert(key, keys.record(index));
-			} finally {
-				// Always advance the frontier, even on failure — otherwise one failed insert
-				// permanently stalls readableCount and leaks pendingAcks. A failed key may then
-				// 404 on a later read (counted as an error), proportionate to the failure rate.
-				keys.acknowledgeInsert(index);
+				pending = executor.insert(key, keys.record(index));
+			} catch (error) {
+				acknowledge();
+				throw error;
 			}
+			if (pending) return pending.finally(acknowledge);
+			acknowledge();
 			return;
 		}
 		case 'scan':

@@ -54,7 +54,7 @@ All `benchmarks/ycsb` flags apply, plus:
 | `--cache`                      | `warm`            | `warm` or `cold` (below)                                                                                    |
 | `--base-harper`                | —                 | `dist/bin/harper.js` of the build `harper-base` runs                                                        |
 | `--generator`                  | below             | `k6` or `node`: the load generator (below)                                                                  |
-| `--shards`                     | `4`               | `--generator=node`: its processes                                                                           |
+| `--shards`                     | generator CPUs    | `--generator=node`: its processes (one per generator CPU, at most `--concurrency`)                          |
 | `--reps`                       | `1`               | Independent samples per target × workload                                                                   |
 | `--perf-counters`              | off               | `perf stat` per component over each measured run                                                            |
 | `--profile=<dir>`              | off               | Counters, then a sampled profile window (below)                                                             |
@@ -85,15 +85,46 @@ Both generators keep `--concurrency` requests in flight and take every key, op, 
     affinity are read at those two points.
   - An op's latency is its requests' send, wait and receive time (k6's `timings.duration`). Timing it in
     k6's JavaScript would add the interpreter's own tens of µs per op.
+  - k6 runs with `GOGC=400` unless the environment sets it; `meta.generator.goEnv` records the setting.
 - **`node`, the default on one host.** `shardedDriver.mts` runs `--shards` Node processes, each with its
   own `KeyState` and REST client.
 
-k6 costs about 3x the CPU per op of the Node driver. Measured on this host at turbo off, it saturates
-its 8 generator CPUs at 33k ops/s, where the Node driver delivers 52k on 3.3 of them. In single-host
-mode that cost competes with the target for the same socket. With 2 target cores and 12 generator CPUs
-the target's instructions/op were equal under both generators (within 1.5%). k6's ops/s were up to 9%
-lower, and its cycles/op 1–4.6% higher, both scaling with k6's busy cores. On a host of its own (GCP,
-below) none of that applies, and `client-ceiling.mts --max-generator-busy` checks the headroom.
+**What each costs here.** These numbers come from the XPS (i7-12700H) at turbo off. The generator ran on
+8 CPUs (two P-cores with their SMT siblings, plus four E-cores) against `client-ceiling.mts`'s
+fixed-record server on 4 other cores, with 64 requests in flight, workload C, k6 v2.3.0 (release binary).
+They describe this harness on this host, not k6 or Node in general.
+
+| generator                            | ops/s | CPU µs/op | busy CPUs |
+| ------------------------------------ | ----: | --------: | --------: |
+| Node driver, 4 shards                |   51k |        70 |  3.6 of 8 |
+| Node driver, 8 shards                |   66k |       101 |  6.7 of 8 |
+| k6, one fixed GET, nothing else      |   78k |       101 |  7.8 of 8 |
+| the same, `GOMAXPROCS=4`             |   55k |        72 |  4.0 of 4 |
+| the same, `GOGC=400`                 |   95k |        84 |  7.9 of 8 |
+| k6 with `k6Workload.mjs`, `GOGC=400` |   52k |       151 |  7.9 of 8 |
+
+- **k6's HTTP path** costs about what the Node driver does per request: 72 µs on 4 Go Ps against 70.
+  Spread over 8 Ps it costs about 28 µs more (Go scheduler and cross-core work), and the default GC
+  adds about 17 µs.
+- **The workload in k6's JavaScript interpreter** adds about 70 µs/op on top: about 50 µs to choose a key
+  (scrambled zipfian with FNV-1a, `KeyState`) and about 25 µs for `executeOp`, the response timings and
+  the latency `Trend`. Node's JIT chooses a key in about 1 µs. Precomputing keys in Node and having k6 only
+  read them cut 25–30 µs/op (126 µs/op, 63k ops/s), a third of the gap, so the harness does not do it.
+
+What that means for each mode:
+
+- **On one host**, the generator and the target share a socket. k6 with this script tops out at 52k ops/s
+  on those 8 CPUs, below harper-uws on 4 cores (59k on warm C, measured with the Node driver at 8 shards).
+  That is why single-host runs default to the Node driver.
+- **The Node driver's shard count matters.** At 4 shards it held harper-uws C to 50k, against 59k at 8
+  shards, and pg-redis to 49k against 52k. That moved the warm-C ratio from about 1.02 to 1.13 (turbo off,
+  `--auth=token`, 2 reps each). Single-host results recorded with 4 shards (`meta.generator.shards`)
+  understate Harper on read-only workloads.
+- **k6 against the Node driver.** With 2 target cores and 12 generator CPUs, neither generator was the
+  ceiling. The target's instructions/op were then equal under both (within 1.5%). k6's ops/s were up to 9%
+  lower and the target's cycles/op 1–4.6% higher, both rising with k6's busy cores on the shared socket.
+- **On a host of its own** (GCP, below) the socket is not shared, and `client-ceiling.mts
+--max-generator-busy` checks the generator's headroom before anything is measured.
 
 Insert workloads differ between the two. k6's VUs share no state, so each VU inserts its own keys
 (YCSB's per-client insert ranges): VU v's n-th insert is key `records + v + vus × n`. Its "latest" reads
@@ -447,8 +478,8 @@ Choices, recorded per run in `gcp/runs/<id>/manifest.json` and in every results 
   term into the dependent-read chains the 2x and 8x points measure. 375 GiB holds 8x on per-engine VMs
   (Harper 138 GiB snapshot plus its restored copy). Documented limits: 150k read IOPS, 625 MiB/s read.
 - **Generator: `c4-standard-48`** (24 cores, SMT on), running k6 (pinned release, SHA-256 checked by
-  `startup.sh`). That is 6x the target's vCPUs, because k6 needs about 3x the Node driver's CPU per op
-  (above). The ceiling check is the gate; `YCSB_GEN_MACHINE_TYPE` changes the shape. No VM gets a
+  `startup.sh`). That is 6x the target's vCPUs: with this harness's script, k6 spent about 151 µs of CPU
+  per op on the XPS (above), so a 4-core target serving 60–80k ops/s could need 10–12 of them. The ceiling check is the gate; `YCSB_GEN_MACHINE_TYPE` changes the shape. No VM gets a
   service account: none calls a GCP API, and the guest attributes go through the metadata server.
 - **Turbo stays on** (GCP has no control for it). Targets interleave within a session, forward and
   reversed per rep, 3 reps per cell, and perf counts the cycles each window ran.

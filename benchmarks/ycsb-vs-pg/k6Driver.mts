@@ -96,6 +96,16 @@ export interface K6Phase {
 
 export const k6Binary = (): string => process.env.YCSB_K6 || 'k6';
 
+/**
+ * Go runtime settings for k6, recorded with the results. GOGC=400 unless set: at the default (100) GC took
+ * about 17% of k6's CPU per op in this harness (README, "Load generator"). GOMAXPROCS stays Go's default,
+ * one per CPU k6 may run on.
+ */
+export const k6GoEnv = (): { GOGC: string; GOMAXPROCS?: string } => ({
+	GOGC: process.env.GOGC || '400',
+	...(process.env.GOMAXPROCS ? { GOMAXPROCS: process.env.GOMAXPROCS } : {}),
+});
+
 export const K6_LATENCY_BASIS = "the op's requests' send, wait and receive time (k6 timings.duration, summed)";
 export const NODE_LATENCY_BASIS = 'wall time around the op in the generator process (performance.now)';
 
@@ -245,6 +255,7 @@ async function runPhase(
 			env: {
 				...process.env,
 				K6_NO_USAGE_REPORT: 'true',
+				...k6GoEnv(),
 				YCSB_PHASE: JSON.stringify({
 					...phase,
 					phaseId,

@@ -24,6 +24,7 @@ import { WORKLOADS, OWNER_COUNT, formatKey, linkTarget, ownerOf, usesDependentRe
 import type { DistributionName, LatencyStats, PhaseResult } from '../ycsb/workload.mts';
 import {
 	K6_LATENCY_BASIS,
+	k6GoEnv,
 	NODE_LATENCY_BASIS,
 	k6Version,
 	startDriver as startK6Driver,
@@ -222,8 +223,9 @@ type Options = ReturnType<typeof parseOptions>;
 export type GeneratorName = 'k6' | 'node';
 
 /**
- * k6 where the generator has a host of its own (--hosts), sized for k6's cost per request; the Node driver
- * (shardedDriver.mts) where it shares one with the target, whose spare cores k6 cannot saturate a target from.
+ * k6 where the generator has a host of its own (--hosts), sized for it; the Node driver (shardedDriver.mts)
+ * where it shares one with the target: there k6 with this harness's script topped out below a 4-core target
+ * (README, "Load generator").
  */
 export const defaultGenerator = (remote: boolean): GeneratorName => (remote ? 'k6' : 'node');
 
@@ -1576,7 +1578,8 @@ export async function createSession(
 		options,
 		cache,
 		generator,
-		shards: Number(argValue(argv, '--shards') ?? 4),
+		// One Node process per generator CPU: 4 capped harper-uws C on 8 generator CPUs (README, "Load generator").
+		shards: Number(argValue(argv, '--shards') ?? Math.min(driverCpus.length, options.config.concurrency)),
 		serverCpus,
 		driverCpus,
 		harperBin,
@@ -1631,7 +1634,7 @@ export async function createSession(
 		recordCacheSize: sizesCache ? session.recordCacheSize : undefined,
 		generator:
 			generator === 'k6'
-				? { name: 'k6', version: k6Version(), latency: K6_LATENCY_BASIS }
+				? { name: 'k6', version: k6Version(), latency: K6_LATENCY_BASIS, goEnv: k6GoEnv() }
 				: { name: 'node', shards: session.shards, latency: NODE_LATENCY_BASIS },
 		dataDir: base,
 		harper: { bin: harperBin, revision: gitRevision(REPO_ROOT), digests: buildDigests(REPO_ROOT) },

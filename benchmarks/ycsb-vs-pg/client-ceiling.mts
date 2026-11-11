@@ -39,7 +39,7 @@ const { values } = parseArgs({
 		'serverCpus': { type: 'string' },
 		'driverCpus': { type: 'string' },
 		'generator': { type: 'string' },
-		'shards': { type: 'string', default: '4' },
+		'shards': { type: 'string' },
 		'records': { type: 'string', default: '200000' },
 		'ops': { type: 'string', default: '300000' },
 		'port': { type: 'string', default: '9941' },
@@ -128,7 +128,7 @@ async function measure(baseUrl: string, serverCpus: string, driver: number[]): P
 			maxScanLength: 100,
 			cpus: driver,
 		},
-		Number(values.shards)
+		Number(values.shards ?? Math.min(driver.length, Number(values.concurrency)))
 	);
 	const maxBusy = values['max-generator-busy'] === undefined ? undefined : Number(values['max-generator-busy']);
 	try {
