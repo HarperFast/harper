@@ -102,7 +102,7 @@ function interceptQueries(rootStore, query) {
 	return () => (rootStore.useLog = useLog);
 }
 
-// flushed, so a purge may remove them, and last written at `mtime`
+// a purge removes only flushed files
 async function ageLogFiles(Table, name, mtime) {
 	const rootStore = Table.auditStore.rootStore;
 	await rootStore.flush();
@@ -111,13 +111,12 @@ async function ageLogFiles(Table, name, mtime) {
 		if (file.endsWith('.txnlog')) fs.utimesSync(path.join(directory, file), mtime / 1000, mtime / 1000);
 }
 
-// what `scheduleAuditCleanup` does on RocksDB: record, then purge what was last written before the cutoff
+// as `scheduleAuditCleanup` does on RocksDB
 function retentionPass(Table, cutoff) {
 	raiseAuditFloor(Table.auditStore, cutoff, true);
 	return Table.auditStore.rootStore.purgeLogs({ before: cutoff });
 }
 
-// counts the log queries the boot purge makes
 function bootPurge(Table, retention) {
 	let queries = 0;
 	const restore = interceptQueries(Table.auditStore.rootStore, (_name, log, options) => {
@@ -423,6 +422,53 @@ describe('per-log purge bounds', function () {
 					delete local.getPurgeWatermark;
 				}
 			}
+		});
+
+		it('reads no log whose watermark cannot be read, recording it at the cutoff', async () => {
+			const Table = backdatedTable();
+			await Table.put('unread-unreadable', { name: 'x' });
+			await tick();
+			const rootStore = Table.auditStore.rootStore;
+			const local = rootStore.useLog('local');
+			let queries = 0;
+			const restore = interceptQueries(rootStore, (_name, log, options) => {
+				queries++;
+				return log.query(options);
+			});
+			overrideWatermark(local, () => {
+				throw new Error('cannot read the watermark');
+			});
+			const cutoff = Date.now();
+			const trackedFrom = getLogPurgeTrackedFrom(Table.auditStore);
+			try {
+				raiseAuditFloor(Table.auditStore, cutoff, true);
+				assert.strictEqual(getLogPurgeBounds(Table.auditStore, 'local').has('local'), false);
+			} finally {
+				restore();
+				delete local.getPurgeWatermark;
+			}
+			assert.strictEqual(queries, 0);
+			assert.ok(recordedLogs(Table.auditStore).local[0] >= cutoff);
+			assert.strictEqual(getLogPurgeTrackedFrom(Table.auditStore), trackedFrom);
+		});
+
+		it('reads where tracking began without listing the logs while a pass is recent', async () => {
+			const Table = backdatedTable();
+			await tick();
+			raiseAuditFloor(Table.auditStore, Date.now(), true);
+			const rootStore = Table.auditStore.rootStore;
+			const listLogs = rootStore.listLogs;
+			let listings = 0;
+			rootStore.listLogs = function () {
+				listings++;
+				return listLogs.call(this);
+			};
+			try {
+				assert.ok(getLogPurgeTrackedFrom(Table.auditStore) > 0);
+			} finally {
+				rootStore.listLogs = listLogs;
+			}
+			assert.strictEqual(listings, 0);
 		});
 
 		it('takes the record rule on a rocksdb-js with no purge watermark, refusing no log', async () => {

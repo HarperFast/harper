@@ -936,11 +936,7 @@ type LogPurgeBounds = {
 	logs: Record<string, LogPurgeEntry>;
 	positions: Record<string, LogPosition>;
 };
-/**
- * What a prune writes per log. `watermarked` names the entries of logs rocksdb-js vouches for; `unaccounted` is
- * whether a listed log has no watermark, `read` that a retention pass read each such log, and `unobserved` that a
- * boot purge could observe none of them.
- */
+/** `unaccounted`: a listed log has no watermark. `unobserved`: a boot purge could observe none of them. */
 type LogObservation = {
 	entries: Map<string, LogPurgeEntry>;
 	watermarked: Set<string>;
@@ -1132,7 +1128,6 @@ function samePosition(a: LogPosition | undefined, b: LogPosition | undefined): b
 	return a !== undefined && b !== undefined && a[0] === b[0] && a[1] === b[1];
 }
 
-/** Whether nothing has been appended to the log since the last pass that read it, which recorded its position. */
 function appendedNothingSince(recorded: LogPurgeBounds, rootStore: any, name: string): boolean {
 	const position = Object.hasOwn(recorded.positions, name) ? recorded.positions[name] : undefined;
 	return position !== undefined && samePosition(position, nextLogPosition(rootStore.useLog(name)));
@@ -1145,8 +1140,8 @@ function appendedNothingSince(recorded: LogPurgeBounds, rootStore: any, name: st
  * keeps its bound while that quiet pass is at or past the reach: every segment either purge can remove was last
  * written before it. Otherwise, and for a log that cannot be read, the reach bounds it. Undefined when the logs
  * cannot be listed, which records the cutoff as the epoch. A prune that reads no log keeps a log with nothing
- * appended since the last pass within that pass's largest key, whatever the clocks did, and observes nothing with no
- * pass inside the native retention, for `trackedFrom` to answer.
+ * appended since the last pass within that pass's largest key, and observes nothing with no pass inside the native
+ * retention, or one stamped ahead of the clock, for `trackedFrom` to answer.
  */
 function observeLogPurgeBounds(
 	auditStore: any,
@@ -1188,9 +1183,10 @@ function observeLogPurgeBounds(
 	const unaccounted: string[] = [];
 	for (const name of names) {
 		const watermark = purgeWatermark(rootStore, name);
-		if (typeof watermark !== 'number') unaccounted.push(name);
+		if (watermark === null) unaccounted.push(name);
 		else {
-			observation.entries.set(name, [Math.max(watermark, cutoff), 0, UNKNOWN_MAXIMUM]);
+			// one whose watermark cannot be read is not read either: the reader refuses it until it can be
+			observation.entries.set(name, [Math.max(watermark ?? 0, cutoff), 0, UNKNOWN_MAXIMUM]);
 			observation.watermarked.add(name);
 		}
 	}
@@ -1308,7 +1304,7 @@ function raisedLogPurgeBounds(
 		const watermarked = observation.watermarked.has(name);
 		// msgpackr renames this key on read, so the epoch carries its bound instead
 		if (name === '__proto__') {
-			if (!watermarked) epoch = Math.max(epoch, bound);
+			epoch = Math.max(epoch, bound);
 			continue;
 		}
 		const [baseBound, baseQuietAt, baseMaxKey] = logs[name] ?? [0, 0, 0];
@@ -1386,7 +1382,7 @@ function establishLogPurgeBounds(auditStore: any): void {
 function logPurgeBoundReader(auditStore: any):
 	| {
 			recorded: LogPurgeBounds;
-			listed: string[];
+			listed: () => string[];
 			trackedFrom: () => number;
 			boundOf: (name: string) => number | undefined;
 	  }
@@ -1395,25 +1391,26 @@ function logPurgeBoundReader(auditStore: any):
 	if (!recorded) return undefined;
 	if (!isRocksStore(auditStore)) {
 		const bound = exposedBound(recorded, LMDB_PURGE_LOG, 0);
-		return { recorded, listed: [], trackedFrom: () => recorded.trackedFrom, boundOf: () => bound };
+		return { recorded, listed: () => [], trackedFrom: () => recorded.trackedFrom, boundOf: () => bound };
 	}
 	const nativeHorizon = nativePurgeHorizon(auditStore, Date.now());
 	if (nativeHorizon === undefined) return undefined;
 	const rootStore = auditStore.rootStore;
-	const listed: string[] = rootStore.listLogs();
-	const isListed = new Set(listed);
+	let names: Set<string> | undefined;
+	const listed = () => (names ??= new Set(rootStore.listLogs()));
 	const watermarks = new Map<string, number | null | undefined>();
 	const watermarkOf = (name: string) => {
-		if (!watermarks.has(name)) watermarks.set(name, isListed.has(name) ? purgeWatermark(rootStore, name) : null);
+		if (!watermarks.has(name)) watermarks.set(name, listed().has(name) ? purgeWatermark(rootStore, name) : null);
 		return watermarks.get(name);
 	};
 	return {
 		recorded,
-		listed,
-		trackedFrom: () =>
-			recorded.observedAt < nativeHorizon && listed.some((name) => typeof watermarkOf(name) !== 'number')
-				? Math.max(recorded.trackedFrom, nativeHorizon)
-				: recorded.trackedFrom,
+		listed: () => [...listed()],
+		trackedFrom: () => {
+			if (recorded.observedAt >= nativeHorizon) return recorded.trackedFrom;
+			for (const name of listed()) if (watermarkOf(name) === null) return Math.max(recorded.trackedFrom, nativeHorizon);
+			return recorded.trackedFrom;
+		},
 		boundOf: (name) => {
 			const watermark = watermarkOf(name);
 			return watermark === null ? exposedBound(recorded, name, nativeHorizon) : watermark;
@@ -1431,11 +1428,12 @@ export function getLogPurgeBound(auditStore: any, logNames?: Iterable<string> | 
 	try {
 		const reader = logPurgeBoundReader(auditStore);
 		if (!reader) return undefined;
-		const { recorded, listed, boundOf } = reader;
+		const { recorded, boundOf } = reader;
 		if (!isRocksStore(auditStore)) return boundOf(LMDB_PURGE_LOG);
 		// no RocksDB log is named '', so this is the bound of a log no pass has recorded
 		let scopeBound = Math.max(reader.trackedFrom(), boundOf(LMDB_PURGE_LOG));
-		const names = typeof logNames === 'string' ? [logNames] : (logNames ?? [...listed, ...Object.keys(recorded.logs)]);
+		const names =
+			typeof logNames === 'string' ? [logNames] : (logNames ?? [...reader.listed(), ...Object.keys(recorded.logs)]);
 		for (const name of names) {
 			const bound = boundOf(name);
 			if (bound === undefined) return undefined;

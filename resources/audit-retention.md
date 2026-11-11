@@ -106,7 +106,8 @@ never existed or were removed. `getLogPurgeBounds` returns each named log's boun
 removed, and `getLogPurgeTrackedFrom` where tracking began; a resume needs both, reading
 `getLogPurgeTrackedFrom` second so a prune between the reads errs toward a copy, and either returning
 undefined means the store cannot say. A name missing from `getLogPurgeBounds`'s map is a log whose
-watermark could not be read: unknown, never 0.
+watermark could not be read: unknown, never 0. A pass does not read such a log either; its record entry
+takes the cutoff, as below.
 
 - **A log with a purge watermark answers with it** (`purgeWatermark`). rocksdb-js 2.14 raises each log's
   `txn.purged` to the largest key of every file it deletes, and syncs it before the unlink, on `purgeLogs`
@@ -140,10 +141,11 @@ cutoff, observedAt, positions, logs: { name: [bound, quietAt, maxKey] } }`: a lo
   instead sit above a caught-up follower's position whenever a log has just gone idle.
 - **The boot purge reads no log** (`readLogs` false) and applies the rule above from the record alone,
   keeping `observedAt`. A log that has appended nothing since the last pass read it keeps that pass's
-  largest key as its bound, however long the node was down (harper-pro#1308): `positions[name]` is its
-  `getStats().nextLogPosition`, taken before that pass read it, and an equal position at boot means every key
-  it holds was there for the pass to see, whatever the clocks did since. Any other log not seen quiet within
-  the reach takes the reach.
+  largest key as its bound after downtime longer than `auditRetention` (harper-pro#1308): `positions[name]` is
+  its `getStats().nextLogPosition`, taken before that pass read it, and an equal position at boot means every
+  key it holds was there for the pass to see, whatever the clocks did since. Any other log not seen quiet
+  within the reach takes the reach. With no pass within the native retention, or one stamped ahead of the
+  clock, the boot purge observes nothing and `trackedFrom` answers, as below.
 - **rocksdb-js also purges on its own** (`transactionLogRetention`, default 3 days, which core does not set)
   when a database opens, including the file being appended to. That cannot reach past `bound` while
   `quietAt` is within the native retention; once it is not, `exposedBound` adds the native horizon, or the
