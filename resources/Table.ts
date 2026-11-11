@@ -997,8 +997,9 @@ function selectOwnAttributes(value: any, names: readonly string[]): any {
 function projectDeliveries(subscription: any, deliveredAttributes: readonly string[]) {
 	const sendSelected = subscription.send;
 	subscription.send = function (event) {
+		// a live event is shared with the record's other subscribers, so the projection goes on a copy
 		if (event?.value !== null && typeof event?.value === 'object')
-			event.value = selectOwnAttributes(event.value, deliveredAttributes);
+			event = { ...event, value: selectOwnAttributes(event.value, deliveredAttributes) };
 		return sendSelected.call(this, event);
 	};
 }
@@ -1963,6 +1964,16 @@ let memoizedEntry: Entry | undefined;
 function clearEntryMemo() {
 	memoizedEntryAuditRecord = memoizedEntryStore = memoizedEntryId = memoizedEntry = undefined;
 }
+/** The live events built from an audit record for the subscriptions that share them, one per variant. */
+const SHARED_LIVE_EVENTS = Symbol('sharedLiveEvents');
+type SharedLiveEvent = {
+	store: any;
+	id: Id;
+	localTime: number;
+	variant: number;
+	event: any;
+	next: SharedLiveEvent | undefined;
+};
 // Field by field: spreading a stored entry or an audit record would deliver storage metadata and the audit user.
 function currentRecordEvent(id: Id, entry: any) {
 	return {
@@ -10649,7 +10660,8 @@ export function makeTable(options): TableResourceClass {
 								if (!includeSuperseded) {
 									let kept = 0;
 									for (const event of state.pendingRealTimeQueue) {
-										if (keepCurrentRecordEvent(event, getFullRecord)) state.pendingRealTimeQueue[kept++] = event;
+										const current = keepCurrentRecordEvent(event, getFullRecord);
+										if (current) state.pendingRealTimeQueue[kept++] = current;
 									}
 									state.pendingRealTimeQueue.length = kept;
 								}
@@ -10799,7 +10811,8 @@ export function makeTable(options): TableResourceClass {
 						} else if (!includeSuperseded && !state.reportingProgress && state.pendingRealTimeQueue) {
 							let kept = 0;
 							for (const event of state.pendingRealTimeQueue) {
-								if (keepCurrentRecordEvent(event, getFullRecord)) state.pendingRealTimeQueue[kept++] = event;
+								const current = keepCurrentRecordEvent(event, getFullRecord);
+								if (current) state.pendingRealTimeQueue[kept++] = current;
 							}
 							state.pendingRealTimeQueue.length = kept;
 						}
@@ -12713,9 +12726,10 @@ export function makeTable(options): TableResourceClass {
 				if (state.pendingRealTimeQueue) return void (state.reloadPending = true);
 				return scheduleReloadResnapshot(state);
 			}
-			const event = eventFromAudit(state, id, auditRecord, txnLogKey, beginTxn, true);
+			const event = this.sharesLiveEvents
+				? sharedLiveEvent(state, id, auditRecord, txnLogKey, beginTxn)
+				: liveEventFor(state, id, auditRecord, txnLogKey, beginTxn);
 			if (!event) return;
-			if (state.reportingProgress) event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
 			// Queued events are filtered when the queue drains through send() below; events sent
 			// directly (queue already drained) are filtered here. Each event is filtered once.
 			if (state.pendingRealTimeQueue) state.pendingRealTimeQueue.push(event);
@@ -12918,20 +12932,59 @@ export function makeTable(options): TableResourceClass {
 		for (const { boundary } of boundaries.values()) if (boundary < floor) floor = boundary;
 		return floor;
 	}
+	/** The event a buffered live event is kept as once the record has moved on: undefined drops it. */
 	function keepCurrentRecordEvent(event: any, getFullRecord: boolean) {
 		const type = event.type;
 		if (
 			event.id === undefined ||
 			!(type === 'put' || type === 'patch' || type === 'delete' || type === 'invalidate' || type === 'relocate')
 		)
-			return true;
+			return event;
 		const entry = primaryStore.getEntry(event.id);
-		if (!entry || entry.version <= event.version) return true;
-		if (!getFullRecord) return false;
-		event.value = entry.value;
-		event.version = entry.version;
-		event.type = entry.metadataFlags & INVALIDATED ? 'invalidate' : entry.value ? 'put' : 'delete';
-		return true;
+		if (!entry || entry.version <= event.version) return event;
+		if (!getFullRecord) return;
+		// a live event is shared with the record's other subscribers (sharedLiveEvent), so it is copied, not rewritten
+		return {
+			...event,
+			value: entry.value,
+			version: entry.version,
+			type: entry.metadataFlags & INVALIDATED ? 'invalidate' : entry.value ? 'put' : 'delete',
+		};
+	}
+	function liveEventFor(state: SubscriberState, id: Id, auditRecord: any, localTime: number, beginTxn: any) {
+		const event = eventFromAudit(state, id, auditRecord, localTime, beginTxn, true);
+		if (event && state.reportingProgress) event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
+		return event;
+	}
+	/**
+	 * The live event for one audit record, built once and shared by every subscription of the record on this thread
+	 * that takes shared events (`sharesLiveEvents`) and whose inputs to eventFromAudit match: the commit broadcast
+	 * hands each the same audit record, id and log key, so only the subscriber's own flags and its transaction
+	 * delimiter can differ, and a progress-reporting subscriber's origin tag is one of those flags. Each delivery path
+	 * writes to an event it does not own only through a copy (projectDeliveries, keepCurrentRecordEvent).
+	 *
+	 * The events are kept on the audit record, which a notify pass decodes afresh and drops once it has delivered it,
+	 * so they live no longer than it and need nothing of their own to clear them.
+	 */
+	function sharedLiveEvent(state: SubscriberState, id: Id, auditRecord: any, localTime: number, beginTxn: any) {
+		const variant =
+			(state.getFullRecord ? 1 : 0) |
+			(state.includeSuperseded ? 2 : 0) |
+			(state.reportingProgress ? 4 : 0) |
+			(beginTxn ? 8 : 0);
+		const first: SharedLiveEvent | undefined = auditRecord[SHARED_LIVE_EVENTS];
+		for (let shared = first; shared; shared = shared.next) {
+			if (
+				shared.variant === variant &&
+				shared.store === primaryStore &&
+				shared.id === id &&
+				shared.localTime === localTime
+			)
+				return shared.event;
+		}
+		const event = liveEventFor(state, id, auditRecord, localTime, beginTxn);
+		auditRecord[SHARED_LIVE_EVENTS] = { store: primaryStore, id, localTime, variant, event, next: first };
+		return event;
 	}
 	function eventFromAudit(
 		state: SubscriberState,
