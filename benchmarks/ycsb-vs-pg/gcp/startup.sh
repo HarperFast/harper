@@ -10,7 +10,10 @@ attr() { curl -fsS -H 'Metadata-Flavor: Google' "$MD/attributes/$1"; }
 report() { curl -fsS -X PUT --data "$1" -H 'Metadata-Flavor: Google' "$MD/guest-attributes/ycsb/state" || true; }
 trap 'report "failed:$LINENO:$?"' ERR
 
+DEV=/dev/disk/by-id/google-local-nvme-ssd-0
+# A later boot (a guest reboot keeps the local SSD): mount the existing filesystem again, never reformat it.
 if [ -f /var/lib/ycsb/ready ]; then
+	if [ -e "$DEV" ] && ! mountpoint -q /mnt/ycsb; then mount -o noatime "$DEV" /mnt/ycsb; fi
 	report ready
 	exit 0
 fi
@@ -25,7 +28,6 @@ apt-get update -q
 apt-get install -yq git curl jq ca-certificates xz-utils util-linux linux-tools-common "linux-tools-$(uname -r)"
 if [ "$ROLE" != generator ]; then
 	apt-get install -yq docker.io docker-compose-v2
-	DEV=/dev/disk/by-id/google-local-nvme-ssd-0
 	[ -e "$DEV" ] || {
 		echo "no local SSD at $DEV" >&2
 		false

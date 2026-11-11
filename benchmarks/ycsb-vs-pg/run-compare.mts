@@ -306,19 +306,27 @@ const OWNERS = Array.from({ length: OWNER_COUNT }, (_, i) => ownerOf(i));
  * user in it and one per record owner, and their operation tokens. Idempotent, since a restored
  * snapshot may hold them.
  */
+async function postOperation(
+	operationsURL: string,
+	authorization: string,
+	body: Record<string, unknown>,
+	tolerate?: RegExp
+): Promise<any> {
+	const response = await fetch(operationsURL, {
+		method: 'POST',
+		headers: { 'content-type': 'application/json', authorization },
+		body: JSON.stringify(body),
+		signal: AbortSignal.timeout(60_000),
+	});
+	const text = await response.text();
+	if (response.ok) return JSON.parse(text);
+	if (tolerate?.test(text)) return undefined;
+	throw new Error(`${body.operation} -> ${response.status}: ${text.slice(0, 300)}`);
+}
+
 async function harperTokenCredentials(operationsURL: string, admin: string, table: string): Promise<Credentials> {
-	const operation = async (body: Record<string, unknown>, tolerate?: RegExp) => {
-		const response = await fetch(operationsURL, {
-			method: 'POST',
-			headers: { 'content-type': 'application/json', 'authorization': admin },
-			body: JSON.stringify(body),
-			signal: AbortSignal.timeout(60_000),
-		});
-		const text = await response.text();
-		if (response.ok) return JSON.parse(text);
-		if (tolerate?.test(text)) return undefined;
-		throw new Error(`${body.operation} -> ${response.status}: ${text.slice(0, 300)}`);
-	};
+	const operation = (body: Record<string, unknown>, tolerate?: RegExp) =>
+		postOperation(operationsURL, admin, body, tolerate);
 	await operation(
 		{
 			operation: 'add_role',
@@ -650,9 +658,20 @@ async function withHarper<T>(
 	}
 	try {
 		const { httpURL, operationsAPIURL, admin } = started.harper;
+		const basic = (password: string) => `Basic ${Buffer.from(`${admin.username}:${password}`).toString('base64')}`;
+		let adminBasic = basic(admin.password);
+		if (bind) {
+			// The test helper's fixed admin password, and the operations API, are reachable on this address too.
+			const password = randomBytes(18).toString('base64url');
+			await postOperation(operationsAPIURL, adminBasic, {
+				operation: 'alter_user',
+				username: admin.username,
+				password,
+			});
+			adminBasic = basic(password);
+		}
 		let credentials: Credentials | undefined;
 		if (session.auth === 'token') {
-			const adminBasic = `Basic ${Buffer.from(`${admin.username}:${admin.password}`).toString('base64')}`;
 			await waitForRoute(`${httpURL}/${options.config.table}/`, 30_000, adminBasic);
 			credentials = await harperTokenCredentials(operationsAPIURL, adminBasic, options.config.table);
 			await assertCredentialChecked(`${httpURL}/${options.config.table}/auth-probe`, credentials.authorization);
@@ -1541,7 +1560,6 @@ export async function createSession(
 	const session: Session = {
 		options,
 		cache,
-		// The old default of 4 held harper-uws warm C below its peak (README, "Load generator").
 		shards: Number(argValue(argv, '--shards') ?? defaultShards(driverCpus.length, options.config.concurrency)),
 		serverCpus,
 		driverCpus,

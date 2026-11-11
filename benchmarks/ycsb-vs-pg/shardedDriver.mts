@@ -67,7 +67,6 @@ export interface DriverRun {
 	close(): Promise<void>;
 }
 
-/** One shard per generator CPU, as many as the in-flight requests allow. */
 export const defaultShards = (generatorCpus: number, concurrency: number): number =>
 	Math.max(1, Math.min(generatorCpus, concurrency));
 
@@ -211,7 +210,6 @@ async function drive(pool: ShardPool, config: DriverConfig): Promise<DriverRun> 
 			return { ...base, phase, concurrency: split(config.concurrency, config.shards)[i], from, to: cursor };
 		});
 	};
-	/** Runs shard commands between the window's begin and end, with the shards' CPU across them. */
 	const measured = async (commands: ShardCommand[], window?: PhaseWindow): Promise<GeneratorResult> => {
 		if (config.cpus) for (const pid of pool.pids) verifyAffinity('generator', pid, config.cpus);
 		const cpuBefore = await cpuSecondsOf(pool.pids);

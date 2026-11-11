@@ -106,7 +106,7 @@ for shards in "$GEN_CPUS" $((GEN_CPUS / 2)); do
 		--concurrency=64 --shards=$shards --max-generator-busy=0.5" || true
 	log="$RUN_DIR/logs/ceiling-$shards.log"
 	ops=$(sed -n 's/.*CLIENT_CEILING workload=C .*ops_per_sec=\([0-9]*\).*/\1/p' "$log" 2>/dev/null | tail -1)
-	if [ -n "$ops" ] && ! grep -q CLIENT_CEILING_FAILED "$log" && [ "$ops" -gt "$best_ops" ]; then
+	if [ -n "$ops" ] && ! grep -q -e CLIENT_CEILING_FAILED -e 'workload=C .*errors=[1-9]' "$log" && [ "$ops" -gt "$best_ops" ]; then
 		best=$shards best_ops=$ops
 	fi
 done

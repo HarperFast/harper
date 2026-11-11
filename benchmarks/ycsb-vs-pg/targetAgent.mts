@@ -455,8 +455,9 @@ function createAgent() {
 
 	/**
 	 * Refuses new work, lets the launches, windows and snapshots already under way finish (or fail),
-	 * then stops every part. A part whose own teardown failed is cleaned up by unit name and container
-	 * instead, since its teardown cannot run twice. Resolves false unless nothing it started still runs.
+	 * then stops every part. Whatever still runs afterwards (a part whose teardown failed, or a launch
+	 * that failed before it became a part) is stopped by unit name and container. Resolves false unless
+	 * nothing it started still runs.
 	 */
 	async function shutdown(): Promise<boolean> {
 		closing = true;
@@ -472,12 +473,12 @@ function createAgent() {
 			}
 		}
 		await echo?.close();
-		if (stopped || !session) return stopped;
+		if (!session) return stopped;
 		const left = await forceCleanup(session.unitPrefix).catch((error) => [
 			`cleanup failed: ${(error as Error).message}`,
 		]);
 		if (left.length > 0) console.error(`still running after shutdown: ${left.join(', ')}`);
-		return left.length === 0;
+		return stopped && left.length === 0;
 	}
 
 	return { handlers, shutdown, info: () => info };
