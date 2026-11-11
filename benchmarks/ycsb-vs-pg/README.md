@@ -377,7 +377,7 @@ exactly `--target-cpus` physical cores, the target gets all of them and the agen
 row then records the agent's own CPU (`agentCores`) apart from the target's and the rest of the
 host's. Remote mode needs `--auth=token` for Harper on a non-loopback address: local trust covers
 loopback peers only. It always counts perf events, since instructions/op is the stable metric where
-turbo stays on. Rows add `perfClockGHz` (cycles over CPU-seconds).
+turbo stays on. Rows add `perfClockGHz` (cycles over CPU-seconds). Run remote mode on a network of its own, as `gcp/` does: Harper's operations API listens on the bound address too, with the test helper's fixed admin password until the harness replaces it moments after startup, and topology b's Postgres keeps its fixed benchmark credential.
 
 **Topologies.** A target name alone is topology (a). A name with `@b` (stack targets only) is
 topology (b). One session can interleave both: `--targets=harper-uws,pg-redis,pg-redis@b`.

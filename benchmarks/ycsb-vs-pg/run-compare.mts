@@ -239,6 +239,11 @@ export interface Session {
 	remote?: RemoteSession;
 	/** On a target agent's host: the address Harper and Fastify listen on instead of loopback. */
 	bindAddress?: string;
+	/**
+	 * With bindAddress: Harper's admin password for this session, replacing the test helper's fixed one,
+	 * which would be reachable on that address. A snapshot this session takes keeps it.
+	 */
+	harperAdminPassword?: string;
 	/** On a target agent's host: report the agent's own CPU apart from the target's and the rest of the host. */
 	separateSelf?: boolean;
 }
@@ -661,13 +666,15 @@ async function withHarper<T>(
 		const basic = (password: string) => `Basic ${Buffer.from(`${admin.username}:${password}`).toString('base64')}`;
 		let adminBasic = basic(admin.password);
 		if (bind) {
-			// The test helper's fixed admin password, and the operations API, are reachable on this address too.
-			const password = randomBytes(18).toString('base64url');
-			await postOperation(operationsAPIURL, adminBasic, {
-				operation: 'alter_user',
-				username: admin.username,
-				password,
-			});
+			const password = session.harperAdminPassword!;
+			// A restored install already has it: the snapshot was taken from this session's launch.
+			if (!launch.restore) {
+				await postOperation(operationsAPIURL, adminBasic, {
+					operation: 'alter_user',
+					username: admin.username,
+					password,
+				});
+			}
 			adminBasic = basic(password);
 		}
 		let credentials: Credentials | undefined;

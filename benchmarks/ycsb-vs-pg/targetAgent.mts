@@ -16,6 +16,7 @@ import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
 import { hostname, release, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { randomBytes } from 'node:crypto';
 import { serveRpc } from './rpc.mts';
 import { pingPong, startEchoServer } from './rtt.mts';
 import {
@@ -316,6 +317,7 @@ function createAgent() {
 			auth: params.auth,
 			jwtSecret: params.jwtSecret,
 			bindAddress: params.bind,
+			harperAdminPassword: params.bind ? randomBytes(18).toString('base64url') : undefined,
 			separateSelf: true,
 		};
 		const cpuinfo = readFileSync('/proc/cpuinfo', 'utf8');
