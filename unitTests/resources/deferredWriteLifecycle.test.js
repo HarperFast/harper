@@ -1525,6 +1525,47 @@ describe('Deferred write lifecycle', function () {
 		}
 	});
 
+	for (const asynchronous of [false, true]) {
+		it(`stores an array PUT element on an instance that holds a pending update (${asynchronous ? 'async' : 'sync'} model hook)`, async function () {
+			const Embedded = table({
+				database: 'deferred_write_lifecycle',
+				table: asynchronous ? 'ArrayMergedAsyncEmbedded' : 'ArrayMergedSyncEmbedded',
+				audit: true,
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'n' },
+					{ name: 'name' },
+					{ name: 'embedding', type: 'Array', embed: { source: 'name', model: 'default' } },
+				],
+			});
+			Embedded.setEmbedAttribute('embedding', (record) =>
+				asynchronous ? Promise.resolve().then(() => [record.name.length]) : [record.name.length]
+			);
+			const key = id();
+			await Embedded.put({ id: key, n: 0, name: 'base' });
+			const record = await Embedded.getResource({ id: key }, {});
+			await record.update({ n: 1 });
+			await record.put(new RequestTarget('/'), [{ id: key, n: 2, name: 'array' }]);
+			const result = await Embedded.get(key);
+			assert.strictEqual(result.n, 2, 'the array element is saved, not left deferred behind the pending patch');
+			assert.strictEqual(result.name, 'array');
+			assert.deepStrictEqual([...result.embedding], [5]);
+		});
+	}
+
+	it('keeps a pending update savable after an array PUT element is refused before staging', async function () {
+		const key = id();
+		await TestTable.put({ id: key, n: 0 });
+		const record = await TestTable.getResource({ id: key }, {});
+		await record.update({ n: 1 });
+		await assert.rejects(
+			async () => record.put(new RequestTarget('/'), [{ id: null, n: 2 }]),
+			(error) => error.statusCode === 400
+		);
+		await record.save();
+		assert.strictEqual((await TestTable.get(key)).n, 1, 'the accepted update is still saved');
+	});
+
 	for (const mode of ['denied keyed update', 'async denied keyed update', 'invalid restricted replacement']) {
 		it(`releases a lazy predecessor capture after ${mode}`, async function () {
 			if (isLMDB) return this.skip();

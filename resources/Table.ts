@@ -6318,16 +6318,28 @@ export function makeTable(options): TableResourceClass {
 							// hook resolves): `#savingOperation` is a single field that parallel writes
 							// would otherwise clobber, so a deferred `save()` would commit the wrong op
 							// — e.g. one element's save running before a later element's vector is written.
-							const writes = record.map((element) => {
-								const id = element[primaryKey];
-								const writePromise = this._writeUpdate(id, element, true);
-								const operation = this.#savingOperation;
-								return when(writePromise, () => {
-									// Array elements have no instance that can retry a deferred refusal.
-									operation.deferSave = false;
-									return this.#saveOperation(operation);
+							const pending = this.#savingOperation;
+							let writes;
+							try {
+								writes = record.map((element) => {
+									const id = element[primaryKey];
+									// An element is its own eager write, so it must not merge into a pending update this
+									// instance holds: once a model hook has run, the merge settles on that update's operation,
+									// not the one captured below, and the callback would save the wrong one.
+									this.#savingOperation = null;
+									const writePromise = this._writeUpdate(id, element, true);
+									const operation = this.#savingOperation;
+									return when(writePromise, () => {
+										// Array elements have no instance that can retry a deferred refusal.
+										operation.deferSave = false;
+										return this.#saveOperation(operation);
+									});
 								});
-							});
+							} catch (error) {
+								// An element refused before it staged anything leaves the instance's earlier update reachable for save().
+								this.#savingOperation = pending;
+								throw error;
+							}
 							this.#savingOperation = null;
 							return Promise.all(writes) as any;
 						} else {
