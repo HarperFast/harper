@@ -2813,6 +2813,30 @@ describe('Record locks (harper#483)', () => {
 				await next.unlock();
 			});
 
+			it(`refuses a holder's update whose changes a later empty update replaced before saving (audit: ${audit})`, async function () {
+				if (isLMDB) return this.skip();
+				const T = tableFor();
+				const idA = id();
+				const idB = id();
+				await T.put({ id: idA, n: 0 });
+				await T.put({ id: idB, n: 0 });
+				const putInterleaving = outsideWriter(() => T.put({ id: idB, n: 50 }));
+
+				await assert.rejects(
+					transaction(async () => {
+						await T.put({ id: idA, n: 1 });
+						await putInterleaving();
+						const b = await T.lock(idB);
+						await b.update(idB, { n: 51 });
+						await b.update(idB, {});
+					}),
+					(error) => error.statusCode === 409 && error.message === EXPECTED_409
+				);
+
+				assert.strictEqual((await T.get(idB)).n, 50, 'B kept the interleaving write');
+				assert.strictEqual((await T.get(idA)).n, 0, 'the aborted transaction rolled A back');
+			});
+
 			it(`control: write, then lock, with no interleaving write, succeeds and stores the locked value (audit: ${audit})`, async function () {
 				if (isLMDB) return this.skip();
 				const T = tableFor();
