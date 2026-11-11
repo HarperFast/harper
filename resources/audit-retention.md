@@ -37,18 +37,19 @@ unnecessary resync; under-reporting loses its data with no signal. So `raiseAudi
 first and a throw from it is what stops the prune.
 
 **On RocksDB the raise must also be durable before a log file is unlinked.** A commit reaches the WAL
-unsynced, and an unlink is not ordered behind it, so a power loss can keep the unlink and lose the raise.
-The retention pass and `delete_transaction_logs_before` await `syncWal`; `purgeAgedLogs` runs before a
-replay that runs synchronously at open (harper#1115), so it uses `flushSync`, and only when a log holds a
-file old enough to purge (`hasPurgeableLogFile`), so an ordinary boot writes no SST. A failed commit or
-barrier removes nothing, with one exception: when the boot purge's flush fails after its commit landed,
-`purgeBehindUnsyncedFloor` purges anyway (harper#2486). A flush needs a new SST, so a full disk fails it
-where the WAL append did not, and shedding these files is how a full node recovers. The failed flush leaves
-RocksDB refusing writes until free space reaches its reserve (the largest write buffer, 16 MiB by default),
-so the branch waits up to 10 s for writes to resume before replay. The floor survives a crash there but not
-a power loss, until the boot purge calls a synchronous WAL sync (harper#4261). This covers the purges Harper
-requests while `auditRetention` does not exceed rocksdb-js's own retention: `purgeLogs` also applies that
-retention, which also unlinks segments when a log loads, before any raise (harper#4262).
+unsynced, and an unlink is not ordered behind it, so a power loss can keep the unlink and lose the raise. The
+retention pass and `delete_transaction_logs_before` await `syncWal`; `purgeAgedLogs` runs before a replay that
+runs synchronously at open (harper#1115), so it uses `flushSync`, and only when a log holds a file old enough
+to purge (`hasPurgeableLogFile`), so an ordinary boot writes no SST. A failed commit or barrier removes
+nothing, with one exception, the boot purge on a full disk (harper#2486): a flush needs a new SST, which a
+full disk cannot hold even when the floor's WAL append fit, and shedding these files is how a full node
+recovers, so `purgeBehindUnsyncedFloor` purges anyway. A failed flush leaves RocksDB refusing writes until
+free space reaches its reserve (the largest write buffer, 16 MiB by default), and replay writes next, so below
+that reserve `flushBootFloor` attempts no flush, and after a failed one the branch waits up to 10 s for writes
+to resume. The floor survives a crash there but not a power loss, until the boot purge calls a synchronous WAL
+sync (harper#4261). This covers the purges Harper requests while `auditRetention` does not exceed rocksdb-js's
+own retention: `purgeLogs` also applies that retention, which also unlinks segments when a log loads, before
+any raise (harper#4262).
 
 | Prune path                                                                   | Engine                                                                    |
 | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------- |

@@ -8,6 +8,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { pack } = require('msgpackr');
 const { setupTestDBPath } = require('../testUtils');
+const { syncBuiltinESMExports } = require('node:module');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
 const { table, closeDatabase, resetDatabases } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
@@ -103,12 +104,8 @@ function readRecords(auditStore) {
 	});
 }
 
-/**
- * Instruments the barriers and purge of `target` (a store, or `RocksDatabase.prototype` for a store the boot path
- * has not opened yet), for the store at `path` when given. `durable` is the floor records' image as of the last
- * barrier that returned: what a barrier makes durable is what committed before it was called. Each purge records
- * the image it started over. The starting image must already be durable.
- */
+// `durable` advances when a barrier returns, to the records as they were when it was called: a barrier makes
+// durable what committed before it. The starting image must already be durable.
 function recordDurability(target, { durable, auditStoreOf, path }) {
 	const original = { flushSync: target.flushSync, syncWal: target.syncWal, purgeLogs: target.purgeLogs };
 	const state = { durable, purges: [] };
@@ -142,7 +139,7 @@ function recordStore(Table, store = Table.auditStore.rootStore) {
 	return recordDurability(store, { durable: readRecords(auditStore), auditStoreOf: () => auditStore });
 }
 
-/** Reopens the database through startup's scan, whose replay runs the boot purge. */
+// startup's database scan, unlike openTable, runs the boot replay and so the boot purge
 async function boot(Table, database, retention) {
 	assert.ok(await closeDatabase(database));
 	const configured = auditRetention;
@@ -364,6 +361,45 @@ describe('audit history is removed only after a durable floor covers it', functi
 			await Booted.put('after-fallback', { name: 'x' });
 			assert.ok(await closeDatabase(database));
 			assertCoversRemoved(openTable(database), removedKeys, cutoff, { preWatermark: true });
+		});
+
+		it('the boot purge attempts no flush RocksDB could not resume from, and still sheds aged files', async () => {
+			const { Table, database, removedKeys } = await databaseWithAgedHistory({ preWatermark: false });
+			const path = Table.auditStore.rootStore.path;
+			const cutoff = Date.now() - HOUR_MS;
+			const { statfsSync } = fs;
+			fs.statfsSync = function (target, ...args) {
+				const stats = statfsSync.call(this, target, ...args);
+				return target === path ? { ...stats, bavail: 1, bsize: 4096 } : stats;
+			};
+			syncBuiltinESMExports();
+			const { flushSync } = RocksDatabase.prototype;
+			let barriers = 0;
+			RocksDatabase.prototype.flushSync = function (...args) {
+				if (this.path === path) barriers++;
+				return flushSync.apply(this, args);
+			};
+			const warnings = [];
+			const warn = harperLogger.warn;
+			harperLogger.warn = (...args) => warnings.push(args);
+			let Booted;
+			try {
+				Booted = await boot(Table, database, HOUR_MS);
+			} finally {
+				fs.statfsSync = statfsSync;
+				syncBuiltinESMExports();
+				RocksDatabase.prototype.flushSync = flushSync;
+				harperLogger.warn = warn;
+			}
+			assert.strictEqual(barriers, 0);
+			assert.strictEqual(Booted.auditStore.rootStore.useLog(ORIGIN).getStats().fileCount, 0, 'the aged files are shed');
+			const warning = warnings.find(([message]) =>
+				/behind an audit floor that is not yet power-loss durable/.test(message)
+			);
+			assert.match(String(warning?.[1]), /below what RocksDB needs to resume/);
+			await Booted.put('after-fallback', { name: 'x' });
+			assert.ok(await closeDatabase(database));
+			assertCoversRemoved(openTable(database), removedKeys, cutoff, { preWatermark: false });
 		});
 
 		it('the retention pass removes nothing when the barrier fails, and purges on a later pass', async () => {

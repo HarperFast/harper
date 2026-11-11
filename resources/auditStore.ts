@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { statfsSync } from 'node:fs';
 import { readKey, writeKey } from 'ordered-binary';
 import { pack, unpack } from 'msgpackr';
 import { get as envGet } from '../utility/environment/environmentManager.ts';
@@ -1973,11 +1974,8 @@ export function purgeAgedLogs(rootStore: RocksDatabase): string[] {
 	if (!hasPurgeableLogFile(rootStore, before)) return [];
 	// The floor and purge bounds reach disk before the files they account for are unlinked. Replay follows
 	// synchronously (harper#1115), so this cannot await `syncWal` as the other purge paths do.
-	try {
-		rootStore.flushSync({ allowWriteStall: true });
-	} catch (error) {
-		return purgeBehindUnsyncedFloor(rootStore, before, error);
-	}
+	const notFlushed = flushBootFloor(rootStore);
+	if (notFlushed !== undefined) return purgeBehindUnsyncedFloor(rootStore, before, notFlushed);
 	return rootStore.purgeLogs({ before });
 }
 
@@ -2003,22 +2001,42 @@ function hasPurgeableLogFile(rootStore: RocksDatabase, before: number): boolean 
 	}
 }
 
-// RocksDB retries a no-space background error every few seconds once space is free
+/**
+ * RocksDB resumes writes after a no-space flush failure only once free space reaches its largest write buffer
+ * (16 MiB, rocksdb-js's default), checking every few seconds. Below it a failed boot flush would leave replay unable
+ * to write, so the boot purge does not attempt one.
+ */
+const RESUMABLE_FREE_SPACE = 16 * 1024 * 1024;
 const RESUME_AFTER_FAILED_FLUSH_MS = 10_000;
 const PAUSE_CELL = new Int32Array(new SharedArrayBuffer(4));
 
+/** Flushes the floor's commit to an SST, or returns why it did not. */
+function flushBootFloor(rootStore: RocksDatabase): unknown {
+	let available = Infinity;
+	try {
+		const stats = statfsSync(rootStore.path);
+		available = stats.bavail * stats.bsize;
+	} catch {}
+	if (available < RESUMABLE_FREE_SPACE)
+		return `${available} bytes free, below what RocksDB needs to resume after a failed flush`;
+	try {
+		rootStore.flushSync({ allowWriteStall: true });
+	} catch (error) {
+		return error;
+	}
+}
+
 /**
- * The boot purge when its barrier failed but the floor's commit landed (harper#2486): a flush needs a new SST, so a
- * full disk fails it where the floor's WAL append did not, and these files are what a full node sheds to recover. The
- * floor precedes the unlink across a process crash, not across a power loss. The failed flush leaves RocksDB refusing
- * writes until it recovers, and replay writes next, synchronously, so this waits for writes to resume. Removed with
- * the switch to a synchronous WAL sync (harper#4261).
+ * The boot purge on a full disk, after the floor's commit landed (harper#2486): a flush needs a new SST, which a full
+ * disk cannot hold even when the floor's WAL append fit, and these files are what a full node sheds to recover. The
+ * floor precedes the unlink across a process crash, not across a power loss. A failed flush leaves RocksDB refusing
+ * writes until it recovers, and replay writes next, synchronously, so this waits for writes to resume (harper#4261).
  */
-function purgeBehindUnsyncedFloor(rootStore: RocksDatabase, before: number, error: unknown): string[] {
+function purgeBehindUnsyncedFloor(rootStore: RocksDatabase, before: number, reason: unknown): string[] {
 	const purged = rootStore.purgeLogs({ before });
 	harperLogger.warn(
-		`Purged ${purged.length} aged transaction-log file(s) in ${rootStore.path} behind an audit floor that is not yet power-loss durable: the flush that makes it durable failed`,
-		error
+		`Purged ${purged.length} aged transaction-log file(s) in ${rootStore.path} behind an audit floor that is not yet power-loss durable`,
+		reason
 	);
 	const deadline = Date.now() + RESUME_AFTER_FAILED_FLUSH_MS;
 	for (;;) {
