@@ -241,7 +241,7 @@ export function admissionStamp(
 	const skew = floor - Date.now();
 	if (skew <= maxSkew) return { floor, stamp: claim ? claimLocalKey(rootStore, floor) : floor, claimed: claim };
 	throw new LockUnavailableError(
-		`A record lock cannot be admitted on state stamped ${Math.round(skew)}ms ahead of this node's clock, beyond storage.maxLockClockSkew (${maxSkew}ms). The record remains unavailable until wall time catches up; check for a future context.timestamp or source peer clock skew, or wait.`
+		`A record lock cannot be admitted on state stamped ${Math.round(skew)}ms ahead of this node's wall clock, beyond storage.maxLockClockSkew (${maxSkew}ms). The record remains unavailable until wall time catches up; check for a future context.timestamp or source peer clock skew, or wait.`
 	);
 }
 

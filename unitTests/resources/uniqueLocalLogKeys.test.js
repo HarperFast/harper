@@ -186,7 +186,10 @@ describe('Every local-origin transaction has a unique log key', () => {
 		const ids = Array.from({ length: 12 }, newId);
 		await Floored.put(ids[0], { name: 'explicit' }, { timestamp: explicit });
 		for (let n = 1; n < ids.length; n++) {
-			if (n === 6) raiseTimestampFloor(ulpsAbove(explicit, -1));
+			if (n === 6) {
+				assert(Date.now() < explicit, 'the writes before the raise overran the fixture lead');
+				raiseTimestampFloor(ulpsAbove(explicit, -1));
+			}
 			await Floored.put(ids[n], { name: `minted-${n}` });
 		}
 

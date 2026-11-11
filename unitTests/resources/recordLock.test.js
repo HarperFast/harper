@@ -1730,7 +1730,7 @@ describe('Record locks (harper#483)', () => {
 					(error) =>
 						error.name === 'LockUnavailableError' &&
 						error.statusCode === 503 &&
-						error.message.includes("ahead of this node's clock") &&
+						error.message.includes("ahead of this node's wall clock") &&
 						error.message.includes('context.timestamp')
 				);
 			} finally {

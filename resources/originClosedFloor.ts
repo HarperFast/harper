@@ -230,7 +230,7 @@ class ThreadRegistry {
 	 * covers it before it is used. A key less ahead than that is not covered: a restart takes longer, so the
 	 * restarted wall clock is already past it.
 	 */
-	private noteIssued(key: number): void {
+	noteIssued(key: number): void {
 		if (key <= this.coveredThrough || (key >= wallSeen && key < wallSeen + 1)) return;
 		wallSeen = Date.now();
 		if (key >= wallSeen + 1) this.covered(key, true);
@@ -467,8 +467,8 @@ export function freshLocalKey(rootStore: any): number {
 export function claimLocalKey(rootStore: RocksDatabase, floor: number): number {
 	const registry = registryFor(rootStore);
 	const below = fromBits(toBits(floor) - 1n);
-	const key = registry.freshKey();
-	const ahead = key < floor;
+	const sample = rootStore.getMonotonicTimestamp();
+	const ahead = sample < floor;
 	if (ahead) {
 		if (!(floor - Date.now() <= MAX_CLAIM_LEAD_MS))
 			throw new ServerError(`A local key cannot be claimed at ${floor}: it is too far ahead of the clock to restore`);
@@ -477,7 +477,9 @@ export function claimLocalKey(rootStore: RocksDatabase, floor: number): number {
 	}
 	// even when the clock had passed the floor: a handle minted before the claim must not reserve below it
 	storeMax(registry.words, WORD_ISSUANCE_FLOOR, below);
-	return ahead ? registry.freshKey() : key;
+	if (ahead) return registry.freshKey();
+	registry.noteIssued(sample);
+	return sample;
 }
 
 /**
@@ -505,7 +507,7 @@ export function seedLocalIssuance(
 		} catch (error) {
 			// Minting below a bound this node advertised is the loss the floor exists to prevent, so the open fails.
 			throw new ServerError(
-				`The persisted transaction-log bounds cannot be restored (origin-closed floor ${floor}, issuance ceiling ${ceiling}): ${(error as Error).message}; correct the host clock and restart`
+				`The persisted transaction-log bounds cannot be restored (origin-closed floor ${floor}, issuance ceiling ${ceiling}): ${(error as Error).message}. Correct the host clock and restart; if it is already correct, the bound was persisted while it ran ahead, and the database cannot open until wall time reaches it`
 			);
 		}
 		storeMax(words, WORD_ISSUANCE_FLOOR, recovered);
