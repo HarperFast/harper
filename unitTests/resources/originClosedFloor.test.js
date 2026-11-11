@@ -623,9 +623,10 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 		await waitFor(() => rootStore.getMonotonicTimestamp() > readLocalIssuanceCeiling(auditStore), 30_000);
 	});
 
-	it('fresh and fully reopened registries issue above their recovered ceilings', () => {
+	it('fresh and fully reopened registries issue above their recovered ceilings', async () => {
 		const directory = fs.mkdtempSync(path.join(PID_DIR_PATH, 'issuance-seed-'));
 		let recoveredRoot = RocksDatabase.open(directory);
+		let raisedTo = 0;
 		try {
 			const recoveredAudit = new RocksTransactionLogStore(recoveredRoot);
 			const ceiling = coverLocalIssuance(recoveredAudit, Date.now() + 200);
@@ -634,6 +635,7 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 			assert.ok(key > ceiling, 'the first key after the open-time seed is above the ceiling');
 			assert.ok(readLocalIssuanceCeiling(recoveredAudit) > key, 'a future key is covered before publication');
 			const latestCeiling = readLocalIssuanceCeiling(recoveredAudit);
+			raisedTo = latestCeiling;
 			forgetOriginFloorRegistry(recoveredRoot);
 			recoveredRoot.close();
 			recoveredRoot = RocksDatabase.open(directory);
@@ -647,6 +649,8 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 			recoveredRoot.close();
 			fs.rmSync(directory, { recursive: true, force: true });
 		}
+		// the raise is process-wide: wait it out before the next test
+		await waitFor(() => Date.now() > raisedTo + 1, 10_000, 20);
 	});
 
 	it('issuance behind a persisted floor (simulated in-process) yields unique keys at or above it', async () => {

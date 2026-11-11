@@ -4,6 +4,7 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { Transaction, raiseTimestampFloor } = require('@harperfast/rocksdb-js');
+const { waitFor } = require('../waitFor');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
@@ -199,5 +200,7 @@ describe('Every local-origin transaction has a unique log key', () => {
 		assert.equal(entries[0].version, explicit);
 		for (const [index, entry] of entries.entries())
 			assert.equal(lookup(entry.txnLogKey, ids[index], 0, Floored)?.recordId, ids[index], `entry ${index} by its key`);
+		// the raise is process-wide: wait it out before the next test
+		await waitFor(() => Date.now() > explicit + 1, 5000, 10);
 	});
 });
