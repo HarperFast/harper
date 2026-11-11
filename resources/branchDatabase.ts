@@ -19,7 +19,7 @@ import {
 	isReadOnlyMode,
 	openBranchDatabase,
 	quarantineBranchIdentity,
-	registryEntryAt,
+	registryEntriesAt,
 	releaseBranchIdentity,
 	reserveBranchIdentity,
 	resolveBranchPath,
@@ -596,7 +596,7 @@ function branchReferenceCount(branchPath: string): number {
 		if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 0;
 		throw error;
 	}
-	return registryEntryAt(resolved)?.refCount ?? 0;
+	return registryEntriesAt(resolved).reduce((count, entry) => count + entry.refCount, 0);
 }
 
 /**

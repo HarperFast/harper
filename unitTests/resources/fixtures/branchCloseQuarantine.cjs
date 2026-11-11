@@ -7,7 +7,7 @@ const { setupTestDBPath } = require('../../testUtils');
 const {
 	assertBranchIdentityAvailable,
 	closeBranchDatabases,
-	registryEntryAt,
+	registryEntriesAt,
 	resolveBranchPath,
 	table,
 } = require('#src/resources/databases');
@@ -42,7 +42,11 @@ async function run() {
 	} finally {
 		chmodSync(appDirectory, 0o755);
 	}
-	const result = { close, closeError: registryEntryAt(branch.path)?.closeError, identityHeld: identityHeld() };
+	const result = {
+		close,
+		closeError: registryEntriesAt(branch.path).find((entry) => entry.closeError)?.closeError,
+		identityHeld: identityHeld(),
+	};
 	// the handle closeBranchAt dropped is still reachable from worker teardown
 	result.retry = await closeBranchDatabases(true).then(() => 'resolved', failure);
 	result.identityHeldAfterRetry = identityHeld();

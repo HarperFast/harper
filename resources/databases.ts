@@ -2796,7 +2796,7 @@ export function openBranchDatabase(
 		// to retry. A failed close holds the branch only while a store is still open, or while rocksdb-js keeps the
 		// directory quarantined (its close-time flush failed) until `shutdown()`.
 		if (closeFailed) {
-			const quarantined = registryEntryAt(path)?.closeError;
+			const quarantined = registryEntriesAt(path).find((entry) => entry.closeError)?.closeError;
 			const storeLeftOpen = [rootStore, (rootStore as any).dbisDb, ...openedStores].some(
 				(store) => store?.status === 'open'
 			);
@@ -2919,9 +2919,12 @@ function closeBranchHandles(
 	return closeFailures;
 }
 
-/** rocksdb-js's registry entry, which spans every thread of the process, for the database at a canonical directory. */
-export function registryEntryAt(canonicalPath: string): ReturnType<typeof getRegistryStatus>[number] | undefined {
-	return getRegistryStatus().find(
+/**
+ * rocksdb-js's registry entries, which span every thread of the process, for the database at a canonical directory:
+ * one for each way it is open (read-write, read-only, secondary).
+ */
+export function registryEntriesAt(canonicalPath: string): ReturnType<typeof getRegistryStatus> {
+	return getRegistryStatus().filter(
 		(entry) => entry.path === canonicalPath || canonicalOrSelf(entry.path) === canonicalPath
 	);
 }

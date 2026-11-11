@@ -1292,9 +1292,8 @@ describeUnlessLmdb('branch blob-root safety (harper#644)', () => {
 	});
 
 	/**
-	 * Remove the open branch, then put its directory back without the blob roots the removal deleted. The copy kept
-	 * aside is a checkpoint plus the completion marker, which is what `readBranchState` reads: the open directory
-	 * itself may be mid-compaction, and a plain copy races the files it deletes.
+	 * The copy kept aside is a checkpoint plus the completion marker, all `readBranchState` reads: a plain copy of the
+	 * open directory races the compaction deleting its files.
 	 */
 	async function putBackWithoutBlobRoots(branch, branchPath) {
 		const saved = `${branchPath}.savedforTest`;
@@ -1539,7 +1538,7 @@ describeUnlessLmdb('a branch close rocksdb-js reports failing (harper#4252)', ()
 	const { dirname } = require('node:path');
 	const { waitFor } = require('../waitFor.js');
 	const { getBlobPathsForDatabaseName, createBlob } = require('#src/resources/blob');
-	const { openBranchDatabase, registryEntryAt } = require('#src/resources/databases');
+	const { openBranchDatabase, registryEntriesAt } = require('#src/resources/databases');
 	const STORE = `${'closeApp'.length}_closeApp__closebase`;
 
 	before(async function () {
@@ -1584,7 +1583,7 @@ describeUnlessLmdb('a branch close rocksdb-js reports failing (harper#4252)', ()
 		} finally {
 			RocksDatabase.off('database:closeFailed', onCloseFailed);
 		}
-		assert.strictEqual(registryEntryAt(held.path), undefined, 'rocksdb-js released the database');
+		assert.deepStrictEqual(registryEntriesAt(held.path), [], 'rocksdb-js released the database');
 
 		const reopened = await getOrCreateBranch('closebase', 'closeApp');
 		assert.ok(await reopened.tables.Rows.get('mine'));
