@@ -227,7 +227,6 @@ describe('An idle full-text index searched by a worker with no reader yet', () =
 		fullTextQuery: { operator: 'boost', boost: 2, clause: { text: 'first', mode: 'any' } },
 	};
 
-	// Indexes one record, then waits until the idle owner has released the runner lock.
 	async function idleIndex(tableName) {
 		const Product = table({
 			database: 'derived-index-idle-coverage',
@@ -387,7 +386,7 @@ describe('An idle full-text index searched by a worker with no reader yet', () =
 		const strictCoverage = (store = auditStore, quiet = identity) =>
 			readDerivedIndexCoverage(store, id, () => undefined, 0, quiet).state;
 		const withoutOptIn = () => readDerivedIndexCoverage(auditStore, id, () => undefined, 0).state;
-		// A log store whose physical logs report what `stats` returns, for states a real store reaches only racily.
+		// These log states arise on a real store only in a race, so the stats are reported, not produced.
 		const rootStore = auditStore.rootStore;
 		const reporting = (stats, logs = () => rootStore.listLogs()) => ({
 			rootStore: {

@@ -1,8 +1,6 @@
 /**
- * The first default full-text search after an index's idle owner released (no writes for longer than the
- * runner's 30 s idle grace) answers with current coverage on a worker that never opened that index's
- * reader. Nothing searches either index before the idle period, so each first search runs with no reader
- * and with the last owner's coverage clock past the 3000 ms default tolerance.
+ * Nothing may search either index before the idle period: a first search with a reader, or with the last
+ * owner's coverage clock inside the 3000 ms default tolerance, would pass without the idle-release proof.
  */
 import { suite, test, before, after } from 'node:test';
 import assert from 'node:assert';
