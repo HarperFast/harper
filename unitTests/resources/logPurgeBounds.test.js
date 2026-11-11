@@ -110,6 +110,21 @@ async function ageLogFiles(Table, name, mtime) {
 		if (file.endsWith('.txnlog')) fs.utimesSync(path.join(directory, file), mtime / 1000, mtime / 1000);
 }
 
+// rocksdb-js reads a segment's age from its mtime at open, so the boot purge sees an aged file only after a reopen
+async function ageLogFilesAndReopen(Table, name, mtime) {
+	const database = Table.databaseName;
+	const directory = path.join(Table.auditStore.rootStore.path, 'transaction_logs', name);
+	assert.ok(await closeDatabase(database));
+	for (const file of fs.readdirSync(directory))
+		if (file.endsWith('.txnlog')) fs.utimesSync(path.join(directory, file), mtime / 1000, mtime / 1000);
+	return table({
+		table: 'Bounded',
+		database,
+		attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+		audit: true,
+	});
+}
+
 function retentionPass(Table, cutoff) {
 	raiseAuditFloor(Table.auditStore, cutoff, true);
 	return Table.auditStore.rootStore.purgeLogs({ before: cutoff });
@@ -344,10 +359,10 @@ describe('per-log purge bounds', function () {
 		});
 
 		it('purges at the boot cutoff and bounds each log by its watermark, reading no log', async () => {
-			const Table = backdatedTable();
-			await Table.put('booted', { name: 'x' });
-			const newest = Math.max(...localLogKeys(Table.auditStore));
-			await ageLogFiles(Table, 'local', Date.now() - 2 * 3_600_000);
+			const written = backdatedTable();
+			await written.put('booted', { name: 'x' });
+			const newest = Math.max(...localLogKeys(written.auditStore));
+			const Table = await ageLogFilesAndReopen(written, 'local', Date.now() - 2 * 3_600_000);
 			assert.strictEqual(bootPurge(Table, 3_600_000), 0);
 			const local = Table.auditStore.rootStore.useLog('local');
 			assert.strictEqual(local.getStats().fileCount, 0, 'precondition: the boot purge removed the aged files');
@@ -1305,10 +1320,14 @@ describe('per-log purge bounds', function () {
 				restore();
 			}
 			assert.deepStrictEqual([...queried], ['local']);
-			await ageLogFiles(Table, 'after-upgrade-origin', Date.now() - 2 * 3_600_000);
-			assert.strictEqual(bootPurge(Table, 3_600_000), 0);
-			assert.strictEqual(rootStore.useLog('after-upgrade-origin').getStats().fileCount, 0, 'precondition: purged');
-			const bounds = getLogPurgeBounds(Table.auditStore, ['local', 'after-upgrade-origin']);
+			const Booted = await ageLogFilesAndReopen(Table, 'after-upgrade-origin', Date.now() - 2 * 3_600_000);
+			assert.strictEqual(bootPurge(Booted, 3_600_000), 0);
+			assert.strictEqual(
+				Booted.auditStore.rootStore.useLog('after-upgrade-origin').getStats().fileCount,
+				0,
+				'precondition: purged'
+			);
+			const bounds = getLogPurgeBounds(Booted.auditStore, ['local', 'after-upgrade-origin']);
 			assert.strictEqual(bounds.get('after-upgrade-origin'), ahead);
 			assert.strictEqual(bounds.get('local'), newest);
 		});

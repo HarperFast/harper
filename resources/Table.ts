@@ -12014,8 +12014,7 @@ export function makeTable(options): TableResourceClass {
 			this.userSetDeciders.add(attribute_name);
 		}
 		static async deleteHistory(endTime = 0, cleanupDeletedRecords = false): Promise<number> {
-			// RocksDB removes history only as whole log files every table in the database shares, so no audit
-			// entry of one table can be removed: the count is always 0, and only the tombstone sweep can run.
+			// a RocksDB log, shared by every table in the database, loses only whole files
 			if (isRocksDB && !cleanupDeletedRecords) return 0;
 			const maxConcurrentRemovals = isRocksDB ? MAX_CONCURRENT_HISTORY_REMOVALS : MAX_CONCURRENT_LMDB_HISTORY_REMOVALS;
 			const inFlightRemovals = new Set<Promise<void>>();

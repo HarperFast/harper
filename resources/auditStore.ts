@@ -1969,6 +1969,8 @@ export function purgeAgedLogs(rootStore: RocksDatabase): string[] {
 	const before = retentionCutoff();
 	// The audit store is reachable this early because initStores opens it before replayLogs runs this.
 	raiseAuditFloor((rootStore as any).auditStore, before, true, false);
+	// With nothing to unlink there is nothing to order the floor ahead of, and an ordinary boot writes no SST.
+	if (!hasPurgeableLogFile(rootStore, before)) return [];
 	// The floor and purge bounds reach disk before the files they account for are unlinked. Replay follows
 	// synchronously (harper#1115), so this cannot await `syncWal` as the other purge paths do.
 	try {
@@ -1980,17 +1982,60 @@ export function purgeAgedLogs(rootStore: RocksDatabase): string[] {
 }
 
 /**
- * The boot purge when its barrier failed but the floor's commit landed: `flushSync` writes a new SST, so on a full
- * disk it fails where the floor's WAL append did not, and these files are what a full node has to shed to recover
- * (harper#2486). The floor still precedes the unlink across a process crash, but not across a power loss. A
- * synchronous WAL sync needs no new space; this branch goes when the boot purge switches to rocksdb-js `syncWalSync`.
+ * Whether `purgeLogs({ before })` could unlink a file: one last written before `before`, or one past rocksdb-js's own
+ * retention, which `purgeLogs` also applies. Log stats map no segment.
+ */
+function hasPurgeableLogFile(rootStore: RocksDatabase, before: number): boolean {
+	const now = Date.now();
+	try {
+		for (const name of rootStore.listLogs()) {
+			const { purge, config } = rootStore.useLog(name).getStats();
+			if (
+				purge.oldestFileAgeMs > now - before ||
+				(config.retentionMs > 0 && purge.oldestFileAgeMs > config.retentionMs)
+			)
+				return true;
+		}
+		return false;
+	} catch (error) {
+		warnContained('Error reading transaction-log file ages before the boot purge', error);
+		return true;
+	}
+}
+
+// RocksDB retries a no-space background error every few seconds once space is free
+const RESUME_AFTER_FAILED_FLUSH_MS = 10_000;
+const PAUSE_CELL = new Int32Array(new SharedArrayBuffer(4));
+
+/**
+ * The boot purge when its barrier failed but the floor's commit landed (harper#2486): a flush needs a new SST, so a
+ * full disk fails it where the floor's WAL append did not, and these files are what a full node sheds to recover. The
+ * floor precedes the unlink across a process crash, not across a power loss. The failed flush leaves RocksDB refusing
+ * writes until it recovers, and replay writes next, synchronously, so this waits for writes to resume. Removed with
+ * the switch to a synchronous WAL sync (harper#4261).
  */
 function purgeBehindUnsyncedFloor(rootStore: RocksDatabase, before: number, error: unknown): string[] {
+	const purged = rootStore.purgeLogs({ before });
 	harperLogger.warn(
-		`Purging aged transaction logs in ${(rootStore as any).databaseName} database before its audit floor is power-loss durable: the flush that makes it durable failed`,
+		`Purged ${purged.length} aged transaction-log file(s) in ${rootStore.path} behind an audit floor that is not yet power-loss durable: the flush that makes it durable failed`,
 		error
 	);
-	return rootStore.purgeLogs({ before });
+	const deadline = Date.now() + RESUME_AFTER_FAILED_FLUSH_MS;
+	for (;;) {
+		try {
+			rootStore.resume();
+			return purged;
+		} catch (resumeError) {
+			if (Date.now() >= deadline) {
+				harperLogger.warn(
+					`RocksDB in ${rootStore.path} has not resumed writes; replay writes fail until it does`,
+					resumeError
+				);
+				return purged;
+			}
+			Atomics.wait(PAUSE_CELL, 0, 0, 100);
+		}
+	}
 }
 
 const HAS_RECORD = 16;

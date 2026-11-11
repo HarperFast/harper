@@ -18,7 +18,6 @@ const {
 	getAuditFloor,
 	getAuditResumeFloor,
 	getLogPurgeBounds,
-	getLogPurgeTrackedFrom,
 	purgeAgedLogs,
 	setAuditRetention,
 	auditRetention,
@@ -79,8 +78,7 @@ async function databaseWithAgedHistory({ preWatermark }) {
 		'precondition: the log kind under test'
 	);
 	const rootStore = Table.auditStore.rootStore;
-	// where the last retention pass before this one left the floors and the purge-bounds record: below any
-	// cutoff these tests purge at
+	// below any cutoff these tests purge at, as an earlier retention pass leaves them
 	const lastPass = Date.now() - 3 * HOUR_MS;
 	const [floorKey, resumeFloorKey, boundsKey] = FLOOR_RECORDS;
 	for (const key of [floorKey, resumeFloorKey]) rootStore.putSync(key, asBinary(floorBytes(lastPass)));
@@ -144,7 +142,7 @@ function recordStore(Table, store = Table.auditStore.rootStore) {
 	return recordDurability(store, { durable: readRecords(auditStore), auditStoreOf: () => auditStore });
 }
 
-/** Closes the database, then reopens it the way startup does, so its replay runs the boot purge. */
+/** Reopens the database through startup's scan, whose replay runs the boot purge. */
 async function boot(Table, database, retention) {
 	assert.ok(await closeDatabase(database));
 	const configured = auditRetention;
@@ -194,11 +192,8 @@ function assertCoversRemoved(Table, removedKeys, cutoff, { preWatermark }) {
 	assert.ok(floor >= cutoff, `the reopened floor ${floor} is below the purge cutoff ${cutoff}`);
 	assert.ok(resumeFloor >= cutoff, `the reopened resume floor ${resumeFloor} is below the purge cutoff ${cutoff}`);
 	const bound = getLogPurgeBounds(auditStore, ORIGIN).get(ORIGIN);
-	const trackedFrom = getLogPurgeTrackedFrom(auditStore);
-	for (const key of removedKeys) {
+	for (const key of removedKeys)
 		assert.ok(bound >= key, `${preWatermark ? 'pre-2.14' : 'watermarked'} log bound ${bound} is below removed ${key}`);
-		assert.ok(trackedFrom <= key || bound >= key, 'precondition: the bound, not the tracking start, covers it');
-	}
 }
 
 describe('audit history is removed only after a durable floor covers it', function () {
@@ -282,6 +277,34 @@ describe('audit history is removed only after a durable floor covers it', functi
 			assert.deepStrictEqual(keys, removedKeys, 'every entry stays readable');
 		}
 
+		it('an ordinary boot, with no file old enough to purge, writes no barrier', async () => {
+			const database = `auditPurgeDurability_${databaseCount++}`;
+			const Table = openTable(database);
+			await Table.put('fresh', { name: 'fresh' });
+			const path = Table.auditStore.rootStore.path;
+			const recorder = recordDurability(RocksDatabase.prototype, {
+				durable: readRecords(Table.auditStore),
+				auditStoreOf: (store) => store.auditStore,
+				path,
+			});
+			const { flushSync } = RocksDatabase.prototype;
+			let barriers = 0;
+			RocksDatabase.prototype.flushSync = function (...args) {
+				if (this.path === path) barriers++;
+				return flushSync.apply(this, args);
+			};
+			let Booted;
+			try {
+				Booted = await boot(Table, database, HOUR_MS);
+			} finally {
+				RocksDatabase.prototype.flushSync = flushSync;
+				recorder.restore();
+			}
+			assert.strictEqual(barriers, 0);
+			assert.deepStrictEqual(recorder.purges, []);
+			assert.strictEqual((await Booted.get('fresh'))?.name, 'fresh');
+		});
+
 		it('the boot purge removes nothing when the floor commit fails', async () => {
 			const { Table, removedKeys } = await databaseWithAgedHistory({ preWatermark: false });
 			const rootStore = Table.auditStore.rootStore;
@@ -302,8 +325,6 @@ describe('audit history is removed only after a durable floor covers it', functi
 		});
 
 		it('the boot purge still sheds aged files when only its barrier fails, behind the floor it committed first', async () => {
-			// harper#2486: flushSync needs a new SST, so a full disk fails it where the floor's WAL append landed, and
-			// these files are what a full node sheds to recover. The floor still precedes the unlink across a crash.
 			const { Table, database, removedKeys } = await databaseWithAgedHistory({ preWatermark: true });
 			const path = Table.auditStore.rootStore.path;
 			const cutoff = Date.now() - HOUR_MS;
@@ -335,7 +356,9 @@ describe('audit history is removed only after a durable floor covers it', functi
 				`the floor ${floorAtPurge} was not committed before the purge (cutoff ${cutoff})`
 			);
 			assert.strictEqual(Booted.auditStore.rootStore.useLog(ORIGIN).getStats().fileCount, 0, 'the aged files are shed');
-			const warning = warnings.find(([message]) => /before its audit floor is power-loss durable/.test(message));
+			const warning = warnings.find(([message]) =>
+				/behind an audit floor that is not yet power-loss durable/.test(message)
+			);
 			assert.ok(warning, 'the fallback is reported');
 			assert.match(warning[1].message, /No space left/, 'with the barrier error');
 			await Booted.put('after-fallback', { name: 'x' });
@@ -399,8 +422,7 @@ describe('audit history is removed only after a durable floor covers it', functi
 			assert.deepStrictEqual(historyAfter, historyBefore);
 			assert.strictEqual(Table.primaryStore.getEntry('deleted')?.value, null, 'the tombstone stays with its entry');
 
-			// a subscriber replaying from before the delete still receives it: no history went missing behind a floor
-			// that does not say so
+			// no floor was raised, so a replay from before the delete must still deliver it
 			const events = [];
 			const subscription = await Table.subscribe({ startTime, listener: (event) => events.push(event) });
 			try {
