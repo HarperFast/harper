@@ -168,7 +168,10 @@ describe('SQL UPDATE SET evaluation on the v2 engine', function () {
 			await sql('UPDATE test.SqlSetFoldUntyped SET qty = qty + 5 WHERE id = 1');
 			assert(Number.isNaN((await Untyped.get(1)).qty), 'NaN stays NaN');
 			assert.strictEqual((await updated(Untyped, { id: 1, qty: true }, 'qty = qty + 5')).qty, 6);
-			assert.strictEqual((await updated(Untyped, { id: 1, qty: '' }, 'qty = qty + 5')).qty, 5);
+			assert(
+				Number.isNaN((await updated(Untyped, { id: 1, qty: '' }, 'qty = qty + 5')).qty),
+				'a blank string is no number'
+			);
 			assert.strictEqual((await updated(Untyped, { id: 1, qty: '7' }, 'qty = qty + 5')).qty, 12);
 		});
 
