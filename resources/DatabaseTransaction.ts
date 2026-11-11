@@ -727,7 +727,8 @@ export type TransactionWrite = {
 	entry?: Partial<Entry>;
 	before?: () => void | Promise<void>;
 	beforeIntermediate?: () => void | Promise<void>;
-	trackedInstance?: object;
+	// the instance that staged this write: its commit stores that instance's changes or clears them
+	stagedBy?: object;
 	// stages the record and its audit entry before returning: staging reads what it appended (stagedAudit)
 	// as soon as it returns. A returned promise is only a completion to wait for.
 	commit?: (
@@ -1031,7 +1032,7 @@ function unappliedHookWriteTo(operation: TransactionWrite): boolean {
 }
 
 export function instanceWriteInSyncCommitHook(instance: object): boolean {
-	for (const hook of syncCommitHooks) if (hook.write.trackedInstance === instance) return true;
+	for (const hook of syncCommitHooks) if (hook.write.stagedBy === instance) return true;
 	return false;
 }
 

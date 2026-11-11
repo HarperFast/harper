@@ -1780,9 +1780,12 @@ function rescope(resolved: ResolvedRecordLockOptions, tableReplicates: boolean):
 
 const retryAfterScopeCommit = Symbol('retry after the scope commit');
 
+// The commit awaits a nested hook only through unsettled frames: work a settled hook left running is not awaited.
 function isOwnCommitHook(root: DatabaseTransaction): boolean {
-	const hook = currentCommitHook();
-	return hook !== undefined && hook.active && hook.root === root;
+	for (let hook = currentCommitHook(); hook?.active; hook = hook.parent) {
+		if (hook.root === root) return true;
+	}
+	return false;
 }
 
 /** A link that left the chain no longer reports its scope's state; the chain root does. */
@@ -6377,7 +6380,7 @@ export function makeTable(options): TableResourceClass {
 				recordVersion: options?.version,
 				lockHandle: undefined,
 				writeGeneration: !this.#lockWritable && closesReceiver ? this[GET_TRACKED_WRITE_GENERATION]() : undefined,
-				trackedInstance: tracksInstance ? this : undefined,
+				stagedBy: this,
 				captureChanges,
 				releaseChanges,
 				validate: (txnTime, committedBy = transaction) => {
