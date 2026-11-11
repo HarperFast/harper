@@ -31,6 +31,7 @@ import * as terms from '../../utility/hdbTerms.ts';
 import * as env from '../../utility/environment/environmentManager.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
 import { ServerError } from '../../utility/errors/hdbError.ts';
+import PermissionResponseObject from '../../security/data_objects/PermissionResponseObject.ts';
 import { sendItcEvent } from '../threads/itc.ts';
 import {
 	hasThreadExited,
@@ -246,10 +247,17 @@ attachListeners();
 
 // `code` and `retryable` tell a caller whether resubmitting is safe (the agent's saved-but-not-run
 // prompt is not), so they survive the hop along with the status.
-function toForwardedError(error: { message: string; statusCode?: number; code?: string; retryable?: boolean }) {
+function toForwardedError(error: {
+	message: string;
+	statusCode?: number;
+	code?: string;
+	retryable?: boolean;
+	permissionReport?: PermissionResponseObject;
+}) {
 	const forwarded: any = new ServerError(error.message, error.statusCode || 500);
 	if (error.code !== undefined) forwarded.code = error.code;
 	if (error.retryable !== undefined) forwarded.retryable = error.retryable;
+	if (error.permissionReport !== undefined) forwarded.http_resp_msg = error.permissionReport;
 	return forwarded;
 }
 
@@ -366,15 +374,17 @@ export async function operationExecuteRequestHandler(event: {
 		}
 		response = { requestId, result };
 	} catch (error) {
-		response = {
-			requestId,
-			error: {
-				message: error.http_resp_msg?.error ?? error.http_resp_msg ?? error.message,
-				statusCode: error.statusCode,
-				code: typeof error.code === 'string' ? error.code : undefined,
-				retryable: typeof error.retryable === 'boolean' ? error.retryable : undefined,
-			},
+		const responseMessage = error?.http_resp_msg;
+		const wireError: any = {
+			message: responseMessage?.error ?? responseMessage ?? error?.message,
+			statusCode: error?.statusCode,
+			code: typeof error?.code === 'string' ? error.code : undefined,
+			retryable: typeof error?.retryable === 'boolean' ? error.retryable : undefined,
 		};
+		// Only a permission report: serverErrorHandler appends `code`/`retryable` to a scalar body but
+		// sends an object body as is, so any other object body must keep forwarding as a scalar message.
+		if (responseMessage instanceof PermissionResponseObject) wireError.permissionReport = responseMessage;
+		response = { requestId, error: wireError };
 	}
 	try {
 		sendExecuteResponse(originator, response);
