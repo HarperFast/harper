@@ -34,7 +34,7 @@ class FakeLogStore {
 			getStats: () => ({
 				oldestSequenceNumber: 1,
 				lastCommittedPosition: this.committedPosition,
-				nextLogPosition: this.committedPosition ?? { sequence: 0, offset: 0 },
+				nextLogPosition: this.writtenPosition ?? this.committedPosition ?? { sequence: 0, offset: 0 },
 			}),
 		});
 		this.rootStore.getMonotonicTimestamp = () => performance.now();
@@ -662,16 +662,20 @@ describe('DerivedIndexRuntime', () => {
 		first.register(registration(firstBackend));
 		second.register(registration(secondBackend));
 
-		await waitFor(() => secondLifecycle.inspectCalls === 1, {
-			message: 'the waiting backend must inspect after the first owner publishes and releases',
+		await waitFor(() => decodeFullTextCursorPayload(shared.payload).logs.local === 20 && store.locks.size === 0, {
+			message: 'the first owner must publish and then release once idle',
 		});
-		assert.deepStrictEqual(
-			{ ...decodeFullTextCursorPayload(shared.payload).logs },
-			cursor(20).logs,
-			'the first owner must publish before the successor acquires'
-		);
+		for (let i = 0; i < 4; i++) await new Promise(setImmediate);
+		assert.strictEqual(secondLifecycle.inspectCalls, 0, 'an idle release with no log movement hands nothing over');
+
+		await first.stop();
+		store.committedPosition = { sequence: 1, offset: 64 };
+		store.rootStore.emit('committed');
+		await waitFor(() => secondLifecycle.inspectCalls === 1, {
+			message: 'the successor must inspect the published checkpoint once the log moves',
+		});
 		assert.strictEqual(secondLifecycle.resetCalls, 0);
-		await Promise.all([first.stop(), second.stop()]);
+		await second.stop();
 	});
 
 	it('settles runtime stop when a full-text native open does not settle', async () => {
@@ -1162,6 +1166,183 @@ describe('DerivedIndexRuntime', () => {
 		assert.strictEqual(attempts, 2, 'the commit must drive a fresh acquisition');
 		assert.deepStrictEqual(backend.cursor, cursor(20));
 		runtime.stop();
+	});
+
+	describe('acquisition of an idle index', () => {
+		const coverageBackend = (id, durable = cursor(10)) => {
+			const backend = new FakeBackend(id, durable);
+			backend.shutdowns = 0;
+			backend.shutdown = () => {
+				backend.shutdowns++;
+			};
+			backend.publishCoverage = (positions) => (backend.cursor = { ...backend.cursor, coverage: positions });
+			return backend;
+		};
+		const options = { idleGraceMilliseconds: 5, lockRetryMilliseconds: 10, maxFlushAgeMilliseconds: 5 };
+		const quietStore = (entries = new Map([[10, []]]), logNames) => {
+			const store = new FakeLogStore(entries, logNames);
+			store.committedPosition = { sequence: 1, offset: 32 };
+			return store;
+		};
+		const released = (store, backend, shutdownsBefore = 0) =>
+			waitFor(() => backend.shutdowns > shutdownsBefore && store.locks.size === 0, {
+				message: 'the owner must release once idle',
+			});
+		// Each pass outlasts the idle grace and the lock-retry cadence.
+		const quietCommits = async (store) => {
+			for (let i = 0; i < 5; i++) {
+				store.rootStore.emit('committed');
+				await new Promise((resolve) => setTimeout(resolve, 15));
+			}
+		};
+		const sharedWords = (store, id) =>
+			new Int32Array(store.getUserSharedBuffer(`derived-index:${id}:readiness`, new ArrayBuffer(READINESS_BYTES)));
+
+		it('keeps its owner epoch across commits that move no log, and acquires once one does', async () => {
+			const entries = new Map([[10, []]]);
+			const store = quietStore(entries);
+			const backend = coverageBackend('quiet-commits');
+			const { runtime } = runtimeFor(store, new Map([['1:a', { version: 20, value: { title: 'a' } }]]), options);
+			runtime.register(registration(backend));
+			await released(store, backend);
+			const epoch = runtime.getReadiness(backend.id).ownerEpoch;
+
+			await quietCommits(store);
+			assert.strictEqual(runtime.getReadiness(backend.id).ownerEpoch, epoch);
+			assert.strictEqual(backend.shutdowns, 1, 'a commit that moves no log must not start an ownership session');
+
+			entries.set(10, [audit({ timestamp: 20, recordId: 'a' })]);
+			store.committedPosition = { sequence: 1, offset: 64 };
+			store.rootStore.emit('committed');
+			await waitFor(() => backend.deliveries.length === 1);
+			assert(runtime.getReadiness(backend.id).ownerEpoch > epoch);
+			await runtime.stop();
+		});
+
+		it('does not hand an idle index to a peer parked on the lock', async () => {
+			const store = quietStore();
+			const backend = coverageBackend('quiet-peer');
+			const first = runtimeFor(store, new Map(), options).runtime;
+			const second = runtimeFor(store, new Map(), options).runtime;
+			first.register(registration(backend));
+			second.register(registration(backend));
+			await released(store, backend);
+			const epoch = second.getReadiness(backend.id).ownerEpoch;
+
+			await quietCommits(store);
+			assert.strictEqual(second.getReadiness(backend.id).ownerEpoch, epoch);
+			assert.strictEqual(backend.shutdowns, 1, 'neither the release notification nor a lock retry hands it over');
+			await Promise.all([first.stop(), second.stop()]);
+		});
+
+		it('acquires an idle index for a rebuild request, a raised lag flag and a coverage wait', async () => {
+			const store = quietStore();
+			const backend = coverageBackend('quiet-demand');
+			const { runtime } = runtimeFor(store, new Map(), options);
+			runtime.register(registration(backend));
+			await released(store, backend);
+			const words = sharedWords(store, backend.id);
+			let epoch = runtime.getReadiness(backend.id).ownerEpoch;
+			for (const [word, name] of [
+				[3, 'rebuild request'],
+				[4, 'lag flag'],
+			]) {
+				const shutdowns = backend.shutdowns;
+				Atomics.store(words, word, 1);
+				store.rootStore.emit('committed');
+				await waitFor(() => runtime.getReadiness(backend.id).ownerEpoch > epoch, {
+					message: `a ${name} must acquire the index`,
+				});
+				Atomics.store(words, word, 0);
+				await released(store, backend, shutdowns);
+				epoch = runtime.getReadiness(backend.id).ownerEpoch;
+			}
+			await runtime.waitForCoverage(backend.id, derivedIndexTime(store.rootStore), 2000);
+			assert(runtime.getReadiness(backend.id).ownerEpoch > epoch, 'a coverage wait must acquire the index');
+			await runtime.stop();
+		});
+
+		it('acquires while a log has an uncommitted transaction or a new log appears', async () => {
+			const logNames = ['local'];
+			const store = quietStore(new Map([[10, []]]), logNames);
+			const backend = coverageBackend('quiet-logs');
+			const { runtime } = runtimeFor(store, new Map(), options);
+			runtime.register(registration(backend));
+			await released(store, backend);
+			let epoch = runtime.getReadiness(backend.id).ownerEpoch;
+
+			store.writtenPosition = { sequence: 1, offset: 96 };
+			store.rootStore.emit('committed');
+			await waitFor(() => runtime.getReadiness(backend.id).ownerEpoch > epoch, {
+				message: 'unproven positions must not keep the index ownerless',
+			});
+			// the pending transaction commits: its own commit wake finds the log moved and acquires
+			const shutdowns = backend.shutdowns;
+			store.writtenPosition = undefined;
+			store.committedPosition = { sequence: 1, offset: 96 };
+			store.rootStore.emit('committed');
+			await released(store, backend, shutdowns);
+			await waitFor(() => !store.locks.size && runtime.getStatus(backend.id).state === 'idle');
+			epoch = runtime.getReadiness(backend.id).ownerEpoch;
+			await quietCommits(store);
+			assert.strictEqual(runtime.getReadiness(backend.id).ownerEpoch, epoch);
+
+			logNames.push('remote');
+			store.rootStore.emit('committed');
+			await waitFor(() => runtime.getReadiness(backend.id).ownerEpoch > epoch, {
+				message: 'a new log must acquire the index',
+			});
+			await runtime.stop();
+		});
+
+		it('publishes no idle positions from a runner stopped while it releases', async () => {
+			const store = quietStore();
+			const backend = coverageBackend('quiet-stopped');
+			let finishShutdown;
+			backend.shutdown = () => {
+				backend.shutdowns++;
+				return new Promise((resolve) => (finishShutdown = resolve));
+			};
+			const first = runtimeFor(store, new Map(), options).runtime;
+			first.register(registration(backend));
+			await waitFor(() => backend.shutdowns === 1);
+			const stopped = first.stop();
+			finishShutdown();
+			await stopped;
+			const epoch = first.getReadiness(backend.id).ownerEpoch;
+
+			const second = runtimeFor(store, new Map(), options).runtime;
+			second.register(registration(coverageBackend(backend.id)));
+			await waitFor(() => second.getReadiness(backend.id).ownerEpoch > epoch, {
+				message: 'a successor must not inherit positions its stopped predecessor never certified',
+			});
+			await second.stop();
+		});
+
+		it('lets only a registration over the same table skip on the published positions', async () => {
+			const store = quietStore();
+			const first = runtimeFor(store, new Map(), options).runtime;
+			const backend = coverageBackend('quiet-table');
+			first.register(registration(backend));
+			await released(store, backend);
+			await first.stop();
+			const epoch = first.getReadiness(backend.id).ownerEpoch;
+
+			const same = runtimeFor(store, new Map(), options).runtime;
+			same.register(registration(coverageBackend('quiet-table')));
+			await quietCommits(store);
+			assert.strictEqual(same.getReadiness('quiet-table').ownerEpoch, epoch);
+			await same.stop();
+
+			// an index recreated under the same id over a new table
+			const recreated = runtimeFor(store, new Map(), options).runtime;
+			recreated.register({
+				backend: coverageBackend('quiet-table'),
+				projections: new Map([[2, (record) => ({ title: record.title })]]),
+			});
+			await waitFor(() => recreated.getReadiness('quiet-table').ownerEpoch > epoch);
+			await recreated.stop();
+		});
 	});
 
 	it('unregisters the backend wake and root commit listeners', async () => {
