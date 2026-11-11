@@ -19,7 +19,7 @@ const { pinLogConfig } = require('../../logConfigFixture.js');
 const { waitFor } = require('../../waitFor.js');
 const fastify = require('fastify');
 const { serverErrorHandler } = require('#src/server/serverHelpers/serverHandlers');
-const { handleHDBError } = require('#src/utility/errors/hdbError');
+const { HdbError } = require('#src/utility/errors/hdbError');
 const PermissionResponseObject = require('#src/security/data_objects/PermissionResponseObject').default;
 
 const test_func_data = { data: 'this is data', more_data: 'this is more data' };
@@ -408,9 +408,8 @@ describe('Test serverUtilities.js module ', () => {
 		});
 
 		let forwardedCount = 0;
-		// Runs `body` through the receiving side of the bridge, delivers the response to a pending
-		// forward as the requesting thread would see it, and returns what that forward rejects with.
 		async function forwardedError(body) {
+			sentMessages.length = 0;
 			const operationName = `test_forwarded_denial_${forwardedCount++}`;
 			await registeredOperations.operationExecuteRequestHandler({
 				message: { requestId: 40 + forwardedCount, body, originator: 1 },
@@ -482,7 +481,7 @@ describe('Test serverUtilities.js module ', () => {
 				report.addUnauthorizedTable('dev', 'dog', ['read']);
 				report.addUnauthorizedAttributes(['name'], 'dev', 'dog', { name: ['read', 'update'] });
 				report.addUnauthorizedAttributes(['id'], 'dev', 'cat', { id: ['read'] });
-				return handleHDBError(new Error(), report.getPermsResponse(), 403);
+				return new HdbError(new Error(), report.getPermsResponse(), 403);
 			};
 			registeredOperations.setLocalOperationDispatch({
 				chooseOperation() {
@@ -495,6 +494,22 @@ describe('Test serverUtilities.js module ', () => {
 
 			assert.strictEqual(local.body.unauthorized_access.length, 2);
 			assert.deepStrictEqual(forwarded, local);
+		});
+
+		it('keeps the report when the rejection is forwarded a second time', async function () {
+			const request = () => ({ ...testUtils.deepClone(TEST_JSON_NON_SU), operation: 'add_user' });
+			const local = await clientResponse(localError(request()));
+			const firstHop = await forwardedError(request());
+			registeredOperations.setLocalOperationDispatch({
+				chooseOperation() {
+					throw firstHop;
+				},
+				processLocalTransaction: serverUtilities.processLocalTransaction,
+			});
+			const secondHop = await forwardedError({ operation: 'test_second_hop' });
+
+			assert.ok(local.body.unauthorized_access.length > 0);
+			assert.deepStrictEqual(await clientResponse(secondHop), local);
 		});
 
 		it('keeps an object body that is not a permission report as a scalar message with its retry signals', async function () {

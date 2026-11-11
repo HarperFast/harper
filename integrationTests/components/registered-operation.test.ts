@@ -208,7 +208,6 @@ suite('Component: registered-operation (#1736)', (ctx: ContextWithHarper) => {
 			const { status, body } = await asUser(UNGRANTED_USER, { operation: GRANTABLE_OP });
 			strictEqual(status, 403, JSON.stringify(body));
 
-			// The same denial raised on the registering worker itself carries detail the forward must keep.
 			const local = await asUser(UNGRANTED_USER, { operation: DENIAL_PROBE_OP });
 			strictEqual(local.status, 200, JSON.stringify(local.body));
 			strictEqual(local.body.denied, true, JSON.stringify(local.body));

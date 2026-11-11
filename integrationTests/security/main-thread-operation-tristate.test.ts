@@ -68,8 +68,7 @@ interface Reply {
 interface Reference {
 	status: number;
 	error: string | undefined;
-	// The operations API carries the specific denial in `unauthorized_access[0]`; a denial forwarded
-	// across the hop must carry it too.
+	// The operations API carries the specific denial in `unauthorized_access[0]`.
 	detail: string | undefined;
 	shape: string | undefined;
 	username: string | null | undefined;

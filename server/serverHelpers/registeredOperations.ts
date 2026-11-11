@@ -257,7 +257,10 @@ function toForwardedError(error: {
 	const forwarded: any = new ServerError(error.message, error.statusCode || 500);
 	if (error.code !== undefined) forwarded.code = error.code;
 	if (error.retryable !== undefined) forwarded.retryable = error.retryable;
-	if (error.permissionReport !== undefined) forwarded.http_resp_msg = error.permissionReport;
+	// Structured clone left a plain object; a rebuilt instance is what the next hop's sender recognizes.
+	if (error.permissionReport !== undefined) {
+		forwarded.http_resp_msg = Object.assign(new PermissionResponseObject(), error.permissionReport);
+	}
 	return forwarded;
 }
 
