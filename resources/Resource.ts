@@ -1198,11 +1198,8 @@ function registerLiveSubscriptionForContext(
 	// recheck; then it, and later subscriptions on its context or connection, need a role even after that record is
 	// dropped.
 	const certificate = isCertificatePrincipal(user);
-	let roleRequired =
-		!certificate ||
-		Boolean(isRecordBacked(user, admitted) || user.role) ||
-		recordBacked.has(user) ||
-		recordBacked.has(context);
+	const latched = certificate && (recordBacked.has(user) || recordBacked.has(context));
+	let roleRequired = !certificate || latched || Boolean(isRecordBacked(user, admitted) || user.role);
 	// Without a caller's select or a condition or sort through a relationship, the default allowRead only
 	// narrows what it returns, so its verdict depends on the role's permission for this table alone.
 	const sharedDecision =
@@ -1257,7 +1254,8 @@ function registerLiveSubscriptionForContext(
 	});
 	let stale: boolean;
 	try {
-		stale = !fixedPrincipal && !isCurrentUser(user, admitted);
+		// a latched principal with no role would otherwise deliver until its first recheck
+		stale = !fixedPrincipal && ((latched && !user.role) || !isCurrentUser(user, admitted));
 	} catch {
 		stale = true;
 	}

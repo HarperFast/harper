@@ -849,7 +849,7 @@ function certificatePrincipal<T>(user: T, getUser?: unknown): T {
 		(user as any)[CERTIFICATE_PRINCIPAL] = true;
 		return user;
 	}
-	if (!isPlainObject(user)) return user;
+	if (!isPlainObject(user) || hasHiddenProperty(user)) return user;
 	const view: any = { ...user, [CERTIFICATE_PRINCIPAL]: true };
 	if (!view[PROVENANCE]) {
 		const tracked = firstLookup(user as unknown as User, view.username);
@@ -875,6 +875,12 @@ function isPlainObject(value: object): boolean {
 		constructor.prototype === prototype &&
 		Function.prototype.toString.call(constructor) === nativeObjectSource
 	);
+}
+
+// a spread copies only own enumerable properties, so it would drop a non-enumerable authExpiresAt or role
+function hasHiddenProperty(value: object): boolean {
+	for (const key of Reflect.ownKeys(value)) if (!Object.prototype.propertyIsEnumerable.call(value, key)) return true;
+	return false;
 }
 
 function isCertificatePrincipal(user: unknown): boolean {

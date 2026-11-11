@@ -295,6 +295,12 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 			}
 		});
 
+		it('leaves a plain object with a non-enumerable own property as it is, unmarked', () => {
+			const hidden = Object.defineProperty({ username: 'hidden_cn' }, 'authExpiresAt', { value: 1, enumerable: false });
+			assert.strictEqual(user.certificatePrincipal(hidden), hidden, 'a copy would drop its expiry');
+			assert.strictEqual(user.isCertificatePrincipal(hidden), false);
+		});
+
 		it('leaves an object on any other null-rooted prototype as it is, unmarked', () => {
 			class Detached extends null {
 				constructor() {
