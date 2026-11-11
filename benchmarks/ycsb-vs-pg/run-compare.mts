@@ -1578,7 +1578,7 @@ export async function createSession(
 		options,
 		cache,
 		generator,
-		// One Node process per generator CPU: 4 capped harper-uws C on 8 generator CPUs (README, "Load generator").
+		// One Node process per generator CPU: the old default of 4 held harper-uws warm C below its peak (README, "Load generator").
 		shards: Number(argValue(argv, '--shards') ?? Math.min(driverCpus.length, options.config.concurrency)),
 		serverCpus,
 		driverCpus,
