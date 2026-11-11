@@ -843,7 +843,8 @@ const CERTIFICATE_PRINCIPAL = Symbol('certificate principal');
  * closed. The mark is a symbol, so no data can carry it. `getUser` is the resolver that returned `user`: the built-in
  * one builds a new view per call, which is marked in place. Any other may hand the same object to a session or
  * password lookup, so a plain object (from any realm) is copied with the lookup that tracked it, its own getters read
- * once; a class instance, whose accessors and private fields a copy would lose, stays unmarked.
+ * once. Any other object stays unmarked, such as a class instance, whose accessors and private fields a copy would
+ * lose.
  */
 function certificatePrincipal<T>(user: T, getUser?: unknown): T {
 	if (!user || typeof user !== 'object') return user;

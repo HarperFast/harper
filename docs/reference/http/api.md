@@ -318,7 +318,7 @@ server.getUser(username: string): Promise<User>
 
 Returns the user object for the given username without verifying credentials. Use for authorization checks when the user is already authenticated.
 
-When a client certificate names the user and `server.getUser` is overridden, Harper authenticates the request or MQTT connection with a shallow copy of a plain-object result, so later changes to the returned object's top-level properties do not reach it. A class instance is used as returned.
+When a client certificate names the user and `server.getUser` is overridden, Harper authenticates the request or MQTT connection with a shallow copy of a plain-object result, so later changes to the returned object's top-level properties do not reach it. Any other object, such as a class instance, is used as returned, and its live subscriptions need a role.
 
 ---
 
