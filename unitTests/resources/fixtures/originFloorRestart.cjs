@@ -52,7 +52,6 @@ async function restart({ dir, database }) {
 	await Tbl.put({ id: 'after-restart', n: 1 });
 	const putKey = localKeyOf(Tbl, 'after-restart', 0);
 	const resumedKey = localKeyOf(Tbl, 'after-restart', bound);
-	// an unreserved native handle, appending to `local` directly
 	const raw = new Transaction(Tbl.primaryStore.store);
 	const rawTimestamp = raw.getTimestamp();
 	const log = root.useLog('local');
@@ -70,7 +69,7 @@ async function restart({ dir, database }) {
 }
 
 async function workerRun({ dir, database }) {
-	// the first timestamp this thread mints, before it opens the floored database itself
+	// before this thread opens the floored database itself
 	const scratchPath = fs.mkdtempSync(path.join(dir, 'scratch-'));
 	const scratch = RocksDatabase.open(scratchPath);
 	const firstMint = scratch.getMonotonicTimestamp();

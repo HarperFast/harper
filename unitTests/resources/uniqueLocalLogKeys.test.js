@@ -5,6 +5,7 @@ const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { Transaction, raiseTimestampFloor } = require('@harperfast/rocksdb-js');
 const { waitFor } = require('../waitFor');
+const { ulpsAbove } = require('../nextLocalMints');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
@@ -37,11 +38,6 @@ describe('Every local-origin transaction has a unique log key', () => {
 	function assertDistinctKeys(entries) {
 		const keys = entries.map((entry) => entry.txnLogKey);
 		assert.equal(new Set(keys).size, keys.length, `log keys repeat: ${keys.join(', ')}`);
-	}
-	function ulpsAbove(value, count) {
-		const scratch = new Float64Array([value]);
-		new BigInt64Array(scratch.buffer)[0] += BigInt(count);
-		return scratch[0];
 	}
 
 	it('two writes with one explicit timestamp take distinct keys and keep the timestamp as their version', async () => {
@@ -185,8 +181,8 @@ describe('Every local-origin transaction has a unique log key', () => {
 			attributes,
 			audit: true,
 		});
-		// a little ahead of the clock, so the clock can be raised to land a later mint exactly on it
-		const explicit = Date.now() + 50;
+		// ahead of the clock by more than the writes before it take, so a raise can land a later mint on it
+		const explicit = Date.now() + 1000;
 		const ids = Array.from({ length: 12 }, newId);
 		await Floored.put(ids[0], { name: 'explicit' }, { timestamp: explicit });
 		for (let n = 1; n < ids.length; n++) {
@@ -200,7 +196,7 @@ describe('Every local-origin transaction has a unique log key', () => {
 		assert.equal(entries[0].version, explicit);
 		for (const [index, entry] of entries.entries())
 			assert.equal(lookup(entry.txnLogKey, ids[index], 0, Floored)?.recordId, ids[index], `entry ${index} by its key`);
-		// the raise is process-wide: wait it out before the next test
+		// the raise is process-wide
 		await waitFor(() => Date.now() > explicit + 1, 5000, 10);
 	});
 });

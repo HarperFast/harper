@@ -20,11 +20,13 @@ const {
 	WORD_ISSUANCE_FLOOR,
 	WORD_SLOT_LIMIT,
 	WORD_COVERED,
+	WORD_DURABLE_CEILING,
 	certifyOriginFloor,
 	claimLocalKey,
 	freshLocalKey,
 	forgetOriginFloorRegistry,
 	localIssuanceFloor,
+	localIssuedAheadThrough,
 	getOriginClosedFloor,
 	localStartBound,
 	publishOriginFloor,
@@ -134,6 +136,7 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 			WORD_COVERED,
 			WORD_INITIAL_CEILING,
 			WORD_SLOT_LIMIT,
+			WORD_DURABLE_CEILING,
 		];
 		assert.strictEqual(new Set(headerWords).size, headerWords.length, 'header word indices must be distinct');
 		for (const word of headerWords) {
@@ -579,10 +582,12 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 			throw new Error('simulated ceiling write failure');
 		});
 		const before = localIssuanceFloor(rootStore);
-		const floor = Math.max(rootStore.getMonotonicTimestamp(), before, readLocalIssuanceCeiling(auditStore)) + 100;
+		const aheadBefore = localIssuedAheadThrough(rootStore);
+		const floor = Math.max(rootStore.getMonotonicTimestamp(), aheadBefore, readLocalIssuanceCeiling(auditStore)) + 100;
 		try {
 			assert.throws(() => claimLocalKey(rootStore, floor), /simulated ceiling write failure/);
 			assert.equal(localIssuanceFloor(rootStore), before);
+			assert.equal(localIssuedAheadThrough(rootStore), aheadBefore, 'a hold step does not treat the floor as issued');
 			assert(rootStore.getMonotonicTimestamp() < floor, 'an uncovered claim must not raise the clock');
 		} finally {
 			seedLocalIssuance(rootStore, readLocalIssuanceCeiling(auditStore), (key) => coverLocalIssuance(auditStore, key));
@@ -607,6 +612,29 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 			await waitFor(() => rootStore.getMonotonicTimestamp() > readLocalIssuanceCeiling(auditStore), 30_000);
 		});
 	}
+
+	it("covers a key another database's claim lifted, though a wall reading taken during a clock glitch was ahead", async () => {
+		const Other = table({
+			table: 'OriginFloorOther',
+			database: 'originFloorOther',
+			audit: true,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'n' }],
+		});
+		await sleep(2);
+		const realNow = Date.now;
+		Date.now = () => realNow() + 3_600_000;
+		try {
+			await Tbl.put({ id: 'glitch-warm', n: 0 });
+		} finally {
+			Date.now = realNow;
+		}
+		const claimed = claimLocalKey(Other.primaryStore.rootStore, rootStore.getMonotonicTimestamp() + 200);
+		await Tbl.put({ id: 'glitch-lifted', n: 1 });
+		const [entry] = entriesFor('glitch-lifted');
+		assert(entry.txnLogKey > claimed, "the other database's claim lifted this key");
+		assert(readLocalIssuanceCeiling(auditStore) >= entry.txnLogKey, "this database's ceiling covers it");
+		await waitFor(() => Date.now() > readLocalIssuanceCeiling(Other.auditStore) + 1, 30_000, 20);
+	});
 
 	it('claims at one floor ahead of the clock are unique, and every later local key is above them', async () => {
 		const floor = rootStore.getMonotonicTimestamp() + 250;
@@ -649,7 +677,7 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 			recoveredRoot.close();
 			fs.rmSync(directory, { recursive: true, force: true });
 		}
-		// the raise is process-wide: wait it out before the next test
+		// the raise is process-wide
 		await waitFor(() => Date.now() > raisedTo + 1, 10_000, 20);
 	});
 
@@ -658,7 +686,6 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 		// the wall clock before the next file (the raise is process-wide).
 		const persisted = rootStore.getMonotonicTimestamp() + 250;
 		persistOriginClosedFloor(auditStore, persisted);
-		// the open's restore, as after a restart behind the floor
 		seedLocalIssuance(
 			rootStore,
 			readLocalIssuanceCeiling(auditStore),

@@ -22,8 +22,10 @@ describe('a restart behind the persisted origin floor (harper#2629)', function (
 		dir = await fs.mkdtemp(path.join(PID_DIR_PATH, 'origin-floor-restart-'));
 	});
 	afterEach(async () => {
-		for (const child of children.splice(0))
+		for (const { child, exited } of children.splice(0)) {
 			if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+			await exited;
+		}
 		if (dir) await fs.rm(dir, { recursive: true, force: true });
 	});
 
@@ -31,7 +33,8 @@ describe('a restart behind the persisted origin floor (harper#2629)', function (
 		const child = fork(path.join(__dirname, 'fixtures/originFloorRestart.cjs'), [JSON.stringify({ dir, ...options })], {
 			stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
 		});
-		children.push(child);
+		const exited = new Promise((resolve) => child.once('exit', resolve));
+		children.push({ child, exited });
 		let stderr = '';
 		child.stderr.on('data', (chunk) => (stderr = (stderr + chunk).slice(-8192)));
 		const reply = new Promise((resolve, reject) => {
@@ -46,8 +49,9 @@ describe('a restart behind the persisted origin floor (harper#2629)', function (
 				reject(new Error(`${options.mode} child exited ${code}/${signal}: ${stderr}`));
 			});
 		});
-		const exited = new Promise((resolve) => child.once('exit', resolve));
-		return { child, reply, exited };
+		// the next process opens the same database, so a finished one must have released it
+		const done = options.hold ? reply : reply.then(async (result) => (await exited, result));
+		return { child, reply: done, exited };
 	}
 
 	async function restartAfter(seedOptions) {

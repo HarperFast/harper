@@ -24,14 +24,16 @@ export const WORD_PUBLISHED = 1;
 // The highest value this database raised the clock to. Stored after the raise: a thread that reads it and
 // then mints is above it, so a handle at or below it was minted before the raise.
 export const WORD_ISSUANCE_FLOOR = 2;
-// The highest issuance ceiling recorded for this database in this process: every key it reserved at least a
-// millisecond ahead of the wall clock is at or below it.
+// At or above every key this database issued at least a millisecond ahead of the wall clock in this process,
+// recorded before that key's ceiling is flushed; a requested claim floor is recorded only once covered.
 export const WORD_COVERED = 3;
 export const WORD_INITIAL_CEILING = 4;
 // One past the highest slot ever claimed: a bounds scan stops there. Raised when a slot is claimed, before
 // the claimer reads `proposed`; a sampler raises `proposed` before it loads this, so a claim the sampler's scan
 // misses admits only keys above the sampler's value.
 export const WORD_SLOT_LIMIT = 5;
+// The highest issuance ceiling this process has flushed for this database: a key at or below it needs no flush.
+export const WORD_DURABLE_CEILING = 6;
 export const HEADER_WORDS = 8;
 const THREAD_WORDS_OFFSET = HEADER_WORDS;
 const BOUND_WORDS_OFFSET = HEADER_WORDS + SLOTS;
@@ -66,8 +68,8 @@ function fromBits(bits: bigint): number {
 }
 const INFINITY_BITS = toBits(Infinity);
 
-// The last wall-clock reading `noteIssued` took on this thread. A key at least a millisecond ahead of the
-// wall clock is at least a millisecond past any earlier reading, so only such keys need a fresh one.
+// The last wall-clock reading `noteIssued` took on this thread. A key within that reading's millisecond is not
+// a millisecond ahead of the wall clock unless the wall clock has since stepped back.
 let wallSeen = 0;
 
 /** The next representable timestamp above a positive `value`: the step the native clock breaks ties by. */
@@ -229,25 +231,29 @@ class ThreadRegistry {
 	 * restarted wall clock is already past it.
 	 */
 	private noteIssued(key: number): void {
-		if (key <= this.coveredThrough || key < wallSeen + 1) return;
+		if (key <= this.coveredThrough || (key >= wallSeen && key < wallSeen + 1)) return;
 		wallSeen = Date.now();
-		if (key >= wallSeen + 1) this.covered(key);
+		if (key >= wallSeen + 1) this.covered(key, true);
 	}
 
-	/** Persist a ceiling above `key` before it is used; open raises the clock above that ceiling. */
-	private covered(key: number): void {
+	/**
+	 * Persist a ceiling above `key` before it is used; open raises the clock above that ceiling. An issued key
+	 * counts as issued ahead whether or not its ceiling lands, so a hold step taken during the flush sees it.
+	 */
+	private covered(key: number, issued: boolean): void {
 		if (key <= this.coveredThrough) return;
 		const cover: ((key: number) => number) | undefined = (this.rootStore as any)[ISSUANCE_COVER];
 		if (!cover) return;
-		// recorded before the flush, so a hold step taken while it runs already sees this key
-		storeMax(this.words, WORD_COVERED, key);
-		this.coveredThrough = cover(key);
+		if (issued) storeMax(this.words, WORD_COVERED, key);
+		const durable = fromBits(Atomics.load(this.words, WORD_DURABLE_CEILING));
+		this.coveredThrough = key <= durable ? durable : cover(key);
+		storeMax(this.words, WORD_DURABLE_CEILING, this.coveredThrough);
 		storeMax(this.words, WORD_COVERED, this.coveredThrough);
 	}
 
 	/** Persist a claim's ceiling before the clock is raised to it. */
 	coverBeforeClaim(floor: number): void {
-		this.covered(floor);
+		this.covered(floor, false);
 	}
 
 	reserve(handle: RocksTransaction, explicit: number | undefined): number {
@@ -461,17 +467,17 @@ export function freshLocalKey(rootStore: any): number {
 export function claimLocalKey(rootStore: RocksDatabase, floor: number): number {
 	const registry = registryFor(rootStore);
 	const below = fromBits(toBits(floor) - 1n);
-	let key = registry.freshKey();
-	if (key < floor) {
+	const key = registry.freshKey();
+	const ahead = key < floor;
+	if (ahead) {
 		if (!(floor - Date.now() <= MAX_CLAIM_LEAD_MS))
 			throw new ServerError(`A local key cannot be claimed at ${floor}: it is too far ahead of the clock to restore`);
 		registry.coverBeforeClaim(floor);
 		raiseTimestampFloor(below);
-		key = registry.freshKey();
 	}
-	// a handle minted before the claim must not be admitted below it
+	// even when the clock had passed the floor: a handle minted before the claim must not reserve below it
 	storeMax(registry.words, WORD_ISSUANCE_FLOOR, below);
-	return key;
+	return ahead ? registry.freshKey() : key;
 }
 
 /**

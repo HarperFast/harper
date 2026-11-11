@@ -60,7 +60,6 @@ describe('Audit references state their kind', () => {
 		const headEntry = entriesFor(T, 'counter').at(-1);
 		assert.deepEqual([headEntry.txnLogKey, headEntry.version], [headKey, head]);
 
-		// the next local key lands on the head patch's version
 		mintNext(root, head);
 		await T.patch('counter', { count: { __op__: 'add', value: 1 } }, { timestamp: older });
 		assert.deepEqual(await T.get('counter'), { id: 'counter', name: 'head', count: 1 });

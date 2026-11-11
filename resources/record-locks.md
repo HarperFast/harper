@@ -339,9 +339,9 @@ replica version clamp: applied writes preserve an explicit record version even w
 key. A hold steps one ulp past its last version,
 which keeps advancing above 2^42 ms, where a fixed 0.000488 ms step no longer changes a double; a step
 ahead of the clock within the cap is claimed, since one ulp above the clock's last key is its next one.
-Keys minted while the clock runs ahead of the wall clock are one ulp apart, so a step at or below one ulp
-above the database's covered ceiling or last raise (`localIssuedAheadThrough`) is also claimed, even
-after clock catch-up, so it cannot repeat a key issued during the lead. A lead under a millisecond is not
+Keys minted while the clock runs ahead of the wall clock are one ulp apart, so a step the clock has passed
+that is at or below one ulp above the database's covered ceiling or last raise (`localIssuedAheadThrough`)
+is also claimed, even after clock catch-up, so it cannot repeat a key issued during the lead. A lead under a millisecond is not
 covered, like a burst of keys minted within one ulp of each other on the wall clock. Such a claim can advance a hold save beyond a later plain
 write rather than retain acquisition order; plain writes remain ungated. The Phase 0 ordering tradeoff
 is tracked in harper#3246.

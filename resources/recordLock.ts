@@ -361,8 +361,9 @@ class KeyLockHandle implements RecordLockHandle {
 		const step = timestampAbove(version);
 		const rootStore = this.store.rootStore;
 		if (typeof rootStore?.getUserSharedBuffer !== 'function') return step;
-		if (step <= timestampAbove(localIssuedAheadThrough(rootStore))) return claimLocalKey(rootStore, step);
-		if (step <= rootStore.getMonotonicTimestamp()) return step;
+		// only a step the clock has passed can repeat a key; one ahead of it is held to the cap
+		if (step <= rootStore.getMonotonicTimestamp())
+			return step <= timestampAbove(localIssuedAheadThrough(rootStore)) ? claimLocalKey(rootStore, step) : step;
 		return step - Date.now() <= maxLockClockSkewMs() ? claimLocalKey(rootStore, step) : step;
 	}
 

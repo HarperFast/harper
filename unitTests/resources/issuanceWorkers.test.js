@@ -12,7 +12,7 @@ const { readLocalIssuanceCeiling } = require('#src/resources/auditStore');
 const { waitFor } = require('../waitFor');
 
 // The claim raises the process-wide clock, so it is kept short and waited out before the next file.
-const CLAIM_LEAD_MS = 5000;
+const CLAIM_LEAD_MS = 6000;
 
 describe('issuance coverage across live workers', function () {
 	this.timeout(60_000);
@@ -22,7 +22,7 @@ describe('issuance coverage across live workers', function () {
 		audit: true,
 		attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'n' }],
 	};
-	let Tbl, claimed, initialCeiling, failedPath;
+	let Tbl, claimed, lifted, initialCeiling, failedPath;
 	const workers = new Set();
 	before(function () {
 		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
@@ -34,7 +34,8 @@ describe('issuance coverage across live workers', function () {
 		initialCeiling = readLocalIssuanceCeiling(Tbl.auditStore);
 	});
 	after(async () => {
-		if (claimed) await waitFor(() => Date.now() > claimed + 1, CLAIM_LEAD_MS + 5000, 50);
+		const raisedTo = Math.max(claimed ?? 0, lifted ?? 0);
+		await waitFor(() => Date.now() > raisedTo + 1, raisedTo - Date.now() + 5000, 50);
 	});
 	afterEach(async () => {
 		for (const worker of workers) await worker.terminate();
@@ -74,6 +75,9 @@ describe('issuance coverage across live workers', function () {
 	});
 	it('serves a failed-coverage source read uncached and gives a waiter a fresh fill', async () => {
 		failedPath = await fs.mkdtemp(path.join(PID_DIR_PATH, 'closed-issuance-audit-'));
+		// another database's claim lifts the clock past this database's ceiling, so its next key needs coverage
+		const Other = table({ ...definition, database: 'issuanceWorkerOther' });
+		lifted = claimLocalKey(Other.primaryStore.rootStore, readLocalIssuanceCeiling(Tbl.auditStore) + 1000);
 		const result = await run('source');
 		assert.ok(result.failures > 0, 'the real closed audit store must reject coverage');
 		assert.strictEqual(result.calls[0].noCacheStore, true);

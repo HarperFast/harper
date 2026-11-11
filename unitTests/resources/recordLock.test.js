@@ -8,7 +8,12 @@ const { transaction, contextStorage } = require('#src/resources/transaction');
 const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
 const { waitFor } = require('../waitFor');
 const { coverLocalIssuance, readLocalIssuanceCeiling } = require('#src/resources/auditStore');
-const { localIssuanceFloor, reservedLocalKey, seedLocalIssuance } = require('#src/resources/originClosedFloor');
+const {
+	localIssuanceFloor,
+	localIssuedAheadThrough,
+	reservedLocalKey,
+	seedLocalIssuance,
+} = require('#src/resources/originClosedFloor');
 const { ImmediateTransaction } = require('#src/resources/DatabaseTransaction');
 const { PassThrough } = require('node:stream');
 const { createBlob } = require('#src/resources/blob');
@@ -1736,21 +1741,57 @@ describe('Record locks (harper#483)', () => {
 		it('measures the skew cap from wall time, so successive claims cannot compound past it', async function () {
 			if (isLMDB) return this.skip();
 			const [nearId, fartherId] = [id(), id()];
+			const rootStore = LockTest.primaryStore.rootStore;
 			const previous = env.get(CONFIG_PARAMS.STORAGE_MAXLOCKCLOCKSKEW);
-			env.setProperty(CONFIG_PARAMS.STORAGE_MAXLOCKCLOCKSKEW, '200ms');
+			env.setProperty(CONFIG_PARAMS.STORAGE_MAXLOCKCLOCKSKEW, '2s');
 			try {
-				const near = futureTimestamp(150);
+				const near = futureTimestamp(1_500);
 				await applyFromPeer(nearId, near);
 				await transaction(async () => {
 					const lock = await LockTest.lock(nearId);
 					lock.set('n', 1);
 					await lock.save();
 				});
-				assert.ok(entryOf(nearId).version > near, 'the first claim lifted the clock above its floor');
-				// within the cap of the clock the first claim lifted, but beyond it from wall time
-				const farther = futureTimestamp(300);
+				assert.ok(localIssuanceFloor(rootStore) >= near, 'the first admission claimed and raised the clock');
+				// within the cap of the raised clock, beyond it from wall time
+				const farther = futureTimestamp(3_000);
 				await applyFromPeer(fartherId, farther);
 				await assert.rejects(LockTest.lock(fartherId), (error) => error.name === 'LockUnavailableError');
+			} finally {
+				env.setProperty(CONFIG_PARAMS.STORAGE_MAXLOCKCLOCKSKEW, previous);
+			}
+		});
+
+		it('holds a hold step ahead of the clock to the skew cap, though it is under the covered ceiling', async function () {
+			if (isLMDB) return this.skip();
+			const [nearId, heldId] = [id(), id()];
+			const rootStore = LockTest.primaryStore.rootStore;
+			const previous = env.get(CONFIG_PARAMS.STORAGE_MAXLOCKCLOCKSKEW);
+			// earlier leads must be behind the wall clock, so this test's own claim sets the clock and ceiling
+			await waitFor(() => Date.now() > Math.max(aheadUntil, localIssuedAheadThrough(rootStore)) + 1, 30_000, 20);
+			env.setProperty(CONFIG_PARAMS.STORAGE_MAXLOCKCLOCKSKEW, '200ms');
+			try {
+				const near = Date.now() + 150;
+				aheadUntil = Math.max(aheadUntil, near + 1000);
+				await applyFromPeer(nearId, near);
+				await transaction(async () => {
+					const lock = await LockTest.lock(nearId);
+					lock.set('n', 1);
+					await lock.save();
+				});
+				const ahead = Date.now() + 800;
+				assert.ok(ahead < readLocalIssuanceCeiling(LockTest.auditStore), 'the step sits under the covered ceiling');
+				await LockTest.put({ id: heldId, n: 0 });
+				const context = {};
+				const holder = await LockTest.lock(heldId, { hold: true, lease: 5000 }, context);
+				try {
+					handleOf(context.transaction).noteHolderVersion(ahead);
+					holder.set('n', 1);
+					await holder.save();
+					assert.ok(rootStore.getMonotonicTimestamp() < ahead, 'the step did not raise the clock past the cap');
+				} finally {
+					await holder.unlock();
+				}
 			} finally {
 				env.setProperty(CONFIG_PARAMS.STORAGE_MAXLOCKCLOCKSKEW, previous);
 			}
@@ -2170,7 +2211,6 @@ describe('Record locks (harper#483)', () => {
 					Math.max(Date.now(), localIssuanceFloor(root), readLocalIssuanceCeiling(LockTest.auditStore)) + 100;
 				aheadUntil = Math.max(aheadUntil, lead + 1000);
 				persistOriginClosedFloor(LockTest.auditStore, lead);
-				// restored as an open after a restart behind the floor would, so the next key is ahead of the wall
 				seedLocalIssuance(
 					root,
 					readLocalIssuanceCeiling(LockTest.auditStore),
