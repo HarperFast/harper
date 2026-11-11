@@ -35,7 +35,7 @@ const isDailyCadence = (delay) => (delay > 15_000 && delay <= 86_400_000) || isN
 function isNextDailySlot(delay) {
 	const startOfYear = new Date();
 	startOfYear.setMonth(0, 1);
-	startOfYear.setHours(0, 0, 0, 0);
+	startOfYear.setHours(0, 0, 0); // keeps the milliseconds, as scheduleCleanup does
 	const now = Date.now();
 	const slot = Math.ceil((now - startOfYear.getTime()) / 86_400_000) * 86_400_000 + startOfYear.getTime();
 	return Math.abs(delay - (slot - now)) < 5000;
@@ -296,16 +296,14 @@ describe('TTL cleanup scan interval', () => {
 
 	it('a table loaded before the main thread became a worker arms its scan once it is one (#2831)', async () => {
 		const tableName = 'TtlLoadedBeforePromotion';
-		const Declared = table({
-			table: tableName,
-			database: databaseName,
-			expiration: 0.05,
-			attributes: [{ name: 'id', isPrimaryKey: true }],
-		});
-		// a restart: the row outlives this class, whose scan stops with it
+		const definition = { table: tableName, database: databaseName, attributes: [{ name: 'id', isPrimaryKey: true }] };
+		const Declared = table(definition);
+		// a restart: the row outlives this class, whose scan stops with it; the TTL comes after the commit, so
+		// no scan of this class can reach the row
 		const expiresAt = Date.now() + 1000;
 		await Declared.put(1, { id: 1 }, { expiresAt });
 		await Declared.primaryStore.committed;
+		table({ ...definition, expiration: 0.05 });
 		Declared.cleanup();
 		delete databases[databaseName][tableName];
 		let Loaded;
