@@ -53,6 +53,12 @@ SUBNET="$RUN_ID-subnet"
 POLICY="$RUN_ID-compact"
 
 if [ "$DRY" != 1 ]; then
+	# The failure trap below deletes everything named for this run id, so it must be this invocation's alone.
+	in_use=$(gcloud compute instances list "${P[@]}" --filter="labels.ycsb-run=$RUN_ID" --format='value(name)')
+	if [ -n "$in_use" ] || gcloud compute networks describe "$NET" "${P[@]}" >/dev/null 2>&1; then
+		echo "run id $RUN_ID is already in use in $YCSB_GCP_PROJECT; pick another" >&2
+		exit 1
+	fi
 	mkdir -p "$RUN_DIR"
 	chmod 700 "$RUN_DIR"
 	[ -f "$KEY" ] || ssh-keygen -q -t ed25519 -N '' -C "$RUN_ID" -f "$KEY"

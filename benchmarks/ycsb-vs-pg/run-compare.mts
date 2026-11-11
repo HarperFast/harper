@@ -23,6 +23,8 @@ import { parseOptions } from '../ycsb/harness.mts';
 import { WORKLOADS, OWNER_COUNT, formatKey, linkTarget, ownerOf, usesDependentReads } from '../ycsb/workload.mts';
 import type { DistributionName, LatencyStats, PhaseResult } from '../ycsb/workload.mts';
 import {
+	K6_LATENCY_BASIS,
+	NODE_LATENCY_BASIS,
 	k6Version,
 	startDriver as startK6Driver,
 	type DriverConfig,
@@ -307,7 +309,7 @@ export async function waitForRoute(url: string, deadlineMs: number, authorizatio
 const TOKEN_USER = 'ycsb_reader';
 
 /** An HS256 JWT signed with `secret`: what the stack's clients would hold. */
-export function mintHs256(secret: string, subject: string): string {
+function mintHs256(secret: string, subject: string): string {
 	const part = (value: object) => Buffer.from(JSON.stringify(value)).toString('base64url');
 	const body = `${part({ alg: 'HS256', typ: 'JWT' })}.${part({ sub: subject, iat: Math.floor(Date.now() / 1000) })}`;
 	return `${body}.${createHmac('sha256', secret).update(body).digest('base64url')}`;
@@ -634,7 +636,6 @@ async function withHarper<T>(
 		startupTimeoutMs: options.startupTimeoutMs,
 	};
 	const launchedAt = Date.now();
-	// A target agent's host binds Harper to the address the generator reaches instead of a pool loopback address.
 	const bind = session.bindAddress;
 	let started: Awaited<ReturnType<typeof startHarper>>;
 	try {
@@ -979,10 +980,13 @@ async function runInWindow<T>(
 				if (session.remote) generatorHost = startHostLoad();
 			},
 			async end() {
-				open = false;
 				window.endMs = Date.now();
-				generatorLoad = await generatorHost?.stop();
-				reading = await running.probe.endWindow();
+				try {
+					reading = await running.probe.endWindow();
+				} finally {
+					open = false;
+					generatorLoad = await generatorHost?.stop();
+				}
 			},
 		});
 		if (!reading) throw new Error('the generator ran without opening and closing its window');
@@ -1406,7 +1410,7 @@ export function gitRevision(root: string): string {
 	}
 }
 
-export function readSysfs(path: string): string | undefined {
+function readSysfs(path: string): string | undefined {
 	try {
 		return readFileSync(path, 'utf8').trim();
 	} catch {
@@ -1620,7 +1624,10 @@ export async function createSession(
 		},
 		cache,
 		recordCacheSize: sizesCache ? session.recordCacheSize : undefined,
-		generator: generator === 'k6' ? { name: 'k6', version: k6Version() } : { name: 'node', shards: session.shards },
+		generator:
+			generator === 'k6'
+				? { name: 'k6', version: k6Version(), latency: K6_LATENCY_BASIS }
+				: { name: 'node', shards: session.shards, latency: NODE_LATENCY_BASIS },
 		dataDir: base,
 		harper: { bin: harperBin, revision: gitRevision(REPO_ROOT), digests: buildDigests(REPO_ROOT) },
 		perfPmu: perfCounters && !hostsFile ? detectPmu() : undefined,

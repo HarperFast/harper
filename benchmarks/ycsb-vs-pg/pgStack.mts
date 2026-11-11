@@ -189,7 +189,7 @@ export interface PgStackOptions {
 }
 
 export type StackService = 'postgres' | 'redis' | 'fastify';
-export const STACK_SERVICES: StackService[] = ['postgres', 'redis', 'fastify'];
+const STACK_SERVICES: StackService[] = ['postgres', 'redis', 'fastify'];
 
 export interface PgStack {
 	/** Fastify's URL; undefined on a host that runs only Postgres or Redis. */

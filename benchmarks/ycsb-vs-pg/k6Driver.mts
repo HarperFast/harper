@@ -96,6 +96,10 @@ export interface K6Phase {
 
 export const k6Binary = (): string => process.env.YCSB_K6 || 'k6';
 
+/** What an op's latency measures under each generator, for the results' meta. */
+export const K6_LATENCY_BASIS = "the op's requests' send, wait and receive time (k6 timings.duration, summed)";
+export const NODE_LATENCY_BASIS = 'wall time around the op in the generator process (performance.now)';
+
 /** `k6 v2.3.0 (...)`, for the results' meta. */
 export function k6Version(): string {
 	return execFileSync(k6Binary(), ['version'], { encoding: 'utf8', timeout: 30_000 }).trim().split('\n')[0];
@@ -104,7 +108,7 @@ export function k6Version(): string {
 let script: string | undefined;
 
 /** workload.mts without its types, then k6Workload.mjs without its import of it: one module for k6. */
-export function k6Script(): string {
+function k6Script(): string {
 	if (script) return script;
 	const body = readFileSync(SCRIPT_PATH, 'utf8');
 	if (!WORKLOAD_IMPORT.test(body)) throw new Error(`${SCRIPT_PATH} no longer imports ../ycsb/workload.mts`);
@@ -143,11 +147,13 @@ export function parseSummary(stdout: string, phaseId: string, iterations: number
 
 type PhaseState = 'starting' | 'beginning' | 'running' | 'ending' | 'ended' | 'failed';
 
+const EMPTY: GeneratorResult = { ops: 0, errors: 0, elapsedMs: 0, throughput: 0, latency: {}, generatorCpuSeconds: 0 };
+
 /**
  * Runs one k6 phase. This process owns the window: it opens it once (when k6's setup asks), closes
  * it once (when teardown asks, or when k6 exits without asking), and reports the first failure.
  */
-export async function runPhase(
+async function runPhase(
 	phase: K6Phase,
 	{ cpus, window }: { cpus?: number[]; window?: PhaseWindow } = {}
 ): Promise<GeneratorResult> {
@@ -158,6 +164,9 @@ export async function runPhase(
 	let failure: unknown;
 	let child: ChildProcess | undefined;
 	let windowOpen = false;
+	let closing: Promise<void> | undefined;
+	/** The control requests being handled; k6's exit waits for them, so a window opening as k6 dies still closes. */
+	const handling = new Set<Promise<void>>();
 	let startedAt = 0;
 	let elapsedMs = 0;
 	let cpuAtStart = 0;
@@ -166,10 +175,16 @@ export async function runPhase(
 		failure ??= error;
 		state = 'failed';
 	};
-	const closeWindow = async () => {
-		if (!windowOpen) return;
-		windowOpen = false;
-		await window!.end().catch(fail);
+	const closeWindow = (): Promise<void> => {
+		if (windowOpen) {
+			windowOpen = false;
+			closing = window!.end().catch(fail);
+		}
+		return closing ?? Promise.resolve();
+	};
+	const settle = async () => {
+		await Promise.allSettled([...handling]);
+		await closeWindow();
 	};
 
 	async function ready(): Promise<void> {
@@ -211,10 +226,12 @@ export async function runPhase(
 	}
 
 	const server = createServer((request, response) => {
-		handle(request, response).catch((error) => {
+		const work = handle(request, response).catch((error) => {
 			fail(error);
 			if (!response.headersSent) response.writeHead(500).end();
 		});
+		handling.add(work);
+		void work.finally(() => handling.delete(work));
 	});
 	await new Promise<void>((resolve, reject) => {
 		server.once('error', reject);
@@ -250,7 +267,7 @@ export async function runPhase(
 			}, MAX_PHASE_MS + 3_600_000);
 		});
 		// k6 died, or was aborted, with the window open: close it here, since teardown never asked.
-		await closeWindow();
+		await settle();
 		if (failure) throw failure;
 		if (exited.code !== 0) throw new Error(`k6 exited ${exited.code ?? exited.signal} in the ${phase.phase} phase`);
 		if (state !== 'ended') throw new Error(`k6 exited without finishing the ${phase.phase} phase (${state})`);
@@ -266,14 +283,13 @@ export async function runPhase(
 	} finally {
 		clearTimeout(deadline);
 		if (child && child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
-		await closeWindow();
+		await settle();
 		server.closeAllConnections();
 		server.close();
 	}
 }
 
-/** Sums sequential phases over parts of one key range. */
-export function sumRanges(parts: GeneratorResult[]): GeneratorResult {
+function sumRanges(parts: GeneratorResult[]): GeneratorResult {
 	const ops = parts.reduce((sum, p) => sum + p.ops, 0);
 	const elapsedMs = parts.reduce((sum, p) => sum + p.elapsedMs, 0);
 	return {
@@ -291,35 +307,36 @@ export async function startDriver(config: DriverConfig): Promise<DriverRun> {
 	const base = {
 		baseUrl: config.baseUrl,
 		table: config.table,
-		vus: config.concurrency,
 		records: config.records,
 		keyWidth: config.keyWidth,
 		shape: config.shape,
 		maxScanLength: config.maxScanLength,
 		authorization: config.authorization,
 	};
+	// k6 refuses a shared-iterations scenario with more VUs than iterations.
+	const vus = (iterations: number) => Math.min(config.concurrency, iterations);
 	const range = async (phase: 'load' | 'readAll'): Promise<GeneratorResult> => {
 		const parts: GeneratorResult[] = [];
 		for (let from = 0; from < config.records; from += RANGE_CHUNK) {
 			const iterations = Math.min(RANGE_CHUNK, config.records - from);
-			parts.push(await runPhase({ ...base, phase, from, iterations }, { cpus: config.cpus }));
+			parts.push(await runPhase({ ...base, phase, from, iterations, vus: vus(iterations) }, { cpus: config.cpus }));
 		}
 		return sumRanges(parts);
 	};
-	const load =
-		config.load === false
-			? { ops: 0, errors: 0, elapsedMs: 0, throughput: 0, latency: {}, generatorCpuSeconds: 0 }
-			: await range('load');
+	const load = config.load === false ? { ...EMPTY } : await range('load');
 	return {
 		load,
 		readAll: () => range('readAll'),
-		runWorkload(name, distribution, opsOverride, mix, window) {
+		async runWorkload(name, distribution, opsOverride, mix, window) {
 			if (!WORKLOADS[name]) throw new Error(`unknown workload ${name}`);
+			const iterations = opsOverride ?? config.opsPerWorkload;
+			if (iterations === 0) return { ...EMPTY };
 			return runPhase(
 				{
 					...base,
 					phase: 'run',
-					iterations: opsOverride ?? config.opsPerWorkload,
+					iterations,
+					vus: vus(iterations),
 					workload: name,
 					distribution,
 					mix,

@@ -96,6 +96,7 @@ export function localProbe(spec: LocalProbeSpec): TargetProbe {
 		return pages;
 	};
 	let opening = false;
+	let closing = false;
 	let open:
 		| {
 				memory?: MemoryPeakSampler;
@@ -119,7 +120,7 @@ export function localProbe(spec: LocalProbeSpec): TargetProbe {
 		cpuSeconds: () => totalCpuSeconds(targets),
 		cgroupMemory,
 		async beginWindow(options) {
-			if (open || opening) throw new Error('a measured window is already open');
+			if (open || opening || closing) throw new Error('a measured window is already open');
 			opening = true;
 			const memory = options.memory ? new MemoryPeakSampler(targets) : undefined;
 			const clock = options.clock ? new ClockProbe(cpus) : undefined;
@@ -157,50 +158,56 @@ export function localProbe(spec: LocalProbeSpec): TargetProbe {
 		},
 		async endWindow() {
 			const window = open;
-			open = undefined;
 			if (!window) throw new Error('no measured window is open');
-			let refaultFilePages: Record<string, number> | undefined;
-			let meanClockGHz = 0;
-			let after: ResourceSample;
-			let perf: Record<string, Counters> | undefined;
-			let memory: MemoryPeaks | undefined;
+			open = undefined;
+			// Until its instruments have stopped, no other window may start (two perf sessions would overlap).
+			closing = true;
 			try {
-				if (window.refaultsBefore) {
-					refaultFilePages = {};
-					for (const [name, pages] of Object.entries(await refaults()))
-						refaultFilePages[name] = pages - window.refaultsBefore[name];
+				let refaultFilePages: Record<string, number> | undefined;
+				let meanClockGHz = 0;
+				let after: ResourceSample;
+				let perf: Record<string, Counters> | undefined;
+				let memory: MemoryPeaks | undefined;
+				try {
+					if (window.refaultsBefore) {
+						refaultFilePages = {};
+						for (const [name, pages] of Object.entries(await refaults()))
+							refaultFilePages[name] = pages - window.refaultsBefore[name];
+					}
+					meanClockGHz = window.clock?.stop() ?? 0;
+					// CPU first: stopping the sampler can wait out its interval, and background work in that gap
+					// would be charged to the run.
+					after = await sampleResources(targets);
+					if (window.counters) {
+						const counters = window.counters;
+						window.counters = undefined;
+						perf = await counters.stop();
+					}
+					if (window.recorder) {
+						const recorder = window.recorder;
+						window.recorder = undefined;
+						await recorder.stop();
+					}
+				} finally {
+					window.clock?.stop();
+					// A failed window must not leave a system-wide perf running into the next sample.
+					await window.counters?.stop().catch(() => {});
+					await window.recorder?.stop().catch(() => {});
+					memory = await window.memory?.stop();
 				}
-				meanClockGHz = window.clock?.stop() ?? 0;
-				// CPU first: stopping the sampler can wait out its interval, and background work in that gap
-				// would be charged to the run.
-				after = await sampleResources(targets);
-				if (window.counters) {
-					const counters = window.counters;
-					window.counters = undefined;
-					perf = await counters.stop();
-				}
-				if (window.recorder) {
-					const recorder = window.recorder;
-					window.recorder = undefined;
-					await recorder.stop();
-				}
+				return {
+					before: window.before,
+					after,
+					meanClockGHz,
+					memory,
+					host: await window.host.stop(),
+					perf,
+					refaultFilePages,
+					cgroupMemory: await cgroupMemory(),
+				};
 			} finally {
-				window.clock?.stop();
-				// A failed window must not leave a system-wide perf running into the next sample.
-				await window.counters?.stop().catch(() => {});
-				await window.recorder?.stop().catch(() => {});
-				memory = await window.memory?.stop();
+				closing = false;
 			}
-			return {
-				before: window.before,
-				after,
-				meanClockGHz,
-				memory,
-				host: await window.host.stop(),
-				perf,
-				refaultFilePages,
-				cgroupMemory: await cgroupMemory(),
-			};
 		},
 		fold: (prefix) => foldPerfScript(`${prefix}.perf.data`, targets.cgroups, prefix),
 		rocksdbEvents: dataRoot ? (fromMs, toMs) => readRocksdbEvents(dataRoot, fromMs, toMs) : undefined,
@@ -212,7 +219,7 @@ function mergeMaps<T>(maps: (Record<string, T> | undefined)[]): Record<string, T
 	return Object.assign({}, ...maps.filter(Boolean));
 }
 
-export function mergeSamples(samples: ResourceSample[]): ResourceSample {
+function mergeSamples(samples: ResourceSample[]): ResourceSample {
 	return {
 		cpuSeconds: mergeMaps(samples.map((s) => s.cpuSeconds)),
 		memoryBytes: mergeMaps(samples.map((s) => s.memoryBytes)),
@@ -245,7 +252,7 @@ export function alignedPeakTotal(timelines: [number, number][][]): number {
 	return peak;
 }
 
-export function mergeMemory(peaks: MemoryPeaks[]): MemoryPeaks {
+function mergeMemory(peaks: MemoryPeaks[]): MemoryPeaks {
 	return {
 		peakBytes: mergeMaps(peaks.map((p) => p.peakBytes)),
 		meanBytes: mergeMaps(peaks.map((p) => p.meanBytes)),

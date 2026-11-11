@@ -21,7 +21,7 @@ for arg in "$@"; do
 		;;
 	esac
 done
-[ -n "$RUN_ID" ] || RUN_ID="ycsb-$(date -u +%Y%m%d-%H%M)-est"
+[ -n "$RUN_ID" ] || RUN_ID="ycsb-$(date -u +%Y%m%d-%H%M)-est-$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n')"
 ycsb_check_run_id "$RUN_ID"
 RUN_DIR="$YCSB_RUNS_DIR/$RUN_ID"
 KEY="$RUN_DIR/id_ed25519"
@@ -33,12 +33,12 @@ COMMON="--hosts=/opt/ycsb/hosts.json --targets=$TARGETS --auth=token"
 
 on_gen() { gcloud compute ssh "$YCSB_VM_USER@$RUN_ID-generator" "${P[@]}" --ssh-key-file="$KEY" --command="$1"; }
 # Fails, after three tries, if the results could not be copied: the generator holds the only copy.
+# Copies both directories whole (into $RUN_DIR/results and $RUN_DIR/logs), so an empty one is not an error.
 collect() {
-	mkdir -p "$RUN_DIR/results"
 	for try in 1 2 3; do
 		timeout 600 gcloud compute scp --recurse "${P[@]}" --ssh-key-file="$KEY" \
-			"$YCSB_VM_USER@$RUN_ID-generator:$REMOTE_RESULTS/*" "$YCSB_VM_USER@$RUN_ID-generator:/opt/ycsb/logs" \
-			"$RUN_DIR/results/" && return 0
+			"$YCSB_VM_USER@$RUN_ID-generator:$REMOTE_RESULTS" "$YCSB_VM_USER@$RUN_ID-generator:/opt/ycsb/logs" \
+			"$RUN_DIR/" && return 0
 		echo "copying results from the generator failed (try $try)" >&2
 		sleep 30
 	done
@@ -56,6 +56,7 @@ finish() {
 
 "$YCSB_GCP_DIR/provision.sh" --run-id="$RUN_ID" --topology=ab "${PASS[@]}"
 trap finish EXIT
+on_gen "mkdir -p $REMOTE_RESULTS /opt/ycsb/logs"
 
 # A phase runs on the generator as a user service, so a dropped ssh session does not end it. It writes
 # its exit status to a file when it ends, which this polls; the generator unreachable for 15 polls in a
@@ -85,7 +86,7 @@ phase() {
 	done
 	collect
 	[ "$status" = 0 ] || {
-		echo "phase $name exited $status (log in $RUN_DIR/results/logs/$name.log)" >&2
+		echo "phase $name exited $status (log in $RUN_DIR/logs/$name.log)" >&2
 		return 1
 	}
 }

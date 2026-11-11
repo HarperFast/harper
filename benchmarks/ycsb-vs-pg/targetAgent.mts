@@ -237,7 +237,7 @@ async function cleanupLeftovers(): Promise<string[]> {
 	return [...scopes, ...(containers.length > 0 ? ['compose project ycsb-vs-pg'] : [])];
 }
 
-export function createAgent() {
+function createAgent() {
 	let session: Session | undefined;
 	let profileDir: string | undefined;
 	let info: HostInfo | undefined;
@@ -409,14 +409,15 @@ export function createAgent() {
 				})
 			),
 		endWindow: ({ handle }: { handle: number }) => fenced(() => probe(handle).endWindow()),
-		async fold({ handle, label }: { handle: number; label: string }) {
-			const prefix = profilePath(label);
-			const samples = await probe(handle).fold(prefix);
-			const files: Record<string, string> = {};
-			for (const component of Object.keys(samples))
-				files[component] = await readFile(`${prefix}.${component}.folded`, 'utf8');
-			return { samples, files };
-		},
+		fold: ({ handle, label }: { handle: number; label: string }) =>
+			fenced(async () => {
+				const prefix = profilePath(label);
+				const samples = await probe(handle).fold(prefix);
+				const files: Record<string, string> = {};
+				for (const component of Object.keys(samples))
+					files[component] = await readFile(`${prefix}.${component}.folded`, 'utf8');
+				return { samples, files };
+			}),
 		rocksdbEvents: ({ handle, fromMs, toMs }: { handle: number; fromMs: number; toMs: number }) => {
 			const events = probe(handle).rocksdbEvents;
 			if (!events) throw new Error(`part ${handle} has no RocksDB log`);
@@ -439,11 +440,12 @@ export function createAgent() {
 					await rm(join(dataDir(), 'snapshots'), { recursive: true, force: true });
 				})
 			),
-		diskBytes: ({ path }: { path: string }) => {
-			ready();
-			if (path.split('/').includes('..')) throw new Error(`bad path ${path}`);
-			return dataDirBytes(path);
-		},
+		diskBytes: ({ path }: { path: string }) =>
+			fenced(async () => {
+				ready();
+				if (path.split('/').includes('..')) throw new Error(`bad path ${path}`);
+				return dataDirBytes(path);
+			}),
 		async leftovers() {
 			const current = ready();
 			const scopes = await agentScopes(`${current.unitPrefix}-`);

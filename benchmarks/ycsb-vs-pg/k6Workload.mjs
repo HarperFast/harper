@@ -23,7 +23,6 @@ const OP_TYPES = ['read', 'update', 'insert', 'scan', 'rmw', 'inspect', 'chain']
 const SUMMARY_MARKER = 'YCSB_K6_SUMMARY ';
 
 const opLatency = Object.fromEntries(OP_TYPES.map((type) => [type, new Trend(`ycsb_${type}`, true)]));
-// Measured runs count their ops in opLatency; this counts the load's and read-all's.
 const completedKeys = new Counter('ycsb_keys');
 const failedOps = new Counter('ycsb_errors');
 
@@ -89,11 +88,10 @@ const executor = {
 	scan: (startKey, count) =>
 		send('GET', `/${phase.table}/?id>=${startKey}&limit(${count})`, null, undefined, plainParams),
 	inspect(key, caller, forbidden) {
-		let params = requestParams({ ...authHeaders, 'x-caller': caller });
-		if (phase.callerAuthorizations) {
-			params = callerParams[caller];
-			if (!params) throw new Error(`no credential for inspect caller ${caller}`);
-		}
+		const params = phase.callerAuthorizations
+			? callerParams[caller]
+			: requestParams({ ...authHeaders, 'x-caller': caller });
+		if (!params) throw new Error(`no credential for inspect caller ${caller}`);
 		send('GET', `/inspect/${key}`, null, forbidden ? 403 : 200, params);
 	},
 	chain: (key, hops) => send('GET', `/chain/${key}?hops=${hops}`, null, 200, plainParams),

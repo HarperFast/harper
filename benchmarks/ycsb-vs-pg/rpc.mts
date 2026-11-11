@@ -11,7 +11,7 @@ import type { Readable } from 'node:stream';
 
 export const FRAME_MARKER = '\x1eYCSB-RPC ';
 /** A frame longer than this is a broken channel, not a payload (folded profiles are a few MB). */
-export const MAX_FRAME_BYTES = 256 * 1024 ** 2;
+const MAX_FRAME_BYTES = 256 * 1024 ** 2;
 
 const NUMBER_TAG = '$ycsb-number';
 

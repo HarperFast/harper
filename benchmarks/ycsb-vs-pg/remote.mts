@@ -145,7 +145,7 @@ export function rolesFor(placed: PlacedTarget): Role[] {
 const isLoopback = (address: string | undefined): boolean =>
 	address === undefined || address === 'localhost' || address === '::1' || address.startsWith('127.');
 
-export const hostKey = (spec: HostSpec): string =>
+const hostKey = (spec: HostSpec): string =>
 	spec.command ? `command:${JSON.stringify(spec.command)}` : `ssh:${spec.ssh}`;
 
 /** Refuses a placement that cannot run, before anything connects. */

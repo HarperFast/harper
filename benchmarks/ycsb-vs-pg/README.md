@@ -431,7 +431,7 @@ this harness does not run.
   ceiling over the VPC (`client-ceiling.mts --serve` on the harper VM, `--base-url` from the generator,
   failing if k6 kept over half its vCPUs busy),
   runs a smoke pass, then harper-uws, pg-redis and pg-redis@b on C, inspect and chain-4, warm and 2x,
-  `--auth=token`, 3 reps. Results come back to `gcp/runs/<id>/results/` after every phase. Teardown
+  `--auth=token`, 3 reps. Results come back to `gcp/runs/<id>/results/` (phase logs to `logs/`) after every phase. Teardown
   runs on exit, after one last copy.
 
 Choices, recorded per run in `gcp/runs/<id>/manifest.json` and in every results file (`meta.remote`):

@@ -245,6 +245,52 @@ test('k6 dying mid-run fails the phase and still closes its window once', { skip
 	}
 });
 
+test('a phase with fewer keys or ops than VUs runs every one of them', { skip }, async () => {
+	const { server, baseUrl, stored } = await recordingServer();
+	try {
+		const driver = await startDriver(config(baseUrl, { records: 3 }));
+		strictEqual(driver.load.ops, 3);
+		strictEqual(stored.size, 3);
+		strictEqual((await driver.runWorkload('C', 'zipfian', 2)).ops, 2);
+		strictEqual((await driver.runWorkload('C', 'zipfian', 0)).ops, 0);
+	} finally {
+		server.close();
+	}
+});
+
+test('a window still opening when k6 dies is closed once it has opened', { skip }, async () => {
+	const dir = mkdtempSync(join(tmpdir(), 'k6-driver-test-'));
+	const pidFile = join(dir, 'k6.pid');
+	const wrapper = join(dir, 'k6');
+	writeFileSync(wrapper, `#!/bin/sh\necho $$ > ${pidFile}\nexec ${k6Binary()} "$@"\n`);
+	chmodSync(wrapper, 0o755);
+	const { server, baseUrl } = await recordingServer();
+	const previous = process.env.YCSB_K6;
+	process.env.YCSB_K6 = wrapper;
+	try {
+		const driver = await startDriver(config(baseUrl, { load: false }));
+		const calls: string[] = [];
+		const window: PhaseWindow = {
+			async begin() {
+				calls.push('begin');
+				process.kill(Number(readFileSync(pidFile, 'utf8')), 'SIGKILL');
+				await new Promise((resolve) => setTimeout(resolve, 300));
+				calls.push('opened');
+			},
+			async end() {
+				calls.push('end');
+			},
+		};
+		await rejects(driver.runWorkload('C', 'zipfian', 1000, undefined, window), /k6 exited/);
+		deepStrictEqual(calls, ['begin', 'opened', 'end']);
+	} finally {
+		if (previous === undefined) delete process.env.YCSB_K6;
+		else process.env.YCSB_K6 = previous;
+		server.close();
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test('failed requests are counted, not fatal, and only successes are timed', { skip }, async () => {
 	const { server, baseUrl } = await recordingServer();
 	try {
