@@ -313,8 +313,8 @@ value falls back to it with a warning) is claimed as a unique local key
 locked or not, is above it: the node's log clock never runs behind state it admitted a lock on. A floor the
 clock has already passed lifts nothing and is admitted whatever the cap; one ahead of it is held to the cap
 measured from wall time, not from the clock an earlier claim lifted, so successive claims cannot compound
-past it. Past the cap, or with a cap of `0`, admission
-fails with `LockUnavailableError` before a holder write is staged or an issuance ceiling is reserved. Both a far-future replicated
+past it. Past the cap, or under a cap of `0`, a floor still ahead of the clock fails admission with
+`LockUnavailableError` before a holder write is staged or an issuance ceiling is reserved. Both a far-future replicated
 version and a local write stamped with a future `context.timestamp` can therefore leave the record unavailable until wall time catches up (callers that stamp future versions on records they also `lock()` must keep the lead within `storage.maxLockClockSkew`). Rewriting or deleting
 at normal clock time does not resolve it because those writes still lose LWW; repair the source
 peer's clock, rewrite at or above that version, or wait. A claim
