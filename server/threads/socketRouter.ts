@@ -109,7 +109,9 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 				if (isProcessShuttingDown()) return [];
 				await threadServer.startServers();
 				if (isProcessShuttingDown()) return [];
-				// After the components' declarations, so a stale saved TTL never arms a scan that a schema replaces
+				// After the components' declarations, so a stale saved TTL never arms a scan that a schema replaces.
+				// Workers need no such pass: they have a worker index before loading components, so each table
+				// arms its own scan as it loads.
 				armTableCleanupScans();
 				// startServers() schedules listener startup after loading components; await its cached
 				// batch so a bind failure reaches bin/run.ts and exits non-zero in single-thread mode too.

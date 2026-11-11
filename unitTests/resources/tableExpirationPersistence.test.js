@@ -13,7 +13,6 @@ const {
 const { defineTable, types } = require('#src/resources/defineTable');
 const { loadGQLSchema } = require('#src/resources/graphql');
 
-// its own database, so per-file teardown drops these tables rather than every later file reopening them
 const DATABASE = 'ttl_persistence';
 
 async function commitCatalog(Table) {

@@ -30,7 +30,7 @@ async function timersArmedBy(run, settleMs = 0) {
 	return delays;
 }
 // the TTLs these tests clear scan every 15 s or less
-const isDailyCadence = (delay) => delay > 60_000 && delay <= 86_400_000;
+const isDailyCadence = (delay) => (delay > 15_000 && delay <= 86_400_000) || isNextDailySlot(delay);
 // a first daily scan with nothing pending lands on the next whole day since the start of the year
 function isNextDailySlot(delay) {
 	const startOfYear = new Date();
@@ -303,7 +303,8 @@ describe('TTL cleanup scan interval', () => {
 			attributes: [{ name: 'id', isPrimaryKey: true }],
 		});
 		// a restart: the row outlives this class, whose scan stops with it
-		await Declared.put(1, { id: 1 }, { expiresAt: Date.now() + 100 });
+		const expiresAt = Date.now() + 1000;
+		await Declared.put(1, { id: 1 }, { expiresAt });
 		await Declared.primaryStore.committed;
 		Declared.cleanup();
 		delete databases[databaseName][tableName];
@@ -318,7 +319,7 @@ describe('TTL cleanup scan interval', () => {
 		}
 		try {
 			assert.strictEqual(Loaded.expirationMS, 50);
-			await sleep(400);
+			await sleep(Math.max(0, expiresAt + 300 - Date.now()));
 			assert(stored(Loaded, 1), 'a scan ran although no thread owned it at load');
 			armTableCleanupScans();
 			await waitFor(() => !stored(Loaded, 1), { timeout: 5000, message: 'the expired record was never evicted' });
