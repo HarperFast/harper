@@ -1162,6 +1162,11 @@ let securityUser: typeof import('../security/user.ts') | undefined;
 // principal (an MQTT session reuses it for every SUBSCRIBE), on that context or by its view need a role too.
 const recordBacked = new WeakSet<object>();
 
+// module-level, so the closure each subscription keeps holds nothing more for it
+function recordProvenBy(error: unknown, username: string): boolean {
+	return securityUser!.isInactiveUserRejection(error) || securityUser!.userRecordVersions(username).userStamp !== null;
+}
+
 function latchRecordBacked(user: object, context: any): void {
 	recordBacked.add(user);
 	if (!context) return;
@@ -1193,10 +1198,8 @@ function registerLiveSubscriptionForContext(
 		hasRecordProvenance,
 		isCertificatePrincipal,
 		isCurrentUser,
-		isInactiveUserRejection,
 		isRecordBacked,
 		isRecordlessPrincipal,
-		userRecordVersions,
 	} = securityUser!;
 	// a memoizing server.getUser's user does not carry what an MQTT connection's own CONNECT recorded
 	const session = (context as any)?.session;
@@ -1241,7 +1244,7 @@ function registerLiveSubscriptionForContext(
 					fresh = await pass.memo(resolveUser, username, resolveUser);
 				} catch (error) {
 					// an inactive record still backs the name; its refusal proves one, even if it was dropped since
-					if (!roleRequired && (isInactiveUserRejection(error) || userRecordVersions(username).userStamp !== null)) {
+					if (!roleRequired && recordProvenBy(error, username)) {
 						roleRequired = true;
 						latchRecordBacked(user, context);
 					}
