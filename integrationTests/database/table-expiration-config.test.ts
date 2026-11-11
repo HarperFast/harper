@@ -23,6 +23,9 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { startHarper, killHarper, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 
 const FIXTURE = 'table-expiration-config';
+// A test reaches a chosen worker by retrying on fresh connections, which needs connections spread across
+// workers: Windows serves HTTP from one worker, and Bun does not spread them.
+const skipWorkerPinning = process.platform === 'win32' || process.env.HARPER_RUNTIME === 'bun';
 const NEGATIVE_FIXTURE = 'table-expiration-config-negative';
 const DATABASE = 'ttl_config';
 const EXPIRATION = 2;
@@ -299,39 +302,47 @@ for (const engine of ['rocksdb', 'lmdb']) {
 			await waitForReclaim(ctx, 'Declared', Date.now() + (EXPIRATION + EVICTION) * 1000, 'a schema-declared TTL');
 		});
 
-		test('an eviction-only TTL adopted from the catalog reclaims rows (#3935)', { timeout: 120_000 }, async () => {
-			const table = 'AdoptedEviction';
-			const { workerIndex } = await untilServed(ctx, { op: 'declare', table, avoidWorker: OWNER });
-			// loaded before it gains a TTL, so the owner adopts the TTL instead of loading the table fresh with it
-			await waitForWorkerTtl(ctx, table, OWNER, { expirationMS: 0, evictionMS: 0 });
-			await untilServed(ctx, { op: 'declare', table, eviction: EVICTION, onWorker: workerIndex });
-			await waitForWorkerTtl(ctx, table, OWNER, { expirationMS: 0, evictionMS: EVICTION * 1000 });
-			await untilServed(ctx, { op: 'write', table, count: ROWS, expiresInMs: 500 });
-			await waitForReclaim(ctx, table, Date.now() + 500 + EVICTION * 1000, 'an eviction-only TTL the owner adopted');
-		});
+		test(
+			'an eviction-only TTL adopted from the catalog reclaims rows (#3935)',
+			{ timeout: 120_000, skip: skipWorkerPinning },
+			async () => {
+				const table = 'AdoptedEviction';
+				const { workerIndex } = await untilServed(ctx, { op: 'declare', table, avoidWorker: OWNER });
+				// loaded before it gains a TTL, so the owner adopts the TTL instead of loading the table fresh with it
+				await waitForWorkerTtl(ctx, table, OWNER, { expirationMS: 0, evictionMS: 0 });
+				await untilServed(ctx, { op: 'declare', table, eviction: EVICTION, onWorker: workerIndex });
+				await waitForWorkerTtl(ctx, table, OWNER, { expirationMS: 0, evictionMS: EVICTION * 1000 });
+				await untilServed(ctx, { op: 'write', table, count: ROWS, expiresInMs: 500 });
+				await waitForReclaim(ctx, table, Date.now() + 500 + EVICTION * 1000, 'an eviction-only TTL the owner adopted');
+			}
+		);
 
 		// both declarations on one worker: a worker keeps a TTL its own declaration set, as a restart re-applies it
-		test('a re-declaration without a TTL clears it on every worker (#3934)', { timeout: 120_000 }, async () => {
-			const table = 'AdoptedClear';
-			const declared = { expirationMS: EXPIRATION * 1000, evictionMS: EVICTION * 1000 };
-			const { workerIndex } = await untilServed(ctx, {
-				op: 'declare',
-				table,
-				expiration: EXPIRATION,
-				eviction: EVICTION,
-				avoidWorker: OWNER,
-			});
-			for (let worker = 0; worker < THREADS; worker++) await waitForWorkerTtl(ctx, table, worker, declared);
-			await untilServed(ctx, { op: 'declare', table, onWorker: workerIndex });
-			const checks = softChecks();
-			for (let worker = 0; worker < THREADS; worker++)
-				await checks.check(() => waitForWorkerTtl(ctx, table, worker, { expirationMS: 0, evictionMS: 0 }));
-			checks.assertNone();
-		});
+		test(
+			'a re-declaration without a TTL clears it on every worker (#3934)',
+			{ timeout: 120_000, skip: skipWorkerPinning },
+			async () => {
+				const table = 'AdoptedClear';
+				const declared = { expirationMS: EXPIRATION * 1000, evictionMS: EVICTION * 1000 };
+				const { workerIndex } = await untilServed(ctx, {
+					op: 'declare',
+					table,
+					expiration: EXPIRATION,
+					eviction: EVICTION,
+					avoidWorker: OWNER,
+				});
+				for (let worker = 0; worker < THREADS; worker++) await waitForWorkerTtl(ctx, table, worker, declared);
+				await untilServed(ctx, { op: 'declare', table, onWorker: workerIndex });
+				const checks = softChecks();
+				for (let worker = 0; worker < THREADS; worker++)
+					await checks.check(() => waitForWorkerTtl(ctx, table, worker, { expirationMS: 0, evictionMS: 0 }));
+				checks.assertNone();
+			}
+		);
 
 		test(
 			'after a restart: a runtime table is reclaimed without a write, and a removed @table TTL stays removed (#3372, #3934)',
-			{ timeout: 180_000 },
+			{ timeout: 180_000, skip: skipWorkerPinning },
 			async () => {
 				const checks = softChecks();
 				await createRuntimeTtl(ctx);
