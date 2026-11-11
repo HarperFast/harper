@@ -227,6 +227,19 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 			assert.strictEqual(user.isRecordBacked({ username: 'scoped', role: { permission: {} } }), undefined);
 		});
 
+		it('tells the refusal of an inactive user from other lookup failures', async () => {
+			await testUtils.seedUsers([lookupUser({ active: false })]);
+			const inactive = await user.findAndValidateUser('lookup_user', null, false).catch((error) => error);
+			assert.strictEqual(user.isInactiveUserRejection(inactive), true);
+			const wrongPassword = await user.findAndValidateUser('nobody_cn', 'x').catch((error) => error);
+			assert.strictEqual(user.isInactiveUserRejection(wrongPassword), false);
+			assert.strictEqual(
+				user.isInactiveUserRejection(new Error(inactive.message)),
+				false,
+				"only the lookup's own refusal"
+			);
+		});
+
 		it('marks a copy as a certificate principal, never the object server.getUser returned', async () => {
 			const unknown = await user.findAndValidateUser('lookup_user', null, false);
 			const named = user.certificatePrincipal(unknown);

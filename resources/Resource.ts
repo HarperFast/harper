@@ -1193,6 +1193,7 @@ function registerLiveSubscriptionForContext(
 		hasRecordProvenance,
 		isCertificatePrincipal,
 		isCurrentUser,
+		isInactiveUserRejection,
 		isRecordBacked,
 		isRecordlessPrincipal,
 		userRecordVersions,
@@ -1239,8 +1240,8 @@ function registerLiveSubscriptionForContext(
 				try {
 					fresh = await pass.memo(resolveUser, username, resolveUser);
 				} catch (error) {
-					// an inactive record still backs the name
-					if (!roleRequired && userRecordVersions(username).userStamp !== null) {
+					// an inactive record still backs the name; its refusal proves one, even if it was dropped since
+					if (!roleRequired && (isInactiveUserRejection(error) || userRecordVersions(username).userStamp !== null)) {
 						roleRequired = true;
 						latchRecordBacked(user, context);
 					}

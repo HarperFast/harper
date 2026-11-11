@@ -29,6 +29,7 @@ export {
 	hasRecordProvenance,
 	isRecordlessPrincipal,
 	isRecordBacked,
+	isInactiveUserRejection,
 	certificatePrincipal,
 	isCertificatePrincipal,
 	userRecordVersions,
@@ -129,7 +130,7 @@ import { server } from '../server/Server.ts';
 import * as terms from '../utility/hdbTerms.ts';
 import { expandOperationsPerms } from '../utility/operationPermissions.ts';
 import { activeSuperUserRemains } from './superUserGuard.ts';
-import { credentialRejectionError } from './credentialRejection.ts';
+import { credentialRejectionError, isCredentialRejection } from './credentialRejection.ts';
 import { databases, getDatabases, onUpdatedTable, onRemovedTable } from '../resources/databases.ts';
 import { VERSION_REUSED } from '../resources/RecordEncoder.ts';
 import { contextStorage } from '../resources/transaction.ts';
@@ -833,6 +834,11 @@ function isRecordlessPrincipal(user: User, admitted?: UserProvenance): boolean {
 function isRecordBacked(user: User, admitted?: UserProvenance): boolean | undefined {
 	const provenance = recordedProvenance(user, admitted);
 	return provenance && provenance.userStamp !== null;
+}
+
+/** Whether `error` is `findAndValidateUser` refusing an inactive user, which proves a record had the name. */
+function isInactiveUserRejection(error: unknown): boolean {
+	return isCredentialRejection(error) && (error as Error).message === AUTHENTICATION_ERROR_MSGS.USER_INACTIVE;
 }
 
 const CERTIFICATE_PRINCIPAL = Symbol('certificate principal');
