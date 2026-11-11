@@ -99,8 +99,6 @@ URL-keyed `cjsCache` and `nativeModules` (registered before native evaluation, r
 
 `updateSession` / `loginWithSession` bind `SessionState` after stored fields are copied, overriding a stored `update`; detached/copied calls work (`unitTests/security/authSessions.test.js`). A property-assigned function literal pretenures its context (`CheckAssigningFunctionLiteralToProperty`), keeping the request graph until major GC (~1.8 KB/request, nearly 3× major GCs). Bind a module function or create a local first. `SESSION_VERSION` shares accessor functions: fresh functions put the clone in dictionary mode. `loadedSessions` keeps the record outside the request's function context.
 
-## Conditional session updates are a best-effort pre-write check (`security/auth.ts`)
-
 `updateSession` reads outside the request snapshot: RocksDB uses `COMMITTED_SESSION_READ`; LMDB renews its shared reader. It rejects non-live, changed, `VERSION_REUSED`, payload `version`, or versions beyond the clock and issuance floor before the ordinary put. In-flight, later or unreplicated writes can still race (#2983, `unitTests/security/sessionUpdateIfVersion.test.js`).
 
 ## User and role lookups read the records, and nothing derived from them outlives them (`security/user.ts`)
