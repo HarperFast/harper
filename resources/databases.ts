@@ -4105,11 +4105,18 @@ function openIndex(
 		// Enable cache (WeakLRUCache + VT) for all custom-object index stores so the VT is
 		// available before resolveIndexFormat decides the format. Versioned stores need the VT
 		// for cached traversal; legacy stores pay a small per-write cache.delete() overhead only.
-		dbi = openRocksDatabase(rootStore.path, {
-			...dbiInit,
-			name: storeNameFor(dbiKey, generation),
-			cache: isCustomObjectIndex,
-		} as any) as any;
+		const storeOptions = { ...dbiInit, name: storeNameFor(dbiKey, generation), cache: isCustomObjectIndex };
+		try {
+			dbi = openRocksDatabase(rootStore.path, { ...storeOptions } as any) as any;
+		} catch (error) {
+			// A plain index's handle on this column family, open since the attribute was a plain index,
+			// makes rocksdb-js refuse the opt-in until every such handle in the process has closed.
+			if (!isCustomObjectIndex || (error as { code?: string })?.code !== 'ERR_VERIFICATION_TABLE_CONFLICT') throw error;
+			dbi = openRocksDatabase(rootStore.path, { ...storeOptions, cache: false } as any) as any;
+			logger.warn(
+				`Index ${dbiKey} reads without its record cache until Harper fully restarts: its column family is still open as a plain index in this process`
+			);
+		}
 		// before the setup below, whose failure cleanup can itself fail to close it
 		owner?.push(dbi);
 		(dbi as any).rootStore = rootStore;
