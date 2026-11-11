@@ -987,7 +987,7 @@ record.addTo('counter', 1); // increment
 record.subtractFrom('stock', 1); // decrement
 ```
 
-Read-then-write patterns — "compare-and-set" — are not safe under concurrency. This includes version-guarded updates (`ifVersion`), create-only "first write wins", reading a value to decide and then writing it back, and HTTP `If-Match` / conditional writes. All of these read a value _before_ commit and are not re-validated _at_ commit, so two concurrent writers can both pass the check. Modeling state as commutative deltas avoids the problem entirely.
+Read-then-write patterns — "compare-and-set" — are not safe under concurrency. This includes version-guarded updates (`ifVersion`), create-only "first write wins", reading a value to decide and then writing it back, and HTTP `If-Match` / conditional writes that are checked without a record lock ([Conditional Writes](../rest/headers.md#conditional-writes)). All of these read a value _before_ commit and are not re-validated _at_ commit, so two concurrent writers can both pass the check. Modeling state as commutative deltas avoids the problem entirely.
 
 A few limitations to design around:
 

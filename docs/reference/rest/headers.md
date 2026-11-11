@@ -107,6 +107,32 @@ If-None-Match: "abc123"
 
 If the record has not changed, Harper returns `304 Not Modified` with no body. This avoids serialization and network transfer overhead and works seamlessly with browser caches and external HTTP caches.
 
+### Conditional Writes
+
+<VersionBadge type="changed" version="v5.4.0" />
+
+A `PUT`, `PATCH` or `DELETE` of a single table record honors `If-Match`, `If-None-Match` and `If-Unmodified-Since`. Harper checks the condition once against the stored record before it writes anything. A failed condition returns `412 Precondition Failed` and changes nothing.
+
+```http
+PATCH /MyTable/123
+If-Match: "abc123"
+Content-Type: application/json
+
+{ "quantity": 4 }
+```
+
+`If-None-Match: *` creates the record only if it does not exist. Dates have one-second precision, so use the `ETag` for a version-level check.
+
+Whether two requests that saw the same `ETag` can both succeed depends on the node. With [`rest.preconditionLocks`](./overview.md#configuration) at its default (`true`), on RocksDB:
+
+| Where the record is                                                                                | Concurrent conditional writes that saw the same `ETag`                             |
+| -------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| A replicated table, with cluster record locks enabled (Harper Pro `replication.recordLocks`)       | One succeeds across the cluster. The others get `412`.                             |
+| A table that is not replicated: Harper without replication, or a table declared `replicate: false` | One succeeds on that node. The others get `412`.                                   |
+| A replicated table, with cluster record locks not enabled                                          | All can succeed, and the last write wins. The condition is checked without a lock. |
+
+With `rest.preconditionLocks: false`, or on LMDB, every conditional write is checked without a lock. With cluster record locks enabled but no home map in place yet, a conditional write to a replicated table fails with `503`. In a cluster where only some nodes enable record locks, a conditional write on a node without them is not serialized against writes on the others.
+
 ### Accept-Encoding
 
 When response compression is enabled with [`http.compressionThreshold`](../http/configuration.md#httpcompressionthreshold) (it is off by default), Harper Brotli-compresses responses for clients that include `br` in this header. Brotli is the only encoding Harper applies, so a client that accepts only `gzip` receives an uncompressed body:

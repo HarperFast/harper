@@ -333,6 +333,20 @@ export interface DelegationRecall {
  */
 export interface ClusterLockTransport {
 	/**
+	 * True on the stand-in registered while this node runs with cluster record locks turned off; fixed for
+	 * the transport object's lifetime. It does not relax `lock()`: a default-scope lock still reaches the
+	 * stand-in and is refused. Only a caller with a defined unlocked fallback for that state reads it:
+	 * a conditional REST write then checks its precondition without a lock. Only `true` counts; absent,
+	 * the node is treated as having cluster record locks enabled.
+	 */
+	readonly disabled?: boolean;
+	/**
+	 * Why `homeMap()` is returning undefined, appended to the refusal a cluster `lock()` gives for a missing
+	 * map — for example the operation that establishes one. Undefined when the transport does not know
+	 * why. Synchronous, must not throw, and safe to show a client.
+	 */
+	homeMapUnavailableReason?(database: string): string | undefined;
+	/**
 	 * The operator-agreed home map for the database, or undefined while none is available — before the
 	 * node has the current generation, or while peers disagree about its digest. Core fails closed on
 	 * undefined rather than guessing a ring.
@@ -1617,7 +1631,7 @@ export class LockCoordinator {
 					continue acquisition;
 				}
 				throw new LockUnavailableError(
-					`No agreed record lock home map for ${this.database}; cluster record locks are unavailable until one is established`
+					`No agreed record lock home map for ${this.database}; cluster record locks are unavailable until one is established${homeMap ? '' : this.#missingMapReason()}`
 				);
 			}
 			const delegation = this.#liveDelegation(keyId, leaseMs, homeMap.generation);
@@ -1890,9 +1904,15 @@ export class LockCoordinator {
 			// outlasts. A wait can see `contended` and still end 503 — the rule is what the home said LAST.
 			if (terminal?.reason === 'contended') throw new ClientError('Record is locked and was not released in time', 423);
 			throw new LockUnavailableError(
-				`Could not establish a cluster record lock on ${this.database}.${this.table} within the wait: ${describeExhaustedWait(terminal, currentGeneration !== undefined)}`
+				`Could not establish a cluster record lock on ${this.database}.${this.table} within the wait: ${describeExhaustedWait(terminal, currentGeneration !== undefined)}${terminal || currentGeneration !== undefined ? '' : this.#missingMapReason()}`
 			);
 		}
+	}
+
+	/** The transport's explanation for a missing home map, as a suffix for a refusal; empty when it has none. */
+	#missingMapReason(): string {
+		const reason = this.transport.homeMapUnavailableReason?.(this.database);
+		return reason ? `: ${reason}` : '';
 	}
 
 	/**

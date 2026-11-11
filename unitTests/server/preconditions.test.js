@@ -1512,8 +1512,12 @@ describe('conditional write lock scope', () => {
 	const DISABLED_MESSAGE = 'cluster record locks are not enabled on this node';
 	let previousHostname;
 	let Row;
+	let Local;
+	let resources;
 	let request;
+	let explicitRequest;
 	let unlockedRequest;
+	let locks;
 	before(() => {
 		setupTestDBPath();
 		setMainIsWorker(true);
@@ -1521,16 +1525,25 @@ describe('conditional write lock scope', () => {
 		// The coordinator refuses a loopback identity, and a bare test box resolves to one.
 		env.setProperty(CONFIG_PARAMS.NODE_HOSTNAME, NODE_NAME);
 		clearThisNodeName();
-		Row = table({
-			database: 'conditionalLockScope',
-			table: 'ScopeRow',
-			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'n' }],
-		});
-		const resources = new Resources();
+		const attributes = [{ name: 'id', isPrimaryKey: true }, { name: 'n' }];
+		Row = table({ database: 'conditionalLockScope', table: 'ScopeRow', attributes });
+		Local = table({ database: 'conditionalLockScope', table: 'ScopeLocal', replicate: false, attributes });
+		const counted = (Table) =>
+			class extends Table {
+				lock(...args) {
+					locks++;
+					return super.lock(...args);
+				}
+			};
+		resources = new Resources();
 		resources.set('ScopeRow', Row, { rest: true });
+		resources.set('CountedRow', counted(Row), { rest: true });
+		resources.set('CountedLocal', counted(Local), { rest: true });
 		request = rest(resources);
+		explicitRequest = rest(resources, { preconditionLocks: true });
 		unlockedRequest = rest(resources, { preconditionLocks: false });
 	});
+	beforeEach(() => (locks = 0));
 	afterEach(() => unregisterClusterLockTransport('conditionalLockScope', true));
 	after(() => {
 		env.setProperty(CONFIG_PARAMS.NODE_HOSTNAME, previousHostname);
@@ -1574,37 +1587,143 @@ describe('conditional write lock scope', () => {
 		assert.strictEqual(stale.status, 412, await bodyOf(stale));
 	});
 
-	it('fails with 503 and stages nothing when cluster record locks are unavailable, unless preconditionLocks is false', async function () {
-		if (isLMDB) this.skip();
-		await Row.put('unavailable', { n: 1 });
-		const version = Row.primaryStore.getEntry('unavailable').version;
-		const before = auditEntries('unavailable');
-		// Mirrors harper-pro's createDisabledRecordLockTransport(), registered while replication.recordLocks is off.
-		const disabled = () => Promise.reject(new ClientError(DISABLED_MESSAGE, 503));
-		registerClusterLockTransport('conditionalLockScope', {
+	/** Mirrors harper-pro's createDisabledRecordLockTransport(), registered while replication.recordLocks is off. */
+	function refusingTransport(flags) {
+		const calls = { homeMap: 0 };
+		const refuse = () => Promise.reject(new ClientError(DISABLED_MESSAGE, 503));
+		const transport = {
+			...flags,
 			homeMap() {
+				calls.homeMap++;
 				throw new ClientError(DISABLED_MESSAGE, 503);
 			},
 			ownsCoordination: () => true,
-			requestDelegation: disabled,
-			recallDelegation: disabled,
-			establishLockFreshness: disabled,
+			requestDelegation: refuse,
+			recallDelegation: refuse,
+			establishLockFreshness: refuse,
+		};
+		registerClusterLockTransport('conditionalLockScope', transport);
+		return calls;
+	}
+	const succeeded = async (response) =>
+		assert.ok(response.status < 300, `${response.status} ${await bodyOf(response)}`);
+
+	it('checks conditional writes without a lock when cluster record locks are disabled on this node', async function () {
+		if (isLMDB) this.skip();
+		const calls = refusingTransport({ disabled: true });
+		const longAgo = 'Wed, 21 Oct 2015 07:28:00 GMT';
+		const later = new Date(Date.now() + 3_600_000).toUTCString();
+		for (const [tag, send] of [
+			['default', request],
+			['explicit', explicitRequest],
+		]) {
+			const id = `disabled-${tag}`;
+			await Row.put(id, { n: 1 });
+			await succeeded(await send('PUT', `/CountedRow/${id}`, { id, n: 2 }, { 'if-match': etagOf(id) }));
+			assert.strictEqual((await Row.get(id)).n, 2);
+
+			const version = Row.primaryStore.getEntry(id).version;
+			const audited = auditEntries(id);
+			for (const [method, headers] of [
+				['PUT', { 'if-match': versionToEtag(1) }],
+				['PATCH', { 'if-none-match': '*' }],
+				['PATCH', { 'if-unmodified-since': longAgo }],
+				['DELETE', { 'if-match': versionToEtag(1) }],
+			]) {
+				const stale = await send(method, `/CountedRow/${id}`, { id, n: 3 }, headers);
+				assert.strictEqual(stale.status, 412, `${method} ${JSON.stringify(headers)}: ${await bodyOf(stale)}`);
+			}
+			assert.strictEqual(Row.primaryStore.getEntry(id).version, version);
+			assert.strictEqual(auditEntries(id), audited, 'a failed condition must stage no write');
+
+			await succeeded(await send('PATCH', `/CountedRow/${id}`, { n: 4 }, { 'if-unmodified-since': later }));
+			assert.strictEqual((await Row.get(id)).n, 4);
+			await succeeded(await send('DELETE', `/CountedRow/${id}`, undefined, { 'if-match': etagOf(id) }));
+			assert.strictEqual(await Row.get(id), null);
+
+			const created = `${id}-created`;
+			await succeeded(await send('PUT', `/CountedRow/${created}`, { id: created, n: 1 }, { 'if-none-match': '*' }));
+			const again = await send('PUT', `/CountedRow/${created}`, { id: created, n: 2 }, { 'if-none-match': '*' });
+			assert.strictEqual(again.status, 412, await bodyOf(again));
+			assert.strictEqual((await Row.get(created)).n, 1);
+		}
+		assert.strictEqual(locks, 0, 'a conditional write must not take the lock the disabled transport refuses');
+		assert.strictEqual(calls.homeMap, 0);
+		// The flag relaxes no lock(): the stand-in still refuses a default-scope one.
+		await assert.rejects(Row.lock('disabled-default', { hold: true, timeout: 100 }), {
+			statusCode: 503,
+			message: DISABLED_MESSAGE,
 		});
-		const rejected = await request('PATCH', '/ScopeRow/unavailable', { n: 2 }, { 'if-match': etagOf('unavailable') });
+	});
+
+	it('keeps the node-local lock of a replicate: false table when cluster record locks are disabled', async function () {
+		if (isLMDB) this.skip();
+		const calls = refusingTransport({ disabled: true });
+		await Local.put('node-only', { n: 1 });
+		const etag = versionToEtag(Local.primaryStore.getEntry('node-only').version);
+		const stale = await request('PATCH', '/CountedLocal/node-only', { n: 2 }, { 'if-match': versionToEtag(1) });
+		assert.strictEqual(stale.status, 412, await bodyOf(stale));
+		await succeeded(await request('PATCH', '/CountedLocal/node-only', { n: 2 }, { 'if-match': etag }));
+		assert.strictEqual((await Local.get('node-only')).n, 2);
+		assert.strictEqual(locks, 2, 'each conditional write still takes the node-scoped lock');
+		assert.strictEqual(calls.homeMap, 0);
+	});
+
+	it('fails with 503 and stages nothing when a transport refuses without declaring locks disabled, unless preconditionLocks is false', async function () {
+		if (isLMDB) this.skip();
+		for (const flags of [{}, { disabled: false }]) {
+			unregisterClusterLockTransport('conditionalLockScope', true);
+			refusingTransport(flags);
+			await Row.put('unavailable', { n: 1 });
+			const version = Row.primaryStore.getEntry('unavailable').version;
+			const before = auditEntries('unavailable');
+			const rejected = await request('PATCH', '/ScopeRow/unavailable', { n: 2 }, { 'if-match': etagOf('unavailable') });
+			const body = await bodyOf(rejected);
+			assert.strictEqual(rejected.status, 503, body);
+			assert.match(body, /not enabled on this node/);
+			assert.strictEqual(Row.primaryStore.getEntry('unavailable').version, version);
+			assert.strictEqual(auditEntries('unavailable'), before, 'a refused lock must stage no write');
+
+			const optedOut = await unlockedRequest(
+				'PATCH',
+				'/ScopeRow/unavailable',
+				{ n: 2 },
+				{ 'if-match': etagOf('unavailable') }
+			);
+			assert.strictEqual(optedOut.status, 204, await bodyOf(optedOut));
+			assert.strictEqual((await Row.get('unavailable')).n, 2);
+		}
+	});
+
+	it('fails with a 503 naming how to establish a home map when cluster record locks are enabled without one', async function () {
+		if (isLMDB) this.skip();
+		class ShortWait extends Row {
+			// the missing-map refusal comes after a ride-through bounded by the lock's wait
+			lock(id, options) {
+				return super.lock(id, { ...options, timeout: 100 });
+			}
+		}
+		resources.set('ShortWait', ShortWait, { rest: true });
+		registerClusterLockTransport('conditionalLockScope', {
+			coordinationIncarnation: () => 1,
+			homeMap: () => undefined,
+			homeMapUnavailableReason: () => 'no home map has been applied; apply one with record_lock_apply_homes',
+			grantableAfterMono: -Infinity,
+			ownsCoordination: () => true,
+			requestDelegation: () => Promise.reject(new Error('no peer transport')),
+			recallDelegation: () => Promise.resolve(),
+			establishLockFreshness: async (_database, _table, _key, dependencies) => dependencies ?? [],
+		});
+		await Row.put('mapless', { n: 1 });
+		const version = Row.primaryStore.getEntry('mapless').version;
+		const before = auditEntries('mapless');
+		const rejected = await request('PATCH', '/ShortWait/mapless', { n: 2 }, { 'if-match': etagOf('mapless') });
 		const body = await bodyOf(rejected);
 		assert.strictEqual(rejected.status, 503, body);
-		assert.match(body, /not enabled on this node/);
-		assert.strictEqual(Row.primaryStore.getEntry('unavailable').version, version);
-		assert.strictEqual(auditEntries('unavailable'), before, 'a refused lock must stage no write');
-
-		const optedOut = await unlockedRequest(
-			'PATCH',
-			'/ScopeRow/unavailable',
-			{ n: 2 },
-			{ 'if-match': etagOf('unavailable') }
-		);
-		assert.strictEqual(optedOut.status, 204, await bodyOf(optedOut));
-		assert.strictEqual((await Row.get('unavailable')).n, 2);
+		assert.match(body, /No agreed record lock home map/);
+		assert.match(body, /record_lock_apply_homes/);
+		assert.strictEqual(Row.primaryStore.getEntry('mapless').version, version);
+		assert.strictEqual(auditEntries('mapless'), before, 'a refused lock must stage no write');
 	});
 });
 
