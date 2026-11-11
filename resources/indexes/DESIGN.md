@@ -486,14 +486,14 @@ snapshot being searched.
 Coverage-only publications do not change the document set: the runtime permits them only after every
 accepted index mutation through that capture is durable. The shared live watermark may therefore wake a
 waiting query before Tantivy commits the newer restart checkpoint; the existing reader is data-current,
-and the later publication notification reloads its checkpoint. Catalog-scale qualification measures this
-metadata-only reload cadence so unrelated write traffic cannot become a hidden query-plane cost.
-Missing, cursorless or malformed payloads fail closed and request one rebuild. A strict, non-waiting query on a
-cold worker can return retryable lag while it opens the reader; retrying, or using
-`waitForIndexMilliseconds`, allows the aligned reader to finish opening without synchronous filesystem
-inspection. An epoch or query-configuration change requires a replacement handle. A publication reload
-uses the existing handle only while it has no active lease; otherwise Harper opens a replacement and
-retires the old handle after its search finishes. One logical query therefore uses one native snapshot
+and the later publication notification reloads its checkpoint.
+Missing, cursorless or malformed payloads fail closed and request one rebuild. A worker with no reader
+certifies an index its idle owner released, while no log has moved, from that release's quiet mark
+(`quietMarkHolds`, shared with admission); the reader it then opens is at least that snapshot.
+Otherwise a cold no-wait query without a fresh clock returns retryable lag while its reader opens,
+without synchronous filesystem inspection. An epoch or query-configuration change requires a
+replacement handle. A publication reload uses the existing handle only while it has no active lease;
+otherwise Harper opens a replacement and retires the old handle after its search finishes. One logical query therefore uses one native snapshot
 across all result pages and highlight tracing. The wrapper's reported query budget bounds that whole
 query, including page fetches, source Blob reads and tracing, rather than restarting for each native
 call. Highlight source materialization is bounded by both the wrapper's trace-record count and source-byte

@@ -1127,9 +1127,8 @@ class DerivedIndexRunner {
 	 * Every acquisition mints an owner epoch, and full-text readers key on it, so a free lock is taken only
 	 * for work: a log moved past the positions the last idle owner proved covered (a commit that writes no
 	 * log entry, such as an audit-metadata update, wakes every runner but moves none), or a demand the log
-	 * does not carry. Only the owner of an epoch writes the mark, once, storing that epoch last, so an
-	 * owner epoch unchanged across the reads makes them one mark. A registration over several tables, or
-	 * whose backend captures no coverage or has no `quietToken`, has no mark and acquires on every wake.
+	 * does not carry. A registration over several tables, or whose backend captures no coverage or has no
+	 * `quietToken`, has no mark and acquires on every wake.
 	 */
 	#quietSinceRelease(): boolean {
 		if (
@@ -1139,31 +1138,19 @@ class DerivedIndexRunner {
 		)
 			return false;
 		try {
-			const { words, epoch } = this.#shared();
-			const quiet = this.#quiet;
-			const releasedEpoch = Atomics.load(quiet.marks, QUIET_EPOCH);
-			if (releasedEpoch === 0n || Atomics.load(epoch, 0) !== releasedEpoch) return false;
-			if (
-				Atomics.load(words, READINESS_STATE) !== READINESS_STATES.indexOf('ready') ||
-				Atomics.load(words, READINESS_REBUILD_REQUEST) !== 0 ||
-				Atomics.load(words, READINESS_LAG_EXCEEDED) !== 0 ||
-				Atomics.load(quiet.words, QUIET_TABLE) !== this.#quietTable
-			)
-				return false;
-			const names = Atomics.load(quiet.words, QUIET_NAMES);
-			const sum = Atomics.load(quiet.marks, QUIET_SUM);
-			const token = Atomics.load(quiet.words, QUIET_TOKEN);
-			if (Atomics.load(epoch, 0) !== releasedEpoch) return false;
-			const current = this.#admission.currentLogMark();
-			return current !== undefined && current.names === names && current.sum === sum && this.#quietToken() === token;
+			return quietMarkHolds(
+				this.#shared(),
+				this.#quiet,
+				this.#quietTable,
+				this.#quietToken,
+				this.#admission.currentLogMark
+			);
 		} catch {
 			return false;
 		}
 	}
 
-	#quietToken(): number | undefined {
-		return this.#registration.backend.quietToken!();
-	}
+	#quietToken = (): number | undefined => this.#registration.backend.quietToken!();
 
 	#publishQuiet(epoch: bigint, mark: LogMark) {
 		const token = this.#quietToken();
@@ -2539,6 +2526,47 @@ function quietViews(logStore: RocksTransactionLogStore, readinessId: string): Qu
 	return { marks: new BigInt64Array(buffer, 0, 2), words: new Int32Array(buffer, 16, 4) };
 }
 
+const quietViewsByStore = new WeakMap<object, Map<string, QuietViews>>();
+
+function getQuietViews(logStore: RocksTransactionLogStore, readinessId: string): QuietViews {
+	let byReadiness = quietViewsByStore.get(logStore);
+	if (!byReadiness) quietViewsByStore.set(logStore, (byReadiness = new Map()));
+	let views = byReadiness.get(readinessId);
+	if (!views) byReadiness.set(readinessId, (views = quietViews(logStore, readinessId)));
+	return views;
+}
+
+/**
+ * Whether the mark an idle release published still describes the logs: no runner has acquired since, the
+ * index is ready with no rebuild or lag demand, and `current`, read after the mark, equals it. Admission
+ * (`#quietSinceRelease`) and coverage (`readDerivedIndexCoverage`) share it, so an index the runtime leaves
+ * ownerless because nothing moved is also certified current. Only the owner of an epoch writes the mark,
+ * once, storing that epoch last, so an owner epoch unchanged across the reads makes them one mark.
+ */
+function quietMarkHolds(
+	shared: SharedViews,
+	quiet: QuietViews,
+	tableId: number,
+	token: () => number | undefined,
+	current: () => LogMark | undefined
+): boolean {
+	const releasedEpoch = Atomics.load(quiet.marks, QUIET_EPOCH);
+	if (releasedEpoch === 0n || Atomics.load(shared.epoch, 0) !== releasedEpoch) return false;
+	if (
+		Atomics.load(shared.words, READINESS_STATE) !== READINESS_STATES.indexOf('ready') ||
+		Atomics.load(shared.words, READINESS_REBUILD_REQUEST) !== 0 ||
+		Atomics.load(shared.words, READINESS_LAG_EXCEEDED) !== 0 ||
+		Atomics.load(quiet.words, QUIET_TABLE) !== tableId
+	)
+		return false;
+	const names = Atomics.load(quiet.words, QUIET_NAMES);
+	const sum = Atomics.load(quiet.marks, QUIET_SUM);
+	const markToken = Atomics.load(quiet.words, QUIET_TOKEN);
+	if (Atomics.load(shared.epoch, 0) !== releasedEpoch) return false;
+	const mark = current();
+	return mark !== undefined && mark.names === names && mark.sum === sum && token() === markToken;
+}
+
 const readinessViews = new WeakMap<object, Map<string, SharedViews>>();
 const publicationViews = new WeakMap<object, Map<string, BigInt64Array>>();
 
@@ -2751,11 +2779,19 @@ export function sameDerivedIndexPositions(left: DerivedIndexPositions, right: De
 	return true;
 }
 
+/** The table and `quietToken` a backend's idle-release mark is bound to; see `readDerivedIndexCoverage`. */
+export type DerivedIndexQuietIdentity = { tableId: number; token: () => number | undefined };
+
+/**
+ * `quiet` lets a reader with no usable cursor certify an index the runtime leaves ownerless because nothing
+ * moved; its `token` must return what the backend's `quietToken()` returns.
+ */
 export function readDerivedIndexCoverage(
 	logStore: RocksTransactionLogStore,
 	backendId: string,
 	loadCursor: () => DerivedIndexCursor | undefined,
-	maxLagMilliseconds: number
+	maxLagMilliseconds: number,
+	quiet?: DerivedIndexQuietIdentity
 ): DerivedIndexCoverage {
 	const unknown: DerivedIndexCoverage = { state: 'unknown', maxLagMilliseconds };
 	try {
@@ -2771,15 +2807,18 @@ export function readDerivedIndexCoverage(
 			}
 		}
 		const cursor = loadCursor();
-		if (!isValidCursor(cursor) || !cursor.coverage) return unknown;
-		const positions = readCommittedPositions(logStore);
+		const covered = isValidCursor(cursor) && cursor.coverage ? cursor.coverage : undefined;
+		if (!covered && !quiet) return unknown;
+		const positions = covered ? readCommittedPositions(logStore) : undefined;
+		const certified =
+			(covered !== undefined && positions !== undefined && sameDerivedIndexPositions(covered, positions)) ||
+			(!!quiet &&
+				quietMarkHolds(views, getQuietViews(logStore, backendId), quiet.tableId, quiet.token, () =>
+					logMark(covered ? positions : readCommittedPositions(logStore))
+				));
+		if (!certified) return unknown;
 		const after = readReadiness(views);
-		if (
-			positions &&
-			after.state === 'ready' &&
-			after.ownerEpoch === readiness.ownerEpoch &&
-			sameDerivedIndexPositions(cursor.coverage, positions)
-		)
+		if (after.state === 'ready' && after.ownerEpoch === readiness.ownerEpoch)
 			return { state: 'current', maxLagMilliseconds, lagUpperBoundMilliseconds: 0 };
 	} catch {
 		// Failure to read coverage is not evidence that the native graph needs rebuilding.
