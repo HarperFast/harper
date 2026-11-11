@@ -13,6 +13,7 @@ const {
 	localIssuedAheadThrough,
 	reservedLocalKey,
 	seedLocalIssuance,
+	timestampAbove,
 } = require('#src/resources/originClosedFloor');
 const { ImmediateTransaction } = require('#src/resources/DatabaseTransaction');
 const { PassThrough } = require('node:stream');
@@ -20,6 +21,7 @@ const { createBlob } = require('#src/resources/blob');
 const {
 	MIN_LOCK_LEASE_MS,
 	admissionFloor,
+	admissionStamp,
 	makeKeyLockHandle,
 	lockAttemptKey,
 	resolveLockOptions,
@@ -1762,6 +1764,22 @@ describe('Record locks (harper#483)', () => {
 			}
 		});
 
+		it('admits a floor the clock has passed whatever the cap, since claiming it lifts nothing', function () {
+			if (isLMDB) return this.skip();
+			const rootStore = LockTest.primaryStore.rootStore;
+			const previous = env.get(CONFIG_PARAMS.STORAGE_MAXLOCKCLOCKSKEW);
+			env.setProperty(CONFIG_PARAMS.STORAGE_MAXLOCKCLOCKSKEW, '0ms');
+			try {
+				const acquiredAt = rootStore.getMonotonicTimestamp();
+				// within the wall clock's current millisecond, so past what a cap of 0 admits against wall time
+				const floor = timestampAbove(acquiredAt);
+				const { stamp, claimed } = admissionStamp(rootStore, floor, acquiredAt);
+				assert.ok(claimed && stamp >= floor, 'a floor the clock has passed is admitted');
+			} finally {
+				env.setProperty(CONFIG_PARAMS.STORAGE_MAXLOCKCLOCKSKEW, previous);
+			}
+		});
+
 		it('holds a hold step ahead of the clock to the skew cap, though it is under the covered ceiling', async function () {
 			if (isLMDB) return this.skip();
 			const [nearId, heldId] = [id(), id()];
@@ -1772,7 +1790,7 @@ describe('Record locks (harper#483)', () => {
 			// the claim's ceiling is 1 s above it: the step sits midway between the cap and that ceiling
 			env.setProperty(CONFIG_PARAMS.STORAGE_MAXLOCKCLOCKSKEW, '1500ms');
 			try {
-				const near = Date.now() + 1_500;
+				const near = Date.now() + 1_400;
 				aheadUntil = Math.max(aheadUntil, near + 1_000);
 				await applyFromPeer(nearId, near);
 				await transaction(async () => {
@@ -1782,7 +1800,7 @@ describe('Record locks (harper#483)', () => {
 				});
 				assert.ok(localIssuanceFloor(rootStore) >= near, 'fixture: the first admission claimed');
 				// beyond the cap from wall time, and under the ceiling the claim covered
-				const ahead = Date.now() + 2_000;
+				const ahead = Date.now() + 1_950;
 				assert.ok(ahead < readLocalIssuanceCeiling(LockTest.auditStore), 'fixture: the step is under the ceiling');
 				await LockTest.put({ id: heldId, n: 0 });
 				const context = {};

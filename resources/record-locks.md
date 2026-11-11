@@ -310,7 +310,8 @@ separately at save. A floor the clock has already passed takes the
 clock's next key. A floor ahead of the clock within `storage.maxLockClockSkew` (default 5 s; a malformed
 value falls back to it with a warning) is claimed as a unique local key
 (`claimLocalKey`), which raises rocksdb-js's process-wide clock, so every later local key on this node,
-locked or not, is above it: the node's log clock never runs behind state it admitted a lock on. The cap is
+locked or not, is above it: the node's log clock never runs behind state it admitted a lock on. A floor the
+clock has already passed lifts nothing and is admitted whatever the cap; one ahead of it is held to the cap
 measured from wall time, not from the clock an earlier claim lifted, so successive claims cannot compound
 past it. Past the cap, or with a cap of `0`, admission
 fails with `LockUnavailableError` before a holder write is staged or an issuance ceiling is reserved. Both a far-future replicated
