@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794381640426,
+  "lastUpdate": 1794388002664,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -28413,6 +28413,58 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw write ops",
             "value": 1907,
+            "unit": "ops"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "821385a12b830ca68a64c12f7457d31b9617b4a4",
+          "message": "Read each transaction log's purge bound from rocksdb-js's purge watermark (#4238)\n\n* Bound each transaction log's purges by rocksdb-js's purge watermark\n\nA log rocksdb-js 2.14 vouches for now answers getLogPurgeBound(s) with its\ndurable purge watermark: exact for keys ahead of the clock, synced before each\nunlink, and read without mapping any segment. Logs from before 2.14 report\nunknown permanently and keep the record rule; the boot purge now keeps such a\nlog's bound at the last reading pass's largest key when nothing was appended\nsince, so a restart after downtime longer than auditRetention forces no copy.\nThe open-time abort-marker check decides emptiness from file counts.\n\nRefs #3953, #3947, #3963, #3968, #3955\n\nDispatch-Task: harper-purge-watermark-swap\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* Read a log on a rocksdb-js without the purge watermark by the record rule\n\nharper-pro still pins rocksdb-js 2.13.0, which has no getPurgeWatermark: a\nmissing method means no watermark, not an unreadable one, so no log is refused.\n\nDispatch-Task: harper-purge-watermark-swap\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* Record an unreadable watermark's log at the cutoff, and list logs only when a read needs them\n\nA log whose purge watermark cannot be read is no longer read by the retention\npass: the record bounds it at the cutoff and the reader refuses it. A\nwatermarked log named __proto__ keeps its fallback in the epoch. The tracking\nstart no longer lists the logs while a pass is recent. The design note scopes\nthe boot purge's append-position rule to downtime within the native retention.\n\nDispatch-Task: harper-purge-watermark-swap\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* Fence where tracking began for a log whose purge watermark cannot be read\n\nDispatch-Task: harper-purge-watermark-swap\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* Keep the last reading pass where it was while a log's purge watermark cannot be read\n\nA pass that could not read a watermark has not accounted for every log, so it\nno longer advances observedAt, and the tracking-start fence stays up.\n\nDispatch-Task: harper-purge-watermark-swap\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* Keep a log's record entry through an unreadable purge watermark, bounded by the reach\n\nDispatch-Task: harper-purge-watermark-swap\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* Merge an unreadable-watermark log's entry as one not read, and survive its useLog failing at boot\n\nDispatch-Task: harper-purge-watermark-swap\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-11-11T05:27:38Z",
+          "url": "https://github.com/HarperFast/harper/commit/821385a12b830ca68a64c12f7457d31b9617b4a4"
+        },
+        "date": 1794387998496,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "value": 15322,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed3",
+            "value": 10109,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed5",
+            "value": 9998,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "value": 10931648,
+            "unit": "records"
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "value": 9323,
+            "unit": "ops"
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "value": 1491,
             "unit": "ops"
           }
         ]
