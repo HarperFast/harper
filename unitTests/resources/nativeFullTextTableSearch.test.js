@@ -8,6 +8,7 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { fullTextDerivedIndexReadiness, setFullTextNativeBindingForTests } = require('#src/resources/derivedIndexes');
 const { loadFullTextNativeBinding } = require('#src/resources/indexes/fullTextNativeBinding');
+const { ResourceBridge } = require('#src/dataLayer/harperBridge/ResourceBridge');
 const { parseQuery } = require('#src/resources/search');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { waitFor } = require('../waitFor');
@@ -60,6 +61,404 @@ describe('published native full-text Table.search integration', () => {
 		if (runtime) await runtime.close();
 		Product = undefined;
 		setFullTextNativeBindingForTests(undefined);
+	});
+
+	it('isolates admitted optional fields across clauses, requests and index definitions', async () => {
+		const catalog = definition('catalogSearch', [{ name: 'title' }, { name: 'details' }]);
+		const titleOnly = definition('titleSearch', [{ name: 'title' }]);
+		Product = table({
+			database: `fulltext-admission-isolation-${Date.now()}`,
+			table: 'Product',
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+				{ name: 'details', type: 'String' },
+			],
+			fullTextIndexes: [catalog, titleOnly],
+		});
+		await Product.put({ id: 'one', title: 'widget', details: 'trail' });
+		await waitFor(
+			() =>
+				['catalogSearch', 'titleSearch'].every(
+					(name) => fullTextDerivedIndexReadiness(Product, name).state === 'ready'
+				),
+			30000
+		);
+		const explicit = ['title'];
+		const make = (attribute) => ({
+			conditions: [
+				{
+					attribute,
+					comparator: 'matches',
+					value: 'widget',
+					should: [
+						{ comparator: 'matches', value: 'trail' },
+						{ comparator: 'matches', value: 'trail' },
+						{ comparator: 'matches', value: 'widget', fields: explicit },
+					],
+				},
+			],
+			select: ['id'],
+		});
+		const prepare = (target) => Product._prepareQueryConditions(target.conditions, 'and', target, {});
+		const combined = make('catalogSearch');
+		combined.conditions.push(...make('titleSearch').conditions);
+		const grouped = prepare(combined).conditions;
+		assert.deepStrictEqual(grouped[0].should[0].fields, ['title', 'details']);
+		assert.deepStrictEqual(grouped[1].should[0].fields, ['title']);
+		const invalidGroup = make('titleSearch');
+		invalidGroup.conditions[0].should[0].fields = ['details'];
+		const invalidCombined = make('catalogSearch');
+		invalidCombined.conditions.push(...invalidGroup.conditions);
+		assert.throws(
+			() => prepare(invalidCombined),
+			(error) => error.statusCode === 400
+		);
+		const target = make('catalogSearch');
+		const admitted = prepare(target).conditions[0].should;
+		assert.deepStrictEqual(
+			admitted.map((clause) => clause.fields),
+			[['title', 'details'], ['title', 'details'], ['title']]
+		);
+		assert.notStrictEqual(admitted[0].fields, admitted[1].fields);
+		assert.notStrictEqual(admitted[2].fields, explicit);
+		admitted[0].fields.push('not-a-schema-field');
+		admitted[2].fields.push('details');
+		assert.deepStrictEqual(admitted[1].fields, ['title', 'details']);
+		assert.deepStrictEqual(explicit, ['title']);
+		assert.deepStrictEqual(prepare(make('catalogSearch')).conditions[0].should[0].fields, ['title', 'details']);
+		assert.deepStrictEqual(prepare(make('titleSearch')).conditions[0].should[0].fields, ['title']);
+		assert.deepStrictEqual(prepare(make('catalogSearch')).conditions[0].should[0].fields, ['title', 'details']);
+	});
+
+	it('boosts required matches and adds optional scores without changing eligibility', async () => {
+		const searchDefinition = definition('catalogSearch', [
+			{ name: 'title', weight: 1, highlight: true },
+			{ name: 'details', weight: 1, highlight: true },
+		]);
+		searchDefinition.highlighting = { maxFragments: 2, fragmentLength: 80 };
+		const database = `fulltext-relevance-${Date.now()}`;
+		Product = table({
+			database,
+			table: 'Product',
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+				{ name: 'details', type: 'String' },
+			],
+			fullTextIndexes: [searchDefinition],
+		});
+		await Product.put([
+			{ id: 'a', title: 'widget', details: 'plain catalog' },
+			{ id: 'b', title: 'widget', details: 'trail running' },
+			{ id: 'c', title: 'widget', details: 'plain catalog' },
+			{ id: 'outside', title: 'different', details: 'trail running' },
+		]);
+		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'catalogSearch').state === 'ready', 30000);
+		const condition = {
+			attribute: 'catalogSearch',
+			comparator: 'matches',
+			value: 'widget',
+			fields: ['title'],
+			maxIndexLagMilliseconds: 0,
+			waitForIndexMilliseconds: 30000,
+		};
+		const search = (controls = {}, options = {}) =>
+			collect(
+				Product.search({
+					conditions: [{ ...condition, ...controls }],
+					select: ['id', 'title', 'details', '$score'],
+					...options,
+				})
+			);
+		const boundaryClause = { comparator: 'matches', value: 'widget', fields: ['title'] };
+		assert.strictEqual(
+			(await search({ should: Array.from({ length: 127 }, () => ({ ...boundaryClause })) })).length,
+			3
+		);
+		await assert.rejects(
+			search({ should: Array.from({ length: 128 }, () => ({ ...boundaryClause })) }),
+			(error) => error.statusCode === 400 && /Full-text query on 'catalogSearch' is invalid/.test(error.message)
+		);
+		const baseline = await search();
+		assert.deepStrictEqual(
+			baseline.map(({ id }) => id),
+			['a', 'b', 'c']
+		);
+		for (const controls of [{ boost: 3 }, { should: [{ comparator: 'matches', value: 'trail' }] }])
+			await assert.rejects(
+				Product.fullTextQueryIndexes.catalogSearch.customIndex.search({ ...condition, ...controls }, {}),
+				(error) => error.statusCode === 400 && /compiled fullTextQuery/.test(error.message)
+			);
+		const boosted = await search({ boost: 3 });
+		assert.deepStrictEqual(ids(boosted), ids(baseline));
+		const pending = Product.fullTextQueryIndexes.catalogSearch.customIndex.search(
+			{
+				...condition,
+				fullTextQuery: { operator: 'boost', boost: 2, clause: { text: 'widget', mode: 'any', fields: ['title'] } },
+				maxIndexLagMilliseconds: 5000,
+				waitForIndexMilliseconds: 0,
+			},
+			{},
+			{ minResults: 1 }
+		);
+		assert(pending.indexCoverage, 'non-waiting scoring exposes coverage before await');
+		assert(['current', 'bounded'].includes(pending.indexCoverage.state));
+		await pending;
+
+		const nativeBoosted = await Product.fullTextQueryIndexes.catalogSearch.customIndex.search(
+			{
+				...condition,
+				fullTextQuery: { operator: 'boost', boost: 3, clause: { text: 'widget', mode: 'any', fields: ['title'] } },
+			},
+			{},
+			{ minResults: baseline.length }
+		);
+		assert.deepStrictEqual(
+			boosted.map(({ id, $score }) => ({ id, $score })),
+			nativeBoosted.map(({ key, $score }) => ({ id: key, $score }))
+		);
+		// Tantivy applies boosts before BM25 rounding, not to the already-rounded result.
+		for (let index = 0; index < baseline.length; index++) {
+			const expected = baseline[index].$score * 3;
+			assert(expected > 0);
+			assert(Math.abs(boosted[index].$score - expected) <= expected * 2 ** -22);
+		}
+		const zero = await search({ boost: 0 });
+		assert.deepStrictEqual(ids(zero), ids(baseline));
+		assert(zero.every(({ $score }) => $score === 0));
+		const controls = {
+			should: [{ comparator: 'matches_phrase', value: 'trail running', fields: ['details'], boost: 10 }],
+		};
+		const ranked = await search(controls);
+		assert.deepStrictEqual(
+			ranked.map(({ id }) => id),
+			['b', 'a', 'c']
+		);
+		assert.deepStrictEqual(ids(ranked), ids(baseline));
+		for (const [comparator, value] of [
+			['matches_prefix', 'trai'],
+			['matches_fuzzy_prefix', 'tral'],
+			['matches_fuzzy', 'trali'],
+		]) {
+			const results = await search({ should: [{ comparator, value, fields: ['details'], boost: 10 }] });
+			assert.deepStrictEqual(
+				results.map(({ id }) => id),
+				['b', 'a', 'c'],
+				comparator
+			);
+			assert(results[0].$score > baseline.find(({ id }) => id === 'b').$score, comparator);
+		}
+		const optionalClauses = [
+			{ comparator: 'matches', value: 'trail', fields: ['details'], boost: 2 },
+			{ comparator: 'matches', value: 'running', fields: ['details'], boost: 3.5 },
+		];
+		const bonusScores = [];
+		for (const { boost: _boost, ...clause } of optionalClauses)
+			bonusScores.push(new Map((await search(clause)).map(({ id, $score }) => [id, $score])));
+		const additive = await search({ boost: 0.5, should: optionalClauses });
+		assert.deepStrictEqual(ids(additive), ['a', 'b', 'c']);
+		const requiredScores = new Map(baseline.map(({ id, $score }) => [id, $score]));
+		for (const record of additive) {
+			const contributions = [
+				Math.fround(requiredScores.get(record.id) * 0.5),
+				...optionalClauses.map(({ boost }, index) => Math.fround((bonusScores[index].get(record.id) ?? 0) * boost)),
+			];
+			const expected = contributions.reduce((sum, score) => sum + score, 0);
+			const tolerance = Math.max(1e-6, Math.abs(expected) * 1e-6);
+			assert(Math.abs(record.$score - expected) <= tolerance, `additive Table score for ${record.id}`);
+			if (record.id === 'b') {
+				assert(record.$score > Math.max(...contributions) + tolerance, 'sum must exceed max-only scoring');
+				assert(
+					contributions.every((score) => score > tolerance),
+					'each contribution must be discriminated'
+				);
+			}
+		}
+
+		const bridge = new ResourceBridge();
+		const bridged = await collect(
+			await bridge.searchByConditions({
+				database,
+				schema: database,
+				table: 'Product',
+				get_attributes: ['id', 'title', 'details', '$score'],
+				conditions: [{ ...condition, ...controls }],
+			})
+		);
+		assert.deepStrictEqual(bridged, ranked);
+		const misplacedControls = await Promise.allSettled(
+			[{ boost: 2 }, { should: controls.should }].map((rootControls) =>
+				bridge.searchByConditions({
+					database,
+					schema: database,
+					table: 'Product',
+					get_attributes: ['id'],
+					conditions: [{ ...condition }],
+					...rootControls,
+				})
+			)
+		);
+		assert.deepStrictEqual(
+			misplacedControls.map(({ status }) => status),
+			['rejected', 'rejected']
+		);
+		for (const result of misplacedControls) assert.strictEqual(result.reason.statusCode, 400);
+
+		await assert.rejects(
+			() =>
+				bridge.searchByConditions({
+					database,
+					schema: database,
+					table: 'Product',
+					get_attributes: ['id'],
+					conditions: [{ ...condition, boost: 2, negated: true }],
+				}),
+			(error) => error.statusCode === 400
+		);
+
+		assert.deepStrictEqual(
+			(await search(controls, { offset: 1, limit: 1 })).map(({ id }) => id),
+			['a']
+		);
+		assert.deepStrictEqual(
+			(await search(controls, { rowFilter: (record) => record.id !== 'b', limit: 2 })).map(({ id }) => id),
+			['a', 'c']
+		);
+		const highlights = await search({ ...controls, includeHighlights: true });
+		assert.deepStrictEqual(highlights[0].$highlights.details[0].spans, [{ start: 0, end: 13 }]);
+		assert.strictEqual(highlights[1].$highlights.details, undefined);
+		const implicitFields = { should: [{ comparator: 'matches', value: 'trail' }] };
+		assert.strictEqual((await search(implicitFields))[0].id, 'b');
+		assert.strictEqual(implicitFields.should[0].fields, undefined);
+		const user = {
+			role: {
+				permission: {
+					[database]: {
+						tables: {
+							Product: {
+								read: true,
+								attribute_permissions: [
+									{ attribute_name: 'title', read: true },
+									{ attribute_name: 'details', read: false },
+								],
+							},
+						},
+					},
+				},
+			},
+		};
+		const allowedTarget = {
+			conditions: [{ ...condition, should: [{ comparator: 'matches', value: 'widget', fields: ['title'] }] }],
+			select: ['title', '$score'],
+		};
+		assert.strictEqual((await collect(Product.search(allowedTarget, { user }))).length, 3);
+		const permission = user.role.permission[database].tables.Product;
+		const originalPermissions = permission.attribute_permissions;
+		const permissionTarget = {
+			...allowedTarget,
+			conditions: [{ ...condition, should: [{ comparator: 'matches', value: 'trail', fields: ['details'] }] }],
+		};
+		user.role.permission[database].tables.Product = {
+			...permission,
+			attribute_permissions: originalPermissions.map((entry) => ({ ...entry, read: true })),
+		};
+		assert.strictEqual((await collect(Product.search(permissionTarget, { user }))).length, 3);
+		user.role.permission[database].tables.Product = {
+			...permission,
+			attribute_permissions: originalPermissions.map((entry) => ({ ...entry })),
+		};
+		await assert.rejects(
+			async () => collect(Product.search(permissionTarget, { user })),
+			(error) => error.name === 'AccessViolation'
+		);
+		user.role.permission[database].tables.Product = {
+			...permission,
+			attribute_permissions: originalPermissions.map((entry) => ({ ...entry, read: true })),
+		};
+		assert.strictEqual((await collect(Product.search(permissionTarget, { user }))).length, 3);
+		user.role.permission[database].tables.Product = permission;
+		for (const fields of [
+			['missing', 'details'],
+			['details', 'details'],
+		])
+			await assert.rejects(
+				async () =>
+					collect(
+						Product.search(
+							{
+								...allowedTarget,
+								conditions: [{ ...condition, should: [{ comparator: 'matches', value: 'trail', fields }] }],
+							},
+							{ user }
+						)
+					),
+				(error) => error.name === 'AccessViolation'
+			);
+
+		for (const should of [
+			[{ comparator: 'matches', value: 'trail', fields: ['details'] }],
+			[{ comparator: 'matches', value: 'trail' }],
+		])
+			await assert.rejects(
+				async () => collect(Product.search({ ...allowedTarget, conditions: [{ ...condition, should }] }, { user })),
+				(error) => error.name === 'AccessViolation'
+			);
+
+		for (const invalid of [
+			{ should: [] },
+			{ comparator: 'not_matches', boost: 1 },
+			{ negated: true, should: controls.should },
+			{ should: [{ ...controls.should[0], attribute: 'other' }] },
+			{ should: [{ ...controls.should[0], fields: [] }] },
+			{ should: [{ ...controls.should[0], fields: ['missing'] }] },
+			{ should: [{ comparator: 'matches_fuzzy', value: 'catxxog', fuzzyDistance: 2 }] },
+		])
+			await assert.rejects(
+				async () => search(invalid),
+				(error) => error.statusCode === 400
+			);
+		for (const operator of ['and', 'or'])
+			await assert.rejects(
+				async () =>
+					collect(
+						Product.search({
+							operator,
+							conditions: [
+								{ ...condition, boost: 2 },
+								{ ...condition, comparator: 'matches_fuzzy', value: 'catxxog', fuzzyDistance: 2 },
+							],
+						})
+					),
+				(error) => error.statusCode === 400 && /maxFuzzyDistance/.test(error.message)
+			);
+		for (const controls of [{ boost: 1 }, { should: [{ comparator: 'matches', value: 'widget' }] }]) {
+			await assert.rejects(
+				async () =>
+					collect(Product.search({ conditions: [{ attribute: 'id', value: 'a', comparator: 'equals', ...controls }] })),
+				/positive full-text/
+			);
+			await assert.rejects(
+				async () =>
+					collect(Product.search({ conditions: [{ operator: 'and', conditions: [condition], ...controls }] })),
+				/positive full-text/
+			);
+			await assert.rejects(
+				async () =>
+					collect(
+						Product.search({
+							conditions: [{ attribute: 'brand', conditions: [{ attribute: 'id', value: 'a' }], ...controls }],
+						})
+					),
+				(error) => error.statusCode === 400 && /positive full-text/.test(error.message)
+			);
+			await assert.rejects(
+				async () => collect(Product.search({ conditions: [condition], ...controls })),
+				/positive full-text/
+			);
+		}
 	});
 
 	it('keeps custom iterable searches and re-evaluates later offset requests', async () => {
@@ -354,7 +753,10 @@ describe('published native full-text Table.search integration', () => {
 						{ attribute: 'catalogSearch', comparator, value },
 					],
 				})
-			);
+			).catch((error) => {
+				error.message += ` (${comparator})`;
+				throw error;
+			});
 			assert.deepStrictEqual(ids(records), ['two'], comparator);
 		}
 
@@ -598,6 +1000,13 @@ describe('published native full-text Table.search integration', () => {
 			reader = await binding.openNativeFullTextReader(options);
 			for (const query of [
 				{ text: 'widget catalog', mode: 'any' },
+				{ operator: 'boost', boost: 0.5, clause: { text: 'widget catalog' } },
+				{ operator: 'boost', boost: 0, clause: { text: 'widget' } },
+				{
+					operator: 'optional',
+					required: { operator: 'boost', boost: 0.5, clause: { text: 'widget' } },
+					optional: [{ operator: 'boost', boost: 4, clause: { text: 'catalog' } }, { text: 'widget widget' }],
+				},
 				{ text: 'widg', mode: 'prefix' },
 				{ text: 'widg', mode: 'fuzzy-prefix' },
 				{ operator: 'and', clauses: [{ text: 'widget' }, { operator: 'not', clause: { text: 'absent' } }] },
@@ -608,6 +1017,7 @@ describe('published native full-text Table.search integration', () => {
 					exactTotal: true,
 				});
 				assert.strictEqual(ordinary.totalRelation, 'exact');
+				assert.deepStrictEqual((await reader.search({ query, limit: ordinary.hits.length })).hits, ordinary.hits);
 				assert.deepStrictEqual((await reader.searchPage({ query, limit: ordinary.hits.length })).hits, ordinary.hits);
 				for (const limit of [17, 73, 113, 257]) {
 					const page = await reader.searchPage({ query, limit });
@@ -674,7 +1084,7 @@ describe('published native full-text Table.search integration', () => {
 					Buffer.from(toBufferKey(b).toString('base64url'))
 				)
 			);
-		const search = (comparator, value, options = {}) =>
+		const search = (comparator, value, options = {}, scoring = {}) =>
 			collect(
 				Product.search({
 					conditions: [
@@ -684,6 +1094,7 @@ describe('published native full-text Table.search integration', () => {
 							value,
 							maxIndexLagMilliseconds: 0,
 							waitForIndexMilliseconds: 30_000,
+							...scoring,
 						},
 					],
 					limit: 25,
@@ -721,8 +1132,35 @@ describe('published native full-text Table.search integration', () => {
 				(await search('matches', 'widget catalog', { offset: info.limits.maxSearchWindow })).map(({ id }) => id),
 				ordered.slice(info.limits.maxSearchWindow)
 			);
+			assert.deepStrictEqual(
+				(
+					await search(
+						'matches',
+						'widget catalog',
+						{ rowFilter: (record) => tail.has(record.id) },
+						{
+							boost: 0.5,
+							should: [{ comparator: 'matches', value: 'catalog', boost: 4 }],
+						}
+					)
+				).map(({ id }) => id),
+				ordered.slice(info.limits.maxSearchWindow)
+			);
 			const first = new Set(ordered.slice(0, info.limits.maxAutocompleteResults));
 			for (const comparator of ['matches_prefix', 'matches_fuzzy_prefix']) {
+				assert.deepStrictEqual(
+					(
+						await search(
+							'matches',
+							'widget',
+							{ limit: info.limits.maxAutocompleteResults + 25 },
+							{
+								should: [{ comparator, value: 'widg', boost: 2 }],
+							}
+						)
+					).map(({ id }) => id),
+					ordered.slice(0, info.limits.maxAutocompleteResults + 25)
+				);
 				assert.deepStrictEqual(
 					(await search(comparator, 'widg', { rowFilter: (record) => !first.has(record.id) })).map(({ id }) => id),
 					ordered.slice(info.limits.maxAutocompleteResults, info.limits.maxAutocompleteResults + 25)
