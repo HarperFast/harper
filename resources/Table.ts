@@ -2000,7 +2000,10 @@ export function makeTable(options): TableResourceClass {
 	// Set when the TTL exists only on this thread: either application code configured it at runtime, or
 	// an isolated application's schema was declared here. Hydrating persisted metadata does not set it:
 	// dedicated workers open unrelated shared tables too, whose scan remains owned by the pool.
-	let ttlConfiguredByApplication = false;
+	let ttlOwnedByThread = false;
+	// Which part of the TTL in effect application code set, rather than a schema: a declaration with no
+	// TTL keeps that part and clears the rest. The number form sets only the expiration.
+	let applicationTtl: 'none' | 'expiration' | 'all' = 'none';
 	let ttlDeclaredBySchema = false;
 	let ttlFromLoad = false; // true only around a catalog load's setTTLExpiration call
 	evictionMs ??= 0;
@@ -2808,7 +2811,7 @@ export function makeTable(options): TableResourceClass {
 				retainExpiryScan = true;
 				scheduleCleanup();
 			}
-			if (ttlConfiguredByApplication || ttlDeclaredBySchema) return;
+			if (ttlOwnedByThread || ttlDeclaredBySchema) return;
 			expiration ||= 0;
 			eviction ||= 0;
 			if (expiration * 1000 === (expirationMs || 0) && eviction * 1000 === evictionMs) return;
@@ -3986,28 +3989,32 @@ export function makeTable(options): TableResourceClass {
 			if (validatedRefreshFraction !== undefined) replicaRefreshFraction = validatedRefreshFraction;
 			const declaredHere = !byNumber && opts.fromSchema;
 			const isolatedApplicationOwner = declaredHere && opts.isolatedApplicationOwner;
+			// a schema without a TTL does not clear one this thread's application code configured
+			const keepApplicationTtl =
+				declaredHere && applicationTtl !== 'none' && !expirationSeconds && !evictionSeconds && !scanIntervalSeconds;
 			const preserveLoadedConfiguration =
 				!byNumber &&
 				(declaredHere || opts.replicaExpiration !== undefined || opts.replicaRefreshFraction !== undefined) &&
 				((opts.expiration === undefined && opts.eviction === undefined && opts.scanInterval === undefined) ||
-					// a schema without a TTL does not clear one this thread's application code configured
-					(declaredHere &&
-						ttlConfiguredByApplication &&
-						!isolatedApplicationOwner &&
-						!expirationSeconds &&
-						!evictionSeconds &&
-						!scanIntervalSeconds));
-			if (((!ttlFromLoad && !declaredHere) || isolatedApplicationOwner) && !ttlConfiguredByApplication) {
-				ttlConfiguredByApplication = true;
+					(keepApplicationTtl && applicationTtl === 'all'));
+			if (((!ttlFromLoad && !declaredHere) || isolatedApplicationOwner) && !ttlOwnedByThread) {
+				ttlOwnedByThread = true;
 				// the scan owner may have changed with this: re-evaluate even if the interval did not
 				lastCleanupInterval = undefined;
 			}
 			if (byNumber) {
 				expirationMs = expirationSeconds * 1000;
 			} else if (!preserveLoadedConfiguration) {
-				expirationMs = (expirationSeconds ?? 0) * 1000;
+				// kept here means the application set only the expiration: the rest is the schema's to clear
+				if (!keepApplicationTtl) expirationMs = (expirationSeconds ?? 0) * 1000;
 				evictionMs = (evictionSeconds ?? 0) * 1000;
 				recordScanInterval = (scanIntervalSeconds ?? 0) * 1000;
+			}
+			if (!preserveLoadedConfiguration && !ttlFromLoad) {
+				// kept, the application's expiration is all that remains
+				if (keepApplicationTtl || (!declaredHere && !byNumber)) applicationTtl = 'all';
+				else if (declaredHere) applicationTtl = 'none';
+				else if (applicationTtl === 'none') applicationTtl = 'expiration';
 			}
 			if (declaredHere && !preserveLoadedConfiguration) ttlDeclaredBySchema = true;
 			const scanWasScheduled = !preserveLoadedConfiguration && (expirationScanScheduled || cleanupTimer);
@@ -14610,7 +14617,7 @@ export function makeTable(options): TableResourceClass {
 	function runRecordExpirationEviction() {
 		if (isReadOnlyMode()) return;
 		// Periodically evict expired records, searching for records who expiresAt timestamp is before now
-		if (ownsStoreExpiration(primaryStore.path) || (ttlConfiguredByApplication && isDedicatedWorker())) {
+		if (ownsStoreExpiration(primaryStore.path) || (ttlOwnedByThread && isDedicatedWorker())) {
 			// we want to run the pruning of expired records on only one thread so we don't have conflicts in evicting
 			recordExpirationInterval = setInterval(() => {
 				// go through each database and table and then search for expired entries
@@ -15228,7 +15235,7 @@ export function makeTable(options): TableResourceClass {
 		));
 	}
 	function ownsCleanup(): boolean {
-		return ownsStoreMaintenance(primaryStore.path) || (ttlConfiguredByApplication && isDedicatedWorker());
+		return ownsStoreMaintenance(primaryStore.path) || (ttlOwnedByThread && isDedicatedWorker());
 	}
 	// an already-armed thread may own the timer only now (the main thread under threads: 0 loads
 	// tables before it is worker 0), so the flag and the timer are settled on every wake

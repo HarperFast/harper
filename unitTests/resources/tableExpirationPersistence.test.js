@@ -356,6 +356,56 @@ describe('table-level expiration persistence (harper-pro#1179)', () => {
 		assert.strictEqual(Configured.evictionMS, 10000);
 	});
 
+	it('keeps a TTL application code set through a re-declaration with none, isolated or not (QA-5424)', async function () {
+		for (const isolatedApplicationOwner of [true, false]) {
+			const tableName = `ExpiryApplicationRedeclared${isolatedApplicationOwner ? 'Isolated' : 'Shared'}`;
+			const Configured = keyed(tableName, { expiration: null, eviction: null, isolatedApplicationOwner });
+			Configured.setTTLExpiration({ expiration: 30, eviction: 10 });
+			keyed(tableName, { expiration: null, eviction: null, isolatedApplicationOwner });
+			assert.strictEqual(Configured.expirationMS, 30000, `isolatedApplicationOwner: ${isolatedApplicationOwner}`);
+			assert.strictEqual(Configured.evictionMS, 10000, `isolatedApplicationOwner: ${isolatedApplicationOwner}`);
+			await commitCatalog(Configured);
+			assert.deepStrictEqual(catalogExpiration(Configured), {}, 'an application TTL is never saved');
+		}
+	});
+
+	it('keeps only the expiration a number-form call set over a schema TTL the schema then drops', async function () {
+		const tableName = 'ExpiryNumberFormOverSchema';
+		const Declared = keyed(tableName, { expiration: 60, eviction: 3600, scanInterval: 3600 });
+		Declared.setTTLExpiration(30);
+		keyed(tableName, { expiration: null, eviction: null });
+		assert.strictEqual(Declared.expirationMS, 30000);
+		assert.strictEqual(Declared.evictionMS, 0, "the eviction was the schema's");
+		keyed(tableName, { expiration: null, eviction: null });
+		assert.strictEqual(Declared.expirationMS, 30000, 'a further declaration without a TTL keeps it');
+	});
+
+	it("clears a TTL an isolated application's schema declared when it declares none", async function () {
+		const tableName = 'ExpiryIsolatedSchemaCleared';
+		const Declared = keyed(tableName, { expiration: 600, eviction: 300, isolatedApplicationOwner: true });
+		assert.strictEqual(Declared.expirationMS, 600000);
+		keyed(tableName, { expiration: null, eviction: null, isolatedApplicationOwner: true });
+		await commitCatalog(Declared);
+		assert.deepStrictEqual(catalogExpiration(Declared), {});
+		assert(!Declared.expirationMS, `this thread still applies ${Declared.expirationMS}ms`);
+		assert.strictEqual(Declared.evictionMS, 0);
+	});
+
+	it('clears a schema TTL that replaced the one application code set, when the schema drops it', async function () {
+		for (const isolatedApplicationOwner of [true, false]) {
+			const tableName = `ExpirySchemaReplacedApplication${isolatedApplicationOwner ? 'Isolated' : 'Shared'}`;
+			const Configured = keyed(tableName, { isolatedApplicationOwner });
+			Configured.setTTLExpiration({ expiration: 30 });
+			keyed(tableName, { expiration: 120, isolatedApplicationOwner });
+			assert.strictEqual(Configured.expirationMS, 120000);
+			keyed(tableName, { expiration: null, eviction: null, isolatedApplicationOwner });
+			assert(
+				!Configured.expirationMS,
+				`isolatedApplicationOwner ${isolatedApplicationOwner} kept ${Configured.expirationMS}ms`
+			);
+		}
+	});
+
 	it('loads a saved value no declaration could save now as absent', async function () {
 		const tableName = 'ExpiryLegacyInvalid';
 		const Legacy = keyed(tableName);

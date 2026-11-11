@@ -1,7 +1,14 @@
 require('../testUtils');
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
-const { table, databases, getDatabases, resetDatabases, armTableCleanupScans } = require('#src/resources/databases');
+const {
+	table,
+	databases,
+	getDatabases,
+	resetDatabases,
+	armTableCleanupScans,
+	scopedTableFactory,
+} = require('#src/resources/databases');
 const { makeTable } = require('#src/resources/Table');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { waitFor } = require('../waitFor');
@@ -122,6 +129,31 @@ describe('TTL cleanup scan interval', () => {
 			);
 			assert(stored(Table, 1), 'a query does not evict');
 			await waitFor(() => !stored(Table, 1), { timeout: 10_000, message: 'the expired record was never evicted' });
+		} finally {
+			Table.cleanup();
+		}
+	});
+
+	it("an isolated application's schema without a TTL leaves the scan for one application code set (QA-5424)", async () => {
+		const definition = {
+			table: 'TtlIsolatedApplicationKept',
+			database: databaseName,
+			expiration: null,
+			eviction: null,
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		};
+		// the table as a previous start left it; application code (jsResource) then loads before the schema
+		const Table = table({ table: definition.table, database: databaseName, attributes: definition.attributes });
+		const isolatedTable = scopedTableFactory(undefined, true);
+		try {
+			Table.sourcedFrom({ get: (id) => ({ id }) }, { expiration: 0.05 });
+			isolatedTable(definition);
+			isolatedTable(definition);
+			assert.strictEqual(Table.expirationMS, 50);
+			await Table.put(1, { id: 1 });
+			await Table.primaryStore.committed;
+			assert(stored(Table, 1));
+			await waitFor(() => !stored(Table, 1), { timeout: 5000, message: 'the expired record was never evicted' });
 		} finally {
 			Table.cleanup();
 		}
