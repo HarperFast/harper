@@ -301,7 +301,7 @@ const READINESS_REBUILD_REQUEST = 3;
 const READINESS_LAG_EXCEEDED = 4;
 const QUIET_EPOCH = 0;
 const QUIET_SUM = 1;
-const QUIET_LOGS = 0;
+const QUIET_NAMES = 0;
 const QUIET_TABLE = 1;
 const QUIET_BYTES = 24;
 
@@ -1119,7 +1119,8 @@ class DerivedIndexRunner {
 	 * for work: a log moved past the positions the last idle owner proved covered (a commit that writes no
 	 * log entry, such as an audit-metadata update, wakes every runner but moves none), or a demand the log
 	 * does not carry. Only the owner of an epoch writes the mark, once, storing that epoch last, so an
-	 * owner epoch unchanged across the reads makes them one mark.
+	 * owner epoch unchanged across the reads makes them one mark. A registration over several tables, or
+	 * whose backend captures no coverage, has no mark and acquires on every wake as before.
 	 */
 	#quietSinceRelease(): boolean {
 		if (
@@ -1140,11 +1141,11 @@ class DerivedIndexRunner {
 				Atomics.load(quiet.words, QUIET_TABLE) !== this.#quietTable
 			)
 				return false;
-			const logs = Atomics.load(quiet.words, QUIET_LOGS);
+			const names = Atomics.load(quiet.words, QUIET_NAMES);
 			const sum = Atomics.load(quiet.marks, QUIET_SUM);
 			if (Atomics.load(epoch, 0) !== releasedEpoch) return false;
 			const current = this.#admission.currentLogMark();
-			return current !== undefined && current.logs === logs && current.sum === sum;
+			return current !== undefined && current.names === names && current.sum === sum;
 		} catch {
 			return false;
 		}
@@ -1152,7 +1153,7 @@ class DerivedIndexRunner {
 
 	#publishQuiet(epoch: bigint, mark: LogMark) {
 		const { marks, words } = this.#quiet;
-		Atomics.store(words, QUIET_LOGS, mark.logs);
+		Atomics.store(words, QUIET_NAMES, mark.names);
 		Atomics.store(words, QUIET_TABLE, this.#quietTable!);
 		Atomics.store(marks, QUIET_SUM, mark.sum);
 		Atomics.store(marks, QUIET_EPOCH, epoch);
@@ -2684,23 +2685,25 @@ function readCommittedPositions(
 	return positions;
 }
 
-type LogMark = { logs: number; sum: bigint };
+type LogMark = { names: number; sum: bigint };
 
 /**
  * A log's committed position only moves forward (commits, rotation and purge all advance it) and its offset
- * fits 32 bits, so over the same logs an equal sum means no log moved. A sum past 2^63 (sequence numbers
- * summing past 2^31) gives no mark, so runners acquire as they would without one.
+ * fits 32 bits, so over the same logs an equal sum means no log moved; `names` hashes the sorted log names,
+ * so a log set that changed is a different mark. A sum past 2^63 (sequence numbers summing past 2^31) gives
+ * no mark, so runners acquire as they would without one.
  */
 function logMark(positions: DerivedIndexPositions | undefined): LogMark | undefined {
 	if (!positions) return;
-	let logs = 0;
+	let names = 0x811c9dc5;
 	let sum = 0n;
-	for (const name in positions) {
-		logs++;
+	for (const name of Object.keys(positions).sort()) {
+		for (let i = 0; i < name.length; i++) names = Math.imul(names ^ name.charCodeAt(i), 0x01000193);
+		names = Math.imul(names, 0x01000193);
 		const position = positions[name];
 		if (position) sum += (BigInt(position.sequence) << 32n) + BigInt(position.offset);
 	}
-	return sum < 1n << 63n ? { logs, sum } : undefined;
+	return sum < 1n << 63n ? { names, sum } : undefined;
 }
 
 export function sameDerivedIndexPositions(left: DerivedIndexPositions, right: DerivedIndexPositions): boolean {

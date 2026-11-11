@@ -136,7 +136,6 @@ describe('A derived index whose table receives no writes', () => {
 			.at(-1).txnLogKey;
 		const id = 'idle-epoch-products';
 		const rootStore = auditStore.rootStore;
-		// The publication an idle pass leaves: the cursor plus the committed positions it covers.
 		const coverage = Object.fromEntries(
 			rootStore.listLogs().map((name) => [name, rootStore.useLog(name).getStats().lastCommittedPosition])
 		);
@@ -192,9 +191,9 @@ describe('A derived index whose table receives no writes', () => {
 				assert.deepStrictEqual(await search(), []);
 			}
 
-			assert.strictEqual(readDerivedIndexReadiness(auditStore, id).ownerEpoch, epoch, 'the owner epoch changed');
-			assert.strictEqual(shared.readerOpens, 1, 'the full-text reader was reopened');
-			assert.strictEqual(shared.inspections, inspections, 'an ownership session started with no log entry to read');
+			assert.strictEqual(readDerivedIndexReadiness(auditStore, id).ownerEpoch, epoch, 'the owner epoch stays');
+			assert.strictEqual(shared.readerOpens, 1, 'the full-text reader stays open');
+			assert.strictEqual(shared.inspections, inspections, 'no ownership session starts without a log entry');
 
 			await Product.put('written', { title: 'written' });
 			await waitFor(() => shared.applied.length === 2, { timeout: 10_000 });

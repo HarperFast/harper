@@ -1294,6 +1294,23 @@ describe('DerivedIndexRuntime', () => {
 			await runtime.stop();
 		});
 
+		it('acquires when a log is replaced by another at the same position', async () => {
+			const logNames = ['local', 'peer-a'];
+			const store = quietStore(new Map([[10, []]]), logNames);
+			const backend = coverageBackend('quiet-replaced-log');
+			const { runtime } = runtimeFor(store, new Map(), options);
+			runtime.register(registration(backend));
+			await released(store, backend);
+			const epoch = runtime.getReadiness(backend.id).ownerEpoch;
+
+			logNames[1] = 'peer-b';
+			store.rootStore.emit('committed');
+			await waitFor(() => runtime.getReadiness(backend.id).ownerEpoch > epoch, {
+				message: 'a changed log set must be read by an owner',
+			});
+			await runtime.stop();
+		});
+
 		it('publishes no idle positions from a runner stopped while it releases', async () => {
 			const store = quietStore();
 			const backend = coverageBackend('quiet-stopped');
