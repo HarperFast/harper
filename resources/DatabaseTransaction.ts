@@ -729,6 +729,11 @@ export type TransactionWrite = {
 	beforeIntermediate?: () => void | Promise<void>;
 	// the instance that staged this write: its commit stores that instance's changes or clears them
 	stagedBy?: object;
+	// set only when this write's record is that instance's tracked changes, with the changes object the write
+	// captured: a later update can replace the instance's own, so only an empty collapse of these means the write
+	// stores nothing. A write carrying a record of its own leaves both unset.
+	trackedInstance?: object;
+	trackedChanges?: object;
 	// stages the record and its audit entry before returning: staging reads what it appended (stagedAudit)
 	// as soon as it returns. A returned promise is only a completion to wait for.
 	commit?: (
@@ -1058,14 +1063,10 @@ function holderWriteRefusal(handle: RecordLockHandle): ClientError {
 
 function stagesWriteChange(operation: TransactionWrite): boolean {
 	const instance = operation.trackedInstance as any;
-	if (!instance) return true;
+	if (!instance || operation.fullUpdate) return true;
 	operation.captureChanges?.();
 	return (
-		collapseChanges(
-			instance,
-			typeof instance.getChanges === 'function' ? instance.getChanges() : undefined,
-			instance.constructor?.loadAsInstance !== false
-		) !== undefined
+		collapseChanges(instance, operation.trackedChanges, instance.constructor?.loadAsInstance !== false) !== undefined
 	);
 }
 
