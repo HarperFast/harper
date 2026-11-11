@@ -398,29 +398,33 @@ function reconstructAtTimestamp(
 		lowerBound = Math.max(1, lowerBound);
 		let windowEnd = timestamp + 0.001;
 		let windowStart = Number.isFinite(timestamp) ? timestamp : lowerBound;
+		const hasState = (entry) => STATE_TYPES.has(entry.type) || entry.previousVersion;
 		for (let width = 100; !start && windowEnd > lowerBound; windowStart -= width, width *= 2) {
-			let key,
-				candidate,
-				preferred = false;
-			const finishKey = () => {
-				if (candidate) start = candidate;
-			};
 			for (const auditEntry of auditStore.getRange({ start: Math.max(windowStart, lowerBound), end: windowEnd })) {
-				if (auditEntry.txnLogKey > timestamp || !isOfRecord(auditEntry)) continue;
-				if (auditEntry.txnLogKey !== key) {
-					finishKey();
-					key = auditEntry.txnLogKey;
-					candidate = undefined;
-					preferred = false;
+				if (auditEntry.txnLogKey > timestamp || !isOfRecord(auditEntry) || !hasState(auditEntry)) continue;
+				if (
+					start &&
+					(auditEntry.txnLogKey < start.txnLogKey ||
+						(auditEntry.txnLogKey === start.txnLogKey && nodeId != null && (start.nodeId ?? 0) === nodeId))
+				)
+					continue;
+				let candidate = auditEntry;
+				if (nodeId != null && (auditEntry.nodeId ?? 0) !== nodeId) {
+					const preferredFrame = readAuditFrame(
+						auditStore,
+						tableId,
+						recordId,
+						auditEntry.txnLogKey,
+						nodeId,
+						false,
+						memo
+					);
+					const preferredState = preferredFrame.findLast(hasState);
+					if (preferredState) candidate = preferredState;
+					else if (preferredFrame.some((entry) => entry.type === 'invalidate')) continue;
 				}
-				const hasState = STATE_TYPES.has(auditEntry.type) || auditEntry.previousVersion;
-				if (nodeId != null && (auditEntry.nodeId ?? 0) === nodeId && (hasState || auditEntry.type === 'invalidate')) {
-					if (!preferred) candidate = undefined;
-					preferred = true;
-					if (hasState) candidate = auditEntry;
-				} else if (hasState && !preferred) candidate = auditEntry;
+				start = candidate;
 			}
-			finishKey();
 			windowEnd = windowStart;
 		}
 		if (!start) return null;

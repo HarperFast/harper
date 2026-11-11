@@ -524,7 +524,8 @@ describe('bounded history readers', function () {
 						{ transaction: txn, nodeId }
 					);
 				T.primaryStore.rootStore.transactionSync((txn) => {
-					previousKey = txn.getTimestamp();
+					previousKey = Date.now() + 1000;
+					txn.setTimestamp(previousKey);
 					write(txn, origins[0], 'put', 7);
 				});
 				const writers = [
@@ -534,11 +535,18 @@ describe('bounded history readers', function () {
 				if (reverseOrder) writers.reverse();
 				for (const write of writers)
 					T.primaryStore.rootStore.transactionSync((txn) => {
-						if (sharedKey) txn.setTimestamp(sharedKey);
-						else sharedKey = txn.getTimestamp();
+						sharedKey ??= previousKey + 100;
+						txn.setTimestamp(sharedKey);
 						write(txn);
 					});
 				assert(sharedKey > previousKey);
+				if (!linked)
+					T.primaryStore.rootStore.transactionSync((txn) => {
+						const middle = (previousKey + sharedKey) / 2;
+						assert(middle > previousKey && middle < sharedKey);
+						txn.setTimestamp(middle);
+						write(txn, origins[0], 'put', 8);
+					});
 				const order = [...T.auditStore.getRange({ start: sharedKey, exactStart: true })]
 					.filter((entry) => entry.txnLogKey === sharedKey && entry.tableId === T.tableId && entry.recordId === 'a')
 					.map((entry) => entry.nodeId);
@@ -549,7 +557,7 @@ describe('bounded history readers', function () {
 				for (const cutoff of [sharedKey, sharedKey + 0.1, Infinity]) {
 					assert.deepStrictEqual(getRecordAtTime(undefined, cutoff, T.primaryStore, T.tableId, 'a', origins[0]), {
 						id: 'a',
-						n: 7,
+						n: linked ? 7 : 8,
 					});
 					assert.deepStrictEqual(getRecordAtTime(undefined, cutoff, T.primaryStore, T.tableId, 'a', origins[1]), {
 						id: 'a',
@@ -567,7 +575,7 @@ describe('bounded history readers', function () {
 		const base = Date.now() + 10000;
 		for (const [offset, n] of [
 			[200, 2],
-			[100, 1],
+			[190, 1],
 		]) {
 			T.primaryStore.rootStore.transactionSync((txn) => {
 				txn.setTimestamp(base + offset);
@@ -586,9 +594,13 @@ describe('bounded history readers', function () {
 			});
 		}
 		raiseAuditFloor(T.auditStore, base + 300);
-		assert.deepStrictEqual(getRecordAtTime(undefined, base + 150, T.primaryStore, T.tableId, 'a', origin), {
+		assert.deepStrictEqual(getRecordAtTime(undefined, base + 195, T.primaryStore, T.tableId, 'a', origin), {
 			id: 'a',
 			n: 1,
+		});
+		assert.deepStrictEqual(getRecordAtTime(undefined, base + 250, T.primaryStore, T.tableId, 'a', origin), {
+			id: 'a',
+			n: 2,
 		});
 	});
 
