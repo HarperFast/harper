@@ -1534,6 +1534,39 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 			);
 		});
 
+		it('requires a role of an earlier subscription once another subscription on its context latched it', async () => {
+			await testUtils.seedUsers([{ username: 'latch_source', active: true, role: 'missing_role' }]);
+			const source = await resolve('latch_source');
+			const context = { user: await certificate('shared_latch_cn'), authorize: true };
+			const earlier = grantingByUsername('shared_latch_cn');
+			const earlierSubscription = await earlier.Resource.subscribe('topic', undefined, context);
+			handles.push({ unregister: () => earlierSubscription.end() });
+
+			// A later subscription on the context, by a principal whose records changed, is rechecked alone at
+			// registration, and finds a record for the name that no notification has brought to the earlier one.
+			const unbacked = await resolve('latch_stale');
+			context.user = userModule.certificatePrincipal({ ...unbacked, username: 'shared_latch_cn' });
+			await databases.system.hdb_user.put({ username: 'latch_stale', active: true, role: 'missing_role' });
+			const findAndValidateUser = userModule.findAndValidateUser;
+			userModule.findAndValidateUser = (name, ...rest) =>
+				name === 'shared_latch_cn'
+					? Promise.resolve({ ...source, username: name })
+					: findAndValidateUser(name, ...rest);
+			try {
+				const later = grantingByUsername('shared_latch_cn');
+				await assert.rejects(later.Resource.subscribe('topic', undefined, context), { statusCode: 403 });
+				assert.strictEqual(earlier.end.calls.length, 0, 'not rechecked yet');
+			} finally {
+				userModule.findAndValidateUser = findAndValidateUser;
+			}
+			await _sweepNow();
+			assert.strictEqual(
+				earlier.end.calls.length,
+				1,
+				'the earlier subscription needs a role too, though no record remains'
+			);
+		});
+
 		it('keeps the CONNECT lookup of a certificate principal a component built with no hdb_user', async () => {
 			const built = { username: 'component_cert_cn', active: true };
 			const admission = {};

@@ -1233,7 +1233,8 @@ function registerLiveSubscriptionForContext(
 				// or role-stripped user no longer authorizes.
 				fresh = await pass.memo(resolveUser, username, resolveUser);
 				if (!fresh) return false;
-				if (!roleRequired && isRecordBacked(fresh)) {
+				// another subscription's recheck may have latched this principal or context since it registered
+				if (!roleRequired && (isRecordBacked(fresh) || recordBacked.has(user) || recordBacked.has(context))) {
 					roleRequired = true;
 					recordBacked.add(user);
 					if (context) recordBacked.add(context);
