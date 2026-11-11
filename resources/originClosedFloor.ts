@@ -12,8 +12,9 @@ import { onMessageByType } from '../server/threads/manageThreads.ts';
  * per-root-store shared buffer, a lower bound on every key it may still append; a certifier
  * publishes `F ≤ min(a clock sample taken first, every thread's bound)`, so no transaction can later
  * append below `F`. Persisted before it is advertised; the open raises rocksdb-js's process-wide clock
- * above the persisted floor and issuance ceiling, so a restart behind them mints above both. Design:
- * resources/DESIGN.md "Origin-closed timestamp floor".
+ * above the persisted floor and issuance ceiling, so a restart behind them mints above both. That clock
+ * mints for every database in the process, so each database covers its own keys that run ahead of the wall
+ * clock, whatever raised it (`noteIssued`). Design: resources/DESIGN.md "Origin-closed timestamp floor".
  */
 
 const SLOTS = 1024;

@@ -66,9 +66,10 @@ The synthesized target keeps the collection flag, or the batch is one null-keyed
 
 **Nothing appends to `local` below the certified floor `F`** (`originClosedFloor.ts`, harper-pro#922).
 
-- **Every `local` key is minted** and reserved on its thread before the first staged write (`DatabaseTransaction.save`, `reserveLocalKey`); a caller's value is only the record version (`uniqueLocalLogKeys.test.js`). Otherwise `RocksTransactionLogStore.put` throws: a logged violation is unrepairable.
+- A key is reserved on its thread before the first staged write (`DatabaseTransaction.save`, `reserveLocalKey`). Otherwise `RocksTransactionLogStore.put` throws: a logged violation is unrepairable.
 - A thread marks its bound pending before minting; samplers raise `proposed` before reading bounds, so one side sees the other. Compare-and-swap maxima keep concurrent certifiers safe. `localStartBound` cannot yield, so it uses the carried bound or the floor published before its sample, never a clock (harper#3599).
-- The floor syncs before publication where `syncWal` exists (`originFloorsDurable`). The open raises the process-wide clock past the persisted floor and ceiling before caching the audit store, or refuses it (`seedLocalIssuance`). A key ≥1 ms ahead of wall time is covered by its database's ceiling first (`noteIssued`). Gaps: power loss without `syncWal`, version-only re-delivery of a local explicit-timestamp write past the walk cap (harper#1148), older binaries, LMDB.
+- **Every `local` key is minted** (`reserve`, `freshKey`). A caller's value is only the record version (`uniqueLocalLogKeys.test.js`).
+- The floor syncs before publication where the engine has `syncWal` (`originFloorsDurable`), and the issuance ceiling is persisted before use (`coverLocalIssuance`), so a restart seeds the clock above both. Gaps: power loss without `syncWal`, version-only re-delivery of a local explicit-timestamp write past the walk cap (harper#1148), older binaries, LMDB.
 - A reservation ends only at its handle's terminal settle or an abort. Worker bounds retire only on main's `worker.on('exit')`, after its commits drain.
 - `progress()` reports `certifiedThrough`. A notify pass captures `localStartBound` before it drains; a same-thread registry uses its own `threadStartBound`, runs no capture tick and certifies no scalar replay (`subscribeProgress.test.js`).
 
