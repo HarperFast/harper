@@ -175,7 +175,7 @@ Drops a database and all its tables/records. **Replicates to all cluster nodes b
 
 ### `create_table`
 
-Creates a new table. Optional fields: `database` (defaults to `data`), `attributes` (array defining schema), `expiration` (TTL in seconds).
+Creates a new table. Optional fields: `database` (defaults to `data`), `attributes` (array defining schema), `expiration` (TTL in seconds), `eviction` (seconds after `expiration` before a record is removed; see [`@table`](../database/schema.md#table)). A negative or non-numeric `expiration` or `eviction` is rejected with a 400 error.
 
 ```json
 {

@@ -31,8 +31,7 @@ name: Cherry-pick milestoned PRs to release branches
 # payload, so changing a milestone (v5.1 → v5.2) tears down the branches that
 # are no longer targeted without depending on GitHub's event ordering.
 #
-# Conflicts are pushed with markers and a sticky comment @-mentions Claude
-# asking for a suggested resolution patch (handled by claude-mention.yml).
+# Conflicts are pushed with markers and reported in a sticky comment.
 
 on:
   workflow_dispatch:
@@ -542,7 +541,7 @@ jobs:
             "$STICKY_MARKER" "$RELEASE_BRANCH" "$HOLD" "$RELEASE_BRANCH" "$HELD_PR_URL")
           node "$RUNNER_TEMP/upsert-sticky-comment.js" "$PR_NUMBER" "$STICKY_MARKER" "$BODY"
 
-      # ── Conflict path: post sticky comment, @-mention Claude ────────────
+      # ── Conflict path: post sticky comment ──────────────────────────────
       - name: Report conflict
         if: steps.pick.outputs.no_op != 'true' && steps.pick.outputs.conflicts != ''
         env:
@@ -575,8 +574,7 @@ jobs:
                 --base "$RELEASE_BRANCH" \
                 --head "$BRANCH" \
                 --title "cherry-pick: ${PR_TITLE} (conflicts → ${RELEASE_BRANCH})" \
-                --body "$(printf 'Cherry-pick of PR #%s onto \`%s\` produced conflicts on commit(s): \`%s\`.%s\n\nResolve the conflict markers on branch \`%s\` and merge this PR.\n\n@claude please review branch \`%s\` and suggest a patch that resolves the conflict markers (`<<<<<<<` / `=======` / `>>>>>>>`) introduced by cherry-picking PR #%s onto \`%s\`. Post the suggested patch as a comment here — do not push.\n' \
-                  "$PR_NUMBER" "$RELEASE_BRANCH" "$CONFLICTS" "$MERGE_WARN" "$BRANCH" "$BRANCH" "$PR_NUMBER" "$RELEASE_BRANCH")")
+                --body "$CONFLICT_BODY")
             else
               # The branch is rebuilt on every run; an earlier body may describe
               # a different set of conflicting commits.
@@ -585,8 +583,8 @@ jobs:
             BODY=$(printf '%s\n## Release cherry-pick `%s`: conflict\n\nCherry-pick onto `%s` produced conflicts on commit(s): `%s`%s\n\nThe conflict markers are committed on branch [`%s`](../tree/%s).\nA pull request has been opened to land this patch: %s\n' \
               "$STICKY_MARKER" "$RELEASE_BRANCH" "$RELEASE_BRANCH" "$CONFLICTS" "$MERGE_WARN" "$BRANCH" "$BRANCH" "$PATCH_PR_URL")
           else
-            BODY=$(printf '%s\n## Release cherry-pick `%s`: conflict\n\nCherry-pick onto `%s` produced conflicts on commit(s): `%s`%s\n\nThe conflict markers are committed on branch [`%s`](../tree/%s).\nIntegration tests are **not** running until conflicts are resolved.\n\n@claude please review branch `%s` and suggest a patch that resolves the conflict markers (`<<<<<<<` / `=======` / `>>>>>>>`) introduced by cherry-picking PR #%s onto `%s`. Post the suggested patch as a comment on this PR — do not push.\n' \
-              "$STICKY_MARKER" "$RELEASE_BRANCH" "$RELEASE_BRANCH" "$CONFLICTS" "$MERGE_WARN" "$BRANCH" "$BRANCH" "$BRANCH" "$PR_NUMBER" "$RELEASE_BRANCH")
+            BODY=$(printf '%s\n## Release cherry-pick `%s`: conflict\n\nCherry-pick onto `%s` produced conflicts on commit(s): `%s`%s\n\nThe conflict markers are committed on branch [`%s`](../tree/%s).\nIntegration tests are **not** running until conflicts are resolved.\n' \
+              "$STICKY_MARKER" "$RELEASE_BRANCH" "$RELEASE_BRANCH" "$CONFLICTS" "$MERGE_WARN" "$BRANCH" "$BRANCH")
           fi
           node "$RUNNER_TEMP/upsert-sticky-comment.js" "$PR_NUMBER" "$STICKY_MARKER" "$BODY"
 

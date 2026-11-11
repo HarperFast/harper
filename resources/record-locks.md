@@ -126,8 +126,11 @@ Consequences that shape the code:
   scope's final commit (`scopeEnding`) is not waited out. A `lock()` made by the scope's own pre-commit hook
   (`operation.before`, a source write-through) while that hook runs belongs to the commit, which awaits it:
   `runCommitHook` marks the invocation in an `AsyncLocalStorage` (`currentCommitHook`) until the hook settles;
-  only that follows the hook's awaits, which the two calls the marker identifies come after. The cache-fill blob
-  save runs no user code, so it is a `beforeIntermediate` and is not wrapped (harper#4085).
+  only that follows the hook's awaits, which the two calls the marker identifies come after. So does one from a
+  hook nested under it, run by a commit the hook started on another transaction (`isOwnCommitHook` walks the
+  marker's `parent` chain through unsettled invocations to one of the scope's root): the commit awaits the outer
+  hook, which awaits the writes it makes. Work a settled hook left running is awaited by neither, so it waits.
+  The cache-fill blob save runs no user code, so it is a `beforeIntermediate` and is not wrapped (harper#4085).
   Outside `transaction()` the marker also names the committing link: an unlocked write made within that hook
   on that link, directly or through a commit the hook started on another link (the marker's `parent` chain), is
   staged into the commit and resolves without awaiting it, where any other unlocked write joining the parked
@@ -381,13 +384,14 @@ unlock as before.
 `before` hook, then applies it. While a hook's synchronous part runs (`syncCommitHooks`), a save of the same record
 would apply first and be overwritten, so it is refused with a 409, locked or not and on any link (only the hook
 can be saving then; a rejected promise at top level), and changing a lock-writable instance whose own write runs the hook is refused (`update()` and
-`[ASSERT_TRACKED_WRITABLE]`, which every setter passes): that write stores the instance's changes object, so a refused save of them would land
-with it. After the hook's first await the outer write has applied: an unlocked same-record write chains after it,
+`[ASSERT_TRACKED_WRITABLE]`, which every setter passes, find it as the write's `stagedBy`). That write either stores the instance's changes
+object — a patch, or a full `update(record, true)`, which makes the record those changes — so a refused save of them would land with it, or
+stores a record passed to it and clears those changes as it commits, dropping the change unreported. After the hook's first await the outer write has applied: an unlocked same-record write chains after it,
 and a holder write is refused as above. On a self-committing link, `update()` through the lock whose commit runs
 the hook is refused too: nothing would commit the deferred write, and left staged it would refuse a fresh `lock()`
 of the record on that context. A hook awaits or catches its writes: an ignored refusal is an unhandled rejection
 and the outer write still commits. An object mutated in place after it was passed to the outer write is not
-tracked and changes that write. LMDB applies writes at commit in staging order, so there the hook's write lands
+tracked and changes that write, the record of a holder's full update included. LMDB applies writes at commit in staging order, so there the hook's write lands
 after the outer one.
 
 **Hold handles and re-entrancy scope.** A hold handle stays registered on the resource instance
@@ -1632,7 +1636,8 @@ feature that has not yet been measured.
 >    unlocked write before `lock()`, keeps its clock; state beyond `storage.maxLockClockSkew` rejects
 >    admission; and any lock write (scoped or held, including disjoint-field patches and commutative ops)
 >    saved in an explicit transaction whose clock is already fixed below the lock's required floor is
->    refused with a 409 ([harper#2712](https://github.com/HarperFast/harper/issues/2712)). To avoid the 409, take the lock first or save the held record in its own transaction.
+>    refused with a 409 ([harper#2712](https://github.com/HarperFast/harper/issues/2712)), unless it stores nothing: a tracked write whose captured
+>    changes collapse to no patch (`stagesWriteChange`), so a read-only lock still commits. To avoid the 409, take the lock first or save the held record in its own transaction.
 > 2. **Successor freshness is not promised on the recovery path.** The §7.2 barrier drains streams
 >    from every _reachable_ member, so a write the predecessor committed and did not replicate is
 >    invisible to it: the barrier succeeds and the successor reads a stale value. Three routes in, and

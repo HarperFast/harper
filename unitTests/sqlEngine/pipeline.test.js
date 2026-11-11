@@ -24,7 +24,12 @@ function makeMockTable({ primaryKey = 'id', attributes = [], rows = [] } = {}) {
 	indexed.add(primaryKey);
 	const table = {
 		primaryKey,
-		attributes: attributes.map((a) => ({ name: a.name, indexed: !!a.indexed, indexNulls: !!a.indexNulls })),
+		attributes: attributes.map((a) => ({
+			name: a.name,
+			type: a.type,
+			indexed: !!a.indexed,
+			indexNulls: !!a.indexNulls,
+		})),
 		indices: Object.fromEntries(
 			attributes.filter((a) => a.indexed).map((a) => [a.name, { indexNulls: !!a.indexNulls }])
 		),
@@ -130,7 +135,7 @@ describe('sqlEngine phase 1: SELECT pipeline', () => {
 			primaryKey: 'id',
 			attributes: [
 				{ name: 'id', indexed: true },
-				{ name: 'name', indexed: true },
+				{ name: 'name', type: 'String', indexed: true },
 				{ name: 'age', indexed: true },
 				{ name: 'city', indexed: false },
 			],
@@ -788,7 +793,7 @@ describe('sqlEngine LIKE … ESCAPE through the pipeline (#3878)', () => {
 			primaryKey: 'id',
 			attributes: [
 				{ name: 'id', indexed: true },
-				{ name: 'ip', indexed: true },
+				{ name: 'ip', type: 'String', indexed: true },
 				{ name: 'note', indexed: false },
 			],
 			rows: IPS.map((ip, i) => ({ id: i + 1, ip, note: ip })),
