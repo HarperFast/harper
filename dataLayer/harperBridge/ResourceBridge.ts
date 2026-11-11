@@ -168,6 +168,7 @@ export class ResourceBridge extends BridgeMethods {
 			attributes,
 			schemaDefined,
 			expiration: tableCreateObj.expiration,
+			eviction: tableCreateObj.eviction,
 			audit: tableCreateObj.audit,
 		});
 	}

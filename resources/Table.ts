@@ -811,6 +811,34 @@ export function replicaExpirationMsOf(seconds: unknown): number | undefined {
 	if (!Number.isFinite(ms)) throw new Error('replicaExpiration is too large');
 	return ms;
 }
+// the scan cadence of a table with no TTL, which an expiring write arms for its per-record expiry
+const DEFAULT_CLEANUP_INTERVAL = 86_400_000;
+// the latest Date, in seconds: an expiry past it cannot be stamped on a record
+const MAX_TTL_SECONDS = 8.64e12;
+/**
+ * A table's `expiration`, `eviction` or `scanInterval` in seconds, as a declaration or `setTTLExpiration` gives
+ * it: undefined when not given, 0 for `null` (cleared), else a number or a numeric string (a create persisted it
+ * as given) that is finite and zero or more.
+ */
+export function ttlSecondsOf(table: string, field: string, value: unknown): number | undefined {
+	if (value === undefined) return undefined;
+	if (value === null) return 0;
+	const seconds =
+		typeof value === 'number' ? value : typeof value === 'string' && value.trim() !== '' ? Number(value) : NaN;
+	if (seconds >= 0 && seconds <= MAX_TTL_SECONDS) return seconds;
+	const shown =
+		typeof value === 'number'
+			? String(value)
+			: typeof value === 'string'
+				? JSON.stringify(value.slice(0, 40))
+				: typeof value;
+	throw new ClientError(`${field} of '${table}' must be a non-negative number of seconds, got ${shown}`);
+}
+/** A TTL field as the catalog holds it: absent unless a valid positive number of seconds. */
+export function savedTtlSeconds(value: unknown): number | undefined {
+	const seconds = Number(value);
+	return seconds > 0 && seconds <= MAX_TTL_SECONDS ? seconds : undefined;
+}
 const TEST_WRITE_KEY_BUFFER = Buffer.allocUnsafeSlow(8192);
 const MAX_KEY_BYTES = 1978;
 const EVENT_HIGH_WATER_MARK = 100;
@@ -1196,6 +1224,7 @@ interface TableResourceClass {
 	readonly residency: Readonly<ResidencyPolicy> | undefined;
 	_setResidencyPolicy(policy: ResidencyPolicy): void;
 	_adoptCatalogExpiration(expiration?: number, eviction?: number): void;
+	_armCleanupScan(): void;
 	getResidencySlot(id: Id, record?: object): number;
 	getRecordResidency(entry: Partial<Entry>): readonly string[] | undefined;
 	get expirationMS(): any;
@@ -1964,7 +1993,6 @@ export function makeTable(options): TableResourceClass {
 	// a store on any thread wakes the sweep when [1] is 0
 	let replicaSweepState: Int32Array | undefined;
 	let recordScanInterval = 0;
-	let recordCleanupInterval = 86400000;
 	const replicaRefreshInFlight = new Set<Id>();
 	const replicaRefreshInFlightComposite = new Set<string>();
 	// Set when the TTL exists only on this thread: either application code configured it at runtime, or
@@ -2036,7 +2064,7 @@ export function makeTable(options): TableResourceClass {
 	let prefetchCallbacks = [];
 	let untilNextPrefetch = 1;
 	let nonPrefetchSequence = 2;
-	let cleanupInterval = 86400000;
+	let cleanupInterval = DEFAULT_CLEANUP_INTERVAL;
 	let cleanupPriority = 0;
 	let lastCleanupInterval: number | undefined;
 	let cleanupTimer: NodeJS.Timeout | undefined;
@@ -2772,21 +2800,22 @@ export function makeTable(options): TableResourceClass {
 		 */
 		static _adoptCatalogExpiration(expiration?: number, eviction?: number) {
 			if (ttlConfiguredByApplication || ttlDeclaredBySchema) return;
-			const loadedExpirationMs = expiration && expiration > 0 ? expiration * 1000 : 0;
-			const loadedEvictionMs = eviction && eviction > 0 ? eviction * 1000 : 0;
-			if (!loadedExpirationMs && !loadedEvictionMs) return;
-			if (loadedExpirationMs === expirationMs && loadedEvictionMs === evictionMs) return;
-			evictionMs = loadedEvictionMs;
-			if (!loadedExpirationMs) {
-				expirationMs = 0;
-				return;
-			}
+			expiration ||= 0;
+			eviction ||= 0;
+			if (expiration * 1000 === (expirationMs || 0) && eviction * 1000 === evictionMs) return;
 			ttlFromLoad = true;
 			try {
-				TableResource.setTTLExpiration(loadedExpirationMs / 1000);
+				TableResource.setTTLExpiration({ expiration, eviction });
 			} finally {
 				ttlFromLoad = false;
 			}
+		}
+		/**
+		 * Arm the cleanup scan of a table this thread loaded before it could own the scan: under `threads: 0` the
+		 * main thread loads every table before it becomes worker 0.
+		 */
+		static _armCleanupScan() {
+			if (expirationScanScheduled || evictionMs) scheduleCleanup();
 		}
 		static getResidencySlot(id: Id, record?: object): number {
 			return calculateResidencySlot(id, record);
@@ -3913,9 +3942,11 @@ export function makeTable(options): TableResourceClass {
 		 * @param opts Time in seconds until records expire, or an options object with `expiration`, `eviction`,
 		 * and `scanInterval` (all in seconds, all optional). Number form preserves any previously configured
 		 * eviction/scanInterval; object form replaces all three, unless it names only the replica options. An internal schema ownership-only call with
-		 * none of those values preserves the settings already loaded from the catalog.
+		 * none of those values preserves the settings already loaded from the catalog, and so does an internal
+		 * schema call with no TTL on a thread whose application code configured one.
 		 * Either form then scans for expired records every `scanInterval`, or a quarter of expiration + eviction
-		 * when none is configured.
+		 * when none is configured, or daily (for per-record expiry) when the table has no TTL. A rejected value
+		 * changes nothing.
 		 */
 		static setTTLExpiration(
 			opts:
@@ -3932,42 +3963,47 @@ export function makeTable(options): TableResourceClass {
 		) {
 			if (opts == null || (typeof opts !== 'number' && typeof opts !== 'object'))
 				throw new Error('Invalid expiration value type');
+			const qualifiedName = `${databaseName}.${tableName}`;
+			const byNumber = typeof opts === 'number';
+			const expirationSeconds = ttlSecondsOf(qualifiedName, 'expiration', byNumber ? opts : opts.expiration);
+			const evictionSeconds = byNumber ? undefined : ttlSecondsOf(qualifiedName, 'eviction', opts.eviction);
+			const scanIntervalSeconds = byNumber ? undefined : ttlSecondsOf(qualifiedName, 'scanInterval', opts.scanInterval);
+			const validatedReplicaExpirationMs = byNumber ? undefined : replicaExpirationMsOf(opts.replicaExpiration);
+			const validatedRefreshFraction = byNumber ? undefined : replicaRefreshFractionOf(opts.replicaRefreshFraction);
 			const previousReplicaExpirationMs = replicaExpirationMs;
 			const ownedCleanup = ownsCleanup();
-			if (typeof opts === 'object' && opts.replicaExpiration != null) {
-				const validated = replicaExpirationMsOf(opts.replicaExpiration);
-				replicaExpirationMs = isRocksDB ? validated : 0;
-			}
-			if (typeof opts === 'object' && opts.replicaRefreshFraction != null)
-				replicaRefreshFraction = replicaRefreshFractionOf(opts.replicaRefreshFraction);
-			const declaredHere = typeof opts === 'object' && opts.fromSchema;
+			if (validatedReplicaExpirationMs !== undefined)
+				replicaExpirationMs = isRocksDB ? validatedReplicaExpirationMs : 0;
+			if (validatedRefreshFraction !== undefined) replicaRefreshFraction = validatedRefreshFraction;
+			const declaredHere = !byNumber && opts.fromSchema;
 			const isolatedApplicationOwner = declaredHere && opts.isolatedApplicationOwner;
 			const preserveLoadedConfiguration =
-				typeof opts === 'object' &&
+				!byNumber &&
 				(declaredHere || opts.replicaExpiration !== undefined || opts.replicaRefreshFraction !== undefined) &&
-				opts.expiration === undefined &&
-				opts.eviction === undefined &&
-				opts.scanInterval === undefined;
+				((opts.expiration === undefined && opts.eviction === undefined && opts.scanInterval === undefined) ||
+					// a schema without a TTL does not clear one this thread's application code configured
+					(declaredHere &&
+						ttlConfiguredByApplication &&
+						!isolatedApplicationOwner &&
+						!expirationSeconds &&
+						!evictionSeconds &&
+						!scanIntervalSeconds));
 			if (((!ttlFromLoad && !declaredHere) || isolatedApplicationOwner) && !ttlConfiguredByApplication) {
 				ttlConfiguredByApplication = true;
 				// the scan owner may have changed with this: re-evaluate even if the interval did not
 				lastCleanupInterval = undefined;
 			}
-			if (typeof opts === 'number') {
-				expirationMs = opts * 1000;
+			if (byNumber) {
+				expirationMs = expirationSeconds * 1000;
 			} else if (!preserveLoadedConfiguration) {
-				// `??` so an explicit 0 is treated as the user's chosen value, not as "missing"
-				expirationMs = (opts.expiration ?? 0) * 1000;
-				evictionMs = (opts.eviction ?? 0) * 1000;
-				recordScanInterval = (opts.scanInterval ?? 0) * 1000;
+				expirationMs = (expirationSeconds ?? 0) * 1000;
+				evictionMs = (evictionSeconds ?? 0) * 1000;
+				recordScanInterval = (scanIntervalSeconds ?? 0) * 1000;
 			}
-			if (expirationMs < 0) throw new Error('Expiration can not be negative');
 			if (declaredHere && !preserveLoadedConfiguration) ttlDeclaredBySchema = true;
 			if (!preserveLoadedConfiguration) {
-				// default to one quarter of the total expiration+eviction window
-				recordCleanupInterval = recordScanInterval || (expirationMs + evictionMs) / 4;
-				cleanupInterval = recordCleanupInterval;
-				expirationScanScheduled = true;
+				expirationScanScheduled = Boolean(recordScanInterval || expirationMs || evictionMs);
+				cleanupInterval = recordScanInterval || (expirationMs + evictionMs) / 4 || DEFAULT_CLEANUP_INTERVAL;
 			}
 			if (
 				replicaTableKnown &&
@@ -3977,8 +4013,9 @@ export function makeTable(options): TableResourceClass {
 				if (replicaExpirationMs) armReplicaEviction();
 			} else if (replicaEvictionArmed) armReplicaEviction();
 			// Re-evaluate an existing table-level scan after an ownership-only declaration, but do not
-			// create the default daily cleanup timer for a table that has only an @expiresAt field.
-			if (!preserveLoadedConfiguration || expirationScanScheduled || evictionMs) scheduleCleanup();
+			// create the default daily cleanup timer for a table that has only an @expiresAt field. A
+			// cleared TTL moves an armed scan to the daily default rather than leaving its old cadence.
+			if (expirationScanScheduled || evictionMs || (!preserveLoadedConfiguration && cleanupTimer)) scheduleCleanup();
 			// @expiresAt has its own interval rather than the cleanup timer above. Arm it whenever a live
 			// declaration introduces the attribute, including after this application already claimed TTL.
 			if (expiresAtProperty && !recordExpirationInterval) runRecordExpirationEviction();
@@ -14424,11 +14461,6 @@ export function makeTable(options): TableResourceClass {
 		if (ownsCleanup()) {
 			// run on the last thread so we aren't overloading lower-numbered threads
 			if (cleanupTimer) clearTimeout(cleanupTimer);
-			if (!cleanupInterval) {
-				// no replacement pass is being scheduled, so nothing is left to settle a superseded one
-				settlePendingCleanup();
-				return;
-			}
 			// This pass adopts the awaiters of the pass whose timer it just cleared: they settle when
 			// this pass's scan completes, so a reclamation run is never told the storage was reclaimed
 			// before any scan ran. It has to run now, though — that run blocks its whole path on the

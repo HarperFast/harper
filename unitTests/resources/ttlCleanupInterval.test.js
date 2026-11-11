@@ -1,15 +1,50 @@
 require('../testUtils');
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
-const { table } = require('#src/resources/databases');
+const { table, databases, getDatabases, resetDatabases, armTableCleanupScans } = require('#src/resources/databases');
 const { makeTable } = require('#src/resources/Table');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { waitFor } = require('../waitFor');
 const { setTimeout: sleep } = require('node:timers/promises');
 
+// the delays of the timers armed while `run` executes
+function timersArmedBy(run) {
+	const originalSetTimeout = global.setTimeout;
+	const delays = [];
+	global.setTimeout = (callback, delay, ...args) => {
+		delays.push(delay);
+		return originalSetTimeout(callback, delay, ...args);
+	};
+	try {
+		run();
+	} finally {
+		global.setTimeout = originalSetTimeout;
+	}
+	return delays;
+}
+
 // The cleanup scan is what removes an expired record: reads return it until then. Its interval has to come
 // from the table's TTL whichever way the TTL was set. A worker that learns of a table from the catalog (a
 // table created at runtime on another thread, or any table after a restart) arms it with the number form.
+// the timers armed while `run` and what it starts within `settleMs` execute
+async function timersArmedWithin(run, settleMs) {
+	const originalSetTimeout = global.setTimeout;
+	const delays = [];
+	global.setTimeout = (callback, delay, ...args) => {
+		delays.push(delay);
+		return originalSetTimeout(callback, delay, ...args);
+	};
+	try {
+		run();
+		await sleep(settleMs);
+	} finally {
+		global.setTimeout = originalSetTimeout;
+	}
+	return delays;
+}
+// a rescheduled scan runs once at once, then at its interval; the daily default is the only one over an hour here
+const isDailyCadence = (delay) => delay > 3_600_000 && delay <= 86_400_000;
+
 describe('TTL cleanup scan interval', () => {
 	before(function () {
 		setupTestDBPath();
@@ -153,5 +188,150 @@ describe('TTL cleanup scan interval', () => {
 		} finally {
 			Hydrated.cleanup();
 		}
+	});
+	it('an eviction-only TTL adopted from the catalog arms the scan (#3935)', async () => {
+		const Declared = table({
+			table: 'TtlAdoptedEvictionOnly',
+			database: databaseName,
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		const Hydrated = hydrate(Declared, 'TtlAdoptedEvictionOnly', {});
+		try {
+			const delays = timersArmedBy(() => Hydrated._adoptCatalogExpiration(0, 0.05));
+			assert.strictEqual(Hydrated.expirationMS, 0);
+			assert.strictEqual(Hydrated.evictionMS, 50);
+			assert.strictEqual(delays.length, 1, 'adopting an eviction-only TTL must arm the scan');
+			await Hydrated.put(1, { id: 1 }, { expiresAt: Date.now() });
+			await Hydrated.primaryStore.committed;
+			await waitFor(() => !stored(Hydrated, 1), { timeout: 5000, message: 'the evictable record was never evicted' });
+		} finally {
+			Hydrated.cleanup();
+		}
+	});
+
+	it('adopting a cleared TTL leaves the scan at the daily default (#3934)', async () => {
+		const Declared = table({
+			table: 'TtlAdoptedClear',
+			database: databaseName,
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		const Hydrated = hydrate(Declared, 'TtlAdoptedClear', { expirationMS: 60_000 });
+		try {
+			const delays = await timersArmedWithin(() => Hydrated._adoptCatalogExpiration(undefined, undefined), 200);
+			assert.strictEqual(Hydrated.expirationMS, 0);
+			assert.strictEqual(Hydrated.evictionMS, 0);
+			// the armed scan moves to the daily cadence a table with no TTL keeps for per-record expiry
+			assert(delays.some(isDailyCadence), `no daily scan armed: ${delays}`);
+		} finally {
+			Hydrated.cleanup();
+		}
+	});
+
+	it('clearing a TTL with zeros keeps a scan for per-record expiry instead of disabling it', async () => {
+		const Table = table({
+			table: 'TtlZeroed',
+			database: databaseName,
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		try {
+			Table.setTTLExpiration({ expiration: 60 });
+			const delays = await timersArmedWithin(() => Table.setTTLExpiration({ expiration: 0, eviction: 0 }), 200);
+			assert(delays.some(isDailyCadence), `the scan was disabled instead of moved to the daily default: ${delays}`);
+		} finally {
+			Table.cleanup();
+		}
+	});
+
+	it('rejects a negative or non-finite value without applying any of it (#3935)', () => {
+		const Table = table({
+			table: 'TtlRejected',
+			database: databaseName,
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		try {
+			Table.setTTLExpiration({ expiration: 10, eviction: 5 });
+			for (const opts of [
+				{ expiration: 1, eviction: -1 },
+				{ expiration: -1, eviction: 1 },
+				{ expiration: 1, scanInterval: -1 },
+				{ expiration: Infinity },
+				{ expiration: Number.NaN },
+				-1,
+			]) {
+				assert.throws(
+					() => Table.setTTLExpiration(opts),
+					/must be a non-negative number of seconds/,
+					JSON.stringify(opts)
+				);
+				assert.strictEqual(Table.expirationMS, 10_000, `${JSON.stringify(opts)} changed the expiration`);
+				assert.strictEqual(Table.evictionMS, 5_000, `${JSON.stringify(opts)} changed the eviction`);
+			}
+		} finally {
+			Table.cleanup();
+		}
+	});
+
+	it('a table loaded before the main thread became a worker arms its scan once it is one (#2831)', async () => {
+		const tableName = 'TtlLoadedBeforePromotion';
+		const Declared = table({
+			table: tableName,
+			database: databaseName,
+			expiration: 0.05,
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		// a restart: the row outlives this class, whose scan stops with it
+		await Declared.put(1, { id: 1 }, { expiresAt: Date.now() + 100 });
+		await Declared.primaryStore.committed;
+		Declared.cleanup();
+		delete databases[databaseName][tableName];
+		let Loaded;
+		try {
+			// threads: 0 loads every table on the main thread before setMainIsWorker(true)
+			setMainIsWorker(false);
+			resetDatabases();
+			Loaded = getDatabases()[databaseName][tableName];
+		} finally {
+			setMainIsWorker(true);
+		}
+		try {
+			assert.strictEqual(Loaded.expirationMS, 50);
+			await sleep(400);
+			assert(stored(Loaded, 1), 'a scan ran although no thread owned it at load');
+			armTableCleanupScans();
+			await waitFor(() => !stored(Loaded, 1), { timeout: 5000, message: 'the expired record was never evicted' });
+		} finally {
+			Loaded.cleanup();
+		}
+	});
+
+	it('arms no scan for a table with no TTL', () => {
+		const Table = table({
+			table: 'TtlNoneToArm',
+			database: databaseName,
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		try {
+			assert.deepStrictEqual(
+				timersArmedBy(() => Table._armCleanupScan()),
+				[]
+			);
+		} finally {
+			Table.cleanup();
+		}
+	});
+
+	it('arms system tables too, which databases does not enumerate', () => {
+		const systemTables = Object.values(databases.system);
+		assert(systemTables.length > 0);
+		assert(!Object.keys(databases).includes('system'), 'the system database is enumerable now; simplify this test');
+		const armed = new Set();
+		const originals = systemTables.map((Table) => [Table, Table._armCleanupScan]);
+		for (const Table of systemTables) Table._armCleanupScan = () => armed.add(Table);
+		try {
+			armTableCleanupScans();
+		} finally {
+			for (const [Table, original] of originals) Table._armCleanupScan = original;
+		}
+		assert.strictEqual(armed.size, systemTables.length);
 	});
 });

@@ -10,6 +10,8 @@ const {
 	resetDatabases,
 	table,
 } = require('#src/resources/databases');
+const { defineTable, types } = require('#src/resources/defineTable');
+const { loadGQLSchema } = require('#src/resources/graphql');
 
 const DATABASE = 'test';
 
@@ -244,5 +246,170 @@ describe('table-level expiration persistence (harper-pro#1179)', () => {
 		assert.strictEqual(Local.expirationMS, 600000);
 		assert.strictEqual(Local.evictionMS, 0);
 		assert.deepStrictEqual(catalogExpiration(Local), { expiration: 600 });
+	});
+	it('clears a saved expiration and eviction that a re-declaration sets to 0, null or "0" (#3934)', async function () {
+		for (const [suffix, cleared] of [
+			['Zero', { expiration: 0, eviction: 0 }],
+			['Null', { expiration: null, eviction: null }],
+			['String', { expiration: '0', eviction: '0' }],
+		]) {
+			const tableName = `ExpiryCleared${suffix}`;
+			const Declared = keyed(tableName, { expiration: 600, eviction: 300 });
+			keyed(tableName, cleared);
+			await commitCatalog(Declared);
+			const { value } = primaryRow(Declared);
+			assert(!('expiration' in value) && !('eviction' in value), `${suffix}: ${JSON.stringify(value)}`);
+			assert.deepStrictEqual(catalogExpiration(Declared), {}, suffix);
+			assert(!Declared.expirationMS, `${suffix}: this thread still applies ${Declared.expirationMS}ms`);
+			assert.strictEqual(Declared.evictionMS, 0, suffix);
+
+			delete databases[DATABASE][tableName];
+			resetDatabases();
+			const Restarted = getDatabases()[DATABASE][tableName];
+			assert(!Restarted.expirationMS, `${suffix}: a restart loads ${Restarted.expirationMS}ms`);
+			assert.strictEqual(Restarted.evictionMS, 0, suffix);
+		}
+	});
+
+	it('clears only the setting a re-declaration sets to 0', async function () {
+		const tableName = 'ExpiryClearedEvictionOnly';
+		const Declared = keyed(tableName, { expiration: 600, eviction: 300 });
+		keyed(tableName, { expiration: 600, eviction: 0 });
+		await commitCatalog(Declared);
+		assert.deepStrictEqual(catalogExpiration(Declared), { expiration: 600 });
+		assert.strictEqual(Declared.evictionMS, 0);
+	});
+
+	it('drops a TTL this thread loaded from the catalog when its re-declaration clears it', async function () {
+		const tableName = 'ExpiryLoadedThenCleared';
+		const Loaded = keyed(tableName);
+		await writeCatalogSettings(Loaded, { expiration: 120, eviction: 60 });
+		resetDatabases();
+		assert.strictEqual(Loaded.expirationMS, 120000);
+
+		keyed(tableName, { expiration: 0 });
+		await commitCatalog(Loaded);
+		assert(!Loaded.expirationMS, `this thread still applies ${Loaded.expirationMS}ms`);
+		assert.deepStrictEqual(catalogExpiration(Loaded), { eviction: 60 }, 'an omitted eviction stays saved');
+		assert.strictEqual(Loaded.evictionMS, 60000, 'and stays applied');
+	});
+
+	it('keeps the saved value of the setting a re-declaration omits, on disk and in memory', async function () {
+		const tableName = 'ExpiryPartialUpdate';
+		const Declared = keyed(tableName, { expiration: 60, eviction: 3600 });
+		keyed(tableName, { expiration: 120 });
+		await commitCatalog(Declared);
+		assert.deepStrictEqual(catalogExpiration(Declared), { expiration: 120, eviction: 3600 });
+		assert.strictEqual(Declared.expirationMS, 120000);
+		assert.strictEqual(Declared.evictionMS, 3600000);
+	});
+
+	it('does not clear a TTL application code configured when the schema declares none', async function () {
+		const tableName = 'ExpiryApplicationKept';
+		const Configured = keyed(tableName);
+		Configured.setTTLExpiration({ expiration: 30, eviction: 10 });
+		keyed(tableName, { expiration: null, eviction: null });
+		assert.strictEqual(Configured.expirationMS, 30000);
+		assert.strictEqual(Configured.evictionMS, 10000);
+	});
+
+	it('loads a saved value no declaration could save now as absent', async function () {
+		const tableName = 'ExpiryLegacyInvalid';
+		const Legacy = keyed(tableName);
+		await writeCatalogSettings(Legacy, { expiration: 'soon', eviction: -1 });
+		delete databases[DATABASE][tableName];
+		resetDatabases();
+		const Restarted = getDatabases()[DATABASE][tableName];
+		assert(Restarted, 'the table must still load');
+		assert(!Restarted.expirationMS);
+		assert.strictEqual(Restarted.evictionMS, 0);
+		keyed(tableName, { expiration: 0, eviction: 0 });
+		await commitCatalog(Restarted);
+		const { value } = primaryRow(Restarted);
+		assert(!('expiration' in value) && !('eviction' in value), 'the next declaration rewrites the row');
+	});
+
+	it('brings a loaded class up to date when another thread clears the catalog (#3934)', async function () {
+		const tableName = 'ExpiryAdoptedClear';
+		const Loaded = keyed(tableName);
+		await writeCatalogSettings(Loaded, { expiration: 120, eviction: 60 });
+		resetDatabases();
+		assert.strictEqual(Loaded.expirationMS, 120000);
+
+		const { key, value } = primaryRow(Loaded);
+		const cleared = { ...value };
+		delete cleared.expiration;
+		delete cleared.eviction;
+		Loaded.dbisDB.putSync(key, cleared);
+		await commitCatalog(Loaded);
+		resetDatabases();
+		assert(!Loaded.expirationMS, `the reload kept ${Loaded.expirationMS}ms`);
+		assert.strictEqual(Loaded.evictionMS, 0);
+	});
+
+	it('keeps a saved TTL through callers that do not author it', async function () {
+		const tableName = 'ExpiryAddAttribute';
+		const Declared = keyed(tableName, { expiration: 600, eviction: 300 });
+		await Declared.addAttributes([{ name: 'added', type: 'String' }]);
+		await commitCatalog(Declared);
+		assert.deepStrictEqual(catalogExpiration(Declared), { expiration: 600, eviction: 300 });
+		assert.strictEqual(Declared.expirationMS, 600000);
+	});
+
+	it('clears a TTL that a @table directive no longer declares (#3934)', async function () {
+		const tableName = 'ExpiryGraphqlRemoved';
+		await loadGQLSchema(`type ${tableName} @table(database: "${DATABASE}", expiration: 600, eviction: 300) {
+			id: ID @primaryKey
+		}`);
+		const Declared = databases[DATABASE][tableName];
+		await commitCatalog(Declared);
+		assert.deepStrictEqual(catalogExpiration(Declared), { expiration: 600, eviction: 300 });
+
+		await loadGQLSchema(`type ${tableName} @table(database: "${DATABASE}") {
+			id: ID @primaryKey
+		}`);
+		await commitCatalog(Declared);
+		assert.deepStrictEqual(catalogExpiration(Declared), {});
+		assert(!Declared.expirationMS, `this thread still applies ${Declared.expirationMS}ms`);
+		assert.strictEqual(Declared.evictionMS, 0);
+	});
+
+	it('clears a TTL that defineTable options no longer declare (#3934)', async function () {
+		const tableName = 'ExpiryDefineTableRemoved';
+		const shape = { id: types.id.primaryKey };
+		const Declared = defineTable(tableName, shape, { database: DATABASE, expiration: 600 });
+		await commitCatalog(Declared);
+		assert.deepStrictEqual(catalogExpiration(Declared), { expiration: 600 });
+
+		defineTable(tableName, shape, { database: DATABASE });
+		await commitCatalog(Declared);
+		assert.deepStrictEqual(catalogExpiration(Declared), {});
+		assert(!Declared.expirationMS, `this thread still applies ${Declared.expirationMS}ms`);
+	});
+
+	it('rejects an invalid TTL before a create, naming the table and field (#1286, #3935)', async function () {
+		for (const [field, value] of [
+			['expiration', -1],
+			['eviction', -1],
+			['scanInterval', -1],
+			['expiration', 'soon'],
+			['eviction', Infinity],
+			['expiration', Number.NaN],
+			['expiration', 1e308],
+			['expiration', ''],
+			['expiration', true],
+			['eviction', [5]],
+		]) {
+			const tableName = `ExpiryInvalidCreate_${field}_${String(value).replace(/\W/g, '')}`;
+			assert.throws(
+				() => keyed(tableName, { [field]: value }),
+				(error) =>
+					error.statusCode === 400 &&
+					error.message.includes(field) &&
+					error.message.includes(`${DATABASE}.${tableName}`),
+				`${field}: ${value}`
+			);
+			assert.strictEqual(databases[DATABASE][tableName], undefined, `${field}: ${value} created the table`);
+		}
 	});
 });

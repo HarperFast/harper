@@ -269,7 +269,7 @@ If this same write (origin and log key) emptied the key, `_writeDelete` writes n
 
 ## Cluster-origin table definitions are additive-only
 
-An `origin: 'cluster'` definition is a peer snapshot, so `table()` only adds from it and logs what it discards. Drops and redefinitions never converge via gossip (recover via local `create_attribute` or redeploy). Abandoned index builds still recover (`clusterSchemaMerge.test.js`). A reload keeps a thread's own TTL.
+An `origin: 'cluster'` definition is a peer snapshot, so `table()` only adds from it and logs what it discards. Drops and redefinitions never converge via gossip (recover via local `create_attribute` or redeploy). Abandoned index builds still recover (`clusterSchemaMerge.test.js`). A reload keeps a thread's own TTL. `@table` omitting a TTL clears it (`null`); `table()` omitting one keeps it.
 
 ## `drop_attribute` never removes the primary key, and a strip keeps each row's version
 
