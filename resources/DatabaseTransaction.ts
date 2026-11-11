@@ -1063,7 +1063,7 @@ function holderWriteRefusal(handle: RecordLockHandle): ClientError {
 
 function stagesWriteChange(operation: TransactionWrite): boolean {
 	const instance = operation.trackedInstance as any;
-	if (!instance) return true;
+	if (!instance || operation.fullUpdate) return true;
 	operation.captureChanges?.();
 	return (
 		collapseChanges(instance, operation.trackedChanges, instance.constructor?.loadAsInstance !== false) !== undefined
