@@ -12076,6 +12076,8 @@ export function makeTable(options): TableResourceClass {
 			this.userSetDeciders.add(attribute_name);
 		}
 		static async deleteHistory(endTime = 0, cleanupDeletedRecords = false): Promise<number> {
+			// a RocksDB log, shared by every table in the database, loses only whole files
+			if (isRocksDB && !cleanupDeletedRecords) return 0;
 			const maxConcurrentRemovals = isRocksDB ? MAX_CONCURRENT_HISTORY_REMOVALS : MAX_CONCURRENT_LMDB_HISTORY_REMOVALS;
 			const inFlightRemovals = new Set<Promise<void>>();
 			const removalSlotWaiters: Array<() => void> = [];
@@ -12117,38 +12119,36 @@ export function makeTable(options): TableResourceClass {
 			}
 			const drainRemovals = () => Promise.all(inFlightRemovals);
 			let entriesDeleted = 0;
-			// LMDB only: RocksTransactionLogStore.remove() is a no-op, so a RocksDB deleteHistory removes
-			// nothing and must not claim it did.
-			// A bound above everything reachable must not be recorded as the floor: the floor only rises
-			// and a store with a record is never re-stamped, so it would never come down, for every table in
-			// this database. `boundedAuditPruneEnd` clamps the cutoff to just above the newest key in the
-			// log, and the scan below uses that same value as its range end, so the prune cannot remove an
-			// entry the floor does not cover.
 			let pruneEnd = endTime;
 			if (!isRocksDB) {
+				// A bound above everything reachable must not be recorded as the floor: the floor only rises
+				// and a store with a record is never re-stamped, so it would never come down, for every table in
+				// this database. `boundedAuditPruneEnd` clamps the cutoff to just above the newest key in the
+				// log, and the scan below uses that same value as its range end, so the prune cannot remove an
+				// entry the floor does not cover.
 				pruneEnd = boundedAuditPruneEnd(auditStore, endTime);
 				raiseAuditFloor(auditStore, pruneEnd);
-			}
-			try {
-				for (const auditRecord of auditStore.getRange({
-					// must not be zero: 0 encodes to all zero bytes and so overlaps the symbol keys, as in
-					// getHistory below
-					start: 1,
-					end: pruneEnd,
-				})) {
-					await rest(); // yield to other async operations
-					if (auditRecord.tableId !== tableId) continue;
-					const backpressure = queueRemoval(
-						() => removeAuditEntry(auditStore, auditRecord),
-						'Error removing audit entry during deleteHistory',
-						() => {
-							entriesDeleted++;
-						}
-					);
-					if (backpressure) await backpressure;
+				try {
+					for (const auditRecord of auditStore.getRange({
+						// must not be zero: 0 encodes to all zero bytes and so overlaps the symbol keys, as in
+						// getHistory below
+						start: 1,
+						end: pruneEnd,
+					})) {
+						await rest(); // yield to other async operations
+						if (auditRecord.tableId !== tableId) continue;
+						const backpressure = queueRemoval(
+							() => removeAuditEntry(auditStore, auditRecord),
+							'Error removing audit entry during deleteHistory',
+							() => {
+								entriesDeleted++;
+							}
+						);
+						if (backpressure) await backpressure;
+					}
+				} finally {
+					await drainRemovals();
 				}
-			} finally {
-				await drainRemovals();
 			}
 			if (cleanupDeletedRecords) {
 				// this is separate procedure we can do if the records are not being cleaned up by the audit log. This shouldn't
