@@ -2076,6 +2076,8 @@ export function makeTable(options): TableResourceClass {
 	let disposed = false;
 	// true once a table-level expiration/eviction/scanInterval has armed the periodic cleanup scan at setup
 	let expirationScanScheduled = false;
+	// rows stamped under a TTL since cleared keep their expiry, so their (daily) scan outlives the TTL
+	let retainExpiryScan = Boolean(options.expiryScan);
 	// set on the first expiring write so the unscheduled-expiration warning is evaluated at most once per table
 	let expirationWarningChecked = false;
 	let writerResidencyWarned = false;
@@ -2817,7 +2819,7 @@ export function makeTable(options): TableResourceClass {
 		 * main thread loads every table before it becomes worker 0.
 		 */
 		static _armCleanupScan() {
-			if (expirationScanScheduled || evictionMs) scheduleCleanup();
+			if (expirationScanScheduled || evictionMs || retainExpiryScan) scheduleCleanup();
 		}
 		static getResidencySlot(id: Id, record?: object): number {
 			return calculateResidencySlot(id, record);
@@ -4003,11 +4005,11 @@ export function makeTable(options): TableResourceClass {
 				recordScanInterval = (scanIntervalSeconds ?? 0) * 1000;
 			}
 			if (declaredHere && !preserveLoadedConfiguration) ttlDeclaredBySchema = true;
-			// rows written under a TTL this call clears keep their expiry, so they still need a scan
 			const scanWasScheduled = !preserveLoadedConfiguration && (expirationScanScheduled || cleanupTimer);
 			if (!preserveLoadedConfiguration) {
 				expirationScanScheduled = Boolean(recordScanInterval || expirationMs || evictionMs);
 				cleanupInterval = recordScanInterval || (expirationMs + evictionMs) / 4 || DEFAULT_CLEANUP_INTERVAL;
+				if (scanWasScheduled && !expirationScanScheduled) retainExpiryScan = true;
 			}
 			if (
 				replicaTableKnown &&
@@ -4018,7 +4020,7 @@ export function makeTable(options): TableResourceClass {
 			} else if (replicaEvictionArmed) armReplicaEviction();
 			// Re-evaluate an existing table-level scan after an ownership-only declaration, but do not
 			// create the default daily cleanup timer for a table that has only an @expiresAt field.
-			if (expirationScanScheduled || evictionMs || scanWasScheduled) scheduleCleanup();
+			if (expirationScanScheduled || evictionMs || retainExpiryScan) scheduleCleanup();
 			// @expiresAt has its own interval rather than the cleanup timer above. Arm it whenever a live
 			// declaration introduces the attribute, including after this application already claimed TTL.
 			if (expiresAtProperty && !recordExpirationInterval) runRecordExpirationEviction();
@@ -12343,7 +12345,7 @@ export function makeTable(options): TableResourceClass {
 			if (disposed || !maintenanceClosed) return;
 			maintenanceClosed = false;
 			lastCleanupInterval = undefined;
-			if (expirationScanScheduled || evictionMs) scheduleCleanup();
+			if (expirationScanScheduled || evictionMs || retainExpiryScan) scheduleCleanup();
 			if (replicaEvictionArmed) scheduleReplicaSweep();
 			if (expiresAtProperty && !recordExpirationInterval) runRecordExpirationEviction();
 		}
@@ -12438,7 +12440,7 @@ export function makeTable(options): TableResourceClass {
 			} finally {
 				ttlFromLoad = false;
 			}
-		}
+		} else if (retainExpiryScan) scheduleCleanup();
 		if (expiresAtProperty && !recordExpirationInterval) runRecordExpirationEviction();
 	} catch (error) {
 		TableResource.cleanup();

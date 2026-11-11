@@ -24,6 +24,15 @@ async function timersArmedBy(run, settleMs = 0) {
 }
 // the TTLs these tests clear scan every 15 s or less
 const isDailyCadence = (delay) => delay > 60_000 && delay <= 86_400_000;
+// a first daily scan with nothing pending lands on the next whole day since the start of the year
+function isNextDailySlot(delay) {
+	const startOfYear = new Date();
+	startOfYear.setMonth(0, 1);
+	startOfYear.setHours(0, 0, 0, 0);
+	const now = Date.now();
+	const slot = Math.ceil((now - startOfYear.getTime()) / 86_400_000) * 86_400_000 + startOfYear.getTime();
+	return Math.abs(delay - (slot - now)) < 5000;
+}
 
 // The cleanup scan is what removes an expired record: reads return it until then. Its interval has to come
 // from the table's TTL whichever way the TTL was set. A worker that learns of a table from the catalog (a
@@ -308,6 +317,51 @@ describe('TTL cleanup scan interval', () => {
 			assert(delays.some(isDailyCadence), `no scan armed for the rows the cleared TTL stamped: ${delays}`);
 		} finally {
 			Hydrated.cleanup();
+		}
+	});
+
+	it('keeps a scan for rows a cleared TTL stamped after a restart (#3934)', async () => {
+		const tableName = 'TtlClearedThenRestarted';
+		const attributes = () => [{ name: 'id', isPrimaryKey: true }];
+		const Declared = table({ table: tableName, database: databaseName, expiration: 60, attributes: attributes() });
+		table({ table: tableName, database: databaseName, expiration: 0, attributes: attributes() });
+		if (Declared.dbisDB.committed) await Declared.dbisDB.committed;
+		const primaryRow = Declared.dbisDB.getSync(`${tableName}/`) ?? Declared.dbisDB.getSync(`${tableName}/id`);
+		assert.strictEqual(primaryRow.expiryScan, true, JSON.stringify(primaryRow));
+		Declared.cleanup();
+		delete databases[databaseName][tableName];
+		let Restarted;
+		try {
+			// loaded with no scan owner, so the only timer below is the one this table arms
+			setMainIsWorker(false);
+			resetDatabases();
+			Restarted = getDatabases()[databaseName][tableName];
+		} finally {
+			setMainIsWorker(true);
+		}
+		try {
+			assert(!Restarted.expirationMS);
+			const delays = await timersArmedBy(() => Restarted._armCleanupScan());
+			assert(delays.length === 1 && isNextDailySlot(delays[0]), `no daily scan armed: ${delays}`);
+		} finally {
+			Restarted.cleanup();
+		}
+	});
+
+	it('keeps a scan for rows a cleared TTL stamped when maintenance resumes (#3934)', async () => {
+		const Table = table({
+			table: 'TtlClearedThenResumed',
+			database: databaseName,
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		try {
+			Table.setTTLExpiration({ expiration: 60 });
+			Table.setTTLExpiration({ expiration: 0, eviction: 0 });
+			await Table.closeMaintenance();
+			const delays = await timersArmedBy(() => Table.resumeMaintenance());
+			assert(delays.some(isDailyCadence), `resuming maintenance armed no scan: ${delays}`);
+		} finally {
+			Table.cleanup();
 		}
 	});
 

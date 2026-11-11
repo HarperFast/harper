@@ -2396,6 +2396,7 @@ function initStores(
 					replicaExpirationMS: replicaExpirationMsOf(replicaExpiration),
 					replicaRefreshFraction: replicaRefreshFractionOf(replicaRefreshFraction),
 					replicaDeadlines: Boolean(tableDef.replicaDeadlines),
+					expiryScan: primaryAttribute.expiryScan === true,
 					cacheControl,
 					trackDeletes,
 					tableName,
@@ -5902,6 +5903,13 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				if (audit) Table.enableAuditing();
 				updatedPrimaryAttribute.audit = audit;
 			}
+			// Rows already stamped under a TTL being cleared keep their expiry, and only a cleanup scan removes
+			// them: a load of a table marked this way keeps the daily scan a table without a TTL would not arm.
+			if (
+				(expiration === 0 && savedTtlSeconds(currentPrimaryAttribute.expiration)) ||
+				(eviction === 0 && savedTtlSeconds(currentPrimaryAttribute.eviction))
+			)
+				updatedPrimaryAttribute.expiryScan = true;
 			if (expiration) updatedPrimaryAttribute.expiration = expiration;
 			else if (expiration === 0) delete updatedPrimaryAttribute.expiration;
 			if (eviction) updatedPrimaryAttribute.eviction = eviction;
