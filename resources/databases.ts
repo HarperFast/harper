@@ -2795,16 +2795,15 @@ export function openBranchDatabase(
 		// rocksdb-js reports RocksDB's own final close failing only after releasing the database, leaving nothing to
 		// retry; a database whose close-time flush failed it keeps quarantined until `shutdown()`.
 		if (closeFailed) {
+			const failed = `Could not close branch database '${databaseName}'`;
 			const quarantined = registryEntriesAt(path).find((entry) => entry.closeError)?.closeError;
-			const storeLeftOpen = [rootStore, (rootStore as any).dbisDb, ...openedStores].some(
-				(store) => store?.status === 'open'
+			if (quarantined)
+				throw new AggregateError(closeFailures.length ? closeFailures : [new Error(quarantined)], failed);
+			if ([rootStore, (rootStore as any).dbisDb, ...openedStores].some((store) => store?.status === 'open'))
+				throw new AggregateError(closeFailures, failed);
+			logger.warn(
+				`Released branch database '${databaseName}' at ${path}: rocksdb-js finished closing it, though its close reported a failure`
 			);
-			if (quarantined || storeLeftOpen) {
-				throw new AggregateError(
-					closeFailures.length ? closeFailures : [new Error(quarantined)],
-					`Could not close branch database '${databaseName}'`
-				);
-			}
 		}
 		unregisterBranch();
 	};
