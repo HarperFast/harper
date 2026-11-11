@@ -281,6 +281,10 @@ By default, table subscriptions skip record mutations whose version differs from
 
 `startTime` is a local audit-log cursor, not a record version. Audit events expose this cursor as `localTime`, which multiple events in a transaction can share. Resuming with `startTime` excludes all events at that cursor, so callers must account for shared cursors before checkpointing.
 
+<VersionBadge type="changed" version="v5.4.0" />
+
+On RocksDB, a table subscription with `startTime` switches from catch-up to live delivery at live delivery's position in each transaction log, not at a `localTime`. A transaction that commits during catch-up with a `localTime` below one already delivered is still delivered, once, and catch-up and live delivery never both deliver the same event. If a transaction log cannot be read up to that position for about five seconds, the subscription ends with a 503 `ServerError` as its last event. Subscribe again from the same `startTime` to retry: resuming from a later `localTime` can skip a transaction that committed during the wait with a lower one.
+
 `previousCount` counts accepted events: superseded or filtered events do not consume the requested count. The request is capped at 1,000 events, and scanning stops after 10,000 in-scope audit entries or the end of retained history, so fewer events may be returned.
 
 Before v5.3.0, non-raw catch-up could include superseded mutations even though non-raw live delivery suppressed them. Consumers that need historical transitions can opt in:
