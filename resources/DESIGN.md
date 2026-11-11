@@ -269,7 +269,7 @@ If this same write (origin and log key) emptied the key, `_writeDelete` writes n
 
 ## Cluster-origin table definitions are additive-only
 
-An `origin: 'cluster'` definition is a peer snapshot, so `table()` only adds from it and logs what it discards. Drops and redefinitions never converge via gossip (recover via local `create_attribute` or redeploy). Abandoned index builds still recover (`clusterSchemaMerge.test.js`). A reload keeps a thread's own TTL.
+An `origin: 'cluster'` definition is a peer snapshot, so `table()` only adds from it and logs what it discards. Drops and redefinitions never converge via gossip (recover via local `create_attribute` or redeploy). Abandoned index builds still recover (`clusterSchemaMerge.test.js`). A reload keeps a thread's own TTL. `@table` omitting a TTL clears it (`null`); `table()` omitting one keeps it.
 
 ## `drop_attribute` never removes the primary key, and a strip keeps each row's version
 
@@ -346,7 +346,7 @@ Replay reads bases with `uncachedRead`: cached WeakRefs outlived the replay, kee
 ## Chained query conditions scope one array element; FIQL tokens always advance
 
 - `a=ge=X&=le=Y` collapses in `prepareConditions` so both paths agree; separate legs match any element; other chains 400. Array ranges dedupe (`distinctRecords`; `query-array-scoping.test.js`).
-- Values (not `target`) convert to leaf/element type (`''`→`null` bar `String`/`Any`; `Any` & untyped coercing ops `autoCast`, so numeric/bool/date text in `[Any]`/`Any` misses `=`), chains too (`coerceConditionValue`; `restConditionCoercion.test.js`; harper#3950).
+- Values (not `target` or pattern text) convert to leaf/element type (`''`→`null` bar `String`/`Any`; `Any` & untyped coercing ops `autoCast`, so numeric/bool/date text in `[Any]`/`Any` misses `=`), chains too (`coerceConditionValue`; `restConditionCoercion.test.js`; harper#3950).
 - In `parseBlock`, a pending condition makes next token a value; only group end picks tokenizer. **Every token must advance**: 0-length match errors or regexes loop (`query-parse.test.js`).
 
 ## A table declaration lands where the application's `databases` binding points

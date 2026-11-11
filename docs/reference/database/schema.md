@@ -107,6 +107,12 @@ type WeatherCache @table(expiration: 300, eviction: 3300, scanInterval: 600) {
 }
 ```
 
+**Changing or removing them** <VersionBadge type="changed" version="v5.4.0" />
+
+`expiration` and `eviction` are saved with the table, and a restart applies what the schema last declared. `@table` (and `defineTable`) sets each of the two that it names and clears each one it omits, including a value `create_table` saved; setting one to `0` clears it too. Without `expiration`, records written afterwards no longer expire; without `eviction`, they are removed as soon as they expire. Records already written keep the expiry they were given. Before v5.4.0 an omitted value stayed in effect until the table was dropped. A TTL that application code sets at runtime (for example through `sourcedFrom` options) is not cleared by a schema that declares none or sets it to `0`; a TTL the schema itself set later is.
+
+Each value must be a number of seconds, zero or more. A negative or non-numeric value fails the declaration with an error naming the table and the argument, and the table is left unchanged.
+
 #### How `scanInterval` Determines the Eviction Cycle
 
 `scanInterval` determines fixed clock-aligned times when eviction runs. Harper divides the clock into evenly spaced anchors based on the interval, calculated in the server's local timezone. As a result:

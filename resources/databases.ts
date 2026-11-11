@@ -44,6 +44,9 @@ import {
 	makeTable,
 	replicaExpirationMsOf,
 	replicaRefreshFractionOf,
+	describeTtlValue,
+	savedTtlSeconds,
+	ttlSecondsOf,
 	ignoreAlreadyDropped,
 	acquireUpdateAttributesLock,
 	releaseUpdateAttributesLock,
@@ -1137,6 +1140,30 @@ export function catalogCreatedTime(table: { dbisDB: any; tableName: string; prim
 	const createdTime = primaryCatalogRowFor(table)?.value?.createdTime;
 	return Number.isFinite(createdTime) ? createdTime : undefined;
 }
+function savedTtlOf(row: any): { expiration?: number; eviction?: number } {
+	return { expiration: savedTtlSeconds(row.expiration), eviction: savedTtlSeconds(row.eviction) };
+}
+/** Whether a declared TTL field (undefined = not declared, 0 = cleared) differs from the catalog's. */
+function ttlChanged(declared: number | undefined, saved: unknown): boolean {
+	if (declared === undefined) return false;
+	return declared ? Number(saved) !== declared : saved !== undefined;
+}
+const warnedInvalidSavedTtl = new Set<string>();
+/**
+ * A saved TTL field as a load applies it: a value no declaration could save now (a negative eviction or a
+ * non-numeric expiration an older create persisted) loads as absent, and the next declaration rewrites it.
+ */
+function loadedTtlSeconds(databaseName: string, tableName: string, field: string, saved: unknown) {
+	const seconds = savedTtlSeconds(saved);
+	const key = `${databaseName}.${tableName}.${field}`;
+	if (seconds === undefined && saved !== undefined && saved !== 0 && !warnedInvalidSavedTtl.has(key)) {
+		logger.warn(
+			`Ignoring the saved ${field} ${describeTtlValue(saved)} of ${databaseName}.${tableName}: not a valid TTL`
+		);
+		warnedInvalidSavedTtl.add(key);
+	}
+	return seconds;
+}
 /**
  * The table-level expiration and eviction (seconds) on disk, each present only when set. A class on a thread
  * that application code configured can hold a TTL the catalog does not.
@@ -1148,13 +1175,24 @@ export function catalogExpiration(table: { dbisDB: any; tableName: string; prima
 	// the row declareTable writes the settings to and initStores loads them from: a named primary row wins
 	const named = table.primaryKey ? table.dbisDB?.getSync(`${table.tableName}/${table.primaryKey}`) : undefined;
 	const row = named?.isPrimaryKey ? named : table.dbisDB?.getSync(`${table.tableName}/`);
-	// a create persists the declared value as given, which can be a numeric string
-	const expiration = Number(row?.expiration);
-	const eviction = Number(row?.eviction);
+	// a create persisted the declared value as given, which can be a numeric string
+	const expiration = savedTtlSeconds(row?.expiration);
+	const eviction = savedTtlSeconds(row?.eviction);
 	const settings: { expiration?: number; eviction?: number } = {};
-	if (expiration > 0 && Number.isFinite(expiration)) settings.expiration = expiration;
-	if (eviction > 0 && Number.isFinite(eviction)) settings.eviction = eviction;
+	if (expiration) settings.expiration = expiration;
+	if (eviction) settings.eviction = eviction;
 	return settings;
+}
+/**
+ * Arms the cleanup scan of every loaded table that has a TTL. Under `threads: 0` the main thread loads every
+ * table before it becomes worker 0, when no thread can own a scan yet.
+ */
+export function armTableCleanupScans(): void {
+	const loaded = getDatabases();
+	// system is not enumerable
+	for (const database of new Set([loaded.system, ...Object.values(loaded)])) {
+		for (const Table of Object.values(database ?? {})) (Table as any)?._armCleanupScan?.();
+	}
 }
 /**
  * Backfills the stamp of a generation created on a build that stored none, once a peer's stamped definition
@@ -2158,8 +2196,8 @@ function initStores(
 		const audit =
 			typeof primaryAttribute.audit === 'boolean' ? primaryAttribute.audit : envGet(CONFIG_PARAMS.LOGGING_AUDITLOG);
 		const trackDeletes = primaryAttribute.trackDeletes;
-		const expiration = primaryAttribute.expiration;
-		const eviction = primaryAttribute.eviction;
+		const expiration = loadedTtlSeconds(databaseName, tableName, 'expiration', primaryAttribute.expiration);
+		const eviction = loadedTtlSeconds(databaseName, tableName, 'eviction', primaryAttribute.eviction);
 		const replicaExpiration = primaryAttribute.replicaExpiration;
 		const replicaRefreshFraction = primaryAttribute.replicaRefreshFraction;
 		const sealed = primaryAttribute.sealed;
@@ -2346,7 +2384,7 @@ function initStores(
 			if (!destination) requestComputedIndexRepair(table);
 			if (replicaExpiration !== undefined || replicaRefreshFraction !== undefined)
 				table.setTTLExpiration({ replicaExpiration, replicaRefreshFraction, fromSchema: true });
-			table._adoptCatalogExpiration(expiration, eviction);
+			table._adoptCatalogExpiration(expiration, eviction, primaryAttribute.expiryScan === true);
 		} else {
 			if (recreateForTableIdChange) table.cleanup();
 			table = setTable(
@@ -2366,6 +2404,7 @@ function initStores(
 					replicaExpirationMS: replicaExpirationMsOf(replicaExpiration),
 					replicaRefreshFraction: replicaRefreshFractionOf(replicaRefreshFraction),
 					replicaDeadlines: Boolean(tableDef.replicaDeadlines),
+					expiryScan: primaryAttribute.expiryScan === true,
 					cacheControl,
 					trackDeletes,
 					tableName,
@@ -2913,9 +2952,10 @@ interface TableDefinition {
 	path?: string;
 	/** Kept when a peer's definition creates the table here, so every copy of a generation shares one stamp. */
 	createdTime?: number;
-	expiration?: number;
-	eviction?: number;
-	scanInterval?: number;
+	/** Seconds; 0 or null clears a saved value, undefined (a caller not authoring the schema) keeps it. */
+	expiration?: number | null;
+	eviction?: number | null;
+	scanInterval?: number | null;
 	/** RocksDB-only replica lifetime in seconds; 0 disables admission. LMDB always proxies. */
 	replicaExpiration?: number;
 	/** RocksDB-only renewal fraction in (0, 1]; 1 never renews. */
@@ -4376,18 +4416,27 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	if (isBranchIdentity(databaseName)) {
 		throw new ClientError(`'${databaseName}' is in use as a branch store identity and cannot be a database name`);
 	}
+	// Before anything is opened, created or persisted. A peer's values reach only a table this call creates, as
+	// a catalog load does (see the end of this function).
+	if (origin !== 'cluster') {
+		const qualifiedName = `${databaseName}.${tableName}`;
+		expiration = ttlSecondsOf(qualifiedName, 'expiration', expiration);
+		eviction = ttlSecondsOf(qualifiedName, 'eviction', eviction);
+		scanInterval = ttlSecondsOf(qualifiedName, 'scanInterval', scanInterval);
+	}
 	const rootStore = target.rootStore(databaseName, tableName);
 	const tables = target.tables(databaseName);
 	logger.trace(`Defining ${tableName} in ${databaseName}`);
 	let Table = tables?.[tableName];
+	const namesOneTtlField = origin !== 'cluster' && (expiration === undefined) !== (eviction === undefined);
+	// the saved value of the field such a declaration omits, from the row persistTableSettings writes
+	let inheritedTtl: { expiration?: number; eviction?: number } | undefined;
 	if (rootStore.status === 'closed') {
 		throw new Error(`Can not use a closed data store for ${tableName}`);
 	}
-	// A re-declaration persists these to the catalog, where a negative expiration fails every later load, and
-	// nothing it changes before then (index builds included) is rolled back.
+	// A re-declaration persists these to the catalog, and nothing it changes before then (index builds included)
+	// is rolled back.
 	if (Table && origin !== 'cluster') {
-		if (+expiration < 0 || +eviction < 0)
-			throw new ClientError(`Expiration and eviction of '${databaseName}.${tableName}' can not be negative`);
 		if (replicaExpiration != null) replicaExpirationMsOf(replicaExpiration);
 		if (replicaRefreshFraction != null) replicaRefreshFractionOf(replicaRefreshFraction);
 	}
@@ -5802,10 +5851,15 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	// A peer's expiration reaches a table this call created through makeTable, as a catalog load. It never
 	// configures an existing table, and applying it here would mark the TTL as this thread's own declaration.
 	if (origin === 'cluster') expiration = eviction = scanInterval = undefined;
+	if (inheritedTtl) {
+		expiration ??= inheritedTtl.expiration ?? 0;
+		eviction ??= inheritedTtl.eviction ?? 0;
+	}
 	if (
 		expiration ||
 		eviction ||
 		scanInterval ||
+		((expiration === 0 || eviction === 0) && (Table.expirationMS || Table.evictionMS)) ||
 		replicaExpiration !== undefined ||
 		replicaRefreshFraction !== undefined ||
 		attributes.some((attribute) => attribute.expiresAt)
@@ -5835,6 +5889,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	}
 	function persistTableSettings(attribute: any, dbiKey: string) {
 		const attributeDescriptor = attributesDbi.getSync(dbiKey) || {};
+		if (namesOneTtlField) inheritedTtl = savedTtlOf(attributeDescriptor);
 		// Persist schemaDefined when the explicit live value disagrees with disk. Without this,
 		// a stale `false` (from a v4-era write or replicated event) survives every reload: the
 		// in-memory re-assert in the existing-Table branch only fixes the worker that ran @table,
@@ -5849,8 +5904,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				(typeof audit === 'boolean' && audit !== attributeDescriptor.audit) ||
 				(sealed !== undefined && sealed !== attributeDescriptor.sealed) ||
 				(replicate !== undefined && replicate !== attributeDescriptor.replicate) ||
-				(expiration && +expiration !== +attributeDescriptor.expiration) ||
-				(eviction && +eviction !== +attributeDescriptor.eviction) ||
+				ttlChanged(expiration, attributeDescriptor.expiration) ||
+				ttlChanged(eviction, attributeDescriptor.eviction) ||
 				(replicaExpiration != null && replicaExpiration !== attributeDescriptor.replicaExpiration) ||
 				(replicaRefreshFraction != null && replicaRefreshFraction !== attributeDescriptor.replicaRefreshFraction) ||
 				attribute.type !== attributeDescriptor.type)
@@ -5858,13 +5913,23 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			exclusiveLock();
 			const currentPrimaryAttribute = attributesDbi.getSync(dbiKey);
 			if (!currentPrimaryAttribute || tableIsDropping(currentPrimaryAttribute, dbiKey)) return;
+			if (namesOneTtlField) inheritedTtl = savedTtlOf(currentPrimaryAttribute);
 			const updatedPrimaryAttribute = { ...currentPrimaryAttribute };
 			if (typeof audit === 'boolean') {
 				if (audit) Table.enableAuditing();
 				updatedPrimaryAttribute.audit = audit;
 			}
-			if (expiration) updatedPrimaryAttribute.expiration = +expiration;
-			if (eviction) updatedPrimaryAttribute.eviction = +eviction;
+			// Rows already stamped under a TTL being cleared keep their expiry, and only a cleanup scan removes
+			// them: a load of a table marked this way keeps the daily scan a table without a TTL would not arm.
+			if (
+				(expiration === 0 && savedTtlSeconds(currentPrimaryAttribute.expiration)) ||
+				(eviction === 0 && savedTtlSeconds(currentPrimaryAttribute.eviction))
+			)
+				updatedPrimaryAttribute.expiryScan = true;
+			if (expiration) updatedPrimaryAttribute.expiration = expiration;
+			else if (expiration === 0) delete updatedPrimaryAttribute.expiration;
+			if (eviction) updatedPrimaryAttribute.eviction = eviction;
+			else if (eviction === 0) delete updatedPrimaryAttribute.eviction;
 			if (replicaExpiration != null) {
 				replicaExpirationMsOf(replicaExpiration);
 				updatedPrimaryAttribute.replicaExpiration = replicaExpiration;

@@ -295,6 +295,11 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		}
 	}
 
+	/** Each storage generation registers under its own readiness id (`fullTextDerivedIndexReadinessId`). */
+	quietToken(): number {
+		return 1;
+	}
+
 	getUnindexableRecords(): number {
 		return this.#unindexableRecords;
 	}
