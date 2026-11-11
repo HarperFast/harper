@@ -9,6 +9,10 @@ const { FULL_WRITE_HEAD, fullWriteHeadKey } = require('#src/resources/Table');
 const { raiseAuditFloor, getAuditFloor, COPIED_RECORD } = require('#src/resources/auditStore');
 const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
 const { server } = require('#src/server/Server');
+const { createBlob, getFilePathForBlob, setDeletionDelay } = require('#src/resources/blob');
+const { existsSync } = require('node:fs');
+const { randomBytes } = require('node:crypto');
+const { waitFor } = require('../waitFor');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 const DAY = 86400 * 1000;
@@ -419,6 +423,192 @@ describe('A record bit for a full-write head (harper#3532)', () => {
 			false,
 			'the fold changed the body at the head’s version'
 		);
+	});
+
+	describe('a base-copied delete (harper-pro#1331)', () => {
+		const copiedDelete = (Table, id, { version, nodeId = headOrigin, logKey = version }) =>
+			fromOrigin(
+				Table,
+				id,
+				(resource) => resource._writeDelete(id, { isNotification: true, isCopyApply: true, nodeId, version }),
+				{ version, logKey }
+			);
+		const copiedPut = (Table, id, record, { version, nodeId = headOrigin }) =>
+			fromOrigin(
+				Table,
+				id,
+				(resource) => resource._writeUpdate(id, record, true, { isCopyApply: true, nodeId, version }),
+				{ version }
+			);
+
+		it('stores a flagged tombstone at the delete’s version and origin, with no audit entry', async function () {
+			if (isLMDB) return this.skip();
+			const id = newId();
+			const version = Date.now() + DAY;
+			await copiedDelete(T, id, { version, logKey: version - 10 });
+			const entry = T.primaryStore.getEntry(id);
+			assert.equal(entry.value, null);
+			assert.equal(entry.version, version);
+			assert.equal(entry.nodeId, headOrigin);
+			assert.ok(entry.metadataFlags & FULL_WRITE_HEAD, 'a delete is a full write');
+			assert.equal(entry.additionalAuditRefs, undefined, 'no ref to a log entry this node does not hold');
+			assert.equal(T.auditStore.getSync(version - 10, T.tableId, id, headOrigin), undefined);
+			assert.equal(T.auditStore.getSync(version, T.tableId, id, headOrigin), undefined);
+		});
+
+		it('yields to a newer or equal head, and replaces an older row and its index entries', async function () {
+			if (isLMDB) return this.skip();
+			const Indexed = table({
+				table: 'CopiedDeleteIndexed',
+				database: 'fullWriteHeadCopiedDeleteIndexed',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'name', indexed: true },
+				],
+				audit: true,
+			});
+			const origin = getIdOfRemoteNode('full-write-head-a', Indexed.auditStore);
+			const version = Date.now() + DAY;
+			const byName = async (name) => {
+				const ids = [];
+				for await (const record of Indexed.search({ conditions: [{ attribute: 'name', value: name }] }))
+					ids.push(record.id);
+				return ids;
+			};
+			await apply(
+				Indexed,
+				'newer',
+				{ id: 'newer', name: 'newer' },
+				{ version: version + 1000, nodeId: origin, fullUpdate: true }
+			);
+			await apply(Indexed, 'equal', { id: 'equal', name: 'equal' }, { version, nodeId: origin, fullUpdate: true });
+			await apply(
+				Indexed,
+				'older',
+				{ id: 'older', name: 'older' },
+				{ version: version - 1000, nodeId: origin, fullUpdate: true }
+			);
+			for (const id of ['newer', 'equal', 'older']) await copiedDelete(Indexed, id, { version, nodeId: origin });
+			assert.equal(Indexed.primaryStore.getEntry('newer').value.name, 'newer');
+			assert.equal(Indexed.primaryStore.getEntry('equal').value.name, 'equal');
+			const older = Indexed.primaryStore.getEntry('older');
+			assert.equal(older.value, null);
+			assert.equal(older.version, version);
+			assert.deepEqual(await byName('older'), [], 'the replaced row leaves the index');
+			assert.deepEqual(await byName('newer'), ['newer']);
+		});
+
+		for (const late of ['put', 'patch', 'add'])
+			it(`beats an older ${late} with no audit lookup, though no entry records the delete`, async function () {
+				if (isLMDB) return this.skip();
+				const id = newId();
+				const version = Date.now() + DAY;
+				await copiedDelete(T, id, { version });
+				const record = {
+					put: { id, name: 'late', count: 1 },
+					patch: { name: 'late' },
+					add: { count: { __op__: 'add', value: 1 } },
+				}[late];
+				const counts = await lookupsDuring(T, () =>
+					apply(T, id, record, { version: version - 1000, nodeId: lateOrigin, fullUpdate: late === 'put' })
+				);
+				assert.equal(counts.lookups, 0);
+				const entry = T.primaryStore.getEntry(id);
+				assert.equal(entry.value, null, `the older ${late} must not recreate the row`);
+				assert.equal(entry.version, version);
+			});
+
+		it('beats an older write whatever the floor', async function () {
+			if (isLMDB) return this.skip();
+			const Floor = auditedTable();
+			const origin = getIdOfRemoteNode('full-write-head-a', Floor.auditStore);
+			const late = getIdOfRemoteNode('full-write-head-b', Floor.auditStore);
+			const now = Date.now();
+			await copiedDelete(Floor, 'copied', { version: now + 10 * DAY, nodeId: origin });
+			// an audited delete whose log key sits below the floor: the floor shortcut cannot vouch for it
+			await apply(
+				Floor,
+				'audited',
+				{ id: 'audited', name: 'head' },
+				{ version: now, nodeId: origin, fullUpdate: true }
+			);
+			await fromOrigin(
+				Floor,
+				'audited',
+				(resource) => resource._writeDelete('audited', { version: now + 10 * DAY, nodeId: origin }),
+				{ version: now + 10 * DAY, logKey: now + DAY }
+			);
+			raiseAuditFloor(Floor.auditStore, now + 2 * DAY);
+			for (const id of ['copied', 'audited']) {
+				await apply(Floor, id, { name: 'late' }, { version: now + 5 * DAY, nodeId: late });
+				assert.equal(Floor.primaryStore.getEntry(id).value, null, `${id}: above the floor`);
+				await apply(Floor, id, { count: { __op__: 'add', value: 1 } }, { version: now - 30 * DAY, nodeId: late });
+				assert.equal(Floor.primaryStore.getEntry(id).value, null, `${id}: below the floor`);
+			}
+			Floor.auditStore.rootStore.removeSync(AUDIT_FLOOR_KEY);
+			await Floor.auditStore.remove(AUDIT_FLOOR_KEY);
+			assert.equal(getAuditFloor(Floor.auditStore), Infinity, 'premise: the floor reads as unknown');
+			for (const id of ['copied', 'audited']) {
+				await apply(Floor, id, { name: 'late' }, { version: now + 5 * DAY, nodeId: late });
+				assert.equal(Floor.primaryStore.getEntry(id).value, null, `${id}: unknown floor`);
+			}
+		});
+
+		it('leaves a publish-only head to the walk, so an older patch newer than the delete still applies', async function () {
+			if (isLMDB) return this.skip();
+			const id = newId();
+			const version = Date.now() + DAY;
+			await apply(T, id, { id, name: 'head' }, { version, fullUpdate: true });
+			await remove(T, id, { version: version + 1 });
+			await fromOrigin(
+				T,
+				id,
+				(resource) =>
+					resource._writePublish(
+						id,
+						{ message: 'hello' },
+						{ isNotification: true, nodeId: headOrigin, version: version + 3 }
+					),
+				{ version: version + 3 }
+			);
+			const head = T.primaryStore.getEntry(id);
+			assert.equal(head.value, null);
+			assert.equal(Boolean(head.metadataFlags & FULL_WRITE_HEAD), false, 'premise: a publish clears the bit');
+			await apply(T, id, { name: 'between' }, { version: version + 2, nodeId: lateOrigin });
+			assert.equal(T.primaryStore.getEntry(id).value?.name, 'between');
+		});
+
+		it('leaves the replaced row’s blob files in place, since the tombstone is durable only at the copy’s flush', async function () {
+			if (isLMDB) return this.skip();
+			const Blobs = table({
+				table: 'CopiedDeleteBlobs',
+				database: 'fullWriteHeadCopiedDeleteBlobs',
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'payload' }],
+				audit: true,
+			});
+			const origin = getIdOfRemoteNode('full-write-head-a', Blobs.auditStore);
+			const version = Date.now() + DAY;
+			const blobPath = (id) => getFilePathForBlob(Blobs.primaryStore.getSync(id).payload);
+			for (const id of ['copied', 'deleted'])
+				await copiedPut(Blobs, id, { id, payload: createBlob(randomBytes(25000)) }, { version, nodeId: origin });
+			const paths = { copied: blobPath('copied'), deleted: blobPath('deleted') };
+			await waitFor(() => existsSync(paths.copied) && existsSync(paths.deleted), {
+				timeout: 5000,
+				message: 'premise: file-backed blobs',
+			});
+			setDeletionDelay(0);
+			try {
+				await copiedDelete(Blobs, 'copied', { version: version + 1, nodeId: origin });
+				await remove(Blobs, 'deleted', { version: version + 1, nodeId: origin });
+				await waitFor(() => !existsSync(paths.deleted), {
+					timeout: 5000,
+					message: 'premise: an audited delete reclaims an unreferenced file',
+				});
+				assert.ok(existsSync(paths.copied), 'a copied delete leaves the file for orphan cleanup');
+			} finally {
+				setDeletionDelay(undefined);
+			}
+		});
 	});
 
 	it('keeps the walk when the head’s own log entry is older than the floor, or the floor is unknown', async function () {

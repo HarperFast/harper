@@ -6877,6 +6877,12 @@ export function makeTable(options): TableResourceClass {
 							// entry is retained and this write is above the floor; otherwise that reconciliation decides.
 							const headKey = fullWriteHeadKey(existingEntry.metadataFlags, existingEntry);
 							if (headKey !== undefined) {
+								// A flagged head holding no record is a delete, which supersedes every older write whatever
+								// the floor; a base-copied one has no audit entry for the walk to reach.
+								if (existingEntry.value == null && !(existingEntry.metadataFlags & (INVALIDATED | REPLICA))) {
+									write.skipped = true;
+									return;
+								}
 								auditFloor = getAuditFloor(auditStore);
 								if (Number.isFinite(auditFloor) && txnTime >= auditFloor && headKey >= auditFloor) {
 									write.skipped = true;
@@ -8231,6 +8237,7 @@ export function makeTable(options): TableResourceClass {
 			checkValidId(id);
 			const entry = entryBeforeWrite(this.#entry, id, transaction, true);
 			const baseReadTxn = this.#commitBaseTxn(id);
+			const isCopyApply = isRocksDB && options?.isCopyApply === true;
 
 			const write: any = {
 				key: id,
@@ -8270,8 +8277,9 @@ export function makeTable(options): TableResourceClass {
 					// transaction can never trip this guard — it shares this transaction's timestamp and
 					// compares as a tie (0), not < 0 — so a negative result always means a genuinely newer
 					// write (a concurrent transaction observed on a retry round, or an out-of-order delivery)
-					// that a chained delete must not destroy.
-					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) < 0) {
+					// that a chained delete must not destroy. A base-copy tombstone also yields to an equal head.
+					const precedesExisting = precedesExistingVersion(txnTime, existingEntry, options?.nodeId);
+					if (precedesExisting < 0 || (isCopyApply && precedesExisting === 0)) {
 						write.skipped = true;
 						return;
 					}
@@ -8295,7 +8303,7 @@ export function makeTable(options): TableResourceClass {
 					}
 					const stagedRemoval = {
 						value: undefined,
-						localTime: txnLogKey,
+						localTime: isCopyApply ? txnTime : txnLogKey,
 						nodeId: options?.nodeId,
 						metadataFlags: options?.localOnly ? LOCAL_ONLY : 0,
 						residencySlot,
@@ -8321,10 +8329,12 @@ export function makeTable(options): TableResourceClass {
 						updateRecord(
 							id,
 							null,
-							existingEntry,
+							// A copied tombstone is durable only at the copy's flush, so a crash can restore the row it
+							// replaced: leave that row's blob files to orphan cleanup instead of unlinking them.
+							isCopyApply && existingEntry ? { ...existingEntry, value: undefined } : existingEntry,
 							txnTime,
 							isRocksDB && audit ? FULL_WRITE_HEAD : 0,
-							audit,
+							isCopyApply ? false : audit,
 							{
 								user: (context as any)?.user,
 								residencySlot,
@@ -8332,10 +8342,10 @@ export function makeTable(options): TableResourceClass {
 								viaNodeId: options?.viaNodeId,
 								transaction,
 								write,
-								tableToTrack: tableName,
+								tableToTrack: isCopyApply ? null : tableName,
 								recordVersion: txnTime,
 								additionalAuditRefs:
-									isRocksDB && audit && txnLogKey !== txnTime
+									isRocksDB && audit && !isCopyApply && txnLogKey !== txnTime
 										? [{ version: txnLogKey, nodeId: options?.nodeId }]
 										: undefined,
 								localOnly: options?.localOnly,

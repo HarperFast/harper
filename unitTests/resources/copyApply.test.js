@@ -4,6 +4,7 @@ const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { setTimeout: delay } = require('node:timers/promises');
 require('#src/server/serverHelpers/serverUtilities');
+const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
 
 // Bulk base-copy frames are applied as snapshots (harper-pro#480): the record + indices are written
 // but NO audit/transaction-log entry is created, and the out-of-order resequencing/dedup is skipped.
@@ -119,6 +120,72 @@ describe('copy-apply snapshot writes (harper-pro#480)', () => {
 			assert.notEqual(entry.localTime, key);
 			assert.ok(!entry.additionalAuditRefs?.some((ref) => ref.version === key));
 			assert.equal((await Rows.getHistoryOfRecord(1)).length, 0);
+		} finally {
+			release();
+		}
+	});
+
+	it('stores a copied delete as a tombstone that older replicated writes do not overwrite (harper-pro#1331)', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
+		let release;
+		const held = new Promise((resolve) => (release = resolve));
+		const now = Date.now();
+		const Rows = table({
+			table: 'CopyApplyTombstone',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+		});
+		const origin = getIdOfRemoteNode('copy-apply-delete-origin', Rows.auditStore);
+		const late = getIdOfRemoteNode('copy-apply-late-origin', Rows.auditStore);
+		const events = [
+			{ type: 'delete', id: 'gone', nodeId: origin, version: now, timestamp: now, isCopyApply: true },
+			{
+				type: 'put',
+				id: 'gone',
+				value: { id: 'gone', name: 'older put' },
+				nodeId: late,
+				version: now - 100,
+				timestamp: now - 100,
+			},
+			{
+				type: 'patch',
+				id: 'gone',
+				value: { name: 'older patch' },
+				nodeId: late,
+				version: now - 50,
+				timestamp: now - 50,
+			},
+			{
+				type: 'put',
+				id: 'marker',
+				value: { id: 'marker', name: 'marker' },
+				nodeId: origin,
+				version: now + 200,
+				timestamp: now + 200,
+			},
+		];
+		Rows.sourcedFrom(
+			{
+				subscribeOnThisThread() {
+					return true;
+				},
+				async *subscribe() {
+					for (const event of events) yield event;
+					await held;
+				},
+			},
+			{ intermediateSource: true }
+		);
+		try {
+			await waitFor(async () => (await Rows.get('marker'))?.name === 'marker', 'sentinel applied');
+			const entry = Rows.primaryStore.getEntry('gone');
+			assert.equal(entry?.value, null, 'the older writes must not recreate the deleted row');
+			assert.equal(entry.version, now);
+			assert.equal(entry.nodeId, origin);
+			assert.equal(
+				(await Rows.getHistoryOfRecord('gone')).length,
+				0,
+				'no audit entry for the copied delete or the losers'
+			);
 		} finally {
 			release();
 		}
