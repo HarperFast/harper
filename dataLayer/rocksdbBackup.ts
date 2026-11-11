@@ -11,7 +11,12 @@ import { createGzip } from 'node:zlib';
 import { setTimeout as delay } from 'node:timers/promises';
 import { pack as tarPack, type Pack } from 'tar-stream';
 import { RocksDatabase, backups, getRegistryStatus, type BackupInfo } from '@harperfast/rocksdb-js';
-import { databases, getDatabases, resolveDatabasePath } from '../resources/databases.ts';
+import {
+	databases,
+	getDatabases,
+	resolveDatabasePath,
+	throwIfUnloadedDatabaseHeldByRestore,
+} from '../resources/databases.ts';
 import { publishRestore } from './restorePublication.ts';
 import { runRestoreChild } from './restoreChildRunner.ts';
 import { readRestoreReceipt } from './restoreReceipt.ts';
@@ -168,6 +173,7 @@ export function backupDirForDatabase(databaseName: string): string {
 export function resolveSingleRootStore(databaseName: string): any {
 	const database = getDatabases()[databaseName];
 	if (!database) {
+		throwIfUnloadedDatabaseHeldByRestore(databaseName);
 		throw new BackupNotFoundError(`Database '${databaseName}' does not exist`);
 	}
 	const rootStores = new Set<any>();

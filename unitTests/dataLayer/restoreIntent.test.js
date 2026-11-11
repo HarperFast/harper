@@ -5,7 +5,7 @@ testUtils.preTestPrep();
 
 const assert = require('node:assert');
 const { randomBytes, randomUUID } = require('node:crypto');
-const { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
+const { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
 
 const { join } = require('node:path');
 const { writeUnsupportedTableFormat } = require('./fixtures/backupFiles.js');
@@ -38,6 +38,7 @@ const { readBackupManifest, writeBackupManifest } = backupManifestModule;
 const blobBackupModule = require('#js/dataLayer/blobBackup');
 const { blobSnapshotDir, fsyncTree } = blobBackupModule;
 const { readBackupPins } = require('#src/dataLayer/backupRepository');
+const { dropSchema } = require('#src/dataLayer/schema');
 const {
 	acquireRestoreLock,
 	checkRestoreState,
@@ -426,6 +427,25 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			assert.strictEqual(kept.state, 'pending');
 			assert.strictEqual(kept.job_id, resumed.jobId);
 			assert.deepStrictEqual(pinsOf(fixture), [{ pin_id: kept.source_pin_id, backup_id: kept.backup_id }]);
+			await restoreBackup({ ...SU, database: fixture.name, cancel: true });
+		});
+
+		it('answers drop_database and create_backup for the reserved database with the restore, not a 404', async function () {
+			const fixture = await seededDatabase();
+			await requestRestore(fixture.name, { on_restart: true, retain_previous: false });
+			await closeDatabase(fixture.name);
+			assert.strictEqual(loadedItems(fixture.name), undefined, 'precondition: reserved, so not loaded');
+
+			for (const attempt of [
+				() => dropSchema({ database: fixture.name }),
+				() => createBackup({ ...SU, database: fixture.name }),
+			]) {
+				await assert.rejects(
+					attempt(),
+					(error) => error.statusCode === 409 && /reserved by a restore that has not finished/.test(error.message)
+				);
+			}
+			assert.ok(existsSync(join(fixture.dir, 'CURRENT')), 'nothing was dropped');
 			await restoreBackup({ ...SU, database: fixture.name, cancel: true });
 		});
 
