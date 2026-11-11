@@ -323,21 +323,17 @@ describe('Test configValidator module', () => {
 			expect(configValidator(config).error.message).to.include("'replication.blobGapEscalationMs' must be an integer");
 		});
 
-		it('accepts replication.region as a string and replication.gateway as a boolean', () => {
+		it('accepts replication.region as a string', () => {
 			const config = testUtils.deepClone(FAKE_CONFIG);
-			config.replication = { region: 'us-east', gateway: true };
+			config.replication = { region: 'us-east' };
 			assert.equal(configValidator(config).error, undefined);
-			config.replication = { region: '', gateway: false };
+			config.replication = { region: '' };
 			assert.equal(configValidator(config).error, undefined);
-			config.replication = { region: null, gateway: null };
+			config.replication = { region: null };
 			assert.equal(configValidator(config).error, undefined);
 
 			config.replication = { region: 5 };
 			assert.match(configValidator(config).error?.message, /'replication\.region' must be a string/);
-			config.replication = { gateway: 'yes' };
-			assert.match(configValidator(config).error?.message, /'replication\.gateway' must be a boolean/);
-			config.replication = { gateway: 'false' };
-			assert.match(configValidator(config).error?.message, /'replication\.gateway' must be a boolean/);
 		});
 
 		it('accepts a well-formed sql config section', () => {

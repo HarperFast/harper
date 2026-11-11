@@ -763,7 +763,6 @@ export const CONFIG_PARAMS = {
 	REPLICATION_SHARD: 'replication_shard',
 	REPLICATION_SHARDS: 'replication_shards',
 	REPLICATION_REGION: 'replication_region',
-	REPLICATION_GATEWAY: 'replication_gateway',
 	REPLICATION_EXPERIMENTALATTRIBUTESLOTS: 'replication_experimentalAttributeSlots',
 	REPLICATION_BLOBTIMEOUT: 'replication_blobTimeout',
 	REPLICATION_CONFIRMATIONTIMEOUT: 'replication_confirmationTimeout',
