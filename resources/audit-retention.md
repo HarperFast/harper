@@ -106,8 +106,9 @@ never existed or were removed. `getLogPurgeBounds` returns each named log's boun
 removed, and `getLogPurgeTrackedFrom` where tracking began; a resume needs both, reading
 `getLogPurgeTrackedFrom` second so a prune between the reads errs toward a copy, and either returning
 undefined means the store cannot say. A name missing from `getLogPurgeBounds`'s map is a log whose
-watermark could not be read: unknown, never 0. A pass does not read such a log either; its record entry
-takes the cutoff, as below.
+watermark could not be read: unknown, never 0. A pass does not read such a log either: it keeps the log's
+record entry, raising its bound to the reach, and does not advance `observedAt`; a boot purge applies the
+record rule to it.
 
 - **A log with a purge watermark answers with it** (`purgeWatermark`). rocksdb-js 2.14 raises each log's
   `txn.purged` to the largest key of every file it deletes, and syncs it before the unlink, on `purgeLogs`

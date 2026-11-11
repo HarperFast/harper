@@ -937,14 +937,14 @@ type LogPurgeBounds = {
 	positions: Record<string, LogPosition>;
 };
 /**
- * `unaccounted`: a listed log has no watermark. `unreadable`: one's could not be read, so this pass did not
- * account for every log. `unobserved`: a boot purge could observe none of them.
+ * `unaccounted`: a listed log has no watermark. `unreadable`: logs whose watermark could not be read, so this pass
+ * did not account for every log. `unobserved`: a boot purge could observe none of them.
  */
 type LogObservation = {
 	entries: Map<string, LogPurgeEntry>;
 	watermarked: Set<string>;
 	unaccounted: boolean;
-	unreadable: boolean;
+	unreadable: Set<string>;
 	read: boolean;
 	unobserved: boolean;
 	positions: Record<string, LogPosition>;
@@ -1134,7 +1134,13 @@ function samePosition(a: LogPosition | undefined, b: LogPosition | undefined): b
 
 function appendedNothingSince(recorded: LogPurgeBounds, rootStore: any, name: string): boolean {
 	const position = Object.hasOwn(recorded.positions, name) ? recorded.positions[name] : undefined;
-	return position !== undefined && samePosition(position, nextLogPosition(rootStore.useLog(name)));
+	if (position === undefined) return false;
+	try {
+		return samePosition(position, nextLogPosition(rootStore.useLog(name)));
+	} catch (error) {
+		warnContained(`Error reading the append position of transaction log ${name}`, error);
+		return false;
+	}
 }
 
 /**
@@ -1159,7 +1165,7 @@ function observeLogPurgeBounds(
 		entries: new Map(),
 		watermarked: new Set(),
 		unaccounted: false,
-		unreadable: false,
+		unreadable: new Set(),
 		read: readLogs,
 		unobserved: false,
 		positions: Object.create(null),
@@ -1186,18 +1192,17 @@ function observeLogPurgeBounds(
 		return undefined;
 	}
 	const unaccounted: string[] = [];
-	const unreadable: string[] = [];
+	const { unreadable } = observation;
 	for (const name of names) {
 		const watermark = purgeWatermark(rootStore, name);
 		if (watermark === null) unaccounted.push(name);
-		else if (watermark === undefined) unreadable.push(name);
+		else if (watermark === undefined) unreadable.add(name);
 		else {
 			observation.entries.set(name, [Math.max(watermark, cutoff), 0, UNKNOWN_MAXIMUM]);
 			observation.watermarked.add(name);
 		}
 	}
-	observation.unreadable = unreadable.length > 0;
-	observation.unaccounted = unaccounted.length > 0 || observation.unreadable;
+	observation.unaccounted = unaccounted.length > 0 || unreadable.size > 0;
 	// the furthest either purge reaches: this prune's cutoff, or rocksdb-js's own retention when it reaches further
 	const reach = Math.max(cutoff, nativeHorizon);
 	if (!readLogs) {
@@ -1329,7 +1334,7 @@ function raisedLogPurgeBounds(
 		// a concurrent pass may have seen a larger key; a real read replaces an unknown one, and a pass that read
 		// nothing keeps whatever the record holds now
 		const merged =
-			!observation.read && logs[name]
+			(!observation.read || observation.unreadable.has(name)) && logs[name]
 				? baseMaxKey
 				: baseMaxKey === UNKNOWN_MAXIMUM
 					? maxKey
@@ -1343,7 +1348,7 @@ function raisedLogPurgeBounds(
 		unobserved: epoch,
 		trackedFrom,
 		cutoff: Math.max(base.cutoff, cutoff),
-		observedAt: read && !observation.unreadable ? now : base.observedAt,
+		observedAt: read && observation.unreadable.size === 0 ? now : base.observedAt,
 		positions: read ? observation.positions : base.positions,
 		logs,
 	});
