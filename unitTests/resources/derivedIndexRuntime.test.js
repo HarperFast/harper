@@ -10,6 +10,7 @@ const {
 	derivedIndexTime,
 	publishDerivedIndexReadiness,
 	publishDerivedIndexUnavailableIfUnknown,
+	readDerivedIndexCoverage,
 	readDerivedIndexPublicationRevision,
 	readDerivedIndexReadiness,
 	retryDerivedIndexUnavailable,
@@ -1399,6 +1400,33 @@ describe('DerivedIndexRuntime', () => {
 				message: 'positions published for other storage must not keep a replacement ownerless',
 			});
 			await Promise.all([owner.stop(), replacement.stop()]);
+		});
+
+		it('certifies the ownerless index for a reader with no cursor by the same mark, bound to its storage', async () => {
+			const store = quietStore();
+			const backend = coverageBackend('quiet-certified');
+			const { runtime } = runtimeFor(store, new Map(), options);
+			runtime.register(registration(backend));
+			await released(store, backend);
+			const quiet = { tableId: 1, token: () => backend.quietToken() };
+			const coverage = (identity = quiet) =>
+				readDerivedIndexCoverage(store, backend.id, () => undefined, 0, identity).state;
+
+			assert.strictEqual(coverage(), 'current');
+			assert.strictEqual(
+				readDerivedIndexCoverage(store, backend.id, () => undefined, 0).state,
+				'unknown',
+				'a reader that does not opt in still needs a cursor'
+			);
+			assert.strictEqual(coverage({ ...quiet, tableId: 2 }), 'unknown', 'a mark bound to another table');
+			const stored = backend.cursor;
+			backend.cursor = cursor(30);
+			assert.strictEqual(coverage(), 'unknown', 'a mark bound to replaced storage');
+			backend.cursor = stored;
+			assert.strictEqual(coverage(), 'current');
+			store.committedPosition = { sequence: 1, offset: 64 };
+			assert.strictEqual(coverage(), 'unknown', 'a log that moved past the mark');
+			await runtime.stop();
 		});
 
 		it('catches up when the same runtime re-registers after its commit listener was detached', async () => {
