@@ -69,6 +69,7 @@ const NATIVE_SEARCH_HIT_OVERHEAD_BYTES = 13;
 const MAX_RELOAD_FAILURES_BEFORE_REOPEN = 3;
 const HIGHLIGHT_BLOB_READ_TIMEOUT_MILLISECONDS = 5_000;
 const READER_DRAIN_GRACE_MILLISECONDS = 1_000;
+const READER_ACQUISITION_TIMEOUT_MILLISECONDS = 30_000;
 const UTF8_DECODER = new TextDecoder('utf-8', { fatal: true });
 const logger = loggerWithTag('fulltext-query-index');
 
@@ -383,15 +384,11 @@ export class FullTextQueryIndex {
 		}
 	}
 
-	async #acquireSearchReader(condition: FullTextCondition, context: any) {
+	async #acquireSearchReader(context: any) {
 		const readiness = readDerivedIndexReadiness(this.#options.auditStore, this.#options.readinessId);
 		assertReady(readiness, this.#definition.name);
 		if (!this.#derivedHost) throw new IndexRebuildingError(`Full-text index '${this.#definition.name}' is not ready`);
 		const publicationGeneration = this.#publicationRevision();
-		const acquisitionTimeout = Math.min(
-			MAX_WAIT_FOR_INDEX_MILLISECONDS,
-			Math.max(1, condition.waitForIndexMilliseconds ?? MAX_WAIT_FOR_INDEX_MILLISECONDS)
-		);
 		const acquisition = this.#acquireReader(readiness.ownerEpoch, publicationGeneration);
 		let abortListener: (() => void) | undefined;
 		const abort = context?.signal
@@ -405,8 +402,8 @@ export class FullTextQueryIndex {
 		try {
 			lease = await withTimeout(
 				abort ? Promise.race([acquisition, abort]) : acquisition,
-				acquisitionTimeout,
-				() => new ServerError('Full-text reader acquisition exceeded the index-wait budget', 503)
+				READER_ACQUISITION_TIMEOUT_MILLISECONDS,
+				() => new ServerError('Full-text reader acquisition timed out', 503)
 			);
 		} catch (error) {
 			void acquisition.then(
@@ -445,7 +442,7 @@ export class FullTextQueryIndex {
 				500
 			);
 		}
-		const lease = await this.#acquireSearchReader(condition, context);
+		const lease = await this.#acquireSearchReader(context);
 		const reader = lease.reader;
 		try {
 			const deadline =

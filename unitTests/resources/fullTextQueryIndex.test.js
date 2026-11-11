@@ -258,6 +258,65 @@ function readyQueryIndex(auditStore, readinessId, storeName) {
 	return fixture.index;
 }
 
+function gatedReaderIndex(auditStore, readinessId) {
+	publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+	const state = { opens: 0, reloads: 0, searches: 0, openGate: undefined, reloadGate: undefined, coverageWaits: [] };
+	const index = new FullTextQueryIndex({
+		Table: {
+			tableId: 1,
+			primaryStore: { rootStore: auditStore.rootStore, getEntry: () => ({ version: 1, value: { title: 'shoe' } }) },
+			_readTxnForContext: () => undefined,
+		},
+		definition: definition(),
+		auditStore,
+		readinessId,
+		indexId: readinessId,
+		storePath: '/unused',
+		storeName: 'unused',
+		sourceGeneration: 'generation',
+		limits: {},
+		binding: {
+			async runtimeInfo() {
+				return {
+					queryClassIsolationMinimumSearchThreads: 1,
+					limits: queryLimits({ maxSearchWindow: 10, maxTraceRecords: 10 }),
+				};
+			},
+			async openNativeFullTextReader() {
+				state.opens++;
+				await state.openGate?.promise;
+				return withTraversal({
+					committedPayload: encodeFullTextCursorPayload({ format: 1, logs: { local: 1 } }),
+					async search() {
+						state.searches++;
+						return { total: 1, totalRelation: 'exact', hits: [{ id: nativeId(1, 'one'), version: '1', score: 1 }] };
+					},
+					async reload() {
+						state.reloads++;
+						await state.reloadGate?.promise;
+					},
+					async close() {},
+				});
+			},
+		},
+	});
+	auditStore.setCoverage(readinessId, 99_000_000n);
+	index.attachDerivedHost({
+		readiness: () => ({ state: 'ready' }),
+		requestRebuild: () => true,
+		waitForCoverage: async (_started, timeout) => {
+			state.coverageWaits.push(timeout);
+		},
+	});
+	return { index, state };
+}
+
+// Outlasts a 5 ms index wait, so only an acquisition bound independent of that wait lets the search finish.
+async function releaseAfterElapsed(gate) {
+	await new Promise((resolve) => setTimeout(resolve, 20));
+	gate.resolve();
+}
+
 describe('full-text replay page protocol', () => {
 	const { replayFullTextPrefix } = require('#src/resources/indexes/fullTextQueryProtocol');
 	const prefix = [
@@ -925,6 +984,78 @@ describe('FullTextQueryIndex', () => {
 			results.map(({ key }) => key),
 			['one']
 		);
+		await index.close();
+	});
+
+	it('waits for a reader reload or reopen on a ready index whatever the index-wait budget', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'no-wait-reader-refresh';
+		const { index, state } = gatedReaderIndex(auditStore, readinessId);
+		const query = { attribute: readinessId, comparator: 'matches', value: 'shoe' };
+		await index.search(query, {}, { minResults: 1 });
+		assert.strictEqual(state.opens, 1);
+
+		for (const [step, condition] of [
+			['explicit zero wait', { ...query, waitForIndexMilliseconds: 0 }],
+			['omitted wait', query],
+		]) {
+			auditStore.publish(readinessId, false);
+			state.reloadGate = Promise.withResolvers();
+			const pending = index.search(condition, {}, { minResults: 1 });
+			await releaseAfterElapsed(state.reloadGate);
+			assert.strictEqual((await pending).length, 1, step);
+		}
+		assert.strictEqual(state.reloads, 2);
+		assert.deepStrictEqual(state.coverageWaits, [], 'a no-wait search never waits for coverage');
+
+		auditStore.publish(readinessId, false);
+		state.reloadGate = Promise.withResolvers();
+		const waiting = index.search(
+			{ ...query, waitForIndexMilliseconds: 5 },
+			{ indexSearchStart: Promise.resolve() },
+			{ minResults: 1 }
+		);
+		await releaseAfterElapsed(state.reloadGate);
+		assert.strictEqual((await waiting).length, 1, 'a reload longer than a positive wait still completes');
+		assert.strictEqual(state.coverageWaits.length, 1);
+		assert(state.coverageWaits[0] <= 5, 'the positive wait still bounds the coverage wait');
+
+		auditStore.setEpoch(readinessId, 7n);
+		state.openGate = Promise.withResolvers();
+		const reopening = index.search({ ...query, waitForIndexMilliseconds: 0 }, {}, { minResults: 1 });
+		await releaseAfterElapsed(state.openGate);
+		assert.strictEqual((await reopening).length, 1);
+		assert.strictEqual(state.opens, 2, 'a new owner epoch replaces the reader');
+
+		auditStore.setCoverage(readinessId, 1n);
+		await assert.rejects(
+			index.search({ ...query, waitForIndexMilliseconds: 0, maxIndexLagMilliseconds: 25 }, {}, { minResults: 1 }),
+			(error) => error.code === 'DERIVED_INDEX_LAGGING'
+		);
+		assert.deepStrictEqual([state.opens, state.reloads], [2, 3], 'lag is rejected without touching the reader');
+		await index.close();
+	});
+
+	it('releases a reader acquired after its no-wait search was aborted', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'no-wait-reader-abort';
+		const { index, state } = gatedReaderIndex(auditStore, readinessId);
+		const query = { attribute: readinessId, comparator: 'matches', value: 'shoe', waitForIndexMilliseconds: 0 };
+		await index.search(query, {}, { minResults: 1 });
+
+		auditStore.publish(readinessId, false);
+		state.reloadGate = Promise.withResolvers();
+		const controller = new AbortController();
+		const reason = new Error('client went away');
+		const aborted = index.search(query, { signal: controller.signal }, { minResults: 1 });
+		await waitFor(() => state.reloads === 1);
+		controller.abort(reason);
+		await assert.rejects(aborted, (error) => error === reason);
+		state.reloadGate.resolve();
+
+		assert.strictEqual((await index.search(query, {}, { minResults: 1 })).length, 1);
+		assert.strictEqual(state.searches, 2, 'the aborted search never reaches the native reader');
+		assert.strictEqual(state.reloads, 1);
 		await index.close();
 	});
 
