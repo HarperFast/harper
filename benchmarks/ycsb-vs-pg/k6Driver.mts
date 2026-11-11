@@ -96,7 +96,6 @@ export interface K6Phase {
 
 export const k6Binary = (): string => process.env.YCSB_K6 || 'k6';
 
-/** What an op's latency measures under each generator, for the results' meta. */
 export const K6_LATENCY_BASIS = "the op's requests' send, wait and receive time (k6 timings.duration, summed)";
 export const NODE_LATENCY_BASIS = 'wall time around the op in the generator process (performance.now)';
 

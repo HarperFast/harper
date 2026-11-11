@@ -559,7 +559,6 @@ export async function withRemoteTarget<T>(
 		const front = started.find((s) => s.part.front)!;
 		const { baseUrl, authorization, callerAuthorizations } = front.descriptor;
 		const table = session.options.config.table;
-		// From the generator: the route answers over the network, and refuses a request without the credential.
 		await waitForRoute(`${baseUrl}/${table}/`, MINUTE, authorization);
 		if (authorization) await assertCredentialChecked(`${baseUrl}/${table}/auth-probe`, authorization);
 		const probes = Object.fromEntries(

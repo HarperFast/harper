@@ -227,6 +227,10 @@ export type GeneratorName = 'k6' | 'node';
  */
 export const defaultGenerator = (remote: boolean): GeneratorName => (remote ? 'k6' : 'node');
 
+/** The line above a results table: which generator ran, and so what its latency columns measure. */
+export const generatorLine = (generator: GeneratorName): string =>
+	`Generator ${generator}; p50/p99 are ${generator === 'k6' ? K6_LATENCY_BASIS : NODE_LATENCY_BASIS}`;
+
 /** k6 (k6Driver.mts), or the Node driver (shardedDriver.mts, `shards` processes). */
 export function startGenerator(generator: GeneratorName, config: DriverConfig, shards = 4): Promise<DriverRun> {
 	return generator === 'node' ? startNodeDriver({ ...config, shards }) : startK6Driver(config);
@@ -1255,6 +1259,7 @@ function printComparison(summaries: Summary[], session: Session): void {
 			: `Equal CPU budget: every target on cpus ${session.serverCpus.join(',')} (${session.serverCpus.length} cores); ` +
 					`generator on ${session.driverCpus.join(',')}; cache=${session.cache}`
 	);
+	out.push(generatorLine(session.generator));
 	out.push('Median of reps by throughput; CPU µs/op, memory, hit rate and latency are from that median rep.');
 	for (const target of new Set(summaries.map((s) => s.target))) {
 		const [name, topology] = target.split('@');

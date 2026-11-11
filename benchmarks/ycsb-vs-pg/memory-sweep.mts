@@ -36,8 +36,10 @@ import {
 	createSession,
 	measureWindow,
 	primaryLatency,
+	generatorLine,
 	sizedRecordCacheSize,
 	startGenerator,
+	type GeneratorName,
 	targetOrder,
 	waitForQuietHosts,
 	withTarget,
@@ -472,9 +474,10 @@ function printSweep(
 	points: PointResult[],
 	samples: SweepSample[],
 	harperMemoryBytes: number,
-	chunkReads: number
+	chunkReads: number,
+	generator: GeneratorName
 ): void {
-	const out: string[] = ['', '='.repeat(150)];
+	const out: string[] = ['', '='.repeat(150), generatorLine(generator)];
 	out.push(
 		`Budget per target: 4 cores, ${MEMORY_BUDGET_BYTES / 1024 ** 3} GiB (hard caps, page cache included, swap off)` +
 			(Number.isFinite(harperMemoryBytes) ? '' : ' — EXCEPT Harper, uncapped (--harper-memory=measured)')
@@ -767,7 +770,7 @@ async function main(): Promise<void> {
 		} finally {
 			await removeSnapshots(session).catch(() => {});
 		}
-		printSweep(points, samples, session.harperMemoryBytes, chunkReads);
+		printSweep(points, samples, session.harperMemoryBytes, chunkReads, session.generator);
 		console.log(`\nResults written to ${file}`);
 	}
 }

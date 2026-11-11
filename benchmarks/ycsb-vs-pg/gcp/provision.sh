@@ -53,7 +53,7 @@ SUBNET="$RUN_ID-subnet"
 POLICY="$RUN_ID-compact"
 
 if [ "$DRY" != 1 ]; then
-	# The failure trap below deletes everything named for this run id, so it must be this invocation's alone.
+	# A clear early error for a run id in use; the network create below is what reserves it.
 	in_use=$(gcloud compute instances list "${P[@]}" --filter="labels.ycsb-run=$RUN_ID" --format='value(name)')
 	if [ -n "$in_use" ] || gcloud compute networks describe "$NET" "${P[@]}" >/dev/null 2>&1; then
 		echo "run id $RUN_ID is already in use in $YCSB_GCP_PROJECT; pick another" >&2
@@ -63,11 +63,13 @@ if [ "$DRY" != 1 ]; then
 	chmod 700 "$RUN_DIR"
 	[ -f "$KEY" ] || ssh-keygen -q -t ed25519 -N '' -C "$RUN_ID" -f "$KEY"
 	printf '%s:%s\n' "$YCSB_VM_USER" "$(cat "$KEY.pub")" >"$RUN_DIR/ssh-keys"
-	# Anything created before a failure is the run's to delete.
-	trap 'status=$?; if [ $status -ne 0 ]; then echo "provisioning failed ($status); tearing down $RUN_ID" >&2; "$YCSB_GCP_DIR/teardown.sh" "$RUN_ID" || true; fi' EXIT
 fi
 
 gc compute networks create "$NET" "${P[@]}" --subnet-mode=custom
+# Creating the network reserves the run id: only from here on is everything named for it this run's to delete.
+if [ "$DRY" != 1 ]; then
+	trap 'status=$?; if [ $status -ne 0 ]; then echo "provisioning failed ($status); tearing down $RUN_ID" >&2; "$YCSB_GCP_DIR/teardown.sh" "$RUN_ID" || true; fi' EXIT
+fi
 gc compute networks subnets create "$SUBNET" "${P[@]}" --network="$NET" --region="$YCSB_GCP_REGION" --range="$YCSB_SUBNET_RANGE"
 # The run's VMs reach each other on every port; from outside, only this host reaches SSH. No default
 # allow-internal rule exists on a new network, so nothing else in the project reaches Redis or Postgres.

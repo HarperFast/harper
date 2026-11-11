@@ -294,7 +294,6 @@ test('a window still opening when k6 dies is closed once it has opened', { skip 
 test('failed requests are counted, not fatal, and only successes are timed', { skip }, async () => {
 	const { server, baseUrl } = await recordingServer();
 	try {
-		// Nothing loaded: every read answers 404.
 		const driver = await startDriver(config(baseUrl, { load: false }));
 		const result = await driver.runWorkload('C', 'zipfian', 100);
 		strictEqual(result.errors, 100);
