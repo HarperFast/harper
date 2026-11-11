@@ -1612,10 +1612,16 @@ describeUnlessLmdb('a branch close rocksdb-js reports failing (harper#4252)', ()
 		const exited = new Promise((resolve) => child.once('exit', resolve));
 		try {
 			const result = await new Promise((resolve, reject) => {
-				child.once('message', (message) =>
-					message.type === 'error' ? reject(new Error(message.message)) : resolve(message.result)
-				);
-				child.once('exit', (code, signal) => reject(new Error(`child exited ${code}/${signal}: ${stderr}`)));
+				const timer = setTimeout(() => reject(new Error(`child timed out: ${stderr}`)), 45_000);
+				child.once('message', (message) => {
+					clearTimeout(timer);
+					if (message.type === 'error') reject(new Error(message.message));
+					else resolve(message.result);
+				});
+				child.once('exit', (code, signal) => {
+					clearTimeout(timer);
+					reject(new Error(`child exited ${code}/${signal}: ${stderr}`));
+				});
 			});
 			const flushFailed = /Failed to flush database during close/;
 			assert.match(result.close, flushFailed);
