@@ -1464,7 +1464,6 @@ describe('record lock delegations', () => {
 			const held = await gamma.acquire(key, LEASE, WAIT);
 			const alpha = cluster.node('alpha');
 			alpha.mapReason = 'apply one with record_lock_apply_homes';
-			// the map goes away, and the wait runs out, while beta's answer is in flight
 			cluster.beforeReply = (from) => {
 				if (from !== 'alpha') return;
 				cluster.beforeReply = undefined;
