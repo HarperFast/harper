@@ -1122,12 +1122,19 @@ export function recordUpdater(
 			const receivedIdentityRefs = options?.receivedIdentityRefs;
 			additionalAuditRefsNextEncoding = additionalAuditRefs?.length > 0 ? additionalAuditRefs : undefined;
 			receivedIdentityRefsNextEncoding = receivedIdentityRefs?.length > 0 ? receivedIdentityRefs : undefined;
-			// an audited put or delete appends its own entry, which then stops every walk
+			// an audited put or delete above it appends its own entry, which then stops every walk
+			const existingBoundary = existingEntry?.copiedDeleteBoundary;
 			const copiedDeleteBoundary =
 				options?.copiedDeleteBoundary ??
-				(existingEntry?.copiedDeleteBoundary &&
-				!(audit && (type === 'put' || type === 'delete') && assignMetadata >= 0 && assignMetadata & FULL_WRITE_HEAD)
-					? existingEntry.copiedDeleteBoundary
+				(existingBoundary &&
+				!(
+					audit &&
+					(type === 'put' || type === 'delete') &&
+					assignMetadata >= 0 &&
+					assignMetadata & FULL_WRITE_HEAD &&
+					(options?.recordVersion ?? newVersion) > existingBoundary.version
+				)
+					? existingBoundary
 					: undefined);
 			copiedDeleteBoundaryNextEncoding = isRocksDB && record !== undefined ? copiedDeleteBoundary : undefined;
 			if (copiedDeleteBoundaryNextEncoding)

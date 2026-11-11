@@ -8292,7 +8292,7 @@ export function makeTable(options): TableResourceClass {
 							audit &&
 							precedesExisting < 0 &&
 							!priorStaged &&
-							!(existingEntry.copiedDeleteBoundary?.version >= txnTime)
+							outranksBoundary(txnTime, options?.nodeId, existingEntry.copiedDeleteBoundary)
 						)
 							stampCopiedDeleteBoundary(
 								id,
@@ -8367,8 +8367,13 @@ export function makeTable(options): TableResourceClass {
 										? [{ version: txnLogKey, nodeId: options?.nodeId }]
 										: undefined,
 								localOnly: options?.localOnly,
+								// an older publish can leave a stronger boundary under this head
 								copiedDeleteBoundary:
-									isCopyApply && audit ? { version: txnTime, nodeId: options?.nodeId ?? 0 } : undefined,
+									isCopyApply && audit
+										? outranksBoundary(txnTime, options?.nodeId, existingEntry?.copiedDeleteBoundary)
+											? { version: txnTime, nodeId: options?.nodeId ?? 0 }
+											: existingEntry.copiedDeleteBoundary
+										: undefined,
 							},
 							'delete'
 						);
@@ -15604,7 +15609,13 @@ export function makeTable(options): TableResourceClass {
 			true // on LMDB, keeps the local time while its audit entry exists
 		);
 	}
-	// Rewrites a row unchanged but for its copied-delete boundary: no new version and no audit entry.
+	function outranksBoundary(
+		version: number,
+		nodeId: number | undefined,
+		boundary?: { version: number; nodeId: number }
+	) {
+		return !boundary || precedesExistingVersion(version, boundary, nodeId) > 0;
+	}
 	function stampCopiedDeleteBoundary(
 		key: Id,
 		entry: Entry,
