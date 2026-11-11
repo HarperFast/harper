@@ -169,7 +169,7 @@ export async function applyRootConfigEffect(component: string, effect: RootConfi
 	return withRootConfigPublicationLock(async () => {
 		const { configFilePath, configDoc, changed } = readRootConfigChange(component, effect);
 		assertEnvLayersKeepEffect(component, effect, configDoc.toJSON() ?? {});
-		if (changed) atomicWriteFile(configFilePath, String(configDoc), { durable: true });
+		if (changed) atomicWriteFile(configFilePath, String(configDoc), { durable: true, ownerOnly: true });
 		else syncFileToStorageSync(configFilePath);
 		// Inside the lock: on the main thread a refresh re-applies the env config layers and can rewrite the file.
 		env.initSync(true);

@@ -88,6 +88,10 @@ The walk masks the value of a data property or Map entry whose key (a symbol by 
 
 Tests: the `inspectForLog` block in `unitTests/utility/logging/harper_logger.test.js`.
 
+## A failed log append falls back to raw stdio (`utility/logging/harper_logger.ts` `logQueuedData`)
+
+On a full volume every log statement is a crash point, so a refused append never throws (#847), and its fallback writes through `writeToStdioDirectly`, never `console`: `installStdioGuard` routes console output back into this logger when `logging.file` and `logging.console` are both on. Stated where `logQueuedData` catches the append.
+
 ## Local messages name the product through `PRODUCT_NAME` (`utility/packageUtils.js`)
 
 Startup, install, restart, stop, upgrade and status messages about the local instance interpolate `PRODUCT_NAME`, the `productName` of the package.json `findPackageJson()` resolves — Harper's own, or Harper Pro's root manifest when core runs compiled under its `dist/core` (Harper Pro ships no other package.json on that path; its `unitTests/bin/productName.test.mjs` asserts both). Distributions brand these messages by declaring `productName`, never by rewriting core sources: Harper Pro's former build-time `s/Harper/Harper Pro/` stopped matching when `bin/` moved to TypeScript, and over the `.ts` sources it would also have put a space into the unquoted deploy multipart boundary. Messages about a remote target or Fabric, and identifiers such as that boundary, keep the literal "Harper".
