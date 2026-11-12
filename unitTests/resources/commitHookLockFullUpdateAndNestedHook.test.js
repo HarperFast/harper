@@ -1,5 +1,3 @@
-// Gaps left by the #4206 suites (commitHookSameRecordWrites.test.js, recordLockScopeClosure.test.js): the
-// hook-refusal and nested-hook arms those files do not reach.
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table, resetDatabases } = require('#src/resources/databases');
@@ -22,7 +20,6 @@ const isLockedChangeRefusal = (error) =>
 const isCommittedDatabase = (error) =>
 	error?.statusCode === 409 && /whose database this commit has already committed/.test(error.message);
 
-// Settled at launch, so a lock() that rejects before the test awaits it is not an unhandled rejection.
 function settle(promise) {
 	return Promise.resolve(promise).then(
 		(value) => ({ value }),
@@ -117,7 +114,6 @@ describe('commit-hook lock refusals: omitted typed attributes and nested hooks',
 		return value == null ? null : { ...value };
 	};
 
-	// a hook on a fresh context, so it commits on a transaction link whose root is not the scope's
 	function nestUnderSourceHook(sideId, nestedHook) {
 		sourcePut = () => {
 			sourcePut = undefined;
@@ -171,6 +167,7 @@ describe('commit-hook lock refusals: omitted typed attributes and nested hooks',
 				if (outcome.value) await outcome.value.unlock();
 			});
 			let iterator;
+			cleanups.push(() => iterator?.return());
 			await transaction(outerContext, async () => {
 				await Head.put({ id: id('head-write'), n: 1 }, outerContext);
 				iterator = Head.search(
@@ -182,7 +179,9 @@ describe('commit-hook lock refusals: omitted typed attributes and nested hooks',
 				sourced.set('n', 2);
 			});
 			iterator.return();
-			assert.ok(isCommittedDatabase(outcome?.error), `${outcome?.error?.statusCode} ${outcome?.error?.message}`);
+			assert.ok(isCommittedDatabase(outcome?.error), outcome?.error?.message ?? 'the nested hook lock was admitted');
+			assert.strictEqual((await SourcedOther.get(sourcedId)).n, 2);
+			await (await Head.lock(headId, { hold: true, timeout: 500 }, {})).unlock();
 		});
 
 		it("admits a non-hold re-entry onto the scope's lock through another instance during the final commit", async function () {
@@ -201,8 +200,9 @@ describe('commit-hook lock refusals: omitted typed attributes and nested hooks',
 				const sourced = await SourcedOther.update(sourcedId, {}, outerContext);
 				sourced.set('n', 2);
 			});
-			assert.ifError(reentry?.error);
-			assert.strictEqual(reentry?.value?.id, otherId);
+			assert.ok(reentry, 'premise: the nested hook ran');
+			assert.ifError(reentry.error);
+			assert.strictEqual(reentry.value?.id, otherId);
 			await waitFor(() => !Other.primaryStore.hasLock(lockAttemptKey(Other.tableId, otherId)), {
 				message: 'the scope lock is released once the final commit settles',
 			});
