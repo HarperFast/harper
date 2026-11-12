@@ -30,7 +30,6 @@ const skipWebSocket = process.env.HARPER_RUNTIME === 'bun' || process.platform =
 const WIDE_ROLE = 'narrowing_wide_role';
 const NARROW_ROLE = 'narrowing_narrow_role';
 const PASSWORD = 'Narrowing-pw-1!';
-// the value of `note`, the attribute each change takes away
 const NOTE = 'NOTEVALUE';
 
 const docRole = (readable: string[]) => ({
@@ -121,6 +120,7 @@ suite('Narrowing attribute read permissions ends open subscriptions', (ctx: Cont
 	function openSse(authorization: string) {
 		const url = new URL(restURL);
 		const frames: string[] = [];
+		let closed = false;
 		const req = httpRequest(
 			{
 				protocol: url.protocol,
@@ -144,25 +144,28 @@ suite('Narrowing attribute read permissions ends open subscriptions', (ctx: Cont
 						if (data) frames.push(data);
 					}
 				});
+				res.on('close', () => (closed = true));
 			}
 		);
 		req.on('error', () => {});
 		req.end();
 		open.push({ close: () => req.destroy() });
-		return { frames };
+		return { frames, closed: () => closed };
 	}
 
 	async function openWs(authorization: string) {
 		const ws = new WebSocket(`${wsBase}/Doc/`, { headers: { Authorization: authorization } });
 		const frames: string[] = [];
+		let closed = false;
 		ws.on('message', (data: Buffer) => frames.push(data.toString()));
+		ws.on('close', () => (closed = true));
 		ws.on('error', () => {});
 		await new Promise((res, reject) => {
 			ws.once('open', res);
 			ws.once('error', reject);
 		});
 		open.push({ close: () => ws.terminate() });
-		return { frames };
+		return { frames, closed: () => closed };
 	}
 
 	async function connectMqtt(username: string) {
@@ -200,10 +203,7 @@ suite('Narrowing attribute read permissions ends open subscriptions', (ctx: Cont
 		ok(await waitFor(() => hasNote(frames, title)), `${label}: note is delivered while the role can read it`);
 	}
 
-	/**
-	 * Writes probes until the oracles get one the narrowed stream does not; then no later write reaches it. A probe
-	 * written before the recheck landed may still arrive with the old projection.
-	 */
+	// a probe written before the recheck landed may still arrive with the old projection
 	async function assertEnded(frames: string[], label: string) {
 		const deadline = Date.now() + 20_000;
 		let ended = false;
@@ -240,27 +240,30 @@ suite('Narrowing attribute read permissions ends open subscriptions', (ctx: Cont
 
 	test('alter_role ends an SSE subscription', async () => {
 		const { role, username } = await roleOf('sse');
-		const { frames } = openSse(auth(username));
-		await assertNoteDelivered(frames, 'SSE alter_role');
+		const stream = openSse(auth(username));
+		await assertNoteDelivered(stream.frames, 'SSE alter_role');
 		await narrowRole(role);
-		await assertEnded(frames, 'SSE alter_role');
+		await assertEnded(stream.frames, 'SSE alter_role');
+		ok(await waitFor(stream.closed), 'the SSE response closes');
 	});
 
 	test('alter_user ends an SSE subscription', async () => {
 		const username = 'narrowing_sse_user';
 		await addUser(username, WIDE_ROLE);
-		const { frames } = openSse(auth(username));
-		await assertNoteDelivered(frames, 'SSE alter_user');
+		const stream = openSse(auth(username));
+		await assertNoteDelivered(stream.frames, 'SSE alter_user');
 		await moveToNarrowRole(username);
-		await assertEnded(frames, 'SSE alter_user');
+		await assertEnded(stream.frames, 'SSE alter_user');
+		ok(await waitFor(stream.closed), 'the SSE response closes');
 	});
 
 	test('alter_role ends a REST WebSocket subscription', { skip: skipWebSocket }, async () => {
 		const { role, username } = await roleOf('ws');
-		const { frames } = await openWs(auth(username));
-		await assertNoteDelivered(frames, 'WebSocket alter_role');
+		const socket = await openWs(auth(username));
+		await assertNoteDelivered(socket.frames, 'WebSocket alter_role');
 		await narrowRole(role);
-		await assertEnded(frames, 'WebSocket alter_role');
+		await assertEnded(socket.frames, 'WebSocket alter_role');
+		ok(await waitFor(socket.closed), 'the WebSocket closes');
 	});
 
 	test('alter_role ends an MQTT subscription', { skip: skipWebSocket }, async () => {

@@ -1234,9 +1234,11 @@ function registerLiveSubscriptionForContext(
 	const resourceClass = resource.constructor;
 	// allowRead narrows rather than denies an attribute the role lost, so the recheck compares the role's readable sets
 	const watchesAttributes = typeof resourceClass._readableAttributes === 'function';
-	let admittedAttributes: ReadonlySet<string> | undefined = watchesAttributes
+	const admittedAttributes: ReadonlySet<string> | undefined = watchesAttributes
 		? resourceClass._readableAttributes(user)
 		: undefined;
+	// the last current set found to hold every admitted attribute; the sets are shared and never mutated
+	let verifiedAttributes = admittedAttributes;
 	const handle = registerLiveSubscription({
 		subscription,
 		username,
@@ -1290,9 +1292,10 @@ function registerLiveSubscriptionForContext(
 			if (!(await (sharedDecision ? pass.memo(fresh, resourceClass, evaluate) : evaluate(viewer)))) return false;
 			if (!watchesAttributes) return true;
 			const current: ReadonlySet<string> | undefined = resourceClass._readableAttributes(fresh);
-			if (!readsEveryAttribute(current, admittedAttributes)) return false;
-			// equal sets: later passes compare by identity
-			if (current?.size === admittedAttributes?.size) admittedAttributes = current;
+			if (current !== verifiedAttributes) {
+				if (!readsEveryAttribute(current, admittedAttributes)) return false;
+				verifiedAttributes = current;
+			}
 			return true;
 		},
 	});

@@ -2102,7 +2102,6 @@ export function makeTable(options): TableResourceClass {
 	let hasRelationships = false;
 	// a stored table permission (stable per role record version) -> that permission with the primary key's implicit grant
 	let primaryKeyGranted = new WeakMap<object, any>();
-	// an effective table permission (from primaryKeyGranted) -> the stored attributes it may read
 	let readableAttributeSets = new WeakMap<object, ReadonlySet<string>>();
 	let declaredAttributeNames: Set<string>;
 	let deferComputedIndexRepair = false;
@@ -2687,7 +2686,7 @@ export function makeTable(options): TableResourceClass {
 		static _referencesRelationship(target: RequestTarget): boolean {
 			return hasRelationships && someRelationshipPath(target, undefined, false);
 		}
-		/** The stored attributes `user`'s role may read here, or undefined when attribute permissions do not narrow its read. */
+		/** undefined when attribute permissions do not narrow the role's read here, including when it has no read at all. */
 		static _readableAttributes(user: User): ReadonlySet<string> | undefined {
 			const tablePermission = user?.role?.permission ? getTablePermissions(user) : undefined;
 			if (!tablePermission?.read || !(tablePermission.attribute_permissions?.length > 0)) return undefined;

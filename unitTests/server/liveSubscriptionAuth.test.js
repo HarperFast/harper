@@ -2005,6 +2005,27 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 				);
 			});
 
+			it('ends a subscription filtered through a relationship once its role cannot read the related attribute', async () => {
+				const role = (parentReadable) => {
+					const filtering = notesRole(roleId, ['title', 'parent']);
+					filtering.permission.test.tables.ReauthNoteParents.attribute_permissions = parentReadable.map(
+						(attribute_name) => ({ attribute_name, read: true, insert: false, update: false })
+					);
+					return filtering;
+				};
+				await testUtils.seedUsers([{ username: 'notes_filtering', active: true, role: role(['name']) }]);
+				const subscription = await subscribeAs(await resolve('notes_filtering'), {
+					conditions: [{ attribute: ['parent', 'name'], value: 'x' }],
+				});
+				await _sweepNow();
+				assert.ok(!ended(subscription));
+
+				await testUtils.seedUsers([{ username: 'notes_filtering', active: true, role: role(['id']) }]);
+				await _sweepNow();
+
+				assert.ok(ended(subscription));
+			});
+
 			it('ends a subscription admitted without attribute restrictions once its role gains them', async () => {
 				await testUtils.seedUsers([{ username: 'notes_open', active: true, role: notesRole(roleId, undefined) }]);
 				const subscription = await subscribeAs(await resolve('notes_open'));
