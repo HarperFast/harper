@@ -533,6 +533,8 @@ suite(
 				`ovr-super local ${LOCAL_SU_OP} probe: ${localSuper.text.slice(0, 200)}`
 			);
 			ok('threads' in (localSuper.json.operation.result ?? {}), localSuper.text.slice(0, 200));
+			const rejected = await probe(LOCAL_SU_OP, basic('ovr-super', 'nope'));
+			strictEqual(rejected.status, 401, `ovr wrong password probe: ${rejected.status} ${rejected.text}`);
 			// The component did not load on the main thread, so the operations API cannot authenticate
 			// the override user; the worker's local operation above is its reference.
 			const opsView = await ops({ operation: LOCAL_SU_OP }, ovrSuper);
