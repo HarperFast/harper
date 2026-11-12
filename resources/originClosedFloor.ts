@@ -423,6 +423,9 @@ function changeWriteFence(words: BigInt64Array, from: bigint, fenced: boolean): 
  * above the target (`rekeyLocalRetry`): its original, lower bound holds the floor until it settles.
  */
 export function setLocalWriteFence(rootStore: RocksDatabase, fenced: boolean): number {
+	// LMDB has no `local` reservations to refuse: a fence there would refuse nothing
+	if (!originFloorsDurable(rootStore))
+		throw new ServerError('A write fence needs a RocksDB database with a durable origin-closed floor', 400);
 	const words = registryFor(rootStore).words;
 	while (!changeWriteFence(words, Atomics.load(words, WORD_WRITE_FENCE), fenced));
 	return timestampAbove(Math.max(rootStore.getMonotonicTimestamp(), localIssuedAheadThrough(rootStore)));

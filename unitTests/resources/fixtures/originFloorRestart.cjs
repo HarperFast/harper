@@ -128,8 +128,8 @@ async function fenceRestart({ dir, database }) {
 	} catch (error) {
 		refusal = { statusCode: error.statusCode, message: error.message };
 	}
-	setLocalWriteFence(Tbl.primaryStore.rootStore, false);
 	await persistLocalWriteFence(Tbl.auditStore, undefined);
+	setLocalWriteFence(Tbl.primaryStore.rootStore, false);
 	await Tbl.put({ id: 'after-cancel', n: 2 });
 	return { fenced, record, refusal, cleared: readLocalWriteFence(Tbl.auditStore) ?? null };
 }

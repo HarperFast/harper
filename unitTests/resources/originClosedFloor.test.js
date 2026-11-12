@@ -350,6 +350,10 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 		}
 	});
 
+	it('refuses a write fence on a store without a durable origin floor, where it would refuse nothing', () => {
+		assert.throws(() => setLocalWriteFence({ getMonotonicTimestamp: () => 1 }, true), /needs a RocksDB database/);
+	});
+
 	it('a restore from a record read before a cancellation does not undo it', () => {
 		assert(!localWritesFenced(rootStore));
 		restoreLocalWriteFence(rootStore, () => {
