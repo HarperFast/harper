@@ -14,7 +14,7 @@ import {
 	onMessageByType,
 	shutdownWorkersNow,
 } from '../server/threads/manageThreads.ts';
-import { handleHDBError, hdbErrors } from '../utility/errors/hdbError.ts';
+import { ClientError, handleHDBError, hdbErrors } from '../utility/errors/hdbError.ts';
 const { HTTP_STATUS_CODES } = hdbErrors;
 import * as envMgr from '../utility/environment/environmentManager.ts';
 import * as path from 'node:path';
@@ -72,13 +72,7 @@ async function restart(req: any) {
 		return;
 	}
 
-	if (calledFromCli) {
-		const hdbPid = processMan.getHdbPid();
-		console.error(hdbPid ? `Restarting ${PRODUCT_NAME}...` : `Starting ${PRODUCT_NAME}...`);
-		enableCompileCache(envMgr.get(hdbTerms.CONFIG_PARAMS.ROOTPATH));
-		(await import('./run.ts')).launch(true);
-		return RESTART_RESPONSE;
-	}
+	if (calledFromCli) return restartFromCli();
 
 	if (isMainThread) {
 		hdbLogger.notify(RESTART_RESPONSE);
@@ -136,6 +130,30 @@ async function restart(req: any) {
 	}
 
 	return RESTART_RESPONSE;
+}
+
+/**
+ * `harper restart`: a running Harper restarts itself through the `restart` operation, so the CLI only
+ * asks it to, over the local domain socket or to an explicit `target=`. Only a stopped Harper is started here.
+ */
+async function restartFromCli() {
+	const cliOperations = await import('./cliOperations.ts');
+	const request = cliOperations.buildRequest();
+	request.operation = hdbTerms.OPERATIONS_ENUM.RESTART;
+	if ('target' in request) {
+		if (typeof request.target !== 'string' || request.target.trim() === '') {
+			throw new ClientError('`target=` must name the Harper instance to restart');
+		}
+		await cliOperations.cliOperations(request);
+		return;
+	}
+	// Without `target=`, a saved login or HARPER_CLI_TARGET must not redirect a restart off this machine.
+	if (processMan.getHdbPid()) {
+		await cliOperations.cliOperations(request, false, { local: true });
+		return;
+	}
+	enableCompileCache(envMgr.get(hdbTerms.CONFIG_PARAMS.ROOTPATH));
+	await (await import('./run.ts')).launch(true);
 }
 
 const DEPLOYMENT_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;

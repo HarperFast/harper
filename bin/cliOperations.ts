@@ -764,11 +764,15 @@ async function refreshExpiredOperationToken(
  * header for remote targets, refreshing an expired operation token when possible) plus the resolved
  * `target` (undefined for a local connection). Exits the process if a local connection is required
  * but Harper is not running or has no domain socket. Shared by `cliOperations` and the CLI's
- * streaming `get_backup` download so both reach local and remote servers the same way.
+ * streaming `get_backup` download so both reach local and remote servers the same way. `local` skips
+ * every target source and the credentials file, for a command that only ever acts on this machine.
  */
-export async function resolveRequestOptions(req: any): Promise<{ options: any; target: any }> {
-	const allCredentials = loadCredentials();
-	const rawTarget = resolveTarget(req, allCredentials);
+export async function resolveRequestOptions(
+	req: any,
+	{ local = false }: { local?: boolean } = {}
+): Promise<{ options: any; target: any }> {
+	const allCredentials = local ? undefined : loadCredentials();
+	const rawTarget = local ? undefined : resolveTarget(req, allCredentials);
 	// Userinfo is a transport credential, and `normalizeTarget` strips it so the resolved target can
 	// be logged, stored and emitted freely — so read it off the raw value first.
 	const urlCredentials = extractTargetCredentials(rawTarget);
@@ -944,7 +948,7 @@ async function followRollout(options: any, response: any, waitTimeout: unknown):
 	);
 }
 
-async function cliOperations(req: any, skipResponseLog = false) {
+async function cliOperations(req: any, skipResponseLog = false, { local = false }: { local?: boolean } = {}) {
 	dotenv.config();
 
 	// Resolve target/auth inside the try so a credential or connection error (e.g. an incomplete
@@ -953,7 +957,7 @@ async function cliOperations(req: any, skipResponseLog = false) {
 	// unhandled rejection. `target` is declared out here so the catch can still reference it.
 	let options: any, target: any;
 	try {
-		({ options, target } = await resolveRequestOptions(req));
+		({ options, target } = await resolveRequestOptions(req, { local }));
 		await PREPARE_OPERATION[req.operation]?.(req);
 		// Streaming deploy (multipart upload + SSE progress) only works against >= 5.1 servers.
 		// When deploying to a remote target, probe its version first and downgrade to the
