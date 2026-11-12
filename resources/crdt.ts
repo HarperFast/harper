@@ -310,6 +310,7 @@ export function readAuditFrame(
 	if (memo && (memo.tableId !== tableId || memo.store.rootStore.auditStore !== auditStore)) memo = undefined;
 	if (memo) {
 		memo.visits++;
+		if (!(key >= memo.lowest)) memo.lowest = key;
 		if (!memo.cachesFrames) memo = undefined;
 	}
 	const cacheKey = memo?.key('frame', recordId, key, nodeId, followingCommittedRef);

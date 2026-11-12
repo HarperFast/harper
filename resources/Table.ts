@@ -10810,6 +10810,7 @@ export function makeTable(options): TableResourceClass {
 						// [entry, key, nodeId] newest-first: without a count or filter to evaluate on the way, values are
 						// computed after the walk, oldest-first, so each patch can carry the one before it
 						const walked: any[] | undefined = replayReader && !count && !allowsEvent ? [] : undefined;
+						const floorBefore = walked && getAuditFloor(auditStore);
 						do {
 							if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
 								recordsSinceYield = 0;
@@ -10874,12 +10875,14 @@ export function makeTable(options): TableResourceClass {
 								if (event && reportingProgress) event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
 								walked[i] = event;
 							}
-							// The walk proved the walked entries present, but values were computed after it, so a prune since
-							// then may have deleted walked entries they read. A prune raises the floor before it removes
+							// The walk proved the walked entries present, but values were computed after it and read further
+							// back, so a prune since may have deleted what they read. A prune raises the floor before it removes
 							// anything below it.
 							const floor = getAuditFloor(auditStore);
-							let retained = true;
-							for (let i = walked.length - 3; i >= 0 && walked[i + 1] < floor; i -= 3) {
+							const read = replayReader.memo;
+							let retained =
+								Object.is(floor, floorBefore) || (!read.exhausted && !read.closed && !(floor > read.lowest));
+							for (let i = walked.length - 3; retained && i >= 0 && walked[i + 1] < floor; i -= 3) {
 								if (!auditStore.getSync(walked[i + 1], tableId, thisId, walked[i + 2], true)) {
 									retained = false;
 									break;
@@ -10891,9 +10894,12 @@ export function makeTable(options): TableResourceClass {
 							}
 							for (let i = 0; i < walked.length; i += 3) {
 								let event = walked[i];
-								// what is left of the history, as the walk computing values newest-first delivers it
 								if (!retained) {
-									if (walked[i + 1] < floor) break;
+									if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
+										recordsSinceYield = 0;
+										await rest();
+										if (!isActive()) return;
+									}
 									const auditRecord = auditStore.getSync(walked[i + 1], tableId, thisId, walked[i + 2], true);
 									if (!auditRecord) break;
 									event = eventFromAudit(thisId, auditRecord, walked[i + 1], undefined, undefined, newestFirstMemo());

@@ -922,16 +922,44 @@ describe('bounded history readers', function () {
 		try {
 			const { subscription, events } = await replay(T, { id: 'a', startTime: keys[0] });
 			try {
-				await waitFor(() => events.length >= 151);
+				await waitFor(() => events.length >= 201);
 				assert.deepStrictEqual(
 					events.map((event) => event.value.n),
-					Array.from({ length: 151 }, (_, n) => n + 150)
+					Array.from({ length: 201 }, (_, n) => n + 100)
 				);
 			} finally {
 				subscription.end();
 			}
 		} finally {
 			T.auditStore.getSync = getSync;
+		}
+	});
+
+	it('refuses a record resume when the floor passes what its values read while they are computed', async function () {
+		if (lmdb) this.skip();
+		const T = newTable({ database: `${database}_record_floor_base` });
+		await T.put({ id: 'a', n: 0, name: 'base' });
+		for (let n = 1; n <= 300; n++) await T.patch('a', { n });
+		const keys = entries(T).map((entry) => entry.txnLogKey);
+		const getEntry = T.primaryStore.getEntry;
+		let calls = 0;
+		T.primaryStore.getEntry = function (...args) {
+			// a prune starting while values are computed, past the put the rebuilds read
+			if (++calls === 150) raiseAuditFloor(T.auditStore, keys[0] + 0.001);
+			return getEntry.apply(this, args);
+		};
+		try {
+			const { subscription, events } = await replay(T, {
+				id: 'a',
+				startTime: keys[0],
+				databaseGeneration: getDatabaseGeneration(T.auditStore).id,
+			});
+			assert.strictEqual(await subscription.resumeVerified, false);
+			await waitFor(() => events.at(-1) instanceof ResumeHistoryUnavailableError);
+			assert.strictEqual(events.length, 1);
+			subscription.end();
+		} finally {
+			T.primaryStore.getEntry = getEntry;
 		}
 	});
 

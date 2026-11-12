@@ -70,6 +70,7 @@ export class HistoryMemo {
 	fallbacks = 0;
 	visits = 0;
 	newer = 0;
+	lowest = Infinity;
 	#retained = new Map<string, Retained>();
 	#bytes = 0;
 	#entries = 0;
@@ -100,7 +101,6 @@ export class HistoryMemo {
 		}
 	}
 
-	/** Without `cachesFrames`, a changed floor or generation discards what was derived under the old one, and goes on. */
 	checkState() {
 		if (this.closed || this.exhausted) return false;
 		try {
@@ -108,6 +108,7 @@ export class HistoryMemo {
 			const floor = getAuditFloor(audit);
 			const generation = getDatabaseGeneration(audit)?.id;
 			if (Object.is(this.#floor, floor) && this.#generation === generation) return true;
+			// a memo without frames holds only state derived under the old floor or generation
 			if (!this.cachesFrames) {
 				for (const key of [...this.#retained.keys()]) this.forget(key);
 				this.#floor = floor;
@@ -545,6 +546,10 @@ export class ReplayReader {
 			const fallbacks = memo.fallbacks;
 			record = rebuild();
 			if (memo.fallbacks !== fallbacks || memo.exhausted || memo.closed) return record;
+			if (record == null || typeof record !== 'object') {
+				if (carry) memo.forget(key);
+				return record;
+			}
 			if (!carry) {
 				const later = memo.newer - newer;
 				if (later >= CARRY_MIN_NEWER) {
@@ -597,15 +602,15 @@ export class ReplayReader {
 		if (!memo.canFit(current.size + 256, 1)) return;
 		const stamp = recordStamp(current);
 		const key = memo.key('carry', id);
+		const overhead = stamp.length * 2 + key.length * 2 + 128;
 		let image: ReturnType<typeof copyImage>;
 		try {
-			image = copyImage(record, memo.maxBytes);
+			image = copyImage(record, memo.maxBytes - memo.stats.bytes - overhead);
 		} catch {
 			memo.keep(key, 'carry', { stamp, allowed: false }, stamp.length * 2);
 			return;
 		}
 		const bytes = image.bytes + stamp.length * 2;
-		if (!memo.canFit(bytes + key.length * 2 + 128, 1)) return;
 		let allowed = false;
 		try {
 			allowed = this.#eligible(id, current, memo, limit);
