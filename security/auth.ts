@@ -1,5 +1,7 @@
 import {
 	cloneUserView,
+	getUserImpl,
+	hasReadRecordChanged,
 	isCurrentUser,
 	isLocalPrincipal,
 	localPrincipal,
@@ -303,22 +305,36 @@ export async function authentication(request, nextHandler) {
 							password = decoded.slice(colonIndex + 1);
 							// legacy support for passing in blank username and password to indicate no auth
 							if (username || password) {
-								// read first: a component's server.getUser principal carries no record versions itself
-								const versions = userRecordVersions(username);
-								let resolved = await server.getUser(username, password, request);
-								// a memoizing server.getUser hands later lookups this same user, so the cache holds a view of it
-								const provenance = trackUserRecords(resolved, versions);
-								if (provenance && resolved.role) resolved = cloneUserView(resolved, provenance);
-								if (resolved && typeof resolved === 'object' && !isCurrentUser(resolved, provenance)) {
-									authLogger.warn?.(
-										`HTTP Basic's server.getUser view for '${username}' no longer matches its hdb_user/hdb_role records (user modified since lookup, or a getUser view memoized across updates)`
-									);
-									throw credentialRejectionError(
-										AUTHENTICATION_ERROR_MSGS.GENERIC_AUTH_FAIL,
-										HTTP_STATUS_CODES.UNAUTHORIZED
-									);
+								if (server.getUser === getUserImpl) {
+									newUser = await getUserImpl(username, password);
+								} else {
+									// read first: a component's server.getUser principal carries no record versions itself
+									let versions = userRecordVersions(username);
+									let resolved = await server.getUser(username, password, request);
+									let provenance = trackUserRecords(resolved, versions);
+									if (
+										resolved &&
+										typeof resolved === 'object' &&
+										hasReadRecordChanged(resolved, provenance) &&
+										!(versions.userStamp === null && provenance?.username === username)
+									) {
+										versions = userRecordVersions(username);
+										resolved = await server.getUser(username, password, request);
+										provenance = trackUserRecords(resolved, versions);
+									}
+									// a memoizing server.getUser hands later lookups this same user, so the cache holds a view of it
+									if (provenance && resolved.role) resolved = cloneUserView(resolved, provenance);
+									if (resolved && typeof resolved === 'object' && hasReadRecordChanged(resolved, provenance)) {
+										authLogger.warn?.(
+											`HTTP Basic's server.getUser view for '${username}' no longer matches the hdb_user/hdb_role records read for it (record dropped since first lookup, or changed while server.getUser resolved it)`
+										);
+										throw credentialRejectionError(
+											AUTHENTICATION_ERROR_MSGS.GENERIC_AUTH_FAIL,
+											HTTP_STATUS_CODES.UNAUTHORIZED
+										);
+									}
+									newUser = resolved;
 								}
-								newUser = resolved;
 							} else newUser = null;
 							break;
 						case 'Bearer': {
