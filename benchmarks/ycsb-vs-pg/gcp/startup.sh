@@ -25,7 +25,8 @@ NODE_MAJOR=$(attr ycsb-node-major)
 export DEBIAN_FRONTEND=noninteractive
 
 apt-get update -q
-apt-get install -yq git curl jq ca-certificates xz-utils util-linux linux-tools-common "linux-tools-$(uname -r)"
+# libatomic1: the Node 26 binary links it, and the image does not ship it.
+apt-get install -yq git curl jq ca-certificates xz-utils util-linux libatomic1 linux-tools-common "linux-tools-$(uname -r)"
 if [ "$ROLE" != generator ]; then
 	apt-get install -yq docker.io docker-compose-v2
 	[ -e "$DEV" ] || {

@@ -115,7 +115,9 @@ for role in $ROLES; do
 		case "$state" in
 		ready) break ;;
 		failed*)
-			echo "$RUN_ID-$role: startup script $state" >&2
+			echo "$RUN_ID-$role: startup script $state; the end of its console output:" >&2
+			gcloud compute instances get-serial-port-output "$RUN_ID-$role" "${P[@]}" --zone="$YCSB_GCP_ZONE" 2>/dev/null |
+				grep 'startup-script' | tail -40 >&2 || true
 			exit 1
 			;;
 		esac
