@@ -420,7 +420,8 @@ this harness does not run.
 - `run-estimate.sh` is the short estimate. It provisions both topologies, checks the generator's
   ceiling over the VPC (`client-ceiling.mts --serve` on the harper VM, `--base-url` from the generator)
   at one shard per generator vCPU and at half that. The measured cells take whichever served more on C
-  without the driver passing half its capacity, and nothing is measured if neither qualifies. It then
+  without the driver saturating (over 90% of one core per shard), and nothing is measured if neither
+  qualifies. It then
   runs a smoke pass, then harper-uws, pg-redis and pg-redis@b on C, inspect and chain-4, warm and 2x,
   `--auth=token`, 3 reps. Results come back to `gcp/runs/<id>/results/` (phase logs to `logs/`) after every phase. Teardown
   runs on exit, after one last copy.

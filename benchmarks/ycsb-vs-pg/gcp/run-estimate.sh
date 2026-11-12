@@ -98,12 +98,13 @@ gcloud compute ssh "$YCSB_VM_USER@$RUN_ID-harper" "${P[@]}" --ssh-key-file="$KEY
 	/usr/local/bin/node benchmarks/ycsb-vs-pg/client-ceiling.mts --serve=4 --host=$HARPER_IP"
 on_gen "for i in \$(seq 60); do curl -fsS -o /dev/null http://$HARPER_IP:9941/usertable/x && exit 0; sleep 1; done; exit 1"
 # One shard per generator vCPU, and half that. The measured cells use whichever served more on C without the
-# driver being the limit (over half its capacity busy); with neither, nothing is measured.
+# driver saturating (over 90% of one core per shard busy): the fixed-record server answers several times
+# faster than any target, so a driver short of saturation there has headroom for every cell.
 GEN_CPUS=$(on_gen nproc)
 best="" best_ops=0
 for shards in "$GEN_CPUS" $((GEN_CPUS / 2)); do
 	phase "ceiling-$shards" "node benchmarks/ycsb-vs-pg/client-ceiling.mts --base-url=http://$HARPER_IP:9941 \
-		--concurrency=64 --shards=$shards --max-generator-busy=0.5" || true
+		--concurrency=64 --shards=$shards --max-generator-busy=0.9" || true
 	log="$RUN_DIR/logs/ceiling-$shards.log"
 	ops=$(sed -n 's/.*CLIENT_CEILING workload=C .*ops_per_sec=\([0-9]*\).*/\1/p' "$log" 2>/dev/null | tail -1)
 	if [ -n "$ops" ] && ! grep -q -e CLIENT_CEILING_FAILED -e 'workload=C .*errors=[1-9]' "$log" && [ "$ops" -gt "$best_ops" ]; then
