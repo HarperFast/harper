@@ -242,6 +242,16 @@ thread. Main forwards a miss to a registering worker (#1736); a worker forwards 
 main-announced name to main (#4134). `operationExecuteRequestHandler` passes `forwarded`, so a
 request that crossed once dispatches locally only and the two directions cannot loop.
 
+### A sealed operation's inner body is untrusted the same way (`components/encryptedOperation.ts`)
+
+`encrypted_operation` (#3288) opens an `enc:v1` envelope and dispatches the inner body through `chooseOperation`
+under the outer principal. That body may not carry `hdb_user`, `impersonate`, `bypass_auth` or dispatcher fields,
+both operations pass `verifyPerms`, and job operations are refused because `system.hdb_job` keeps the request and
+result readable by `get_job`. Only admission failures before the nonce is reserved answer in plaintext. Dispatch logs
+the body's view (`utility/operationLogView.ts`), never the body, and forwarding carries the view beside the body like
+trusted state. That holds on this node only (#3338); replay is refused per process (#3344, #3816). Tests:
+`unitTests/components/encryptedOperation.test.js`.
+
 ## Resource ↔ HTTP boundary
 
 `REST.ts → http(request, nextHandler)` is the chief integration point: it takes a `Request`, asks the `Resources` registry for a match, builds a `RequestTarget`, and dispatches into the Resource class's static method. Cache headers are translated to `request.expiresAt` / `onlyIfCached` / `noCache` flags within the same function.

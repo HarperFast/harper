@@ -479,6 +479,13 @@
 					"items": { "type": "integer", "minimum": 0, "maximum": 65535 },
 					"description": "Complete shard-ID set, shared by all nodes. Required to initialize a sharding map automatically; installed maps remain authoritative. Different lists block declarative writes."
 				},
+				"spareShards": {
+					"type": "array",
+					"maxItems": 65536,
+					"uniqueItems": true,
+					"items": { "type": "integer", "minimum": 0, "maximum": 65535 },
+					"description": "Shard IDs from replication.shards that a default map gives no slots, so nodes can join them owning nothing. Shared by all nodes; different lists block declarative writes."
+				},
 				"logging": { "$ref": "#/definitions/loggerConfig" }
 			}
 		},

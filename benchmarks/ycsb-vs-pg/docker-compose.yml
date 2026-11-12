@@ -35,7 +35,8 @@ services:
       - -c
       - effective_cache_size=${YCSB_PG_EFFECTIVE_CACHE_SIZE:-6GB}
       - -c
-      - listen_addresses=127.0.0.1
+      # Loopback; a Postgres on its own host (topology b) adds that host's VPC address.
+      - listen_addresses=${YCSB_PG_LISTEN:-127.0.0.1}
       - -c
       - max_connections=300
       - -c
@@ -56,20 +57,16 @@ services:
     cpuset: ${YCSB_TARGET_CPUSET}
     mem_limit: ${YCSB_REDIS_MEM_LIMIT:-1g}
     memswap_limit: ${YCSB_REDIS_MEM_LIMIT:-1g}
+    environment:
+      # Loopback; a Redis on its own host (topology b) adds that host's VPC address and a password.
+      YCSB_REDIS_BIND: ${YCSB_REDIS_BIND:-127.0.0.1}
+      YCSB_REDIS_PASSWORD: ${YCSB_REDIS_PASSWORD:-}
+      YCSB_REDIS_MAXMEMORY: ${YCSB_REDIS_MAXMEMORY:-768mb}
     # Cache role: no persistence, LRU eviction. At the default 768mb the whole
     # ~260MB standard-scale dataset fits; --cache=warm asserts it is resident. The
-    # memory sweep sets it from its stack split.
-    command:
-      - redis-server
-      - --port
-      - '6380'
-      - --bind
-      - 127.0.0.1
-      - --save
-      - ''
-      - --appendonly
-      - 'no'
-      - --maxmemory
-      - ${YCSB_REDIS_MAXMEMORY:-768mb}
-      - --maxmemory-policy
-      - allkeys-lru
+    # memory sweep sets it from its stack split. A shell entrypoint so the bind
+    # list can hold two addresses and requirepass can be left out.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - 'exec docker-entrypoint.sh redis-server --port 6380 --bind $$YCSB_REDIS_BIND --save "" --appendonly no --maxmemory "$$YCSB_REDIS_MAXMEMORY" --maxmemory-policy allkeys-lru $${YCSB_REDIS_PASSWORD:+--requirepass "$$YCSB_REDIS_PASSWORD"}'
