@@ -145,7 +145,10 @@ suite(
 		function assertProbeLocalDenied(reply: Reply, context: string): void {
 			strictEqual(reply.status, 200, `${context}: ${reply.status} ${reply.text}`);
 			strictEqual(reply.json?.operation?.statusCode, 403, `${context}: ${JSON.stringify(reply.json?.operation)}`);
-			ok(reply.json.operation.error.startsWith(referenceDenial), `${context}: ${JSON.stringify(reply.json.operation)}`);
+			ok(
+				String(reply.json.operation.error).startsWith(referenceDenial),
+				`${context}: ${JSON.stringify(reply.json.operation)}`
+			);
 		}
 
 		function assertProbeGranted(reply: Reply, context: string): void {
@@ -588,6 +591,10 @@ suite(
 			strictEqual(hopProbe.json.operation.ok, false, `ovr-fn probe: ${JSON.stringify(hopProbe.json.operation)}`);
 			strictEqual(hopProbe.json.operation.statusCode, 500, `ovr-fn probe: ${JSON.stringify(hopProbe.json.operation)}`);
 			ok(FORWARD_CLONE_ERROR.test(hopProbe.json.operation.error ?? ''), `ovr-fn probe text: ${hopProbe.text}`);
+			ok(
+				!hopProbe.text.includes('"permission"') && !hopProbe.text.includes('hdb_user'),
+				`ovr-fn probe body: ${hopProbe.text}`
+			);
 			strictEqual(hopProbe.json.operation.result, undefined, `ovr-fn probe leaked a result: ${hopProbe.text}`);
 		});
 	}
