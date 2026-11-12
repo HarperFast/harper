@@ -43,15 +43,19 @@ describe('RootConfigWatcher after the config file is replaced inside a re-watch'
 	}
 
 	async function assertLaterWriteDelivered(seen) {
-		// The in-place write has to land after any re-open has armed.
-		await delay(500);
+		// On darwin the watch always strands, so the write must go to the re-opened, armed watch rather
+		// than reach the test through that watch's arming re-read; elsewhere it need not strand.
+		if (process.platform === 'darwin')
+			await waitFor(() => watcher._openCountForTests > 1 && watcher._armedForTests, {
+				timeout: 5000,
+				message: 'the stranded watch was never re-opened and armed',
+			});
+		else await delay(500);
 		writeFileSync(file, stringify({ value: 'in-place' }));
 		await waitFor(() => seen.at(-1) === 'in-place', {
 			timeout: 5000,
 			message: () => `a write after the raced replace was never delivered; saw ${JSON.stringify(seen)}`,
 		});
-		// Elsewhere the watch need not strand, but on darwin it always does, so only a re-open recovers it.
-		if (process.platform === 'darwin') assert.ok(watcher._openCountForTests > 1, 'the stranded watch was re-opened');
 	}
 
 	it('keeps delivering writes after a replace lands inside the re-watch of the previous one', async () => {

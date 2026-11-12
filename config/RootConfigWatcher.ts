@@ -117,7 +117,6 @@ export class RootConfigWatcher extends EventEmitter {
 		this.#verifyWatchedInode(true);
 	}
 
-	// config/DESIGN.md: `RootConfigWatcher` schedules a trailing verify-read
 	#verifyWatchedInode(retryInconclusive: boolean) {
 		if (this.#closed || this.#usingPolling || this.#watchedIno === undefined || process.platform === 'win32') return;
 		let ino: number | undefined;
