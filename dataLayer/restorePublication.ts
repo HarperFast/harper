@@ -528,7 +528,6 @@ export function scanRestoreReceipts(roots: string[] = databaseRoots()): ScannedR
 	return scanned;
 }
 
-/** Whether a restore receipt that is not committed names this job: it, not the job row, decides the outcome. */
 /** The jobs that restores which have not finished still name; each such receipt settles its own job. */
 export function jobsNamedByUnfinishedRestores(): Set<string> {
 	const named = new Set<string>();
