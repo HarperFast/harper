@@ -153,7 +153,7 @@ restored generation is usable.
   worker-replacing reload), settling the rest and running restart restores. Without directory fsync
   (Windows) the evidence says `durability: 'no-directory-fsync'`.
 
-## Restart restores (`dataLayer/restoreIntent.ts`)
+### Restart restores (`dataLayer/restoreIntent.ts`)
 
 A database a component holds cannot be closed while the server runs, so `on_restart=true` records the
 restore and the next startup applies it, before anything can open the target.
