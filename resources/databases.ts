@@ -168,6 +168,7 @@ import {
 	type BlockedRestoreState,
 	type DatabaseDropLock,
 } from '../dataLayer/restoreMarker.ts';
+import { readRestoreReceipt } from '../dataLayer/restoreReceipt.ts';
 import {
 	claimDatabaseDropPreparations,
 	databaseDropPrepared,
@@ -1756,6 +1757,14 @@ function databasesBlockedByRestore(databasePath: string): Set<string> {
 			);
 			blocked.add(dbName);
 		} else if (state === 'pending') {
+			// A reservation stops new opens, not a handle this thread holds: on_restart reserves a database every
+			// thread still serves. The re-read also tolerates a receipt cancelled or committed since the scan.
+			const rootPath = join(databasePath, dbName);
+			if (
+				(rocksdbDatabaseEnvs.has(rootPath) || lmdbDatabaseEnvs.has(rootPath)) &&
+				readRestoreReceipt(rootPath).kind !== 'unreadable'
+			)
+				continue;
 			logger.warn(`Database '${dbName}' is reserved by a restore that has not finished; not loading it`);
 			blocked.add(dbName);
 		}

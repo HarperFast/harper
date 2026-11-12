@@ -130,7 +130,9 @@ restored generation is usable.
   is the publication boundary: before it a failure leaves the target blocked and rerunnable; after it
   the restore is only finished, by the next claim (`finishOutstandingRestore`) or startup, never
   re-applied. Online, the job reads `COMPLETE` only after the reload broadcast returns. A receipt not
-  committed, or unreadable, reserves its database as a marker does.
+  committed, or unreadable, reserves its database: no thread opens it. A readable one leaves a handle a
+  thread already holds loaded through a rescan (`databasesBlockedByRestore`), since `on_restart`
+  reserves a database every thread still serves; only a marker or the restore's own close unloads it.
 - **The proof.** Required column families are checked against `requiredStoreNames`
   (`openRestoredGeneration`); replay runs with `policy: 'restore'`, failing on any skipped entry, torn
   transaction or corrupt frame; `assessBlobReferences` decodes every record strictly, and a reference

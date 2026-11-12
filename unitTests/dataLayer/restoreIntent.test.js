@@ -354,6 +354,36 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			await restoreBackup({ ...SU, database: fixture.name, cancel: true });
 		});
 
+		it('keeps serving the open database through a rescan before the restart, and through a cancel then', async function () {
+			const fixture = await seededDatabase();
+			const Items = getDatabases()[fixture.name].Items;
+			await requestRestore(fixture.name, { on_restart: true, retain_previous: false });
+
+			// every thread rescans on a schema event, and one can land before the restart does
+			assert.ok(loadedItems(fixture.name), 'the reservation unloaded a database this thread holds open');
+			assert.strictEqual((await Items.get('a')).label, 'live');
+
+			const { result } = await restoreBackup({ ...SU, database: fixture.name, cancel: true });
+
+			assert.strictEqual(result.restarting, false);
+			assert.match(result.message, /loads normally/);
+			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.live);
+			assert.strictEqual((await Items.get('a')).label, 'live');
+		});
+
+		it('still unloads an open database whose restore record cannot be read, or whose replacement has begun', async function () {
+			const unreadable = await seededDatabase();
+			await requestRestore(unreadable.name, { on_restart: true, retain_previous: false });
+			writeFileSync(restoreReceiptPath(unreadable.dir), '{"version":1,"state":');
+			assert.strictEqual(loadedItems(unreadable.name), undefined, 'what it reserves, or for whom, is unknown');
+			await restoreBackup({ ...SU, database: unreadable.name, cancel: true });
+
+			const begun = await seededDatabase();
+			await requestRestore(begun.name, { on_restart: true, retain_previous: false });
+			rewriteReceipt(begun.dir, { state: 'applying', attempts: 1 }, { marker: true });
+			assert.strictEqual(loadedItems(begun.name), undefined, 'a marker means the directory may be partial');
+		});
+
 		it('asks for a drained restart once the job row records the deferral', async function () {
 			const fixture = await seededDatabase();
 			// a real restart would tear this process down
