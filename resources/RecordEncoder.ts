@@ -1125,6 +1125,7 @@ export function recordUpdater(
 			const receivedIdentityRefs = options?.receivedIdentityRefs;
 			additionalAuditRefsNextEncoding = additionalAuditRefs?.length > 0 ? additionalAuditRefs : undefined;
 			receivedIdentityRefsNextEncoding = receivedIdentityRefs?.length > 0 ? receivedIdentityRefs : undefined;
+			// a record-less write over a delete keeps that delete's identity, native or copied; a copied one carries its own
 			const existingBoundary =
 				existingEntry?.copiedDeleteBoundary ??
 				((type === 'message' || type === 'publish' || type === 'invalidate') &&
