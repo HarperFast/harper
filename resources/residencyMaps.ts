@@ -160,10 +160,13 @@ let configuredList: unknown;
 let configuredGeneration = -1;
 let configuredShards: number[] | undefined;
 let configuredSpares: number[] | undefined;
+let configuredSparesError: string | undefined;
 let configuredDigest: string | null = null;
 let configuration: Readonly<{
 	shards: readonly number[] | undefined;
 	spares: readonly number[] | undefined;
+	/** A malformed spare list: peers see an invalid digest, and only a default map is refused. */
+	sparesError?: string;
 	shard: number;
 	digest: string | null;
 }>;
@@ -175,12 +178,19 @@ export function getResidencyConfiguration(forRecovery = false) {
 			throw new ClientError('replication.shard must be an integer from 0 through 65535', 400);
 		if (!recoveryConfiguration) {
 			const shards = canonicalShards(shardingRecoveryConfiguration.shards);
-			const spares = canonicalSpareList(shardingRecoveryConfiguration.spareShards);
+			let spares: number[] | undefined;
+			let sparesError: string | undefined;
+			try {
+				spares = canonicalSpareList(shardingRecoveryConfiguration.spareShards);
+			} catch (error) {
+				sparesError = error.message;
+			}
 			recoveryConfiguration = Object.freeze({
 				shards,
 				spares,
+				sparesError,
 				shard: shardingRecoveryConfiguration.shard,
-				digest: shardListDigest(shards, spares),
+				digest: sparesError ? 'invalid' : shardListDigest(shards, spares),
 			});
 		}
 		return recoveryConfiguration;
@@ -192,18 +202,26 @@ export function getResidencyConfiguration(forRecovery = false) {
 	const generation = configGeneration();
 	if (value !== configuredList || generation !== configuredGeneration) {
 		const shards = canonicalShards(value);
-		const spares = canonicalSpareList(env.get(CONFIG_PARAMS.REPLICATION_SPARESHARDS));
+		let spares: number[] | undefined;
+		let sparesError: string | undefined;
+		try {
+			spares = canonicalSpareList(env.get(CONFIG_PARAMS.REPLICATION_SPARESHARDS));
+		} catch (error) {
+			sparesError = error.message;
+		}
 		configuredList = value;
 		configuredGeneration = generation;
 		configuredShards = shards;
 		configuredSpares = spares;
-		configuredDigest = shardListDigest(shards, spares);
+		configuredSparesError = sparesError;
+		configuredDigest = sparesError ? 'invalid' : shardListDigest(shards, spares);
 		configuration = undefined;
 	}
 	if (!configuration || configuration.shard !== shard)
 		configuration = Object.freeze({
 			shards: configuredShards,
 			spares: configuredSpares,
+			sparesError: configuredSparesError,
 			shard,
 			digest: configuredDigest,
 		});
@@ -223,8 +241,9 @@ function assertResidencyConfiguration(
 	} catch (error) {
 		residencyFailure(database, error.message);
 	}
-	const { shards, shard } = current;
+	const { shards, shard, sparesError } = current;
 	if (!shards && !hasMap) residencyFailure(database, 'replication.shards is required before a map is installed');
+	if (sparesError && !hasMap) residencyFailure(database, sparesError);
 	if (shards && !shards.includes(shard)) residencyFailure(database, 'replication.shard is not in replication.shards');
 	if (!forRecovery) placementGuard?.(database, undefined, undefined, undefined, undefined, forDeclaration);
 }

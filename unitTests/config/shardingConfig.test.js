@@ -66,6 +66,85 @@ describe('Sharding configuration repair', () => {
 	);
 
 	(process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? it.skip : it)(
+		'rereads a changed spare list alone, and a malformed one refuses only a new default map',
+		async function () {
+			this.timeout(20_000);
+			const { Worker } = require('node:worker_threads');
+			let worker;
+			let timer;
+			try {
+				worker = new Worker(
+					`
+				const { parentPort, workerData } = require('node:worker_threads');
+				require(workerData.testUtils).setupTestDBPath();
+				const env = require('#src/utility/environment/environmentManager');
+				const maps = require('#src/resources/residencyMaps');
+				const { shardListDigest } = require('#src/resources/residencyPolicy');
+				(async () => {
+					env.setProperty('replication_shard', 0);
+					env.setProperty('replication_shards', [0, 1, 2]);
+					env.setProperty('replication_spareShards', [2]);
+					const first = maps.getResidencyConfiguration();
+					const shardsInput = env.get('replication_shards');
+					env.setProperty('replication_spareShards', [1, 2]);
+					const second = maps.getResidencyConfiguration();
+					await maps.prepareResidencyDeclaration('sparesLive', 'Rows', { slots: 4 });
+					env.setProperty('replication_spareShards', 1);
+					const broken = maps.getResidencyConfiguration();
+					const local = maps.residencyIsLocal('sparesLive', 0, 4);
+					const refused = await maps.prepareResidencyDeclaration('sparesBroken', 'Rows', {}).then(
+						() => undefined,
+						(error) => error.message
+					);
+					parentPort.postMessage({
+						type: 'spares-result',
+						sameShards: env.get('replication_shards') === shardsInput,
+						spares: [first.spares, second.spares],
+						digests: [
+							first.digest === shardListDigest([0, 1, 2], [2]),
+							second.digest === shardListDigest([0, 1, 2], [1, 2]),
+						],
+						brokenDigest: broken.digest,
+						local,
+						refused,
+					});
+				})().catch((error) => parentPort.postMessage({ type: 'spares-result', error: error.message }));
+				parentPort.ref();
+			`,
+					{
+						eval: true,
+						workerData: {
+							testUtils: require.resolve('../testUtils'),
+							noServerStart: true,
+							addPorts: [],
+							workerIndex: 9,
+							workerCount: 10,
+						},
+					}
+				);
+				const result = await new Promise((resolve, reject) => {
+					timer = setTimeout(() => reject(new Error('worker did not report')), 15_000);
+					worker.once('error', reject);
+					worker.once('exit', (code) => reject(new Error(`worker exited before reporting: ${code}`)));
+					worker.on('message', (message) => {
+						if (message.type === 'spares-result') resolve(message);
+					});
+				});
+				assert.equal(result.error, undefined);
+				assert.equal(result.sameShards, true, 'only the spare list changed');
+				assert.deepEqual(result.spares, [[2], [1, 2]]);
+				assert.deepEqual(result.digests, [true, true]);
+				assert.equal(result.brokenDigest, 'invalid');
+				assert.equal(typeof result.local, 'boolean', 'an installed map still answers');
+				assert.match(result.refused, /replication.spareShards must be an array/);
+			} finally {
+				clearTimeout(timer);
+				await worker?.terminate();
+			}
+		}
+	);
+
+	(process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? it.skip : it)(
 		'projects the root spare list before a worker installs its first map, so spares get no slots',
 		async function () {
 			this.timeout(20_000);
