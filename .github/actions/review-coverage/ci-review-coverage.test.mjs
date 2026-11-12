@@ -526,7 +526,13 @@ const HELPER_LEG_FAMILY = new Map([
 	['cursor-kimi', 'kimi'],
 	['cursor-muse', 'muse'],
 	['muse', 'muse'],
+	// Advisory late leg: the Gemini family, so it never adds a second outside family beside `gemini`.
+	['gemini-carbon', 'gemini'],
 ]);
+
+// Update with the helper: REVIEW_LEGS in prepush-policy.mjs and the `advisory` entries of LATE_LEG_KINDS
+// in prepush-late-legs.mjs (skills-internal skills/cross-model-review/bin). A new advisory leg belongs here too.
+const HELPER_ADVISORY_LATE_LEGS = ['gemini-carbon'];
 
 test('every leg the grammar accepts scores the families the helper counts', () => {
 	assert.deepStrictEqual([...COVERAGE_LEGS].sort(), [...HELPER_LEG_FAMILY.keys()].sort());
@@ -543,6 +549,75 @@ test('every leg the grammar accepts scores the families the helper counts', () =
 			}
 		}
 	}
+});
+
+const carbonFooter = (rest, ran = 'codex,gemini') =>
+	`<sub>Review-Coverage: authored=claude; ran=${ran}; ${rest}rounds=2 @ ${PIN}</sub>`;
+
+test('the helper footer naming a timed-out advisory late leg is enforceable', () => {
+	const footer =
+		'Review-Coverage: authored=claude; ran=cursor-composer,codex,cursor-grok,gemini; late=cursor-grok:adjudicated,gemini-carbon:timeout; adjudicated=domain; declined=muse; rounds=36; full=12 @ 7d5ec5a90d11';
+	assert.strictEqual(coverageFooterProblem(footer), '');
+	const r = evaluateCiCoverage(pr({ body: footer }), { mode: 'enforce' });
+	assert.strictEqual(r.pass, true);
+	assert.strictEqual(r.compliant, true);
+	assert.strictEqual(r.count, 4);
+	assert.deepStrictEqual(r.pendingLegs, []);
+});
+
+test('an advisory late leg never holds a ready PR, whichever way the footer names it pending', () => {
+	for (const leg of HELPER_ADVISORY_LATE_LEGS) {
+		for (const footer of [
+			carbonFooter(`late=${leg}:pending; adjudicated=domain; `),
+			carbonFooter(`late=cursor-grok:adjudicated,${leg}:pending; adjudicated=domain; `),
+		]) {
+			assert.strictEqual(coverageFooterProblem(footer), '', footer);
+			const r = evaluateCiCoverage(pr({ body: footer }), { mode: 'enforce' });
+			assert.strictEqual(r.pass, true, footer);
+			assert.strictEqual(r.pendingHeld, false, footer);
+			assert.deepStrictEqual(r.pendingLegs, [], footer);
+			assert.strictEqual(r.lateNotice, '', footer);
+			assert.doesNotMatch(r.detail, /still pending/, footer);
+		}
+		// A gating leg beside it still holds.
+		const held = evaluateCiCoverage(pr({ body: carbonFooter(`late=cursor-grok:pending,${leg}:pending; `) }), {
+			mode: 'enforce',
+		});
+		assert.strictEqual(held.pass, false);
+		assert.deepStrictEqual(held.pendingLegs, ['cursor-grok']);
+	}
+});
+
+test('a folded advisory leg is the Gemini family, not a second outside family', () => {
+	const footer = carbonFooter('late=gemini-carbon:adjudicated; adjudicated=domain; ', 'codex,gemini,gemini-carbon');
+	assert.strictEqual(coverageFooterProblem(footer), '');
+	assert.strictEqual(evaluateCiCoverage(pr({ body: footer }), { mode: 'enforce' }).count, 2);
+	const onlyCarbon = evaluateCiCoverage(pr({ body: carbonFooter('', 'gemini-carbon') }), { mode: 'enforce' });
+	assert.strictEqual(onlyCarbon.count, 1);
+	assert.strictEqual(onlyCarbon.pass, false);
+	const geminiAuthored = evaluateCiCoverage(pr({ body: covered('gemini-carbon,codex', 'gemini') }), {
+		mode: 'enforce',
+	});
+	assert.strictEqual(geminiAuthored.count, 1);
+});
+
+test('the helper writes an advisory leg only where it can: never under pending= or blocked=', () => {
+	for (const leg of HELPER_ADVISORY_LATE_LEGS) {
+		assert.strictEqual(coverageFooterProblem(carbonFooter(`declined=${leg}; `)), '');
+		assert.match(coverageFooterProblem(carbonFooter(`pending=${leg}; `)), /unknown leg `gemini-carbon` in `pending=`/);
+		assert.match(
+			coverageFooterProblem(carbonFooter(`blocked=${leg}(timeout); `)),
+			/unknown leg `gemini-carbon` in `blocked=`/
+		);
+	}
+});
+
+test('an unknown late leg still fails the grammar', () => {
+	const problem = coverageFooterProblem(carbonFooter('late=gemini-argon:timeout; '));
+	assert.match(problem, /names unknown leg `gemini-argon` in `late=`/);
+	const r = evaluateCiCoverage(pr({ body: carbonFooter('late=gemini-argon:timeout; ') }), { mode: 'enforce' });
+	assert.strictEqual(r.pass, false);
+	assert.match(r.detail, /counts 0 toward enforcement/);
 });
 
 test('a footer the helper could not have written is reported but not enforceable, and says why', () => {

@@ -15,9 +15,16 @@ export const COVERAGE_LEGS = new Set([
 	'cursor-kimi',
 	'cursor-muse',
 	'muse',
+	'gemini-carbon',
 ]);
+// Late legs the helper treats as experiments (LATE_LEG_KINDS `advisory` in prepush-late-legs.mjs): they
+// never gate readiness, and `pending=`/`blocked=` never name them, so only a folded one reaches `ran=`.
+const ADVISORY_LATE_LEGS = new Set(['gemini-carbon']);
+const GATING_LEGS = new Set([...COVERAGE_LEGS].filter((leg) => !ADVISORY_LATE_LEGS.has(leg)));
 const ADJUDICATOR_LABELS = new Set(['domain', 'domain(claude)', 'domain(codex)']);
-const RECEIPT_LEGS = new Set([...COVERAGE_LEGS, 'domain', 'conformance']);
+const NON_COVERAGE_LEGS = ['domain', 'conformance'];
+const DECLINED_LEGS = new Set([...COVERAGE_LEGS, ...NON_COVERAGE_LEGS]);
+const BLOCKED_LEGS = new Set([...GATING_LEGS, ...NON_COVERAGE_LEGS]);
 const knownLegs = (key, allowed, legs) => {
 	const unknown = legs.find((leg) => !allowed.has(leg));
 	if (unknown !== undefined) return `names unknown leg \`${unknown}\` in \`${key}=\``;
@@ -38,7 +45,7 @@ const SEGMENTS = new Map([
 				: `has \`authored=${value}\`, not claude, codex, gemini or unknown`,
 	],
 	['ran', (value) => (value === 'none' ? '' : legList('ran', COVERAGE_LEGS)(value))],
-	['pending', legList('pending', COVERAGE_LEGS)],
+	['pending', legList('pending', GATING_LEGS)],
 	[
 		'late',
 		(value) => {
@@ -63,10 +70,10 @@ const SEGMENTS = new Map([
 				if (!parsed) return `has \`blocked=\` entry \`${entry}\`, not \`<leg>(<reason>)\``;
 				legs.push(parsed[1]);
 			}
-			return knownLegs('blocked', RECEIPT_LEGS, legs);
+			return knownLegs('blocked', BLOCKED_LEGS, legs);
 		},
 	],
-	['declined', legList('declined', RECEIPT_LEGS)],
+	['declined', legList('declined', DECLINED_LEGS)],
 	[
 		'urgency',
 		(value) =>
@@ -152,7 +159,8 @@ export function evaluateCiCoverage(pr, { mode = 'report', required = COVERAGE_RE
 	const adjudicatorBlocked = footerRead.segments.has('adjudicated')
 		? ''
 		: (/(?:^|,)domain\(([^)]+)\)/.exec(footerRead.segments.get('blocked') ?? '')?.[1] ?? '');
-	// `pending=` is the older form the helper still writes beside `late=`; either one marks the leg pending.
+	// `pending=` is the older form the helper still writes beside `late=`; either one marks the leg pending,
+	// except an advisory leg, which holds nothing.
 	const pendingLegs = [
 		...new Set([
 			...(footerRead.segments.get('pending')?.split(',') ?? []),
@@ -161,7 +169,7 @@ export function evaluateCiCoverage(pr, { mode = 'report', required = COVERAGE_RE
 				.filter((entry) => entry.endsWith(':pending'))
 				.map((entry) => entry.slice(0, -':pending'.length)),
 		]),
-	];
+	].filter((leg) => !ADVISORY_LATE_LEGS.has(leg));
 	const urgency = footerRead.segments.get('urgency') ?? 'normal';
 	const plural = count === 1 ? 'review' : 'reviews';
 	const reported = `${count} cross-model ${plural} reported${families.length ? ` (${families.join(', ')})` : ''}`;
