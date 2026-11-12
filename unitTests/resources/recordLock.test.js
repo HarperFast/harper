@@ -2225,6 +2225,7 @@ describe('Record locks (harper#483)', () => {
 			await LockTest.put({ id: lockedId, n: 0 });
 			const context = {};
 			const holder = await LockTest.lock(lockedId, { hold: true, lease: 30_000 }, context);
+			const sibling = await LockTest.lock(lockedId, { hold: true, lease: 30_000 }, context);
 			const root = LockTest.primaryStore.rootStore;
 			let coverageError;
 			try {
@@ -2246,7 +2247,7 @@ describe('Record locks (harper#483)', () => {
 					lead
 				);
 				await transaction(context, async () => {
-					await holder.update(lockedId, { n: 2 });
+					await sibling.update(lockedId, { n: 2 });
 					await holder.update(lockedId, { n: 3 });
 					const owner = context.transaction;
 					assert.ok(

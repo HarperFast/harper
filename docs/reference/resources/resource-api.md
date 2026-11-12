@@ -876,11 +876,23 @@ Properties declared in the schema can be assigned directly. On a table that is n
 
 This saves the current state of the resource to the database in the current transaction. This method can be called after making changes to the resource to ensure that those changes have been saved to the current transaction and can be queried within the same transaction. Any pending changes are automatically saved when the transaction commits (if `save()` has not already saved them).
 
-This method only saves data when using RocksDB storage engine, and is a no-op when using LMDB.
+Inside an explicit LMDB transaction, `save()` does not force a commit; it still waits for pending preparation and reports preparation errors.
+
+<VersionBadge type="changed" version="v5.4.0" />
+
+On RocksDB, a deferred instance save refused with 409 because another write through its lock holder is committing stays pending; call `save()` again after that commit finishes.
+
+On either engine, if the first update fails preparation, `save()` repeats that error until an explicit `update()` succeeds. On RocksDB, this includes held drafts edited with setters after a model-hook failure.
 
 ### `addTo(property: string, value: number | bigint)` {#addtoproperty-string-value-number}
 
 Adds `value` to `property` using CRDT incrementation — safe for concurrent updates across threads and nodes.
+
+<VersionBadge type="changed" version="v5.4.0" />
+
+Repeated additions on one instance fold into one operand before it is applied. Declared numeric fields normalize the operands to their declared type. Otherwise, two Number operands sum as Number, two BigInt operands sum exactly as BigInt, and mixed integer operands sum as BigInt. A mixed pair containing a fractional Number sums as Number. If an integer Number sum overflows, it folds as BigInt instead. On a declared Number field, `addTo()` rejects that sum when it cannot convert the BigInt exactly.
+
+Folding can change rounding compared with applying each addition separately. On an untyped field whose current value is missing, null, NaN or a non-numeric string, the sum establishes the field's value and type; this can differ from the first delta's type. Extreme magnitudes can also differ: an overflowing sum may lose cancellation against an opposite-sign Number base, and a fractional Number combined with a BigInt above Number range is rejected as a merged operand even when separate additions to a Number base would yield Infinity.
 
 <VersionBadge version="v4.3.0" />
 
