@@ -38,7 +38,7 @@ const TABLE_NAME = 'ReauthBench';
 const roleId = (index) => `reauth_bench_role_${index}`;
 const username = (index) => `reauth_bench_user_${index}`;
 
-function benchRole(index) {
+function benchRole(index, widened = false) {
 	return {
 		id: roleId(index),
 		role: roleId(index),
@@ -51,7 +51,7 @@ function benchRole(index) {
 						insert: false,
 						update: false,
 						delete: false,
-						attribute_permissions: ATTRIBUTES.map((attribute_name) => ({
+						attribute_permissions: (widened ? [...ATTRIBUTES, 'value'] : ATTRIBUTES).map((attribute_name) => ({
 							attribute_name,
 							read: true,
 							insert: false,
@@ -207,6 +207,20 @@ describe('Benchmark: live subscription re-authorization at scale', function () {
 			USERS * SUBSCRIPTIONS_PER_USER,
 			'a user change revoked a subscription'
 		);
+	});
+
+	it('backstop sweep once every role reads one more attribute', async function () {
+		// widening a role with no attribute permissions would restrict it
+		if (ATTRIBUTES.length === 0) this.skip();
+		const before = userChanges;
+		for (let index = 0; index < ROLES; index++) await databases.system.hdb_role.put(benchRole(index, true));
+		while (userChanges === before) await turn();
+		await measure(() => _sweepNow(), { quietTurns: 1 });
+		const samples = [];
+		for (let round = 0; round < ROUNDS; round++) samples.push(await measure(() => _sweepNow(), { quietTurns: 1 }));
+		report('sweep after widening', samples);
+		assert.strictEqual(_liveSubscriptionCount(), USERS * SUBSCRIPTIONS_PER_USER, 'widening revoked a subscription');
+		for (let index = 0; index < ROLES; index++) await databases.system.hdb_role.put(benchRole(index));
 	});
 
 	it('one hdb_role write', async () => {
