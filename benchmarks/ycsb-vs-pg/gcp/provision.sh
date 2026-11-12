@@ -2,8 +2,9 @@
 # Creates one benchmark run's VMs: a generator and target-shaped VMs for harper and the stack (and, with
 # --topology=ab, redis and postgres for topology b), in a network of their own, one zone, one compact
 # placement policy. Every VM is labeled with the run id and deleted by GCE after YCSB_MAX_RUN_DURATION.
-# A failure part way tears down what was created. Writes runs/<run-id>/{hosts.json,manifest.json} and
-# copies the hosts file and the run's ssh key to the generator.
+# A failure part way tears down what was created. Writes runs/<run-id>/{hosts.json,manifest.json,zone}, the
+# host keys (known_hosts, read through the API) and addresses (ssh-hosts) that ycsb_ssh_init uses, and copies
+# the hosts file, the run's ssh key and the targets' host keys to the generator.
 #
 #   YCSB_GCP_PROJECT=<project> gcp/provision.sh --run-id=ycsb-20261110-1 --topology=ab [--commit=<sha>]
 #   gcp/provision.sh --dry-run ...     print the gcloud commands, call nothing
@@ -83,7 +84,8 @@ CREATE=(compute instances create)
 if [ "$DRY" != 1 ] && ! gcloud compute instances create --help 2>/dev/null | grep -q -- '--performance-monitoring-unit'; then
 	CREATE=(beta compute instances create)
 fi
-for role in $ROLES; do
+create_vm() {
+	local role=$1 zone=$2 shape
 	if [ "$role" = generator ]; then
 		shape=(--machine-type="$YCSB_GEN_MACHINE_TYPE")
 	else
@@ -92,7 +94,7 @@ for role in $ROLES; do
 			shape+=("--create-disk=name=$RUN_ID-$role-data,device-name=ycsb-data,type=hyperdisk-balanced,size=${YCSB_HYPERDISK_GB}GB,provisioned-iops=$YCSB_HYPERDISK_IOPS,provisioned-throughput=$YCSB_HYPERDISK_MIBPS,auto-delete=yes")
 		fi
 	fi
-	gc "${CREATE[@]}" "$RUN_ID-$role" "${P[@]}" --zone="$YCSB_GCP_ZONE" "${shape[@]}" \
+	gc "${CREATE[@]}" "$RUN_ID-$role" "${P[@]}" --zone="$zone" "${shape[@]}" \
 		--network-interface="subnet=$SUBNET,nic-type=GVNIC" \
 		--resource-policies="$POLICY" \
 		--maintenance-policy=TERMINATE --provisioning-model=STANDARD \
@@ -103,8 +105,44 @@ for role in $ROLES; do
 		--boot-disk-size="$YCSB_BOOT_DISK_SIZE" --boot-disk-type=hyperdisk-balanced \
 		--metadata="ycsb-role=$role,ycsb-commit=$COMMIT,ycsb-repo=$YCSB_REPO_URL,ycsb-node-major=$YCSB_NODE_MAJOR,ycsb-data-device=$YCSB_DATA_DEVICE,enable-oslogin=FALSE,enable-guest-attributes=TRUE" \
 		--metadata-from-file="startup-script=$YCSB_GCP_DIR/startup.sh,ssh-keys=$RUN_DIR/ssh-keys"
+}
+# Every VM of a run in one zone (one compact placement group). A zone out of capacity for a shape, or not
+# offering it, gets the run's VMs there deleted and the next zone of YCSB_GCP_ZONES tried; any other failure
+# ends provisioning.
+ZONE=""
+for zone in $YCSB_GCP_ZONES; do
+	created=1
+	for role in $ROLES; do
+		if [ "$DRY" = 1 ]; then
+			create_vm "$role" "$zone"
+			continue
+		fi
+		if ! create_vm "$role" "$zone" 2>"$RUN_DIR/create.err"; then
+			cat "$RUN_DIR/create.err" >&2
+			grep -Eqi 'ZONE_RESOURCE_POOL_EXHAUSTED|enough resources available|STOCKOUT|does not exist in zone' \
+				"$RUN_DIR/create.err" || exit 1
+			echo "$zone has no capacity for (or does not offer) $RUN_ID-$role's shape; deleting this run's VMs there and trying the next zone" >&2
+			gcloud compute instances list "${P[@]}" --filter="labels.ycsb-run=$RUN_ID" --format='value(name,zone.basename())' |
+				while read -r name vm_zone; do
+					[ -n "$name" ] && gc compute instances delete "$name" "${P[@]}" --zone="$vm_zone" --delete-disks=all
+				done
+			created=0
+			break
+		fi
+	done
+	if [ "$created" = 1 ]; then
+		ZONE=$zone
+		break
+	fi
 done
+[ -n "$ZONE" ] || {
+	echo "no zone of [$YCSB_GCP_ZONES] had capacity for $RUN_ID" >&2
+	exit 1
+}
+YCSB_GCP_ZONE=$ZONE
 if [ "$DRY" = 1 ]; then exit 0; fi
+echo "$ZONE" >"$RUN_DIR/zone"
+echo "$RUN_ID: VMs created in $ZONE"
 
 console_tail() {
 	echo "the end of $RUN_ID-$1's startup-script output:" >&2
@@ -135,19 +173,31 @@ for role in $ROLES; do
 	echo "$RUN_ID-$role ready"
 done
 
-ip_of() {
-	gcloud compute instances describe "$RUN_ID-$1" "${P[@]}" --zone="$YCSB_GCP_ZONE" --format='value(networkInterfaces[0].networkIP)'
-}
+describe() { gcloud compute instances describe "$RUN_ID-$1" "${P[@]}" --zone="$YCSB_GCP_ZONE" --format="$2"; }
 vm_json() {
-	gcloud compute instances describe "$RUN_ID-$1" "${P[@]}" --zone="$YCSB_GCP_ZONE" --format=json |
+	describe "$1" json |
 		jq -c '{name, machineType: (.machineType | split("/") | last), cpuPlatform, internalIp: .networkInterfaces[0].networkIP, scheduling, labels}'
 }
+# Host keys, read through the API from the guest attribute the startup script wrote: known_hosts for this
+# host (alias vm-<role>, see ycsb_ssh_init) and known_hosts_run for the generator (target internal addresses).
+: >"$RUN_DIR/known_hosts"
+: >"$RUN_DIR/known_hosts_run"
+: >"$RUN_DIR/ssh-hosts"
 roles_json=""
 vms_json=""
 for role in $ROLES; do
+	hostkey=$(gcloud compute instances get-guest-attributes "$RUN_ID-$role" "${P[@]}" --zone="$YCSB_GCP_ZONE" \
+		--query-path=ycsb/hostkey --format='value(value)')
+	printf '%s' "$hostkey" | grep -Eq '^ssh-ed25519 [A-Za-z0-9+/=]+$' || {
+		echo "$RUN_ID-$role: no ed25519 host key in guest attribute ycsb/hostkey (got: ${hostkey:-nothing})" >&2
+		exit 1
+	}
+	printf 'vm-%s %s\n' "$role" "$hostkey" >>"$RUN_DIR/known_hosts"
+	printf '%s %s\n' "$role" "$(describe "$role" 'value(networkInterfaces[0].accessConfigs[0].natIP)')" >>"$RUN_DIR/ssh-hosts"
 	vms_json="$vms_json${vms_json:+,}\"$role\":$(vm_json "$role")"
 	[ "$role" = generator ] && continue
-	ip=$(ip_of "$role")
+	ip=$(describe "$role" 'value(networkInterfaces[0].networkIP)')
+	printf '%s %s\n' "$ip" "$hostkey" >>"$RUN_DIR/known_hosts_run"
 	roles_json="$roles_json${roles_json:+,}\"$role\":{\"ssh\":\"$YCSB_VM_USER@$ip\",\"address\":\"$ip\",\"dataDir\":\"/mnt/ycsb/data\",\"requireMount\":\"/mnt/ycsb\"}"
 done
 jq -n \
@@ -162,12 +212,13 @@ jq -n \
 	>"$RUN_DIR/manifest.json"
 jq -n --arg repo "$YCSB_VM_REPO" --argjson roles "{$roles_json}" --slurpfile meta "$RUN_DIR/manifest.json" \
 	'{repoDir: $repo, roles: $roles, meta: $meta[0],
-	  sshOptions: ["-i", "/home/ycsb/.ssh/ycsb_run", "-o", "StrictHostKeyChecking=accept-new", "-o", "UserKnownHostsFile=/home/ycsb/.ssh/known_hosts_run"]}' \
+	  sshOptions: ["-i", "/home/ycsb/.ssh/ycsb_run", "-o", "StrictHostKeyChecking=yes", "-o", "UserKnownHostsFile=/home/ycsb/.ssh/known_hosts_run"]}' \
 	>"$RUN_DIR/hosts.json"
 
-GEN_SSH=(compute ssh "$YCSB_VM_USER@$RUN_ID-generator" "${P[@]}" --zone="$YCSB_GCP_ZONE" --ssh-key-file="$KEY")
-gcloud compute scp "${P[@]}" --zone="$YCSB_GCP_ZONE" --ssh-key-file="$KEY" "$KEY" "$YCSB_VM_USER@$RUN_ID-generator:.ssh/ycsb_run"
-gcloud compute scp "${P[@]}" --zone="$YCSB_GCP_ZONE" --ssh-key-file="$KEY" "$RUN_DIR/hosts.json" "$YCSB_VM_USER@$RUN_ID-generator:/opt/ycsb/hosts.json"
-gcloud "${GEN_SSH[@]}" --command='chmod 600 ~/.ssh/ycsb_run'
+ycsb_ssh_init "$RUN_DIR"
+copy_to generator "$KEY" .ssh/ycsb_run
+copy_to generator "$RUN_DIR/known_hosts_run" .ssh/known_hosts_run
+copy_to generator "$RUN_DIR/hosts.json" /opt/ycsb/hosts.json
+on_vm generator 'chmod 600 ~/.ssh/ycsb_run'
 trap - EXIT
-echo "provisioned $RUN_ID: $RUN_DIR/hosts.json"
+echo "provisioned $RUN_ID in $YCSB_GCP_ZONE: $RUN_DIR/hosts.json"

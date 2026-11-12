@@ -1,8 +1,19 @@
-# Settings shared by provision.sh, teardown.sh and run-estimate.sh. Each can be overridden from the
-# environment. Sourced, not run.
+# Settings shared by the gcp/ scripts. Each can be overridden from the environment. Sourced, not run.
 
 YCSB_GCP_ZONE="${YCSB_GCP_ZONE:-us-central1-a}"
+# Zones provision.sh tries in order when a zone has no capacity for the run's shapes (C4 local-SSD shapes have
+# been out of capacity in some us-central1 zones for hours). All must be in one region: the subnet and the
+# placement policy are regional. The zone a run got is in runs/<id>/zone and its manifest.
+YCSB_GCP_ZONES="${YCSB_GCP_ZONES:-$YCSB_GCP_ZONE}"
+YCSB_GCP_ZONE="${YCSB_GCP_ZONES%% *}"
 YCSB_GCP_REGION="${YCSB_GCP_ZONE%-*}"
+for _zone in $YCSB_GCP_ZONES; do
+	if [ "${_zone%-*}" != "$YCSB_GCP_REGION" ]; then
+		echo "YCSB_GCP_ZONES must all be in one region: $YCSB_GCP_ZONES" >&2
+		return 1
+	fi
+done
+unset _zone
 # The data volume of every target-shaped VM in a run: local-ssd (one 375 GiB Titanium SSD, the -lssd shape) or
 # hyperdisk (one Hyperdisk Balanced volume with fixed provisioned IOPS and throughput, on the plain shape), for
 # when the -lssd shape is out of capacity. The kind is recorded with the run.
@@ -51,6 +62,42 @@ YCSB_RUNS_DIR="${YCSB_RUNS_DIR:-$YCSB_GCP_DIR/runs}"
 # On every VM: the checkout, and (generator) the hosts file and the per-run key.
 YCSB_VM_REPO=/opt/ycsb/harper
 YCSB_VM_USER=ycsb
+
+# Plain ssh to a run's VM, checked against the host key provision.sh pinned in the run directory (from the
+# VM's ycsb/hostkey guest attribute). Nothing reads or writes ~/.ssh, so a resumed session in a fresh $HOME
+# still verifies every host. Sets YCSB_SSH (options for ssh and scp).
+#   ycsb_ssh_init <run-dir>; on_vm <role> <command>; copy_to <role> <file> <path>
+ycsb_ssh_init() {
+	YCSB_RUN_SSH_DIR=$1
+	[ -s "$1/known_hosts" ] && [ -s "$1/ssh-hosts" ] || {
+		echo "$1 has no known_hosts or ssh-hosts: provision.sh writes them once the VMs are ready" >&2
+		return 1
+	}
+	YCSB_SSH=(-i "$1/id_ed25519" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=20 -o LogLevel=ERROR
+		-o UserKnownHostsFile="$1/known_hosts" -o GlobalKnownHostsFile=/dev/null -o StrictHostKeyChecking=yes
+		-o HostKeyAlgorithms=ssh-ed25519 -o ServerAliveInterval=30 -o ServerAliveCountMax=6)
+}
+# The external address of a role's VM; its host key is pinned under the alias vm-<role>.
+ycsb_vm_address() {
+	local address
+	address=$(awk -v r="$1" '$1 == r { print $2 }' "$YCSB_RUN_SSH_DIR/ssh-hosts")
+	[ -n "$address" ] || {
+		echo "no address for role $1 in $YCSB_RUN_SSH_DIR/ssh-hosts" >&2
+		return 1
+	}
+	printf '%s\n' "$address"
+}
+on_vm() {
+	local address
+	address=$(ycsb_vm_address "$1") || return 1
+	ssh "${YCSB_SSH[@]}" -o HostKeyAlias="vm-$1" "$YCSB_VM_USER@$address" "$2"
+}
+# Copies a local file to a path on a role's VM: copy_to <role> <file> <path>
+copy_to() {
+	local address
+	address=$(ycsb_vm_address "$1") || return 1
+	scp "${YCSB_SSH[@]}" -o HostKeyAlias="vm-$1" "$2" "$YCSB_VM_USER@$address:$3"
+}
 
 # A run id names every resource of the run and labels its VMs.
 ycsb_check_run_id() {

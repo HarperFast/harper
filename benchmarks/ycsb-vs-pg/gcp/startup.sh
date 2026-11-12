@@ -3,18 +3,24 @@
 # data disk at /mnt/ycsb, installs Docker, Node (CI's major), perf and git, prepares user ycsb (docker, user
 # systemd with the memory controller delegated, linger), checks out the harness at the run's commit and
 # builds what the VM's role runs. Reports ready or failed:<line>:<status> as guest attribute ycsb/state,
-# which provision.sh polls.
+# which provision.sh polls, after publishing the VM's ed25519 host key as ycsb/hostkey: provision.sh pins
+# it in the run directory's known_hosts, read through the authenticated API rather than trusted on first use.
 # errtrace: the ERR trap also reports a failure inside a function.
 set -Eeuo pipefail
 MD=http://metadata.google.internal/computeMetadata/v1/instance
 attr() { curl -fsS -H 'Metadata-Flavor: Google' "$MD/attributes/$1"; }
 report() { curl -fsS -X PUT --data "$1" -H 'Metadata-Flavor: Google' "$MD/guest-attributes/ycsb/state" || true; }
+publish_hostkey() {
+	curl -fsS -X PUT --data "$(cut -d' ' -f1,2 /etc/ssh/ssh_host_ed25519_key.pub)" -H 'Metadata-Flavor: Google' \
+		"$MD/guest-attributes/ycsb/hostkey"
+}
 trap 'report "failed:$LINENO:$?"' ERR
 
 DEV=/dev/disk/by-id/$(attr ycsb-data-device)
 # A later boot (a guest reboot keeps the data disk): mount the existing filesystem again, never reformat it.
 if [ -f /var/lib/ycsb/ready ]; then
 	if [ -e "$DEV" ] && ! mountpoint -q /mnt/ycsb; then mount -o noatime "$DEV" /mnt/ycsb; fi
+	publish_hostkey
 	report ready
 	exit 0
 fi
@@ -93,4 +99,5 @@ esac
 
 mkdir -p /var/lib/ycsb
 date -u >/var/lib/ycsb/ready
+publish_hostkey
 report ready

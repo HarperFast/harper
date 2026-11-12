@@ -590,6 +590,44 @@ test('teardown selects a run by its exact names, so one run id never matches a l
 	);
 });
 
+test('the full matrix runs every workload once per point, and zones stay in one region', async () => {
+	const { stdout } = await gcpScript('run-matrix.sh', ['--plan'], {});
+	const sets = stdout
+		.trim()
+		.split('\n')
+		.map((line) => /^(\S+)\s+point (\S+)\s+generator (\S+)\s+max-run (\S+)\s+workloads (\S+)$/.exec(line)!)
+		.map(([, name, point, , , workloads]) => ({ name, point, workloads: workloads.split(',') }));
+	const all = ['C', 'B', 'inspect', 'chain-1', 'chain-2', 'chain-4', 'F'];
+	for (const point of ['warm', '2', '8']) {
+		const covered = sets.filter((s) => s.point === point).flatMap((s) => s.workloads);
+		deepStrictEqual([...covered].sort(), [...all].sort(), `point ${point}: each workload in exactly one set`);
+	}
+	const { stdout: zones } = await gcpScript(
+		'provision.sh',
+		['--dry-run', '--run-id=ycsb-z1', '--commit=abc', '--topology=a'],
+		{
+			YCSB_GCP_PROJECT: 'p',
+			YCSB_BENCH_IP: '203.0.113.7',
+			YCSB_GCP_ZONES: 'us-central1-c us-central1-a',
+		}
+	);
+	const creates = zones.split('\n').filter((l) => l.includes(' instances create '));
+	strictEqual(creates.length, 3);
+	ok(
+		creates.every((c) => c.includes('--zone=us-central1-c')),
+		'the first zone of the list'
+	);
+	await rejects(
+		gcpScript('provision.sh', ['--dry-run', '--run-id=ycsb-z2', '--commit=abc'], {
+			YCSB_GCP_PROJECT: 'p',
+			YCSB_BENCH_IP: '203.0.113.7',
+			YCSB_GCP_ZONES: 'us-central1-c us-east1-b',
+		}),
+		/one region/
+	);
+	await rejects(gcpScript('run-matrix.sh', ['--resume', '--set=2x'], { YCSB_GCP_PROJECT: 'p' }), /--run-id/);
+});
+
 test('remote mode defaults Harper threads and Fastify workers to --target-cpus, not to an empty cpu list', () => {
 	strictEqual(defaultThreads([0, 2, 4, 6], []), 4);
 	strictEqual(defaultThreads([], []), 4);

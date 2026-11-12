@@ -424,10 +424,28 @@ this harness does not run.
   qualifies. It then
   runs a smoke pass, then harper-uws, pg-redis and pg-redis@b on C, inspect and chain-4, warm and 2x,
   `--auth=token`, 3 reps. Results come back to `gcp/runs/<id>/results/` (phase logs to `logs/`) after every phase. Teardown
-  runs on exit, after one last copy. Phase polls and copies use plain ssh, checked against the host key
-  gcloud recorded, so they keep working if the operator's gcloud session expires mid-run. Teardown needs
-  that session: when it fails, GCE still deletes the VMs at `--max-run-duration`, and
-  `teardown.sh <id>` removes the network, firewall rules and placement policy.
+  runs on exit, after one last copy. Teardown needs a working gcloud session: when it fails, GCE still
+  deletes the VMs at `--max-run-duration`, and `teardown.sh <id>` removes the network, firewall rules and
+  placement policy.
+- `run-matrix.sh` is the full matrix, topology (a): harper-uws, harper and pg-redis on C, B, inspect,
+  chain-1, chain-2, chain-4 and F, at warm, 2x and 8x, `--auth=token`, 3 reps, targets interleaved. One
+  VM set in sequence would take about a day, so it runs five sets in parallel (`--plan` lists them), each
+  one session on its own generator, harper and stack VMs: warm (then perf profiles of warm C and chain-4
+  for harper-uws and pg-redis), 2x, and 8x split three ways by workload. The 8x split is for time: every
+  8x sample restores a 138 GiB Harper snapshot at local-SSD write speed (330 MiB/s documented, about
+  7 minutes). Each set loads each engine's dataset once and restores it for every sample, checks its
+  generator's ceiling, and runs a smoke pass of its own phases first. `--all` starts every set and waits;
+  `--set=<set>` runs one. `--resume` picks a set up after its orchestrator died without tearing down: it
+  provisions nothing, and phases that already ended on the generator are read, not run again. Run the
+  orchestrator under `systemd-run --user`, since any exit it sees tears its run down.
+- **SSH.** Every script reaches the VMs with plain ssh, never `gcloud compute ssh`. The startup script
+  publishes each VM's ed25519 host key as a guest attribute; `provision.sh` reads it through the API and
+  pins it in `runs/<id>/known_hosts` (and the targets' keys on the generator, for the agents' ssh). Nothing
+  reads `~/.ssh`, so a resumed session in a fresh `$HOME` still verifies every host, and polls and copies
+  keep working if the operator's gcloud session expires mid-run.
+- **Zones.** `YCSB_GCP_ZONES` (space-separated, one region) is tried in order: a zone without capacity
+  for the run's shapes gets that run's VMs deleted and the next zone tried. The zone a run got is in
+  `runs/<id>/zone` and its manifest.
 
 Choices, recorded per run in `gcp/runs/<id>/manifest.json` and in every results file (`meta.remote`):
 
