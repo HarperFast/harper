@@ -30,7 +30,7 @@ not present in any current branch, but it remains reachable in this
 repository's published commit history, so automated secret scanners continue to
 surface it.
 
-**This token was revoked on TODO-REVOCATION-DATE and is no longer valid.**
+**This token was revoked on November 12, 2026, and is no longer valid.**
 
 We have deliberately chosen not to rewrite this repository's history to remove
 it. The credential is already revoked, so a rewrite would provide no additional
