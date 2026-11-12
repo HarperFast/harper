@@ -162,8 +162,7 @@ let encodeForStorageForRecordId: number = undefined; // only enable encoding of 
 let promisedWrites: Array<Promise<void>>;
 let currentStore: any; // the root store of the database we are currently encoding for
 export let blobsWereEncoded = false; // keep track of whether blobs were encoded with file paths
-// File id → final size of the blobs a commit waited for, while that commit re-stages its writes: a
-// blob decoded from the first staging's bytes is a separate instance that never learns the size.
+// file id → final size while a commit re-stages its writes; see resources/DESIGN.md (`createBlob(readable)`)
 let restagedBlobSizes: Map<string, number> | undefined;
 // the header is 8 bytes
 const DEFAULT_BLOB_READ_TIMEOUT = 20000;
@@ -3454,7 +3453,6 @@ addExtension({
 			storageInfo.end === undefined
 		) {
 			const size = restagedBlobSizes.get(storageInfo.fileId);
-			// kept on the copy, so a retry round encoding it outside this scope still stores the size
 			if (size !== undefined) options.size = blob.size = size;
 		}
 		if (storageInfo) {

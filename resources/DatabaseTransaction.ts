@@ -998,7 +998,6 @@ type RocksTransactionWithRetry = RocksTransaction & {
 	// confirmation waiter starts, and a logged retry reuses the handle
 	lockConfirmation?: number;
 	nodeLocalByStore?: Map<object, boolean>;
-	// blobs a write staged here was saving before their size was known; see stagedBeforeBlobSizes()
 	blobsAwaitingSize?: Blob[];
 };
 
@@ -3564,6 +3563,8 @@ export class DatabaseTransaction implements Transaction {
 			coordinatedRetry: true,
 		}) as RocksTransactionWithRetry;
 		if (original?.immediateCommit) replayTransaction.immediateCommit = true;
+		// a retry round of the replacement re-encodes its writes too
+		if (original?.blobsAwaitingSize) replayTransaction.blobsAwaitingSize = original.blobsAwaitingSize;
 		if (timestamp) replayTransaction.setTimestamp(timestamp);
 		transferLocalKey(transaction, replayTransaction);
 		const retries = (original?.retries ?? this.retries) + 1;
@@ -3605,11 +3606,7 @@ export class DatabaseTransaction implements Transaction {
 		}
 	}
 
-	/**
-	 * A write staged on `transaction` before its blobs' sizes were known encoded descriptors without them,
-	 * in the primary value and in the log entry, which a staged handle cannot replace. True once the commit
-	 * has waited for one of those saves, so re-staging would store a size.
-	 */
+	// see resources/DESIGN.md, "`createBlob(readable)` and `table.put()` don't synchronously drain the source"
 	private stagedBeforeBlobSizes(transaction: RocksTransaction): boolean {
 		const awaiting = (transaction as RocksTransactionWithRetry).blobsAwaitingSize;
 		return awaiting !== undefined && !hasDurableLog(transaction) && awaiting.some((blob) => blob.size != null);
@@ -3640,6 +3637,29 @@ export class DatabaseTransaction implements Transaction {
 		}
 	}
 
+	private saveForCommit(
+		transaction: RocksTransaction | undefined,
+		options: CommitOptions,
+		retryRound: boolean,
+		isImmediateCommit: boolean
+	): RocksTransaction | undefined {
+		for (let i = 0; i < this.writes.length; i++) {
+			const operation = this.writes[i];
+			if (
+				!operation ||
+				(isImmediateCommit
+					? !retryRound || !operation.saved || operation.stagedOn !== transaction
+					: retryRound
+						? !operation.saved || (Boolean(operation.stagedOn) && operation.stagedOn !== transaction)
+						: Boolean(operation.saved) || (this.saveCommits && Boolean(operation.deferSave)))
+			)
+				continue;
+			this.save(operation, transaction, Boolean(operation.saved) || i < this.validated, options);
+			if (!transaction) transaction = this.transaction;
+		}
+		return transaction;
+	}
+
 	// A state this handles specially must also send a final commit away from endsScopeUnwritten()'s fast path.
 	protected performCommit(options: CommitOptions = {}): MaybePromise<CommitResolution> {
 		// reused across retries — the native layer resets it in place (fresh snapshot) on IsBusy/TryAgain —
@@ -3651,20 +3671,13 @@ export class DatabaseTransaction implements Transaction {
 			if (retryRound && this.activeCommitHandle && this.activeCommitHandle !== transaction) {
 				this.backfillActiveHandleWrites(this.activeCommitHandle);
 			}
-			for (let i = 0; i < this.writes.length; i++) {
-				let operation = this.writes[i];
-				if (
-					!operation ||
-					(isImmediateCommit
-						? !retryRound || !operation.saved || operation.stagedOn !== transaction
-						: retryRound
-							? !operation.saved || (Boolean(operation.stagedOn) && operation.stagedOn !== transaction)
-							: Boolean(operation.saved) || (this.saveCommits && Boolean(operation.deferSave)))
-				)
-					continue;
-				this.save(operation, transaction, Boolean(operation.saved) || i < this.validated, options);
-				if (!transaction) transaction = this.transaction;
-			}
+			const retrySizes = retryRound ? (transaction as RocksTransactionWithRetry).blobsAwaitingSize : undefined;
+			transaction =
+				retrySizes === undefined
+					? this.saveForCommit(transaction, options, retryRound, isImmediateCommit)
+					: withRestagedBlobSizes(retrySizes, () =>
+							this.saveForCommit(transaction, options, retryRound, isImmediateCommit)
+						);
 			if (transaction && (this.writes.length > 0 || hasDurableLog(transaction)))
 				this.trackActiveCommitHandle(transaction);
 		} catch (error) {
