@@ -975,6 +975,23 @@ describe('A record bit for a full-write head (harper#3532)', () => {
 				assert.deepEqual(T.primaryStore.getEntry(id).copiedDeleteBoundary, { version, nodeId: 0 });
 			});
 
+			it('a record-less write over a delete keeps that delete, not an older copied one stamped on it', async function () {
+				if (isLMDB) return this.skip();
+				const id = newId();
+				const version = Date.now() + DAY;
+				await apply(T, id, { name: 'alive' }, { version: version - 5000 });
+				await remove(T, id, { version: version + 2000 });
+				await copiedDelete(T, id, { version });
+				assert.deepEqual(T.primaryStore.getEntry(id).copiedDeleteBoundary, { version, nodeId: headOrigin }, 'premise');
+				await publish(T, id, { version: version - 500 });
+				assert.deepEqual(T.primaryStore.getEntry(id).copiedDeleteBoundary, {
+					version: version + 2000,
+					nodeId: headOrigin,
+				});
+				await apply(T, id, { name: 'between' }, { version: version + 1000, nodeId: lateOrigin });
+				assert.equal(T.primaryStore.getEntry(id).value, null, 'a write the newer delete precedes still loses');
+			});
+
 			it('a relocation over a delete this node made keeps that delete as the boundary', async function () {
 				if (isLMDB) return this.skip();
 				const id = newId();

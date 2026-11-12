@@ -1127,16 +1127,18 @@ export function recordUpdater(
 			const receivedIdentityRefs = options?.receivedIdentityRefs;
 			additionalAuditRefsNextEncoding = additionalAuditRefs?.length > 0 ? additionalAuditRefs : undefined;
 			receivedIdentityRefsNextEncoding = receivedIdentityRefs?.length > 0 ? receivedIdentityRefs : undefined;
-			// a record-less write over a delete keeps that delete's identity, native or copied; a copied one carries its own
-			const existingBoundary =
-				existingEntry?.copiedDeleteBoundary ??
-				((type === 'message' || type === 'publish' || type === 'invalidate' || type === 'relocate') &&
+			// a record-less write over a delete keeps that delete's identity, native or copied, unless the stored boundary is later
+			const headDelete =
+				(type === 'message' || type === 'publish' || type === 'invalidate' || type === 'relocate') &&
 				existingEntry &&
 				existingEntry.value == null &&
 				existingEntry.metadataFlags & FULL_WRITE_HEAD &&
 				!(existingEntry.metadataFlags & STUB_FLAGS)
 					? { version: existingEntry.version, nodeId: existingEntry.nodeId ?? 0 }
-					: undefined);
+					: undefined;
+			const storedBoundary = existingEntry?.copiedDeleteBoundary;
+			const existingBoundary =
+				headDelete && !(storedBoundary?.version > headDelete.version) ? headDelete : storedBoundary;
 			const copiedDeleteBoundary =
 				options?.copiedDeleteBoundary ??
 				(existingBoundary &&
