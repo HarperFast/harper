@@ -1,9 +1,5 @@
 'use strict';
 
-// A source fill holds its record lock for at most one tenure and releases it itself. A request
-// waiting on the lock only wakes when its wait times out: it never releases a lock that a live
-// fill, on this thread or another, still holds.
-
 require('../testUtils');
 const assert = require('node:assert');
 const { setTimeout: delay } = require('node:timers/promises');
@@ -46,7 +42,7 @@ describe('Source fill lock tenure', function () {
 		pendingCalls = [];
 	});
 	afterEach(function () {
-		for (const call of pendingCalls) call.resolve(undefined);
+		for (const call of pendingCalls ?? []) call.resolve(undefined);
 	});
 
 	it("does not let a fill that outlived its tenure release the next fill's lock", async function () {
