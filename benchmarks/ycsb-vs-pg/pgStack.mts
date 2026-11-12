@@ -299,7 +299,11 @@ async function startServices(
 		}
 	}
 	const startupMs = Date.now() - upAt;
-	if (has('redis')) await compose([...redisCli, 'flushall']);
+	if (has('redis')) {
+		// On a host without Postgres nothing above waited, and redis-server may not be listening yet.
+		await waitForRedis(compose, redisCli, 120_000);
+		await compose([...redisCli, 'flushall']);
+	}
 
 	const cgroups: Record<string, string> = {};
 	if (has('postgres')) cgroups.postgres = await containerCgroup('postgres');
@@ -371,7 +375,6 @@ async function startServices(
 	};
 }
 
-/** The parts of the stack that run in containers on this host: Postgres, Redis, or both. */
 async function backends(
 	options: PgStackOptions & { services: StackService[] },
 	cgroups: Record<string, string>,
@@ -440,6 +443,24 @@ async function backends(
  * TCP — which is how the app connects anyway — can only succeed against the real
  * server. On tmpfs initdb was fast enough to hide this; on a real disk it is not.
  */
+async function waitForRedis(
+	compose: (args: string[], timeoutMs?: number) => Promise<{ stdout: string }>,
+	redisCli: string[],
+	timeoutMs: number
+): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	let lastError: unknown;
+	while (Date.now() < deadline) {
+		try {
+			if ((await compose([...redisCli, 'ping'], 30_000)).stdout.trim() === 'PONG') return;
+		} catch (error) {
+			lastError = error;
+		}
+		await delay(500);
+	}
+	throw new Error(`redis did not become ready: ${(lastError as Error)?.message ?? 'no PONG'}`);
+}
+
 async function waitForPostgres(
 	compose: (args: string[], timeoutMs?: number) => Promise<unknown>,
 	timeoutMs: number

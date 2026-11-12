@@ -1457,7 +1457,9 @@ export async function createSession(
 	}
 ): Promise<{ session: Session; meta: Record<string, unknown> }> {
 	const targets = [...new Set(placedTargets.map((p) => p.target))];
-	const hostsFile = argValue(argv, '--hosts');
+	// Resolved now: --profile changes the working directory below.
+	const hostsArg = argValue(argv, '--hosts');
+	const hostsFile = hostsArg && resolve(hostsArg);
 	if (argv.includes('--uws')) {
 		throw new Error('--uws is gone: the HTTP backend is part of the target (harper-uws, harper-uws-sized)');
 	}

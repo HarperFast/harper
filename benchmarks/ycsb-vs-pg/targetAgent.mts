@@ -58,7 +58,7 @@ const REPO_ROOT = join(import.meta.dirname, '..', '..');
 const LOCK_PATH = join(tmpdir(), 'ycsb-vs-pg-agent.lock');
 const UNIT_PREFIX = 'ycsb-vs-pg-agent-';
 
-export interface AgentInit {
+interface AgentInit {
 	options: Session['options'];
 	cache: Session['cache'];
 	recordCacheSize: number;

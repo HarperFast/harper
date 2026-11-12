@@ -6,8 +6,11 @@
  * trip, which plain JSON would turn into null.
  */
 import { spawn, type ChildProcess } from 'node:child_process';
+import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { Readable } from 'node:stream';
+
+const REPO_ROOT = join(import.meta.dirname, '..', '..');
 
 export const FRAME_MARKER = '\x1eYCSB-RPC ';
 /** A frame longer than this is a broken channel, not a payload (folded profiles are a few MB). */
@@ -65,7 +68,9 @@ export class RpcClient {
 	constructor(name: string, command: string[], { onLog = (line: string) => console.log(`[${name}] ${line}`) } = {}) {
 		this.name = name;
 		const [file, ...args] = command;
-		this.child = spawn(file, args, { stdio: ['pipe', 'pipe', 'pipe'] });
+		// From the repo root, whatever the caller's working directory (--profile changes it): a hosts file's
+		// local agent command names a path relative to it.
+		this.child = spawn(file, args, { stdio: ['pipe', 'pipe', 'pipe'], cwd: REPO_ROOT });
 		this.exited = new Promise((resolve) => {
 			this.child.once('exit', (code, signal) => {
 				this.fail(new Error(`agent ${name} exited (${code ?? signal})`));

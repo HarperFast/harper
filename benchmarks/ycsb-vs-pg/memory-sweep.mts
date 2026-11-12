@@ -200,7 +200,6 @@ export function parseCells(list: string, { remote = false } = {}): Cell[] {
 const snapshotKeyOf = (placed: PlacedTarget): SnapshotKey =>
 	TARGETS[placed.target].kind === 'harper' ? 'harper' : placed.topology === 'b' ? 'pg@b' : 'pg';
 
-/** The host role that keeps a snapshot, in remote mode. */
 const SNAPSHOT_ROLE: Record<SnapshotKey, Role> = { 'harper': 'harper', 'pg': 'stack', 'pg@b': 'postgres' };
 
 async function diskBytes(session: Session, key: SnapshotKey, path: string): Promise<number> {
