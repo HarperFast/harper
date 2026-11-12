@@ -1174,6 +1174,7 @@ interface TableResourceClass {
 	_authorizeRelatedSelection(property: any, user: User, checkPermission: any, context: Context): any;
 	_authorizeSelectedRelationships(select: any[], user: User): any[];
 	_referencesRelationship(target: RequestTarget): boolean;
+	_readableAttributes(user: User): ReadonlySet<string> | undefined;
 	_readableInFull(user: User, target?: RequestTarget): boolean;
 	_inReadAdmission<T>(authorize: () => T): T;
 	_proveReadableInFull(): any;
@@ -2101,6 +2102,8 @@ export function makeTable(options): TableResourceClass {
 	let hasRelationships = false;
 	// a stored table permission (stable per role record version) -> that permission with the primary key's implicit grant
 	let primaryKeyGranted = new WeakMap<object, any>();
+	// an effective table permission (from primaryKeyGranted) -> the stored attributes it may read
+	let readableAttributeSets = new WeakMap<object, ReadonlySet<string>>();
 	let declaredAttributeNames: Set<string>;
 	let deferComputedIndexRepair = false;
 	// The resolver each declared function `from` installed, with its source hash (databases.ts); an attribute,
@@ -2683,6 +2686,17 @@ export function makeTable(options): TableResourceClass {
 		}
 		static _referencesRelationship(target: RequestTarget): boolean {
 			return hasRelationships && someRelationshipPath(target, undefined, false);
+		}
+		/** The stored attributes `user`'s role may read here, or undefined when attribute permissions do not narrow its read. */
+		static _readableAttributes(user: User): ReadonlySet<string> | undefined {
+			const tablePermission = user?.role?.permission ? getTablePermissions(user) : undefined;
+			if (!tablePermission?.read || !(tablePermission.attribute_permissions?.length > 0)) return undefined;
+			let readable = readableAttributeSets.get(tablePermission);
+			if (!readable) {
+				readable = new Set(permittedScalarAttributes(tablePermission.attribute_permissions));
+				readableAttributeSets.set(tablePermission, readable);
+			}
+			return readable;
 		}
 		static _authorizeRelatedSelection(property: any, user: User, checkPermission: any, context: Context): any {
 			const relatedTable = propertyResolvers[property?.name || property]?.definition?.tableClass;
@@ -11951,6 +11965,7 @@ export function makeTable(options): TableResourceClass {
 			// class-construction snapshot would otherwise go stale.
 			declaredAttributeNames = new Set((this.attributes as any[]).map((attribute) => attribute.name));
 			primaryKeyGranted = new WeakMap();
+			readableAttributeSets = new WeakMap();
 			// Declarations are refused before they are saved; here a descriptor an earlier build
 			// accepted must still load, so a violation is logged and the table keeps working.
 			try {

@@ -1842,5 +1842,238 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 			assert.notStrictEqual(context.user, user);
 			assert.ok(userModule.isCurrentUser(context.user));
 		});
+
+		describe('attribute read permissions', () => {
+			let Notes;
+			const roleId = 'notes_role';
+			const narrowerRoleId = 'notes_narrower_role';
+
+			before(() => {
+				const NoteParents = table({
+					table: 'ReauthNoteParents',
+					database: 'test',
+					attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+				});
+				const Table = table({
+					table: 'ReauthNotes',
+					database: 'test',
+					attributes: [
+						{ name: 'id', isPrimaryKey: true },
+						{ name: 'title' },
+						{ name: 'note' },
+						{ name: 'parentId' },
+						{ name: 'parent', relationship: { from: 'parentId' }, definition: { tableClass: NoteParents } },
+					],
+				});
+				Notes = class extends Table {
+					subscribe() {
+						const subscription = fakeSubscription();
+						// registration wraps end()
+						subscription.endSpy = subscription.end;
+						return subscription;
+					}
+				};
+			});
+
+			// `readable` undefined: table read with no attribute permissions
+			const notesRole = (id, readable, superUser = false) => ({
+				id,
+				role: id,
+				permission: {
+					super_user: superUser,
+					test: {
+						tables: {
+							ReauthNotes: {
+								read: true,
+								insert: false,
+								update: false,
+								delete: false,
+								attribute_permissions: (readable ?? []).map((attribute_name) => ({
+									attribute_name,
+									read: true,
+									insert: false,
+									update: false,
+								})),
+							},
+							ReauthNoteParents: { read: true, insert: false, update: false, delete: false, attribute_permissions: [] },
+						},
+					},
+				},
+			});
+
+			async function subscribeAs(user, shape = {}, authorize = true) {
+				const context = authorize ? { user, authorize: true } : { user };
+				const target = new RequestTarget('/topic');
+				target.id = 'topic';
+				Object.assign(target, shape);
+				const subscription = await Notes.subscribe(target, undefined, context);
+				handles.push({ unregister: () => subscription.end() });
+				return subscription;
+			}
+			const ended = (subscription) => subscription.endSpy.calls.length > 0;
+
+			it('ends a subscription once its role can no longer read an attribute it could at admission', async () => {
+				// a condition through `parent` needs it readable
+				await testUtils.seedUsers([
+					{ username: 'notes_user', active: true, role: notesRole(roleId, ['title', 'note', 'parent']) },
+				]);
+				const user = await resolve('notes_user');
+				const shared = await subscribeAs(user);
+				const selected = await subscribeAs(user, { select: ['title', 'note'] });
+				const related = await subscribeAs(user, { conditions: [{ attribute: ['parent', 'name'], value: 'x' }] });
+				await _notifyUserChange(change({ roleIds: [roleId] }));
+				assert.ok(![shared, selected, related].some(ended), 'an unchanged role keeps every subscription');
+
+				await testUtils.seedUsers([
+					{ username: 'notes_user', active: true, role: notesRole(roleId, ['title', 'parent']) },
+				]);
+				await _notifyUserChange(change({ roleIds: [roleId] }));
+
+				assert.ok(ended(shared), 'the subscription the role decision is shared for ends');
+				assert.ok(ended(selected), 'a subscription with a caller select ends');
+				assert.ok(ended(related), 'a subscription filtered through a relationship ends');
+				assert.strictEqual(_liveSubscriptionCount(), 0);
+			});
+
+			it('ends a subscription once its user moves to a role that reads fewer attributes', async () => {
+				const narrower = notesRole(narrowerRoleId, ['title']);
+				await testUtils.seedUsers([
+					{ username: 'notes_mover', active: true, role: notesRole(roleId, ['title', 'note']) },
+					{ username: 'notes_placeholder', active: true, role: narrower },
+				]);
+				const subscription = await subscribeAs(await resolve('notes_mover'));
+
+				await testUtils.seedUsers([
+					{ username: 'notes_mover', active: true, role: narrowerRoleId },
+					{ username: 'notes_placeholder', active: true, role: narrower },
+				]);
+				await _notifyUserChange(change({ usernames: ['notes_mover'] }));
+
+				assert.ok(ended(subscription));
+			});
+
+			it('keeps a subscription its role can still read in full, whatever its target', async () => {
+				await testUtils.seedUsers([
+					{ username: 'notes_keeper', active: true, role: notesRole(roleId, ['title', 'note', 'parent']) },
+					{ username: 'notes_super', active: true, role: notesRole('notes_super_role', undefined, true) },
+				]);
+				const user = await resolve('notes_keeper');
+				const kept = [
+					await subscribeAs(user),
+					await subscribeAs(user, { select: ['title', 'parent'] }),
+					// authorization rewrites a relationship property into a select of the related record
+					await subscribeAs(user, { property: 'parent' }),
+					await subscribeAs(user, { conditions: [{ attribute: ['parent', 'name'], value: 'x' }] }),
+					await subscribeAs(user, {}, false),
+					await subscribeAs(await resolve('notes_super')),
+				];
+				const reseed = (readable) =>
+					testUtils.seedUsers([
+						{ username: 'notes_keeper', active: true, role: notesRole(roleId, readable) },
+						{ username: 'notes_super', active: true, role: notesRole('notes_super_role', undefined, true) },
+					]);
+				await _sweepNow();
+				await _sweepNow();
+				assert.deepStrictEqual(
+					kept.map(ended),
+					kept.map(() => false),
+					'an unchanged role'
+				);
+
+				await reseed(['title', 'note', 'parent', 'parentId']);
+				await _sweepNow();
+				assert.deepStrictEqual(
+					kept.map(ended),
+					kept.map(() => false),
+					'a widened role'
+				);
+
+				await reseed(undefined);
+				await _sweepNow();
+				assert.deepStrictEqual(
+					kept.map(ended),
+					kept.map(() => false),
+					'a role no longer restricted'
+				);
+
+				await reseed(['title']);
+				await _sweepNow();
+				assert.deepStrictEqual(
+					kept.map(ended),
+					[true, true, true, true, true, false],
+					'a narrowed role, below admission'
+				);
+			});
+
+			it('ends a subscription admitted without attribute restrictions once its role gains them', async () => {
+				await testUtils.seedUsers([{ username: 'notes_open', active: true, role: notesRole(roleId, undefined) }]);
+				const subscription = await subscribeAs(await resolve('notes_open'));
+
+				await testUtils.seedUsers([
+					{ username: 'notes_open', active: true, role: notesRole(roleId, ['title', 'note']) },
+				]);
+				await _sweepNow();
+
+				assert.ok(ended(subscription));
+			});
+
+			it('compares each subscription with what its role could read when it was admitted', async () => {
+				const seedRole = (readable) =>
+					testUtils.seedUsers([{ username: 'notes_twice', active: true, role: notesRole(roleId, readable) }]);
+				await seedRole(['title']);
+				const narrowAdmission = await subscribeAs(await resolve('notes_twice'));
+				await seedRole(['title', 'note']);
+				await _sweepNow();
+				const wideAdmission = await subscribeAs(await resolve('notes_twice'));
+				assert.ok(!ended(narrowAdmission), 'widening keeps the earlier subscription');
+
+				await seedRole(['title']);
+				await _sweepNow();
+
+				assert.ok(!ended(narrowAdmission), 'admitted with title alone, it can still read everything it could');
+				assert.ok(ended(wideAdmission), 'admitted with note, it ends');
+			});
+
+			it('ends a subscription whose allowRead override defers to the table once its role narrows', async () => {
+				class Deferring extends Notes {
+					allowRead(user, target, context) {
+						return super.allowRead(user, target, context);
+					}
+				}
+				await testUtils.seedUsers([
+					{ username: 'notes_deferring', active: true, role: notesRole(roleId, ['title', 'note']) },
+				]);
+				const context = { user: await resolve('notes_deferring'), authorize: true };
+				const subscription = await Deferring.subscribe('topic', undefined, context);
+				handles.push({ unregister: () => subscription.end() });
+
+				await testUtils.seedUsers([{ username: 'notes_deferring', active: true, role: notesRole(roleId, ['title']) }]);
+				await _sweepNow();
+
+				assert.ok(ended(subscription));
+			});
+
+			it('rejects a subscription admitted by a role that lost an attribute before it registered', async () => {
+				await testUtils.seedUsers([
+					{ username: 'notes_stale', active: true, role: notesRole(roleId, ['title', 'note']) },
+				]);
+				const user = await resolve('notes_stale');
+				await databases.system.hdb_role.put(notesRole(roleId, ['title']));
+
+				await assert.rejects(subscribeAs(user), { statusCode: 403 });
+				assert.strictEqual(_liveSubscriptionCount(), 0);
+			});
+
+			it('admits a stale principal whose role still reads every attribute it read', async () => {
+				await testUtils.seedUsers([{ username: 'notes_stale_ok', active: true, role: notesRole(roleId, ['title']) }]);
+				const user = await resolve('notes_stale_ok');
+				await databases.system.hdb_role.put(notesRole(roleId, ['title', 'note']));
+
+				const subscription = await subscribeAs(user);
+
+				assert.ok(!ended(subscription));
+				assert.strictEqual(_liveSubscriptionCount(), 1);
+			});
+		});
 	});
 });
