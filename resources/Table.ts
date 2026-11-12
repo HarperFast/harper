@@ -8119,8 +8119,7 @@ export function makeTable(options): TableResourceClass {
 				}
 			};
 			if (!modelHooksBefore) return proceed();
-			// Cleared as each handler starts, not in a .finally: that costs every hooked write another
-			// promise, and the handlers already run synchronously at settlement.
+			// each handler clears staging itself; a .finally would add a promise to every hooked write
 			write.staging = modelHooksBefore((context as any)?.signal).then(
 				() => {
 					write.staging = undefined;
