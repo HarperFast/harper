@@ -1233,6 +1233,11 @@ function registerLiveSubscriptionForContext(
 	const evaluate = sharedDecision
 		? readEvaluator(resource.allowRead, undefined, admittedTarget, context)
 		: readEvaluator(resource.allowRead, resource, admittedTarget, context);
+	// allowRead narrows rather than denies an attribute the role lost, so the recheck compares the role's readable sets
+	const watchesAttributes = typeof resourceClass._readableAttributes === 'function';
+	let admittedAttributes: ReadonlySet<string> | undefined = watchesAttributes
+		? resourceClass._readableAttributes(user)
+		: undefined;
 	const handle = registerLiveSubscription({
 		subscription,
 		username,
@@ -1283,7 +1288,13 @@ function registerLiveSubscriptionForContext(
 				if (context) (context as any).user = viewer;
 			}
 			// Re-run the same operation-level allowRead that granted the subscription.
-			return !!(await (sharedDecision ? pass.memo(fresh, resourceClass, evaluate) : evaluate(viewer)));
+			if (!(await (sharedDecision ? pass.memo(fresh, resourceClass, evaluate) : evaluate(viewer)))) return false;
+			if (!watchesAttributes) return true;
+			const current: ReadonlySet<string> | undefined = resourceClass._readableAttributes(fresh);
+			if (!readsEveryAttribute(current, admittedAttributes)) return false;
+			// equal sets: later passes compare by identity
+			if (current?.size === admittedAttributes?.size) admittedAttributes = current;
+			return true;
 		},
 	});
 	let stale: boolean;
@@ -1315,6 +1326,16 @@ function readEvaluator(allowRead: Function, resource: any, admittedTarget: any, 
 	};
 }
 
+/** Whether a role that can read `current` still reads every attribute of `admitted`; undefined is every attribute. */
+function readsEveryAttribute(
+	current: ReadonlySet<string> | undefined,
+	admitted: ReadonlySet<string> | undefined
+): boolean {
+	if (current === undefined || current === admitted) return true;
+	if (admitted === undefined) return false;
+	for (const name of admitted) if (!current.has(name)) return false;
+	return true;
+}
 const KNOWN_METHODS = ['get', 'head', 'put', 'post', 'delete', 'patch', 'query', 'move', 'copy'];
 type ClientErrorWithMethods = ClientError & { allow: string[]; method: string };
 export function missingMethod(resource: any, method: string) {
