@@ -89,6 +89,9 @@ const JOB_ID = JOB_NAME.substring(4);
 		const report = err?.http_resp_msg;
 		jobObj.message = report !== null && typeof report === 'object' ? report : err?.message ? err.message : err;
 		if (err?.result !== undefined) jobObj.result = err.result;
+		// a failure can leave work that must act once the row records it, as a JobCompletion does
+		if (typeof err?.afterRecorded === 'function')
+			continuation = { afterRecorded: err.afterRecorded, onNotRecorded: err.afterRecorded };
 		jobObj.end_datetime = Date.now();
 	} finally {
 		// A rejected updateJob must not skip handle cleanup and exit scheduling below (that would

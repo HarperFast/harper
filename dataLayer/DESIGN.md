@@ -190,6 +190,9 @@ restore and the next startup applies it, before anything can open the target.
   withdrawn resume or supersede does. That hold is recorded, never inferred from `attempts` (an attempt
   can fail before counting): `recoverRestoresOnce` ends by publishing the receipts it left reserved as
   worker environment data, which job workers inherit and a relaunched process lacks (`restoreHeldAtBoot`).
+  An online restore after which nothing keeps components off restarts too, published or failed (the
+  error carries `afterRecorded`), since safe mode stays latched on every thread until a restart
+  (`restoreSafeModeLifted`).
 
 ## RocksDB managed backups: blob snapshots (`dataLayer/blobBackup.ts`)
 

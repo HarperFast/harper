@@ -69,7 +69,7 @@ describe('recordJobResult', function () {
 describe('jobProcess', function () {
 	this.timeout(60000);
 
-	async function runJobWorker({ updateJobFails, asyncWithdraw = false }) {
+	async function runJobWorker({ updateJobFails, asyncWithdraw = false, operationFails = false }) {
 		const { Worker } = require('node:worker_threads');
 		const worker = new Worker(
 			`
@@ -87,8 +87,12 @@ describe('jobProcess', function () {
 			if (workerData.asyncWithdraw)
 				require(workerData.databases).closeLoadedDatabases = async () => parentPort.postMessage({ type: 'cleanup' });
 			serverUtilities.getOperationFunction = () => ({
-				job_operation_function: async () =>
-					new DeferredJobCompletion(
+				job_operation_function: async () => {
+					if (workerData.operationFails)
+						throw Object.assign(new Error('the restore failed'), {
+							afterRecorded: () => parentPort.postMessage({ type: 'continued' }),
+						});
+					return new DeferredJobCompletion(
 						'restore-intent',
 						'runs at the next startup',
 						undefined,
@@ -96,7 +100,8 @@ describe('jobProcess', function () {
 						workerData.asyncWithdraw
 							? () => new Promise((resolve) => setTimeout(resolve, 100)).then(() => parentPort.postMessage({ type: 'withdrawn' }))
 							: () => parentPort.postMessage({ type: 'withdrawn' })
-					),
+					);
+				},
 			});
 			require(workerData.jobProcess);
 			`,
@@ -106,6 +111,7 @@ describe('jobProcess', function () {
 				workerData: {
 					updateJobFails,
 					asyncWithdraw,
+					operationFails,
 					databases: require.resolve('#js/resources/databases'),
 					jobs: require.resolve('#js/server/jobs/jobs'),
 					serverUtilities: require.resolve('#js/server/serverHelpers/serverUtilities'),
@@ -140,6 +146,14 @@ describe('jobProcess', function () {
 		const messages = await runJobWorker({ updateJobFails: false });
 		assert.deepStrictEqual(messages, [
 			{ type: 'updateJob', status: JOB_STATUS_ENUM.IN_PROGRESS, deferred_to: 'restore-intent' },
+			{ type: 'continued' },
+		]);
+	});
+
+	it("runs a failed job's continuation once the row records the failure", async function () {
+		const messages = await runJobWorker({ updateJobFails: false, operationFails: true });
+		assert.deepStrictEqual(messages, [
+			{ type: 'updateJob', status: JOB_STATUS_ENUM.ERROR, deferred_to: undefined },
 			{ type: 'continued' },
 		]);
 	});

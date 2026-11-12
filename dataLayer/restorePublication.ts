@@ -15,6 +15,7 @@ import * as hdbTerms from '../utility/hdbTerms.ts';
 import logger from '../utility/logging/harper_logger.ts';
 import { databaseRoots, resetDatabases } from '../resources/databases.ts';
 import { acquireMembershipFence, assertNoReplicationPeers } from '../server/replicationMembership.ts';
+import { JobCompletion } from '../server/jobs/deferredJobCompletion.ts';
 import { pinBackup, unpinBackup, readBackupPins } from './backupRepository.ts';
 import { assertBlobSnapshotRestorable, assertEngineOnlyRestoreAllowed } from './blobBackup.ts';
 import type { BackupManifest } from './backupManifest.ts';
@@ -241,15 +242,26 @@ async function resolveRestoreSource(
 	return selected;
 }
 
-export async function publishRestore(request: PublishRestoreRequest): Promise<Record<string, unknown>> {
+export async function publishRestore(request: PublishRestoreRequest): Promise<Record<string, unknown> | JobCompletion> {
 	const releaseMembership = request.checkPeers ? await acquireMembershipFence() : undefined;
+	let result: Record<string, unknown>;
 	try {
 		if (request.checkPeers) assertNoReplicationPeers(request.targetDatabase, request.checkPeers === 'routes');
 		await finishOutstandingRestore(request.databaseDir, request.online && (() => request.online!.publish()));
-		return await publishUnderFence(request);
+		result = await publishUnderFence(request);
+	} catch (error) {
+		// a takeover that failed before replacing anything has removed the record that kept components off
+		if (request.online && restoreSafeModeLifted()) error.afterRecorded = await drainedRestart();
+		throw error;
 	} finally {
 		releaseMembership?.();
 	}
+	if (!request.online || !restoreSafeModeLifted()) return result;
+	return new JobCompletion({ ...result, restarting: true }, await drainedRestart());
+}
+
+async function drainedRestart(): Promise<() => void> {
+	return (await import('./restoreIntent.ts')).requestDrainedRestart;
 }
 
 async function publishUnderFence(request: PublishRestoreRequest): Promise<Record<string, unknown>> {
@@ -690,6 +702,23 @@ function restartRestoreIsTerminal(receipt: RestoreReceipt): boolean {
 	return (
 		read.kind === 'valid' && read.receipt.operation_id === receipt.operation_id && read.receipt.state === 'terminal'
 	);
+}
+
+/**
+ * Whether this boot latched restore safe mode and no restore keeps components off any longer: the latch holds
+ * on every thread until a restart. Unknown counts as lifted, since the next boot decides again.
+ */
+function restoreSafeModeLifted(): boolean {
+	if (process.env.HARPER_SAFE_MODE !== 'restore-unpublished') return false;
+	try {
+		return unpublishedRestoreBlocksComponents() === undefined;
+	} catch (error) {
+		logger.error(
+			'Could not tell whether a restore still keeps components off; restarting so the next boot decides',
+			error
+		);
+		return true;
+	}
 }
 
 /**

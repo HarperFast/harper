@@ -1555,6 +1555,66 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			assert.strictEqual(unpublishedRestoreBlocksComponents(), undefined);
 		});
 
+		it('restarts once an ordinary restore publishes the last restore that kept components off', async function () {
+			const fixtures = [await seededDatabase(), await seededDatabase()];
+			for (const fixture of fixtures) {
+				await requestRestore(fixture.name, { on_restart: true, retain_previous: false });
+				await closeDatabase(fixture.name);
+				rewriteReceipt(fixture.dir, { state: 'terminal', attempts: 3 }, { marker: true });
+			}
+			// what loadRootComponents latches for this boot
+			process.env.HARPER_SAFE_MODE = 'restore-unpublished';
+			const restarts = [];
+			const restoreRestart = replaceExport(restartModule, 'restart', async (...args) => {
+				restarts.push(args);
+			});
+			try {
+				const [first, last] = fixtures;
+				const kept = await requestRestore(first.name, { backup_id: first.backupIds[0] });
+				assert.strictEqual(kept.result.restarting, undefined, 'the other restore still keeps components off');
+				assert.strictEqual(kept.result.afterRecorded, undefined);
+
+				const { jobId, result } = await requestRestore(last.name, { backup_id: last.backupIds[0] });
+				assert.strictEqual(result.result?.restarting, true);
+				assert.deepStrictEqual(restarts, [], 'not before the job row records the restore');
+				result.afterRecorded();
+				assert.deepStrictEqual(restarts, [[{ operation: 'restart', drain: true }]]);
+				assert.strictEqual((await job(jobId)).status, JOB_STATUS_ENUM.COMPLETE);
+				assert.deepStrictEqual(await snapshot(loadedItems(last.name)), last.backedUp[0]);
+			} finally {
+				restoreRestart();
+			}
+		});
+
+		it('restarts once an ordinary restore that fails before replacing anything drops the last restore that kept components off', async function () {
+			const fixture = await seededDatabase();
+			const [backupId] = fixture.backupIds;
+			await requestRestore(fixture.name, { on_restart: true, retain_previous: false });
+			await closeDatabase(fixture.name);
+			rewriteReceipt(fixture.dir, { state: 'terminal', attempts: 3 });
+			process.env.HARPER_SAFE_MODE = 'restore-unpublished';
+			const restarts = [];
+			const restoreRestart = replaceExport(restartModule, 'restart', async (...args) => {
+				restarts.push(args);
+			});
+			const repair = breakBackup(fixture, backupId);
+			try {
+				let failure;
+				await assert.rejects(requestRestore(fixture.name, { backup_id: backupId }), (error) => {
+					failure = error;
+					return true;
+				});
+				assert.strictEqual(readRestoreReceipt(fixture.dir).kind, 'absent', 'precondition: nothing blocks now');
+				assert.strictEqual(restoreMarkerPresent(fixture.dir), false, 'precondition: nothing was replaced');
+				assert.deepStrictEqual(restarts, [], 'not before the job row records the failure');
+				failure.afterRecorded();
+				assert.deepStrictEqual(restarts, [[{ operation: 'restart', drain: true }]]);
+			} finally {
+				repair();
+				restoreRestart();
+			}
+		});
+
 		it('removes a receipt that cannot be read', async function () {
 			const fixture = await seededDatabase();
 			await requestRestore(fixture.name, { on_restart: true });

@@ -141,7 +141,7 @@ function claimTarget(databaseName: string, databaseDir: string): RestoreLock {
 	return lock;
 }
 
-function requestDrainedRestart(): void {
+export function requestDrainedRestart(): void {
 	// required lazily: bin/restart pulls in the thread fabric, which a CLI or test caller may not have
 	const { restart } = loadRuntimeModule('bin/restart');
 	restart({ operation: 'restart', drain: true }).catch((error: unknown) =>
