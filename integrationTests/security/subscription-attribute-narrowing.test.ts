@@ -214,7 +214,6 @@ suite('Narrowing attribute read permissions ends open subscriptions', (ctx: Cont
 				await waitFor(() => hasNote(superUserStream, title) && hasNote(steadyStream, title)),
 				`${label}: the super-user and unchanged-role subscriptions keep delivering note`
 			);
-			// a non-event: give the narrowed stream the same delivery a little longer
 			await sleep(300);
 			ended = !hasTitle(frames, title);
 		}
