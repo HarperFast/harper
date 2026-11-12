@@ -361,6 +361,8 @@ Options (all optional; prefer setting these via `@table` schema directives):
 
 Harper automatically serializes concurrent requests for the same missing or stale record — all waiting requests share a single upstream fetch, preventing cache stampedes.
 
+<VersionBadge type="changed" version="v5.4.0" /> If the source throws an error whose `statusCode` is 404 or 410 (as an HTTP client that throws on any non-2xx response does), the requests waiting on that fetch in the same worker thread receive that error, each its own copy, instead of calling the source again. After any other failure, the waiting requests fetch again in turn. A failure is never cached, so the next request after them calls the source again.
+
 #### Observing cache disposition
 
 Each `get` on a caching table records whether the record came from the cache or from the source in the `loadedFromSource` property of the **`RequestTarget`** for that get. Cache disposition is a per-get result, so it lives on the per-get target — pass an explicit `RequestTarget` to observe it:
