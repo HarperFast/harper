@@ -5,3 +5,11 @@ type Item @table @export {
 	b: Int @indexed
 	flag: String
 }
+
+type Mixed @table @export {
+	id: ID @primaryKey
+	grp: String @indexed
+	v: Any
+	iv: Any @indexed
+	flag: String
+}

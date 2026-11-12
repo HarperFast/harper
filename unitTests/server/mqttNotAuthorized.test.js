@@ -1,11 +1,12 @@
 const assert = require('node:assert');
 const { EventEmitter } = require('node:events');
 const mqttPacket = require('mqtt-packet');
-const { setupTestDBPath } = require('../testUtils');
+const { ensureSystemTables, seedUsers, setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const Resources = require('#src/resources/Resources');
 const { Resource } = require('#src/resources/Resource');
 const { handleApplication } = require('#src/server/mqtt');
+const { _tickNow } = require('#src/server/liveSubscriptionAuth');
 const { server } = require('#src/server/Server');
 const { forComponent } = require('#src/utility/logging/harper_logger');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
@@ -543,5 +544,241 @@ describe('mqtt.ts reason codes for a refused request', () => {
 			assert.strictEqual((await connect(open, { protocolVersion: 4 })).connack.returnCode, 3);
 			assert.strictEqual((await connect(open, { protocolVersion: 5 })).connack.reasonCode, NOT_AUTHORIZED);
 		});
+	});
+});
+
+describe('mqtt.ts CONNECT through a component’s server.getUser', () => {
+	const userModule = require('#src/security/user');
+	const { databases } = require('#src/resources/databases');
+	let open;
+	let originalGetUser;
+	before(async () => {
+		setupTestDBPath();
+		await ensureSystemTables();
+		setMainIsWorker(true);
+		if (!Resources.resources) Resources.resetResources();
+		open = mqttListener();
+		originalGetUser = server.getUser;
+	});
+	after(() => (server.getUser = originalGetUser));
+	afterEach(() => seedUsers());
+
+	it('keeps the user a memoizing component returns as its first login tracked it, so a drop still revokes it', async () => {
+		await seedUsers([
+			{
+				username: 'mqtt_memoized',
+				active: true,
+				role: { id: 'mqtt_memoized_role', permission: { super_user: true } },
+			},
+		]);
+		// a component that memoizes the user it built, as a copy without the original's provenance
+		const memoized = structuredClone(userModule.getUserWithRole('mqtt_memoized'));
+		server.getUser = async () => memoized;
+		const topic = `${protectedTable()}/#`;
+		const backed = await connect(open, { username: 'mqtt_memoized', password: 'secret' });
+		assert.deepStrictEqual((await backed.subscribe(topic)).granted, [1]);
+		await databases.system.hdb_user.delete('mqtt_memoized');
+		const after = await connect(open, { username: 'mqtt_memoized', password: 'secret' });
+
+		assert.strictEqual(backed.session.user, memoized, 'the first connection keeps what the component returned');
+		assert.strictEqual(after.session.user, memoized, 'and so does a later one');
+		assert.strictEqual(userModule.isRecordlessPrincipal(memoized), false, 'its record was read at the first login');
+		assert.deepStrictEqual((await after.subscribe(topic)).granted, [NOT_AUTHORIZED], 'its record was dropped');
+	});
+
+	it('keeps a held connection’s memoized user as its CONNECT tracked it when an HTTP login returns it after a drop', async () => {
+		const { authentication } = require('#src/security/auth');
+		const { Headers } = require('#src/server/serverHelpers/Headers');
+		await seedUsers([
+			{
+				username: 'mqtt_memoized_http',
+				active: true,
+				role: { id: 'mqtt_memoized_http_role', permission: { super_user: true } },
+			},
+		]);
+		const memoized = structuredClone(userModule.getUserWithRole('mqtt_memoized_http'));
+		server.getUser = async () => memoized;
+		const held = await connect(open, { username: 'mqtt_memoized_http', password: 'secret' });
+		assert.deepStrictEqual((await held.subscribe(`${protectedTable()}/#`)).granted, [1]);
+		await databases.system.hdb_user.delete('mqtt_memoized_http');
+		const response = await authentication(
+			{
+				headers: {
+					asObject: { authorization: 'Basic ' + Buffer.from('mqtt_memoized_http:secret').toString('base64') },
+				},
+				method: 'GET',
+				pathname: '/',
+				ip: '10.0.0.1',
+				isOperationsServer: true,
+			},
+			async () => ({ status: 200, headers: new Headers(), body: {} })
+		);
+		assert.strictEqual(response.status, 200, 'the component still admits the HTTP login');
+
+		assert.strictEqual(userModule.isRecordlessPrincipal(memoized), false);
+		assert.deepStrictEqual((await held.subscribe(`${protectedTable()}/#`)).granted, [NOT_AUTHORIZED]);
+	});
+
+	it('checks a connection that a login’s own record admitted against that record, though its memoized user is recordless', async () => {
+		await seedUsers([
+			{ username: 'mqtt_admitting', active: true, role: { id: 'mqtt_admitting_role', permission: {} } },
+		]);
+		const shared = { username: 'mqtt_shared_subject', role: { permission: { super_user: true } } };
+		server.getUser = async () => shared;
+		const unbacked = await connect(open, { username: 'mqtt_token_login', password: 'token' });
+		const admitted = await connect(open, { username: 'mqtt_admitting', password: 'secret' });
+		await databases.system.hdb_user.delete('mqtt_admitting');
+
+		try {
+			assert.strictEqual(userModule.isRecordlessPrincipal(shared), true, 'its first login had no record');
+			assert.deepStrictEqual((await unbacked.subscribe(`${protectedTable()}/#`)).granted, [1]);
+			assert.deepStrictEqual(
+				(await admitted.subscribe(`${protectedTable()}/#`)).granted,
+				[NOT_AUTHORIZED],
+				'the record that admitted it was dropped'
+			);
+		} finally {
+			// no recheck revokes the recordless connection's subscription
+			unbacked.socket.handlers.close();
+			admitted.socket.handlers.close();
+		}
+	});
+
+	it('keeps checking a repeated login against the record that first admitted it, once that record is dropped', async () => {
+		await seedUsers([{ username: 'mqtt_alias_login', active: true, role: { id: 'mqtt_alias_role', permission: {} } }]);
+		const shared = { username: 'mqtt_alias_subject', role: { permission: { super_user: true } } };
+		server.getUser = async () => shared;
+		const first = await connect(open, { username: 'mqtt_alias_login', password: 'secret' });
+		assert.deepStrictEqual((await first.subscribe(`${protectedTable()}/#`)).granted, [1]);
+		await databases.system.hdb_user.delete('mqtt_alias_login');
+		const again = await connect(open, { username: 'mqtt_alias_login', password: 'secret' });
+		try {
+			assert.deepStrictEqual((await again.subscribe(`${protectedTable()}/#`)).granted, [NOT_AUTHORIZED]);
+		} finally {
+			first.socket.handlers.close();
+			again.socket.handlers.close();
+		}
+	});
+
+	it('checks a later CONNECT of a memoized user against its first, so a role downgraded since is not current', async () => {
+		await seedUsers([
+			{
+				username: 'mqtt_downgraded',
+				active: true,
+				role: { id: 'mqtt_downgraded_role', role: 'mqtt_downgraded_role', permission: { super_user: true } },
+			},
+		]);
+		const memoized = structuredClone(userModule.getUserWithRole('mqtt_downgraded'));
+		server.getUser = async () => memoized;
+		const first = await connect(open, { username: 'mqtt_downgraded', password: 'secret' });
+		await databases.system.hdb_role.put({
+			id: 'mqtt_downgraded_role',
+			role: 'mqtt_downgraded_role',
+			permission: { super_user: false },
+		});
+		const later = await connect(open, { username: 'mqtt_downgraded', password: 'secret' });
+		try {
+			assert.deepStrictEqual((await later.subscribe(`${protectedTable()}/#`)).granted, [NOT_AUTHORIZED]);
+		} finally {
+			first.socket.handlers.close();
+			later.socket.handlers.close();
+		}
+	});
+
+	it('refuses a CONNECT that read a role downgraded before a later CONNECT of the same memoized user completed', async () => {
+		await seedUsers([
+			{
+				username: 'mqtt_raced',
+				active: true,
+				role: { id: 'mqtt_raced_role', role: 'mqtt_raced_role', permission: { super_user: true } },
+			},
+		]);
+		let userChanges = 0;
+		userModule.onUserChange(() => userChanges++);
+		const memoized = structuredClone(userModule.getUserWithRole('mqtt_raced'));
+		const pending = [];
+		server.getUser = () => new Promise((resolve) => pending.push(() => resolve(memoized)));
+		const earlier = connect(open, { username: 'mqtt_raced', password: 'secret' });
+		await waitFor(() => pending.length === 1, { message: 'the earlier CONNECT never reached getUser' });
+		const changesBefore = userChanges;
+		await databases.system.hdb_role.put({ id: 'mqtt_raced_role', role: 'mqtt_raced_role', permission: {} });
+		await waitFor(() => userChanges > changesBefore, { message: 'the downgrade was never notified' });
+		const later = connect(open, { username: 'mqtt_raced', password: 'secret' });
+		await waitFor(() => pending.length === 2, { message: 'the later CONNECT never reached getUser' });
+		pending[1]();
+		const laterClient = await later;
+		pending[0]();
+		const earlierClient = await earlier;
+		try {
+			assert.deepStrictEqual((await earlierClient.subscribe(`${protectedTable()}/#`)).granted, [NOT_AUTHORIZED]);
+		} finally {
+			earlierClient.socket.handlers.close();
+			laterClient.socket.handlers.close();
+		}
+	});
+
+	it('refuses a copy of a user dropped while a login under another name resolved', async () => {
+		await seedUsers([
+			{ username: 'mqtt_copied', active: true, role: { id: 'mqtt_copied_role', permission: { super_user: true } } },
+		]);
+		server.getUser = async () => {
+			const copied = structuredClone(userModule.getUserWithRole('mqtt_copied'));
+			await databases.system.hdb_user.delete('mqtt_copied');
+			return copied;
+		};
+		const client = await connect(open, { username: 'mqtt_copied_login', password: 'token' });
+		try {
+			assert.strictEqual(client.session.user.username, 'mqtt_copied');
+			assert.deepStrictEqual((await client.subscribe(`${protectedTable()}/#`)).granted, [NOT_AUTHORIZED]);
+		} finally {
+			client.socket.handlers.close();
+		}
+	});
+
+	it('revokes such a copy at the next pass on an unaudited hdb_user, where the drop leaves no tombstone', async () => {
+		await seedUsers([
+			{
+				username: 'mqtt_unaudited',
+				active: true,
+				role: { id: 'mqtt_unaudited_role', permission: { super_user: true } },
+			},
+		]);
+		const userTable = databases.system.hdb_user;
+		const audited = userTable.audit;
+		server.getUser = async () => {
+			const copied = structuredClone(userModule.getUserWithRole('mqtt_unaudited'));
+			await userTable.delete('mqtt_unaudited');
+			userTable.primaryStore.removeSync('mqtt_unaudited');
+			return copied;
+		};
+		userTable.audit = false;
+		let client;
+		try {
+			client = await connect(open, { username: 'mqtt_unaudited_login', password: 'token' });
+			assert.strictEqual(client.session.user.username, 'mqtt_unaudited');
+			assert.deepStrictEqual((await client.subscribe(`${protectedTable()}/#`)).granted, [1], 'nothing shows a change');
+			const subscription = client.session.subscriptions.at(-1);
+			await _tickNow();
+			assert.strictEqual(subscription.closed, true, 'its own name is re-read, and no record has it');
+		} finally {
+			userTable.audit = audited;
+			client?.socket.handlers.close();
+		}
+	});
+
+	it('classes a memoized user a record-backed login reached first as recordless for a login no record admitted', async () => {
+		await seedUsers([{ username: 'mqtt_backing', active: true, role: { id: 'mqtt_backing_role', permission: {} } }]);
+		const shared = { username: 'mqtt_backed_subject', role: { permission: { super_user: true } } };
+		server.getUser = async () => shared;
+		const backed = await connect(open, { username: 'mqtt_backing', password: 'secret' });
+		const token = await connect(open, { username: 'mqtt_token_only', password: 'token' });
+		await databases.system.hdb_user.delete('mqtt_backing');
+		try {
+			assert.deepStrictEqual((await token.subscribe(`${protectedTable()}/#`)).granted, [1], 'no record admitted it');
+			assert.deepStrictEqual((await backed.subscribe(`${protectedTable()}/#`)).granted, [NOT_AUTHORIZED]);
+		} finally {
+			token.socket.handlers.close();
+			backed.socket.handlers.close();
+		}
 	});
 });

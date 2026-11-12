@@ -754,6 +754,11 @@ export class HierarchicalNavigableSmallWorld {
 		this.derivedHost?.requestRebuild();
 	}
 
+	/** Storage cleared outside the transaction log (`Table.clear()`) leaves the owner nothing to replay. */
+	requestDerivedRebuild(): void {
+		this.derivedHost?.requestRebuild();
+	}
+
 	/**
 	 * Delete the derived plane state before an audit-backed reconstruction. Path invalidation
 	 * makes peers stop using an old mapping even when unlink leaves their mmap inode alive.

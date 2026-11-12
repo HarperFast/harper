@@ -44,6 +44,7 @@ import {
 	measureWindow,
 	parseTargets,
 	primaryLatency,
+	sizedRecordCacheSize,
 	targetOrder,
 	withTarget,
 	writeJsonAtomic,
@@ -337,7 +338,7 @@ async function measureSweepSample(
 	const launch = {
 		restore: snapshot.restore,
 		restoreRoot: snapshot.restoreRoot,
-		recordCacheSize: spec.kind === 'harper' && spec.sized ? 2 ** Math.ceil(Math.log2(sample.records)) : undefined,
+		recordCacheSize: spec.kind === 'harper' && spec.sized ? sizedRecordCacheSize(sample.records) : undefined,
 	};
 	try {
 		await withTarget(

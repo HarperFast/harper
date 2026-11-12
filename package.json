@@ -2,7 +2,7 @@
 	"name": "harper",
 	"productName": "Harper",
 	"description": "Harper is an open-source Node.js performance platform that unifies database, cache, application, and messaging layers into one in-memory process.",
-	"version": "5.4.0-beta.2",
+	"version": "5.4.0-beta.4",
 	"license": "Apache-2.0",
 	"homepage": "https://harper.fast",
 	"bugs": {
@@ -213,7 +213,7 @@
 		"@fastify/cors": "^11.2.0",
 		"@fastify/static": "^10.0.0",
 		"@harperfast/extended-iterable": "1.0.5",
-		"@harperfast/rocksdb-js": "2.13.0",
+		"@harperfast/rocksdb-js": "2.14.0",
 		"@harperfast/skills": "^1.10.8",
 		"@inquirer/confirm": "^6.3.2",
 		"@inquirer/input": "^5.1.6",

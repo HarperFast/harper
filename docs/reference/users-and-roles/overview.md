@@ -125,7 +125,7 @@ The value must be an array of strings; a non-array value is rejected on write. A
 
 Groups expand to a predefined set of operations and can be mixed with individual operation names:
 
-- `read_only` — Search, SQL SELECT, describe, and monitoring operations. No data modification. Operations: `search`, `search_by_conditions`, `search_by_hash`, `search_by_id`, `search_by_value`, `sql`, `describe_all`, `describe_schema`, `describe_database`, `describe_table`, `user_info`, `get_job`, `get_analytics`, `list_metrics`, `describe_metric`
+- `read_only` — Search, SQL SELECT, describe, and monitoring operations. No data modification. Operations: `search`, `search_by_conditions`, `search_by_hash`, `search_by_id`, `search_by_value`, `sql`, `describe_all`, `describe_schema`, `describe_database`, `describe_table`, `user_info`, `get_studio_configuration`, `get_job`, `get_analytics`, `list_metrics`, `describe_metric`
 
 - `standard_user` — Everything in `read_only` plus full data manipulation and bulk load. Does not include any `super_user`-restricted operations, schema DDL (`create_attribute`), or token management. Additional operations beyond `read_only`: `insert`, `update`, `upsert`, `delete`, `csv_data_load`, `csv_file_load`, `csv_url_load`, `import_from_s3`
 
@@ -397,15 +397,16 @@ A [component deploy grant](#component-deploy-grants) (Added in: v5.4.0) lets a r
 
 ### Utilities
 
-| Operation               | Restricted to Super User |
-| ----------------------- | :----------------------: |
-| `delete_records_before` |            X             |
-| `export_local`          |            X             |
-| `export_to_s3`          |            X             |
-| `system_information`    |            X             |
-| `restart`               |            X             |
-| `restart_service`       |            X             |
-| `get_configuration`     |            X             |
+| Operation                  | Restricted to Super User |
+| -------------------------- | :----------------------: |
+| `delete_records_before`    |            X             |
+| `export_local`             |            X             |
+| `export_to_s3`             |            X             |
+| `system_information`       |            X             |
+| `restart`                  |            X             |
+| `restart_service`          |            X             |
+| `get_configuration`        |            X             |
+| `get_studio_configuration` |                          |
 
 ### Token Authentication
 

@@ -6,6 +6,7 @@ import YAML from 'yaml';
 import logger from '../utility/logging/harper_logger.ts';
 import * as hdbUtils from '../utility/common_utils.ts';
 import { deriveGlobOptions, type FilesOption } from '../components/deriveGlobOptions.ts';
+import { COMPONENT_CONFIG_FILES } from '../utility/hdbTerms.ts';
 
 /** Config-shaping env vars that only take effect from the process environment. */
 export const CONFIG_SHAPING_ENV_VARS = ['HARPER_DEFAULT_CONFIG', 'HARPER_CONFIG', 'HARPER_SET_CONFIG'];
@@ -83,13 +84,10 @@ function candidateComponentDirs(componentsRoot: string | undefined, runAppFolder
 	return dirs;
 }
 
-// same precedence as loadComponent's config-file resolution
-const COMPONENT_CONFIG_FILENAMES = ['harper-config.yaml', 'harperdb-config.yaml', 'config.yaml'];
-
 function declaredEnvFiles(componentPath: string): { envFiles: string[] } {
 	const none = { envFiles: [] };
 	let componentConfig;
-	for (const configFileName of COMPONENT_CONFIG_FILENAMES) {
+	for (const configFileName of COMPONENT_CONFIG_FILES) {
 		const configFilePath = path.join(componentPath, configFileName);
 		if (!fs.existsSync(configFilePath)) continue;
 		try {

@@ -281,6 +281,10 @@ By default, table subscriptions skip record mutations whose version differs from
 
 `startTime` is a local audit-log cursor, not a record version. Audit events expose this cursor as `localTime`, which multiple events in a transaction can share. Resuming with `startTime` excludes all events at that cursor, so callers must account for shared cursors before checkpointing.
 
+<VersionBadge type="changed" version="v5.4.0" />
+
+On RocksDB, a table subscription with `startTime` switches from catch-up to live delivery at live delivery's position in each transaction log, not at a `localTime`. A transaction that commits during catch-up with a `localTime` below one already delivered is still delivered, once, and catch-up and live delivery never both deliver the same event. If a transaction log cannot be read up to that position for about five seconds, the subscription ends with a 503 `ServerError` as its last event. Subscribe again from the same `startTime` to retry: resuming from a later `localTime` can skip a transaction that committed during the wait with a lower one.
+
 `previousCount` counts accepted events: superseded or filtered events do not consume the requested count. The request is capped at 1,000 events, and scanning stops after 10,000 in-scope audit entries or the end of retained history, so fewer events may be returned.
 
 Before v5.3.0, non-raw catch-up could include superseded mutations even though non-raw live delivery suppressed them. Consumers that need historical transitions can opt in:
@@ -510,6 +514,10 @@ class MySource extends Resource {
 ```
 
 Harper waits for the source to confirm the write before committing to the local cache (two-phase write).
+
+<VersionBadge type="changed" version="v5.4.0" />
+
+On RocksDB, a source method that writes the record being written must do so after its first `await`, by when the cached write has been applied; that write then follows it. One made before that is refused with `409`, since the cached write would overwrite it. When the cached write goes through a `lock()` holder, the source method can not save that record through the holder (`409`, the lock stays usable), and before its first `await` it can not change the holder either. Outside `transaction()` an `update()` through the holder is refused too; inside `transaction()` one left unsaved is committed after the cached write. Await (or catch) every write a source method makes: a refused one is otherwise an unhandled rejection, and the cached write still commits.
 
 **Loading from source in write methods:** Methods other than `get()` do not automatically load data from the source. Call `ensureLoaded()` first if you need the existing record:
 
@@ -868,11 +876,23 @@ Properties declared in the schema can be assigned directly. On a table that is n
 
 This saves the current state of the resource to the database in the current transaction. This method can be called after making changes to the resource to ensure that those changes have been saved to the current transaction and can be queried within the same transaction. Any pending changes are automatically saved when the transaction commits (if `save()` has not already saved them).
 
-This method only saves data when using RocksDB storage engine, and is a no-op when using LMDB.
+Inside an explicit LMDB transaction, `save()` does not force a commit; it still waits for pending preparation and reports preparation errors.
+
+<VersionBadge type="changed" version="v5.4.0" />
+
+On RocksDB, a deferred instance save refused with 409 because another write through its lock holder is committing stays pending; call `save()` again after that commit finishes.
+
+On either engine, if the first update fails preparation, `save()` repeats that error until an explicit `update()` succeeds. On RocksDB, this includes held drafts edited with setters after a model-hook failure.
 
 ### `addTo(property: string, value: number | bigint)` {#addtoproperty-string-value-number}
 
 Adds `value` to `property` using CRDT incrementation — safe for concurrent updates across threads and nodes.
+
+<VersionBadge type="changed" version="v5.4.0" />
+
+Repeated additions on one instance fold into one operand before it is applied. Declared numeric fields normalize the operands to their declared type. Otherwise, two Number operands sum as Number, two BigInt operands sum exactly as BigInt, and mixed integer operands sum as BigInt. A mixed pair containing a fractional Number sums as Number. If an integer Number sum overflows, it folds as BigInt instead. On a declared Number field, `addTo()` rejects that sum when it cannot convert the BigInt exactly.
+
+Folding can change rounding compared with applying each addition separately. On an untyped field whose current value is missing, null, NaN or a non-numeric string, the sum establishes the field's value and type; this can differ from the first delta's type. Extreme magnitudes can also differ: an overflowing sum may lose cancellation against an opposite-sign Number base, and a fractional Number combined with a BigInt above Number range is rejected as a merged operand even when separate additions to a Number base would yield Infinity.
 
 <VersionBadge version="v4.3.0" />
 
@@ -1067,11 +1087,15 @@ Array of condition objects to filter records. Each condition:
 | `conditions`               | Nested conditions array; with `attribute`, conditions on the related table that one related record must meet (no `comparator` or `value`)                                                                                          |
 | `operator`                 | `and` (default) or `or` for the nested `conditions`                                                                                                                                                                                |
 | `fields`                   | Full-text source fields to search; every name must belong to the selected full-text index                                                                                                                                          |
+| `boost`                    | Optional full-text score multiplier (`number`, default `1`); see v5.4 [query-time relevance controls](../full-text-search/querying.md#query-time-relevance-controls)                                                               |
+| `should`                   | Optional nonempty array of additional scoring clauses; omitted by default; see v5.4 [query-time relevance controls](../full-text-search/querying.md#query-time-relevance-controls)                                                 |
+| `fuzzyDistance`            | Integer edit distance for a fuzzy condition, including negated forms; see [v5.4 fuzzy controls](../full-text-search/querying.md#fuzzy-controls-in-v54) and the server cap.                                                         |
+| `fuzzyTranspositions`      | Boolean controlling whether adjacent transpositions count as one edit on a fuzzy condition; see [v5.4 fuzzy controls](../full-text-search/querying.md#fuzzy-controls-in-v54).                                                      |
 | `includeHighlights`        | Include configured full-text highlights                                                                                                                                                                                            |
 | `maxIndexLagMilliseconds`  | Maximum accepted full-text index lag; see [freshness controls](../full-text-search/querying.md#freshness-controls)                                                                                                                 |
 | `waitForIndexMilliseconds` | Time to wait for acceptable full-text coverage; see [freshness controls](../full-text-search/querying.md#freshness-controls)                                                                                                       |
 
-The final four properties apply to full-text conditions (v5.3.0). See [Querying Full-Text Indexes](../full-text-search/querying.md) for their constraints, error behavior, and permission requirements for direct server-side searches.
+The `fields`, `includeHighlights`, `maxIndexLagMilliseconds` and `waitForIndexMilliseconds` properties apply to full-text conditions (v5.3.0). The `fuzzyDistance` and `fuzzyTranspositions` properties apply to fuzzy conditions in v5.4. The `boost` and `should` controls are available in v5.4; their constraints are described in [query-time relevance controls](../full-text-search/querying.md#query-time-relevance-controls). See [Querying Full-Text Indexes](../full-text-search/querying.md) for their constraints, error behavior, and permission requirements for direct server-side searches.
 
 Full-text conditions use `matches`, `matches_all`, `matches_phrase`, `matches_prefix`, `matches_fuzzy`, or `matches_fuzzy_prefix` against a declared full-text index. Each comparator also has a `not_` form: `not_matches`, `not_matches_all`, `not_matches_phrase`, `not_matches_prefix`, `not_matches_fuzzy`, and `not_matches_fuzzy_prefix`. A negated condition requires a positive full-text condition on the same index. See [Full-text query execution](./query-optimization.md#full-text-search-work-and-paging) for paging costs and work limits.
 
@@ -1177,7 +1201,7 @@ Special properties:
 
 Full-text queries add two special properties:
 
-- `$score`: When a query uses a full-text index, returns its BM25 relevance score.
+- `$score`: When a query uses a full-text index, returns its BM25 relevance score. In v5.4, supplied [query-time boosts and optional clauses](../full-text-search/querying.md#query-time-relevance-controls) contribute to this score.
 - `$highlights`: Enables and returns full-text fragments and matching spans when the index has highlighting configured. See [Highlights](../full-text-search/querying.md#highlights).
 
 #### Selecting related records

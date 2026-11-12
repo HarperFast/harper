@@ -222,7 +222,7 @@ Clear only after durable advance, end-of-log and actual age below half budget. A
 
 ### Failure flow
 
-See runtime rules.
+See the runtime rules.
 
 ## Native HNSW plane: a file-primary mmap graph on the derived-index runtime (`resources/indexes/HierarchicalNavigableSmallWorld.ts`, `resources/indexes/hnswDerivedIndex.ts`, `resources/indexes/hnswPlaneBinding.ts`)
 

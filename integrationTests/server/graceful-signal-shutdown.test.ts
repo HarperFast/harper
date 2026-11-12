@@ -134,9 +134,14 @@ interface Subscription {
 	closed: Promise<{ code: number; at: number }>;
 }
 
-async function subscribe(ctx: ContextWithHarper): Promise<Subscription> {
-	const socket = new WebSocket(`${ctx.harper.httpURL.replace('http', 'ws')}/Subscriber/`, {
+async function subscribe(
+	ctx: ContextWithHarper,
+	url = `${ctx.harper.httpURL.replace('http', 'ws')}/Subscriber/`,
+	ca?: string[]
+): Promise<Subscription> {
+	const socket = new WebSocket(url, {
 		headers: { Authorization: authHeader(ctx), Accept: 'application/json' },
+		ca,
 	});
 	const closed = new Promise<{ code: number; at: number }>((resolve) =>
 		socket.once('close', (code) => resolve({ code, at: Date.now() }))
@@ -184,7 +189,7 @@ for (const threadCount of [1, 0]) {
 			});
 			after(async () => {
 				await teardownHarper(ctx);
-				await rm(fixtureParent, { recursive: true, force: true });
+				if (fixtureParent) await rm(fixtureParent, { recursive: true, force: true });
 			});
 
 			test(
@@ -277,7 +282,7 @@ suite(
 		});
 		after(async () => {
 			await teardownHarper(ctx);
-			await rm(fixtureParent, { recursive: true, force: true });
+			if (fixtureParent) await rm(fixtureParent, { recursive: true, force: true });
 		});
 
 		test('no subscriber closes before the request finishes, and each then sees 1001', async () => {
@@ -310,6 +315,68 @@ suite(
 );
 
 suite(
+	'WebSockets with http2 enabled across multiple threads',
+	{
+		skip:
+			SKIP_SIGNALS ||
+			SKIP_WEBSOCKET_CLOSE ||
+			(process.platform === 'darwin' && 'one worker binds each port on macOS, so nothing lands on another thread'),
+	},
+	(ctx: ContextWithHarper) => {
+		const config = { http: { http2: true }, tls: {}, threads: { count: 2 } };
+		let fixtureParent: string;
+		before(async () => {
+			fixtureParent = await mkdtemp(join(tmpdir(), 'harper-graceful-shutdown-'));
+			await setupHarperWithFixture(ctx, await writeProbeApp(fixtureParent, {}), {
+				config,
+				env: {},
+			});
+		});
+		after(async () => {
+			await teardownHarper(ctx);
+			if (fixtureParent) await rm(fixtureParent, { recursive: true, force: true });
+		});
+
+		test('every subscriber across both threads sees 1001 on repeated SIGTERM stops', async () => {
+			const rows = (await sendOperation(ctx.harper, {
+				operation: 'search_by_value',
+				database: 'system',
+				table: 'hdb_certificate',
+				search_attribute: 'name',
+				search_value: '*',
+				get_attributes: ['certificate'],
+			})) as { certificate: string }[];
+			const ca = rows.map((row) => row.certificate);
+			const wssUrl = `wss://${ctx.harper.hostname}:9927/Subscriber/`;
+			for (let stop = 0; stop < 4; stop++) {
+				if (stop > 0) {
+					await startHarper(ctx, { config, env: {} });
+				}
+				const subscriptions: Subscription[] = [];
+				const threads = new Set<number>();
+				for (let i = 0; i < 64 && threads.size < 2; i++) {
+					const subscription = await subscribe(ctx, i % 2 === 0 ? wssUrl : undefined, ca);
+					subscriptions.push(subscription);
+					threads.add(subscription.threadId);
+				}
+				strictEqual(threads.size, 2, `stop ${stop + 1}: subscribers landed on both HTTP workers`);
+
+				const proc = ctx.harper.process;
+				const signalledAt = Date.now();
+				proc.kill('SIGTERM');
+				for (const { closed } of subscriptions) {
+					const { code } = await closed;
+					strictEqual(code, 1001, `stop ${stop + 1}: subscriber received close code ${code}`);
+				}
+				const exit = await exitOf(proc, signalledAt);
+				deepStrictEqual({ code: exit.code, signal: exit.signal }, { code: 0, signal: null });
+				ok(exit.afterMs < 7500, `stop ${stop + 1}: exited ${exit.afterMs} ms after SIGTERM`);
+			}
+		});
+	}
+);
+
+suite(
 	'a signal during a rolling restart',
 	{
 		skip:
@@ -328,7 +395,7 @@ suite(
 		});
 		after(async () => {
 			await teardownHarper(ctx);
-			await rm(fixtureParent, { recursive: true, force: true });
+			if (fixtureParent) await rm(fixtureParent, { recursive: true, force: true });
 		});
 
 		test('a retiring worker still closes its subscribers', async () => {
@@ -336,7 +403,15 @@ suite(
 			const retiring = await subscribe(ctx);
 			// its response can be lost with the worker that serves it
 			sendOperation(ctx.harper, { operation: 'restart_service', service: 'http_workers' }).catch(() => {});
-			await waitFor(async () => (await subscribe(ctx)).threadId !== retiring.threadId, { timeout: 30_000 });
+			await waitFor(
+				// a probe arriving right as the retiring worker closes its listener can be reset before its first message
+				async () =>
+					subscribe(ctx).then(
+						({ threadId }) => threadId !== retiring.threadId,
+						() => false
+					),
+				{ timeout: 30_000 }
+			);
 			// the worker retires once its replacement is up, then holds its subscriber for 5 s: signal inside that hold
 			await delay(500);
 			const signalledAt = Date.now();
@@ -359,7 +434,7 @@ suite('a scope close that never finishes', { skip: SKIP_SIGNALS }, (ctx: Context
 	});
 	after(async () => {
 		await teardownHarper(ctx);
-		await rm(fixtureParent, { recursive: true, force: true });
+		if (fixtureParent) await rm(fixtureParent, { recursive: true, force: true });
 	});
 
 	test('holds the first SIGTERM, and a second signal exits 0 at once', async () => {

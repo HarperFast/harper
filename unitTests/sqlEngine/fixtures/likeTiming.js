@@ -23,7 +23,7 @@ if (engine === 'v2') {
 	matches = (value) => like.eval({ v: value });
 } else {
 	const alasql = require('alasql');
-	require('#src/sqlTranslator/alasqlFunctionImporter').default(alasql);
+	require('#src/sqlTranslator/alasqlLike').installAlasqlLike(alasql);
 	matches = (value) =>
 		escape === undefined ? alasql.utils.like(pattern, value) : alasql.utils.like(pattern, value, escape);
 }

@@ -131,6 +131,8 @@ Workload B costs Harper 31 µs/op more than C at warm though only 5% of ops writ
 
 ## Why warm reads still reach RocksDB (record cache, 2026-10-31)
 
+These runs predate `storage.recordCacheSize`: they set the record cache with the `HARPER_RECORD_CACHE_SIZE` environment variable, which Harper no longer reads.
+
 Warm C, 200k records of ~1.03 KiB (10 × 100 B fields). Counts come from a temporary probe in `PrimaryRocksDatabase.getEntry`, not committed. The probe records whether the record cache's `getValue` hit, whether the hit's value still mapped to its `Entry`, and whether the verification table (VT) already held the cached version, checked with `verifyVersion` before the read. It also records what the native read returned, every `setValue`, and every cache-Map deletion. 3M-op measured runs; rates exclude the read-all pass.
 
 | record cache                               | weak-lru-cache | hit rate | VT fast path, share of hits | reads reaching `DBImpl::GetImpl` | strong entries/thread | instructions/op |

@@ -155,6 +155,13 @@ export interface DerivedIndexBackend {
 	getDurableCursor(): DerivedIndexCursor | undefined;
 	/** Persist coverage only after its offered cursor is durable; reset must remove it with the cursor. */
 	publishCoverage?(positions: DerivedIndexPositions, ownerEpoch: bigint): void;
+	/**
+	 * Opts the backend into idle admission: a fingerprint of the durable state, readable without the lock and
+	 * without side effects, or `undefined` when there is none. An idle release's positions bind to it, so a
+	 * runner over replaced storage acquires. A backend whose readiness id changes with its storage generation
+	 * may return a constant. Without it, a runner acquires a free lock on every wake.
+	 */
+	quietToken?(): number | undefined;
 	deliver(batch: DerivedIndexBatch): DerivedIndexDeliveryResult;
 	/** Request a durability barrier; the backend completes it and wakes through `onStateChange`. */
 	flush(reason: DerivedIndexFlushReason): void | Promise<void>;
@@ -299,6 +306,12 @@ const READINESS_REASON = 1;
 const READINESS_ATTEMPTS = 2;
 const READINESS_REBUILD_REQUEST = 3;
 const READINESS_LAG_EXCEEDED = 4;
+const QUIET_EPOCH = 0;
+const QUIET_SUM = 1;
+const QUIET_NAMES = 0;
+const QUIET_TABLE = 1;
+const QUIET_TOKEN = 2;
+const QUIET_BYTES = 32;
 
 /** A failure raised inside the collector that already knows its shareable reason. */
 class RunnerError extends Error {
@@ -318,7 +331,23 @@ export class DerivedIndexRuntime {
 	#pendingStops = new Set<Promise<void>>();
 	#heldRunners = new Map<string, { runner: DerivedIndexRunner; stopped: Promise<void> }>();
 	#stopping?: Promise<void>;
-	#onCommit = () => this.wake();
+	#onCommit = () => {
+		this.#logMark = undefined;
+		this.wake();
+	};
+	// A `committed` event arrives after its positions are visible, so dropping the memo there keeps it current
+	// while the listener is attached; attaching and detaching drop it too.
+	#logMark?: { mark: LogMark | undefined };
+	#currentLogMark = (): LogMark | undefined => {
+		if (!this.#logMark) {
+			let mark: LogMark | undefined;
+			try {
+				mark = logMark(readCommittedPositions(this.#logStore));
+			} catch {}
+			this.#logMark = { mark };
+		}
+		return this.#logMark.mark;
+	};
 	#listening = false;
 	#stopped = false;
 	#coverageWaits = new Map<string, CoverageWaitGroup>();
@@ -347,13 +376,24 @@ export class DerivedIndexRuntime {
 		}
 		if (this.#runners.has(registration.backend.id))
 			throw new Error(`Derived index backend '${registration.backend.id}' is already registered`);
-		const runner = new DerivedIndexRunner(this.#logStore, this.#resolveRecord, this.#scanRecords, registration, {
-			...resolveRunnerOptions(registration.options, this.#options),
-			idleGraceMilliseconds: this.#options.idleGraceMilliseconds,
-			now: this.#options.now,
-		});
+		const runner = new DerivedIndexRunner(
+			this.#logStore,
+			this.#resolveRecord,
+			this.#scanRecords,
+			registration,
+			{
+				...resolveRunnerOptions(registration.options, this.#options),
+				idleGraceMilliseconds: this.#options.idleGraceMilliseconds,
+				now: this.#options.now,
+			},
+			{
+				currentLogMark: this.#currentLogMark,
+				coverageWaiting: () => this.#coverageWaits.has(registration.backend.id),
+			}
+		);
 		this.#runners.set(registration.backend.id, runner);
 		if (!this.#listening) {
+			this.#logMark = undefined;
 			this.#logStore.rootStore.on('committed', this.#onCommit);
 			this.#listening = true;
 		}
@@ -525,6 +565,7 @@ export class DerivedIndexRuntime {
 	}
 
 	#stopListening() {
+		this.#logMark = undefined;
 		if (!this.#listening) return;
 		try {
 			this.#logStore.rootStore.off?.('committed', this.#onCommit);
@@ -590,6 +631,12 @@ type OfferedProgress = {
 	coverage?: CoverageCapture;
 };
 
+type RunnerAdmission = {
+	/** The committed positions now, memoized per worker until the next `committed` event. */
+	currentLogMark: () => LogMark | undefined;
+	coverageWaiting: () => boolean;
+};
+
 type CollectedKey = { recordId: Id; logVersion: number; sizeHint: number | undefined };
 
 type CollectedTransaction = {
@@ -636,6 +683,12 @@ class DerivedIndexRunner {
 	#lagRecovery?: { target?: DerivedIndexCursor; since?: number };
 	/** Delivered work or acquisition; a wake that finds nothing to deliver does not extend the idle grace. */
 	#workAt = 0;
+	#admission: RunnerAdmission;
+	/** The registration's one table, which binds a published quiet mark to this index generation. */
+	#quietTable?: number;
+	#quiet: QuietViews;
+	/** The positions the last idle pass proved durably covered, while nothing has been accepted since. */
+	#quietMark?: LogMark;
 	#lagTimer?: NodeJS.Timeout;
 	#lockRetryTimer?: NodeJS.Timeout;
 	#lagBudget: number;
@@ -710,13 +763,23 @@ class DerivedIndexRunner {
 		resolveRecord: (tableId: number, recordId: Id) => DerivedIndexRecord,
 		scanRecords: ((tableId: number) => Iterable<DerivedIndexScanRecord>) | undefined,
 		registration: DerivedIndexRegistration,
-		options: ResolvedRunnerOptions
+		options: ResolvedRunnerOptions,
+		admission: RunnerAdmission
 	) {
 		this.#logStore = logStore;
 		this.#resolveRecord = resolveRecord;
 		this.#scanRecords = scanRecords;
 		this.#registration = registration;
 		this.#options = options;
+		this.#admission = admission;
+		if (
+			registration.projections.size === 1 &&
+			registration.backend.publishCoverage &&
+			registration.backend.quietToken
+		) {
+			const [tableId] = registration.projections.keys();
+			if ((tableId | 0) === tableId) this.#quietTable = tableId;
+		}
 		this.#lockKey = `derived-index:${registration.backend.id}:runner`;
 		this.#markerKey = Symbol.for(`derived-index:${registration.backend.id}:condemned`);
 		const root = logStore.rootStore as { getSync?: unknown; removeSync?: unknown } | undefined;
@@ -736,6 +799,7 @@ class DerivedIndexRunner {
 			if (this.#owned) this.wake(false, true);
 		});
 		this.#sharedViews = sharedViewsOf(this.#readinessBuffer);
+		this.#quiet = quietViews(logStore, this.readinessId);
 		if (registration.backend.publishesQueryRevisions) {
 			this.#publicationBuffer = publicationBuffer(logStore, this.readinessId);
 			this.#publicationRevision = new BigInt64Array(this.#publicationBuffer, 0, 1);
@@ -1027,6 +1091,7 @@ class DerivedIndexRunner {
 			this.#releasing.then(() => this.wake(true));
 			return;
 		}
+		if (this.#quietSinceRelease()) return;
 		let acquired: boolean;
 		try {
 			acquired = this.#logStore.tryLock(this.#lockKey);
@@ -1049,6 +1114,59 @@ class DerivedIndexRunner {
 			this.#lockRetryTimer = undefined;
 		}
 		this.#acquired();
+	}
+
+	/**
+	 * Every acquisition mints an owner epoch, and full-text readers key on it, so a free lock is taken only
+	 * for work: a log moved past the positions the last idle owner proved covered (a commit that writes no
+	 * log entry, such as an audit-metadata update, wakes every runner but moves none), or a demand the log
+	 * does not carry. Only the owner of an epoch writes the mark, once, storing that epoch last, so an
+	 * owner epoch unchanged across the reads makes them one mark. A registration over several tables, or
+	 * whose backend captures no coverage or has no `quietToken`, has no mark and acquires on every wake.
+	 */
+	#quietSinceRelease(): boolean {
+		if (
+			this.#quietTable === undefined ||
+			(this.#rebuildRequested && this.#canRebuild()) ||
+			this.#admission.coverageWaiting()
+		)
+			return false;
+		try {
+			const { words, epoch } = this.#shared();
+			const quiet = this.#quiet;
+			const releasedEpoch = Atomics.load(quiet.marks, QUIET_EPOCH);
+			if (releasedEpoch === 0n || Atomics.load(epoch, 0) !== releasedEpoch) return false;
+			if (
+				Atomics.load(words, READINESS_STATE) !== READINESS_STATES.indexOf('ready') ||
+				Atomics.load(words, READINESS_REBUILD_REQUEST) !== 0 ||
+				Atomics.load(words, READINESS_LAG_EXCEEDED) !== 0 ||
+				Atomics.load(quiet.words, QUIET_TABLE) !== this.#quietTable
+			)
+				return false;
+			const names = Atomics.load(quiet.words, QUIET_NAMES);
+			const sum = Atomics.load(quiet.marks, QUIET_SUM);
+			const token = Atomics.load(quiet.words, QUIET_TOKEN);
+			if (Atomics.load(epoch, 0) !== releasedEpoch) return false;
+			const current = this.#admission.currentLogMark();
+			return current !== undefined && current.names === names && current.sum === sum && this.#quietToken() === token;
+		} catch {
+			return false;
+		}
+	}
+
+	#quietToken(): number | undefined {
+		return this.#registration.backend.quietToken!();
+	}
+
+	#publishQuiet(epoch: bigint, mark: LogMark) {
+		const token = this.#quietToken();
+		if (token === undefined) return;
+		const { marks, words } = this.#quiet;
+		Atomics.store(words, QUIET_NAMES, mark.names);
+		Atomics.store(words, QUIET_TABLE, this.#quietTable!);
+		Atomics.store(words, QUIET_TOKEN, token);
+		Atomics.store(marks, QUIET_SUM, mark.sum);
+		Atomics.store(marks, QUIET_EPOCH, epoch);
 	}
 
 	#armLockRetry(delay: number) {
@@ -1362,6 +1480,7 @@ class DerivedIndexRunner {
 	#noteAccepted(batch: DerivedIndexBatch) {
 		const now = this.#options.now();
 		this.#workAt = now;
+		this.#quietMark = undefined;
 		if (batch.through && !sameCursor(batch.through, this.#offered)) {
 			this.#offered = cloneCursor(batch.through);
 			this.#offeredCursors.push({
@@ -1729,6 +1848,10 @@ class DerivedIndexRunner {
 			return;
 		}
 		this.#settleReady();
+		this.#quietMark =
+			capture && this.#quietTable !== undefined && this.#indexUnchangedSinceDurable()
+				? logMark(capture.positions)
+				: undefined;
 		if (this.#idleTimer) return;
 		this.status = { state: 'idle', ownerEpoch: this.#ownerEpoch };
 		this.#idleTimer = setTimeout(
@@ -1736,7 +1859,7 @@ class DerivedIndexRunner {
 				this.#idleTimer = undefined;
 				if (this.#stopped) return;
 				try {
-					if (sameCursor(this.#registration.backend.getDurableCursor(), this.#offered!)) this.#release();
+					if (sameCursor(this.#registration.backend.getDurableCursor(), this.#offered!)) this.#release(this.#quietMark);
 				} catch (error) {
 					this.#fail('backend cursor read threw at idle release', error, 'backend-failed');
 				}
@@ -2019,6 +2142,7 @@ class DerivedIndexRunner {
 	}
 
 	#discardProgress() {
+		this.#quietMark = undefined;
 		if (this.#coverageTimer) clearTimeout(this.#coverageTimer);
 		this.#coverageTimer = undefined;
 		this.#lastPersistedCoverageTime = 0n;
@@ -2292,7 +2416,7 @@ class DerivedIndexRunner {
 		Atomics.store(words, READINESS_STATE, READINESS_STATES.indexOf(state));
 	}
 
-	#release() {
+	#release(quiet?: LogMark) {
 		if (!this.#owned) return;
 		if (this.#idleTimer) {
 			clearTimeout(this.#idleTimer);
@@ -2316,6 +2440,11 @@ class DerivedIndexRunner {
 		const unlock = () => {
 			this.#releasing = undefined;
 			this.#releasingSince = undefined;
+			try {
+				if (quiet && !this.#stopped && epoch !== undefined) this.#publishQuiet(epoch, quiet);
+			} catch (error) {
+				logger.warn?.(`Derived index '${backend.id}' could not publish its idle positions`, error);
+			}
 			try {
 				this.#logStore.unlock(this.#lockKey);
 			} catch (error) {
@@ -2418,6 +2547,13 @@ function sharedViewsOf(buffer: ArrayBufferLike): SharedViews {
 		epoch: new BigInt64Array(buffer, READINESS_EPOCH_OFFSET, 1),
 		coverage: new BigInt64Array(buffer, READINESS_COVERAGE_OFFSET, 1),
 	};
+}
+
+type QuietViews = { marks: BigInt64Array; words: Int32Array };
+
+function quietViews(logStore: RocksTransactionLogStore, readinessId: string): QuietViews {
+	const buffer = logStore.getUserSharedBuffer(`derived-index:${readinessId}:quiet`, new ArrayBuffer(QUIET_BYTES));
+	return { marks: new BigInt64Array(buffer, 0, 2), words: new Int32Array(buffer, 16, 4) };
 }
 
 const readinessViews = new WeakMap<object, Map<string, SharedViews>>();
@@ -2580,6 +2716,34 @@ function readCommittedPositions(
 		return;
 	}
 	return positions;
+}
+
+type LogMark = { names: number; sum: bigint };
+
+/**
+ * A log's committed position only moves forward (commits, rotation and purge all advance it) and its offset
+ * fits 32 bits, so over the same logs an equal sum means no log moved; `names` hashes the sorted log names,
+ * so a log set that changed is a different mark. A sum past 2^63 (sequence numbers summing past 2^31) gives
+ * no mark, so runners acquire as they would without one.
+ */
+function logMark(positions: DerivedIndexPositions | undefined): LogMark | undefined {
+	if (!positions) return;
+	let names = 0x811c9dc5;
+	let sum = 0n;
+	for (const name of Object.keys(positions).sort()) {
+		for (let i = 0; i < name.length; i++) names = Math.imul(names ^ name.charCodeAt(i), 0x01000193);
+		names = Math.imul(names, 0x01000193);
+		const position = positions[name];
+		if (position) sum += (BigInt(position.sequence) << 32n) + BigInt(position.offset);
+	}
+	return sum < 1n << 63n ? { names, sum } : undefined;
+}
+
+export function derivedIndexCursorToken(cursor: DerivedIndexCursor): number {
+	const text = JSON.stringify([cursor.logs, cursor.floors ?? null]);
+	let hash = 0x811c9dc5;
+	for (let i = 0; i < text.length; i++) hash = Math.imul(hash ^ text.charCodeAt(i), 0x01000193);
+	return hash;
 }
 
 export function sameDerivedIndexPositions(left: DerivedIndexPositions, right: DerivedIndexPositions): boolean {
