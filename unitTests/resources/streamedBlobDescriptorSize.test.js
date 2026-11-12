@@ -39,7 +39,6 @@ function within(promise, what, ms = 10_000) {
 	]).finally(() => clearTimeout(timer));
 }
 
-// a blob whose source is still open when the write carrying it is staged
 function pendingBlob(payload) {
 	const stream = new PassThrough();
 	const blob = createBlob(stream);

@@ -3128,8 +3128,8 @@ export class DatabaseTransaction implements Transaction {
 				result = operation.beforeIntermediate?.() as Promise<void>;
 				if (result?.then) {
 					this.stageCompletion(result, transaction);
-					// a source apply tracks its blobs without awaiting them (trackPersistedBlobs), so a size landing by
-					// commit is timing; replicated descriptors carry the origin's size
+					// Not a source apply: its notification writes track received blobs without awaiting them, so a size
+					// landing by commit is timing (replicated descriptors carry the origin's size; harper#4329)
 					if (operation.savedBlobs !== undefined && !this.sourceApply && !this.isReplay) {
 						for (const blob of operation.savedBlobs) {
 							if (blob.size == null) ((transaction as RocksTransactionWithRetry).blobsAwaitingSize ??= []).push(blob);
@@ -3564,7 +3564,6 @@ export class DatabaseTransaction implements Transaction {
 			coordinatedRetry: true,
 		}) as RocksTransactionWithRetry;
 		if (original?.immediateCommit) replayTransaction.immediateCommit = true;
-		// a retry round of the replacement re-encodes its writes too
 		if (original?.blobsAwaitingSize) replayTransaction.blobsAwaitingSize = original.blobsAwaitingSize;
 		if (timestamp) replayTransaction.setTimestamp(timestamp);
 		transferLocalKey(transaction, replayTransaction);
