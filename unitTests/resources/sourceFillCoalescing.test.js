@@ -244,6 +244,18 @@ describe('Concurrent source misses on one key', function () {
 		assert.equal(results.filter((outcome) => outcome === 'written meanwhile').length, 19);
 	});
 
+	it('do not share a not-found whose status a copy would lose', async function () {
+		respond = () => {
+			throw Object.defineProperty(new OriginError('origin answered 404'), 'statusCode', { value: 404 });
+		};
+		const reasons = (await concurrentGets(CoalescingTable, 'hidden-status')).map(({ reason }) => reason);
+		assert.equal(sourceCalls, 20);
+		assert.deepEqual(
+			reasons.map((reason) => reason.statusCode),
+			Array(20).fill(404)
+		);
+	});
+
 	it('call the source again for a thrown not-found on the next burst', async function () {
 		respond = () => {
 			throw sourceError(404);

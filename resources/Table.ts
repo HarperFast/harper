@@ -669,11 +669,22 @@ function notFoundFailureSnapshot(error: unknown): Error | undefined {
 	try {
 		if (!utilTypes.isNativeError(error)) return;
 		const status = (error as any).statusCode ?? (error as any).status;
-		if (NOT_FOUND_STATUSES.has(status)) return copyError(error as Error);
+		if (!NOT_FOUND_STATUSES.has(status)) return;
+		const snapshot: any = copyError(error as Error);
+		// a status the copy cannot carry (non-enumerable, or behind a private field) is not shared
+		if ((snapshot.statusCode ?? snapshot.status) === status) return snapshot;
 	} catch {}
 }
 function copyError(error: Error): Error {
-	const copy = Object.assign(Object.setPrototypeOf(new Error(error.message), Object.getPrototypeOf(error)), error);
+	const stackTraceLimit = Error.stackTraceLimit;
+	Error.stackTraceLimit = 0;
+	let copy: Error;
+	try {
+		copy = new Error(error.message);
+	} finally {
+		Error.stackTraceLimit = stackTraceLimit;
+	}
+	Object.assign(Object.setPrototypeOf(copy, Object.getPrototypeOf(error)), error);
 	copy.stack = error.stack;
 	return copy;
 }
