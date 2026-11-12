@@ -64,7 +64,6 @@ describe('A blob streamed into a record stores its final size', () => {
 		});
 	});
 
-	// Decoded from the stored bytes, not the cached instance the write used.
 	function storedBlob(id) {
 		const blob = StreamedBlobs.primaryStore.getEntry(id, { uncachedRead: true })?.value?.blob;
 		assert(blob, `record ${id} has no stored blob`);
