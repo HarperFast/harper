@@ -333,6 +333,21 @@ export interface DelegationRecall {
  */
 export interface ClusterLockTransport {
 	/**
+	 * True on the stand-in registered while this node runs with cluster record locks turned off. It must not
+	 * change while the process runs: a conditional write reads it once, when it binds to its table, and keeps
+	 * that answer through its write. It does not relax `lock()`: a default-scope lock still reaches the
+	 * stand-in and is refused. Only a caller with a defined unlocked fallback for that state reads it:
+	 * a conditional REST write then checks its precondition without a lock. Only `true` counts; absent,
+	 * the node is treated as having cluster record locks enabled.
+	 */
+	readonly disabled?: boolean;
+	/**
+	 * Why `homeMap()` is returning undefined, appended to the refusal a cluster `lock()` gives for a missing
+	 * map — for example the operation that establishes one. Undefined when the transport does not know
+	 * why. Synchronous and safe to show a client; a throw is logged and the refusal keeps its own text.
+	 */
+	homeMapUnavailableReason?(database: string): string | undefined;
+	/**
 	 * The operator-agreed home map for the database, or undefined while none is available — before the
 	 * node has the current generation, or while peers disagree about its digest. Core fails closed on
 	 * undefined rather than guessing a ring.
@@ -1617,7 +1632,7 @@ export class LockCoordinator {
 					continue acquisition;
 				}
 				throw new LockUnavailableError(
-					`No agreed record lock home map for ${this.database}; cluster record locks are unavailable until one is established`
+					`No agreed record lock home map for ${this.database}; cluster record locks are unavailable until one is established${homeMap ? '' : missingMapReason(this.transport, this.database)}`
 				);
 			}
 			const delegation = this.#liveDelegation(keyId, leaseMs, homeMap.generation);
@@ -1890,7 +1905,7 @@ export class LockCoordinator {
 			// outlasts. A wait can see `contended` and still end 503 — the rule is what the home said LAST.
 			if (terminal?.reason === 'contended') throw new ClientError('Record is locked and was not released in time', 423);
 			throw new LockUnavailableError(
-				`Could not establish a cluster record lock on ${this.database}.${this.table} within the wait: ${describeExhaustedWait(terminal, currentGeneration !== undefined)}`
+				`Could not establish a cluster record lock on ${this.database}.${this.table} within the wait: ${describeExhaustedWait(terminal, currentGeneration !== undefined)}${terminal || currentGeneration !== undefined ? '' : missingMapReason(this.transport, this.database)}`
 			);
 		}
 	}
@@ -3740,6 +3755,16 @@ function describeExhaustedWait(terminal: DelegationReply | undefined, hasCurrent
 		: 'this node has no current record lock home map';
 }
 
+function missingMapReason(transport: ClusterLockTransport, database: string): string {
+	let reason: string | undefined;
+	try {
+		reason = transport.homeMapUnavailableReason?.(database);
+	} catch (error) {
+		warnOnce('a record lock transport could not say why it has no home map', error);
+	}
+	return reason ? `: ${reason}` : '';
+}
+
 /** Between half and all of `ms`, so callers parked on one home do not retry in step. */
 function jittered(ms: number): number {
 	return ms / 2 + Math.random() * (ms / 2);
@@ -3842,7 +3867,11 @@ export async function recallDelegationsFromHome(
 	if (!transport.ownsCoordination())
 		throw new Error('Cluster record lock coordination is not owned by this worker thread');
 	const homeMap = transport.homeMap(database);
-	if (!homeMap) throw new ClientError(`No agreed record lock home map for ${database}`, 503);
+	if (!homeMap)
+		throw new ClientError(
+			`No agreed record lock home map for ${database}${missingMapReason(transport, database)}`,
+			503
+		);
 	if (homeMap.generation !== generation)
 		throw new ClientError(
 			`This node holds record lock home map generation ${homeMap.generation} for ${database}, not ${generation}`,
@@ -3887,7 +3916,11 @@ export async function retireDelegateEpoch(database: string, delegate: string, be
 	if (!transport.ownsCoordination())
 		throw new Error('Cluster record lock coordination is not owned by this worker thread');
 	const homeMap = transport.homeMap(database);
-	if (!homeMap) throw new ClientError(`No agreed record lock home map for ${database}`, 503);
+	if (!homeMap)
+		throw new ClientError(
+			`No agreed record lock home map for ${database}${missingMapReason(transport, database)}`,
+			503
+		);
 	if (!homeMap.homes.includes(delegate))
 		throw new ClientError(`${delegate} is not named in the record lock home map for ${database}`, 403);
 	const sweepKey = `${database}\u0000${delegate}`;
