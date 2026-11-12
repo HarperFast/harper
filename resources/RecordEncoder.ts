@@ -180,6 +180,8 @@ function versionIsReused(newVersion: number, existingEntry: { version?: number }
 	return existingEntry?.version != null && newVersion <= existingEntry.version;
 }
 
+// Table.ts INVALIDATED | REPLICA (imported there, so not here): a stub holds no delete
+const STUB_FLAGS = 1 | 4;
 const TRACKED_WRITE_TYPES = new Set(['put', 'patch', 'delete', 'message', 'publish']);
 // For now we use this as the private property mechanism for mapping records to entries.
 // WeakMaps are definitely not the fastest form of private properties, but they are the only
@@ -1122,7 +1124,16 @@ export function recordUpdater(
 			const receivedIdentityRefs = options?.receivedIdentityRefs;
 			additionalAuditRefsNextEncoding = additionalAuditRefs?.length > 0 ? additionalAuditRefs : undefined;
 			receivedIdentityRefsNextEncoding = receivedIdentityRefs?.length > 0 ? receivedIdentityRefs : undefined;
-			const existingBoundary = existingEntry?.copiedDeleteBoundary;
+			// a record-less write over a delete keeps that delete's identity, as a copied delete already carries its own
+			const existingBoundary =
+				existingEntry?.copiedDeleteBoundary ??
+				((type === 'message' || type === 'invalidate') &&
+				existingEntry &&
+				existingEntry.value == null &&
+				existingEntry.metadataFlags & FULL_WRITE_HEAD &&
+				!(existingEntry.metadataFlags & STUB_FLAGS)
+					? { version: existingEntry.version, nodeId: existingEntry.nodeId ?? 0 }
+					: undefined);
 			const copiedDeleteBoundary =
 				options?.copiedDeleteBoundary ??
 				(existingBoundary &&

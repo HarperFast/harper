@@ -863,6 +863,31 @@ describe('A record bit for a full-write head (harper#3532)', () => {
 				assert.deepEqual(T.primaryStore.getEntry(id).copiedDeleteBoundary, { version, nodeId: lateOrigin });
 			});
 
+			it('a record-less write over a delete this node made keeps that delete as the boundary', async function () {
+				if (isLMDB) return this.skip();
+				const id = newId();
+				await T.put(id, { id, name: 'gone' });
+				await T.delete(id);
+				const version = T.primaryStore.getEntry(id).version;
+				await T.publish(id, { message: 'no record' });
+				const head = T.primaryStore.getEntry(id);
+				assert.equal(head.value, null);
+				assert.equal(head.metadataFlags & FULL_WRITE_HEAD, 0);
+				assert.deepEqual(head.copiedDeleteBoundary, { version, nodeId: 0 });
+				await T.publish(id, { message: 'again' });
+				assert.deepEqual(T.primaryStore.getEntry(id).copiedDeleteBoundary, { version, nodeId: 0 });
+				await apply(T, id, { name: 'older' }, { version: version - 1000, fullUpdate: true });
+				assert.equal(T.primaryStore.getEntry(id).value, null, 'a write the delete precedes loses');
+			});
+
+			it('a publish over a head that is not a delete adds no boundary', async function () {
+				if (isLMDB) return this.skip();
+				const id = newId();
+				await T.put(id, { id, name: 'alive' });
+				await T.publish(id, { message: 'no record' });
+				assert.equal(T.primaryStore.getEntry(id).copiedDeleteBoundary, undefined);
+			});
+
 			it('holds across writes in one transaction', async function () {
 				if (isLMDB) return this.skip();
 				const id = newId();
