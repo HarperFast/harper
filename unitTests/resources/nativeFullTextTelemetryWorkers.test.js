@@ -96,17 +96,20 @@ it('persists an actual managed-worker sample produced before main applies the sa
 		assert.strictEqual(fullTextTelemetryCollector.collecting, false);
 		await waitFor(() => Date.now() > produced.sampledAt);
 		setRootConfigEntry('analytics', { ...readRootConfig().analytics, fullText: { enabled: true } });
-		await waitFor(() => fullTextTelemetryCollector.collecting, 5000).catch((error) => {
-			error.message += `; activation state ${JSON.stringify({
-				file: readRootConfig().analytics?.fullText,
-				watched: watcher.config?.analytics?.fullText,
-				analyticsEnabled: analytics.checkAnalyticsEnabled(false),
-				armed: watcher._armedForTests,
-				polling: watcher._usingPollingForTests,
-				reads: watcher._readCountForTests,
-				listeners: watcher.listenerCount('change'),
-			})}`;
-			throw error;
+		await waitFor(() => fullTextTelemetryCollector.collecting, {
+			timeout: 5000,
+			// mocha prints the stack's own header, so state appended to `error.message` never reaches the log
+			message: () =>
+				`Collection did not start; activation state ${JSON.stringify({
+					file: readRootConfig().analytics?.fullText,
+					watched: watcher.config?.analytics?.fullText,
+					analyticsEnabled: analytics.checkAnalyticsEnabled(false),
+					armed: watcher._armedForTests,
+					polling: watcher._usingPollingForTests,
+					reads: watcher._readCountForTests,
+					opens: watcher._openCountForTests,
+					listeners: watcher.listenerCount('change'),
+				})}`,
 		});
 		const mainEnabledAt = Date.now();
 		assert.ok(produced.sampledAt < mainEnabledAt);

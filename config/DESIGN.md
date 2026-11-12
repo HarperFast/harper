@@ -130,9 +130,8 @@ empties `harper-config.yaml` at runtime gets divergence between workers until th
 `RootConfigWatcher.ready` is a startup barrier — `harper_logger`'s `updateLogSettings()` attaches
 its `change` listener only after awaiting it — so it has to mean "watching", not merely "the first
 read landed". The synchronous read would otherwise emit `ready` from inside chokidar's initial `add`
-dispatch, and on darwin FSEvents has not armed its stream at that point: a write in that window is
-dropped with no later event to recover it (harper#2191: a write 0ms after `ready` is lost, one 5ms
-later arrives).
+dispatch, and on darwin the native watch has not armed at that point: a write in that window is
+dropped with no later event to recover it (harper#2191).
 
 So `ready` is gated on chokidar's own `ready` — its initial scan has established the native
 watches by then — plus a darwin-only grace over that measurement for the kernel-side warm-up
@@ -146,27 +145,23 @@ the watch was unarmed produced no event, so nothing else would ever deliver it �
 unarmed window and, for the root config, many more of them: `componentLoader` gives every
 `TRUSTED_RESOURCE_PLUGINS` entry its own root-config `OptionsWatcher`, and those read synchronously.
 It shares the arming **re-read**, which is what recovers the otherwise-undeliverable write, but not
-the barrier: its `ready` still goes out on the first read, so it means "the config has been read",
-not "armed". The difference is only ordering, because unlike `harper_logger` its consumer (`Scope`)
-attaches `change`/`remove`/`ready` listeners in its constructor, before any read — so a write made
-in the unarmed window reaches the scope as a post-`ready` `change` (and, for a plugin that doesn't
-handle its own options, a restart) rather than being lost. Holding `OptionsWatcher.ready` behind arming too would need a second per-scope
+the barrier: its `ready` means "the config has been read", not "armed". That is safe because `Scope`
+attaches its listeners in its constructor, before any read, so a write in the unarmed window reaches
+it as a post-`ready` `change` rather than being lost. Holding `OptionsWatcher.ready` behind arming too would need a second per-scope
 barrier, with a boot hang as its failure mode.
 
 Whether a scope is configured is tracked separately from its value, because neither truthiness nor
 `!== undefined` can answer it: `myPlugin:` with no body is a configured scope whose value is `null`,
 and a boot that found no config of its own holds `DEFAULT_CONFIG[name]` — a value the watcher gave
 itself. Reading either as "the file supplied this" costs a restart: for the six scopes
-`DEFAULT_CONFIG` names, the next read of an unchanged file looks like the block being deleted, and
-filling in an empty block looks like the unconfigured → configured transition `Scope` answers by
-restarting rather than the `change` it is.
+`DEFAULT_CONFIG` names, an unchanged file's next read looks like the block's deletion, and filling
+an empty block like the unconfigured → configured transition `Scope` restarts on.
 
 What the arming re-read must _not_ do is report a deletion. Its job is the write no event carried;
 a file that is gone is chokidar's `unlink` to report, and answering the re-read's `ENOENT` with
-`remove` announces it ahead of the event that would confirm it — where there is a grace, ahead of
-chokidar having finished tearing the watch down, so a config recreated on the strength of that
-early `remove` lands in a window where its `add` is not observed at all and the scope keeps the
-defaults with nothing further coming. Settling a barrier that has nothing applied yet is still the
+`remove` announces it ahead of the event that would confirm it, so a config recreated on that early
+`remove` can land before chokidar has torn the watch down, its `add` unobserved, and the scope keeps
+the defaults. Settling a barrier with nothing applied yet is still the
 arming re-read's job: an absent file at boot is the install window, not a deletion.
 
 ### Every terminal read outcome settles the barrier
@@ -232,6 +227,8 @@ off on the very boot that could not read its configuration.
 ## `RootConfigWatcher` schedules a trailing verify-read (`config/RootConfigWatcher.ts`)
 
 Chokidar throttles per-path `EV.CHANGE` for 50ms (`node_modules/chokidar/index.js`) without a trailing event, so adjacent `atomicWriteFile()` renames can be missed. A successful `handleChange` arms a 100ms verify-read (`TRAILING_VERIFY_READ_DELAY_MS`, `#read(true)`), re-armed on each event; close, terminal read failure or `ConfigReadRetry` clears it. After `ready`, matching `#lastData` skips parsing; otherwise `isDeepStrictEqual` compares an unmutated clone (`#lastParsedConfig`), preventing duplicate changes after `harper_logger` mutates `#config` in place (`unitTests/config/rootConfigWatcher.test.js`). Root-config `OptionsWatcher`s lack this verification and remain exposed.
+
+It and the arming read re-open the watch (`#reopenWatcher`) if the path's inode is not the one chokidar's last `add`/`change` reported (`#watchedIno`, never set by them). chokidar re-watches a replaced file in its listener, which darwin's kqueue registers only at the next poll, and its 5ms listener throttle drops events: a rename in either gap strands it on an unlinked inode. Not on win32 or while polling; enforced by `unitTests/config/rootConfigWatcherReplacedInode.test.js`.
 
 For `fullTextTelemetryConfiguration.ts` policy retention and override behavior, see [analytics design](../resources/analytics/DESIGN.md#full-text-collection-follows-actual-handle-ownership).
 
