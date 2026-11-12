@@ -179,6 +179,7 @@ describe('commit-hook lock refusals: omitted typed attributes and nested hooks',
 				sourced.set('n', 2);
 			});
 			iterator.return();
+			assert.ok(outcome, 'premise: the nested hook ran');
 			assert.ok(isCommittedDatabase(outcome?.error), outcome?.error?.message ?? 'the nested hook lock was admitted');
 			assert.strictEqual((await SourcedOther.get(sourcedId)).n, 2);
 			await (await Head.lock(headId, { hold: true, timeout: 500 }, {})).unlock();
@@ -207,6 +208,7 @@ describe('commit-hook lock refusals: omitted typed attributes and nested hooks',
 				message: 'the scope lock is released once the final commit settles',
 			});
 			assert.strictEqual((await Other.get(otherId)).n, 2);
+			assert.strictEqual((await SourcedOther.get(sourcedId)).n, 2);
 		});
 	});
 });
