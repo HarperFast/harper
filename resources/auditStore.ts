@@ -30,6 +30,7 @@ import {
 	publishOriginFloor,
 	originFloorsDurable,
 	seedLocalIssuance,
+	setLocalWriteFence,
 	timestampAbove,
 } from './originClosedFloor.ts';
 import { isReadOnlyMode, openRocksDatabase } from './databases.ts';
@@ -201,6 +202,11 @@ const ORIGIN_CLOSED_FLOOR_KEY = Symbol.for('origin-closed-floor');
  * clock, so a restart before the wall clock passes them cannot issue them again. RocksDB only.
  */
 const LOCAL_ISSUANCE_CEILING_KEY = Symbol.for('local-issuance-ceiling');
+/**
+ * The write fence of a node being removed from its cluster (`setLocalWriteFence`), as JSON: restored at open, before
+ * any transaction can start, so a restart mid-removal admits no local write. RocksDB only.
+ */
+const LOCAL_WRITE_FENCE_KEY = Symbol.for('local-write-fence');
 const ABORT_MARKED_RECHECK_MS = 60_000;
 // Amortize durability barriers across keys; restart seeds above this whole reserve.
 const ISSUANCE_CEILING_HEADROOM_MS = 1000;
@@ -230,6 +236,7 @@ export function openAuditStore(rootStore) {
 			(key) => coverLocalIssuance(auditStore, key),
 			readOriginClosedFloor(auditStore)
 		);
+		if (readLocalWriteFence(auditStore)) setLocalWriteFence(rootStore, true);
 	} else {
 		auditStore = rootStore.openDB(AUDIT_STORE_NAME, {
 			create: false,
@@ -1681,6 +1688,36 @@ export function persistOriginClosedFloor(auditStore: any, floor: number): void {
 		},
 		'origin-closed floor'
 	);
+}
+
+export interface LocalWriteFence {
+	epoch: string;
+	target: number;
+	state: 'fenced' | 'removing';
+}
+
+export function readLocalWriteFence(auditStore: any): LocalWriteFence | undefined {
+	const stored = auditStore.getBinary?.(LOCAL_WRITE_FENCE_KEY);
+	if (!stored?.byteLength) return;
+	try {
+		const fence = JSON.parse(Buffer.from(stored).toString());
+		if (fence === null) return;
+		if (typeof fence?.epoch === 'string' && isValidFloor(fence.target)) return fence;
+	} catch {}
+	// an unreadable record still fences: losing a write is worse than a node that refuses writes until cancelled
+	return { epoch: '', target: 0, state: 'fenced' };
+}
+
+/**
+ * Persist the write fence record (`undefined` clears it) and make it durable before returning, so a caller that
+ * reports it can rely on a restart restoring it. Setting or clearing the in-memory fence is the caller's step.
+ */
+export async function persistLocalWriteFence(auditStore: any, fence: LocalWriteFence | undefined): Promise<void> {
+	const bytes = new Uint8Array(Buffer.from(JSON.stringify(fence ?? null)));
+	commitAuditMetadata(auditStore, () => [[LOCAL_WRITE_FENCE_KEY, bytes]], 'local write fence');
+	const rootStore = auditStore.rootStore ?? auditStore;
+	if (originFloorsDurable(rootStore)) await rootStore.syncWal();
+	else rootStore.flushSync?.({ allowWriteStall: true });
 }
 
 export function readLocalIssuanceCeiling(auditStore: any): number {

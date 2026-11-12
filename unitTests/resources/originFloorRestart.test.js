@@ -70,6 +70,16 @@ describe('a restart behind the persisted origin floor (harper#2629)', function (
 		assert.ok(restarted.worker.putKey > bound, "a worker's first write is above the bound");
 	}
 
+	it('a persisted write fence is restored at open, before any write, and clears when cancelled', async () => {
+		const { target } = await run({ mode: 'fenceSeed', database: 'restartFence' }).reply;
+		const restarted = await run({ mode: 'fenceRestart', database: 'restartFence' }).reply;
+		assert.strictEqual(restarted.fenced, true);
+		assert.deepStrictEqual(restarted.record, { epoch: 'e1', target, state: 'fenced' });
+		assert.strictEqual(restarted.refusal?.statusCode, 503);
+		assert.match(restarted.refusal.message, /being removed from its cluster/);
+		assert.strictEqual(restarted.cleared, null);
+	});
+
 	it('keys every later local entry above a persisted origin-closed floor', async () => {
 		const { seeded, restarted } = await restartAfter({ floorLead: LEAD_MS });
 		assert.ok(seeded.floor > seeded.ceiling);

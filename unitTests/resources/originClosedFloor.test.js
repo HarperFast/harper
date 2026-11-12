@@ -21,6 +21,7 @@ const {
 	WORD_SLOT_LIMIT,
 	WORD_COVERED,
 	WORD_DURABLE_CEILING,
+	WORD_WRITE_FENCE,
 	certifyOriginFloor,
 	claimLocalKey,
 	freshLocalKey,
@@ -34,6 +35,8 @@ const {
 	releaseLocalKey,
 	retireOriginFloorSlots,
 	seedLocalIssuance,
+	setLocalWriteFence,
+	localWritesFenced,
 	timestampAbove,
 } = require('#src/resources/originClosedFloor');
 const {
@@ -137,6 +140,7 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 			WORD_INITIAL_CEILING,
 			WORD_SLOT_LIMIT,
 			WORD_DURABLE_CEILING,
+			WORD_WRITE_FENCE,
 		];
 		assert.strictEqual(new Set(headerWords).size, headerWords.length, 'header word indices must be distinct');
 		for (const word of headerWords) {
@@ -272,6 +276,39 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 		assert(second > first, 'the floor follows the clock while nothing is outstanding');
 		assert.equal(readOriginClosedFloor(auditStore), second, 'the advertised floor is the persisted one');
 		assert(second <= rootStore.getMonotonicTimestamp(), 'the floor never runs ahead of the clock');
+	});
+
+	it('a write fence refuses a new local write, admits a transaction that already reserved, and sets a target above it', async () => {
+		let target;
+		try {
+			await transaction({}, async () => {
+				await Tbl.put({ id: 'fence-admitted', n: 1 });
+				target = setLocalWriteFence(rootStore, true);
+				// same handle: an existing reservation is never re-checked
+				await Tbl.put({ id: 'fence-admitted-2', n: 2 });
+			});
+			assert(localWritesFenced(rootStore));
+			const [entry] = entriesFor('fence-admitted');
+			assert(entry, 'the transaction that reserved before the fence committed');
+			assert(entry.txnLogKey < target, `admitted key ${entry.txnLogKey} is below the target ${target}`);
+			assert.equal(entriesFor('fence-admitted-2')[0]?.txnLogKey, entry.txnLogKey);
+			await assert.rejects(
+				async () => Tbl.put({ id: 'fence-refused', n: 3 }),
+				(error) => {
+					assert.equal(error.statusCode, 503);
+					assert.match(error.message, /being removed from its cluster/);
+					return true;
+				}
+			);
+			assert.equal(entriesFor('fence-refused').length, 0);
+			await sleep(2);
+			assert(certify() >= target, 'the floor reaches the target once the admitted transaction has settled');
+		} finally {
+			setLocalWriteFence(rootStore, false);
+		}
+		assert(!localWritesFenced(rootStore));
+		await Tbl.put({ id: 'fence-cleared', n: 4 });
+		assert.equal(entriesFor('fence-cleared').length, 1);
 	});
 
 	it('a plain write commits at or above every floor published before it', async () => {

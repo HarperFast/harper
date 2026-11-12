@@ -35,7 +35,7 @@ import {
 	localIssuanceFloor,
 	rekeyLocalRetry,
 	releaseLocalKey,
-	reserveLocalKey,
+	reserveLocalWriteKey,
 	reservedLocalKey,
 	transferLocalKey,
 } from './originClosedFloor.ts';
@@ -2873,7 +2873,7 @@ export class DatabaseTransaction implements Transaction {
 						}
 					}
 				}
-				const key = reserveLocalKey(operation.store.rootStore, transaction, txnTime || undefined);
+				const key = reserveLocalWriteKey(operation.store.rootStore, transaction, txnTime || undefined);
 				if (!txnTime) {
 					txnTime = key;
 					if (!concurrentClosedWrite) this.timestamp = key;

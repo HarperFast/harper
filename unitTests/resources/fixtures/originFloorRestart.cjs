@@ -9,10 +9,12 @@ const env = require('#src/utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
-const { claimLocalKey } = require('#src/resources/originClosedFloor');
+const { claimLocalKey, localWritesFenced, setLocalWriteFence } = require('#src/resources/originClosedFloor');
 const {
 	coverLocalIssuance,
+	persistLocalWriteFence,
 	persistOriginClosedFloor,
+	readLocalWriteFence,
 	readLocalIssuanceCeiling,
 	readOriginClosedFloor,
 } = require('#src/resources/auditStore');
@@ -108,7 +110,31 @@ async function reopenB({ dir }) {
 	return { wall, key: localKeyOf(B, 'after-reopen', 0) };
 }
 
-const modes = { seed, restart, refusedOpen, crossDatabase, reopenB };
+async function fenceSeed({ dir, database }) {
+	const Tbl = open(dir, database);
+	await Tbl.put({ id: 'before-fence', n: 0 });
+	const target = setLocalWriteFence(Tbl.primaryStore.rootStore, true);
+	await persistLocalWriteFence(Tbl.auditStore, { epoch: 'e1', target, state: 'fenced' });
+	return { target };
+}
+
+async function fenceRestart({ dir, database }) {
+	const Tbl = open(dir, database);
+	const fenced = localWritesFenced(Tbl.primaryStore.rootStore);
+	const record = readLocalWriteFence(Tbl.auditStore);
+	let refusal = null;
+	try {
+		await Tbl.put({ id: 'after-fence', n: 1 });
+	} catch (error) {
+		refusal = { statusCode: error.statusCode, message: error.message };
+	}
+	setLocalWriteFence(Tbl.primaryStore.rootStore, false);
+	await persistLocalWriteFence(Tbl.auditStore, undefined);
+	await Tbl.put({ id: 'after-cancel', n: 2 });
+	return { fenced, record, refusal, cleared: readLocalWriteFence(Tbl.auditStore) ?? null };
+}
+
+const modes = { seed, restart, refusedOpen, crossDatabase, reopenB, fenceSeed, fenceRestart };
 
 if (!isMainThread) {
 	workerRun(workerData).then((result) => {
