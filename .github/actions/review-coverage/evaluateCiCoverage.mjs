@@ -159,8 +159,7 @@ export function evaluateCiCoverage(pr, { mode = 'report', required = COVERAGE_RE
 	const adjudicatorBlocked = footerRead.segments.has('adjudicated')
 		? ''
 		: (/(?:^|,)domain\(([^)]+)\)/.exec(footerRead.segments.get('blocked') ?? '')?.[1] ?? '');
-	// `pending=` is the older form the helper still writes beside `late=`; either one marks the leg pending,
-	// except an advisory leg, which holds nothing.
+	// `pending=` is the older form the helper still writes beside `late=`; either one marks the leg pending.
 	const pendingLegs = [
 		...new Set([
 			...(footerRead.segments.get('pending')?.split(',') ?? []),

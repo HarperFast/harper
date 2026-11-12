@@ -429,6 +429,8 @@ const HELPER_FOOTERS = [
 	`<sub>Review-Coverage: authored=gemini; ran=codex,cursor-composer; adjudicated=domain; declined=muse; rounds=1 @ ${PIN}</sub>`,
 	`<sub>Review-Coverage: authored=claude; ran=codex,gemini,cursor-composer,cursor-grok; late=cursor-grok:adjudicated; adjudicated=domain; rounds=3; full=2 @ ${PIN}</sub>`,
 	`<sub>Review-Coverage: authored=claude; ran=codex,gemini; late=cursor-grok:timeout; adjudicated=domain; blocked=cursor-grok(timeout); rounds=2; full=1 @ ${PIN}</sub>`,
+	`Review-Coverage: authored=claude; ran=cursor-composer,codex,cursor-grok,gemini; late=cursor-grok:adjudicated,gemini-carbon:timeout; adjudicated=domain; declined=muse; rounds=36; full=12 @ ${PIN}`,
+	`<sub>Review-Coverage: authored=claude; ran=codex,gemini,gemini-carbon; late=gemini-carbon:adjudicated; adjudicated=domain; rounds=2; full=1 @ ${PIN}</sub>`,
 ];
 
 test('every helper-shaped Review-Coverage footer is enforceable', () => {
@@ -526,12 +528,11 @@ const HELPER_LEG_FAMILY = new Map([
 	['cursor-kimi', 'kimi'],
 	['cursor-muse', 'muse'],
 	['muse', 'muse'],
-	// Advisory late leg: the Gemini family, so it never adds a second outside family beside `gemini`.
 	['gemini-carbon', 'gemini'],
 ]);
 
-// Update with the helper: REVIEW_LEGS in prepush-policy.mjs and the `advisory` entries of LATE_LEG_KINDS
-// in prepush-late-legs.mjs (skills-internal skills/cross-model-review/bin). A new advisory leg belongs here too.
+// Update with the helper (skills-internal skills/cross-model-review/bin, as of f58f2339e): REVIEW_LEGS in
+// prepush-policy.mjs and the `advisory` entries of LATE_LEG_KINDS in prepush-late-legs.mjs.
 const HELPER_ADVISORY_LATE_LEGS = ['gemini-carbon'];
 
 test('every leg the grammar accepts scores the families the helper counts', () => {
@@ -579,7 +580,6 @@ test('an advisory late leg never holds a ready PR, whichever way the footer name
 			assert.strictEqual(r.lateNotice, '', footer);
 			assert.doesNotMatch(r.detail, /still pending/, footer);
 		}
-		// A gating leg beside it still holds.
 		const held = evaluateCiCoverage(pr({ body: carbonFooter(`late=cursor-grok:pending,${leg}:pending; `) }), {
 			mode: 'enforce',
 		});
