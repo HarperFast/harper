@@ -10807,8 +10807,8 @@ export function makeTable(options): TableResourceClass {
 						let inspected = 0;
 						let missingVersion = false;
 						let nextTime = localTime;
-						// [entry, key, nodeId] newest-first: without a count or filter to evaluate on the way, values are
-						// computed after the walk, oldest-first, so each patch can carry the one before it
+						// [entry, key, nodeId] newest-first; values are computed after the walk, oldest-first, so each patch
+						// can carry the one before it
 						const walked: any[] | undefined = replayReader && !count && !allowsEvent ? [] : undefined;
 						const floorBefore = walked && getAuditFloor(auditStore);
 						do {

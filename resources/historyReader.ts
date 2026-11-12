@@ -497,12 +497,9 @@ type CarryImage = { record: any; time: number; origin: number; version: number }
 type Carry = { stamp: string; allowed: boolean; image?: CarryImage };
 
 /**
- * Reads a replay's entries in log order, carrying each eligible record's image from one patch to the next. A
- * record's carry state (its current entry's stamp, its eligibility and its image, in one memo entry) is admitted
- * while it fits and is never evicted, so a record walks for eligibility at most once per current entry. A record
- * is decided only once its first rebuild crossed enough later versions to repay the walk, and the walk is
- * limited to the rebuild work it would save. `eligible` must accept only chains whose carry equals the plain
- * rebuild.
+ * Reads a replay's entries in log order, carrying each eligible record's image from one patch to the next. Carry
+ * state is never evicted, so a record walks for eligibility at most once per current entry. `eligible` must
+ * accept only chains whose carry equals the plain rebuild.
  */
 export class ReplayReader {
 	readonly memo: HistoryMemo;
@@ -568,6 +565,7 @@ export class ReplayReader {
 			entry.previousAdditionalAuditRefs?.length ||
 			!(entry.version > image.version) ||
 			entry.previousVersion !== image.time ||
+			// a decoded entry has no previousNodeId, so the link is checked as consecutive writes in one origin's log
 			(entry.nodeId ?? 0) !== image.origin
 		)
 			return;
