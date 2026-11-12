@@ -15,6 +15,7 @@ import {
 	isPayloadRoutingShape,
 	isRootConfigEffect,
 	PAYLOAD_ROUTING_KEYS,
+	publishedRouting,
 	rootConfigEffectFromDeclaration,
 	type PayloadRouting,
 	type RootConfigEffect,
@@ -1564,6 +1565,23 @@ async function readArtifactDescriptor(
 		);
 	}
 	return parsed as ArtifactDescriptor;
+}
+
+export async function releaseRoutingOf(
+	componentDirPath: string,
+	componentName: string,
+	deploymentId: string
+): Promise<PayloadRouting | null | undefined> {
+	try {
+		const descriptor = await readArtifactDescriptor(
+			candidateDeploymentDirPath(componentDirPath, deploymentId),
+			componentName
+		);
+		return descriptor && publishedRouting(descriptor.rootConfig, descriptor.routing);
+	} catch (error) {
+		logger.warn?.(`Could not read the routing of ${componentName}'s release ${deploymentId}:`, error);
+		return undefined;
+	}
 }
 
 const SEPARATORS_IN_LINK_TARGETS = process.platform === 'win32' ? /[\\/]/ : /\//;
