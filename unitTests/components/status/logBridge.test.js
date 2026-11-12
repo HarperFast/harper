@@ -180,14 +180,26 @@ describe('logBridge', function () {
 		const logger = createLogger({ level: 'error', writeToLog: () => {} });
 		const key = 'test.refresh-expiry';
 		try {
-			logger.status({ problem: key, expires: 0.06 }).error('first');
-			const originalWindow = new Promise((resolve) =>
-				setTimeout(() => resolve(componentStatusRegistry.getStatus(key)?.status), 65)
-			);
-			await delay(10);
-			logger.status({ problem: key, expires: 0.06 }).error('still failing');
-			assert.equal(await originalWindow, COMPONENT_STATUS_LEVELS.ERROR);
-			await waitFor(() => componentStatusRegistry.getStatus(key)?.status === COMPONENT_STATUS_LEVELS.HEALTHY, 2000);
+			// Measured from the renewal, not sampled by a timer: Node can run a refreshed timer ahead of
+			// an earlier-due one when both come due in the same timer pass.
+			let renewedAt;
+			for (let attempt = 0; attempt < 3 && renewedAt === undefined; attempt++) {
+				handleStatusLog({ resolves: key }, null, undefined, []);
+				logger.status({ problem: key, expires: 0.1 }).error('first');
+				await delay(50);
+				const repeatedAt = performance.now();
+				logger.status({ problem: key, expires: 0.1 }).error('still failing');
+				// A stall past the first deadline turns the repeat into a fresh report, which does not renew.
+				if (componentStatusRegistry.getStatus(key).occurrenceCount === 2) renewedAt = repeatedAt;
+			}
+			assert.ok(renewedAt !== undefined, 'every attempt expired the first report before the repeat');
+			await waitFor(() => componentStatusRegistry.getStatus(key)?.status === COMPONENT_STATUS_LEVELS.HEALTHY, {
+				timeout: 2000,
+				interval: 1,
+			});
+			assert.equal(componentStatusRegistry.getStatus(key).message, 'Auto-expired');
+			const elapsed = performance.now() - renewedAt;
+			assert.ok(elapsed >= 100, `expired ${elapsed.toFixed(1)}ms after the renewal, before its 100ms`);
 		} finally {
 			handleStatusLog({ resolves: key }, null, undefined, []);
 		}
