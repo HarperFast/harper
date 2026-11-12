@@ -183,7 +183,7 @@ function versionIsReused(newVersion: number, existingEntry: { version?: number }
 	return existingEntry?.version != null && newVersion <= existingEntry.version;
 }
 
-// Table.ts INVALIDATED | REPLICA (imported there, so not here): a stub holds no delete
+// Table.ts INVALIDATED | REPLICA: a stub holds no delete
 const STUB_FLAGS = 1 | 4;
 const TRACKED_WRITE_TYPES = new Set(['put', 'patch', 'delete', 'message', 'publish']);
 // For now we use this as the private property mechanism for mapping records to entries.
@@ -1130,7 +1130,7 @@ export function recordUpdater(
 			// a record-less write over a delete keeps that delete's identity, native or copied; a copied one carries its own
 			const existingBoundary =
 				existingEntry?.copiedDeleteBoundary ??
-				((type === 'message' || type === 'publish' || type === 'invalidate') &&
+				((type === 'message' || type === 'publish' || type === 'invalidate' || type === 'relocate') &&
 				existingEntry &&
 				existingEntry.value == null &&
 				existingEntry.metadataFlags & FULL_WRITE_HEAD &&

@@ -122,7 +122,6 @@ function fixtureWorker() {
 			fullWriteHead: entry.version,
 		});
 
-		// The worker caches the head, the copied delete stamps it here, and the worker's own read still lacks the stamp.
 		async function stampWhileCached(T, id, deleteVersion) {
 			const cached = await worker.call('cache', { key: id });
 			assert.equal(cached.boundary, undefined);

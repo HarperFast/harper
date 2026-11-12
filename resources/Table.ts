@@ -2462,7 +2462,7 @@ export function makeTable(options): TableResourceClass {
 			return undefined;
 		}
 		const readTxn = transaction.getReadTxn();
-		// on RocksDB only a copy-apply row reaches here: its write base, so not another worker's cached copy
+		// on RocksDB only a copy-apply row reaches here
 		return primaryStore.getEntry(
 			id,
 			isRocksDB ? { transaction: readTxn, uncachedRead: true } : { transaction: readTxn }
@@ -5603,7 +5603,6 @@ export function makeTable(options): TableResourceClass {
 			let committed = false;
 			try {
 				if ((hasSourceGet || audit) && !existingRecord) return;
-				// demoteReplica's write base, so not another worker's cached copy
 				entry = primaryStore.getEntry(id, lmdbTransaction ? options : { transaction, uncachedRead: true });
 				if (!entry || entry.version !== existingVersion) return;
 				if (hasSourceGet) {
@@ -15445,7 +15444,6 @@ export function makeTable(options): TableResourceClass {
 		const options = { transaction };
 		let committed = false;
 		try {
-			// the write base, so not another worker's cached copy
 			const current: Entry = primaryStore.getEntry(id, { transaction, uncachedRead: true });
 			if (
 				!(residencyPolicy ? current : current?.residencyId) ||

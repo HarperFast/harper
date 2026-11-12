@@ -975,6 +975,22 @@ describe('A record bit for a full-write head (harper#3532)', () => {
 				assert.deepEqual(T.primaryStore.getEntry(id).copiedDeleteBoundary, { version, nodeId: 0 });
 			});
 
+			it('a relocation over a delete this node made keeps that delete as the boundary', async function () {
+				if (isLMDB) return this.skip();
+				const id = newId();
+				await T.put(id, { id, name: 'gone' });
+				await T.delete(id);
+				const version = T.primaryStore.getEntry(id).version;
+				T.dbisDB.putSync([Symbol.for('residency_by_id'), 8], ['full-write-head-elsewhere']);
+				const context = {};
+				await transaction(context, async () =>
+					(await T.getResource(id, context, { ensureLoaded: false }))._writeRelocate(id, { residencyId: 8 })
+				);
+				const head = T.primaryStore.getEntry(id);
+				assert.ok(head.metadataFlags & INVALIDATED, 'premise: relocated away');
+				assert.deepEqual(head.copiedDeleteBoundary, { version, nodeId: 0 });
+			});
+
 			it('a publish over a head that is not a delete adds no boundary', async function () {
 				if (isLMDB) return this.skip();
 				const id = newId();
