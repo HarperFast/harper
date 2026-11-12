@@ -108,12 +108,13 @@ export class HistoryMemo {
 			const floor = getAuditFloor(audit);
 			const generation = getDatabaseGeneration(audit)?.id;
 			if (Object.is(this.#floor, floor) && this.#generation === generation) return true;
-			// a memo without frames holds only state derived under the old floor or generation
+			// a memo without frames holds only state derived under the old floor or generation, so once that is
+			// gone it is current again
 			if (!this.cachesFrames) {
 				for (const key of [...this.#retained.keys()]) this.forget(key);
 				this.#floor = floor;
 				this.#generation = generation;
-				return false;
+				return true;
 			}
 		} catch {}
 		this.stopOptimizing();
