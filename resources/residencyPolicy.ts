@@ -183,8 +183,9 @@ export function canonicalSpareShards(value: unknown, shards: readonly number[] |
 		spares.add(shard);
 	}
 	if (!shards) throw new ClientError('replication.spareShards requires replication.shards', 400);
+	const listed = new Set(shards);
 	for (const shard of spares)
-		if (!shards.includes(shard))
+		if (!listed.has(shard))
 			throw new ClientError(`replication.spareShards lists ${shard}, which is not in replication.shards`, 400);
 	if (spares.size >= shards.length)
 		throw new ClientError('replication.spareShards must leave at least one shard in replication.shards', 400);
@@ -269,7 +270,8 @@ export function defaultResidencyMap(
 	const listed = canonicalShards(configured);
 	if (!listed) throw new ClientError('replication.shards is required before installing a default shard map', 503);
 	const spares = canonicalSpareShards(configuredSpares, listed);
-	const shards = spares ? listed.filter((shard) => !spares.includes(shard)) : listed;
+	const spareSet = spares && new Set(spares);
+	const shards = spareSet ? listed.filter((shard) => !spareSet.has(shard)) : listed;
 	return createResidencyMap(
 		database,
 		slots,

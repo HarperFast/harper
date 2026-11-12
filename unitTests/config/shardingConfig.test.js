@@ -175,6 +175,28 @@ describe('Sharding configuration repair', () => {
 				initConfig(true);
 			}
 		});
+	for (const section of [false, true])
+		it(`persists and clears the spare list through set_configuration (section=${section})`, async () => {
+			const { setConfiguration, initConfig, getConfigFilePath } = require('#src/config/configUtils');
+			const { readRootConfig, setRootConfigEntry } = require('../rootConfigFixture');
+			const path = getConfigFilePath();
+			const saved = readFileSync(path, 'utf8');
+			try {
+				const replication = { ...readRootConfig().replication, shard: 0, shards: [0, 1, 2] };
+				setRootConfigEntry('replication', replication);
+				initConfig(true);
+				const args = (spareShards) =>
+					section ? { replication: { ...replication, spareShards } } : { replication_spareShards: spareShards };
+				await setConfiguration({ operation: 'set_configuration', ...args([1, 2]) });
+				assert.deepEqual(readRootConfig().replication.spareShards, [1, 2]);
+				await setConfiguration({ operation: 'set_configuration', ...args([]) });
+				assert.deepEqual(readRootConfig().replication.spareShards ?? [], []);
+			} finally {
+				writeFileSync(path, saved);
+				initConfig(true);
+			}
+		});
+
 	it('also persists an explicit port rollback without changing boot snapshot semantics', async () => {
 		const { setConfiguration, initConfig, getConfigFilePath } = require('#src/config/configUtils');
 		const { readRootConfig, setRootConfigEntry } = require('../rootConfigFixture');

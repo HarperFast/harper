@@ -1,5 +1,6 @@
 import { setDatabaseLiveGuard, setDatabaseBaselineGuard } from './databaseLiveGuard.ts';
 import { ensureShardingConfiguration, shardingRecoveryConfiguration } from '../config/shardingConfiguration.ts';
+import { configGeneration } from '../config/configUtils.ts';
 import { isMainThread } from 'node:worker_threads';
 import { databases, database as openDatabase, getDatabaseCatalog, getDatabases, table } from './databases.ts';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
@@ -156,7 +157,7 @@ export function residencyDeclarationDatabases(): string[] {
 }
 
 let configuredList: unknown;
-let configuredSpareList: unknown;
+let configuredGeneration = -1;
 let configuredShards: number[] | undefined;
 let configuredSpares: number[] | undefined;
 let configuredDigest: string | null = null;
@@ -185,15 +186,16 @@ export function getResidencyConfiguration(forRecovery = false) {
 		return recoveryConfiguration;
 	}
 	const value = env.get(CONFIG_PARAMS.REPLICATION_SHARDS);
-	const spareValue = env.get(CONFIG_PARAMS.REPLICATION_SPARESHARDS);
 	const shard = env.get(CONFIG_PARAMS.REPLICATION_SHARD);
 	if (shard !== undefined && (!Number.isInteger(shard) || shard < 0 || shard > 65535))
 		throw new ClientError('replication.shard must be an integer from 0 through 65535', 400);
-	if (value !== configuredList || spareValue !== configuredSpareList) {
+	// A per-write call reads no extra setting: spares are reread only after the configuration changes.
+	const generation = configGeneration();
+	if (value !== configuredList || generation !== configuredGeneration) {
 		const shards = canonicalShards(value);
-		const spares = canonicalSpareShards(spareValue, shards);
+		const spares = canonicalSpareShards(env.get(CONFIG_PARAMS.REPLICATION_SPARESHARDS), shards);
 		configuredList = value;
-		configuredSpareList = spareValue;
+		configuredGeneration = generation;
 		configuredShards = shards;
 		configuredSpares = spares;
 		configuredDigest = shardListDigest(shards, spares);
