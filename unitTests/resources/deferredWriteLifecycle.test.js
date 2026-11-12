@@ -320,6 +320,20 @@ describe('Deferred write lifecycle', function () {
 		}
 	}
 
+	it('rejects an unsupported operation on an undeclared field without consuming the pending replacement', async () => {
+		const key = id();
+		const record = await TestTable.getResource({ id: key }, {});
+		await record.update({ dynamic: 1, name: 'kept' }, true);
+		await assert.rejects(
+			async () => record.update({ dynamic: { __op__: 'mul', value: 2 } }),
+			(error) => error.statusCode === 400 && /Operation "mul" in property dynamic is not supported/.test(error.message)
+		);
+		await record.save();
+		const result = await TestTable.get(key);
+		assert.strictEqual(result.dynamic, 1);
+		assert.strictEqual(result.name, 'kept');
+	});
+
 	for (const keyed of [false, true]) {
 		for (const operation of ['mul', 'invalid add']) {
 			it(`rejects ${operation} in a ${keyed ? 'keyed' : 'direct'} patch without consuming the pending replacement`, async () => {

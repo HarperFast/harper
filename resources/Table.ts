@@ -4923,6 +4923,16 @@ export function makeTable(options): TableResourceClass {
 					previousChanges,
 					changes,
 					(name, value, prior) => {
+						// validate() checks operations only on declared attributes, and a replacement would store
+						// an unsupported one as literal data; applied separately it fails at commit
+						if (!prior && previous?.fullUpdate && value?.__op__ && !crdtOperations[value.__op__])
+							throw new ValidationError([
+								{
+									path: name,
+									code: 'type',
+									message: `Operation ${stringify(value.__op__)} in property ${name} is not supported`,
+								},
+							]);
 						const field = { [name]: value?.__op__ ? { ...value } : value };
 						try {
 							if (!(prior && previous?.fullUpdate && value?.__op__))
@@ -6338,7 +6348,6 @@ export function makeTable(options): TableResourceClass {
 									});
 								});
 							} catch (error) {
-								// An element refused before it staged anything leaves the instance's earlier update reachable for save().
 								this.#savingOperation = pending;
 								throw error;
 							}
