@@ -4,7 +4,8 @@
 # systemd with the memory controller delegated, linger), checks out the harness at the run's commit and
 # builds what the VM's role runs. Reports ready or failed:<line>:<status> as guest attribute ycsb/state,
 # which provision.sh polls.
-set -euo pipefail
+# errtrace: the ERR trap also reports a failure inside a function.
+set -Eeuo pipefail
 MD=http://metadata.google.internal/computeMetadata/v1/instance
 attr() { curl -fsS -H 'Metadata-Flavor: Google' "$MD/attributes/$1"; }
 report() { curl -fsS -X PUT --data "$1" -H 'Metadata-Flavor: Google' "$MD/guest-attributes/ycsb/state" || true; }
@@ -25,15 +26,16 @@ NODE_MAJOR=$(attr ycsb-node-major)
 export DEBIAN_FRONTEND=noninteractive
 
 APT_OPTS=(-o Acquire::Languages=none -o Acquire::http::Timeout=30 -o Acquire::Retries=3)
-# The zone's GCE mirror can crawl (one 15 MB index took 15 minutes). Each download is bounded and, past the
-# bound, retried from the main archive; dpkg runs only once every package is local, so no kill lands mid-install.
+# The zone's GCE mirror can crawl (one 15 MB index took 15 minutes). A download that runs past 300 s is retried
+# from the main archive, and one that runs 600 s more there fails the startup. dpkg runs only once every package
+# is local, so no bound interrupts an install.
 fetch() {
 	timeout 300 apt-get "${APT_OPTS[@]}" "$@" && return
 	for sources in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; do
 		if [ -f "$sources" ]; then sed -i 's#http://[a-z0-9-]*\.gce\.archive\.ubuntu\.com/ubuntu#http://archive.ubuntu.com/ubuntu#' "$sources"; fi
 	done
-	apt-get "${APT_OPTS[@]}" update -q
-	[ "$1" = update ] || apt-get "${APT_OPTS[@]}" "$@"
+	timeout 600 apt-get "${APT_OPTS[@]}" update -q
+	if [ "$1" != update ]; then timeout 600 apt-get "${APT_OPTS[@]}" "$@"; fi
 }
 # libatomic1: the Node 26 binary links it, and the image does not ship it.
 PACKAGES=(git curl jq ca-certificates xz-utils util-linux libatomic1 linux-tools-common "linux-tools-$(uname -r)")
