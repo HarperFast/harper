@@ -113,8 +113,10 @@ export type Entry = {
 	receivedIdentityRefs?: Array<{ version: number; nodeId: number }>;
 	/**
 	 * A delete a copied-delete tombstone has no audit entry for, or a native delete a record-less write landed on:
-	 * every write it precedes loses (Table.ts `_writeUpdate`). Kept by later writes until an audited put or delete
-	 * above it, whose own entry ends the walk.
+	 * no write it precedes stores a record (Table.ts `precedesDeleteBoundary`); a delete or publish it precedes
+	 * leaves the row null. Kept by later writes until an audited put or delete above it, whose own entry ends the
+	 * walk. A stamp onto a newer head keeps the head's version, so another worker's cache can still vouch for the
+	 * entry without it: a write must read its base uncached.
 	 */
 	copiedDeleteBoundary?: { version: number; nodeId: number };
 };

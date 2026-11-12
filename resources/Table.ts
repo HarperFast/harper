@@ -2461,7 +2461,12 @@ export function makeTable(options): TableResourceClass {
 			transaction.getReadTxn();
 			return undefined;
 		}
-		return primaryStore.getEntry(id, { transaction: transaction.getReadTxn() });
+		const readTxn = transaction.getReadTxn();
+		// on RocksDB only a copy-apply row reaches here, and it writes from this base
+		return primaryStore.getEntry(
+			id,
+			isRocksDB ? { transaction: readTxn, uncachedRead: true } : { transaction: readTxn }
+		);
 	}
 	// Table-scoped, not nested in getNewId(): a nested declaration is instantiated on every call.
 	function replaceIdAllocation(expectedAllocation, nextAllocation) {
@@ -5288,6 +5293,10 @@ export function makeTable(options): TableResourceClass {
 					write.skipped = false; // reset on each retry; cleanup happens after commit if still true
 					write.stagedEntry = undefined;
 					write.superseded = false;
+					if (precedesDeleteBoundary(txnTime, existingEntry, options?.nodeId)) {
+						write.skipped = true;
+						return;
+					}
 					const priorStagedOp = priorStagedWrite(write);
 					const existingRecord = priorStagedOp ? priorStagedOp.stagedEntry.value : existingEntry?.value;
 					const receivedIdentityRefs =
@@ -5460,6 +5469,7 @@ export function makeTable(options): TableResourceClass {
 					const precedesExisting = precedesExistingVersion(txnTime, existingEntry, options?.nodeId);
 					if (
 						precedesExisting < 0 ||
+						precedesDeleteBoundary(txnTime, existingEntry, options?.nodeId) ||
 						// a re-delivered relocate would restamp the committed head, which can be another write of its transaction
 						(precedesExisting === 0 &&
 							committedBy?.sourceApply &&
@@ -5593,7 +5603,8 @@ export function makeTable(options): TableResourceClass {
 			let committed = false;
 			try {
 				if ((hasSourceGet || audit) && !existingRecord) return;
-				entry = primaryStore.getEntry(id, options);
+				// demoteReplica rewrites the row from this entry, so it must not be another worker's cached copy
+				entry = primaryStore.getEntry(id, lmdbTransaction ? options : { transaction, uncachedRead: true });
 				if (!entry || entry.version !== existingVersion) return;
 				if (hasSourceGet) {
 					// if there is a resolution in-progress, abandon the eviction
@@ -6589,7 +6600,7 @@ export function makeTable(options): TableResourceClass {
 				updateOptions: options,
 				pendingChanges: recordUpdate,
 				chainsStagedState: true,
-				// copy-apply rows keep their pre-read base: one read per row, healed by the post-copy replay
+				// copy-apply rows keep their (uncached) pre-read base: one read per row, healed by the post-copy replay
 				reloadCommitBase: reloadsCommitBase,
 				deferSave: true,
 				// the origin's record version on an applied write; absent for a locally-originated one
@@ -6856,10 +6867,9 @@ export function makeTable(options): TableResourceClass {
 						}
 					}
 
-					// Whatever the head's order (an older publish can leave it below the boundary) and residency: unlike a
-					// null stub, the boundary is a delete, and a write it precedes would otherwise fold into a stub.
-					const deleteBoundary = existingEntry?.copiedDeleteBoundary;
-					if (deleteBoundary && precedesExistingVersion(txnTime, deleteBoundary, options?.nodeId) < 0) {
+					// Whatever the head's residency: unlike a null stub, the boundary is a delete, and a write it precedes
+					// would otherwise fold into a stub.
+					if (precedesDeleteBoundary(txnTime, existingEntry, options?.nodeId)) {
 						write.skipped = true;
 						return;
 					}
@@ -12944,9 +12954,10 @@ export function makeTable(options): TableResourceClass {
 		if (readTxn?.isDone) {
 			throw new Error('You can not read from a transaction that has already been committed/aborted');
 		}
+		// a copy row's load is its write's base: replication applies it without a method
 		const readsCommitBase =
 			isRocksDB &&
-			COMMIT_BASE_METHODS.has(resourceOptions?.method) &&
+			(COMMIT_BASE_METHODS.has(resourceOptions?.method) || resourceOptions?.isCopyApply === true) &&
 			!resourceOptions?.ensureLoaded &&
 			readTxn &&
 			!(readTxn as any).snapshotDisabled;
@@ -14578,6 +14589,7 @@ export function makeTable(options): TableResourceClass {
 					store: primaryStore,
 					requiresExclusiveCommit: Boolean(residencyPolicy) || isResidencyMapTable,
 					entry: undefined,
+					reloadCommitBase: true,
 					nodeName: 'source',
 					commit: (_txnTime, existingEntry, _retry, transaction: any) => {
 						sourceWrite.skipped = false; // reset on each retry; cleanup happens after commit if still true
@@ -15428,7 +15440,8 @@ export function makeTable(options): TableResourceClass {
 		const options = { transaction };
 		let committed = false;
 		try {
-			const current: Entry = primaryStore.getEntry(id, options);
+			// the base of the row written below, so not another worker's cached copy
+			const current: Entry = primaryStore.getEntry(id, { transaction, uncachedRead: true });
 			if (
 				!(residencyPolicy ? current : current?.residencyId) ||
 				!(current.metadataFlags & INVALIDATED) ||
@@ -15613,6 +15626,11 @@ export function makeTable(options): TableResourceClass {
 		boundary?: { version: number; nodeId: number }
 	) {
 		return !boundary || precedesExistingVersion(version, boundary, nodeId) > 0;
+	}
+	// A write this precedes must store no record, whatever the head's order: an older publish can leave the head below it.
+	function precedesDeleteBoundary(version: number, entry: Entry | undefined, nodeId: number | undefined) {
+		const boundary = entry?.copiedDeleteBoundary;
+		return boundary !== undefined && precedesExistingVersion(version, boundary, nodeId) < 0;
 	}
 	function stampCopiedDeleteBoundary(
 		key: Id,

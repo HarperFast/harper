@@ -769,6 +769,70 @@ describe('A record bit for a full-write head (harper#3532)', () => {
 				assert.equal(T.primaryStore.getEntry(id).value, null);
 			});
 
+			describe('an invalidation or relocation under a head the delete is above', () => {
+				const ELSEWHERE = 8;
+				const writes = {
+					'an invalidation': (id, { version, nodeId }) =>
+						fromOrigin(
+							T,
+							id,
+							(resource) =>
+								resource._writeInvalidate(id, { name: 'projected' }, { isNotification: true, nodeId, version }),
+							{ version }
+						),
+					'a relocation': (id, { version, nodeId }) =>
+						fromOrigin(
+							T,
+							id,
+							(resource) =>
+								resource._writeRelocate(id, { isNotification: true, nodeId, version, residencyId: ELSEWHERE }),
+							{ version }
+						),
+				};
+				before(() => T.dbisDB.putSync([Symbol.for('residency_by_id'), ELSEWHERE], ['full-write-head-elsewhere']));
+				async function tombstoneUnderPublish(version) {
+					const id = newId();
+					await copiedDelete(T, id, { version });
+					await publish(T, id, { version: version - 2000 });
+					return id;
+				}
+
+				for (const kind of Object.keys(writes)) {
+					it(`${kind} older than the delete loses, from an origin on either side of the delete's`, async function () {
+						if (isLMDB) return this.skip();
+						const version = Date.now() + DAY;
+						const lower = getIdOfRemoteNode('full-write-head-0', T.auditStore);
+						for (const late of [
+							{ version: version - 1000, nodeId: lateOrigin },
+							{ version: version - 1000, nodeId: lower },
+							{ version, nodeId: lower },
+						]) {
+							const id = await tombstoneUnderPublish(version);
+							await writes[kind](id, late);
+							const entry = T.primaryStore.getEntry(id);
+							const label = `${kind} at ${late.version - version} from ${late.nodeId}`;
+							assert.equal(entry.value, null, label);
+							assert.equal(entry.version, version - 2000, `${label} must leave the head`);
+							assert.equal(entry.metadataFlags & INVALIDATED, 0, label);
+							assert.deepEqual(entry.copiedDeleteBoundary, { version, nodeId: headOrigin }, label);
+						}
+					});
+
+					it(`${kind} the delete precedes lands and keeps the boundary`, async function () {
+						if (isLMDB) return this.skip();
+						const version = Date.now() + DAY;
+						const id = await tombstoneUnderPublish(version);
+						await writes[kind](id, { version, nodeId: lateOrigin });
+						const entry = T.primaryStore.getEntry(id);
+						assert.equal(entry.version, version);
+						assert.ok(entry.metadataFlags & INVALIDATED);
+						assert.deepEqual(entry.copiedDeleteBoundary, { version, nodeId: headOrigin });
+						await apply(T, id, { extra: 'old' }, { version: version - 1000, nodeId: lateOrigin });
+						assert.equal(T.primaryStore.getEntry(id).version, version, 'an older write still loses');
+					});
+				}
+			});
+
 			for (const kind of ['patch', 'add'])
 				it(`an older ${kind} loses on an invalidated head too`, async function () {
 					if (isLMDB) return this.skip();
