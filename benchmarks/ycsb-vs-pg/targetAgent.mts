@@ -138,17 +138,21 @@ async function findMount(path: string): Promise<HostInfo['dataMount']> {
 
 /** Instance facts from the GCP metadata server, absent off GCP. Never `attributes`: they hold the ssh keys. */
 async function gcpMetadata(): Promise<Record<string, unknown> | undefined> {
-	try {
-		const response = await fetch('http://metadata.google.internal/computeMetadata/v1/instance/?recursive=true', {
+	const get = (path: string) =>
+		fetch(`http://metadata.google.internal/computeMetadata/v1/instance/${path}`, {
 			headers: { 'Metadata-Flavor': 'Google' },
 			signal: AbortSignal.timeout(2000),
 		});
+	try {
+		const response = await get('?recursive=true');
 		if (!response.ok) return undefined;
 		const instance = (await response.json()) as Record<string, any>;
+		// The id is a 64-bit integer: JSON.parse rounds it, the plain-text endpoint keeps every digit.
+		const id = await (await get('id')).text();
 		const last = (path: unknown) => (typeof path === 'string' ? path.slice(path.lastIndexOf('/') + 1) : undefined);
 		return {
 			name: instance.name,
-			id: String(instance.id),
+			id,
 			zone: last(instance.zone),
 			machineType: last(instance.machineType),
 			cpuPlatform: instance.cpuPlatform,

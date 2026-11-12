@@ -424,7 +424,10 @@ this harness does not run.
   qualifies. It then
   runs a smoke pass, then harper-uws, pg-redis and pg-redis@b on C, inspect and chain-4, warm and 2x,
   `--auth=token`, 3 reps. Results come back to `gcp/runs/<id>/results/` (phase logs to `logs/`) after every phase. Teardown
-  runs on exit, after one last copy.
+  runs on exit, after one last copy. Phase polls and copies use plain ssh, checked against the host key
+  gcloud recorded, so they keep working if the operator's gcloud session expires mid-run. Teardown needs
+  that session: when it fails, GCE still deletes the VMs at `--max-run-duration`, and
+  `teardown.sh <id>` removes the network, firewall rules and placement policy.
 
 Choices, recorded per run in `gcp/runs/<id>/manifest.json` and in every results file (`meta.remote`):
 

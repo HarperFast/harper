@@ -31,14 +31,17 @@ TARGETS=harper-uws,pg-redis,pg-redis@b
 WORKLOADS=C,inspect,chain-4
 COMMON="--hosts=/opt/ycsb/hosts.json --targets=$TARGETS --auth=token"
 
-on_gen() { gcloud compute ssh "$YCSB_VM_USER@$RUN_ID-generator" "${P[@]}" --ssh-key-file="$KEY" --command="$1"; }
+# The generator over plain ssh, so phase polls and result copies outlive the operator's gcloud session (an
+# expired one cost a run its last results). Strict against the host key gcloud's first connection pinned.
+GEN_ADDRESS=""
+GEN_SSH=()
+on_gen() { ssh "${GEN_SSH[@]}" "$YCSB_VM_USER@$GEN_ADDRESS" "$1"; }
 # Fails, after three tries, if the results could not be copied: the generator holds the only copy.
 # Copies both directories whole (into $RUN_DIR/results and $RUN_DIR/logs), so an empty one is not an error.
 collect() {
 	for try in 1 2 3; do
-		timeout 600 gcloud compute scp --recurse "${P[@]}" --ssh-key-file="$KEY" \
-			"$YCSB_VM_USER@$RUN_ID-generator:$REMOTE_RESULTS" "$YCSB_VM_USER@$RUN_ID-generator:/opt/ycsb/logs" \
-			"$RUN_DIR/" && return 0
+		timeout 600 scp -r "${GEN_SSH[@]}" "$YCSB_VM_USER@$GEN_ADDRESS:$REMOTE_RESULTS" \
+			"$YCSB_VM_USER@$GEN_ADDRESS:/opt/ycsb/logs" "$RUN_DIR/" && return 0
 		echo "copying results from the generator failed (try $try)" >&2
 		sleep 30
 	done
@@ -50,12 +53,20 @@ finish() {
 		echo "results since the last successful copy are lost: the generator is being deleted (cost guard)" >&2
 		status=1
 	fi
-	"$YCSB_GCP_DIR/teardown.sh" "$RUN_ID" || status=1
+	"$YCSB_GCP_DIR/teardown.sh" "$RUN_ID" || {
+		echo "teardown failed: run $YCSB_GCP_DIR/teardown.sh $RUN_ID once gcloud can reach $YCSB_GCP_PROJECT." \
+			"GCE deletes the VMs $YCSB_MAX_RUN_DURATION after creation; the network, firewall rules and placement policy stay." >&2
+		status=1
+	}
 	exit "$status"
 }
 
 "$YCSB_GCP_DIR/provision.sh" --run-id="$RUN_ID" --topology=ab "${PASS[@]}"
 trap finish EXIT
+read -r GEN_ADDRESS GEN_ID < <(gcloud compute instances describe "$RUN_ID-generator" "${P[@]}" \
+	--format='value(networkInterfaces[0].accessConfigs[0].natIP,id)')
+GEN_SSH=(-i "$KEY" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=20 -o LogLevel=ERROR
+	-o HostKeyAlias="compute.$GEN_ID" -o UserKnownHostsFile="$HOME/.ssh/google_compute_known_hosts" -o StrictHostKeyChecking=yes)
 on_gen "mkdir -p $REMOTE_RESULTS /opt/ycsb/logs"
 
 # A phase runs on the generator as a user service, so a dropped ssh session does not end it. It writes
