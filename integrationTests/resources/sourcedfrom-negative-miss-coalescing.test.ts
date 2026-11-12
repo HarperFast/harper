@@ -68,6 +68,11 @@ suite('sourcedFrom concurrent misses over REST', (ctx: ContextWithHarper) => {
 		strictEqual(originRequests.get('absent'), 1);
 	});
 
+	test('a record the source reports missing by throwing a 404', async () => {
+		deepStrictEqual(await concurrentGets('thrown-absent'), Array(CONCURRENCY).fill(404));
+		strictEqual(originRequests.get('thrown-absent'), 1);
+	});
+
 	test('a record read with Cache-Control: no-store', async () => {
 		deepStrictEqual(
 			await concurrentGets('present', { 'Cache-Control': 'no-store' }),

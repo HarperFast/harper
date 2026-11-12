@@ -14,6 +14,7 @@ describe('Concurrent source misses on one key', function () {
 	let respond;
 	let bursts = [];
 	let tryLock;
+	let tryLocks = 0;
 	const burstFor = (id) => bursts.find((burst) => Object.is(burst.id, id));
 	function holdFirstCall(id, waiters) {
 		let release;
@@ -58,6 +59,7 @@ describe('Concurrent source misses on one key', function () {
 		const { primaryStore } = CoalescingTable;
 		tryLock = primaryStore.tryLock;
 		primaryStore.tryLock = function (key, onUnlocked) {
+			tryLocks++;
 			const acquired = tryLock.call(this, key, onUnlocked);
 			if (!acquired) burstFor(key)?.park();
 			return acquired;
@@ -68,6 +70,7 @@ describe('Concurrent source misses on one key', function () {
 	});
 	beforeEach(() => {
 		sourceCalls = 0;
+		tryLocks = 0;
 		bursts = [];
 	});
 	const concurrentGets = (Table, id, context) => {
@@ -178,6 +181,97 @@ describe('Concurrent source misses on one key', function () {
 		assert.equal(sourceCalls, 2);
 		assert.equal(results.filter((outcome) => outcome?.startsWith('first fill fails')).length, 1);
 		assert.equal(results.filter((outcome) => outcome == null).length, 19);
+	});
+
+	class OriginError extends Error {}
+	const sourceError = (statusCode) =>
+		Object.assign(new OriginError(`origin answered ${statusCode}`), { statusCode, code: 'ORIGIN_' + statusCode });
+
+	for (const statusCode of [404, 410]) {
+		it(`share a ${statusCode} the source throws with the reads queued behind it`, async function () {
+			respond = () => {
+				throw sourceError(statusCode);
+			};
+			const reasons = (await concurrentGets(CoalescingTable, `thrown-${statusCode}`)).map(({ reason }) => reason);
+			assert.equal(sourceCalls, 1);
+			assert.equal(tryLocks, 20, 'no queued read went back for the lock');
+			assert.equal(new Set(reasons).size, 20, 'each read rejects with its own error');
+			for (const reason of reasons) {
+				assert.ok(reason instanceof OriginError);
+				assert.equal(reason.statusCode, statusCode);
+				assert.equal(reason.code, 'ORIGIN_' + statusCode);
+				assert.equal(reason.message, reasons[0].message);
+			}
+			assert.match(reasons[0].message, new RegExp(`^origin answered ${statusCode} while resolving record`));
+		});
+	}
+
+	it('keep the context each caller adds to a shared not-found its own', async function () {
+		const OuterTable = table({
+			table: 'SourceFillCoalescingOuterTable',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+		});
+		OuterTable.sourcedFrom({
+			get: () => CoalescingTable.get('nested-missing'),
+		});
+		respond = () => {
+			throw sourceError(404);
+		};
+		holdFirstCall('nested-missing', 1);
+		const [first, second] = await Promise.allSettled([OuterTable.get('outer-a'), OuterTable.get('outer-b')]);
+		assert.equal(sourceCalls, 1);
+		assert.match(first.reason.message, /record outer-a for SourceFillCoalescingOuterTable$/);
+		assert.match(second.reason.message, /record outer-b for SourceFillCoalescingOuterTable$/);
+		assert.doesNotMatch(first.reason.message, /outer-b/);
+		assert.doesNotMatch(second.reason.message, /outer-a/);
+	});
+
+	it('serve a record written while the source was failing instead of the failure', async function () {
+		let written;
+		respond = async () => {
+			await written;
+			throw sourceError(404);
+		};
+		const reads = concurrentGets(CoalescingTable, 'raced-by-write');
+		// written outside the fill, whose own writes would abort with it
+		written = burstFor('raced-by-write').allParked.then(() =>
+			CoalescingTable.put('raced-by-write', { id: 'raced-by-write', name: 'written meanwhile' })
+		);
+		const results = outcomes(await reads, (record) => record?.name);
+		assert.equal(sourceCalls, 1);
+		assert.equal(results.filter((outcome) => outcome?.startsWith('origin answered 404')).length, 1);
+		assert.equal(results.filter((outcome) => outcome === 'written meanwhile').length, 19);
+	});
+
+	it('call the source again for a thrown not-found on the next burst', async function () {
+		respond = () => {
+			throw sourceError(404);
+		};
+		await concurrentGets(CoalescingTable, 'thrown-twice');
+		await settle('thrown-twice');
+		await concurrentGets(CoalescingTable, 'thrown-twice');
+		assert.equal(sourceCalls, 2);
+	});
+
+	it('share the retry, not a transient failure the source throws with a status', async function () {
+		respond = (id, attempt) => {
+			if (attempt === 1) throw sourceError(503);
+		};
+		const results = outcomes(await concurrentGets(CoalescingTable, 'unavailable'));
+		assert.equal(sourceCalls, 2);
+		assert.equal(results.filter((outcome) => outcome?.startsWith('origin answered 503')).length, 1);
+		assert.equal(results.filter((outcome) => outcome == null).length, 19);
+	});
+
+	it('do not share a thrown not-found from a source that opted out of the cache', async function () {
+		respond = (id, attempt, context) => {
+			context.noCacheStore = true;
+			throw sourceError(404);
+		};
+		const results = await concurrentGets(CoalescingTable, 'private-thrown');
+		assert.equal(sourceCalls, 20);
+		assert.equal(new Set(results.map(({ reason }) => reason)).size, 20);
 	});
 
 	it('do not share a fill that failed after the source answered', async function () {
