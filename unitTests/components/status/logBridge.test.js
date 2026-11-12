@@ -159,18 +159,23 @@ describe('logBridge', function () {
 		});
 	}
 
+	// The next two tests time the expiry from the report instead of sampling it with a timer: Node can run
+	// a refreshed timer ahead of an earlier-due one when both come due in the same timer pass.
 	it('renews a repeated expiry and supports a changed duration', async function () {
 		const logger = createLogger({ level: 'error', writeToLog: () => {} });
 		const key = 'test.renew-expiry';
 		try {
-			const originalWindow = new Promise((resolve) =>
-				setTimeout(() => resolve(componentStatusRegistry.getStatus(key)?.status), 60)
-			);
 			logger.status({ problem: key, expires: 0.03 }).error('first');
+			const changedAt = performance.now();
 			logger.status({ problem: key, expires: 0.2 }).error('renewed');
 			logger.status({ problem: key, expires: 0.2 }).error('renewed again');
-			assert.equal(await originalWindow, COMPONENT_STATUS_LEVELS.ERROR);
-			await waitFor(() => componentStatusRegistry.getStatus(key)?.status === COMPONENT_STATUS_LEVELS.HEALTHY, 2000);
+			await waitFor(() => componentStatusRegistry.getStatus(key)?.status === COMPONENT_STATUS_LEVELS.HEALTHY, {
+				timeout: 2000,
+				interval: 1,
+			});
+			assert.equal(componentStatusRegistry.getStatus(key).message, 'Auto-expired');
+			const elapsed = performance.now() - changedAt;
+			assert.ok(elapsed >= 200, `expired ${elapsed.toFixed(1)}ms after the change, before its 200ms`);
 		} finally {
 			handleStatusLog({ resolves: key }, null, undefined, []);
 		}
@@ -180,8 +185,6 @@ describe('logBridge', function () {
 		const logger = createLogger({ level: 'error', writeToLog: () => {} });
 		const key = 'test.refresh-expiry';
 		try {
-			// Measured from the renewal, not sampled by a timer: Node can run a refreshed timer ahead of
-			// an earlier-due one when both come due in the same timer pass.
 			let renewedAt;
 			for (let attempt = 0; attempt < 3 && renewedAt === undefined; attempt++) {
 				handleStatusLog({ resolves: key }, null, undefined, []);
