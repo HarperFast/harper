@@ -74,12 +74,22 @@ function preRestorePinId(operationId: string): string {
 	return `pre-restore-${operationId}`;
 }
 
+// the database is open and written while it is measured, so an entry can vanish between listing and stat
+function ignoringVanished<T>(read: () => T, vanished: T): T {
+	try {
+		return read();
+	} catch (error: any) {
+		if (error?.code === 'ENOENT') return vanished;
+		throw error;
+	}
+}
+
 function directorySize(path: string): number {
 	let total = 0;
-	for (const entry of readdirSync(path, { withFileTypes: true })) {
+	for (const entry of ignoringVanished(() => readdirSync(path, { withFileTypes: true }), [])) {
 		const entryPath = join(path, entry.name);
 		if (entry.isDirectory()) total += directorySize(entryPath);
-		else if (entry.isFile()) total += statSync(entryPath).size;
+		else if (entry.isFile()) total += ignoringVanished(() => statSync(entryPath).size, 0);
 	}
 	return total;
 }
@@ -190,6 +200,14 @@ function inheritedPins(backupDir: string, databaseDir: string, earlier: RestoreR
 		.map((pin) => pin.pin_id);
 }
 
+/** Read without the lock, so only a hint, which is enough for the advisory space check. */
+function inheritsRollbackCopy(databaseDir: string): boolean {
+	const read = readRestoreReceipt(databaseDir);
+	return (
+		read.kind === 'valid' && read.receipt.route === 'on_restart' && read.receipt.pre_restore_backup_id !== undefined
+	);
+}
+
 export async function requestRestartRestore(request: RestartRestoreRequest): Promise<DeferredJobCompletion> {
 	const { databaseName, databaseDir, backupDir } = request;
 	await finishOutstandingRestore(databaseDir);
@@ -198,7 +216,12 @@ export async function requestRestartRestore(request: RestartRestoreRequest): Pro
 	let displaced: RestoreReceipt | undefined;
 	try {
 		assertNoReplicationPeers(databaseName);
-		if (request.retainPrevious && !restoreMarkerPresent(databaseDir) && existsSync(join(databaseDir, 'CURRENT')))
+		if (
+			request.retainPrevious &&
+			!restoreMarkerPresent(databaseDir) &&
+			existsSync(join(databaseDir, 'CURRENT')) &&
+			!inheritsRollbackCopy(databaseDir)
+		)
 			await assertRoomForPreRestoreBackup(databaseName, databaseDir, backupDir);
 		await withBackupRepositoryLock(backupDir, databaseName, async () => {
 			let selected: Awaited<ReturnType<typeof resolveCompleteBackup>>;

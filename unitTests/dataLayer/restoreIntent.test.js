@@ -64,6 +64,7 @@ const { restoreChildSlotLockPath, runRestoreChild } = restoreChildRunnerModule;
 const { reconcileInterruptedJobs, settleAbandonedJob } = require('#src/server/jobs/jobOwnership');
 const { DeferredJobCompletion } = require('#src/server/jobs/deferredJobCompletion');
 const restartModule = require('#js/bin/restart');
+const storageReclamationModule = require('#js/server/storageReclamation');
 
 const describeUnlessLmdb = process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? describe.skip : describe;
 
@@ -964,6 +965,58 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 				[...fixture.backupIds, settled.result.pre_restore_backup_id]
 			);
 			assert.deepStrictEqual(pinsOf(fixture), [], 'the displaced source retires once its successor commits');
+			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.backedUp[1]);
+		});
+
+		it('supersedes a restore that already took its rollback copy without asking for room for another', async function () {
+			const fixture = await seededDatabase({ backups: 2 });
+			const [first, second] = fixture.backupIds;
+			const noRoom = () =>
+				replaceExport(storageReclamationModule, 'getStorageSpaceStats', async () => ({
+					available: 0,
+					free: 0,
+					size: 0,
+					basis: 'filesystem',
+				}));
+			let restoreSpace = noRoom();
+			try {
+				await assert.rejects(
+					requestRestore(fixture.name, { on_restart: true, backup_id: first }),
+					(error) => error.statusCode === 507
+				);
+			} finally {
+				restoreSpace();
+			}
+			assert.strictEqual(readRestoreReceipt(fixture.dir).kind, 'absent', 'refused before anything is recorded');
+			assert.deepStrictEqual(pinsOf(fixture), []);
+
+			await requestRestore(fixture.name, { on_restart: true, backup_id: first });
+			const restoreRunner = replaceExport(restoreChildRunnerModule, 'runRestoreChild', async (command, ...args) => {
+				if (command !== 'pre-restore-backup') throw new Error('simulated failure before the purge');
+				return runRestoreChild(command, ...args);
+			});
+			try {
+				await boot(fixture.name);
+			} finally {
+				restoreRunner();
+			}
+			const { pre_restore_backup_id: copy } = receiptOf(fixture.dir);
+			assert.ok(Number.isInteger(copy), 'precondition: the attempt took its rollback copy');
+
+			// the copy left too little room for a second one, which the supersede does not take
+			restoreSpace = noRoom();
+			let replacement;
+			try {
+				replacement = await requestRestore(fixture.name, { on_restart: true, backup_id: second });
+			} finally {
+				restoreSpace();
+			}
+
+			const receipt = receiptOf(fixture.dir);
+			assert.strictEqual(receipt.retain_previous, false);
+			assert.strictEqual(receipt.pre_restore_backup_id, copy);
+			await boot(fixture.name);
+			assert.strictEqual((await job(replacement.jobId)).status, JOB_STATUS_ENUM.COMPLETE);
 			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.backedUp[1]);
 		});
 
