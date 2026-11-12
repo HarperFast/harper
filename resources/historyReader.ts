@@ -108,8 +108,6 @@ export class HistoryMemo {
 			const floor = getAuditFloor(audit);
 			const generation = getDatabaseGeneration(audit)?.id;
 			if (Object.is(this.#floor, floor) && this.#generation === generation) return true;
-			// a memo without frames holds only state derived under the old floor or generation, so once that is
-			// gone it is current again
 			if (!this.cachesFrames) {
 				for (const key of [...this.#retained.keys()]) this.forget(key);
 				this.#floor = floor;
@@ -599,7 +597,6 @@ export class ReplayReader {
 	#decide(id, current, record, time: number, entry, limit: number) {
 		const { memo } = this;
 		if (!current || current.additionalAuditRefs?.length || !(current.size <= memo.maxBytes)) return;
-		// before copying: the image is at least the size of its encoding
 		if (!memo.canFit(current.size + 256, 1)) return;
 		const stamp = recordStamp(current);
 		const key = memo.key('carry', id);
