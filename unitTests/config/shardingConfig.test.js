@@ -90,6 +90,7 @@ describe('Sharding configuration repair', () => {
 				const env = require('#src/utility/environment/environmentManager');
 				env.setProperty('replication_shard', 0);
 				env.setProperty('replication_shards', [1]);
+				env.setProperty('replication_spareShards', [2]);
 				const { prepareResidencyDeclaration, readResidencyMap } = require('#src/resources/residencyMaps');
 				prepareResidencyDeclaration('spareProjection', 'Rows', {}).then(() => {
 					parentPort.postMessage({ type: 'projection-result', map: readResidencyMap('spareProjection') });

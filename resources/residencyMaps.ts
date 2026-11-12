@@ -189,7 +189,6 @@ export function getResidencyConfiguration(forRecovery = false) {
 	const shard = env.get(CONFIG_PARAMS.REPLICATION_SHARD);
 	if (shard !== undefined && (!Number.isInteger(shard) || shard < 0 || shard > 65535))
 		throw new ClientError('replication.shard must be an integer from 0 through 65535', 400);
-	// A per-write call reads no extra setting: spares are reread only after the configuration changes.
 	const generation = configGeneration();
 	if (value !== configuredList || generation !== configuredGeneration) {
 		const shards = canonicalShards(value);
