@@ -55,6 +55,8 @@ import {
 } from './registeredOperations.ts';
 import { runWithOperationAuthorizationBypass } from './operationAuthorizationState.ts';
 import { stripSuppliedParsedSqlObject } from './requestSanitization.ts';
+import { isOperationLogEnabled, operationLogViewOf } from '../../utility/operationLogView.ts';
+import * as encryptedOperation from '../../components/encryptedOperation.ts';
 
 const pSearchSearch = util.promisify(search.search);
 let sqlModule;
@@ -123,6 +125,8 @@ const UNLOGGABLE_FIELDS_BY_OPERATION = new Map<string, ReadonlySet<string>>([
 	['set_configuration', new Set(['models', terms.STUDIO_CONFIG_PARAMS.NAVIGATION, terms.STUDIO_CONFIG_PARAMS.LANDING])],
 	['add_ssh_key', new Set(['key'])],
 	['update_ssh_key', new Set(['key'])],
+	// fields mode: the visible operation text, whose sealed leaves would print as ciphertext
+	[terms.OPERATIONS_ENUM.ENCRYPTED_OPERATION, new Set(['op'])],
 ]);
 
 /** Callers gate this on log level: it allocates, and the operations log is often off. */
@@ -140,13 +144,9 @@ export function redactForOperationLog(body: Record<string, any>): Record<string,
 
 export async function processLocalTransaction(req: OperationRequest, operationFunction: Function) {
 	try {
-		if (
-			req.body.operation !== 'read_log' &&
-			(harperLogger.logLevel === terms.LOG_LEVELS.INFO ||
-				harperLogger.logLevel === terms.LOG_LEVELS.DEBUG ||
-				harperLogger.logLevel === terms.LOG_LEVELS.TRACE)
-		) {
-			operationLog.info(redactForOperationLog(req.body));
+		if (req.body.operation !== 'read_log' && isOperationLogEnabled()) {
+			const logView = operationLogViewOf(req.body);
+			operationLog.info(redactForOperationLog(logView ? logView() : req.body));
 		}
 	} catch (e) {
 		operationLog.error(e);
@@ -260,6 +260,10 @@ const EXPORT_SEARCH_OPERATIONS = new Set<string>([
 	terms.OPERATIONS_ENUM.SEARCH_BY_CONDITIONS,
 	terms.OPERATIONS_ENUM.SQL,
 ]);
+
+export function isJobOperation(operation: string): boolean {
+	return OPERATION_FUNCTION_MAP.get(operation as any)?.job_operation_function !== undefined;
+}
 
 export function chooseOperation(json: OperationRequestBody, bypassAuth = false, forwarded = false) {
 	let getOpResult: OperationFunctionObject;
@@ -522,8 +526,10 @@ export function getOperationFunction(json: OperationRequestBody): OperationFunct
 
 // Give the cross-thread bridge (#1736) the worker-side dispatch path for forwarded operations.
 // Injected (rather than imported there) because registeredOperations is imported above — a
-// static import back into this module would be a cycle.
+// static import back into this module would be a cycle. encrypted_operation dispatches its inner
+// operation the same way, for the same reason.
 setLocalOperationDispatch({ chooseOperation, processLocalTransaction });
+encryptedOperation.setEncryptedOperationDispatch({ chooseOperation, processLocalTransaction, isJobOperation });
 
 _assignPackageExport('operation', operation);
 /**
@@ -805,6 +811,10 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 	opFuncMap.set(
 		terms.OPERATIONS_ENUM.GET_SECRETS_PUBLIC_KEY,
 		new OperationFunctionObject(secretOperations.getSecretsPublicKey)
+	);
+	opFuncMap.set(
+		terms.OPERATIONS_ENUM.ENCRYPTED_OPERATION,
+		new OperationFunctionObject(encryptedOperation.encryptedOperation)
 	);
 	opFuncMap.set(terms.OPERATIONS_ENUM.ADD_OIDC_TRUST, new OperationFunctionObject(trustPolicyOperations.addOidcTrust));
 	opFuncMap.set(
