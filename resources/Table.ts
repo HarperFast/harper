@@ -14281,7 +14281,7 @@ export function makeTable(options): TableResourceClass {
 				}, LOCK_TIMEOUT);
 			});
 			clearTimeout(timer);
-			if (--waiting.count === 0 && sourceFillWaiters.get(fillKey) === waiting) sourceFillWaiters.delete(fillKey);
+			if (--waiting.count === 0) sourceFillWaiters.delete(fillKey);
 			const entry = primaryStore.getEntry(id);
 			if (
 				!entry ||
@@ -14501,6 +14501,8 @@ export function makeTable(options): TableResourceClass {
 						entryMap.set(updatedRecord, resolvedEntry);
 					}
 					if (!issuanceFailed && !sourceContext.noCacheStore) sharedEntry = resolvedEntry;
+					const waiting = sourceFillWaiters?.get(fillKey);
+					if (waiting) waiting.lastFailure = undefined;
 					resolve(resolvedEntry);
 				} catch (error) {
 					// A source may reject with anything at all, so deciding how to settle is itself
@@ -14530,7 +14532,7 @@ export function makeTable(options): TableResourceClass {
 							logger.trace?.((error as Error)?.message, '(returned stale record)');
 						} else {
 							const waiting = sourceFillWaiters?.get(fillKey);
-							if (waiting) waiting.lastFailure = error?.statusCode ?? error?.status ?? error?.name;
+							if (waiting) waiting.lastFailure = error?.statusCode ?? error?.status ?? error?.name ?? 'an error';
 							reject(error);
 						}
 					} catch (settlingError) {
@@ -14758,10 +14760,6 @@ export function makeTable(options): TableResourceClass {
 		});
 	}
 
-	/**
-	 * Closing the handle that owns a record lock releases it (the RocksDB handle, or the LMDB
-	 * environment), so an unlock that fails after close had nothing left to release.
-	 */
 	function noteSourceFillWaiter(fillKey: unknown, id: Id): SourceFillWaiters {
 		let waiting = (sourceFillWaiters ??= new Map()).get(fillKey);
 		if (!waiting) sourceFillWaiters.set(fillKey, (waiting = { count: 0 }));
@@ -14770,7 +14768,9 @@ export function makeTable(options): TableResourceClass {
 			if (now - lastSourceFillWaitersWarn >= 60_000) {
 				lastSourceFillWaitersWarn = now;
 				const lastFailure =
-					waiting.lastFailure === undefined ? '' : `; its last fill on this thread failed with ${waiting.lastFailure}`;
+					waiting.lastFailure === undefined
+						? ''
+						: `; while they waited, a fill of it on this thread failed with ${inspectForLog(waiting.lastFailure, KEY_FOR_LOG)}`;
 				logger.warn?.(
 					`${waiting.count} requests on this thread are waiting for record ${inspectForLog(id, KEY_FOR_LOG)} of ${tableName} to load from its source${lastFailure}`
 				);
@@ -14778,6 +14778,10 @@ export function makeTable(options): TableResourceClass {
 		}
 		return waiting;
 	}
+	/**
+	 * Closing the handle that owns a record lock releases it (the RocksDB handle, or the LMDB
+	 * environment), so an unlock that fails after close had nothing left to release.
+	 */
 	function releaseRecordLock(id: Id): void {
 		try {
 			primaryStore.unlock(id);

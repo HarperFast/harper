@@ -1,8 +1,5 @@
 'use strict';
 
-// Requests piling up on one key's source fill are named in a warning, at most once per table per
-// interval, with the key rendered within a bound.
-
 require('../testUtils');
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
@@ -81,7 +78,7 @@ describe('Requests waiting on one source fill', function () {
 		await waitFor(() => warningsFor(fixture).length > 0);
 		assert.match(
 			warningsFor(fixture)[0],
-			/^\d+ requests on this thread are waiting for record 'failing' of SourceFillWaiters\d+ to load from its source; its last fill on this thread failed with 503$/
+			/^\d+ requests on this thread are waiting for record 'failing' of SourceFillWaiters\d+ to load from its source; while they waited, a fill of it on this thread failed with 503$/
 		);
 		for (const call of fixture.pending) call.resolve(undefined);
 		await Promise.all([...first, ...more]);
