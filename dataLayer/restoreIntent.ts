@@ -510,6 +510,9 @@ export async function runRestartAttempt(found: RestoreReceipt): Promise<boolean>
 	}
 	let receipt: RestoreReceipt;
 	try {
+		// sampled under the lock, as claimRestore does, so a retry over a target an earlier attempt began
+		// replacing is reported as such if its backup then fails verification
+		lock.preexisting = restoreMarkerPresent(found.database_path);
 		// counted before any native work, so an attempt that kills the process still moves toward terminal
 		receipt = writeRestoreReceipt(lock, { ...found, attempts: found.attempts + 1 });
 	} catch (error) {

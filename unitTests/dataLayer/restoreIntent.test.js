@@ -761,6 +761,31 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.backedUp[0]);
 		});
 
+		it('says a retry whose backup fails verification leaves the target an earlier attempt began replacing', async function () {
+			const fixture = await seededDatabase();
+			const [good] = fixture.backupIds;
+			const unprovable = await unprovableBackup(fixture);
+			await requestRestore(fixture.name, { on_restart: true, backup_id: unprovable, retain_previous: false });
+			await boot(fixture.name);
+			assert.strictEqual(restoreMarkerPresent(fixture.dir), true, 'precondition: the first attempt purged the target');
+
+			const repair = breakBackup(fixture, unprovable);
+			try {
+				await boot(fixture.name);
+			} finally {
+				repair();
+			}
+
+			const failed = receiptOf(fixture.dir);
+			assert.strictEqual(failed.attempts, 2);
+			assert.match(failed.last_error, /failed verification, so database '\w+' still holds an earlier restore/);
+			assert.doesNotMatch(failed.last_error, /did not modify/);
+
+			await requestRestore(fixture.name, { on_restart: true, backup_id: good });
+			await boot(fixture.name);
+			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.backedUp[0]);
+		});
+
 		it('goes terminal without another attempt when the last one killed the process', async function () {
 			const fixture = await seededDatabase();
 			const { jobId } = await requestRestore(fixture.name, { on_restart: true, retain_previous: false });

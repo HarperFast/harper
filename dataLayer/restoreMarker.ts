@@ -138,7 +138,8 @@ export type RestoreLock = {
 	 * True when a `.restoring` marker already existed at `beginRestore` time — i.e. this restore is a
 	 * recovery attempt over a possibly half-purged directory. A pre-existing marker must never be
 	 * cleared by a *failed* recovery attempt, or the directory could be reloaded as healthy while
-	 * still partial. Only set on `beginRestore`; always false for a bare `acquireRestoreLock`.
+	 * still partial. Set by `claimRestore` and by a restart attempt (`runRestartAttempt`); false as a bare
+	 * `acquireRestoreLock` returns it.
 	 */
 	preexisting: boolean;
 };
