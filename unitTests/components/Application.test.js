@@ -5,7 +5,38 @@ const assert = require('node:assert');
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
 
-const { isSSHAuthFailure, assertApplicationConfig, parseGitReference } = require('#src/components/Application');
+const {
+	isSSHAuthFailure,
+	assertApplicationConfig,
+	parseGitReference,
+	getEnvBuiltInComponents,
+} = require('#src/components/Application');
+
+async function withBuiltInComponents(value, run) {
+	const savedBuiltIns = process.env.HARPER_BUILTIN_COMPONENTS;
+	process.env.HARPER_BUILTIN_COMPONENTS = value;
+	try {
+		return await run();
+	} finally {
+		if (savedBuiltIns === undefined) delete process.env.HARPER_BUILTIN_COMPONENTS;
+		else process.env.HARPER_BUILTIN_COMPONENTS = savedBuiltIns;
+	}
+}
+
+describe('getEnvBuiltInComponents', () => {
+	it('skips incomplete declarations and preserves complete entries', async () => {
+		await withBuiltInComponents(
+			'first=@/first.js,secretCustody,=@/missing-name.js,empty=,  ,padded = @/padded.js?sig=a=b,last=@/last.js,',
+			() => {
+				assert.deepStrictEqual(getEnvBuiltInComponents(), [
+					{ name: 'first', packageIdentifier: '@/first.js' },
+					{ name: 'padded', packageIdentifier: '@/padded.js?sig=a=b' },
+					{ name: 'last', packageIdentifier: '@/last.js' },
+				]);
+			}
+		);
+	});
+});
 
 describe('isSSHAuthFailure', () => {
 	it('returns true for "Could not read from remote repository"', () => {
