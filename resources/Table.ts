@@ -3716,6 +3716,14 @@ export function makeTable(options): TableResourceClass {
 					);
 				} else {
 					condition.id = target.id;
+					// the default-scope lock this table would take is refused while cluster record locks are off
+					if (
+						condition.lock &&
+						isRocksDB &&
+						TableResource.replicate !== false &&
+						getClusterLockTransport(databaseName)?.disabled === true
+					)
+						condition.lock = false;
 					txnForContext(request);
 				}
 			}

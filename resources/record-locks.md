@@ -259,7 +259,7 @@ Consequences that shape the code:
   `KNOWN_METHODS` does not include it,
   and neither OpenAPI nor MCP enumerate it. Exposing lock/unlock over a protocol is a Phase 1 decision.
   REST conditional writes do take a default-scope hold lock internally, after authorization, when
-  `rest.preconditionLocks` is on; see [HTTP request preconditions](../server/DESIGN.md#http-request-preconditions-restts-tablets).
+  `rest.preconditionLocks` is on, unless the table is replicated and its transport declares cluster record locks `disabled`; see [HTTP request preconditions](../server/DESIGN.md#http-request-preconditions-restts-tablets).
   Acquisition itself has no authorization hook — lock() is not protocol-dispatched, so no
   allowUpdate/allowCreate check runs when a caller acquires a lock.
 - **`lock()` and `allowUpdate`:** writes through a held lock bypass per-table
@@ -450,7 +450,9 @@ does not name, so a node absent from it can neither arbitrate nor lock. The map 
 digest before the feature is enabled, and nothing a node observes — an unreachable peer, a restart,
 a partition — changes it. Core never computes topology, never advances a generation, and never
 proceeds without a map: no map means no agreed ring, and a ring guessed from whoever looks reachable
-is exactly the asymmetric-partition failure a single arbiter exists to remove. A key's **home** is
+is exactly the asymmetric-partition failure a single arbiter exists to remove. The refusal appends the
+transport's `homeMapUnavailableReason()`, since only harper-pro knows why it has no map and how an
+operator establishes one. A key's **home** is
 the rendezvous-hash winner over `homes[]` — chosen over a modulo because a generation change then
 re-homes only the departing node's keys, and every re-homed key pays the recovery path on its next
 lock.
