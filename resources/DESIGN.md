@@ -75,7 +75,7 @@ The synthesized target keeps the collection flag, or the batch is one null-keyed
 
 ## Historical record reconstruction (`getRecordAtTime`)
 
-`getRecordAtTime` reads matching-origin frames and follows their first predecessor; reversals must be exact. Unlinked puts don't prove absence. `HistoryMemo` bounds per-call reuse; unsafe chains rebuild. Non-evicting reinserts retain a gap (`crdt.test.js`, `auditLog.test.js`, `historyReader.test.js`).
+`getRecordAtTime` (`crdt.ts`) undoes only patches. Past a newer put, delete or invalidate it rebuilds forward (`reconstructForward`): carrying an image back returns a future state. A reversed field survives only when the reversal is exact. An unlinked put ends the chain without implying an empty past (`crdt.test.js`).
 
 ## Path routing & parameterised routes
 
