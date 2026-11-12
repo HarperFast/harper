@@ -39,8 +39,7 @@ function within(promise, what, ms = 10_000) {
 	]).finally(() => clearTimeout(timer));
 }
 
-// A blob whose source has not ended when the write that carries it is staged, so its size is unknown
-// at that point; `finish()` delivers the bytes in two chunks.
+// a blob whose source is still open when the write carrying it is staged
 function pendingBlob(payload) {
 	const stream = new PassThrough();
 	const blob = createBlob(stream);
@@ -195,17 +194,29 @@ describe('A blob streamed into a record stores its final size', () => {
 		const { blob, finish } = pendingBlob(payload);
 		const context = {};
 		let iterator;
-		await transaction(context, async () => {
-			iterator = StreamedBlobs.search([], context)[Symbol.asyncIterator]();
-			assert(!(await iterator.next()).done, 'the iterator is outstanding at commit');
-			StreamedBlobs.put({ id: 'iterator', x: 1, blob }, context);
-			if (!isLMDB) {
-				const readBack = await StreamedBlobs.get('iterator', context);
-				StreamedBlobs.put({ id: 'iterator', x: 2, blob: readBack.blob }, context);
-			}
-			finish();
-		});
-		while (!(await iterator.next()).done);
+		try {
+			await within(
+				transaction(context, async () => {
+					iterator = StreamedBlobs.search([], context)[Symbol.asyncIterator]();
+					assert(!(await iterator.next()).done, 'the iterator is outstanding at commit');
+					StreamedBlobs.put({ id: 'iterator', x: 1, blob }, context);
+					if (!isLMDB) {
+						const readBack = await StreamedBlobs.get('iterator', context);
+						StreamedBlobs.put({ id: 'iterator', x: 2, blob: readBack.blob }, context);
+					}
+					finish();
+				}),
+				'the commit past the iterator'
+			);
+			await within(
+				(async () => {
+					while (!(await iterator.next()).done);
+				})(),
+				'the iterator to drain'
+			);
+		} finally {
+			await iterator?.return?.();
+		}
 		assert.strictEqual(storedBlob('iterator').size, payload.length);
 		for (const size of await auditedBlobSizes('iterator')) assert.strictEqual(size, payload.length);
 	});

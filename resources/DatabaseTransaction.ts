@@ -3128,7 +3128,8 @@ export class DatabaseTransaction implements Transaction {
 				result = operation.beforeIntermediate?.() as Promise<void>;
 				if (result?.then) {
 					this.stageCompletion(result, transaction);
-					// a source apply's blobs arrive out-of-band and its commit does not wait for them
+					// a source apply tracks its blobs without awaiting them (trackPersistedBlobs), so a size landing by
+					// commit is timing; replicated descriptors carry the origin's size
 					if (operation.savedBlobs !== undefined && !this.sourceApply && !this.isReplay) {
 						for (const blob of operation.savedBlobs) {
 							if (blob.size == null) ((transaction as RocksTransactionWithRetry).blobsAwaitingSize ??= []).push(blob);
@@ -3585,7 +3586,9 @@ export class DatabaseTransaction implements Transaction {
 	): void {
 		try {
 			withRestagedBlobSizes(blobs, () => {
-				for (const operation of writes) this.save(operation, replayTransaction, true, options);
+				for (const operation of writes) {
+					if (operation?.saved) this.save(operation, replayTransaction, true, options);
+				}
 			});
 		} catch (error) {
 			abortNativeTransaction(
@@ -3606,7 +3609,6 @@ export class DatabaseTransaction implements Transaction {
 		}
 	}
 
-	// see resources/DESIGN.md, "`createBlob(readable)` and `table.put()` don't synchronously drain the source"
 	private stagedBeforeBlobSizes(transaction: RocksTransaction): boolean {
 		const awaiting = (transaction as RocksTransactionWithRetry).blobsAwaitingSize;
 		return awaiting !== undefined && !hasDurableLog(transaction) && awaiting.some((blob) => blob.size != null);
@@ -3787,12 +3789,7 @@ export class DatabaseTransaction implements Transaction {
 							const retainedBlobs = (transaction as RocksTransactionWithRetry | undefined)?.blobsAwaitingSize;
 							const replayTransaction = this.openReplayTransaction(transaction, this.timestamp);
 							transaction = replayTransaction;
-							this.restageOnto(
-								replayTransaction,
-								options,
-								this.writes.filter((operation) => operation?.saved),
-								retainedBlobs
-							);
+							this.restageOnto(replayTransaction, options, this.writes, retainedBlobs);
 						}
 						// with options.transaction set this is a retry round — the save loop above already
 						// re-staged the writes into it
