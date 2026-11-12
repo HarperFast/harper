@@ -440,6 +440,9 @@
 				"attribute": "activated_from"
 			},
 			{
+				"name": "routing"
+			},
+			{
 				"attribute": "restart_job_id"
 			},
 			{
