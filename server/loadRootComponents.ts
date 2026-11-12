@@ -14,7 +14,7 @@ import { dirname } from 'node:path';
 import { loadCertificates } from '../security/keys.ts';
 import { installApplications, recoverInterruptedActivations } from '../components/Application.ts';
 import { failClosedReleases, liveDeploymentId, RejectedReleaseError } from '../components/releaseCertification.ts';
-import { errorForLog } from '../utility/logging/harper_logger.ts';
+import harperLogger, { errorForLog } from '../utility/logging/harper_logger.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import { settleInterruptedRolloutsOnce } from '../components/deploymentRecorder.ts';
 import { sweepFailedPayloadsOnce } from '../components/payloadRetention.ts';
@@ -65,18 +65,19 @@ async function loadRootComponents(isWorkerThread: any = false) {
 			const blocked = restorePublication.unpublishedRestoreBlocksComponents();
 			if (blocked && !process.env.HARPER_SAFE_MODE) {
 				process.env.HARPER_SAFE_MODE = 'restore-unpublished';
-				console.error(
-					`A restore (${blocked}) began replacing its database and has not published; starting in safe mode. Finish it with restore_backup: resume=true, or another backup_id with on_restart=true, for a restart restore; otherwise rerun restore_backup for that database.`
+				// the log file, not the console: a detached start discards stderr, and logging.console is off by default
+				harperLogger.error(
+					`A restore (${blocked}) has not published, so this boot starts in safe mode and loads no component. Finish it with restore_backup for that database: resume=true or another backup_id with on_restart=true, or, once it has stopped retrying, an ordinary restore; Harper restarts by itself once no restore keeps components off. cancel=true withdraws a restore that had not begun replacing the database.`
 				);
 			}
 		} catch (error) {
 			// what recovery left is unknown, so components stay off whatever it may have half-replaced
-			console.error(errorForLog(error));
+			harperLogger.error('Could not recover restores at startup, so this boot starts in safe mode', error);
 			if (!process.env.HARPER_SAFE_MODE) process.env.HARPER_SAFE_MODE = 'restore-unpublished';
 			try {
 				restoreOwnedJobs = loadRuntimeModule('dataLayer/restorePublication').jobsNamedByUnfinishedRestores();
 			} catch (readError) {
-				console.error(errorForLog(readError));
+				harperLogger.error('Could not read which jobs unfinished restores own', readError);
 			}
 		}
 	}
