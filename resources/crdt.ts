@@ -1,3 +1,6 @@
+import { compareKeys } from 'ordered-binary';
+import type { HistoryMemo } from './historyReader.ts';
+
 // Single definition of the numeric `add` fold, shared by the storage-time merge (crdt.add, via
 // updateAndFreeze) and the read/serialize path (tracked.ts Addition.update). One implementation
 // keeps the two from diverging: a numeric string was concatenated on the storage path but coerced
@@ -195,13 +198,12 @@ export function applyForward(record, update, skipUnseededOps = false) {
  * (missing/evicted `currentEntry`, a reverse walk that crosses a `put` or `delete`, or a post-eviction
  * re-insert with a broken `previousVersion` chain) and when filling `unknowns` on a live record.
  *
- * `fromPosition` is the starting audit position; the walk follows the previous links from there.
- * Entries newer than `timestamp` are skipped (the cutoff may fall between entries). Returns `null`
- * if the record did not exist at `timestamp` (the nearest in-range history boundary is a delete
- * with no surviving writes, or there is no in-range history). When a prior link leads to a pruned
- * entry, returns `undefined` without `partial` (history is incomplete for a whole-record caller);
- * with `partial` (the `unknowns` fill on a live record) it replays the surviving writes and sets
- * `partial.truncated` when the history it read was incomplete.
+ * `fromPosition` is the starting audit position, carrying its decoded frame when available.
+ * The walk follows previous links and skips entries newer than `timestamp` (which may fall
+ * between entries). Returns `null` if the record did not exist at `timestamp` (the nearest in-range
+ * history boundary is a delete with no surviving writes, or there is no in-range history).
+ * Incomplete whole-record history can return `undefined`. Partial reconstruction replays surviving
+ * writes and marks `partial.truncated` so the caller preserves unresolved fields.
  */
 function reconstructForward(
 	auditStore,
@@ -210,7 +212,8 @@ function reconstructForward(
 	recordId: any,
 	fromPosition,
 	timestamp,
-	partial?: { truncated: boolean }
+	partial?: { truncated: boolean },
+	memo?: HistoryMemo
 ) {
 	// Collect the in-range entries (at or before `timestamp`) back to a base boundary, newest-first.
 	// The boundary is a full `put` (snapshot) or a `delete` (everything older is erased); a record
@@ -219,44 +222,55 @@ function reconstructForward(
 	// whole-record caller and end a partial one's history.
 	const entries = [];
 	let truncated = false;
-	let { txnLogKey: auditTime, nodeId: auditNodeId } = fromPosition;
-	while (auditTime > 0) {
-		const auditEntry = auditStore.get(auditTime, tableId, recordId, auditNodeId, true);
-		if (!auditEntry) {
+	let { txnLogKey: auditTime, nodeId: auditNodeId, frame } = fromPosition;
+	const visitedFrames = new Set<string>();
+	frames: while (auditTime > 0) {
+		frame ??= readAuditFrame(auditStore, tableId, recordId, auditTime, auditNodeId, true, memo);
+		const identity = `${frame[0]?.nodeId ?? auditNodeId ?? 0}:${auditTime}`;
+		if (frame.length === 0 || visitedFrames.has(identity)) {
 			if (partial) {
 				truncated = true;
 				break;
 			}
 			return entries.length === 0 ? null : undefined;
 		}
-		// a corrupt entry reads with no type and no previous link, which must not pass for the start of history
-		if (partial && auditEntry.type === undefined) {
-			truncated = true;
-			break;
-		}
-		if (auditEntry.type === 'delete') {
-			// A delete at or before `timestamp` bounds the history; the record is rebuilt from the
-			// writes collected after it (an empty base). A delete newer than `timestamp` (a later
-			// delete/re-insert cycle) is irrelevant and skipped, like any other newer entry.
-			if (auditTime <= timestamp) break;
-		} else if (auditTime <= timestamp) {
-			if (auditEntry.type === 'put') {
-				entries.push(auditEntry);
-				break; // full snapshot reached; nothing older is needed
-			} else if (auditEntry.type === 'patch') {
-				entries.push(auditEntry);
-			} else if (partial && auditEntry.type === 'invalidate') {
-				// an invalidate replaced the record with a stub (projection and indexed fields): older writes
-				// no longer describe it, and a field the stub lacks is unknown, not absent
-				partial.truncated = truncated = true;
-				break;
+		visitedFrames.add(identity);
+		for (let index = frame.length - 1; index >= 0; index--) {
+			const auditEntry = frame[index];
+			// a corrupt entry reads with no type and no previous link, which must not pass for the start of history
+			if (partial && auditEntry.type === undefined) {
+				truncated = true;
+				break frames;
+			}
+			if (auditEntry.type === 'delete') {
+				// A delete at or before `timestamp` bounds the history; the record is rebuilt from the
+				// writes collected after it (an empty base). A delete newer than `timestamp` (a later
+				// delete/re-insert cycle) is irrelevant and skipped, like any other newer entry.
+				if (auditTime <= timestamp) break frames;
+			} else if (auditTime <= timestamp) {
+				if (auditEntry.type === 'put') {
+					entries.push(auditEntry);
+					break frames; // full snapshot reached; nothing older is needed
+				} else if (auditEntry.type === 'patch') {
+					entries.push(auditEntry);
+				} else if (partial && auditEntry.type === 'invalidate') {
+					// an invalidate replaced the record with a stub (projection and indexed fields): older writes
+					// no longer describe it, and a field the stub lacks is unknown, not absent
+					partial.truncated = truncated = true;
+					break frames;
+				}
+			}
+			if (partial) {
+				const previousPosition = previousAuditPosition(auditStore, tableId, recordId, auditEntry);
+				if (mergesBranchBy(auditEntry.previousAdditionalAuditRefs, previousPosition, timestamp))
+					partial.truncated = true;
 			}
 		}
-		const previousPosition = previousAuditPosition(auditStore, tableId, recordId, auditEntry);
-		if (partial && mergesBranchBy(auditEntry.previousAdditionalAuditRefs, previousPosition, timestamp))
-			partial.truncated = true;
+		// Later mutations link back to this frame; only its first entry leads out.
+		const previousPosition = previousAuditPosition(auditStore, tableId, recordId, frame[0]);
 		auditTime = previousPosition.txnLogKey;
 		auditNodeId = previousPosition.nodeId;
+		frame = undefined;
 	}
 	if (partial && truncated) partial.truncated = true;
 	if (entries.length === 0) return null; // record did not exist at `timestamp`
@@ -283,6 +297,151 @@ function reconstructForward(
 	}
 	return record;
 }
+
+export function readAuditFrame(
+	auditStore,
+	tableId: number,
+	recordId: any,
+	key: number,
+	nodeId,
+	followingCommittedRef = false,
+	memo?: HistoryMemo
+) {
+	if (memo && (memo.tableId !== tableId || memo.store.rootStore.auditStore !== auditStore)) memo = undefined;
+	const cacheKey = memo?.key('frame', recordId, key, nodeId, followingCommittedRef);
+	const cached = memo?.frame(cacheKey);
+	if (cached) return cached;
+	if (typeof auditStore.logById !== 'function') {
+		const entry = auditStore.get(key, tableId, recordId, nodeId, followingCommittedRef);
+		const entries = entry?.tableId === tableId && compareKeys(entry.recordId, recordId) === 0 ? [entry] : [];
+		return memo
+			? memo.rememberFrame(
+					cacheKey,
+					entries.map((entry) => ({ ...memo.snapshot(entry), txnLogKey: key })),
+					entries.length > 0
+				)
+			: entries;
+	}
+	let origin = nodeId;
+	const entries = [];
+	const snapshots = [];
+	const ended = memo ? new Set<number>() : undefined;
+	let bad = false;
+	let bytes = 0;
+	const range = auditStore.getRange({
+		start: key,
+		end: Infinity,
+		exactStart: true,
+		log: origin,
+		readUncommitted: followingCommittedRef,
+	});
+	for (const entry of range) {
+		if (entry.txnLogKey !== key) break;
+		const entryOrigin = entry.nodeId ?? 0;
+		if (memo && (entry.type === undefined || (origin != null && entryOrigin === origin && ended.has(origin))))
+			bad = true;
+		const entryId = entry.tableId === tableId ? entry.recordId : undefined;
+		if (
+			memo &&
+			entry.tableId === tableId &&
+			entryId === undefined &&
+			(STATE_TYPES.has(entry.type) || entry.type === 'invalidate')
+		)
+			bad = true;
+		if (entry.tableId === tableId && compareKeys(entryId, recordId) === 0) {
+			origin ??= entryOrigin;
+			if (entryOrigin === origin) {
+				if (memo) {
+					if (ended.has(origin)) bad = true;
+					const snapshot = memo.snapshot(entry);
+					bytes += snapshot.encoded.byteLength + 64;
+					if (!memo.canFit(bytes + cacheKey.length * 2 + 128, snapshots.length + 1)) memo.unavailable();
+					snapshots.push(snapshot);
+				} else entries.push(entry);
+			}
+		}
+		if (memo && entry.endTxn) {
+			if (ended.size >= 32) bad = true;
+			else ended.add(entryOrigin);
+		}
+	}
+	if (memo) {
+		const complete = !bad && ended.has(origin) && !range.failedLogs?.size && !range.corruptFrameStop?.breaks;
+		return memo.rememberFrame(cacheKey, snapshots, complete);
+	}
+	return entries;
+}
+
+function reconstructAtTimestamp(
+	auditStore,
+	store,
+	tableId: number,
+	recordId: any,
+	timestamp,
+	nodeId,
+	memo?: HistoryMemo
+) {
+	const isOfRecord = (auditEntry) => auditEntry.tableId === tableId && compareKeys(auditEntry.recordId, recordId) === 0;
+	let frame = readAuditFrame(auditStore, tableId, recordId, timestamp, nodeId, false, memo);
+	let start = frame.at(-1);
+	// An unlinked control entry has no record image to reconstruct.
+	if (!(start && isOfRecord(start) && (STATE_TYPES.has(start.type) || start.previousVersion))) {
+		start = undefined;
+		let lowerBound = auditStore.getAuditFloor?.() ?? 1;
+		if (lowerBound > 1) {
+			// Native logs can append older keys later; the first yielded key is not a lower bound.
+			for (const retained of auditStore.getRange({ start: 1, end: Math.min(lowerBound, timestamp + 0.001) })) {
+				if (retained.txnLogKey > 0 && Number.isFinite(retained.txnLogKey))
+					lowerBound = Math.min(lowerBound, retained.txnLogKey);
+			}
+		}
+		lowerBound = Math.max(1, lowerBound);
+		let windowEnd = timestamp + 0.001;
+		let windowStart = Number.isFinite(timestamp) ? timestamp : lowerBound;
+		const hasState = (entry) => STATE_TYPES.has(entry.type) || entry.previousVersion;
+		for (let width = 100; !start && windowEnd > lowerBound; windowStart -= width, width *= 2) {
+			for (const auditEntry of auditStore.getRange({ start: Math.max(windowStart, lowerBound), end: windowEnd })) {
+				if (auditEntry.txnLogKey > timestamp || !isOfRecord(auditEntry) || !hasState(auditEntry)) continue;
+				if (
+					start &&
+					(auditEntry.txnLogKey < start.txnLogKey ||
+						(auditEntry.txnLogKey === start.txnLogKey && nodeId != null && (start.nodeId ?? 0) === nodeId))
+				)
+					continue;
+				let candidate = auditEntry;
+				if (nodeId != null && (auditEntry.nodeId ?? 0) !== nodeId) {
+					const preferredFrame = readAuditFrame(
+						auditStore,
+						tableId,
+						recordId,
+						auditEntry.txnLogKey,
+						nodeId,
+						false,
+						memo
+					);
+					const preferredState = preferredFrame.findLast(hasState);
+					if (preferredState) candidate = preferredState;
+					else if (preferredFrame.some((entry) => entry.type === 'invalidate')) continue;
+				}
+				start = candidate;
+			}
+			windowEnd = windowStart;
+		}
+		if (!start) return null;
+		frame = readAuditFrame(auditStore, tableId, recordId, start.txnLogKey, start.nodeId, false, memo);
+	}
+	return reconstructForward(
+		auditStore,
+		store,
+		tableId,
+		recordId,
+		{ txnLogKey: start.txnLogKey ?? timestamp, nodeId: start.nodeId, frame },
+		timestamp,
+		undefined,
+		memo
+	);
+}
+const STATE_TYPES = new Set(['put', 'patch', 'delete']);
 
 function resolveAuditPosition(auditStore, tableId: number, recordId: any, version, nodeId, refs) {
 	if (!refs?.length) return { txnLogKey: version, nodeId };
@@ -332,11 +491,37 @@ function previousAuditPosition(auditStore, tableId: number, recordId: any, audit
  * @param store
  * @returns
  */
-export function getRecordAtTime(currentEntry, timestamp, store, tableId: number, recordId: any, nodeId?: number) {
-	const auditStore = store.rootStore.auditStore;
-	if (!currentEntry) {
-		return reconstructForward(auditStore, store, tableId, recordId, { txnLogKey: timestamp, nodeId }, timestamp);
+export function getRecordAtTime(
+	currentEntry,
+	timestamp,
+	store,
+	tableId: number,
+	recordId: any,
+	nodeId?: number,
+	memo?: HistoryMemo
+) {
+	if (memo && memo.store === store && memo.tableId === tableId && memo.checkState()) {
+		try {
+			return recordAtTime(currentEntry, timestamp, store, tableId, recordId, nodeId, memo);
+		} catch {
+			memo.fallbacks++;
+			memo.stopOptimizing();
+		}
 	}
+	return recordAtTime(currentEntry, timestamp, store, tableId, recordId, nodeId);
+}
+
+function recordAtTime(
+	currentEntry,
+	timestamp,
+	store,
+	tableId: number,
+	recordId: any,
+	nodeId?: number,
+	memo?: HistoryMemo
+) {
+	const auditStore = store.rootStore.auditStore;
+	if (!currentEntry) return reconstructAtTimestamp(auditStore, store, tableId, recordId, timestamp, nodeId, memo);
 	let record = { ...currentEntry.value };
 	// `localTime` is the record's audit head on both engines: the audit-store key on LMDB, where it
 	// is a different clock than the record version, and the transaction-log key on RocksDB. Only a
@@ -359,31 +544,38 @@ export function getRecordAtTime(currentEntry, timestamp, store, tableId: number,
 	const reversedAdds = new Set<string>();
 	const overwritten = new Set<string>();
 	let replaced = false;
+	const visitedFrames = new Set<string>();
 	while (auditTime > timestamp) {
-		const auditEntry = auditStore.get(auditTime, tableId, recordId, auditNodeId, true);
-		if (!auditEntry) break;
-		switch (auditEntry.type) {
-			case 'put':
-			case 'delete':
-			case 'invalidate': // the newer stub lacks unindexed fields, so it cannot be reversed from
-				replaced = true;
-				break;
-			case 'patch':
-				if (!replaced) {
-					const update = auditEntry.getValue(store);
-					// a patch with no readable body cannot be reversed, but the state before it does not need it
-					if (update == null) replaced = true;
-					else applyReverse(record, update, unknowns, reversedAdds, overwritten);
-				}
-				break;
+		const frame = readAuditFrame(auditStore, tableId, recordId, auditTime, auditNodeId, true, memo);
+		const identity = `${frame[0]?.nodeId ?? auditNodeId ?? 0}:${auditTime}`;
+		if (frame.length === 0 || visitedFrames.has(identity)) break;
+		visitedFrames.add(identity);
+		for (let index = frame.length - 1; index >= 0; index--) {
+			const auditEntry = frame[index];
+			switch (auditEntry.type) {
+				case 'put':
+				case 'delete':
+				case 'invalidate': // the newer stub lacks unindexed fields, so it cannot be reversed from
+					replaced = true;
+					break;
+				case 'patch':
+					if (!replaced) {
+						const update = auditEntry.getValue(store);
+						// a patch with no readable body cannot be reversed, but the state before it does not need it
+						if (update == null) replaced = true;
+						else applyReverse(record, update, unknowns, reversedAdds, overwritten);
+					}
+					break;
+			}
+			const previousPosition = previousAuditPosition(auditStore, tableId, recordId, auditEntry);
+			branched ||= mergesBranchBy(auditEntry.previousAdditionalAuditRefs, previousPosition, timestamp);
 		}
-		const previousPosition = previousAuditPosition(auditStore, tableId, recordId, auditEntry);
-		branched ||= mergesBranchBy(auditEntry.previousAdditionalAuditRefs, previousPosition, timestamp);
+		const previousPosition = previousAuditPosition(auditStore, tableId, recordId, frame[0]);
 		auditTime = previousPosition.txnLogKey;
 		auditNodeId = previousPosition.nodeId;
 	}
 	if (!(auditTime > 0 && auditTime <= timestamp)) {
-		return reconstructForward(auditStore, store, tableId, recordId, { txnLogKey: timestamp, nodeId }, timestamp);
+		return reconstructAtTimestamp(auditStore, store, tableId, recordId, timestamp, nodeId, memo);
 	}
 	if (replaced) {
 		return reconstructForward(
@@ -392,15 +584,19 @@ export function getRecordAtTime(currentEntry, timestamp, store, tableId: number,
 			tableId,
 			recordId,
 			{ txnLogKey: auditTime, nodeId: auditNodeId },
-			timestamp
+			timestamp,
+			undefined,
+			memo
 		);
 	}
 	// If the most recent entry at or before `timestamp` is a delete, the record did not exist then.
 	// (A delete reached as a boundary — rather than crossed, which returns via reconstructForward —
 	// is otherwise missed, leaving `record` holding a newer re-inserted value. See issue #1330.)
-	if (auditTime > 0) {
-		const boundaryEntry = auditStore.get(auditTime, tableId, recordId, auditNodeId, true);
-		if (boundaryEntry?.type === 'delete') return null;
+	const boundaryFrame = readAuditFrame(auditStore, tableId, recordId, auditTime, auditNodeId, true, memo);
+	for (let index = boundaryFrame.length - 1; index >= 0; index--) {
+		const type = boundaryFrame[index].type;
+		if (type === 'delete') return null;
+		if (STATE_TYPES.has(type)) break;
 	}
 	for (const key of reversedAdds) {
 		const value = record[key];
@@ -415,9 +611,10 @@ export function getRecordAtTime(currentEntry, timestamp, store, tableId: number,
 				store,
 				tableId,
 				recordId,
-				{ txnLogKey: auditTime, nodeId: auditNodeId },
+				{ txnLogKey: auditTime, nodeId: auditNodeId, frame: boundaryFrame },
 				timestamp,
-				partial
+				partial,
+				memo
 			) ?? {};
 		for (const key of unknowns) {
 			// Object.hasOwn, not `in`: an unknown field named like a prototype member (toString,

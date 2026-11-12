@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { statfsSync } from 'node:fs';
 import { readKey, writeKey } from 'ordered-binary';
 import { pack, unpack } from 'msgpackr';
 import { get as envGet } from '../utility/environment/environmentManager.ts';
@@ -253,6 +254,7 @@ export function openAuditStore(rootStore) {
 	}
 	rootStore.auditStore = auditStore;
 	auditStore.rootStore = rootStore;
+	auditStore.getAuditFloor = () => getAuditFloor(auditStore);
 	establishAuditFloor(auditStore);
 	establishLogPurgeBounds(auditStore);
 	establishDatabaseGeneration(auditStore);
@@ -333,8 +335,7 @@ export function openAuditStore(rootStore) {
 					if (isRocksAuditStore) {
 						const before = retentionCutoff(1 + passCleanupPriority * passCleanupPriority);
 						raiseAuditFloor(auditStore, before, true);
-						// the floor and purge bounds reach disk before the files they account for are unlinked;
-						// the synchronous boot purge does not wait yet (harper#3947)
+						// the floor and purge bounds reach disk before the files they account for are unlinked
 						if (originFloorsDurable(auditStore.rootStore)) await auditStore.rootStore.syncWal();
 						if (!cleanupStopped && !storeClosing()) auditStore.rootStore.purgeLogs({ before });
 					} else {
@@ -1970,7 +1971,97 @@ export function purgeAgedLogs(rootStore: RocksDatabase): string[] {
 	const before = retentionCutoff();
 	// The audit store is reachable this early because initStores opens it before replayLogs runs this.
 	raiseAuditFloor((rootStore as any).auditStore, before, true, false);
+	// With nothing to unlink there is nothing to order the floor ahead of, and an ordinary boot writes no SST.
+	if (!hasPurgeableLogFile(rootStore, before)) return [];
+	// The floor and purge bounds reach disk before the files they account for are unlinked. Replay follows
+	// synchronously (harper#1115), so this cannot await `syncWal` as the other purge paths do.
+	const notFlushed = flushBootFloor(rootStore);
+	if (notFlushed !== undefined) return purgeBehindUnsyncedFloor(rootStore, before, notFlushed);
 	return rootStore.purgeLogs({ before });
+}
+
+/**
+ * Whether `purgeLogs({ before })` could unlink a file: one last written before `before`, or one past rocksdb-js's own
+ * retention, which `purgeLogs` also applies. Log stats map no segment.
+ */
+function hasPurgeableLogFile(rootStore: RocksDatabase, before: number): boolean {
+	const now = Date.now();
+	try {
+		for (const name of rootStore.listLogs()) {
+			const { purge, config } = rootStore.useLog(name).getStats();
+			if (
+				purge.oldestFileAgeMs > now - before ||
+				(config.retentionMs > 0 && purge.oldestFileAgeMs > config.retentionMs)
+			)
+				return true;
+		}
+		return false;
+	} catch (error) {
+		warnContained('Error reading transaction-log file ages before the boot purge', error);
+		return true;
+	}
+}
+
+/**
+ * RocksDB resumes writes after a no-space flush failure only once free space reaches its largest write buffer
+ * (16 MiB, rocksdb-js's default), checking every few seconds. Below it a failed boot flush would leave replay unable
+ * to write, so the boot purge does not attempt one.
+ */
+const RESUMABLE_FREE_SPACE = 16 * 1024 * 1024;
+const RESUME_AFTER_FAILED_FLUSH_MS = 10_000;
+const PAUSE_CELL = new Int32Array(new SharedArrayBuffer(4));
+
+function flushBootFloor(rootStore: RocksDatabase): unknown {
+	let available = Infinity;
+	try {
+		const stats = statfsSync(rootStore.path);
+		available = stats.bavail * stats.bsize;
+	} catch {}
+	if (available < RESUMABLE_FREE_SPACE)
+		return `${available} bytes free, below what RocksDB needs to resume after a failed flush`;
+	try {
+		rootStore.flushSync({ allowWriteStall: true });
+	} catch (error) {
+		return error;
+	}
+}
+
+/**
+ * The boot purge on a full disk, after the floor's commit landed (harper#2486): a flush needs a new SST, which a full
+ * disk cannot hold even when the floor's WAL append fit, and these files are what a full node sheds to recover. The
+ * floor precedes the unlink across a process crash, not across a power loss. A failed flush leaves RocksDB refusing
+ * writes until it recovers, and replay writes next, synchronously, so this waits for writes to resume (harper#4261).
+ */
+function purgeBehindUnsyncedFloor(rootStore: RocksDatabase, before: number, reason: unknown): string[] {
+	try {
+		const purged = rootStore.purgeLogs({ before });
+		harperLogger.warn(
+			`Purged ${purged.length} aged transaction-log file(s) in ${rootStore.path} behind an audit floor that is not yet power-loss durable`,
+			reason
+		);
+		return purged;
+	} finally {
+		awaitResumedWrites(rootStore);
+	}
+}
+
+function awaitResumedWrites(rootStore: RocksDatabase): void {
+	const deadline = Date.now() + RESUME_AFTER_FAILED_FLUSH_MS;
+	for (;;) {
+		try {
+			rootStore.resume();
+			return;
+		} catch (error) {
+			if (Date.now() >= deadline) {
+				harperLogger.error(
+					`RocksDB in ${rootStore.path} still refuses writes, so replay cannot apply the transaction log until space is freed`,
+					error
+				);
+				return;
+			}
+			Atomics.wait(PAUSE_CELL, 0, 0, 100);
+		}
+	}
 }
 
 const HAS_RECORD = 16;
@@ -2466,7 +2557,7 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 				// only the recovered prefix is discounted; every other case keeps its existing basis
 				return (end !== undefined ? end - start : buffer.byteLength) - (entryStart - start);
 			},
-			getValue(store, fullRecord?, auditTime?) {
+			getValue(store, fullRecord?, auditTime?, historyMemo?) {
 				if (action & HAS_RECORD || (action & HAS_PARTIAL_RECORD && !fullRecord)) {
 					if (decoder.position >= (end ?? buffer.byteLength)) {
 						// Entry advertises a record but has no body (minted before #2153): nothing to decode, and
@@ -2494,7 +2585,7 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 				}
 				if (action & HAS_PARTIAL_RECORD && auditTime) {
 					const recordId = this.recordId;
-					return getRecordAtTime(store.getEntry(recordId), auditTime, store, tableId, recordId, nodeId);
+					return getRecordAtTime(store.getEntry(recordId), auditTime, store, tableId, recordId, nodeId, historyMemo);
 				} // TODO: If we store a partial and full record, may need to read both sequentially
 			},
 			getBinaryValue() {

@@ -19,7 +19,7 @@
 import type { ExprNode } from '../parser/ast.ts';
 import type { PhysicalOp } from './op.ts';
 import type { Row, SqlEngineContext } from '../types.ts';
-import { compileExpr } from '../expressions/compile.ts';
+import { compileExpr, compilePredicate, neverEqual } from '../expressions/compile.ts';
 import { EngineUnsupportedError } from '../errors.ts';
 
 export interface HashJoinOptions {
@@ -35,7 +35,7 @@ export interface HashJoinOptions {
 export function physicalHashJoin(left: PhysicalOp, right: PhysicalOp, opts: HashJoinOptions): PhysicalOp {
 	const leftKeyEvals = opts.leftKeys.map((e) => compileExpr(e, true).eval);
 	const rightKeyEvals = opts.rightKeys.map((e) => compileExpr(e, true).eval);
-	const residual = opts.residual ? compileExpr(opts.residual, true) : undefined;
+	const residual = opts.residual ? compilePredicate(opts.residual, true) : undefined;
 
 	return {
 		schema: [],
@@ -62,10 +62,7 @@ export function physicalHashJoin(left: PhysicalOp, right: PhysicalOp, opts: Hash
 					if (bucket) {
 						for (const rrow of bucket) {
 							const merged = { ...lrow, ...rrow };
-							if (residual) {
-								const v = residual.eval(merged);
-								if (v == null || v === false) continue;
-							}
+							if (residual && !residual(merged)) continue;
 							matched = true;
 							yield merged;
 						}
@@ -89,7 +86,7 @@ function keyTuple(evals: Array<(row: Row) => unknown>, row: Row): string | undef
 	const vals: unknown[] = [];
 	for (const e of evals) {
 		const v = e(row);
-		if (v == null || (typeof v === 'number' && Number.isNaN(v))) return undefined;
+		if (neverEqual(v)) return undefined;
 		vals.push(v);
 	}
 	return JSON.stringify(vals);

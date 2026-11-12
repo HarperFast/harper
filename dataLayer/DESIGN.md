@@ -42,7 +42,7 @@ Set `audit = true` on the directive's `CreateTableObject`: `createTables()` audi
 - A node that never runs the owner's code path never declares the rest, and its replicated rows are never removed.
 - An install on a pre-release of the directive's version never runs it (the `compareVersions` caveat).
 
-Repeating a local `table()` declaration repairs any of these in place, keeping every row, and is a no-op once the shape matches. Storage-layer limits: a thread that only loads the table scans daily, so a spent row can stay a day (reads skip it); under `threads: 0` nothing scans until the first expiring write or declaration after restart; and a dropped attribute's index store stays on disk, since `table()` looks it up by table name. The certificate verification tables follow the same pattern through `security/certificateVerification/verificationTables.ts`; their rows are covered in security/DESIGN.md.
+Repeating a local `table()` declaration repairs any of these in place, keeping every row, and is a no-op once the shape matches. Storage-layer limit: a dropped attribute's index store stays on disk, since `table()` looks it up by table name. The certificate verification tables follow the same pattern through `security/certificateVerification/verificationTables.ts`; their rows are covered in security/DESIGN.md.
 
 ## RocksDB restore: the restore lock + marker protocol (`dataLayer/restoreMarker.ts`)
 

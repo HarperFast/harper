@@ -32,6 +32,7 @@ import { declaringTables } from './columnScope.ts';
 
 interface AttributeInfo {
 	name: string;
+	type?: string;
 	indexed: boolean;
 	isPrimaryKey: boolean;
 	/** Whether the attribute's index can serve `value === null` conditions —
@@ -170,7 +171,7 @@ function bindTableRef(ref: TableRefNode, databases: Record<string, Record<string
 	}
 	const r = resource as {
 		primaryKey?: string;
-		attributes?: { name: string; indexed?: boolean; indexNulls?: boolean }[];
+		attributes?: { name: string; type?: string; indexed?: boolean; indexNulls?: boolean }[];
 		indices?: Record<string, { indexNulls?: boolean } | unknown>;
 	};
 	const primaryKey = r.primaryKey;
@@ -179,6 +180,7 @@ function bindTableRef(ref: TableRefNode, databases: Record<string, Record<string
 	// (databases.ts sets each) — honor either.
 	const attributes: AttributeInfo[] = (r.attributes ?? []).map((a) => ({
 		name: a.name,
+		type: a.type,
 		indexed: !!a.indexed || !!indices[a.name] || a.name === primaryKey,
 		isPrimaryKey: a.name === primaryKey,
 		indexNulls:
