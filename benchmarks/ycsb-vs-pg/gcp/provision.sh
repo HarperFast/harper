@@ -106,6 +106,11 @@ for role in $ROLES; do
 done
 if [ "$DRY" = 1 ]; then exit 0; fi
 
+console_tail() {
+	echo "the end of $RUN_ID-$1's startup-script output:" >&2
+	gcloud compute instances get-serial-port-output "$RUN_ID-$1" "${P[@]}" --zone="$YCSB_GCP_ZONE" 2>/dev/null |
+		grep 'startup-script' | tail -40 >&2 || true
+}
 # The startup script reports through a guest attribute: ready, or failed:<line>:<status>.
 deadline=$(($(date +%s) + 45 * 60))
 for role in $ROLES; do
@@ -115,14 +120,14 @@ for role in $ROLES; do
 		case "$state" in
 		ready) break ;;
 		failed*)
-			echo "$RUN_ID-$role: startup script $state; the end of its console output:" >&2
-			gcloud compute instances get-serial-port-output "$RUN_ID-$role" "${P[@]}" --zone="$YCSB_GCP_ZONE" 2>/dev/null |
-				grep 'startup-script' | tail -40 >&2 || true
+			echo "$RUN_ID-$role: startup script $state" >&2
+			console_tail "$role"
 			exit 1
 			;;
 		esac
 		if [ "$(date +%s)" -gt "$deadline" ]; then
 			echo "$RUN_ID-$role: not ready after 45 minutes (state: ${state:-none})" >&2
+			console_tail "$role"
 			exit 1
 		fi
 		sleep 20
