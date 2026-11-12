@@ -584,6 +584,8 @@ describe('DerivedIndexRuntime for native backends', () => {
 		);
 		let releaseShutdown;
 		const backend = new AsyncBackend('handoff', { cursor: cursor(10), applyDelay: 50 });
+		// the old owner's accepted batch is held until the epoch flips, so its apply always lands after the handoff
+		backend.scheduleApply = () => {};
 		backend.shutdown = (epoch) => {
 			backend.shutdowns.push(epoch);
 			return new Promise((resolve) => (releaseShutdown = resolve));
@@ -608,9 +610,14 @@ describe('DerivedIndexRuntime for native backends', () => {
 		await stopped;
 		backend.shutdown = AsyncBackend.prototype.shutdown;
 		await waitFor(() => backend.host.isOwnerEpoch(firstEpoch) === false);
+		assert.strictEqual(backend.queue.length, 1);
+		assert.strictEqual(backend.queue[0], backend.deliveries[0], 'the old owner batch is still queued at the handoff');
+		backend.scheduleApply = AsyncBackend.prototype.scheduleApply;
+		backend.scheduleApply();
 		assert(backend.deliveries.every((batch) => batch.ownerEpoch >= firstEpoch));
 		await waitFor(() => second.getStatus('handoff').state === 'idle' && store.locks.size === 1);
-		await waitFor(() => backend.fenced >= 1, { timeout: 2000 });
+		await waitFor(() => backend.queue.length === 0 && !backend.applying, { timeout: 2000 });
+		assert(backend.fenced >= 1);
 		assert.strictEqual(backend.applied.size, 0, 'the old owner apply must not publish into the new generation');
 		await second.stop();
 	});
