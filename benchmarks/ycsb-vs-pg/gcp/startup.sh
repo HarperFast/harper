@@ -24,11 +24,24 @@ REPO=$(attr ycsb-repo)
 NODE_MAJOR=$(attr ycsb-node-major)
 export DEBIAN_FRONTEND=noninteractive
 
-apt-get update -q
+APT_OPTS=(-o Acquire::Languages=none -o Acquire::http::Timeout=30 -o Acquire::Retries=3)
+# The zone's GCE mirror can crawl (one 15 MB index took 15 minutes). Each download is bounded and, past the
+# bound, retried from the main archive; dpkg runs only once every package is local, so no kill lands mid-install.
+fetch() {
+	timeout 300 apt-get "${APT_OPTS[@]}" "$@" && return
+	for sources in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; do
+		if [ -f "$sources" ]; then sed -i 's#http://[a-z0-9-]*\.gce\.archive\.ubuntu\.com/ubuntu#http://archive.ubuntu.com/ubuntu#' "$sources"; fi
+	done
+	apt-get "${APT_OPTS[@]}" update -q
+	[ "$1" = update ] || apt-get "${APT_OPTS[@]}" "$@"
+}
 # libatomic1: the Node 26 binary links it, and the image does not ship it.
-apt-get install -yq git curl jq ca-certificates xz-utils util-linux libatomic1 linux-tools-common "linux-tools-$(uname -r)"
+PACKAGES=(git curl jq ca-certificates xz-utils util-linux libatomic1 linux-tools-common "linux-tools-$(uname -r)")
+if [ "$ROLE" != generator ]; then PACKAGES+=(docker.io docker-compose-v2); fi
+fetch update -q
+fetch install -yq --download-only "${PACKAGES[@]}"
+apt-get "${APT_OPTS[@]}" install -yq "${PACKAGES[@]}"
 if [ "$ROLE" != generator ]; then
-	apt-get install -yq docker.io docker-compose-v2
 	[ -e "$DEV" ] || {
 		echo "no data disk at $DEV" >&2
 		false
