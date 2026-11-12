@@ -8119,13 +8119,19 @@ export function makeTable(options): TableResourceClass {
 				}
 			};
 			if (!modelHooksBefore) return proceed();
-			const staged = modelHooksBefore((context as any)?.signal).then(proceed, (error: any) => {
-				this.#restoreUpdate(previous, previousChanges, write, error, previousRecord);
-				throw error;
-			});
-			write.staging = staged.finally(() => {
-				write.staging = undefined;
-			});
+			// Cleared as each handler starts, not in a .finally: that costs every hooked write another
+			// promise, and the handlers already run synchronously at settlement.
+			write.staging = modelHooksBefore((context as any)?.signal).then(
+				() => {
+					write.staging = undefined;
+					return proceed();
+				},
+				(error: any) => {
+					write.staging = undefined;
+					this.#restoreUpdate(previous, previousChanges, write, error, previousRecord);
+					throw error;
+				}
+			);
 			return write.staging;
 		}
 
