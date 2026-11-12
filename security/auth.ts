@@ -305,10 +305,20 @@ export async function authentication(request, nextHandler) {
 							if (username || password) {
 								// read first: a component's server.getUser principal carries no record versions itself
 								const versions = userRecordVersions(username);
-								newUser = await server.getUser(username, password, request);
+								let resolved = await server.getUser(username, password, request);
 								// a memoizing server.getUser hands later lookups this same user, so the cache holds a view of it
-								const provenance = trackUserRecords(newUser, versions);
-								if (provenance && newUser.role) newUser = cloneUserView(newUser, provenance);
+								const provenance = trackUserRecords(resolved, versions);
+								if (provenance && resolved.role) resolved = cloneUserView(resolved, provenance);
+								if (resolved && typeof resolved === 'object' && !isCurrentUser(resolved, provenance)) {
+									authLogger.warn?.(
+										`HTTP Basic's server.getUser view for '${username}' no longer matches its hdb_user/hdb_role records (user modified since lookup, or a getUser view memoized across updates)`
+									);
+									throw credentialRejectionError(
+										AUTHENTICATION_ERROR_MSGS.GENERIC_AUTH_FAIL,
+										HTTP_STATUS_CODES.UNAUTHORIZED
+									);
+								}
+								newUser = resolved;
 							} else newUser = null;
 							break;
 						case 'Bearer': {
