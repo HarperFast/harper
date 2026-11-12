@@ -29,8 +29,8 @@ import {
 	isValidFloor,
 	publishOriginFloor,
 	originFloorsDurable,
+	restoreLocalWriteFence,
 	seedLocalIssuance,
-	setLocalWriteFence,
 	timestampAbove,
 } from './originClosedFloor.ts';
 import { isReadOnlyMode, openRocksDatabase } from './databases.ts';
@@ -236,7 +236,7 @@ export function openAuditStore(rootStore) {
 			(key) => coverLocalIssuance(auditStore, key),
 			readOriginClosedFloor(auditStore)
 		);
-		if (readLocalWriteFence(auditStore)) setLocalWriteFence(rootStore, true);
+		restoreLocalWriteFence(rootStore, () => readLocalWriteFence(auditStore) !== undefined);
 	} else {
 		auditStore = rootStore.openDB(AUDIT_STORE_NAME, {
 			create: false,
@@ -1696,21 +1696,26 @@ export interface LocalWriteFence {
 	state: 'fenced' | 'removing';
 }
 
+/**
+ * An unreadable record still fences (a node that refuses writes until cancelled is better than a lost write), and
+ * reads as `target: 0` with no epoch: a caller fixes a new target rather than using it.
+ */
 export function readLocalWriteFence(auditStore: any): LocalWriteFence | undefined {
 	const stored = auditStore.getBinary?.(LOCAL_WRITE_FENCE_KEY);
 	if (!stored?.byteLength) return;
 	try {
 		const fence = JSON.parse(Buffer.from(stored).toString());
 		if (fence === null) return;
-		if (typeof fence?.epoch === 'string' && isValidFloor(fence.target)) return fence;
+		if (typeof fence?.epoch === 'string' && isValidFloor(fence.target))
+			return { epoch: fence.epoch, target: fence.target, state: fence.state === 'removing' ? 'removing' : 'fenced' };
 	} catch {}
-	// an unreadable record still fences: losing a write is worse than a node that refuses writes until cancelled
 	return { epoch: '', target: 0, state: 'fenced' };
 }
 
 /**
  * Persist the write fence record (`undefined` clears it) and make it durable before returning, so a caller that
- * reports it can rely on a restart restoring it. Setting or clearing the in-memory fence is the caller's step.
+ * reports it can rely on a restart restoring it. The caller sets the in-memory fence before persisting one, and
+ * clears it after persisting the clear.
  */
 export async function persistLocalWriteFence(auditStore: any, fence: LocalWriteFence | undefined): Promise<void> {
 	const bytes = new Uint8Array(Buffer.from(JSON.stringify(fence ?? null)));

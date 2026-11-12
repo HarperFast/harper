@@ -35,7 +35,8 @@ export const WORD_INITIAL_CEILING = 4;
 export const WORD_SLOT_LIMIT = 5;
 // The highest issuance ceiling this process has flushed for this database: a key at or below it needs no flush.
 export const WORD_DURABLE_CEILING = 6;
-// Nonzero while this database admits no new local write reservation (a node being removed from its cluster).
+// Low bit: no new local write reservation is admitted (a node being removed from its cluster). The rest counts
+// changes, so a restore from a record read before a change cannot undo it (`restoreLocalWriteFence`).
 export const WORD_WRITE_FENCE = 7;
 export const HEADER_WORDS = 8;
 const THREAD_WORDS_OFFSET = HEADER_WORDS;
@@ -399,30 +400,44 @@ export class LocalWritesFencedError extends ServerError {
 export function reserveLocalWriteKey(rootStore: RocksDatabase, handle: RocksTransaction, explicit?: number): number {
 	const existing: Reservation | undefined = (handle as any)[RESERVATION];
 	if (existing) return existing.logKey ?? existing.key;
-	if (typeof rootStore?.getUserSharedBuffer !== 'function') return reserveLocalKey(rootStore, handle, explicit);
+	if (explicit !== undefined) assertValidTimestamp(explicit);
 	const registry = registryFor(rootStore);
-	if (Atomics.load(registry.words, WORD_WRITE_FENCE) !== 0n) throw new LocalWritesFencedError(rootStore);
-	const key = reserveLocalKey(rootStore, handle, explicit);
-	if (Atomics.load(registry.words, WORD_WRITE_FENCE) !== 0n) {
+	if (Atomics.load(registry.words, WORD_WRITE_FENCE) & 1n) throw new LocalWritesFencedError(rootStore);
+	const key = registry.reserve(handle, explicit);
+	if (Atomics.load(registry.words, WORD_WRITE_FENCE) & 1n) {
 		releaseLocalKey(handle);
 		throw new LocalWritesFencedError(rootStore);
 	}
 	return key;
 }
 
+function changeWriteFence(words: BigInt64Array, from: bigint, fenced: boolean): boolean {
+	return (
+		Atomics.compareExchange(words, WORD_WRITE_FENCE, from, (((from >> 1n) + 1n) << 1n) | (fenced ? 1n : 0n)) === from
+	);
+}
+
 /**
- * Set or clear the write fence on every thread of this process. The returned target is above every key a
- * reservation admitted before the fence can carry: a floor at or above it was certified after they all settled.
+ * Set or clear the write fence on every thread of this process. A floor certified at or above the returned target
+ * was certified once every reservation admitted before the fence had settled, including a retry that re-keyed
+ * above the target (`rekeyLocalRetry`): its original, lower bound holds the floor until it settles.
  */
 export function setLocalWriteFence(rootStore: RocksDatabase, fenced: boolean): number {
 	const words = registryFor(rootStore).words;
-	Atomics.store(words, WORD_WRITE_FENCE, fenced ? 1n : 0n);
+	while (!changeWriteFence(words, Atomics.load(words, WORD_WRITE_FENCE), fenced));
 	return timestampAbove(Math.max(rootStore.getMonotonicTimestamp(), localIssuedAheadThrough(rootStore)));
+}
+
+/** Set the fence at open from a persisted record, unless the fence changed after `fenced` started reading it. */
+export function restoreLocalWriteFence(rootStore: RocksDatabase, fenced: () => boolean): void {
+	const words = registryFor(rootStore).words;
+	const before = Atomics.load(words, WORD_WRITE_FENCE);
+	if (!(before & 1n) && fenced()) changeWriteFence(words, before, true);
 }
 
 export function localWritesFenced(rootStore: RocksDatabase): boolean {
 	if (typeof rootStore?.getUserSharedBuffer !== 'function') return false;
-	return Atomics.load(registryFor(rootStore).words, WORD_WRITE_FENCE) !== 0n;
+	return (Atomics.load(registryFor(rootStore).words, WORD_WRITE_FENCE) & 1n) !== 0n;
 }
 
 /**

@@ -37,6 +37,8 @@ const {
 	seedLocalIssuance,
 	setLocalWriteFence,
 	localWritesFenced,
+	restoreLocalWriteFence,
+	rekeyLocalRetry,
 	timestampAbove,
 } = require('#src/resources/originClosedFloor');
 const {
@@ -284,7 +286,6 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 			await transaction({}, async () => {
 				await Tbl.put({ id: 'fence-admitted', n: 1 });
 				target = setLocalWriteFence(rootStore, true);
-				// same handle: an existing reservation is never re-checked
 				await Tbl.put({ id: 'fence-admitted-2', n: 2 });
 			});
 			assert(localWritesFenced(rootStore));
@@ -309,6 +310,58 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 		assert(!localWritesFenced(rootStore));
 		await Tbl.put({ id: 'fence-cleared', n: 4 });
 		assert.equal(entriesFor('fence-cleared').length, 1);
+	});
+
+	it('a reservation the fence lands during is released and refused (worker thread)', async () => {
+		const gate = new Int32Array(new SharedArrayBuffer(4));
+		const { next } = startWorker({ mode: 'park-reserving', gate, tableName, record: { id: 'fence-raced', n: 1 } });
+		await next('ready');
+		await next('parked');
+		const target = setLocalWriteFence(rootStore, true);
+		try {
+			releaseGate(gate);
+			await assert.rejects(next('committed'), /being removed from its cluster/);
+			assert.equal(entriesFor('fence-raced').length, 0);
+			await sleep(2);
+			assert(certify() >= target, 'the refused reservation released its bound');
+		} finally {
+			setLocalWriteFence(rootStore, false);
+		}
+	});
+
+	it('a retry re-keyed above the target holds the floor below it until it settles, so a floor at the target covers it', async () => {
+		const handle = new Transaction(Tbl.primaryStore.store);
+		const key = reserveLocalKey(rootStore, handle);
+		let target;
+		try {
+			target = setLocalWriteFence(rootStore, true);
+			const retried = rekeyLocalRetry(handle);
+			assert(retried > target, `the retry key ${retried} is above the target ${target}`);
+			await sleep(2);
+			assert(certify() <= key, 'the original bound holds the floor');
+			rootStore.useLog('local').addEntry(Buffer.from('fence-retried'), handle.id);
+			handle.commitSync();
+			releaseLocalKey(handle);
+			await sleep(2);
+			const floor = certify();
+			assert(floor >= target && floor > retried, `floor ${floor} covers the retried key ${retried}`);
+		} finally {
+			setLocalWriteFence(rootStore, false);
+		}
+	});
+
+	it('a restore from a record read before a cancellation does not undo it', () => {
+		assert(!localWritesFenced(rootStore));
+		restoreLocalWriteFence(rootStore, () => {
+			setLocalWriteFence(rootStore, true);
+			setLocalWriteFence(rootStore, false);
+			return true;
+		});
+		assert(!localWritesFenced(rootStore), 'a cancel during the read stands');
+		restoreLocalWriteFence(rootStore, () => true);
+		assert(localWritesFenced(rootStore));
+		setLocalWriteFence(rootStore, false);
+		assert(!localWritesFenced(rootStore));
 	});
 
 	it('a plain write commits at or above every floor published before it', async () => {
