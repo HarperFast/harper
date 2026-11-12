@@ -164,6 +164,22 @@ function writeReceiptReconciled(lock: RestoreLock, receipt: RestoreReceipt): Res
 	}
 }
 
+/**
+ * A removal takes effect at its unlink, before the directory flush that can still throw: with the record gone, the
+ * caller carries on as after a clean removal.
+ */
+function removeReceiptReconciled(lock: RestoreLock, databaseName: string, remove: () => void): void {
+	try {
+		remove();
+	} catch (error) {
+		if (readRestoreReceipt(lock.dbPath).kind !== 'absent') throw error;
+		logger.error(
+			`The restore record of '${databaseName}' was removed, but the removal could not be confirmed durable; if a power loss brings it back, withdraw it again with restore_backup cancel=true`,
+			error
+		);
+	}
+}
+
 function deferredUntilRestart(receipt: RestoreReceipt, message: string): DeferredJobCompletion {
 	return new DeferredJobCompletion(
 		RESTORE_INTENT_OWNER,
@@ -208,14 +224,14 @@ async function withdrawUnrecordedRestore(receipt: RestoreReceipt): Promise<void>
 			if (restoreMarkerPresent(receipt.database_path)) {
 				// an earlier attempt already began replacing the target: it stays blocked, its pins stay with it, and
 				// the terminal receipt keeps components off it until a restore succeeds
-				writeRestoreReceipt(lock, {
+				writeReceiptReconciled(lock, {
 					...read.receipt,
 					state: 'terminal',
 					pre_terminal_state: undefined,
 					last_error: 'its job could not record the restart restore',
 				});
 			} else {
-				removeRestoreReceipt(lock, receipt.operation_id);
+				removeReceiptReconciled(lock, receipt.database, () => removeRestoreReceipt(lock, receipt.operation_id));
 				releaseReceiptPins(read.receipt);
 				unblocked = true;
 			}
@@ -255,8 +271,10 @@ function inheritsRollbackCopy(databaseDir: string): boolean {
  * after an unlink: a bare marker blocks only its own database, and a component that opens it itself ignores that.
  */
 function cancelUnreadableRestore(lock: RestoreLock, databaseName: string): void {
-	if (!restoreMarkerPresent(lock.dbPath)) return removeUnreadableRestoreReceipt(lock);
-	writeRestoreReceipt(
+	if (!restoreMarkerPresent(lock.dbPath)) {
+		return removeReceiptReconciled(lock, databaseName, () => removeUnreadableRestoreReceipt(lock));
+	}
+	writeReceiptReconciled(
 		lock,
 		newRestoreReceipt({
 			route: 'on_restart',
@@ -466,7 +484,7 @@ export async function cancelRestartRestore(
 			if (restoreMarkerPresent(databaseDir)) {
 				// it began replacing the target, so the target stays blocked and its pins stay; the receipt stays
 				// too, as terminal, so this boot and the next keep components off the unproved generation
-				writeRestoreReceipt(lock, {
+				writeReceiptReconciled(lock, {
 					...cancelled,
 					state: 'terminal',
 					pre_terminal_state: undefined,
@@ -474,7 +492,7 @@ export async function cancelRestartRestore(
 				});
 			} else {
 				// the receipt first: an unpinned source under a receipt that still schedules a restore can be purged
-				removeRestoreReceipt(lock, cancelled.operation_id);
+				removeReceiptReconciled(lock, databaseName, () => removeRestoreReceipt(lock, cancelled!.operation_id));
 				releaseReceiptPins(cancelled);
 			}
 		} else {

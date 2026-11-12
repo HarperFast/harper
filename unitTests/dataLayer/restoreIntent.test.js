@@ -581,6 +581,33 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			assert.deepStrictEqual(restarts, [[{ operation: 'restart', drain: true }]]);
 		});
 
+		it('still restarts after a withdrawal whose removal took effect but could not be flushed', async function () {
+			const fixture = await seededDatabase();
+			await requestRestore(fixture.name, { on_restart: true, retain_previous: false });
+			const repair = failReceiptWrites(fixture);
+			try {
+				await boot(fixture.name);
+			} finally {
+				repair();
+			}
+			const { result } = await requestRestore(fixture.name, { resume: true });
+			const restarts = [];
+			const restoreRestart = replaceExport(restartModule, 'restart', async (...args) => {
+				restarts.push(args);
+			});
+			const restoreRemoval = flushFailsAfter(fixture, 'removeRestoreReceipt');
+			try {
+				await result.onNotRecorded();
+			} finally {
+				restoreRemoval();
+				restoreRestart();
+			}
+
+			assert.strictEqual(readRestoreReceipt(fixture.dir).kind, 'absent');
+			assert.deepStrictEqual(pinsOf(fixture), []);
+			assert.deepStrictEqual(restarts, [[{ operation: 'restart', drain: true }]]);
+		});
+
 		it("leaves a resumed restore to its new job when the older job's row cannot record the deferral", async function () {
 			const fixture = await seededDatabase();
 			const original = await requestRestore(fixture.name, { on_restart: true, retain_previous: false });
@@ -1679,6 +1706,46 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 
 			assert.strictEqual(readRestoreReceipt(fixture.dir).kind, 'valid', 'the receipt is still there');
 			assert.deepStrictEqual(pinsOf(fixture), before, 'and so is the pin that protects its source');
+		});
+
+		it('finishes the cancel, restart included, when its removal took effect but could not be flushed', async function () {
+			const fixture = await seededDatabase();
+			const { jobId } = await requestRestore(fixture.name, { on_restart: true, retain_previous: false });
+			const repair = failReceiptWrites(fixture);
+			try {
+				await boot(fixture.name);
+			} finally {
+				repair();
+			}
+
+			const restoreRemoval = flushFailsAfter(fixture, 'removeRestoreReceipt');
+			let cancelled;
+			try {
+				cancelled = await restoreBackup({ ...SU, database: fixture.name, cancel: true });
+			} finally {
+				restoreRemoval();
+			}
+
+			assert.strictEqual(cancelled.result.restarting, true, 'the boot that held it loaded components without it');
+			assert.strictEqual(typeof cancelled.afterRecorded, 'function');
+			assert.strictEqual(readRestoreReceipt(fixture.dir).kind, 'absent');
+			assert.deepStrictEqual(pinsOf(fixture), []);
+			assert.strictEqual((await job(jobId)).message, 'Cancelled');
+
+			// an unreadable record, removed the same way
+			const unreadable = await seededDatabase();
+			await requestRestore(unreadable.name, { on_restart: true });
+			await closeDatabase(unreadable.name);
+			writeFileSync(restoreReceiptPath(unreadable.dir), '{"version":1,"state":');
+			const unreadableRemoval = flushFailsAfter(unreadable, 'removeUnreadableRestoreReceipt');
+			try {
+				cancelled = await restoreBackup({ ...SU, database: unreadable.name, cancel: true });
+			} finally {
+				unreadableRemoval();
+			}
+			assert.strictEqual(cancelled.result.restarting, true);
+			assert.strictEqual(typeof cancelled.afterRecorded, 'function');
+			assert.strictEqual(readRestoreReceipt(unreadable.dir).kind, 'absent');
 		});
 
 		it('from applying before the purge: removes the receipt and unblocks the untouched database', async function () {
