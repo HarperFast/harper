@@ -880,6 +880,16 @@ describe('A record bit for a full-write head (harper#3532)', () => {
 				assert.equal(T.primaryStore.getEntry(id).value, null, 'a write the delete precedes loses');
 			});
 
+			it('an invalidation over a delete this node made keeps that delete as the boundary', async function () {
+				if (isLMDB) return this.skip();
+				const id = newId();
+				await T.put(id, { id, name: 'gone' });
+				await T.delete(id);
+				const version = T.primaryStore.getEntry(id).version;
+				await T.invalidate(id);
+				assert.deepEqual(T.primaryStore.getEntry(id).copiedDeleteBoundary, { version, nodeId: 0 });
+			});
+
 			it('a publish over a head that is not a delete adds no boundary', async function () {
 				if (isLMDB) return this.skip();
 				const id = newId();

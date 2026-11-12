@@ -112,8 +112,9 @@ export type Entry = {
 	/** What a re-delivery of a write carries when that is not its log key; addresses no entry. */
 	receivedIdentityRefs?: Array<{ version: number; nodeId: number }>;
 	/**
-	 * A delete this node received by base copy, so with no audit entry: every write it precedes loses (Table.ts
-	 * `_writeUpdate`). Kept by later writes until an audited put or delete above it, whose own entry ends the walk.
+	 * A delete a copied-delete tombstone has no audit entry for, or a native delete a record-less write landed on:
+	 * every write it precedes loses (Table.ts `_writeUpdate`). Kept by later writes until an audited put or delete
+	 * above it, whose own entry ends the walk.
 	 */
 	copiedDeleteBoundary?: { version: number; nodeId: number };
 };
@@ -151,7 +152,7 @@ export const RECEIVED_IDENTITY_REF = 0x80000000;
 // it (5.3, 5.4 betas) decodes the row correctly but files the ref as a log key under node id `origin | bit 30`, which
 // names no log: a walk that follows it misses and merges, an in-order write drops it, and an out-of-order write can
 // copy it into an audit entry's previous refs, where it later reads as missing history. Each degrades that row to
-// the behavior before boundaries existed, and only rows that held a copied delete carry one.
+// the behavior before boundaries existed, and only rows that held a delete under a record-less or later write carry one.
 const COPIED_DELETE_REF = 0x40000000;
 // A resequenced write keeps the (newer) version it merged onto, so one version identifies two
 // different stored values and version equality proves nothing. The metadata word this is set in is
@@ -1124,10 +1125,9 @@ export function recordUpdater(
 			const receivedIdentityRefs = options?.receivedIdentityRefs;
 			additionalAuditRefsNextEncoding = additionalAuditRefs?.length > 0 ? additionalAuditRefs : undefined;
 			receivedIdentityRefsNextEncoding = receivedIdentityRefs?.length > 0 ? receivedIdentityRefs : undefined;
-			// a record-less write over a delete keeps that delete's identity, as a copied delete already carries its own
 			const existingBoundary =
 				existingEntry?.copiedDeleteBoundary ??
-				((type === 'message' || type === 'invalidate') &&
+				((type === 'message' || type === 'publish' || type === 'invalidate') &&
 				existingEntry &&
 				existingEntry.value == null &&
 				existingEntry.metadataFlags & FULL_WRITE_HEAD &&
