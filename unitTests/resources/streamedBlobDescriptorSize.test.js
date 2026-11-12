@@ -8,6 +8,8 @@ const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const { getFilePathForBlob, isBlobComplete, findIncompleteBlobRefs } = require('#src/resources/blob');
+const { setAbortMarkersForTests } = require('#src/resources/transactionLogAbortMarkers');
+const { waitFor } = require('../waitFor.js');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 const HEADER_SIZE = 8;
@@ -24,6 +26,17 @@ function truncateConsistently(filePath, newSize) {
 	} finally {
 		closeSync(fd);
 	}
+}
+
+// mocha's timeout is 0 here, so a wait that a regression could leave pending fails on its own
+function within(promise, what, ms = 10_000) {
+	let timer;
+	return Promise.race([
+		promise,
+		new Promise((_, reject) => {
+			timer = setTimeout(() => reject(new Error(`timed out waiting for ${what}`)), ms);
+		}),
+	]).finally(() => clearTimeout(timer));
 }
 
 // A blob whose source has not ended when the write that carries it is staged, so its size is unknown
@@ -110,6 +123,71 @@ describe('A blob streamed into a record stores its final size', () => {
 		assert(Buffer.from(await stored.bytes()).equals(payload));
 	});
 
+	it('when the re-staged commit hits a conflict and retries', async function () {
+		if (isLMDB) this.skip(); // the conflict is forced on a RocksDB handle
+		const { Transaction } = require('@harperfast/rocksdb-js');
+		const originalCommit = Transaction.prototype.commit;
+		const targetDb = StreamedBlobs.primaryStore.store.db;
+		// markers off: the failed attempt keeps its log batch and the retry re-stages only the records
+		const priorAbortMarkers = setAbortMarkersForTests(false);
+		let armed = false;
+		let conflicts = 0;
+		Transaction.prototype.commit = function (...args) {
+			if (armed && this.store?.db === targetDb) {
+				armed = false;
+				conflicts++;
+				return Promise.reject(Object.assign(new Error('forced conflict'), { code: 'ERR_BUSY' }));
+			}
+			return originalCommit.apply(this, args);
+		};
+		try {
+			const payload = randomBytes(20000);
+			const { blob, finish } = pendingBlob(payload);
+			const context = {};
+			await within(
+				transaction(context, async () => {
+					StreamedBlobs.put({ id: 'retried', x: 1, blob }, context);
+					const readBack = await StreamedBlobs.get('retried', context);
+					StreamedBlobs.put({ id: 'retried', x: 2, blob: readBack.blob }, context);
+					armed = true;
+					finish();
+				}),
+				'the retried commit'
+			);
+			assert.strictEqual(conflicts, 1, 'test setup: the commit retried once');
+			assert.strictEqual((await StreamedBlobs.get('retried')).x, 2);
+			assert.strictEqual(storedBlob('retried').size, payload.length);
+			for (const size of await auditedBlobSizes('retried')) assert.strictEqual(size, payload.length);
+		} finally {
+			Transaction.prototype.commit = originalCommit;
+			setAbortMarkersForTests(priorAbortMarkers ?? true);
+		}
+	});
+
+	it('for a write that joins while the commit waits for the blob', async function () {
+		if (isLMDB) this.skip(); // exercises RocksDB's commit continuation
+		const first = randomBytes(20000);
+		const second = randomBytes(12000);
+		const pendingFirst = pendingBlob(first);
+		const pendingSecond = pendingBlob(second);
+		const context = {};
+		const committing = transaction(context, async () => {
+			StreamedBlobs.put({ id: 'joined-first', blob: pendingFirst.blob }, context);
+		});
+		let joining;
+		try {
+			await waitFor(() => context.transaction?.committing, 5000);
+			joining = StreamedBlobs.put({ id: 'joined-second', blob: pendingSecond.blob }, context);
+		} finally {
+			pendingFirst.finish();
+			pendingSecond.finish();
+		}
+		await within(Promise.all([committing, joining]), 'both writes to commit');
+		assert.strictEqual(storedBlob('joined-first').size, first.length);
+		assert.strictEqual(storedBlob('joined-second').size, second.length);
+		assert.deepStrictEqual(await auditedBlobSizes('joined-second'), [second.length]);
+	});
+
 	it('when the commit replays its writes past an open read iterator', async () => {
 		await StreamedBlobs.put({ id: 'iterator-seed-1', x: 0 });
 		await StreamedBlobs.put({ id: 'iterator-seed-2', x: 0 });
@@ -165,14 +243,14 @@ describe('A blob streamed into a record stores its final size', () => {
 				await StreamedBlobs.put({ id: 'closed-scope', x: 1 }, context);
 				gating = true;
 			});
-			await enteredScopeCommit;
+			await within(enteredScopeCommit, 'the scope commit to reach the gate');
 			// the holder outlives the scope, so its save commits on its own handle
 			holder.set('blob', blob);
 			const late = holder.save();
 			finish();
-			await late;
+			await within(late, 'the late save');
 			releaseScopeCommit();
-			await scope;
+			await within(scope, 'the scope commit');
 			assert(immediateCommits.length > 0, 'test setup: the late write commits on an immediate handle');
 			assert.strictEqual(storedBlob('late').size, payload.length);
 			for (const size of await auditedBlobSizes('late')) assert.strictEqual(size, payload.length);

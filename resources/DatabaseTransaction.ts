@@ -3129,6 +3129,7 @@ export class DatabaseTransaction implements Transaction {
 				result = operation.beforeIntermediate?.() as Promise<void>;
 				if (result?.then) {
 					this.stageCompletion(result, transaction);
+					// a source apply's blobs arrive out-of-band and its commit does not wait for them
 					if (operation.savedBlobs !== undefined && !this.sourceApply && !this.isReplay) {
 						for (const blob of operation.savedBlobs) {
 							if (blob.size == null) ((transaction as RocksTransactionWithRetry).blobsAwaitingSize ??= []).push(blob);
@@ -3575,7 +3576,6 @@ export class DatabaseTransaction implements Transaction {
 		return replayTransaction;
 	}
 
-	/** Re-save `writes` onto `replayTransaction`, with the sizes `blobs` settled available to their encoding. */
 	private restageOnto(
 		replayTransaction: RocksTransactionWithRetry,
 		options: CommitOptions,
@@ -3615,7 +3615,6 @@ export class DatabaseTransaction implements Transaction {
 		return awaiting !== undefined && !hasDurableLog(transaction) && awaiting.some((blob) => blob.size != null);
 	}
 
-	/** Move the writes `original` owns onto `replayTransaction`, re-staging them there, and drop `original`. */
 	private restageForBlobSizes(
 		original: RocksTransaction,
 		replayTransaction: RocksTransactionWithRetry,

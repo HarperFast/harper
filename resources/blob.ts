@@ -3040,11 +3040,6 @@ export function encodeBlobsWithFilePath<T>(callback: () => T, encodingId: number
 	}
 }
 
-/**
- * Run `callback` (a commit re-staging its writes) with the final sizes of `blobs` available to
- * encoding by file id, so a copy of one of those blobs decoded from the earlier staging is stored
- * with its size too.
- */
 export function withRestagedBlobSizes<T>(blobs: Blob[] | undefined, callback: () => T): T {
 	if (!blobs) return callback();
 	const sizes = new Map<string, number>();
@@ -3459,7 +3454,8 @@ addExtension({
 			storageInfo.end === undefined
 		) {
 			const size = restagedBlobSizes.get(storageInfo.fileId);
-			if (size !== undefined) options.size = size;
+			// kept on the copy, so a retry round encoding it outside this scope still stores the size
+			if (size !== undefined) options.size = blob.size = size;
 		}
 		if (storageInfo) {
 			if (
@@ -3757,7 +3753,7 @@ async function isBlobFileComplete(storageInfo: StorageInfo, expectedSize?: numbe
 	return isBlobFileCompleteAtPath(getFilePath(storageInfo), expectedSize);
 }
 
-/** The size a full (non-slice) blob's file must declare: its record descriptor's. */
+// A slice's descriptor size is the slice's, not its file's.
 function descriptorSizeToVerify(blob: Blob, storageInfo: StorageInfo): number | undefined {
 	return storageInfo.start === undefined && storageInfo.end === undefined
 		? ((blob as { size?: number }).size ?? undefined)
