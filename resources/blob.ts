@@ -162,6 +162,9 @@ let encodeForStorageForRecordId: number = undefined; // only enable encoding of 
 let promisedWrites: Array<Promise<void>>;
 let currentStore: any; // the root store of the database we are currently encoding for
 export let blobsWereEncoded = false; // keep track of whether blobs were encoded with file paths
+// File id → final size of the blobs a commit waited for, while that commit re-stages its writes: a
+// blob decoded from the first staging's bytes is a separate instance that never learns the size.
+let restagedBlobSizes: Map<string, number> | undefined;
 // the header is 8 bytes
 const DEFAULT_BLOB_READ_TIMEOUT = 20000;
 /**
@@ -3038,6 +3041,28 @@ export function encodeBlobsWithFilePath<T>(callback: () => T, encodingId: number
 }
 
 /**
+ * Run `callback` (a commit re-staging its writes) with the final sizes of `blobs` available to
+ * encoding by file id, so a copy of one of those blobs decoded from the earlier staging is stored
+ * with its size too.
+ */
+export function withRestagedBlobSizes<T>(blobs: Blob[] | undefined, callback: () => T): T {
+	if (!blobs) return callback();
+	const sizes = new Map<string, number>();
+	for (const blob of blobs) {
+		const storageInfo = storageInfoForBlob.get(blob);
+		if (storageInfo?.fileId && storageInfo.start === undefined && storageInfo.end === undefined && blob.size != null)
+			sizes.set(storageInfo.fileId, blob.size);
+	}
+	const previous = restagedBlobSizes;
+	restagedBlobSizes = sizes;
+	try {
+		return callback();
+	} finally {
+		restagedBlobSizes = previous;
+	}
+}
+
+/**
  * Open and close a window where saveBlob tracks every in-flight blob save promise. Used by the
  * v4→v5 migration in copyDb.ts so the migration can await every blob file write before declaring
  * a database done. Without this, fire-and-forget blob saves can be left mid-pipeline at migration
@@ -3427,6 +3452,15 @@ addExtension({
 		const { saveBeforeCommit: _sbc, saveInRecord: _sir, ...options } = blob as any;
 		if (blob.type) options.type = blob.type;
 		if (blob.size !== undefined) options.size = blob.size;
+		else if (
+			restagedBlobSizes !== undefined &&
+			storageInfo?.fileId &&
+			storageInfo.start === undefined &&
+			storageInfo.end === undefined
+		) {
+			const size = restagedBlobSizes.get(storageInfo.fileId);
+			if (size !== undefined) options.size = size;
+		}
 		if (storageInfo) {
 			if (
 				storageInfo.contentBuffer &&
@@ -3719,11 +3753,18 @@ export async function cleanupOrphans(database: any, databaseName?: string) {
 	}
 }
 
-async function isBlobFileComplete(storageInfo: StorageInfo): Promise<boolean> {
-	return isBlobFileCompleteAtPath(getFilePath(storageInfo));
+async function isBlobFileComplete(storageInfo: StorageInfo, expectedSize?: number): Promise<boolean> {
+	return isBlobFileCompleteAtPath(getFilePath(storageInfo), expectedSize);
 }
 
-async function isBlobFileCompleteAtPath(filePath: string): Promise<boolean> {
+/** The size a full (non-slice) blob's file must declare: its record descriptor's. */
+function descriptorSizeToVerify(blob: Blob, storageInfo: StorageInfo): number | undefined {
+	return storageInfo.start === undefined && storageInfo.end === undefined
+		? ((blob as { size?: number }).size ?? undefined)
+		: undefined;
+}
+
+async function isBlobFileCompleteAtPath(filePath: string, expectedSize?: number): Promise<boolean> {
 	let fileSize: number;
 	try {
 		fileSize = statSync(filePath).size;
@@ -3746,6 +3787,7 @@ async function isBlobFileCompleteAtPath(filePath: string): Promise<boolean> {
 	// uncompressed byte count). For an uncompressed blob that equals the on-disk body length;
 	// for a compressed blob it does not, so the body length can't be compared to it directly.
 	const size = Number(headerValue & 0xffffffffffffn);
+	if (expectedSize !== undefined && expectedSize < UNKNOWN_SIZE && size !== expectedSize) return false;
 	if (header[1] === DEFLATE_TYPE) {
 		// This function's contract is to resolve true/false; harper-pro's repair sweep awaits it without a
 		// catch (replication/blobRepair.ts), so an I/O fault must not become a rejection here. The capture
@@ -3798,15 +3840,15 @@ export function inflatesToExactly(filePath: string, size: number): Promise<boole
 
 /**
  * Resolves true if the given blob's backing file is present and complete: no error stub, not an
- * in-flight placeholder, and the content matches the header (uncompressed blobs by body length,
- * compressed blobs by a streamed inflate). Used by the repair sweep to verify a blob was durably
- * written after a peer fetch.
+ * in-flight placeholder, the header matches a full blob's descriptor size, and the content matches the
+ * header (uncompressed blobs by body length, compressed blobs by a streamed inflate). Used by the
+ * repair sweep to verify a blob was durably written after a peer fetch.
  */
 export async function isBlobComplete(blob: Blob): Promise<boolean> {
 	if (!(blob instanceof FileBackedBlob)) return true; // inline blobs are always complete
 	const storageInfo = storageInfoForBlob.get(blob);
 	if (!storageInfo?.fileId) return false;
-	return isBlobFileComplete(storageInfo);
+	return isBlobFileComplete(storageInfo, descriptorSizeToVerify(blob, storageInfo));
 }
 
 export type StoredBlobBody = {
@@ -4099,17 +4141,15 @@ export async function* findIncompleteBlobRefs(
 		for (const entry of table.primaryStore.getRange({ versions: true, snapshot: false, lazy: true })) {
 			try {
 				if (entry.metadataFlags & HAS_BLOBS && entry.value) {
-					const storageInfos: StorageInfo[] = [];
+					const blobs: Blob[] = [];
 					findBlobsInObject(entry.value, (blob) => {
-						if (blob instanceof FileBackedBlob) {
-							const storageInfo = storageInfoForBlob.get(blob);
-							if (storageInfo?.fileId != null) storageInfos.push(storageInfo);
-						}
+						if (blob instanceof FileBackedBlob && storageInfoForBlob.get(blob)?.fileId != null) blobs.push(blob);
 					});
 					let hasIncomplete = false;
-					for (const storageInfo of storageInfos) {
+					for (const blob of blobs) {
+						const storageInfo = storageInfoForBlob.get(blob);
 						try {
-							if (!(await isBlobFileComplete(storageInfo))) {
+							if (!(await isBlobFileComplete(storageInfo, descriptorSizeToVerify(blob, storageInfo)))) {
 								hasIncomplete = true;
 								break;
 							}

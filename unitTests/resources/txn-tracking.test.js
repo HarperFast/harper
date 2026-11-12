@@ -908,7 +908,8 @@ describe('Commit-phase pre-commit work is not poisoned by the monitor (#2062)', 
 
 	it('gives every link a fresh idle window when the head hands its writes to the store', async function () {
 		const slow = new PassThrough();
-		const blob = createBlob(slow);
+		// a known size keeps the head's writes on the handle stallNativeCommit intercepts
+		const blob = createBlob(slow, { size: 32768 });
 		const context = {};
 		const trackedTxns = setExpiration(20);
 		let links;
