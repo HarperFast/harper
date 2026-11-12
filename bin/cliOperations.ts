@@ -33,11 +33,18 @@ try {
 }
 const OP_ALIASES = { deploy: 'deploy_component', package: 'package_component' };
 
-// Shown for any local-instance connection failure (missing pid, missing/stale domain
-// socket, or a refused/ENOENT connect against it) — they're all the same user-facing
-// scenario: Harper isn't running. Remote-target failures keep the detailed error instead,
+// Shown for a local-instance connection failure (missing pid, missing/stale domain socket, or a
+// refused/ENOENT connect against it). Remote-target failures keep the detailed error instead,
 // since there's no single "just start it" fix for those.
 const LOCAL_NOT_RUNNING_MESSAGE = `${PRODUCT_NAME} is not running. Use \`harperdb run\` (or \`harperdb start\`) to start it.`;
+
+// A live pid means `harper start` would refuse with "already running", so "not running" is the wrong advice.
+function localUnreachableMessage(): string {
+	const pid = getHdbPid();
+	return pid
+		? `${PRODUCT_NAME} is running (pid ${pid}), but its Operations API domain socket could not be reached; it may be starting or stopping, or \`operationsApi.network.domainSocket\` is disabled.`
+		: LOCAL_NOT_RUNNING_MESSAGE;
+}
 
 // Operations whose responses should be consumed as text/event-stream so live phase events
 // (prepare, load, replicate, restart) render as they happen instead of after the whole
@@ -809,7 +816,7 @@ export async function resolveRequestOptions(
 		}
 
 		if (!fs.existsSync(getConfigPath(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET))) {
-			console.error(LOCAL_NOT_RUNNING_MESSAGE);
+			console.error(localUnreachableMessage());
 			process.exit(1);
 		}
 	}
@@ -1160,7 +1167,7 @@ async function cliOperations(req: any, skipResponseLog = false, { local = false 
 		} catch {}
 		const isConnectionFailure = code === 'ENOENT' || code === 'ECONNREFUSED';
 		if (isConnectionFailure && !target) {
-			console.error(LOCAL_NOT_RUNNING_MESSAGE);
+			console.error(localUnreachableMessage());
 		} else if (isConnectionFailure) {
 			console.error(`error: Failed to connect to Harper (${code}): ${message}`);
 		} else if (code === 'EACCES') {

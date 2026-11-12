@@ -18,7 +18,7 @@ import { ClientError, handleHDBError, hdbErrors } from '../utility/errors/hdbErr
 const { HTTP_STATUS_CODES } = hdbErrors;
 import * as envMgr from '../utility/environment/environmentManager.ts';
 import * as path from 'node:path';
-import { existsSync, rmSync } from 'node:fs';
+import { rmSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { getThisNodeName } from '../server/nodeName.ts';
 import { REPLICATION_NOT_IMPLEMENTED } from '../server/Server.ts';
@@ -132,7 +132,6 @@ async function restart(req: any) {
 	return RESTART_RESPONSE;
 }
 
-/** `harper restart`: a running Harper restarts itself through the `restart` operation; only a stopped one is started here. */
 async function restartFromCli() {
 	const cliOperations = await import('./cliOperations.ts');
 	const request = cliOperations.buildRequest();
@@ -150,16 +149,7 @@ async function restartFromCli() {
 		return;
 	}
 	// Without `target=`, a saved login or HARPER_CLI_TARGET must not redirect a restart off this machine.
-	const pid = processMan.getHdbPid();
-	if (pid) {
-		const { getConfigPath } = await import('../config/configUtils.ts');
-		const socketPath = getConfigPath(hdbTerms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET);
-		if (!socketPath || !existsSync(socketPath)) {
-			throw new ClientError(
-				`${PRODUCT_NAME} is running (pid ${pid}) but has no Operations API domain socket to send the restart to; ` +
-					'it may still be starting, or `operationsApi.network.domainSocket` is disabled'
-			);
-		}
+	if (processMan.getHdbPid()) {
 		await cliOperations.cliOperations(request, false, { local: true });
 		return;
 	}

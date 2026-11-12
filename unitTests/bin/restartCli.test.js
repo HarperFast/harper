@@ -37,7 +37,6 @@ function runCli(env, cwd, ...args) {
 	});
 }
 
-// Answers with `reply`, or never answers when it is null.
 function operationsServer(reply) {
 	const requests = [];
 	const server = http.createServer((request, response) => {
@@ -51,6 +50,23 @@ function operationsServer(reply) {
 		});
 	});
 	return { server, requests };
+}
+
+// A process killed while listening leaves its socket file behind, and connecting to it is refused.
+async function leaveStaleSocket(socketPath) {
+	const holder = spawn(
+		process.execPath,
+		['-e', 'require("node:net").createServer().listen(process.argv[1], () => console.log("listening"))', socketPath],
+		{ stdio: ['ignore', 'pipe', 'inherit'] }
+	);
+	await new Promise((resolve, reject) => {
+		holder.stdout.once('data', resolve);
+		holder.once('exit', () => reject(new Error('the socket holder exited before listening')));
+	});
+	const exited = new Promise((resolve) => holder.once('exit', resolve));
+	holder.kill('SIGKILL');
+	await exited;
+	assert(fs.existsSync(socketPath), 'the killed holder left its socket file');
 }
 
 function listen(server, ...args) {
@@ -90,12 +106,12 @@ describe('harper restart from the CLI (harper#4299)', function () {
 
 	afterEach(async () => {
 		await Promise.all(
-			servers.map((server) => {
+			(servers ?? []).map((server) => {
 				server.closeAllConnections();
 				return new Promise((resolve) => server.close(resolve));
 			})
 		);
-		fs.rmSync(temp, { recursive: true, force: true });
+		if (temp) fs.rmSync(temp, { recursive: true, force: true });
 	});
 
 	// The CLI process's own pid is never reported as running, so a running Harper is stood in for
@@ -109,7 +125,6 @@ describe('harper restart from the CLI (harper#4299)', function () {
 		const { server, requests } = operationsServer({ statusCode: 200, body: RESTART_REPLY });
 		servers.push(server);
 		await listen(server, socketPath);
-		// Neither a target from the environment nor a saved login moves a bare `harper restart` off this machine.
 		env.HARPER_CLI_TARGET = 'https://remote.invalid:9925';
 		const credentialsDir = path.join(env.HOME, '.harperdb');
 		fs.mkdirSync(credentialsDir);
@@ -140,24 +155,27 @@ describe('harper restart from the CLI (harper#4299)', function () {
 		assert.doesNotMatch(output, /Restarting|Starting Harper/, output);
 	});
 
+	const unreachable = () => new RegExp(`running \\(pid ${process.pid}\\), but its Operations API domain socket`);
+
 	it('says Harper is running, without claiming a restart, when it has no domain socket', async () => {
 		markRunning();
 
 		const { code, output } = await runCli(env, temp);
 
 		assert.strictEqual(code, 1, output);
-		assert.match(output, new RegExp(`running \\(pid ${process.pid}\\) but has no Operations API domain socket`));
+		assert.match(output, unreachable());
 		assert.doesNotMatch(output, /not running|Restarting|Starting Harper|already running/, output);
 	});
 
-	it('exits non-zero, without claiming a restart, when nothing listens on the domain socket', async () => {
+	it('says Harper is running, without claiming a restart, when nothing listens on its domain socket', async () => {
 		markRunning();
-		fs.writeFileSync(socketPath, '');
+		await leaveStaleSocket(socketPath);
 
 		const { code, output } = await runCli(env, temp);
 
 		assert.strictEqual(code, 1, output);
-		assert.doesNotMatch(output, /Restarting|Starting Harper|already running/, output);
+		assert.match(output, unreachable());
+		assert.doesNotMatch(output, /not running|Restarting|Starting Harper|already running/, output);
 	});
 
 	it('exits non-zero, without claiming a restart, when the running Harper never answers', async () => {
