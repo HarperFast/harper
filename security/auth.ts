@@ -76,8 +76,10 @@ function envFlag(value: string | undefined): boolean | undefined {
 
 const DEFAULT_COOKIE_EXPIRES = 'Tue, 01 Oct 8307 19:33:20 GMT';
 
+const MAX_WARNED_STALE_CREDENTIALS = 1024;
 let authorizationCache = new Map<string, User | null>();
 let failedCredentials = new Set<string>();
+let warnedStaleCredentials = new Set<string>();
 const validatorClaims = new WeakMap<object, BearerValidatorEntry>();
 let invalidationGeneration = 0;
 
@@ -106,10 +108,12 @@ onStartup(() => {
 		invalidationGeneration++;
 		authorizationCache = new Map();
 		failedCredentials = new Set();
+		warnedStaleCredentials = new Set();
 	});
 	setInterval(() => {
 		authorizationCache = new Map();
 		failedCredentials = new Set();
+		warnedStaleCredentials = new Set();
 	}, env.get(CONFIG_PARAMS.AUTHENTICATION_CACHETTL)).unref();
 });
 let authorizeAllAsLocal = false;
@@ -313,27 +317,30 @@ export async function authentication(request, nextHandler) {
 									let versions = userRecordVersions(username);
 									let resolved = await server.getUser(username, password, request);
 									let provenance = trackUserRecords(resolved, versions);
-									if (
-										resolved &&
-										typeof resolved === 'object' &&
-										hasReadRecordChanged(resolved, provenance) &&
-										canRetryChangedUser(resolved, provenance)
-									) {
+									let changed =
+										Boolean(resolved) && typeof resolved === 'object' && hasReadRecordChanged(resolved, provenance);
+									if (changed && canRetryChangedUser(resolved, provenance)) {
 										versions = userRecordVersions(username);
 										resolved = await server.getUser(username, password, request);
 										provenance = trackUserRecords(resolved, versions);
+										changed =
+											Boolean(resolved) && typeof resolved === 'object' && hasReadRecordChanged(resolved, provenance);
 									}
-									// a memoizing server.getUser hands later lookups this same user, so the cache holds a view of it
-									if (provenance && resolved.role) resolved = cloneUserView(resolved, provenance);
-									if (resolved && typeof resolved === 'object' && hasReadRecordChanged(resolved, provenance)) {
-										authLogger.warn?.(
-											`HTTP Basic's server.getUser view for '${username}' no longer matches the hdb_user/hdb_role records read for it (record dropped since first lookup, or changed while server.getUser resolved it)`
-										);
+									if (changed) {
+										if (!warnedStaleCredentials.has(authorization)) {
+											if (warnedStaleCredentials.size >= MAX_WARNED_STALE_CREDENTIALS) warnedStaleCredentials.clear();
+											warnedStaleCredentials.add(authorization);
+											authLogger.warn?.(
+												`HTTP Basic's server.getUser view for '${username}' no longer matches the hdb_user/hdb_role records read for it (record dropped since first lookup, or changed while server.getUser resolved it)`
+											);
+										}
 										throw credentialRejectionError(
 											AUTHENTICATION_ERROR_MSGS.GENERIC_AUTH_FAIL,
 											HTTP_STATUS_CODES.UNAUTHORIZED
 										);
 									}
+									// a memoizing server.getUser hands later lookups this same user, so the cache holds a view of it
+									if (provenance && resolved.role) resolved = cloneUserView(resolved, provenance);
 									newUser = resolved;
 								}
 							} else newUser = null;

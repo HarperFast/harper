@@ -724,7 +724,10 @@ function trackUserRecords(user: User, versions: UserProvenance): UserProvenance 
 	}
 	// a record created under its name since is another principal's
 	else if (first.recordless) provenance.recordless = true;
-	else if (first.userStamp !== null && (provenance.userStamp === null || provenance.userStamp === UNREAD_RECORD))
+	else if (first.userStamp === null && provenance.userStamp !== null && provenance.userStamp !== UNREAD_RECORD) {
+		provenance.recordless = false;
+		firsts.set(provenance.username, provenance);
+	} else if (first.userStamp !== null && (provenance.userStamp === null || provenance.userStamp === UNREAD_RECORD))
 		provenance = first;
 	else provenance.recordless = false;
 	return provenance;
@@ -841,11 +844,7 @@ function hasReadRecordChanged(user: User, admitted?: UserProvenance): boolean {
 	return !isCurrentUser(user, provenance);
 }
 
-/**
- * Whether re-running `server.getUser` can resolve a changed read record: true when `provenance.username` was
- * created while `getUser` awaited (`userStamp === null`) or still has a live `hdb_user` entry, and false when
- * a previously read `hdb_user` record has been dropped.
- */
+// A dropped hdb_user record cannot become current on retry, so skip re-running server.getUser for it.
 function canRetryChangedUser(user: User, admitted?: UserProvenance): boolean {
 	const provenance = recordedProvenance(user, admitted);
 	if (!provenance) return false;

@@ -596,6 +596,7 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 			await databases.system.hdb_user.delete('lookup_sso_tombstone');
 			const memoizedSso = { username: 'lookup_sso_tombstone', role: { role: 'component_role', permission: {} } };
 			const memoizedLive = { username: 'lookup_alias_live', role: { role: 'component_role', permission: {} } };
+			let memoizedCreatedMidflight;
 			const getUser = server.getUser;
 			let aliasCalls = 0;
 			let createdMidflightCalls = 0;
@@ -608,8 +609,9 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 					createdMidflightCalls++;
 					if (createdMidflightCalls === 1) {
 						await databases.system.hdb_user.put(lookupUser({ username: 'lookup_created_midflight' }));
+						memoizedCreatedMidflight = structuredClone(user.getUserWithRole('lookup_created_midflight'));
 					}
-					return { username: 'lookup_created_midflight', role: { role: 'component_role', permission: {} } };
+					return memoizedCreatedMidflight;
 				}
 				aliasCalls++;
 				return memoizedLive;
@@ -636,6 +638,12 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 				const createdMidflight = await authenticate(basic('lookup_created_midflight', 'token'));
 				assert.strictEqual(createdMidflight.status, 200, 'a record created mid-lookup retries once and succeeds');
 				assert.strictEqual(createdMidflightCalls, 2);
+				await databases.system.hdb_user.delete('lookup_created_midflight');
+				assert.strictEqual(
+					(await authenticate(basic('lookup_created_midflight', 'token'))).status,
+					401,
+					'the retry updated firsts to the live stamp, so dropping that record later is refused'
+				);
 			} finally {
 				server.getUser = getUser;
 			}
