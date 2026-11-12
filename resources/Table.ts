@@ -328,7 +328,7 @@ import {
 	type StorageSpaceStats,
 } from '../server/storageReclamation.ts';
 import { RequestTarget } from './RequestTarget.ts';
-import harperLogger from '../utility/logging/harper_logger.ts';
+import harperLogger, { inspectForLog } from '../utility/logging/harper_logger.ts';
 import { throttle } from '../server/throttle.ts';
 import {
 	RocksDatabase,
@@ -398,6 +398,10 @@ type SourceTxnStream = {
 	held?: boolean;
 };
 type SourceFill = { source: unknown; outcome?: Entry; unstoredRecord?: boolean; sharable?: boolean };
+type SourceFillWaiters = { count: number; lastFailure?: unknown };
+// concurrent misses on one key normally coalesce into one fill, so this many waiting on one is a hot key
+const SOURCE_FILL_WAITERS_WARNING = 50;
+const KEY_FOR_LOG = { maxStringLength: 100, maxArrayLength: 4, depth: 1 };
 const UNCACHEABLE_TIMESTAMP = Infinity; // we use this when dynamic content is accessed that we can't safely cache, and this prevents earlier timestamps from change the "last" modification
 const MAX_DATE_TIMESTAMP = 8.64e15;
 const RECORD_PRUNING_INTERVAL = 60000; // one minute
@@ -2032,9 +2036,11 @@ export function makeTable(options): TableResourceClass {
 	let warnedNullSourcePut = false; // latched: one warn per table per worker (see _writeUpdate)
 	let warnedFutureSourceVersion = false; // likewise (see getFromSource)
 	let lastIssuanceFailureWarn = -Infinity;
+	let lastSourceFillWaitersWarn = -Infinity;
 	let sourceLoad: any; // if a source has a load function (replicator), record it here
 	let hasSourceGet: any;
 	let sourceFills: Map<unknown, SourceFill> | undefined;
+	let sourceFillWaiters: Map<unknown, SourceFillWaiters> | undefined;
 	let primaryKeyAttribute: Attribute | undefined;
 	let lastEvictionCompletion: Promise<void> = Promise.resolve();
 	let recordExpirationCompletion: Promise<void> = Promise.resolve();
@@ -14265,6 +14271,7 @@ export function makeTable(options): TableResourceClass {
 
 		if (!lockAcquired) {
 			let timer: ReturnType<typeof setTimeout>;
+			const waiting = noteSourceFillWaiter(fillKey, id);
 			await new Promise<void>((resolve) => {
 				wake = resolve;
 				// closing this thread's handle does not notify a wait on another thread's lock
@@ -14274,6 +14281,7 @@ export function makeTable(options): TableResourceClass {
 				}, LOCK_TIMEOUT);
 			});
 			clearTimeout(timer);
+			if (--waiting.count === 0 && sourceFillWaiters.get(fillKey) === waiting) sourceFillWaiters.delete(fillKey);
 			const entry = primaryStore.getEntry(id);
 			if (
 				!entry ||
@@ -14520,7 +14528,11 @@ export function makeTable(options): TableResourceClass {
 								receivedIdentityRefs: audit ? undefined : existingIdentityRefs,
 							} as any);
 							logger.trace?.((error as Error)?.message, '(returned stale record)');
-						} else reject(error);
+						} else {
+							const waiting = sourceFillWaiters?.get(fillKey);
+							if (waiting) waiting.lastFailure = error?.statusCode ?? error?.status ?? error?.name;
+							reject(error);
+						}
 					} catch (settlingError) {
 						reject(error ?? settlingError);
 					}
@@ -14750,6 +14762,22 @@ export function makeTable(options): TableResourceClass {
 	 * Closing the handle that owns a record lock releases it (the RocksDB handle, or the LMDB
 	 * environment), so an unlock that fails after close had nothing left to release.
 	 */
+	function noteSourceFillWaiter(fillKey: unknown, id: Id): SourceFillWaiters {
+		let waiting = (sourceFillWaiters ??= new Map()).get(fillKey);
+		if (!waiting) sourceFillWaiters.set(fillKey, (waiting = { count: 0 }));
+		if (++waiting.count >= SOURCE_FILL_WAITERS_WARNING) {
+			const now = performance.now();
+			if (now - lastSourceFillWaitersWarn >= 60_000) {
+				lastSourceFillWaitersWarn = now;
+				const lastFailure =
+					waiting.lastFailure === undefined ? '' : `; its last fill on this thread failed with ${waiting.lastFailure}`;
+				logger.warn?.(
+					`${waiting.count} requests on this thread are waiting for record ${inspectForLog(id, KEY_FOR_LOG)} of ${tableName} to load from its source${lastFailure}`
+				);
+			}
+		}
+		return waiting;
+	}
 	function releaseRecordLock(id: Id): void {
 		try {
 			primaryStore.unlock(id);
