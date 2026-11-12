@@ -458,6 +458,11 @@ try {
 }
 const LMDB_PREFETCH_WRITES = envMngr.get(CONFIG_PARAMS.STORAGE_PREFETCHWRITES);
 const LOCK_TIMEOUT = 10000;
+let sourceFillLockTimeout = LOCK_TIMEOUT;
+/** Tests only: how long a source fill's record lock is held before it is released; `undefined` restores it. */
+export function setSourceFillLockTimeoutForTesting(ms: number | undefined) {
+	sourceFillLockTimeout = ms ?? LOCK_TIMEOUT;
+}
 export const UPDATE_ATTRIBUTES_LOCK_TIMEOUT = 10000;
 const UPDATE_ATTRIBUTES_LOCK = 'update-attributes';
 // Contention is otherwise only visible once it becomes a timeout (harper#2251).
@@ -14271,7 +14276,7 @@ export function makeTable(options): TableResourceClass {
 				timer = setTimeout(() => {
 					releaseRecordLock(id);
 					resolve();
-				}, LOCK_TIMEOUT);
+				}, sourceFillLockTimeout);
 			});
 			clearTimeout(timer);
 			const entry = primaryStore.getEntry(id);
