@@ -207,6 +207,7 @@ const LOCAL_ISSUANCE_CEILING_KEY = Symbol.for('local-issuance-ceiling');
  * any transaction can start, so a restart mid-removal admits no local write. RocksDB only.
  */
 const LOCAL_WRITE_FENCE_KEY = Symbol.for('local-write-fence');
+const clearedWriteFence = () => new Uint8Array(Buffer.from('null'));
 const ABORT_MARKED_RECHECK_MS = 60_000;
 // Amortize durability barriers across keys; restart seeds above this whole reserve.
 const ISSUANCE_CEILING_HEADROOM_MS = 1000;
@@ -1697,17 +1698,13 @@ export interface LocalWriteFence {
 	state: 'fenced' | 'removing' | 'unreadable';
 }
 
-/**
- * An unreadable record still fences: a node that refuses writes until cancelled is better than a lost write. A
- * record written under another database generation came with a copy of the database, and fences nothing here.
- */
+/** An unreadable record still fences: a node that refuses writes until cancelled is better than a lost write. */
 export function readLocalWriteFence(auditStore: any): LocalWriteFence | undefined {
 	const stored = auditStore.getBinary?.(LOCAL_WRITE_FENCE_KEY);
 	if (!stored) return;
 	try {
 		const fence = JSON.parse(Buffer.from(stored).toString());
 		if (fence === null) return;
-		if (typeof fence.generation === 'string' && fence.generation !== storedGenerationId(auditStore)) return;
 		if (typeof fence?.epoch === 'string' && isValidFloor(fence.target))
 			return { epoch: fence.epoch, target: fence.target, state: fence.state === 'removing' ? 'removing' : 'fenced' };
 	} catch {}
@@ -1720,16 +1717,11 @@ export function readLocalWriteFence(auditStore: any): LocalWriteFence | undefine
  * clears it after persisting the clear.
  */
 export async function persistLocalWriteFence(auditStore: any, fence: LocalWriteFence | undefined): Promise<void> {
-	const record = fence && { ...fence, generation: storedGenerationId(auditStore) };
-	const bytes = new Uint8Array(Buffer.from(JSON.stringify(record ?? null)));
+	const bytes = fence ? new Uint8Array(Buffer.from(JSON.stringify(fence))) : clearedWriteFence();
 	commitAuditMetadata(auditStore, () => [[LOCAL_WRITE_FENCE_KEY, bytes]], 'local write fence');
 	const rootStore = auditStore.rootStore ?? auditStore;
 	if (originFloorsDurable(rootStore)) await rootStore.syncWal();
 	else rootStore.flushSync?.({ allowWriteStall: true });
-}
-
-function storedGenerationId(auditStore: any): string | undefined {
-	return decodeGeneration(auditStore.getBinary(DATABASE_GENERATION_KEY))?.id;
 }
 
 export function readLocalIssuanceCeiling(auditStore: any): number {
@@ -1955,6 +1947,8 @@ export function stampDatabaseGeneration(
 	const stamp: Array<[symbol, Uint8Array]> = [
 		[DATABASE_GENERATION_KEY, encodeGeneration(generation)],
 		[AUDIT_RESUME_FLOOR_KEY, encodeAuditFloor(0)],
+		// a write fence belongs to the node being removed, not to a copy of its database
+		[LOCAL_WRITE_FENCE_KEY, clearedWriteFence()],
 	];
 	commitAuditMetadata(
 		store,

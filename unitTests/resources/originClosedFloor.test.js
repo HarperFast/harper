@@ -153,6 +153,15 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 		}
 	});
 
+	it('keeps the write fence in the low 32 bits of its word, which every access reads through one Int32 view', () => {
+		const words = new BigInt64Array(rootStore.getUserSharedBuffer('origin-closed-floor', new ArrayBuffer(0)));
+		for (let change = 0; change < 3; change++) {
+			setLocalWriteFence(rootStore, change % 2 === 0);
+			assert.strictEqual(Atomics.load(words, WORD_WRITE_FENCE) >> 32n, 0n);
+		}
+		setLocalWriteFence(rootStore, false);
+	});
+
 	it('refuses a shared buffer of another layout rather than misreading its slots', () => {
 		const rootStore = {
 			status: 'open',
