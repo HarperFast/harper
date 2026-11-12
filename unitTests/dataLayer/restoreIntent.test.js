@@ -109,6 +109,8 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 	afterEach(function () {
 		if (savedSafeMode === undefined) delete process.env.HARPER_SAFE_MODE;
 		else process.env.HARPER_SAFE_MODE = savedSafeMode;
+		// what a boot's recovery recorded belongs to that boot
+		resetStartupRecoveryForTesting();
 		// the safe-mode decision scans every receipt, so one a failed test leaves would fail every later test
 		for (const dir of testDirs) {
 			rmSync(restoreReceiptPath(dir), { force: true });
@@ -485,6 +487,30 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 
 			assert.strictEqual(receiptOf(fixture.dir).state, 'pending');
 			await restoreBackup({ ...SU, database: fixture.name, cancel: true });
+		});
+
+		it('restarts after withdrawing a resumed restore of a database this boot held, so it loads', async function () {
+			const fixture = await seededDatabase();
+			await requestRestore(fixture.name, { on_restart: true, retain_previous: false });
+			const repair = failReceiptWrites(fixture);
+			try {
+				await boot(fixture.name);
+			} finally {
+				repair();
+			}
+			const { result } = await requestRestore(fixture.name, { resume: true });
+			const restarts = [];
+			const restoreRestart = replaceExport(restartModule, 'restart', async (...args) => {
+				restarts.push(args);
+			});
+			try {
+				await result.onNotRecorded();
+			} finally {
+				restoreRestart();
+			}
+
+			assert.strictEqual(readRestoreReceipt(fixture.dir).kind, 'absent');
+			assert.deepStrictEqual(restarts, [[{ operation: 'restart', drain: true }]]);
 		});
 
 		it("leaves a resumed restore to its new job when the older job's row cannot record the deferral", async function () {
@@ -1329,6 +1355,29 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 				if (saved === undefined) delete process.env.HARPER_SAFE_MODE;
 				else process.env.HARPER_SAFE_MODE = saved;
 			}
+		});
+
+		it('restarts when this boot held the database without counting an attempt or entering safe mode', async function () {
+			const fixture = await seededDatabase();
+			await requestRestore(fixture.name, { on_restart: true, retain_previous: false });
+			const repair = failReceiptWrites(fixture);
+			try {
+				await boot(fixture.name);
+			} finally {
+				repair();
+			}
+			assert.strictEqual(receiptOf(fixture.dir).attempts, 0, 'precondition: no attempt was counted');
+			assert.strictEqual(unpublishedRestoreBlocksComponents(), undefined, 'precondition: no safe mode');
+
+			const { result, afterRecorded } = await restoreBackup({ ...SU, database: fixture.name, cancel: true });
+
+			assert.strictEqual(result.restarting, true, 'the boot loaded components without it, and nothing reloads it');
+			assert.strictEqual(typeof afterRecorded, 'function');
+
+			const requestedSince = await seededDatabase();
+			await requestRestore(requestedSince.name, { on_restart: true, retain_previous: false });
+			const later = await restoreBackup({ ...SU, database: requestedSince.name, cancel: true });
+			assert.strictEqual(later.result.restarting, false, 'requested after this boot started, so never held');
 		});
 
 		it('keeps the source pinned when the receipt cannot be removed, so a pending restore never loses its source', async function () {

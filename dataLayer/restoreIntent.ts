@@ -44,6 +44,7 @@ import {
 	finishCommittedRestore,
 	finishOutstandingRestore,
 	releaseReceiptPins,
+	restoreHeldAtBoot,
 	settleRestoreJob,
 } from './restorePublication.ts';
 import {
@@ -177,6 +178,7 @@ async function acquireRestoreLockWaiting(databaseDir: string): Promise<RestoreLo
  * operation's and this job's (a resume keeps the operation and takes the job), and nothing has started.
  */
 async function withdrawUnrecordedRestore(receipt: RestoreReceipt): Promise<void> {
+	let unblocked = false;
 	try {
 		const lock = await acquireRestoreLockWaiting(receipt.database_path);
 		try {
@@ -200,6 +202,7 @@ async function withdrawUnrecordedRestore(receipt: RestoreReceipt): Promise<void>
 			} else {
 				removeRestoreReceipt(lock, receipt.operation_id);
 				releaseReceiptPins(read.receipt);
+				unblocked = true;
 			}
 			logger.error(`The restart restore of '${receipt.database}' was withdrawn: its job could not record it`);
 		} finally {
@@ -211,6 +214,7 @@ async function withdrawUnrecordedRestore(receipt: RestoreReceipt): Promise<void>
 			error
 		);
 	}
+	if (unblocked && restoreHeldAtBoot(receipt.database_path)) requestDrainedRestart();
 }
 
 /** The pins an earlier receipt on this target holds, which stay until this restore commits. */
@@ -443,11 +447,9 @@ export async function cancelRestartRestore(databaseName: string, databaseDir: st
 			logger.error(`Could not settle cancelled restore job ${cancelled!.job_id}`, error)
 		);
 	}
-	// A boot that held the database loaded components without it, and only a restart loads them again. No
-	// attempt and no restore safe mode mean no boot has held it yet; an unreadable receipt cannot say.
-	const restarting =
-		!stillBlocked &&
-		(cancelled === undefined || cancelled.attempts > 0 || process.env.HARPER_SAFE_MODE === 'restore-unpublished');
+	// A boot that held the database loaded components without it, and only a restart loads them again; a
+	// restore requested since this boot started was never held. An unreadable receipt cannot say.
+	const restarting = !stillBlocked && (cancelled === undefined || restoreHeldAtBoot(databaseDir));
 	let message: string;
 	if (stillBlocked) {
 		message = `The restore was cancelled, but it had already begun replacing '${databaseName}', which stays unloadable until a restore succeeds`;

@@ -8,7 +8,8 @@
  * dataLayer/DESIGN.md.
  */
 import { existsSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { getEnvironmentData, setEnvironmentData } from 'node:worker_threads';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import * as hdbTerms from '../utility/hdbTerms.ts';
 import logger from '../utility/logging/harper_logger.ts';
@@ -32,6 +33,7 @@ import {
 	newRestoreReceipt,
 	readRestoreReceipt,
 	readRestoreReceiptFile,
+	receiptBlocksDiscovery,
 	removeRestoreReceipt,
 	restoreReceiptPath,
 	writeRestoreReceipt,
@@ -611,9 +613,23 @@ async function finishWithLock(receipt: RestoreReceipt): Promise<void> {
 }
 
 let startupRecovery: Promise<Set<string>> | undefined;
+// Threads started after recovery inherit it, job workers included; a relaunched process starts without it.
+const HELD_AT_BOOT_KEY = 'harper.restoresHeldAtBoot';
 
 export function resetStartupRecoveryForTesting(): void {
 	startupRecovery = undefined;
+	setEnvironmentData(HELD_AT_BOOT_KEY, undefined);
+}
+
+/**
+ * Whether this boot started without the database because a restore record reserved it, so the components that
+ * use it loaded without it and only a restart loads them.
+ */
+export function restoreHeldAtBoot(databaseDir: string): boolean {
+	const held = getEnvironmentData(HELD_AT_BOOT_KEY);
+	// recovery did not finish, so what it held is unknown; startup latched restore safe mode for the same reason
+	if (!Array.isArray(held)) return process.env.HARPER_SAFE_MODE === 'restore-unpublished';
+	return held.includes(resolve(restoreReceiptPath(databaseDir)));
 }
 
 /**
@@ -660,6 +676,12 @@ async function recoverRestoresOnce(): Promise<Set<string>> {
 		}
 	}
 	if (published) resetDatabases();
+	setEnvironmentData(
+		HELD_AT_BOOT_KEY,
+		scanRestoreReceipts()
+			.filter(({ read }) => receiptBlocksDiscovery(read))
+			.map(({ file }) => resolve(file))
+	);
 	return owned;
 }
 
