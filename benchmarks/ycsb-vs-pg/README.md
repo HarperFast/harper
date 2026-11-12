@@ -429,9 +429,9 @@ this harness does not run.
   placement policy.
 - `run-matrix.sh` is the full matrix, topology (a): harper-uws, harper and pg-redis on C, B, inspect,
   chain-1, chain-2, chain-4 and F, at warm, 2x and 8x, `--auth=token`, 3 reps, targets interleaved. One
-  VM set in sequence would take about a day, so it runs five sets in parallel (`--plan` lists them), each
+  VM set in sequence would take about a day, so it runs six sets in parallel (`--plan` lists them), each
   one session on its own generator, harper and stack VMs: warm (then perf profiles of warm C and chain-4
-  for harper-uws and pg-redis), 2x, and 8x split three ways by workload. The 8x split is for time: every
+  for harper-uws and pg-redis), 2x, and 8x split four ways by workload. The 8x split is for time: every
   8x sample restores a 138 GiB Harper snapshot at local-SSD write speed (330 MiB/s documented, about
   7 minutes). Each set loads each engine's dataset once and restores it for every sample, checks its
   generator's ceiling, and runs a smoke pass of its own phases first. `--all` starts every set and waits;

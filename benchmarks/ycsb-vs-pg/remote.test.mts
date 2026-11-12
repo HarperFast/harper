@@ -643,11 +643,14 @@ test('the full matrix runs every workload once per point, and zones stay in one 
 		};
 	};
 	deepStrictEqual(await created('warm'), { generator: 'c4-standard-32', maxRun: '10h' });
-	deepStrictEqual(await created('8x-chain'), { generator: 'c4-standard-16', maxRun: '16h' });
-	deepStrictEqual(await created('8x-chain', { YCSB_MAX_RUN_DURATION: '3h', YCSB_GEN_MACHINE_TYPE: 'c4-standard-48' }), {
-		generator: 'c4-standard-48',
-		maxRun: '3h',
-	});
+	deepStrictEqual(await created('8x-chain4'), { generator: 'c4-standard-16', maxRun: '16h' });
+	deepStrictEqual(
+		await created('8x-chain4', { YCSB_MAX_RUN_DURATION: '3h', YCSB_GEN_MACHINE_TYPE: 'c4-standard-48' }),
+		{
+			generator: 'c4-standard-48',
+			maxRun: '3h',
+		}
+	);
 });
 
 test('remote mode defaults Harper threads and Fastify workers to --target-cpus, not to an empty cpu list', () => {

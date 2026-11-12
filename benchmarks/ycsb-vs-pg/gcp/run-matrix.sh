@@ -6,9 +6,10 @@
 #
 #   warm        run-compare, every workload; then perf profiles of warm C and chain-4 (harper-uws, pg-redis)
 #   2x          memory-sweep --ratios=2, every workload
-#   8x-cbf      memory-sweep --ratios=8, C, B and F           (8x is split three ways: each sample restores
-#   8x-inspect  memory-sweep --ratios=8, inspect and chain-1   a 138 GiB Harper snapshot at local-SSD write
-#   8x-chain    memory-sweep --ratios=8, chain-2 and chain-4   speed; each split loads its own snapshot)
+#   8x-cb       memory-sweep --ratios=8, C and B               (8x is split four ways, at most 18 samples a
+#   8x-fi       memory-sweep --ratios=8, F and inspect          set: each sample restores a 138 GiB Harper
+#   8x-chain12  memory-sweep --ratios=8, chain-1 and chain-2    snapshot at local-SSD write speed; each split
+#   8x-chain4   memory-sweep --ratios=8, chain-4                loads its own snapshot)
 #
 # Each engine's dataset is loaded once per VM set and point, and every sample of the set restores it. Every
 # set checks the generator's ceiling first and runs a smoke pass of its own phases at a size that takes
@@ -34,7 +35,7 @@ GEN_OVERRIDE="${YCSB_GEN_MACHINE_TYPE:-}"
 MAX_RUN_OVERRIDE="${YCSB_MAX_RUN_DURATION:-}"
 . "$(dirname "$0")/config.sh"
 
-SETS="warm 2x 8x-cbf 8x-inspect 8x-chain"
+SETS="warm 2x 8x-cb 8x-fi 8x-chain12 8x-chain4"
 TARGETS=harper-uws,harper,pg-redis
 ALL_WORKLOADS=C,B,inspect,chain-1,chain-2,chain-4,F
 
@@ -44,9 +45,10 @@ set_point() { case "$1" in warm) echo warm ;; 2x) echo 2 ;; 8x-*) echo 8 ;; esac
 set_workloads() {
 	case "$1" in
 	warm | 2x) echo "$ALL_WORKLOADS" ;;
-	8x-cbf) echo C,B,F ;;
-	8x-inspect) echo inspect,chain-1 ;;
-	8x-chain) echo chain-2,chain-4 ;;
+	8x-cb) echo C,B ;;
+	8x-fi) echo F,inspect ;;
+	8x-chain12) echo chain-1,chain-2 ;;
+	8x-chain4) echo chain-4 ;;
 	esac
 }
 set_generator() {
@@ -125,7 +127,7 @@ if [ "$ALL" = 1 ]; then
 	fi
 	check_account
 	[ -n "$BASE" ] || BASE="ycsb-$(date -u +%Y%m%d-%H%M)-$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n')"
-	ycsb_check_run_id "$BASE-8x-inspect"
+	ycsb_check_run_id "$BASE-8x-chain12"
 	mkdir -p "$YCSB_RUNS_DIR"
 	pids=()
 	for s in $SETS; do
@@ -134,7 +136,7 @@ if [ "$ALL" = 1 ]; then
 		echo "starting $BASE-$s (log: $YCSB_RUNS_DIR/$BASE-$s.log)"
 		"$0" "${args[@]}" >>"$YCSB_RUNS_DIR/$BASE-$s.log" 2>&1 &
 		pids+=("$!")
-		# Spreads the API calls and the zone-capacity requests of five provisionings.
+		# Spreads the API calls and the zone-capacity requests of six provisionings.
 		sleep "${YCSB_SET_STAGGER_S:-20}"
 	done
 	failed=""
