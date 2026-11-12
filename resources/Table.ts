@@ -407,7 +407,6 @@ const ABSENT_ENTRY = Object.freeze({
 	},
 });
 const KEEP_STALE = Object.freeze({ allowStaleWhileRevalidate: () => true });
-const FILL_IN_FLIGHT = Symbol('fill in flight');
 // `$distance` is left out: it can fall back to the record
 const ENTRY_SORT_ATTRIBUTES = new Set(['$id', '$updatedtime', '$updatedTime', '$expiresAt', '$score', '$highlights']);
 const MAX_CONCURRENT_HISTORY_REMOVALS = 10;
@@ -13681,8 +13680,8 @@ export function makeTable(options): TableResourceClass {
 				// if the resource defines a method for indicating if stale-while-revalidate is allowed for a record
 				const servesStale = Boolean(entry?.value && resource?.allowStaleWhileRevalidate?.(entry, id));
 				// a stale read refreshes only a key no fill holds; queued behind one, it would refetch after a failure
+				if (servesStale && !tryRecordLock(id)) return;
 				const loadingFromSource = getFromSource(source, id, entry, context, target, servesStale).then((entry) => {
-					if (entry === FILL_IN_FLIGHT) return;
 					if (entry?.value && entry?.value.getRecord?.())
 						logger.error?.('Can not assign a record that is already a resource');
 					if (context) {
@@ -14230,8 +14229,8 @@ export function makeTable(options): TableResourceClass {
 		existingEntry: Entry,
 		context: Context,
 		target?,
-		onlyIfUnlocked?: boolean
-	): Promise<Entry | typeof FILL_IN_FLIGHT> {
+		lockHeld?: boolean
+	): Promise<Entry> {
 		const metadataFlags = existingEntry?.metadataFlags;
 
 		const existingVersion = existingEntry?.version;
@@ -14271,10 +14270,9 @@ export function makeTable(options): TableResourceClass {
 		// the other thread releases the lock.
 		// The callback only wakes this request: it can fire during a database close, where reading
 		// the store would throw inside a native callback and leave the request unsettled.
-		const lockAcquired = primaryStore.tryLock(id, onlyIfUnlocked ? undefined : () => wake());
+		const lockAcquired = lockHeld || primaryStore.tryLock(id, () => wake());
 
 		if (!lockAcquired) {
-			if (onlyIfUnlocked) return FILL_IN_FLIGHT;
 			let timer: ReturnType<typeof setTimeout>;
 			await new Promise<void>((resolve) => {
 				wake = resolve;
@@ -14782,6 +14780,13 @@ export function makeTable(options): TableResourceClass {
 	function recordLockHeld(id: Id): boolean {
 		try {
 			return primaryStore.hasLock(id);
+		} catch {
+			return false;
+		}
+	}
+	function tryRecordLock(id: Id): boolean {
+		try {
+			return primaryStore.tryLock(id);
 		} catch {
 			return false;
 		}

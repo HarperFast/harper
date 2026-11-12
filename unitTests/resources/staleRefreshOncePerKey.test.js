@@ -1,8 +1,5 @@
 'use strict';
 
-// A read that may be served stale starts a background refresh only when no fill holds its key, on
-// this thread or another; it never queues behind one, so a failed refresh is not repeated per read.
-
 require('../testUtils');
 const assert = require('node:assert');
 const { setTimeout: delay } = require('node:timers/promises');
@@ -37,7 +34,6 @@ describe('Stale-while-revalidate refreshes', function () {
 			database: 'test',
 			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
 		});
-		// a query consults the table's own stale policy, so this one allows stale on its prototype
 		StaleQueryTable = table({
 			table: 'StaleRefreshOncePerKeyQueried',
 			database: 'test',
@@ -65,7 +61,7 @@ describe('Stale-while-revalidate refreshes', function () {
 	});
 	afterEach(function () {
 		logger.warn = originalWarn;
-		for (const call of pendingCalls) call.resolve(undefined);
+		for (const call of pendingCalls ?? []) call.resolve(undefined);
 	});
 	const expire = (id, name = 'stale ' + id) => StaleTable.put(id, { id, name }, { expiresAt: 1 });
 	const refreshFailure = () => Object.assign(new Error('refresh failed'), { statusCode: 503 });
