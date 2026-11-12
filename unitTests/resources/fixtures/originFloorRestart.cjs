@@ -15,6 +15,7 @@ const {
 	persistLocalWriteFence,
 	persistOriginClosedFloor,
 	readLocalWriteFence,
+	stampDatabaseGeneration,
 	readLocalIssuanceCeiling,
 	readOriginClosedFloor,
 } = require('#src/resources/auditStore');
@@ -134,7 +135,24 @@ async function fenceRestart({ dir, database }) {
 	return { fenced, record, refusal, cleared: readLocalWriteFence(Tbl.auditStore) ?? null };
 }
 
-const modes = { seed, restart, refusedOpen, crossDatabase, reopenB, fenceSeed, fenceRestart };
+// a copy of a fenced database is stamped with a new generation before it is read
+async function fenceCopied({ dir, database }) {
+	const Tbl = open(dir, database);
+	const target = setLocalWriteFence(Tbl.primaryStore.rootStore, true);
+	await persistLocalWriteFence(Tbl.auditStore, { epoch: 'e2', target, state: 'fenced' });
+	const before = readLocalWriteFence(Tbl.auditStore) ?? null;
+	stampDatabaseGeneration(Tbl.auditStore, { carriesLog: true });
+	return { before, after: readLocalWriteFence(Tbl.auditStore) ?? null };
+}
+
+async function openedCopy({ dir, database }) {
+	const Tbl = open(dir, database);
+	const fenced = localWritesFenced(Tbl.primaryStore.rootStore);
+	await Tbl.put({ id: 'after-copy', n: 3 });
+	return { fenced };
+}
+
+const modes = { seed, restart, refusedOpen, crossDatabase, reopenB, fenceSeed, fenceRestart, fenceCopied, openedCopy };
 
 if (!isMainThread) {
 	workerRun(workerData).then((result) => {

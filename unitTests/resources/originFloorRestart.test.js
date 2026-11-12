@@ -80,6 +80,14 @@ describe('a restart behind the persisted origin floor (harper#2629)', function (
 		assert.strictEqual(restarted.cleared, null);
 	});
 
+	it('a fence record that came with a copy of the database fences nothing on the copy', async () => {
+		const { before, after } = await run({ mode: 'fenceCopied', database: 'copiedFence' }).reply;
+		assert.strictEqual(before?.epoch, 'e2');
+		assert.strictEqual(after, null);
+		const opened = await run({ mode: 'openedCopy', database: 'copiedFence' }).reply;
+		assert.strictEqual(opened.fenced, false);
+	});
+
 	it('keys every later local entry above a persisted origin-closed floor', async () => {
 		const { seeded, restarted } = await restartAfter({ floorLead: LEAD_MS });
 		assert.ok(seeded.floor > seeded.ceiling);
