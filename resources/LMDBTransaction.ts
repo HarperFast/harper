@@ -159,6 +159,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 			throw new Error('Can not use a transaction that is no longer open');
 		}
 
+		if (operation.stagedIn === this && !operation.saved && this.ownedWrites?.has(operation)) return operation;
 		this.linkWrite(operation);
 		this.writes.push(operation); // standard path, add to current transaction
 		(this.ownedWrites ??= new WeakSet()).add(operation);
