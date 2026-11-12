@@ -812,6 +812,29 @@ describe('bounded history readers', function () {
 		});
 	}
 
+	it('replays a field removal with the plain rebuild values', async () => {
+		const T = newTable();
+		const startTime = Date.now() - 1;
+		await T.put({ id: 'a', n: 0, name: 'base', payload: 'x' });
+		for (let n = 1; n <= 4; n++) await T.patch('a', { n });
+		await T.patch('a', { payload: undefined });
+		await transaction(async (context) => (await T.update('a', context)).deleteProperty('name'));
+		for (let n = 5; n <= 8; n++) await T.patch('a', { n });
+		const plain = plainEvents(T, startTime, 'a');
+		for (const isCollection of [true, false]) {
+			const counter = meter(T);
+			const { subscription, events } = await replay(T, { id: isCollection ? undefined : 'a', isCollection, startTime });
+			try {
+				await waitFor(() => events.length >= plain.expected.length);
+				assert.deepStrictEqual(replayed(events), plain.expected);
+				assert(counter.logReads < plain.logReads, `${counter.logReads} log reads, plain ${plain.logReads}`);
+			} finally {
+				counter.close();
+				subscription.end();
+			}
+		}
+	});
+
 	it('replays a set followed by an add on the same field with the plain rebuild values', async () => {
 		const T = newTable();
 		const startTime = Date.now() - 1;
