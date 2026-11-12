@@ -238,4 +238,32 @@ describe('Sharding configuration repair', () => {
 			initConfig(true);
 		}
 	});
+
+	it('does not rewrite or back up an unchanged spare list at boot', () => {
+		const { updateConfigValue, initConfig, getConfigFilePath } = require('#src/config/configUtils');
+		const { readRootConfig, setRootConfigEntry } = require('../rootConfigFixture');
+		const path = getConfigFilePath();
+		const saved = readFileSync(path, 'utf8');
+		try {
+			setRootConfigEntry('replication', {
+				...readRootConfig().replication,
+				shard: 0,
+				shards: [0, 1, 2],
+				spareShards: [1, 2],
+			});
+			initConfig(true);
+			const before = readFileSync(path, 'utf8');
+			const beforeStat = statSync(path);
+			const backupDir = join(readRootConfig().rootPath, 'backup');
+			const backups = existsSync(backupDir) ? readdirSync(backupDir).sort() : [];
+			updateConfigValue(undefined, undefined, { REPLICATION_SPARESHARDS: '[1,2]' }, true);
+			assert.equal(readFileSync(path, 'utf8'), before);
+			assert.equal(statSync(path).mtimeMs, beforeStat.mtimeMs, 'an unchanged boot value must not rewrite the file');
+			assert.equal(statSync(path).ino, beforeStat.ino, 'an unchanged boot value must not replace the file');
+			assert.deepEqual(existsSync(backupDir) ? readdirSync(backupDir).sort() : [], backups);
+		} finally {
+			writeFileSync(path, saved);
+			initConfig(true);
+		}
+	});
 });

@@ -16,7 +16,7 @@ import {
 	compileResidencyPolicy,
 	residencyMapExtends,
 	canonicalShards,
-	canonicalSpareShards,
+	canonicalSpareList,
 	createResidencyMap,
 	defaultResidencyMap,
 	expandResidencyMap,
@@ -175,7 +175,7 @@ export function getResidencyConfiguration(forRecovery = false) {
 			throw new ClientError('replication.shard must be an integer from 0 through 65535', 400);
 		if (!recoveryConfiguration) {
 			const shards = canonicalShards(shardingRecoveryConfiguration.shards);
-			const spares = canonicalSpareShards(shardingRecoveryConfiguration.spareShards, shards);
+			const spares = canonicalSpareList(shardingRecoveryConfiguration.spareShards);
 			recoveryConfiguration = Object.freeze({
 				shards,
 				spares,
@@ -192,7 +192,7 @@ export function getResidencyConfiguration(forRecovery = false) {
 	const generation = configGeneration();
 	if (value !== configuredList || generation !== configuredGeneration) {
 		const shards = canonicalShards(value);
-		const spares = canonicalSpareShards(env.get(CONFIG_PARAMS.REPLICATION_SPARESHARDS), shards);
+		const spares = canonicalSpareList(env.get(CONFIG_PARAMS.REPLICATION_SPARESHARDS));
 		configuredList = value;
 		configuredGeneration = generation;
 		configuredShards = shards;

@@ -1,6 +1,6 @@
 import isEqual from 'lodash/isEqual.js';
 import { getConfigValue, updateConfigObject } from './configUtils.ts';
-import { canonicalShards, canonicalSpareShards, shardListDigest } from '../resources/residencyPolicy.ts';
+import { canonicalShards, canonicalSpareList, shardListDigest } from '../resources/residencyPolicy.ts';
 import * as logger from '../utility/logging/harper_logger.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import type { RootConfigWatcher } from './RootConfigWatcher.ts';
@@ -22,9 +22,9 @@ function canonicalList(value: unknown): unknown {
 	}
 }
 
-function canonicalSpareList(value: unknown, shards: unknown): unknown {
+function canonicalSpares(value: unknown): unknown {
 	try {
-		return canonicalSpareShards(value, canonicalShards(shards));
+		return canonicalSpareList(value);
 	} catch {
 		return value;
 	}
@@ -32,8 +32,7 @@ function canonicalSpareList(value: unknown, shards: unknown): unknown {
 
 function digest(shards: unknown, spares: unknown): string | null {
 	try {
-		const list = canonicalShards(shards);
-		return shardListDigest(list, canonicalSpareShards(spares, list));
+		return shardListDigest(canonicalShards(shards), canonicalSpareList(spares));
 	} catch {
 		return 'invalid';
 	}
@@ -61,9 +60,9 @@ export function watchShardingConfiguration(watcher: RootConfigWatcher): { ready:
 		const previous = getConfigValue('replication_shards');
 		const previousSpares = getConfigValue('replication_spareShards');
 		const next = canonicalList(replication.shards);
-		const nextSpares = canonicalSpareList(replication.spareShards, replication.shards);
+		const nextSpares = canonicalSpares(replication.spareShards);
 		const shardsChanged = !isEqual(canonicalList(previous), next);
-		const sparesChanged = !isEqual(canonicalSpareList(previousSpares, previous), nextSpares);
+		const sparesChanged = !isEqual(canonicalSpares(previousSpares), nextSpares);
 		if (!shardsChanged && !sparesChanged) return;
 		if (shardsChanged) updateConfigObject('replication_shards', next);
 		if (sparesChanged) updateConfigObject('replication_spareShards', nextSpares);

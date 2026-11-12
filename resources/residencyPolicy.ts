@@ -167,11 +167,8 @@ export function canonicalShards(value: unknown): number[] | undefined {
 	return [...shards].sort((a, b) => a - b);
 }
 
-/**
- * Shard IDs a default map gives no slots, so a node can join one and own nothing until slots are moved into it.
- * At least one listed shard must remain to hold slots.
- */
-export function canonicalSpareShards(value: unknown, shards: readonly number[] | undefined): number[] | undefined {
+/** The spare list's own shape: unique shard IDs, sorted; an empty list is none. */
+export function canonicalSpareList(value: unknown): number[] | undefined {
 	if (value === undefined || value === null) return;
 	if (!Array.isArray(value) || value.length > 65536)
 		throw new ClientError('replication.spareShards must be an array of shard IDs', 400);
@@ -182,14 +179,24 @@ export function canonicalSpareShards(value: unknown, shards: readonly number[] |
 			throw new ClientError('replication.spareShards must contain unique integer shard IDs from 0 to 65535', 400);
 		spares.add(shard);
 	}
+	return [...spares].sort((a, b) => a - b);
+}
+
+/**
+ * Shard IDs a default map gives no slots, so a node can join one and own nothing until slots are moved into it.
+ * Checked against the shard list only where a default map is built: an installed map does not depend on it.
+ */
+export function canonicalSpareShards(value: unknown, shards: readonly number[] | undefined): number[] | undefined {
+	const spares = canonicalSpareList(value);
+	if (!spares) return;
 	if (!shards) throw new ClientError('replication.spareShards requires replication.shards', 400);
 	const listed = new Set(shards);
 	for (const shard of spares)
 		if (!listed.has(shard))
 			throw new ClientError(`replication.spareShards lists ${shard}, which is not in replication.shards`, 400);
-	if (spares.size >= shards.length)
+	if (spares.length >= shards.length)
 		throw new ClientError('replication.spareShards must leave at least one shard in replication.shards', 400);
-	return [...spares].sort((a, b) => a - b);
+	return spares;
 }
 
 /** With no spares the digest is the list's alone, so a node without spares agrees with one that predates them. */

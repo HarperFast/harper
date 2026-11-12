@@ -7,6 +7,7 @@ const {
 	normalizeResidencyPolicy,
 	canonicalShards,
 	canonicalSpareShards,
+	canonicalSpareList,
 	shardListDigest,
 	defaultResidencyMap,
 	createResidencyMap,
@@ -101,6 +102,13 @@ describe('Residency policy and map identity', () => {
 		assert.notEqual(shardListDigest([0, 1]), shardListDigest([0, 1], [1]));
 		assert.notEqual(shardListDigest([0, 1, 2], [1]), shardListDigest([0, 1, 2], [2]));
 		assert.equal(shardListDigest(undefined, [1]), null);
+	});
+
+	it('checks only the spare list shape outside default-map creation, so a stale spare cannot block an installed map', () => {
+		assert.deepEqual(canonicalSpareList([2, 1]), [1, 2]);
+		assert.throws(() => canonicalSpareShards([2], [0, 1]), /lists 2, which is not in replication.shards/);
+		assert.throws(() => canonicalSpareList([1, 1]), /unique integer/);
+		assert.equal(canonicalSpareList([]), undefined);
 	});
 
 	it('canonicalizes a spare list and treats an empty one as none', () => {
