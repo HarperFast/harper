@@ -629,7 +629,7 @@ export async function verifyBackup(request: any) {
 
 export async function validateRestoreBackup(request: any) {
 	requireSuperUser(request, OPERATIONS_ENUM.RESTORE_BACKUP);
-	const { databaseName, targetDatabase, acceptIncompatible, resume, cancel } = readOnlineRestoreRequest(request);
+	const { databaseName, targetDatabase, acceptIncompatible, resume, cancel } = readRestoreRequest(request);
 	// they act on the restore record the target already has, which needs no backup to resolve
 	if (resume || cancel) return;
 	const requestedBackupId = request.backup_id === undefined ? undefined : requireBackupId(request.backup_id);
@@ -650,8 +650,8 @@ export async function validateRestoreBackup(request: any) {
 	}
 }
 
-/** The options an online restore_backup accepts, validated the same way at submission and in the job. */
-function readOnlineRestoreRequest(request: any) {
+/** The options restore_backup accepts, validated the same way at submission, in the job and offline. */
+function readRestoreRequest(request: any, { offline = false } = {}) {
 	const databaseName = getDatabaseName(request);
 	const allowEngineOnly = requireBooleanOption(request.allow_engine_only, 'allow_engine_only');
 	const acceptIncompatible = requireBooleanOption(request.accept_incompatible_backup, 'accept_incompatible_backup');
@@ -675,7 +675,7 @@ function readOnlineRestoreRequest(request: any) {
 	if (request.retain_previous !== undefined && !onRestart) refuse(`'retain_previous' applies only with 'on_restart'`);
 	if (request.target_database !== undefined && (onRestart || resume || cancel))
 		refuse(`'target_database' is never held by a component, so it restores online; omit 'on_restart'`);
-	if (databaseName === 'system' || targetDatabase === 'system') {
+	if (!offline && (databaseName === 'system' || targetDatabase === 'system')) {
 		throw new ClientError(
 			`The 'system' database cannot be restored while Harper is running; stop the server and run: harper restore_backup database=system`
 		);
@@ -718,7 +718,7 @@ export async function restoreBackup(request: any) {
 		resume,
 		cancel,
 		retainPrevious,
-	} = readOnlineRestoreRequest(request);
+	} = readRestoreRequest(request);
 	const inPlace = targetDatabase === databaseName;
 	const requestedBackupId = request.backup_id === undefined ? undefined : requireBackupId(request.backup_id);
 	// a loaded database *with tables* knows its real directory via its root store (which can differ
@@ -932,7 +932,8 @@ export function beginRestoreForDatabase(
 	try {
 		return claimRestore(databaseDir, beforePublishMarker, backupDir);
 	} catch (error) {
-		if (error.statusCode === 409) throw restoreClaimConflict(databaseName, error);
+		// the admission callback's refusals are already client-facing, and say what to do instead
+		if (error.statusCode === 409 && !(error instanceof ClientError)) throw restoreClaimConflict(databaseName, error);
 		throw error;
 	}
 }
@@ -1416,6 +1417,16 @@ export async function restoreBackupOffline(
 		checkPeers: target === 'system' ? 'routes' : true,
 		probeEngineLock: true,
 	});
+}
+
+/**
+ * `cancel=true` with Harper stopped, the one part of the restart route that needs no server: starting
+ * Harper would run the restore before an online cancel could reach it.
+ */
+export async function cancelRestartRestoreOffline(request: any) {
+	const { databaseName } = readRestoreRequest(request, { offline: true });
+	const { cancelRestartRestore } = await import('./restoreIntent.ts');
+	return cancelRestartRestore(databaseName, resolveDatabasePath(databaseName), { offline: true });
 }
 
 /** Where each restore path calls this, and why, is in dataLayer/DESIGN.md (harper#2965). */

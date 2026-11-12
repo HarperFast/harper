@@ -16,10 +16,12 @@ import { httpRequest } from '../utility/common_utils.ts';
 import { initConfig } from '../config/configUtils.ts';
 import { getHdbPid } from '../utility/processManagement/processManagement.ts';
 import {
+	cancelRestartRestoreOffline,
 	createBackupOffline,
 	deleteBackupOffline,
 	listBackupsOffline,
 	purgeBackupsOffline,
+	requireBooleanOption,
 	restoreBackupOffline,
 	verifyBackupOffline,
 } from '../dataLayer/rocksdbBackup.ts';
@@ -84,11 +86,16 @@ export async function runBackupCommand(command: string): Promise<void> {
 			result = await purgeBackupsOffline(databaseName, request.keep_count);
 			break;
 		case OPERATIONS_ENUM.RESTORE_BACKUP: {
-			// ignoring one would turn a cancel, or a restore scheduled for the next start, into an immediate restore
-			const needsServer = OFFLINE_RESTORE_UNSUPPORTED.filter((field) => request[field] !== undefined);
+			if (requireBooleanOption(request.cancel, 'cancel')) {
+				result = await cancelRestartRestoreOffline(request);
+				break;
+			}
+			// ignoring one would restore now what was asked for at the next start, or without its rollback copy
+			const needsServer = OFFLINE_RESTORE_UNSUPPORTED.filter((field) => requireBooleanOption(request[field], field));
 			if (needsServer.length > 0) {
+				const fields = needsServer.join(', ');
 				throw new ClientError(
-					`restore_backup ${needsServer.join(', ')} needs the server running; start Harper and rerun, or restore offline with backup_id=`
+					`restore_backup ${fields} needs the server running; start Harper and rerun. With Harper stopped, restore now by omitting ${fields} (backup_id=<id> picks the backup, the latest by default), or withdraw a pending restart restore with cancel=true`
 				);
 			}
 			result = await restoreBackupOffline(
@@ -108,7 +115,7 @@ export async function runBackupCommand(command: string): Promise<void> {
 	console.log(YAML.stringify(result).trim());
 }
 
-const OFFLINE_RESTORE_UNSUPPORTED = ['on_restart', 'retain_previous', 'resume', 'cancel'];
+const OFFLINE_RESTORE_UNSUPPORTED = ['on_restart', 'retain_previous', 'resume'];
 
 /**
  * Whether the target of a saved `last_target` is the local instance (localhost / loopback). A

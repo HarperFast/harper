@@ -399,7 +399,11 @@ export async function resumeRestartRestore(
 	return deferredUntilRestart(receipt, `Restore of database '${databaseName}' resumes at the next startup`);
 }
 
-export async function cancelRestartRestore(databaseName: string, databaseDir: string) {
+export async function cancelRestartRestore(
+	databaseName: string,
+	databaseDir: string,
+	{ offline = false }: { offline?: boolean } = {}
+) {
 	const lock = claimTarget(databaseName, databaseDir);
 	let cancelled: RestoreReceipt | undefined;
 	let stillBlocked: boolean;
@@ -435,6 +439,7 @@ export async function cancelRestartRestore(databaseName: string, databaseDir: st
 	} finally {
 		releaseRestoreLock(lock);
 	}
+	if (offline) return cancelledOffline(databaseName, cancelled, stillBlocked);
 	if (cancelled?.job_id && cancelled.state !== 'terminal') {
 		await settleRestoreJob(cancelled, hdbTerms.JOB_STATUS_ENUM.ERROR, 'Cancelled').catch((error) =>
 			logger.error(`Could not settle cancelled restore job ${cancelled!.job_id}`, error)
@@ -461,6 +466,24 @@ export async function cancelRestartRestore(databaseName: string, databaseDir: st
 		},
 		restarting ? requestDrainedRestart : undefined
 	);
+}
+
+/** With Harper stopped there is no job table to settle and nothing to restart; the next start settles the job. */
+function cancelledOffline(databaseName: string, cancelled: RestoreReceipt | undefined, stillBlocked: boolean) {
+	const outcome = stillBlocked
+		? `The restore was cancelled, but it had already begun replacing '${databaseName}', which stays unloadable until a restore succeeds`
+		: `The restore was cancelled before anything was replaced; '${databaseName}' loads when Harper starts`;
+	const job =
+		cancelled?.job_id && cancelled.state !== 'terminal'
+			? `; its job ${cancelled.job_id} is marked failed when Harper starts`
+			: '';
+	return {
+		database: databaseName,
+		cancelled: cancelled?.operation_id ?? 'unreadable restore record',
+		still_blocked: stillBlocked,
+		restarting: false,
+		message: outcome + job,
+	};
 }
 
 async function adoptOrTakePreRestoreBackup(lock: RestoreLock, receipt: RestoreReceipt): Promise<RestoreReceipt> {
@@ -547,6 +570,19 @@ async function failAttempt(lock: RestoreLock, receipt: RestoreReceipt, reason: s
 /** One attempt at a pending restart restore, at startup. Returns whether it published; never throws past a failure. */
 export async function runRestartAttempt(found: RestoreReceipt): Promise<boolean> {
 	const lock = acquireRestoreLock(found.database_path);
+	// the scan read the receipt before this lock, and a cancel in between (an offline one racing this
+	// boot) must not be undone by writing the scanned copy back
+	const current = readRestoreReceipt(found.database_path);
+	if (
+		current.kind !== 'valid' ||
+		current.receipt.operation_id !== found.operation_id ||
+		current.receipt.state === 'committed' ||
+		current.receipt.state === 'terminal'
+	) {
+		releaseRestoreLock(lock);
+		return false;
+	}
+	found = current.receipt;
 	lock.source = restoreSourceId(found.backup_dir);
 	// an attempt that killed the process never recorded its failure, so the limit is checked before
 	// starting another, not only after one fails

@@ -196,12 +196,18 @@ export async function finishOutstandingRestore(databaseDir: string, reload?: () 
 }
 
 /** Under the claim: what an earlier receipt on this target allows; returns the attempt taken over. */
-function admitOverEarlierReceipt(databaseDir: string, databaseName: string): RestoreReceipt | undefined {
+function admitOverEarlierReceipt(
+	databaseDir: string,
+	databaseName: string,
+	route: RestoreRoute
+): RestoreReceipt | undefined {
 	const read = readRestoreReceipt(databaseDir);
 	if (read.kind === 'absent') return undefined;
 	if (read.kind === 'unreadable') {
+		// the path is for an operator on this host; a client gets the operation that removes it
+		const remove = route === 'offline' ? restoreReceiptPath(databaseDir) : 'it with restore_backup cancel=true';
 		throw new ClientError(
-			`Database '${databaseName}' has a restore record that cannot be read (${read.reason}); remove ${restoreReceiptPath(databaseDir)} before restoring again`,
+			`Database '${databaseName}' has a restore record that cannot be read (${read.reason}); remove ${remove} before restoring again`,
 			409
 		);
 	}
@@ -214,8 +220,11 @@ function admitOverEarlierReceipt(databaseDir: string, databaseName: string): Res
 	}
 	// a terminal restart restore is no longer scheduled, so any restore may take its target over
 	if (earlier.route === 'on_restart' && earlier.state !== 'terminal') {
+		const pending = `Database '${databaseName}' has a pending restart restore (job ${earlier.job_id ?? earlier.operation_id}, ${earlier.state})`;
 		throw new ClientError(
-			`Database '${databaseName}' has a pending restart restore (job ${earlier.job_id ?? earlier.operation_id}, ${earlier.state}); use restore_backup resume=true, cancel=true, or another backup_id with on_restart=true`,
+			route === 'offline'
+				? `${pending}, which runs when Harper starts; to restore now instead, first withdraw it with restore_backup cancel=true`
+				: `${pending}; use restore_backup resume=true, cancel=true, or another backup_id with on_restart=true`,
 			409
 		);
 	}
@@ -281,7 +290,7 @@ async function publishUnderFence(request: PublishRestoreRequest): Promise<Record
 				allowEngineOnly: request.allowEngineOnly,
 			});
 			const claimed = beginRestoreForDatabase(databaseDir, targetDatabase, backupDir, (preexisting, claimLock) => {
-				const earlier = admitOverEarlierReceipt(databaseDir, targetDatabase);
+				const earlier = admitOverEarlierReceipt(databaseDir, targetDatabase, request.route);
 				assertTargetClaimable(
 					{ databaseDir, databaseName: targetDatabase, inPlace: request.inPlace },
 					backupDir,
@@ -672,8 +681,9 @@ async function recoverRestoresOnce(): Promise<Set<string>> {
 			} else if (receipt.route === 'on_restart' && receipt.state !== 'terminal') {
 				const { runRestartAttempt } = await import('./restoreIntent.ts');
 				if (await runRestartAttempt(receipt)) published = true;
-				// still scheduled, so its job is the receipt's; a terminal one already settled its job as failed
-				else if (receipt.job_id && !restartRestoreIsTerminal(receipt)) owned.add(receipt.job_id);
+				// still scheduled, so its job is the receipt's; a terminal one already settled its job as failed,
+				// and one cancelled since the scan leaves its job to the sweep
+				else if (receipt.job_id && restartRestoreStillScheduled(receipt)) owned.add(receipt.job_id);
 			} else if (receipt.route === 'on_restart' && receipt.job_id) {
 				// terminal: the job failed when the receipt did, but that settle may not have landed
 				await settleRestoreJob(receipt, hdbTerms.JOB_STATUS_ENUM.ERROR);
@@ -698,10 +708,10 @@ async function recoverRestoresOnce(): Promise<Set<string>> {
 	return owned;
 }
 
-function restartRestoreIsTerminal(receipt: RestoreReceipt): boolean {
+function restartRestoreStillScheduled(receipt: RestoreReceipt): boolean {
 	const read = readRestoreReceipt(receipt.database_path);
 	return (
-		read.kind === 'valid' && read.receipt.operation_id === receipt.operation_id && read.receipt.state === 'terminal'
+		read.kind === 'valid' && read.receipt.operation_id === receipt.operation_id && read.receipt.state !== 'terminal'
 	);
 }
 

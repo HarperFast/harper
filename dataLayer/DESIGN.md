@@ -168,7 +168,8 @@ restore and the next startup applies it, before anything can open the target.
 - **Job ownership.** The receipt, not the row, decides the outcome. The boot sweep skips the job ids
   `recoverRestoresAtStartup` returns, and `settleAbandonedJob` skips a `deferred_to` row only while
   `restoreReceiptOwnsJob` finds an uncommitted receipt naming it, so a crash between receipt and row
-  cannot strand a job.
+  cannot strand a job. A `cancel` with Harper stopped (`cancelRestartRestoreOffline`) can reach neither
+  the row nor a restart; it changes the files only, and the next boot settles the row.
 - **Drain.** `bin/restart.ts` with `drain` runs `shutdownProcess(deadline)`, the path a SIGTERM takes,
   so main-thread components flush too (`threads.count=0`); the exit watchdog adds
   `threads.shutdownTimeout`.

@@ -88,7 +88,8 @@ export function readRestoreReceiptFile(receiptPath: string): RestoreReceiptRead 
 		text = readFileSync(receiptPath, 'utf8');
 	} catch (error: any) {
 		if (error.code === 'ENOENT') return { kind: 'absent' };
-		return { kind: 'unreadable', reason: `${error.code ?? 'read error'}: ${error.message}` };
+		// its message names the file, and a reason can reach a client
+		return { kind: 'unreadable', reason: error.code ?? 'read error' };
 	}
 	let parsed: any;
 	try {

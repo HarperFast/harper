@@ -5,9 +5,9 @@ testUtils.preTestPrep();
 
 const assert = require('node:assert');
 const { randomBytes, randomUUID } = require('node:crypto');
-const { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
+const { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
 
-const { join } = require('node:path');
+const { dirname, join } = require('node:path');
 const { writeUnsupportedTableFormat } = require('./fixtures/backupFiles.js');
 const { tryFileLock, fileLockRelease } = require('../rocksdbBindings.mts').rocksdbBindings();
 const env = require('#src/utility/environment/environmentManager');
@@ -25,6 +25,7 @@ const { setAnalyticsEnabled } = require('#src/resources/analytics/write');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const {
 	backupDirForDatabase,
+	cancelRestartRestoreOffline,
 	createBackup,
 	createPreRestoreBackup,
 	deleteBackupOffline,
@@ -1377,6 +1378,110 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.live, 'nothing was replaced');
 		});
 
+		it('with Harper stopped: withdraws the restore without a restart, leaving its job to the next start', async function () {
+			const fixture = await seededDatabase();
+			const { jobId } = await requestRestore(fixture.name, { on_restart: true });
+			const { operation_id: operationId } = receiptOf(fixture.dir);
+			await closeDatabase(fixture.name);
+			// a counted attempt is what makes the online cancel restart
+			rewriteReceipt(fixture.dir, { attempts: 1 });
+			const restarts = [];
+			const restoreRestart = replaceExport(restartModule, 'restart', async (...args) => {
+				restarts.push(args);
+			});
+			let result;
+			try {
+				result = await cancelRestartRestoreOffline({ database: fixture.name, cancel: true });
+			} finally {
+				restoreRestart();
+			}
+
+			assert.deepStrictEqual(
+				{ cancelled: result.cancelled, still_blocked: result.still_blocked, restarting: result.restarting },
+				{ cancelled: operationId, still_blocked: false, restarting: false }
+			);
+			assert.match(result.message, new RegExp(`job ${jobId}`));
+			assert.deepStrictEqual(restarts, []);
+			assert.strictEqual(readRestoreReceipt(fixture.dir).kind, 'absent');
+			assert.deepStrictEqual(pinsOf(fixture), []);
+			assert.strictEqual((await job(jobId)).status, JOB_STATUS_ENUM.IN_PROGRESS, 'the CLI leaves the job row alone');
+
+			await reconcileInterruptedJobs(await boot(fixture.name));
+			const settled = await job(jobId);
+			assert.strictEqual(settled.status, JOB_STATUS_ENUM.ERROR);
+			assert.match(settled.message, /interrupted/);
+			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.live, 'nothing was replaced');
+		});
+
+		it('with Harper stopped: a cancel that lands after the boot scanned the receipt is not undone', async function () {
+			const fixtures = [await seededDatabase(), await seededDatabase()];
+			const jobs = [];
+			for (const fixture of fixtures) {
+				jobs.push((await requestRestore(fixture.name, { on_restart: true, retain_previous: false })).jobId);
+				await closeDatabase(fixture.name);
+			}
+			// whichever restore the boot runs first, the other is cancelled while it runs, after the scan
+			let cancelled;
+			const restoreChild = replaceExport(
+				restoreChildRunnerModule,
+				'runRestoreChild',
+				async (command, args, options) => {
+					if (cancelled === undefined) {
+						cancelled = fixtures.findIndex((fixture) => fixture.name !== args.databaseName);
+						await cancelRestartRestoreOffline({ database: fixtures[cancelled].name, cancel: true });
+					}
+					return runRestoreChild(command, args, options);
+				}
+			);
+			let owned;
+			try {
+				resetStartupRecoveryForTesting();
+				owned = await recoverRestoresAtStartup();
+			} finally {
+				restoreChild();
+			}
+			const restored = 1 - cancelled;
+
+			assert.strictEqual(
+				readRestoreReceipt(fixtures[cancelled].dir).kind,
+				'absent',
+				'the scanned copy is not written back'
+			);
+			assert.deepStrictEqual([...owned], [], 'no receipt names the cancelled job any longer');
+			await reconcileInterruptedJobs(owned);
+			assert.strictEqual((await job(jobs[cancelled])).status, JOB_STATUS_ENUM.ERROR);
+			assert.strictEqual((await job(jobs[restored])).status, JOB_STATUS_ENUM.COMPLETE);
+			assert.deepStrictEqual(await snapshot(loadedItems(fixtures[cancelled].name)), fixtures[cancelled].live);
+			assert.deepStrictEqual(await snapshot(loadedItems(fixtures[restored].name)), fixtures[restored].backedUp[0]);
+		});
+
+		it('with Harper stopped: refuses a restore over a pending one, naming only the way out that works offline', async function () {
+			const fixture = await seededDatabase();
+			const [backupId] = fixture.backupIds;
+			await requestRestore(fixture.name, { on_restart: true, retain_previous: false });
+			await assert.rejects(
+				restoreBackup({ ...SU, database: fixture.name, backup_id: backupId }),
+				(error) => error.statusCode === 409 && /pending restart restore.*resume=true, cancel=true/.test(error.message)
+			);
+			await closeDatabase(fixture.name);
+
+			await assert.rejects(restoreBackupOffline(fixture.name, backupId), (error) => {
+				assert.strictEqual(error.statusCode, 409);
+				assert.match(error.message, /pending restart restore/);
+				assert.match(error.message, /cancel=true/);
+				assert.doesNotMatch(error.message, /resume=true|on_restart=true/);
+				return true;
+			});
+			await assert.rejects(
+				cancelRestartRestoreOffline({ database: fixture.name, cancel: true, backup_id: backupId }),
+				(error) => error.statusCode === 400 && /omit 'backup_id'/.test(error.message)
+			);
+
+			await cancelRestartRestoreOffline({ database: fixture.name, cancel: true });
+			await restoreBackupOffline(fixture.name, backupId);
+			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.backedUp[0]);
+		});
+
 		it('restarts when this boot latched restore safe mode before counting an attempt', async function () {
 			const fixture = await seededDatabase();
 			await requestRestore(fixture.name, { on_restart: true });
@@ -1651,6 +1756,38 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 				repair();
 				restoreRestart();
 			}
+		});
+
+		it('refuses a restore over a record that cannot be read, telling a client how to remove it and never where it is', async function () {
+			const fixture = await seededDatabase();
+			const [backupId] = fixture.backupIds;
+			await requestRestore(fixture.name, { on_restart: true, retain_previous: false });
+			const receiptPath = restoreReceiptPath(fixture.dir);
+			// a read error's own message names the file; a mode cannot deny the read on Windows, or to root
+			if (process.platform !== 'win32' && process.getuid?.() !== 0) {
+				chmodSync(receiptPath, 0o000);
+				try {
+					await assert.rejects(restoreBackup({ ...SU, database: fixture.name, backup_id: backupId }), (error) => {
+						assert.strictEqual(error.statusCode, 409);
+						assert.match(error.message, /cannot be read \(EACCES\).*restore_backup cancel=true/);
+						assert.ok(!error.message.includes(dirname(fixture.dir)), error.message);
+						return true;
+					});
+				} finally {
+					chmodSync(receiptPath, 0o600);
+				}
+			}
+			writeFileSync(receiptPath, '{"version":1,"state":');
+			await assert.rejects(
+				restoreBackup({ ...SU, database: fixture.name, backup_id: backupId }),
+				(error) => error.statusCode === 409 && /cannot be read \(not valid JSON\).*cancel=true/.test(error.message)
+			);
+			await closeDatabase(fixture.name);
+			await assert.rejects(
+				restoreBackupOffline(fixture.name, backupId),
+				(error) => error.statusCode === 409 && error.message.includes(restoreReceiptPath(fixture.dir))
+			);
+			await restoreBackup({ ...SU, database: fixture.name, cancel: true });
 		});
 
 		it('removes a receipt that cannot be read', async function () {
