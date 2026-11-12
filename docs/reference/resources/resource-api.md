@@ -361,6 +361,8 @@ Options (all optional; prefer setting these via `@table` schema directives):
 
 Harper automatically serializes concurrent requests for the same missing or stale record — all waiting requests share a single upstream fetch, preventing cache stampedes.
 
+<VersionBadge type="changed" version="v5.4.0" /> A fetch holds the record for at most 10 seconds. If it is still running then, the next waiting request starts a fresh fetch while the first one finishes; a late result is cached only if nothing newer was cached meanwhile. At most one fetch at a time holds the record, and only that fetch releases it.
+
 #### Observing cache disposition
 
 Each `get` on a caching table records whether the record came from the cache or from the source in the `loadedFromSource` property of the **`RequestTarget`** for that get. Cache disposition is a per-get result, so it lives on the per-get target — pass an explicit `RequestTarget` to observe it:

@@ -14272,11 +14272,13 @@ export function makeTable(options): TableResourceClass {
 			let timer: ReturnType<typeof setTimeout>;
 			await new Promise<void>((resolve) => {
 				wake = resolve;
-				// closing this thread's handle does not notify a wait on another thread's lock
-				timer = setTimeout(() => {
-					releaseRecordLock(id);
-					resolve();
-				}, sourceFillLockTimeout);
+				// only the fill holding the lock releases it; this thread's closed handle never hears of another
+				// thread's release, and its hasLock() throws, so a wait still settles
+				const recheck = () => {
+					if (recordLockHeld(id)) timer = setTimeout(recheck, sourceFillLockTimeout);
+					else resolve();
+				};
+				timer = setTimeout(recheck, sourceFillLockTimeout);
 			});
 			clearTimeout(timer);
 			const entry = primaryStore.getEntry(id);
@@ -14307,10 +14309,18 @@ export function makeTable(options): TableResourceClass {
 		setLoadedFromSource(target, true);
 		const fill: SourceFill = { source };
 		(sourceFills ??= new Map()).set(fillKey, fill);
+		let tenure: ReturnType<typeof setTimeout>;
+		let lockReleased = false;
 		const releaseFill = () => {
+			if (lockReleased) return;
+			lockReleased = true;
+			clearTimeout(tenure);
 			if (sourceFills.get(fillKey) === fill) sourceFills.delete(fillKey);
 			releaseRecordLock(id);
 		};
+		// a fill still running after its tenure lets the next request have the key; its late release is a no-op
+		tenure = setTimeout(releaseFill, sourceFillLockTimeout);
+		tenure.unref?.();
 
 		// it is important to remember that this is _NOT_ part of the current transaction; nothing is changing
 		// with the canonical data, we are simply fulfilling our local copy of the canonical data.
@@ -14761,6 +14771,13 @@ export function makeTable(options): TableResourceClass {
 		} catch (error) {
 			if (primaryStore.status === 'open' && tableRootStore.status === 'open')
 				logger.error?.(`Error releasing the cache resolution lock for ${id} in ${tableName}`, error);
+		}
+	}
+	function recordLockHeld(id: Id): boolean {
+		try {
+			return primaryStore.hasLock(id);
+		} catch {
+			return false;
 		}
 	}
 
