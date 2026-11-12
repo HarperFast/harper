@@ -301,7 +301,9 @@ import {
 	operations as crdtOperations,
 	rebuildUpdateBefore,
 	remainingAgainstRecord,
+	readAuditFrame,
 } from './crdt.ts';
+import { HistoryMemo, HistoryReader } from './historyReader.ts';
 import { appendHeader } from '../server/serverHelpers/Headers.ts';
 import fs from 'node:fs';
 import {
@@ -7768,14 +7770,7 @@ export function makeTable(options): TableResourceClass {
 						// Evaluate at most once per table (on the first expiring write); later writes short-circuit on one check.
 						if (!expirationWarningChecked) {
 							expirationWarningChecked = true;
-							if (
-								!expirationMs &&
-								!evictionMs &&
-								!expirationScanScheduled &&
-								!retainExpiryScan &&
-								!expiresAtProperty &&
-								!hasSourceGet
-							) {
+							if (!evictsRecords()) {
 								logger.warn?.(
 									`A per-record expiresAt was set on table "${tableName}" which has no table-level expiration/eviction, no expiresAt attribute, and no source; expiration will not be reliably enforced (the eviction scan is only armed best-effort on write and does not survive a restart with no writes). Configure a table-level expiration/eviction or an indexed expiresAt attribute for reliable eviction.`
 								);
@@ -10163,6 +10158,10 @@ export function makeTable(options): TableResourceClass {
 			// in subscription.queue. Without this, the IIFE can fill the queue past
 			// EVENT_HIGH_WATER_MARK and hit waitForDrain before the consumer's listener exists.
 			if (request.listener) subscription!.on('data', request.listener);
+			let replayMemo =
+				includeSuperseded && getFullRecord
+					? new HistoryMemo(primaryStore, tableId, { maxBytes: 128 * 1024, maxEntries: 256 })
+					: undefined;
 			const result = (async () => {
 				const isCollection = request.isCollection ?? thisId == null;
 				if (isCollection) {
@@ -10257,7 +10256,7 @@ export function makeTable(options): TableResourceClass {
 							if (!inScope(id)) continue;
 							// a lagging origin's write can be merged into another origin's newer one already delivered below
 							// that origin's boundary, so it is the only delivery of the merged state, as live
-							const event = eventFromAudit(id, auditRecord, auditRecord.txnLogKey, undefined, true);
+							const event = eventFromAudit(id, auditRecord, auditRecord.txnLogKey, undefined, true, replayMemo);
 							if (!event) continue;
 							event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
 							if (!send(event)) return;
@@ -10373,7 +10372,7 @@ export function makeTable(options): TableResourceClass {
 								if (resnapshots) reloadPending = true;
 								else if (thisId == null || isReload || isDescendantId(thisId, id)) {
 									// as live delivery converts it: a live entry dropped during the replay is delivered only here
-									const event = eventFromAudit(id, auditRecord, auditRecord.txnLogKey, undefined, true);
+									const event = eventFromAudit(id, auditRecord, auditRecord.txnLogKey, undefined, true, replayMemo);
 									if (event) {
 										if (reportingProgress) event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
 										if (!send(event)) return;
@@ -10458,7 +10457,14 @@ export function makeTable(options): TableResourceClass {
 										reloadPending = true;
 										continue;
 									}
-									const historyEntry = eventFromAudit(id, auditRecord, auditRecord.txnLogKey);
+									const historyEntry = eventFromAudit(
+										id,
+										auditRecord,
+										auditRecord.txnLogKey,
+										undefined,
+										undefined,
+										replayMemo
+									);
 									if (!historyEntry) continue;
 									// Filter rows before they consume a previousCount slot.
 									if (allowsEvent && !allowsEvent(historyEntry)) {
@@ -10577,7 +10583,7 @@ export function makeTable(options): TableResourceClass {
 							const auditRecord = auditStore.getSync(nextTime, tableId, thisId, nodeId, true);
 							if (auditRecord && !(checkResume && auditRecord.type === undefined)) {
 								if (startTime < nextTime) {
-									const event = eventFromAudit(thisId, auditRecord, nextTime);
+									const event = eventFromAudit(thisId, auditRecord, nextTime, undefined, undefined, replayMemo);
 									if (event && reportingProgress) event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
 									if (event && (!allowsEvent || allowsEvent(event))) {
 										request.omitCurrent = true;
@@ -10629,7 +10635,10 @@ export function makeTable(options): TableResourceClass {
 				if (reloadPending) scheduleReloadResnapshot();
 				settleResume?.(isActive());
 				goLive?.();
-			})();
+			})().finally(() => {
+				replayMemo?.close();
+				replayMemo = undefined;
+			});
 			result.catch(failSubscription);
 			if (settleResume) {
 				const settleUnverified = () => settleResume?.(false);
@@ -10682,7 +10691,14 @@ export function makeTable(options): TableResourceClass {
 				event.type = entry.metadataFlags & INVALIDATED ? 'invalidate' : entry.value ? 'put' : 'delete';
 				return true;
 			}
-			function eventFromAudit(id: Id, auditRecord: any, localTime: number, beginTxn?: boolean, live?: boolean) {
+			function eventFromAudit(
+				id: Id,
+				auditRecord: any,
+				localTime: number,
+				beginTxn?: boolean,
+				live?: boolean,
+				historyMemo?: HistoryMemo
+			) {
 				let type = auditRecord.type;
 				let value;
 				let version = auditRecord.version;
@@ -10702,7 +10718,7 @@ export function makeTable(options): TableResourceClass {
 						type = entry?.metadataFlags & INVALIDATED ? 'invalidate' : value ? 'put' : 'delete';
 					} else value = auditRecord.getValue?.(primaryStore, false, localTime);
 				} else {
-					value = auditRecord.getValue?.(primaryStore, getFullRecord, localTime);
+					value = auditRecord.getValue?.(primaryStore, getFullRecord, localTime, historyMemo);
 					if (getFullRecord && type === 'patch') type = 'put';
 				}
 				return { id, localTime, value, version, type, beginTxn, size: auditRecord.size };
@@ -12181,93 +12197,104 @@ export function makeTable(options): TableResourceClass {
 			return entriesDeleted;
 		}
 		static async *getHistory(startTime = 0, endTime = Infinity) {
-			let loggedEntryError = false;
-			for (const auditRecord of auditStore.getRange({
-				start: startTime || 1, // if startTime is 0, we actually want to shift to 1 because 0 is encoded as all zeros with audit store's special encoder, and will include symbols
-				end: endTime,
-			})) {
-				await rest(); // yield to other async operations
-				if (auditRecord.tableId !== tableId || isNonHistoryType(auditRecord.type)) continue;
-				let value;
-				try {
-					value = auditRecord.getValue(primaryStore, true, auditRecord.txnLogKey);
-				} catch (error) {
-					if (!loggedEntryError) {
-						loggedEntryError = true;
-						logger.error?.('Error getting history entry', auditRecord.txnLogKey, error);
-					}
+			const historyEntry = historyEntryReader();
+			try {
+				for (const auditRecord of auditStore.getRange({
+					start: startTime || 1, // if startTime is 0, we actually want to shift to 1 because 0 is encoded as all zeros with audit store's special encoder, and will include symbols
+					end: endTime,
+				})) {
+					await rest(); // yield to other async operations
+					if (isHistoryEntry(auditRecord)) yield historyEntry(auditRecord);
 				}
-				yield {
-					id: auditRecord.recordId,
-					// Compatibility-facing LMDB history has always reported/grouped by record version.
-					localTime: isRocksDB ? auditRecord.txnLogKey : auditRecord.version,
-					version: auditRecord.version,
-					type: auditRecord.type,
-					value,
-					user: auditRecord.user,
-					operation: auditRecord.originatingOperation,
-				};
+			} finally {
+				historyEntry.close();
 			}
 		}
 		static async getHistoryOfRecord(id) {
 			const history = [];
 			if (id == undefined) throw new Error('An id is required');
-			const entry = primaryStore.getEntry(id);
-			if (!entry) return history;
-			let nextVersion = isRocksDB
-				? resolveAuditHead(id, entry.version, entry.nodeId, entry.additionalAuditRefs).txnLogKey
-				: entry.localTime;
-			if (!nextVersion) return history;
-			const count = 0;
-			const auditWindow = 100;
-			let loggedEntryError = false;
-			do {
-				await rest(); // yield to other async operations
-				let insertionPoint = history.length;
-				let highestPreviousVersion = 0;
-				const start = nextVersion - auditWindow;
-				for (const auditRecord of auditStore.getRange({ start, end: nextVersion + 0.001 })) {
+			const historyEntry = historyEntryReader(id, true);
+			try {
+				const isEntryOfRecord = (auditRecord) => {
+					if (auditRecord.tableId !== tableId) return false;
+					const recordId = auditRecord.recordId;
 					if (
-						auditRecord.tableId === tableId &&
-						!isNonHistoryType(auditRecord.type) &&
-						compareKeys(auditRecord.recordId, id) === 0
-					) {
-						let value;
-						try {
-							// reconstruct each entry's record image as of its own log position, not the audit
-							// window boundary (nextVersion), matching getHistory (issue #1330)
-							value = auditRecord.getValue(primaryStore, true, auditRecord.txnLogKey);
-						} catch (error) {
-							if (!loggedEntryError) {
-								loggedEntryError = true;
-								logger.error?.('Error getting history entry', auditRecord.txnLogKey, error);
-							}
-						}
-						history.splice(insertionPoint, 0, {
-							id: auditRecord.recordId,
-							localTime: isRocksDB ? auditRecord.txnLogKey : auditRecord.version,
-							version: auditRecord.version,
-							type: auditRecord.type,
-							value,
-							user: auditRecord.user,
-							operation: auditRecord.originatingOperation,
-						});
-						const previousVersion = isRocksDB
-							? resolveAuditHead(
-									id,
-									auditRecord.previousVersion,
-									auditRecord.previousNodeId,
-									auditRecord.previousAdditionalAuditRefs
-								).txnLogKey
-							: auditRecord.previousVersion;
-						if (previousVersion > highestPreviousVersion && previousVersion < start) {
-							highestPreviousVersion = previousVersion;
+						recordId === undefined &&
+						(auditRecord.type === 'put' ||
+							auditRecord.type === 'patch' ||
+							auditRecord.type === 'delete' ||
+							auditRecord.type === 'invalidate')
+					)
+						historyEntry.memo.stopOptimizing();
+					return compareKeys(recordId, id) === 0;
+				};
+				const unlinkedEntries = async (end: number) => {
+					const entries = [];
+					let sinceYield = 0;
+					historyEntry.memo.beginRange();
+					const range = auditStore.getRange({ start: 1, end });
+					for (const auditRecord of range) {
+						const matches = isEntryOfRecord(auditRecord);
+						historyEntry.memo.observe(auditRecord, matches);
+						if (auditRecord.txnLogKey < end && matches && isHistoryEntry(auditRecord))
+							entries.push(historyEntry(auditRecord));
+						if (++sinceYield >= REPLAY_YIELD_INTERVAL) {
+							sinceYield = 0;
+							await rest();
 						}
 					}
-				}
-				nextVersion = highestPreviousVersion;
-			} while (count < 1000 && nextVersion);
-			return history.reverse();
+					historyEntry.memo.finishRange(range);
+					return entries;
+				};
+				const entry = primaryStore.getEntry(id);
+				if (!entry) return await historyEntry.settle(await unlinkedEntries(Infinity));
+				let nextVersion = isRocksDB
+					? resolveAuditHead(id, entry.version, entry.nodeId, entry.additionalAuditRefs).txnLogKey
+					: entry.localTime;
+				if (!nextVersion) return history;
+				const auditWindow = 100;
+				let start: number;
+				let endsAtUnlinkedWrite: boolean;
+				do {
+					await rest(); // yield to other async operations
+					const windowItems = [];
+					let highestPreviousVersion = 0;
+					start = nextVersion - auditWindow;
+					endsAtUnlinkedWrite = false;
+					historyEntry.memo.beginRange();
+					const range = auditStore.getRange({ start, end: nextVersion + 0.001 });
+					for (const auditRecord of range) {
+						const matches = isEntryOfRecord(auditRecord);
+						historyEntry.memo.observe(auditRecord, matches);
+						if (matches && isHistoryEntry(auditRecord)) {
+							const oldestInWindow = windowItems.length === 0;
+							windowItems.push(historyEntry(auditRecord));
+							const previousVersion = isRocksDB
+								? resolveAuditHead(
+										id,
+										auditRecord.previousVersion,
+										auditRecord.previousNodeId,
+										auditRecord.previousAdditionalAuditRefs
+									).txnLogKey
+								: auditRecord.previousVersion;
+							if (oldestInWindow) endsAtUnlinkedWrite = !previousVersion;
+							if (previousVersion > highestPreviousVersion && previousVersion < start) {
+								highestPreviousVersion = previousVersion;
+							}
+						}
+					}
+					historyEntry.memo.finishRange(range);
+					for (const item of windowItems.reverse()) history.push(item);
+					nextVersion = highestPreviousVersion;
+				} while (nextVersion);
+				history.reverse();
+				// a re-insert after eviction has no predecessor link, so an evictable record may have older history
+				if (endsAtUnlinkedWrite && (evictsRecords() || entry.expiresAt != undefined))
+					return await historyEntry.settle((await unlinkedEntries(start)).concat(history));
+				return await historyEntry.settle(history);
+			} finally {
+				historyEntry.close();
+			}
 		}
 		static async clear() {
 			if (databaseName === 'system' && tableName === RESIDENCY_MAP_TABLE)
@@ -13278,6 +13305,111 @@ export function makeTable(options): TableResourceClass {
 	}
 	function isHiddenExpiry(expiresAt: number | undefined, now?: number) {
 		return !hasSourceGet && expiresAt != undefined && expiresAt < (now ?? Date.now());
+	}
+	function evictsRecords() {
+		return Boolean(
+			expirationMs || evictionMs || expirationScanScheduled || retainExpiryScan || expiresAtProperty || hasSourceGet
+		);
+	}
+	function isHistoryEntry(auditRecord): boolean {
+		return auditRecord.tableId === tableId && !isNonHistoryType(auditRecord.type);
+	}
+	function historyCanCarry(id, current, memo: HistoryMemo) {
+		if (!TableResource.schemaDefined || residencyPolicy || !current) return false;
+		if (current.metadataFlags & (INVALIDATED | REPLICA | VERSION_REUSED) || current.additionalAuditRefs?.length)
+			return false;
+		try {
+			let { txnLogKey: key, nodeId } = isRocksDB
+				? resolveAuditHead(id, current.version, current.nodeId, current.additionalAuditRefs)
+				: { txnLogKey: current.localTime, nodeId: current.nodeId };
+			let newer = Infinity;
+			let inspected = 0;
+			while (key > 0 && ++inspected <= 16_384) {
+				const frame = readAuditFrame(auditStore, tableId, id, key, nodeId, true, memo);
+				const audited = frame[0];
+				if (frame.length !== 1 || !audited || audited.previousAdditionalAuditRefs?.length || !(audited.version < newer))
+					return false;
+				if (audited.type === 'put' || audited.type === 'delete') return true;
+				if (audited.type === 'invalidate' || audited.type === undefined) return false;
+				if (audited.type === 'patch') {
+					const update = audited.getValue(primaryStore, false);
+					if (update == null || Object.prototype.toString.call(update) !== '[object Object]') return false;
+					for (const value of Object.values(update) as any[])
+						if (
+							value &&
+							typeof value === 'object' &&
+							value.__op__ &&
+							typeof crdtOperations[value.__op__] !== 'function'
+						)
+							return false;
+				}
+				newer = audited.version;
+				key = audited.previousVersion;
+				nodeId = audited.previousNodeId;
+			}
+		} catch {}
+		return false;
+	}
+	function historyEntryReader(recordId?, deferred = false) {
+		const reader = new HistoryReader(
+			primaryStore,
+			tableId,
+			historyCanCarry,
+			deferred ? undefined : { maxBytes: 2 * 1024 * 1024, maxEntries: 8192 },
+			recordId
+		);
+		const pending = new Map<any, () => any>();
+		let loggedEntryError = false;
+		const report = (time, error) => {
+			if (!loggedEntryError) {
+				loggedEntryError = true;
+				logger.error?.('Error getting history entry', time, error);
+			}
+		};
+		const read = (auditRecord) => {
+			let value, resolve;
+			try {
+				resolve = deferred ? reader.defer(auditRecord) : undefined;
+				if (!resolve) value = reader.read(auditRecord);
+			} catch (error) {
+				report(auditRecord.txnLogKey, error);
+			}
+			const item = {
+				id: auditRecord.recordId,
+				localTime: isRocksDB ? auditRecord.txnLogKey : auditRecord.version,
+				version: auditRecord.version,
+				type: auditRecord.type,
+				value,
+				user: auditRecord.user,
+				operation: auditRecord.originatingOperation,
+			};
+			if (resolve) pending.set(item, resolve);
+			return item;
+		};
+		read.settle = async (items: any[]): Promise<any[]> => {
+			let sinceYield = 0;
+			for (const item of items) {
+				const resolve = pending.get(item);
+				if (!resolve) continue;
+				try {
+					item.value = resolve();
+				} catch (error) {
+					report(item.localTime, error);
+				}
+				pending.delete(item);
+				if (++sinceYield >= REPLAY_YIELD_INTERVAL) {
+					sinceYield = 0;
+					await rest();
+				}
+			}
+			return items;
+		};
+		read.memo = reader.memo;
+		read.close = () => {
+			pending.clear();
+			reader.memo.close();
+		};
+		return read;
 	}
 	function ensureLoadedFromSource(source: TableResourceClass, id, entry, context, resource?, target?) {
 		if (context?.onlyIfCached) {
