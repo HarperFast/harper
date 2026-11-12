@@ -84,6 +84,21 @@ async function processCpuSeconds(root: number): Promise<number> {
 	return total;
 }
 
+/** User plus system CPU-seconds of these processes (all their threads); an exited one counts 0. */
+export async function cpuSecondsOf(pids: number[]): Promise<number> {
+	let total = 0;
+	for (const pid of pids) {
+		try {
+			const stat = await readFile(`/proc/${pid}/stat`, 'utf8');
+			const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+			total += (Number(fields[11]) + Number(fields[12])) / 100;
+		} catch {
+			// exited
+		}
+	}
+	return total;
+}
+
 /**
  * Fails unless every thread of every process in `root`'s tree is allowed exactly `cpus`.
  *
@@ -194,6 +209,24 @@ export function chooseCpuSets(topology: CpuTopology[], k: number): { server: num
 		.map((t) => t.cpu)
 		.sort((a, b) => a - b);
 	return { server, driver };
+}
+
+/**
+ * The target's CPUs on a host that runs only targets (remote mode): one logical CPU per physical core
+ * when the host has exactly `k` cores (a 4-core VM gives the target all of it), else chooseCpuSets.
+ * `rest` is every CPU on the other physical cores, where a target agent pins itself; empty on a k-core host.
+ */
+export function targetHostCpus(topology: CpuTopology[], k: number): { server: number[]; rest: number[] } {
+	const firstOfCore = new Map<string, number>();
+	for (const t of [...topology].sort((a, b) => a.cpu - b.cpu)) {
+		const key = t.siblings.join(',');
+		if (!firstOfCore.has(key)) firstOfCore.set(key, t.cpu);
+	}
+	if (firstOfCore.size < k)
+		throw new Error(`need ${k} physical cores for the target, the host has ${firstOfCore.size}`);
+	if (firstOfCore.size === k) return { server: [...firstOfCore.values()].sort((a, b) => a - b), rest: [] };
+	const { server, driver } = chooseCpuSets(topology, k);
+	return { server, rest: driver };
 }
 
 /** Fails if the two sets overlap or share a physical core (SMT contention between target and generator). */
@@ -372,7 +405,7 @@ export async function readCgroupMemory(scope: string): Promise<CgroupMemory> {
 	};
 }
 
-async function totalCpuSeconds(targets: ResourceTargets): Promise<number> {
+export async function totalCpuSeconds(targets: ResourceTargets): Promise<number> {
 	let total = 0;
 	for (const root of Object.values(targets.processes)) total += await processCpuSeconds(root);
 	for (const scope of Object.values(targets.cgroups)) total += await cgroupCpuSeconds(scope);
@@ -380,19 +413,19 @@ async function totalCpuSeconds(targets: ResourceTargets): Promise<number> {
 }
 
 /**
- * Waits until the target uses less than `cores` of CPU over a `windowMs` window: compaction after a
- * bulk load, or a checkpoint, must not land in a measured run. Returns how long it waited, and
- * whether it got quiet before `maxMs`.
+ * Waits until the target (`cpuSeconds`: its CPU so far, on whichever hosts it runs) uses less than
+ * `cores` over a `windowMs` window: compaction after a bulk load, or a checkpoint, must not land in a
+ * measured run. Returns how long it waited, and whether it got quiet before `maxMs`.
  */
 export async function waitForQuiet(
-	targets: ResourceTargets,
+	cpuSeconds: () => Promise<number>,
 	{ cores = 0.1, windowMs = 5000, maxMs = 30 * 60_000 } = {}
 ): Promise<{ waitedMs: number; quiet: boolean }> {
 	const start = Date.now();
-	let previous = await totalCpuSeconds(targets);
+	let previous = await cpuSeconds();
 	while (Date.now() - start < maxMs) {
 		await new Promise((r) => setTimeout(r, windowMs));
-		const now = await totalCpuSeconds(targets);
+		const now = await cpuSeconds();
 		const used = (now - previous) / (windowMs / 1000);
 		previous = now;
 		if (used < cores) return { waitedMs: Date.now() - start, quiet: true };
@@ -486,6 +519,8 @@ export interface HostLoad {
 	otherCores: number;
 	/** Mean cores busy inside this run over the window. */
 	ownCores: number;
+	/** With `separateSelf`: the measuring process's own cgroup (a target agent), counted in neither of the above. */
+	agentCores?: number;
 }
 
 /**
@@ -493,23 +528,31 @@ export interface HostLoad {
  * CPU-heavy work outside the bench lock, which lands on the target cores' SMT siblings and shared
  * caches; this is the measure of that, not the load average, which counts the run itself.
  */
-export function startHostLoad(targets?: ResourceTargets): { stop(): Promise<HostLoad> } {
-	// This process's cgroup holds, under bench-run, the orchestrator and the load generator's shards.
-	const own = async () =>
-		(targets ? await totalCpuSeconds(targets) : 0) + (await cgroupCpuSeconds(processCgroup(process.pid)));
-	const begin = Promise.all([hostBusyCpuSeconds(), own(), Date.now()]);
+export function startHostLoad(
+	targets?: ResourceTargets,
+	{ separateSelf = false }: { separateSelf?: boolean } = {}
+): { stop(): Promise<HostLoad> } {
+	const targetCpu = async () => (targets ? await totalCpuSeconds(targets) : 0);
+	// Under bench-run this process's cgroup holds the orchestrator and the load generator's shards, which
+	// are the run's own; a target agent's is its own overhead on the target host, reported apart.
+	const selfCpu = async () => cgroupCpuSeconds(processCgroup(process.pid));
+	const read = () => Promise.all([hostBusyCpuSeconds(), targetCpu(), selfCpu()]);
+	const begin = Promise.all([read(), Date.now()]);
 	// Observed by stop(); until then a failed read must not be an unhandled rejection.
 	begin.catch(() => {});
 	return {
 		async stop() {
-			const [hostBefore, ownBefore, startMs] = await begin;
-			const [hostAfter, ownAfter] = await Promise.all([hostBusyCpuSeconds(), own()]);
+			const [[hostBefore, targetBefore, selfBefore], startMs] = await begin;
+			const [hostAfter, targetAfter, selfAfter] = await read();
 			const seconds = Math.max(1e-3, (Date.now() - startMs) / 1000);
-			const ownCores = (ownAfter - ownBefore) / seconds;
+			const targetCores = (targetAfter - targetBefore) / seconds;
+			const selfCores = (selfAfter - selfBefore) / seconds;
+			const ownCores = separateSelf ? targetCores : targetCores + selfCores;
 			return {
 				loadavg1: Number((await readFile('/proc/loadavg', 'utf8')).split(' ')[0]),
-				otherCores: Math.max(0, (hostAfter - hostBefore) / seconds - ownCores),
+				otherCores: Math.max(0, (hostAfter - hostBefore) / seconds - targetCores - selfCores),
 				ownCores,
+				...(separateSelf ? { agentCores: selfCores } : {}),
 			};
 		},
 	};
@@ -519,14 +562,19 @@ export function startHostLoad(targets?: ResourceTargets): { stop(): Promise<Host
  * Waits until the rest of the host has used under `maxOtherCores` over a `windowMs` window, for at
  * most `maxMs`; then the sample runs anyway and is marked not quiet.
  */
-export async function waitForQuietHost({ maxOtherCores = 1, windowMs = 30_000, maxMs = 20 * 60_000 } = {}): Promise<{
+export async function waitForQuietHost({
+	maxOtherCores = 1,
+	windowMs = 30_000,
+	maxMs = 20 * 60_000,
+	separateSelf = false,
+} = {}): Promise<{
 	waitedMs: number;
 	quiet: boolean;
 	last: HostLoad;
 }> {
 	const start = Date.now();
 	for (;;) {
-		const probe = startHostLoad();
+		const probe = startHostLoad(undefined, { separateSelf });
 		await new Promise((r) => setTimeout(r, windowMs));
 		const last = await probe.stop();
 		const waitedMs = Date.now() - start;
@@ -584,6 +632,13 @@ export async function sampleMemory(targets: ResourceTargets): Promise<Record<str
 	return memoryBytes;
 }
 
+export interface MemoryPeaks {
+	peakBytes: Record<string, number>;
+	peakTotalBytes: number;
+	meanBytes: Record<string, number>;
+	timeline: [number, number][];
+}
+
 /**
  * Peak resident memory per component across a measurement window, sampled every `intervalMs`.
  * An endpoint reading misses a spike that GC or eviction released before the window closed.
@@ -593,6 +648,7 @@ export class MemoryPeakSampler {
 	private peakTotal = 0;
 	private sum: Record<string, number> = {};
 	private samples = 0;
+	private timeline: [number, number][] = [];
 	private running?: Promise<void>;
 	private stopped = false;
 	private wake?: () => void;
@@ -618,6 +674,7 @@ export class MemoryPeakSampler {
 					total += bytes;
 				}
 				this.samples++;
+				this.timeline.push([Date.now(), total]);
 				this.peakTotal = Math.max(this.peakTotal, total);
 				await new Promise<void>((resolve) => {
 					this.wake = resolve;
@@ -630,19 +687,18 @@ export class MemoryPeakSampler {
 		});
 	}
 
-	/** `meanBytes` is the steady level: the mean of the window's samples, per component. */
-	async stop(): Promise<{
-		peakBytes: Record<string, number>;
-		peakTotalBytes: number;
-		meanBytes: Record<string, number>;
-	}> {
+	/**
+	 * `meanBytes` is the steady level: the mean of the window's samples, per component. `timeline` is
+	 * each sample's epoch ms and total, for summing simultaneous readings across hosts.
+	 */
+	async stop(): Promise<MemoryPeaks> {
 		this.stopped = true;
 		this.wake?.();
 		await this.running;
 		if (this.error) throw this.error;
 		const meanBytes: Record<string, number> = {};
 		for (const [name, sum] of Object.entries(this.sum)) meanBytes[name] = sum / this.samples;
-		return { peakBytes: this.peak, peakTotalBytes: this.peakTotal, meanBytes };
+		return { peakBytes: this.peak, peakTotalBytes: this.peakTotal, meanBytes, timeline: this.timeline };
 	}
 }
 
@@ -698,6 +754,8 @@ export class ClockProbe {
 	start(): void {
 		this.readings = [];
 		this.take();
+		// No cpufreq (a VM): nothing to read, so nothing polls the target's cores.
+		if (this.readings.length === 0) return;
 		this.timer = setInterval(() => this.take(), 200);
 		this.timer.unref();
 	}

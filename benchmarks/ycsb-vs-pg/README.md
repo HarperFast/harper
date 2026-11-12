@@ -53,7 +53,7 @@ All `benchmarks/ycsb` flags apply, plus:
 | `--serverCpus`, `--driverCpus` | derived           | Explicit CPU lists instead of `--target-cpus`                                                               |
 | `--cache`                      | `warm`            | `warm` or `cold` (below)                                                                                    |
 | `--base-harper`                | —                 | `dist/bin/harper.js` of the build `harper-base` runs                                                        |
-| `--shards`                     | `4`               | Load-generator processes                                                                                    |
+| `--shards`                     | generator CPUs    | Load-generator processes: one per generator CPU, at most `--concurrency` (below)                            |
 | `--reps`                       | `1`               | Independent samples per target × workload                                                                   |
 | `--perf-counters`              | off               | `perf stat` per component over each measured run                                                            |
 | `--profile=<dir>`              | off               | Counters, then a sampled profile window (below)                                                             |
@@ -61,11 +61,33 @@ All `benchmarks/ycsb` flags apply, plus:
 | `--auth`                       | `none`            | `none` or `token` (below); recorded in every row                                                            |
 | `--host-quiet-cores=N`         | off               | Before each sample, wait for the rest of the host to use < N cores; refuses a shared cgroup, like the sweep |
 | `--host-quiet-max-min`         | `20`              | Longest that wait, in minutes                                                                               |
+| `--hosts=<file>`               | off               | Remote-target mode: targets on other hosts, this host only generates load (below)                           |
 
 `--threads` (Harper's worker threads and the Fastify cluster size) defaults to K.
 Results land in `benchmarks/ycsb-vs-pg/results/`, written after every sample, with
 a printed table at the end. Runtime scales with reps × workloads × targets: every
 sample starts a fresh server and reloads the dataset.
+
+### Load generator
+
+`shardedDriver.mts` keeps `--concurrency` requests in flight from `--shards` Node processes, each with its
+own `KeyState` and REST client. Every key, op, record and link comes from `../ycsb/workload.mts`, and
+`--shards` defaults to one process per generator CPU (at most `--concurrency`). A measured window opens
+as the shards start a phase's requests and closes as they finish, and the shards' CPU over it is the
+row's generator CPU.
+
+**Shards matter.** Measured on the XPS (i7-12700H) at turbo off, with the generator on 8 CPUs (two
+P-cores with their SMT siblings, plus four E-cores), 64 requests in flight and `--auth=token`, 2 runs each:
+
+| shards |         client-ceiling C | harper-uws warm C | pg-redis warm C |
+| ------ | -----------------------: | ----------------: | --------------: |
+| 4      | 56k ops/s, 3.7 CPUs busy |               50k |             49k |
+| 8      | 66k ops/s, 6.7 CPUs busy |               59k |             52k |
+
+Four shards, the old default, held harper-uws on 4 target cores below what it serves, and moved the
+warm-C harper-uws/pg-redis ratio from 1.13 to about 1.02. Rows recorded with 4 shards (`meta.shards`)
+understate Harper on read-only workloads. Run `client-ceiling.mts` on the generator's CPUs before trusting
+a cell that comes within reach of its ceiling.
 
 ## Method
 
@@ -156,7 +178,7 @@ sample starts a fresh server and reloads the dataset.
 - **The read-all pass touches every key through the target's own read path** —
   Redis for `pg-redis`, Postgres for `pg-only`, the record cache and RocksDB for
   Harper — so first-touch costs land before the measured run.
-- **Everything is on one host**, including the load generator. Run
+- **Everything is on one host**, including the load generator (unless `--hosts`, below). Run
   `client-ceiling.mts` to confirm the reported numbers are server-bound rather
   than client-bound:
 
@@ -168,7 +190,9 @@ sample starts a fresh server and reloads the dataset.
   CPUs and drives it with the same sharded driver on the same generator CPUs,
   for workload C (all shards) and E (one shard, since it inserts). Every route
   returns one ~1 KB record, so it bounds the generator's request rate, not the
-  cost of receiving E's multi-record scan bodies.
+  cost of receiving E's multi-record scan bodies. Each line reports the shards'
+  busy cores; `--max-generator-busy=<fraction>` exits 1 when C kept more than
+  that share of the driver's capacity busy (one core per shard, at most one per CPU).
 
 ## Authentication (`--auth`)
 
@@ -315,6 +339,135 @@ with (`measured.harperSettings`; `meta.harperSettings` per target):
 - The record-cache counts in [PROFILE.md](PROFILE.md) come from a temporary probe patched
   into `dist/` for those runs, never committed. `meta.harper.digests` holds the SHA-256 of the
   two files such probes patch, so a results file says whether its build was instrumented.
+
+## Remote targets and GCP (`--hosts`, `gcp/`)
+
+Single-host mode shares one machine between the target and the load generator. With `--hosts=<file>`,
+`run-compare.mts`, `memory-sweep.mts` and their flags work the same way, but this host only runs the
+orchestrator and the load generator. Each target host runs a target agent (`targetAgent.mts`, started
+over `ssh <host> -- node ...`). The agent launches its part with the single-host code: the same capped
+scopes, compose cpusets, restore inside the sample's cgroup, credentials and teardown. It takes that
+part's readings on its host: cgroup CPU and memory, perf counters and records, thread affinity, and
+the host-quiet gate. Nothing crosses the network while a window runs except the load: each host's
+readings for a window are taken in one call before it and one after it. The hosts file names a host
+for each role:
+
+```json
+{
+	"repoDir": "/opt/ycsb/harper",
+	"roles": {
+		"harper": {
+			"ssh": "ycsb@10.77.0.3",
+			"address": "10.77.0.3",
+			"dataDir": "/mnt/ycsb/data",
+			"requireMount": "/mnt/ycsb"
+		},
+		"stack": { "ssh": "ycsb@10.77.0.4", "address": "10.77.0.4" },
+		"redis": { "ssh": "ycsb@10.77.0.5", "address": "10.77.0.5" },
+		"postgres": { "ssh": "ycsb@10.77.0.6", "address": "10.77.0.6" }
+	}
+}
+```
+
+`address` is where the target listens and other hosts reach it. Without it, the host keeps
+single-host loopback addresses, which is how the local validation runs both "hosts" on one
+machine (`"ssh": "localhost"`, or `"command": ["node", "benchmarks/ycsb-vs-pg/targetAgent.mts"]`
+without sshd, plus `serverCpus` and `--driverCpus` to pin as single-host mode does). On a host with
+exactly `--target-cpus` physical cores, the target gets all of them and the agent shares them. Each
+row then records the agent's own CPU (`agentCores`) apart from the target's and the rest of the
+host's. Remote mode needs `--auth=token` for Harper on a non-loopback address: local trust covers
+loopback peers only. It always counts perf events, since instructions/op is the stable metric where
+turbo stays on. Rows add `perfClockGHz` (cycles over CPU-seconds). Run remote mode on a network of its own, as `gcp/` does: Harper's operations API listens on the bound address too, with the test helper's fixed admin password until the harness replaces it moments after startup, and topology b's Postgres keeps its fixed benchmark credential.
+
+**Topologies.** A target name alone is topology (a). A name with `@b` (stack targets only) is
+topology (b). One session can interleave both: `--targets=harper-uws,pg-redis,pg-redis@b`.
+
+- **(a) co-located, the publishable one.** Each target gets its own target VM of the same shape.
+  Harper runs alone on its VM; Fastify, Redis and Postgres share theirs. The rules are the ones
+  above: 4 cores and 8 GiB per target, and the stack's per-component split (memory-sweep: Fastify
+  1 GiB, Redis 3.5 GiB with `maxmemory 3gb`, Postgres 3.5 GiB). The stack's hops stay on loopback.
+- **(b) separate hosts.** Fastify runs on the stack VM; Redis and Postgres each run on a VM of the
+  same shape in the same zone and placement group, with the same per-component memory caps.
+  Every (b) row carries `topology: "b"`, a `note` saying what it is, and `rtt`: TCP ping-pong
+  p50/p99 from Fastify's host to Redis's and Postgres's, before each sample. Session meta holds
+  the same at session start, the generator's round trip to every host, and the probe's
+  loopback floor.
+
+What (b) does and does not claim. It measures a common production layout: a cache-aside app whose
+cache and database are network services. It gives the stack three VMs, so 3x the cores of (a),
+on purpose. Its numbers are therefore a deployment comparison, not an equal-budget one, and the
+(b)/(a) ratio is not the cost of the network hops alone: hops and cores change together. Per-component
+CPU in each row shows whether the stack was CPU-bound in (a). Attributing a gap to the hops alone would
+need a matched-resource variant, for example (b) with its components pinned to 4 cores in total, which
+this harness does not run.
+
+**GCP.** The `gcp/` scripts provision a run with the gcloud CLI. The project comes from
+`YCSB_GCP_PROJECT`; zone, shapes and limits are in `gcp/config.sh`.
+
+- `provision.sh --run-id=<id> --topology=a|ab [--commit=<sha>]` creates a network of its own
+  (internal traffic between the run's VMs, SSH only from this host's address), one compact
+  placement policy, and VMs `generator`, `harper`, `stack` (plus `redis` and `postgres` for ab).
+  Every VM is labeled `ycsb-bench=true,ycsb-run=<id>,ycsb-role=<role>` and created with
+  `--max-run-duration` (12 h) and `--instance-termination-action=DELETE`, so GCE deletes it even if no script
+  ever runs again. A failure part way tears the run down. `--dry-run` prints the gcloud commands.
+- `startup.sh` (the VMs' startup script) mounts the local SSD at `/mnt/ycsb`, installs Docker, the
+  latest Node of CI's major, perf for the running kernel and git. It sets up user `ycsb` (docker, user
+  systemd with the memory controller delegated, linger), checks out the harness at the run's commit and
+  builds what the role runs.
+- `teardown.sh <id>` deletes the run's VMs by label, then its placement policy, firewall rules,
+  subnet, network and disks by name (none of those take labels). It fails unless none is left.
+  `teardown.sh --all --yes` does the same for every run.
+- `run-estimate.sh` is the short estimate. It provisions both topologies, checks the generator's
+  ceiling over the VPC (`client-ceiling.mts --serve` on the harper VM, `--base-url` from the generator)
+  at one shard per generator vCPU and at half that. The measured cells take whichever served more on C
+  without the driver saturating (over 90% of one core per shard), and nothing is measured if neither
+  qualifies. It then
+  runs a smoke pass, then harper-uws, pg-redis and pg-redis@b on C, inspect and chain-4, warm and 2x,
+  `--auth=token`, 3 reps. Results come back to `gcp/runs/<id>/results/` (phase logs to `logs/`) after every phase. Teardown
+  runs on exit, after one last copy. Teardown needs a working gcloud session: when it fails, GCE still
+  deletes the VMs at `--max-run-duration`, and `teardown.sh <id>` removes the network, firewall rules and
+  placement policy.
+- `run-matrix.sh` is the full matrix, topology (a): harper-uws, harper and pg-redis on C, B, inspect,
+  chain-1, chain-2, chain-4 and F, at warm, 2x and 8x, `--auth=token`, 3 reps, targets interleaved. One
+  VM set in sequence would take about a day, so it runs six sets in parallel (`--plan` lists them), each
+  one session on its own generator, harper and stack VMs: warm (then perf profiles of warm C and chain-4
+  for harper-uws and pg-redis), 2x, and 8x split four ways by workload. The 8x split is for time: every
+  8x sample restores a 138 GiB Harper snapshot at local-SSD write speed (330 MiB/s documented, about
+  7 minutes). Each set loads each engine's dataset once and restores it for every sample, checks its
+  generator's ceiling, and runs a smoke pass of its own phases first. `--all` starts every set and waits;
+  `--set=<set>` runs one. `--resume` picks a set up after its orchestrator died without tearing down: it
+  provisions nothing, and phases that already ended on the generator are read, not run again. Run the
+  orchestrator under `systemd-run --user`, since any exit it sees tears its run down.
+- **SSH.** Every script reaches the VMs with plain ssh, never `gcloud compute ssh`. The startup script
+  publishes each VM's ed25519 host key as a guest attribute; `provision.sh` reads it through the API and
+  pins it in `runs/<id>/known_hosts` (and the targets' keys on the generator, for the agents' ssh). Nothing
+  reads `~/.ssh`, so a resumed session in a fresh `$HOME` still verifies every host, and polls and copies
+  keep working if the operator's gcloud session expires mid-run.
+- **Zones.** `YCSB_GCP_ZONES` (space-separated, one region) is tried in order: a zone without capacity
+  for the run's shapes gets that run's VMs deleted and the next zone tried. The zone a run got is in
+  `runs/<id>/zone` and its manifest.
+
+Choices, recorded per run in `gcp/runs/<id>/manifest.json` and in every results file (`meta.remote`):
+
+- **Target VM: `c4-standard-8-lssd`, `--threads-per-core=1`, `--performance-monitoring-unit=architectural`.**
+  That is 4 physical cores with SMT off, 30 GB and one 375 GiB Titanium local SSD. C4 is the series
+  that exposes a PMU to a VM of this size (C3 VMs have none), and instructions/op needs one. On a
+  4-core VM, the kernel's network work for the target's traffic (gVNIC interrupts, softirq) lands
+  on the target's own cores, as in a real 4-core deployment.
+- **Data disk: local SSD on every VM.** The shape fixes it, so identical VMs get identical disks with
+  nothing to provision. It is local NVMe, like the XPS where every earlier row was measured. Unlike a
+  network disk, it adds no network round trip to each page-cache miss, which would mix a disk-latency
+  term into the dependent-read chains the 2x and 8x points measure. 375 GiB holds 8x on per-engine VMs
+  (Harper 138 GiB snapshot plus its restored copy). Documented limits: 150k read IOPS, 625 MiB/s read. When that shape is out of capacity, `YCSB_DATA_DISK_KIND=hyperdisk` gives every target-shaped VM the plain `c4-standard-8` and one Hyperdisk Balanced volume with fixed provisioned IOPS and throughput (`YCSB_HYPERDISK_IOPS`, 25,000, and `YCSB_HYPERDISK_MIBPS`, 480: the VM's steady-state limit, so no burst credit varies the results). That adds a network round trip to each page-cache miss, so results record the kind (`dataDisk`).
+- **Generator: `c4-standard-32`** (16 cores, SMT on). The sharded driver spent 70–100 µs of CPU per op on
+  the XPS (above), so a 4-core target serving 60–80k ops/s needs up to about 8 of its cores. The ceiling
+  check is the gate; `YCSB_GEN_MACHINE_TYPE` changes the shape. No VM gets a
+  service account: none calls a GCP API, and the guest attributes go through the metadata server.
+- **Turbo stays on** (GCP has no control for it). Targets interleave within a session, forward and
+  reversed per rep, 3 reps per cell, and perf counts the cycles each window ran.
+- Every results file records each host's machine type, zone and CPU platform (GCP metadata
+  server), CPU model, kernel, Node version, target and agent cpus, and data-dir mount. It also
+  records the measured round trips.
 
 ## Profiling (`--profile`)
 
