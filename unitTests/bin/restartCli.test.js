@@ -59,13 +59,20 @@ async function leaveStaleSocket(socketPath) {
 		['-e', 'require("node:net").createServer().listen(process.argv[1], () => console.log("listening"))', socketPath],
 		{ stdio: ['ignore', 'pipe', 'inherit'] }
 	);
-	await new Promise((resolve, reject) => {
-		holder.stdout.once('data', resolve);
-		holder.once('exit', () => reject(new Error('the socket holder exited before listening')));
-	});
 	const exited = new Promise((resolve) => holder.once('exit', resolve));
-	holder.kill('SIGKILL');
-	await exited;
+	const deadline = setTimeout(() => holder.kill('SIGKILL'), CHILD_TIMEOUT_MS);
+	try {
+		await Promise.race([
+			new Promise((resolve) => holder.stdout.once('data', resolve)),
+			exited.then(() => {
+				throw new Error('the socket holder exited before listening');
+			}),
+		]);
+	} finally {
+		clearTimeout(deadline);
+		holder.kill('SIGKILL');
+		await exited;
+	}
 	assert(fs.existsSync(socketPath), 'the killed holder left its socket file');
 }
 
