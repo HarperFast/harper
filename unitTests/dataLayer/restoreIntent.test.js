@@ -9,6 +9,7 @@ const { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync 
 
 const { join } = require('node:path');
 const { writeUnsupportedTableFormat } = require('./fixtures/backupFiles.js');
+const { tryFileLock, fileLockRelease } = require('../rocksdbBindings.mts').rocksdbBindings();
 const env = require('#src/utility/environment/environmentManager');
 const { CONFIG_PARAMS, JOB_STATUS_ENUM, SYSTEM_TABLE_NAMES } = require('#src/utility/hdbTerms');
 const {
@@ -48,6 +49,7 @@ const {
 	restoringMarkerPath,
 	releaseRestoreLock,
 	restoreLockHeldExclusively,
+	restoreLockPath,
 	restoreMarkerPresent,
 	restoreSourceId,
 } = require('#src/dataLayer/restoreMarker');
@@ -427,7 +429,7 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			const pinsBefore = pinsOf(fixture);
 
 			// what the job worker runs when the row write fails
-			result.onNotRecorded();
+			await result.onNotRecorded();
 
 			const kept = receiptOf(fixture.dir);
 			assert.strictEqual(kept.state, 'terminal');
@@ -441,11 +443,48 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			const fixture = await seededDatabase();
 			const { result } = await requestRestore(fixture.name, { on_restart: true, retain_previous: false });
 
-			result.onNotRecorded();
+			await result.onNotRecorded();
 
 			assert.strictEqual(readRestoreReceipt(fixture.dir).kind, 'absent');
 			assert.deepStrictEqual(pinsOf(fixture), []);
 			assert.strictEqual(checkRestoreState(fixture.dir), 'clear');
+		});
+
+		it('withdraws it once a momentary holder of its lock lets go, instead of leaving it to a later restart', async function () {
+			const fixture = await seededDatabase();
+			const { result } = await requestRestore(fixture.name, { on_restart: true, retain_previous: false });
+			// what a thread opening the database, or a pin-liveness probe, holds for a moment
+			let holder = tryFileLock(restoreLockPath(fixture.dir), true);
+			assert.ok(holder);
+			const release = () => {
+				if (holder) fileLockRelease(holder);
+				holder = 0;
+			};
+			const releaseLater = setTimeout(release, 200);
+			try {
+				await result.onNotRecorded();
+			} finally {
+				clearTimeout(releaseLater);
+				release();
+			}
+
+			assert.strictEqual(readRestoreReceipt(fixture.dir).kind, 'absent');
+			assert.deepStrictEqual(pinsOf(fixture), []);
+		});
+
+		it('gives up on the withdrawal at its deadline when the lock stays held, leaving the receipt to cancel', async function () {
+			const fixture = await seededDatabase();
+			const { result } = await requestRestore(fixture.name, { on_restart: true, retain_previous: false });
+			const holder = tryFileLock(restoreLockPath(fixture.dir), true);
+			assert.ok(holder);
+			try {
+				await result.onNotRecorded();
+			} finally {
+				fileLockRelease(holder);
+			}
+
+			assert.strictEqual(receiptOf(fixture.dir).state, 'pending');
+			await restoreBackup({ ...SU, database: fixture.name, cancel: true });
 		});
 
 		it("leaves a resumed restore to its new job when the older job's row cannot record the deferral", async function () {
@@ -453,7 +492,7 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			const original = await requestRestore(fixture.name, { on_restart: true, retain_previous: false });
 			const resumed = await requestRestore(fixture.name, { resume: true });
 
-			original.result.onNotRecorded();
+			await original.result.onNotRecorded();
 
 			const kept = receiptOf(fixture.dir);
 			assert.strictEqual(kept.state, 'pending');

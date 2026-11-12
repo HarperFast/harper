@@ -8,6 +8,7 @@
  */
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import * as hdbTerms from '../utility/hdbTerms.ts';
 import logger from '../utility/logging/harper_logger.ts';
@@ -56,6 +57,8 @@ import {
 const RESTORE_INTENT_OWNER = 'restore-intent';
 // room beyond the live size, since a backup also writes its transaction logs and blob snapshot
 const PRE_RESTORE_SPACE_MARGIN = 1.1;
+const WITHDRAW_CLAIM_TIMEOUT_MS = 10_000;
+const WITHDRAW_CLAIM_POLL_MS = 100;
 
 export interface RestartRestoreRequest {
 	databaseName: string;
@@ -155,38 +158,58 @@ function deferredUntilRestart(receipt: RestoreReceipt, message: string): Deferre
 	);
 }
 
+/** Opens and pin-liveness probes hold the lock shared for a moment, so a claim that must not be skipped waits. */
+async function acquireRestoreLockWaiting(databaseDir: string): Promise<RestoreLock> {
+	const deadline = Date.now() + WITHDRAW_CLAIM_TIMEOUT_MS;
+	for (;;) {
+		try {
+			return acquireRestoreLock(databaseDir);
+		} catch (error: any) {
+			if (error.statusCode !== 409 || Date.now() >= deadline) throw error;
+		}
+		await delay(WITHDRAW_CLAIM_POLL_MS);
+	}
+}
+
 /**
  * The job row could not record the deferral, so the job will read as failed: a receipt still pending
  * would run the restore at some later, unrelated restart. Withdrawn only while it is still this
  * operation's and this job's (a resume keeps the operation and takes the job), and nothing has started.
  */
-function withdrawUnrecordedRestore(receipt: RestoreReceipt): void {
-	const lock = acquireRestoreLock(receipt.database_path);
+async function withdrawUnrecordedRestore(receipt: RestoreReceipt): Promise<void> {
 	try {
-		const read = readRestoreReceipt(receipt.database_path);
-		if (
-			read.kind !== 'valid' ||
-			read.receipt.operation_id !== receipt.operation_id ||
-			read.receipt.job_id !== receipt.job_id ||
-			read.receipt.state === 'committed'
-		)
-			return;
-		if (restoreMarkerPresent(receipt.database_path)) {
-			// an earlier attempt already began replacing the target: it stays blocked, its pins stay with it, and
-			// the terminal receipt keeps components off it until a restore succeeds
-			writeRestoreReceipt(lock, {
-				...read.receipt,
-				state: 'terminal',
-				pre_terminal_state: undefined,
-				last_error: 'its job could not record the restart restore',
-			});
-		} else {
-			removeRestoreReceipt(lock, receipt.operation_id);
-			releaseReceiptPins(read.receipt);
+		const lock = await acquireRestoreLockWaiting(receipt.database_path);
+		try {
+			const read = readRestoreReceipt(receipt.database_path);
+			if (
+				read.kind !== 'valid' ||
+				read.receipt.operation_id !== receipt.operation_id ||
+				read.receipt.job_id !== receipt.job_id ||
+				read.receipt.state === 'committed'
+			)
+				return;
+			if (restoreMarkerPresent(receipt.database_path)) {
+				// an earlier attempt already began replacing the target: it stays blocked, its pins stay with it, and
+				// the terminal receipt keeps components off it until a restore succeeds
+				writeRestoreReceipt(lock, {
+					...read.receipt,
+					state: 'terminal',
+					pre_terminal_state: undefined,
+					last_error: 'its job could not record the restart restore',
+				});
+			} else {
+				removeRestoreReceipt(lock, receipt.operation_id);
+				releaseReceiptPins(read.receipt);
+			}
+			logger.error(`The restart restore of '${receipt.database}' was withdrawn: its job could not record it`);
+		} finally {
+			releaseRestoreLock(lock);
 		}
-		logger.error(`The restart restore of '${receipt.database}' was withdrawn: its job could not record it`);
-	} finally {
-		releaseRestoreLock(lock);
+	} catch (error) {
+		logger.error(
+			`Could not withdraw the restart restore of '${receipt.database}' (operation ${receipt.operation_id}, job ${receipt.job_id}) after its job failed to record it; unless a later request replaced it, it runs at the next restart. Cancel it with restore_backup cancel=true`,
+			error
+		);
 	}
 }
 

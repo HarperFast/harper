@@ -12,13 +12,13 @@ export class DeferredJobCompletion {
 	/** Runs once the job row records the deferral, e.g. the restart that carries the job on. */
 	afterRecorded?: () => void;
 	/** Runs when the row could not record it, to withdraw what would otherwise outlive a failed job. */
-	onNotRecorded?: () => void;
+	onNotRecorded?: () => void | Promise<void>;
 	constructor(
 		owner: string,
 		message: string,
 		result?: unknown,
 		afterRecorded?: () => void,
-		onNotRecorded?: () => void
+		onNotRecorded?: () => void | Promise<void>
 	) {
 		this.owner = owner;
 		this.message = message;
@@ -48,7 +48,7 @@ export class JobCompletion {
 export function recordJobResult(
 	jobObj: Record<string, any>,
 	results: unknown
-): { afterRecorded?: () => void; onNotRecorded?: () => void } | undefined {
+): { afterRecorded?: () => void; onNotRecorded?: () => void | Promise<void> } | undefined {
 	if (results instanceof DeferredJobCompletion) {
 		jobObj.status = JOB_STATUS_ENUM.IN_PROGRESS;
 		jobObj.deferred_to = results.owner;

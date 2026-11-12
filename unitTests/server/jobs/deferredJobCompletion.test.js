@@ -69,7 +69,7 @@ describe('recordJobResult', function () {
 describe('jobProcess', function () {
 	this.timeout(60000);
 
-	async function runJobWorker({ updateJobFails }) {
+	async function runJobWorker({ updateJobFails, asyncWithdraw = false }) {
 		const { Worker } = require('node:worker_threads');
 		const worker = new Worker(
 			`
@@ -84,6 +84,8 @@ describe('jobProcess', function () {
 				if (workerData.updateJobFails) throw new Error('the job table is unavailable');
 			};
 			application.getEnvBuiltInComponents = () => [];
+			if (workerData.asyncWithdraw)
+				require(workerData.databases).closeLoadedDatabases = async () => parentPort.postMessage({ type: 'cleanup' });
 			serverUtilities.getOperationFunction = () => ({
 				job_operation_function: async () =>
 					new DeferredJobCompletion(
@@ -91,7 +93,9 @@ describe('jobProcess', function () {
 						'runs at the next startup',
 						undefined,
 						() => parentPort.postMessage({ type: 'continued' }),
-						() => parentPort.postMessage({ type: 'withdrawn' })
+						workerData.asyncWithdraw
+							? () => new Promise((resolve) => setTimeout(resolve, 100)).then(() => parentPort.postMessage({ type: 'withdrawn' }))
+							: () => parentPort.postMessage({ type: 'withdrawn' })
 					),
 			});
 			require(workerData.jobProcess);
@@ -101,6 +105,8 @@ describe('jobProcess', function () {
 				env: { ...process.env, PROCESS_NAME: 'JOB-deferred-job-test' },
 				workerData: {
 					updateJobFails,
+					asyncWithdraw,
+					databases: require.resolve('#js/resources/databases'),
 					jobs: require.resolve('#js/server/jobs/jobs'),
 					serverUtilities: require.resolve('#js/server/serverHelpers/serverUtilities'),
 					application: require.resolve('#js/components/Application'),
@@ -111,7 +117,7 @@ describe('jobProcess', function () {
 		);
 		const messages = [];
 		// the thread's own reports (resource metrics) share the port; only this harness's messages count
-		const harnessTypes = new Set(['updateJob', 'continued', 'withdrawn']);
+		const harnessTypes = new Set(['updateJob', 'continued', 'withdrawn', 'cleanup']);
 		worker.on('message', (message) => harnessTypes.has(message?.type) && messages.push(message));
 		const errors = [];
 		worker.on('error', (error) => errors.push(error));
@@ -143,6 +149,15 @@ describe('jobProcess', function () {
 		assert.deepStrictEqual(messages, [
 			{ type: 'updateJob', status: JOB_STATUS_ENUM.IN_PROGRESS, deferred_to: 'restore-intent' },
 			{ type: 'withdrawn' },
+		]);
+	});
+
+	it('finishes an asynchronous withdrawal before releasing its database handles', async function () {
+		const messages = await runJobWorker({ updateJobFails: true, asyncWithdraw: true });
+		assert.deepStrictEqual(messages, [
+			{ type: 'updateJob', status: JOB_STATUS_ENUM.IN_PROGRESS, deferred_to: 'restore-intent' },
+			{ type: 'withdrawn' },
+			{ type: 'cleanup' },
 		]);
 	});
 });

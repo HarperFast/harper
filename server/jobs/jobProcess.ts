@@ -104,7 +104,7 @@ const JOB_ID = JOB_NAME.substring(4);
 		const next = recorded ? continuation?.afterRecorded : continuation?.onNotRecorded;
 		if (next) {
 			try {
-				next();
+				await next();
 			} catch (continueError) {
 				harperLogger.error('Error continuing job after recording it:', continueError);
 			}
