@@ -47,6 +47,8 @@ import {
 	finishOutstandingRestore,
 	releaseReceiptPins,
 	restoreHeldAtBoot,
+	restoreKeepingComponentsOff,
+	restoreSafeModeLatched,
 	settleRestoreJob,
 } from './restorePublication.ts';
 import {
@@ -245,7 +247,29 @@ async function withdrawUnrecordedRestore(receipt: RestoreReceipt): Promise<void>
 			error
 		);
 	}
-	if (unblocked && restoreHeldAtBoot(receipt.database_path)) requestDrainedRestart();
+	if (unblocked && restartAfterWithdrawal(receipt.database_path, false).restarting) requestDrainedRestart();
+}
+
+/**
+ * Whether withdrawing a restore of this database calls for a restart: this boot loaded components without it (it
+ * held the database, or latched restore safe mode, which only a restart lifts), and no other restore would start
+ * the next boot without them. A restore requested since this boot started was never held.
+ */
+function restartAfterWithdrawal(
+	databaseDir: string,
+	heldUnknown: boolean
+): { restarting: boolean; keptOffBy?: ReturnType<typeof restoreKeepingComponentsOff> } {
+	if (!heldUnknown && !restoreSafeModeLatched() && !restoreHeldAtBoot(databaseDir)) return { restarting: false };
+	let keptOffBy: ReturnType<typeof restoreKeepingComponentsOff>;
+	try {
+		keptOffBy = restoreKeepingComponentsOff();
+	} catch (error) {
+		logger.error(
+			'Could not tell whether a restore still keeps components off; restarting so the next boot decides',
+			error
+		);
+	}
+	return { restarting: keptOffBy === undefined, keptOffBy };
 }
 
 /** The pins an earlier receipt on this target holds, which stay until this restore commits. */
@@ -508,12 +532,18 @@ export async function cancelRestartRestore(
 			logger.error(`Could not settle cancelled restore job ${cancelled!.job_id}`, error)
 		);
 	}
-	// A boot that held the database loaded components without it, and only a restart loads them again; a
-	// restore requested since this boot started was never held. An unreadable receipt cannot say.
-	const restarting = !stillBlocked && (cancelled === undefined || restoreHeldAtBoot(databaseDir));
+	// an unreadable receipt cannot say whether this boot held it
+	const { restarting, keptOffBy } = stillBlocked
+		? { restarting: false, keptOffBy: undefined }
+		: restartAfterWithdrawal(databaseDir, cancelled === undefined);
 	let message: string;
 	if (stillBlocked) {
 		message = `The restore was cancelled, but it had already begun replacing '${databaseName}', which stays unloadable until a restore succeeds`;
+	} else if (keptOffBy) {
+		const other =
+			'database' in keptOffBy ? `the restore of '${keptOffBy.database}'` : 'a restore record that cannot be read';
+		message = `The restore was cancelled before anything was replaced; '${databaseName}' and the components that use it load at the next restart, which this cancel does not request because ${other} would start Harper without components`;
+		if (restoreSafeModeLatched()) message += '; Harper restarts by itself once no restore keeps components off';
 	} else if (restarting) {
 		message = `The restore was cancelled before anything was replaced; restarting so '${databaseName}' and the components that use it load`;
 	} else {

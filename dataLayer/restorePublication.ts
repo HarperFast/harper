@@ -649,6 +649,10 @@ export function resetStartupRecoveryForTesting(): void {
 	setEnvironmentData(HELD_AT_BOOT_KEY, undefined);
 }
 
+export function restoreSafeModeLatched(): boolean {
+	return process.env.HARPER_SAFE_MODE === 'restore-unpublished';
+}
+
 /**
  * Whether this boot started without the database because a restore record reserved it, so the components that
  * use it loaded without it and only a restart loads them.
@@ -656,7 +660,7 @@ export function resetStartupRecoveryForTesting(): void {
 export function restoreHeldAtBoot(databaseDir: string): boolean {
 	const held = getEnvironmentData(HELD_AT_BOOT_KEY);
 	// recovery did not finish, so what it held is unknown; startup latched restore safe mode for the same reason
-	if (!Array.isArray(held)) return process.env.HARPER_SAFE_MODE === 'restore-unpublished';
+	if (!Array.isArray(held)) return restoreSafeModeLatched();
 	return held.includes(resolve(restoreReceiptPath(databaseDir)));
 }
 
@@ -726,7 +730,7 @@ function restartRestoreStillScheduled(receipt: RestoreReceipt): boolean {
  * on every thread until a restart. Unknown counts as lifted, since the next boot decides again.
  */
 function restoreSafeModeLifted(): boolean {
-	if (process.env.HARPER_SAFE_MODE !== 'restore-unpublished') return false;
+	if (!restoreSafeModeLatched()) return false;
 	try {
 		return unpublishedRestoreBlocksComponents() === undefined;
 	} catch (error) {
@@ -746,14 +750,20 @@ function restoreSafeModeLifted(): boolean {
  * to the live one after its rollback copy was taken, which the next attempt would replace uncaptured.
  */
 export function unpublishedRestoreBlocksComponents(): string | undefined {
+	const blocker = restoreKeepingComponentsOff();
+	return blocker && ('database' in blocker ? blocker.database : blocker.file);
+}
+
+/** As `unpublishedRestoreBlocksComponents`, telling a database a client may be told from a file it may not. */
+export function restoreKeepingComponentsOff(): { database: string } | { file: string } | undefined {
 	// a marker alone, as older versions leave one, blocks only its own database
 	for (const { file, read } of scanRestoreReceipts()) {
 		// what an unreadable record would have restored, or how far, is unknown
-		if (read.kind === 'unreadable') return file;
+		if (read.kind === 'unreadable') return { file };
 		if (read.kind !== 'valid') continue;
 		const { receipt } = read;
 		if (receipt.route !== 'on_restart' && !receipt.superseded_from) continue;
-		if (receipt.state === 'terminal') return receipt.database;
+		if (receipt.state === 'terminal') return { database: receipt.database };
 		if (
 			receipt.state !== 'committed' &&
 			(restoreMarkerPresent(receipt.database_path) ||
@@ -761,7 +771,7 @@ export function unpublishedRestoreBlocksComponents(): string | undefined {
 				// a copy taken but not yet recorded is adopted by the next attempt all the same
 				receipt.pre_restore_started_at !== undefined)
 		)
-			return receipt.database;
+			return { database: receipt.database };
 	}
 	return undefined;
 }

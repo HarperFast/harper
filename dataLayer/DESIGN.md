@@ -192,7 +192,8 @@ restore and the next startup applies it, before anything can open the target.
   `cancel` removes a receipt, keeping marker and pins once destruction began (an unreadable one is then
   replaced by a `record_lost` terminal receipt, so safe mode holds); if this boot started without the
   database, it then restarts (`JobCompletion`) so the components that loaded without it load, as a
-  withdrawn resume or supersede does. That hold is recorded, never inferred from `attempts` (an attempt
+  withdrawn resume or supersede does, unless another restore would keep them off the next boot too
+  (`restartAfterWithdrawal`). That hold is recorded, never inferred from `attempts` (an attempt
   can fail before counting): `recoverRestoresOnce` ends by publishing the receipts it left reserved as
   worker environment data, which job workers inherit and a relaunched process lacks (`restoreHeldAtBoot`).
   An online restore after which nothing keeps components off restarts too, published or failed (the

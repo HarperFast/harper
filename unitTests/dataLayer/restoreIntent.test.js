@@ -1740,6 +1740,42 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			assert.strictEqual(later.result.restarting, false, 'requested after this boot started, so never held');
 		});
 
+		it('does not restart while another restore would start Harper without components, and names it', async function () {
+			const [held, stopped] = [await seededDatabase(), await seededDatabase()];
+			for (const fixture of [held, stopped]) {
+				await requestRestore(fixture.name, { on_restart: true, retain_previous: false });
+				await closeDatabase(fixture.name);
+			}
+			rewriteReceipt(stopped.dir, { state: 'terminal', attempts: 3 });
+			const repair = failReceiptWrites(held);
+			try {
+				resetStartupRecoveryForTesting();
+				await recoverRestoresAtStartup();
+			} finally {
+				repair();
+			}
+			assert.strictEqual(unpublishedRestoreBlocksComponents(), stopped.name, 'precondition');
+			// what loadRootComponents latches for this boot
+			process.env.HARPER_SAFE_MODE = 'restore-unpublished';
+
+			const first = await restoreBackup({ ...SU, database: held.name, cancel: true });
+
+			assert.strictEqual(first.result.restarting, false, 'the next boot would start in safe mode all the same');
+			assert.strictEqual(first.afterRecorded, undefined);
+			assert.match(first.result.message, new RegExp(`the restore of '${stopped.name}'`));
+			assert.match(first.result.message, /restarts by itself once no restore keeps components off/);
+			assert.strictEqual(getDatabases()[held.name], undefined, 'nothing has loaded it yet');
+
+			const last = await restoreBackup({ ...SU, database: stopped.name, cancel: true });
+
+			assert.strictEqual(last.result.restarting, true, 'nothing keeps components off any longer');
+			assert.strictEqual(typeof last.afterRecorded, 'function');
+			assert.strictEqual(unpublishedRestoreBlocksComponents(), undefined);
+			// the restarted process
+			assert.deepStrictEqual(await snapshot(loadedItems(held.name)), held.live);
+			assert.deepStrictEqual(await snapshot(loadedItems(stopped.name)), stopped.live);
+		});
+
 		it('keeps the source pinned when the receipt cannot be removed, so a pending restore never loses its source', async function () {
 			const fixture = await seededDatabase();
 			await requestRestore(fixture.name, { on_restart: true });
