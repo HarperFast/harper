@@ -98,7 +98,6 @@ it('persists an actual managed-worker sample produced before main applies the sa
 		setRootConfigEntry('analytics', { ...readRootConfig().analytics, fullText: { enabled: true } });
 		await waitFor(() => fullTextTelemetryCollector.collecting, {
 			timeout: 5000,
-			// mocha prints the stack's own header, so state appended to `error.message` never reaches the log
 			message: () =>
 				`Collection did not start; activation state ${JSON.stringify({
 					file: readRootConfig().analytics?.fullText,

@@ -619,7 +619,6 @@ describe('Harper full-text analytics lifecycle and persistence', function () {
 			change(true);
 			await waitFor(() => live.collecting, {
 				timeout: 5000,
-				// mocha prints the stack's own header, so state appended to `error.message` never reaches the log
 				message: () => {
 					const watcher = require('#src/config/RootConfigWatcher').getSharedRootConfigWatcher();
 					return `Collection did not start; activation state ${JSON.stringify({

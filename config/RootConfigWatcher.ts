@@ -61,7 +61,8 @@ export class RootConfigWatcher extends EventEmitter {
 	#readCount: number = 0;
 	#readRetry: ConfigReadRetry = new ConfigReadRetry();
 	#trailingReadTimer?: NodeJS.Timeout;
-	// The inode chokidar reported with its last `add`/`change`, which is what its watch was opened on.
+	// From the stat chokidar took before its last (re)watch; the arming and verify reads compare
+	// against it and never set it.
 	#watchedIno?: number;
 	#reopening?: Promise<void>;
 	#armGate: ArmGate = new ArmGate();
@@ -113,19 +114,20 @@ export class RootConfigWatcher extends EventEmitter {
 		this.#read(true);
 		// A read that armed the ladder settles `ready` itself, with the newer config.
 		if (!this.#readRetry.pending) this.#emitReady();
-		this.#verifyWatchedInode();
+		this.#verifyWatchedInode(true);
 	}
 
 	// config/DESIGN.md: `RootConfigWatcher` schedules a trailing verify-read
-	#verifyWatchedInode() {
+	#verifyWatchedInode(retryInconclusive: boolean) {
 		if (this.#closed || this.#usingPolling || this.#watchedIno === undefined || process.platform === 'win32') return;
 		let ino: number | undefined;
 		try {
 			ino = statSync(this.#watchPath, { throwIfNoEntry: false })?.ino;
-		} catch {
-			return;
-		}
-		if (ino && ino !== this.#watchedIno) this.#reopenWatcher();
+		} catch {}
+		// A probe that could not tell must not certify the watch.
+		if (!ino) {
+			if (retryInconclusive) this.#scheduleTrailingRead(false);
+		} else if (ino !== this.#watchedIno) this.#reopenWatcher();
 	}
 
 	// The replaced generation stops speaking for the watch before its teardown settles, and a request
@@ -216,7 +218,6 @@ export class RootConfigWatcher extends EventEmitter {
 			if (!this.#usingPolling) {
 				warnWatcherFallback(this.#configFilePath);
 				this.#usingPolling = true;
-				// The replacement arms on its own scan, and re-reads then as the first one did.
 				this.#reopenWatcher();
 			} else {
 				// Already polling — the replacement failed too, or the watch was polling from
@@ -248,17 +249,17 @@ export class RootConfigWatcher extends EventEmitter {
 	}
 
 	handleChange(_path?: string, stats?: Stats) {
-		this.#watchedIno = stats?.ino || undefined;
+		if (stats?.ino) this.#watchedIno = stats.ino;
 		if (this.#read(true)) this.#scheduleTrailingRead();
 	}
 
-	#scheduleTrailingRead() {
+	#scheduleTrailingRead(retryInconclusive: boolean = true) {
 		this.#clearTrailingRead();
 		if (this.#closed || this.#readRetry.pending) return;
 		this.#trailingReadTimer = setTimeout(() => {
 			this.#trailingReadTimer = undefined;
 			this.#read(true);
-			this.#verifyWatchedInode();
+			this.#verifyWatchedInode(retryInconclusive);
 		}, TRAILING_VERIFY_READ_DELAY_MS);
 		this.#trailingReadTimer.unref();
 	}
