@@ -297,7 +297,7 @@ The host policy is captured once for the full Harper process, inherited by worke
 
 ### How a capacity rejection reaches the client
 
-Harper returns `400` for a capacity failure only when it finds the problem before the query runs. Of the `storage.fullText.query` limits, the only one checked at that point is the `should` list length against `maxQueryClauses`. It returns `400` in every response format, like the other malformed-control errors on this page.
+Harper returns `400` for a capacity failure only when it finds the problem before it writes the response head. Of the `storage.fullText.query` limits, the only one checked before the query runs is the `should` list length against `maxQueryClauses`. It returns `400` in every response format, like the other malformed-control errors on this page.
 
 Harper finds every other capacity failure while the query runs:
 
@@ -305,18 +305,23 @@ Harper finds every other capacity failure while the query runs:
 - more compiled clauses than `storage.fullText.query.maxQueryClauses`, including Boolean structure, field expansion and a `should` list that passed the precheck;
 - a fuzzy distance above `storage.fullText.query.maxFuzzyDistance`.
 
-A REST collection read streams its results, so the response can already have started by then. The error is still a `ClientError` with status `400`, but it arrives in the body instead of the status line:
+A REST collection read normally streams its results, so the response can already have started by then. The error is still a `ClientError` with status `400`, but it arrives in the body instead of the status line:
 
-| Format           | `GET` and `HEAD`                                                                                                                                                       | `QUERY`                                                |
+| Format           | `GET`                                                                                                                                                                  | `QUERY`                                                |
 | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
 | NDJSON           | `400` if Harper finds the problem within the stream's short startup window; otherwise `200` and a final `{"$harperStreamError": {...}}` line                           | `200` and a final `{"$harperStreamError": {...}}` line |
 | JSON             | `200`; the array ends at an `{"error": "ClientError: ..."}` element with no closing `]`, and the connection closes                                                     | Same as `GET`                                          |
 | CBOR             | `200`; the body is cut off                                                                                                                                             | Same as `GET`                                          |
 | CSV, MessagePack | If the failure comes before the first row, no status at all: over HTTP/1.1 the connection closes and the client reports a network error. Otherwise the body is cut off | Same as `GET`                                          |
 
-Of these formats, only NDJSON has a startup window, and only on `GET` and `HEAD`. A rejection found inside it returns `400`; one found after it does not. The same limit can land on either side, so do not rely on a `400`. `HEAD` discards the body, so its `200` never shows an in-stream rejection. The operations API `search_by_conditions` operation behaves like `QUERY` for JSON and NDJSON.
+Of these formats, only NDJSON has a startup window, and only on `GET` and `HEAD`. A rejection found inside it returns `400`; one found after it does not. The same limit can land on either side, so do not rely on a `400`. `HEAD` behaves like `GET` for NDJSON. For every other format it returns an empty `200` without streaming rows, so a `200` from `HEAD` does not show that the query is within capacity. Other methods, such as a custom resource's `POST` that returns the search iterator, have no startup window and behave like `QUERY`. The operations API `search_by_conditions` operation behaves like `QUERY` for JSON and NDJSON.
 
-A resource that finishes consuming the `Table.search()` iterator before it returns, for example by collecting rows into an array, sends the thrown error through the normal error path and returns `400`. A resource that returns the iterator is streamed like a REST read. See [When a Streamed Response Fails](../rest/content-types.md#when-a-streamed-response-fails) for the stream formats.
+Two cases return an ordinary `400` in every format, because the query finishes before Harper writes the response head:
+
+- a `GET` with `Prefer: count=exact` or `Prefer: count=estimated` and a bounded `limit`, which builds the whole page before it responds;
+- a resource that finishes consuming the `Table.search()` iterator before it returns, for example by collecting rows into an array. A resource that returns the iterator is streamed like a REST read.
+
+See [When a Streamed Response Fails](../rest/content-types.md#when-a-streamed-response-fails) for the stream formats.
 
 When you send a full-text query, check for all of these:
 
