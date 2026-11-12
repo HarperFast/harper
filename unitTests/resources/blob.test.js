@@ -2022,16 +2022,18 @@ describe('Blob test', () => {
 		const databaseName = store.databaseName;
 		setDeletionDelay(200);
 		let condemnedPath;
-		let survivor;
 		try {
 			const first = await createBlob(Readable.from('aborted-restore-generation'.repeat(64)));
 			await BlobTest.put({ id: 92, blob: first });
 			condemnedPath = getFilePathForBlob(first);
-			const second = await createBlob(Readable.from('still-valid-generation'.repeat(64)));
-			await BlobTest.put({ id: 92, blob: second });
-			survivor = getFilePathForBlob(second);
 
 			await blockBlobSavesForRestore(databaseName, 'restore-aborted');
+			// Supersede the blob only once the fence is up. The reclamation is queued when the write is
+			// issued, before its commit settles, so superseding first and fencing after left the entry's
+			// 200ms deadline racing the commit and the fence: on a loaded LMDB runner it came due first
+			// and was unlinked before the fence existed. A blob-less put saves nothing, so the fence
+			// does not refuse it.
+			await BlobTest.put({ id: 92 });
 			// Let the drain run and skip the entry while fenced -- that pass records no next deadline, so
 			// without a wakeup on release the entry is kept but never comes due again.
 			await new Promise((resolve) => setTimeout(resolve, 400));
@@ -2045,8 +2047,11 @@ describe('Blob test', () => {
 				message: 'a reclamation kept across an aborted restore must still run',
 			});
 		} finally {
+			// A no-op once released above; on an earlier failure it keeps the fence from leaking into the
+			// next test, which would then fail on a database that still reads as mid-restore.
+			resumeBlobSavesForRestore('restore-aborted', false);
 			await BlobTest.delete(92).catch(() => {});
-			for (const path of [condemnedPath, survivor]) if (path && existsSync(path)) unlinkSync(path);
+			if (condemnedPath && existsSync(condemnedPath)) unlinkSync(condemnedPath);
 			setDeletionDelay(500);
 		}
 	});
