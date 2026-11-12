@@ -1636,7 +1636,8 @@ feature that has not yet been measured.
 >    unlocked write before `lock()`, keeps its clock; state beyond `storage.maxLockClockSkew` rejects
 >    admission; and any lock write (scoped or held, including disjoint-field patches and commutative ops)
 >    saved in an explicit transaction whose clock is already fixed below the lock's required floor is
->    refused with a 409 ([harper#2712](https://github.com/HarperFast/harper/issues/2712)). To avoid the 409, take the lock first or save the held record in its own transaction.
+>    refused with a 409 ([harper#2712](https://github.com/HarperFast/harper/issues/2712)), unless it stores nothing: a tracked write whose captured
+>    changes collapse to no patch (`stagesWriteChange`), so a read-only lock still commits. To avoid the 409, take the lock first or save the held record in its own transaction.
 > 2. **Successor freshness is not promised on the recovery path.** The §7.2 barrier drains streams
 >    from every _reachable_ member, so a write the predecessor committed and did not replicate is
 >    invisible to it: the barrier succeeds and the successor reads a stale value. Three routes in, and
