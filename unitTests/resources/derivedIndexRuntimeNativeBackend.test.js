@@ -584,7 +584,7 @@ describe('DerivedIndexRuntime for native backends', () => {
 		);
 		let releaseShutdown;
 		const backend = new AsyncBackend('handoff', { cursor: cursor(10), applyDelay: 50 });
-		// the old owner's accepted batch is held until the epoch flips, so its apply always lands after the handoff
+		// applyDelay cannot order the old owner's apply after the epoch flip on a slow runner, so it is held until then
 		backend.scheduleApply = () => {};
 		backend.shutdown = (epoch) => {
 			backend.shutdowns.push(epoch);
