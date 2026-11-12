@@ -564,6 +564,44 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			}
 		});
 
+		it('names the database, never its directory, when another claim holds it', async function () {
+			const fixture = await seededDatabase();
+			const [backupId] = fixture.backupIds;
+			const { jobId } = await requestRestore(fixture.name, { on_restart: true, retain_previous: false });
+			const refusedByName = (options) =>
+				assert.rejects(
+					restoreBackup({ ...SU, database: fixture.name, ...options }),
+					(error) => {
+						assert.strictEqual(error.statusCode, 409);
+						assert.strictEqual(error.name, 'BackupInProgressError');
+						assert.ok(error.message.includes(`'${fixture.name}'`), error.message);
+						assert.ok(!error.message.includes(fixture.dir), error.message);
+						return true;
+					},
+					JSON.stringify(options)
+				);
+			let held = acquireRestoreLock(fixture.dir);
+			try {
+				for (const options of [{ on_restart: true, retain_previous: false }, { resume: true }, { cancel: true }]) {
+					await refusedByName(options);
+				}
+			} finally {
+				releaseRestoreLock(held);
+			}
+			// a committed receipt is finished before any new claim, under the same lock
+			await closeDatabase(fixture.name);
+			rewriteReceipt(fixture.dir, { state: 'committed', attempts: 1 }, { marker: true });
+			held = acquireRestoreLock(fixture.dir);
+			try {
+				await refusedByName({ on_restart: true, retain_previous: false });
+				await refusedByName({ backup_id: backupId });
+			} finally {
+				releaseRestoreLock(held);
+			}
+			await boot(fixture.name);
+			assert.strictEqual((await job(jobId)).status, JOB_STATUS_ENUM.COMPLETE);
+		});
+
 		it('starts the boot in safe mode while a restore record cannot be read', async function () {
 			const fixture = await seededDatabase();
 			await requestRestore(fixture.name, { on_restart: true, retain_previous: false });

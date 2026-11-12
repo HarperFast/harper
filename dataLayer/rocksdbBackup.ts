@@ -35,6 +35,7 @@ import { ClientError } from '../utility/errors/hdbError.ts';
 import * as signalling from '../utility/signalling.ts';
 import { SchemaEventMsg } from '../server/threads/itc.ts';
 import {
+	acquireRestoreLock,
 	claimRestore,
 	restoreLockHeldExclusively,
 	checkRestoreState,
@@ -902,9 +903,26 @@ export function restorePinId(databaseDir: string): string {
 }
 
 /**
- * claimRestore's own error message carries the filesystem path (useful in CLI/server logs);
+ * The restore lock's own error message carries the filesystem path, which stays in the log;
  * client-facing operations report by database name instead.
  */
+function restoreClaimConflict(databaseName: string, error: Error): BackupInProgressError {
+	logger.info(error.message);
+	return new BackupInProgressError(
+		`Cannot claim database '${databaseName}': a restore, a drop, or a database open holds its lock; retry once that finishes`
+	);
+}
+
+/** `acquireRestoreLock` for a client-facing operation. */
+export function acquireRestoreLockFor(databaseName: string, databaseDir: string): RestoreLock {
+	try {
+		return acquireRestoreLock(databaseDir);
+	} catch (error) {
+		if (error.statusCode === 409) throw restoreClaimConflict(databaseName, error);
+		throw error;
+	}
+}
+
 export function beginRestoreForDatabase(
 	databaseDir: string,
 	databaseName: string,
@@ -914,11 +932,7 @@ export function beginRestoreForDatabase(
 	try {
 		return claimRestore(databaseDir, beforePublishMarker, backupDir);
 	} catch (error) {
-		if (error.statusCode === 409) {
-			throw new BackupInProgressError(
-				`Cannot claim database '${databaseName}': a restore, a drop, or a database open holds its lock; retry once that finishes`
-			);
-		}
+		if (error.statusCode === 409) throw restoreClaimConflict(databaseName, error);
 		throw error;
 	}
 }

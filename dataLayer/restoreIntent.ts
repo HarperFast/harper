@@ -48,6 +48,7 @@ import {
 	settleRestoreJob,
 } from './restorePublication.ts';
 import {
+	acquireRestoreLockFor,
 	isRocksDbLockError,
 	listBackupsInDir,
 	resolveCompleteBackup,
@@ -124,15 +125,7 @@ async function assertRoomForPreRestoreBackup(databaseName: string, databaseDir: 
 }
 
 function claimTarget(databaseName: string, databaseDir: string): RestoreLock {
-	let lock: RestoreLock;
-	try {
-		lock = acquireRestoreLock(databaseDir);
-	} catch (error: any) {
-		if (error.statusCode === 409) {
-			throw new ClientError(`Cannot reserve database '${databaseName}' for a restart restore: ${error.message}`, 409);
-		}
-		throw error;
-	}
+	const lock = acquireRestoreLockFor(databaseName, databaseDir);
 	// as claimRestore refuses: a drop that has begun owns the directory until it finishes
 	if (databaseDropMarkerPresent(databaseDir)) {
 		releaseRestoreLock(lock);

@@ -45,6 +45,7 @@ import {
 import { runRestoreChild } from './restoreChildRunner.ts';
 import type { RestoreEvidence } from './restoreChildCommands.ts';
 import {
+	acquireRestoreLockFor,
 	assertTargetClaimable,
 	beginRestoreForDatabase,
 	logCompatibilityWaived,
@@ -170,7 +171,7 @@ export async function finishOutstandingRestore(databaseDir: string, reload?: () 
 	const read = readRestoreReceipt(databaseDir);
 	if (read.kind !== 'valid' || read.receipt.state !== 'committed') return;
 	let published: RestoreReceipt | undefined;
-	const lock = acquireRestoreLock(databaseDir);
+	const lock = acquireRestoreLockFor(read.receipt.database, databaseDir);
 	try {
 		const again = readRestoreReceipt(databaseDir);
 		if (again.kind === 'valid' && again.receipt.state === 'committed') {
@@ -186,7 +187,7 @@ export async function finishOutstandingRestore(databaseDir: string, reload?: () 
 	} catch (error) {
 		logger.error(`Restore of '${published.database}' is published, but not every thread reloaded it`, error);
 	}
-	const settling = acquireRestoreLock(databaseDir);
+	const settling = acquireRestoreLockFor(published.database, databaseDir);
 	try {
 		await settleCommittedRestore(settling, published);
 	} finally {
