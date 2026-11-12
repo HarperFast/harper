@@ -14,7 +14,7 @@ import logger from '../utility/logging/harper_logger.ts';
 import { loadRuntimeModule } from '../utility/packageUtils.js';
 import { getBlobPathsForDatabaseName } from '../resources/blob.ts';
 import { getStorageSpaceStats } from '../server/storageReclamation.ts';
-import { DeferredJobCompletion } from '../server/jobs/deferredJobCompletion.ts';
+import { DeferredJobCompletion, JobCompletion } from '../server/jobs/deferredJobCompletion.ts';
 import { acquireMembershipFence, assertNoReplicationPeers } from '../server/replicationMembership.ts';
 import { pinBackup, readBackupPins, withBackupRepositoryLock } from './backupRepository.ts';
 import { readAllManifests, readBackupManifest } from './backupManifest.ts';
@@ -331,6 +331,7 @@ export async function resumeRestartRestore(
 export async function cancelRestartRestore(databaseName: string, databaseDir: string) {
 	const lock = claimTarget(databaseName, databaseDir);
 	let cancelled: RestoreReceipt | undefined;
+	let stillBlocked: boolean;
 	try {
 		const read = readRestoreReceipt(databaseDir);
 		if (read.kind === 'absent') throw new ClientError(`Database '${databaseName}' has no restore to cancel`, 404);
@@ -359,6 +360,7 @@ export async function cancelRestartRestore(databaseName: string, databaseDir: st
 				releaseReceiptPins(cancelled);
 			}
 		}
+		stillBlocked = restoreMarkerPresent(databaseDir);
 	} finally {
 		releaseRestoreLock(lock);
 	}
@@ -367,15 +369,29 @@ export async function cancelRestartRestore(databaseName: string, databaseDir: st
 			logger.error(`Could not settle cancelled restore job ${cancelled!.job_id}`, error)
 		);
 	}
-	const stillBlocked = restoreMarkerPresent(databaseDir);
-	return {
-		database: databaseName,
-		cancelled: cancelled?.operation_id ?? 'unreadable restore record',
-		still_blocked: stillBlocked,
-		message: stillBlocked
-			? `The restore was cancelled, but it had already begun replacing '${databaseName}', which stays unloadable until a restore succeeds`
-			: `The restore was cancelled before anything was replaced; '${databaseName}' loads normally`,
-	};
+	// A boot that held the database loaded components without it, and only a restart loads them again. No
+	// attempt and no restore safe mode mean no boot has held it yet; an unreadable receipt cannot say.
+	const restarting =
+		!stillBlocked &&
+		(cancelled === undefined || cancelled.attempts > 0 || process.env.HARPER_SAFE_MODE === 'restore-unpublished');
+	let message: string;
+	if (stillBlocked) {
+		message = `The restore was cancelled, but it had already begun replacing '${databaseName}', which stays unloadable until a restore succeeds`;
+	} else if (restarting) {
+		message = `The restore was cancelled before anything was replaced; restarting so '${databaseName}' and the components that use it load`;
+	} else {
+		message = `The restore was cancelled before anything was replaced; '${databaseName}' loads normally`;
+	}
+	return new JobCompletion(
+		{
+			database: databaseName,
+			cancelled: cancelled?.operation_id ?? 'unreadable restore record',
+			still_blocked: stillBlocked,
+			restarting,
+			message,
+		},
+		restarting ? requestDrainedRestart : undefined
+	);
 }
 
 async function adoptOrTakePreRestoreBackup(lock: RestoreLock, receipt: RestoreReceipt): Promise<RestoreReceipt> {

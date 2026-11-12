@@ -1124,10 +1124,13 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			const { operation_id: operationId } = receiptOf(fixture.dir);
 			await closeDatabase(fixture.name);
 
-			const result = await restoreBackup({ ...SU, database: fixture.name, cancel: true });
+			const { result, afterRecorded } = await restoreBackup({ ...SU, database: fixture.name, cancel: true });
 
 			assert.strictEqual(result.cancelled, operationId);
 			assert.strictEqual(result.still_blocked, false);
+			assert.strictEqual(result.restarting, false, 'no boot has held it, so components already have it');
+			assert.strictEqual(afterRecorded, undefined);
+			assert.match(result.message, /loads normally/);
 			assert.strictEqual(readRestoreReceipt(fixture.dir).kind, 'absent');
 			assert.strictEqual(checkRestoreState(fixture.dir), 'clear');
 			assert.deepStrictEqual(pinsOf(fixture), []);
@@ -1135,6 +1138,24 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			assert.strictEqual(cancelled.status, JOB_STATUS_ENUM.ERROR);
 			assert.strictEqual(cancelled.message, 'Cancelled');
 			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.live, 'nothing was replaced');
+		});
+
+		it('restarts when this boot latched restore safe mode before counting an attempt', async function () {
+			const fixture = await seededDatabase();
+			await requestRestore(fixture.name, { on_restart: true });
+			await closeDatabase(fixture.name);
+			assert.strictEqual(receiptOf(fixture.dir).attempts, 0, 'precondition: no attempt was counted');
+			const saved = process.env.HARPER_SAFE_MODE;
+			process.env.HARPER_SAFE_MODE = 'restore-unpublished';
+			try {
+				const { result, afterRecorded } = await restoreBackup({ ...SU, database: fixture.name, cancel: true });
+
+				assert.strictEqual(result.restarting, true, 'components were kept off, so only a restart loads them');
+				assert.strictEqual(typeof afterRecorded, 'function');
+			} finally {
+				if (saved === undefined) delete process.env.HARPER_SAFE_MODE;
+				else process.env.HARPER_SAFE_MODE = saved;
+			}
 		});
 
 		it('keeps the source pinned when the receipt cannot be removed, so a pending restore never loses its source', async function () {
@@ -1170,9 +1191,12 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			assert.strictEqual(receiptOf(fixture.dir).state, 'applying');
 			assert.strictEqual(restoreMarkerPresent(fixture.dir), false, 'verification refused before the purge');
 
-			const result = await restoreBackup({ ...SU, database: fixture.name, cancel: true });
+			const { result, afterRecorded } = await restoreBackup({ ...SU, database: fixture.name, cancel: true });
 
 			assert.strictEqual(result.still_blocked, false);
+			assert.strictEqual(result.restarting, true, 'the boot that held it loaded components without it');
+			assert.strictEqual(typeof afterRecorded, 'function', 'the restart runs once the job row records the cancel');
+			assert.match(result.message, /restarting so '[^']+' and the components that use it load/);
 			assert.strictEqual(readRestoreReceipt(fixture.dir).kind, 'absent');
 			assert.strictEqual(checkRestoreState(fixture.dir), 'clear');
 			assert.deepStrictEqual(pinsOf(fixture), []);
@@ -1193,9 +1217,11 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			const preRestoreId = failed.pre_restore_backup_id;
 			assert.ok(Number.isInteger(preRestoreId), 'precondition: a rollback copy was taken');
 
-			const result = await restoreBackup({ ...SU, database: fixture.name, cancel: true });
+			const { result, afterRecorded } = await restoreBackup({ ...SU, database: fixture.name, cancel: true });
 
 			assert.strictEqual(result.still_blocked, true);
+			assert.strictEqual(result.restarting, false, 'a restart would only boot into safe mode again');
+			assert.strictEqual(afterRecorded, undefined);
 			const kept = receiptOf(fixture.dir);
 			assert.strictEqual(kept.state, 'terminal', 'kept as terminal, so components stay off the unproved generation');
 			assert.strictEqual(unpublishedRestoreBlocksComponents(), fixture.name);
@@ -1284,10 +1310,12 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			writeFileSync(restoreReceiptPath(fixture.dir), '{"version":1,"state":');
 			assert.strictEqual(checkRestoreState(fixture.dir), 'pending', 'an unreadable receipt fails closed');
 
-			const result = await restoreBackup({ ...SU, database: fixture.name, cancel: true });
+			const { result, afterRecorded } = await restoreBackup({ ...SU, database: fixture.name, cancel: true });
 
 			assert.strictEqual(result.cancelled, 'unreadable restore record');
 			assert.strictEqual(result.still_blocked, false);
+			assert.strictEqual(result.restarting, true, 'an unreadable record cannot say whether a boot held it');
+			assert.strictEqual(typeof afterRecorded, 'function');
 			assert.strictEqual(readRestoreReceipt(fixture.dir).kind, 'absent');
 			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.live);
 		});

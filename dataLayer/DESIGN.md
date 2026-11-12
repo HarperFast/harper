@@ -181,7 +181,8 @@ restore and the next startup applies it, before anything can open the target.
   marker shows destruction began, or one whose rollback copy has started but is not applied starts that boot in safe
   mode (`unpublishedRestoreBlocksComponents`): a component that opens RocksDB itself ignores the
   marker, and a write it makes after the copy would be replaced uncaptured by the next attempt.
-  `cancel` removes a receipt, keeping marker and pins once destruction began.
+  `cancel` removes a receipt, keeping marker and pins once destruction began; if a boot already held the
+  database, it then restarts (`JobCompletion`) so the components that loaded without it load.
 
 ## RocksDB managed backups: blob snapshots (`dataLayer/blobBackup.ts`)
 

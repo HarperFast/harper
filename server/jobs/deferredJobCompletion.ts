@@ -29,6 +29,19 @@ export class DeferredJobCompletion {
 }
 
 /**
+ * Returned by a job operation that has finished but must act after its row write, e.g. a restart that
+ * would cut the write short. The work is already done, so it acts whether or not the row recorded it.
+ */
+export class JobCompletion {
+	result: unknown;
+	afterRecorded?: () => void;
+	constructor(result: unknown, afterRecorded?: () => void) {
+		this.result = result;
+		this.afterRecorded = afterRecorded;
+	}
+}
+
+/**
  * Records a job handler's return value on its row, and returns what to run once the row is written. A
  * `DeferredJobCompletion` leaves the job IN_PROGRESS, naming the record that will settle it.
  */
@@ -42,6 +55,10 @@ export function recordJobResult(
 		jobObj.message = results.message;
 		if (results.result !== undefined) jobObj.result = results.result;
 		return { afterRecorded: results.afterRecorded, onNotRecorded: results.onNotRecorded };
+	}
+	if (results instanceof JobCompletion) {
+		recordJobResult(jobObj, results.result);
+		return { afterRecorded: results.afterRecorded, onNotRecorded: results.afterRecorded };
 	}
 	jobObj.status = JOB_STATUS_ENUM.COMPLETE;
 	if (typeof results === 'string') jobObj.message = results;

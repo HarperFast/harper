@@ -7,7 +7,7 @@
 const assert = require('node:assert');
 const { waitFor } = require('../../waitFor.js');
 const { JOB_STATUS_ENUM } = require('#src/utility/hdbTerms');
-const { DeferredJobCompletion, recordJobResult } = require('#src/server/jobs/deferredJobCompletion');
+const { DeferredJobCompletion, JobCompletion, recordJobResult } = require('#src/server/jobs/deferredJobCompletion');
 
 describe('recordJobResult', function () {
 	it('leaves a deferred job IN_PROGRESS, naming what will settle it, and hands back its continuation', function () {
@@ -43,12 +43,29 @@ describe('recordJobResult', function () {
 		assert.deepStrictEqual(withResult.result, { backup_id: 4 });
 		assert.strictEqual(withResult.message, 'Successfully completed job: job-3');
 	});
+
+	it('completes a JobCompletion with its result, and hands back what runs after the row write, recorded or not', function () {
+		const afterRecorded = () => {};
+		const jobObj = { id: 'job-4' };
+
+		const continuation = recordJobResult(jobObj, new JobCompletion({ restarting: true }, afterRecorded));
+
+		assert.deepStrictEqual(
+			continuation,
+			{ afterRecorded, onNotRecorded: afterRecorded },
+			'the work is done either way'
+		);
+		assert.strictEqual(jobObj.status, JOB_STATUS_ENUM.COMPLETE);
+		assert.deepStrictEqual(jobObj.result, { restarting: true });
+		assert.strictEqual(jobObj.message, 'Successfully completed job: job-4');
+		assert.ok(jobObj.end_datetime);
+	});
 });
 
 // The job worker itself, run in a thread with its row I/O and dispatch stubbed: the deferred job's
-// continuation (the drained restart) must run even when the row that records the deferral cannot be
-// written, or the pending restore would fire at some unrelated later restart. Its stubs replace exports,
-// which only the compiled build allows, hence `#js`.
+// continuation (the drained restart) runs only once its row records the deferral, and is withdrawn
+// otherwise, or the pending restore would fire at some unrelated later restart. Its stubs replace
+// exports, which only the compiled build allows, hence `#js`.
 describe('jobProcess', function () {
 	this.timeout(60000);
 
