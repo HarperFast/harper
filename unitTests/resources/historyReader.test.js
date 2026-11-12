@@ -1184,6 +1184,26 @@ describe('bounded history readers', function () {
 			}
 		});
 
+		it('keeps what its eligibility walk reads out of the lowest key values read', async () => {
+			const T = newTable();
+			await T.put({ id: 'a', n: 0 });
+			await T.patch('a', { n: 1 });
+			await T.put({ id: 'a', n: 2 });
+			for (let n = 3; n <= 12; n++) await T.patch('a', { n });
+			const all = patchesOf(T);
+			const reader = new ReplayReader(T.primaryStore, T.tableId, (id, current, memo) => {
+				readAuditFrame(T.auditStore, T.tableId, id, all[0].txnLogKey, undefined, true, memo);
+				return true;
+			});
+			try {
+				for (const entry of all.slice(4, -1)) assert.deepStrictEqual(reader.read(entry), oracle(T, entry));
+				assert.strictEqual(reader.memo.carries, 1);
+				assert.strictEqual(reader.memo.lowest, all[2].txnLogKey);
+			} finally {
+				reader.memo.close();
+			}
+		});
+
 		it('rebuilds every patch of a chain its eligibility refuses', async () => {
 			const T = newTable();
 			await T.put({ id: 'a', n: 0 });

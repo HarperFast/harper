@@ -608,9 +608,12 @@ export class ReplayReader {
 		}
 		const bytes = image.bytes + stamp.length * 2;
 		let allowed = false;
+		// values never depend on what the eligibility walk reads, so it must not lower the retention bound
+		const lowest = memo.lowest;
 		try {
 			allowed = this.#eligible(id, current, memo, limit);
 		} catch {}
+		memo.lowest = lowest;
 		const carry: Carry = { stamp, allowed };
 		if (allowed) carry.image = { record: image.record, time, origin: entry.nodeId ?? 0, version: entry.version };
 		memo.keep(key, 'carry', carry, allowed ? bytes : stamp.length * 2);
