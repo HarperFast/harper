@@ -626,6 +626,7 @@ test('the full matrix runs every workload once per point, and zones stay in one 
 		/one region/
 	);
 	await rejects(gcpScript('run-matrix.sh', ['--resume', '--set=2x'], { YCSB_GCP_PROJECT: 'p' }), /--run-id/);
+	await rejects(gcpScript('run-matrix.sh', ['--all', '--dry-run'], { YCSB_GCP_PROJECT: 'p' }), /previews one set/);
 	// What a set's VMs are created with, not only what --plan prints: config.sh's own defaults must not win.
 	const created = async (set: string, env: Record<string, string> = {}) => {
 		const { stdout } = await gcpScript('run-matrix.sh', [`--set=${set}`, '--dry-run', '--commit=abc'], {

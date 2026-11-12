@@ -25,7 +25,8 @@
 # orchestrator died without tearing down (a host crash, SIGKILL): it provisions nothing, and each phase that
 # already ended is read, not run again. A set whose VMs are gone is provisioned again, its old run directory
 # kept as <id>.attempt-<n>; a set that finished (runs/<id>/done) is skipped. Without --resume an existing run
-# directory is refused, and a run whose orchestrator is alive (runs/<id>/orchestrator.pid) is never taken over.
+# directory is refused, and a run whose orchestrator is alive (it holds runs/<id>/orchestrator.lock) is never
+# taken over.
 # Run the orchestrator where the operator's session ending does not signal it (systemd-run --user): any exit
 # it sees tears the run down.
 set -euo pipefail
@@ -111,15 +112,19 @@ check_account() {
 
 if [ "$ALL" = 1 ]; then
 	: "${YCSB_GCP_PROJECT:?set YCSB_GCP_PROJECT}"
-	check_account
 	[ -z "$SET$RUN_ID" ] || {
 		echo "--all names its sets and run ids itself; use --base" >&2
+		exit 2
+	}
+	[ "$DRY" = 0 ] || {
+		echo "--dry-run previews one set (--set=<set>); --plan lists them all" >&2
 		exit 2
 	}
 	if [ "$RESUME" = 1 ] && [ -z "$BASE" ]; then
 		echo "--all --resume needs the --base of the matrix to resume" >&2
 		exit 2
 	fi
+	check_account
 	[ -n "$BASE" ] || BASE="ycsb-$(date -u +%Y%m%d-%H%M)-$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n')"
 	ycsb_check_run_id "$BASE-8x-inspect"
 	mkdir -p "$YCSB_RUNS_DIR"
@@ -191,14 +196,18 @@ if [ -e "$RUN_DIR" ] && [ "$RESUME" != 1 ]; then
 fi
 mkdir -p "$RUN_DIR"
 chmod 700 "$RUN_DIR"
-# One orchestrator per run: a second one would poll the same phases and tear the run down when it exits.
+# One orchestrator per run: a second one would poll the same phases and tear the run down when it exits. The
+# lock is held on fd 9 for this process's life (flock(1), Linux), so a crashed orchestrator releases it.
 claim_run() {
-	local pid
-	pid=$(cat "$RUN_DIR/orchestrator.pid" 2>/dev/null || true)
-	if [ -n "$pid" ] && [ "$pid" != $$ ] && kill -0 "$pid" 2>/dev/null; then
-		echo "$RUN_ID is driven by pid $pid; stop it first (or delete $RUN_DIR/orchestrator.pid if that pid is not an orchestrator)" >&2
+	command -v flock >/dev/null || {
+		echo "run-matrix.sh needs flock(1) (util-linux) to own its run" >&2
 		exit 1
-	fi
+	}
+	exec 9>>"$RUN_DIR/orchestrator.lock"
+	flock -n 9 || {
+		echo "$RUN_ID is driven by pid $(cat "$RUN_DIR/orchestrator.pid" 2>/dev/null || echo unknown); stop it first" >&2
+		exit 1
+	}
 	echo $$ >"$RUN_DIR/orchestrator.pid"
 }
 claim_run
@@ -215,11 +224,11 @@ if [ -s "$RUN_DIR/zone" ] && [ -s "$RUN_DIR/known_hosts" ]; then
 fi
 if [ "$provisioned" = 0 ]; then
 	# Whatever an earlier attempt left (results, logs, keys) is kept beside the new attempt, not mixed into it.
-	if [ -n "$(ls -A "$RUN_DIR" | grep -vx orchestrator.pid || true)" ]; then
+	if [ -n "$(ls -A "$RUN_DIR" | grep -vx -e orchestrator.pid -e orchestrator.lock || true)" ]; then
 		n=1
 		while [ -e "$RUN_DIR.attempt-$n" ]; do n=$((n + 1)); done
 		mv "$RUN_DIR" "$RUN_DIR.attempt-$n"
-		rm -f "$RUN_DIR.attempt-$n/orchestrator.pid"
+		rm -f "$RUN_DIR.attempt-$n/orchestrator.pid" "$RUN_DIR.attempt-$n/orchestrator.lock"
 		mkdir -m 700 "$RUN_DIR"
 		claim_run
 		echo "kept the earlier attempt's directory as $RUN_DIR.attempt-$n"
