@@ -1443,20 +1443,50 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			assert.strictEqual((await job(jobId)).status, JOB_STATUS_ENUM.COMPLETE);
 		});
 
-		it('keeps components off a half-replaced database after its unreadable record is removed', async function () {
+		it('keeps components off a half-replaced database after its unreadable record is cancelled', async function () {
 			const fixture = await seededDatabase();
 			await requestRestore(fixture.name, { on_restart: true, retain_previous: false });
 			await closeDatabase(fixture.name);
 			rewriteReceipt(fixture.dir, { state: 'applying', attempts: 1 }, { marker: true });
 			writeFileSync(restoreReceiptPath(fixture.dir), '{"version":1,"state":');
 
-			await restoreBackup({ ...SU, database: fixture.name, cancel: true });
+			const { result } = await restoreBackup({ ...SU, database: fixture.name, cancel: true });
+
+			assert.strictEqual(result.still_blocked, true);
+			const kept = receiptOf(fixture.dir);
+			assert.strictEqual(kept.state, 'terminal', 'a readable record takes the place of the one removed');
+			assert.strictEqual(kept.record_lost, true);
+			assert.strictEqual(restoreMarkerPresent(fixture.dir), true, 'the target was being replaced');
+			assert.strictEqual(unpublishedRestoreBlocksComponents(), fixture.name, 'so the boot still starts in safe mode');
+			await assert.rejects(
+				restoreBackup({ ...SU, database: fixture.name, resume: true }),
+				(error) => error.statusCode === 404,
+				'it names no backup to resume'
+			);
+			await restoreBackupOffline(fixture.name, fixture.backupIds[0]);
+			assert.strictEqual(readRestoreReceipt(fixture.dir).kind, 'absent');
+			assert.strictEqual(unpublishedRestoreBlocksComponents(), undefined);
+		});
+
+		it('blocks only its own database on a marker an older version left without a record', async function () {
+			const fixture = await seededDatabase();
+			await closeDatabase(fixture.name);
+			// what v5.3.6 leaves when a restore fails past its purge: the marker, and no receipt
+			const lock = acquireRestoreLock(fixture.dir);
+			try {
+				lock.source = restoreSourceId(fixture.backupDir);
+				markRestoreDestructive(lock);
+			} finally {
+				releaseRestoreLock(lock);
+			}
 
 			assert.strictEqual(readRestoreReceipt(fixture.dir).kind, 'absent');
-			assert.strictEqual(restoreMarkerPresent(fixture.dir), true, 'the target was being replaced');
-			assert.ok(unpublishedRestoreBlocksComponents(), 'the marker alone still starts the boot in safe mode');
+			assert.strictEqual(unpublishedRestoreBlocksComponents(), undefined, 'every other component still loads');
+			assert.strictEqual(checkRestoreState(fixture.dir), 'incomplete');
+			assert.strictEqual(loadedItems(fixture.name), undefined, 'the database itself stays blocked');
 			await restoreBackupOffline(fixture.name, fixture.backupIds[0]);
-			assert.strictEqual(unpublishedRestoreBlocksComponents(), undefined);
+			assert.strictEqual(restoreMarkerPresent(fixture.dir), false);
+			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.backedUp[0]);
 		});
 
 		it('keeps components off the target when a restore that took over a terminal restart restore fails', async function () {

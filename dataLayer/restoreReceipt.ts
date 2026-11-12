@@ -56,6 +56,11 @@ export interface RestoreReceipt {
 	pre_restore_pin_id?: string;
 	/** The restart restore this one replaced; it inherits that one's pre-restore backup. */
 	superseded_from?: string;
+	/**
+	 * Stands in for a record that could not be read and was cancelled after its target began being replaced:
+	 * `terminal`, naming no backup, so it keeps components off until a restore of the target publishes.
+	 */
+	record_lost?: boolean;
 	/** What a `terminal` receipt was before it ran out of attempts, so `resume` returns it there. */
 	pre_terminal_state?: 'pending' | 'applying';
 	last_error?: string;

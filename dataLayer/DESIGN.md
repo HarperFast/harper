@@ -182,8 +182,10 @@ restore and the next startup applies it, before anything can open the target.
   or `resume` retries, and at `max_attempts` it is `terminal`. A `terminal` restart receipt, one whose
   marker shows destruction began, or one whose rollback copy has started but is not applied starts that boot in safe
   mode (`unpublishedRestoreBlocksComponents`): a component that opens RocksDB itself ignores the
-  marker, and a write it makes after the copy would be replaced uncaptured by the next attempt.
-  `cancel` removes a receipt, keeping marker and pins once destruction began; if a boot already held the
+  marker, and a write it makes after the copy would be replaced uncaptured by the next attempt. A
+  marker alone never does: older versions leave one, and it blocks only its database.
+  `cancel` removes a receipt, keeping marker and pins once destruction began (an unreadable one is then
+  replaced by a `record_lost` terminal receipt, so safe mode holds); if a boot already held the
   database, it then restarts (`JobCompletion`) so the components that loaded without it load.
 
 ## RocksDB managed backups: blob snapshots (`dataLayer/blobBackup.ts`)

@@ -231,6 +231,29 @@ function inheritsRollbackCopy(databaseDir: string): boolean {
 	);
 }
 
+/**
+ * Once its target began being replaced, a terminal placeholder replaces the unreadable record in one write, never
+ * after an unlink: a bare marker blocks only its own database, and a component that opens it itself ignores that.
+ */
+function cancelUnreadableRestore(lock: RestoreLock, databaseName: string): void {
+	if (!restoreMarkerPresent(lock.dbPath)) return removeUnreadableRestoreReceipt(lock);
+	writeRestoreReceipt(
+		lock,
+		newRestoreReceipt({
+			route: 'on_restart',
+			state: 'terminal',
+			record_lost: true,
+			database: databaseName,
+			database_path: lock.dbPath,
+			source_database: databaseName,
+			backup_dir: '',
+			backup_id: 0,
+			options: {},
+			last_error: 'its record could not be read, and it was cancelled after it began replacing the database',
+		})
+	);
+}
+
 export async function requestRestartRestore(request: RestartRestoreRequest): Promise<DeferredJobCompletion> {
 	const { databaseName, databaseDir, backupDir } = request;
 	await finishOutstandingRestore(databaseDir);
@@ -351,7 +374,12 @@ export async function resumeRestartRestore(
 	let previous: RestoreReceipt;
 	try {
 		const read = readRestoreReceipt(databaseDir);
-		if (read.kind !== 'valid' || read.receipt.route !== 'on_restart' || read.receipt.state === 'committed') {
+		if (
+			read.kind !== 'valid' ||
+			read.receipt.route !== 'on_restart' ||
+			read.receipt.state === 'committed' ||
+			read.receipt.record_lost
+		) {
 			throw new ClientError(`Database '${databaseName}' has no pending restart restore to resume`, 404);
 		}
 		previous = read.receipt;
@@ -382,7 +410,7 @@ export async function cancelRestartRestore(databaseName: string, databaseDir: st
 		const read = readRestoreReceipt(databaseDir);
 		if (read.kind === 'absent') throw new ClientError(`Database '${databaseName}' has no restore to cancel`, 404);
 		if (read.kind === 'unreadable') {
-			removeUnreadableRestoreReceipt(lock);
+			cancelUnreadableRestore(lock, databaseName);
 		} else {
 			if (read.receipt.state === 'committed') {
 				throw new ClientError(
