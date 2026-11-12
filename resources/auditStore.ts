@@ -1702,7 +1702,7 @@ export interface LocalWriteFence {
  */
 export function readLocalWriteFence(auditStore: any): LocalWriteFence | undefined {
 	const stored = auditStore.getBinary?.(LOCAL_WRITE_FENCE_KEY);
-	if (!stored?.byteLength) return;
+	if (!stored) return;
 	try {
 		const fence = JSON.parse(Buffer.from(stored).toString());
 		if (fence === null) return;

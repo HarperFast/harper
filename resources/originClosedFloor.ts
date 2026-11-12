@@ -38,6 +38,7 @@ export const WORD_DURABLE_CEILING = 6;
 // Low bit: no new local write reservation is admitted (a node being removed from its cluster). The rest counts
 // changes, so a restore from a record read before a change cannot undo it (`restoreLocalWriteFence`).
 export const WORD_WRITE_FENCE = 7;
+const FENCE_BIT_INDEX = WORD_WRITE_FENCE * 2;
 export const HEADER_WORDS = 8;
 const THREAD_WORDS_OFFSET = HEADER_WORDS;
 const BOUND_WORDS_OFFSET = HEADER_WORDS + SLOTS;
@@ -109,6 +110,8 @@ type Reservation = {
  */
 class ThreadRegistry {
 	readonly words: BigInt64Array;
+	// the low half of WORD_WRITE_FENCE (little-endian), read as a small integer: no BigInt per reservation
+	readonly fenceWords: Int32Array;
 	readonly rootStore: RocksDatabase;
 	private slot = -1;
 	private readonly heap: Reservation[] = [];
@@ -127,6 +130,7 @@ class ThreadRegistry {
 				`The origin-closed floor buffer has another layout (${buffer.byteLength} bytes); restart the process`
 			);
 		this.words = new BigInt64Array(buffer);
+		this.fenceWords = new Int32Array(buffer);
 		// a reservation's pending bound is `proposed` as it starts, so it must never be 0
 		if (Atomics.load(this.words, WORD_PROPOSED) === 0n)
 			storeMax(this.words, WORD_PROPOSED, rootStore.getMonotonicTimestamp());
@@ -402,9 +406,9 @@ export function reserveLocalWriteKey(rootStore: RocksDatabase, handle: RocksTran
 	if (existing) return existing.logKey ?? existing.key;
 	if (explicit !== undefined) assertValidTimestamp(explicit);
 	const registry = registryFor(rootStore);
-	if (Atomics.load(registry.words, WORD_WRITE_FENCE) & 1n) throw new LocalWritesFencedError(rootStore);
+	if (Atomics.load(registry.fenceWords, FENCE_BIT_INDEX) & 1) throw new LocalWritesFencedError(rootStore);
 	const key = registry.reserve(handle, explicit);
-	if (Atomics.load(registry.words, WORD_WRITE_FENCE) & 1n) {
+	if (Atomics.load(registry.fenceWords, FENCE_BIT_INDEX) & 1) {
 		releaseLocalKey(handle);
 		throw new LocalWritesFencedError(rootStore);
 	}
