@@ -18,7 +18,7 @@ import { ClientError, handleHDBError, hdbErrors } from '../utility/errors/hdbErr
 const { HTTP_STATUS_CODES } = hdbErrors;
 import * as envMgr from '../utility/environment/environmentManager.ts';
 import * as path from 'node:path';
-import { rmSync } from 'node:fs';
+import { existsSync, rmSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { getThisNodeName } from '../server/nodeName.ts';
 import { REPLICATION_NOT_IMPLEMENTED } from '../server/Server.ts';
@@ -132,14 +132,16 @@ async function restart(req: any) {
 	return RESTART_RESPONSE;
 }
 
-/**
- * `harper restart`: a running Harper restarts itself through the `restart` operation, so the CLI only
- * asks it to, over the local domain socket or to an explicit `target=`. Only a stopped Harper is started here.
- */
+/** `harper restart`: a running Harper restarts itself through the `restart` operation; only a stopped one is started here. */
 async function restartFromCli() {
 	const cliOperations = await import('./cliOperations.ts');
 	const request = cliOperations.buildRequest();
 	request.operation = hdbTerms.OPERATIONS_ENUM.RESTART;
+	if (request.replicated) {
+		throw new ClientError(
+			'`harper restart` restarts one instance; to restart every node in the cluster, use `harper restart_service service=http_workers replicated=true`'
+		);
+	}
 	if ('target' in request) {
 		if (typeof request.target !== 'string' || request.target.trim() === '') {
 			throw new ClientError('`target=` must name the Harper instance to restart');
@@ -148,7 +150,16 @@ async function restartFromCli() {
 		return;
 	}
 	// Without `target=`, a saved login or HARPER_CLI_TARGET must not redirect a restart off this machine.
-	if (processMan.getHdbPid()) {
+	const pid = processMan.getHdbPid();
+	if (pid) {
+		const { getConfigPath } = await import('../config/configUtils.ts');
+		const socketPath = getConfigPath(hdbTerms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET);
+		if (!socketPath || !existsSync(socketPath)) {
+			throw new ClientError(
+				`${PRODUCT_NAME} is running (pid ${pid}) but has no Operations API domain socket to send the restart to; ` +
+					'it may still be starting, or `operationsApi.network.domainSocket` is disabled'
+			);
+		}
 		await cliOperations.cliOperations(request, false, { local: true });
 		return;
 	}

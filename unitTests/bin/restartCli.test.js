@@ -13,8 +13,7 @@ const RESTART_MESSAGE = 'Restarting Harper. This may take up to 60 seconds.';
 const RESTART_REPLY = { message: RESTART_MESSAGE };
 const CHILD_TIMEOUT_MS = 60000;
 
-// Runs the real `harper restart` CLI in its own process, the way a user does.
-function runCli(env, ...args) {
+function runCli(env, cwd, ...args) {
 	return new Promise((resolve, reject) => {
 		const child = spawn(
 			process.execPath,
@@ -24,7 +23,7 @@ function runCli(env, ...args) {
 				'restart',
 				...args,
 			],
-			{ cwd: path.resolve(__dirname, '../..'), env, stdio: ['ignore', 'pipe', 'pipe'] }
+			{ cwd, env, stdio: ['ignore', 'pipe', 'pipe'] }
 		);
 		let output = '';
 		child.stdout.on('data', (chunk) => (output += chunk));
@@ -38,7 +37,7 @@ function runCli(env, ...args) {
 	});
 }
 
-// An Operations API stand-in that records each request and answers it with `reply`, or never answers when it is null.
+// Answers with `reply`, or never answers when it is null.
 function operationsServer(reply) {
 	const requests = [];
 	const server = http.createServer((request, response) => {
@@ -119,7 +118,7 @@ describe('harper restart from the CLI (harper#4299)', function () {
 			JSON.stringify({ last_target: 'https://saved.invalid:9925', targets: {} })
 		);
 
-		const { code, output } = await runCli(env);
+		const { code, output } = await runCli(env, temp);
 
 		assert.strictEqual(code, 0, output);
 		assert.deepStrictEqual(requests, [{ operation: 'restart' }], output);
@@ -133,20 +132,31 @@ describe('harper restart from the CLI (harper#4299)', function () {
 		servers.push(server);
 		await listen(server, socketPath);
 
-		const { code, output } = await runCli(env);
+		const { code, output } = await runCli(env, temp);
 
 		assert.strictEqual(requests.length, 1, output);
-		assert.notStrictEqual(code, 0, output);
+		assert.strictEqual(code, 1, output);
 		assert.match(output, /refused for the test/);
 		assert.doesNotMatch(output, /Restarting|Starting Harper/, output);
 	});
 
-	it('exits non-zero, without claiming a restart, when the running Harper cannot be reached', async () => {
+	it('says Harper is running, without claiming a restart, when it has no domain socket', async () => {
 		markRunning();
 
-		const { code, output } = await runCli(env);
+		const { code, output } = await runCli(env, temp);
 
-		assert.notStrictEqual(code, 0, output);
+		assert.strictEqual(code, 1, output);
+		assert.match(output, new RegExp(`running \\(pid ${process.pid}\\) but has no Operations API domain socket`));
+		assert.doesNotMatch(output, /not running|Restarting|Starting Harper|already running/, output);
+	});
+
+	it('exits non-zero, without claiming a restart, when nothing listens on the domain socket', async () => {
+		markRunning();
+		fs.writeFileSync(socketPath, '');
+
+		const { code, output } = await runCli(env, temp);
+
+		assert.strictEqual(code, 1, output);
 		assert.doesNotMatch(output, /Restarting|Starting Harper|already running/, output);
 	});
 
@@ -157,10 +167,11 @@ describe('harper restart from the CLI (harper#4299)', function () {
 		await listen(server, socketPath);
 		env.HARPER_CLI_TIMEOUT_MS = '1000';
 
-		const { code, output } = await runCli(env);
+		const { code, signal, output } = await runCli(env, temp);
 
 		assert.strictEqual(requests.length, 1, output);
-		assert.notStrictEqual(code, 0, output);
+		assert.strictEqual(signal, null, 'the CLI timed out by itself rather than being killed');
+		assert.strictEqual(code, 1, output);
 		assert.doesNotMatch(output, /Restarting|Starting Harper|already running/, output);
 	});
 
@@ -173,7 +184,7 @@ describe('harper restart from the CLI (harper#4299)', function () {
 		fs.mkdirSync(credentialsDir);
 		fs.writeFileSync(path.join(credentialsDir, 'credentials.json'), '{ truncated');
 
-		const { code, output } = await runCli(env);
+		const { code, output } = await runCli(env, temp);
 
 		assert.strictEqual(code, 0, output);
 		assert.deepStrictEqual(requests, [{ operation: 'restart' }], output);
@@ -185,11 +196,24 @@ describe('harper restart from the CLI (harper#4299)', function () {
 		servers.push(server);
 		await listen(server, socketPath);
 
-		const { code, output } = await runCli(env, 'target=');
+		const { code, output } = await runCli(env, temp, 'target=');
 
 		assert.strictEqual(code, 1, output);
 		assert.deepStrictEqual(requests, [], output);
 		assert.match(output, /target=/);
+	});
+
+	it('refuses replicated=true, which the restart operation cannot honor', async () => {
+		markRunning();
+		const { server, requests } = operationsServer({ statusCode: 200, body: RESTART_REPLY });
+		servers.push(server);
+		await listen(server, socketPath);
+
+		const { code, output } = await runCli(env, temp, 'replicated=true');
+
+		assert.strictEqual(code, 1, output);
+		assert.deepStrictEqual(requests, [], output);
+		assert.match(output, /restart_service service=http_workers replicated=true/);
 	});
 
 	it('restarts the instance named by target= rather than the local one', async () => {
@@ -197,7 +221,7 @@ describe('harper restart from the CLI (harper#4299)', function () {
 		servers.push(server);
 		await listen(server, 0, '127.0.0.1');
 
-		const { code, output } = await runCli(env, `target=http://127.0.0.1:${server.address().port}`);
+		const { code, output } = await runCli(env, temp, `target=http://127.0.0.1:${server.address().port}`);
 
 		assert.strictEqual(code, 0, output);
 		assert.deepStrictEqual(requests, [{ operation: 'restart' }], output);
