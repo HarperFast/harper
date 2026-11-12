@@ -896,7 +896,7 @@ describe('A record bit for a full-write head (harper#3532)', () => {
 				assert.deepEqual(T.primaryStore.getEntry(id).copiedDeleteBoundary, { version, nodeId: headOrigin });
 			});
 
-			it('keeps the boundary under an older publish when a lower delete lands on it', async function () {
+			it('keeps the boundary under an older publish when a lower delete arrives', async function () {
 				if (isLMDB) return this.skip();
 				const audited = newId();
 				const copied = newId();
@@ -911,6 +911,27 @@ describe('A record bit for a full-write head (harper#3532)', () => {
 					assert.deepEqual(T.primaryStore.getEntry(id).copiedDeleteBoundary, { version, nodeId: headOrigin }, id);
 					await apply(T, id, { extra: 'old' }, { version: version - 1000, nodeId: lateOrigin });
 					assert.equal(T.primaryStore.getEntry(id).value, null, `${id}: the stronger delete still holds`);
+				}
+			});
+
+			it('a lower delete loses after a newer write recreated the row and an older publish lowered its head', async function () {
+				if (isLMDB) return this.skip();
+				const audited = newId();
+				const copied = newId();
+				const version = Date.now() + DAY;
+				for (const id of [audited, copied]) {
+					await copiedDelete(T, id, { version });
+					await apply(T, id, { name: 'newer' }, { version: version + 2000 });
+					await publish(T, id, { version: version - 3000 });
+					const head = T.primaryStore.getEntry(id);
+					assert.equal(head.version, version - 3000, 'premise: the publish lowered the head');
+					assert.deepEqual({ ...head.value }, { id, name: 'newer' }, 'premise: and kept the body');
+				}
+				await remove(T, audited, { version: version - 2000, nodeId: lateOrigin });
+				await copiedDelete(T, copied, { version: version - 2000, nodeId: lateOrigin });
+				for (const id of [audited, copied]) {
+					assert.deepEqual({ ...T.primaryStore.getEntry(id).value }, { id, name: 'newer' }, id);
+					assert.deepEqual(T.primaryStore.getEntry(id).copiedDeleteBoundary, { version, nodeId: headOrigin }, id);
 				}
 			});
 

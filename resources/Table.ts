@@ -2462,7 +2462,7 @@ export function makeTable(options): TableResourceClass {
 			return undefined;
 		}
 		const readTxn = transaction.getReadTxn();
-		// on RocksDB only a copy-apply row reaches here, and it writes from this base
+		// on RocksDB only a copy-apply row reaches here: its write base, so not another worker's cached copy
 		return primaryStore.getEntry(
 			id,
 			isRocksDB ? { transaction: readTxn, uncachedRead: true } : { transaction: readTxn }
@@ -5603,7 +5603,7 @@ export function makeTable(options): TableResourceClass {
 			let committed = false;
 			try {
 				if ((hasSourceGet || audit) && !existingRecord) return;
-				// demoteReplica rewrites the row from this entry, so it must not be another worker's cached copy
+				// demoteReplica's write base, so not another worker's cached copy
 				entry = primaryStore.getEntry(id, lmdbTransaction ? options : { transaction, uncachedRead: true });
 				if (!entry || entry.version !== existingVersion) return;
 				if (hasSourceGet) {
@@ -8295,7 +8295,11 @@ export function makeTable(options): TableResourceClass {
 					// write (a concurrent transaction observed on a retry round, or an out-of-order delivery)
 					// that a chained delete must not destroy.
 					const precedesExisting = precedesExistingVersion(txnTime, existingEntry, options?.nodeId);
-					if (precedesExisting < 0 || (isCopyApply && precedesExisting === 0)) {
+					if (
+						precedesExisting < 0 ||
+						(isCopyApply && precedesExisting === 0) ||
+						precedesDeleteBoundary(txnTime, existingEntry, options?.nodeId)
+					) {
 						if (
 							isCopyApply &&
 							audit &&
@@ -12954,20 +12958,21 @@ export function makeTable(options): TableResourceClass {
 		if (readTxn?.isDone) {
 			throw new Error('You can not read from a transaction that has already been committed/aborted');
 		}
-		// a copy row's load is its write's base: replication applies it without a method
 		const readsCommitBase =
 			isRocksDB &&
-			(COMMIT_BASE_METHODS.has(resourceOptions?.method) || resourceOptions?.isCopyApply === true) &&
+			COMMIT_BASE_METHODS.has(resourceOptions?.method) &&
 			!resourceOptions?.ensureLoaded &&
 			readTxn &&
 			!(readTxn as any).snapshotDisabled;
+		// a copy row writes from this load without reloading it, so not from another worker's cached copy
+		const readsCopyBase = isRocksDB && resourceOptions?.isCopyApply === true;
 		return loadLocalRecord(
 			id,
 			request,
 			{
 				transaction: readTxn,
 				ensureLoaded: resourceOptions?.ensureLoaded,
-				uncachedRead: readsCommitBase || undefined,
+				uncachedRead: readsCommitBase || readsCopyBase || undefined,
 			},
 			sync,
 			(entry) => {
@@ -15440,7 +15445,7 @@ export function makeTable(options): TableResourceClass {
 		const options = { transaction };
 		let committed = false;
 		try {
-			// the base of the row written below, so not another worker's cached copy
+			// the write base, so not another worker's cached copy
 			const current: Entry = primaryStore.getEntry(id, { transaction, uncachedRead: true });
 			if (
 				!(residencyPolicy ? current : current?.residencyId) ||
