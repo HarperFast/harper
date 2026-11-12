@@ -25,8 +25,7 @@
 # orchestrator died without tearing down (a host crash, SIGKILL): it provisions nothing, and each phase that
 # already ended is read, not run again. A set whose VMs are gone is provisioned again, its old run directory
 # kept as <id>.attempt-<n>; a set that finished (runs/<id>/done) is skipped. Without --resume an existing run
-# directory is refused, and a run whose orchestrator is alive (it holds runs/<id>/orchestrator.lock) is never
-# taken over.
+# directory is refused, and a run whose orchestrator is alive (it holds runs/<id>.lock) is never taken over.
 # Run the orchestrator where the operator's session ending does not signal it (systemd-run --user): any exit
 # it sees tears the run down.
 set -euo pipefail
@@ -197,13 +196,14 @@ fi
 mkdir -p "$RUN_DIR"
 chmod 700 "$RUN_DIR"
 # One orchestrator per run: a second one would poll the same phases and tear the run down when it exits. The
-# lock is held on fd 9 for this process's life (flock(1), Linux), so a crashed orchestrator releases it.
+# lock is held on fd 9 for this process's life (flock(1), Linux), so a crashed orchestrator releases it. It is
+# beside the run directory, not in it, so archiving an earlier attempt never swaps the file the lock is on.
 claim_run() {
 	command -v flock >/dev/null || {
 		echo "run-matrix.sh needs flock(1) (util-linux) to own its run" >&2
 		exit 1
 	}
-	exec 9>>"$RUN_DIR/orchestrator.lock"
+	exec 9>>"$YCSB_RUNS_DIR/$RUN_ID.lock"
 	flock -n 9 || {
 		echo "$RUN_ID is driven by pid $(cat "$RUN_DIR/orchestrator.pid" 2>/dev/null || echo unknown); stop it first" >&2
 		exit 1
@@ -224,13 +224,12 @@ if [ -s "$RUN_DIR/zone" ] && [ -s "$RUN_DIR/known_hosts" ]; then
 fi
 if [ "$provisioned" = 0 ]; then
 	# Whatever an earlier attempt left (results, logs, keys) is kept beside the new attempt, not mixed into it.
-	if [ -n "$(ls -A "$RUN_DIR" | grep -vx -e orchestrator.pid -e orchestrator.lock || true)" ]; then
+	if [ -n "$(ls -A "$RUN_DIR" | grep -vx orchestrator.pid || true)" ]; then
 		n=1
 		while [ -e "$RUN_DIR.attempt-$n" ]; do n=$((n + 1)); done
 		mv "$RUN_DIR" "$RUN_DIR.attempt-$n"
-		rm -f "$RUN_DIR.attempt-$n/orchestrator.pid" "$RUN_DIR.attempt-$n/orchestrator.lock"
 		mkdir -m 700 "$RUN_DIR"
-		claim_run
+		mv "$RUN_DIR.attempt-$n/orchestrator.pid" "$RUN_DIR/"
 		echo "kept the earlier attempt's directory as $RUN_DIR.attempt-$n"
 	fi
 	"$YCSB_GCP_DIR/provision.sh" --run-id="$RUN_ID" --topology=a "${PASS[@]}"
