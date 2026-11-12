@@ -995,6 +995,40 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.backedUp[0]);
 		});
 
+		it('keeps a rollback copy its child completed before failing, instead of stopping the restore', async function () {
+			const fixture = await seededDatabase();
+			const { jobId } = await requestRestore(fixture.name, { on_restart: true });
+			let completed;
+			// the child published the copy's manifest, then died before it reported the result
+			const restoreRunner = replaceExport(restoreChildRunnerModule, 'runRestoreChild', async (command, ...args) => {
+				const result = await runRestoreChild(command, ...args);
+				if (command !== 'pre-restore-backup') return result;
+				completed = result.backupId;
+				throw new Error('The restore child running pre-restore-backup exited on SIGKILL without a result');
+			});
+			try {
+				assert.deepStrictEqual([...(await boot(fixture.name))], []);
+			} finally {
+				restoreRunner();
+			}
+
+			assert.ok(Number.isInteger(completed), 'precondition: the child completed the copy');
+			assert.strictEqual(
+				readRestoreReceipt(fixture.dir).kind,
+				'absent',
+				`the restore finished: ${JSON.stringify(readRestoreReceipt(fixture.dir))}`
+			);
+			const settled = await job(jobId);
+			assert.strictEqual(settled.status, JOB_STATUS_ENUM.COMPLETE);
+			assert.strictEqual(settled.result.pre_restore_backup_id, completed);
+			assert.deepStrictEqual(
+				(await listBackupsInDir(fixture.backupDir)).map((backup) => backup.backupId),
+				[...fixture.backupIds, completed],
+				'no second copy'
+			);
+			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.backedUp[0]);
+		});
+
 		it('counts a refused pre-restore backup as an attempt to retry, not a terminal failure', async function () {
 			const fixture = await seededDatabase();
 			const { jobId } = await requestRestore(fixture.name, { on_restart: true });

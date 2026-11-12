@@ -510,13 +510,23 @@ function cancelledOffline(databaseName: string, cancelled: RestoreReceipt | unde
 	};
 }
 
+/**
+ * A rollback copy a child took for this operation. Its manifest is written only once the copy is durable, and
+ * removed again if finishing it fails, so one the engine still lists is whole whatever the child did next.
+ */
+async function finishedPreRestoreBackup(receipt: RestoreReceipt): Promise<number | undefined> {
+	const engineBackups = new Set((await listBackupsInDir(receipt.backup_dir)).map((backup) => backup.backupId));
+	let backupId: number | undefined;
+	for (const [id, manifest] of await readAllManifests(receipt.backup_dir)) {
+		if (manifest.pre_restore_for === receipt.operation_id && engineBackups.has(id)) backupId = id;
+	}
+	return backupId;
+}
+
 async function adoptOrTakePreRestoreBackup(lock: RestoreLock, receipt: RestoreReceipt): Promise<RestoreReceipt> {
 	let backupId: number | undefined;
 	if (receipt.pre_restore_started_at !== undefined) {
-		const engineBackups = new Set((await listBackupsInDir(receipt.backup_dir)).map((backup) => backup.backupId));
-		for (const [id, manifest] of await readAllManifests(receipt.backup_dir)) {
-			if (manifest.pre_restore_for === receipt.operation_id && engineBackups.has(id)) backupId = id;
-		}
+		backupId = await finishedPreRestoreBackup(receipt);
 	} else {
 		receipt = writeRestoreReceipt(lock, { ...receipt, pre_restore_started_at: Date.now() });
 	}
@@ -541,9 +551,16 @@ async function adoptOrTakePreRestoreBackup(lock: RestoreLock, receipt: RestoreRe
 				}
 			));
 		} catch (error) {
-			throw Object.assign(new Error(error?.message ?? String(error), { cause: error }), {
-				preRestoreBackupFailed: true,
-			});
+			// the runner settles only once the child has exited, so nothing still writes to a copy found here
+			backupId = await finishedPreRestoreBackup(receipt).catch(() => undefined);
+			if (backupId === undefined) {
+				throw Object.assign(new Error(error?.message ?? String(error), { cause: error }), {
+					preRestoreBackupFailed: true,
+				});
+			}
+			logger.warn(
+				`The pre-restore backup of '${receipt.database}' failed after it completed backup ${backupId}; it is kept as the rollback copy (${error?.message ?? error})`
+			);
 		}
 	}
 	const pinId = preRestorePinId(receipt.operation_id);

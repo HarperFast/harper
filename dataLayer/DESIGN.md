@@ -176,7 +176,7 @@ restore and the next startup applies it, before anything can open the target.
 - **Attempt.** Counted before any native work. Peers are re-checked under the fence (`terminal` if
   any). A `pending` receipt with `retain_previous` takes the pre-restore backup in the restore child
   (`createPreRestoreBackup`, the one backup allowed past the reservation; `pre_restore_for` lets a
-  retry adopt it) and pins it. Then `applyProveAndCommit`, the step online and offline restores share,
+  retry, or this attempt once its child fails after the manifest, adopt it) and pins it. Then `applyProveAndCommit`, the step online and offline restores share,
   with the engine-lock probe on: it aborts only on a lock conflict, so a corrupt old directory stays
   replaceable.
 - **Failure never exits.** The receipt keeps its error and the target stays blocked; the next restart
