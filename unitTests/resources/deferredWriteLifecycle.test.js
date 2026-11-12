@@ -1,4 +1,5 @@
 const assert = require('node:assert');
+const { existsSync } = require('node:fs');
 const { PassThrough } = require('node:stream');
 const { setupTestDBPath } = require('../testUtils');
 const { waitFor } = require('../waitFor');
@@ -6,7 +7,13 @@ const { table } = require('#src/resources/databases');
 const { RequestTarget } = require('#src/resources/RequestTarget');
 const { transaction } = require('#src/resources/transaction');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
-const { createBlob, getFileId, getFilePathForBlob } = require('#src/resources/blob');
+const {
+	createBlob,
+	deleteBlobAndWait,
+	getFileId,
+	getFilePathForBlob,
+	setDeletionDelay,
+} = require('#src/resources/blob');
 const { writeKeyId, TRANSACTION_STATE, suspendDatabaseCommits } = require('#src/resources/DatabaseTransaction');
 require('#src/server/serverHelpers/serverUtilities');
 
@@ -1697,6 +1704,36 @@ describe('Deferred write lifecycle', function () {
 			assert.strictEqual((await TestTable.get(key)).n, 0);
 		} finally {
 			await holder.unlock();
+		}
+	});
+
+	it('keeps a blob another write is saving when a draft that tracked it is superseded', async () => {
+		const key = id();
+		const otherKey = id();
+		const sentinelKey = id();
+		const stream = new PassThrough();
+		const shared = createBlob(stream);
+		setDeletionDelay(0);
+		try {
+			const record = await TestTable.getResource({ id: key }, {});
+			await record.update({ blob: shared, n: 1 }, true);
+			const other = TestTable.put(otherKey, { blob: shared });
+			try {
+				await waitFor(() => getFileId(shared) != null);
+				await record.update({ n: 2 }, true);
+			} finally {
+				stream.end(Buffer.alloc(20000, 7));
+			}
+			await other;
+			await record.save();
+			// reclamation runs in queue order, so one the superseded draft queued has run once this one has
+			await TestTable.put(sentinelKey, { blob: createBlob(Buffer.alloc(20000, 1)) });
+			await deleteBlobAndWait((await TestTable.get(sentinelKey)).blob);
+			assert.strictEqual((await TestTable.get(key)).blob, undefined);
+			assert.ok(existsSync(getFilePathForBlob(shared)), 'superseding the draft deleted a file another write committed');
+			assert.strictEqual((await (await TestTable.get(otherKey)).blob.bytes()).length, 20000);
+		} finally {
+			setDeletionDelay(undefined);
 		}
 	});
 

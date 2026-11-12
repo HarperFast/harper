@@ -667,7 +667,9 @@ describe('REST preconditions with real table transactions', () => {
 
 	it('settles queued writes after their conditional precondition fails', async function () {
 		if (isLMDB) return this.skip();
-		this.timeout(45000);
+		// The child's own timeout fires first so a hang is reported by name; the kill only backstops a
+		// child that never reaches its test.
+		this.timeout(process.env.HARPER_CONDITIONAL_QUEUE_CHILD ? 30000 : 60000);
 		if (!process.env.HARPER_CONDITIONAL_QUEUE_CHILD) {
 			// Bypass Mocha's forking launcher so the timeout and heap cap own the test process.
 			const { spawnSync } = require('node:child_process');
@@ -686,7 +688,7 @@ describe('REST preconditions with real table transactions', () => {
 					cwd: resolve(__dirname, '../..'),
 					env: { ...process.env, HARPER_CONDITIONAL_QUEUE_CHILD: '1' },
 					encoding: 'utf8',
-					timeout: 30000,
+					timeout: 50000,
 					killSignal: 'SIGKILL',
 				}
 			);

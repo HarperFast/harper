@@ -4973,6 +4973,8 @@ export function makeTable(options): TableResourceClass {
 			// A moved slot belongs to a later write; an older failure must leave it untouched.
 			if (this.#savingOperation !== failed) return;
 			if (previous) {
+				// A draft that failed preparation stays failed and reports the newest cause; a staged or
+				// still-preparable draft remains savable, so this rejection reaches only the caller.
 				if (previous.stagingFailure) previous.stagingFailure = { error };
 				previous.releaseChanges?.();
 				this.#savingOperation = previous;
@@ -8055,12 +8057,8 @@ export function makeTable(options): TableResourceClass {
 							'Can not modify an update instance after it has been saved; call update() again',
 							409
 						);
-					const abandonedBlobs = previous?.savedBlobs;
-					let retainedBlobs: Set<string> | undefined;
-					if (abandonedBlobs?.some((blob) => getFileId(blob))) {
-						retainedBlobs = collectRetainedFileIds(primaryStore.getEntry(id)?.value) ?? new Set();
-						for (const fileId of collectRetainedFileIds(recordUpdate) ?? []) retainedBlobs.add(fileId);
-					}
+					// No blob cleanup for the replaced draft: a commit marks a write saved or closed before
+					// it saves blobs, so any file in a mergeable draft's savedBlobs belongs to another write.
 					let result;
 					if (
 						previous &&
@@ -8101,7 +8099,6 @@ export function makeTable(options): TableResourceClass {
 							previous.dropped = true;
 						}
 					}
-					if (abandonedBlobs) cleanupUnusedBlobs(abandonedBlobs, retainedBlobs);
 					previous = undefined;
 					previousChanges = undefined;
 					previousRecord = undefined;
