@@ -3128,8 +3128,8 @@ export class DatabaseTransaction implements Transaction {
 				result = operation.beforeIntermediate?.() as Promise<void>;
 				if (result?.then) {
 					this.stageCompletion(result, transaction);
-					// Not a source apply: its notification writes track received blobs without awaiting them, so a size
-					// landing by commit is timing (replicated descriptors carry the origin's size; harper#4329)
+					// Not a source apply: its notification writes do not await their blobs, so a size landing by commit is
+					// timing (harper#4329)
 					if (operation.savedBlobs !== undefined && !this.sourceApply && !this.isReplay) {
 						for (const blob of operation.savedBlobs) {
 							if (blob.size == null) ((transaction as RocksTransactionWithRetry).blobsAwaitingSize ??= []).push(blob);
