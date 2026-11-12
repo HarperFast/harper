@@ -242,6 +242,11 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 		return getDatabases()[name]?.Items;
 	}
 
+	/** What this thread serves now, with no rescan: what stays loaded until something reloads it. */
+	function servedItems(name) {
+		return getDatabases()[name]?.Items;
+	}
+
 	function receiptOf(dir) {
 		const read = readRestoreReceipt(dir);
 		assert.strictEqual(read.kind, 'valid', `expected a readable receipt, found ${JSON.stringify(read)}`);
@@ -1577,7 +1582,6 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			const fixture = await seededDatabase();
 			const { jobId } = await requestRestore(fixture.name, { on_restart: true });
 			const { operation_id: operationId } = receiptOf(fixture.dir);
-			await closeDatabase(fixture.name);
 
 			const { result, afterRecorded } = await restoreBackup({ ...SU, database: fixture.name, cancel: true });
 
@@ -1592,6 +1596,11 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			const cancelled = await job(jobId);
 			assert.strictEqual(cancelled.status, JOB_STATUS_ENUM.ERROR);
 			assert.strictEqual(cancelled.message, 'Cancelled');
+			assert.deepStrictEqual(
+				await snapshot(servedItems(fixture.name)),
+				fixture.live,
+				'still served with no rescan or restart, so nothing needs one'
+			);
 			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.live, 'nothing was replaced');
 		});
 
@@ -1733,11 +1742,14 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 
 			assert.strictEqual(result.restarting, true, 'the boot loaded components without it, and nothing reloads it');
 			assert.strictEqual(typeof afterRecorded, 'function');
+			assert.strictEqual(servedItems(fixture.name), undefined, 'until the restart, nothing loads it');
+			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.live, 'the restarted process does');
 
 			const requestedSince = await seededDatabase();
 			await requestRestore(requestedSince.name, { on_restart: true, retain_previous: false });
 			const later = await restoreBackup({ ...SU, database: requestedSince.name, cancel: true });
 			assert.strictEqual(later.result.restarting, false, 'requested after this boot started, so never held');
+			assert.deepStrictEqual(await snapshot(servedItems(requestedSince.name)), requestedSince.live, 'and still served');
 		});
 
 		it('does not restart while another restore would start Harper without components, and names it', async function () {
@@ -1859,6 +1871,7 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			assert.strictEqual(checkRestoreState(fixture.dir), 'clear');
 			assert.deepStrictEqual(pinsOf(fixture), []);
 			assert.strictEqual((await job(jobId)).status, JOB_STATUS_ENUM.ERROR);
+			assert.strictEqual(servedItems(fixture.name), undefined, 'until the restart, nothing loads it');
 			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.live, 'nothing was replaced');
 		});
 
