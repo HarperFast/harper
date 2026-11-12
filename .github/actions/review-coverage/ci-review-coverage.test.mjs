@@ -1,7 +1,7 @@
 import assert from 'node:assert';
 import test from 'node:test';
 
-import { COVERAGE_LEGS, coverageFooterProblem, evaluateCiCoverage } from './evaluateCiCoverage.mjs';
+import { ADVISORY_LATE_LEGS, COVERAGE_LEGS, coverageFooterProblem, evaluateCiCoverage } from './evaluateCiCoverage.mjs';
 import { evaluateFramingVerdict, parseFramingPaths } from './evaluateFramingVerdict.mjs';
 
 const HEAD = 'abcdef1234567890abcdef1234567890abcdef12';
@@ -534,6 +534,10 @@ const HELPER_LEG_FAMILY = new Map([
 // Update with the helper (skills-internal skills/cross-model-review/bin, as of f58f2339e): REVIEW_LEGS in
 // prepush-policy.mjs and the `advisory` entries of LATE_LEG_KINDS in prepush-late-legs.mjs.
 const HELPER_ADVISORY_LATE_LEGS = ['gemini-carbon'];
+
+test("the advisory leg list is the helper's", () => {
+	assert.deepStrictEqual([...ADVISORY_LATE_LEGS].sort(), [...HELPER_ADVISORY_LATE_LEGS].sort());
+});
 
 test('every leg the grammar accepts scores the families the helper counts', () => {
 	assert.deepStrictEqual([...COVERAGE_LEGS].sort(), [...HELPER_LEG_FAMILY.keys()].sort());

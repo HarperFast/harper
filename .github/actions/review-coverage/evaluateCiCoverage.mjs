@@ -19,7 +19,7 @@ export const COVERAGE_LEGS = new Set([
 ]);
 // Late legs the helper treats as experiments (LATE_LEG_KINDS `advisory` in prepush-late-legs.mjs): they
 // never gate readiness, and `pending=`/`blocked=` never name them, so only a folded one reaches `ran=`.
-const ADVISORY_LATE_LEGS = new Set(['gemini-carbon']);
+export const ADVISORY_LATE_LEGS = new Set(['gemini-carbon']);
 const GATING_LEGS = new Set([...COVERAGE_LEGS].filter((leg) => !ADVISORY_LATE_LEGS.has(leg)));
 const ADJUDICATOR_LABELS = new Set(['domain', 'domain(claude)', 'domain(codex)']);
 const NON_COVERAGE_LEGS = ['domain', 'conformance'];
