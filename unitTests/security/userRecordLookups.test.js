@@ -597,11 +597,21 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 			const memoizedSso = { username: 'lookup_sso_tombstone', role: { role: 'component_role', permission: {} } };
 			const memoizedLive = { username: 'lookup_alias_live', role: { role: 'component_role', permission: {} } };
 			const getUser = server.getUser;
+			let aliasCalls = 0;
+			let createdMidflightCalls = 0;
 			server.getUser = async (username) => {
 				if (username === 'lookup_sso_fresh_login') {
 					return { username: 'lookup_sso_tombstone', role: { role: 'component_role', permission: {} } };
 				}
 				if (username === 'lookup_sso_memo_login') return memoizedSso;
+				if (username === 'lookup_created_midflight') {
+					createdMidflightCalls++;
+					if (createdMidflightCalls === 1) {
+						await databases.system.hdb_user.put(lookupUser({ username: 'lookup_created_midflight' }));
+					}
+					return { username: 'lookup_created_midflight', role: { role: 'component_role', permission: {} } };
+				}
+				aliasCalls++;
 				return memoizedLive;
 			};
 			try {
@@ -615,11 +625,17 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 
 				assert.strictEqual((await authenticate(basic('lookup_alias_login', 'token'))).status, 200);
 				await databases.system.hdb_user.delete('lookup_alias_live');
+				const aliasCallsBeforeDrop = aliasCalls;
 				assert.strictEqual(
 					(await authenticate(basic('lookup_alias_login', 'token'))).status,
 					401,
 					'a memoized alias whose first lookup read a live record is refused once that record is dropped'
 				);
+				assert.strictEqual(aliasCalls, aliasCallsBeforeDrop + 1, 'a dropped alias record skips the retry');
+
+				const createdMidflight = await authenticate(basic('lookup_created_midflight', 'token'));
+				assert.strictEqual(createdMidflight.status, 200, 'a record created mid-lookup retries once and succeeds');
+				assert.strictEqual(createdMidflightCalls, 2);
 			} finally {
 				server.getUser = getUser;
 			}

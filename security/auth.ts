@@ -1,4 +1,5 @@
 import {
+	canRetryChangedUser,
 	cloneUserView,
 	getUserImpl,
 	hasReadRecordChanged,
@@ -316,7 +317,7 @@ export async function authentication(request, nextHandler) {
 										resolved &&
 										typeof resolved === 'object' &&
 										hasReadRecordChanged(resolved, provenance) &&
-										!(versions.userStamp === null && provenance?.username === username)
+										canRetryChangedUser(resolved, provenance)
 									) {
 										versions = userRecordVersions(username);
 										resolved = await server.getUser(username, password, request);

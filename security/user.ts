@@ -25,6 +25,7 @@ export {
 	getUserWithRole,
 	isCurrentUser,
 	hasReadRecordChanged,
+	canRetryChangedUser,
 	hasRecordProvenance,
 	isRecordlessPrincipal,
 	userRecordVersions,
@@ -838,6 +839,17 @@ function hasReadRecordChanged(user: User, admitted?: UserProvenance): boolean {
 	const provenance = recordedProvenance(user, admitted);
 	if (!provenance || provenance.userStamp === UNREAD_RECORD) return false;
 	return !isCurrentUser(user, provenance);
+}
+
+/**
+ * Whether re-running `server.getUser` can resolve a changed read record: true when `provenance.username` was
+ * created while `getUser` awaited (`userStamp === null`) or still has a live `hdb_user` entry, and false when
+ * a previously read `hdb_user` record has been dropped.
+ */
+function canRetryChangedUser(user: User, admitted?: UserProvenance): boolean {
+	const provenance = recordedProvenance(user, admitted);
+	if (!provenance) return false;
+	return provenance.userStamp === null || readEntry(systemStore(USER_TABLE_NAME), provenance.username) !== undefined;
 }
 
 /**
