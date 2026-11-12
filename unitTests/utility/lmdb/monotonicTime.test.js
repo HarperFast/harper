@@ -29,8 +29,7 @@ const MINTER = `
 `;
 const minterSource = MINTER.replace('__MINTER__', () => JSON.stringify(MINTER));
 
-// Loads the clock with real timers, then replaces the timer globals while it re-anchors (its 60 s interval
-// callback, captured here) and while it issues a time. Its own clock word, so a skew cannot leak out.
+// Runs on its own clock word, so a skew from a failing run cannot leak into this process's clock.
 const STUBBED_TIMERS = `
 	const { parentPort, workerData } = require('node:worker_threads');
 	const realSetInterval = setInterval;
