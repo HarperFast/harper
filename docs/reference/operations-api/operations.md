@@ -2451,7 +2451,7 @@ Deletes all but the newest `keep_count` managed backups.
 
 ### `restore_backup`
 
-Restores a database in place from a managed backup, as a background [job](#jobs). `backup_id` defaults to the latest backup. Restoring the `system` database, or a database a loaded component keeps open, requires the server to be stopped — see [when can a database be restored?](../backups/overview.md#when-can-a-database-be-restored)
+Restores a database in place from a managed backup, as a background [job](#jobs). `backup_id` defaults to the latest backup. Restoring the `system` database requires the server to be stopped. A database a loaded component keeps open can be restored with the server stopped, or, from v5.4.0, with `"on_restart": true`, which restores it at the next startup — see [when can a database be restored?](../backups/overview.md#when-can-a-database-be-restored)
 
 ```json
 { "operation": "restore_backup", "database": "dev", "backup_id": 1 }
@@ -2481,6 +2481,8 @@ Detailed documentation: [Database Jobs](../database/jobs.md)
 ### `get_job`
 
 Returns job status (`CREATED`, `IN_PROGRESS`, `COMPLETE`, `ERROR`), timing, and result message for the specified job ID. Bulk import/export operations return a job ID on initiation, as does a `deploy_component` with `"restart": "rolling"`, as `restartJobId`. [`restart_service`](#restart_service) also returns one; with `"replicated": true`, its job's `status` and `result.replicated` report whether each node restarted, as [`replicated`](#restart_service-replicated) describes.
+
+From v5.4.0, a job whose work is deferred to the next startup stays `IN_PROGRESS` across the restart and names what will settle it in `deferred_to`. A [`restore_backup`](../backups/operations.md#restoring-at-the-next-startup) with `"on_restart": true` reports `"deferred_to": "restore-intent"` until the startup applies the restore.
 
 ```json
 { "operation": "get_job", "id": "4a982782-929a-4507-8794-26dae1132def" }
