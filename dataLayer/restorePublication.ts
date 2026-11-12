@@ -551,18 +551,24 @@ export function scanRestoreReceipts(roots: string[] = databaseRoots()): ScannedR
 	return scanned;
 }
 
-/** The jobs that restores which have not finished still name; each such receipt settles its own job. */
-export function jobsNamedByUnfinishedRestores(): Set<string> {
-	const named = new Set<string>();
+/**
+ * A receipt removed only after it settles its job: a restart restore's in any state, and any committed one. An
+ * online or offline attempt that did not commit leaves its job to the process that ran it, or to the sweep.
+ */
+function receiptSettlesJob(receipt: RestoreReceipt): boolean {
+	return Boolean(receipt.job_id) && (receipt.route === 'on_restart' || receipt.state === 'committed');
+}
+
+export function jobsOwnedByRestoreReceipts(): Set<string> {
+	const owned = new Set<string>();
 	for (const { read } of scanRestoreReceipts()) {
-		if (read.kind === 'valid' && read.receipt.job_id && read.receipt.state !== 'committed')
-			named.add(read.receipt.job_id);
+		if (read.kind === 'valid' && receiptSettlesJob(read.receipt)) owned.add(read.receipt.job_id!);
 	}
-	return named;
+	return owned;
 }
 
 export function restoreReceiptOwnsJob(jobId: string): boolean {
-	return jobsNamedByUnfinishedRestores().has(jobId);
+	return jobsOwnedByRestoreReceipts().has(jobId);
 }
 
 /**
@@ -693,7 +699,7 @@ async function recoverRestoresOnce(): Promise<Set<string>> {
 			}
 		} catch (error) {
 			logger.error(`Could not recover the restore of '${receipt.database}'`, error);
-			if (receipt.route === 'on_restart' && receipt.job_id) owned.add(receipt.job_id);
+			if (receiptSettlesJob(receipt)) owned.add(receipt.job_id!);
 			// a failure after its commit may already have published; rescanning a still-blocked name is harmless
 			published = true;
 		}

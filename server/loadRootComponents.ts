@@ -75,9 +75,9 @@ async function loadRootComponents(isWorkerThread: any = false) {
 			harperLogger.error('Could not recover restores at startup, so this boot starts in safe mode', error);
 			if (!process.env.HARPER_SAFE_MODE) process.env.HARPER_SAFE_MODE = 'restore-unpublished';
 			try {
-				restoreOwnedJobs = loadRuntimeModule('dataLayer/restorePublication').jobsNamedByUnfinishedRestores();
+				restoreOwnedJobs = loadRuntimeModule('dataLayer/restorePublication').jobsOwnedByRestoreReceipts();
 			} catch (readError) {
-				harperLogger.error('Could not read which jobs unfinished restores own', readError);
+				harperLogger.error('Could not read which jobs restore records own', readError);
 			}
 		}
 	}

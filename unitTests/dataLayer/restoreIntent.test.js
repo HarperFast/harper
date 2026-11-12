@@ -58,7 +58,7 @@ const {
 const restoreReceiptModule = require('#js/dataLayer/restoreReceipt');
 const { readRestoreReceipt, restoreReceiptPath, writeRestoreReceipt } = restoreReceiptModule;
 const {
-	jobsNamedByUnfinishedRestores,
+	jobsOwnedByRestoreReceipts,
 	recoverRestoresAtStartup,
 	resetStartupRecoveryForTesting,
 	unpublishedRestoreBlocksComponents,
@@ -938,14 +938,14 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			await reconcileInterruptedJobs(owned);
 			assert.strictEqual((await job(jobId)).status, JOB_STATUS_ENUM.IN_PROGRESS);
 			// the set a boot falls back to when recovery throws names the same job
-			const named = jobsNamedByUnfinishedRestores();
+			const named = jobsOwnedByRestoreReceipts();
 			assert.deepStrictEqual([...named], [jobId]);
 			await reconcileInterruptedJobs(named);
 			assert.strictEqual((await job(jobId)).status, JOB_STATUS_ENUM.IN_PROGRESS);
 
 			repair();
 			assert.deepStrictEqual([...(await boot(fixture.name))], []);
-			assert.deepStrictEqual([...jobsNamedByUnfinishedRestores()], []);
+			assert.deepStrictEqual([...jobsOwnedByRestoreReceipts()], []);
 
 			assert.strictEqual(readRestoreReceipt(fixture.dir).kind, 'absent');
 			assert.strictEqual(restoreMarkerPresent(fixture.dir), false);
@@ -1180,6 +1180,31 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 				fixture.live,
 				'what the directory held when the commit was found survives'
 			);
+		});
+
+		it('keeps the job of a committed restore from the sweep a boot falls back to, until the receipt settles it', async function () {
+			const fixture = await seededDatabase();
+			const { jobId } = await requestRestore(fixture.name, { on_restart: true, retain_previous: false });
+			await closeDatabase(fixture.name);
+			rewriteReceipt(fixture.dir, { state: 'committed', attempts: 1 }, { marker: true });
+
+			const owned = jobsOwnedByRestoreReceipts();
+			assert.ok(owned.has(jobId), 'a committed receipt settles its job before it is removed');
+			await reconcileInterruptedJobs(owned);
+			assert.strictEqual((await job(jobId)).status, JOB_STATUS_ENUM.IN_PROGRESS);
+			assert.strictEqual(await settleAbandonedJob(jobId), false);
+
+			await boot(fixture.name);
+			assert.strictEqual((await job(jobId)).status, JOB_STATUS_ENUM.COMPLETE);
+			assert.strictEqual(jobsOwnedByRestoreReceipts().has(jobId), false);
+
+			// an online attempt that did not commit leaves its job to the process that ran it, or to the sweep
+			const online = await seededDatabase();
+			const onlineJob = await requestRestore(online.name, { on_restart: true, retain_previous: false });
+			await closeDatabase(online.name);
+			rewriteReceipt(online.dir, { route: 'online', state: 'applying', attempts: 1 }, { marker: true });
+			assert.strictEqual(jobsOwnedByRestoreReceipts().has(onlineJob.jobId), false);
+			await restoreBackupOffline(online.name, online.backupIds[0]);
 		});
 
 		it('moves to terminal at the attempt limit, and resume carries it on from where it stopped', async function () {
