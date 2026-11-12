@@ -10393,7 +10393,6 @@ export function makeTable(options): TableResourceClass {
 					? new ReplayReader(primaryStore, tableId, replayCanCarry, { maxBytes: 128 * 1024, maxEntries: 256 })
 					: undefined;
 			let replayMemo: HistoryMemo | undefined;
-			// the frame cache for history computed newest-first, where nothing can carry
 			const newestFirstMemo = () =>
 				(replayMemo ??=
 					replayReader && new HistoryMemo(primaryStore, tableId, { maxBytes: 128 * 1024, maxEntries: 256 }));
@@ -10875,8 +10874,9 @@ export function makeTable(options): TableResourceClass {
 								if (event && reportingProgress) event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
 								walked[i] = event;
 							}
-							// The walk proved this history present, but the values were computed after it: a prune since then may
-							// have deleted what they read. A prune raises the floor before it removes anything below it.
+							// The walk proved the walked entries present, but values were computed after it, so a prune since
+							// then may have deleted walked entries they read. A prune raises the floor before it removes
+							// anything below it.
 							const floor = getAuditFloor(auditStore);
 							let retained = true;
 							for (let i = walked.length - 3; i >= 0 && walked[i + 1] < floor; i -= 3) {
@@ -10885,17 +10885,23 @@ export function makeTable(options): TableResourceClass {
 									break;
 								}
 							}
-							if (!retained) {
-								if (checkResume) {
-									checkResume(new ResumeHistoryUnavailableError());
-									return;
+							if (!retained && checkResume) {
+								checkResume(new ResumeHistoryUnavailableError());
+								return;
+							}
+							for (let i = 0; i < walked.length; i += 3) {
+								let event = walked[i];
+								// what is left of the history, as the walk computing values newest-first delivers it
+								if (!retained) {
+									if (walked[i + 1] < floor) break;
+									const auditRecord = auditStore.getSync(walked[i + 1], tableId, thisId, walked[i + 2], true);
+									if (!auditRecord) break;
+									event = eventFromAudit(thisId, auditRecord, walked[i + 1], undefined, undefined, newestFirstMemo());
+									if (event && reportingProgress) event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
 								}
-							} else {
-								for (let i = 0; i < walked.length; i += 3) {
-									if (!walked[i]) continue;
-									request.omitCurrent = true;
-									history.push(walked[i]);
-								}
+								if (!event) continue;
+								request.omitCurrent = true;
+								history.push(event);
 							}
 						}
 						for (let i = history.length; i > 0;) {
@@ -10975,8 +10981,6 @@ export function makeTable(options): TableResourceClass {
 				event.type = entry.metadataFlags & INVALIDATED ? 'invalidate' : entry.value ? 'put' : 'delete';
 				return true;
 			}
-			// `history` is the reader for entries read oldest-first, so a patch can carry the image before it, and the
-			// bare memo for entries read newest-first
 			function eventFromAudit(
 				id: Id,
 				auditRecord: any,

@@ -509,7 +509,8 @@ export function getRecordAtTime(
 			return recordAtTime(currentEntry, timestamp, store, tableId, recordId, nodeId, memo);
 		} catch {
 			memo.fallbacks++;
-			memo.stopOptimizing();
+			// a memo that caches no frames took no part in the failed read
+			if (memo.cachesFrames) memo.stopOptimizing();
 		}
 	}
 	return recordAtTime(currentEntry, timestamp, store, tableId, recordId, nodeId);

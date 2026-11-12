@@ -83,7 +83,6 @@ describe('bounded history readers', function () {
 			get reads() {
 				return reads;
 			},
-			/** Reads of log entries, without the floor and generation metadata reads. */
 			get logReads() {
 				return logReads;
 			},
@@ -747,7 +746,6 @@ describe('bounded history readers', function () {
 		});
 		return { subscription, events };
 	}
-	// each replayed entry's value as the plain rebuild returns it now, with its log reads
 	function plainEvents(T, startTime, id) {
 		const counter = meter(T);
 		try {
@@ -764,7 +762,6 @@ describe('bounded history readers', function () {
 	}
 	const replayed = (events) => events.map((event) => ({ id: event.id, value: event.value, time: event.localTime }));
 
-	// RocksDB, then LMDB: one record put once and patched 2,880 times
 	const LINEAR_REPLAY_READS = { true: [8642, 8643], false: [14404, 14405] };
 	for (const isCollection of [true, false]) {
 		it(`replays 2,880 patches with linear audit reads (${isCollection ? 'collection' : 'record'})`, async () => {
@@ -881,7 +878,6 @@ describe('bounded history readers', function () {
 			let walked = 0;
 			if (!resumeIntact)
 				T.auditStore.getSync = function (key, ...rest) {
-					// read again after the walk: the oldest entries are gone
 					if (++walked > 300 && key < keys[100]) return;
 					return getSync.call(this, key, ...rest);
 				};
@@ -909,6 +905,101 @@ describe('bounded history readers', function () {
 			}
 		});
 	}
+
+	it('delivers what remains of a record history that loses entries below the floor while its values are computed', async function () {
+		if (lmdb) this.skip();
+		const T = newTable({ database: `${database}_record_floor_unchecked` });
+		await T.put({ id: 'a', n: 0 });
+		for (let n = 1; n <= 300; n++) await T.patch('a', { n });
+		const keys = entries(T).map((entry) => entry.txnLogKey);
+		raiseAuditFloor(T.auditStore, keys[150]);
+		const getSync = T.auditStore.getSync;
+		let calls = 0;
+		T.auditStore.getSync = function (key, ...rest) {
+			if (++calls > 300 && key < keys[100]) return;
+			return getSync.call(this, key, ...rest);
+		};
+		try {
+			const { subscription, events } = await replay(T, { id: 'a', startTime: keys[0] });
+			try {
+				await waitFor(() => events.length >= 151);
+				assert.deepStrictEqual(
+					events.map((event) => event.value.n),
+					Array.from({ length: 151 }, (_, n) => n + 150)
+				);
+			} finally {
+				subscription.end();
+			}
+		} finally {
+			T.auditStore.getSync = getSync;
+		}
+	});
+
+	it('replays a record written during the computation of its values', async () => {
+		const T = newTable();
+		const startTime = Date.now() - 1;
+		await T.put({ id: 'a', n: 0, name: 'start' });
+		for (let n = 1; n <= 1000; n++) await T.patch('a', { n });
+		const { expected } = plainEvents(T, startTime, 'a');
+		const getEntry = T.primaryStore.getEntry;
+		let calls = 0;
+		let written;
+		T.primaryStore.getEntry = function (...args) {
+			if (++calls === 100) written = T.patch('a', { name: 'during' });
+			return getEntry.apply(this, args);
+		};
+		try {
+			const { subscription, events } = await replay(T, { id: 'a', startTime });
+			try {
+				await waitFor(() => events.length >= 1002);
+				await written;
+				assert.deepStrictEqual(replayed(events.slice(0, 1001)), expected);
+				assert.deepStrictEqual(events[1001].value, { id: 'a', n: 1000, name: 'during' });
+			} finally {
+				subscription.end();
+			}
+		} finally {
+			T.primaryStore.getEntry = getEntry;
+		}
+	});
+
+	it('frees a record’s carry state when its replay reaches its current version', async () => {
+		const T = newTable();
+		const startTime = Date.now() - 1;
+		for (let r = 0; r < 300; r++) {
+			await T.put({ id: `r${r}`, n: 0 });
+			for (let n = 1; n <= 10; n++) await T.patch(`r${r}`, { n });
+		}
+		const plain = plainEvents(T, startTime);
+		const counter = meter(T);
+		const { subscription, events } = await replay(T, { startTime });
+		try {
+			await waitFor(() => events.length >= 3300);
+			assert.deepStrictEqual(replayed(events), plain.expected);
+			assert(counter.logReads * 3 < plain.logReads, `${counter.logReads} log reads, plain ${plain.logReads}`);
+		} finally {
+			counter.close();
+			subscription.end();
+		}
+	});
+
+	it('reads no more than the plain rebuild when more records are in progress than it can carry', async () => {
+		const T = newTable();
+		const startTime = Date.now() - 1;
+		for (let r = 0; r < 300; r++) await T.put({ id: `r${r}`, n: 0 });
+		for (let n = 1; n <= 10; n++) for (let r = 0; r < 300; r++) await T.patch(`r${r}`, { n });
+		const plain = plainEvents(T, startTime);
+		const counter = meter(T);
+		const { subscription, events } = await replay(T, { startTime });
+		try {
+			await waitFor(() => events.length >= 3300);
+			assert.deepStrictEqual(replayed(events), plain.expected);
+			assert(counter.logReads < plain.logReads, `${counter.logReads} log reads, plain ${plain.logReads}`);
+		} finally {
+			counter.close();
+			subscription.end();
+		}
+	});
 
 	it('invokes a record replay filter newest-first, as it walks', async () => {
 		const T = newTable();
@@ -954,6 +1045,25 @@ describe('bounded history readers', function () {
 					assert.strictEqual(expected.n, 5, 'precondition: the new add changed the plain rebuild');
 					assert.deepStrictEqual(reader.read(entry), expected);
 				}
+			} finally {
+				reader.memo.close();
+			}
+		});
+
+		it('carries again after the audit floor moves', async () => {
+			const T = newTable();
+			await T.put({ id: 'a', n: 0 });
+			for (let n = 1; n <= 20; n++) await T.patch('a', { n });
+			const all = patchesOf(T);
+			const reader = new ReplayReader(T.primaryStore, T.tableId, () => true);
+			try {
+				for (const entry of all.slice(0, 10)) assert.deepStrictEqual(reader.read(entry), oracle(T, entry));
+				assert.strictEqual(reader.memo.carries, 1);
+				raiseAuditFloor(T.auditStore, all[0].txnLogKey);
+				for (const entry of all.slice(10, 12)) assert.deepStrictEqual(reader.read(entry), oracle(T, entry));
+				assert.strictEqual(reader.memo.exhausted, false);
+				assert.strictEqual(reader.memo.carries, 1);
+				for (const entry of all.slice(12)) assert.deepStrictEqual(reader.read(entry), oracle(T, entry));
 			} finally {
 				reader.memo.close();
 			}

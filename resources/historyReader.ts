@@ -68,9 +68,7 @@ export class HistoryMemo {
 	exhausted = false;
 	closed = false;
 	fallbacks = 0;
-	/** Frames read through this memo, cached or not. */
 	visits = 0;
-	/** Frames newer than the requested time that reconstructions through this memo walked back across. */
 	newer = 0;
 	#retained = new Map<string, Retained>();
 	#bytes = 0;
@@ -102,12 +100,20 @@ export class HistoryMemo {
 		}
 	}
 
+	/** Without `cachesFrames`, a changed floor or generation discards what was derived under the old one, and goes on. */
 	checkState() {
 		if (this.closed || this.exhausted) return false;
 		try {
 			const audit = this.store.rootStore.auditStore;
-			if (Object.is(this.#floor, getAuditFloor(audit)) && this.#generation === getDatabaseGeneration(audit)?.id)
-				return true;
+			const floor = getAuditFloor(audit);
+			const generation = getDatabaseGeneration(audit)?.id;
+			if (Object.is(this.#floor, floor) && this.#generation === generation) return true;
+			if (!this.cachesFrames) {
+				for (const key of [...this.#retained.keys()]) this.forget(key);
+				this.#floor = floor;
+				this.#generation = generation;
+				return false;
+			}
 		} catch {}
 		this.stopOptimizing();
 		return false;
@@ -483,7 +489,6 @@ export class HistoryReader {
 	}
 }
 
-/** The longest chain an eligibility walk inspects. */
 export const CARRY_SCAN_LIMIT = 16_384;
 // with fewer later versions than this, the rebuilds left cost less than the walk that would replace them
 const CARRY_MIN_NEWER = 3;
@@ -519,7 +524,7 @@ export class ReplayReader {
 		const rebuild = () => entry.getValue?.(memo.store, true, time, memo.exhausted || memo.closed ? undefined : memo);
 		if (entry.type !== 'patch' || memo.exhausted || memo.closed) {
 			if (entry.type !== 'message' && memo.carries > 0 && entry.recordId !== undefined)
-				this.#dropImage(memo.key('carry', entry.recordId));
+				this.#dropImage(memo.key('carry', entry.recordId), entry);
 			return rebuild();
 		}
 		const id = entry.recordId;
@@ -588,6 +593,8 @@ export class ReplayReader {
 	#decide(id, current, record, time: number, entry, limit: number) {
 		const { memo } = this;
 		if (!current || current.additionalAuditRefs?.length || !(current.size <= memo.maxBytes)) return;
+		// before copying: the image is at least the size of its encoding
+		if (!memo.canFit(current.size + 256, 1)) return;
 		const stamp = recordStamp(current);
 		const key = memo.key('carry', id);
 		let image: ReturnType<typeof copyImage>;
@@ -625,9 +632,13 @@ export class ReplayReader {
 		memo.keep(key, 'carry', { stamp, allowed: false }, stamp.length * 2);
 	}
 
-	#dropImage(key: string) {
-		const carry: Carry | undefined = this.memo.get(key);
-		if (carry?.image)
-			this.memo.keep(key, 'carry', { stamp: carry.stamp, allowed: carry.allowed }, carry.stamp.length * 2);
+	#dropImage(key: string, entry) {
+		const { memo } = this;
+		const carry: Carry | undefined = memo.get(key);
+		if (!carry) return;
+		const current = memo.store.getEntry(entry.recordId);
+		if (!current || entry.version >= current.version) memo.forget(key);
+		else if (carry.image)
+			memo.keep(key, 'carry', { stamp: carry.stamp, allowed: carry.allowed }, carry.stamp.length * 2);
 	}
 }
