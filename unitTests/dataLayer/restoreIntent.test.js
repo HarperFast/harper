@@ -60,7 +60,7 @@ const {
 	unpublishedRestoreBlocksComponents,
 } = require('#src/dataLayer/restorePublication');
 const restoreChildRunnerModule = require('#js/dataLayer/restoreChildRunner');
-const { runRestoreChild } = restoreChildRunnerModule;
+const { restoreChildSlotLockPath, runRestoreChild } = restoreChildRunnerModule;
 const { reconcileInterruptedJobs, settleAbandonedJob } = require('#src/server/jobs/jobOwnership');
 const { DeferredJobCompletion } = require('#src/server/jobs/deferredJobCompletion');
 const restartModule = require('#js/bin/restart');
@@ -797,6 +797,32 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			await requestRestore(fixture.name, { on_restart: true, backup_id: backupId, retain_previous: false });
 			await boot(fixture.name);
 			assert.strictEqual(readRestoreReceipt(fixture.dir).kind, 'absent');
+			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.backedUp[0]);
+		});
+
+		it('counts a refused pre-restore backup as an attempt to retry, not a terminal failure', async function () {
+			const fixture = await seededDatabase();
+			const { jobId } = await requestRestore(fixture.name, { on_restart: true });
+			// an offline backup verification, say, holds the instance's one restore child slot
+			const slot = tryFileLock(restoreChildSlotLockPath());
+			assert.notStrictEqual(slot, 0, 'precondition: the slot is free');
+			try {
+				await boot(fixture.name);
+			} finally {
+				fileLockRelease(slot);
+			}
+
+			const failed = receiptOf(fixture.dir);
+			assert.strictEqual(failed.state, 'pending');
+			assert.strictEqual(failed.attempts, 1);
+			assert.match(failed.last_error, /retry once it finishes/);
+			assert.doesNotMatch(failed.last_error, /retain_previous=false/);
+			assert.strictEqual((await job(jobId)).status, JOB_STATUS_ENUM.IN_PROGRESS);
+
+			await boot(fixture.name);
+			const settled = await job(jobId);
+			assert.strictEqual(settled.status, JOB_STATUS_ENUM.COMPLETE);
+			assert.ok(Number.isInteger(settled.result.pre_restore_backup_id), 'the retry kept its rollback copy');
 			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.backedUp[0]);
 		});
 

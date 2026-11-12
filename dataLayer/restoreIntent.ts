@@ -507,8 +507,10 @@ export async function runRestartAttempt(found: RestoreReceipt): Promise<boolean>
 			try {
 				receipt = await adoptOrTakePreRestoreBackup(lock, receipt);
 			} catch (error: any) {
-				// a lock conflict means something still holds the directory, which a later attempt may not find
-				if (!error?.preRestoreBackupFailed || isRocksDbLockError(error.cause ?? error)) throw error;
+				// a conflict (a busy restore child slot, a held repository or engine lock) means something else holds
+				// what the copy needs, which a later attempt may not find
+				const cause = error?.cause ?? error;
+				if (!error?.preRestoreBackupFailed || cause?.statusCode === 409 || isRocksDbLockError(cause)) throw error;
 				// retrying reopens the same directory, so a database the backup cannot read stays unrestorable
 				// until the operator chooses to replace it without a copy
 				await failAttempt(
