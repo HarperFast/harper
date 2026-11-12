@@ -28,10 +28,7 @@ export class DeferredJobCompletion {
 	}
 }
 
-/**
- * Returned by a job operation that has finished but must act after its row write, e.g. a restart that
- * would cut the write short. The work is already done, so it acts whether or not the row recorded it.
- */
+/** A finished job operation's work to run after its row write, recorded or not: a restart would cut the write short. */
 export class JobCompletion {
 	result: unknown;
 	afterRecorded?: () => void;

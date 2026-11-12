@@ -54,9 +54,8 @@ async function loadRootComponents(isWorkerThread: any = false) {
 	// would assert "nothing is unreconciled" on a thread that never checked. The loader treats undefined as
 	// "no verdict from boot" instead.
 	let interruptedActivationFailures;
-	// Startup only (it latches), and first: restart restores run here, before secret custody, application
-	// install or any component could open the database they replace. A restart restore left unpublished
-	// starts this boot in safe mode, since a container cannot set its own env for the next boot.
+	// Startup only (it latches), and first: restart restores run before secret custody, application install
+	// or any component could open the database they replace.
 	let restoreOwnedJobs: Set<string> | undefined;
 	if (isMainThread) {
 		try {

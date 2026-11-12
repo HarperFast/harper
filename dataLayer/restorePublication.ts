@@ -121,7 +121,6 @@ export function releaseReceiptPins(receipt: RestoreReceipt): void {
 		const pin = sourcePinId && readBackupPins(receipt.backup_dir).find((candidate) => candidate.pin_id === sourcePinId);
 		if (pin && pin.backup_id === receipt.backup_id) unpinBackup(receipt.backup_dir, sourcePinId!);
 		for (const superseded of receipt.superseded_pin_ids ?? []) unpinBackup(receipt.backup_dir, superseded);
-		// the rollback copy is an ordinary managed backup once nothing restores from or over it
 		if (receipt.pre_restore_pin_id) unpinBackup(receipt.backup_dir, receipt.pre_restore_pin_id);
 	} catch (error) {
 		logger.error(`Could not release the source pin of the restore of '${receipt.database}'`, error);

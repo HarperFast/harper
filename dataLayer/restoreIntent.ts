@@ -272,7 +272,6 @@ function restartAfterWithdrawal(
 	return { restarting: keptOffBy === undefined, keptOffBy };
 }
 
-/** The pins an earlier receipt on this target holds, which stay until this restore commits. */
 function inheritedPins(backupDir: string, databaseDir: string, earlier: RestoreReceipt | undefined): string[] {
 	const ids = new Set(
 		[restorePinId(databaseDir), earlier?.source_pin_id, ...(earlier?.superseded_pin_ids ?? [])].filter(Boolean)
@@ -437,7 +436,7 @@ function resumableReceipt(databaseName: string, read: RestoreReceiptRead): Resto
 	return read.receipt;
 }
 
-/** What cancel refuses. A record that cannot be read is cancellable: removing it is what cancel is for. */
+/** A record that cannot be read is cancellable: removing it is what cancel is for. */
 function assertCancellable(databaseName: string, read: RestoreReceiptRead): void {
 	if (read.kind === 'absent') throw new ClientError(`Database '${databaseName}' has no restore to cancel`, 404);
 	if (read.kind === 'valid' && read.receipt.state === 'committed') {
@@ -561,7 +560,7 @@ export async function cancelRestartRestore(
 	);
 }
 
-/** With Harper stopped there is no job table to settle and nothing to restart; the next start settles the job. */
+/** With Harper stopped, the next start settles the job. */
 function cancelledOffline(databaseName: string, cancelled: RestoreReceipt | undefined, stillBlocked: boolean) {
 	const outcome = stillBlocked
 		? `The restore was cancelled, but it had already begun replacing '${databaseName}', which stays unloadable until a restore succeeds`
@@ -653,7 +652,7 @@ async function adoptOrTakePreRestoreBackup(lock: RestoreLock, receipt: RestoreRe
 }
 
 async function failAttempt(lock: RestoreLock, receipt: RestoreReceipt, reason: string, terminal: boolean) {
-	// what this attempt already recorded (the pre-restore checkpoint) is newer than the caller's copy
+	// the caller's copy can predate this attempt's pre-restore checkpoint
 	const current = readRestoreReceipt(lock.dbPath);
 	if (current.kind === 'valid' && current.receipt.operation_id === receipt.operation_id) receipt = current.receipt;
 	// a committed restore is only ever finished, and one its finish removed is not brought back
