@@ -9,6 +9,7 @@
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { isDeepStrictEqual } from 'node:util';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import * as hdbTerms from '../utility/hdbTerms.ts';
 import logger from '../utility/logging/harper_logger.ts';
@@ -141,6 +142,26 @@ export function requestDrainedRestart(): void {
 	restart({ operation: 'restart', drain: true }).catch((error: unknown) =>
 		logger.error('Could not restart Harper for the pending restore', error)
 	);
+}
+
+/**
+ * A receipt write takes effect at its rename, before the directory flush that can still throw, so after a throw
+ * the record on disk, read under the lock the caller holds, decides whether it was written.
+ */
+function writeReceiptReconciled(lock: RestoreLock, receipt: RestoreReceipt): RestoreReceipt {
+	try {
+		return writeRestoreReceipt(lock, receipt);
+	} catch (error) {
+		const read = readRestoreReceipt(lock.dbPath);
+		// as the write stores it: its own updated_at, and no undefined fields
+		const intended = { ...JSON.parse(JSON.stringify(receipt)), updated_at: 0 };
+		if (read.kind !== 'valid' || !isDeepStrictEqual({ ...read.receipt, updated_at: 0 }, intended)) throw error;
+		logger.error(
+			`The restore record of '${receipt.database}' was written, but could not be confirmed durable; a power loss before it is flushed can undo it`,
+			error
+		);
+		return read.receipt;
+	}
 }
 
 function deferredUntilRestart(receipt: RestoreReceipt, message: string): DeferredJobCompletion {
@@ -337,7 +358,7 @@ export async function requestRestartRestore(request: RestartRestoreRequest): Pro
 					`restart restore of database '${databaseName}'`,
 					databaseDir
 				);
-				receipt = writeRestoreReceipt(lock, {
+				receipt = writeReceiptReconciled(lock, {
 					...planned,
 					source_pin_id: sourcePinId,
 					...(superseded.length > 0 ? { superseded_pin_ids: superseded } : {}),
@@ -410,7 +431,7 @@ export async function resumeRestartRestore(
 	let previous: RestoreReceipt;
 	try {
 		previous = resumableReceipt(databaseName, readRestoreReceipt(databaseDir));
-		receipt = writeRestoreReceipt(lock, {
+		receipt = writeReceiptReconciled(lock, {
 			...previous,
 			state: previous.state === 'terminal' ? (previous.pre_terminal_state ?? 'pending') : previous.state,
 			pre_terminal_state: undefined,

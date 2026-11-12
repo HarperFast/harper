@@ -295,6 +295,21 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 		return () => rmSync(tempPath, { recursive: true, force: true });
 	}
 
+	/**
+	 * Makes a receipt write or removal for this database that `when(receipt)` picks take effect and then throw, as
+	 * one does when the directory flush after its rename or unlink fails. Returns the undo.
+	 */
+	function flushFailsAfter(fixture, name, when = () => true) {
+		const original = restoreReceiptModule[name];
+		return replaceExport(restoreReceiptModule, name, (lock, ...args) => {
+			const result = original(lock, ...args);
+			if (lock.dbPath === fixture.dir && when(...args)) {
+				throw Object.assign(new Error('EIO: i/o error, fsync'), { code: 'EIO' });
+			}
+			return result;
+		});
+	}
+
 	/** The receipt as a crash at a later transition would have left it, written under the target's lock. */
 	function rewriteReceipt(dir, fields, { marker = false } = {}) {
 		const lock = acquireRestoreLock(dir);
@@ -452,6 +467,57 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			assert.strictEqual(readRestoreReceipt(fixture.dir).kind, 'absent');
 			assert.deepStrictEqual(pinsOf(fixture), []);
 			assert.strictEqual(checkRestoreState(fixture.dir), 'clear');
+		});
+
+		it('defers the job when its receipt took effect but could not be flushed, so the job still owns the restore', async function () {
+			const fixture = await seededDatabase();
+			const restoreWrite = flushFailsAfter(fixture, 'writeRestoreReceipt', (receipt) => receipt.state === 'pending');
+			let result;
+			try {
+				({ result } = await requestRestore(fixture.name, { on_restart: true, retain_previous: false }));
+			} finally {
+				restoreWrite();
+			}
+
+			assert.ok(result instanceof DeferredJobCompletion, 'the restore it recorded runs at the restart it asks for');
+			const receipt = receiptOf(fixture.dir);
+			assert.strictEqual(receipt.operation_id, result.result.operation_id);
+			assert.strictEqual(receipt.state, 'pending');
+
+			// and the deferral keeps its withdrawal, should the job row not record it
+			await result.onNotRecorded();
+			assert.strictEqual(readRestoreReceipt(fixture.dir).kind, 'absent');
+			assert.deepStrictEqual(pinsOf(fixture), []);
+		});
+
+		it('resumes when its receipt took effect but could not be flushed, and fails when it never took effect', async function () {
+			const fixture = await seededDatabase();
+			await requestRestore(fixture.name, { on_restart: true, retain_previous: false });
+			await closeDatabase(fixture.name);
+			const stopped = rewriteReceipt(fixture.dir, { state: 'terminal', pre_terminal_state: 'pending', attempts: 3 });
+
+			const repair = failReceiptWrites(fixture);
+			try {
+				await assert.rejects(requestRestore(fixture.name, { resume: true }), (error) => error.code === 'EISDIR');
+			} finally {
+				repair();
+			}
+			assert.deepStrictEqual(receiptOf(fixture.dir), stopped, 'the stopped restore is not taken for the resumed one');
+
+			const restoreWrite = flushFailsAfter(fixture, 'writeRestoreReceipt');
+			let resumed;
+			try {
+				resumed = await requestRestore(fixture.name, { resume: true });
+			} finally {
+				restoreWrite();
+			}
+			assert.ok(resumed.result instanceof DeferredJobCompletion);
+			const receipt = receiptOf(fixture.dir);
+			assert.deepStrictEqual(
+				{ state: receipt.state, attempts: receipt.attempts, job_id: receipt.job_id },
+				{ state: 'pending', attempts: 0, job_id: resumed.jobId }
+			);
+			await restoreBackup({ ...SU, database: fixture.name, cancel: true });
 		});
 
 		it('withdraws it once a momentary holder of its lock lets go, instead of leaving it to a later restart', async function () {
