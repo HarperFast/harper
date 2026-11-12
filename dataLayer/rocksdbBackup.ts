@@ -588,9 +588,17 @@ none the blob ids start over at 1 and the next blob written lands on a path a re
 references. Restoring into a new database is **not** a way around this — its blob roots are empty for
 the same reason. Restore a backup that includes blobs, or accept the mixed result explicitly.
 
-A database held open by a loaded component — and always the \`system\` database — cannot be restored
-while Harper is running; stop the server and run the same command offline. Offline you can also
-restore into a *copy*, leaving the original untouched:
+The \`system\` database cannot be restored while Harper is running; stop the server and run the same
+command offline. Neither can a database a loaded component holds open: stop the server, or have
+Harper restore it at its next startup, before components load (this restarts Harper):
+
+    harper restore_backup database=${databaseName} backup_id=<id> on_restart=true
+
+A pending restart restore is withdrawn, with Harper running or stopped, by:
+
+    harper restore_backup database=${databaseName} cancel=true
+
+You can also restore into a *copy*, leaving the original untouched:
 
     harper restore_backup database=${databaseName} target_database=${databaseName}-restore
 
