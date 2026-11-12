@@ -299,11 +299,12 @@ The host policy is captured once for the full Harper process, inherited by worke
 
 Harper returns `400` for a capacity failure only when it finds the problem before it writes the response head. Of the `storage.fullText.query` limits, the only one checked before the query runs is the `should` list length against `maxQueryClauses`. It returns `400` in every response format, like the other malformed-control errors on this page.
 
-Harper finds every other capacity failure while the query runs:
+Harper finds the other limits while the query runs:
 
 - more analyzed terms than `storage.fullText.query.maxQueryTerms`;
 - more compiled clauses than `storage.fullText.query.maxQueryClauses`, including Boolean structure, field expansion and a `should` list that passed the precheck;
-- a fuzzy distance above `storage.fullText.query.maxFuzzyDistance`.
+- a fuzzy distance above `storage.fullText.query.maxFuzzyDistance`;
+- the fixed native fuzzy limits described above, such as more than 16 eligible fuzzy terms.
 
 A REST collection read normally streams its results, so the response can already have started by then. The error is still a `ClientError` with status `400`, but it arrives in the body instead of the status line:
 
@@ -318,7 +319,7 @@ Of these formats, only NDJSON has a startup window, and only on `GET` and `HEAD`
 
 Two cases return an ordinary `400` in every format, because the query finishes before Harper writes the response head:
 
-- a `GET` with `Prefer: count=exact` or `Prefer: count=estimated` and a bounded `limit`, which builds the whole page before it responds;
+- a `GET` or `HEAD` with `Prefer: count=exact` or `Prefer: count=estimated` and a page within the [count limits](../rest/querying.md#pagination-and-total-count), which builds the whole page before it responds. A larger page streams without a count;
 - a resource that finishes consuming the `Table.search()` iterator before it returns, for example by collecting rows into an array. A resource that returns the iterator is streamed like a REST read.
 
 See [When a Streamed Response Fails](../rest/content-types.md#when-a-streamed-response-fails) for the stream formats.
@@ -327,7 +328,8 @@ When you send a full-text query, check for all of these:
 
 - Treat an HTTP `400`, an NDJSON `$harperStreamError` record with `status: 400`, and a JSON `error` element that begins `ClientError:` as the same result. The query is invalid or over the host policy. Do not retry it unchanged: shorten the text, reduce the conditions or fuzzy distance, or ask the operator to raise the policy.
 - Do not treat `200` as success until the whole body has been read. A body that is cut off, fails to parse, or ends the read with a network error is a failed read. Discard its rows.
-- The message for term and clause overflow is the same text, `Full-text query on '<index>' is invalid; check its syntax and storage.fullText.query limits`, and does not say which limit was exceeded. Count analyzed terms and Boolean branches before sending a query built from user text.
+- Only NDJSON gives a client that reads the whole body a parseable error. With JSON, CBOR, CSV or MessagePack the client usually sees only a failed read, which looks like a dropped connection. Request NDJSON when you need to tell a rejected query from a network failure. A rejected query fails the same way on every retry, so retry a failed read automatically only when you can tell it was a network failure.
+- The message for term, clause and fixed fuzzy-limit overflow is the same text, `Full-text query on '<index>' is invalid; check its syntax and storage.fullText.query limits`, and does not say which limit was exceeded. Count analyzed terms and Boolean branches before sending a query built from user text.
 
 ## REST
 
