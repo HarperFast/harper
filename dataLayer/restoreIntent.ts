@@ -626,6 +626,12 @@ async function failAttempt(lock: RestoreLock, receipt: RestoreReceipt, reason: s
 	// what this attempt already recorded (the pre-restore checkpoint) is newer than the caller's copy
 	const current = readRestoreReceipt(lock.dbPath);
 	if (current.kind === 'valid' && current.receipt.operation_id === receipt.operation_id) receipt = current.receipt;
+	// a committed restore is only ever finished, and one its finish removed is not brought back
+	if (receipt.state === 'committed' || current.kind === 'absent') {
+		throw new Error(
+			`The restore of '${receipt.database}' is past its commit, so a failure (${reason}) is not recorded over it`
+		);
+	}
 	const failed = writeRestoreReceipt(lock, {
 		...receipt,
 		last_error: reason,
@@ -686,7 +692,6 @@ export async function runRestartAttempt(found: RestoreReceipt): Promise<boolean>
 		throw error;
 	}
 	let releaseMembership: (() => void) | undefined;
-	let committed = false;
 	try {
 		releaseMembership = await acquireMembershipFence();
 		try {
@@ -731,14 +736,20 @@ export async function runRestartAttempt(found: RestoreReceipt): Promise<boolean>
 			waived,
 			checkPeers: false,
 		});
-		committed = true;
 		await finishCommittedRestore(lock, receipt);
 		logger.notify?.(`Restored database '${receipt.database}' from ${describeRestoreSource(receipt)} at startup`);
 		return true;
 	} catch (error: any) {
 		// past the commit only bookkeeping failed, which the next startup finishes: counted as an attempt, it
-		// could turn a published restore terminal and fail its job
-		if (committed) {
+		// could turn a published restore terminal and fail its job. The record decides, since the commit can take
+		// effect and then throw, and under the lock only the finish removes it.
+		const onDisk = readRestoreReceipt(lock.dbPath);
+		if (
+			onDisk.kind === 'absent' ||
+			(onDisk.kind === 'valid' &&
+				onDisk.receipt.operation_id === receipt.operation_id &&
+				onDisk.receipt.state === 'committed')
+		) {
 			throw new Error(
 				`Restored database '${receipt.database}' from ${describeRestoreSource(receipt)}, but could not finish its record; the next startup finishes it`,
 				{ cause: error }

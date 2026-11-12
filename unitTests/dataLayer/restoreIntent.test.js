@@ -1433,6 +1433,36 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			assert.strictEqual((await job(jobId)).status, JOB_STATUS_ENUM.COMPLETE);
 		});
 
+		it('never turns a commit that took effect before its flush failed into a failed attempt', async function () {
+			const fixture = await seededDatabase();
+			const { jobId } = await requestRestore(fixture.name, { on_restart: true, retain_previous: false });
+			const { max_attempts: maxAttempts } = receiptOf(fixture.dir);
+			await closeDatabase(fixture.name);
+			// the last attempt the limit allows, so a miscounted failure would make it terminal
+			rewriteReceipt(fixture.dir, { attempts: maxAttempts - 1 });
+			const restoreWrite = flushFailsAfter(fixture, 'writeRestoreReceipt', (receipt) => receipt.state === 'committed');
+			let owned;
+			try {
+				owned = await boot(fixture.name);
+			} finally {
+				restoreWrite();
+			}
+
+			const receipt = receiptOf(fixture.dir);
+			assert.strictEqual(receipt.state, 'committed', 'a committed restore is only ever finished');
+			assert.strictEqual(receipt.pre_terminal_state, undefined);
+			assert.strictEqual(receipt.last_error, undefined);
+			assert.strictEqual(Boolean(unpublishedRestoreBlocksComponents()), false);
+			assert.deepStrictEqual([...owned], [jobId], 'the job stays with its receipt, not the interrupted-job sweep');
+			assert.strictEqual((await job(jobId)).status, JOB_STATUS_ENUM.IN_PROGRESS, 'the restore did not fail');
+
+			assert.deepStrictEqual([...(await boot(fixture.name))], []);
+			assert.strictEqual(readRestoreReceipt(fixture.dir).kind, 'absent');
+			assert.strictEqual(restoreMarkerPresent(fixture.dir), false);
+			assert.strictEqual((await job(jobId)).status, JOB_STATUS_ENUM.COMPLETE);
+			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.backedUp[0]);
+		});
+
 		for (const [what, remove] of [
 			['removed', (fixture, backupId) => deleteBackupOffline(fixture.name, backupId)],
 			[

@@ -170,6 +170,10 @@ restore and the next startup applies it, before anything can open the target.
   `restoreReceiptOwnsJob` finds an uncommitted receipt naming it, so a crash between receipt and row
   cannot strand a job. A `cancel` with Harper stopped (`cancelRestartRestoreOffline`) can reach neither
   the row nor a restart; it changes the files only, and the next boot settles the row.
+- **A throwing receipt write or removal may have landed.** `writeFileDurably` renames and
+  `removeFileDurably` unlinks before the directory flush, so after a throw the record re-read under the
+  held lock decides (`writeReceiptReconciled`, `removeReceiptReconciled`, `runRestartAttempt`'s catch).
+  `failAttempt` never writes over a `committed` receipt.
 - **Drain.** `bin/restart.ts` with `drain` runs `shutdownProcess(deadline)`, the path a SIGTERM takes,
   so main-thread components flush too (`threads.count=0`); the exit watchdog adds
   `threads.shutdownTimeout`.
