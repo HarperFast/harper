@@ -88,6 +88,9 @@ for role in $ROLES; do
 		shape=(--machine-type="$YCSB_GEN_MACHINE_TYPE")
 	else
 		shape=(--machine-type="$YCSB_TARGET_MACHINE_TYPE" --threads-per-core=1 --performance-monitoring-unit=architectural)
+		if [ "$YCSB_DATA_DISK_KIND" = hyperdisk ]; then
+			shape+=("--create-disk=name=$RUN_ID-$role-data,device-name=ycsb-data,type=hyperdisk-balanced,size=${YCSB_HYPERDISK_GB}GB,provisioned-iops=$YCSB_HYPERDISK_IOPS,provisioned-throughput=$YCSB_HYPERDISK_MIBPS,auto-delete=yes")
+		fi
 	fi
 	gc "${CREATE[@]}" "$RUN_ID-$role" "${P[@]}" --zone="$YCSB_GCP_ZONE" "${shape[@]}" \
 		--network-interface="subnet=$SUBNET,nic-type=GVNIC" \
@@ -98,7 +101,7 @@ for role in $ROLES; do
 		--labels="ycsb-bench=true,ycsb-run=$RUN_ID,ycsb-role=$role" \
 		--image-family="$YCSB_IMAGE_FAMILY" --image-project="$YCSB_IMAGE_PROJECT" \
 		--boot-disk-size="$YCSB_BOOT_DISK_SIZE" --boot-disk-type=hyperdisk-balanced \
-		--metadata="ycsb-role=$role,ycsb-commit=$COMMIT,ycsb-repo=$YCSB_REPO_URL,ycsb-node-major=$YCSB_NODE_MAJOR,enable-oslogin=FALSE,enable-guest-attributes=TRUE" \
+		--metadata="ycsb-role=$role,ycsb-commit=$COMMIT,ycsb-repo=$YCSB_REPO_URL,ycsb-node-major=$YCSB_NODE_MAJOR,ycsb-data-device=$YCSB_DATA_DEVICE,enable-oslogin=FALSE,enable-guest-attributes=TRUE" \
 		--metadata-from-file="startup-script=$YCSB_GCP_DIR/startup.sh,ssh-keys=$RUN_DIR/ssh-keys"
 done
 if [ "$DRY" = 1 ]; then exit 0; fi

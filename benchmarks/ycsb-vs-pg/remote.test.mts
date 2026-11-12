@@ -519,6 +519,24 @@ test('every VM a run creates is labeled, placed compactly and deleted by GCE aft
 		}
 	);
 	strictEqual(a.split('\n').filter((l) => l.includes(' instances create ')).length, 3);
+	const { stdout: hyperdisk } = await gcpScript(
+		'provision.sh',
+		['--dry-run', '--run-id=ycsb-test-8', '--commit=abc', '--topology=a'],
+		{ YCSB_GCP_PROJECT: 'p', YCSB_BENCH_IP: '203.0.113.7', YCSB_DATA_DISK_KIND: 'hyperdisk' }
+	);
+	for (const create of hyperdisk.split('\n').filter((l) => l.includes(' instances create '))) {
+		const role = /instances create ycsb-test-8-(\S+)/.exec(create)![1];
+		const target = role !== 'generator';
+		strictEqual(create.includes('--machine-type=c4-standard-8 '), target, `${role}: the plain shape`);
+		strictEqual(
+			create.includes(
+				`--create-disk=name=ycsb-test-8-${role}-data,device-name=ycsb-data,type=hyperdisk-balanced,size=375GB,provisioned-iops=25000,provisioned-throughput=480,auto-delete=yes`
+			),
+			target,
+			`${role}: one fixed-performance Hyperdisk per target-shaped VM`
+		);
+		ok(create.includes('ycsb-data-device=google-ycsb-data'), `${role}: the startup script finds the disk`);
+	}
 });
 
 test('provisioning refuses a bad run id or an unknown public address; teardown finds a run by label and name', async () => {
@@ -552,12 +570,19 @@ test('teardown selects a run by its exact names, so one run id never matches a l
 	for (const own of [
 		'ycsb-check-generator',
 		'ycsb-check-postgres',
+		'ycsb-check-harper-data',
 		'ycsb-check-net',
 		'ycsb-check-compact',
 		'ycsb-check-ssh',
 	])
 		ok(matched(own), own);
-	for (const other of ['ycsb-check-2-generator', 'ycsb-check-2-net', 'ycsb-checker-net', 'ycsb-check-netx'])
+	for (const other of [
+		'ycsb-check-2-generator',
+		'ycsb-check-2-harper-data',
+		'ycsb-check-2-net',
+		'ycsb-checker-net',
+		'ycsb-check-netx',
+	])
 		ok(!matched(other), other);
 	ok(
 		filters.every((f) => !f.includes('labels.') || f.includes('labels.ycsb-run=ycsb-check ')),

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# GCE startup script for a ycsb-vs-pg VM (provision.sh sets it). Runs as root at boot. Mounts the local
-# SSD at /mnt/ycsb, installs Docker, Node (CI's major), perf and git, prepares user ycsb (docker, user
+# GCE startup script for a ycsb-vs-pg VM (provision.sh sets it). Runs as root at boot. Mounts the
+# data disk at /mnt/ycsb, installs Docker, Node (CI's major), perf and git, prepares user ycsb (docker, user
 # systemd with the memory controller delegated, linger), checks out the harness at the run's commit and
 # builds what the VM's role runs. Reports ready or failed:<line>:<status> as guest attribute ycsb/state,
 # which provision.sh polls.
@@ -10,8 +10,8 @@ attr() { curl -fsS -H 'Metadata-Flavor: Google' "$MD/attributes/$1"; }
 report() { curl -fsS -X PUT --data "$1" -H 'Metadata-Flavor: Google' "$MD/guest-attributes/ycsb/state" || true; }
 trap 'report "failed:$LINENO:$?"' ERR
 
-DEV=/dev/disk/by-id/google-local-nvme-ssd-0
-# A later boot (a guest reboot keeps the local SSD): mount the existing filesystem again, never reformat it.
+DEV=/dev/disk/by-id/$(attr ycsb-data-device)
+# A later boot (a guest reboot keeps the data disk): mount the existing filesystem again, never reformat it.
 if [ -f /var/lib/ycsb/ready ]; then
 	if [ -e "$DEV" ] && ! mountpoint -q /mnt/ycsb; then mount -o noatime "$DEV" /mnt/ycsb; fi
 	report ready
@@ -29,7 +29,7 @@ apt-get install -yq git curl jq ca-certificates xz-utils util-linux linux-tools-
 if [ "$ROLE" != generator ]; then
 	apt-get install -yq docker.io docker-compose-v2
 	[ -e "$DEV" ] || {
-		echo "no local SSD at $DEV" >&2
+		echo "no data disk at $DEV" >&2
 		false
 	}
 	# Eager inode and journal init: no background initialization writes while a run measures the disk.

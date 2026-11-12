@@ -436,7 +436,7 @@ Choices, recorded per run in `gcp/runs/<id>/manifest.json` and in every results 
   nothing to provision. It is local NVMe, like the XPS where every earlier row was measured. Unlike a
   network disk, it adds no network round trip to each page-cache miss, which would mix a disk-latency
   term into the dependent-read chains the 2x and 8x points measure. 375 GiB holds 8x on per-engine VMs
-  (Harper 138 GiB snapshot plus its restored copy). Documented limits: 150k read IOPS, 625 MiB/s read.
+  (Harper 138 GiB snapshot plus its restored copy). Documented limits: 150k read IOPS, 625 MiB/s read. When that shape is out of capacity, `YCSB_DATA_DISK_KIND=hyperdisk` gives every target-shaped VM the plain `c4-standard-8` and one Hyperdisk Balanced volume with fixed provisioned IOPS and throughput (`YCSB_HYPERDISK_IOPS`, 25,000, and `YCSB_HYPERDISK_MIBPS`, 480: the VM's steady-state limit, so no burst credit varies the results). That adds a network round trip to each page-cache miss, so results record the kind (`dataDisk`).
 - **Generator: `c4-standard-32`** (16 cores, SMT on). The sharded driver spent 70–100 µs of CPU per op on
   the XPS (above), so a 4-core target serving 60–80k ops/s needs up to about 8 of its cores. The ceiling
   check is the gate; `YCSB_GEN_MACHINE_TYPE` changes the shape. No VM gets a

@@ -38,7 +38,7 @@ if [ "$ALL" = 1 ]; then
 else
 	ycsb_check_run_id "$RUN_ID"
 	# The regexes are quoted inside the filter: gcloud's filter grammar would read the parentheses itself.
-	VMS="labels.ycsb-run=$RUN_ID OR name ~ '^$RUN_ID-($(ycsb_roles ab | tr ' ' '|'))\$'"
+	VMS="labels.ycsb-run=$RUN_ID OR name ~ '^$RUN_ID-($(ycsb_roles ab | tr ' ' '|'))(-data)?\$'"
 	NAMED="name ~ '^$RUN_ID-(net|subnet|internal|ssh|compact)\$'"
 fi
 
