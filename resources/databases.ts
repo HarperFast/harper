@@ -2790,6 +2790,7 @@ export function openBranchDatabase(
 	}
 	let closing: Promise<void> | undefined;
 	let handleTeardownStarted = false;
+	let closeFailed = false;
 	const unregisterBranch = () => {
 		if (openBranches.get(path) === branch) openBranches.delete(path);
 		releaseBranchIdentity(storeName);
@@ -2798,8 +2799,19 @@ export function openBranchDatabase(
 	};
 	const closeRemainingHandles = () => {
 		const closeFailures = closeBranchHandles(path, rootStore, openedStores, tables);
-		if (closeFailures.length) {
-			throw new AggregateError(closeFailures, `Could not close branch database '${databaseName}'`);
+		if (closeFailures.length) closeFailed = true;
+		// rocksdb-js reports RocksDB's own final close failing only after releasing the database, leaving nothing to
+		// retry; a database whose close-time flush failed it keeps quarantined until `shutdown()`.
+		if (closeFailed) {
+			const failed = `Could not close branch database '${databaseName}'`;
+			const quarantined = registryEntriesAt(path).find((entry) => entry.closeError)?.closeError;
+			if (quarantined)
+				throw new AggregateError(closeFailures.length ? closeFailures : [new Error(quarantined)], failed);
+			if ([rootStore, (rootStore as any).dbisDb, ...openedStores].some((store) => store?.status === 'open'))
+				throw new AggregateError(closeFailures, failed);
+			logger.warn(
+				`Released branch database '${databaseName}' at ${path}: rocksdb-js finished closing it, though its close reported a failure`
+			);
 		}
 		unregisterBranch();
 	};
@@ -2911,6 +2923,24 @@ function closeBranchHandles(
 	if (rootStore) databasePaths.delete(rootStore as RootDatabase);
 	for (const reclamationPath of reclamationPaths) removeStorageReclamation(reclamationPath);
 	return closeFailures;
+}
+
+/**
+ * rocksdb-js's registry entries, which span every thread of the process, for the database at a canonical directory:
+ * one for each way it is open (read-write, read-only, secondary).
+ */
+export function registryEntriesAt(canonicalPath: string): ReturnType<typeof getRegistryStatus> {
+	return getRegistryStatus().filter(
+		(entry) => entry.path === canonicalPath || canonicalOrSelf(entry.path) === canonicalPath
+	);
+}
+
+function canonicalOrSelf(path: string): string {
+	try {
+		return realpathSync(path);
+	} catch {
+		return path;
+	}
 }
 
 async function settleBranchDerivedIndexes(tables: Tables): Promise<void> {

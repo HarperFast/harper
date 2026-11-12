@@ -298,6 +298,82 @@ describe('Test serverUtilities.js module ', () => {
 				global.threads = originalThreads;
 			}
 		});
+
+		it('carries a sealed body’s log view beside the body, never in it', async function () {
+			const { setOperationLogView } = require('#src/utility/operationLogView');
+			const operationName = 'test_remote_log_view';
+			const sentMessages = [];
+			const originalThreads = global.threads;
+			global.threads = {
+				sendToThread(_threadId, message) {
+					sentMessages.push(message);
+					return false;
+				},
+			};
+			const originalLevel = logger.logLevel;
+			// The fake worker never accepts the send, so each attempt drops the registration; re-announce it.
+			const announce = () =>
+				registeredOperations.operationRegisteredHandler({ message: { name: operationName, originator: 9_000_018 } });
+			try {
+				const body = { operation: operationName, records: [{ secret: 'forwarded-secret' }] };
+				let built = 0;
+				setOperationLogView(body, () => {
+					built++;
+					return { operation: operationName, encrypted_operation: { mode: 'sealed' } };
+				});
+
+				logger.logLevel = 'warn';
+				announce();
+				await assert.rejects(registeredOperations.getRemoteOperationFunction(operationName)(body));
+				assert.deepStrictEqual(sentMessages[0].message.logView, { operation: operationName });
+				assert.strictEqual(built, 0, 'the full view was built although the operation log is off');
+
+				logger.logLevel = 'info';
+				announce();
+				await assert.rejects(registeredOperations.getRemoteOperationFunction(operationName)(body));
+				assert.deepStrictEqual(sentMessages[1].message.logView, {
+					operation: operationName,
+					encrypted_operation: { mode: 'sealed' },
+				});
+				assert.ok(!Object.hasOwn(sentMessages[1].message.body, 'logView'));
+			} finally {
+				logger.logLevel = originalLevel;
+				global.threads = originalThreads;
+			}
+		});
+
+		it('registers the forwarded log view on the worker’s copy of the body', async function () {
+			const { operationLogViewOf } = require('#src/utility/operationLogView');
+			const sentMessages = [];
+			const originalThreads = global.threads;
+			global.threads = {
+				sendToThread(_threadId, message) {
+					sentMessages.push(message);
+					return true;
+				},
+			};
+			registeredOperations.setLocalOperationDispatch({
+				chooseOperation() {
+					return () => {};
+				},
+				async processLocalTransaction({ body }) {
+					return { view: operationLogViewOf(body)?.() ?? null };
+				},
+			});
+			try {
+				const logView = { operation: 'test_worker_log_view', encrypted_operation: { mode: 'fields' } };
+				await registeredOperations.operationExecuteRequestHandler({
+					message: { requestId: 25, body: { operation: 'test_worker_log_view' }, originator: 1, logView },
+				});
+				assert.deepStrictEqual(sentMessages[0].message.result, { view: logView });
+			} finally {
+				registeredOperations.setLocalOperationDispatch({
+					chooseOperation: serverUtilities.chooseOperation,
+					processLocalTransaction: serverUtilities.processLocalTransaction,
+				});
+				global.threads = originalThreads;
+			}
+		});
 	});
 
 	describe('forwarded operation dispatch', function () {
@@ -1464,9 +1540,14 @@ describe('processLocalTransaction call-site redaction (real log file)', function
 		server.setMcpQuotaHandler = realSetMcpQuotaHandler;
 		global.operation = globals.operation = realGlobalOperation;
 		require.cache[modulePath] = originalCacheEntry;
-		registeredOperations.setLocalOperationDispatch({
+		const dispatch = {
 			chooseOperation: serverUtilities.chooseOperation,
 			processLocalTransaction: serverUtilities.processLocalTransaction,
+		};
+		registeredOperations.setLocalOperationDispatch(dispatch);
+		require('#src/components/encryptedOperation').setEncryptedOperationDispatch({
+			...dispatch,
+			isJobOperation: serverUtilities.isJobOperation,
 		});
 	});
 

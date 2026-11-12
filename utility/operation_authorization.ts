@@ -59,6 +59,7 @@ import * as regDeprecated from '../resources/registrationDeprecated.ts';
 import * as deploymentOperations from '../components/deploymentOperations.ts';
 import * as releaseOperations from '../components/releaseOperations.ts';
 import * as secretOperations from '../components/secretOperations.ts';
+import * as encryptedOperation from '../components/encryptedOperation.ts';
 import * as trustPolicyOperations from '../security/authn/oidc/trustPolicyOperations.ts';
 import * as networkAccess from '../security/networkAccess.ts';
 import * as tokenExchange from '../security/authn/oidc/tokenExchange.ts';
@@ -413,6 +414,12 @@ requiredPermissions.set(
 requiredPermissions.set(
 	secretOperations.getSecretsPublicKey.name,
 	new permission(true, [], terms.OPERATIONS_ENUM.GET_SECRETS_PUBLIC_KEY)
+);
+// A transport, not an action: open to any principal, and the sealed inner operation is authorized
+// again under its own name. A role allowlist or scoped token must list both.
+requiredPermissions.set(
+	encryptedOperation.encryptedOperation.name,
+	new permission(false, [], terms.OPERATIONS_ENUM.ENCRYPTED_OPERATION)
 );
 
 // OIDC trust policies (#2171). A policy lets an external CI run authenticate as a Harper user, so

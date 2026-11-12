@@ -1,0 +1,4 @@
+# The test custody is wired in through HARPER_BUILTIN_COMPONENTS (see the test), and must also be a
+# top-level component key for componentLoader to load it.
+rest: true
+encryptedOperationTestCustody: true

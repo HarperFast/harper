@@ -1,5 +1,6 @@
 const assert = require('node:assert');
 const { Readable, PassThrough } = require('node:stream');
+const { resolve } = require('node:path');
 const { setImmediate: nextTurn, setTimeout: delay } = require('node:timers/promises');
 const { waitFor } = require('../waitFor.js');
 const { setupTestDBPath } = require('../testUtils.js');
@@ -625,6 +626,110 @@ describe('REST preconditions with real table transactions', () => {
 				assert.strictEqual((await Row.get(id)).n, accepted ? 2 : 1);
 				assert.strictEqual(Lines.primaryStore.getEntry(id)?.value?.n, accepted ? 8 : undefined);
 			}
+		}
+	});
+
+	it('coalesces increments while their conditional record lock is pending', async function () {
+		if (isLMDB) return this.skip();
+		const id = 'queued-adds';
+		await Row.put(id, { n: 0 });
+		let started = false;
+		class QueuedAdds extends Row {
+			async patch() {
+				const first = this.update({ n: { __op__: 'add', value: 1 } });
+				const second = this.update({ n: { __op__: 'add', value: 1 } });
+				started = true;
+				await Promise.all([first, second]);
+				return this.save();
+			}
+		}
+		resources.set('QueuedAdds', QueuedAdds, { rest: true });
+		const holder = await Row.lock(id, { hold: true, lease: 30000 });
+		let pending;
+		try {
+			pending = request('PATCH', `/QueuedAdds/${id}`, {}, { 'if-match': '*' });
+			await waitFor(() => started, 2000);
+			await holder.unlock();
+			const response = await pending;
+			assert.strictEqual(response.status, 204, await bodyOf(response));
+			assert.strictEqual((await Row.get(id)).n, 2);
+			assert.strictEqual(
+				[...Row.auditStore.getRange({ start: 1 })].filter(
+					(entry) => entry.tableId === Row.tableId && entry.recordId === id && entry.type === 'patch'
+				).length,
+				1
+			);
+		} finally {
+			await holder.unlock();
+			if (pending) await pending;
+		}
+	});
+
+	it('settles queued writes after their conditional precondition fails', async function () {
+		if (isLMDB) return this.skip();
+		// The child's own timeout fires first so a hang is reported by name; the kill only backstops a
+		// child that never reaches its test.
+		this.timeout(process.env.HARPER_CONDITIONAL_QUEUE_CHILD ? 30000 : 60000);
+		if (!process.env.HARPER_CONDITIONAL_QUEUE_CHILD) {
+			// Bypass Mocha's forking launcher so the timeout and heap cap own the test process.
+			const { spawnSync } = require('node:child_process');
+			const child = spawnSync(
+				process.execPath,
+				[
+					...process.execArgv,
+					'--max-old-space-size=512',
+					require.resolve('mocha/lib/cli/cli.js'),
+					__filename,
+					'--grep',
+					this.test.title,
+					'--fail-zero',
+				],
+				{
+					cwd: resolve(__dirname, '../..'),
+					env: { ...process.env, HARPER_CONDITIONAL_QUEUE_CHILD: '1' },
+					encoding: 'utf8',
+					timeout: 50000,
+					killSignal: 'SIGKILL',
+				}
+			);
+			assert.ifError(child.error);
+			assert.strictEqual(child.status, 0, child.stdout + child.stderr);
+			assert.match(child.stdout, /\b1 passing\b/);
+			return;
+		}
+		const unhandled = [];
+		const onRejection = (error) => unhandled.push(error);
+		process.on('unhandledRejection', onRejection);
+		try {
+			for (const verb of ['direct', 'keyed', 'put', 'discarded direct', 'discarded keyed', 'discarded put']) {
+				const id = `rejected-queue-${verb}`;
+				await Row.put(id, { n: 0 });
+				let called = false;
+				class RejectedQueue extends Row {
+					async patch(target) {
+						called = true;
+						const first = this.update({ n: { __op__: 'add', value: 1 } });
+						const second = verb.endsWith('put')
+							? this.put(target, { n: 9 })
+							: verb.endsWith('keyed')
+								? this.update(target, { n: 9 })
+								: this.update({ n: 9 });
+						if (!verb.startsWith('discarded')) await Promise.all([first, second]);
+						return this.save();
+					}
+				}
+				const name = `RejectedQueue${verb.replaceAll(' ', '')}`;
+				resources.set(name, RejectedQueue, { rest: true });
+				const response = await request('PATCH', `/${name}/${id}`, {}, { 'if-match': '"stale"' });
+				assert.strictEqual(called, true, `${verb} handler ran`);
+				assert.strictEqual(response.status, 412, await bodyOf(response));
+				await nextTurn();
+				assert.deepStrictEqual(unhandled, [], `${verb} must not emit an unhandled rejection`);
+				assert.strictEqual((await request('GET', `/Row/${id}`)).status, 200);
+				assert.strictEqual((await Row.get(id)).n, 0);
+			}
+		} finally {
+			process.off('unhandledRejection', onRejection);
 		}
 	});
 
