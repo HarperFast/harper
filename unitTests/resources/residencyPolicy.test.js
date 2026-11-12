@@ -6,6 +6,7 @@ const {
 	compileResidencyPolicy,
 	normalizeResidencyPolicy,
 	canonicalShards,
+	canonicalSpareShards,
 	shardListDigest,
 	defaultResidencyMap,
 	createResidencyMap,
@@ -83,6 +84,45 @@ describe('Residency policy and map identity', () => {
 		assert.notEqual(shardListDigest([0, 1]), shardListDigest([0, 2]));
 		assert.equal(shardListDigest(undefined), null);
 	});
+
+	it('gives spare shards no slots in a default map', () => {
+		const map = defaultResidencyMap('data', 10, [0, 1, 2, 3], [3, 1]);
+		assert.deepEqual([...expandResidencyMap(map)], [0, 2, 0, 2, 0, 2, 0, 2, 0, 2]);
+		assert.deepEqual(defaultResidencyMap('data', 10, [0, 1], []), defaultResidencyMap('data', 10, [0, 1]));
+		assert.deepEqual(
+			[...expandResidencyMap(defaultResidencyMap('data', 4, [0, 1, 2, 3, 4, 5, 6, 7], [1, 2, 3, 4, 5, 6, 7]))],
+			[0, 0, 0, 0]
+		);
+	});
+
+	it('digests the spare list with the shard list, and only the shard list when there are no spares', () => {
+		assert.equal(shardListDigest([0, 1]), shardListDigest([0, 1], undefined));
+		assert.equal(shardListDigest([0, 1]), shardListDigest([0, 1], []));
+		assert.notEqual(shardListDigest([0, 1]), shardListDigest([0, 1], [1]));
+		assert.notEqual(shardListDigest([0, 1, 2], [1]), shardListDigest([0, 1, 2], [2]));
+		assert.equal(shardListDigest(undefined, [1]), null);
+	});
+
+	it('canonicalizes a spare list and treats an empty one as none', () => {
+		assert.deepEqual(canonicalSpareShards([3, 1], [0, 1, 2, 3]), [1, 3]);
+		assert.equal(canonicalSpareShards([], [0, 1]), undefined);
+		assert.equal(canonicalSpareShards(undefined, [0, 1]), undefined);
+		assert.equal(canonicalSpareShards(undefined, undefined), undefined);
+	});
+
+	for (const [spares, shards, message] of [
+		[[1, 1], [0, 1, 2], /unique integer/],
+		[['1'], [0, 1], /unique integer/],
+		[1, [0, 1], /must be an array/],
+		[[2], [0, 1], /lists 2, which is not in replication.shards/],
+		[[0, 1], [0, 1], /at least one shard/],
+		[[1], undefined, /requires replication.shards/],
+	]) {
+		it(`rejects spare shards ${JSON.stringify(spares)} with shards ${JSON.stringify(shards)}`, () => {
+			assert.throws(() => canonicalSpareShards(spares, shards), message);
+			if (shards) assert.throws(() => defaultResidencyMap('data', 4, shards, spares), message);
+		});
+	}
 
 	for (const shards of [[], [0, 0], [-1], [65536], [0.5], ['0']]) {
 		it(`rejects malformed topology ${JSON.stringify(shards)}`, () => {

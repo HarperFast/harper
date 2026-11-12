@@ -15,6 +15,7 @@ import {
 	compileResidencyPolicy,
 	residencyMapExtends,
 	canonicalShards,
+	canonicalSpareShards,
 	createResidencyMap,
 	defaultResidencyMap,
 	expandResidencyMap,
@@ -155,9 +156,16 @@ export function residencyDeclarationDatabases(): string[] {
 }
 
 let configuredList: unknown;
+let configuredSpareList: unknown;
 let configuredShards: number[] | undefined;
+let configuredSpares: number[] | undefined;
 let configuredDigest: string | null = null;
-let configuration: Readonly<{ shards: readonly number[] | undefined; shard: number; digest: string | null }>;
+let configuration: Readonly<{
+	shards: readonly number[] | undefined;
+	spares: readonly number[] | undefined;
+	shard: number;
+	digest: string | null;
+}>;
 let recoveryConfiguration: typeof configuration;
 export function getResidencyConfiguration(forRecovery = false) {
 	if (forRecovery && shardingRecoveryConfiguration) {
@@ -166,27 +174,38 @@ export function getResidencyConfiguration(forRecovery = false) {
 			throw new ClientError('replication.shard must be an integer from 0 through 65535', 400);
 		if (!recoveryConfiguration) {
 			const shards = canonicalShards(shardingRecoveryConfiguration.shards);
+			const spares = canonicalSpareShards(shardingRecoveryConfiguration.spareShards, shards);
 			recoveryConfiguration = Object.freeze({
 				shards,
+				spares,
 				shard: shardingRecoveryConfiguration.shard,
-				digest: shardListDigest(shards),
+				digest: shardListDigest(shards, spares),
 			});
 		}
 		return recoveryConfiguration;
 	}
 	const value = env.get(CONFIG_PARAMS.REPLICATION_SHARDS);
+	const spareValue = env.get(CONFIG_PARAMS.REPLICATION_SPARESHARDS);
 	const shard = env.get(CONFIG_PARAMS.REPLICATION_SHARD);
 	if (shard !== undefined && (!Number.isInteger(shard) || shard < 0 || shard > 65535))
 		throw new ClientError('replication.shard must be an integer from 0 through 65535', 400);
-	if (value !== configuredList) {
+	if (value !== configuredList || spareValue !== configuredSpareList) {
 		const shards = canonicalShards(value);
+		const spares = canonicalSpareShards(spareValue, shards);
 		configuredList = value;
+		configuredSpareList = spareValue;
 		configuredShards = shards;
-		configuredDigest = shardListDigest(shards);
+		configuredSpares = spares;
+		configuredDigest = shardListDigest(shards, spares);
 		configuration = undefined;
 	}
 	if (!configuration || configuration.shard !== shard)
-		configuration = Object.freeze({ shards: configuredShards, shard, digest: configuredDigest });
+		configuration = Object.freeze({
+			shards: configuredShards,
+			spares: configuredSpares,
+			shard,
+			digest: configuredDigest,
+		});
 	return configuration;
 }
 
@@ -391,7 +410,7 @@ export async function prepareResidencyDeclaration(
 	}
 	if (existing) residencyFailure(database, 'an existing table requires its custom map before @sharded activation');
 	try {
-		await installResidencyMap(defaultResidencyMap(database, resolved.slots, current.shards));
+		await installResidencyMap(defaultResidencyMap(database, resolved.slots, current.shards, current.spares));
 	} catch (error) {
 		if (!(error instanceof ClientError) || !readResidencyMap(database)) throw error;
 	}

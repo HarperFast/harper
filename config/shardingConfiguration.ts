@@ -1,13 +1,14 @@
 import isEqual from 'lodash/isEqual.js';
 import { getConfigValue, updateConfigObject } from './configUtils.ts';
-import { canonicalShards, shardListDigest } from '../resources/residencyPolicy.ts';
+import { canonicalShards, canonicalSpareShards, shardListDigest } from '../resources/residencyPolicy.ts';
 import * as logger from '../utility/logging/harper_logger.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import type { RootConfigWatcher } from './RootConfigWatcher.ts';
 
 const listeners = new Set<() => void>();
 let ready: Promise<void> | undefined;
-export let shardingRecoveryConfiguration: Readonly<{ shards: unknown; shard: number }> | undefined;
+export let shardingRecoveryConfiguration:
+	Readonly<{ shards: unknown; spareShards: unknown; shard: number }> | undefined;
 
 function report(error: unknown): void {
 	logger.warn?.('Could not observe sharding configuration', error);
@@ -21,9 +22,18 @@ function canonicalList(value: unknown): unknown {
 	}
 }
 
-function digest(value: unknown): string | null {
+function canonicalSpareList(value: unknown, shards: unknown): unknown {
 	try {
-		return shardListDigest(canonicalShards(value));
+		return canonicalSpareShards(value, canonicalShards(shards));
+	} catch {
+		return value;
+	}
+}
+
+function digest(shards: unknown, spares: unknown): string | null {
+	try {
+		const list = canonicalShards(shards);
+		return shardListDigest(list, canonicalSpareShards(spares, list));
 	} catch {
 		return 'invalid';
 	}
@@ -49,10 +59,15 @@ export function watchShardingConfiguration(watcher: RootConfigWatcher): { ready:
 		if (!replication || typeof replication !== 'object' || Array.isArray(replication)) return;
 		if (replication.shard !== getConfigValue('replication_shard')) return;
 		const previous = getConfigValue('replication_shards');
+		const previousSpares = getConfigValue('replication_spareShards');
 		const next = canonicalList(replication.shards);
-		if (isEqual(canonicalList(previous), next)) return;
-		updateConfigObject('replication_shards', next);
-		if (digest(previous) === digest(next)) return;
+		const nextSpares = canonicalSpareList(replication.spareShards, replication.shards);
+		const shardsChanged = !isEqual(canonicalList(previous), next);
+		const sparesChanged = !isEqual(canonicalSpareList(previousSpares, previous), nextSpares);
+		if (!shardsChanged && !sparesChanged) return;
+		if (shardsChanged) updateConfigObject('replication_shards', next);
+		if (sparesChanged) updateConfigObject('replication_spareShards', nextSpares);
+		if (digest(previous, previousSpares) === digest(next, nextSpares)) return;
 		for (const listener of listeners) {
 			try {
 				Promise.resolve(listener()).catch(report);
@@ -98,8 +113,10 @@ export function watchShardingConfiguration(watcher: RootConfigWatcher): { ready:
 export function ensureShardingConfiguration(): Promise<void> {
 	if (!ready) {
 		const shards = getConfigValue('replication_shards');
+		const spareShards = getConfigValue('replication_spareShards');
 		shardingRecoveryConfiguration ??= Object.freeze({
 			shards: Array.isArray(shards) ? Object.freeze([...shards]) : shards,
+			spareShards: Array.isArray(spareShards) ? Object.freeze([...spareShards]) : spareShards,
 			shard: getConfigValue('replication_shard'),
 		});
 		ready = import('./RootConfigWatcher.ts')

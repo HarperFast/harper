@@ -64,6 +64,67 @@ describe('Sharding configuration repair', () => {
 			}
 		}
 	);
+
+	(process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? it.skip : it)(
+		'projects the root spare list before a worker installs its first map, so spares get no slots',
+		async function () {
+			this.timeout(20_000);
+			const { Worker } = require('node:worker_threads');
+			const { getConfigFilePath } = require('#src/config/configUtils');
+			const { readRootConfig, setRootConfigEntry } = require('../rootConfigFixture');
+			const path = getConfigFilePath();
+			const saved = readFileSync(path, 'utf8');
+			let worker;
+			let timer;
+			try {
+				setRootConfigEntry('replication', {
+					...readRootConfig().replication,
+					shard: 0,
+					shards: [0, 1, 2],
+					spareShards: [1],
+				});
+				worker = new Worker(
+					`
+				const { parentPort, workerData } = require('node:worker_threads');
+				require(workerData.testUtils).setupTestDBPath();
+				const env = require('#src/utility/environment/environmentManager');
+				env.setProperty('replication_shard', 0);
+				env.setProperty('replication_shards', [1]);
+				const { prepareResidencyDeclaration, readResidencyMap } = require('#src/resources/residencyMaps');
+				prepareResidencyDeclaration('spareProjection', 'Rows', {}).then(() => {
+					parentPort.postMessage({ type: 'projection-result', map: readResidencyMap('spareProjection') });
+				}, error => parentPort.postMessage({ type: 'projection-result', error: error.message }));
+				parentPort.ref();
+			`,
+					{
+						eval: true,
+						workerData: {
+							testUtils: require.resolve('../testUtils'),
+							noServerStart: true,
+							addPorts: [],
+							workerIndex: 9,
+							workerCount: 10,
+						},
+					}
+				);
+				const result = await new Promise((resolve, reject) => {
+					timer = setTimeout(() => reject(new Error('worker did not project the root configuration')), 15_000);
+					worker.once('error', reject);
+					worker.once('exit', (code) => reject(new Error(`worker exited before declaration: ${code}`)));
+					worker.on('message', (message) => {
+						if (message.type === 'projection-result') resolve(message);
+					});
+				});
+				assert.equal(result.error, undefined);
+				assert.equal(result.map.slots, 1024);
+				assert.deepEqual([...new Set(result.map.ranges.map((range) => range.shard))].sort(), [0, 2]);
+			} finally {
+				clearTimeout(timer);
+				await worker?.terminate();
+				writeFileSync(path, saved);
+			}
+		}
+	);
 	for (const failure of ['rejected', 'unreadable', 'closed'])
 		it(`does not certify a failed sharding configuration observer (${failure})`, async () => {
 			const { EventEmitter } = require('node:events');

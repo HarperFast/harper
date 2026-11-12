@@ -167,8 +167,39 @@ export function canonicalShards(value: unknown): number[] | undefined {
 	return [...shards].sort((a, b) => a - b);
 }
 
-export function shardListDigest(shards: readonly number[] | undefined): string | null {
-	return shards === undefined ? null : createHash('sha256').update(JSON.stringify(shards)).digest('hex');
+/**
+ * Shard IDs a default map gives no slots, so a node can join one and own nothing until slots are moved into it.
+ * At least one listed shard must remain to hold slots.
+ */
+export function canonicalSpareShards(value: unknown, shards: readonly number[] | undefined): number[] | undefined {
+	if (value === undefined || value === null) return;
+	if (!Array.isArray(value) || value.length > 65536)
+		throw new ClientError('replication.spareShards must be an array of shard IDs', 400);
+	if (value.length === 0) return;
+	const spares = new Set<number>();
+	for (const shard of value) {
+		if (!Number.isInteger(shard) || shard < 0 || shard > 65535 || spares.has(shard))
+			throw new ClientError('replication.spareShards must contain unique integer shard IDs from 0 to 65535', 400);
+		spares.add(shard);
+	}
+	if (!shards) throw new ClientError('replication.spareShards requires replication.shards', 400);
+	for (const shard of spares)
+		if (!shards.includes(shard))
+			throw new ClientError(`replication.spareShards lists ${shard}, which is not in replication.shards`, 400);
+	if (spares.size >= shards.length)
+		throw new ClientError('replication.spareShards must leave at least one shard in replication.shards', 400);
+	return [...spares].sort((a, b) => a - b);
+}
+
+/** With no spares the digest is the list's alone, so a node without spares agrees with one that predates them. */
+export function shardListDigest(
+	shards: readonly number[] | undefined,
+	spares?: readonly number[] | undefined
+): string | null {
+	if (shards === undefined) return null;
+	return createHash('sha256')
+		.update(JSON.stringify(spares?.length ? { shards, spares } : shards))
+		.digest('hex');
 }
 
 function canonicalRanges(slots: number, ranges: unknown): ResidencyRange[] {
@@ -228,10 +259,17 @@ export function createResidencyMap(
 	return { ...snapshot, digest: createHash('sha256').update(JSON.stringify(snapshot)).digest('hex') };
 }
 
-export function defaultResidencyMap(database: string, slots: number, configured: unknown): ResidencyMapSnapshot {
+export function defaultResidencyMap(
+	database: string,
+	slots: number,
+	configured: unknown,
+	configuredSpares?: unknown
+): ResidencyMapSnapshot {
 	validateSlotCount(slots);
-	const shards = canonicalShards(configured);
-	if (!shards) throw new ClientError('replication.shards is required before installing a default shard map', 503);
+	const listed = canonicalShards(configured);
+	if (!listed) throw new ClientError('replication.shards is required before installing a default shard map', 503);
+	const spares = canonicalSpareShards(configuredSpares, listed);
+	const shards = spares ? listed.filter((shard) => !spares.includes(shard)) : listed;
 	return createResidencyMap(
 		database,
 		slots,
