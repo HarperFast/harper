@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794477213823,
+  "lastUpdate": 1794477218551,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -34763,6 +34763,53 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw read p99",
             "value": 676.6,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "9d77c4270c7ac8e98cedb3630869e7919019bdbb",
+          "message": "Keep a record's audit history readable after it is evicted (#3504)\n\n* Keep a record's audit history reachable after eviction\n\ngetHistoryOfRecord returned [] for an evicted record and dropped everything\nbefore a re-insert that came more than the 100ms walk window after the\neviction, since the re-insert has no previousVersion link to follow. It now\nscans the retained log for an evicted record, and scans below the walked\nrange when the walk ends at an unlinked write of a record that can have been\nevicted. getRecordAtTime now starts from the newest put/patch/delete at or\nbefore a timestamp that is not an audit key, instead of returning null.\n\nRefs #2730\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nDispatch-Task: harper-record-history-after-eviction\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\nDispatch-Task: pr-maint-0611fabc36c24b9ab57c8473c3566a23\n\n* Tighten the post-eviction history bridge per review\n\n- Scan below the walk only when its oldest entry has no predecessor link,\n  not when it links to a pruned entry in the same window.\n- Start a non-key timestamp from the exact entry only when it is a state\n  change or links to one; an unlinked eviction marker reaches no state.\n- Make the crdt mock return another record's entry at a key, as LMDB does.\n\nRefs #2730\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nDispatch-Task: harper-record-history-after-eviction\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\nDispatch-Task: pr-maint-0611fabc36c24b9ab57c8473c3566a23\n\n* Search back from a non-key timestamp instead of scanning from the log start\n\nreconstructAtTimestamp now searches back in doubling windows, the first\nholding only the timestamp, so an exact-key miss (RocksDB's exact lookup\nmisses compound ids) costs one narrow range instead of a scan from key 1.\nCorrects the documented gap: a re-insert without an expiry after read-path\nexpiry of a per-record expiresAt on a table that cannot evict is also not\nbridged.\n\nRefs #2730\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nDispatch-Task: harper-record-history-after-eviction\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\nDispatch-Task: pr-maint-0611fabc36c24b9ab57c8473c3566a23\n\n* Keep the requested origin's entry when two origins share a log key\n\nAlso makes the exact-key test count any non-exact range, and drops two\ncomments that restated code.\n\nRefs #2730\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nDispatch-Task: harper-record-history-after-eviction\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\nDispatch-Task: pr-maint-0611fabc36c24b9ab57c8473c3566a23\n\n* Keep retention cleanup out of the history tests' scan count\n\nRefs #2730\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nDispatch-Task: harper-record-history-after-eviction\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\nDispatch-Task: pr-maint-0611fabc36c24b9ab57c8473c3566a23\n\n* Reconstruct every record mutation in an audit transaction frame\n\nResolve complete same-origin frames for exact timestamp reads, predecessor walks and reversal. Preserve the shared keyed lookup contract and cover real put/patch, multiple-patch, later-link and replacement histories after eviction.\n\nDispatch-Task: pr-maint-0611fabc36c24b9ab57c8473c3566a23\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n* Resolve historical delete boundaries from the complete transaction frame\n\nRead RocksDB frames in one pass and retain single-entry LMDB lookups. Add real-store delete/recreate and put/delete boundary regressions.\n\nDispatch-Task: pr-maint-0611fabc36c24b9ab57c8473c3566a23\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n* Bound history reads and carry ordinary patch images per listing\n\nDispatch-Task: pr-maint-0611fabc36c24b9ab57c8473c3566a23\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n* Format the retained-expiry predicate after rebase\n\nDispatch-Task: pr-maint-0611fabc36c24b9ab57c8473c3566a23\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n* Keep history design notes within repository budgets\n\nDispatch-Task: pr-maint-0611fabc36c24b9ab57c8473c3566a23\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n* Reuse the sealed first-origin frame captured by history discovery\n\nDispatch-Task: pr-maint-0611fabc36c24b9ab57c8473c3566a23\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n* Bound retained-history search and discard unsafe carried images\n\nKeep control-frame origin selection consistent and use plain rebuilding after an observed head changes. Measure the remaining evicted and bulk-patch reader costs.\n\nDispatch-Task: pr-maint-0611fabc36c24b9ab57c8473c3566a23\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n* Exercise both native origin iteration orders in history regressions\n\nDispatch-Task: pr-maint-0611fabc36c24b9ab57c8473c3566a23\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n* Preserve newest-key and origin selection across unordered audit windows\n\nResolve requested-origin frames before accepting another origin's candidate,\nand choose by audit key rather than append order. Extend native regressions\nwith interleaved control frames and a late-appended older put.\n\nDispatch-Task: pr-maint-0611fabc36c24b9ab57c8473c3566a23\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n* Restore existing design invariants to satisfy base-aware budgets\n\nKeep the reviewed runtime unchanged and avoid expanding this scoped history fix into a shared-note rewrite.\n\nDispatch-Task: pr-maint-0611fabc36c24b9ab57c8473c3566a23\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n---------\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>\nCo-authored-by: GPT-5 Codex <noreply@openai.com>",
+          "timestamp": "2026-11-12T05:49:40Z",
+          "url": "https://github.com/HarperFast/harper/commit/9d77c4270c7ac8e98cedb3630869e7919019bdbb"
+        },
+        "date": 1794477217196,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "value": 29993.7,
+            "unit": "MB"
+          },
+          {
+            "name": "ttl-churn final size",
+            "value": 29993.7,
+            "unit": "MB"
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "value": 179.6,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "value": 416.7,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "value": 516.3,
             "unit": "ms"
           }
         ]
