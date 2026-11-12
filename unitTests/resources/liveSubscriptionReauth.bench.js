@@ -212,15 +212,19 @@ describe('Benchmark: live subscription re-authorization at scale', function () {
 	it('backstop sweep once every role reads one more attribute', async function () {
 		// widening a role with no attribute permissions would restrict it
 		if (ATTRIBUTES.length === 0) this.skip();
-		const before = userChanges;
-		for (let index = 0; index < ROLES; index++) await databases.system.hdb_role.put(benchRole(index, true));
-		while (userChanges === before) await turn();
-		await measure(() => _sweepNow(), { quietTurns: 1 });
+		const putRoles = async (widened) => {
+			const before = userChanges;
+			for (let index = 0; index < ROLES; index++) await databases.system.hdb_role.put(benchRole(index, widened));
+			while (userChanges === before) await turn();
+			// drains the rechecks the role writes started, so none lands in a measured sample
+			await measure(() => _sweepNow(), { quietTurns: 1 });
+		};
+		await putRoles(true);
 		const samples = [];
 		for (let round = 0; round < ROUNDS; round++) samples.push(await measure(() => _sweepNow(), { quietTurns: 1 }));
 		report('sweep after widening', samples);
 		assert.strictEqual(_liveSubscriptionCount(), USERS * SUBSCRIPTIONS_PER_USER, 'widening revoked a subscription');
-		for (let index = 0; index < ROLES; index++) await databases.system.hdb_role.put(benchRole(index));
+		await putRoles(false);
 	});
 
 	it('one hdb_role write', async () => {
