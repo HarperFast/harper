@@ -71,7 +71,6 @@ const DEPRECATED_CONFIG = {
 let flatDefaultConfigObj;
 let flatConfigObj;
 let configGenerationCount = 0;
-/** Changes whenever the active configuration is replaced or updated: a cache keyed on it rereads only after a change. */
 export function configGeneration(): number {
 	return configGenerationCount;
 }

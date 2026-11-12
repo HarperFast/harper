@@ -167,7 +167,6 @@ export function canonicalShards(value: unknown): number[] | undefined {
 	return [...shards].sort((a, b) => a - b);
 }
 
-/** The spare list's own shape: unique shard IDs, sorted; an empty list is none. */
 export function canonicalSpareList(value: unknown): number[] | undefined {
 	if (value === undefined || value === null) return;
 	if (!Array.isArray(value) || value.length > 65536)
