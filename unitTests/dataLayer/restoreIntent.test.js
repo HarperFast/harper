@@ -34,6 +34,7 @@ const {
 	purgeBackupsOffline,
 	restoreBackup,
 	restoreBackupOffline,
+	validateRestoreBackup,
 } = require('#src/dataLayer/rocksdbBackup');
 const backupManifestModule = require('#js/dataLayer/backupManifest');
 const { readBackupManifest, writeBackupManifest } = backupManifestModule;
@@ -653,6 +654,10 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 				[{ retain_previous: false }, /'retain_previous' applies only with 'on_restart'/],
 				[{ target_database: `${fixture.name}_copy`, on_restart: true }, /'target_database'/],
 				[{ on_restart: 'yes' }, /on_restart/],
+				[{ resume: true, accept_unverified_blobs: true }, /'accept_unverified_blobs'.*on_restart=true/],
+				[{ resume: true, allow_engine_only: false }, /'allow_engine_only'.*on_restart=true/],
+				[{ cancel: true, accept_incompatible_backup: true }, /'cancel' takes no 'accept_incompatible_backup'/],
+				[{ cancel: true, immutable_source: true }, /'immutable_source'/],
 			]) {
 				await assert.rejects(
 					restoreBackup({ ...SU, database: fixture.name, ...options }),
@@ -668,6 +673,36 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 				);
 			}
 			assert.strictEqual(readRestoreReceipt(fixture.dir).kind, 'absent');
+		});
+
+		it('answers resume and cancel at submission as the job would, writing nothing for a database that does not exist', async function () {
+			const fixture = await seededDatabase();
+			const missing = `restore_intent_missing_${process.pid}`;
+			const refusal = (promise) =>
+				promise.then(
+					() => assert.fail('expected a refusal'),
+					(error) => ({ statusCode: error.statusCode, message: error.message })
+				);
+			for (const options of [{ resume: true }, { cancel: true }]) {
+				const atSubmission = await refusal(validateRestoreBackup({ ...SU, database: missing, ...options }));
+				assert.strictEqual(atSubmission.statusCode, 404, JSON.stringify(options));
+				assert.ok(atSubmission.message.includes(`'${missing}'`), atSubmission.message);
+				assert.deepStrictEqual(
+					await refusal(validateRestoreBackup({ ...SU, database: fixture.name, ...options })),
+					await refusal(restoreBackup({ ...SU, database: fixture.name, ...options })),
+					JSON.stringify(options)
+				);
+			}
+			await assert.rejects(
+				cancelRestartRestoreOffline({ database: missing, cancel: true }),
+				(error) => error.statusCode === 404,
+				'with Harper stopped too'
+			);
+			await assert.rejects(
+				cancelRestartRestoreOffline({ database: fixture.name }),
+				(error) => error.statusCode === 400 && /'cancel' must be true/.test(error.message)
+			);
+			assert.strictEqual(existsSync(restoreLockPath(resolveDatabasePath(missing))), false);
 		});
 	});
 
@@ -1625,10 +1660,13 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			await closeDatabase(fixture.name);
 			rewriteReceipt(fixture.dir, { state: 'committed', attempts: 1 }, { marker: true });
 
-			await assert.rejects(
-				restoreBackup({ ...SU, database: fixture.name, cancel: true }),
-				(error) => error.statusCode === 409 && /cannot be cancelled/.test(error.message)
-			);
+			for (const step of [validateRestoreBackup, restoreBackup]) {
+				await assert.rejects(
+					step({ ...SU, database: fixture.name, cancel: true }),
+					(error) => error.statusCode === 409 && /cannot be cancelled/.test(error.message),
+					step.name
+				);
+			}
 			assert.strictEqual(receiptOf(fixture.dir).state, 'committed');
 
 			await boot(fixture.name);

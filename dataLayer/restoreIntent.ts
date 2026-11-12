@@ -37,6 +37,7 @@ import {
 	removeUnreadableRestoreReceipt,
 	writeRestoreReceipt,
 	type RestoreReceipt,
+	type RestoreReceiptRead,
 } from './restoreReceipt.ts';
 import { runRestoreChild } from './restoreChildRunner.ts';
 import {
@@ -361,6 +362,44 @@ export async function requestRestartRestore(request: RestartRestoreRequest): Pro
 	);
 }
 
+function resumableReceipt(databaseName: string, read: RestoreReceiptRead): RestoreReceipt {
+	if (
+		read.kind !== 'valid' ||
+		read.receipt.route !== 'on_restart' ||
+		read.receipt.state === 'committed' ||
+		read.receipt.record_lost
+	) {
+		throw new ClientError(`Database '${databaseName}' has no pending restart restore to resume`, 404);
+	}
+	return read.receipt;
+}
+
+/** What cancel refuses. A record that cannot be read is cancellable: removing it is what cancel is for. */
+function assertCancellable(databaseName: string, read: RestoreReceiptRead): void {
+	if (read.kind === 'absent') throw new ClientError(`Database '${databaseName}' has no restore to cancel`, 404);
+	if (read.kind === 'valid' && read.receipt.state === 'committed') {
+		throw new ClientError(
+			`The restore of '${databaseName}' has already been applied and is being finished; it cannot be cancelled`,
+			409
+		);
+	}
+}
+
+/**
+ * At submission, the refusal the job would give, read without the lock so that a name with no database
+ * gets an answer and no lock file; the job checks again under the lock, since the record can change in
+ * between.
+ */
+export function assertRestartRestoreActionable(
+	databaseName: string,
+	databaseDir: string,
+	action: 'resume' | 'cancel'
+): void {
+	const read = readRestoreReceipt(databaseDir);
+	if (action === 'resume') resumableReceipt(databaseName, read);
+	else assertCancellable(databaseName, read);
+}
+
 export async function resumeRestartRestore(
 	databaseName: string,
 	databaseDir: string,
@@ -370,16 +409,7 @@ export async function resumeRestartRestore(
 	let receipt: RestoreReceipt;
 	let previous: RestoreReceipt;
 	try {
-		const read = readRestoreReceipt(databaseDir);
-		if (
-			read.kind !== 'valid' ||
-			read.receipt.route !== 'on_restart' ||
-			read.receipt.state === 'committed' ||
-			read.receipt.record_lost
-		) {
-			throw new ClientError(`Database '${databaseName}' has no pending restart restore to resume`, 404);
-		}
-		previous = read.receipt;
+		previous = resumableReceipt(databaseName, readRestoreReceipt(databaseDir));
 		receipt = writeRestoreReceipt(lock, {
 			...previous,
 			state: previous.state === 'terminal' ? (previous.pre_terminal_state ?? 'pending') : previous.state,
@@ -409,16 +439,8 @@ export async function cancelRestartRestore(
 	let stillBlocked: boolean;
 	try {
 		const read = readRestoreReceipt(databaseDir);
-		if (read.kind === 'absent') throw new ClientError(`Database '${databaseName}' has no restore to cancel`, 404);
-		if (read.kind === 'unreadable') {
-			cancelUnreadableRestore(lock, databaseName);
-		} else {
-			if (read.receipt.state === 'committed') {
-				throw new ClientError(
-					`The restore of '${databaseName}' has already been applied and is being finished; it cannot be cancelled`,
-					409
-				);
-			}
+		assertCancellable(databaseName, read);
+		if (read.kind === 'valid') {
 			cancelled = read.receipt;
 			if (restoreMarkerPresent(databaseDir)) {
 				// it began replacing the target, so the target stays blocked and its pins stay; the receipt stays
@@ -434,6 +456,8 @@ export async function cancelRestartRestore(
 				removeRestoreReceipt(lock, cancelled.operation_id);
 				releaseReceiptPins(cancelled);
 			}
+		} else {
+			cancelUnreadableRestore(lock, databaseName);
 		}
 		stillBlocked = restoreMarkerPresent(databaseDir);
 	} finally {

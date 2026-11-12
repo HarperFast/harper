@@ -631,7 +631,15 @@ export async function validateRestoreBackup(request: any) {
 	requireSuperUser(request, OPERATIONS_ENUM.RESTORE_BACKUP);
 	const { databaseName, targetDatabase, acceptIncompatible, resume, cancel } = readRestoreRequest(request);
 	// they act on the restore record the target already has, which needs no backup to resolve
-	if (resume || cancel) return;
+	if (resume || cancel) {
+		const { assertRestartRestoreActionable } = await import('./restoreIntent.ts');
+		assertRestartRestoreActionable(
+			databaseName,
+			restoreTargetDir(databaseName, targetDatabase),
+			resume ? 'resume' : 'cancel'
+		);
+		return;
+	}
 	const requestedBackupId = request.backup_id === undefined ? undefined : requireBackupId(request.backup_id);
 	try {
 		await resolveCompleteBackup(
@@ -649,6 +657,9 @@ export async function validateRestoreBackup(request: any) {
 		requireRocksRootStore(databaseName, OPERATIONS_ENUM.RESTORE_BACKUP);
 	}
 }
+
+// fixed in the receipt when a restart restore is requested
+const RESTART_RESTORE_OPTIONS = ['allow_engine_only', 'accept_incompatible_backup', 'accept_unverified_blobs'];
 
 /** The options restore_backup accepts, validated the same way at submission, in the job and offline. */
 function readRestoreRequest(request: any, { offline = false } = {}) {
@@ -670,7 +681,16 @@ function readRestoreRequest(request: any, { offline = false } = {}) {
 	if (resume && cancel) refuse(`'resume' and 'cancel' cannot be combined`);
 	if ((resume || cancel) && (request.backup_id !== undefined || onRestart))
 		refuse(`'resume' and 'cancel' act on the pending restart restore; omit 'backup_id' and 'on_restart'`);
-	if (immutableSource && (onRestart || resume))
+	const fixedAtRequest = resume || cancel ? RESTART_RESTORE_OPTIONS.filter((name) => request[name] !== undefined) : [];
+	if (fixedAtRequest.length > 0) {
+		const named = fixedAtRequest.map((name) => `'${name}'`).join(', ');
+		refuse(
+			cancel
+				? `'cancel' takes no ${named}; omit it`
+				: `'resume' runs with the options the restart restore was requested with, so it takes no ${named}; to change one, request the restore again with the same backup_id, on_restart=true and the option, which replaces the pending one`
+		);
+	}
+	if (immutableSource && (onRestart || resume || cancel))
 		refuse(`'immutable_source' cannot be combined with a restart restore, whose pins protect its source`);
 	if (request.retain_previous !== undefined && !onRestart) refuse(`'retain_previous' applies only with 'on_restart'`);
 	if (request.target_database !== undefined && (onRestart || resume || cancel))
@@ -692,6 +712,19 @@ function readRestoreRequest(request: any, { offline = false } = {}) {
 		cancel,
 		retainPrevious,
 	};
+}
+
+/**
+ * A loaded database *with tables* knows its real directory via its root store (which can differ from
+ * the computed default, e.g. legacy layouts); fall back to the computed path when the database is
+ * unloaded (recovering an interrupted restore) or empty (no table to resolve a root store from —
+ * Object.keys skips the DEFINED_TABLES symbol).
+ */
+function restoreTargetDir(databaseName: string, targetDatabase: string): string {
+	const loaded = targetDatabase === databaseName ? getDatabases()[databaseName] : undefined;
+	return loaded != null && Object.keys(loaded).length > 0
+		? requireRocksRootStore(databaseName, OPERATIONS_ENUM.RESTORE_BACKUP).path
+		: resolveDatabasePath(targetDatabase);
 }
 
 /** The id of the job this thread is running, or undefined outside a job worker. */
@@ -721,15 +754,7 @@ export async function restoreBackup(request: any) {
 	} = readRestoreRequest(request);
 	const inPlace = targetDatabase === databaseName;
 	const requestedBackupId = request.backup_id === undefined ? undefined : requireBackupId(request.backup_id);
-	// a loaded database *with tables* knows its real directory via its root store (which can differ
-	// from the computed default, e.g. legacy layouts); fall back to the computed path when the
-	// database is unloaded (recovering an interrupted restore) or empty (no table to resolve a root
-	// store from — Object.keys skips the DEFINED_TABLES symbol)
-	const loaded = inPlace ? getDatabases()[databaseName] : undefined;
-	const databaseDir =
-		loaded != null && Object.keys(loaded).length > 0
-			? requireRocksRootStore(databaseName, OPERATIONS_ENUM.RESTORE_BACKUP).path
-			: resolveDatabasePath(targetDatabase);
+	const databaseDir = restoreTargetDir(databaseName, targetDatabase);
 	if (cancel || resume || onRestart) {
 		const intent = await import('./restoreIntent.ts');
 		if (cancel) return intent.cancelRestartRestore(databaseName, databaseDir);
@@ -932,7 +957,7 @@ export function beginRestoreForDatabase(
 	try {
 		return claimRestore(databaseDir, beforePublishMarker, backupDir);
 	} catch (error) {
-		// the admission callback's refusals are already client-facing, and say what to do instead
+		// the admission callback's refusals are already client-facing
 		if (error.statusCode === 409 && !(error instanceof ClientError)) throw restoreClaimConflict(databaseName, error);
 		throw error;
 	}
@@ -1424,9 +1449,12 @@ export async function restoreBackupOffline(
  * Harper would run the restore before an online cancel could reach it.
  */
 export async function cancelRestartRestoreOffline(request: any) {
-	const { databaseName } = readRestoreRequest(request, { offline: true });
-	const { cancelRestartRestore } = await import('./restoreIntent.ts');
-	return cancelRestartRestore(databaseName, resolveDatabasePath(databaseName), { offline: true });
+	const { databaseName, cancel } = readRestoreRequest(request, { offline: true });
+	if (!cancel) throw new ClientError(`'cancel' must be true`);
+	const databaseDir = resolveDatabasePath(databaseName);
+	const { assertRestartRestoreActionable, cancelRestartRestore } = await import('./restoreIntent.ts');
+	assertRestartRestoreActionable(databaseName, databaseDir, 'cancel');
+	return cancelRestartRestore(databaseName, databaseDir, { offline: true });
 }
 
 /** Where each restore path calls this, and why, is in dataLayer/DESIGN.md (harper#2965). */
