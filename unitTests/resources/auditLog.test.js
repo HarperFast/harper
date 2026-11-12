@@ -33,6 +33,7 @@ const { AUDIT_STORE_NAME } = require('#src/utility/lmdb/terms');
 const harperLogger = require('#js/utility/logging/harper_logger');
 const { logger } = require('#src/utility/logging/logger');
 const { ResourceBridge } = require('#src/dataLayer/harperBridge/ResourceBridge');
+const { getRecordAtTime } = require('#src/resources/crdt');
 require('#src/server/serverHelpers/serverUtilities');
 describe('Audit log', () => {
 	let AuditedTable;
@@ -2789,5 +2790,288 @@ describe('history after record eviction (issue #3164)', () => {
 			EvictedHistoryTable.primaryStore.getEntry = originalGetEntry;
 			logger.error = originalError;
 		}
+	});
+
+	describe('per-record history and time travel across eviction (issue #2730)', () => {
+		let HistoryTable;
+		let historyTableName;
+		beforeEach(() => {
+			historyTableName = `${tableName}_ttl`;
+			// a TTL makes this a table that evicts; long enough that nothing expires during a test
+			HistoryTable = table({
+				database: schema,
+				table: historyTableName,
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }, { name: 'count' }],
+				expiration: 3600,
+			});
+		});
+		const historyOf = async (Table, id) =>
+			(await Table.getHistoryOfRecord(id)).map((entry) => ({ type: entry.type, value: entry.value }));
+		const recordAt = (id, timestamp) =>
+			getRecordAtTime(
+				HistoryTable.primaryStore.getEntry(id),
+				timestamp,
+				HistoryTable.primaryStore,
+				HistoryTable.tableId,
+				id
+			);
+		const headOf = (Table, id) => Table.primaryStore.getEntry(id).localTime;
+		async function evict(Table, id) {
+			const entry = Table.primaryStore.getEntry(id);
+			await Table.evict(id, entry.value, entry.version);
+			assert.strictEqual(Table.primaryStore.getEntry(id), undefined, 'eviction should remove the entry');
+			return entry;
+		}
+		// longer than getHistoryOfRecord's 100ms audit window, so no window holds both sides of the gap
+		async function pastAuditWindow(since) {
+			await delay(150);
+			assert.ok(Date.now() - since > 100);
+		}
+		// retention cleanup also ranges from key 1, always with snapshot: false
+		function countLogScans(Table, isScan = (options) => options.start === 1 && options.snapshot !== false) {
+			const auditStore = Table.primaryStore.rootStore.auditStore;
+			const getRange = auditStore.getRange;
+			const scans = { count: 0 };
+			auditStore.getRange = function (options) {
+				if (isScan(options)) scans.count++;
+				return getRange.call(this, options);
+			};
+			scans.restore = () => (auditStore.getRange = getRange);
+			return scans;
+		}
+		const initial = { id: 'rec-1', name: 'initial', count: 1 };
+		const patched = { id: 'rec-1', name: 'patched', count: 1 };
+		const refetched = { id: 'rec-1', name: 'refetched', count: 7 };
+
+		it('returns the audited history of an evicted record', async () => {
+			await HistoryTable.put(initial);
+			await HistoryTable.patch('rec-1', { name: 'patched' });
+			await HistoryTable.put({ id: 'rec-2', name: 'other', count: 2 });
+			await evict(HistoryTable, 'rec-1');
+
+			assert.deepStrictEqual(await historyOf(HistoryTable, 'rec-1'), [
+				{ type: 'put', value: initial },
+				{ type: 'patch', value: patched },
+			]);
+			const byId = await new ResourceBridge().readAuditLog({
+				schema,
+				table: historyTableName,
+				search_type: 'hash_value',
+				search_values: ['rec-1', 'never-written'],
+			});
+			assert.deepStrictEqual(
+				byId['rec-1'].map((entry) => entry.records),
+				[[initial], [patched]]
+			);
+			assert.deepStrictEqual(byId['never-written'], []);
+		});
+
+		it("returns an evicted record's history on a table that cannot evict", async () => {
+			await EvictedHistoryTable.put(initial);
+			await EvictedHistoryTable.patch('rec-1', { name: 'patched' });
+			await evict(EvictedHistoryTable, 'rec-1');
+			assert.deepStrictEqual(await historyOf(EvictedHistoryTable, 'rec-1'), [
+				{ type: 'put', value: initial },
+				{ type: 'patch', value: patched },
+			]);
+		});
+
+		it('spans evictions and re-inserts that are further apart than the walk window', async () => {
+			await HistoryTable.put(initial);
+			await HistoryTable.patch('rec-1', { name: 'patched' });
+			const firstHead = (await evict(HistoryTable, 'rec-1')).localTime;
+			await pastAuditWindow(firstHead);
+			await HistoryTable.put(refetched);
+			await HistoryTable.patch('rec-1', { count: 8 });
+			const secondHead = (await evict(HistoryTable, 'rec-1')).localTime;
+			await pastAuditWindow(secondHead);
+			await HistoryTable.put({ id: 'rec-1', name: 'third', count: 9 });
+			assert.ok(headOf(HistoryTable, 'rec-1') - secondHead > 100);
+
+			assert.deepStrictEqual(await historyOf(HistoryTable, 'rec-1'), [
+				{ type: 'put', value: initial },
+				{ type: 'patch', value: patched },
+				{ type: 'put', value: refetched },
+				{ type: 'patch', value: { ...refetched, count: 8 } },
+				{ type: 'put', value: { id: 'rec-1', name: 'third', count: 9 } },
+			]);
+		});
+
+		it('spans a read-path eviction of a per-record expiration on a table without a TTL', async () => {
+			await EvictedHistoryTable.put('rec-1', initial, { expiresAt: Date.now() + 20 });
+			const firstHead = headOf(EvictedHistoryTable, 'rec-1');
+			await delay(40);
+			assert.strictEqual(await EvictedHistoryTable.get('rec-1'), null, 'an expired record reads as absent');
+			await waitFor(() => EvictedHistoryTable.primaryStore.getEntry('rec-1') === undefined);
+			await pastAuditWindow(firstHead);
+			await EvictedHistoryTable.put('rec-1', refetched, { expiresAt: Date.now() + 3_600_000 });
+
+			assert.deepStrictEqual(await historyOf(EvictedHistoryTable, 'rec-1'), [
+				{ type: 'put', value: initial },
+				{ type: 'put', value: refetched },
+			]);
+		});
+
+		it('answers a record that cannot have been evicted without scanning the log', async () => {
+			await EvictedHistoryTable.put(initial);
+			await EvictedHistoryTable.patch('rec-1', { name: 'patched' });
+			const scans = countLogScans(EvictedHistoryTable);
+			try {
+				assert.deepStrictEqual(await historyOf(EvictedHistoryTable, 'rec-1'), [
+					{ type: 'put', value: initial },
+					{ type: 'patch', value: patched },
+				]);
+				assert.strictEqual(scans.count, 0);
+			} finally {
+				scans.restore();
+			}
+		});
+
+		it('reconstructs the state at a timestamp that is not an audit key', async () => {
+			await HistoryTable.put(initial);
+			const putTime = headOf(HistoryTable, 'rec-1');
+			await HistoryTable.patch('rec-1', { name: 'patched' });
+			const patchTime = (await evict(HistoryTable, 'rec-1')).localTime;
+			await pastAuditWindow(patchTime);
+			const between = patchTime + 50;
+
+			const scans = countLogScans(HistoryTable, (options) => !options.exactStart && options.snapshot !== false);
+			try {
+				assert.deepStrictEqual(recordAt('rec-1', between), patched, 'evicted: no current entry to walk back from');
+				assert(scans.count <= 3, 'at most two search windows plus the retained-boundary probe');
+			} finally {
+				scans.restore();
+			}
+			assert.strictEqual(recordAt('rec-1', putTime - 1), null, 'the record did not exist yet');
+
+			await HistoryTable.put(refetched);
+			const reinsertTime = headOf(HistoryTable, 'rec-1');
+			assert.ok(reinsertTime > between);
+			await HistoryTable.patch('rec-1', { count: 8 });
+			assert.deepStrictEqual(recordAt('rec-1', between), patched, 'the walk back ends at the unlinked re-insert');
+			assert.deepStrictEqual(recordAt('rec-1', (putTime + patchTime) / 2), initial);
+			assert.strictEqual(recordAt('rec-1', putTime - 1), null);
+			assert.deepStrictEqual(recordAt('rec-1', reinsertTime), refetched);
+		});
+
+		for (const scenario of [
+			'put-patch',
+			'put-two-patches',
+			'patch-frame',
+			'message-first',
+			'message-middle',
+			'later-link',
+			'later-put',
+		]) {
+			it(`reconstructs ${scenario} history through a complete transaction frame`, async function () {
+				if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
+				if (scenario === 'patch-frame' || scenario === 'message-first') await HistoryTable.put(initial);
+				await transaction(async () => {
+					if (scenario !== 'patch-frame' && scenario !== 'message-first') await HistoryTable.put(initial);
+					if (scenario === 'message-first' || scenario === 'message-middle')
+						await HistoryTable.publish('rec-1', { notice: true });
+					await HistoryTable.patch('rec-1', { name: 'patched' });
+					if (scenario === 'put-two-patches' || scenario === 'patch-frame')
+						await HistoryTable.patch('rec-1', { count: 7 });
+				});
+				const frameTime = headOf(HistoryTable, 'rec-1');
+				const entries = [...HistoryTable.auditStore.getRange({ start: frameTime, exactStart: true })].filter(
+					(entry) => entry.tableId === HistoryTable.tableId && entry.recordId === 'rec-1'
+				);
+				assert.strictEqual(entries.length, scenario === 'put-two-patches' || scenario === 'message-middle' ? 3 : 2);
+				assert.ok(entries.every((entry) => entry.txnLogKey === frameTime));
+				assert.strictEqual(entries.at(-1).previousVersion, frameTime);
+				const expected = { ...patched, count: scenario === 'put-two-patches' || scenario === 'patch-frame' ? 7 : 1 };
+				if (scenario === 'later-link') await HistoryTable.patch('rec-1', { count: 8 });
+				if (scenario === 'later-put') await HistoryTable.put(refetched);
+				for (const cutoff of [frameTime, frameTime + 0.001]) {
+					for (const origin of [undefined, 0])
+						assert.deepStrictEqual(
+							getRecordAtTime(
+								HistoryTable.primaryStore.getEntry('rec-1'),
+								cutoff,
+								HistoryTable.primaryStore,
+								HistoryTable.tableId,
+								'rec-1',
+								origin
+							),
+							expected
+						);
+				}
+				await evict(HistoryTable, 'rec-1');
+				for (const cutoff of [frameTime, frameTime + 0.001])
+					for (const origin of [undefined, 0])
+						assert.deepStrictEqual(
+							getRecordAtTime(undefined, cutoff, HistoryTable.primaryStore, HistoryTable.tableId, 'rec-1', origin),
+							expected
+						);
+				const history = await HistoryTable.getHistoryOfRecord('rec-1');
+				const framePatches = history.filter((entry) => entry.localTime === frameTime && entry.type === 'patch');
+				assert.ok(framePatches.length > 0);
+				for (const entry of framePatches) assert.deepStrictEqual(entry.value, expected);
+				if (scenario === 'later-link') assert.deepStrictEqual(history.at(-1).value, { ...expected, count: 8 });
+			});
+		}
+
+		for (const deletedLast of [false, true]) {
+			it(`uses the final state of a delete frame (deleted last: ${deletedLast})`, async function () {
+				if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
+				await HistoryTable.put(initial);
+				await transaction(async () => {
+					if (!deletedLast) await HistoryTable.delete('rec-1');
+					await HistoryTable.put(refetched);
+					if (deletedLast) await HistoryTable.delete('rec-1');
+				});
+				const entries = [...HistoryTable.auditStore.getRange({ start: 1 })].filter(
+					(entry) => entry.tableId === HistoryTable.tableId && entry.recordId === 'rec-1'
+				);
+				const frameTime = entries.at(-1).txnLogKey;
+				assert.deepStrictEqual(
+					entries.filter((entry) => entry.txnLogKey === frameTime).map((entry) => entry.type),
+					deletedLast ? ['put', 'delete'] : ['delete', 'put']
+				);
+				await HistoryTable.patch('rec-1', { count: 8 });
+				assert.ok(headOf(HistoryTable, 'rec-1') > frameTime);
+				const expected = deletedLast ? null : refetched;
+				assert.deepStrictEqual(recordAt('rec-1', frameTime), expected);
+				assert.deepStrictEqual(recordAt('rec-1', frameTime + 0.001), expected);
+				await evict(HistoryTable, 'rec-1');
+				assert.deepStrictEqual(recordAt('rec-1', frameTime), expected);
+			});
+		}
+
+		it('reverses every patch in a newer RocksDB frame', async function () {
+			if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
+			await HistoryTable.put(initial);
+			const beforeFrame = headOf(HistoryTable, 'rec-1');
+			await transaction(async () => {
+				await HistoryTable.patch('rec-1', { name: 'patched' });
+				await HistoryTable.patch('rec-1', { count: 7 });
+			});
+			const afterFrame = headOf(HistoryTable, 'rec-1');
+			assert.ok(afterFrame > beforeFrame);
+			const entries = [...HistoryTable.auditStore.getRange({ start: afterFrame, exactStart: true })].filter(
+				(entry) => entry.tableId === HistoryTable.tableId && entry.recordId === 'rec-1'
+			);
+			assert.strictEqual(entries.length, 2);
+			assert.ok(entries.every((entry) => entry.txnLogKey === afterFrame));
+			assert.deepStrictEqual(recordAt('rec-1', beforeFrame), initial);
+			assert.deepStrictEqual(recordAt('rec-1', (beforeFrame + afterFrame) / 2), initial);
+		});
+
+		it('reads an exact audit key without scanning the log', async () => {
+			await HistoryTable.put(initial);
+			const putTime = headOf(HistoryTable, 'rec-1');
+			await HistoryTable.patch('rec-1', { name: 'patched' });
+			await evict(HistoryTable, 'rec-1');
+			// RocksDB serves the exact lookup itself through an exact-start range
+			const scans = countLogScans(HistoryTable, (options) => !options.exactStart && options.snapshot !== false);
+			try {
+				assert.deepStrictEqual(recordAt('rec-1', putTime), initial);
+				assert.strictEqual(scans.count, 0);
+			} finally {
+				scans.restore();
+			}
+		});
 	});
 });
