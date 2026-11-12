@@ -35,10 +35,11 @@ export const WORD_INITIAL_CEILING = 4;
 export const WORD_SLOT_LIMIT = 5;
 // The highest issuance ceiling this process has flushed for this database: a key at or below it needs no flush.
 export const WORD_DURABLE_CEILING = 6;
-// Low bit: no new local write reservation is admitted (a node being removed from its cluster). The rest counts
-// changes, so a restore from a record read before a change cannot undo it (`restoreLocalWriteFence`).
+// Used only through its low 32 bits (`FENCE_INDEX`, little-endian), so every access is the same 32-bit range. Low
+// bit: no new local write reservation is admitted (a node being removed from its cluster). The rest counts changes,
+// so a restore from a record read before a change cannot undo it (`restoreLocalWriteFence`).
 export const WORD_WRITE_FENCE = 7;
-const FENCE_BIT_INDEX = WORD_WRITE_FENCE * 2;
+const FENCE_INDEX = WORD_WRITE_FENCE * 2;
 export const HEADER_WORDS = 8;
 const THREAD_WORDS_OFFSET = HEADER_WORDS;
 const BOUND_WORDS_OFFSET = HEADER_WORDS + SLOTS;
@@ -110,7 +111,6 @@ type Reservation = {
  */
 class ThreadRegistry {
 	readonly words: BigInt64Array;
-	// the low half of WORD_WRITE_FENCE (little-endian), read as a small integer: no BigInt per reservation
 	readonly fenceWords: Int32Array;
 	readonly rootStore: RocksDatabase;
 	private slot = -1;
@@ -406,19 +406,17 @@ export function reserveLocalWriteKey(rootStore: RocksDatabase, handle: RocksTran
 	if (existing) return existing.logKey ?? existing.key;
 	if (explicit !== undefined) assertValidTimestamp(explicit);
 	const registry = registryFor(rootStore);
-	if (Atomics.load(registry.fenceWords, FENCE_BIT_INDEX) & 1) throw new LocalWritesFencedError(rootStore);
+	if (Atomics.load(registry.fenceWords, FENCE_INDEX) & 1) throw new LocalWritesFencedError(rootStore);
 	const key = registry.reserve(handle, explicit);
-	if (Atomics.load(registry.fenceWords, FENCE_BIT_INDEX) & 1) {
+	if (Atomics.load(registry.fenceWords, FENCE_INDEX) & 1) {
 		releaseLocalKey(handle);
 		throw new LocalWritesFencedError(rootStore);
 	}
 	return key;
 }
 
-function changeWriteFence(words: BigInt64Array, from: bigint, fenced: boolean): boolean {
-	return (
-		Atomics.compareExchange(words, WORD_WRITE_FENCE, from, (((from >> 1n) + 1n) << 1n) | (fenced ? 1n : 0n)) === from
-	);
+function changeWriteFence(words: Int32Array, from: number, fenced: boolean): boolean {
+	return Atomics.compareExchange(words, FENCE_INDEX, from, (((from >>> 1) + 1) << 1) | (fenced ? 1 : 0) | 0) === from;
 }
 
 /**
@@ -430,21 +428,21 @@ export function setLocalWriteFence(rootStore: RocksDatabase, fenced: boolean): n
 	// LMDB has no `local` reservations to refuse: a fence there would refuse nothing
 	if (!originFloorsDurable(rootStore))
 		throw new ServerError('A write fence needs a RocksDB database with a durable origin-closed floor', 400);
-	const words = registryFor(rootStore).words;
-	while (!changeWriteFence(words, Atomics.load(words, WORD_WRITE_FENCE), fenced));
+	const words = registryFor(rootStore).fenceWords;
+	while (!changeWriteFence(words, Atomics.load(words, FENCE_INDEX), fenced));
 	return timestampAbove(Math.max(rootStore.getMonotonicTimestamp(), localIssuedAheadThrough(rootStore)));
 }
 
 /** Set the fence at open from a persisted record, unless the fence changed after `fenced` started reading it. */
 export function restoreLocalWriteFence(rootStore: RocksDatabase, fenced: () => boolean): void {
-	const words = registryFor(rootStore).words;
-	const before = Atomics.load(words, WORD_WRITE_FENCE);
-	if (!(before & 1n) && fenced()) changeWriteFence(words, before, true);
+	const words = registryFor(rootStore).fenceWords;
+	const before = Atomics.load(words, FENCE_INDEX);
+	if (!(before & 1) && fenced()) changeWriteFence(words, before, true);
 }
 
 export function localWritesFenced(rootStore: RocksDatabase): boolean {
 	if (typeof rootStore?.getUserSharedBuffer !== 'function') return false;
-	return (Atomics.load(registryFor(rootStore).words, WORD_WRITE_FENCE) & 1n) !== 0n;
+	return (Atomics.load(registryFor(rootStore).fenceWords, FENCE_INDEX) & 1) !== 0;
 }
 
 /**

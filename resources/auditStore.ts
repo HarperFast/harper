@@ -1693,13 +1693,11 @@ export function persistOriginClosedFloor(auditStore: any, floor: number): void {
 export interface LocalWriteFence {
 	epoch: string;
 	target: number;
-	state: 'fenced' | 'removing';
+	// 'unreadable': a record that could not be parsed; its epoch and target are not usable
+	state: 'fenced' | 'removing' | 'unreadable';
 }
 
-/**
- * An unreadable record still fences (a node that refuses writes until cancelled is better than a lost write), and
- * reads as `target: 0` with no epoch: a caller fixes a new target rather than using it.
- */
+/** An unreadable record still fences: a node that refuses writes until cancelled is better than a lost write. */
 export function readLocalWriteFence(auditStore: any): LocalWriteFence | undefined {
 	const stored = auditStore.getBinary?.(LOCAL_WRITE_FENCE_KEY);
 	if (!stored) return;
@@ -1709,7 +1707,7 @@ export function readLocalWriteFence(auditStore: any): LocalWriteFence | undefine
 		if (typeof fence?.epoch === 'string' && isValidFloor(fence.target))
 			return { epoch: fence.epoch, target: fence.target, state: fence.state === 'removing' ? 'removing' : 'fenced' };
 	} catch {}
-	return { epoch: '', target: 0, state: 'fenced' };
+	return { epoch: '', target: 0, state: 'unreadable' };
 }
 
 /**
