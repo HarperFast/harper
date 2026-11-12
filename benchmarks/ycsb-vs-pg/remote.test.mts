@@ -626,6 +626,27 @@ test('the full matrix runs every workload once per point, and zones stay in one 
 		/one region/
 	);
 	await rejects(gcpScript('run-matrix.sh', ['--resume', '--set=2x'], { YCSB_GCP_PROJECT: 'p' }), /--run-id/);
+	// What a set's VMs are created with, not only what --plan prints: config.sh's own defaults must not win.
+	const created = async (set: string, env: Record<string, string> = {}) => {
+		const { stdout } = await gcpScript('run-matrix.sh', [`--set=${set}`, '--dry-run', '--commit=abc'], {
+			YCSB_GCP_PROJECT: 'p',
+			YCSB_BENCH_IP: '203.0.113.7',
+			...env,
+		});
+		const creates = stdout.split('\n').filter((l) => l.includes(' instances create '));
+		strictEqual(creates.length, 3, set);
+		const generator = creates.find((c) => c.includes('-generator '))!;
+		return {
+			generator: /--machine-type=(\S+)/.exec(generator)![1],
+			maxRun: [...new Set(creates.map((c) => /--max-run-duration=(\S+)/.exec(c)![1]))].join(','),
+		};
+	};
+	deepStrictEqual(await created('warm'), { generator: 'c4-standard-32', maxRun: '10h' });
+	deepStrictEqual(await created('8x-chain'), { generator: 'c4-standard-16', maxRun: '16h' });
+	deepStrictEqual(await created('8x-chain', { YCSB_MAX_RUN_DURATION: '3h', YCSB_GEN_MACHINE_TYPE: 'c4-standard-48' }), {
+		generator: 'c4-standard-48',
+		maxRun: '3h',
+	});
 });
 
 test('remote mode defaults Harper threads and Fastify workers to --target-cpus, not to an empty cpu list', () => {

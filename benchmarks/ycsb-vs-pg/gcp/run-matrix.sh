@@ -17,15 +17,21 @@
 #
 #   YCSB_GCP_PROJECT=<project> gcp/run-matrix.sh --set=<set> [--run-id=<id>] [--resume] [--commit=<sha>]
 #   YCSB_GCP_PROJECT=<project> gcp/run-matrix.sh --all [--base=<id>] [--resume] [--commit=<sha>]
-#   gcp/run-matrix.sh --plan
+#   gcp/run-matrix.sh --plan                 the sets, with the shapes and deadlines they would get
+#   gcp/run-matrix.sh --set=<set> --dry-run  the gcloud commands provisioning that set would run
 #
 # --all starts every set (run id <base>-<set>) and waits for all of them; each set's output goes to
 # runs/<base>-<set>.log. --resume (with --run-id, or --base for --all) picks a set up where it stopped when its
 # orchestrator died without tearing down (a host crash, SIGKILL): it provisions nothing, and each phase that
 # already ended is read, not run again. A set whose VMs are gone is provisioned again, its old run directory
-# kept as <id>.attempt-<n>; a set that finished (runs/<id>/done) is skipped. Run the orchestrator where the
-# operator's session ending does not signal it (systemd-run --user): any exit it sees tears the run down.
+# kept as <id>.attempt-<n>; a set that finished (runs/<id>/done) is skipped. Without --resume an existing run
+# directory is refused, and a run whose orchestrator is alive (runs/<id>/orchestrator.pid) is never taken over.
+# Run the orchestrator where the operator's session ending does not signal it (systemd-run --user): any exit
+# it sees tears the run down.
 set -euo pipefail
+# The operator's own shape and deadline, if given, win over a set's: read before config.sh fills its defaults.
+GEN_OVERRIDE="${YCSB_GEN_MACHINE_TYPE:-}"
+MAX_RUN_OVERRIDE="${YCSB_MAX_RUN_DURATION:-}"
 . "$(dirname "$0")/config.sh"
 
 SETS="warm 2x 8x-cbf 8x-inspect 8x-chain"
@@ -43,10 +49,22 @@ set_workloads() {
 	8x-chain) echo chain-2,chain-4 ;;
 	esac
 }
-set_generator() { case "$1" in warm) echo c4-standard-32 ;; *) echo c4-standard-16 ;; esac; }
-set_max_run() { case "$1" in warm) echo 10h ;; *) echo 16h ;; esac; }
+set_generator() {
+	[ -z "$GEN_OVERRIDE" ] || {
+		echo "$GEN_OVERRIDE"
+		return
+	}
+	case "$1" in warm) echo c4-standard-32 ;; *) echo c4-standard-16 ;; esac
+}
+set_max_run() {
+	[ -z "$MAX_RUN_OVERRIDE" ] || {
+		echo "$MAX_RUN_OVERRIDE"
+		return
+	}
+	case "$1" in warm) echo 10h ;; *) echo 16h ;; esac
+}
 
-SET="" RUN_ID="" BASE="" ALL=0 RESUME=0 PLAN=0
+SET="" RUN_ID="" BASE="" ALL=0 RESUME=0 PLAN=0 DRY=0
 PASS=()
 for arg in "$@"; do
 	case "$arg" in
@@ -56,6 +74,7 @@ for arg in "$@"; do
 	--all) ALL=1 ;;
 	--resume) RESUME=1 ;;
 	--plan) PLAN=1 ;;
+	--dry-run) DRY=1 ;;
 	--commit=*) PASS+=("$arg") ;;
 	*)
 		echo "unknown argument $arg" >&2
@@ -143,6 +162,12 @@ if [ "$RESUME" = 1 ] && [ -z "$RUN_ID" ]; then
 	echo "--resume needs the --run-id of the set to resume" >&2
 	exit 2
 fi
+export YCSB_GEN_MACHINE_TYPE YCSB_MAX_RUN_DURATION
+YCSB_GEN_MACHINE_TYPE=$(set_generator "$SET")
+YCSB_MAX_RUN_DURATION=$(set_max_run "$SET")
+if [ "$DRY" = 1 ]; then
+	exec "$YCSB_GCP_DIR/provision.sh" --dry-run --run-id="${RUN_ID:-ycsb-dry-run-$SET}" --topology=a "${PASS[@]}"
+fi
 check_account
 [ -n "$RUN_ID" ] || RUN_ID="ycsb-$(date -u +%Y%m%d-%H%M)-$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n')-$SET"
 ycsb_check_run_id "$RUN_ID"
@@ -151,8 +176,6 @@ if [ -f "$RUN_DIR/done" ]; then
 	echo "$RUN_ID finished already ($RUN_DIR/done)"
 	exit 0
 fi
-export YCSB_GEN_MACHINE_TYPE="${YCSB_GEN_MACHINE_TYPE:-$(set_generator "$SET")}"
-export YCSB_MAX_RUN_DURATION="${YCSB_MAX_RUN_DURATION:-$(set_max_run "$SET")}"
 POINT=$(set_point "$SET")
 WORKLOADS=$(set_workloads "$SET")
 . "$YCSB_GCP_DIR/session.sh"
@@ -162,8 +185,25 @@ finish() {
 	exit $?
 }
 
+if [ -e "$RUN_DIR" ] && [ "$RESUME" != 1 ]; then
+	echo "$RUN_DIR exists: pass --resume to continue that run, or pick another run id" >&2
+	exit 2
+fi
+mkdir -p "$RUN_DIR"
+chmod 700 "$RUN_DIR"
+# One orchestrator per run: a second one would poll the same phases and tear the run down when it exits.
+claim_run() {
+	local pid
+	pid=$(cat "$RUN_DIR/orchestrator.pid" 2>/dev/null || true)
+	if [ -n "$pid" ] && [ "$pid" != $$ ] && kill -0 "$pid" 2>/dev/null; then
+		echo "$RUN_ID is driven by pid $pid; stop it first (or delete $RUN_DIR/orchestrator.pid if that pid is not an orchestrator)" >&2
+		exit 1
+	fi
+	echo $$ >"$RUN_DIR/orchestrator.pid"
+}
+claim_run
 provisioned=0
-if [ "$RESUME" = 1 ] && [ -s "$RUN_DIR/zone" ] && [ -s "$RUN_DIR/known_hosts" ]; then
+if [ -s "$RUN_DIR/zone" ] && [ -s "$RUN_DIR/known_hosts" ]; then
 	vms=$(gcloud compute instances list --project="$YCSB_GCP_PROJECT" --filter="labels.ycsb-run=$RUN_ID" --format='value(name)' | wc -l | tr -d ' ')
 	if [ "$vms" -eq 3 ]; then
 		echo "resuming $RUN_ID on its VMs in $(cat "$RUN_DIR/zone")"
@@ -174,10 +214,14 @@ if [ "$RESUME" = 1 ] && [ -s "$RUN_DIR/zone" ] && [ -s "$RUN_DIR/known_hosts" ];
 	fi
 fi
 if [ "$provisioned" = 0 ]; then
-	if [ -d "$RUN_DIR" ]; then
+	# Whatever an earlier attempt left (results, logs, keys) is kept beside the new attempt, not mixed into it.
+	if [ -n "$(ls -A "$RUN_DIR" | grep -vx orchestrator.pid || true)" ]; then
 		n=1
 		while [ -e "$RUN_DIR.attempt-$n" ]; do n=$((n + 1)); done
 		mv "$RUN_DIR" "$RUN_DIR.attempt-$n"
+		rm -f "$RUN_DIR.attempt-$n/orchestrator.pid"
+		mkdir -m 700 "$RUN_DIR"
+		claim_run
 		echo "kept the earlier attempt's directory as $RUN_DIR.attempt-$n"
 	fi
 	"$YCSB_GCP_DIR/provision.sh" --run-id="$RUN_ID" --topology=a "${PASS[@]}"
