@@ -304,7 +304,7 @@ import {
 	remainingAgainstRecord,
 	readAuditFrame,
 } from './crdt.ts';
-import { HistoryMemo, HistoryReader } from './historyReader.ts';
+import { CARRY_SCAN_LIMIT, HistoryMemo, HistoryReader, ReplayReader, detachAuditEntry } from './historyReader.ts';
 import { appendHeader } from '../server/serverHelpers/Headers.ts';
 import fs from 'node:fs';
 import {
@@ -10388,10 +10388,15 @@ export function makeTable(options): TableResourceClass {
 			// in subscription.queue. Without this, the IIFE can fill the queue past
 			// EVENT_HIGH_WATER_MARK and hit waitForDrain before the consumer's listener exists.
 			if (request.listener) subscription!.on('data', request.listener);
-			let replayMemo =
+			let replayReader =
 				includeSuperseded && getFullRecord
-					? new HistoryMemo(primaryStore, tableId, { maxBytes: 128 * 1024, maxEntries: 256 })
+					? new ReplayReader(primaryStore, tableId, replayCanCarry, { maxBytes: 128 * 1024, maxEntries: 256 })
 					: undefined;
+			let replayMemo: HistoryMemo | undefined;
+			// the frame cache for history computed newest-first, where nothing can carry
+			const newestFirstMemo = () =>
+				(replayMemo ??=
+					replayReader && new HistoryMemo(primaryStore, tableId, { maxBytes: 128 * 1024, maxEntries: 256 }));
 			const result = (async () => {
 				const isCollection = request.isCollection ?? thisId == null;
 				if (isCollection) {
@@ -10486,7 +10491,7 @@ export function makeTable(options): TableResourceClass {
 							if (!inScope(id)) continue;
 							// a lagging origin's write can be merged into another origin's newer one already delivered below
 							// that origin's boundary, so it is the only delivery of the merged state, as live
-							const event = eventFromAudit(id, auditRecord, auditRecord.txnLogKey, undefined, true, replayMemo);
+							const event = eventFromAudit(id, auditRecord, auditRecord.txnLogKey, undefined, true, replayReader);
 							if (!event) continue;
 							event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
 							if (!send(event)) return;
@@ -10602,7 +10607,7 @@ export function makeTable(options): TableResourceClass {
 								if (resnapshots) reloadPending = true;
 								else if (thisId == null || isReload || isDescendantId(thisId, id)) {
 									// as live delivery converts it: a live entry dropped during the replay is delivered only here
-									const event = eventFromAudit(id, auditRecord, auditRecord.txnLogKey, undefined, true, replayMemo);
+									const event = eventFromAudit(id, auditRecord, auditRecord.txnLogKey, undefined, true, replayReader);
 									if (event) {
 										if (reportingProgress) event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
 										if (!send(event)) return;
@@ -10693,7 +10698,7 @@ export function makeTable(options): TableResourceClass {
 										auditRecord.txnLogKey,
 										undefined,
 										undefined,
-										replayMemo
+										newestFirstMemo()
 									);
 									if (!historyEntry) continue;
 									// Filter rows before they consume a previousCount slot.
@@ -10803,6 +10808,9 @@ export function makeTable(options): TableResourceClass {
 						let inspected = 0;
 						let missingVersion = false;
 						let nextTime = localTime;
+						// [entry, key, nodeId] newest-first: without a count or filter to evaluate on the way, values are
+						// computed after the walk, oldest-first, so each patch can carry the one before it
+						const walked: any[] | undefined = replayReader && !count && !allowsEvent ? [] : undefined;
 						do {
 							if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
 								recordsSinceYield = 0;
@@ -10813,13 +10821,23 @@ export function makeTable(options): TableResourceClass {
 							const auditRecord = auditStore.getSync(nextTime, tableId, thisId, nodeId, true);
 							if (auditRecord && !(checkResume && auditRecord.type === undefined)) {
 								if (startTime < nextTime) {
-									const event = eventFromAudit(thisId, auditRecord, nextTime, undefined, undefined, replayMemo);
-									if (event && reportingProgress) event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
-									if (event && (!allowsEvent || allowsEvent(event))) {
-										request.omitCurrent = true;
-										history.push(event);
-										if (count) count--;
-									} else if (!isActive()) return;
+									if (walked) walked.push(detachAuditEntry(auditRecord), nextTime, nodeId);
+									else {
+										const event = eventFromAudit(
+											thisId,
+											auditRecord,
+											nextTime,
+											undefined,
+											undefined,
+											newestFirstMemo()
+										);
+										if (event && reportingProgress) event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
+										if (event && (!allowsEvent || allowsEvent(event))) {
+											request.omitCurrent = true;
+											history.push(event);
+											if (count) count--;
+										} else if (!isActive()) return;
+									}
 								}
 								const previousHead = isRocksDB
 									? resolveAuditHead(
@@ -10845,6 +10863,41 @@ export function makeTable(options): TableResourceClass {
 							// a first version may be a record recreated after retention pruned its tombstone
 							if (!(nextTime > 0) && !checkResume()) return;
 						}
+						if (walked?.length) {
+							for (let i = walked.length - 3; i >= 0; i -= 3) {
+								if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
+									recordsSinceYield = 0;
+									await rest();
+									if (!isActive()) return;
+								}
+								const auditRecord = walked[i];
+								const event = eventFromAudit(thisId, auditRecord, walked[i + 1], undefined, undefined, replayReader);
+								if (event && reportingProgress) event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
+								walked[i] = event;
+							}
+							// The walk proved this history present, but the values were computed after it: a prune since then may
+							// have deleted what they read. A prune raises the floor before it removes anything below it.
+							const floor = getAuditFloor(auditStore);
+							let retained = true;
+							for (let i = walked.length - 3; i >= 0 && walked[i + 1] < floor; i -= 3) {
+								if (!auditStore.getSync(walked[i + 1], tableId, thisId, walked[i + 2], true)) {
+									retained = false;
+									break;
+								}
+							}
+							if (!retained) {
+								if (checkResume) {
+									checkResume(new ResumeHistoryUnavailableError());
+									return;
+								}
+							} else {
+								for (let i = 0; i < walked.length; i += 3) {
+									if (!walked[i]) continue;
+									request.omitCurrent = true;
+									history.push(walked[i]);
+								}
+							}
+						}
 						for (let i = history.length; i > 0;) {
 							if (!send(history[--i], true)) return;
 						}
@@ -10866,8 +10919,9 @@ export function makeTable(options): TableResourceClass {
 				settleResume?.(isActive());
 				goLive?.();
 			})().finally(() => {
+				replayReader?.memo.close();
 				replayMemo?.close();
-				replayMemo = undefined;
+				replayMemo = replayReader = undefined;
 			});
 			result.catch(failSubscription);
 			if (settleResume) {
@@ -10921,13 +10975,15 @@ export function makeTable(options): TableResourceClass {
 				event.type = entry.metadataFlags & INVALIDATED ? 'invalidate' : entry.value ? 'put' : 'delete';
 				return true;
 			}
+			// `history` is the reader for entries read oldest-first, so a patch can carry the image before it, and the
+			// bare memo for entries read newest-first
 			function eventFromAudit(
 				id: Id,
 				auditRecord: any,
 				localTime: number,
 				beginTxn?: boolean,
 				live?: boolean,
-				historyMemo?: HistoryMemo
+				history?: ReplayReader | HistoryMemo
 			) {
 				let type = auditRecord.type;
 				let value;
@@ -10948,7 +11004,10 @@ export function makeTable(options): TableResourceClass {
 						type = entry?.metadataFlags & INVALIDATED ? 'invalidate' : value ? 'put' : 'delete';
 					} else value = auditRecord.getValue?.(primaryStore, false, localTime);
 				} else {
-					value = auditRecord.getValue?.(primaryStore, getFullRecord, localTime, historyMemo);
+					value =
+						history instanceof ReplayReader
+							? history.read(auditRecord, localTime)
+							: auditRecord.getValue?.(primaryStore, getFullRecord, localTime, history);
 					if (getFullRecord && type === 'patch') type = 'put';
 				}
 				return { id, localTime, value, version, type, beginTxn, size: auditRecord.size };
@@ -13544,7 +13603,8 @@ export function makeTable(options): TableResourceClass {
 	function isHistoryEntry(auditRecord): boolean {
 		return auditRecord.tableId === tableId && !isNonHistoryType(auditRecord.type);
 	}
-	function historyCanCarry(id, current, memo: HistoryMemo) {
+	/** `plainOnly`: refuse a chain with any operation, whose reversal the plain rebuild can type differently. */
+	function historyCanCarry(id, current, memo: HistoryMemo, limit = CARRY_SCAN_LIMIT, plainOnly = false) {
 		if (!TableResource.schemaDefined || residencyPolicy || !current) return false;
 		if (current.metadataFlags & (INVALIDATED | REPLICA | VERSION_REUSED) || current.additionalAuditRefs?.length)
 			return false;
@@ -13554,7 +13614,7 @@ export function makeTable(options): TableResourceClass {
 				: { txnLogKey: current.localTime, nodeId: current.nodeId };
 			let newer = Infinity;
 			let inspected = 0;
-			while (key > 0 && ++inspected <= 16_384) {
+			while (key > 0 && ++inspected <= limit) {
 				const frame = readAuditFrame(auditStore, tableId, id, key, nodeId, true, memo);
 				const audited = frame[0];
 				if (frame.length !== 1 || !audited || audited.previousAdditionalAuditRefs?.length || !(audited.version < newer))
@@ -13569,7 +13629,7 @@ export function makeTable(options): TableResourceClass {
 							value &&
 							typeof value === 'object' &&
 							value.__op__ &&
-							typeof crdtOperations[value.__op__] !== 'function'
+							(plainOnly || typeof crdtOperations[value.__op__] !== 'function')
 						)
 							return false;
 				}
@@ -13579,6 +13639,9 @@ export function makeTable(options): TableResourceClass {
 			}
 		} catch {}
 		return false;
+	}
+	function replayCanCarry(id, current, memo: HistoryMemo, limit: number) {
+		return historyCanCarry(id, current, memo, limit, true);
 	}
 	function historyEntryReader(recordId?, deferred = false) {
 		const reader = new HistoryReader(
