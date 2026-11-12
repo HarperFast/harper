@@ -433,16 +433,6 @@ async function backends(
 	};
 }
 
-/**
- * Waits for the real server, over TCP.
- *
- * The postgres image's entrypoint runs a temporary server while it initializes a
- * fresh PGDATA, then stops it and starts the real one. That temporary server is
- * socket-only (`listen_addresses=''`), so a unix-socket `pg_isready` reports
- * "ready" during init and the next statement races its shutdown. Probing over
- * TCP — which is how the app connects anyway — can only succeed against the real
- * server. On tmpfs initdb was fast enough to hide this; on a real disk it is not.
- */
 async function waitForRedis(
 	compose: (args: string[], timeoutMs?: number) => Promise<{ stdout: string }>,
 	redisCli: string[],
@@ -461,6 +451,16 @@ async function waitForRedis(
 	throw new Error(`redis did not become ready: ${(lastError as Error)?.message ?? 'no PONG'}`);
 }
 
+/**
+ * Waits for the real server, over TCP.
+ *
+ * The postgres image's entrypoint runs a temporary server while it initializes a
+ * fresh PGDATA, then stops it and starts the real one. That temporary server is
+ * socket-only (`listen_addresses=''`), so a unix-socket `pg_isready` reports
+ * "ready" during init and the next statement races its shutdown. Probing over
+ * TCP — which is how the app connects anyway — can only succeed against the real
+ * server. On tmpfs initdb was fast enough to hide this; on a real disk it is not.
+ */
 async function waitForPostgres(
 	compose: (args: string[], timeoutMs?: number) => Promise<unknown>,
 	timeoutMs: number
