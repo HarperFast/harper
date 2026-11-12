@@ -17,9 +17,10 @@ import {
 	fullTextComparatorMode,
 	fullTextFuzzyOptions,
 	validateFullTextFuzzyOptions,
+	validateFullTextScoringOptions,
 } from './indexes/fullTextQueryProtocol.ts';
 
-export { fullTextComparatorMode, validateFullTextFuzzyOptions };
+export { fullTextComparatorMode, validateFullTextFuzzyOptions, validateFullTextScoringOptions };
 
 // these are ratios/percentages of overall table size
 const OPEN_RANGE_ESTIMATE = 0.3;
@@ -82,7 +83,8 @@ export function executeConditions(
 	filtered,
 	recordAccess?,
 	// where this group's relationship conditions register: sibling conditions share one scope, an OR branch gets its own
-	scope: any = filtered
+	scope: any = filtered,
+	covered?: CoveredSelect
 ) {
 	conditions = combineFullTextConditions(conditions, operator, table);
 	const firstSearch = conditions[0];
@@ -142,12 +144,15 @@ export function executeConditions(
 		}
 		// General path: execute the lead FIRST — a leading join populates `filtered`, which the sibling
 		// filters read as they are built — then apply the sibling filters plus any record guards.
-		const results = executeCondition(firstSearch);
+		const results = executeCondition(
+			firstSearch,
+			conditions.length === 1 && !firstSearch.conditions && !recordGuards ? covered : undefined
+		);
 		const filters = mapConditionsToFilters(conditions.slice(1), true, firstSearch.estimated_count, scope);
 		const recordFilters = recordGuards ? filters.concat(recordGuards) : filters;
 		return recordFilters.length > 0 ? transformToEntries(results, recordFilters) : results;
 	}
-	function executeCondition(condition) {
+	function executeCondition(condition, covered?: CoveredSelect) {
 		const branchScope = operator === 'or' ? Object.create(null) : scope;
 		if (condition.conditions && !isRelationshipGroup(condition))
 			return executeConditions(
@@ -170,6 +175,7 @@ export function executeConditions(
 			holderReadTxn: txn,
 			disableSnapshot: request.snapshot === false,
 			leaseHost: filtered,
+			covered,
 			minResults:
 				request.limit === 0 ? 0 : request.limit !== undefined ? (request.offset || 0) + request.limit : undefined,
 			resultOffset: request.offset || 0,
@@ -193,6 +199,12 @@ export function executeConditions(
 						: (record, entry) => filters.every((filter) => filter(record, entry));
 					if (filters.some((filter) => filter.maybeAsync))
 						groupFilter.maybeAsync = (record, entry) => matchesFilters(filters, record, entry, union);
+					if (filters.length === condition.conditions.length && filters.every((filter) => filter.keyFilter)) {
+						const keyFilters = filters.map((filter) => filter.keyFilter);
+						groupFilter.keyFilter = union
+							? (key) => keyFilters.some((keyFilter) => keyFilter(key))
+							: (key) => keyFilters.every((keyFilter) => keyFilter(key));
+					}
 					return groupFilter;
 				}
 				const isPrimaryKey = (condition.attribute || condition[0]) === table.primaryKey;
@@ -326,6 +338,7 @@ function compileFullTextExpression(
 	if (isRelationshipGroup(condition)) return;
 	if (condition.conditions) {
 		validateFullTextFuzzyOptions(condition);
+		validateFullTextScoringOptions(condition);
 		const children = condition.conditions.map((child) => compileFullTextExpression(child, table));
 		const fullTextChildren = children.filter(Boolean) as Array<NonNullable<(typeof children)[number]>>;
 		if (fullTextChildren.length === 0) return;
@@ -361,21 +374,44 @@ function compileFullTextExpression(
 	if (typeof (condition[1] ?? condition.value) !== 'string')
 		throw new ClientError(`Full-text index '${indexName}' requires a full-text comparator and string value`, 400);
 	const text = condition[1] ?? condition.value;
+	validateFullTextScoringOptions(condition, mode);
 	const leaf = {
 		text,
 		mode,
 		...fullTextFuzzyOptions(condition),
 		...(condition.fields ? { fields: condition.fields } : null),
 	};
+	let expression = boostExpression(leaf, condition.boost);
+	let leaves = condition.negated ? [] : [leaf];
+	if (condition.should) {
+		const optionalLeaves = condition.should.map((clause: any) => ({
+			text: clause.value,
+			mode: fullTextComparatorMode(clause.comparator),
+			...fullTextFuzzyOptions(clause),
+			fields: clause.fields,
+		}));
+		expression = {
+			operator: 'optional',
+			required: expression,
+			optional: optionalLeaves.map((clause: any, index: number) =>
+				boostExpression(clause, condition.should[index].boost)
+			),
+		};
+		leaves = [leaf, ...optionalLeaves];
+	}
 	return {
 		indexName,
-		expression: condition.negated ? { operator: 'not', clause: leaf } : leaf,
-		leaves: condition.negated ? [] : [leaf],
+		expression: condition.negated ? { operator: 'not', clause: leaf } : expression,
+		leaves,
 		positive: !condition.negated,
 		includeHighlights: condition.includeHighlights === true,
 		maxIndexLagMilliseconds: condition.maxIndexLagMilliseconds,
 		waitForIndexMilliseconds: condition.waitForIndexMilliseconds,
 	};
+}
+
+function boostExpression(clause: any, boost: number | undefined): any {
+	return boost === undefined ? clause : { operator: 'boost', boost: Math.fround(boost), clause };
 }
 
 function mergeFullTextOption(name: string, current: number | undefined, next: number | undefined): number | undefined {
@@ -869,7 +905,7 @@ async function collectCandidateKeysCooperatively(
  * range that is hundreds of MB where main streamed at O(1). Accepted for #2434 over the bounded
  * alternative, which costs a primary read per index entry.
  */
-function distinctRecords(entries: any): AsyncIterable<Id> {
+function distinctRecords(entries: any, primaryKeyOf?: (entry: any) => Id): AsyncIterable<Id> {
 	const distinct = new ExtendedIterable();
 	(distinct as any).iterate = (options) => {
 		// A non-scalar key decodes to a fresh instance per entry, so identity never matches it;
@@ -880,13 +916,14 @@ function distinctRecords(entries: any): AsyncIterable<Id> {
 		const yieldedEncodedKeys = new Set();
 		// map rather than filter: filter clears `continueOnRecoverableError` for everything below it
 		return entries
-			.map((primaryKey) => {
+			.map((entry) => {
+				const primaryKey = primaryKeyOf ? primaryKeyOf(entry) : entry;
 				const isEncoded = typeof primaryKey === 'object' && primaryKey !== null;
 				const yielded = isEncoded ? yieldedEncodedKeys : yieldedKeys;
 				const identity = isEncoded ? writeKeyId(primaryKey) : primaryKey;
 				if (yielded.has(identity)) return SKIP;
 				yielded.add(identity);
-				return primaryKey;
+				return entry;
 			})
 			.iterate(options);
 	};
@@ -911,6 +948,146 @@ function leaseRelatedReadTxn(relatedTable, context, holderTable, holderReadTxn, 
 export function releaseRelatedLeases(leaseHost) {
 	const leases = leaseHost[RELATED_LEASES];
 	if (leases) for (const lease of leases.values()) lease.onDone?.();
+}
+
+interface CoveredSelect {
+	attribute: string;
+	recordRead?: () => void;
+}
+
+// ordered-binary writes -0 as bytes that decode as ['\x18', null] on LMDB and as key '\x18' with a null-led primary
+// key on RocksDB (as a real [null, …] id can too): such an entry is left to the record path
+function negativeZeroShape(key: any, primaryKey: any): boolean {
+	return (typeof key === 'object' && key !== null) || (key === '\x18' && primaryKey?.[0] === null);
+}
+
+function overflowResolver(
+	Table: any,
+	searchCondition: any,
+	attributeName: string,
+	filter: ((record: any) => boolean) | undefined,
+	filtered: any,
+	transaction: any
+) {
+	let condition = filter;
+	const checkActive = getReadTransactionGuard(transaction);
+	const matches = (record: any) => (condition ??= filterByType(searchCondition, Table, null, filtered, false))(record);
+	const recover = (entry, record) => {
+		entry.recovered =
+			record != null ? overflowedValue(record[attributeName], entry.key, attributeName, matches) : undefined;
+		return entry.recovered === undefined ? SKIP : entry;
+	};
+	return (sync: boolean, entry) => {
+		if (sync) return recover(entry, Table.primaryStore.getEntry(entry.value, { transaction })?.value);
+		const load = () => {
+			checkActive?.();
+			return when(Table.primaryStore.getEntry(entry.value, { transaction, async: true }), (loaded) =>
+				recover(entry, loaded?.value)
+			);
+		};
+		if (!filter) return load();
+		return new Promise((resolve, reject) =>
+			setImmediate(() => {
+				try {
+					resolve(load());
+				} catch (error) {
+					reject(error);
+				}
+			})
+		);
+	};
+}
+
+// resources/DESIGN.md, Per-row read work on RocksDB index scans: with a filter or a dedupe, admission (and an
+// overflow entry's value) is settled before distinctRecords collapses a record onto one entry
+function admitCoveredEntries(
+	range: any,
+	attributeName: string,
+	coverAttribute: boolean,
+	filter: ((record: any) => boolean) | undefined,
+	sorting: boolean,
+	resolveOverflow: (sync: boolean, entry: any) => any
+) {
+	return range.map(function (entry) {
+		const { key, value: primaryKey } = entry;
+		if (negativeZeroShape(key, primaryKey)) entry.uncovered = true;
+		else if (
+			typeof key === 'string' &&
+			key.length > MAX_SEARCH_KEY_LENGTH &&
+			(coverAttribute || (filter !== undefined && !sorting))
+		)
+			return resolveOverflow(this?.isSync, entry);
+		if (!filter) return entry;
+		if (this?.isSync) return filter({ [attributeName]: key }) ? entry : SKIP;
+		return new Promise((resolve, reject) =>
+			setImmediate(() => {
+				try {
+					resolve(filter({ [attributeName]: key }) ? entry : SKIP);
+				} catch (error) {
+					reject(error);
+				}
+			})
+		);
+	});
+}
+
+function coverIndexEntries(
+	entries: any,
+	Table: any,
+	attributeName: string,
+	coverAttribute: boolean,
+	covered: CoveredSelect,
+	resolveOverflow: ((sync: boolean, entry: any) => any) | undefined
+) {
+	const primaryKeyName = Table.primaryKey;
+	const decodePrimaryKey = declaredTypeDecoder(findAttribute(Table.attributes, primaryKeyName));
+	const decodeValue = coverAttribute && declaredTypeDecoder(findAttribute(Table.attributes, attributeName));
+	const recordRead = covered.recordRead;
+	const project = (entry) => {
+		if (entry === SKIP) return SKIP;
+		const { key, value: primaryKey, recovered } = entry;
+		recordRead?.();
+		const id = decodePrimaryKey ? decodePrimaryKey(primaryKey) : primaryKey;
+		entry.key = id;
+		entry.value = coverAttribute
+			? {
+					[primaryKeyName]: id,
+					[attributeName]: recovered !== undefined ? recovered : decodeValue ? decodeValue(key) : key,
+				}
+			: { [primaryKeyName]: id };
+		return entry;
+	};
+	return entries.map(function (entry) {
+		if (resolveOverflow) {
+			if (negativeZeroShape(entry.key, entry.value)) return entry.value;
+			if (coverAttribute && typeof entry.key === 'string' && entry.key.length > MAX_SEARCH_KEY_LENGTH) {
+				const resolved = resolveOverflow(this?.isSync, entry);
+				return typeof resolved?.then === 'function' ? resolved.then(project) : project(resolved);
+			}
+		} else if (entry.uncovered) return entry.value;
+		return project(entry);
+	});
+}
+
+function overflowedValue(stored: any, key: string, attributeName: string, filter?: (record: any) => boolean) {
+	const prefix = key.slice(0, MAX_SEARCH_KEY_LENGTH);
+	const indexed = (value: any) =>
+		typeof value === 'string' &&
+		value.length > MAX_SEARCH_KEY_LENGTH &&
+		// the key is stored as UTF-8, which writes a surrogate left unpaired by the cut as U+FFFD
+		(value.startsWith(prefix) || value.slice(0, MAX_SEARCH_KEY_LENGTH).toWellFormed() === prefix) &&
+		(!filter || filter({ [attributeName]: value }));
+	return Array.isArray(stored) ? stored.find(indexed) : indexed(stored) ? stored : undefined;
+}
+
+const MAX_DATE_TIME = 8.64e15;
+function declaredTypeDecoder(attribute: any): ((key: any) => any) | undefined {
+	switch (attribute?.type) {
+		case 'Date':
+			return (key) => (Number.isInteger(key) && Math.abs(key) <= MAX_DATE_TIME ? new Date(key) : key);
+		case 'BigInt':
+			return (key) => (Number.isInteger(key) ? BigInt(key) : key);
+	}
 }
 
 /**
@@ -945,6 +1122,7 @@ export function searchByIndex(
 		disableSnapshot?: boolean;
 		leaseHost?: any;
 		leaseContext?: any;
+		covered?: CoveredSelect;
 	} = {}
 ): AsyncIterable<Id | { key: Id; value: any }> {
 	// A stale positional caller passes `allowFullScan` here. Type checking only covers .ts callers, so
@@ -961,6 +1139,7 @@ export function searchByIndex(
 		holderReadTxn,
 		disableSnapshot,
 		leaseHost,
+		covered,
 	} = options;
 	const leaseContext = options.leaseContext ?? context;
 	const group: any = isRelationshipGroup(searchCondition) ? searchCondition : undefined;
@@ -997,6 +1176,9 @@ export function searchByIndex(
 			const relatedOptions = {
 				allowFullScan,
 				filtered: joined,
+				context,
+				// no parent rows wanted means no related rows either; any other count does not carry across a join
+				minResults: minResults === 0 ? 0 : undefined,
 				holderTable,
 				holderReadTxn,
 				disableSnapshot,
@@ -1011,7 +1193,7 @@ export function searchByIndex(
 					: searchByIndex(
 							group
 								? ({ attribute: rest, conditions: group.conditions, operator: group.operator } as any)
-								: { attribute: rest, value, comparator, negated: searchCondition.negated },
+								: relatedCondition(searchCondition, rest, value),
 							relatedTxn,
 							reverse,
 							relatedTable,
@@ -1045,7 +1227,16 @@ export function searchByIndex(
 						throw new ServerError(
 							`A same-record group on ${firstAttributeName} reached a many-to-one join without being flattened`
 						);
-					results = (results as any).flatMap(searchEntry);
+					// flatMap flattens only its own copy of ExtendedIterable; a custom index's results are this module's
+					// copy, while a store's ranges can be another (lmdb's CommonJS build when this runs from source)
+					results = (results as any).flatMap(
+						results instanceof ExtendedIterable
+							? (relatedEntry) => {
+									const matches = searchEntry(relatedEntry);
+									return matches instanceof ExtendedIterable ? matches : new ExtendedIterable(matches);
+								}
+							: searchEntry
+					);
 				}
 			}
 			return results;
@@ -1286,12 +1477,20 @@ export function searchByIndex(
 				: undefined;
 			const indexSearchStart = waiting ? start.promise.then(() => checkActive?.()) : undefined;
 			indexSearchStart?.catch(() => {});
+			// the index reads through context.transaction, which heads a chain of per-database links and can be another
+			// database's (a relationship, or a scope that touched another database first)
+			const headTransaction = context?.transaction;
+			const tableTransaction = headTransaction && Table._txnForContext(context);
+			const tableContext =
+				tableTransaction === headTransaction
+					? context
+					: Object.create(context, { transaction: { value: tableTransaction } });
 			const searchContext = waiting
-				? Object.create(context, {
+				? Object.create(tableContext, {
 						signal: { value: signal },
 						indexSearchStart: { value: indexSearchStart },
 					})
-				: context;
+				: tableContext;
 			const searched = index.customIndex.search(searchCondition, searchContext, {
 				filter:
 					waiting && recordFilter
@@ -1395,39 +1594,63 @@ export function searchByIndex(
 				};
 				return results;
 			}
-			return processEntries(searched);
+			const loaded = processEntries(searched);
+			// unlike an Array's, this iterator can be closed, which a join or union that stops early does
+			const results: any = new ExtendedIterable();
+			results.iterate = function* () {
+				yield* loaded;
+			};
+			return results;
 		}
-		const scanned = index.getRange(rangeOptions).map(
-			filter
-				? function ({ key, value }) {
-						let recordMatcher: any;
-						if (typeof key === 'string' && key.length > MAX_SEARCH_KEY_LENGTH) {
-							// if it is an overflow string, need to get the actual value from the database
-							recordMatcher = Table.primaryStore.getSync(value);
-						} else recordMatcher = { [attribute_name]: key };
-						if (this.isSync) return filter(recordMatcher) ? value : SKIP;
-						// for filter operations, we intentionally yield the event turn so that scanning queries
-						// do not hog resources
-						return new Promise((resolve, reject) =>
-							setImmediate(() => {
-								try {
-									resolve(filter(recordMatcher) ? value : SKIP);
-								} catch (error) {
-									reject(error);
-								}
-							})
-						);
-					}
-				: ({ value }) => value
-		);
+		const coverAttribute = covered?.attribute === attribute_name;
+		const coverEntries = coverAttribute || (covered !== undefined && covered.attribute === Table.primaryKey);
+		const dedupe = !scansOneIndexedValue && Boolean(findAttribute(Table.attributes, attribute_name)?.elements);
+		const resolveOverflow =
+			coverEntries && overflowResolver(Table, searchCondition, attribute_name, filter, filtered, transaction);
+		const admit = coverEntries && (filter !== undefined || dedupe);
+		const scanned = coverEntries
+			? admit
+				? admitCoveredEntries(
+						index.getRange(rangeOptions),
+						attribute_name,
+						coverAttribute,
+						filter,
+						resolvedComparator === 'sort',
+						resolveOverflow
+					)
+				: index.getRange(rangeOptions)
+			: index.getRange(rangeOptions).map(
+					filter
+						? function ({ key, value }) {
+								let recordMatcher: any;
+								if (typeof key === 'string' && key.length > MAX_SEARCH_KEY_LENGTH) {
+									// if it is an overflow string, need to get the actual value from the database
+									recordMatcher = Table.primaryStore.getSync(value);
+								} else recordMatcher = { [attribute_name]: key };
+								if (this.isSync) return filter(recordMatcher) ? value : SKIP;
+								// for filter operations, we intentionally yield the event turn so that scanning queries
+								// do not hog resources
+								return new Promise((resolve, reject) =>
+									setImmediate(() => {
+										try {
+											resolve(filter(recordMatcher) ? value : SKIP);
+										} catch (error) {
+											reject(error);
+										}
+									})
+								);
+							}
+						: ({ value }) => value
+				);
 		// Collapsing AFTER the map is required, not incidental: the condition's own filter tests one
 		// element at a time, so a record whose first entry fails it and whose second passes must
 		// still be reached. Collapsing first would settle that record on the failing entry and drop
 		// it. Scoped to attributes the schema declares multi-valued; a runtime array under an
 		// undeclared attribute repeats the same way but stays outside this boundary.
-		return scansOneIndexedValue || !findAttribute(Table.attributes, attribute_name)?.elements
-			? scanned
-			: distinctRecords(scanned);
+		const distinct = dedupe ? distinctRecords(scanned, coverEntries ? (entry) => entry.value : undefined) : scanned;
+		return coverEntries
+			? coverIndexEntries(distinct, Table, attribute_name, coverAttribute, covered, admit ? undefined : resolveOverflow)
+			: distinct;
 	} else {
 		return Table.primaryStore
 			.getRange(reverse ? { end: true, transaction, reverse: true } : { start: true, transaction })
@@ -1470,6 +1693,23 @@ export function findAttribute(attributes, attribute_name) {
 		} else attribute_name = attribute_name.toString();
 	} else if (typeof attribute_name !== 'string') attribute_name = attribute_name.toString();
 	return attributes.find((attribute) => attribute.name === attribute_name);
+}
+
+/**
+ * The condition a relationship hop runs on the related table. It keeps the leaf's own query options (an HNSW
+ * `target`, `distance`, `ef`, index-lag bounds) and drops what search.ts cached or attached to it for this table,
+ * so new per-table state set on a condition belongs in this list.
+ */
+function relatedCondition(condition, attribute, value) {
+	const related = { ...condition, attribute, value };
+	delete related[0];
+	delete related[1];
+	delete related.estimated_count;
+	delete related.descending;
+	delete related.recordFilter;
+	delete related.candidateKeys;
+	delete related.cachedSet;
+	return related;
 }
 
 /**
@@ -1697,22 +1937,26 @@ export function matchesFilters(filters, record, entry, any: boolean, start = 0) 
 	}
 	return !any;
 }
+// decides a filter from the primary key alone; relationship id mapping reads only `idFilter`, never `keyFilter`
+export function keyPredicate(filter): ((key: any) => boolean) | undefined {
+	return filter.idFilter ?? filter.keyFilter;
+}
 // read per candidate, since a content filter can switch to an index-backed idFilter mid-scan
 function rejectsKey(filters, key) {
 	for (let i = 0; i < filters.length; i++) {
-		const idFilter = filters[i].idFilter;
-		if (idFilter && !idFilter(key)) return true;
+		const test = keyPredicate(filters[i]);
+		if (test && !test(key)) return true;
 	}
 	return false;
 }
 function needsRecord(filters) {
-	for (let i = 0; i < filters.length; i++) if (!filters[i].idFilter) return true;
+	for (let i = 0; i < filters.length; i++) if (!keyPredicate(filters[i])) return true;
 	return false;
 }
 function matchesRelatedRecord(filters, record, skipIdFilters: boolean, scan: JoinScan, start = 0) {
 	for (let i = start; i < filters.length; i++) {
 		const filter = filters[i];
-		if (skipIdFilters && filter.idFilter) continue;
+		if (skipIdFilters && keyPredicate(filter)) continue;
 		if (record == null) return false;
 		const matches = (filter.maybeAsync ?? filter)(record);
 		if (matches?.then)
@@ -1820,7 +2064,7 @@ function joinFrom(rightIterable, attribute, store, joined: Map<any, any[]>, sear
 								const record = entry.value !== undefined ? entry.value : store.getSync(id, readOptions);
 								let matches = record != null;
 								for (let i = 0; matches && i < filters.length; i++)
-									if (!filters[i].idFilter) matches = filters[i](record);
+									if (!keyPredicate(filters[i])) matches = filters[i](record);
 								if (!matches) continue;
 							}
 						}
@@ -2104,7 +2348,7 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 					: filterByType(
 							group
 								? { attribute: rest, conditions: group.conditions, operator: group.operator }
-								: { attribute: rest, value, comparator, negated },
+								: relatedCondition(searchCondition, rest, value),
 							relatedTable,
 							context,
 							nestedScope,
@@ -2178,6 +2422,8 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 		}
 	}
 	if (value instanceof Date) value = value.getTime();
+	const distanceFilter = vectorDistanceFilter(searchCondition, Table, attribute, value);
+	if (distanceFilter) return negated ? (record) => !distanceFilter(record) : distanceFilter;
 
 	let baseFilter;
 	switch (ALTERNATE_COMPARATOR_NAMES[comparator] || comparator) {
@@ -2323,7 +2569,10 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 		// Wrap with negation. Internal index-optimization state on `baseFilter`
 		// (idFilter, to, etc.) is intentionally not propagated through the
 		// negation wrapper — negated conditions are filter-only in Phase 1.
-		return (record, entry) => !baseFilter(record, entry);
+		const negatedFilter: any = (record, entry) => !baseFilter(record, entry);
+		const keyFilter = (baseFilter as any).keyFilter;
+		if (keyFilter) negatedFilter.keyFilter = (key) => !keyFilter(key);
+		return negatedFilter;
 	}
 	return baseFilter;
 	/** Create a comparison function that can take the record and check the attribute's value with the filter function */
@@ -2371,7 +2620,9 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 					(++misses / filteredSoFar) * estimatedIncomingCount > thresholdRemainingMisses
 				) {
 					// if we have missed too many times, we need to switch to indexed retrieval
-					const searchResults = searchByIndex(searchCondition, Table._readTxnForContext(context), false, Table);
+					const searchResults = searchByIndex(searchCondition, Table._readTxnForContext(context), false, Table, {
+						context,
+					});
 					let matchingIds: Iterable<Id>;
 					if ((recordFilter as any).to) {
 						// the values could be an array of keys, so we flatten the mapping
@@ -2400,9 +2651,17 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 		}
 		if (isPrimaryKey) {
 			recordFilter.idFilter = filter;
+			(recordFilter as any).keyFilter = filter;
 		}
 		return recordFilter;
 	}
+}
+
+function vectorDistanceFilter(condition, table, attribute, value): ((record: any) => boolean) | undefined {
+	const comparator = ALTERNATE_COMPARATOR_NAMES[condition.comparator] || condition.comparator;
+	const matches =
+		table && conditionIndex(table, attribute)?.customIndex?.thresholdFilter?.(condition, comparator, value);
+	return matches && ((record) => matches(record?.[attribute]));
 }
 
 // mirror searchByIndex's openStart: an indexNulls index's `[null, primaryKey]` entries are outside the executed range

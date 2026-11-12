@@ -1098,6 +1098,7 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 		const server = (httpServers[port] = (
 			secure ? (http2 ? createSecureServer : createSecureServerHttp1) : createServer
 		)(options, queuedRequestHandler));
+		if (http2) (server as any).servesHttp2 = true;
 
 		// Node v16 and earlier required setting this as a property; but carefully, we must only set if it is actually a
 		// number or it will actually crash the server
@@ -1995,6 +1996,21 @@ type OnWebSocketOptions = {
 };
 const websocketListeners = [],
 	websocketChains = {};
+export function hasOpenWebSockets(): boolean {
+	for (const port in websocketServers) {
+		if (websocketServers[port].clients.size > 0) return true;
+	}
+	return false;
+}
+export function closeWebSockets() {
+	const closed: Promise<void>[] = [];
+	for (const port in websocketServers) {
+		closed.push(new Promise<void>((resolve) => websocketServers[port].close(() => resolve()))); // an upgrade still arriving gets a 503
+		for (const ws of websocketServers[port].clients) ws.close(1001, 'Server shutting down');
+	}
+	return Promise.all(closed);
+}
+
 /**
  *
  * @param {Listener} listener

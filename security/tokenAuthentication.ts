@@ -13,6 +13,7 @@ import {
 import { ClientError, ServerError, hdbErrors } from '../utility/errors/hdbError.ts';
 const { HTTP_STATUS_CODES, AUTHENTICATION_ERROR_MSGS } = hdbErrors;
 import logger from '../utility/logging/harper_logger.ts';
+import { withoutSystemGrants } from './systemRolePermissions.ts';
 import * as password from '../utility/password.ts';
 import { findAndValidateUser, getSuperUser, isLocalPrincipal, type User } from './user.ts';
 import { attachScopeToToken, attachScopeToUser, hasOperationScope } from './operationScope.ts';
@@ -520,10 +521,10 @@ function assertUsableVerificationKey(publicKey: unknown): void {
 /**
  * Builds the request user for a verified scoped token from its embedded role. No hdb_user lookup:
  * the signed claims are the whole identity. The downgrade is re-applied here as defense-in-depth,
- * so no scoped token — whatever minted it — can ever assert super_user or cluster_user.
+ * so no scoped token — whatever minted it — can assert super_user, cluster_user or declared system grants.
  */
 function buildUserFromScopedToken(claims: JwtPayload): User {
-	const embedded = (claims.role as { permission?: Record<string, unknown> })?.permission;
+	const embedded = withoutSystemGrants(claims.role as { permission?: Record<string, unknown> }, false)?.permission;
 	if (!embedded || typeof embedded !== 'object' || Array.isArray(embedded) || typeof claims.username !== 'string') {
 		throw credentialRejectionError(AUTHENTICATION_ERROR_MSGS.INVALID_TOKEN, HTTP_STATUS_CODES.UNAUTHORIZED);
 	}

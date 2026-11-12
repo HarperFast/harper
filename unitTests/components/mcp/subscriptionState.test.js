@@ -25,7 +25,12 @@ const {
 	getRegisteredSession,
 	_resetSessionRegistryForTest,
 } = require('#src/components/mcp/sessionRegistry');
-const { _setResourcesForTest, _setSubscribeImplForTest } = require('#src/components/mcp/resources');
+const {
+	_setResourcesForTest,
+	_setSubscribeImplForTest,
+	_setCustomSubscribeTimeoutForTest,
+} = require('#src/components/mcp/resources');
+const { addCustomResource, clearProfileCustomResources } = require('#src/components/mcp/customResourceRegistry');
 const { _liveSubscriptionCount, _resetSubscriptionsForTest } = require('#src/components/mcp/subscriptions');
 const { AccessViolation } = require('#src/utility/errors/hdbError');
 
@@ -80,9 +85,11 @@ describe('MCP persisted subscription state', function () {
 		_resetSessionRegistryForTest();
 		if (session) await waitFor(async () => !(await loadSession(session.id))?.streamToken);
 		_resetSubscriptionsForTest();
+		clearProfileCustomResources('application');
 		_setSubscribeImplForTest(undefined);
 		_setResourcesForTest(undefined);
 		_setSubscriptionTimeoutForTest(undefined);
+		_setCustomSubscribeTimeoutForTest(undefined);
 		assert.equal(_pendingSubscriptionRouteCount(), 0);
 	});
 	after(() => _setSessionTableForTest(undefined));
@@ -477,6 +484,118 @@ describe('MCP persisted subscription state', function () {
 		assert.deepEqual((await loadSession(session.id)).subscriptions, []);
 	});
 
+	it('does not restore a scoped grant onto an ordinary credential with identical permissions', async () => {
+		await open();
+		_setSubscribeImplForTest(async () => changeStream());
+		assert.equal(await subscribe(URI, { ...USER, _scopedToken: true }), 'success');
+		const ordinary = `${URI}/ordinary`;
+		assert.equal(await subscribe(ordinary), 'success');
+		const record = await open();
+		assert.equal(_liveSubscriptionCount(session.id), 1);
+		const saved = await loadSession(session.id);
+		assert.deepEqual(saved.subscriptions, [ordinary]);
+		assert.deepEqual(saved.subscriptionPrincipals, {});
+		assert.equal(getRegisteredSession(session.id), record);
+	});
+
+	for (const remote of [false, true]) {
+		it(`installs a live scoped generation from ${remote ? 'another' : 'this'} worker during restore`, async () => {
+			await patchSession(session.id, { subscriptions: [URI] });
+			const started = deferred();
+			const restoring = deferred();
+			let attempts = 0;
+			_setSubscribeImplForTest(async () => {
+				if (++attempts === 1) {
+					started.resolve();
+					return restoring.promise;
+				}
+				return changeStream();
+			});
+			const owner = remote ? USER : { ...USER, _scopedToken: true, role: { permission: {} } };
+			const record = registerSession(session.id, 'application', owner);
+			const claiming = claimSubscriptionOwner(session.id, record.streamToken);
+			await started.promise;
+			const uri = `${URI}/live`;
+			const user = { ...USER, _scopedToken: true };
+			let pending;
+			try {
+				if (remote) {
+					await patchSession(session.id, {
+						subscriptions: [URI, uri],
+						subscriptionGenerations: { [uri]: 'remote-live' },
+						subscriptionPrincipals: { live: user },
+						subscriptionPrincipalIds: { [uri]: 'live' },
+						subscriptionRevision: 1,
+					});
+				} else {
+					pending = subscribe(uri, user);
+					await waitFor(async () => (await loadSession(session.id)).subscriptionGenerations?.[uri]);
+				}
+			} finally {
+				restoring.resolve(changeStream());
+			}
+			if (pending) assert.equal(await pending, 'success');
+			assert.equal(await claiming, true);
+			assert.equal(_liveSubscriptionCount(session.id), 2);
+			assert.deepEqual((await loadSession(session.id)).subscriptionAck.rejected, {});
+		});
+	}
+
+	it('checks the local POST principal when its generation precedes a scoped GET claim', async () => {
+		await open();
+		const started = deferred();
+		const installing = deferred();
+		_setSubscribeImplForTest(async () => {
+			started.resolve();
+			return installing.promise;
+		});
+		const pending = subscribe();
+		await started.promise;
+		const record = registerSession(session.id, 'application', {
+			...USER,
+			_scopedToken: true,
+			role: { permission: {} },
+		});
+		try {
+			assert.equal(await claimSubscriptionOwner(session.id, record.streamToken), true);
+			assert.equal(await pending, 'permission-denied');
+			assert.equal(_liveSubscriptionCount(session.id), 0);
+		} finally {
+			installing.resolve(changeStream());
+			await pending;
+		}
+	});
+
+	for (const replace of [false, true]) {
+		it(`acknowledges a failed live ${replace ? 'replacement' : 'subscribe'} during initial restore`, async () => {
+			_setSubscriptionTimeoutForTest(2000);
+			await patchSession(session.id, { subscriptions: [URI] });
+			const started = deferred();
+			const restoring = deferred();
+			let attempts = 0;
+			_setSubscribeImplForTest(async () => {
+				if (++attempts === 1) {
+					started.resolve();
+					return restoring.promise;
+				}
+				throw new Error('live subscription unavailable');
+			});
+			const record = registerSession(session.id, 'application', USER);
+			const claiming = claimSubscriptionOwner(session.id, record.streamToken);
+			await started.promise;
+			const uri = replace ? URI : `${URI}/live`;
+			const pending = subscribe(uri);
+			try {
+				await waitFor(async () => (await loadSession(session.id)).subscriptionGenerations?.[uri]);
+			} finally {
+				restoring.resolve(changeStream());
+			}
+			assert.equal(await pending, 'internal-error');
+			assert.equal(await claiming, true);
+			assert.equal(getRegisteredSession(session.id), record);
+		});
+	}
+
 	it('rejects expired scoped-token state on reconnect', async () => {
 		await patchSession(session.id, {
 			subscriptions: [URI],
@@ -565,5 +684,93 @@ describe('MCP persisted subscription state', function () {
 		await sessions.delete(session.id);
 		await waitFor(() => !getRegisteredSession(session.id));
 		assert.equal(_liveSubscriptionCount(session.id), 0);
+	});
+
+	it('keeps a custom restore failure sticky for its generation without stalling unrelated subscribes, and retries on same-URI re-subscribe or reconnect', async () => {
+		let faultedAttempts = 0;
+		addCustomResource({
+			uriTemplate: 'notes:///{id}',
+			name: 'note',
+			profile: 'application',
+			read: async () => 'x',
+			subscribe: async (params) => {
+				if (params.id === 'vanished') return null;
+				if (params.id === 'faulted' && ++faultedAttempts <= 2) throw new Error('transient custom failure');
+				return changeStream();
+			},
+		});
+		await patchSession(session.id, { subscriptions: ['notes:///faulted', 'notes:///vanished'] });
+		const record = await open();
+		assert.equal(getRegisteredSession(session.id), record);
+		assert.equal(_liveSubscriptionCount(session.id), 0);
+		assert.deepEqual((await loadSession(session.id)).subscriptions, ['notes:///faulted']);
+		assert.equal(await subscribe(URI), 'success');
+		assert.equal(faultedAttempts, 1, 'unrelated subscribe does not re-invoke a sticky custom failure');
+		assert.equal(_liveSubscriptionCount(session.id), 1);
+		const reconnected = await open();
+		assert.equal(getRegisteredSession(session.id), reconnected);
+		assert.equal(faultedAttempts, 2, 'reconnect retries the retained custom URI');
+		assert.equal(_liveSubscriptionCount(session.id), 1);
+		assert.equal(await subscribe('notes:///faulted'), 'success');
+		assert.equal(faultedAttempts, 3, 'same-URI re-subscribe creates a new generation and retries');
+		assert.equal(_liveSubscriptionCount(session.id), 2);
+	});
+
+	it('closes the GET and stops custom subscriptions in the same batch when a row-backed restore fails', async () => {
+		addCustomResource({
+			uriTemplate: 'notes:///{id}',
+			name: 'note',
+			profile: 'application',
+			read: async () => 'x',
+			subscribe: async () => changeStream(),
+		});
+		_setSubscribeImplForTest(async () => {
+			throw new Error('transient row-backed failure');
+		});
+		await patchSession(session.id, { subscriptions: ['notes:///ok', URI] });
+		const first = registerSession(session.id, 'application', USER);
+		assert.equal(await claimSubscriptionOwner(session.id, first.streamToken), false);
+		assert.equal(getRegisteredSession(session.id), undefined);
+		assert.equal(_liveSubscriptionCount(session.id), 0);
+		assert.deepEqual((await loadSession(session.id)).subscriptions, ['notes:///ok', URI]);
+	});
+
+	it('restores multiple hanging custom URIs in bounded batches of 8 without listener warnings', async () => {
+		_setCustomSubscribeTimeoutForTest(25);
+		_setSubscriptionTimeoutForTest(200);
+		let started = 0;
+		const firstBatchStarted = deferred();
+		addCustomResource({
+			uriTemplate: 'notes:///{id}',
+			name: 'note',
+			profile: 'application',
+			read: async () => 'x',
+			subscribe: () => {
+				if (++started === 8) firstBatchStarted.resolve();
+				return new Promise(() => {});
+			},
+		});
+		const warnings = [];
+		const onWarning = (warning) => warnings.push(warning);
+		process.on('warning', onWarning);
+		try {
+			const uris = Array.from({ length: 10 }, (_, index) => `notes:///h${index}`);
+			await patchSession(session.id, { subscriptions: uris });
+			const record = registerSession(session.id, 'application', USER);
+			const claiming = claimSubscriptionOwner(session.id, record.streamToken);
+			await firstBatchStarted.promise;
+			await new Promise((resolve) => setImmediate(resolve));
+			assert.equal(started, 8, 'first batch holds the 9th custom URI until the first 8 time out');
+			assert.equal(await claiming, true);
+			assert.equal(started, 10);
+			assert.equal(getRegisteredSession(session.id), record);
+			assert.deepEqual((await loadSession(session.id)).subscriptions, uris);
+			assert.deepEqual(
+				warnings.filter((w) => w.name === 'MaxListenersExceededWarning'),
+				[]
+			);
+		} finally {
+			process.off('warning', onWarning);
+		}
 	});
 });

@@ -2,18 +2,20 @@
 
 This directory contains single-node storage and throughput benchmarks for Harper.
 
-| Benchmark          | File                              | What it measures                                                                                            |
-| ------------------ | --------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| YCSB               | `ycsb/`                           | Standard CRUD workloads (A–F) across the REST interface                                                     |
-| HNSW search        | `hnsw-search.js`                  | In-memory vector index search latency and recall                                                            |
-| **Indexed-write**  | `indexed-write/`                  | Write throughput at 0 / 3 / 5 secondary indexes (**ST-2**)                                                  |
-| **TTL-churn**      | `ttl-churn/`                      | Storage size stability under continuous insert-with-TTL (**ST-1**)                                          |
-| **Concurrent R+W** | `concurrent-rw/`                  | Read p99 under mixed concurrent writes on a highly-indexed table (**ST-5**)                                 |
-| Hot-key commit     | `hot-key-commit/`                 | Commit throughput, latency and retries per commit when audited transactions contend on a few keys           |
-| **SQL engine A/B** | `sql-engine/`                     | New (Resource-API) vs legacy (AlaSQL) SQL engine latency, per query shape                                   |
-| **Compression**    | `compression/`                    | RocksDB codec comparison: on-disk size and throughput per codec                                             |
-| WebSocket scale    | [`ws-scale/`](ws-scale/README.md) | Memory and CPU per WebSocket connection, subscription and delivered message; write rates that drive fan-out |
-| Lockdown           | `lockdown/`                       | Per-mode `applications.lockdown` cost in a worker: holey-array string building, msgpackr decode             |
+| Benchmark           | File                                                 | What it measures                                                                                            |
+| ------------------- | ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| YCSB                | `ycsb/`                                              | Standard CRUD workloads (A–F) across the REST interface                                                     |
+| HNSW search         | `hnsw-search.js`                                     | In-memory vector index search latency and recall                                                            |
+| Full-text analytics | `fulltext-analytics.mjs`                             | Paired collection-disabled/enabled cost through real Tables, native indexes and analytics persistence       |
+| **Indexed-write**   | `indexed-write/`                                     | Write throughput at 0 / 3 / 5 secondary indexes (**ST-2**)                                                  |
+| **TTL-churn**       | `ttl-churn/`                                         | Storage size stability under continuous insert-with-TTL (**ST-1**)                                          |
+| **Concurrent R+W**  | `concurrent-rw/`                                     | Read p99 under mixed concurrent writes on a highly-indexed table (**ST-5**)                                 |
+| Hot-key commit      | `hot-key-commit/`                                    | Commit throughput, latency and retries per commit when audited transactions contend on a few keys           |
+| **SQL engine A/B**  | `sql-engine/`                                        | New (Resource-API) vs legacy (AlaSQL) SQL engine latency, per query shape                                   |
+| **Compression**     | `compression/`                                       | RocksDB codec comparison: on-disk size and throughput per codec                                             |
+| WebSocket scale     | [`ws-scale/`](ws-scale/README.md)                    | Memory and CPU per WebSocket connection, subscription and delivered message; write rates that drive fan-out |
+| Lockdown            | `lockdown/`                                          | Per-mode `applications.lockdown` cost in a worker: holey-array string building, msgpackr decode             |
+| Full-text admission | [`full-text-admission.cjs`](full-text-admission.cjs) | Table query preparation with optional scoring and per-field authorization                                   |
 
 The three new benchmarks (ST-1, ST-2, ST-5) address gaps called out in §6.3 of the
 Harper Release Testing Strategy and §5 of the v5 Integration Test Plan.
@@ -40,6 +42,51 @@ On macOS/Windows, set up loopback addresses once (Linux has them by default):
 ```sh
 npx harper-integration-test-setup-loopback
 ```
+
+---
+
+## Full-text analytics (`fulltext-analytics.mjs`)
+
+Run manually after `npm run build`, with the optional `@harperfast/fulltext` native
+package installed on a supported platform. The runner starts isolated Mocha children
+using Harper's test fixtures and RocksDB. It does not start a REST server or require
+loopback setup. Each pair alternates which profile runs first.
+
+### Short smoke (not performance qualification)
+
+```sh
+node benchmarks/fulltext-analytics.mjs --duration 1000 --indexes 1 --pairs 1 --interval 1000 --output benchmarks/fulltext-analytics/results/smoke-01
+```
+
+### Full-cadence comparison (about five minutes)
+
+```sh
+node benchmarks/fulltext-analytics.mjs --output benchmarks/fulltext-analytics/results/paired-01
+```
+
+| Flag            | Default  | Meaning                                                                                   |
+| --------------- | -------- | ----------------------------------------------------------------------------------------- |
+| `--duration`    | `70000`  | Measured milliseconds per profile; 100–3600000                                            |
+| `--indexes`     | `4`      | Audited product Tables with native full-text indexes; 1–16                                |
+| `--pairs`       | `2`      | Disabled/enabled pairs; 1–10                                                              |
+| `--interval`    | `60000`  | Telemetry collection interval in milliseconds; 1000–2147483647                            |
+| `--maxIndexLag` | `0`      | Allowed index lag in milliseconds; 0–60000. Zero waits up to 5000 ms for index freshness. |
+| `--output`      | Required | Fresh or empty artifact directory; existing nonempty directories are rejected             |
+
+The ignored `benchmarks/fulltext-analytics/results/` directory holds generated
+manifests, child logs, results and comparisons, including failure evidence. Choose
+a new run subdirectory each time. Custom output paths are supported; keep them
+outside the checkout or add a suitable ignore rule before running. Do not commit
+generated output or test databases.
+
+Compare throughput, API latency, CPU, event-loop delay, RSS and exported/persisted
+rows with identical settings on the same host. Both profiles use fulltext 0.9.0;
+this does not measure the engine upgrade's always-on accounting cost. Histograms
+and snapshot-byte observations remain off. Short runs report
+`qualificationSufficient: false`; full-cadence runs require at least 60000 ms and
+one collection interval plus 1000 ms. Even sufficient runs are finite local
+evidence, not production or sustained-memory qualification. This benchmark is not
+part of CI or the trend dashboard.
 
 ---
 
@@ -342,3 +389,96 @@ cannot change what is stored, keep a tolerance (`--max-error-rate`).
 Shutdown is likewise gated: sizes are measured after Harper exits, and a final memtable flush cut
 short by `SIGKILL` loses SST bytes the benchmark would report as the codec being smaller. The runner
 gives shutdown `--shutdown-grace` (default 120s) and fails the run if the process had to be killed.
+
+## Full-text query admission
+
+Run the opt-in [Table admission benchmark](full-text-admission.cjs) from the repository root:
+
+```sh
+npm ci
+npm run build
+node node_modules/mocha/bin/mocha.js benchmarks/full-text-admission.cjs
+```
+
+The repository Mocha configuration supplies an isolated per-process database root and exposes
+GC. The benchmark uses the existing test native binding to make an index ready, then calls the
+real compiled `Table._prepareQueryConditions` with an explicit attribute permission allowlist
+that permits every indexed field. It does not measure denied-field handling. It does not
+measure the native search engine. Use the default RocksDB engine; unset any inherited `HARPER_STORAGE_ENGINE=lmdb` override.
+No running Harper installation or loopback setup is needed.
+
+Each request is fresh. Cases combine 2 or 16 source fields, 0/1/32/127 optional clauses, and
+default or explicit optional-clause fields. The zero-clause control runs once per field width.
+Each case warms up for 1,000 iterations, then runs five samples of 5,000 iterations; sample
+order reverses on alternate rounds. GC runs before each sample when available. `ADMISSION`
+JSON lines report runtime/platform, every sample, and the median microseconds per request.
+
+Timing includes request construction and a clause-count assertion. It excludes index setup,
+query compilation, reader acquisition, native execution, networking, concurrent requests and the forced GC before samples; allocation
+and in-sample GC costs are not separately measured. These sample means are not request p99
+latencies, and this is not an end-to-end or gating regression benchmark.
+
+Historical scratch-run medians on macOS ARM64, Node 24.16.0, at `3d4a1dc58`:
+
+| Source fields | Optional clauses | Default fields (µs) | Explicit fields (µs) |
+| ------------- | ---------------- | ------------------- | -------------------- |
+| 2             | 1                | 0.59                | 1.07                 |
+| 2             | 32               | 5.09                | 9.07                 |
+| 2             | 127              | 17.62               | 27.47                |
+| 16            | 1                | 1.42                | 3.61                 |
+| 16            | 32               | 25.02               | 74.46                |
+| 16            | 127              | 99.02               | 279.33               |
+
+Other tests were active during that run; the last case ranged from 168–573 µs across samples.
+Treat these as observations, not performance thresholds. Compare revisions using the same
+benchmark, runtime and machine under similar load, retaining all samples. Older revisions
+without optional scoring cannot provide an equivalent baseline for those cases.
+
+### Predicate-local lookup reuse comparison
+
+On 2026-11-03, three fresh-process runs per revision compared `3d1fcc45b` with
+the initial predicate-local lookup reuse change at `78cfe495d`. Node 24.16.0, macOS ARM64; the committed
+benchmark and sample counts above were unchanged. Values are medians of the three
+process medians; brackets span process medians, not individual request latencies.
+
+| Fields | Optional clauses | Mode     | Before µs [range]       | After µs [range]       |
+| ------ | ---------------- | -------- | ----------------------- | ---------------------- |
+| 2      | 0                | default  | 0.308 [0.300–0.309]     | 0.321 [0.319–0.331]    |
+| 2      | 1                | default  | 0.617 [0.555–0.659]     | 0.624 [0.610–0.644]    |
+| 2      | 1                | explicit | 0.671 [0.669–0.800]     | 0.750 [0.748–0.806]    |
+| 2      | 32               | default  | 4.534 [4.163–4.575]     | 4.128 [4.034–4.272]    |
+| 2      | 32               | explicit | 7.107 [6.646–7.120]     | 5.484 [5.336–5.500]    |
+| 2      | 127              | default  | 14.038 [14.029–14.225]  | 13.034 [12.579–13.558] |
+| 2      | 127              | explicit | 23.398 [23.179–24.630]  | 19.270 [19.175–20.052] |
+| 16     | 0                | default  | 0.427 [0.386–0.435]     | 0.366 [0.351–0.371]    |
+| 16     | 1                | default  | 0.922 [0.914–0.994]     | 0.883 [0.860–0.908]    |
+| 16     | 1                | explicit | 1.650 [1.585–1.678]     | 1.620 [1.580–1.640]    |
+| 16     | 32               | default  | 8.856 [8.374–9.370]     | 6.197 [6.062–6.313]    |
+| 16     | 32               | explicit | 25.441 [22.854–27.745]  | 17.021 [16.875–17.382] |
+| 16     | 127              | default  | 31.564 [29.443–33.220]  | 21.422 [20.920–22.034] |
+| 16     | 127              | explicit | 96.189 [86.629–103.473] | 63.421 [62.932–64.816] |
+
+The 16-field/127-clause cases improved 32% (default) and 34% (explicit). The
+2-field/1-explicit-clause case increased 0.079 µs with overlapping process ranges.
+The 2-field/0-clause case also rose 4% (0.013 µs), with non-overlapping process ranges,
+and 2-field/1-default rose 0.007 µs with overlapping ranges. These sequential runs
+do not establish the cause of small changes or a universal improvement. All six runs passed.
+
+Separate Node inspector CPU/allocation sampling covered 364,000 requests per
+revision, including warmup and setup/teardown. Sampling included collected objects
+and estimated 29% less cumulative allocation; these are statistical estimates, not
+retained heap sizes. Observed minor GC fell from 517 events/84 ms to 360/50 ms.
+Major GC totals include 70 forced benchmark collections and are not production GC
+costs. Instrumented timings are excluded from the table above.
+
+A separate deployed smoke comparison used two documents, four indexed fields,
+HTTP QUERY and operations, concurrency 1/4, and 1/32/127 optional clauses. Each
+revision returned valid rankings for 4,608 measured requests plus 1,152 warmups.
+The test raised query limits to 1,024 terms/4,096 clauses so these expanded queries
+were admissible; it used admin credentials and does not measure restricted-user
+authorization overhead. At concurrency 4 with 127 clauses, HTTP medians moved
+2.816→2.720 ms (default fields) and 2.831→2.692 ms (explicit); operations medians
+moved 2.861→2.676 ms and 2.813→2.677 ms. One small operations case rose
+0.522→0.622 ms while p95 stayed near 1.91 ms. Separate localhost runs and ambient
+load limit causal attribution; these are bounded smoke observations, not
+catalog-scale throughput or production latency guarantees.

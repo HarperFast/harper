@@ -28,6 +28,104 @@ function testScope(warnings = [], errors = []) {
 }
 
 describe('roles entry events', () => {
+	for (const expanded of [false, true]) {
+		it(`omits legacy system grants and applies all roles (${expanded ? 'expanded' : 'collapsed'})`, async () => {
+			const warnings = [];
+			const harness = testScope(warnings);
+			const applied = [];
+			handleApplication(harness.scope, async (role) => applied.push(role));
+			const legacy = 'system:\n  hdb_user:\n    read: true\ndata:\n  records:\n    read: true\n';
+			const indent = expanded ? '    ' : '  ';
+			const contents =
+				'first:\n  super_user: false\nlegacy:\n' +
+				(expanded ? '  permission:\n' : '') +
+				legacy
+					.split('\n')
+					.filter(Boolean)
+					.map((line) => indent + line)
+					.join('\n') +
+				'\n';
+			await harness.handler({
+				entryType: 'file',
+				eventType: 'add',
+				absolutePath: '/app/roles.yaml',
+				contents: Buffer.from(contents),
+			});
+			assert.deepStrictEqual(
+				applied.map((role) => role.role),
+				['first', 'legacy']
+			);
+			assert.strictEqual(applied[1].permission.system, undefined);
+			assert.strictEqual(applied[1].permission.data.tables.records.read, true);
+			assert.strictEqual(warnings.length, 1);
+			assert.match(warnings[0], /legacy.*system|system.*legacy/);
+			harness.fire('deploy:end');
+			await waitFor(() => applied.length === 4);
+			await harness.handler({
+				entryType: 'file',
+				eventType: 'change',
+				absolutePath: '/app/roles.yaml',
+				contents: Buffer.from(contents),
+			});
+			assert.strictEqual(warnings.length, 1);
+			await harness.handler({
+				entryType: 'file',
+				eventType: 'change',
+				absolutePath: '/app/roles.yaml',
+				contents: Buffer.from(contents + '# updated revision\n'),
+			});
+			assert.strictEqual(warnings.length, 2);
+		});
+	}
+	it('rejects a false permission wrapper before applying any role', async () => {
+		const harness = testScope();
+		const applied = [];
+		handleApplication(harness.scope, async (role) => applied.push(role.role));
+		await assert.rejects(
+			harness.handler({
+				entryType: 'file',
+				eventType: 'add',
+				absolutePath: '/app/roles.yaml',
+				contents: Buffer.from(
+					'first:\n  super_user: false\nlegacy:\n  permission: false\n  system:\n    hdb_user:\n      read: true\n'
+				),
+			}),
+			(error) => error.statusCode === 400
+		);
+		assert.deepStrictEqual(applied, []);
+	});
+
+	for (const contents of ['', '# No roles yet\n', '---\n']) {
+		it(`accepts an empty roles document ${JSON.stringify(contents)}`, async () => {
+			const harness = testScope();
+			const applied = [];
+			handleApplication(harness.scope, async (role) => applied.push(role.role));
+			await harness.handler({
+				entryType: 'file',
+				eventType: 'add',
+				absolutePath: '/app/roles.yaml',
+				contents: Buffer.from(contents),
+			});
+			assert.deepStrictEqual(applied, []);
+		});
+	}
+
+	it('names a null role definition before applying other roles', async () => {
+		const harness = testScope();
+		const applied = [];
+		handleApplication(harness.scope, async (role) => applied.push(role.role));
+		await assert.rejects(
+			harness.handler({
+				entryType: 'file',
+				eventType: 'add',
+				absolutePath: '/app/roles.yaml',
+				contents: Buffer.from('first:\n  system:\n    hdb_user:\n      read: true\ninvalid:\n'),
+			}),
+			(error) => error.statusCode === 400 && /Role 'invalid' must be an object/.test(error.message)
+		);
+		assert.deepStrictEqual(applied, []);
+	});
+
 	it('ignores directory and unlink events without reading file contents', async () => {
 		const harness = testScope();
 		handleApplication(harness.scope, async () => {});

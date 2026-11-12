@@ -18,7 +18,8 @@ Where things are in `resources/`. The rules live in [DESIGN.md](DESIGN.md): read
 - `transactionLogAbortMarkers.ts` — the process-latched abort-marker and write-intent settings (`latchAbortMarkers`, `latchWriteIntents`)
 - `search.ts` — FIQL parsing, condition planning and estimation, index scans, joins
 - `blob.ts` — file-backed blobs: saving, compression, cleanup, reclamation
-- `tracked.ts`, `crdt.ts` — tracked-instance changes; CRDT operations and history reconstruction
+- `tracked.ts`, `crdt.ts` — tracked-instance changes (`mergeUpdateChanges` composes pending patches); CRDT operations and history reconstruction
+- `historyReader.ts` — bounded per-call audit-frame snapshots and incremental history images
 - `Resources.ts`, `RequestTarget.ts`, `jsResource.ts` — the path registry and routes; the parsed request target; registering component exports
 - `ResourceInterface.ts` — shared types (`Context`, request body parts)
 - `resolveBody.ts`, `staticResourceDispatch.ts`, `ErrorResource.ts`, `login.ts` — body resolution, the false-mode dispatch marker, the error resource, the login endpoint
@@ -40,20 +41,24 @@ Where things are in `resources/`. The rules live in [DESIGN.md](DESIGN.md): read
 - request authorization → `transactional()` in Resource.ts; `allowRead`/`allowUpdate`/`allowCreate`/`allowDelete` in Table.ts
 - restricted replacements and implicit key grants → `getTablePermissions`, `allowTableUpdate`, `restrictedReplacement` in Table.ts; see [permission invariants](../security/DESIGN.md#resource-attribute-permissions)
 - versioning, write conflicts, out-of-order merge → `_writeUpdate` in Table.ts
+- instance ordering, retries and conditional queues → `update`, `#queueAfterStaging`, `#restoreUpdate`, `#saveOperation` in Table.ts
 - delete, invalidate, relocate, publish → `_writeDelete`, `_writeInvalidate`, `_writeRelocate`, `_writePublish` in Table.ts
 - index choice and condition order → `executeConditions`, `estimateCondition`, `searchByIndex` in search.ts
 - FIQL parsing → `parseBlock` in search.ts
 - response shape (select) → `transformEntryForSelect` in Table.ts; `transformForSelect` in Resource.ts
+- selects answered from index entries alone → `coveredSelectAttribute` in Table.ts; `coverIndexEntries` in search.ts
 - sorting → `transformToOrderedSelect` in Table.ts; whether the lead already supplies the order → `scansInAttributeOrder` in search.ts
-- record TTL and eviction → `setTTLExpiration`, `evict`, `scheduleCleanup` in Table.ts
+- record TTL and eviction → `setTTLExpiration`, `_adoptCatalogExpiration`, `evict`, `scheduleCleanup` in Table.ts; `armTableCleanupScans` in databases.ts
 - cache miss to source → `getFromSource` in Table.ts
 - subscriptions and replay → `subscribe`, `eventFromAudit` in Table.ts; `addSubscription` in transactionBroadcast.ts
+- history listings and full audit replay → `getHistory`, `getHistoryOfRecord`, `eventFromAudit` in Table.ts; `HistoryReader`, `HistoryMemo` in historyReader.ts; `getRecordAtTime` in crdt.ts
 - replication apply loop → `sourcedFrom` in Table.ts
 - the per-request transaction → `txnForContext` in Table.ts; `transaction()` in transaction.ts
 - transaction timeouts and long-held handles → `startMonitoringTxns` in DatabaseTransaction.ts; longLivedTransactions.ts
 - conflict retry cap, deadline, aborting a logged commit → `noteRetryBoundary`, `mustRetryLoggedCommit` in DatabaseTransaction.ts
-- residency, stubs, replicas → `getResidency`, `_storeReplica` in Table.ts; residencyMaps.ts
+- residency, stubs, replicas → `getResidency`, `_storeReplica`, `reclaimReplicaSpace` in Table.ts; residencyMaps.ts
 - table create, schema change, drop → `table()`, `runIndexing` in databases.ts; `dropTable`, `updatedAttributes` in Table.ts
+- when a `@computed` index rebuilds (re-declare, late resolver) → `declareTable`, `requestComputedIndexRepair` in databases.ts
 - relationships → the resolvers built in `updatedAttributes`; `_prepareRelationshipSelection` and `_readDenial` in Table.ts
 - relationship conditions and `rel[...]` groups → `filterByType`, `searchRelatedGroup` in search.ts; `_prepareQueryConditions` in Table.ts
 - URL path to resource → `getMatch`, `matchParamRoute` in Resources.ts
@@ -63,5 +68,6 @@ Where things are in `resources/`. The rules live in [DESIGN.md](DESIGN.md): read
 - application row filtering → `eventFilter` in ResourceInterface.ts; `search`, `subscribe` in Table.ts
 - matching expired rows in SQL UPDATE/DELETE → `transformEntryForSelect` in Table.ts
 - filters during a vector search → `composeRecordFilter`, `planCandidateKeys` in search.ts; see [indexes/DESIGN.md](indexes/DESIGN.md)
+- a vector threshold that filters rather than leads → `vectorDistanceFilter` in search.ts; `thresholdFilter` in indexes/HierarchicalNavigableSmallWorld.ts
 - HNSW connectivity after a delete → `repairSeveredNeighbors` in indexes/HierarchicalNavigableSmallWorld.ts
 - tests → `unitTests/resources/`

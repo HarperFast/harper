@@ -486,6 +486,31 @@
 				"enabled": { "type": "boolean", "description": "Enable local Harper Studio GUI. Default: false" }
 			}
 		},
+		"studio": {
+			"type": "object",
+			"description": "Harper Studio UI settings for the cluster, written with set_configuration (studio_navigation, studio_landing) and readable by every authenticated role through get_studio_configuration. Each node keeps its own copy, so write it on every node, or pass replicated: true. A UI choice only: server permissions are unchanged. An invalid entry is ignored with a logged warning.",
+			"properties": {
+				"navigation": {
+					"type": ["object", "null"],
+					"description": "How Studio shows each built-in tab, or a component's page keyed <component>.<pageId>. Beats what applications and plugins set. A tab no one lists is visible.",
+					"propertyNames": { "$ref": "#/definitions/studioPageKey" },
+					"properties": {
+						"applications": { "$ref": "#/definitions/studioNavigationState" },
+						"databases": { "$ref": "#/definitions/studioNavigationState" },
+						"apis": { "$ref": "#/definitions/studioNavigationState" },
+						"operations": { "$ref": "#/definitions/studioNavigationState" },
+						"status": { "$ref": "#/definitions/studioNavigationState" },
+						"logs": { "$ref": "#/definitions/studioNavigationState" },
+						"config": { "$ref": "#/definitions/studioNavigationState" }
+					},
+					"additionalProperties": { "$ref": "#/definitions/studioNavigationState" }
+				},
+				"landing": {
+					"anyOf": [{ "$ref": "#/definitions/studioPageKey" }, { "type": "null" }],
+					"description": "The page Studio opens the cluster on: a built-in tab key, or <component>.<pageId> for a page a component declares."
+				}
+			}
+		},
 
 		"logging": {
 			"type": "object",
@@ -710,6 +735,12 @@
 					"description": "When true, sets LMDB noSync to disable LMDB's commit disk sync for faster writes (risk of losing recent commits on OS crash or power loss); when false, LMDB keeps commit disk sync enabled (overlapped on Linux and macOS by default). Applies only to the LMDB storage engine; this setting has no effect on RocksDB, where Harper does not fsync individual commits to disk (transaction logs are synced on memtable flush rather than per commit). Default: false"
 				},
 				"caching": { "type": "boolean", "description": "Enable in-memory caching of records. Default: true" },
+				"recordCacheSize": {
+					"type": "integer",
+					"minimum": 4,
+					"maximum": 16777215,
+					"description": "RocksDB only: the size, in entries, of each thread's in-memory record cache, shared by every table in the thread. A record under 1 KB is one entry and takes about 2 KB of heap while cached; a larger record counts as about one entry per 512 bytes. Read at startup; changes take effect on restart. Default: 32768"
+				},
 				"compression": {
 					"oneOf": [
 						{ "type": "boolean" },
@@ -1033,6 +1064,28 @@
 			"type": "object",
 			"additionalProperties": false,
 			"properties": {
+				"fullText": {
+					"type": "object",
+					"additionalProperties": false,
+					"description": "Live, opt-in native full-text analytics. Omitted means disabled; no polling. Counters always record in the wrapper.",
+					"properties": {
+						"enabled": { "type": "boolean" },
+						"intervalMilliseconds": {
+							"type": "integer",
+							"minimum": 1000,
+							"maximum": 2147483647,
+							"description": "Per-handle collection interval. Implied default: 60000 ms. Calls are staggered."
+						},
+						"histograms": {
+							"type": "boolean",
+							"description": "Independently opt in to histogram recording. Implied default: false."
+						},
+						"snapshotBytes": {
+							"type": "boolean",
+							"description": "Independently opt in to reader byte observation. Implied default: false."
+						}
+					}
+				},
 				"aggregatePeriod": {
 					"type": "number",
 					"description": "Seconds between aggregation of raw analytics. Default: 60"
@@ -1063,6 +1116,17 @@
 	"additionalProperties": true,
 
 	"definitions": {
+		"studioPageKey": {
+			"type": "string",
+			"maxLength": 128,
+			"pattern": "^(?:[a-z0-9-]+|[A-Za-z0-9_@-][A-Za-z0-9_@/.-]*\\.[a-z0-9-]{1,64})$",
+			"description": "A built-in tab key, or <component>.<pageId>: the component (an application's name as get_components reports it, followed for a plugin's page by .<key> for each plugin down to the one declaring it), a dot, and the id of a page it declares."
+		},
+		"studioNavigationState": {
+			"type": "string",
+			"enum": ["visible", "tucked", "hidden"],
+			"description": "visible: a top tab; tucked: moved out of the top tabs; hidden: not shown."
+		},
 		"loggerConfig": {
 			"type": "object",
 			"additionalProperties": true,

@@ -15,6 +15,8 @@ const {
 	serialize,
 	serializeMessage,
 	toCsvStream,
+	buildSelectColumns,
+	recordAppliedSelect,
 	waitForStreamStartup,
 	discardSerializedStream,
 	brotliOptions,
@@ -1141,5 +1143,62 @@ describe('contentTypes – toCsvStream scalar and tuple columns (harper#1482)', 
 			tupleErrOut,
 			'"id","note"\n"z-1","n1"\n"{""error"":""Error"",""message"":""row 2 failed"",""id"":""z-2""}"\n"z-3","n3"\n'
 		);
+	});
+});
+
+describe('contentTypes – text/csv applied select', function () {
+	const response = { headers: { set() {} } };
+	const nestedSelect = () => ({ name: 'child', select: ['id', 'label'] });
+
+	it('formats a value as one cell when its applied scalar select names the same column as the target select', async function () {
+		const request = { headers: { accept: 'text/csv' } };
+		const child = { id: 'c1', label: 'l1' };
+		recordAppliedSelect(request, nestedSelect(), false, child);
+		const body = await streamToString(serialize(child, request, response, { select: nestedSelect() }));
+		assert.strictEqual(body, '"child"\n"{""id"":""c1"",""label"":""l1""}"\n');
+	});
+
+	it('formats a value by its own keys when its applied select names another column', async function () {
+		const request = { headers: { accept: 'text/csv' } };
+		const child = { id: 'c1', label: 'l1' };
+		recordAppliedSelect(request, nestedSelect(), false, child);
+		const body = await streamToString(serialize(child, request, response, { select: { name: 'owner' } }));
+		assert.strictEqual(body, '"id","label"\n"c1","l1"\n');
+	});
+
+	it('records nothing for a request that cannot negotiate CSV', async function () {
+		const child = { id: 'c1', label: 'l1' };
+		recordAppliedSelect({ headers: { accept: 'application/json' } }, nestedSelect(), false, child);
+		const request = { headers: { accept: 'text/csv' } };
+		const body = await streamToString(serialize(child, request, response, { select: nestedSelect() }));
+		assert.strictEqual(body, '"id","label"\n"c1","l1"\n');
+	});
+});
+
+describe('contentTypes – toCsvStream wildcard columns', function () {
+	const attributes = [{ name: 'id' }, { name: 'name' }, { name: 'note' }];
+	const rows = () => [
+		{ id: '1', name: 'a', extra: 1 },
+		{ id: '2', note: 'n', extra: 2 },
+	];
+
+	it('leads the header with the declared columns of a wildcard, then adds the first row keys', async function () {
+		const out = await streamToString(toCsvStream(rows(), undefined, buildSelectColumns('*', attributes)));
+		assert.strictEqual(out, '"id","name","note","extra"\n"1","a",,1\n"2",,"n",2\n');
+	});
+
+	it('lists a column once when the select also names it', function () {
+		assert.deepStrictEqual([...buildSelectColumns(Object.assign(['*', 'note']), attributes)], ['id', 'name', 'note']);
+		assert.deepStrictEqual([...buildSelectColumns(Object.assign(['note', '*']), attributes)], ['note', 'id', 'name']);
+	});
+
+	it('keeps the first row keys for an explicit select and lets getColumns() win over a wildcard fallback', async function () {
+		const explicit = await streamToString(
+			toCsvStream(rows(), undefined, buildSelectColumns(['id', 'name'], attributes))
+		);
+		assert.strictEqual(explicit, '"id","name","extra"\n"1","a",1\n"2",,2\n');
+		const withColumns = Object.assign(rows(), { getColumns: () => ['id', 'name'] });
+		const own = await streamToString(toCsvStream(withColumns, undefined, buildSelectColumns('*', attributes)));
+		assert.strictEqual(own, '"id","name"\n"1","a"\n"2",\n');
 	});
 });

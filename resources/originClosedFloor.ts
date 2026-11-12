@@ -1,6 +1,7 @@
 import { threadId } from 'node:worker_threads';
-import type { Transaction as RocksTransaction, RocksDatabase } from '@harperfast/rocksdb-js';
+import { raiseTimestampFloor, type Transaction as RocksTransaction, type RocksDatabase } from '@harperfast/rocksdb-js';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
+import { ServerError } from '../utility/errors/hdbError.ts';
 import { onMessageByType } from '../server/threads/manageThreads.ts';
 
 /**
@@ -10,9 +11,10 @@ import { onMessageByType } from '../server/threads/manageThreads.ts';
  * handle stages its first write, which is when rocksdb-js freezes it. Each thread publishes, in a
  * per-root-store shared buffer, a lower bound on every key it may still append; a certifier
  * publishes `F ≤ min(a clock sample taken first, every thread's bound)`, so no transaction can later
- * append below `F`. Persisted before it is advertised; the issuance ratchet keeps keys unique and at
- * or above the recovered floor after a restart behind it. Design: resources/DESIGN.md
- * "Origin-closed timestamp floor".
+ * append below `F`. Persisted before it is advertised; the open raises rocksdb-js's process-wide clock
+ * above the persisted floor and issuance ceiling, so a restart behind them mints above both. That clock
+ * mints for every database in the process, so each database covers its own keys that run ahead of the wall
+ * clock, whatever raised it (`noteIssued`). Design: resources/DESIGN.md "Origin-closed timestamp floor".
  */
 
 const SLOTS = 1024;
@@ -20,16 +22,19 @@ const SLOTS = 1024;
 const BOUND_STRIDE = 8;
 export const WORD_PROPOSED = 0;
 export const WORD_PUBLISHED = 1;
-export const WORD_RATCHET = 2;
-// Non-zero once a key may have been issued from the ratchet rather than the native clock (the clock
-// was behind a recovered floor or a runtime claim); native keys then pass through it for the rest of
-// the process, since any later hand-back to load-only admission races a fallback still in flight.
-export const WORD_STRICT = 3;
+// The highest value this database raised the clock to. Stored after the raise: a thread that reads it and
+// then mints is above it, so a handle at or below it was minted before the raise.
+export const WORD_ISSUANCE_FLOOR = 2;
+// At or above every key this database issued at least a millisecond ahead of the wall clock in this process,
+// recorded before that key's ceiling is flushed; a requested claim floor is recorded only once covered.
+export const WORD_COVERED = 3;
 export const WORD_INITIAL_CEILING = 4;
 // One past the highest slot ever claimed: a bounds scan stops there. Raised when a slot is claimed, before
 // the claimer reads `proposed`; a sampler raises `proposed` before it loads this, so a claim the sampler's scan
 // misses admits only keys above the sampler's value.
 export const WORD_SLOT_LIMIT = 5;
+// The highest issuance ceiling this process has flushed for this database: a key at or below it needs no flush.
+export const WORD_DURABLE_CEILING = 6;
 export const HEADER_WORDS = 8;
 const THREAD_WORDS_OFFSET = HEADER_WORDS;
 const BOUND_WORDS_OFFSET = HEADER_WORDS + SLOTS;
@@ -39,6 +44,9 @@ const BUFFER_KEY = 'origin-closed-floor';
 export const ORIGIN_FLOOR_TICK_MS = 5000;
 const PENDING_RETRIES = 8;
 const MAX_TIMESTAMP = 8.64e15;
+// rocksdb-js refuses to raise its clock more than ten years ahead of the wall clock; a claim stops a year
+// short, so the ceiling it persists stays restorable at the next open.
+const MAX_CLAIM_LEAD_MS = 9 * 365.25 * 86_400_000;
 
 export const ORIGIN_FLOOR_RETIRE = 'origin-floor-retire';
 
@@ -60,6 +68,10 @@ function fromBits(bits: bigint): number {
 	return FLOAT_SCRATCH[0];
 }
 const INFINITY_BITS = toBits(Infinity);
+
+// The last wall-clock reading `noteIssued` took on this thread. A key within that reading's millisecond is not
+// a millisecond ahead of the wall clock unless the wall clock has since stepped back.
+let wallSeen = 0;
 
 /** The next representable timestamp above a positive `value`: the step the native clock breaks ties by. */
 export function timestampAbove(value: number): number {
@@ -206,57 +218,41 @@ class ThreadRegistry {
 		Atomics.store(this.words, boundIndex(this.slot), toBits(bound));
 	}
 
-	/**
-	 * Admit a natively minted key: it must beat the ratchet. Ordinarily that is one load, since the
-	 * ratchet is the recovered floor and native keys are unique by the native clock. Once a key has
-	 * been issued from the ratchet instead (`WORD_STRICT`), a native key also raises the ratchet to
-	 * itself by compare-and-swap, so a stale ratchet step cannot repeat a native key another thread
-	 * admitted meanwhile.
-	 */
-	private admitNative(bits: bigint): boolean {
-		for (;;) {
-			const ratchet = Atomics.load(this.words, WORD_RATCHET);
-			if (bits <= ratchet) return false;
-			if (Atomics.load(this.words, WORD_STRICT) === 0n) return true;
-			if (Atomics.compareExchange(this.words, WORD_RATCHET, ratchet, bits) === ratchet) return true;
-		}
-	}
-
-	/**
-	 * A unique key above every clock sample so far: the native clock's next value, or, while that
-	 * clock is still behind the ratchet (the recovered floor after a restart), the ratchet's next ulp.
-	 */
 	freshKey(): number {
-		const minted = this.rootStore.getMonotonicTimestamp();
-		if (this.admitNative(toBits(minted))) return minted;
-		// Behind the ratchet: from here on native keys go through it too, and a sample taken after that
-		// switch is ordered against every admission that saw the old mode.
-		Atomics.store(this.words, WORD_STRICT, 1n);
-		for (;;) {
-			const again = this.rootStore.getMonotonicTimestamp();
-			if (this.admitNative(toBits(again))) return again;
-			const ratchet = Atomics.load(this.words, WORD_RATCHET);
-			const next = ratchet + 1n;
-			this.covered(fromBits(next));
-			if (Atomics.compareExchange(this.words, WORD_RATCHET, ratchet, next) === ratchet) return fromBits(next);
-		}
-	}
-
-	/**
-	 * A key issued from the ratchet is ahead of the clock, which a restart cannot recover, so a ceiling
-	 * above it is persisted before it is used; open seeds issuance above that ceiling.
-	 */
-	private covered(key: number): number {
-		if (key > this.coveredThrough) {
-			const cover: ((key: number) => number) | undefined = (this.rootStore as any)[ISSUANCE_COVER];
-			if (cover) this.coveredThrough = cover(key);
-		}
+		const key = this.rootStore.getMonotonicTimestamp();
+		this.noteIssued(key);
 		return key;
 	}
 
-	/** Persist a claim's ceiling before making its floor visible to other workers. */
+	/**
+	 * A key minted at least a millisecond ahead of the wall clock, after a raise for any database in the
+	 * process, would be minted again by a restart before wall time reaches it, so this database's ceiling
+	 * covers it before it is used. A key less ahead than that is not covered: a restart takes longer, so the
+	 * restarted wall clock is already past it.
+	 */
+	noteIssued(key: number): void {
+		if (key <= this.coveredThrough || (key >= wallSeen && key < wallSeen + 1)) return;
+		wallSeen = Date.now();
+		if (key >= wallSeen + 1) this.covered(key, true);
+	}
+
+	/**
+	 * Persist a ceiling above `key` before it is used; open raises the clock above that ceiling. An issued key
+	 * counts as issued ahead whether or not its ceiling lands, so a hold step taken during the flush sees it.
+	 */
+	private covered(key: number, issued: boolean): void {
+		if (key <= this.coveredThrough) return;
+		const cover: ((key: number) => number) | undefined = (this.rootStore as any)[ISSUANCE_COVER];
+		if (!cover) return;
+		if (issued) storeMax(this.words, WORD_COVERED, key);
+		const durable = fromBits(Atomics.load(this.words, WORD_DURABLE_CEILING));
+		this.coveredThrough = key <= durable ? durable : cover(key);
+		storeMax(this.words, WORD_DURABLE_CEILING, this.coveredThrough);
+		storeMax(this.words, WORD_COVERED, this.coveredThrough);
+	}
+
 	coverBeforeClaim(floor: number): void {
-		this.covered(floor);
+		this.covered(floor, false);
 	}
 
 	reserve(handle: RocksTransaction, explicit: number | undefined): number {
@@ -270,12 +266,18 @@ class ThreadRegistry {
 			const current = handle.getTimestamp();
 			const bits = toBits(current);
 			// Admitting a caller's value would let two local transactions share a key, and a later mint land on
-			// it, since it may not move the ratchet (one far in the future would pin every later key). Every site
-			// that installs a caller's value on a handle hands it to `save` as `txnTime`, so a handle without
-			// `explicit` carries its own mint.
-			const admissible = explicit == null && bits >= Atomics.load(words, WORD_PROPOSED) && this.admitNative(bits);
-			const key = admissible ? current : this.freshKey();
-			if (key !== current) handle.setTimestamp(key);
+			// it. Every site that installs a caller's value on a handle hands it to `save` as `txnTime`, so a
+			// handle without `explicit` carries its own mint.
+			const admissible =
+				explicit == null &&
+				bits >= Atomics.load(words, WORD_PROPOSED) &&
+				bits > Atomics.load(words, WORD_ISSUANCE_FLOOR);
+			let key = current;
+			if (admissible) this.noteIssued(key);
+			else {
+				key = this.freshKey();
+				handle.setTimestamp(key);
+			}
 			const reservation: Reservation = { registry: this, key, released: false, aroundCallerValue: explicit != null };
 			(handle as any)[RESERVATION] = reservation;
 			this.pushHeap(reservation);
@@ -413,9 +415,11 @@ export function reservedLocalKey(handle: RocksTransaction | undefined): number |
 }
 
 /**
- * A retry whose attempt wrote no log batch logs afresh, under a fresh key, so it stays in order with the
+ * A retry whose attempt wrote no log batch logs afresh, under a fresh key, so its version stays above the
  * writes that beat it; the published bound stays at the original, smaller key, which still bounds it.
- * Returns the new key, or undefined when the handle has no minted reservation or its timestamp is frozen.
+ * Returns the new key, or undefined when the handle has no reservation or reserved around a caller's value:
+ * that write's version is the caller's value whatever its key, so a fresh key would order nothing, and the
+ * key it reserved is still unused and above the floor.
  */
 export function rekeyLocalRetry(handle: RocksTransaction): number | undefined {
 	const reservation: Reservation | undefined = (handle as any)[RESERVATION];
@@ -434,53 +438,79 @@ export function reservedAroundCallerValue(handle: RocksTransaction | undefined):
 	return (handle && (handle as any)[RESERVATION]?.aroundCallerValue) === true;
 }
 
-/** The highest key the ratchet has issued or admitted. */
-export function localIssuanceRatchet(rootStore: RocksDatabase): number {
-	return fromBits(Atomics.load(registryFor(rootStore).words, WORD_RATCHET));
+/** The highest value this database raised the clock to: a reservation re-keys a handle minted at or below it. */
+export function localIssuanceFloor(rootStore: RocksDatabase): number {
+	return fromBits(Atomics.load(registryFor(rootStore).words, WORD_ISSUANCE_FLOOR));
 }
 
 /**
- * A timestamp no local append on this node is issued at: the clock's next one, or the ratchet's while it
- * is ahead. A raw clock sample can equal a key the ratchet issued ahead of the clock once the clock
- * catches up, and an equal version on one record reads as a re-delivery.
+ * At or above every key this database issued ahead of the wall clock in this process, by more than a
+ * millisecond: such keys are dense, one ulp apart, so a version one ulp above another may already be a key.
  */
+export function localIssuedAheadThrough(rootStore: RocksDatabase): number {
+	const words = registryFor(rootStore).words;
+	return Math.max(fromBits(Atomics.load(words, WORD_ISSUANCE_FLOOR)), fromBits(Atomics.load(words, WORD_COVERED)));
+}
+
 export function freshLocalKey(rootStore: any): number {
 	return typeof rootStore?.getUserSharedBuffer === 'function'
 		? registryFor(rootStore).freshKey()
 		: rootStore.getMonotonicTimestamp();
 }
 
-/** Claim a record-version floor with a fresh local key, leaving all later local keys above it. */
+/**
+ * Claim a record-version floor with a fresh local key, leaving all later local keys above it. A floor
+ * ahead of the clock persists its ceiling first, then raises the clock to it.
+ */
 export function claimLocalKey(rootStore: RocksDatabase, floor: number): number {
 	const registry = registryFor(rootStore);
-	registry.coverBeforeClaim(floor);
-	storeMax(registry.words, WORD_RATCHET, fromBits(toBits(floor) - 1n));
-	return registry.freshKey();
+	const below = fromBits(toBits(floor) - 1n);
+	const sample = rootStore.getMonotonicTimestamp();
+	const ahead = sample < floor;
+	if (ahead) {
+		if (!(floor - Date.now() <= MAX_CLAIM_LEAD_MS))
+			throw new ServerError(`A local key cannot be claimed at ${floor}: it is too far ahead of the clock to restore`);
+		registry.coverBeforeClaim(floor);
+		raiseTimestampFloor(below);
+	}
+	// even when the clock had passed the floor: a handle minted before the claim must not reserve below it
+	storeMax(registry.words, WORD_ISSUANCE_FLOOR, below);
+	if (ahead) return registry.freshKey();
+	registry.noteIssued(sample);
+	return sample;
 }
 
 /**
- * Install per-thread coverage and seed a fresh registry above the earlier process's persisted ceiling.
- * Later openers share that initial snapshot without consuming newly reserved headroom.
+ * Restore a database's persisted bounds before anything on this thread can start a transaction on it: raise
+ * the process-wide clock above the origin-closed floor and the issuance ceiling, publish the floor, and
+ * install ceiling coverage. The ceiling is the first opener's snapshot: a later opener must not turn
+ * headroom another thread reserved into a lead. Persists nothing, so a read-only open stays read-only.
  */
-export function seedLocalIssuance(rootStore: RocksDatabase, ceiling: number, cover: (key: number) => number): void {
+export function seedLocalIssuance(
+	rootStore: RocksDatabase,
+	ceiling: number,
+	cover: (key: number) => number,
+	floor = 0
+): void {
 	if (typeof rootStore?.getUserSharedBuffer !== 'function') return;
 	(rootStore as any)[ISSUANCE_COVER] = cover;
 	const words = registryFor(rootStore).words;
-	// Only recovery consumes the disk reserve. Later workers must not turn unused headroom into a lead.
 	const encoded = isValidFloor(ceiling) ? toBits(ceiling) : -1n;
 	const prior = Atomics.compareExchange(words, WORD_INITIAL_CEILING, 0n, encoded);
 	const initial = prior === 0n ? encoded : prior;
-	if (initial === -1n) return;
-	const recovered = fromBits(initial);
-	storeMax(words, WORD_RATCHET, recovered);
-	if (rootStore.getMonotonicTimestamp() <= recovered) Atomics.store(words, WORD_STRICT, 1n);
-}
-
-function raiseOriginFloorIssuance(rootStore: RocksDatabase, floor: number): void {
-	const words = registryFor(rootStore).words;
-	storeMax(words, WORD_RATCHET, floor);
-	storeMax(words, WORD_PROPOSED, floor);
-	if (rootStore.getMonotonicTimestamp() <= floor) Atomics.store(words, WORD_STRICT, 1n);
+	const recovered = Math.max(initial === -1n ? 0 : fromBits(initial), isValidFloor(floor) ? floor : 0);
+	if (recovered > 0) {
+		try {
+			raiseTimestampFloor(recovered);
+		} catch (error) {
+			// Minting below a bound this node advertised is the loss the floor exists to prevent, so the open fails.
+			throw new ServerError(
+				`The persisted transaction-log bounds cannot be restored (origin-closed floor ${floor}, issuance ceiling ${ceiling}): ${(error as Error).message}. Correct the host clock and restart; if it is already correct, the bound was persisted while it ran ahead, and the database opens only once wall time is within ten years of it, with the clock raised that far ahead`
+			);
+		}
+		storeMax(words, WORD_ISSUANCE_FLOOR, recovered);
+	}
+	publishOriginFloor(rootStore, floor);
 }
 
 /** Whether this engine can make a floor record power-loss durable before it is advertised (`syncWal`). */
@@ -488,12 +518,16 @@ export function originFloorsDurable(rootStore: any): boolean {
 	return typeof rootStore?.syncWal === 'function';
 }
 
+/**
+ * Advertise a floor at or below the clock: a certified one is, and the open raises the clock above a
+ * restored one before publishing it.
+ */
 export function publishOriginFloor(rootStore: RocksDatabase, floor: number): void {
 	if (typeof rootStore?.getUserSharedBuffer !== 'function') return;
-	registryFor(rootStore); // every opener can retire a dead thread's bounds, floor or no floor
+	const words = registryFor(rootStore).words; // every opener can retire a dead thread's bounds, floor or no floor
 	if (!isValidFloor(floor)) return;
-	raiseOriginFloorIssuance(rootStore, floor);
-	storeMax(registryFor(rootStore).words, WORD_PUBLISHED, floor);
+	storeMax(words, WORD_PROPOSED, floor);
+	storeMax(words, WORD_PUBLISHED, floor);
 }
 
 /**
@@ -534,7 +568,7 @@ export function threadStartBound(rootStore: RocksDatabase): { atOrAbove: number 
 	if (rootStore.status === 'closed') return;
 	const registry = registryFor(rootStore);
 	const words = registry.words;
-	const sample = Math.max(rootStore.getMonotonicTimestamp(), fromBits(Atomics.load(words, WORD_RATCHET)));
+	const sample = Math.max(rootStore.getMonotonicTimestamp(), fromBits(Atomics.load(words, WORD_ISSUANCE_FLOOR)));
 	storeMax(words, WORD_PROPOSED, sample);
 	const bound = registry.lowestOutstanding();
 	return bound <= sample ? { atOrAbove: bound } : { above: sample };
@@ -543,7 +577,7 @@ export function threadStartBound(rootStore: RocksDatabase): { atOrAbove: number 
 function sampleClosedBounds(rootStore: RocksDatabase): { sample: number; bound: number; settled: boolean } {
 	const registry = registryFor(rootStore);
 	const words = registry.words;
-	const sample = Math.max(rootStore.getMonotonicTimestamp(), fromBits(Atomics.load(words, WORD_RATCHET)));
+	const sample = Math.max(rootStore.getMonotonicTimestamp(), fromBits(Atomics.load(words, WORD_ISSUANCE_FLOOR)));
 	storeMax(words, WORD_PROPOSED, sample);
 	let bound = registry.minBound();
 	for (let attempt = 1; attempt < PENDING_RETRIES && bound < 0; attempt++) bound = registry.minBound();

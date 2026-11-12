@@ -222,7 +222,7 @@ async function descTable(describeTableObject: any, attrPerms?: any) {
 		db_size,
 	};
 	if (tableObj.replicate !== undefined) tableResult.replicate = tableObj.replicate;
-	if (tableObj.expirationMS !== undefined) tableResult.expiration = tableObj.expirationMS / 1000 + 's';
+	if (tableObj.expirationMS || tableObj.evictionMS) tableResult.expiration = tableObj.expirationMS / 1000 + 's';
 	if (tableObj.sealed !== undefined) tableResult.sealed = tableObj.sealed;
 	if (tableObj.cacheControl != null) tableResult.cacheControl = tableObj.cacheControl;
 	if ((tableObj as any).sources?.length > 0)
@@ -273,12 +273,19 @@ async function descTable(describeTableObject: any, attrPerms?: any) {
 	try {
 		// `getRecordCount` scans the table's primary store, which dominates describe latency on large
 		// tables -- and `describe_all` pays it serially for every table. Callers that only need schema
-		// /metadata can pass `skip_record_count: true` to omit the scan and fetch the count separately
+		// /metadata can pass `skip_record_count: true` to omit the scan, and the replica count and size
+		// sample with it, and fetch the count separately
 		// (e.g. asynchronously). The remaining stats below are all small per-table storage reads.
 		if (!describeTableObject.skip_record_count) {
 			const recordCount = await tableObj.getRecordCount({ exactCount: !!describeTableObject.exact_count });
 			tableResult.record_count = recordCount.recordCount;
 			tableResult.estimated_record_range = recordCount.estimatedRange;
+			const replicas = await tableObj.getReplicaStats?.({ exactCount: !!describeTableObject.exact_count });
+			if (replicas) {
+				tableResult.replica_count = replicas.count;
+				if (replicas.estimatedRange) tableResult.estimated_replica_range = replicas.estimatedRange;
+				tableResult.replica_size_estimate = replicas.sizeEstimate;
+			}
 		}
 		tableResult.table_size = tableObj.getSize();
 		tableResult.db_audit_size = tableObj.getAuditSize();

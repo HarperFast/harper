@@ -46,6 +46,11 @@ const { errorToString, errorForLog } = harperLogger;
 
 const OPENAPI_DOMAIN = 'openapi';
 
+// An error status carries a payload, not the read's projection
+function serializationTarget(method: string, target: RequestTarget | undefined, status?: number) {
+	return (method === 'GET' || method === 'HEAD') && !(status >= 400) ? target : undefined;
+}
+
 /**
  * Finalize a Response (or a response-like envelope carrying a `headers` field) into the response object
  * handed to the HTTP layer: merge in the accumulated headers, serialize a body from `data` or the object
@@ -58,7 +63,9 @@ function finalizeResponse(
 	status,
 	request,
 	method = request.method,
-	preconditionsEnabled = true
+	preconditionsEnabled = true,
+	target?: RequestTarget,
+	resource?: typeof Resource
 ) {
 	if (Object.isFrozen(responseData)) {
 		// make a copy if it is a frozen record
@@ -100,7 +107,8 @@ function finalizeResponse(
 		let body: any;
 		if ('data' in responseData) {
 			// a standard Response object does not have a setter for body, so we force it
-			body = serialize(responseData.data, request, responseData);
+			const dataTarget = serializationTarget(method, target, responseData.status ?? status);
+			body = serialize(responseData.data, request, responseData, dataTarget, resource);
 		} else if (responseData.body === undefined) {
 			// if there is really no body, serialize this object into the body. Note that `new Response()` creates a response
 			// with a null body, and will not fall into this branch
@@ -332,6 +340,9 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 	const conditionalRead =
 		preconditionsEnabled && (method === 'GET' || method === 'HEAD') && hasPreconditions(headersObject);
 	let writeCondition;
+	// declared outside the try so a thrown Response is serialized against the same target
+	let target: RequestTarget;
+	let resource: typeof Resource;
 	try {
 		request.responseHeaders = headers;
 		request.response = {
@@ -340,8 +351,6 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 		};
 		const url = request.url.slice(1);
 
-		let target: RequestTarget;
-		let resource: typeof Resource;
 		if (url !== OPENAPI_DOMAIN) {
 			const entry = resources.getMatch(url, isSse ? 'sse' : 'rest');
 			if (!entry) {
@@ -627,7 +636,9 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				status,
 				request,
 				method,
-				preconditionsEnabled && !deferred
+				preconditionsEnabled && !deferred,
+				target,
+				resource
 			);
 			const startup = readStreamStartup(response.body, request.method, method);
 			if (startup) await startup;
@@ -709,7 +720,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				responseData,
 				request,
 				responseObject,
-				method === 'GET' || method === 'HEAD' ? target : undefined,
+				serializationTarget(method, target, responseObject.status),
 				resource
 			);
 			const startup = readStreamStartup(responseObject.body, request.method, method);
@@ -741,7 +752,16 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				error = new ClientError('The resource did not apply the write precondition', 501);
 			} else {
 				try {
-					return finalizeResponse(error, headers, request.response.status, request, method, preconditionsEnabled);
+					return finalizeResponse(
+						error,
+						headers,
+						request.response.status,
+						request,
+						method,
+						preconditionsEnabled,
+						target,
+						resource
+					);
 				} catch (preconditionError) {
 					error = preconditionError;
 				}

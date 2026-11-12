@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { fullTextTelemetryCollector, registerNativeFullTextTelemetry } from '../analytics/fullTextTelemetryRuntime.ts';
 import { getFullTextQueryPolicy } from './fullTextRuntimeConfiguration.ts';
 import * as env from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
@@ -18,6 +19,7 @@ import type { FullTextDefinition } from '../fullTextSchema.ts';
 import type { RocksTransactionLogStore } from '../RocksTransactionLogStore.ts';
 import {
 	loadFullTextNativeBinding,
+	getValidatedFullTextRuntimeInfo,
 	nativeFullTextSearchThreads,
 	nativeFullTextQueryLimits,
 	validateFullTextQueryRuntimeInfo,
@@ -36,6 +38,7 @@ import {
 	fullTextHitsAdvance,
 	fullTextFuzzyOptions,
 	validateFullTextFuzzyOptions,
+	validateFullTextScoringRuntime,
 } from './fullTextQueryProtocol.ts';
 export {
 	FULL_TEXT_QUERY_PAUSE_OPERATION,
@@ -48,6 +51,7 @@ import {
 	type DerivedNativeIndexHost,
 } from './hnswDerivedIndex.ts';
 import { loggerWithTag } from '../../utility/logging/logger.ts';
+import type { FullTextScoringClause } from '../ResourceInterface.ts';
 import type { CandidateKeyPlan } from '../search.ts';
 import type { Id } from '../ResourceInterface.ts';
 
@@ -68,6 +72,8 @@ const NATIVE_SEARCH_HIT_OVERHEAD_BYTES = 13;
 const MAX_RELOAD_FAILURES_BEFORE_REOPEN = 3;
 const HIGHLIGHT_BLOB_READ_TIMEOUT_MILLISECONDS = 5_000;
 const READER_DRAIN_GRACE_MILLISECONDS = 1_000;
+const READER_ACQUISITION_TIMEOUT_MILLISECONDS = 30_000;
+const CAPABILITY_LOADING_TIMEOUT_MILLISECONDS = 30_000;
 const UTF8_DECODER = new TextDecoder('utf-8', { fatal: true });
 const logger = loggerWithTag('fulltext-query-index');
 
@@ -76,6 +82,8 @@ export type FullTextCondition = {
 	value?: string;
 	comparator?: string;
 	fields?: string[];
+	boost?: number;
+	should?: FullTextScoringClause[];
 	fullTextQuery?: NativeFullTextSearchExpression;
 	fuzzyDistance?: number;
 	fuzzyTranspositions?: boolean;
@@ -130,8 +138,10 @@ export type FullTextQueryIndexOptions = {
 	storePath: string;
 	storeName: string;
 	sourceGeneration: string;
+	telemetryLabel?: string;
 	limits: NativeFullTextIndexConfiguration['limits'];
 	binding?: NativeFullTextModule | (() => Promise<NativeFullTextModule>);
+	capabilityLoadingTimeoutMilliseconds?: number;
 };
 
 export class FullTextQueryIndex {
@@ -149,6 +159,7 @@ export class FullTextQueryIndex {
 	#definitionSnapshot: string;
 	#configurationRevision = 0;
 	#binding?: NativeFullTextModule;
+	#queryApiVersion?: number;
 	#readerSlot?: ReaderSlot;
 	#readerOperation?: Promise<ReaderSlot>;
 	#retiredReaderSlots = new Set<ReaderSlot>();
@@ -242,15 +253,25 @@ export class FullTextQueryIndex {
 		const waiting = waitForIndexMilliseconds > 0;
 		let coverage: DerivedIndexCoverage | undefined;
 		const execute = async () => {
-			assertFuzzyPolicy(
-				condition.fullTextQuery ?? leafDescriptor(condition),
-				getFullTextQueryPolicy().maxFuzzyDistance
-			);
+			const query = condition.fullTextQuery ?? leafDescriptor(condition);
+			const scoring = assertQueryPolicy(query, getFullTextQueryPolicy().maxFuzzyDistance);
 			assertReady(
 				readDerivedIndexReadiness(this.#options.auditStore, this.#options.readinessId),
 				this.#definition.name
 			);
 			if (waiting) {
+				if (scoring) {
+					if (!this.#binding) {
+						await waitForBinding(
+							this.#getBinding(),
+							this.#options.capabilityLoadingTimeoutMilliseconds ?? CAPABILITY_LOADING_TIMEOUT_MILLISECONDS,
+							context?.signal
+						);
+						context?.signal?.throwIfAborted();
+					}
+					if (this.#closed) throw new ServerError('Full-text index is closed', 503);
+					validateFullTextScoringRuntime(this.#queryApiVersion);
+				}
 				await context?.indexSearchStart;
 				context?.signal?.throwIfAborted();
 				const waitDeadline = performance.now() + waitForIndexMilliseconds;
@@ -282,7 +303,29 @@ export class FullTextQueryIndex {
 				this.#incompletePageFailureLogged = false;
 				return result;
 			}
-			coverage = this.#queryCoverage(maxIndexLagMilliseconds);
+			if (scoring) {
+				if (this.#binding) validateFullTextScoringRuntime(this.#queryApiVersion);
+				let coverageError: unknown;
+				try {
+					coverage = this.#queryCoverage(maxIndexLagMilliseconds, false);
+				} catch (error) {
+					coverageError = error;
+				}
+				if (!this.#binding) {
+					await waitForBinding(
+						this.#getBinding(),
+						this.#options.capabilityLoadingTimeoutMilliseconds ?? CAPABILITY_LOADING_TIMEOUT_MILLISECONDS,
+						context?.signal
+					);
+					context?.signal?.throwIfAborted();
+					validateFullTextScoringRuntime(this.#queryApiVersion);
+				}
+				if (this.#closed) throw new ServerError('Full-text index is closed', 503);
+				if (coverageError) {
+					this.#refreshReader(true);
+					throw coverageError;
+				}
+			} else coverage = this.#queryCoverage(maxIndexLagMilliseconds);
 			const result = await this.#search(condition, context, options);
 			this.#unexpectedSearchFailureWarned = false;
 			this.#incompletePageFailureLogged = false;
@@ -381,15 +424,11 @@ export class FullTextQueryIndex {
 		}
 	}
 
-	async #acquireSearchReader(condition: FullTextCondition, context: any) {
+	async #acquireSearchReader(context: any) {
 		const readiness = readDerivedIndexReadiness(this.#options.auditStore, this.#options.readinessId);
 		assertReady(readiness, this.#definition.name);
 		if (!this.#derivedHost) throw new IndexRebuildingError(`Full-text index '${this.#definition.name}' is not ready`);
 		const publicationGeneration = this.#publicationRevision();
-		const acquisitionTimeout = Math.min(
-			MAX_WAIT_FOR_INDEX_MILLISECONDS,
-			Math.max(1, condition.waitForIndexMilliseconds ?? MAX_WAIT_FOR_INDEX_MILLISECONDS)
-		);
 		const acquisition = this.#acquireReader(readiness.ownerEpoch, publicationGeneration);
 		let abortListener: (() => void) | undefined;
 		const abort = context?.signal
@@ -403,8 +442,8 @@ export class FullTextQueryIndex {
 		try {
 			lease = await withTimeout(
 				abort ? Promise.race([acquisition, abort]) : acquisition,
-				acquisitionTimeout,
-				() => new ServerError('Full-text reader acquisition exceeded the index-wait budget', 503)
+				READER_ACQUISITION_TIMEOUT_MILLISECONDS,
+				() => new ServerError('Full-text reader acquisition timed out', 503)
 			);
 		} catch (error) {
 			void acquisition.then(
@@ -443,7 +482,7 @@ export class FullTextQueryIndex {
 				500
 			);
 		}
-		const lease = await this.#acquireSearchReader(condition, context);
+		const lease = await this.#acquireSearchReader(context);
 		const reader = lease.reader;
 		try {
 			const deadline =
@@ -969,6 +1008,7 @@ export class FullTextQueryIndex {
 					reloadFailures: 0,
 				};
 				this.#readerSlot = slot;
+				registerNativeFullTextTelemetry(reader, this.#options.telemetryLabel ?? this.#options.indexId, 'reader');
 				return slot;
 			} catch (error) {
 				if (canReload && error instanceof FullTextReaderPublicationError) {
@@ -1055,7 +1095,20 @@ export class FullTextQueryIndex {
 	#closeReaderSlot(slot: ReaderSlot): Promise<void> {
 		if (!slot.closeOperation) {
 			const operation = Promise.resolve()
-				.then(() => slot.reader.close())
+				.then(() => {
+					fullTextTelemetryCollector.beforeClose(slot.reader);
+					return slot.reader.close();
+				})
+				.then(
+					(result) => {
+						fullTextTelemetryCollector.afterClose(slot.reader);
+						return result;
+					},
+					(error) => {
+						fullTextTelemetryCollector.closeFailed(slot.reader);
+						throw error;
+					}
+				)
 				.then((result) => {
 					this.#retiredReaderSlots.delete(slot);
 					if (result?.cleanupError) this.#warnReaderClose(result.cleanupError);
@@ -1114,7 +1167,8 @@ export class FullTextQueryIndex {
 				? await configured()
 				: configured
 			: await loadFullTextNativeBinding();
-		const info = validateFullTextQueryRuntimeInfo(await binding.runtimeInfo());
+		const runtime = configured ? await binding.runtimeInfo() : getValidatedFullTextRuntimeInfo(binding);
+		const info = validateFullTextQueryRuntimeInfo(runtime);
 		const queryPolicy = nativeFullTextQueryLimits(info, getFullTextQueryPolicy());
 		this.#nativeOptions.limits.maxQueryTerms = queryPolicy.maxQueryTerms;
 		this.#nativeOptions.limits.maxQueryClauses = queryPolicy.maxQueryClauses;
@@ -1142,13 +1196,14 @@ export class FullTextQueryIndex {
 		this.#maxSearchBudgetMilliseconds = info.limits.maxSearchBudgetMilliseconds;
 		this.#maxTraceRecords = info.limits.maxTraceRecords;
 		this.#maxTraceSourceBytes = info.limits.maxTraceSourceBytes;
+		this.#queryApiVersion = runtime.queryApiVersion;
 		return (this.#binding = binding);
 	}
 
-	#queryCoverage(maxLagMilliseconds: number): DerivedIndexCoverage {
+	#queryCoverage(maxLagMilliseconds: number, refreshOnUnknown = true): DerivedIndexCoverage {
 		const coverage = this.#readCoverage(maxLagMilliseconds);
 		if (!coverage || coverage.state === 'unknown') {
-			this.#refreshReader(true);
+			if (refreshOnUnknown) this.#refreshReader(true);
 			const age = coverage?.lagUpperBoundMilliseconds;
 			throw new DerivedIndexLagError(
 				`Cannot certify full-text index coverage within ${maxLagMilliseconds} ms` +
@@ -1241,7 +1296,10 @@ function assertFreshnessOptions(maxIndexLagMilliseconds: number, waitForIndexMil
 
 function expressionUsesAutocomplete(expression: NativeFullTextSearchExpression): boolean {
 	if ('text' in expression) return expression.mode === 'prefix' || expression.mode === 'fuzzy-prefix';
-	if (expression.operator === 'not') return expressionUsesAutocomplete(expression.clause);
+	if (expression.operator === 'not' || expression.operator === 'boost')
+		return expressionUsesAutocomplete(expression.clause);
+	if (expression.operator === 'optional')
+		return expressionUsesAutocomplete(expression.required) || expression.optional.some(expressionUsesAutocomplete);
 	return expression.clauses.some(expressionUsesAutocomplete);
 }
 
@@ -1252,6 +1310,8 @@ function leafDescriptor(condition: FullTextCondition): {
 	fuzzyDistance?: number;
 	fuzzyTranspositions?: boolean;
 } {
+	if (condition.boost !== undefined || condition.should !== undefined)
+		throw new ClientError('Direct full-text index scoring requires a compiled fullTextQuery expression', 400);
 	const mode = fullTextComparatorMode(condition.comparator);
 	if (!mode || typeof condition.value !== 'string' || condition.value.length === 0)
 		throw new ClientError('Full-text conditions require a supported comparator and non-empty string value', 400);
@@ -1465,7 +1525,7 @@ function withTimeout<T>(
 	]).finally(() => clearTimeout(timer));
 }
 
-function assertFuzzyPolicy(expression: NativeFullTextSearchExpression, maximum: number): void {
+function assertQueryPolicy(expression: NativeFullTextSearchExpression, maximum: number): boolean {
 	if ('text' in expression) {
 		validateFullTextFuzzyOptions(expression, expression.mode);
 		if (
@@ -1473,6 +1533,40 @@ function assertFuzzyPolicy(expression: NativeFullTextSearchExpression, maximum: 
 			(expression.fuzzyDistance ?? 1) > maximum
 		)
 			throw new ClientError('Full-text fuzzy distance exceeds storage.fullText.query.maxFuzzyDistance', 400);
-	} else if (expression.operator === 'not') assertFuzzyPolicy(expression.clause, maximum);
-	else for (const clause of expression.clauses) assertFuzzyPolicy(clause, maximum);
+		return false;
+	}
+	if (expression.operator === 'not') return assertQueryPolicy(expression.clause, maximum);
+	if (expression.operator === 'boost') {
+		assertQueryPolicy(expression.clause, maximum);
+		return true;
+	}
+	if (expression.operator === 'optional') {
+		assertQueryPolicy(expression.required, maximum);
+		for (const clause of expression.optional) assertQueryPolicy(clause, maximum);
+		return true;
+	}
+	let scoring = false;
+	for (const clause of expression.clauses) if (assertQueryPolicy(clause, maximum)) scoring = true;
+	return scoring;
+}
+
+async function waitForBinding<T>(binding: Promise<T>, milliseconds: number, signal?: AbortSignal): Promise<T> {
+	let abort: (() => void) | undefined;
+	const cancelled = signal
+		? new Promise<never>((_, reject) => {
+				abort = () => reject(signal.reason);
+				if (signal.aborted) abort();
+				else signal.addEventListener('abort', abort, { once: true });
+			})
+		: undefined;
+	try {
+		return await withTimeout(cancelled ? Promise.race([binding, cancelled]) : binding, milliseconds, () =>
+			Object.assign(new ServerError('Full-text capability loading timed out', 503), {
+				code: 'FULL_TEXT_INITIALIZATION_TIMEOUT',
+				retryable: true,
+			})
+		);
+	} finally {
+		if (abort) signal!.removeEventListener('abort', abort);
+	}
 }

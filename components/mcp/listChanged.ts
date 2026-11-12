@@ -221,8 +221,14 @@ function snapshotSessions(profile: McpProfile): RegisteredSession[] {
 async function refreshSessionUser(record: RegisteredSession): Promise<void> {
 	// A scoped token's username is attribution only — re-resolving it against hdb_user could
 	// substitute a real principal (created later with that name) and advertise a surface the token
-	// never granted. Its embedded role is fixed for the token's life, so there is nothing to refresh.
-	if (record.user?._scopedToken || userRuntimeModule.isLocalPrincipal(record.user)) return;
+	// never granted. Its embedded role is fixed for the token's life, so there is nothing to refresh;
+	// nor for a recordless principal, whose role came from the credential a component resolved.
+	if (
+		record.user?._scopedToken ||
+		userRuntimeModule.isLocalPrincipal(record.user) ||
+		userRuntimeModule.isRecordlessPrincipal(record.user as userRuntimeModule.User)
+	)
+		return;
 	const fresh = await resolveUser(record.user?.username);
 	if (fresh)
 		record.user =

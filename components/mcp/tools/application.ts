@@ -36,6 +36,7 @@ import {
 	snapshotProfileTools,
 	type AuthedUser,
 	type ToolCallContext,
+	type ToolDef,
 	type ToolResult,
 } from '../toolRegistry.ts';
 import {
@@ -51,10 +52,13 @@ import {
 	snapshotProfileCustomResources,
 	type CustomResourceDef,
 	type CustomResourceReadResult,
+	type CustomResourceSubscription,
+	UnsubscribableError,
 	type ResourceReadContext,
 } from '../customResourceRegistry.ts';
 import { notifyPromptsListChanged, notifyResourcesListChanged, notifyToolsListChanged } from '../listChanged.ts';
 import { decodeCursor, encodeCursor } from '../pagination.ts';
+import { resolveAttributes } from '../../../resources/jsonSchemaTypes.ts';
 import { serializesToArray, wrapToolResult } from './results.ts';
 import {
 	type AttributePermissionEntry,
@@ -90,6 +94,7 @@ interface ResourceClassLike {
 	description?: string;
 	hidden?: boolean;
 	properties?: Record<string, unknown>;
+	required?: readonly string[];
 	outputSchemas?: { [verb: string]: object };
 	/** The URL path (may carry `:param`/`*wildcard` segments), used to bind path params for contract resources. */
 	path?: string;
@@ -157,7 +162,8 @@ interface ResourceClassLike {
 	 * (text content), `{ text }`, `{ blob, mimeType }` (base64 binary), or any
 	 * other object (serialized as JSON). RBAC is delegated to the Resource.
 	 * `completions` optionally declares candidate values per template parameter
-	 * for `completion/complete`.
+	 * for `completion/complete`. `subscribe` optionally names an instance method
+	 * that makes the URI subscribable (contract in customResourceRegistry.ts).
 	 */
 	mcpResources?: ReadonlyArray<{
 		uri?: string;
@@ -167,6 +173,7 @@ interface ResourceClassLike {
 		description?: string;
 		mimeType?: string;
 		method: string;
+		subscribe?: string;
 		completions?: Readonly<Record<string, ReadonlyArray<string>>>;
 	}>;
 }
@@ -364,11 +371,26 @@ type RequestTargetCtor = new () => Record<string, unknown> & {
 // Test seams: avoid Harper's eager graph init in unit tests.
 let _resourcesOverride: ResourcesRegistry | undefined;
 let _requestTargetCtorOverride: RequestTargetCtor | undefined;
+let warnedInvalidResourceSchemas = new WeakSet<object>();
+
+function warnInvalidResourceSchema(resource: ResourceClassLike, path: string, error: unknown): void {
+	if (warnedInvalidResourceSchemas.has(resource)) return;
+	warnedInvalidResourceSchemas.add(resource);
+	let detail = 'unknown schema error';
+	try {
+		detail = typeof error === 'object' && error !== null && 'message' in error ? String(error.message) : String(error);
+	} catch {}
+	harperLogger.warn(`MCP application skipped invalid schema for resource '/${path}': ${detail}`);
+}
+
 export function _setResourcesForTest(r: ResourcesRegistry | undefined): void {
 	_resourcesOverride = r;
 }
 export function _setRequestTargetForTest(ctor: RequestTargetCtor | undefined): void {
 	_requestTargetCtorOverride = ctor;
+}
+export function _resetInvalidSchemaWarningsForTest(): void {
+	warnedInvalidResourceSchemas = new WeakSet<object>();
 }
 
 // Cache the Resources module object (not the `resources` registry itself):
@@ -903,8 +925,8 @@ function mergeAnnotations(
  * semantics) is the only built-in default; `patch_*`/`delete_*` annotations are
  * deferred until repeat-call behavior is verified end-to-end.
  */
-function registerVerbTools(ctx: ResourceContext): number {
-	let count = 0;
+function deriveVerbTools(ctx: ResourceContext): ToolDef[] {
+	const definitions: ToolDef[] = [];
 	const { suffix, ResourceClass, attributes, verbs, tableName, databaseName, path } = ctx;
 	const tableDoc = ResourceClass.description;
 	const primaryKey = ResourceClass.primaryKey;
@@ -929,7 +951,7 @@ function registerVerbTools(ctx: ResourceContext): number {
 
 	if (verbs.get) {
 		const name = `get_${suffix}`;
-		addTool({
+		definitions.push({
 			name,
 			description: verbDescription('get', ctxForVerb),
 			inputSchema: overrideInput('get') ?? deriveGetSchema(attributes, undefined),
@@ -939,13 +961,12 @@ function registerVerbTools(ctx: ResourceContext): number {
 			visibleTo: makeVisibleTo(databaseName, tableName, 'read'),
 			handler: makeGetHandler(name, path, ResourceClass),
 		});
-		count++;
 	}
 	if (verbs.search) {
 		const name = `search_${suffix}`;
 		// search_* deliberately omits outputSchema — envelope shape (records vs
 		// data, cursor vs nextCursor) is tracked in the sibling envelope issue.
-		addTool({
+		definitions.push({
 			name,
 			description: verbDescription('search', ctxForVerb),
 			inputSchema: overrideInput('search') ?? deriveSearchSchema(attributes, undefined),
@@ -954,11 +975,10 @@ function registerVerbTools(ctx: ResourceContext): number {
 			visibleTo: makeVisibleTo(databaseName, tableName, 'read'),
 			handler: makeSearchHandler(name, path, ResourceClass),
 		});
-		count++;
 	}
 	if (verbs.create) {
 		const name = `create_${suffix}`;
-		addTool({
+		definitions.push({
 			name,
 			description: verbDescription('create', ctxForVerb),
 			inputSchema: overrideInput('create') ?? deriveCreateSchema(attributes, undefined),
@@ -968,11 +988,10 @@ function registerVerbTools(ctx: ResourceContext): number {
 			visibleTo: makeVisibleTo(databaseName, tableName, 'insert'),
 			handler: makeCreateHandler(name, path, ResourceClass),
 		});
-		count++;
 	}
 	if (verbs.updatePut) {
 		const name = `update_${suffix}`;
-		addTool({
+		definitions.push({
 			name,
 			description: verbDescription('update', ctxForVerb),
 			inputSchema: overrideInput('update') ?? deriveUpdateSchema(attributes, undefined),
@@ -984,10 +1003,9 @@ function registerVerbTools(ctx: ResourceContext): number {
 			visibleTo: makeVisibleTo(databaseName, tableName, 'update'),
 			handler: makeUpdateHandler(name, path, ResourceClass, 'put'),
 		});
-		count++;
 	} else if (verbs.updatePatch) {
 		const name = `patch_${suffix}`;
-		addTool({
+		definitions.push({
 			name,
 			description: verbDescription('patch', ctxForVerb),
 			inputSchema: overrideInput('patch') ?? deriveUpdateSchema(attributes, undefined),
@@ -999,7 +1017,6 @@ function registerVerbTools(ctx: ResourceContext): number {
 			visibleTo: makeVisibleTo(databaseName, tableName, 'update'),
 			handler: makeUpdateHandler(name, path, ResourceClass, 'patch'),
 		});
-		count++;
 	}
 	if (verbs.delete) {
 		const name = `delete_${suffix}`;
@@ -1007,7 +1024,7 @@ function registerVerbTools(ctx: ResourceContext): number {
 		// `{ deleted }` so the result carries structuredContent matching the
 		// `{ deleted: boolean }` outputSchema. Authors can override the shape via
 		// `static outputSchemas.delete`.
-		addTool({
+		definitions.push({
 			name,
 			description: verbDescription('delete', ctxForVerb),
 			inputSchema: overrideInput('delete') ?? deriveDeleteSchema(attributes, undefined),
@@ -1019,9 +1036,8 @@ function registerVerbTools(ctx: ResourceContext): number {
 			visibleTo: makeVisibleTo(databaseName, tableName, 'delete'),
 			handler: makeDeleteHandler(name, path, ResourceClass),
 		});
-		count++;
 	}
-	return count;
+	return definitions;
 }
 
 /**
@@ -1147,9 +1163,11 @@ function registerCustomMcpPrompts(ResourceClass: ResourceClassLike, path: string
 // Warn-once dedup for mcpResources entries missing a description (same telemetry
 // pattern as custom tools). Keyed by `${path}:${name}`; test seam resets it.
 const _warnedResourceMissingDesc = new Set<string>();
+const _warnedResourceInvalidSubscribe = new Set<string>();
 
 export function _resetCustomResourceWarningsForTest(): void {
 	_warnedResourceMissingDesc.clear();
+	_warnedResourceInvalidSubscribe.clear();
 }
 
 /**
@@ -1201,6 +1219,7 @@ function registerCustomMcpResources(ResourceClass: ResourceClassLike, path: stri
 					`Clients surface it to models/users by description; add { description: '...' } to the mcpResources entry.`
 			);
 		}
+		const subscribeName = validSubscribeMethod(ResourceClass, path, def);
 		const registryDef: CustomResourceDef = {
 			...(hasUri ? { uri: def.uri } : {}),
 			...(hasTemplate ? { uriTemplate: def.uriTemplate } : {}),
@@ -1211,6 +1230,7 @@ function registerCustomMcpResources(ResourceClass: ResourceClassLike, path: stri
 			...(def.completions ? { completions: def.completions } : {}),
 			profile: 'application',
 			read: makeCustomResourceReader(path, ResourceClass, methodName),
+			...(subscribeName ? { subscribe: makeCustomResourceSubscriber(path, ResourceClass, subscribeName) } : {}),
 		};
 		try {
 			addCustomResource(registryDef);
@@ -1244,6 +1264,62 @@ function makeCustomResourceReader(path: string, capturedClass: ResourceClassLike
 			((p: Record<string, string>, ctx: ResourceReadContext) => CustomResourceReadResult) | undefined;
 		if (typeof method !== 'function') {
 			throw new Error(`method '${methodName}' is not a function on the constructed Resource`);
+		}
+		return await method.call(instance, params ?? {}, context);
+	};
+}
+
+function validSubscribeMethod(
+	ResourceClass: ResourceClassLike,
+	path: string,
+	def: { name: string; subscribe?: unknown }
+): string | undefined {
+	const subscribeName = def.subscribe;
+	if (subscribeName === undefined) return undefined;
+	const fn =
+		typeof subscribeName === 'string'
+			? (ResourceClass.prototype as Record<string, unknown>)?.[subscribeName]
+			: undefined;
+	let problem: string | undefined;
+	if (typeof fn !== 'function') {
+		problem = `declares subscribe ${JSON.stringify(subscribeName)}, but no such instance method exists on the prototype`;
+	} else if (isGeneratorFunction(fn)) {
+		problem = `names generator method '${subscribeName}' as subscribe; a generator's body runs only once iteration starts, outside the subscribing user's transaction, so return an async iterable from a regular method instead`;
+	}
+	if (!problem) return subscribeName as string;
+	const dedupKey = `${path}:${def.name}:${problem}`;
+	if (!_warnedResourceInvalidSubscribe.has(dedupKey)) {
+		_warnedResourceInvalidSubscribe.add(dedupKey);
+		harperLogger.warn(
+			`MCP application profile: mcpResource '${def.name}' on '${path}' ${problem}; it is registered without subscriptions`
+		);
+	}
+	return undefined;
+}
+
+function isGeneratorFunction(fn: unknown): boolean {
+	const tag = Object.prototype.toString.call(fn);
+	return tag === '[object AsyncGeneratorFunction]' || tag === '[object GeneratorFunction]';
+}
+
+// The generator check repeats here because the live class can be a subclass registered after the walk.
+function makeCustomResourceSubscriber(path: string, capturedClass: ResourceClassLike, methodName: string) {
+	return async function (
+		params: Record<string, string>,
+		context: ResourceReadContext
+	): Promise<CustomResourceSubscription> {
+		const ResourceClass = liveResource(path, capturedClass);
+		const Ctor = ResourceClass as unknown as new (id: unknown, ctx: unknown) => Record<string, unknown>;
+		const instance = new Ctor(undefined, buildContext(context.user));
+		const method = instance[methodName] as
+			((p: Record<string, string>, ctx: ResourceReadContext) => CustomResourceSubscription) | undefined;
+		if (typeof method !== 'function') {
+			throw new UnsubscribableError(`method '${methodName}' is not a function on the constructed Resource`);
+		}
+		if (isGeneratorFunction(method)) {
+			throw new UnsubscribableError(
+				`subscribe method '${methodName}' is a generator; return an async iterable from a regular method`
+			);
 		}
 		return await method.call(instance, params ?? {}, context);
 	};
@@ -1443,21 +1519,37 @@ function buildApplicationTools(resources: ResourcesRegistry): void {
 		const hasCustomPrompts = Array.isArray(ResourceClass?.mcpPrompts) && ResourceClass.mcpPrompts.length > 0;
 		const hasCustomResources = Array.isArray(ResourceClass?.mcpResources) && ResourceClass.mcpResources.length > 0;
 		if (!hasVerbs && !hasCustomTools && !hasCustomPrompts && !hasCustomResources) return;
-		const databaseName = ResourceClass?.databaseName;
-		const tableName = ResourceClass?.tableName;
-		const suffix = uniqueSuffix(path, databaseName, claimedSuffixes);
+		const suffix = uniqueSuffix(path, ResourceClass?.databaseName, claimedSuffixes);
 		claimedSuffixes.add(suffix);
-		const attributes = (ResourceClass?.attributes ?? []) as HarperAttribute[];
 		if (hasVerbs) {
-			toolsRegistered += registerVerbTools({
-				path,
-				suffix,
-				ResourceClass,
-				databaseName,
-				tableName,
-				attributes,
-				verbs,
-			});
+			let attributes: HarperAttribute[] | undefined;
+			try {
+				attributes = resolveAttributes(ResourceClass) as HarperAttribute[];
+			} catch (error) {
+				warnInvalidResourceSchema(ResourceClass, path, error);
+			}
+			if (attributes) {
+				const databaseName = ResourceClass?.databaseName;
+				const tableName = ResourceClass?.tableName;
+				let definitions: ToolDef[] | undefined;
+				try {
+					definitions = deriveVerbTools({
+						path,
+						suffix,
+						ResourceClass,
+						databaseName,
+						tableName,
+						attributes,
+						verbs,
+					});
+				} catch (error) {
+					warnInvalidResourceSchema(ResourceClass, path, error);
+				}
+				if (definitions) {
+					for (const definition of definitions) addTool(definition);
+					toolsRegistered += definitions.length;
+				}
+			}
 		}
 		toolsRegistered += registerCustomMcpTools(ResourceClass, path);
 		registerCustomMcpPrompts(ResourceClass, path);

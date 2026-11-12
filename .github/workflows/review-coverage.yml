@@ -31,8 +31,8 @@ jobs:
         id: app-token
         # The webhook's author_association is wrong for a PRIVATE org membership: only a
         # credential carrying members:read can see it, and GITHUB_TOKEN cannot be granted that
-        # permission at all. harperfastaibot already holds members:read org-wide and already has
-        # its secrets wired into this repo for the Claude/Gemini review bots.
+        # permission at all. harperfastaibot already holds members:read org-wide, and its
+        # secrets are already wired into this repo.
         if: >-
           github.event.pull_request.user.type != 'Bot' &&
           !endsWith(github.event.pull_request.user.login, '[bot]')
@@ -123,6 +123,8 @@ jobs:
             dataLayer/harperBridge/ResourceBridge.ts
             dataLayer/harperBridge/lmdbBridge/lmdbMethods/lmdbGetBackup.js
             dataLayer/harperBridge/lmdbBridge/lmdbMethods/lmdbGetBackup.ts
+            dataLayer/restoreChild.ts
+            dataLayer/restoreChildCommands.ts
             dataLayer/restoreMarker.ts
             dataLayer/rocksdbBackup.ts
             dataLayer/schemaDescribe.ts
@@ -148,6 +150,7 @@ jobs:
             resources/subscriptionCheckpoint.ts
             resources/transactionLogAbortMarkers.ts
             server/http.ts
+            server/replicationMembership.ts
             server/transactionLogCooling.ts
             utility/environment/systemInformation.ts
             utility/lmdb/commonUtility.ts

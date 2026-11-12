@@ -96,6 +96,13 @@ async function loadRootComponents(isWorkerThread: any = false) {
 	// An unreconciled job row is misleading, but it is no reason to refuse to start. This function re-runs
 	// on every root component reload; the sweep itself holds the once-per-process guard.
 	if (isMainThread) {
+		// Startup only (it latches): a restore that committed but could not finish its bookkeeping is
+		// finished here, after `system` is open and before any component could hold its database.
+		try {
+			await loadRuntimeModule('dataLayer/restorePublication').recoverRestoresAtStartup();
+		} catch (error) {
+			console.error(errorForLog(error));
+		}
 		jobOwnershipRuntimeModule
 			.reconcileInterruptedJobsOnce()
 			// A rolling deploy's record is ended by its job, so settle the records once their jobs are.

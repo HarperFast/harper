@@ -13,7 +13,7 @@
 import type { ExprNode } from '../parser/ast.ts';
 import type { PhysicalOp } from './op.ts';
 import type { Row, SqlEngineContext } from '../types.ts';
-import { compileExpr } from '../expressions/compile.ts';
+import { compilePredicate } from '../expressions/compile.ts';
 import { EngineUnsupportedError } from '../errors.ts';
 
 export interface NestedLoopJoinOptions {
@@ -24,7 +24,7 @@ export interface NestedLoopJoinOptions {
 }
 
 export function physicalNestedLoopJoin(left: PhysicalOp, right: PhysicalOp, opts: NestedLoopJoinOptions): PhysicalOp {
-	const on = opts.on ? compileExpr(opts.on, true) : undefined;
+	const on = opts.on ? compilePredicate(opts.on, true) : undefined;
 
 	return {
 		schema: [],
@@ -41,10 +41,7 @@ export function physicalNestedLoopJoin(left: PhysicalOp, right: PhysicalOp, opts
 				let matched = false;
 				for (const rrow of inner) {
 					const merged = { ...lrow, ...rrow };
-					if (on) {
-						const v = on.eval(merged);
-						if (v == null || v === false) continue;
-					}
+					if (on && !on(merged)) continue;
 					matched = true;
 					yield merged;
 				}

@@ -147,6 +147,8 @@ const OPERATION_AUTH_ERROR_MSGS = {
 		`This operation is not authorized: the statement qualifies ${columns.join(', ')} with a table name or alias that does not identify exactly one table in the statement.`,
 	SQL_ROW_ACCESSOR:
 		'This operation is not authorized: the statement reads whole rows through `_`, `SELECT VALUE`/`ROW`, a JavaScript expression, a `?` or `$n` parameter or a JSON literal that sets `__proto__`, which attribute permissions cannot be applied to. Name the attributes to read instead.',
+	SQL_RELATIONSHIP_MEMBER: (relationship: string) =>
+		`This operation is not authorized: member access reads through the relationship '${relationship}' without naming the path. Follow the relationship column directly with literal member names (for example \`dept->name\`).`,
 	USER_HAS_NO_PERMS: (user) => `User ${user} has no role or permissions.  Please assign the user a valid role.`,
 	DROP_SYSTEM:
 		"The 'system' database, tables and records are used internally by Harper and cannot be updated or removed.",
@@ -175,6 +177,7 @@ const ROLE_PERMS_ERROR_MSGS = {
 		`Your role does not have permission to view database metadata for '${schema_name}'`,
 	SCHEMA_TABLE_PERM_ERROR: (schema_name, table_name) =>
 		`Your role does not have permission to view database.table metadata for '${schema_name}.${table_name}'`,
+	SYSTEM_ROLE_PERMISSIONS_MANAGED: 'Permissions for system are managed by Harper and cannot be declared in a role',
 	PERMISSION_NOT_OBJECT: "Value for 'permission' must be an object of role and database permissions",
 	SU_ROLE_MISSING_ERROR: "Missing 'super_user' key/value in permission set",
 	SU_CU_ROLE_BOOLEAN_ERROR: (role) => `Value for '${role}' permission must be a boolean`,

@@ -49,7 +49,20 @@ const BINARY_TO_COMPARATOR: Record<string, string> = {
 	'>=': 'ge',
 };
 
-export type IndexedAttribute = { name: string; indexed: boolean; isPrimaryKey?: boolean; indexNulls?: boolean };
+const REVERSED_COMPARATOR: Record<string, string> = {
+	lt: 'gt',
+	le: 'ge',
+	gt: 'lt',
+	ge: 'le',
+};
+
+export type IndexedAttribute = {
+	name: string;
+	type?: string;
+	indexed: boolean;
+	isPrimaryKey?: boolean;
+	indexNulls?: boolean;
+};
 
 // Single-sided range comparators, split by which bound they set, and the fused
 // comparator name that combines a lower + upper bound (matching the set
@@ -65,7 +78,7 @@ export function whereToConditions(predicate: ExprNode | undefined, attributes?: 
 	const conditions: ConditionNode[] = [];
 	const residuals: ExprNode[] = [];
 	for (const e of conjuncts) {
-		const cond = leafToCondition(e);
+		const cond = leafToCondition(e, attributes);
 		// Only push a conjunct into the Resource API condition tree when every
 		// attribute it references is indexed: Table.search runs searchByIndex on
 		// each condition and throws "…is not indexed" for an unindexed attribute.
@@ -317,13 +330,14 @@ function fuseRangeBounds(conditions: ConditionNode[], attributes?: IndexedAttrib
 	return fused;
 }
 
-function leafToCondition(expr: ExprNode): ConditionNode | undefined {
+function leafToCondition(expr: ExprNode, attributes: IndexedAttribute[] | undefined): ConditionNode | undefined {
 	switch (expr.kind) {
 		case 'binop': {
-			const comparator = BINARY_TO_COMPARATOR[expr.op];
-			if (!comparator) return undefined;
+			const baseComparator = BINARY_TO_COMPARATOR[expr.op];
+			if (!baseComparator) return undefined;
 			const colLit = pickColumnAndLiteral(expr.left, expr.right);
 			if (!colLit) return undefined;
+			const comparator = colLit.reversed ? (REVERSED_COMPARATOR[baseComparator] ?? baseComparator) : baseComparator;
 			// a range against NULL is UNKNOWN for every row, where a pushed null bound would open the range; the
 			// residual's three-valued logic answers it (a NULL literal normalizes to `undefined`)
 			if (colLit.value == null && comparator !== 'equals' && comparator !== 'ne') return undefined;
@@ -390,6 +404,8 @@ function leafToCondition(expr: ExprNode): ConditionNode | undefined {
 		}
 		case 'like': {
 			if (expr.expr.kind !== 'column') return undefined;
+			const name = expr.expr.name;
+			if (attributes?.find((attribute) => attribute.name === name)?.type !== 'String') return undefined;
 			if (expr.pattern.kind !== 'literal' || typeof expr.pattern.value !== 'string') return undefined;
 			if (expr.negated) return undefined;
 			const tokens = tokenizeLike(expr.pattern.value, expr.escape);
@@ -423,7 +439,7 @@ function leafToCondition(expr: ExprNode): ConditionNode | undefined {
 			if (expr.op !== 'or' && expr.op !== 'and') return undefined;
 			const sub: ConditionNode[] = [];
 			for (const a of expr.args) {
-				const c = leafToCondition(a);
+				const c = leafToCondition(a, attributes);
 				if (!c) return undefined;
 				sub.push(c);
 			}
@@ -434,9 +450,12 @@ function leafToCondition(expr: ExprNode): ConditionNode | undefined {
 	}
 }
 
-function pickColumnAndLiteral(a: ExprNode, b: ExprNode): { column: string; value: unknown } | undefined {
-	if (a.kind === 'column' && b.kind === 'literal') return { column: a.name, value: b.value };
-	if (b.kind === 'column' && a.kind === 'literal') return { column: b.name, value: a.value };
+function pickColumnAndLiteral(
+	a: ExprNode,
+	b: ExprNode
+): { column: string; value: unknown; reversed: boolean } | undefined {
+	if (a.kind === 'column' && b.kind === 'literal') return { column: a.name, value: b.value, reversed: false };
+	if (b.kind === 'column' && a.kind === 'literal') return { column: b.name, value: a.value, reversed: true };
 	return undefined;
 }
 

@@ -38,6 +38,7 @@ import { makeSchemaClass, type Contract, type SchemaClass } from './defineResour
 import { markStaticResourceInstance } from './staticResourceDispatch.ts';
 import { isFormDataIterable, resolveBody } from './resolveBody.ts';
 import { compareKeys } from 'ordered-binary';
+import { recordAppliedSelect } from '../server/serverHelpers/contentTypes.ts';
 
 // Only table-backed classes are refused here: a custom resource's put/post/delete may be a non-storage call that a
 // read-only server must still answer. post, publish, copy and move are left to the transaction's write admission.
@@ -90,6 +91,8 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 	static preconditions?: boolean;
 	static description?: string;
 	static properties?: { [name: string]: JsonSchemaFragment };
+	/** For programmatic static properties: names guaranteed to be present, including undeclared names; independent of nullability. */
+	static required?: readonly string[];
 	static outputSchemas?: { [verb: string]: JsonSchemaFragment };
 	static mcp?: { annotations?: { [verb: string]: { [key: string]: unknown } } };
 	static hidden?: boolean;
@@ -159,11 +162,11 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 				if ((select = query?.select) && result != null && !result.selectApplied) {
 					const transform = transformForSelect(select, resource.constructor);
 					if (Array.isArray(result)) {
-						return settleAll(result.map(transform));
+						return recordAppliedSelect(request, select, true, settleAll(result.map(transform)));
 					} else if (typeof result?.map === 'function') {
-						return result.map(transform);
+						return recordAppliedSelect(request, select, true, result.map(transform));
 					} else {
-						return transform(result);
+						return recordAppliedSelect(request, select, false, transform(result));
 					}
 				}
 				return result;
@@ -385,7 +388,12 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 					const select = (request as any).select;
 					if (select && request.hasOwnProperty('select') && result != null && !result.selectApplied) {
 						const transform = transformForSelect(select, resource.constructor);
-						return Array.isArray(result) ? settleAll(result.map(transform)) : result.map(transform);
+						return recordAppliedSelect(
+							request,
+							select,
+							true,
+							Array.isArray(result) ? settleAll(result.map(transform)) : result.map(transform)
+						);
 					}
 					return result;
 				})
@@ -1201,7 +1209,11 @@ function registerLiveSubscriptionForContext(
 	if (!username || securityUser!.isLocalPrincipal(user)) return subscription;
 	// no subscription, or one already closed (a refused resume): nothing will be delivered to revoke
 	if (!subscription || typeof subscription !== 'object' || subscription.closed) return subscription;
-	const { cloneUserView, hasRecordProvenance, isCurrentUser } = securityUser!;
+	const { cloneUserView, hasRecordProvenance, isCurrentUser, isRecordlessPrincipal } = securityUser!;
+	// a memoizing server.getUser's user does not carry what an MQTT connection's own CONNECT recorded
+	const session = (context as any)?.session;
+	const admitted = session?.user === user ? session.userProvenance : undefined;
+	const fixedPrincipal = Boolean(user._scopedToken) || isRecordlessPrincipal(user, admitted);
 	// Without a caller's select or a condition or sort through a relationship, the default allowRead only
 	// narrows what it returns, so its verdict depends on the role's permission for this table alone.
 	const sharedDecision =
@@ -1220,14 +1232,15 @@ function registerLiveSubscriptionForContext(
 		authExpiresAt: user.authExpiresAt,
 		// A principal with no record provenance (a component's server.getUser on a path that does not track it)
 		// can't be checked for staleness at admission, so every tick rechecks it.
-		identityOnly: sharedDecision && (user._scopedToken || hasRecordProvenance(user)),
+		identityOnly: sharedDecision && (user._scopedToken || hasRecordProvenance(user, admitted)),
 		recheck: async (pass) => {
 			let fresh: any;
 			let viewer: any;
-			if (user._scopedToken) {
-				// A scoped token's identity IS its embedded role — never re-resolve its attribution
-				// username against hdb_user (it may not exist, or may name an unrelated principal
-				// created later). Expiry (authExpiresAt above) is its only revocation.
+			if (fixedPrincipal) {
+				// A scoped token's identity IS its embedded role, and a component's server.getUser built a
+				// recordless principal from its credential — never re-resolve either username against
+				// hdb_user (it may not exist, or may name an unrelated principal created later). Expiry
+				// (authExpiresAt above) and closing are their only revocation besides allowRead.
 				fresh = viewer = user;
 			} else {
 				// Re-read current user state from hdb_user/hdb_role, once per username per pass, so a dropped
@@ -1247,7 +1260,7 @@ function registerLiveSubscriptionForContext(
 	});
 	let stale: boolean;
 	try {
-		stale = !isCurrentUser(user);
+		stale = !fixedPrincipal && !isCurrentUser(user, admitted);
 	} catch {
 		stale = true;
 	}

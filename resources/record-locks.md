@@ -71,6 +71,76 @@ Consequences that shape the code:
   `unregisterRecordLock` manage it. `lock()` consults it before calling `tryLock`; a re-entrant call
   returns the existing live handle. A handle expired by its lease timer is pruned on next re-lock lookup
   so a stale holder's write gets 409.
+- **A handle leaves the registry only when it is deliberately released** (harper#4053): `unlock()`; a
+  re-lock of its key, which prunes a lapsed one (`recordLockFor`); or, for a scoped handle in an explicit
+  transaction, the commit or abort that releases it (a scoped lock covers one commit, a mid-scope
+  `txn.commit()` included). A lapse never removes it, and no commit removes a hold or any handle of a
+  self-committing context: `ImmediateTransaction.releaseRecordLocks()` does nothing. Until then a lapsed or
+  released handle keeps refusing writes to its key through every instance on the context
+  (`#bindWriteLock` binds it, `DatabaseTransaction.save()` refuses it); pruning it at an unrelated write's
+  commit let a stale write through another instance land after another worker took the key. `unlock()`
+  removes even an already released handle, unless its transaction already completed and took the registry
+  with it. The cost is accepted: a context that relies on leases and never unlocks keeps one entry per key
+  it locked, and its writes pay the lock bookkeeping a live hold already costs. Covered by
+  `recordLockLapsedHandleFence.test.js`.
+- **The registry outlives the link that holds it.** Hold handles, and an `ImmediateTransaction`'s live
+  scoped ones, survive the commit that drops their link from the chain — `txnForContext`'s unlink of a
+  spent self-committing link (#2323) and `completeMidScopeCommit`'s cut of the chain. Each drop hands the
+  link's `recordLocks` to the chain root (keyed by database path) and the next link
+  `txnForContext` creates for that database adopts them (`adoptDetachedRecordLocks`), so every lookup
+  through `txnForContext` — re-entrant `lock()`, `unlock()`, `#bindWriteLock`'s holder stamp and the
+  expired-lease 409 — still finds the handle (harper#3872). Every removal of a link other than abort's goes
+  through `detachNext` (the spent-link loop, `completeMidScopeCommit`, `LMDBTransaction.commit`), which also
+  marks the link `leftChain`; parking and adoption merge registries, the later registration winning a key
+  both hold. The closed link itself is never reused, so
+  #2323 stays fixed. A `lock()` whose wait outlives its link (a self-committing link's commit, or a mid-scope
+  `txn.commit()`) does everything after the wait on the link that replaced it: the pending-write check below,
+  registration, the clock pin, the read-snapshot refresh, and a coalesced follower's lookup. Whether the scope
+  ended is read from the chain root (`lockScopeEnded`), since a dropped explicit link is CLOSED while the scope
+  lives on. `abort()` still drops the chain without handing anything over: it releases scoped handles
+  link by link after the cut. Covered by `recordLockChainedImmediateLinks.test.js`,
+  `recordLockChainedMidScopeCommit.test.js`, `recordLockLeftChainLockLink.test.js` and
+  `recordLockRegistryHandover.test.js`.
+- **A scope has ended only when it really ends** (harper#4080). From `commit()`'s entry until it settles, a
+  mid-scope commit runs pre-commit work with the root still OPEN, then reads CLOSED through the native commit,
+  the cascade into chained links and the rotation that reopens it. It is not the end of the scope, but a scoped
+  `lock()` must not register into it either: the commit would release a handle it never covered, or commit the
+  lock's placeholder before the caller wrote, and the link is about to be cut. So an explicit-scope `lock()`
+  that meets its root's own commit in flight (`scopeCommitsInFlight`: a `commit()` call, not a closed
+  transaction's write committing by itself) — at entry, on another instance's re-entry into a scoped lock, or
+  after its native wait, its cluster round, a coalesced join or a retry — gives the key and any cluster grant
+  back (`retryAfterScopeCommit`), waits on `whenCommitSettles` (drained by `endCommitAttempt` after rotation)
+  and retries with its remaining budget; the root still CLOSED after that means the scope ended, and the waiter
+  gets 500. Two CLOSED roots whose scope still runs answer 409 instead, without admitting the lock
+  (`lockScopeClosure`, harper#4081): one a mid-scope commit left CLOSED because a read iterator still held its
+  native handle (`closedForReadIterators`), whose later writes each commit on their own and so would release the
+  lock at its first write; and, for a `lock()` from a pre-commit hook in the cascade, one whose own commit already
+  landed and released its locks, so nothing would release a handle registered there. Holding the key while waiting would deadlock a pre-commit hook's own `lock()` on it. A hold waits
+  only once the root reads CLOSED: it survives the commit and stages nothing until saved, so in pre-commit work
+  it is admitted as before. A re-entry onto a scoped handle while any scope commit is in flight, the final one
+  included, is refused with a 409 instead (`relockRefused`): from the instance holding it, and an upgrade of it
+  to a hold through any instance, even from the commit's own hook (harper#4081, harper#4122). The commit releases
+  the handle, and an upgrade would detach the staged write it may be committing; the caller awaits the commit and
+  locks again through `Table.lock()`, its own handle being released. The commit's own hook may still re-enter
+  without upgrading. Two more exceptions keep the earlier outcome. The
+  scope's final commit (`scopeEnding`) is not waited out. A `lock()` made by the scope's own pre-commit hook
+  (`operation.before`, a source write-through) while that hook runs belongs to the commit, which awaits it:
+  `runCommitHook` marks the invocation in an `AsyncLocalStorage` (`currentCommitHook`) until the hook settles;
+  only that follows the hook's awaits, which the two calls the marker identifies come after. So does one from a
+  hook nested under it, run by a commit the hook started on another transaction (`isOwnCommitHook` walks the
+  marker's `parent` chain through unsettled invocations to one of the scope's root): the commit awaits the outer
+  hook, which awaits the writes it makes. Work a settled hook left running is awaited by neither, so it waits.
+  The cache-fill blob save runs no user code, so it is a `beforeIntermediate` and is not wrapped (harper#4085).
+  Outside `transaction()` the marker also names the committing link: an unlocked write made within that hook
+  on that link, directly or through a commit the hook started on another link (the marker's `parent` chain), is
+  staged into the commit and resolves without awaiting it, where any other unlocked write joining the parked
+  commit awaits it. Sibling-database links share the root but commit on their own, so the link, not the root,
+  decides. The marker also names the hook's write: a holder write follows "One commit in flight per lock" below.
+  A chained link's hook runs after the head committed, so its `lock()` of a head-database record gets the 409
+  above. On the scope's final commit the head releases the context first, so after the hook's first await its
+  `lock()` resolves a fresh self-committing link that would outlive the commit; `lockScopeClosure` recognizes the
+  hook's root by that context and refuses it with a 409 as well (harper#4122). A commit that awaits a `lock()` started
+  outside its hook still waits until that `lock()` gives up.
 - **Release.** Every handle — scoped or hold — is registered in `link.recordLocks` and kept on the
   locked instance as `#lockHandle`; every commit or abort calls `releaseRecordLocks()`, which calls
   `handle.release()` on each non-hold handle, so a `{ hold: true }` handle outlives the transaction.
@@ -95,29 +165,47 @@ Consequences that shape the code:
   `lockHandle` into the same guard.
 - **A write on a locked key carries the lock, whichever instance staged it.** `DatabaseTransaction`
   applies lock rules (holder stamps, hold floor or 409, lease-expiry 409, `refuseLockWrites`,
-  `hasUnlockedWrite`) by `write.lockHandle` alone. `#bindWriteLock` sets it at all four staging sites
-  (`_writeUpdate`, `_writeDelete`, `_writeInvalidate`, `_writeRelocate`) from the instance's own handle,
-  else from `recordLocks` — so static verbs and other instances on the same context are covered — and
-  `registerRecordLock` binds unsaved writes already staged on the key, so admission's
-  `hasUnlockedWrite(store, keyId)` already discounts them and claims the stamp the clock may then adopt.
+  `hasUnlockedWrite`) by `write.lockHandle` alone. `#bindWriteLock` covers all five keyed staging sites
+  (`_writeUpdate`, `_writeDelete`, `_writeInvalidate`, `_writeRelocate`, `_writePublish`) using the instance
+  handle or `recordLocks` for static verbs and other instances on the same context.
   Binding happens at staging (and again after `_writeUpdate`'s async model hooks), reading the registry
   without `recordLockFor`'s pruning: a lapsed lease still refuses the write, at save time it would have
   been pruned away. A handle that lapsed while bound stays bound across the hooks even if a re-lock
-  replaced it; only one released by `unlock()` lets the write rebind or revert. Writes bound from the registry are `lockJoined`: they are the caller's writes, not
-  the scoped lock's placeholder, so a scoped → hold upgrade keeps them and `unlock()` turns them back
-  into ordinary unlocked writes rather than dropping them. Covered by `recordLockStaticVerbs.test.js`.
+  replaced it; only one released by `unlock()` lets the write rebind or revert. All bound publishes
+  (own-handle or registry), deletes, invalidations and registry-bound writes are `lockJoined`: caller writes
+  rather than the scoped lock's placeholder, so a scoped → hold upgrade keeps them and `unlock()` turns them back
+  into ordinary unlocked writes rather than dropping them (a delete staged behind the placeholder was dropped
+  with it, harper#3902). Covered by `recordLockStaticVerbs.test.js` and `recordLockScopedDelete.test.js`.
+  A bound publish can still stamp below a concurrent record version; see
+  [An out-of-order publish rewinds the record's version, letting a stale delete or write through](https://github.com/HarperFast/harper/issues/3637).
+- **Lock first, then write (harper#3896).** A fresh `lock()` on a key this transaction has a pending write to
+  is refused with 409 (`hasPendingWriteTo`: owned, not dropped, and unsaved or saved into a transaction that
+  has not committed; an `ImmediateTransaction`'s saved write was submitted on its own). Such a write was
+  computed without the lock's exclusion, so it must not commit as a holder write. Re-entrant `lock()` and
+  scoped → hold upgrades are not refused. It is
+  checked at entry, before any wait, and again on the link that will own the handle once the key is
+  acquired, before admission (a write staged during the wait). The locked instance's own write can still be
+  in its model hooks, outside `writesByKey`, so a fresh acquisition also refuses one `#stagedWrite()`
+  shows (`#hasStagedWriteFor`), before `#reloadLocked` would discard the changes it reads. "Pending" means
+  staged: a write still in its hooks or record load when the lock registers stages under the lock. An
+  instance joining a lock already in the registry keeps its changes only if its staged write is bound to
+  that lock. `unlock()` keeps a joined write as the instance's saving operation and clears a dropped one;
+  changes it abandons, and those a `lock()` reloads over, are discarded with their write generation
+  closed (`#discardChanges`), so nested tracked objects in them 409. Covered by
+  `recordLockPendingWrite.test.js`.
 - **Read-your-writes in `#reloadLocked`.** Freshness always starts from the committed entry
   (`primaryStore.getEntry(id)`, snapshot-free) so a hold lock sees concurrent committed writes rather
-  than a stale snapshot. A write earlier in the _same_ explicit transaction has not reached that
-  committed entry yet, so `#reloadLocked` looks up the tail `TransactionWrite` for the key
+  than a stale snapshot. A write made under the lock earlier in the _same_ explicit transaction (seen by a
+  re-entrant `lock()`) has not reached that committed entry yet, so `#reloadLocked` looks up the tail `TransactionWrite` for the key
   (`link.writesByKey`) and, if it (or an ancestor found via `priorStagedWrite`) has a `stagedEntry`,
   takes the record from there — the same basis a chained write picks up (harper#1968): the record
   comes from the prior staged write, the rest of the entry (version, audit chain, blob metadata) stays
   the pre-transaction one.
 - **Scoped lock in an explicit `transaction()` scope.** After acquisition, when no writes have been
   staged yet (`link.writes.length === 0`), the transaction clock is pinned to `acquiredAt` so the
-  holder write wins over any pre-lock concurrent write. When prior staged writes already exist,
-  ordering is best-effort — no 409 is thrown. In an `ImmediateTransaction` context (no explicit
+  holder write wins over any pre-lock concurrent write. When writes to other records are already staged,
+  the clock is left alone; if that fixed clock sits below the version floor `lock()` admitted, saving a
+  write under the lock is refused with a 409 ([harper#2712](https://github.com/HarperFast/harper/issues/2712)). In an `ImmediateTransaction` context (no explicit
   scope), a scoped lock's writes go through the same `update()`-style staging as above; each explicit
   `update()`+`save()` cycle is stamped with `holderVersionCandidate()` independently. A scoped lock acquired
   outside any explicit `transaction()` scope persists until `unlock()` or the lease expires
@@ -135,9 +223,12 @@ Consequences that shape the code:
   on the instance that owns it falls through to the hold branch instead of resolving a dead reference.
   The upgrade is gated on `!scoped.hold`; if the existing handle is already a hold the call is
   re-entrant and returns the existing handle.
-- **Concurrent `lock()` calls for one key on one link coalesce.** `Promise.all([T.lock(id), T.lock(id)])`
+- **Concurrent `lock()` calls for one key in one scope coalesce.** `Promise.all([T.lock(id), T.lock(id)])`
   would otherwise have both calls reach `tryLock` before either registers, so the second parks against
-  the first. The first registers its in-flight acquisition (`registerPendingLock`); the second becomes a
+  the first. The first registers its in-flight acquisition (`registerPendingLock`) on the chain root, which
+  outlives every link, so a call made after the first one's link left the chain still finds it
+  (harper#3913); it unregisters by identity on success and failure, so neither a later leader's entry is
+  removed nor a rejected one left for followers to rejoin. The second becomes a
   follower that races that promise against its OWN timeout, then either takes the re-entrant path or
   retries with whatever budget it has left. A follower that lands after its enclosing transaction has
   closed must NOT retry: `lock()` re-resolves the context, which no longer points at that link, so the
@@ -191,8 +282,8 @@ off-key write through the locked instance, the next operation in a retry or repl
 the lock's acquisition time, which LWW then silently drops against a newer record version. In an
 explicit OPEN transaction, when the hold is the first write (no prior staged writes), the transaction
 clock is pinned to `handle.acquiredAt`; subsequent saves reuse that pinned clock. When non-hold writes
-were staged before the lock was acquired, the clock is left alone (best-effort ordering; no 409 is
-thrown for the mixed-write case). Either way the holder's writes commit at the transaction's version:
+to other records were staged before the lock was acquired, the clock is left alone (and a lock write
+whose admitted version floor exceeds that fixed clock is refused with a 409). Either way an accepted holder write commits at the transaction's version:
 `save()` stamps from the handle only a save that commits on its own handle (`saveCommits`, or
 `concurrentClosedWrite` — a write that reaches the transaction after it closed), so the conflict-retry
 and open-iterator-replay re-saves that `performCommit()` runs after closing the transaction keep each
@@ -221,38 +312,87 @@ could read as a re-delivery — a shared counter loses an increment. Each write'
 separately at save. A floor the clock has already passed takes the
 clock's next key. A floor ahead of the clock within `storage.maxLockClockSkew` (default 5 s; a malformed
 value falls back to it with a warning) is claimed as a unique local key
-(`claimLocalKey`), which lifts every later local key on this node, locked or not, above it: the node's
-log clock never runs behind state it admitted a lock on. Past the cap, or with a cap of `0`, admission
-fails with `LockUnavailableError` before a holder write is staged or an issuance ceiling is reserved. Both a far-future replicated
+(`claimLocalKey`), which raises rocksdb-js's process-wide clock, so every later local key on this node,
+locked or not, is above it: the node's log clock never runs behind state it admitted a lock on. A floor the
+clock has already passed lifts nothing and is admitted whatever the cap; one ahead of it is held to the cap
+measured from wall time, not from the clock an earlier claim lifted, so successive claims cannot compound
+past it. Past the cap, or under a cap of `0`, a floor still ahead of the clock fails admission with
+`LockUnavailableError` before a holder write is staged or an issuance ceiling is reserved. Both a far-future replicated
 version and a local write stamped with a future `context.timestamp` can therefore leave the record unavailable until wall time catches up (callers that stamp future versions on records they also `lock()` must keep the lead within `storage.maxLockClockSkew`). Rewriting or deleting
 at normal clock time does not resolve it because those writes still lose LWW; repair the source
-peer's clock, rewrite at or above that version, or wait. A key the
-ratchet issues ahead of the clock is covered by a ceiling flushed before use, including when another
-worker stored that ceiling. Coverage reserves one second of headroom; restart seeds above that whole
-reserve, so it can add up to a second of clock lead while preventing key reuse. The initial recovery ceiling is shared in the ratchet buffer; later workers opening the live database do not consume unused headroom (resources/DESIGN.md "Origin-closed timestamp floor"). For the same
-reason a handle's `acquiredAt` and a cluster round's `tsR` come from that allocator (`freshLocalKey`),
-not a raw clock sample, which could equal an issued key once the clock catches up. Re-entry and
+peer's clock, rewrite at or above that version, or wait. A claim
+persists its ceiling, flushed, before it raises the clock, and every later key at least a millisecond ahead
+of the wall clock is covered the same way before use, including when another worker or another
+database's claim raised the clock. Coverage reserves one second of headroom; restart seeds above that whole
+reserve, so it can add up to a second of clock lead while preventing key reuse. The initial recovery ceiling is shared in the floor's buffer; later workers opening the live database do not consume unused headroom (resources/DESIGN.md "Origin-closed timestamp floor"). A
+handle's `acquiredAt` and a cluster round's `tsR` come from `freshLocalKey`, which covers a key minted
+ahead of the wall clock as a reservation does. Re-entry and
 coalesced followers do not perform a new admission. A scoped → hold upgrade primes its next version
 before changing modes and can claim a deferred floor.
 
 The floor reaches the write through the existing stamps. An explicit transaction's clock takes it — at
 admission or when a surviving hold saves in a later or mid-scope-rotated explicit transaction — while
 nothing else would move with it (no log key reserved yet and no unlocked write staged first via
-`hasUnlockedWrite`); a hold save whose floor exceeds a fixed transaction clock is refused with a 409. An
+`hasUnlockedWrite`); a lock save whose floor exceeds a fixed transaction clock is refused with a 409. An
 `ImmediateTransaction` uses the handle's per-write stamp and reserves its log key separately. A deferred
 write takes its stamp at its own save. A holder write saved while the same context's previous commit
 is still in flight (awaiting a streamed blob) would join that commit's handle, whose log key is already
-reserved; the joined-commit policy refuses it with a 409 before staging when that key is below
-its stamp (harper#3238). This is a local admission policy, not a replica version clamp: applied writes
-preserve an explicit record version even when it exceeds the origin log key. The caller unlocks, then
-locks and retries once
-the earlier commit settles. A hold steps one ulp past its last version,
+reserved; it is staged on its own native transaction instead ("One commit in flight per lock" below), so a
+reserved key never moves and no holder version exceeds its log key (harper#3238). This is a local admission policy, not a
+replica version clamp: applied writes preserve an explicit record version even when it exceeds the origin log
+key. A hold steps one ulp past its last version,
 which keeps advancing above 2^42 ms, where a fixed 0.000488 ms step no longer changes a double; a step
-ahead of the clock within the cap is claimed, since one ulp above the ratchet is the next key it
-issues. A step at or below the ratchet's next key is also claimed, even after clock catch-up, so it
-cannot repeat a key issued during the lead. Such a claim can advance a hold save beyond a later plain
+ahead of the clock within the cap is claimed, since one ulp above the clock's last key is its next one.
+Keys minted while the clock runs ahead of the wall clock are one ulp apart, so a step the clock has passed
+that is at or below one ulp above the database's covered ceiling or last raise (`localIssuedAheadThrough`)
+is also claimed, even after clock catch-up, so it cannot repeat a key issued during the lead. A lead under a millisecond is not
+covered, like a burst of keys minted within one ulp of each other on the wall clock. Such a claim can advance a hold save beyond a later plain
 write rather than retain acquisition order; plain writes remain ungated. The Phase 0 ordering tradeoff
 is tracked in harper#3246.
+
+**One commit in flight per lock.** A record-lock handle has at most one self-committing commit in flight,
+and a holder write never joins a native commit already in flight. A self-committing holder write (outside
+`transaction()`, or a late write reaching a `transaction()` after it closed) issued while its handle has a commit
+in flight — another such write not yet settled (`handle.selfCommits`), or a native commit carrying the handle's
+writes (`hasCommitHold()`, between `retainTransactionLockHolds` and its release) — is refused with a 409
+(`saveHolderSelfCommit`). An explicit transaction staging a holder write, or first saving a deferred one in its
+commit sweep, while that handle has a commit in flight is refused the same way, but thrown, so it fails the
+scope. A self-committing refusal is a rejected promise, so a caller aggregating it with the earlier
+write still observes that write. Eager refused writes, including array PUT elements without a retry instance, detach; deferred ones keep their chain position and open
+generation (`saveHolderSelfCommit`, `#restoreRefusedWrite`). The next awaited `save()` retries the same operation,
+attaching it to the current link if its old owner has finished. Refusal does not poison the hold. Inside
+`transaction()` a refused write is discarded with its 409, since staging it again in the commit that ran the hook
+would land the write the 409 refused; the caller catches it and writes again (through a fresh `update()` on a
+scoped lock, as after any `save()`).
+Both counters move synchronously when a commit settles, before the awaiting caller resumes, so awaited
+sequential writes are never refused. Each holder write therefore stamps above the committed floor: overlapping
+holder writes can neither share a version (harper#4098) nor land out of order, which let an older publish
+rewind the row (`_writePublish` stores at its own version without a last-writer comparison). An admitted holder
+write on an OPEN `ImmediateTransaction` whose commit is in flight (a blob still streaming, an async `before`
+hook) is staged on a fresh native transaction flagged `immediateCommit` (`isolatedCommit`), so it neither joins
+that commit's reserved log key nor waits for it. A holder write whose active ancestor commit hook belongs to a
+write of the same handle (a source's `before` hook writing the record its own commit is writing) is refused
+with a 409, as a rejected promise the hook can catch, in an explicit transaction as well: the outer write read
+its base before the hook ran (harper#4109). Inside `transaction()`, a deferred write the hook leaves for the commit sweep is staged after
+the outer write and reloads its base there; the sweep saves it before the commit takes its holds and with no
+self-commit in flight, so it is not refused. Waiting instead was rejected: a queued save stages after the instance's mutable changes have
+moved on, so it would need coalesced saves, a turn deadline and queue-aware `unlock()`, for overlap no caller
+uses. `unlock()` needs nothing new: nothing is queued, and an admitted write's commit hold defers the native
+unlock as before.
+
+**A hook's synchronous part has not seen its write apply (harper#4112).** `save()` marks a write saved, runs its
+`before` hook, then applies it. While a hook's synchronous part runs (`syncCommitHooks`), a save of the same record
+would apply first and be overwritten, so it is refused with a 409, locked or not and on any link (only the hook
+can be saving then; a rejected promise at top level), and changing a lock-writable instance whose own write runs the hook is refused (`update()` and
+`[ASSERT_TRACKED_WRITABLE]`, which every setter passes, find it as the write's `stagedBy`). That write either stores the instance's changes
+object — a patch, or a full `update(record, true)`, which makes the record those changes — so a refused save of them would land with it, or
+stores a record passed to it and clears those changes as it commits, dropping the change unreported. After the hook's first await the outer write has applied: an unlocked same-record write chains after it,
+and a holder write is refused as above. On a self-committing link, `update()` through the lock whose commit runs
+the hook is refused too: nothing would commit the deferred write, and left staged it would refuse a fresh `lock()`
+of the record on that context. A hook awaits or catches its writes: an ignored refusal is an unhandled rejection
+and the outer write still commits. An object mutated in place after it was passed to the outer write is not
+tracked and changes that write, the record of a holder's full update included. LMDB applies writes at commit in staging order, so there the hook's write lands
+after the outer one.
 
 **Hold handles and re-entrancy scope.** A hold handle stays registered on the resource instance
 (`#lockHandle`) and on the link until `unlock()` is called. Writing through the returned record after
@@ -1191,6 +1331,18 @@ takes the recovery path (§7.2). A failed or rejected recall never fabricates a 
 eviction obeys exactly the same rules: a delegate may drop a delegation early, but not while it holds
 an active handle or an unsettled write.
 
+**A recall that lands during the freshness barrier closes admission to later waiters, not to the one
+the grant was requested for** (`PendingDelegation.lastAdmission`, harper-pro#438). A barrier takes at
+least 1.5 round trips and a recall arrives within one contender poll (25 ms) plus a hop, so a delegate
+that gave the grant up on recall would be replaced by a successor recalled the same way: a key whose
+lineage names other nodes changes hands until its waiters reach their deadlines, with nobody admitted.
+So the barrier runs on, its waiter is admitted once, and the recall then drains and releases as for any
+held delegation. It answers only at the end, because `quiesce` reads the answer as "nothing here can
+admit". `RECALLED_BARRIER_GRACE_MS` bounds the wait: a delegate that can never finish (a route excluding
+the table, a dead stream from one origin) would otherwise block every other node for its whole lock
+wait. `close()`, a restarted home's recall by incarnation and a recall that beat its grant reply stop
+the barrier at once, because those grants must not admit.
+
 ### 7. Freshness
 
 #### 7.1 Clean handoff: an inherited dependency set, not a version number
@@ -1467,29 +1619,25 @@ feature that has not yet been measured.
 >
 > 1. **A predecessor's write can outrank its successor's under last-write-wins.** LWW compares the
 >    transaction timestamp assigned when the write was _staged_ (`_writeUpdate`'s `precedesExistingVersion(txnTime, …)`), and lease
->    expiry orders admissions, not timestamps. **`lock()` changes nothing about conflict resolution**
->    — a locked write and an unlocked write resolve identically, by timestamp, per field, with CRDT
+>    expiry orders admissions, not timestamps. **`lock()` changes nothing about storage conflict resolution**
+>    — once a locked write is staged to commit, it and an unlocked write resolve identically, by timestamp, per field, with CRDT
 >    ops folded and the surviving shape depending on both writes' shapes and on whether auditing is
 >    on — so whatever the pair would have done to the record without a lock is what they do with one,
->    silently and with no error raised. That is the whole of the limitation, and the contract must not
+>    silently and with no error raised. The contract must not
 >    restate the resolution rules: they live in `Table.ts` / `crdt.ts` and are not `lock()`'s to
 >    promise. What `lock()` does add (harper#2540) is a floor: an admitted holder's writes are stamped
 >    above the version it reloaded, a tombstone's included, and above the predecessor log positions its
 >    admission waited for. So a predecessor write that was committed and visible at admission — a
 >    clock-skewed peer's, or one stamped ahead on purpose by a caller's future `context.timestamp` —
->    no longer outranks the holder's own writes. The routes that remain:
->    - **(1a) clock skew, write in flight.** The predecessor's clock ran ahead of its successor's, and
->      its write is still in flight when the successor writes, so no admission saw it.
->    - **(1b) a holder whose own clock cannot move.** The floor reaches a write only through its
->      stamp. An explicit transaction that already reserved its log key, or staged an unlocked write
->      before `lock()`, keeps its clock; state beyond `storage.maxLockClockSkew` rejects admission; and
->      a surviving hold saved in an explicit transaction whose clock is already fixed below the hold's
->      floor is refused with a 409. When a scoped lock in an already-fixed explicit transaction writes
->      at that clock on a clean handoff and the admitted state is stamped above it, the holder's write is
->      the older one, silently. What the committed record then holds is whatever ordinary resolution
->      produces from the pair — which for overlapping plain fields is not the holder's value, and for
->      disjoint patches or commutative ops may still carry it. The defense is to take the lock first
->      in its own transaction, or save the held record before unrelated writes.
+>    no longer outranks the holder's own writes. The silent route that remains is **(1a) clock skew, write
+>    in flight** — the predecessor's clock ran ahead of its successor's, and its write is still in flight
+>    when the successor writes, so no admission saw it. **(1b) a holder whose own clock cannot move**
+>    instead fails closed: an explicit transaction that already reserved its log key, or staged an
+>    unlocked write before `lock()`, keeps its clock; state beyond `storage.maxLockClockSkew` rejects
+>    admission; and any lock write (scoped or held, including disjoint-field patches and commutative ops)
+>    saved in an explicit transaction whose clock is already fixed below the lock's required floor is
+>    refused with a 409 ([harper#2712](https://github.com/HarperFast/harper/issues/2712)), unless it stores nothing: a tracked write whose captured
+>    changes collapse to no patch (`stagesWriteChange`), so a read-only lock still commits. To avoid the 409, take the lock first or save the held record in its own transaction.
 > 2. **Successor freshness is not promised on the recovery path.** The §7.2 barrier drains streams
 >    from every _reachable_ member, so a write the predecessor committed and did not replicate is
 >    invisible to it: the barrier succeeds and the successor reads a stale value. Three routes in, and
@@ -1535,7 +1683,7 @@ feature that has not yet been measured.
 > _and_ the late-settling commit to be fenced rather than confirmed — which is why harper#2540's
 > quorum-confirmed arm is not a one-line header change and needs the fenced arm with it.
 
-**Both limitations ship silent, and that is a choice worth recording rather than a consequence.** A
+**Limitation (1a) and limitation (2) ship silent, and that is a choice worth recording rather than a consequence.** A
 caller whose locked write loses gets a 200, no log line and no counter, so nothing distinguishes it
 from correct behavior. Making it observable is cheap and confined to the lock path — the handle
 already carries its floor and the commit path already fences per write on `write.lockHandle`
@@ -1852,7 +2000,7 @@ not because each mutation shape needs its own hook.
 The release-entry position replaces an earlier per-write commit-hook design. It removes a hot-path
 callback, covers every write that remains authorized when the release is committed, and cannot sort
 behind a replication cursor that has already advanced. Cold-state trust is discarded whenever
-history may have been missed, and pending grants remain recallable before admission.
+history may have been missed, and a pending grant is given back on recall only after serving its waiter or overrunning `RECALLED_BARRIER_GRACE_MS` (§6).
 
 ### Applied-prefix holes
 

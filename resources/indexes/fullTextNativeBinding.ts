@@ -9,10 +9,11 @@ import {
 import { getFullTextRuntimeConfiguration, FullTextWorkerInitializationError } from './fullTextRuntimeConfiguration.ts';
 import { loggerWithTag } from '../../utility/logging/logger.ts';
 
-const FULLTEXT_NATIVE_ABI_VERSION = 13;
+const FULLTEXT_NATIVE_ABI_VERSION = 14;
 const FULLTEXT_LIFECYCLE_API_VERSION = 1;
 const FULLTEXT_MUTATION_BATCH_API_VERSION = 5;
-const FULLTEXT_QUERY_API_VERSION = 7;
+const FULLTEXT_QUERY_API_VERSION = 8;
+const FULLTEXT_TELEMETRY_API_VERSION = 1;
 const logger = loggerWithTag('fulltext-derived-index');
 
 export interface NativeFullTextRuntimeBudget {
@@ -57,7 +58,9 @@ export type NativeFullTextSearchExpression =
 			fields?: string[];
 	  })
 	| { operator: 'and' | 'or'; clauses: NativeFullTextSearchExpression[] }
-	| { operator: 'not'; clause: NativeFullTextSearchExpression };
+	| { operator: 'not'; clause: NativeFullTextSearchExpression }
+	| { operator: 'boost'; boost: number; clause: NativeFullTextSearchExpression }
+	| { operator: 'optional'; required: NativeFullTextSearchExpression; optional: NativeFullTextSearchExpression[] };
 
 export type NativeFullTextSearchRequest = NativeFullTextFuzzyOptions & {
 	text?: string;
@@ -95,7 +98,12 @@ export type NativeFullTextTraceResult = {
 	}>;
 };
 
-export interface NativeFullTextReader {
+export interface NativeFullTextTelemetryHandle {
+	telemetry(): { available: boolean };
+	configureTelemetry(options: { histograms?: boolean; snapshotBytes?: boolean }): void;
+}
+
+export interface NativeFullTextReader extends NativeFullTextTelemetryHandle {
 	readonly committedPayload?: string;
 	reload(): Promise<void>;
 	search(
@@ -127,6 +135,7 @@ export type NativeFullTextRuntimeInfo = {
 	lifecycleApiVersion: number;
 	mutationBatchApiVersion: number;
 	queryApiVersion: number;
+	telemetryApiVersion: number;
 	storageBackends: ReadonlyArray<'native'>;
 	limits: {
 		maxConfiguredQueryTerms: number;
@@ -170,7 +179,11 @@ export interface NativeFullTextModule {
 	configureNativeFullTextRuntime(limits: NativeFullTextRuntimeBudget): void;
 	NativeFullTextIndex: {
 		prototype: Pick<FullTextDerivedIndexEngine, 'applyMutationBatch' | 'publish' | 'close'> &
-			Pick<NativeFullTextReader, 'searchPage'>;
+			Pick<NativeFullTextReader, 'searchPage'> &
+			NativeFullTextTelemetryHandle;
+	};
+	NativeFullTextReader: {
+		prototype: NativeFullTextTelemetryHandle;
 	};
 	runtimeInfo(): Promise<NativeFullTextRuntimeInfo>;
 	validateNativeFullTextIndexOptions(
@@ -260,14 +273,26 @@ export async function loadFullTextNativeBinding(): Promise<NativeFullTextModule>
 	return bindingPromise;
 }
 
+export async function initializeFullTextQueryPolicy(): Promise<void> {
+	const configuration = getFullTextRuntimeConfiguration();
+	if (configuration.query === undefined) return;
+	const policy = resolveFullTextQueryLimits(configuration.query);
+	const binding = await loadFullTextNativeBinding().catch(() => undefined);
+	if (binding) nativeFullTextQueryLimits(getValidatedFullTextRuntimeInfo(binding), policy);
+}
+
 export async function validateFullTextNativeBinding(module: unknown): Promise<NativeFullTextModule> {
 	const prototype = (
 		module as {
 			NativeFullTextIndex?: {
-				prototype?: Partial<FullTextDerivedIndexEngine & Pick<NativeFullTextReader, 'searchPage'>>;
+				prototype?: Partial<
+					FullTextDerivedIndexEngine & Pick<NativeFullTextReader, 'searchPage'> & NativeFullTextTelemetryHandle
+				>;
 			};
 		}
 	)?.NativeFullTextIndex?.prototype;
+	const readerPrototype = (module as { NativeFullTextReader?: { prototype?: Partial<NativeFullTextTelemetryHandle> } })
+		?.NativeFullTextReader?.prototype;
 	if (
 		!module ||
 		typeof module !== 'object' ||
@@ -279,6 +304,12 @@ export async function validateFullTextNativeBinding(module: unknown): Promise<Na
 		typeof prototype.publish !== 'function' ||
 		typeof prototype.close !== 'function' ||
 		typeof prototype.searchPage !== 'function' ||
+		typeof prototype.telemetry !== 'function' ||
+		typeof prototype.configureTelemetry !== 'function' ||
+		!('NativeFullTextReader' in module) ||
+		typeof module.NativeFullTextReader !== 'function' ||
+		typeof readerPrototype?.telemetry !== 'function' ||
+		typeof readerPrototype.configureTelemetry !== 'function' ||
 		!('openNativeFullTextIndex' in module) ||
 		typeof module.openNativeFullTextIndex !== 'function' ||
 		!('openNativeFullTextReader' in module) ||
@@ -295,15 +326,13 @@ export async function validateFullTextNativeBinding(module: unknown): Promise<Na
 		throw new TypeError('@harperfast/fulltext/native does not implement the required Harper binding contract');
 	const binding = module as NativeFullTextModule;
 	const info = await binding.runtimeInfo();
+	validateFullTextRuntimeVersions(info);
 	validateFullTextQueryRuntimeInfo(info);
 	if (
 		!info ||
 		typeof info.packageVersion !== 'string' ||
 		typeof info.tantivyVersion !== 'string' ||
-		info.nativeAbiVersion !== FULLTEXT_NATIVE_ABI_VERSION ||
-		info.lifecycleApiVersion !== FULLTEXT_LIFECYCLE_API_VERSION ||
-		info.mutationBatchApiVersion !== FULLTEXT_MUTATION_BATCH_API_VERSION ||
-		info.queryApiVersion !== FULLTEXT_QUERY_API_VERSION ||
+		info.telemetryApiVersion !== FULLTEXT_TELEMETRY_API_VERSION ||
 		!Array.isArray(info.storageBackends) ||
 		!info.storageBackends.includes('native') ||
 		!info.limits ||
@@ -376,4 +405,20 @@ export function nativeFullTextQueryLimits(info: NativeFullTextQueryRuntimeInfo, 
 		if (policy[name] > ceiling)
 			throw new TypeError(`storage.fullText.query.${name} exceeds the native runtime ceiling ${ceiling}`);
 	return policy;
+}
+
+export function validateFullTextRuntimeVersions(
+	info: Pick<
+		NativeFullTextRuntimeInfo,
+		'nativeAbiVersion' | 'queryApiVersion' | 'lifecycleApiVersion' | 'mutationBatchApiVersion'
+	>
+): void {
+	if (
+		!info ||
+		info.nativeAbiVersion !== FULLTEXT_NATIVE_ABI_VERSION ||
+		info.queryApiVersion !== FULLTEXT_QUERY_API_VERSION ||
+		info.lifecycleApiVersion !== FULLTEXT_LIFECYCLE_API_VERSION ||
+		info.mutationBatchApiVersion !== FULLTEXT_MUTATION_BATCH_API_VERSION
+	)
+		throw new TypeError('@harperfast/fulltext/native reported incompatible runtime capabilities');
 }

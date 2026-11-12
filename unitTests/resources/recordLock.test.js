@@ -8,13 +8,20 @@ const { transaction, contextStorage } = require('#src/resources/transaction');
 const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
 const { waitFor } = require('../waitFor');
 const { coverLocalIssuance, readLocalIssuanceCeiling } = require('#src/resources/auditStore');
-const { localIssuanceRatchet, reservedLocalKey, seedLocalIssuance } = require('#src/resources/originClosedFloor');
+const {
+	localIssuanceFloor,
+	localIssuedAheadThrough,
+	reservedLocalKey,
+	seedLocalIssuance,
+	timestampAbove,
+} = require('#src/resources/originClosedFloor');
 const { ImmediateTransaction } = require('#src/resources/DatabaseTransaction');
 const { PassThrough } = require('node:stream');
 const { createBlob } = require('#src/resources/blob');
 const {
 	MIN_LOCK_LEASE_MS,
 	admissionFloor,
+	admissionStamp,
 	makeKeyLockHandle,
 	lockAttemptKey,
 	resolveLockOptions,
@@ -652,18 +659,20 @@ describe('Record locks (harper#483)', () => {
 			assert.strictEqual((await LockTest.get(recordId)).n, 1, 'write committed');
 		});
 
-		it('a reused ImmediateTransaction prunes expired lock handles', async function () {
+		// harper#4053: the per-write commit does not prune it, or a stale write through another instance lands
+		it('a reused ImmediateTransaction keeps an expired lock handle registered until unlock()', async function () {
 			if (isLMDB) return this.skip();
 			this.timeout(2000);
 			const recordId = id();
 			await LockTest.put({ id: recordId, n: 0 });
 			const context = {};
-			await LockTest.lock(recordId, { hold: true, lease: MIN_LOCK_LEASE_MS }, context);
+			const holder = await LockTest.lock(recordId, { hold: true, lease: MIN_LOCK_LEASE_MS }, context);
 			const immediate = context.transaction;
 			await delay(MIN_LOCK_LEASE_MS + 50);
-			assert.ok(immediate.recordLocks?.size, 'expired handle remains until the transaction is reused');
 			immediate.releaseRecordLocks();
-			assert.strictEqual(immediate.recordLocks, undefined, 'the next cleanup drops expired handle references');
+			assert.ok(immediate.recordLocks?.size === 1, 'a per-write commit leaves the expired handle registered');
+			assert.strictEqual(await holder.unlock(), false);
+			assert.ok(immediate.recordLocks === undefined, 'unlock() removes it');
 		});
 
 		it('scoped lock with expired lease: write through the returned record throws 409', async function () {
@@ -776,16 +785,29 @@ describe('Record locks (harper#483)', () => {
 			assert.strictEqual((await LockTest.get(recordB)).n, 201, 'credit write (B) landed');
 		});
 
-		it('item-1: lock() in transaction after prior staged write sees the staged value', async function () {
-			// put(id,{n:1}) in the same transaction then lock(id) → r.n must be 1 (staged value),
-			// so r.set('n', r.n+1) lands as n=2, not n=1 (the pre-put value from a naked getEntry).
-			// Also verifies that the locked instance has a full entry (version defined) so a
-			// subsequent save() can use it as a valid existingEntry in the commit handler.
+		it('item-1: lock() in a transaction that already wrote the record is refused (harper#3896)', async function () {
 			if (isLMDB) return this.skip();
 			this.timeout(2000);
 			const recordId = id();
 			await LockTest.put({ id: recordId, n: 0 });
 			await transaction(async () => {
+				await LockTest.put({ id: recordId, n: 1 });
+				await assert.rejects(
+					() => LockTest.lock(recordId),
+					(err) => err?.statusCode === 409
+				);
+			});
+			assert.strictEqual((await LockTest.get(recordId)).n, 1, 'the earlier write still commits');
+		});
+
+		it('item-1: a re-entrant lock() sees what the transaction wrote under the lock', async function () {
+			// The locked instance has a full entry (version defined), so its save() has a valid existingEntry.
+			if (isLMDB) return this.skip();
+			this.timeout(2000);
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 0 });
+			await transaction(async () => {
+				await LockTest.lock(recordId);
 				await LockTest.put({ id: recordId, n: 1 });
 				const r = await LockTest.lock(recordId);
 				assert.strictEqual(r.getProperty('n'), 1, 'lock() sees staged put value (n===1)');
@@ -1710,9 +1732,87 @@ describe('Record locks (harper#483)', () => {
 					(error) =>
 						error.name === 'LockUnavailableError' &&
 						error.statusCode === 503 &&
-						error.message.includes("ahead of this node's clock") &&
+						error.message.includes("ahead of this node's wall clock") &&
 						error.message.includes('context.timestamp')
 				);
+			} finally {
+				env.setProperty(CONFIG_PARAMS.STORAGE_MAXLOCKCLOCKSKEW, previous);
+			}
+		});
+
+		it('measures the skew cap from wall time, so successive claims cannot compound past it', async function () {
+			if (isLMDB) return this.skip();
+			const [nearId, fartherId] = [id(), id()];
+			const rootStore = LockTest.primaryStore.rootStore;
+			const previous = env.get(CONFIG_PARAMS.STORAGE_MAXLOCKCLOCKSKEW);
+			env.setProperty(CONFIG_PARAMS.STORAGE_MAXLOCKCLOCKSKEW, '2s');
+			try {
+				const near = futureTimestamp(1_500);
+				await applyFromPeer(nearId, near);
+				await transaction(async () => {
+					const lock = await LockTest.lock(nearId);
+					lock.set('n', 1);
+					await lock.save();
+				});
+				assert.ok(localIssuanceFloor(rootStore) >= near, 'the first admission claimed and raised the clock');
+				// within the cap of the raised clock, beyond it from wall time
+				const farther = futureTimestamp(3_000);
+				await applyFromPeer(fartherId, farther);
+				await assert.rejects(LockTest.lock(fartherId), (error) => error.name === 'LockUnavailableError');
+			} finally {
+				env.setProperty(CONFIG_PARAMS.STORAGE_MAXLOCKCLOCKSKEW, previous);
+			}
+		});
+
+		it('admits a floor the clock has passed whatever the cap, since claiming it lifts nothing', function () {
+			if (isLMDB) return this.skip();
+			const rootStore = LockTest.primaryStore.rootStore;
+			const previous = env.get(CONFIG_PARAMS.STORAGE_MAXLOCKCLOCKSKEW);
+			env.setProperty(CONFIG_PARAMS.STORAGE_MAXLOCKCLOCKSKEW, '0ms');
+			try {
+				const acquiredAt = rootStore.getMonotonicTimestamp();
+				// within the wall clock's current millisecond, so past what a cap of 0 admits against wall time
+				const floor = timestampAbove(acquiredAt);
+				const { stamp, claimed } = admissionStamp(rootStore, floor, acquiredAt);
+				assert.ok(claimed && stamp >= floor, 'a floor the clock has passed is admitted');
+			} finally {
+				env.setProperty(CONFIG_PARAMS.STORAGE_MAXLOCKCLOCKSKEW, previous);
+			}
+		});
+
+		it('holds a hold step ahead of the clock to the skew cap, though it is under the covered ceiling', async function () {
+			if (isLMDB) return this.skip();
+			const [nearId, heldId] = [id(), id()];
+			const rootStore = LockTest.primaryStore.rootStore;
+			const previous = env.get(CONFIG_PARAMS.STORAGE_MAXLOCKCLOCKSKEW);
+			// earlier leads must be behind the wall clock, so this test's own claim sets the clock and ceiling
+			await waitFor(() => Date.now() > Math.max(aheadUntil, localIssuedAheadThrough(rootStore)) + 1, 30_000, 20);
+			// the claim's ceiling is 1 s above it: the step sits midway between the cap and that ceiling
+			env.setProperty(CONFIG_PARAMS.STORAGE_MAXLOCKCLOCKSKEW, '1500ms');
+			try {
+				const near = Date.now() + 1_400;
+				aheadUntil = Math.max(aheadUntil, near + 1_000);
+				await applyFromPeer(nearId, near);
+				await transaction(async () => {
+					const lock = await LockTest.lock(nearId);
+					lock.set('n', 1);
+					await lock.save();
+				});
+				assert.ok(localIssuanceFloor(rootStore) >= near, 'fixture: the first admission claimed');
+				// beyond the cap from wall time, and under the ceiling the claim covered
+				const ahead = Date.now() + 1_950;
+				assert.ok(ahead < readLocalIssuanceCeiling(LockTest.auditStore), 'fixture: the step is under the ceiling');
+				await LockTest.put({ id: heldId, n: 0 });
+				const context = {};
+				const holder = await LockTest.lock(heldId, { hold: true, lease: 5000 }, context);
+				try {
+					handleOf(context.transaction).noteHolderVersion(ahead);
+					holder.set('n', 1);
+					await holder.save();
+					assert.ok(rootStore.getMonotonicTimestamp() < ahead, 'the step did not raise the clock past the cap');
+				} finally {
+					await holder.unlock();
+				}
 			} finally {
 				env.setProperty(CONFIG_PARAMS.STORAGE_MAXLOCKCLOCKSKEW, previous);
 			}
@@ -1826,7 +1926,7 @@ describe('Record locks (harper#483)', () => {
 			const lockedId = id();
 			const unlockedId = id();
 			const rootStore = LockTest.primaryStore.rootStore;
-			const predecessorTimestamp = Math.max(Date.now(), localIssuanceRatchet(rootStore)) + 2_000;
+			const predecessorTimestamp = Math.max(Date.now(), localIssuanceFloor(rootStore)) + 2_000;
 			await applyFromPeer(lockedId, predecessorTimestamp);
 			const ceilingBefore = readLocalIssuanceCeiling(LockTest.auditStore);
 			const context = {};
@@ -1836,7 +1936,7 @@ describe('Record locks (harper#483)', () => {
 				await LockTest.lock(lockedId, undefined, context);
 			});
 			assert.ok(
-				localIssuanceRatchet(rootStore) < predecessorTimestamp,
+				localIssuanceFloor(rootStore) < predecessorTimestamp,
 				'the unused floor did not move the local ratchet into the future'
 			);
 			assert.strictEqual(
@@ -2026,7 +2126,7 @@ describe('Record locks (harper#483)', () => {
 			assert.ok(entryOf(recordId).version > firstVersion, 'the second save is stamped above the first');
 		});
 
-		it('refuses a holder write that would join an in-flight commit reserved below its stamp', async function () {
+		it('a holder write while an earlier commit awaits a streamed blob commits on its own transaction, its log key covering its version (harper#3238)', async function () {
 			if (isLMDB) return this.skip();
 			const blobbedId = id();
 			const lockedId = id();
@@ -2040,145 +2140,73 @@ describe('Record locks (harper#483)', () => {
 				n: 1,
 				blob: createBlob(stream),
 			});
-			await waitFor(
-				() => context.transaction.writes.some((write) => write && write.key === blobbedId && write.saved),
-				1000
-			);
-			const holder = await LockTest.lock(lockedId, { hold: true, lease: MIN_LOCK_LEASE_MS }, context);
-			const refusedHandle = [...context.transaction.recordLocks.values()][0].values().next().value;
-			holder.set('n', 2);
-			await assert.rejects(
-				async () => holder.save(),
-				(error) => error.statusCode === 409
-			);
-			const sameHandle = await LockTest.lock(lockedId, { hold: true, lease: MIN_LOCK_LEASE_MS }, context);
-			sameHandle.set('n', 3);
-			await assert.rejects(
-				async () => sameHandle.save(),
-				(error) => error.statusCode === 409
-			);
-			assert.ok(
-				!context.transaction.writes.some((write) => write && write.key === lockedId && !write.saved),
-				'the refused write left nothing staged'
-			);
-			await assert.rejects(
-				async () => holder.save(),
-				(error) => error.statusCode === 409
-			);
-			await LockTest.put({ id: lockedId, n: 3 });
-			stream.end('payload');
-			await blobbed;
+			let holder;
+			try {
+				await waitFor(
+					() => context.transaction.writes.some((write) => write && write.key === blobbedId && write.saved),
+					1000
+				);
+				holder = await LockTest.lock(lockedId, { hold: true, lease: 5000 }, context);
+				holder.set('n', 2);
+				assert.strictEqual(await Promise.race([holder.save(), delay(2000).then(() => 'hung')]), undefined);
+				const stored = entryOf(lockedId);
+				assert.strictEqual(stored.value.n, 2);
+				assert.ok(stored.version > predecessorTimestamp, 'the holder write is stamped above its predecessor');
+				assert.ok(auditOf(lockedId, stored.version).txnLogKey >= stored.version, 'its log key covers its version');
+				assert.strictEqual(entryOf(blobbedId).value.n, 0, 'the earlier commit is still waiting on its blob');
+				holder.set('n', 3);
+				await holder.save();
+				assert.strictEqual(entryOf(lockedId).value.n, 3, 'the hold stays writable');
+			} finally {
+				stream.end('payload');
+				await blobbed;
+				await holder?.unlock();
+			}
 			assert.strictEqual(entryOf(blobbedId).value.n, 1, 'the earlier commit landed');
-			await assert.rejects(
-				transaction(context, async () => {
-					await holder.update(lockedId, { n: 6 });
-					// Leave the deferred write to the explicit transaction's commit sweep.
-				}),
-				(error) => error.statusCode === 409
-			);
-			assert.strictEqual(
-				entryOf(lockedId).value.n,
-				3,
-				'a refused handle cannot commit a deferred explicit-transaction write'
-			);
-			const offKeyId = id();
-			await LockTest.put({ id: offKeyId, n: 0 });
-			await holder.update(offKeyId, { n: 5 });
-			await holder.save();
-			assert.strictEqual(
-				entryOf(offKeyId).value.n,
-				5,
-				'a refused handle does not block an off-key write through its instance'
-			);
-			await waitFor(() => refusedHandle.isExpired(), { timeout: 1000, message: 'refused handle lease expires' });
-			await LockTest.put({ id: lockedId, n: 4 });
-			const retry = await LockTest.lock(lockedId, { lease: 5000 });
-			retry.set('n', 2);
-			await retry.save();
-			await retry.unlock();
-			const stored = entryOf(lockedId);
-			assert.strictEqual(stored.value.n, 2, 'a fresh lock retries successfully after expiry');
-			assert.ok(stored.version > predecessorTimestamp, 'the retry is above its predecessor');
-			assert.ok(auditOf(lockedId, stored.version).txnLogKey >= stored.version, 'its log key covers its version');
 		});
 
-		for (const stagedBeforeRefusal of [false, true]) {
-			it(`a caught refusal contains ${stagedBeforeRefusal ? 'earlier staged siblings' : 'repeated deferred updates'}`, async function () {
-				if (isLMDB) return this.skip();
-				this.timeout(15_000);
-				const blobbedId = id();
-				const lockedId = id();
-				const otherId = id();
-				await LockTest.put([
-					{ id: blobbedId, n: 0 },
-					{ id: lockedId, n: 0 },
-					{ id: otherId, n: 0 },
-				]);
-				const context = {};
-				const stream = new PassThrough();
-				const blobbed = (await LockTest.getResource(blobbedId, context)).patch(blobbedId, {
-					n: 1,
-					blob: createBlob(stream),
-				});
-				let holder;
-				try {
-					await waitFor(
-						() => context.transaction.writes.some((write) => write && write.key === blobbedId && write.saved),
-						5000
-					);
-					holder = await LockTest.lock(lockedId, { hold: true, lease: 30_000 }, context);
-					if (stagedBeforeRefusal) {
-						await holder.update(lockedId, { n: 2 });
-						await holder.update(lockedId, { n: 3 });
-						assert.ok(
-							context.transaction.writes.filter((write) => write?.key === lockedId && !write.saved).length >= 2
-						);
-					} else holder.set('n', 2);
-					let attempted;
-					try {
-						attempted = holder.save();
-					} catch (error) {
-						attempted = Promise.reject(error);
-					}
-					const refused = assert.rejects(attempted, (error) => error.statusCode === 409);
-					await refused;
-					assert.ok(
-						!context.transaction.writes.some((write) => write?.key === lockedId && !write.saved),
-						'the first refusal detached every unsaved sibling without another mutation'
-					);
-					stream.end('payload');
-					await blobbed;
-					await transaction(context, async () => {
-						if (!stagedBeforeRefusal)
-							try {
-								await holder.update(lockedId, { n: 5 });
-								await holder.update(lockedId, { n: 6 });
-								await holder.save();
-								assert.fail('the refused handle must reject the mutation');
-							} catch (error) {
-								assert.strictEqual(error.statusCode, 409);
-							}
-						await LockTest.put({ id: otherId, n: 1 });
-					});
-					assert.strictEqual(entryOf(lockedId).value.n, 0, 'neither refused write landed');
-					assert.strictEqual(entryOf(otherId).value.n, 1, 'the unrelated write committed');
-					assert.strictEqual(entryOf(blobbedId).value.n, 1, 'the earlier accepted write committed');
-					await assert.rejects(
-						async () => holder.lock(),
-						(error) => error.statusCode === 409
-					);
-					await holder.unlock();
-					holder = await holder.lock({ hold: true, lease: 30_000 });
-					holder.set('n', 7);
-					await holder.save();
-					assert.strictEqual(entryOf(lockedId).value.n, 7, 'unlock then lock obtains a writable fresh handle');
-				} finally {
-					stream.end();
-					await blobbed.catch(() => {});
-					await holder?.unlock();
-				}
+		it('deferred holder updates staged while an earlier commit awaits a streamed blob land, and unrelated writes are unaffected', async function () {
+			if (isLMDB) return this.skip();
+			this.timeout(15_000);
+			const blobbedId = id();
+			const lockedId = id();
+			const otherId = id();
+			await LockTest.put([
+				{ id: blobbedId, n: 0 },
+				{ id: lockedId, n: 0 },
+				{ id: otherId, n: 0 },
+			]);
+			const context = {};
+			const stream = new PassThrough();
+			const blobbed = (await LockTest.getResource(blobbedId, context)).patch(blobbedId, {
+				n: 1,
+				blob: createBlob(stream),
 			});
-		}
+			let holder;
+			try {
+				await waitFor(
+					() => context.transaction.writes.some((write) => write && write.key === blobbedId && write.saved),
+					5000
+				);
+				holder = await LockTest.lock(lockedId, { hold: true, lease: 30_000 }, context);
+				await holder.update(lockedId, { n: 2 });
+				await holder.update(lockedId, { n: 3 });
+				await holder.save();
+				assert.strictEqual(entryOf(lockedId).value.n, 3);
+				stream.end('payload');
+				await blobbed;
+				await transaction(context, () => LockTest.put({ id: otherId, n: 1 }));
+				assert.strictEqual(entryOf(otherId).value.n, 1, 'the unrelated write committed');
+				assert.strictEqual(entryOf(blobbedId).value.n, 1, 'the earlier accepted write committed');
+				holder.set('n', 7);
+				await holder.save();
+				assert.strictEqual(entryOf(lockedId).value.n, 7);
+			} finally {
+				stream.end();
+				await blobbed.catch(() => {});
+				await holder?.unlock();
+			}
+		});
 
 		it('detaches all unsaved siblings when reserving a log key fails', async function () {
 			if (isLMDB) return this.skip();
@@ -2188,7 +2216,6 @@ describe('Record locks (harper#483)', () => {
 			const { RocksDatabase } = require('../rocksdbBindings.mts').rocksdbBindings();
 			const { RocksTransactionLogStore } = require('#src/resources/RocksTransactionLogStore');
 			const { persistOriginClosedFloor } = require('#src/resources/auditStore');
-			const { publishOriginFloor } = require('#src/resources/originClosedFloor');
 			const directory = fs.mkdtempSync(path.join(PID_DIR_PATH, 'refused-reservation-'));
 			const failedRoot = RocksDatabase.open(directory);
 			const failedAudit = new RocksTransactionLogStore(failedRoot);
@@ -2198,24 +2225,29 @@ describe('Record locks (harper#483)', () => {
 			await LockTest.put({ id: lockedId, n: 0 });
 			const context = {};
 			const holder = await LockTest.lock(lockedId, { hold: true, lease: 30_000 }, context);
+			const sibling = await LockTest.lock(lockedId, { hold: true, lease: 30_000 }, context);
 			const root = LockTest.primaryStore.rootStore;
 			let coverageError;
 			try {
 				const lead =
-					Math.max(Date.now(), localIssuanceRatchet(root), readLocalIssuanceCeiling(LockTest.auditStore)) + 100;
+					Math.max(Date.now(), localIssuanceFloor(root), readLocalIssuanceCeiling(LockTest.auditStore)) + 100;
 				aheadUntil = Math.max(aheadUntil, lead + 1000);
 				persistOriginClosedFloor(LockTest.auditStore, lead);
-				publishOriginFloor(root, lead);
-				seedLocalIssuance(root, readLocalIssuanceCeiling(LockTest.auditStore), (key) => {
-					try {
-						return coverLocalIssuance(failedAudit, key);
-					} catch (error) {
-						coverageError = error;
-						throw error;
-					}
-				});
+				seedLocalIssuance(
+					root,
+					readLocalIssuanceCeiling(LockTest.auditStore),
+					(key) => {
+						try {
+							return coverLocalIssuance(failedAudit, key);
+						} catch (error) {
+							coverageError = error;
+							throw error;
+						}
+					},
+					lead
+				);
 				await transaction(context, async () => {
-					await holder.update(lockedId, { n: 2 });
+					await sibling.update(lockedId, { n: 2 });
 					await holder.update(lockedId, { n: 3 });
 					const owner = context.transaction;
 					assert.ok(
@@ -2253,7 +2285,7 @@ describe('Record locks (harper#483)', () => {
 			const context = {};
 			const holder = await LockTest.lock(lockedId, { hold: true, lease: 5000 }, context);
 			const rootStore = LockTest.primaryStore.rootStore;
-			const coverageLead = Math.max(rootStore.getMonotonicTimestamp(), localIssuanceRatchet(rootStore)) + 1000;
+			const coverageLead = Math.max(rootStore.getMonotonicTimestamp(), localIssuanceFloor(rootStore)) + 1000;
 			aheadUntil = Math.max(aheadUntil, coverageLead);
 			assert.ok(context.transaction instanceof ImmediateTransaction);
 			let failedCover = false;
@@ -2412,6 +2444,441 @@ describe('Record locks (harper#483)', () => {
 				assert.strictEqual(handleOf(txn).holderVersionCandidate(), candidate, 're-entry did not raise the floor');
 			});
 		});
+	});
+
+	describe('refuses a lock write when an explicit transaction clock is fixed below the admitted version (harper#2712)', function () {
+		let Unaudited;
+		const cleanups = [];
+		const EXPECTED_409 =
+			'Record lock write cannot advance past its earlier holder version in a transaction whose clock is already fixed; save the held record first or in its own transaction';
+
+		before(function () {
+			Unaudited = table({
+				table: 'RecordLockUnaudited2712',
+				database: 'test',
+				audit: false,
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'n' }, { name: 'name' }],
+			});
+		});
+
+		afterEach(async function () {
+			while (cleanups.length) await cleanups.pop()();
+		});
+
+		const outsideWriter = (fn) => {
+			let run;
+			const done = new Promise((resolve) => {
+				run = resolve;
+			}).then(fn);
+			return () => {
+				run();
+				return done;
+			};
+		};
+
+		for (const audit of [true, false]) {
+			const tableFor = () => (audit ? LockTest : Unaudited);
+
+			it(`refuses a scoped lock save after an earlier plain write fixed the clock below an interleaving write (audit: ${audit})`, async function () {
+				if (isLMDB) return this.skip();
+				const T = tableFor();
+				const idA = id();
+				const idB = id();
+				await T.put({ id: idA, n: 0 });
+				await T.put({ id: idB, n: 0 });
+				const putInterleaving = outsideWriter(() => T.put({ id: idB, n: 50 }));
+
+				await assert.rejects(
+					transaction(async () => {
+						await T.put({ id: idA, n: 1 });
+						await putInterleaving();
+						const b = await T.lock(idB);
+						assert.strictEqual(b.n, 50, 'lock() reloaded the interleaving write');
+						b.set('n', b.n + 1);
+						await b.save();
+					}),
+					(error) => error.statusCode === 409 && error.message === EXPECTED_409
+				);
+
+				assert.strictEqual((await T.get(idB)).n, 50, 'B kept the interleaving write');
+				assert.strictEqual((await T.get(idA)).n, 0, 'the aborted transaction rolled A back');
+				const next = await T.lock(idB, { hold: true, timeout: 100 });
+				await next.unlock();
+			});
+
+			it(`poisons a scoped lock handle after a caught 409 so a second save() does not resolve silently (audit: ${audit})`, async function () {
+				if (isLMDB) return this.skip();
+				const T = tableFor();
+				const idA = id();
+				const idB = id();
+				await T.put({ id: idA, n: 0 });
+				await T.put({ id: idB, n: 0 });
+				const putInterleaving = outsideWriter(() => T.put({ id: idB, n: 50 }));
+
+				await transaction(async () => {
+					await T.put({ id: idA, n: 1 });
+					await putInterleaving();
+					const b = await T.lock(idB);
+					b.set('n', b.n + 1);
+					await assert.rejects(
+						async () => b.save(),
+						(error) => error.statusCode === 409 && error.message === EXPECTED_409
+					);
+					await assert.rejects(
+						async () => b.save(),
+						(error) =>
+							error.statusCode === 409 &&
+							error.message === 'This lock write was refused; unlock and acquire a fresh lock before retrying'
+					);
+				});
+
+				assert.strictEqual((await T.get(idA)).n, 1);
+				assert.strictEqual((await T.get(idB)).n, 50);
+			});
+
+			it(`refuses a commit-sweep save of a modified scoped lock and releases the lock on abort (audit: ${audit})`, async function () {
+				if (isLMDB) return this.skip();
+				const T = tableFor();
+				const idA = id();
+				const idB = id();
+				await T.put({ id: idA, n: 0 });
+				await T.put({ id: idB, n: 0 });
+				const putInterleaving = outsideWriter(() => T.put({ id: idB, n: 50 }));
+
+				await assert.rejects(
+					transaction(async () => {
+						await T.put({ id: idA, n: 1 });
+						await putInterleaving();
+						const b = await T.lock(idB);
+						assert.strictEqual(b.n, 50);
+						b.set('n', b.n + 1);
+					}),
+					(error) => error.statusCode === 409 && error.message === EXPECTED_409
+				);
+
+				assert.strictEqual((await T.get(idB)).n, 50);
+				assert.strictEqual((await T.get(idA)).n, 0);
+				const next = await T.lock(idB, { hold: true, timeout: 100 });
+				await next.unlock();
+			});
+
+			it(`refuses a held lock save in a fixed-clock transaction and allows saving in its own transaction (audit: ${audit})`, async function () {
+				if (isLMDB) return this.skip();
+				const T = tableFor();
+				const idA = id();
+				const idB = id();
+				await T.put({ id: idA, n: 0 });
+				await T.put({ id: idB, n: 0 });
+				const putInterleaving = outsideWriter(() => T.put({ id: idB, n: 50 }));
+				let holder;
+
+				await transaction(async () => {
+					await T.put({ id: idA, n: 1 });
+					await putInterleaving();
+					holder = await T.lock(idB, { hold: true, lease: 5000 });
+					cleanups.push(() => holder.unlock());
+					assert.strictEqual(holder.n, 50);
+					holder.set('n', holder.n + 1);
+					await assert.rejects(
+						async () => holder.save(),
+						(error) => error.statusCode === 409 && error.message === EXPECTED_409
+					);
+				});
+
+				assert.strictEqual((await T.get(idA)).n, 1, 'catching the 409 let the earlier write commit');
+				assert.strictEqual((await T.get(idB)).n, 50, 'the refused holder write was detached before commit');
+
+				holder.set('n', 51);
+				await holder.save();
+				assert.strictEqual((await T.get(idB)).n, 51, 'saving the held record in its own transaction succeeded');
+			});
+
+			it(`refuses a static verb write joined to a lock whose admitted version exceeds the fixed clock (audit: ${audit})`, async function () {
+				if (isLMDB) return this.skip();
+				const T = tableFor();
+				const idA = id();
+				const idB = id();
+				await T.put({ id: idA, n: 0 });
+				await T.put({ id: idB, n: 0 });
+				const putInterleaving = outsideWriter(() => T.put({ id: idB, n: 50 }));
+
+				await assert.rejects(
+					transaction(async () => {
+						await T.put({ id: idA, n: 1 });
+						await putInterleaving();
+						await T.lock(idB);
+						await T.patch(idB, { n: 51 });
+					}),
+					(error) => error.statusCode === 409 && error.message === EXPECTED_409
+				);
+
+				assert.strictEqual((await T.get(idB)).n, 50);
+				assert.strictEqual((await T.get(idA)).n, 0);
+			});
+
+			it(`refuses static put and deferred update joined to a { hold: true } lock after an interleaving write (audit: ${audit})`, async function () {
+				if (isLMDB) return this.skip();
+				const T = tableFor();
+				const idA1 = id();
+				const idB1 = id();
+				const idA2 = id();
+				const idB2 = id();
+				await T.put({ id: idA1, n: 0 });
+				await T.put({ id: idB1, n: 0 });
+				await T.put({ id: idA2, n: 0 });
+				await T.put({ id: idB2, n: 0 });
+				const putInterleaving1 = outsideWriter(() => T.put({ id: idB1, n: 50 }));
+				const putInterleaving2 = outsideWriter(() => T.put({ id: idB2, n: 50 }));
+
+				await assert.rejects(
+					transaction(async () => {
+						await T.put({ id: idA1, n: 1 });
+						await putInterleaving1();
+						const holder = await T.lock(idB1, { hold: true, lease: 5000 });
+						cleanups.push(() => holder.unlock());
+						await T.put({ id: idB1, n: 51 });
+					}),
+					(error) => error.statusCode === 409 && error.message === EXPECTED_409
+				);
+
+				await assert.rejects(
+					transaction(async () => {
+						await T.put({ id: idA2, n: 1 });
+						await putInterleaving2();
+						const holder = await T.lock(idB2, { hold: true, lease: 5000 });
+						cleanups.push(() => holder.unlock());
+						await T.update(idB2, { n: 51 });
+					}),
+					(error) => error.statusCode === 409 && error.message === EXPECTED_409
+				);
+
+				assert.strictEqual((await T.get(idB1)).n, 50);
+				assert.strictEqual((await T.get(idB2)).n, 50);
+			});
+
+			it(`refuses a lock write when an earlier deferred unlocked update() set hasUnlockedWrite() before an interleaving write (audit: ${audit})`, async function () {
+				if (isLMDB) return this.skip();
+				const T = tableFor();
+				const idA = id();
+				const idB = id();
+				await T.put({ id: idA, n: 0 });
+				await T.put({ id: idB, n: 0 });
+				const futureTs = Date.now() + 2000;
+				const putInterleaving = outsideWriter(() =>
+					transaction({ timestamp: futureTs }, () => T.put({ id: idB, n: 50 }))
+				);
+
+				await assert.rejects(
+					transaction(async () => {
+						await T.update(idA, { n: 1 });
+						await putInterleaving();
+						const b = await T.lock(idB);
+						assert.strictEqual(b.n, 50);
+						b.set('n', b.n + 1);
+						await b.save();
+					}),
+					(error) => error.statusCode === 409 && error.message === EXPECTED_409
+				);
+
+				assert.strictEqual((await T.get(idB)).n, 50);
+				assert.strictEqual((await T.get(idA)).n, 0);
+			});
+
+			it(`refuses commutative addTo and disjoint-field lock writes when the clock is fixed below the admitted version (audit: ${audit})`, async function () {
+				if (isLMDB) return this.skip();
+				const T = tableFor();
+				const idA1 = id();
+				const idB1 = id();
+				const idA2 = id();
+				const idB2 = id();
+				await T.put({ id: idA1, n: 0 });
+				await T.put({ id: idB1, n: 0, name: 'before' });
+				await T.put({ id: idA2, n: 0 });
+				await T.put({ id: idB2, n: 0, name: 'before' });
+				const putInterleaving1 = outsideWriter(() => T.patch(idB1, { name: 'interleaved' }));
+				const putInterleaving2 = outsideWriter(() => T.patch(idB2, { n: 50 }));
+
+				await assert.rejects(
+					transaction(async () => {
+						await T.put({ id: idA1, n: 1 });
+						await putInterleaving1();
+						const b = await T.lock(idB1);
+						b.addTo('n', 1);
+						await b.save();
+					}),
+					(error) => error.statusCode === 409 && error.message === EXPECTED_409
+				);
+
+				await assert.rejects(
+					transaction(async () => {
+						await T.put({ id: idA2, n: 1 });
+						await putInterleaving2();
+						const b = await T.lock(idB2);
+						b.set('name', 'holder');
+						await b.save();
+					}),
+					(error) => error.statusCode === 409 && error.message === EXPECTED_409
+				);
+
+				assert.strictEqual((await T.get(idB1)).n, 0);
+				assert.strictEqual((await T.get(idB2)).name, 'before');
+			});
+
+			it(`refuses a second lock write when an earlier lock fixed the clock below an interleaving write (audit: ${audit})`, async function () {
+				if (isLMDB) return this.skip();
+				const T = tableFor();
+				const idA = id();
+				const idB = id();
+				await T.put({ id: idA, n: 0 });
+				await T.put({ id: idB, n: 0 });
+				const putInterleaving = outsideWriter(() => T.put({ id: idB, n: 50 }));
+
+				await assert.rejects(
+					transaction(async () => {
+						const a = await T.lock(idA);
+						a.set('n', 1);
+						await a.save();
+						await putInterleaving();
+						const b = await T.lock(idB);
+						assert.strictEqual(b.n, 50);
+						b.set('n', b.n + 1);
+						await b.save();
+					}),
+					(error) => error.statusCode === 409 && error.message === EXPECTED_409
+				);
+
+				assert.strictEqual((await T.get(idB)).n, 50);
+				assert.strictEqual((await T.get(idA)).n, 0);
+			});
+
+			it(`allows a read-only scoped lock after an earlier write and interleaving write (audit: ${audit})`, async function () {
+				if (isLMDB) return this.skip();
+				const T = tableFor();
+				const idA = id();
+				const idB = id();
+				await T.put({ id: idA, n: 0 });
+				await T.put({ id: idB, n: 0 });
+				const putInterleaving = outsideWriter(() => T.put({ id: idB, n: 50 }));
+
+				await transaction(async () => {
+					await T.put({ id: idA, n: 1 });
+					await putInterleaving();
+					const b = await T.lock(idB);
+					assert.strictEqual(b.n, 50);
+				});
+
+				assert.strictEqual((await T.get(idA)).n, 1);
+				assert.strictEqual((await T.get(idB)).n, 50);
+			});
+
+			it(`refuses a holder's put of a record of its own while it has no changes (audit: ${audit})`, async function () {
+				if (isLMDB) return this.skip();
+				const T = tableFor();
+				const idA1 = id();
+				const idB1 = id();
+				const idA2 = id();
+				const idB2 = id();
+				for (const recordId of [idA1, idB1, idA2, idB2]) await T.put({ id: recordId, n: 0 });
+				const putInterleaving1 = outsideWriter(() => T.put({ id: idB1, n: 50 }));
+				const putInterleaving2 = outsideWriter(() => T.put({ id: idB2, n: 50 }));
+
+				await assert.rejects(
+					transaction(async () => {
+						await T.put({ id: idA1, n: 1 });
+						await putInterleaving1();
+						const b = await T.lock(idB1);
+						assert.strictEqual(b.n, 50);
+						assert.strictEqual(b.getChanges(), undefined, 'the scoped holder has no changes of its own');
+						await b.put(idB1, { id: idB1, n: 51 });
+					}),
+					(error) => error.statusCode === 409 && error.message === EXPECTED_409
+				);
+
+				await assert.rejects(
+					transaction(async () => {
+						await T.put({ id: idA2, n: 1 });
+						await putInterleaving2();
+						const holder = await T.lock(idB2, { hold: true, lease: 5000 });
+						cleanups.push(() => holder.unlock());
+						assert.strictEqual(holder.getChanges(), undefined, 'the held holder has no changes of its own');
+						await holder.put(idB2, { id: idB2, n: 51 });
+					}),
+					(error) => error.statusCode === 409 && error.message === EXPECTED_409
+				);
+
+				assert.strictEqual((await T.get(idB1)).n, 50, 'B1 kept the interleaving write');
+				assert.strictEqual((await T.get(idA1)).n, 0, 'the aborted transaction rolled A1 back');
+				assert.strictEqual((await T.get(idB2)).n, 50, 'B2 kept the interleaving write');
+				assert.strictEqual((await T.get(idA2)).n, 0, 'the aborted transaction rolled A2 back');
+				const next = await T.lock(idB1, { hold: true, timeout: 100 });
+				await next.unlock();
+			});
+
+			it(`refuses a holder's update whose changes a later empty update replaced before saving (audit: ${audit})`, async function () {
+				if (isLMDB) return this.skip();
+				const T = tableFor();
+				const idA = id();
+				const idB = id();
+				await T.put({ id: idA, n: 0 });
+				await T.put({ id: idB, n: 0 });
+				const putInterleaving = outsideWriter(() => T.put({ id: idB, n: 50 }));
+
+				await assert.rejects(
+					transaction(async () => {
+						await T.put({ id: idA, n: 1 });
+						await putInterleaving();
+						const b = await T.lock(idB);
+						await b.update(idB, { n: 51 });
+						await b.update(idB, {});
+					}),
+					(error) => error.statusCode === 409 && error.message === EXPECTED_409
+				);
+
+				assert.strictEqual((await T.get(idB)).n, 50, 'B kept the interleaving write');
+				assert.strictEqual((await T.get(idA)).n, 0, 'the aborted transaction rolled A back');
+			});
+
+			it(`control: write, then lock, with no interleaving write, succeeds and stores the locked value (audit: ${audit})`, async function () {
+				if (isLMDB) return this.skip();
+				const T = tableFor();
+				const idA = id();
+				const idB = id();
+				await T.put({ id: idA, n: 0 });
+				await T.put({ id: idB, n: 0 });
+
+				await transaction(async () => {
+					await T.put({ id: idA, n: 1 });
+					const b = await T.lock(idB);
+					b.set('n', b.n + 1);
+					await b.save();
+				});
+
+				assert.strictEqual((await T.get(idA)).n, 1);
+				assert.strictEqual((await T.get(idB)).n, 1);
+			});
+
+			it(`control: a plain write committing during the hold still wins under last-write-wins (audit: ${audit})`, async function () {
+				if (isLMDB) return this.skip();
+				const T = tableFor();
+				const idA = id();
+				const idB = id();
+				await T.put({ id: idA, n: 0 });
+				await T.put({ id: idB, n: 0 });
+				const putDuringHold = outsideWriter(() => T.put({ id: idB, n: 50 }));
+
+				await transaction(async () => {
+					await T.put({ id: idA, n: 1 });
+					const b = await T.lock(idB);
+					assert.strictEqual(b.n, 0);
+					await putDuringHold();
+					b.set('n', b.n + 1);
+					await b.save();
+				});
+
+				assert.strictEqual((await T.get(idA)).n, 1);
+				assert.strictEqual((await T.get(idB)).n, 50, 'plain write during the hold still wins under LWW');
+			});
+		}
 	});
 
 	describe('recreate-after-delete race (issue-(f))', function () {

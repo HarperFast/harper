@@ -26,6 +26,7 @@ import { compactOnStart, migrateOnStart } from './copyDb.ts';
 import minimist from 'minimist';
 import * as keys from '../security/keys.ts';
 import { startHTTPThreads } from '../server/threads/socketRouter.ts';
+import { configuredHttpThreadCount } from '../server/threads/workerPools.ts';
 import { beginProcessShutdown } from '../server/threads/manageThreads.ts';
 import { createTerminationHandler, shutdownProcess } from '../server/threads/processShutdown.ts';
 import { getProcessShutdownTimeoutMs } from '../components/shutdownDrain.ts';
@@ -171,6 +172,14 @@ async function initialize(calledByInstall = false, calledByMain = false) {
 	}
 	hdbLogger.info(`${PRODUCT_NAME} PID`, process.pid);
 
+	// Before anything reads `system`: an offline restore (of `system` itself included) that committed and
+	// then stopped short of clearing its marker is finished here, from its receipt file alone.
+	try {
+		await (await import('../dataLayer/restorePublication.ts')).finishCommittedRestoresBeforeStartup();
+	} catch (error) {
+		hdbLogger.error('Could not finish a committed restore before startup', error);
+	}
+
 	// Check to see if an upgrade is needed based on existing hdbInfo data. If so, we need to force the user to upgrade
 	// before the server can be started.
 	let upgradeVers;
@@ -259,11 +268,7 @@ async function main(calledByInstall = false) {
 
 		const isScripted = process.env.IS_SCRIPTED_SERVICE && !cmdArgs.service;
 
-		await startHTTPThreads(
-			process.env.DEV_MODE
-				? 1
-				: (env.get(hdbTerms.CONFIG_PARAMS.THREADS_COUNT) ?? env.get(hdbTerms.CONFIG_PARAMS.THREADS))
-		);
+		await startHTTPThreads(configuredHttpThreadCount());
 		// after main settled interrupted deploys and every pool worker reported what it loaded
 		import('../components/operations.ts').then(
 			({ retryPendingBranchRemovals }) => retryPendingBranchRemovals(),

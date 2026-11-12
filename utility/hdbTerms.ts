@@ -21,6 +21,8 @@ export const HDB_ROOT_DIR_NAME = 'harper';
 export const REPLICATED_FROM = Symbol('replicatedFrom');
 /** Harper Component Config File */
 export const HDB_COMPONENT_CONFIG_FILE = 'config.yaml';
+/** The config file names a component may use, in the order componentLoader looks for them; the first present wins. */
+export const COMPONENT_CONFIG_FILES = [HARPER_CONFIG_FILE, HDB_CONFIG_FILE, HDB_COMPONENT_CONFIG_FILE] as const;
 
 /** Name of the Harper Process Script */
 export const HDB_PROC_NAME = 'harper.js';
@@ -167,6 +169,8 @@ export const MAX_SET_TIMEOUT_MS = 2147483647;
 
 /** Harper File Permissions Mode */
 export const HDB_FILE_PERMISSIONS = 0o700;
+
+export const SECRET_FILE_PERMISSIONS = 0o600;
 
 /** Smallest `threads.maxHeapMemory` (MB) a worker thread is accepted on — see server/threads/threadHeapMemory.ts */
 export const MIN_THREAD_HEAP_MEMORY_MB = 64;
@@ -320,6 +324,7 @@ export const OPERATIONS_ENUM = {
 	DELETE_JOB: 'delete_job',
 	UPDATE_JOB: 'update_job',
 	REGISTRATION_INFO: 'registration_info',
+	GET_STUDIO_CONFIGURATION: 'get_studio_configuration',
 	SET_CONFIGURATION: 'set_configuration',
 	DROP_ATTRIBUTE: 'drop_attribute',
 	RESTART: 'restart',
@@ -533,6 +538,11 @@ export const LEGACY_CONFIG_PARAMS = {
  */
 export const CONFIG_PARAMS = {
 	ANALYTICS_AGGREGATEPERIOD: 'analytics_aggregatePeriod',
+	ANALYTICS_FULL_TEXT: 'analytics_fullText',
+	ANALYTICS_FULL_TEXT_ENABLED: 'analytics_fullText_enabled',
+	ANALYTICS_FULL_TEXT_INTERVAL_MILLISECONDS: 'analytics_fullText_intervalMilliseconds',
+	ANALYTICS_FULL_TEXT_HISTOGRAMS: 'analytics_fullText_histograms',
+	ANALYTICS_FULL_TEXT_SNAPSHOT_BYTES: 'analytics_fullText_snapshotBytes',
 	ANALYTICS_AGGREGATERETENTIONMS: 'analytics_aggregateRetentionMs',
 	ANALYTICS_RAWRETENTIONMS: 'analytics_rawRetentionMs',
 	ANALYTICS_REPLICATE: 'analytics_replicate',
@@ -732,6 +742,8 @@ export const CONFIG_PARAMS = {
 	REPLICATION_SECUREPORT: 'replication_securePort',
 	REPLICATION_THREADS: 'replication_threads',
 	REPLICATION_ROUTES: 'replication_routes',
+	REPLICATION_NETWORK: 'replication_network',
+	REPLICATION_PRIVATEURLS: 'replication_privateUrls',
 	REPLICATION_DATABASES: 'replication_databases',
 	REPLICATION_ENABLEROOTCAS: 'replication_enableRootCAs',
 	REPLICATION_MTLS_CERTIFICATEVERIFICATION: 'replication_mtls_certificateVerification',
@@ -806,6 +818,7 @@ export const CONFIG_PARAMS = {
 	STORAGE_WRITEASYNC: 'storage_writeAsync',
 	STORAGE_OVERLAPPINGSYNC: 'storage_overlappingSync',
 	STORAGE_CACHING: 'storage_caching',
+	STORAGE_RECORDCACHESIZE: 'storage_recordCacheSize',
 	STORAGE_COMPRESSION: 'storage_compression',
 	STORAGE_NOREADAHEAD: 'storage_noReadAhead',
 	STORAGE_RANDOMACCESSFIELDS: 'storage_randomAccessFields',
@@ -883,6 +896,15 @@ export const CONFIG_PARAMS = {
 	SQL_ALLOWFULLSCAN: 'sql_allowFullScan',
 	SQL_MAXSORTROWS: 'sql_maxSortRows',
 	SQL_MAXHASHROWS: 'sql_maxHashRows',
+} as const;
+
+/**
+ * Root config params that only `set_configuration` writes: Studio's cluster UI settings. Kept out of CONFIG_PARAMS so
+ * a bare env var or CLI arg of the same name is never applied at boot.
+ */
+export const STUDIO_CONFIG_PARAMS = {
+	NAVIGATION: 'studio_navigation',
+	LANDING: 'studio_landing',
 } as const;
 
 /**

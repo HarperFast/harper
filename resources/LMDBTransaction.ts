@@ -159,6 +159,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 			throw new Error('Can not use a transaction that is no longer open');
 		}
 
+		if (operation.stagedIn === this && !operation.saved && this.ownedWrites?.has(operation)) return operation;
 		this.linkWrite(operation);
 		this.writes.push(operation); // standard path, add to current transaction
 		(this.ownedWrites ??= new WeakSet()).add(operation);
@@ -418,7 +419,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 					// now reset transactions tracking; this transaction be reused and committed again
 					this.clearWrites();
 					this.timestamp = 0;
-					this.next = null;
+					while (this.next) this.detachNext();
 					const completed =
 						confirmation || (this.root ?? this).confirmationCount
 							? settleCommitCompletions(completions, confirmation)

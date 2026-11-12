@@ -36,6 +36,7 @@ import { systemInformation } from '../utility/environment/systemInformation.ts';
 import * as tokenAuthentication from '../security/tokenAuthentication.ts';
 import * as auth from '../security/auth.ts';
 import * as configUtils from '../config/configUtils.ts';
+import { getStudioConfiguration } from '../config/studioConfiguration.ts';
 import * as functionsOperations from '../components/operations.ts';
 import * as transactionLog from '../utility/logging/transactionLog.ts';
 import * as npmUtilities from './npmUtilities.ts';
@@ -469,6 +470,10 @@ requiredPermissions.set(
 	new permission(false, [], terms.OPERATIONS_ENUM.REGISTRATION_INFO)
 );
 requiredPermissions.set(user.userInfo.name, new permission(false, [], terms.OPERATIONS_ENUM.USER_INFO));
+requiredPermissions.set(
+	getStudioConfiguration.name,
+	new permission(false, [], terms.OPERATIONS_ENUM.GET_STUDIO_CONFIGURATION)
+);
 //DescribeAll will only return the schema values a user has permissions for
 requiredPermissions.set(schemaDescribe.describeAll.name, new permission(false, [], terms.OPERATIONS_ENUM.DESCRIBE_ALL));
 
@@ -663,8 +668,9 @@ export function verifyPermsAST(ast, userObject, operation, apiOperation = terms.
 
 		//If the AST is for a SELECT, we need to check for wildcards and, if they exist, update the AST to include the
 		// attributes that the user has READ perms for - we can skip this step for super users
-		if (!isSuperUser && ast instanceof (alasql.yy as any).Select) {
-			ast = parsedAst.updateAttributeWildcardsForRolePerms(fullRolePerms);
+		const nonSuperSelect = !isSuperUser && ast instanceof (alasql.yy as any).Select;
+		if (nonSuperSelect) {
+			ast = parsedAst.updateAttributeWildcardsForRolePerms(fullRolePerms, userObject);
 		}
 		// After expansion, so a wildcard cannot expand into an attribute named `_`.
 		if (!isSuperUser && parsedAst.getRowAccessors().length > 0) {
@@ -684,6 +690,7 @@ export function verifyPermsAST(ast, userObject, operation, apiOperation = terms.
 			return tablePermRestriction;
 		}
 
+		let relatedTableDenials: RelationshipReadCheck['denials'];
 		schemaTableMap.forEach((tables, schemaKey) => {
 			for (let t = 0; t < tables.length; t++) {
 				let attributes = parsedAst.getAttributesBySchemaTableName(schemaKey, tables[t]);
@@ -697,6 +704,14 @@ export function verifyPermsAST(ast, userObject, operation, apiOperation = terms.
 					permsResponse,
 					undefined
 				);
+				if (nonSuperSelect)
+					relatedTableDenials = addRelatedTableDenials(
+						schemaKey,
+						tables[t],
+						attributes,
+						userObject,
+						relatedTableDenials
+					);
 			}
 		});
 
@@ -711,7 +726,29 @@ export function verifyPermsAST(ast, userObject, operation, apiOperation = terms.
 				permsResponse,
 				undefined
 			);
+			relatedTableDenials = addRelatedTableDenials(
+				writeReads.schema,
+				writeReads.table,
+				writeReads.attributes,
+				userObject,
+				relatedTableDenials
+			);
 		}
+
+		// A read sees a related attribute it cannot read as absent (relatedRecordData); a write would pick or compute rows by
+		// that absent value, so a write's member access must name a path the role can read.
+		if (writeReads && !permsResponse.hasIssues()) {
+			const memberAccess = parsedAst.getRelationshipMemberPaths();
+			if (memberAccess.unresolved !== undefined)
+				return permsResponse.handleUnauthorizedItem(HDB_ERROR_MSGS.SQL_RELATIONSHIP_MEMBER(memberAccess.unresolved));
+			for (const { tableClass, path } of memberAccess.paths)
+				relatedTableDenials = addMemberPathDenial(tableClass, path, userObject, relatedTableDenials);
+		}
+
+		// Only a statement admitted on its own tables and attributes answers for related tables, so a refusal never
+		// names the target of a relationship attribute the role cannot see.
+		if (relatedTableDenials && !permsResponse.hasIssues())
+			reportRelationshipDenials(relatedTableDenials, userObject.role.permission, undefined, undefined, permsResponse);
 
 		return permsResponse.getPermsResponse();
 	} catch (e) {
@@ -1094,6 +1131,46 @@ function stripPermissionControls(select: any) {
 	}
 }
 
+const NO_PATH: readonly string[] = [];
+
+// A relationship column reads its related table, which the statement never names. That table is checked on its own,
+// so a root the role may write but not read (or a self-relationship) still answers for it.
+function addRelatedTableDenials(
+	schemaName: string,
+	table: string,
+	attributes: string[] | undefined,
+	user: any,
+	denials: RelationshipReadCheck['denials']
+): RelationshipReadCheck['denials'] {
+	const tableClass = getDatabases()[schemaName]?.[table];
+	if (!tableClass?.hasRelationships || !attributes) return denials;
+	for (const attribute of attributes) {
+		const denial = relatedTableOf(tableClass, attribute)?._readDenial(NO_PATH, user);
+		if (denial) denials = recordDenial(denials, denial);
+	}
+	return denials;
+}
+
+function addMemberPathDenial(
+	tableClass: any,
+	path: string[],
+	user: any,
+	denials: RelationshipReadCheck['denials']
+): RelationshipReadCheck['denials'] {
+	const denial = relatedTableOf(tableClass, path[0])._readDenial(path, user, undefined, 1);
+	return denial ? recordDenial(denials, denial) : denials;
+}
+
+function recordDenial(denials: RelationshipReadCheck['denials'], denial: ReadDenial): RelationshipReadCheck['denials'] {
+	denials ??= new Map();
+	const key = `${denial.database}_${denial.table}`;
+	let entry = denials.get(key);
+	if (!entry) denials.set(key, (entry = { denial, attributes: new Set() }));
+	if (denial.attribute === undefined) entry.denial = denial;
+	else entry.attributes.add(denial.attribute);
+	return denials;
+}
+
 interface RelationshipReadCheck {
 	tableClass: any;
 	user: any;
@@ -1139,8 +1216,8 @@ function checkRelationshipReads(
 function reportRelationshipDenials(
 	denials: RelationshipReadCheck['denials'],
 	permission: any,
-	operationSchema: string,
-	table: string,
+	operationSchema: string | undefined,
+	table: string | undefined,
 	permsResponse
 ): Set<string> | undefined {
 	let rootAttributes: Set<string> | undefined;
@@ -1191,13 +1268,7 @@ function checkRelationshipPath(state: RelationshipReadCheck, attribute: any) {
 	const path = Array.isArray(attribute);
 	if (!relatedTableOf(state.tableClass, path ? attribute[0] : attribute)) return;
 	const denial = state.tableClass._readDenial(path ? attribute : [attribute], state.user);
-	if (!denial) return;
-	state.denials ??= new Map();
-	const key = `${denial.database}_${denial.table}`;
-	let entry = state.denials.get(key);
-	if (!entry) state.denials.set(key, (entry = { denial, attributes: new Set() }));
-	if (denial.attribute === undefined) entry.denial = denial;
-	else entry.attributes.add(denial.attribute);
+	if (denial) state.denials = recordDenial(state.denials, denial);
 }
 
 function checkSortPaths(state: RelationshipReadCheck, sort: any, prefix: any[] | undefined) {
