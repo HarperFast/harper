@@ -486,7 +486,11 @@ async function failAttempt(lock: RestoreLock, receipt: RestoreReceipt, reason: s
 		logger.error(
 			`The restart restore of '${receipt.database}' cannot finish (${reason}); starting in safe mode. Use restore_backup resume=true, a different backup_id with on_restart=true, or cancel=true.`
 		);
-		if (failed.job_id) await settleRestoreJob(failed, hdbTerms.JOB_STATUS_ENUM.ERROR).catch(() => {});
+		if (failed.job_id) {
+			await settleRestoreJob(failed, hdbTerms.JOB_STATUS_ENUM.ERROR).catch((error) =>
+				logger.error(`Could not settle terminal restore job ${failed.job_id}`, error)
+			);
+		}
 	} else {
 		logger.error(
 			`Attempt ${receipt.attempts} of ${receipt.max_attempts ?? DEFAULT_RESTORE_MAX_ATTEMPTS} to restore '${receipt.database}' failed (${reason}); it stays unloaded and retries at the next restart`
