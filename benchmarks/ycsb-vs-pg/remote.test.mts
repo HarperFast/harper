@@ -172,6 +172,10 @@ test('perf counters use the hybrid PMU where there is one and cpu elsewhere, and
 			pageFaults: 7,
 		},
 	});
+	// Counted over cpus (-C), not per cgroup: the fourth field is the run time, and everything is one entry.
+	const host = Object.values(counterEvents('cpu')).map((event, i) => `${i + 1},,${event},4000000,100.00,,`);
+	deepStrictEqual(Object.keys(parsePerfStat(host.join('\n'), 'host(harper)')), ['host(harper)']);
+	strictEqual(parsePerfStat(host.join('\n'), 'host(harper)')['host(harper)'].pageFaults, 7);
 });
 
 test('memory peaks across hosts are summed only where the readings coincide', () => {

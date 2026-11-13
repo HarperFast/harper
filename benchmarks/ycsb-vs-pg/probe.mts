@@ -27,7 +27,8 @@ import { foldPerfScript, startCounters, startRecord, type Counters } from './per
 import { readRocksdbEvents, type RocksdbEvent } from './rocksdbLog.mts';
 
 export interface WindowOptions {
-	counters?: boolean;
+	/** Hardware counters per component cgroup (true), or over the target cpus as a whole ('host'). */
+	counters?: boolean | 'host';
 	memory?: boolean;
 	clock?: boolean;
 	refaults?: boolean;
@@ -127,7 +128,8 @@ export function localProbe(spec: LocalProbeSpec): TargetProbe {
 			let counters: Awaited<ReturnType<typeof startCounters>> | undefined;
 			let recorder: Awaited<ReturnType<typeof startRecord>> | undefined;
 			const startPerf = async () => {
-				if (options.counters) counters = await startCounters(targets.cgroups, workDir);
+				if (options.counters)
+					counters = await startCounters(targets.cgroups, workDir, options.counters === 'host' ? cpus : undefined);
 				if (options.recordPrefix) recorder = await startRecord(cpus, `${options.recordPrefix}.perf.data`);
 			};
 			try {
