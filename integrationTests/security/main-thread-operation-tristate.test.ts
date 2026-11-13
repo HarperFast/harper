@@ -164,6 +164,10 @@ suite(
 			await setupHarperWithFixture(ctx, FIXTURE_PATH, {
 				config: {
 					threads: { count: WORKER_COUNT },
+					// With the fixture's `rest.webSocket: false`, nothing registers a WebSocket listener on the
+					// application port. One would put Bun's port on node:http, where the legacy route is
+					// unreachable (#2355); without it Bun serves the port through Bun.serve.
+					mqtt: { webSocket: false },
 					authentication: { authorizeLocal: false },
 					logging: { console: true, level: 'error' },
 				},

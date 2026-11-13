@@ -259,7 +259,7 @@ Consequences that shape the code:
   `KNOWN_METHODS` does not include it,
   and neither OpenAPI nor MCP enumerate it. Exposing lock/unlock over a protocol is a Phase 1 decision.
   REST conditional writes do take a default-scope hold lock internally, after authorization, when
-  `rest.preconditionLocks` is on; see [HTTP request preconditions](../server/DESIGN.md#http-request-preconditions-restts-tablets).
+  `rest.preconditionLocks` is on, unless the table is replicated and its transport declares cluster record locks `disabled`; see [HTTP request preconditions](../server/DESIGN.md#http-request-preconditions-restts-tablets).
   Acquisition itself has no authorization hook — lock() is not protocol-dispatched, so no
   allowUpdate/allowCreate check runs when a caller acquires a lock.
 - **`lock()` and `allowUpdate`:** writes through a held lock bypass per-table
@@ -358,9 +358,9 @@ writes (`hasCommitHold()`, between `retainTransactionLockHolds` and its release)
 (`saveHolderSelfCommit`). An explicit transaction staging a holder write, or first saving a deferred one in its
 commit sweep, while that handle has a commit in flight is refused the same way, but thrown, so it fails the
 scope. A self-committing refusal is a rejected promise, so a caller aggregating it with the earlier
-write still observes that write; it detaches only the refused write, and does not poison the hold
-(`writeRefused` stays false). On a self-committing link the instance keeps its pending changes: its refused
-deferred write is staged again (`#restageRefusedWrite`), so its next awaited `save()` commits it. Inside
+write still observes that write. Eager refused writes, including array PUT elements without a retry instance, detach; deferred ones keep their chain position and open
+generation (`saveHolderSelfCommit`, `#restoreRefusedWrite`). The next awaited `save()` retries the same operation,
+attaching it to the current link if its old owner has finished. Refusal does not poison the hold. Inside
 `transaction()` a refused write is discarded with its 409, since staging it again in the commit that ran the hook
 would land the write the 409 refused; the caller catches it and writes again (through a fresh `update()` on a
 scoped lock, as after any `save()`).
@@ -450,7 +450,9 @@ does not name, so a node absent from it can neither arbitrate nor lock. The map 
 digest before the feature is enabled, and nothing a node observes — an unreachable peer, a restart,
 a partition — changes it. Core never computes topology, never advances a generation, and never
 proceeds without a map: no map means no agreed ring, and a ring guessed from whoever looks reachable
-is exactly the asymmetric-partition failure a single arbiter exists to remove. A key's **home** is
+is exactly the asymmetric-partition failure a single arbiter exists to remove. The refusal appends the
+transport's `homeMapUnavailableReason()`, since only harper-pro knows why it has no map and how an
+operator establishes one. A key's **home** is
 the rendezvous-hash winner over `homes[]` — chosen over a modulo because a generation change then
 re-homes only the departing node's keys, and every re-homed key pays the recovery path on its next
 lock.

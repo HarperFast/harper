@@ -64,6 +64,147 @@ describe('Sharding configuration repair', () => {
 			}
 		}
 	);
+
+	(process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? it.skip : it)(
+		'rereads a changed spare list alone, and a malformed one refuses only a new default map',
+		async function () {
+			this.timeout(20_000);
+			const { Worker } = require('node:worker_threads');
+			let worker;
+			let timer;
+			try {
+				worker = new Worker(
+					`
+				const { parentPort, workerData } = require('node:worker_threads');
+				require(workerData.testUtils).setupTestDBPath();
+				const env = require('#src/utility/environment/environmentManager');
+				const maps = require('#src/resources/residencyMaps');
+				const { shardListDigest } = require('#src/resources/residencyPolicy');
+				(async () => {
+					env.setProperty('replication_shard', 0);
+					env.setProperty('replication_shards', [0, 1, 2]);
+					env.setProperty('replication_spareShards', [2]);
+					const first = maps.getResidencyConfiguration();
+					const shardsInput = env.get('replication_shards');
+					env.setProperty('replication_spareShards', [1, 2]);
+					const second = maps.getResidencyConfiguration();
+					await maps.prepareResidencyDeclaration('sparesLive', 'Rows', { slots: 4 });
+					env.setProperty('replication_spareShards', 1);
+					const broken = maps.getResidencyConfiguration();
+					const local = maps.residencyIsLocal('sparesLive', 0, 4);
+					const refused = await maps.prepareResidencyDeclaration('sparesBroken', 'Rows', {}).then(
+						() => undefined,
+						(error) => error.message
+					);
+					parentPort.postMessage({
+						type: 'spares-result',
+						sameShards: env.get('replication_shards') === shardsInput,
+						spares: [first.spares, second.spares],
+						digests: [
+							first.digest === shardListDigest([0, 1, 2], [2]),
+							second.digest === shardListDigest([0, 1, 2], [1, 2]),
+						],
+						brokenDigest: broken.digest,
+						local,
+						refused,
+					});
+				})().catch((error) => parentPort.postMessage({ type: 'spares-result', error: error.message }));
+				parentPort.ref();
+			`,
+					{
+						eval: true,
+						workerData: {
+							testUtils: require.resolve('../testUtils'),
+							noServerStart: true,
+							addPorts: [],
+							workerIndex: 9,
+							workerCount: 10,
+						},
+					}
+				);
+				const result = await new Promise((resolve, reject) => {
+					timer = setTimeout(() => reject(new Error('worker did not report')), 15_000);
+					worker.once('error', reject);
+					worker.once('exit', (code) => reject(new Error(`worker exited before reporting: ${code}`)));
+					worker.on('message', (message) => {
+						if (message.type === 'spares-result') resolve(message);
+					});
+				});
+				assert.equal(result.error, undefined);
+				assert.equal(result.sameShards, true, 'only the spare list changed');
+				assert.deepEqual(result.spares, [[2], [1, 2]]);
+				assert.deepEqual(result.digests, [true, true]);
+				assert.equal(result.brokenDigest, 'invalid');
+				assert.equal(typeof result.local, 'boolean', 'an installed map still answers');
+				assert.match(result.refused, /replication.spareShards must be an array/);
+			} finally {
+				clearTimeout(timer);
+				await worker?.terminate();
+			}
+		}
+	);
+
+	(process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? it.skip : it)(
+		'projects the root spare list before a worker installs its first map, so spares get no slots',
+		async function () {
+			this.timeout(20_000);
+			const { Worker } = require('node:worker_threads');
+			const { getConfigFilePath } = require('#src/config/configUtils');
+			const { readRootConfig, setRootConfigEntry } = require('../rootConfigFixture');
+			const path = getConfigFilePath();
+			const saved = readFileSync(path, 'utf8');
+			let worker;
+			let timer;
+			try {
+				setRootConfigEntry('replication', {
+					...readRootConfig().replication,
+					shard: 0,
+					shards: [0, 1, 2],
+					spareShards: [1],
+				});
+				worker = new Worker(
+					`
+				const { parentPort, workerData } = require('node:worker_threads');
+				require(workerData.testUtils).setupTestDBPath();
+				const env = require('#src/utility/environment/environmentManager');
+				env.setProperty('replication_shard', 0);
+				env.setProperty('replication_shards', [1]);
+				env.setProperty('replication_spareShards', [2]);
+				const { prepareResidencyDeclaration, readResidencyMap } = require('#src/resources/residencyMaps');
+				prepareResidencyDeclaration('spareProjection', 'Rows', {}).then(() => {
+					parentPort.postMessage({ type: 'projection-result', map: readResidencyMap('spareProjection') });
+				}, error => parentPort.postMessage({ type: 'projection-result', error: error.message }));
+				parentPort.ref();
+			`,
+					{
+						eval: true,
+						workerData: {
+							testUtils: require.resolve('../testUtils'),
+							noServerStart: true,
+							addPorts: [],
+							workerIndex: 9,
+							workerCount: 10,
+						},
+					}
+				);
+				const result = await new Promise((resolve, reject) => {
+					timer = setTimeout(() => reject(new Error('worker did not project the root configuration')), 15_000);
+					worker.once('error', reject);
+					worker.once('exit', (code) => reject(new Error(`worker exited before declaration: ${code}`)));
+					worker.on('message', (message) => {
+						if (message.type === 'projection-result') resolve(message);
+					});
+				});
+				assert.equal(result.error, undefined);
+				assert.equal(result.map.slots, 1024);
+				assert.deepEqual([...new Set(result.map.ranges.map((range) => range.shard))].sort(), [0, 2]);
+			} finally {
+				clearTimeout(timer);
+				await worker?.terminate();
+				writeFileSync(path, saved);
+			}
+		}
+	);
 	for (const failure of ['rejected', 'unreadable', 'closed'])
 		it(`does not certify a failed sharding configuration observer (${failure})`, async () => {
 			const { EventEmitter } = require('node:events');
@@ -114,6 +255,28 @@ describe('Sharding configuration repair', () => {
 				initConfig(true);
 			}
 		});
+	for (const section of [false, true])
+		it(`persists and clears the spare list through set_configuration (section=${section})`, async () => {
+			const { setConfiguration, initConfig, getConfigFilePath } = require('#src/config/configUtils');
+			const { readRootConfig, setRootConfigEntry } = require('../rootConfigFixture');
+			const path = getConfigFilePath();
+			const saved = readFileSync(path, 'utf8');
+			try {
+				const replication = { ...readRootConfig().replication, shard: 0, shards: [0, 1, 2] };
+				setRootConfigEntry('replication', replication);
+				initConfig(true);
+				const args = (spareShards) =>
+					section ? { replication: { ...replication, spareShards } } : { replication_spareShards: spareShards };
+				await setConfiguration({ operation: 'set_configuration', ...args([1, 2]) });
+				assert.deepEqual(readRootConfig().replication.spareShards, [1, 2]);
+				await setConfiguration({ operation: 'set_configuration', ...args([]) });
+				assert.deepEqual(readRootConfig().replication.spareShards ?? [], []);
+			} finally {
+				writeFileSync(path, saved);
+				initConfig(true);
+			}
+		});
+
 	it('also persists an explicit port rollback without changing boot snapshot semantics', async () => {
 		const { setConfiguration, initConfig, getConfigFilePath } = require('#src/config/configUtils');
 		const { readRootConfig, setRootConfigEntry } = require('../rootConfigFixture');
@@ -145,6 +308,34 @@ describe('Sharding configuration repair', () => {
 			const backupDir = join(readRootConfig().rootPath, 'backup');
 			const backups = existsSync(backupDir) ? readdirSync(backupDir).sort() : [];
 			updateConfigValue(undefined, undefined, { REPLICATION_SHARDS: '[0,1]' }, true);
+			assert.equal(readFileSync(path, 'utf8'), before);
+			assert.equal(statSync(path).mtimeMs, beforeStat.mtimeMs, 'an unchanged boot value must not rewrite the file');
+			assert.equal(statSync(path).ino, beforeStat.ino, 'an unchanged boot value must not replace the file');
+			assert.deepEqual(existsSync(backupDir) ? readdirSync(backupDir).sort() : [], backups);
+		} finally {
+			writeFileSync(path, saved);
+			initConfig(true);
+		}
+	});
+
+	it('does not rewrite or back up an unchanged spare list at boot', () => {
+		const { updateConfigValue, initConfig, getConfigFilePath } = require('#src/config/configUtils');
+		const { readRootConfig, setRootConfigEntry } = require('../rootConfigFixture');
+		const path = getConfigFilePath();
+		const saved = readFileSync(path, 'utf8');
+		try {
+			setRootConfigEntry('replication', {
+				...readRootConfig().replication,
+				shard: 0,
+				shards: [0, 1, 2],
+				spareShards: [1, 2],
+			});
+			initConfig(true);
+			const before = readFileSync(path, 'utf8');
+			const beforeStat = statSync(path);
+			const backupDir = join(readRootConfig().rootPath, 'backup');
+			const backups = existsSync(backupDir) ? readdirSync(backupDir).sort() : [];
+			updateConfigValue(undefined, undefined, { REPLICATION_SPARESHARDS: '[1,2]' }, true);
 			assert.equal(readFileSync(path, 'utf8'), before);
 			assert.equal(statSync(path).mtimeMs, beforeStat.mtimeMs, 'an unchanged boot value must not rewrite the file');
 			assert.equal(statSync(path).ino, beforeStat.ino, 'an unchanged boot value must not replace the file');

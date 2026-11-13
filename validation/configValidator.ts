@@ -541,6 +541,14 @@ export function configValidator(configJson, skipFsValidation = false) {
 				securePort: portConstraints,
 				timeout: number.min(1).optional(),
 			}).optional(),
+			encryptedOperation: Joi.object({
+				maxAge: number.integer().min(1000).max(600000).optional(),
+				maxSize: number
+					.integer()
+					.min(1024)
+					.max(64 * 1024 * 1024)
+					.optional(),
+			}).optional(),
 			tls: Joi.alternatives([Joi.array().items(tlsConstraints), tlsConstraints]),
 		}).required(),
 		rootPath: string.pattern(DIRECTORY_PATH_PATTERN, 'directory path').required(),

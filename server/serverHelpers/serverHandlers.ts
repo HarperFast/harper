@@ -20,6 +20,7 @@ function pAuthorize(req?: any, resp?: any) {
 }
 
 import * as serverUtilities from './serverUtilities.ts';
+import { operationErrorResponse } from './operationErrorResponse.ts';
 import { applyImpersonation } from '../../security/impersonation.ts';
 import { clientAddressOf, runWithCallerAddress } from '../../security/networkAccess.ts';
 import { createGzip, constants } from 'node:zlib';
@@ -78,55 +79,8 @@ function serverErrorHandler(error?: any, req?: any, resp?: any) {
 	// Fastify passes a handler's reason through as-is, so a rejection with none arrives here as nullish.
 	error ??= handleHDBError(new Error('The request failed without an error'), undefined, 500);
 	if (!errorsLoggedByRequest.get(req)?.has(error)) harperLogger[error.logLevel || 'info'](error);
-	let replicationUnconfirmed = false;
-	try {
-		replicationUnconfirmed = error.replicationUnconfirmed === true;
-	} catch {}
-	if (error.statusCode) {
-		if (typeof error.http_resp_msg !== 'object') {
-			const body: any = { error: error.http_resp_msg || error.message };
-			if (replicationUnconfirmed) body.replicationUnconfirmed = true;
-			// surface the machine-readable signal for errors that declare retryability (e.g. a
-			// still-building index, IndexRebuildingError) so API callers can distinguish and retry
-			try {
-				if (replicationUnconfirmed || error.retryable !== undefined) {
-					body.retryable = replicationUnconfirmed ? false : error.retryable;
-					body.code = error.code;
-				}
-			} catch {
-				try {
-					body.code = error.code;
-				} catch {}
-			}
-			return resp.code(error.statusCode).send(body);
-		}
-		if (replicationUnconfirmed) {
-			let body;
-			try {
-				body = Array.isArray(error.http_resp_msg) ? { error: error.http_resp_msg } : { ...error.http_resp_msg };
-				body.code ??= error.code;
-			} catch {
-				body = { error: 'Replication confirmation failed' };
-				try {
-					if (typeof error.message === 'string') body.error = error.message;
-				} catch {}
-				try {
-					body.code = error.code;
-				} catch {}
-			}
-			return resp.code(error.statusCode).send({
-				...body,
-				replicationUnconfirmed: true,
-				retryable: false,
-			});
-		}
-		return resp.code(error.statusCode).send(error.http_resp_msg);
-	}
-	const statusCode = error.statusCode ? error.statusCode : hdbErrors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR;
-	if (typeof error === 'string') {
-		return resp.code(statusCode).send({ error: error });
-	}
-	return resp.code(statusCode).send(error.message ? { error: error.message } : error);
+	const { statusCode, body } = operationErrorResponse(error);
+	return resp.code(statusCode).send(body);
 }
 
 function reqBodyValidationHandler(req?: any, resp?: any, done?: any) {

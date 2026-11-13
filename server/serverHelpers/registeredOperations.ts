@@ -44,6 +44,7 @@ import {
 	unregisterWorkerGrantableOperation,
 } from '../../utility/operationPermissions.ts';
 import { runWithOperationAuthorizationBypass } from './operationAuthorizationState.ts';
+import { isOperationLogEnabled, operationLogViewOf, setOperationLogView } from '../../utility/operationLogView.ts';
 import { onStartup } from '../../utility/lifecycle.ts';
 
 const operationLog = harperLogger.loggerWithTag('operation');
@@ -270,19 +271,27 @@ function withoutNonForwardableFields(body: any) {
 	return forwardBody;
 }
 
+// The receiving thread needs a view whenever the body has one (its error logging keys off it), but the
+// full view only when the operation log will print it. A view never holds a sealed value.
+function forwardedLogView(body: any): Record<string, unknown> | undefined {
+	const view = operationLogViewOf(body);
+	return view && (isOperationLogEnabled() ? view() : { operation: body.operation });
+}
+
 /** Resolves with the correlated response; undefined when the target's port is gone. */
 function sendExecuteRequest(
 	name: string,
 	targetThreadId: number,
 	forwardBody: any,
-	bypassAuth: boolean
+	bypassAuth: boolean,
+	logView: Record<string, unknown> | undefined
 ): Promise<any> | undefined {
 	const requestId = nextRequestId++;
 	let sent;
 	try {
 		sent = threads.sendToThread(targetThreadId, {
 			type: terms.ITC_EVENT_TYPES.OPERATION_EXECUTE_REQUEST,
-			message: { requestId, body: forwardBody, bypassAuth, originator: threadId },
+			message: { requestId, body: forwardBody, bypassAuth, originator: threadId, logView },
 		});
 	} catch (error) {
 		// Structured-clone failure (e.g. a function or native handle on the request body) is a
@@ -316,7 +325,13 @@ function sendExecuteRequest(
 }
 
 async function executeMainThreadOperation(name: string, body: any, bypassAuth: boolean): Promise<any> {
-	const pending = sendExecuteRequest(name, MAIN_THREAD_ID, withoutNonForwardableFields(body), bypassAuth);
+	const pending = sendExecuteRequest(
+		name,
+		MAIN_THREAD_ID,
+		withoutNonForwardableFields(body),
+		bypassAuth,
+		forwardedLogView(body)
+	);
 	if (!pending) throw new ServerError(`Operation '${name}' runs on the main thread, which is unreachable`, 503);
 	return pending;
 }
@@ -324,13 +339,14 @@ async function executeMainThreadOperation(name: string, body: any, bypassAuth: b
 async function executeRemoteOperation(name: string, body: any, bypassAuth: boolean): Promise<any> {
 	const workerIds = registeredByWorker.get(name);
 	const forwardBody = withoutNonForwardableFields(body);
+	const logView = forwardedLogView(body);
 
 	// Pick one live registering worker (rotating for spread), pruning ids whose port is gone.
 	// sendToThread returning false means the worker exited; try the next one.
 	while (workerIds?.size) {
 		const candidates = [...workerIds];
 		const targetThreadId = candidates[rotation++ % candidates.length];
-		const pending = sendExecuteRequest(name, targetThreadId, forwardBody, bypassAuth);
+		const pending = sendExecuteRequest(name, targetThreadId, forwardBody, bypassAuth, logView);
 		if (pending) return pending;
 		// The port is gone, so this thread's claims go with it — grantability included, which
 		// handleThreadExit would otherwise not retract while other workers still route the name.
@@ -349,9 +365,16 @@ async function executeRemoteOperation(name: string, body: any, bypassAuth: boole
  * (permission check + processLocalTransaction) and send the result back to the requesting thread.
  */
 export async function operationExecuteRequestHandler(event: {
-	message: { requestId: number; body: any; bypassAuth?: boolean; originator: number };
+	message: {
+		requestId: number;
+		body: any;
+		bypassAuth?: boolean;
+		originator: number;
+		logView?: Record<string, unknown>;
+	};
 }) {
-	const { requestId, body, bypassAuth, originator } = event.message;
+	const { requestId, body, bypassAuth, originator, logView } = event.message;
+	if (logView) setOperationLogView(body, () => logView);
 	let response;
 	try {
 		const localDispatch = operationDispatchState.local;
