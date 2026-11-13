@@ -2347,6 +2347,7 @@ export function makeTable(options): TableResourceClass {
 			});
 			const entries: AuditRecord[] = [];
 			let found = false;
+			let unreadable = false;
 			let capped = false;
 			let sincePause = 0;
 			for (const entry of range) {
@@ -2360,6 +2361,13 @@ export function makeTable(options): TableResourceClass {
 					yield { pause: true };
 				}
 				if (
+					!entry.type ||
+					!Number.isFinite(entry.version) ||
+					entry.tableId === undefined ||
+					entry.recordId === undefined
+				)
+					unreadable = true;
+				if (
 					entry.tableId !== tableId ||
 					compareKeys(entry.recordId, id) !== 0 ||
 					(sharedLog && entry.nodeId !== ref.nodeId)
@@ -2372,7 +2380,7 @@ export function makeTable(options): TableResourceClass {
 				if (previousRefs)
 					for (let index = previousRefs.length - 1; index >= 0; index--) pending.push(previousRefs[index]);
 			}
-			yield { key: ref.version, entries, found, capped, range };
+			yield { key: ref.version, entries, found: found && !unreadable, capped, range };
 			if (capped) return;
 		}
 	}
@@ -11357,7 +11365,6 @@ export function makeTable(options): TableResourceClass {
 					const base = priorStagedOp?.stagedEntry ?? existingEntry;
 					const value = base?.value ?? null;
 					const metadataFlags = (base?.metadataFlags ?? 0) & (LOCAL_ONLY | INVALIDATED | REPLICA);
-					// a message older than the record never moves its version back: later writes order against it
 					const late =
 						existingEntry?.version !== undefined &&
 						precedesExistingVersion(txnTime, existingEntry, options?.nodeId) < 0;

@@ -1,4 +1,3 @@
-// Cases from HarperFast/harper#4360.
 require('../testUtils');
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
@@ -42,7 +41,6 @@ describe('A publish older than its record', function () {
 		T0 = caseBase += 100_000;
 	});
 
-	// one origin transaction at log key `key` (its version unless given), applied the way replication applies it
 	function apply(key, nodeId, writes) {
 		const context = { source: {}, sourceApply: true, timestamp: key };
 		return transaction(context, async () => {
@@ -72,7 +70,6 @@ describe('A publish older than its record', function () {
 		const subscription = await Topics.subscribe({ id, omitCurrent: true, ...request });
 		subscription.on('data', (event) => events.push(event));
 		try {
-			// a subscription sends its backfill before any live event, so this one marks its end
 			await publish(id, 'end', at(90_000));
 			await waitFor(() => events.some((event) => event.value?.n === 'end'), { timeout: 5000 });
 		} finally {
@@ -93,6 +90,16 @@ describe('A publish older than its record', function () {
 			await publish('d1', 1, at(150));
 			await put('d1', 'C', at(170));
 			assert.deepEqual(recordState('d1'), { name: 'B', version: 200 });
+		});
+
+		it('keeps the newer put when one transaction carried two late publishes to it', async () => {
+			await put('d6', 'B', at(200));
+			await apply(at(150), peerA, [
+				{ id: 'd6', message: { n: 1 } },
+				{ id: 'd6', message: { n: 2 } },
+			]);
+			await put('d6', 'C', at(170));
+			assert.deepEqual(recordState('d6'), { name: 'B', version: 200 });
 		});
 
 		it('keeps the newer put when a late put arrives before a late publish', async () => {
