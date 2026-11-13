@@ -226,6 +226,22 @@ describe('Replication confirmation defaults', () => {
 			});
 		});
 
+		it('refuses a defaulted write the feasibility check rejects, before it lands', async () => {
+			setReplicationConfirmationDefaults({ writes: 1 });
+			registerConfirmation(
+				() => {},
+				() => {
+					throw new ServerError('no peers', 400);
+				}
+			);
+			const id = nextId();
+			await assert.rejects(
+				transaction({}, () => First.put({ id })),
+				/no peers/
+			);
+			assert.equal(await First.get(id), null);
+		});
+
 		it('refuses a default outside the non-negative integers', () => {
 			for (const value of [-1, 1.5, Number.NaN, '1'])
 				assert.throws(() => setReplicationConfirmationDefaults({ writes: value }), TypeError);
