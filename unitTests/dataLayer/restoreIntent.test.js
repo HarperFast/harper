@@ -40,7 +40,7 @@ const backupManifestModule = require('#js/dataLayer/backupManifest');
 const { readBackupManifest, writeBackupManifest } = backupManifestModule;
 const blobBackupModule = require('#js/dataLayer/blobBackup');
 const { blobSnapshotDir, fsyncTree } = blobBackupModule;
-const { readBackupPins } = require('#src/dataLayer/backupRepository');
+const { assertBackupsUnpinned, readBackupPins } = require('#src/dataLayer/backupRepository');
 const { dropSchema } = require('#src/dataLayer/schema');
 const { ResourceBridge } = require('#src/dataLayer/harperBridge/ResourceBridge');
 const {
@@ -1429,6 +1429,97 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			await boot(fixture.name);
 			assert.strictEqual((await job(replacement.jobId)).status, JOB_STATUS_ENUM.COMPLETE);
 			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.backedUp[1]);
+		});
+
+		it('takes its own rollback copy when it supersedes a restore whose copy is in another backup repository', async function () {
+			const fixture = await seededDatabase();
+			const [first] = fixture.backupIds;
+			const savedRoot = env.get(CONFIG_PARAMS.STORAGE_BACKUPPATH);
+			const movedRoot = `${dirname(fixture.backupDir)}-moved-${process.pid}-${sequence}`;
+			const movedDir = join(movedRoot, fixture.name);
+			const useRoot = (root) => env.setProperty(CONFIG_PARAMS.STORAGE_BACKUPPATH, root);
+			const noRoom = () =>
+				replaceExport(storageReclamationModule, 'getStorageSpaceStats', async () => ({
+					available: 0,
+					free: 0,
+					size: 0,
+					basis: 'filesystem',
+				}));
+			try {
+				const Items = getDatabases()[fixture.name].Items;
+				const movedState = await snapshot(Items);
+				useRoot(movedRoot);
+				const { backup_id: moved } = await createBackup({ database: fixture.name });
+				await Items.put({ id: 'after-moved-backup', label: 'live' });
+				await Items.primaryStore.rootStore.flush();
+				useRoot(savedRoot);
+
+				const original = await requestRestore(fixture.name, { on_restart: true, backup_id: first });
+				const restoreRunner = replaceExport(restoreChildRunnerModule, 'runRestoreChild', async (command, ...args) => {
+					if (command !== 'pre-restore-backup') throw new Error('simulated failure before the purge');
+					return runRestoreChild(command, ...args);
+				});
+				try {
+					await boot(fixture.name);
+				} finally {
+					restoreRunner();
+				}
+				const displaced = receiptOf(fixture.dir);
+				assert.ok(
+					Number.isInteger(displaced.pre_restore_backup_id),
+					'precondition: the attempt took its rollback copy'
+				);
+				assert.strictEqual(restoreMarkerPresent(fixture.dir), false, 'precondition: the live generation is intact');
+
+				useRoot(movedRoot);
+				const restoreSpace = noRoom();
+				try {
+					await assert.rejects(
+						requestRestore(fixture.name, { on_restart: true, backup_id: moved }),
+						(error) => error.statusCode === 507,
+						'the copy in the old repository is not one this restore keeps, so it needs room for its own'
+					);
+				} finally {
+					restoreSpace();
+				}
+				const replacement = await requestRestore(fixture.name, { on_restart: true, backup_id: moved });
+
+				const receipt = receiptOf(fixture.dir);
+				assert.deepStrictEqual(
+					{
+						backup_dir: receipt.backup_dir,
+						superseded_from: receipt.superseded_from,
+						retain_previous: receipt.retain_previous,
+						pre_restore_backup_id: receipt.pre_restore_backup_id,
+						pre_restore_pin_id: receipt.pre_restore_pin_id,
+					},
+					{
+						backup_dir: movedDir,
+						superseded_from: displaced.operation_id,
+						retain_previous: true,
+						pre_restore_backup_id: undefined,
+						pre_restore_pin_id: undefined,
+					}
+				);
+				assert.strictEqual((await job(original.jobId)).status, JOB_STATUS_ENUM.ERROR);
+
+				await boot(fixture.name);
+
+				const settled = await job(replacement.jobId);
+				assert.strictEqual(settled.status, JOB_STATUS_ENUM.COMPLETE);
+				assert.ok(
+					(await listBackupsInDir(movedDir)).some((backup) => backup.backupId === settled.result.pre_restore_backup_id),
+					'the rollback copy is in the repository the restore names'
+				);
+				assert.deepStrictEqual(readBackupPins(movedDir), []);
+				assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), movedState);
+				// the old repository's pins lapse with the receipt that kept them live, and its next removal sweeps them
+				assertBackupsUnpinned(fixture.backupDir, [first, displaced.pre_restore_backup_id], fixture.name);
+				assert.deepStrictEqual(readBackupPins(fixture.backupDir), []);
+			} finally {
+				useRoot(savedRoot);
+				rmSync(movedRoot, { recursive: true, force: true });
+			}
 		});
 
 		it('keeps a superseded restore and its pinned source when its successor cannot record its receipt', async function () {

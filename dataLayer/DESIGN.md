@@ -164,7 +164,8 @@ restore and the next startup applies it, before anything can open the target.
   pinned under its own operation id (`restore-intent-<id>`). The job returns a `DeferredJobCompletion`:
   the row stays `IN_PROGRESS` with `deferred_to`, and the drained restart is requested only after that
   row is written. A supersede (another `backup_id` with `on_restart`) inherits the displaced receipt's
-  pins as `superseded_pin_ids`, retired only when the successor commits, and its rollback copy.
+  pins as `superseded_pin_ids`, retired only when the successor commits, and its rollback copy, both
+  only from its own repository (`rollbackCopyToInherit`): pins in another lapse with the receipt.
 - **Job ownership.** The receipt, not the row, decides the outcome. The boot sweep skips the job ids
   `recoverRestoresAtStartup` returns, as its last scan finds them owned, and `settleAbandonedJob` skips a `deferred_to` row only while
   `restoreReceiptOwnsJob` finds a receipt that settles it (`receiptSettlesJob`, committed ones

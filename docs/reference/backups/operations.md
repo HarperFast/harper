@@ -214,7 +214,7 @@ Unless `retain_previous` is `false`, the startup first takes a managed backup of
 
 - **Space.** When the backup root lacks room for it, the request's job ends in `ERROR` without restarting Harper; free space, or pass `retain_previous: false`.
 - **A database that cannot be backed up.** A backup refused because another restore or backup holds what it needs counts as a failed attempt and is retried at the next restart. Any other failure to take the backup, such as a live database that cannot be read, stops the restore at once, without retrying, and its error suggests requesting it again with `retain_previous: false`. A backup that completed before its process failed is kept and used, and the restore carries on. A completed backup that is deleted before Harper protects it, or that Harper then fails to protect, counts as a failed attempt instead: the job stays `IN_PROGRESS` and the restore is retried at the next restart.
-- **No backup is taken** when the database does not exist yet or an earlier restore left it incomplete. A request that replaces a pending restore keeps the pre-restore backup that one already took instead of taking another.
+- **No backup is taken** when the database does not exist yet or an earlier restore left it incomplete. A request that replaces a pending restore keeps the pre-restore backup that one already took instead of taking another, unless the backup root has changed since; it then takes its own.
 
 #### Failed attempts
 

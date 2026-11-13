@@ -3,7 +3,7 @@
  * startup hook applies it before any component, worker or plugin exists. See dataLayer/DESIGN.md.
  */
 import { existsSync, readdirSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { isDeepStrictEqual } from 'node:util';
 import { ClientError } from '../utility/errors/hdbError.ts';
@@ -279,12 +279,19 @@ function inheritedPins(backupDir: string, databaseDir: string, earlier: RestoreR
 		.map((pin) => pin.pin_id);
 }
 
+/** A rollback copy in another repository is one this request's repository can neither resolve nor release. */
+function rollbackCopyToInherit(earlier: RestoreReceipt | undefined, backupDir: string): RestoreReceipt | undefined {
+	return earlier?.route === 'on_restart' &&
+		earlier.pre_restore_backup_id !== undefined &&
+		resolve(earlier.backup_dir) === resolve(backupDir)
+		? earlier
+		: undefined;
+}
+
 /** Read without the lock, so only a hint, which is enough for the advisory space check. */
-function inheritsRollbackCopy(databaseDir: string): boolean {
+function inheritsRollbackCopy(databaseDir: string, backupDir: string): boolean {
 	const read = readRestoreReceipt(databaseDir);
-	return (
-		read.kind === 'valid' && read.receipt.route === 'on_restart' && read.receipt.pre_restore_backup_id !== undefined
-	);
+	return read.kind === 'valid' && rollbackCopyToInherit(read.receipt, backupDir) !== undefined;
 }
 
 /**
@@ -326,7 +333,7 @@ export async function requestRestartRestore(request: RestartRestoreRequest): Pro
 			request.retainPrevious &&
 			!restoreMarkerPresent(databaseDir) &&
 			existsSync(join(databaseDir, 'CURRENT')) &&
-			!inheritsRollbackCopy(databaseDir)
+			!inheritsRollbackCopy(databaseDir, backupDir)
 		)
 			await assertRoomForPreRestoreBackup(databaseName, databaseDir, backupDir);
 		await withBackupRepositoryLock(backupDir, databaseName, async () => {
@@ -360,7 +367,7 @@ export async function requestRestartRestore(request: RestartRestoreRequest): Pro
 					throw new ClientError(`Database '${databaseName}' is finishing an earlier restore; retry shortly`, 409);
 				}
 				displaced = existing.kind === 'valid' ? existing.receipt : undefined;
-				const earlierRestart = displaced?.route === 'on_restart' ? displaced : undefined;
+				const rollbackCopy = rollbackCopyToInherit(displaced, backupDir);
 				const nothingToRetain = restoreMarkerPresent(databaseDir) || !existsSync(join(databaseDir, 'CURRENT'));
 				const planned = newRestoreReceipt({
 					route: 'on_restart',
@@ -377,10 +384,9 @@ export async function requestRestartRestore(request: RestartRestoreRequest): Pro
 					// a supersede is how an operator rolls back, so it keeps the rollback copy it inherits instead of
 					// taking a second; with none to inherit it takes its own, so the live generation is never replaced
 					// without one by accident
-					retain_previous:
-						nothingToRetain || earlierRestart?.pre_restore_backup_id !== undefined ? false : request.retainPrevious,
-					pre_restore_backup_id: earlierRestart?.pre_restore_backup_id,
-					pre_restore_pin_id: earlierRestart?.pre_restore_pin_id,
+					retain_previous: nothingToRetain || rollbackCopy ? false : request.retainPrevious,
+					pre_restore_backup_id: rollbackCopy?.pre_restore_backup_id,
+					pre_restore_pin_id: rollbackCopy?.pre_restore_pin_id,
 					options: {
 						accept_unverified_blobs: request.acceptUnverifiedBlobs,
 						allow_engine_only: request.allowEngineOnly,
