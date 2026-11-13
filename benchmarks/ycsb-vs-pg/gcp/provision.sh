@@ -108,32 +108,39 @@ create_vm() {
 }
 # Every VM of a run in one zone (one compact placement group). A zone out of capacity for a shape, or not
 # offering it, gets the run's VMs there deleted and the next zone of YCSB_GCP_ZONES tried; any other failure
-# ends provisioning.
+# ends provisioning. When no zone has capacity, the list is tried again every YCSB_CAPACITY_RETRY_S until
+# YCSB_CAPACITY_WAIT_MIN minutes have passed: C4 stockouts in us-central1 have lasted minutes to hours.
 ZONE=""
-for zone in $YCSB_GCP_ZONES; do
-	created=1
-	for role in $ROLES; do
-		if [ "$DRY" = 1 ]; then
-			create_vm "$role" "$zone"
-			continue
-		fi
-		if ! create_vm "$role" "$zone" 2>"$RUN_DIR/create.err"; then
-			cat "$RUN_DIR/create.err" >&2
-			grep -Eqi 'ZONE_RESOURCE_POOL_EXHAUSTED|enough resources available|STOCKOUT|does not exist in zone' \
-				"$RUN_DIR/create.err" || exit 1
-			echo "$zone has no capacity for (or does not offer) $RUN_ID-$role's shape; deleting this run's VMs there and trying the next zone" >&2
-			gcloud compute instances list "${P[@]}" --filter="labels.ycsb-run=$RUN_ID" --format='value(name,zone.basename())' |
-				while read -r name vm_zone; do
-					[ -n "$name" ] && gc compute instances delete "$name" "${P[@]}" --zone="$vm_zone" --delete-disks=all
-				done
-			created=0
+capacity_deadline=$(($(date +%s) + YCSB_CAPACITY_WAIT_MIN * 60))
+while :; do
+	for zone in $YCSB_GCP_ZONES; do
+		created=1
+		for role in $ROLES; do
+			if [ "$DRY" = 1 ]; then
+				create_vm "$role" "$zone"
+				continue
+			fi
+			if ! create_vm "$role" "$zone" 2>"$RUN_DIR/create.err"; then
+				cat "$RUN_DIR/create.err" >&2
+				grep -Eqi 'ZONE_RESOURCE_POOL_EXHAUSTED|enough resources available|STOCKOUT|does not exist in zone' \
+					"$RUN_DIR/create.err" || exit 1
+				echo "$zone has no capacity for (or does not offer) $RUN_ID-$role's shape; deleting this run's VMs there and trying the next zone" >&2
+				gcloud compute instances list "${P[@]}" --filter="labels.ycsb-run=$RUN_ID" --format='value(name,zone.basename())' |
+					while read -r name vm_zone; do
+						[ -n "$name" ] && gc compute instances delete "$name" "${P[@]}" --zone="$vm_zone" --delete-disks=all
+					done
+				created=0
+				break
+			fi
+		done
+		if [ "$created" = 1 ]; then
+			ZONE=$zone
 			break
 		fi
 	done
-	if [ "$created" = 1 ]; then
-		ZONE=$zone
-		break
-	fi
+	[ -z "$ZONE" ] && [ "$(date +%s)" -lt "$capacity_deadline" ] || break
+	echo "no zone of [$YCSB_GCP_ZONES] had capacity for $RUN_ID; trying them again in $YCSB_CAPACITY_RETRY_S s" >&2
+	sleep "$YCSB_CAPACITY_RETRY_S"
 done
 [ -n "$ZONE" ] || {
 	echo "no zone of [$YCSB_GCP_ZONES] had capacity for $RUN_ID" >&2

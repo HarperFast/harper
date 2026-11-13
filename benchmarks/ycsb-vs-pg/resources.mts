@@ -13,6 +13,7 @@
  * because Postgres backends fork per connection and would otherwise be missed.
  */
 import { readFile, writeFile, mkdir, chmod } from 'node:fs/promises';
+import { setTimeout as delay } from 'node:timers/promises';
 import { join, dirname } from 'node:path';
 import { readFileSync, readdirSync } from 'node:fs';
 import { execFile } from 'node:child_process';
@@ -337,6 +338,27 @@ export interface MemoryLimit {
 	swapMaxBytes: number;
 	/** Tightest memory.max on any ancestor; a cap there would silently shrink the budget. */
 	ancestorMaxBytes: number;
+}
+
+/**
+ * verifyMemoryLimit for a container just started: retried for up to `waitMs` before failing. Once in about 200 Postgres
+ * starts on GCP, memory.swap.max still read `max` when compose had returned, with memory.max already set.
+ */
+export async function settledMemoryLimit(
+	component: string,
+	scope: string,
+	expectedBytes: number,
+	waitMs = 5000
+): Promise<MemoryLimit> {
+	const deadline = Date.now() + waitMs;
+	for (;;) {
+		try {
+			return verifyMemoryLimit(component, scope, expectedBytes);
+		} catch (error) {
+			if (Date.now() >= deadline) throw error;
+			await delay(100);
+		}
+	}
 }
 
 /**
