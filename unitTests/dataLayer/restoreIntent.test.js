@@ -83,6 +83,8 @@ function replaceExport(module, name, replacement) {
 	};
 }
 
+const UNCONFIRMED_REMOVAL =
+	"The restore record's removal could not be confirmed durable; if a power loss brings the restore back, cancel it again with restore_backup cancel=true";
 const SU = { hdb_user: { username: 'admin', role: { permission: { super_user: true } } } };
 const BLOB_BYTES = 20000; // over the file-storage threshold, so the blob lives in a blob root
 
@@ -1650,6 +1652,7 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			assert.strictEqual(result.restarting, false, 'no boot has held it, so components already have it');
 			assert.strictEqual(afterRecorded, undefined);
 			assert.match(result.message, /loads normally/);
+			assert.doesNotMatch(result.message, /confirmed durable/);
 			assert.strictEqual(readRestoreReceipt(fixture.dir).kind, 'absent');
 			assert.strictEqual(checkRestoreState(fixture.dir), 'clear');
 			assert.deepStrictEqual(pinsOf(fixture), []);
@@ -1687,6 +1690,7 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 				{ cancelled: operationId, still_blocked: false, restarting: false }
 			);
 			assert.match(result.message, new RegExp(`job ${jobId}`));
+			assert.doesNotMatch(result.message, /confirmed durable/);
 			assert.deepStrictEqual(restarts, []);
 			assert.strictEqual(readRestoreReceipt(fixture.dir).kind, 'absent');
 			assert.deepStrictEqual(pinsOf(fixture), []);
@@ -1891,9 +1895,25 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 
 			assert.strictEqual(cancelled.result.restarting, true, 'the boot that held it loaded components without it');
 			assert.strictEqual(typeof cancelled.afterRecorded, 'function');
+			assert.ok(cancelled.result.message.endsWith(`. ${UNCONFIRMED_REMOVAL}`), cancelled.result.message);
 			assert.strictEqual(readRestoreReceipt(fixture.dir).kind, 'absent');
 			assert.deepStrictEqual(pinsOf(fixture), []);
 			assert.strictEqual((await job(jobId)).message, 'Cancelled');
+
+			// with Harper stopped, the same
+			const offline = await seededDatabase();
+			await requestRestore(offline.name, { on_restart: true, retain_previous: false });
+			await closeDatabase(offline.name);
+			const offlineRemoval = flushFailsAfter(offline, 'removeRestoreReceipt');
+			let offlineResult;
+			try {
+				offlineResult = await cancelRestartRestoreOffline({ database: offline.name, cancel: true });
+			} finally {
+				offlineRemoval();
+			}
+			assert.match(offlineResult.message, /is marked failed when Harper starts/);
+			assert.ok(offlineResult.message.endsWith(`. ${UNCONFIRMED_REMOVAL}`), offlineResult.message);
+			assert.strictEqual(readRestoreReceipt(offline.dir).kind, 'absent');
 
 			// an unreadable record, removed the same way
 			const unreadable = await seededDatabase();
@@ -1908,6 +1928,11 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			}
 			assert.strictEqual(cancelled.result.restarting, true);
 			assert.strictEqual(typeof cancelled.afterRecorded, 'function');
+			assert.doesNotMatch(
+				cancelled.result.message,
+				/confirmed durable/,
+				'a record that came back unreadable would only keep the database blocked'
+			);
 			assert.strictEqual(readRestoreReceipt(unreadable.dir).kind, 'absent');
 		});
 

@@ -243,6 +243,8 @@ A startup that cannot apply the restore records the error, leaves the database u
 | `restarting`    | `true` when Harper restarts to load the database and the components that use it, because this boot started without it or in restore safe mode. `false` when the restore was requested after this boot started, since the database is still loaded, and when `still_blocked` is `true`. Also `false` while another restore would start Harper without components: `message` names it, and the database loads at the next restart. |
 | `message`       | What happened, in words.                                                                                                                                                                                                                                                                                                                                                                                                         |
 
+If the restore's record was removed but the disk could not confirm the removal durable, `message`, here and from the CLI below, ends by saying so: a power loss soon after can bring the restore back, and if it does, cancel it again with `restore_backup cancel=true`.
+
 When `still_blocked` is `true`, recover with an ordinary restore or an `on_restart` restore of the database, or with `resume: true`. If the restore's record could not be read, `resume` fails with status code 404, but the other two still recover it.
 
 Starting Harper would run a pending restore, so to withdraw one while Harper is stopped, run the same command from the CLI:

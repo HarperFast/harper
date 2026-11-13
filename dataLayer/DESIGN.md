@@ -172,7 +172,8 @@ restore and the next startup applies it, before anything can open the target.
   the row nor a restart; it changes the files only, and the next boot settles the row.
 - **A throwing receipt write or removal may have landed.** `writeFileDurably` renames and
   `removeFileDurably` unlinks before the directory flush, so after a throw the record re-read under the
-  held lock decides (`writeReceiptReconciled`, `removeReceiptReconciled`, `runRestartAttempt`'s catch).
+  held lock decides (`writeReceiptReconciled`, `removeReceiptReconciled`, `runRestartAttempt`'s catch);
+  a cancel names an unconfirmed removal in its `message`, since a power loss can bring that restore back.
   `failAttempt` never writes over a `committed` receipt.
 - **Drain.** `bin/restart.ts` with `drain` runs `shutdownProcess(deadline)`, the path a SIGTERM takes,
   so main-thread components flush too (`threads.count=0`); the exit watchdog adds

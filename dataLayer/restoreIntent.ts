@@ -166,19 +166,21 @@ function writeReceiptReconciled(lock: RestoreLock, receipt: RestoreReceipt): Res
 	}
 }
 
+const UNCONFIRMED_REMOVAL =
+	"The restore record's removal could not be confirmed durable; if a power loss brings the restore back, cancel it again with restore_backup cancel=true";
+
 /**
  * A removal takes effect at its unlink, before the directory flush that can still throw: with the record gone, the
- * caller carries on as after a clean removal.
+ * caller carries on as after a clean removal. Returns whether the removal was confirmed durable.
  */
-function removeReceiptReconciled(lock: RestoreLock, databaseName: string, remove: () => void): void {
+function removeReceiptReconciled(lock: RestoreLock, databaseName: string, remove: () => void): boolean {
 	try {
 		remove();
+		return true;
 	} catch (error) {
 		if (readRestoreReceipt(lock.dbPath).kind !== 'absent') throw error;
-		logger.error(
-			`The restore record of '${databaseName}' was removed, but the removal could not be confirmed durable; if a power loss brings it back, withdraw it again with restore_backup cancel=true`,
-			error
-		);
+		logger.error(`Removed the restore record of '${databaseName}'. ${UNCONFIRMED_REMOVAL}`, error);
+		return false;
 	}
 }
 
@@ -295,7 +297,8 @@ function inheritsRollbackCopy(databaseDir: string): boolean {
  */
 function cancelUnreadableRestore(lock: RestoreLock, databaseName: string): void {
 	if (!restoreMarkerPresent(lock.dbPath)) {
-		return removeReceiptReconciled(lock, databaseName, () => removeUnreadableRestoreReceipt(lock));
+		removeReceiptReconciled(lock, databaseName, () => removeUnreadableRestoreReceipt(lock));
+		return;
 	}
 	writeReceiptReconciled(
 		lock,
@@ -499,6 +502,7 @@ export async function cancelRestartRestore(
 	const lock = claimTarget(databaseName, databaseDir);
 	let cancelled: RestoreReceipt | undefined;
 	let stillBlocked: boolean;
+	let removalDurable = true;
 	try {
 		const read = readRestoreReceipt(databaseDir);
 		assertCancellable(databaseName, read);
@@ -515,7 +519,9 @@ export async function cancelRestartRestore(
 				});
 			} else {
 				// the receipt first: an unpinned source under a receipt that still schedules a restore can be purged
-				removeReceiptReconciled(lock, databaseName, () => removeRestoreReceipt(lock, cancelled!.operation_id));
+				removalDurable = removeReceiptReconciled(lock, databaseName, () =>
+					removeRestoreReceipt(lock, cancelled!.operation_id)
+				);
 				releaseReceiptPins(cancelled);
 			}
 		} else {
@@ -525,7 +531,7 @@ export async function cancelRestartRestore(
 	} finally {
 		releaseRestoreLock(lock);
 	}
-	if (offline) return cancelledOffline(databaseName, cancelled, stillBlocked);
+	if (offline) return cancelledOffline(databaseName, cancelled, stillBlocked, removalDurable);
 	if (cancelled?.job_id && cancelled.state !== 'terminal') {
 		await settleRestoreJob(cancelled, hdbTerms.JOB_STATUS_ENUM.ERROR, 'Cancelled').catch((error) =>
 			logger.error(`Could not settle cancelled restore job ${cancelled!.job_id}`, error)
@@ -554,14 +560,23 @@ export async function cancelRestartRestore(
 			cancelled: cancelled?.operation_id ?? 'unreadable restore record',
 			still_blocked: stillBlocked,
 			restarting,
-			message,
+			message: withRemovalCaveat(message, removalDurable),
 		},
 		restarting ? requestDrainedRestart : undefined
 	);
 }
 
+function withRemovalCaveat(message: string, removalDurable: boolean): string {
+	return removalDurable ? message : `${message}. ${UNCONFIRMED_REMOVAL}`;
+}
+
 /** With Harper stopped, the next start settles the job. */
-function cancelledOffline(databaseName: string, cancelled: RestoreReceipt | undefined, stillBlocked: boolean) {
+function cancelledOffline(
+	databaseName: string,
+	cancelled: RestoreReceipt | undefined,
+	stillBlocked: boolean,
+	removalDurable: boolean
+) {
 	const outcome = stillBlocked
 		? `The restore was cancelled, but it had already begun replacing '${databaseName}', which stays unloadable until a restore succeeds`
 		: `The restore was cancelled before anything was replaced; '${databaseName}' loads when Harper starts`;
@@ -574,7 +589,7 @@ function cancelledOffline(databaseName: string, cancelled: RestoreReceipt | unde
 		cancelled: cancelled?.operation_id ?? 'unreadable restore record',
 		still_blocked: stillBlocked,
 		restarting: false,
-		message: outcome + job,
+		message: withRemovalCaveat(outcome + job, removalDurable),
 	};
 }
 
