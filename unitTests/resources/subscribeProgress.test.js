@@ -62,6 +62,20 @@ describe('Certified subscription progress', function () {
 		listened.end();
 	});
 
+	it('answers progress and checkpoints called detached from the subscription, as when called on it', async () => {
+		const T = tableInOwnDatabase();
+		await T.put('a', { value: 1 });
+		const subscription = await T.subscribe({ omitCurrent: true, reportProgress: true });
+		await T.put('b', { value: 2 });
+		await waitFor(() => subscription.progress() !== undefined);
+		const { progress, checkpoint, checkpointFloor, lowestLateUnconsumed } = subscription;
+		assert.strictEqual(progress(), subscription.progress());
+		assert.deepStrictEqual(checkpoint(), subscription.checkpoint());
+		assert.strictEqual(checkpointFloor(), subscription.checkpointFloor());
+		assert.strictEqual(lowestLateUnconsumed(0), subscription.lowestLateUnconsumed(0));
+		subscription.end();
+	});
+
 	it('runs one follow-up pass, not a chain, while a key from another origin is ahead of this clock', async () => {
 		const T = tableInOwnDatabase();
 		await T.put('seed', { value: 0 });

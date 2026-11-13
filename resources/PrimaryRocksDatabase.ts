@@ -16,6 +16,70 @@ import { resolveRecordCacheSize } from '../utility/rocksMemoryConfig.ts';
 let recordCacheExpirer: LRFUExpirer | undefined;
 
 /**
+ * A range entry whose value is decoded from its kept bytes on first read, as getRange would have decoded it
+ * (`deferValues`). `value` is an accessor on the prototype, so a deferred row defines no getter of its own.
+ */
+class DeferredRangeEntry {
+	key: any;
+	version: number;
+	localTime: number;
+	metadataFlags: number;
+	expiresAt: number | undefined;
+	residencyId: number | undefined;
+	residencySlot: number | undefined;
+	nodeId: number | undefined;
+	additionalAuditRefs: any;
+	receivedIdentityRefs: any;
+	size: number;
+	#bytes: Buffer | undefined;
+	#enc: any;
+	#value: any;
+	constructor(key: any, metadata: any, enc: any) {
+		this.key = key;
+		this.version = metadata.version;
+		this.localTime = metadata.localTime;
+		this.metadataFlags = metadata[METADATA];
+		this.expiresAt = metadata.expiresAt;
+		this.residencyId = metadata.residencyId;
+		this.residencySlot = metadata.residencySlot;
+		this.nodeId = metadata.nodeId;
+		this.additionalAuditRefs = metadata.additionalAuditRefs;
+		this.receivedIdentityRefs = metadata.receivedIdentityRefs;
+		this.size = metadata.size;
+		this.#bytes = metadata.deferredValue;
+		this.#enc = enc;
+	}
+	get value() {
+		const bytes = this.#bytes;
+		if (bytes !== undefined) {
+			const enc = this.#enc;
+			let value = enc.decodeDeferred(bytes);
+			// a shared entry outlives its scan step, so its bytes go once decoded
+			this.#bytes = undefined;
+			if (value?.constructor === Object && enc.structPrototype) {
+				const originalValue = value;
+				value = new enc.structPrototype.constructor();
+				assignStoredFields(value, originalValue, enc);
+			}
+			this.#value = value;
+		}
+		return this.#value;
+	}
+	set value(value: any) {
+		this.#bytes = undefined;
+		this.#value = value;
+	}
+}
+
+/**
+ * The latest deferred row's entry and metadata. Optimized code holds the object shapes it has seen weakly, so once
+ * the last object of a shape only deferring scans create is collected, V8 discards the code that read it (this
+ * getRange's map callback, RecordEncoder.decode) and the next scan on the thread runs unoptimized until that code is
+ * recompiled. Holding the latest of each, one row per thread, keeps those shapes and that code.
+ */
+const latestDeferred: { entry?: DeferredRangeEntry; metadata?: any } = {};
+
+/**
  * RocksDatabase subclass that owns all primary-store behaviour for Harper tables:
  *   - RecordEncoder metadata extraction (version, metadataFlags, etc.)
  *   - Optional WeakLRUCache keyed on entry version, verified via the process-wide VerificationTable
@@ -199,6 +263,15 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 		});
 	}
 
+	/**
+	 * The entry the cache holds for a record, unverified: it may be older than the record's current version.
+	 * Its version still identifies its value, unless VERSION_REUSED is set.
+	 */
+	cachedEntry(id: any): Entry | undefined {
+		const cachedValue = this.#cache?.getValue(id);
+		return cachedValue != null && typeof cachedValue === 'object' ? entryMap.get(cachedValue) : undefined;
+	}
+
 	getSync(id: any, options?: any): any {
 		const entry = this.getEntry(id, options) as Entry;
 		return entry?.value;
@@ -214,8 +287,12 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 		if (options?.values === false || options?.onlyCount) return iterable;
 		if (!this.#enc.isRocksDB) return iterable;
 		const enc = this.#enc;
-		return iterable.map((entry: any) => {
+		const mapped = iterable.map((entry: any) => {
 			if (entry.value?.[METADATA] !== undefined) {
+				if (entry.value.deferredValue) {
+					latestDeferred.metadata = entry.value;
+					return (latestDeferred.entry = new DeferredRangeEntry(entry.key, entry.value, enc));
+				}
 				entry.metadataFlags = entry.value[METADATA];
 				Object.assign(entry, entry.value);
 			}
@@ -226,6 +303,37 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 			}
 			return entry;
 		});
+		// `deferValues()`, asked before each step: whether this step's value is to be decoded only when read
+		const deferValues: (() => boolean) | undefined = options?.deferValues;
+		if (!deferValues) return mapped;
+		// metadata flags that rule a row out of sharing, so it is decoded at once
+		const deferExcept: number = options?.deferExcept ?? 0;
+		return {
+			[Symbol.iterator]() {
+				const iterator = mapped[Symbol.iterator]();
+				return {
+					next() {
+						enc.deferValues = deferValues();
+						enc.deferExcept = deferExcept;
+						try {
+							return iterator.next();
+						} finally {
+							enc.deferValues = false;
+						}
+					},
+					return(value?: any) {
+						return iterator.return ? iterator.return(value) : { done: true, value };
+					},
+					throw(error?: any) {
+						if (iterator.throw) return iterator.throw(error);
+						throw error;
+					},
+					[Symbol.iterator]() {
+						return this;
+					},
+				};
+			},
+		};
 	}
 
 	putSync(id: any, value: any, options?: any): any {

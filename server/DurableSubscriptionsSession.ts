@@ -3,16 +3,18 @@ import { onStartup } from '../utility/lifecycle.ts';
 import { keyArrayToString, resources } from '../resources/Resources.ts';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
 import { warn, trace } from '../utility/logging/harper_logger.ts';
-import { transaction } from '../resources/transaction.ts';
+import { contextStorage, transaction } from '../resources/transaction.ts';
 import { getWorkerIndex } from '../server/threads/manageThreads.ts';
 import { whenComponentsLoaded } from '../server/threads/threadServer.ts';
 import { server } from '../server/Server.ts';
 import { RequestTarget } from '../resources/RequestTarget.ts';
 import { randomBytes } from 'node:crypto';
+import { AsyncResource } from 'node:async_hooks';
+import { IterableEventQueue } from '../resources/IterableEventQueue.ts';
 import { auditRetention, getDatabaseGeneration, isResumablePosition } from '../resources/auditStore.ts';
 import { exportIdMapping, getNodeNameForId } from '../resources/nodeIdMapping.ts';
 import { getThisNodeName } from './nodeName.ts';
-import { ClientError } from '../utility/errors/hdbError.ts';
+import { ClientError, ServerError } from '../utility/errors/hdbError.ts';
 import { isLocalPrincipal, localPrincipal, type UserProvenance } from '../security/user.ts';
 import {
 	ORIGIN_ID,
@@ -22,9 +24,15 @@ import {
 	type SubscriptionCheckpoint,
 } from '../resources/subscriptionCheckpoint.ts';
 
+const SETTLED: Promise<void> = Promise.resolve();
 const AWAITING_ACKS_HIGH_WATER_MARK = 100;
 /** Inbound QoS 2 exchanges a client may hold open, advertised in the v5 CONNACK. */
 export const RECEIVE_MAXIMUM = 1000;
+/**
+ * Set on a listener's promise that waits only for its message's serialization: the session's socket is free,
+ * so only that subscription waits, where socket back-pressure holds the whole session.
+ */
+export const SERIALIZING = Symbol('serializing');
 /** Past this many receipts kept for a session, more are not kept: a replay resends those deliveries instead. */
 const RECEIVED_LIMIT = 1000;
 /** QoS 1 receipts stop here, so they never take the share QoS 2 needs for exactly-once. */
@@ -245,6 +253,55 @@ export async function getSession({
 	}
 	return session;
 }
+/**
+ * Every subscription's delivery loop on this thread draws on one budget per event turn, so a fan-out to many
+ * subscribers, or a backlog behind one, cannot run more than this many deliveries before I/O runs. The loops
+ * over budget all wait on one shared turn instead of one each.
+ */
+const DELIVERIES_PER_TURN = 1000;
+/**
+ * A QoS 2 delivery counts as this many against the budget, so about 16 go out per turn. Its PUBREL waits for the
+ * save its PUBREC starts, and the PUBRECs are read only between turns: sent in one batch, a turn's QoS 2
+ * messages come back as one burst of PUBRECs whose saves queue behind each other.
+ */
+const QOS_2_DELIVERY_WEIGHT = Math.ceil(DELIVERIES_PER_TURN / 16);
+let deliveriesSinceYield = 0;
+let budgetResetScheduled = false;
+/** Counts a delivery at `qos` against this turn's budget: true once it is spent. */
+function countDelivery(qos: number): boolean {
+	if (!budgetResetScheduled) {
+		budgetResetScheduled = true;
+		// the budget is per turn, whether or not it was spent
+		setImmediate(resetDeliveryBudget);
+	}
+	deliveriesSinceYield += qos === 2 ? QOS_2_DELIVERY_WEIGHT : 1;
+	return deliveriesSinceYield >= DELIVERIES_PER_TURN;
+}
+function resetDeliveryBudget() {
+	budgetResetScheduled = false;
+	deliveriesSinceYield = 0;
+}
+let turnEnded: Promise<void> | undefined;
+/** True while what a new turn resumed runs: that turn began in a check phase, after a poll phase read sockets. */
+let resumingTurn = false;
+function endResumingTurn() {
+	resumingTurn = false;
+}
+function nextTurn(): Promise<void> {
+	return (turnEnded ??= new Promise((resolve) => {
+		const startTurn = () => {
+			turnEnded = undefined;
+			deliveriesSinceYield = 0;
+			resumingTurn = true;
+			resolve();
+			queueMicrotask(endResumingTurn);
+		};
+		// Sockets are read in the poll phase, and an immediate queued there runs before the next poll, so a turn spent
+		// outside a resumed one takes a second hop to start after they are read again (one a commit's notify pass
+		// spent, already in an immediate, waits an iteration more than it needs)
+		setImmediate(resumingTurn ? startTurn : () => setImmediate(startTurn));
+	}));
+}
 const MAX_MESSAGE_ID = 65500;
 let nextMessageId = 1;
 function getNextMessageId() {
@@ -253,6 +310,163 @@ function getNextMessageId() {
 	if (nextMessageId > MAX_MESSAGE_ID) nextMessageId = 1;
 	return nextMessageId;
 }
+/** Matches a record id against a topic pattern with single-level (`+`) wildcards; the filter holds only the pattern. */
+function topicLevelFilter(matchingPath: string[], mustMatchLength: boolean) {
+	return (update) => {
+		let updatePath = update.id;
+		if (!Array.isArray(updatePath)) {
+			if (updatePath?.indexOf?.('/') > -1) {
+				// if it is a string with slashes, we can split it into an array
+				updatePath = updatePath.split('/');
+			} else {
+				return false;
+			}
+		}
+		if (mustMatchLength && updatePath.length !== matchingPath.length) return false;
+		for (let i = 0; i < matchingPath.length; i++) {
+			if (matchingPath[i] !== '+' && matchingPath[i] !== updatePath[i]) return false;
+		}
+		return true;
+	};
+}
+const SENDS_PER_TURN = 16;
+/** Filtered out, or not a deliverable event: nothing was sent, so nothing counts against the budget. */
+const SKIPPED = Symbol('skipped');
+/** sendQueued()'s result for a delivery that waits on its own and wakes itself when it can send again. */
+const HELD = Symbol('held');
+
+/**
+ * One subscription's delivery state. A subscription whose queue the session can pull from has no loop of
+ * its own: its queue wakes the delivery, which puts it on the session's ready list, and the session's one
+ * drain sends from it inside `scope`, the async context the subscription was started in.
+ */
+class Delivery {
+	session: SubscriptionsSession;
+	subscription: any;
+	/** The QoS the client subscribed with; the delivery stands in for its SUBSCRIBE entry as the listener's `subscription`. */
+	qos: number;
+	topic: string;
+	resourcePath: string;
+	needsAck: boolean;
+	filter: ((update: any) => boolean) | undefined;
+	/** On the session's ready list, or being sent from. */
+	queued = false;
+	// every message of a record goes out under one topic string, so its hash is computed once
+	topicId: any;
+	recordTopic: string | undefined;
+	scope: AsyncResource | undefined;
+	constructor(session, subscription, request, topic: string, resourcePath: string, needsAck: boolean, filter) {
+		this.session = session;
+		this.subscription = subscription;
+		this.qos = request.qos;
+		this.topic = topic;
+		this.resourcePath = resourcePath;
+		this.needsAck = needsAck;
+		this.filter = filter;
+	}
+	wake() {
+		if (this.queued) return;
+		this.queued = true;
+		if (this.session.parked) this.session.parked.push(this);
+		else ready(this);
+	}
+	closed() {
+		// a consumer blocked on socket back-pressure would not reach a final error for a long time
+		const subscription = this.subscription;
+		if (subscription.closedWith instanceof Error)
+			this.session.subscriptionFailed(subscription, subscription.closedWith);
+	}
+}
+
+/**
+ * Pulled deliveries with messages queued, from every session on this thread, in turn order; `readyHead`
+ * is the next to send from. One drain sends from all of them, in a microtask after the notify pass
+ * that queued them, so a fan-out to many connections costs one drain rather than one per connection.
+ */
+let readyDeliveries: Delivery[] = [];
+let readyHead = 0;
+let drainScheduled = false;
+function ready(delivery: Delivery) {
+	readyDeliveries.push(delivery);
+	if (!drainScheduled) {
+		drainScheduled = true;
+		// off the sender's stack: a queue is fed from inside a commit notification
+		queueMicrotask(drainDeliveries);
+	}
+}
+function drainDeliveries() {
+	// taken off the ready list but still marked queued, so if the drain throws over it nothing would wake it again
+	let inHand: Delivery | undefined;
+	try {
+		while (readyHead < readyDeliveries.length) {
+			if (deliveriesSinceYield >= DELIVERIES_PER_TURN) {
+				// the turn's budget is spent: the rest waits for the next turn, as every other delivery loop does
+				nextTurn().then(drainDeliveries);
+				return;
+			}
+			const delivery = readyDeliveries[readyHead];
+			readyDeliveries[readyHead++] = undefined;
+			const session = delivery.session;
+			// a session waiting on its socket or acknowledgements sends nothing until that settles
+			if (session.parked) {
+				session.parked.push(delivery);
+				continue;
+			}
+			inHand = delivery;
+			let more: boolean | Promise<boolean> | typeof HELD;
+			// a turn that will send more than one message has the transport hold them, to write them together
+			const held = session.holdSends !== undefined && delivery.subscription.queue?.length > 1;
+			if (held) session.holdSends();
+			try {
+				more = delivery.scope.runInAsyncScope(session.sendQueued, session, delivery);
+			} catch (error) {
+				// sendQueued handles a failed send itself, so this is the pull failing, as a loop over the queue would
+				// be rejected: retrying it here would never yield the thread
+				session.subscriptionFailed(delivery.subscription, error);
+				more = false;
+			} finally {
+				if (held) session.releaseSends();
+			}
+			if (more === true) readyDeliveries.push(delivery);
+			else if (more === false) delivery.queued = false;
+			else if (more !== HELD) session.park(delivery, more);
+			inHand = undefined;
+			if (readyHead >= 1024 && readyHead * 2 >= readyDeliveries.length) {
+				readyDeliveries = readyDeliveries.slice(readyHead);
+				readyHead = 0;
+			}
+		}
+		readyDeliveries.length = 0;
+		readyHead = 0;
+		drainScheduled = false;
+	} catch (error) {
+		// nothing above should throw; if it does, keep draining rather than strand the queued deliveries
+		warn(error);
+		if (inHand) {
+			// the delivery it threw over fails, as a pull that throws does
+			inHand.queued = false;
+			try {
+				inHand.session.subscriptionFailed(inHand.subscription, error);
+			} catch (failure) {
+				warn(failure);
+			}
+		}
+		queueMicrotask(drainDeliveries);
+	}
+}
+
+function isPullable(subscription: any): boolean {
+	return (
+		subscription instanceof IterableEventQueue &&
+		subscription[Symbol.asyncIterator] === IterableEventQueue.prototype[Symbol.asyncIterator] &&
+		// a queue reading its messages its own way is iterated, as it would be on its own
+		subscription.getNextMessage === IterableEventQueue.prototype.getNextMessage &&
+		!subscription.hasDataListeners &&
+		!subscription.resolveNext &&
+		!subscription.consumer
+	);
+}
+
 type Acknowledgement = {
 	qos?: number;
 	topic?: string;
@@ -287,11 +501,17 @@ class SubscriptionsSession {
 	sessionWasPresent: boolean;
 	keepalive: number;
 	keepaliveTimer: any;
+	keepaliveTimerFor: number | undefined;
 	terminated = false;
 	incarnation = randomBytes(8).toString('hex');
 	willId: [string, string] | undefined;
 	/** Closes the transport; mqtt.ts supplies it, and sends a v5 DISCONNECT carrying `error` first. */
 	closeConnection?: (error?: Error) => void;
+	/** Hold the packets sent until released, to write them together; mqtt.ts supplies them for a Node socket. */
+	holdSends?: () => void;
+	releaseSends?: () => void;
+	/** While a send waits on the socket or on acknowledgements, the session's ready deliveries wait here. */
+	parked: Delivery[] | null = null;
 	constructor(sessionId, user) {
 		this.sessionId = sessionId;
 		this.user = user;
@@ -367,24 +587,7 @@ class SubscriptionsSession {
 					matchingPath.length--;
 					mustMatchLength = false;
 				}
-				if (needsFilter) {
-					filter = (update) => {
-						let updatePath = update.id;
-						if (!Array.isArray(updatePath)) {
-							if (updatePath?.indexOf?.('/') > -1) {
-								// if it is a string with slashes, we can split it into an array
-								updatePath = updatePath.split('/');
-							} else {
-								return false;
-							}
-						}
-						if (mustMatchLength && updatePath.length !== matchingPath.length) return false;
-						for (let i = 0; i < matchingPath.length; i++) {
-							if (matchingPath[i] !== '+' && matchingPath[i] !== updatePath[i]) return false;
-						}
-						return true;
-					};
-				}
+				if (needsFilter) filter = topicLevelFilter(matchingPath, mustMatchLength);
 				const firstWildcard = matchingPath.indexOf('+');
 				url = '/' + (firstWildcard > -1 ? matchingPath.slice(0, firstWildcard) : matchingPath).concat('').join('/');
 			}
@@ -424,81 +627,221 @@ class SubscriptionsSession {
 			}
 			subscription.topic = topic;
 			subscription.qos = subscriptionRequest.qos;
+			// The session reads an event only in sendUpdate, and its one write there (topic, for the acknowledgement)
+			// is read back before sendUpdate returns, so a table's live listener may hand it the event object it
+			// built for the record's other sessions. Set on the subscription the resource returned: a resource that
+			// wraps the table's subscription consumes the events itself, and its table subscription keeps its own.
+			subscription.sharesLiveEvents = true;
 			this.subscriptions.push(subscription);
 			this.subscribed(subscription);
-			// a consumer blocked on socket back-pressure would not reach a final error for a long time
-			subscription.on?.('close', () => {
-				if (subscription.closedWith instanceof Error) this.subscriptionFailed(subscription, subscription.closedWith);
-			});
-			const _result = (async () => {
-				for await (const update of subscription) {
-					try {
-						if (update instanceof Error) {
-							this.subscriptionFailed(subscription, update);
-							break;
-						}
-						if (!update || typeof update !== 'object') continue;
-						let messageId;
-						let dup = false;
-						if (
-							update.type &&
-							update.type !== 'put' &&
-							update.type !== 'delete' &&
-							update.type !== 'message' &&
-							update.type !== 'patch'
-						)
-							continue;
-						if (filter && !filter(update)) continue;
-						if (needsAck) {
-							update.topic = topic;
-							const priorMessageId = this.priorDelivery(update);
-							if (priorMessageId === ALREADY_RECEIVED) {
-								update.acknowledge?.();
-								continue;
-							}
-							messageId = this.needsAcknowledge(update, subscriptionRequest.qos, priorMessageId);
-							dup = priorMessageId !== undefined;
-						} else {
-							// There is no ack to wait for. We can immediately notify any interested source
-							// that we have sent the message
-							update.acknowledge?.();
-							messageId = getNextMessageId();
-						}
-						let path = update.id;
-						if (Array.isArray(path)) path = keyArrayToString(path);
-						if (path == null) path = '';
-						// the version is forwarded so the delivery side can tell a store-sourced event (whose
-						// value is a fresh object per version) from an app-yielded one that may be a reused
-						// mutable envelope — only the former is safe to encode once and share
-						const result = await this.listener(
-							resourcePath + '/' + path,
-							update.value,
-							messageId,
-							subscriptionRequest,
-							update.version,
-							dup
-						);
-						if (result === false) break;
-						const pending = this.pendingDeliveries();
-						if (pending > AWAITING_ACKS_HIGH_WATER_MARK) {
-							// slow it down if we are getting too far ahead in acks
-							await new Promise((resolve) => setTimeout(resolve, pending - AWAITING_ACKS_HIGH_WATER_MARK));
-						} else await new Promise(setImmediate); // yield event turn
-					} catch (error) {
-						if (error.code === MESSAGE_IDS_EXHAUSTED) {
-							this.subscriptionFailed(subscription, error);
-							break;
-						}
-						warn(error);
-					} finally {
-						this.consumed(subscription);
-					}
-				}
-			})();
-			_result.catch((error) => this.subscriptionFailed(subscription, error));
+			this.startDelivery(subscription, subscriptionRequest, topic, resourcePath, needsAck, filter);
 			return subscription;
 		});
 		return subscription;
+	}
+	/**
+	 * Starts sending a subscription's messages to the client. What it builds lives as long as the subscription,
+	 * so it must not hold addSubscription()'s scope (its request target among it). It runs in the subscription's
+	 * async context, and a pulled delivery's scope keeps that context for every later send.
+	 */
+	startDelivery(subscription, request, topic: string, resourcePath: string, needsAck, filter?) {
+		const delivery = new Delivery(this, subscription, request, topic, resourcePath, needsAck, filter);
+		if (!isPullable(subscription)) return this.deliverMessages(delivery);
+		delivery.scope = new AsyncResource('MqttDelivery');
+		subscription.consumer = delivery;
+		// messages a replay queued before the delivery existed
+		if (subscription.queue?.length > 0) delivery.wake();
+	}
+	/**
+	 * Holds this session's deliveries until `pending`, a send's wait on the socket or on acknowledgements,
+	 * settles; the delivery that waited comes back unless it ended.
+	 */
+	park(delivery: Delivery, pending: Promise<boolean>) {
+		this.parked = [delivery];
+		const resume = (more?: boolean) => {
+			const parked = this.parked;
+			this.parked = null;
+			// the others first: under an acknowledgement backlog the delivery that waited parks again after one
+			// send, so woken first it would hold the session ahead of them every time
+			for (let index = 1; index < parked.length; index++) {
+				parked[index].queued = false;
+				parked[index].wake();
+			}
+			delivery.queued = false;
+			if (more !== false) delivery.wake();
+		};
+		pending.then(resume, (error) => {
+			warn(error);
+			resume();
+		});
+	}
+	/**
+	 * Sends a pulled subscription's queued messages until it runs dry, must wait, or has had its turn, in
+	 * the subscription's async context; returns true when the drain should come back to it.
+	 */
+	sendQueued(delivery: Delivery): boolean | Promise<boolean> | typeof HELD {
+		const subscription = delivery.subscription;
+		for (let sent = 0; sent < SENDS_PER_TURN;) {
+			const update = subscription.getNextMessage();
+			if (update === undefined) return false;
+			let result;
+			try {
+				result = this.sendUpdate(delivery, update);
+				// only a pending serialization or socket back-pressure returns a promise
+				if (typeof result?.then === 'function') {
+					// counted when issued, so a turn's sends stay within the budget however many of them wait
+					countDelivery(delivery.qos);
+					return result[SERIALIZING] ? this.holdDelivery(delivery, result) : this.finishSend(delivery, result);
+				}
+			} catch (error) {
+				result = this.sendFailed(delivery, error);
+			}
+			this.consumed(subscription);
+			if (result === false) return this.stopDelivery(delivery);
+			if (result !== SKIPPED) {
+				sent++;
+				const spent = countDelivery(delivery.qos);
+				const backlog = this.acknowledgementBacklog();
+				if (backlog) return backlog.then(() => true);
+				// the budget is the thread's: the subscriptions sent from before this one can have spent most of it
+				if (spent) return true;
+			}
+		}
+		return true;
+	}
+	/** Waits out one delivery's serialization without the session, then wakes the delivery to send on. */
+	holdDelivery(delivery: Delivery, pending: Promise<any>): typeof HELD {
+		// still queued, so a message queued meanwhile does not put it on the ready list ahead of this one
+		this.finishSend(delivery, pending).then(
+			(more) => {
+				delivery.queued = false;
+				if (more !== false) delivery.wake();
+			},
+			(error) => {
+				delivery.queued = false;
+				this.subscriptionFailed(delivery.subscription, error);
+			}
+		);
+		return HELD;
+	}
+	async finishSend(delivery: Delivery, pending: Promise<any>): Promise<boolean> {
+		let result;
+		try {
+			result = await pending;
+		} catch (error) {
+			result = this.sendFailed(delivery, error);
+		}
+		this.consumed(delivery.subscription);
+		if (result === false) return this.stopDelivery(delivery);
+		// counted against the budget when it was issued
+		if (result !== SKIPPED) {
+			const backlog = this.acknowledgementBacklog();
+			if (backlog) await backlog;
+		}
+		return true;
+	}
+	/** Ends a pulled delivery the way leaving a loop over the subscription does: by closing its queue. */
+	stopDelivery(delivery: Delivery): false {
+		delivery.subscription.close();
+		return false;
+	}
+	pace(qos: number): Promise<void> | undefined {
+		const backlog = this.acknowledgementBacklog();
+		if (backlog) return backlog;
+		if (countDelivery(qos)) return nextTurn();
+	}
+	acknowledgementBacklog(): Promise<void> | undefined {
+		const pending = this.pendingDeliveries();
+		// slow it down if we are getting too far ahead in acks
+		if (pending > AWAITING_ACKS_HIGH_WATER_MARK) {
+			return new Promise((resolve) => setTimeout(resolve, pending - AWAITING_ACKS_HIGH_WATER_MARK));
+		}
+	}
+	/** Only running out of packet identifiers fails the subscription: any other send error skips that one message. */
+	sendFailed(delivery: Delivery, error): false | typeof SKIPPED {
+		if (error?.code === MESSAGE_IDS_EXHAUSTED) {
+			this.subscriptionFailed(delivery.subscription, error);
+			return false;
+		}
+		warn(error);
+		return SKIPPED;
+	}
+	/**
+	 * Sends one message from a subscription to the client: false ends the subscription, a promise means
+	 * wait for it, and SKIPPED means nothing was sent.
+	 */
+	sendUpdate(delivery: Delivery, update) {
+		if (update instanceof Error) {
+			this.subscriptionFailed(delivery.subscription, update);
+			return false;
+		}
+		if (!update || typeof update !== 'object') return SKIPPED;
+		if (
+			update.type &&
+			update.type !== 'put' &&
+			update.type !== 'delete' &&
+			update.type !== 'message' &&
+			update.type !== 'patch'
+		)
+			return SKIPPED;
+		if (delivery.filter && !delivery.filter(update)) return SKIPPED;
+		let messageId;
+		let dup = false;
+		if (delivery.needsAck) {
+			// the topic goes alongside: the event may be shared with other sessions' subscriptions (sharesLiveEvents)
+			const priorMessageId = this.priorDelivery(update, delivery.topic);
+			if (priorMessageId === ALREADY_RECEIVED) {
+				update.acknowledge?.();
+				return SKIPPED;
+			}
+			messageId = this.needsAcknowledge(update, delivery.qos, priorMessageId, delivery.topic);
+			dup = priorMessageId !== undefined;
+		} else {
+			// There is no ack to wait for. We can immediately notify any interested source
+			// that we have sent the message
+			update.acknowledge?.();
+			messageId = getNextMessageId();
+		}
+		// an array id is compared by identity, which a producer reusing one array would defeat, so only a
+		// primitive id is cached
+		if (delivery.recordTopic === undefined || update.id !== delivery.topicId || typeof update.id === 'object') {
+			delivery.topicId = update.id;
+			let path = update.id;
+			if (Array.isArray(path)) path = keyArrayToString(path);
+			if (path == null) path = '';
+			delivery.recordTopic = delivery.resourcePath + '/' + path;
+		}
+		// the version is forwarded so the delivery side can tell a store-sourced event (whose
+		// value is a fresh object per version) from an app-yielded one that may be a reused
+		// mutable envelope — only the former is safe to encode once and share
+		return this.listener(delivery.recordTopic, update.value, messageId, delivery, update.version, dup);
+	}
+	/** Iterates a subscription the session can not pull from, with a loop of its own. */
+	async deliverMessages(delivery: Delivery) {
+		const subscription = delivery.subscription;
+		// a consumer blocked on socket back-pressure would not reach a final error for a long time
+		subscription.on?.('close', () => {
+			if (subscription.closedWith instanceof Error) this.subscriptionFailed(subscription, subscription.closedWith);
+		});
+		try {
+			for await (const update of subscription) {
+				try {
+					let result = this.sendUpdate(delivery, update);
+					if (typeof result?.then === 'function') result = await result;
+					if (result === false) break;
+					if (result !== SKIPPED) {
+						const pause = this.pace(delivery.qos);
+						if (pause) await pause;
+					}
+				} catch (error) {
+					if (this.sendFailed(delivery, error) === false) break;
+				} finally {
+					this.consumed(subscription);
+				}
+			}
+		} catch (error) {
+			this.subscriptionFailed(subscription, error);
+		}
 	}
 	resume() {
 		// nothing to do in a clean session
@@ -518,10 +861,10 @@ class SubscriptionsSession {
 	pendingDeliveries(): number {
 		return (this.awaitingAcks?.size ?? 0) + (this.awaitingCompletion?.size ?? 0);
 	}
-	priorDelivery(_update): number | undefined {
+	priorDelivery(_update, _topic?: string): number | undefined {
 		return undefined;
 	}
-	needsAcknowledge(update, qos: number, messageId = this.newMessageId()) {
+	needsAcknowledge(update, qos: number, messageId = this.newMessageId(), _topic?: string) {
 		if (update.acknowledge || qos === 2) {
 			if (!this.awaitingAcks) this.awaitingAcks = new Map();
 			this.awaitingAcks.set(messageId, { qos, acknowledge: update.acknowledge });
@@ -644,7 +987,11 @@ class SubscriptionsSession {
 		this.listener = listener;
 	}
 	disconnect(clientTerminated) {
-		if (this.keepaliveTimer) clearTimeout(this.keepaliveTimer);
+		if (this.keepaliveTimer) {
+			clearTimeout(this.keepaliveTimer);
+			// a packet after this starts a timer of its own, rather than reviving this one
+			this.keepaliveTimer = undefined;
+		}
 		const willId = this.willId;
 		this.willId = undefined;
 		if (willId) {
@@ -678,11 +1025,15 @@ class SubscriptionsSession {
 	}
 	receivedPacket() {
 		if (this.keepalive) {
-			clearTimeout(this.keepaliveTimer);
-			this.keepaliveTimer = setTimeout(() => {
-				if (this.socket?.destroy) this.socket.destroy(new Error('Keepalive timeout'));
-				else this.socket?.terminate();
-			}, this.keepalive * 1500);
+			if (this.keepaliveTimer && this.keepaliveTimerFor === this.keepalive) this.keepaliveTimer.refresh();
+			else {
+				clearTimeout(this.keepaliveTimer);
+				this.keepaliveTimerFor = this.keepalive;
+				this.keepaliveTimer = setTimeout(() => {
+					if (this.socket?.destroy) this.socket.destroy(new Error('Keepalive timeout'));
+					else this.socket?.terminate();
+				}, this.keepalive * 1500);
+			}
 		}
 	}
 }
@@ -767,7 +1118,10 @@ type TopicState = {
 	highestKey?: number;
 	/** Each event has its own log key, as on LMDB; a RocksDB transaction's events share one. */
 	keysPerEntry?: boolean;
-	/** In delivery order: `needsAcknowledge` is its only writer and runs as each message is sent. */
+	/**
+	 * In delivery order: `needsAcknowledge` is its only writer and runs as each message is sent. NOTHING_UNACKED
+	 * while it is empty.
+	 */
 	unacked: Map<
 		number,
 		{ key: number; ordinal: number; id: unknown; previousKey?: number; late?: boolean; origin?: number }
@@ -786,6 +1140,24 @@ type TopicState = {
 	/** At or below this a receipt may be missing (pruned, never kept, or before the topic's start). */
 	prunedThrough?: number;
 };
+/**
+ * The empty Map or Set every idle topic or session shares, so it keeps none of its own. A write to one would reach every
+ * holder, so it throws: each writer takes a collection of its own first.
+ */
+class SharedEmptyMap<K, V> extends Map<K, V> {
+	set(): this {
+		throw new ServerError('A durable session wrote to the empty Map its idle topics share');
+	}
+}
+class SharedEmptySet<T> extends Set<T> {
+	add(): this {
+		throw new ServerError('A durable session wrote to the empty Set its idle sessions share');
+	}
+}
+/** The `unacked` of every topic with nothing unacknowledged, so an idle topic keeps no Map of its own. */
+const NOTHING_UNACKED: TopicState['unacked'] = new SharedEmptyMap();
+/** The `reservedIds` of every session that has reserved none, so most keep no Set of their own. */
+const NO_RESERVED_IDS: Set<number> = new SharedEmptySet<number>();
 
 /** Only pruned history resets a session: a position from another generation resumes unchecked instead. */
 const RESETTING_REFUSALS = new Set(['RESUME_HISTORY_UNAVAILABLE']);
@@ -795,8 +1167,135 @@ function logKeysPerEntry(topic: string): boolean {
 	return Boolean(auditStore) && !auditStore.reusableIterable;
 }
 
+let checkpointIntervalOverride: number | undefined;
+export function setCheckpointIntervalForTests(milliseconds: number | undefined): number | undefined {
+	const previous = checkpointIntervalOverride;
+	checkpointIntervalOverride = milliseconds;
+	return previous;
+}
 function checkpointInterval(): number {
-	return Math.min(auditRetention / 10, 3_600_000);
+	return checkpointIntervalOverride ?? Math.min(auditRetention / 10, 3_600_000);
+}
+
+/**
+ * Durable sessions with positions to checkpoint: one interval on the thread checkpoints them all, in batches
+ * across turns, rather than one timer per session.
+ */
+const checkpointing = new Set<DurableSubscriptionsSession>();
+let checkpointSweep: NodeJS.Timeout | undefined;
+let sweepInterval: number | undefined;
+const CHECKPOINT_SWEEP_BATCH = 500;
+function sweepCheckpoints() {
+	const sessions = [...checkpointing];
+	let index = 0;
+	const next = () => {
+		for (const end = Math.min(index + CHECKPOINT_SWEEP_BATCH, sessions.length); index < end; index++) {
+			const session = sessions[index];
+			if (!checkpointing.has(session)) continue;
+			try {
+				session.checkpoint();
+			} catch (error) {
+				warn(error);
+			}
+		}
+		if (index < sessions.length) setImmediate(next);
+	};
+	next();
+}
+
+/** Sessions whose acknowledgements call for a checkpoint this turn; one immediate runs them all. */
+let dueCheckpoints: DurableSubscriptionsSession[] = [];
+function runDueCheckpoints() {
+	const sessions = dueCheckpoints;
+	dueCheckpoints = [];
+	try {
+		for (const session of sessions) {
+			const settle = session.checkpointSettle;
+			session.checkpointScheduled = session.checkpointSettle = undefined;
+			try {
+				session.checkpoint();
+			} catch (error) {
+				warn(error);
+			}
+			settle(session.writes);
+		}
+	} finally {
+		// the saves these checkpoints started commit now, with any others waiting, unless a commit is in flight
+		commitIdleSaveGroup();
+	}
+}
+
+type GroupedSave = { session: DurableSubscriptionsSession; resolve: () => void; reject: (error: unknown) => void };
+/**
+ * A group's saves all wait for its commit, which takes longer the more records it writes, so the cap bounds how
+ * long the saves that joined it first wait.
+ */
+const MAX_GROUPED_SAVES = 32;
+let saveGroup: GroupedSave[] | undefined;
+let savesCommitting = 0;
+/**
+ * A save with no commit ahead of it commits once the code that started it has run, so it waits for no event
+ * turn; saves started while a commit is in flight wait for it and then share the next one, so a load heavy
+ * enough to keep commits in flight is saved in groups as large as that load. A full group commits at once.
+ */
+function joinSaveGroup(save: GroupedSave) {
+	if (!saveGroup) {
+		saveGroup = [];
+		// outside the context of the save that opened it, which is any session's
+		if (savesCommitting === 0) contextStorage.exit(() => queueMicrotask(commitIdleSaveGroup));
+	}
+	if (saveGroup.push(save) >= MAX_GROUPED_SAVES) commitOpenSaveGroup();
+}
+function commitIdleSaveGroup() {
+	// a commit started since (a full group's) takes this group along when it finishes
+	if (savesCommitting === 0) commitOpenSaveGroup();
+}
+function commitOpenSaveGroup() {
+	const group = saveGroup;
+	saveGroup = undefined;
+	if (!group) return;
+	savesCommitting++;
+	contextStorage.exit(() =>
+		commitSaveGroup(group).then(saveGroupCommitted, (error) => {
+			// still counted out, or every later save would wait on this one
+			warn(error);
+			saveGroupCommitted();
+		})
+	);
+}
+function saveGroupCommitted() {
+	// the saves started while this one committed go next
+	if (--savesCommitting === 0 && saveGroup) commitOpenSaveGroup();
+}
+
+/**
+ * Commits a group of saves in one transaction. If the shared commit fails, each session saves alone, so one
+ * failure cannot fail the others. Settles, never rejecting, once every save in the group has.
+ */
+function commitSaveGroup(group: GroupedSave[]): Promise<unknown> {
+	if (group.length === 1) {
+		const [{ session, resolve, reject }] = group;
+		return session.saveAlone().then(resolve, reject);
+	}
+	const context: any = { source: true };
+	const wrote = new Array<number>(group.length);
+	const stage = async () => {
+		// every write settles before the transaction ends, or one still reading could put alone after the fallback
+		const outcomes = await Promise.allSettled(group.map(({ session }) => session.write(context)));
+		for (let index = 0; index < outcomes.length; index++) {
+			const outcome = outcomes[index];
+			if (outcome.status === 'rejected') throw outcome.reason;
+			wrote[index] = outcome.value;
+		}
+	};
+	return new Promise((resolve) => resolve(transaction(context, stage))).then(
+		() =>
+			group.forEach(({ session, resolve }, index) => {
+				if (wrote[index]) session.saved(wrote[index]);
+				resolve();
+			}),
+		() => Promise.all(group.map(({ session, resolve, reject }) => session.saveAlone().then(resolve, reject)))
+	);
 }
 
 /**
@@ -895,14 +1394,15 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	sealed = false;
 	topics = new Map<string, TopicState>();
 	/** Settles once the latest save or deletion has, and never rejects. */
-	writes: Promise<void> = Promise.resolve();
+	writes: Promise<void> = SETTLED;
 	saving: Promise<void> | undefined;
 	dirty = false;
 	checkpointScheduled: Promise<void> | undefined;
-	checkpointTimer: any;
+	declare checkpointSettle: ((writes: Promise<void>) => void) | undefined;
 	/** Packets are handled concurrently, so SUBSCRIBE, UNSUBSCRIBE and resume change `topics` one at a time. */
-	changes: Promise<unknown> = Promise.resolve();
-	reservedIds = new Set<number>();
+	changes: Promise<unknown> = SETTLED;
+	/** NO_RESERVED_IDS until the session first reserves one (`reserveId`). */
+	reservedIds = NO_RESERVED_IDS;
 	receivedCount = 0;
 	inFlightChanged = false;
 	/** Bumped per `advancePositions`, so each topic computes its checkpoint once per pass. */
@@ -950,7 +1450,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 				for (const identity of entry.received || []) this.addReceived(state, identity);
 				for (const delivery of entry.inFlight || []) {
 					(state.resend ??= new Map()).set(slotOf(delivery[0], delivery[1]), delivery);
-					this.reservedIds.add(delivery[3]);
+					this.reserveId(delivery[3]);
 				}
 			}
 			this.topics.set(topic, state);
@@ -1042,7 +1542,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 							? [sent.key, sent.ordinal, sent.id, messageId]
 							: [sent.key, sent.ordinal, sent.id, messageId, originName]
 					);
-					this.reservedIds.add(messageId);
+					this.reserveId(messageId);
 				}
 			} else if (replaced.entry.qos === 1) {
 				state.received = replaced.received;
@@ -1073,6 +1573,10 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	messageIdInUse(messageId: number): boolean {
 		return super.messageIdInUse(messageId) || this.reservedIds.has(messageId);
 	}
+	reserveId(messageId: number) {
+		if (this.reservedIds === NO_RESERVED_IDS) this.reservedIds = new Set();
+		this.reservedIds.add(messageId);
+	}
 	addReceived(state: TopicState, identity: DeliveryIdentity) {
 		const [key, ordinal] = identity;
 		const runs = (state.receivedRuns ??= new Map());
@@ -1102,8 +1606,8 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		this.receivedCount -= (state.received?.size ?? 0) + (state.receivedRuns?.size ?? 0);
 		for (const delivery of state.resend?.values() ?? []) this.reservedIds.delete(delivery[3]);
 	}
-	priorDelivery(update) {
-		const state = this.topics.get(update.topic);
+	priorDelivery(update, topic = update.topic) {
+		const state = this.topics.get(topic);
 		if (!(state?.entry.qos > 0) || update.fromScan || typeof update.localTime !== 'number') return;
 		const key = update.localTime;
 		// a transaction's events arrive together and in the same order when replayed
@@ -1176,16 +1680,16 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		}
 		state.receivedThrough = through;
 	}
-	needsAcknowledge(update, qos: number, messageId = this.newMessageId()) {
+	needsAcknowledge(update, qos: number, messageId = this.newMessageId(), topic = update.topic) {
 		if (!this.awaitingAcks) this.awaitingAcks = new Map();
 		const ackInfo: Acknowledgement = {
 			qos,
-			topic: update.topic,
+			topic,
 			timestamp: update.localTime,
 		};
 		if (update.acknowledge) ackInfo.acknowledge = update.acknowledge;
 		this.awaitingAcks.set(messageId, ackInfo);
-		const state = this.topics.get(update.topic);
+		const state = this.topics.get(topic);
 		// scan deliveries are state, not history: their keys follow no transaction order
 		if (state && !update.fromScan && typeof update.localTime === 'number') {
 			const key = update.localTime;
@@ -1203,6 +1707,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			const late = key < state.highestKey;
 			if (late) state.lateUnacked++;
 			else state.highestKey = key;
+			if (state.unacked === NOTHING_UNACKED) state.unacked = new Map();
 			state.unacked.set(messageId, {
 				key,
 				ordinal: state.ordinal,
@@ -1223,6 +1728,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		const sent = state?.unacked.get(messageId);
 		if (sent?.late) state.lateUnacked--;
 		state?.unacked.delete(messageId);
+		if (sent && state.unacked.size === 0) state.unacked = NOTHING_UNACKED;
 		if (sent && update.qos === 1) {
 			if (this.receivedCount >= QOS1_RECEIVED_LIMIT && this.receiptsReclaimedAt !== this.advanceCount)
 				this.reclaimQoS1Receipts();
@@ -1634,13 +2140,10 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	/** Settles once the scheduled checkpoint's save has, and never rejects. */
 	scheduleCheckpoint(): Promise<void> {
 		if (this.terminated) return Promise.resolve();
-		this.checkpointScheduled ??= new Promise<void>((resolve) =>
-			setImmediate(() => {
-				this.checkpointScheduled = undefined;
-				this.checkpoint();
-				resolve(this.writes);
-			})
-		);
+		if (!this.checkpointScheduled) {
+			this.checkpointScheduled = new Promise<void>((resolve) => (this.checkpointSettle = resolve));
+			if (dueCheckpoints.push(this) === 1) setImmediate(runDueCheckpoints);
+		}
 		return this.checkpointScheduled;
 	}
 	checkpoint() {
@@ -1649,9 +2152,29 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			this.persist().catch(() => {});
 	}
 	startCheckpoints() {
-		if (this.checkpointTimer || this.terminated) return;
-		this.checkpointTimer = setInterval(() => this.checkpoint(), checkpointInterval());
-		this.checkpointTimer.unref?.();
+		if (this.terminated || checkpointing.has(this)) return;
+		// the interval follows the audit retention, which can change while the sweep runs
+		const interval = checkpointInterval();
+		if (checkpointSweep && sweepInterval !== interval) {
+			// a restarted sweep's next tick is a whole interval away, so the sessions it holds checkpoint now
+			clearInterval(checkpointSweep);
+			checkpointSweep = undefined;
+			sweepCheckpoints();
+		}
+		checkpointing.add(this);
+		if (checkpointSweep) return;
+		sweepInterval = interval;
+		checkpointSweep = setInterval(sweepCheckpoints, interval);
+		checkpointSweep.unref?.();
+	}
+	stopCheckpoints() {
+		if (checkpointing.delete(this) && checkpointing.size === 0 && checkpointSweep) {
+			clearInterval(checkpointSweep);
+			checkpointSweep = undefined;
+		}
+	}
+	get checkpointing(): boolean {
+		return checkpointing.has(this);
 	}
 	recordToWrite() {
 		const subscriptions = [];
@@ -1728,21 +2251,42 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			if (this.saveWaiters.length > 0) this.settleSaveWaiters(Infinity, failure ?? this.endedError());
 		}
 	}
-	async saveOnce() {
+	saveOnce(): Promise<void> {
+		return new Promise((resolve, reject) => joinSaveGroup({ session: this, resolve, reject }));
+	}
+	async saveAlone() {
+		const saveNumber = await this.write();
+		if (saveNumber) this.saved(saveNumber);
+	}
+	/**
+	 * Writes the session's record, in `context`'s transaction or one of its own, if this connection still
+	 * owns it: the save's number if it wrote, which is settled (`saved`) once that transaction commits.
+	 */
+	async write(context?: any): Promise<number> {
 		const saveNumber = ++this.savesStarted;
+		// a grouped save builds its record when its group commits, so it carries what was marked dirty meanwhile
+		this.dirty = false;
 		const record = this.recordToWrite();
 		try {
-			const stored = await getDurableSession().get(this.sessionId);
-			if (this.discarded) return this.settleSaveWaiters(saveNumber, this.endedError());
+			const stored = await getDurableSession().get(this.sessionId, context);
+			if (this.discarded) {
+				this.settleSaveWaiters(saveNumber, this.endedError());
+				return 0;
+			}
 			if (stored ? stored.incarnation !== this.incarnation : !this.mayCreate) {
 				this.settleSaveWaiters(saveNumber, this.endedError());
-				return this.supersede();
+				this.supersede();
+				return 0;
 			}
-			await getDurableSession().put(record, { source: true });
+			await getDurableSession().put(record, context ?? { source: true });
 		} catch (error) {
-			this.settleSaveWaiters(saveNumber, error);
+			// a grouped write that fails is saved again alone, which settles its waiters
+			if (!context) this.settleSaveWaiters(saveNumber, error);
 			throw error;
 		}
+		return saveNumber;
+	}
+	saved(saveNumber: number) {
 		this.mayCreate = false;
 		this.settleSaveWaiters(saveNumber);
 	}
@@ -1764,7 +2308,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		if (!this.terminated) {
 			const changed = this.advancePositions();
 			this.terminated = true;
-			clearInterval(this.checkpointTimer);
+			this.stopCheckpoints();
 			this.seal(changed || this.dirty || this.hasInFlight() || this.receivedCount > 0);
 			this.closeConnection?.();
 		} else this.seal(false);
@@ -1774,13 +2318,13 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		this.terminated = true;
 		// the record is another connection's now, or a clean start deleted it
 		this.discarded = true;
-		clearInterval(this.checkpointTimer);
+		this.stopCheckpoints();
 		this.closeConnection?.();
 	}
 	subscriptionFailed(subscription, error) {
 		if (this.terminated || subscription.failed) return;
 		subscription.failed = true;
-		clearInterval(this.checkpointTimer);
+		this.stopCheckpoints();
 		if (!RESETTING_REFUSALS.has(error?.code)) {
 			// the client can reconnect and resume from what this session saves now
 			this.advancePositions();
@@ -1815,7 +2359,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		);
 	}
 	disconnect(clientTerminated) {
-		clearInterval(this.checkpointTimer);
+		this.stopCheckpoints();
 		// ending a subscription clears its queue, which would read as idle, so positions are taken first
 		const changed = !this.terminated && this.advancePositions();
 		this.terminated = true;
@@ -1867,7 +2411,7 @@ function newTopicState(entry: DurableEntry): TopicState {
 		entry,
 		prunedThrough: entry.startTime,
 		verified: true,
-		unacked: new Map(),
+		unacked: NOTHING_UNACKED,
 		ordinal: 0,
 		lateUnacked: 0,
 		consumed: 0,

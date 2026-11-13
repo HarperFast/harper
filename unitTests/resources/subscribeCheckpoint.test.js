@@ -325,6 +325,128 @@ describe('Per-origin subscription checkpoints (harper-pro#922 items 3–4)', fun
 			resumed.end();
 		});
 
+		// Sessions resuming one checkpoint at once (a reconnect storm) replay the same versions: a version the record
+		// cache holds is delivered to each as the cache's object, so they share it and its serialization.
+		it('shares a version value across resumes from one checkpoint that include superseded versions', async () => {
+			const T = tableInOwnDatabase();
+			const first = collector();
+			const subscription = await T.subscribe({
+				omitCurrent: true,
+				includeSuperseded: true,
+				reportProgress: true,
+				listener: first,
+			});
+			await T.put('a', { value: 'a' });
+			await waitFor(() => first.values().includes('a'));
+			const checkpoint = await certifiedCheckpoint(T, subscription);
+			subscription.end();
+			await T.put('b', { value: 'b' });
+			await T.put('c', { value: 'c' });
+			// cached, as a read leaves them
+			await T.get('b');
+			await T.get('c');
+			const resume = async () => {
+				const values = new Map();
+				const resumed = await T.subscribe({
+					resume: checkpoint,
+					omitCurrent: true,
+					includeSuperseded: true,
+					listener: (event) => event.type === 'put' && values.set(event.id, event.value),
+				});
+				return { resumed, values };
+			};
+			const [one, two] = await Promise.all([resume(), resume()]);
+			await waitFor(() => one.values.has('c') && two.values.has('c'));
+			assert.strictEqual(one.values.get('b'), two.values.get('b'), 'the resumes share the value of b');
+			assert.strictEqual(one.values.get('c'), two.values.get('c'), 'the resumes share the value of c');
+			one.resumed.end();
+			two.resumed.end();
+		});
+
+		// A transaction gives every write one version and log position and can write a record more than once, so
+		// overlapping resumes share each write's value only with the same write, and the record cache, which holds the
+		// last, with none of them.
+		it('delivers each write of a cached record written twice in one transaction to resumes from one checkpoint', async () => {
+			const T = tableInOwnDatabase();
+			const first = collector();
+			const subscription = await T.subscribe({
+				omitCurrent: true,
+				includeSuperseded: true,
+				reportProgress: true,
+				listener: first,
+			});
+			await T.put('seed', { value: 'seed' });
+			await waitFor(() => first.values().includes('seed'));
+			const checkpoint = await certifiedCheckpoint(T, subscription);
+			subscription.end();
+			const ids = Array.from({ length: 300 }, (_, i) => `k${String(i).padStart(3, '0')}`);
+			for (const id of ids) {
+				await transaction({}, async (context) => {
+					await T.put(id, { value: 'first' }, context);
+					await T.put(id, { value: 'second' }, context);
+				});
+				// cached, as a read leaves it
+				await T.get(id);
+			}
+			const resume = async () => {
+				const writes = new Map();
+				const resumed = await T.subscribe({
+					resume: checkpoint,
+					omitCurrent: true,
+					includeSuperseded: true,
+					listener: (event) => {
+						if (event.type !== 'put') return;
+						if (!writes.has(event.id)) writes.set(event.id, []);
+						writes.get(event.id).push(event.value.value);
+					},
+				});
+				return { resumed, writes };
+			};
+			const resumes = await Promise.all([resume(), resume(), resume()]);
+			const last = ids[ids.length - 1];
+			await waitFor(() => resumes.every(({ writes }) => writes.get(last)?.length === 2));
+			for (const { writes } of resumes)
+				for (const id of ids) assert.deepStrictEqual(writes.get(id), ['first', 'second'], `the writes to ${id}`);
+			for (const { resumed } of resumes) resumed.end();
+		});
+
+		// Uncached, a version is shared once three resumes overlap, from the first of them to decode it; a resume
+		// reads its first 100 records before it yields, so the overlap begins after them.
+		it('shares an uncached version value between resumes from one checkpoint once they overlap', async () => {
+			const T = tableInOwnDatabase();
+			const first = collector();
+			const subscription = await T.subscribe({
+				omitCurrent: true,
+				includeSuperseded: true,
+				reportProgress: true,
+				listener: first,
+			});
+			await T.put('seed', { value: 'seed' });
+			await waitFor(() => first.values().includes('seed'));
+			const checkpoint = await certifiedCheckpoint(T, subscription);
+			subscription.end();
+			const ids = Array.from({ length: 300 }, (_, i) => `k${String(i).padStart(3, '0')}`);
+			for (const id of ids) await T.put(id, { value: id });
+			const resume = async () => {
+				const values = new Map();
+				const resumed = await T.subscribe({
+					resume: checkpoint,
+					omitCurrent: true,
+					includeSuperseded: true,
+					listener: (event) => event.type === 'put' && values.set(event.id, event.value),
+				});
+				return { resumed, values };
+			};
+			const resumes = await Promise.all([resume(), resume(), resume()]);
+			const last = ids[ids.length - 1];
+			await waitFor(() => resumes.every(({ values }) => values.has(last)));
+			// sharing needs three overlapping scans, which the middle of the range has; once one finishes, the tail does not
+			const middle = ids[ids.length / 2];
+			const objects = new Set(resumes.map(({ values }) => values.get(middle)));
+			assert.ok(objects.size < resumes.length, 'overlapping resumes share an uncached version');
+			for (const { resumed } of resumes) resumed.end();
+		});
+
 		it('reports a resumed scalar progress below the lowest boundary, which is not yet delivered', async () => {
 			const T = tableInOwnDatabase();
 			const first = collector();
