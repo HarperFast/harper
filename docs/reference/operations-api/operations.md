@@ -53,7 +53,7 @@ Detailed documentation: [Database Overview](../database/overview.md)
 
 ### `describe_all`
 
-Returns the definitions of all databases and tables within the database. Record counts above 5000 records are estimated; the response includes `estimated_record_range` when estimated. To force an exact count (requires full table scan), include `"exact_count": true`. Each table definition includes the [record-structure dictionary fields](#record-structure-dictionaries) described for `describe_table`.
+Returns the definitions of all databases and tables within the database. Record counts above 5000 records are estimated; the response includes `estimated_record_range` when estimated. To force an exact count (requires full table scan), include `"exact_count": true`. Each table definition includes the [record-structure dictionary fields](#record-structure-dictionaries) and the [storage `engine`](#storage-engine) described for `describe_table`.
 
 ```json
 { "operation": "describe_all" }
@@ -61,7 +61,7 @@ Returns the definitions of all databases and tables within the database. Record 
 
 ### `describe_database`
 
-Returns all table definitions within the specified database. Each table definition includes the [record-structure dictionary fields](#record-structure-dictionaries) described for `describe_table`.
+Returns all table definitions within the specified database. Each table definition includes the [record-structure dictionary fields](#record-structure-dictionaries) and the [storage `engine`](#storage-engine) described for `describe_table`.
 
 ```json
 { "operation": "describe_database", "database": "dev" }
@@ -117,6 +117,12 @@ A table that has kept [local replicas](../database/schema.md#replicaexpiration-a
 | `replica_size_estimate`   | Estimated bytes of those replicas: the average size of up to 100 of their rows, blobs included, times the count. A rough figure, since the rows sampled are the first by key                                                                   |
 
 See [Local replicas under storage pressure](../database/storage-tuning.md#local-replicas-under-storage-pressure).
+
+#### Storage engine
+
+<VersionBadge version="v5.4.1" />
+
+Each table definition includes `engine`: `rocksdb` or `lmdb`, the engine of the store the table is opened on. `storage.engine` only picks the engine for databases created from then on. A database that already exists on disk opens on the engine it was written with, so a node upgraded in place from v4 keeps its `.mdb` databases on LMDB until they are migrated (`storage.migrateOnStart`).
 
 #### Record-structure dictionaries
 
