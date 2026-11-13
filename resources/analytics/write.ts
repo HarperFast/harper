@@ -45,9 +45,8 @@ interface Action {
 }
 
 let activeActions = new Map<string, Action>();
-// activeActions by recordAction's arguments as given, metric -> method -> type -> path (the most varied, so
-// the leaf). A tuple enters on its second call in a window, so a path recorded once is not stored twice. It
-// holds activeActions' own actions, so it is replaced wherever activeActions is.
+// activeActions by recordAction's arguments as given, metric -> method -> type -> path. A tuple enters on
+// its second call in a window, so a path recorded once is not stored twice.
 let actionIndex = new Map<string, Map<string, Map<string, Map<string, Action>>>>();
 let analyticsEnabled = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) > -1;
 let analyticsReadOnlyChecked = false;
@@ -166,7 +165,6 @@ function isPrimitive(value: unknown): boolean {
 	return value === null || (typeof value !== 'object' && typeof value !== 'function');
 }
 
-/** Whether recordAction has indexed this tuple in the current window */
 export function isActionIndexedForTests(metric: string, path?: string, method?: string, type?: string): boolean {
 	return actionIndex.get(metric)?.get(method)?.get(type)?.has(path) ?? false;
 }
