@@ -76,6 +76,8 @@ Default: `1000`
 
 Hard cap on the number of records a generated `search_<resource>` tool can return per call. Clients still pass `limit`, but the server clamps to this ceiling regardless of what the client requests — bounded to keep a runaway agent from exhausting memory.
 
+Default per-profile rate-limit values for `application`: `perToolPerSecond: 25`, `perToolBurst: 50`, `sessionConcurrency: 50`, `sessionPerSecond: 200`, `initializePerSecond: 10`, `initializeBurst: 50`.
+
 ### `mcp.application.authentication.required`
 
 <VersionBadge version="v5.5.0" />
@@ -108,8 +110,6 @@ Type: `string`
 Default: unset
 
 The URL of the protected-resource metadata document that the application profile's `401` challenges name. It takes precedence over a validator's `challenge`. It must be an `https:` URL with no fragment; `http:` is accepted only for a loopback host (`localhost`, `127.x.x.x` or `[::1]`), for local development. The URL is written into the header as given, so it may contain only visible ASCII characters other than `"` and `\`.
-
-Default per-profile rate-limit values for `application`: `perToolPerSecond: 25`, `perToolBurst: 50`, `sessionConcurrency: 50`, `sessionPerSecond: 200`, `initializePerSecond: 10`, `initializeBurst: 50`.
 
 ## `mcp.<profile>.rateLimit.*`
 

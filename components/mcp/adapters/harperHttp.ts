@@ -151,8 +151,8 @@ function nameResourceMetadata(
 	if (!resourceMetadata && authentication.required && !warnedNoResourceMetadata) {
 		warnedNoResourceMetadata = true;
 		harperLogger.warn(
-			'MCP application profile requires authentication but knows no protected-resource metadata URL: set ' +
-				'mcp.application.authentication.resourceMetadata, or register one Bearer validator with a challenge'
+			'MCP application profile requires authentication but has no single protected-resource metadata URL: set ' +
+				'mcp.application.authentication.resourceMetadata, or have every Bearer validator that declares a challenge name the same URL'
 		);
 	}
 	if (resourceMetadata) {
