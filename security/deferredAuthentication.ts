@@ -87,6 +87,22 @@ export function settleDeferredCredentialRejection(
 	return credentialRejectionResponse(request, deferred.status, deferred.message, deferred.strategy, true);
 }
 
+const OWNED_CHALLENGE = Symbol('harper.ownedAuthenticationChallenge');
+
+/**
+ * Marks a 401 whose route set the challenge it means, so `security/auth.ts` neither replaces its
+ * `WWW-Authenticate` nor turns it into a login redirect. Opt-in per response: an unmarked route 401 is
+ * rewritten as before.
+ */
+export function ownAuthenticationChallenge<R extends object>(response: R): R {
+	Object.defineProperty(response, OWNED_CHALLENGE, { value: true, enumerable: false, configurable: true });
+	return response;
+}
+
+export function ownsAuthenticationChallenge(response: unknown): boolean {
+	return (response as Record<symbol, unknown> | null | undefined)?.[OWNED_CHALLENGE] === true;
+}
+
 const CHALLENGE = Symbol('harper.authenticationChallenge');
 
 function carryChallenge<E>(error: E, challenge: string): E {

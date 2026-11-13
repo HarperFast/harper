@@ -19,7 +19,8 @@
 import harperLogger from '../../utility/logging/harper_logger.ts';
 import { getConfigObj as realGetConfigObj } from '../../config/configUtils.ts';
 import { createFastifyHandler } from './adapters/fastify.ts';
-import { createHarperHttpHandler } from './adapters/harperHttp.ts';
+import { createHarperHttpHandler, type McpAuthentication } from './adapters/harperHttp.ts';
+import { isValidChallengeUrl } from '../../security/challengeUrl.ts';
 import { ensureSessionTable } from './session.ts';
 import { initListChanged } from './listChanged.ts';
 import { registerApplicationTools } from './tools/application.ts';
@@ -38,6 +39,7 @@ export function _restoreGetConfigObj(): void {
 interface McpProfileConfig {
 	enabled?: boolean;
 	mountPath?: string;
+	authentication?: { required?: unknown; resourceMetadata?: unknown };
 }
 
 interface FullConfig {
@@ -133,9 +135,24 @@ export function handleApplication(scope: ScopeLike): void {
 	initListChanged();
 	registerApplicationTools();
 	const mountPath = config.mcp.application.mountPath ?? DEFAULT_MOUNT_PATH;
-	const handler = createHarperHttpHandler('application');
+	const authentication = applicationAuthentication(config.mcp.application.authentication);
+	const handler = createHarperHttpHandler('application', authentication);
 	scope.server.http(handler, { urlPath: mountPath, after: 'authentication' });
-	harperLogger.info(`MCP application profile registered at ${mountPath}`);
+	harperLogger.info(
+		`MCP application profile registered at ${mountPath}${authentication.required ? ' (authentication required)' : ''}`
+	);
+}
+
+function applicationAuthentication(config: McpProfileConfig['authentication']): McpAuthentication {
+	// `true` only: config validation does not write a coerced value back, so a quoted "false" arrives as a string
+	const required = config?.required === true;
+	const configured = config?.resourceMetadata;
+	if (configured === undefined || configured === null) return { required };
+	if (isValidChallengeUrl(configured)) return { required, resourceMetadata: configured };
+	harperLogger.error(
+		'mcp.application.authentication.resourceMetadata must be an https URL (http only for a loopback host) with no fragment; ignoring it'
+	);
+	return { required };
 }
 
 /** Test seam: reset the module-level guard so tests can re-invoke handleApplication. */
