@@ -84,7 +84,7 @@ async function resolveUser(username: string | undefined, from?: unknown): Promis
 		const fresh = await findAndValidateUser(username, null, false);
 		return fresh as AuthedUser;
 	} catch (err) {
-		// an inactive record backs the name, so the certificate admission `from` is a view of needs a role from now on
+		// an inactive record proves one backs the name: the admission behind `from` needs a role from now on
 		if (userRuntimeModule.isInactiveUserRejection(err)) {
 			const admission = userRuntimeModule.certificateAdmission(from);
 			if (admission) userRuntimeModule.latchRoleRequirement(admission);
