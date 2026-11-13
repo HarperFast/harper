@@ -70,7 +70,7 @@ Configures the application-profile MCP endpoint that walks your exported `Resour
 
 ### `mcp.application.allow`
 
-<VersionBadge type="changed" version="v5.4.0" />
+<VersionBadge type="changed" version="v5.4.1" />
 
 Type: `array<string>` (glob patterns or literal tool names)
 
@@ -78,21 +78,21 @@ Default: unset (every tool)
 
 Tools the application profile exposes, matched by tool name with the same glob rules as `mcp.operations.allow`. Unlike the operations profile there is no curated default: when `allow` is unset or empty, every generated verb tool (`get_<resource>`, `search_<resource>`, `create_<resource>`, ...) and every custom [`mcpTools`](./tools-and-resources.md#custom-mcptools-opt-in) entry is exposed. When set, it applies to both kinds, and a tool it filters out is neither listed by `tools/list` nor callable through `tools/call`.
 
-Before v5.4.0 this key was accepted but ignored.
+Before v5.4.1 this key was accepted but ignored.
 
 ### `mcp.application.deny`
 
-<VersionBadge type="changed" version="v5.4.0" />
+<VersionBadge type="changed" version="v5.4.1" />
 
 Type: `array<string>` (glob patterns or literal tool names)
 
 Default: `[]`
 
-Tool names to filter out after `allow` has been applied. Before v5.4.0 this key was accepted but ignored.
+Tool names to filter out after `allow` has been applied. Before v5.4.1 this key was accepted but ignored.
 
 ### `mcp.application.generatedTools`
 
-<VersionBadge version="v5.4.0" />
+<VersionBadge version="v5.4.1" />
 
 Type: `boolean`
 

@@ -1,4 +1,7 @@
-// Booted from root config, not an injected registry: the keys must reach the tool rebuild under the names the validator accepts.
+/**
+ * `mcp.application.allow`/`deny` and `generatedTools` set in a booted server's root config filter what MCP clients can list and call
+ * (https://github.com/HarperFast/harper/issues/4345).
+ */
 import { suite, test, before, after } from 'node:test';
 import { deepStrictEqual, rejects } from 'node:assert';
 import { resolve } from 'node:path';

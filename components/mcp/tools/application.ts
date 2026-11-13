@@ -1479,7 +1479,6 @@ function buildApplicationTools(resources: ResourcesRegistry): void {
 	const claimedSuffixes = new Set<string>();
 	let toolsRegistered = 0;
 	let resourcesConsidered = 0;
-	// Read once per rebuild so tools/list and tools/call resolve against the same filtered registry.
 	const isToolAllowed = compileNameFilter(
 		readNameList(env.get(CONFIG_PARAMS.MCP_APPLICATION_ALLOW)),
 		readNameList(env.get(CONFIG_PARAMS.MCP_APPLICATION_DENY))
