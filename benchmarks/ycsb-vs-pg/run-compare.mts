@@ -1052,8 +1052,10 @@ export async function measureWindow(
 		peakTotalMemoryBytes: peaks.peakTotalBytes,
 		meanMemoryBytes: peaks.meanBytes,
 	};
+	// Host-scope cycles include work outside the component cgroups (the agent, kernel threads), so they have no
+	// matching CPU-seconds.
 	const perfClockGHz =
-		perf && meanClockGHz === 0 && resources.totalCpuSeconds > 0
+		perf && session.perfScope !== 'host' && meanClockGHz === 0 && resources.totalCpuSeconds > 0
 			? (perf.total.cyclesUser + perf.total.cyclesKernel) / (resources.totalCpuSeconds * 1e9)
 			: undefined;
 	if (

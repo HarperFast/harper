@@ -536,7 +536,6 @@ const SUMMARY: [string, Bucket[]][] = [
 	['JIT compilation, other', ['jit', 'other']],
 ];
 
-/** The summary table, with (chain-N − C) / N columns for each target and point that has both. */
 function summaryTable(rows: ProfileRow[]): string[] {
 	const name = (r: ProfileRow) => `${r.target} ${r.workload} ${r.point}`;
 	const deltas: { label: string; c: ProfileRow; chain: ProfileRow; hops: number }[] = [];

@@ -378,7 +378,8 @@ row then records the agent's own CPU (`agentCores`) apart from the target's and 
 host's. Remote mode needs `--auth=token` for Harper on a non-loopback address: local trust covers
 loopback peers only. It counts perf events unless given `--no-perf-counters`, since instructions/op is
 the stable metric where turbo stays on, and counts each target host's cpus as a whole rather than each
-component's cgroup (`--perf-scope=host`, below). Rows add `perfClockGHz` (cycles over CPU-seconds). Run remote mode on a network of its own, as `gcp/` does: Harper's operations API listens on the bound address too, with the test helper's fixed admin password until the harness replaces it moments after startup, and topology b's Postgres keeps its fixed benchmark credential.
+component's cgroup (`--perf-scope=host`, below). Rows add `perfClockGHz` (cycles over CPU-seconds) under
+per-cgroup counting only. Run remote mode on a network of its own, as `gcp/` does: Harper's operations API listens on the bound address too, with the test helper's fixed admin password until the harness replaces it moments after startup, and topology b's Postgres keeps its fixed benchmark credential.
 
 **Counting on a VM (`--perf-scope`).** `perf stat --for-each-cgroup` switches a cgroup's events out and in
 whenever a cpu moves between cgroups, and on a GCP VM's virtual PMU every counter write traps to the
@@ -397,7 +398,9 @@ mode in a Latin-square order, medians in ops/s:
 Instructions/op were the same in every mode. The trap's cost does not run guest instructions, so instruction
 counts from either mode compare. At 2x and 8x, where Postgres reads from disk, the stack's measured windows
 under per-cgroup counting ran at 80–86% of its own warmup chunks (which count nothing), against 94–101% for
-Harper. Remote sessions therefore default to `host`; single-host sessions keep per-cgroup counting
+Harper. Remote sessions therefore default to `host`. Its counts cover everything on the target cpus: the
+target, its agent, and kernel work outside the target's cgroups (I/O completion, network softirqs); in the
+A/B that came to about 1% more instructions/op. Single-host sessions keep per-cgroup counting
 (`cgroups`), the only way to split one host's CPU between components. A profile's counters-only window still
 counts per cgroup for its per-component instructions, so read that window's CPU µs/op as inflated.
 

@@ -58,7 +58,7 @@ export function phaseResults(setDir: string, phase: string): string | undefined 
 	return existsSync(file) ? file : undefined;
 }
 
-/** One cell per (point, workload, target): the median rep by throughput, as run-compare's table picks it. */
+/** The median rep by throughput, as run-compare's table picks it. */
 export function cells(samples: Sample[], point: string): Cell[] {
 	const groups = new Map<string, Sample[]>();
 	for (const s of samples) {
@@ -137,7 +137,7 @@ const fmt = (n: number, digits = 0) =>
 		? n.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits })
 		: '–';
 
-export function report(sets: SetReport[]): string {
+function report(sets: SetReport[]): string {
 	const out: string[] = [];
 	out.push('| set | zone | target VMs | generator | target CPU | kernel | Node |', '|---|---|---|---|---|---|---|');
 	for (const s of sets)

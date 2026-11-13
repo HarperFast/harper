@@ -706,6 +706,29 @@ esac
 	}
 });
 
+test('every set of a matrix builds the commit recorded at its first start', async () => {
+	const dir = mkdtempSync(join(tmpdir(), 'pin-'));
+	try {
+		writeFileSync(
+			join(dir, 'gcloud'),
+			'#!/usr/bin/env bash\ncase "$*" in "config get-value account") echo bench@p.iam.gserviceaccount.com ;; esac\n',
+			{ mode: 0o755 }
+		);
+		const head = (await execAsync('git', ['-C', DIR, 'rev-parse', 'HEAD'])).stdout.trim();
+		const parent = (await execAsync('git', ['-C', DIR, 'rev-parse', 'HEAD~1'])).stdout.trim();
+		writeFileSync(join(dir, 'ycsb-pin.commit'), `${head}\n`);
+		const failed = await gcpScript('run-matrix.sh', ['--set=2x', '--run-id=ycsb-pin-2x', `--commit=${parent}`], {
+			PATH: `${dir}:${process.env.PATH}`,
+			CLOUDSDK_CONFIG: dir,
+			YCSB_GCP_PROJECT: 'p',
+			YCSB_RUNS_DIR: dir,
+		}).catch((error) => error);
+		ok(failed.stderr.includes(`matrix ycsb-pin builds ${head}`), failed.stderr);
+	} finally {
+		rmSync(dir, { recursive: true });
+	}
+});
+
 test('the generator ceiling picks shards by the ops/s it reached, not by how busy the driver looked', async () => {
 	const dir = mkdtempSync(join(tmpdir(), 'ceiling-'));
 	try {

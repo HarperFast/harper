@@ -96,6 +96,26 @@ if [ "$PLAN" = 1 ]; then
 	exit 0
 fi
 
+# The commit every set of matrix <base> builds, recorded at its first start (an explicit --commit, else HEAD): a set
+# provisioned again later (a resume, a capacity wait) would otherwise check out whatever HEAD is then. A --commit
+# naming another revision than the recorded one is refused.
+pin_commit() {
+	local file="$YCSB_RUNS_DIR/$1.commit" given="" sha
+	for a in "${PASS[@]}"; do case "$a" in --commit=*) given="${a#*=}" ;; esac; done
+	if [ -s "$file" ]; then
+		sha=$(cat "$file")
+		if [ -n "$given" ] && [ "$(git -C "$YCSB_GCP_DIR" rev-parse --verify "$given^{commit}")" != "$sha" ]; then
+			echo "matrix $1 builds $sha ($file), not --commit=$given" >&2
+			exit 2
+		fi
+	else
+		sha=$(git -C "$YCSB_GCP_DIR" rev-parse --verify "${given:-HEAD}^{commit}")
+		mkdir -p "$YCSB_RUNS_DIR"
+		echo "$sha" >"$file"
+	fi
+	PASS=(--commit="$sha")
+}
+
 # A run lasts most of a day, longer than a user login's gcloud token: it runs as a service account from a
 # gcloud configuration directory of its own, never from the default one, ADC or a user account.
 check_account() {
@@ -132,12 +152,7 @@ if [ "$ALL" = 1 ]; then
 	[ -n "$BASE" ] || BASE="ycsb-$(date -u +%Y%m%d-%H%M)-$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n')"
 	ycsb_check_run_id "$BASE-8x-chain12"
 	mkdir -p "$YCSB_RUNS_DIR"
-	# Every set builds one commit, recorded at the matrix's start: a set provisioned again later (a resume, a
-	# capacity wait) would otherwise check out whatever HEAD is then.
-	if ! printf '%s\n' "${PASS[@]}" | grep -q '^--commit='; then
-		[ -s "$YCSB_RUNS_DIR/$BASE.commit" ] || git -C "$YCSB_GCP_DIR" rev-parse HEAD >"$YCSB_RUNS_DIR/$BASE.commit"
-		PASS+=(--commit="$(cat "$YCSB_RUNS_DIR/$BASE.commit")")
-	fi
+	pin_commit "$BASE"
 	pids=()
 	for s in $SETS; do
 		args=(--set="$s" --run-id="$BASE-$s" "${PASS[@]}")
@@ -186,6 +201,8 @@ fi
 check_account
 [ -n "$RUN_ID" ] || RUN_ID="ycsb-$(date -u +%Y%m%d-%H%M)-$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n')-$SET"
 ycsb_check_run_id "$RUN_ID"
+# A set's run id is <base>-<set>: it builds its matrix's commit.
+pin_commit "${RUN_ID%-"$SET"}"
 RUN_DIR="$YCSB_RUNS_DIR/$RUN_ID"
 if [ -f "$RUN_DIR/done" ]; then
 	echo "$RUN_ID finished already ($RUN_DIR/done)"
