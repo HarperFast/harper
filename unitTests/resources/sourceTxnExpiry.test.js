@@ -75,7 +75,6 @@ describe('a source-applied transaction gives each write only its own expiry', fu
 		await applied(Table, 'expiring', 'plain');
 		assert.equal(entry(Table, 'expiring').expiresAt, firstExpiresAt);
 		hasNoExpiry(Table, 'plain');
-		// the symptom: once the first write expires, reads hide only that write
 		await waitFor(async () => (await Table.get('expiring')) == null, { timeout: 5000 });
 		assert.equal((await Table.get('plain'))?.id, 'plain');
 	});
