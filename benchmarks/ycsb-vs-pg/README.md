@@ -29,6 +29,166 @@ mixes and the 10 × 100 B record shape. The only variable is the server. See
 `benchmarks/ycsb/README.md` for the workload definitions and the REST operation
 mapping.
 
+## Results: full matrix on GCP (2026-11-12)
+
+harper-uws, harper (Node's HTTP server) and pg-redis, each on its own 4-core VM, on seven workloads at three dataset sizes: 3 targets × 7 workloads × 3 points × 3 reps, `--auth=token`. Run with `gcp/run-matrix.sh --all` (matrix `ycsb-20261113-0157-cf6c`). Profiles of warm C and chain-4 are in [PROFILE.md](PROFILE.md#warm-c-and-chain-4-on-gcp-token-auth-2026-11-12).
+
+**Where each side wins.**
+
+- **Warm, one stored record per request (C, B, inspect, F): pg-redis, by 14–20%.** Each read is one Redis `GET` that returns the record's stored bytes. Harper's fixed cost per request is about 11 µs/op higher: its read transaction, the RocksDB get path and the record cache. uWS and Harper's token cache win part of that back. On C both retire about 231k instructions per op; the gap is in instructions per cycle, 1.22 against 1.53 on these VMs. Part of that is the harper VM's host: the counting A/B's harper VM ran C at IPC 1.30–1.36, for a ratio of 0.91 instead of 0.84.
+- **Warm, dependent reads: Harper, by 4% at chain-1 rising to 39% at chain-4.** Each extra read costs harper-uws 43k instructions and 8.3 µs/op of CPU, against 100k and 15.6 µs/op for pg-redis. The stack's extra read is a Redis round trip, a `JSON.parse` and the garbage collection they cause. Harper's is an in-process read through the request's own transaction.
+- **2x and 8x, dataset larger than memory: Harper, on every workload.** C is 1.48× and 1.63×, chain-4 1.89× and 1.88×, F 1.05× and 1.15×. Redis holds 3 GiB of a 17 or 69 GB dataset, so about 40% (2x) and 45% (8x) of single-record reads miss it. Each miss goes to Postgres on the same VM and then fills Redis. Harper's misses stay in-process: a record-cache miss is a RocksDB block-cache, page-cache or SSD read. On C the stack retires 400k instructions per op at 2x, against 232k warm; Harper 293k, against 230k.
+- **harper-uws over harper: uWS by 2–14% warm and 8–20% at 2x and 8x.** Node's HTTP server costs Harper 18–70k more instructions per request.
+
+Throughput ratios, median reps:
+
+| workload | warm uws/pg-redis | warm uws/harper | 2x uws/pg-redis | 2x uws/harper | 8x uws/pg-redis | 8x uws/harper |
+| -------- | ----------------: | --------------: | --------------: | ------------: | --------------: | ------------: |
+| C        |              0.84 |            1.11 |            1.48 |          1.20 |            1.63 |          1.18 |
+| B        |              0.85 |            1.14 |            1.30 |          1.18 |            1.39 |          1.19 |
+| inspect  |              0.83 |            1.06 |            1.46 |          1.17 |            1.64 |          1.16 |
+| chain-1  |              1.04 |            1.13 |            1.55 |          1.13 |            1.76 |          1.11 |
+| chain-2  |              1.11 |            1.03 |            1.74 |          1.14 |            1.77 |          1.09 |
+| chain-4  |              1.39 |            1.02 |            1.89 |          1.09 |            1.88 |          1.08 |
+| F        |              0.88 |            1.10 |            1.05 |          1.08 |            1.15 |          1.09 |
+
+Cost of each additional dependent read, from the median reps. (chain-4 − C) / 4 also charges the stack one `JSON.parse` that C skips (its C returns Redis's bytes), so the chain-1 column compares requests of one shape:
+
+| point | target     | instructions/op C, chain-1, chain-4 | per extra read | same, from chain-1 | CPU µs/op C, chain-1, chain-4 | per extra read | same, from chain-1 |
+| ----- | ---------- | ----------------------------------: | -------------: | -----------------: | ----------------------------: | -------------: | -----------------: |
+| warm  | harper-uws |              230.4k, 297.4k, 402.4k |          43.0k |              35.0k |              48.5, 59.0, 81.8 |            8.3 |                7.6 |
+| warm  | harper     |              262.2k, 316.5k, 421.7k |          39.9k |              35.1k |              55.6, 65.8, 82.2 |            6.6 |                5.5 |
+| warm  | pg-redis   |              231.6k, 352.5k, 630.1k |          99.6k |              92.6k |             39.0, 59.4, 101.5 |           15.6 |               14.0 |
+| 2x    | harper-uws |              292.7k, 376.9k, 512.9k |          55.1k |              45.4k |             67.9, 93.3, 123.5 |           13.9 |               10.0 |
+| 2x    | harper     |              348.6k, 421.3k, 555.2k |          51.7k |              44.6k |            81.9, 105.3, 137.1 |           13.8 |               10.6 |
+| 2x    | pg-redis   |              399.7k, 584.5k, 924.3k |         131.2k |             113.3k |           105.4, 150.1, 231.7 |           31.6 |               27.2 |
+| 8x    | harper-uws |              301.0k, 384.8k, 524.5k |          55.9k |              46.6k |             69.3, 96.9, 130.7 |           15.4 |               11.3 |
+| 8x    | harper     |              358.4k, 433.3k, 572.5k |          53.5k |              46.4k |            83.0, 109.2, 144.5 |           15.4 |               11.8 |
+| 8x    | pg-redis   |              435.4k, 643.0k, 994.1k |         139.7k |             117.0k |           119.8, 180.2, 252.8 |           33.2 |               24.2 |
+
+**Not settled or short.**
+
+- pg-redis chain-4 at 2x and 8x hit the warmup ceiling (12 chunks) in all three reps. Its Redis hit rate was still climbing, 72% → 84% at 8x and still gaining 0.3–0.4 points a chunk, while its throughput was flat in two of the three reps. The cells are measured but not settled.
+- 2x chain-2 pg-redis has 2 reps. The third failed at start when Postgres's `memory.swap.max` still read `max`; the stack now re-reads its container limits for up to 5 s (`settledMemoryLimit`).
+- F at 2x and 8x: Harper's read p99 is 25–35 ms against the stack's 10–12 ms, while its p50 is lower (0.7 against 1.6 ms). Each Harper window carried 45–48 RocksDB flushes and 15–21 compactions (3–5 GB written). Not investigated here.
+
+**Conditions.**
+
+- GCP us-central1-c, every set. Each target on its own `c4-standard-8-lssd` VM: 4 physical cores (SMT off) of an Intel Xeon 6985P-C (Granite Rapids), 30 GB, one local SSD. Every target runs under the 8 GiB cap. Topology (a): Fastify, Redis and Postgres share the stack's VM.
+- One VM set per matrix set: a generator, a harper VM (harper-uws and harper take turns on it) and a stack VM. The six sets ran at the same time on 18 VMs.
+- Generators: `c4-standard-32` for warm and `c4-standard-16` for 2x and 8x, Emerald Rapids, Node's sharded driver. Each set's own client-ceiling check picked its shard count (table below). Every cell stayed under half its generator's ceiling.
+- `--auth=token`, 3 reps per cell, targets interleaved within each session (forward and reversed per rep), Harper's default record cache. Linux 7.0.0-1017-gcp, Node v26.13.1, Harper `f39c1a1831` (main), harness `da839bf`.
+- Hardware events counted over each target VM's cpus (`--perf-scope=host`; see "Counting on a VM" under [Remote targets and GCP](#remote-targets-and-gcp---hosts-gcp)). An earlier run of this matrix counted per cgroup, and that counting slowed both targets, the stack more. Its ops/s, latencies and CPU µs/op are discarded. Its instructions/op agree with these within 4%, most cells within 2%. With host counting, every target's 2x and 8x measured windows averaged 99–101% of their own warmup chunks, where the stack's had run at 80–86%.
+- **Turbo stays on, and VMs share physical hosts**, so a VM's speed varies by host and over time. Target VMs ran at 3.78–4.08 GHz, by cycles per target CPU-second. Across VM sets, unbiased warm-C ratios came out at 0.84 and 0.91, while instructions/op agreed within 2%. Read instructions/op as the host-independent cost, and ops/s ratios as ±10%.
+
+<details><summary>Per set: zone, VMs, generator, shards, clock</summary>
+
+| set        | zone          | target VMs                                                                                        | generator                                                               | target CPU                             | kernel         | Node     | target VM clock and IPC (medians)                   |
+| ---------- | ------------- | ------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- | -------------------------------------- | -------------- | -------- | --------------------------------------------------- |
+| warm       | us-central1-c | harper c4-standard-8-lssd (Intel Granite Rapids), stack c4-standard-8-lssd (Intel Granite Rapids) | c4-standard-32 (Intel Emerald Rapids), 32 shards, ceiling 307,341 ops/s | Intel(R) Xeon(R) 6985P-C CPU @ 2.30GHz | 7.0.0-1017-gcp | v26.13.1 | harper 3.90 GHz, IPC 1.21, stack 3.90 GHz, IPC 1.53 |
+| 2x         | us-central1-c | harper c4-standard-8-lssd (Intel Granite Rapids), stack c4-standard-8-lssd (Intel Granite Rapids) | c4-standard-16 (Intel Emerald Rapids), 16 shards, ceiling 218,431 ops/s | Intel(R) Xeon(R) 6985P-C CPU @ 2.30GHz | 7.0.0-1017-gcp | v26.13.1 | harper 3.89 GHz, IPC 1.04, stack 4.02 GHz, IPC 0.95 |
+| 8x-cb      | us-central1-c | harper c4-standard-8-lssd (Intel Granite Rapids), stack c4-standard-8-lssd (Intel Granite Rapids) | c4-standard-16 (Intel Emerald Rapids), 8 shards, ceiling 238,428 ops/s  | Intel(R) Xeon(R) 6985P-C CPU @ 2.30GHz | 7.0.0-1017-gcp | v26.13.1 | harper 3.87 GHz, IPC 1.03, stack 4.04 GHz, IPC 0.86 |
+| 8x-fi      | us-central1-c | harper c4-standard-8-lssd (Intel Granite Rapids), stack c4-standard-8-lssd (Intel Granite Rapids) | c4-standard-16 (Intel Emerald Rapids), 8 shards, ceiling 228,083 ops/s  | Intel(R) Xeon(R) 6985P-C CPU @ 2.30GHz | 7.0.0-1017-gcp | v26.13.1 | harper 4.08 GHz, IPC 0.84, stack 3.94 GHz, IPC 0.81 |
+| 8x-chain12 | us-central1-c | harper c4-standard-8-lssd (Intel Granite Rapids), stack c4-standard-8-lssd (Intel Granite Rapids) | c4-standard-16 (Intel Emerald Rapids), 16 shards, ceiling 216,083 ops/s | Intel(R) Xeon(R) 6985P-C CPU @ 2.30GHz | 7.0.0-1017-gcp | v26.13.1 | harper 3.88 GHz, IPC 1.02, stack 3.78 GHz, IPC 0.95 |
+| 8x-chain4  | us-central1-c | harper c4-standard-8-lssd (Intel Granite Rapids), stack c4-standard-8-lssd (Intel Granite Rapids) | c4-standard-16 (Intel Emerald Rapids), 16 shards, ceiling 221,789 ops/s | Intel(R) Xeon(R) 6985P-C CPU @ 2.30GHz | 7.0.0-1017-gcp | v26.13.1 | harper 3.88 GHz, IPC 1.02, stack 4.03 GHz, IPC 0.98 |
+
+</details>
+
+<details><summary>Every cell, warm</summary>
+
+Median rep by ops/s; spread is (max − min) / median of the three reps; latency is the primary operation's (read, inspect or chain).
+
+| workload | target     |  ops/s | spread | p50 ms | p99 ms | CPU µs/op | instructions/op | notes |
+| -------- | ---------- | -----: | -----: | -----: | -----: | --------: | --------------: | ----- |
+| C        | harper-uws | 76,589 |   6.3% |   0.55 |   3.74 |      48.5 |          230.4k |       |
+| C        | harper     | 69,209 |  14.7% |   0.66 |   3.83 |      55.6 |          262.2k |       |
+| C        | pg-redis   | 91,628 |   7.8% |   0.51 |   3.50 |      39.0 |          231.6k |       |
+| B        | harper-uws | 59,734 |   1.6% |   0.72 |   3.97 |      61.6 |          262.7k |       |
+| B        | harper     | 52,172 |   1.3% |   0.85 |   3.91 |      70.1 |          289.2k |       |
+| B        | pg-redis   | 70,251 |   1.1% |   0.58 |   3.83 |      51.7 |          258.8k |       |
+| inspect  | harper-uws | 74,441 |   8.6% |   0.57 |   3.86 |      48.4 |          236.7k |       |
+| inspect  | harper     | 70,009 |  15.3% |   0.62 |   3.87 |      50.8 |          254.9k |       |
+| inspect  | pg-redis   | 89,901 |  10.0% |   0.49 |   3.76 |      40.6 |          248.2k |       |
+| chain-1  | harper-uws | 62,974 |   1.0% |   0.67 |   4.48 |      59.0 |          297.4k |       |
+| chain-1  | harper     | 55,843 |  14.5% |   0.79 |   4.67 |      65.8 |          316.5k |       |
+| chain-1  | pg-redis   | 60,658 |  13.0% |   0.72 |   5.61 |      59.4 |          352.5k |       |
+| chain-2  | harper-uws | 53,478 |   7.4% |   0.77 |   4.71 |      66.8 |          335.9k |       |
+| chain-2  | harper     | 51,884 |  16.7% |   0.86 |   5.14 |      72.9 |          358.2k |       |
+| chain-2  | pg-redis   | 47,982 |  11.7% |   0.89 |   6.31 |      72.9 |          445.3k |       |
+| chain-4  | harper-uws | 46,131 |   2.9% |   0.96 |   5.41 |      81.8 |          402.4k |       |
+| chain-4  | harper     | 45,162 |   7.8% |   1.01 |   5.14 |      82.2 |          421.7k |       |
+| chain-4  | pg-redis   | 33,305 |   5.4% |   1.32 |   8.52 |     101.5 |          630.1k |       |
+| F        | harper-uws | 20,809 |   8.3% |   0.43 |   2.72 |     173.5 |          572.4k |       |
+| F        | harper     | 18,972 |   1.7% |   0.51 |   2.86 |     196.0 |          612.8k |       |
+| F        | pg-redis   | 23,761 |   2.3% |   0.95 |   5.10 |     154.7 |          587.4k |       |
+
+</details>
+
+<details><summary>Every cell, 2x</summary>
+
+| workload | target     |  ops/s | spread | p50 ms | p99 ms | CPU µs/op | instructions/op | notes                     |
+| -------- | ---------- | -----: | -----: | -----: | -----: | --------: | --------------: | ------------------------- |
+| C        | harper-uws | 54,498 |   3.6% |   0.81 |   5.17 |      67.9 |          292.7k |                           |
+| C        | harper     | 45,335 |   4.4% |   0.98 |   6.34 |      81.9 |          348.6k |                           |
+| C        | pg-redis   | 36,801 |   0.9% |   1.31 |   6.74 |     105.4 |          399.7k |                           |
+| B        | harper-uws | 41,884 |   4.0% |   1.11 |   6.25 |      88.0 |          336.3k |                           |
+| B        | harper     | 35,475 |   1.2% |   1.32 |   7.33 |     104.5 |          391.9k |                           |
+| B        | pg-redis   | 32,327 |   2.1% |   1.42 |   7.94 |     118.5 |          424.2k |                           |
+| inspect  | harper-uws | 53,949 |   1.7% |   0.85 |   5.09 |      68.7 |          287.3k |                           |
+| inspect  | harper     | 46,133 |   4.6% |   0.97 |   6.16 |      80.8 |          333.4k |                           |
+| inspect  | pg-redis   | 37,056 |   1.1% |   1.27 |   6.61 |     104.2 |          407.0k |                           |
+| chain-1  | harper-uws | 39,978 |   2.8% |   1.16 |   6.71 |      93.3 |          376.9k |                           |
+| chain-1  | harper     | 35,254 |   1.6% |   1.24 |   7.61 |     105.3 |          421.3k |                           |
+| chain-1  | pg-redis   | 25,730 |   2.1% |   1.89 |   9.43 |     150.1 |          584.5k |                           |
+| chain-2  | harper-uws | 35,718 |   0.6% |   1.29 |   7.78 |     105.1 |          427.8k |                           |
+| chain-2  | harper     | 31,241 |   3.1% |   1.45 |   8.73 |     120.1 |          478.8k |                           |
+| chain-2  | pg-redis   | 20,506 |   7.2% |   2.31 |  12.15 |     185.7 |          720.1k | 2 reps; 1 failed at start |
+| chain-4  | harper-uws | 29,935 |   0.9% |   1.41 |   9.19 |     123.5 |          512.9k |                           |
+| chain-4  | harper     | 27,387 |   2.3% |   1.61 |  10.35 |     137.1 |          555.2k |                           |
+| chain-4  | pg-redis   | 15,881 |  11.5% |   3.31 |  13.65 |     231.7 |          924.3k | 3/3 warmup-ceiling        |
+| F        | harper-uws | 15,054 |   1.1% |   0.69 |  28.39 |     208.3 |          663.6k |                           |
+| F        | harper     | 13,941 |   5.3% |   0.76 |  25.79 |     229.8 |          710.7k |                           |
+| F        | pg-redis   | 14,369 |   2.4% |   1.56 |  10.18 |     240.2 |          803.7k |                           |
+
+</details>
+
+<details><summary>Every cell, 8x</summary>
+
+| workload | target     |  ops/s | spread | p50 ms | p99 ms | CPU µs/op | instructions/op | notes              |
+| -------- | ---------- | -----: | -----: | -----: | -----: | --------: | --------------: | ------------------ |
+| C        | harper-uws | 52,959 |   0.5% |   0.91 |   5.14 |      69.3 |          301.0k |                    |
+| C        | harper     | 44,811 |   8.3% |   1.00 |   6.30 |      83.0 |          358.4k |                    |
+| C        | pg-redis   | 32,464 |   5.3% |   1.51 |   7.48 |     119.8 |          435.4k |                    |
+| B        | harper-uws | 41,046 |   3.1% |   1.16 |   6.52 |      88.5 |          352.0k |                    |
+| B        | harper     | 34,616 |   3.9% |   1.31 |   7.96 |     105.5 |          421.6k |                    |
+| B        | pg-redis   | 29,566 |   2.6% |   1.65 |   8.55 |     131.0 |          457.4k |                    |
+| inspect  | harper-uws | 55,940 |   1.4% |   0.88 |   4.83 |      66.6 |          293.6k |                    |
+| inspect  | harper     | 48,138 |   4.9% |   0.95 |   5.88 |      77.8 |          342.3k |                    |
+| inspect  | pg-redis   | 34,119 |   2.3% |   1.48 |   7.00 |     114.3 |          438.7k |                    |
+| chain-1  | harper-uws | 37,815 |   1.4% |   1.24 |   6.64 |      96.9 |          384.8k |                    |
+| chain-1  | harper     | 33,943 |   1.5% |   1.33 |   7.64 |     109.2 |          433.3k |                    |
+| chain-1  | pg-redis   | 21,531 |   0.7% |   2.29 |  10.80 |     180.2 |          643.0k |                    |
+| chain-2  | harper-uws | 32,056 |   0.9% |   1.39 |   8.05 |     112.7 |          449.6k |                    |
+| chain-2  | harper     | 29,494 |   1.5% |   1.50 |   9.06 |     126.1 |          496.4k |                    |
+| chain-2  | pg-redis   | 18,157 |   2.7% |   2.77 |  12.80 |     212.2 |          775.0k |                    |
+| chain-4  | harper-uws | 27,969 |   1.9% |   1.46 |  10.20 |     130.7 |          524.5k |                    |
+| chain-4  | harper     | 25,909 |   7.8% |   1.62 |  10.91 |     144.5 |          572.5k |                    |
+| chain-4  | pg-redis   | 14,843 |   5.4% |   3.49 |  14.97 |     252.8 |          994.1k | 3/3 warmup-ceiling |
+| F        | harper-uws | 15,322 |   4.0% |   0.70 |  32.35 |     198.2 |          680.7k |                    |
+| F        | harper     | 14,111 |   3.3% |   0.77 |  32.37 |     220.9 |          736.3k |                    |
+| F        | pg-redis   | 13,279 |   1.0% |   1.79 |  11.92 |     260.3 |          842.3k |                    |
+
+</details>
+
+Reproduce (from the operator's host, with a service account active in its own gcloud directory):
+
+```sh
+CLOUDSDK_CONFIG=<dir> YCSB_GCP_PROJECT=<project> YCSB_GCP_ZONES="us-central1-c us-central1-a us-central1-b us-central1-f" \
+  systemd-run --user --unit=ycsb-matrix benchmarks/ycsb-vs-pg/gcp/run-matrix.sh --all
+node benchmarks/ycsb-vs-pg/gcp/matrix-report.mts --base=<the matrix base>
+node benchmarks/ycsb-vs-pg/profile-report.mts gcp/runs/<base>-warm/results/<the profile phase's file> --summary --pipeline
+```
+
 ## Running
 
 ```sh

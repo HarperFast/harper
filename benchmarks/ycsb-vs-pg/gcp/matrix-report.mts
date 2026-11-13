@@ -23,6 +23,7 @@ interface Sample {
 	ratio?: number;
 	status?: string;
 	settled?: boolean;
+	failure?: { phase?: string };
 	measured?: {
 		cpuMicrosPerOp: number;
 		perf?: {
@@ -68,6 +69,7 @@ export function cells(samples: Sample[], point: string): Cell[] {
 		const key = `${s.workload}\0${s.target}`;
 		groups.set(key, [...(groups.get(key) ?? []), s]);
 	}
+	const failed = samples.filter((s) => !s.measured?.result && s.status === 'failed');
 	return [...groups.values()].map((reps) => {
 		const sorted = [...reps].sort((a, b) => a.measured!.result.throughput - b.measured!.result.throughput);
 		const median = sorted[Math.floor((sorted.length - 1) / 2)];
@@ -81,6 +83,8 @@ export function cells(samples: Sample[], point: string): Cell[] {
 			notes.push(`${unsettled.length}/${reps.length} ${[...new Set(unsettled.map((s) => s.status))].join(',')}`);
 		const errors = reps.reduce((sum, s) => sum + s.measured!.result.errors, 0);
 		if (errors) notes.push(`${errors} errors`);
+		const lost = failed.filter((s) => s.workload === median.workload && s.target === median.target);
+		if (lost.length) notes.push(`${lost.length} failed at ${lost.map((s) => s.failure?.phase ?? '?').join(', ')}`);
 		return {
 			point,
 			workload: median.workload,
@@ -184,7 +188,7 @@ function report(sets: SetReport[]): string {
 				const c = find(point, workload, target);
 				out.push(
 					c
-						? `| ${workload} | ${target} | ${fmt(c.opsPerSec)} | ${fmt(c.spread * 100, 1)}% | ${fmt(c.p50, 2)} | ${fmt(c.p99, 2)} | ${fmt(c.cpuMicrosPerOp, 1)} | ${fmt(c.instructionsPerOp / 1000, 1)}k | ${c.reps < 3 ? `${c.reps} reps; ` : ''}${c.notes.join('; ')} |`
+						? `| ${workload} | ${target} | ${fmt(c.opsPerSec)} | ${fmt(c.spread * 100, 1)}% | ${fmt(c.p50, 2)} | ${fmt(c.p99, 2)} | ${fmt(c.cpuMicrosPerOp, 1)} | ${fmt(c.instructionsPerOp / 1000, 1)}k | ${[...(c.reps < 3 ? [`${c.reps} reps`] : []), ...c.notes].join('; ')} |`
 						: `| ${workload} | ${target} | not run | | | | | | |`
 				);
 			}
