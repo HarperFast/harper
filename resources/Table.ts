@@ -663,17 +663,32 @@ function finishDroppedTableBlobSweep(rootStore: RocksDatabase, primaryStore, lab
 		});
 }
 const NOT_FOUND_STATUSES = new Set([404, 410]);
-// A thrown not-found is the answer each queued request would get, like an absent record; anything else
-// may succeed on a retry. Each request gets its own copy, since a caller may annotate the error it receives.
+const copyableErrorPrototypes = new WeakMap<object, boolean>();
 function notFoundFailureSnapshot(error: unknown): Error | undefined {
 	try {
 		if (!utilTypes.isNativeError(error)) return;
 		const status = (error as any).statusCode ?? (error as any).status;
-		if (!NOT_FOUND_STATUSES.has(status)) return;
-		const snapshot: any = copyError(error as Error);
-		// a status the copy cannot carry (non-enumerable, or behind a private field) is not shared
+		if (!NOT_FOUND_STATUSES.has(status) || !isCopyableError(error)) return;
+		const snapshot: any = copyError(error);
 		if ((snapshot.statusCode ?? snapshot.status) === status) return snapshot;
 	} catch {}
+}
+// A copy has no private fields, so an accessor may throw on it, and a fetch body can be read only once.
+function isCopyableError(error: Error): boolean {
+	const prototype = Object.getPrototypeOf(error);
+	let copyable = copyableErrorPrototypes.get(prototype);
+	if (copyable === undefined) {
+		copyable = true;
+		for (let link = prototype; copyable && link && link !== Error.prototype; link = Object.getPrototypeOf(link))
+			for (const key of Reflect.ownKeys(link)) if (Object.getOwnPropertyDescriptor(link, key).get) copyable = false;
+		copyableErrorPrototypes.set(prototype, copyable);
+	}
+	return (
+		copyable &&
+		Object.values(error).every(
+			(value) => !(value && typeof value === 'object' && ('bodyUsed' in value || 'getReader' in value))
+		)
+	);
 }
 function copyError(error: Error): Error {
 	const stackTraceLimit = Error.stackTraceLimit;
@@ -686,6 +701,7 @@ function copyError(error: Error): Error {
 	}
 	Object.assign(Object.setPrototypeOf(copy, Object.getPrototypeOf(error)), error);
 	copy.stack = error.stack;
+	if (Object.hasOwn(error, 'cause')) copy.cause = error.cause;
 	return copy;
 }
 // A response consumes a stream or iterator once, merges into Headers in place and assigns onto a record
