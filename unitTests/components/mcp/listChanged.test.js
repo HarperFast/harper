@@ -13,7 +13,7 @@ const { databases } = require('#src/resources/databases');
 const testUtils = require('../../testUtils.js');
 const { waitFor } = require('../../waitFor');
 
-const { certificatePrincipal, isCertificatePrincipal, localPrincipal } = userModule;
+const { certificateAdmission, certificatePrincipal, isCertificatePrincipal, localPrincipal } = userModule;
 
 const SUPER = { username: 'admin', role: { permission: { super_user: true } } };
 const ALICE = {
@@ -217,7 +217,12 @@ describe('mcp/listChanged', () => {
 		fakeItc._fireUser();
 		await waitFor(() => record.user !== named);
 		assert.equal(isCertificatePrincipal(record.user), true);
+		assert.equal(certificateAdmission(record.user), named, 'the refreshed view keeps the admission');
 		assert.equal(isCertificatePrincipal(fresh), false);
+		const refreshed = record.user;
+		fakeItc._fireUser();
+		await waitFor(() => record.user !== refreshed);
+		assert.equal(certificateAdmission(record.user), named, 'and keeps it across refreshes');
 	});
 
 	it('a scoped-token session is never re-resolved by name (no privilege substitution)', async () => {

@@ -232,9 +232,7 @@ async function refreshSessionUser(record: RegisteredSession): Promise<void> {
 	const fresh = await resolveUser(record.user?.username);
 	if (!fresh) return;
 	const view = record.user.authExpiresAt === undefined ? fresh : { ...fresh, authExpiresAt: record.user.authExpiresAt };
-	record.user = userRuntimeModule.isCertificatePrincipal(record.user)
-		? userRuntimeModule.certificatePrincipal(view)
-		: view;
+	record.user = userRuntimeModule.withCertificateAdmission(view, record.user);
 }
 
 /**

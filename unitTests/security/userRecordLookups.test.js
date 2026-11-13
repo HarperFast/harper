@@ -248,6 +248,23 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 			assert.strictEqual(user.isCertificatePrincipal(unknown), false, 'the shared object stays unmarked');
 			assert.strictEqual(user.isRecordBacked(named), false, 'the copy keeps its record provenance');
 			assert.strictEqual(user.isCertificatePrincipal(user.cloneUserView(named)), true, 'a clone keeps the mark');
+			assert.strictEqual(user.certificateAdmission(named), named, 'the copy is the admission');
+			assert.strictEqual(user.certificateAdmission(user.cloneUserView(named)), named, 'a clone keeps the admission');
+			const again = user.certificatePrincipal(named);
+			assert.strictEqual(user.certificateAdmission(again), again, 'a new admission of a marked object is its own');
+			assert.strictEqual(
+				user.certificateAdmission(user.cloneUserView(unknown, undefined, named)),
+				named,
+				"a recheck's view carries the admission it replaced"
+			);
+			const carried = user.withCertificateAdmission({ username: 'lookup_user' }, named);
+			assert.strictEqual(user.certificateAdmission(carried), named);
+			const plain = { username: 'lookup_user' };
+			assert.strictEqual(
+				user.withCertificateAdmission(plain, unknown),
+				plain,
+				'nothing to carry from an unmarked user'
+			);
 			assert.strictEqual(
 				user.isCertificatePrincipal(JSON.parse(JSON.stringify(named))),
 				false,
@@ -287,6 +304,7 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 				'no copy of a view only it holds'
 			);
 			assert.strictEqual(user.isCertificatePrincipal(builtIn), true);
+			assert.strictEqual(user.certificateAdmission(builtIn), builtIn, 'the view is its own admission');
 
 			const fromOverride = await user.findAndValidateUser('lookup_user', null, false);
 			const named = user.certificatePrincipal(fromOverride, async () => fromOverride);

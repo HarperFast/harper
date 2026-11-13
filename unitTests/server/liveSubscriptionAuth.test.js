@@ -1604,6 +1604,101 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 			assert.strictEqual(_liveSubscriptionCount(), 0, 'a subscription by that view needs a role');
 		});
 
+		it('requires a role of a subscription by a view held outside its context once a record backed the admission', async () => {
+			// every view a recheck installs on the context, as application code could keep one (getCurrentUser())
+			const installed = [];
+			let current = await certificate('retained_latch_cn');
+			const context = {
+				authorize: true,
+				get user() {
+					return current;
+				},
+				set user(view) {
+					installed.push(view);
+					current = view;
+				},
+			};
+			const first = grantingByUsername('retained_latch_cn');
+			const firstSubscription = await first.Resource.subscribe('topic', undefined, context);
+			handles.push({ unregister: () => firstSubscription.end() });
+			const second = grantingByUsername('retained_latch_cn');
+			const secondSubscription = await second.Resource.subscribe('topic', undefined, context);
+			handles.push({ unregister: () => secondSubscription.end() });
+			await _sweepNow();
+			assert.strictEqual(installed.length, 2, 'each subscription installed its own view');
+			const retained = installed[0];
+			assert.notStrictEqual(context.user, retained, "the other subscription's view replaced it");
+			assert.strictEqual(
+				userModule.certificateAdmission(retained),
+				userModule.certificateAdmission(context.user),
+				'both views carry the one admission'
+			);
+			await testUtils.seedUsers([{ username: 'retained_latch_cn', active: true, role: 'missing_role' }]);
+			await _sweepNow();
+			assert.strictEqual(first.end.calls.length + second.end.calls.length, 2, 'a record with no role revokes both');
+
+			await testUtils.seedUsers();
+			const later = grantingByUsername('retained_latch_cn');
+			// a subscription admitted with no recheck returns synchronously, which assert.rejects needs as a rejection
+			await assert.rejects(
+				async () => later.Resource.subscribe('topic', undefined, { user: retained, authorize: true }),
+				{
+					statusCode: 403,
+				}
+			);
+			assert.strictEqual(_liveSubscriptionCount(), 0, 'a subscription by a retained view needs a role');
+		});
+
+		for (const active of [true, false]) {
+			const kind = active ? 'a record' : 'an inactive record';
+			it(`latches an admission whose recheck finds ${kind} even on a context that already required a role`, async () => {
+				const username = active ? 'relatch_cn' : 'relatch_inactive_cn';
+				const context = { user: await certificate(username), authorize: true };
+				const first = grantingByUsername(username);
+				const firstSubscription = await first.Resource.subscribe('topic', undefined, context);
+				handles.push({ unregister: () => firstSubscription.end() });
+				await testUtils.seedUsers([{ username, active, role: 'missing_role' }]);
+				await _sweepNow();
+				assert.strictEqual(first.end.calls.length, 1, 'the record latches the context');
+
+				await testUtils.seedUsers();
+				const other = await certificate(username);
+				await testUtils.seedUsers([{ username, active, role: 'missing_role' }]);
+				context.user = other;
+				const second = grantingByUsername(username);
+				await assert.rejects(async () => second.Resource.subscribe('topic', undefined, context), { statusCode: 403 });
+
+				await testUtils.seedUsers();
+				const later = grantingByUsername(username);
+				await assert.rejects(
+					async () => later.Resource.subscribe('topic', undefined, { user: other, authorize: true }),
+					{
+						statusCode: 403,
+					}
+				);
+				assert.strictEqual(_liveSubscriptionCount(), 0, 'its own recheck latched that admission');
+			});
+		}
+
+		it('latches the admission of the view a context holds when a record backs that name', async () => {
+			const context = { user: await certificate('held_latch_cn'), authorize: true };
+			const first = grantingByUsername('held_latch_cn');
+			const firstSubscription = await first.Resource.subscribe('topic', undefined, context);
+			handles.push({ unregister: () => firstSubscription.end() });
+			const held = await certificate('held_latch_cn');
+			context.user = held;
+			await testUtils.seedUsers([{ username: 'held_latch_cn', active: true, role: 'missing_role' }]);
+			await _sweepNow();
+			assert.strictEqual(first.end.calls.length, 1, 'a record with no role revokes it');
+
+			await testUtils.seedUsers();
+			const later = grantingByUsername('held_latch_cn');
+			await assert.rejects(async () => later.Resource.subscribe('topic', undefined, { user: held, authorize: true }), {
+				statusCode: 403,
+			});
+			assert.strictEqual(_liveSubscriptionCount(), 0, 'the held view of another admission needs a role');
+		});
+
 		it('keeps the CONNECT lookup of a certificate principal a component built with no hdb_user', async () => {
 			const built = { username: 'component_cert_cn', active: true };
 			const admission = {};

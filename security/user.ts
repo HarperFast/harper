@@ -32,6 +32,8 @@ export {
 	isInactiveUserRejection,
 	certificatePrincipal,
 	isCertificatePrincipal,
+	certificateAdmission,
+	withCertificateAdmission,
 	userRecordVersions,
 	trackUserRecords,
 	cloneUserView,
@@ -752,12 +754,12 @@ function firstLookup(user: User, name: unknown = user?.username): UserProvenance
  * `isCurrentUser` checks it against `provenance`, what `trackUserRecords` returned for this lookup, or else
  * against the records `user` was built from.
  */
-function cloneUserView(user: User, provenance?: UserProvenance, certificate = false): User {
+function cloneUserView(user: User, provenance?: UserProvenance, admission?: object): User {
 	const clone: User = { ...user };
 	if (user.role) clone.role = { ...user.role, permission: { ...user.role.permission } };
 	provenance ??= (clone as any)[PROVENANCE] ?? firstLookup(user);
 	if (provenance) (clone as any)[PROVENANCE] = provenance;
-	if (certificate) (clone as any)[CERTIFICATE_PRINCIPAL] = true;
+	if (admission) (clone as any)[CERTIFICATE_PRINCIPAL] = admission;
 	return clone;
 }
 
@@ -841,22 +843,27 @@ function isInactiveUserRejection(error: unknown): boolean {
 	return isCredentialRejection(error) && (error as Error).message === AUTHENTICATION_ERROR_MSGS.USER_INACTIVE;
 }
 
+// Its value is the admission, the principal a certificate named, which every view of it carries and the
+// live-subscription role latch is keyed on; not a flag.
 const CERTIFICATE_PRINCIPAL = Symbol('certificate principal');
 
 /**
  * `user` marked as named by a verified client certificate, which live-subscription rechecks exempt from the role
- * requirement (#4062); a by-name re-resolve that replaces such a principal must re-mark the fresh view, or it fails
- * closed. Only the built-in resolver's view, new per call, is marked in place: an override may hand the same object
- * to a session or password lookup, so its result is copied, and only when a copy loses nothing (`isPlainObject`).
+ * requirement (#4062). The mark holds the admission, the principal it was set on, so every view of it shares one
+ * identity; a by-name re-resolve that replaces such a principal must carry the admission to the fresh view
+ * (`cloneUserView`, `withCertificateAdmission`), or it fails closed. Only the built-in resolver's view, new per call,
+ * is marked in place: an override may hand the same object to a session or password lookup, so its result is copied,
+ * and only when a copy loses nothing (`isPlainObject`).
  */
 function certificatePrincipal<T>(user: T, getUser?: unknown): T {
 	if (!user || typeof user !== 'object') return user;
 	if (getUser === getUserImpl && (user as any)[PROVENANCE]) {
-		(user as any)[CERTIFICATE_PRINCIPAL] = true;
+		(user as any)[CERTIFICATE_PRINCIPAL] = user;
 		return user;
 	}
 	if (!isPlainObject(user) || hasHiddenProperty(user)) return user;
-	const view: any = { ...user, [CERTIFICATE_PRINCIPAL]: true };
+	const view: any = { ...user };
+	view[CERTIFICATE_PRINCIPAL] = view;
 	if (!view[PROVENANCE]) {
 		const tracked = firstLookup(user as unknown as User, view.username);
 		if (tracked) view[PROVENANCE] = tracked;
@@ -890,7 +897,20 @@ function hasHiddenProperty(value: object): boolean {
 }
 
 function isCertificatePrincipal(user: unknown): boolean {
-	return (user as any)?.[CERTIFICATE_PRINCIPAL] === true;
+	return certificateAdmission(user) !== undefined;
+}
+
+/** The certificate admission `user`, or the view it replaced, was marked with, which the role latch is keyed on. */
+function certificateAdmission(user: unknown): object | undefined {
+	const admission = (user as any)?.[CERTIFICATE_PRINCIPAL];
+	return typeof admission === 'object' && admission !== null ? admission : undefined;
+}
+
+/** A copy of `view` carrying `from`'s certificate admission, or `view` itself when `from` has none. */
+function withCertificateAdmission<T>(view: T, from: unknown): T {
+	const admission = certificateAdmission(from);
+	if (!admission || !view || typeof view !== 'object') return view;
+	return { ...view, [CERTIFICATE_PRINCIPAL]: admission };
 }
 
 /**
