@@ -135,6 +135,26 @@ function headerName(name: string): string {
 	return name;
 }
 
+// uWS.js keeps its sockets as libuv handles that Node never closes: a thread whose JavaScript stops with one open
+// aborts the whole process at teardown. The thread's last JavaScript closes whatever is still open.
+const openApps = new Set<UwsApp>();
+let exitListenerInstalled = false;
+function trackOpenApp(app: UwsApp): void {
+	openApps.add(app);
+	if (exitListenerInstalled) return;
+	exitListenerInstalled = true;
+	process.on('exit', () => {
+		for (const openApp of openApps) {
+			try {
+				closeApp(openApp);
+			} catch {}
+		}
+	});
+}
+function closeApp(app: UwsApp): void {
+	if (openApps.delete(app)) app.close();
+}
+
 export async function createUwsServer(options: UwsServerOptions): Promise<{ app: UwsApp; close: () => void }> {
 	// The process.dlopen guard refuses a standard-ABI uWS binary too, but uws.js rethrows any load
 	// error as a misleading "supports only Node.js versions …" Error; checking here keeps the real one.
@@ -164,6 +184,7 @@ export async function createUwsServer(options: UwsServerOptions): Promise<{ app:
 		maxBodyBytes = 100 * 1024 * 1024,
 	} = options;
 	const app: UwsApp = uWS.App();
+	trackOpenApp(app);
 
 	// Accept WebSocket upgrades on this app/port when a ws handler is supplied. Registered before the
 	// HTTP routes so uWS routes upgrade requests here; normal requests still fall through to app.get/any.
@@ -328,11 +349,14 @@ export async function createUwsServer(options: UwsServerOptions): Promise<{ app:
 		} else {
 			app.listen_unix(onListen, socketPath!);
 		}
+	}).catch((error) => {
+		closeApp(app);
+		throw error;
 	});
 
 	return {
 		app,
-		close: () => app.close(),
+		close: () => closeApp(app),
 	};
 }
 
