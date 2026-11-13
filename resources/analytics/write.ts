@@ -45,9 +45,8 @@ interface Action {
 }
 
 let activeActions = new Map<string, Action>();
-// activeActions by recordAction's arguments as given, metric -> method -> type -> path. A tuple enters only
-// once activeActions already holds its action, normally on its second call in a window, so a path recorded
-// once is not stored twice.
+// activeActions by recordAction's arguments as given. A tuple enters only once activeActions already holds
+// its action, so an action recorded once in a window is never indexed.
 let actionIndex = new Map<string, Map<string | undefined, Map<string | undefined, Map<string | undefined, Action>>>>();
 let analyticsEnabled = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) > -1;
 let analyticsReadOnlyChecked = false;
@@ -148,16 +147,16 @@ function recordNewAction(key: string, value: Value, metric?: string, path?: stri
  * @param type
  */
 export function recordAction(value: Value, metric: string, path?: string, method?: string, type?: string) {
-	if (!checkAnalyticsEnabled()) return;
+	if (!checkAnalyticsEnabled() || analyticsExiting) return;
 	const actionsByPath = actionIndex.get(metric)?.get(method)?.get(type);
 	const action = actionsByPath?.get(path);
-	if (action === undefined) {
+	if (action !== undefined) {
+		recordExistingAction(value, action);
+		armFlush();
+	} else {
 		const existing = recordKeyedAction(actionKey(metric, path, method, type), value, metric, path, method, type);
 		if (existing !== undefined && isPrimitive(path) && isPrimitive(method) && isPrimitive(type))
 			(actionsByPath ?? indexedActionsByPath(metric, method, type)).set(path, existing);
-	} else if (!analyticsExiting) {
-		recordExistingAction(value, action);
-		if (!sendAnalyticsTimeout) contextStorage.exit(sendAnalytics);
 	}
 }
 
@@ -184,7 +183,7 @@ function indexedActionsByPath(metric: string, method?: string, type?: string): M
 export function actionRecorder(metric: string, path?: string, method?: string, type?: string): (value: Value) => void {
 	const key = actionKey(metric, path, method, type);
 	return (value) => {
-		if (checkAnalyticsEnabled()) recordKeyedAction(key, value, metric, path, method, type);
+		if (checkAnalyticsEnabled() && !analyticsExiting) recordKeyedAction(key, value, metric, path, method, type);
 	};
 }
 
@@ -195,7 +194,7 @@ function actionKey(metric: string, path?: string, method?: string, type?: string
 	return key;
 }
 
-/** The action the window already held for the key; undefined when this call started it or while exiting */
+/** The action the window already held for the key; undefined when this call started it */
 function recordKeyedAction(
 	key: string,
 	value: Value,
@@ -204,15 +203,18 @@ function recordKeyedAction(
 	method?: string,
 	type?: string
 ): Action | undefined {
-	if (analyticsExiting) return;
 	const action = activeActions.get(key);
 	if (action) {
 		recordExistingAction(value, action);
 	} else {
 		recordNewAction(key, value, metric, path, method, type);
 	}
-	if (!sendAnalyticsTimeout) contextStorage.exit(sendAnalytics);
+	armFlush();
 	return action;
+}
+
+function armFlush() {
+	if (!sendAnalyticsTimeout) contextStorage.exit(sendAnalytics);
 }
 
 // Let the storage layer emit write-commit latency without statically depending on this module.

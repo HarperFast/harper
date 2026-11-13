@@ -1,10 +1,10 @@
 'use strict';
 
-// Per-call cost of recordAction: npx mocha unitTests/resources/analytics/recordAction.bench.js
+// Per-call cost of recordAction: npm run bench:record-action
 // Each round is one fresh analytics window of CALLS calls, timed in this thread's CPU time; a round
 // before the counted ones warms up. Generated paths and topics are new strings each round, with no
 // cached hash, as a parsed topic or a new request path would be. The cases share recordAction's
-// feedback, so for figures to compare, run each in its own process with --grep.
+// feedback, so for figures to compare, run each in its own process: npm run bench:record-action -- --grep <case>.
 require('../../testUtils');
 const { setupTestDBPath } = require('../../testUtils');
 const {
