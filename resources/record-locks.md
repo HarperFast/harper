@@ -430,6 +430,21 @@ parks a leader there and a coalesced follower behind it.
 > would have given up. The fenced and quorum-confirmed alternatives are not built; harper#2540 took
 > the stamp floor instead.
 
+**Confirmation of locked commits** (`setReplicationConfirmationDefaults({ recordLocks })`,
+harper-pro's `replication.recordLockConfirmation`, 1 by default where cluster locks are on). A native commit made while its link holds a
+cluster-granted handle, or that has a write made through one, requests at least that many peer
+confirmations, by the same rules as an explicit count. `releaseRecordLocks()` runs when the batch lands,
+before its confirmation waiter starts, so the count is decided in `refuseUnconfirmable()` and kept on
+the native handle (`lockConfirmation`), not the link. A link can have two batches in flight, and a
+logged retry reuses the handle. Release ordering is unchanged: the key goes back at local commit, and a
+confirmation failure afterwards finds it already released. This confirms the write to N peers. It is
+not arm (c) below: the barrier gets no quorum floor, so the exclusion-only contract stands. When the
+minimum governs (no explicit per-write count meets it), `lockGoverned(handle)` tells both registered
+callbacks, so the replication layer can refuse the commit before submission while no peer is connected
+and end the wait once the confirming peers are gone, rather than holding the caller for the full
+confirmation timeout. A commit moves onto `settleCommitCompletions` for the lock default only when it
+has a later link, so single-database writes keep `Promise.all`.
+
 Phase 1 keeps every Phase 0 mechanism and adds a cluster step on top of it. Nothing in core registers
 a `ClusterLockTransport`, so in a core-only build the machinery is inert and `lock()` behaves exactly
 as it did in Phase 0 — the whole feature is gated on harper-pro registering a transport.
