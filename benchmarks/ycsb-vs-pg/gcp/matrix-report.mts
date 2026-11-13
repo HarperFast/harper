@@ -25,7 +25,9 @@ interface Sample {
 	settled?: boolean;
 	measured?: {
 		cpuMicrosPerOp: number;
-		perf?: { total: { instructionsUser: number; instructionsKernel: number } };
+		perf?: {
+			total: { instructionsUser: number; instructionsKernel: number; cyclesUser: number; cyclesKernel: number };
+		};
 		result: { throughput: number; ops: number; errors: number; latency: Record<string, any> };
 	};
 }
@@ -126,10 +128,30 @@ function readSet(runsDir: string, base: string, set: string): SetReport {
 		hosts.harper?.kernel ?? '?',
 		hosts.harper?.node ?? '?',
 	];
+	conditions.push(
+		`harper ${vmClock(results.samples, ['harper-uws', 'harper'])}, stack ${vmClock(results.samples, ['pg-redis'])}`
+	);
 	const setCells = cells(results.samples, point);
 	for (const c of setCells)
 		if (ceiling && c.opsPerSec > Number(ceiling) / 2) c.notes.push('over half the generator ceiling');
 	return { set, cells: setCells, conditions };
+}
+
+/**
+ * A target VM's speed over the set: the median, across its measured samples, of cycles per CPU-second of the target's
+ * cgroups (GHz; under host counting the cycles also cover the agent and kernel work on those cpus, about 1%) and of
+ * instructions per cycle. Turbo is on and VMs share hosts, so this differs between VMs and over time.
+ */
+function vmClock(samples: Sample[], targets: string[]): string {
+	const median = (xs: number[]) => xs.sort((a, b) => a - b)[Math.floor((xs.length - 1) / 2)];
+	const rows = samples.filter((s) => targets.includes(s.target) && s.measured?.perf);
+	if (rows.length === 0) return '?';
+	const cycles = (s: Sample) => s.measured!.perf!.total.cyclesUser + s.measured!.perf!.total.cyclesKernel;
+	const ghz = median(rows.map((s) => cycles(s) / (s.measured!.cpuMicrosPerOp * s.measured!.result.ops * 1e3)));
+	const ipc = median(
+		rows.map((s) => (s.measured!.perf!.total.instructionsUser + s.measured!.perf!.total.instructionsKernel) / cycles(s))
+	);
+	return `${ghz.toFixed(2)} GHz, IPC ${ipc.toFixed(2)}`;
 }
 
 const fmt = (n: number, digits = 0) =>
@@ -139,9 +161,12 @@ const fmt = (n: number, digits = 0) =>
 
 function report(sets: SetReport[]): string {
 	const out: string[] = [];
-	out.push('| set | zone | target VMs | generator | target CPU | kernel | Node |', '|---|---|---|---|---|---|---|');
+	out.push(
+		'| set | zone | target VMs | generator | target CPU | kernel | Node | target VM clock and IPC (medians) |',
+		'|---|---|---|---|---|---|---|---|'
+	);
 	for (const s of sets)
-		out.push(s.conditions ? `| ${s.conditions.join(' | ')} |` : `| ${s.set} | ${s.missing} | | | | | |`);
+		out.push(s.conditions ? `| ${s.conditions.join(' | ')} |` : `| ${s.set} | ${s.missing} | | | | | | |`);
 	const all = sets.flatMap((s) => s.cells);
 	const find = (point: string, workload: string, target: string) =>
 		all.find((c) => c.point === point && c.workload === workload && c.target === target);
