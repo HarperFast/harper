@@ -19,7 +19,7 @@ import { collapseChanges } from './tracked.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 import type { Context, Id } from './ResourceInterface.ts';
 import * as envMngr from '../utility/environment/environmentManager.ts';
-import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
+import { CONFIG_PARAMS, SYSTEM_SCHEMA_NAME } from '../utility/hdbTerms.ts';
 import { onStartup } from '../utility/lifecycle.ts';
 import { convertToMS } from '../utility/common_utils.ts';
 import { settleBeforeDeadline, when } from '../utility/when.ts';
@@ -546,6 +546,32 @@ export function registeredReplicationConfirmation() {
 	return confirmReplication;
 }
 
+let defaultWriteConfirmation = 0;
+let defaultRecordLockConfirmation = 0;
+/**
+ * Register the configured confirmation defaults: `writes`, the count a write transaction requests when
+ * nothing set one, and `recordLocks`, the minimum a native commit made while holding a cluster record
+ * lock requests.
+ */
+export function setReplicationConfirmationDefaults(defaults: { writes?: number; recordLocks?: number }): void {
+	const writes = defaults.writes ?? 0;
+	const recordLocks = defaults.recordLocks ?? 0;
+	for (const [name, value] of [
+		['writes', writes],
+		['recordLocks', recordLocks],
+	] as const)
+		if (!Number.isSafeInteger(value) || value < 0)
+			throw new TypeError(`A replication confirmation default must be a non-negative integer, but ${name} is ${value}`);
+	defaultWriteConfirmation = writes;
+	defaultRecordLockConfirmation = recordLocks;
+}
+
+/** An explicitly set count, or undefined when none was set (a non-number counts as unset). */
+export function explicitConfirmation(value: unknown): number | undefined {
+	if (typeof value !== 'number' || Number.isNaN(value)) return undefined;
+	return value > 0 ? value : 0;
+}
+
 export function confirmReplicationAfterCommit(callback: () => unknown): Promise<void> {
 	let result;
 	try {
@@ -934,7 +960,14 @@ type RocksTransactionWithRetry = RocksTransaction & {
 	commitInFlight?: boolean;
 	committed?: boolean;
 	immediateCommit?: boolean;
+	// the record-lock minimum, decided before submission: the batch's locks are released before its
+	// confirmation waiter starts, and a logged retry reuses the handle
+	lockConfirmation?: number;
 };
+
+function lockConfirmationOf(transaction: RocksTransaction | undefined): number {
+	return (transaction as RocksTransactionWithRetry | undefined)?.lockConfirmation ?? 0;
+}
 
 // Crash-recovery replay sets `isRetry` before `save()`, so `hasStagedLog` is never set there.
 function hasDurableLog(transaction: RocksTransaction | null | undefined, error?: { hasLog?: boolean }): boolean {
@@ -1166,7 +1199,28 @@ export class DatabaseTransaction implements Transaction {
 	replicatedConfirmation: number;
 	declare requiresOwnerConfirmation?: boolean;
 	get requestedConfirmationCount(): number {
-		return this.replicatedConfirmation || 0;
+		return explicitConfirmation(this.replicatedConfirmation) ?? this.configuredConfirmation();
+	}
+	/**
+	 * The configured write default for a link no explicit count reached. A root's explicit count of 0
+	 * opts its other links out too; a positive one still reaches only the first database, so the default
+	 * covers the rest.
+	 */
+	configuredConfirmation(): number {
+		if (!defaultWriteConfirmation) return 0;
+		const root = this.root ?? this;
+		if (root !== this && explicitConfirmation(root.replicatedConfirmation) === 0) return 0;
+		if (this.sourceApply || this.isReplay || root.sourceApply || root.isReplay) return 0;
+		const databaseName =
+			(this.db as any)?.databaseName ?? this.writes.find((write) => write)?.store.rootStore.databaseName;
+		return databaseName === SYSTEM_SCHEMA_NAME ? 0 : defaultWriteConfirmation;
+	}
+	/** The requested count of the native commit `transaction`, including its record-lock minimum. */
+	requestedConfirmationFor(transaction?: RocksTransaction): number {
+		return Math.max(this.requestedConfirmationCount, lockConfirmationOf(transaction));
+	}
+	confirmationCountFor(transaction?: RocksTransaction): number {
+		return Math.max(this.confirmationCount, lockConfirmationOf(transaction));
 	}
 	get confirmationCount(): number {
 		return Math.max(
@@ -2415,7 +2469,7 @@ export class DatabaseTransaction implements Transaction {
 				? this.residentPeerLists(committedTransaction)
 				: (this.checkedResidentPeerLists ?? undefined);
 		this.checkedResidentPeerLists = undefined;
-		if (!this.requestedConfirmationCount && !residentPeerLists) return;
+		if (!this.requestedConfirmationFor(committedTransaction) && !residentPeerLists) return;
 		// writes that lost to newer entries appended nothing at the key, which peers would then pass only
 		// when some later write replicates
 		let version = this.writes.some(
@@ -2438,11 +2492,12 @@ export class DatabaseTransaction implements Transaction {
 	 * adds no list: N confirmations from any list already come from N distinct peers.
 	 */
 	residentPeerLists(submitted?: RocksTransaction): string[][] | undefined {
-		const count = this.confirmationCount;
+		const count = this.confirmationCountFor(submitted);
+		const requested = this.requestedConfirmationFor(submitted);
 		let lists: Map<number | readonly string[], string[]> | undefined;
 		for (const write of this.writes) {
 			if (!write?.saved || confirmsNothing(write)) continue;
-			if (!this.requestedConfirmationCount && !write.requiresOwnerConfirmation) continue;
+			if (!requested && !write.requiresOwnerConfirmation) continue;
 			if (write.residencyOwners) {
 				if (submitted && write.appendedTo !== submitted) continue;
 				(lists ??= new Map()).set(
@@ -2472,16 +2527,18 @@ export class DatabaseTransaction implements Transaction {
 		if ((transaction as RocksTransactionWithRetry)?.isRetry) return;
 		this.checkedResidentPeerLists = undefined;
 		this.checkedFor = transaction;
+		if (transaction) this.noteLockConfirmation(transaction);
 		try {
 			if (this.hasExclusiveWrites)
 				for (const write of this.writes) if (write?.saved && !write.skipped) write.checkResidency?.();
-			if (!this.confirmationCount || !this.writes.some((write) => write?.saved && !confirmsNothing(write))) return;
+			const confirmationCount = this.confirmationCountFor(transaction);
+			if (!confirmationCount || !this.writes.some((write) => write?.saved && !confirmsNothing(write))) return;
 
 			const residentPeerLists = this.residentPeerLists(transaction);
-			if (!this.requestedConfirmationCount && !residentPeerLists) return;
+			if (!this.requestedConfirmationFor(transaction) && !residentPeerLists) return;
 			const databaseName = this.writes.find((write) => write)?.store.rootStore.databaseName;
 			if (databaseName) {
-				const result: any = confirmationFeasibility?.(databaseName, this.confirmationCount, residentPeerLists);
+				const result: any = confirmationFeasibility?.(databaseName, confirmationCount, residentPeerLists);
 				if (result?.then) {
 					result.then(null, () => {});
 					throw new TypeError('A replication confirmation feasibility check must be synchronous');
@@ -2503,6 +2560,33 @@ export class DatabaseTransaction implements Transaction {
 			}
 			throw error;
 		}
+	}
+
+	/**
+	 * Record on the native commit `transaction` the record-lock minimum it must wait for: set when this
+	 * link holds a cluster-granted lock, or the batch has a write made through one (a hold handle can come
+	 * from another transaction). Expired handles still count: the commit fence refuses their writes.
+	 */
+	private noteLockConfirmation(transaction: RocksTransaction): void {
+		const txn = transaction as RocksTransactionWithRetry;
+		txn.lockConfirmation = undefined;
+		if (!defaultRecordLockConfirmation || (!this.recordLocks && !this.hasLeaseProtectedWrite)) return;
+		if (this.holdsClusterLock(transaction)) txn.lockConfirmation = defaultRecordLockConfirmation;
+	}
+
+	private holdsClusterLock(transaction: RocksTransaction): boolean {
+		if (this.recordLocks)
+			for (const storeMap of this.recordLocks.values())
+				for (const handle of storeMap.values()) if (handle.clusterTsR !== undefined) return true;
+		if (this.hasLeaseProtectedWrite)
+			for (const write of this.writes)
+				if (
+					write?.saved &&
+					write.lockHandle?.clusterTsR !== undefined &&
+					(!write.stagedOn || write.stagedOn === transaction)
+				)
+					return true;
+		return false;
 	}
 
 	/**
@@ -3710,7 +3794,7 @@ export class DatabaseTransaction implements Transaction {
 								return this.commit({ ...options, transaction });
 							}
 							const committedTxnKey = reservedLocalKey(transaction);
-							const committedLogKey = this.confirmationCount ? committedTxnKey : undefined;
+							const committedLogKey = this.confirmationCountFor(transaction) ? committedTxnKey : undefined;
 							const committedTransaction = transaction;
 							const committedImmediate = Boolean(
 								(committedTransaction as RocksTransactionWithRetry | undefined)?.immediateCommit
@@ -3762,7 +3846,8 @@ export class DatabaseTransaction implements Transaction {
 								if (store) completions.push(store.flushed);
 							}
 							let confirmation: Promise<void>;
-							if (this.confirmationCount) {
+							const confirmationCount = this.confirmationCountFor(committedTransaction);
+							if (confirmationCount) {
 								// if we want to wait for replication confirmation, we need to track the transaction times
 								// and when replication notifications come in, we count the number of confirms until we reach the desired number
 								const databaseName = this.writes[0]?.store.rootStore.databaseName;
@@ -3777,9 +3862,9 @@ export class DatabaseTransaction implements Transaction {
 											confirmReplication(
 												databaseName,
 												target.version,
-												this.confirmationCount,
+												confirmationCount,
 												target.residentPeerLists,
-												!this.requestedConfirmationCount
+												!this.requestedConfirmationFor(committedTransaction)
 											)
 										);
 									}

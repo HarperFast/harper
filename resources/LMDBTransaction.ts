@@ -11,6 +11,7 @@ import {
 	requestAbortedError,
 	transactionOpenTooLongError,
 	confirmReplicationAfterCommit,
+	explicitConfirmation,
 	registeredReplicationConfirmation,
 	settleCommitCompletions,
 	type CommitOptions,
@@ -52,10 +53,15 @@ export class LMDBTransaction extends DatabaseTransaction {
 	declare overloadChecked: boolean;
 	open = TRANSACTION_STATE.OPEN;
 	get requestedConfirmationCount(): number {
-		if (this.replicatedConfirmation) return this.replicatedConfirmation;
+		const explicit = explicitConfirmation(this.replicatedConfirmation);
+		if (explicit !== undefined) return explicit;
 		const root = this.root;
 		// A root without a database passes its request to its first child; later database children use their own count.
-		return root && root.next === this && !root.db ? root.replicatedConfirmation || 0 : 0;
+		if (root && root.next === this && !root.db) {
+			const requested = explicitConfirmation(root.replicatedConfirmation);
+			if (requested !== undefined) return requested;
+		}
+		return this.configuredConfirmation();
 	}
 
 	renewIdleTimeout(): void {
