@@ -1172,7 +1172,6 @@ function latchRecordBacked(admission: object, context: any, username: string): v
 	recordBacked.add(admission);
 	if (!context) return;
 	recordBacked.add(context);
-	// the context may hold a view of another admission of this name
 	const current = context.user;
 	if (current?.username !== username) return;
 	const held = securityUser!.certificateAdmission(current);
@@ -1216,7 +1215,11 @@ function registerLiveSubscriptionForContext(
 	const fixedPrincipal = Boolean(user._scopedToken) || isRecordlessPrincipal(user, admitted);
 	// #1414 requires a role of a principal re-read by name; #4062 exempts a certificate naming no hdb_user
 	const admission = certificateAdmission(user);
-	const latched = admission !== undefined && isLatched(admission, context);
+	// a record behind the admission, when it was admitted or found by a recheck since, requires a role of every view of
+	// it, such as one an MCP refresh built after the record was dropped
+	const latched =
+		admission !== undefined &&
+		(isLatched(admission, context) || (admission !== user && isRecordBacked(admission as any) === true));
 	let roleRequired = admission === undefined || latched || Boolean(isRecordBacked(user, admitted) || user.role);
 	// Without a caller's select or a condition or sort through a relationship, the default allowRead only
 	// narrows what it returns, so its verdict depends on the role's permission for this table alone.
@@ -1261,12 +1264,12 @@ function registerLiveSubscriptionForContext(
 				}
 				if (!fresh) return false;
 				if (admission !== undefined) {
-					// a record behind the name latches this admission even when its context already required a role
+					// whatever its context required: a later subscription of this admission may use another context
 					if (isRecordBacked(fresh)) {
 						roleRequired = true;
 						latchRecordBacked(admission, context, username);
 					}
-					// another subscription's recheck may have latched this admission or context since it registered
+					// another subscription's recheck may have latched it since it registered
 					else if (!roleRequired && isLatched(admission, context)) roleRequired = true;
 				}
 				if (!fresh.role && roleRequired) return false;

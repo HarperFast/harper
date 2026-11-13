@@ -1699,6 +1699,23 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 			assert.strictEqual(_liveSubscriptionCount(), 0, 'the held view of another admission needs a role');
 		});
 
+		it('requires a role of a view an MCP refresh built after the record that backed the admission was dropped', async () => {
+			await testUtils.seedUsers([{ username: 'refreshed_cn', active: true, role: readRole('refreshed_role') }]);
+			const admitted = await certificate('refreshed_cn');
+			assert.strictEqual(userModule.isRecordBacked(admitted), true);
+			await testUtils.seedUsers();
+			const refreshed = userModule.withCertificateAdmission(await resolve('refreshed_cn'), admitted);
+			assert.strictEqual(userModule.isRecordBacked(refreshed), false, 'the refresh found no record');
+			const gate = grantingByUsername('refreshed_cn');
+			await assert.rejects(
+				async () => gate.Resource.subscribe('topic', undefined, { user: refreshed, authorize: true }),
+				{
+					statusCode: 403,
+				}
+			);
+			assert.strictEqual(_liveSubscriptionCount(), 0, 'a record backed its admission, so it needs a role');
+		});
+
 		it('keeps the CONNECT lookup of a certificate principal a component built with no hdb_user', async () => {
 			const built = { username: 'component_cert_cn', active: true };
 			const admission = {};

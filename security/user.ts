@@ -843,8 +843,7 @@ function isInactiveUserRejection(error: unknown): boolean {
 	return isCredentialRejection(error) && (error as Error).message === AUTHENTICATION_ERROR_MSGS.USER_INACTIVE;
 }
 
-// Its value is the admission, the principal a certificate named, which every view of it carries and the
-// live-subscription role latch is keyed on; not a flag.
+// holds the admission: the principal a certificate named, shared by every view of it
 const CERTIFICATE_PRINCIPAL = Symbol('certificate principal');
 
 /**
@@ -900,13 +899,13 @@ function isCertificatePrincipal(user: unknown): boolean {
 	return certificateAdmission(user) !== undefined;
 }
 
-/** The certificate admission `user`, or the view it replaced, was marked with, which the role latch is keyed on. */
+/** The principal whose certificate admission `user` is a view of. */
 function certificateAdmission(user: unknown): object | undefined {
 	const admission = (user as any)?.[CERTIFICATE_PRINCIPAL];
 	return typeof admission === 'object' && admission !== null ? admission : undefined;
 }
 
-/** A copy of `view` carrying `from`'s certificate admission, or `view` itself when `from` has none. */
+/** `view` as a view of `from`'s certificate admission, if it has one. */
 function withCertificateAdmission<T>(view: T, from: unknown): T {
 	const admission = certificateAdmission(from);
 	if (!admission || !view || typeof view !== 'object') return view;
