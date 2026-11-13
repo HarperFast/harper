@@ -91,6 +91,7 @@ import {
 	heldByAncestorHook,
 	instanceWriteInSyncCommitHook,
 	commitHooksRunning,
+	registerStoreTable,
 } from './DatabaseTransaction.ts';
 import { readOnlyModeError } from './readOnlyMode.ts';
 import {
@@ -170,6 +171,7 @@ import {
 	isDeadGeneration,
 	recordTableDrop,
 	replicateIsFalse,
+	isNodeLocalTable,
 	OMIT_LIFECYCLE_STAMPS_FOR_TEST,
 	sweepDroppedTableBlobs,
 	storeNameFor,
@@ -12753,6 +12755,7 @@ export function makeTable(options): TableResourceClass {
 			if (replicaExpirationMs) armReplicaEviction();
 		}
 	}
+	registerStoreTable(primaryStore, () => isNodeLocalTable(TableResource));
 	return TableResource;
 	function resolveOverStub(resolver: (record: any) => any, stub: any, name: string) {
 		try {
@@ -14325,6 +14328,8 @@ export function makeTable(options): TableResourceClass {
 			transaction: undefined,
 			expiresAt: undefined,
 			lastModified: undefined,
+			// a fill is a copy the source can supply again, so a configured confirmation default does not apply
+			replicatedConfirmation: 0,
 		};
 		const responseHeaders = (context as any)?.responseHeaders;
 		return new Promise((resolve, reject) => {
