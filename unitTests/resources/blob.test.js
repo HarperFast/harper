@@ -2028,11 +2028,8 @@ describe('Blob test', () => {
 			condemnedPath = getFilePathForBlob(first);
 
 			await blockBlobSavesForRestore(databaseName, 'restore-aborted');
-			// Supersede the blob only once the fence is up. The reclamation is queued when the write is
-			// issued, before its commit settles, so superseding first and fencing after left the entry's
-			// 200ms deadline racing the commit and the fence: on a loaded LMDB runner it came due first
-			// and was unlinked before the fence existed. A blob-less put saves nothing, so the fence
-			// does not refuse it.
+			// Fence before superseding: reclamation is queued when the write is issued, not when it
+			// commits. A blob-less put saves nothing, so the fence admits it.
 			await BlobTest.put({ id: 92 });
 			// Let the drain run and skip the entry while fenced -- that pass records no next deadline, so
 			// without a wakeup on release the entry is kept but never comes due again.
@@ -2047,8 +2044,7 @@ describe('Blob test', () => {
 				message: 'a reclamation kept across an aborted restore must still run',
 			});
 		} finally {
-			// A no-op once released above; on an earlier failure it keeps the fence from leaking into the
-			// next test, which would then fail on a database that still reads as mid-restore.
+			// Keeps a failed assertion from leaking the fence into the next test.
 			resumeBlobSavesForRestore('restore-aborted', false);
 			await BlobTest.delete(92).catch(() => {});
 			if (condemnedPath && existsSync(condemnedPath)) unlinkSync(condemnedPath);
