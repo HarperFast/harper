@@ -48,7 +48,8 @@ function measure(prepare, run) {
 		if (round >= 0) perCall.push(elapsed / CALLS);
 	}
 	perCall.sort((a, b) => a - b);
-	return `median ${perCall[perCall.length >> 1].toFixed(1)} ns/call, min ${perCall[0].toFixed(1)}`;
+	const counter = process.threadCpuUsage ? 'thread' : 'process';
+	return `median ${perCall[perCall.length >> 1].toFixed(1)} ns/call, min ${perCall[0].toFixed(1)} (${counter} CPU)`;
 }
 
 const cases = {
