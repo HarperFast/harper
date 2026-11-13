@@ -1716,6 +1716,24 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 			assert.strictEqual(_liveSubscriptionCount(), 0, 'a record backed its admission, so it needs a role');
 		});
 
+		it('requires a role of a refreshed view of a certificate admission that arrived with a role and no record', async () => {
+			const admitted = userModule.certificatePrincipal(
+				{ username: 'role_admission_cn', role: readRole('role_admission_role') },
+				async () => undefined
+			);
+			assert.strictEqual(userModule.isRecordBacked(admitted), undefined, 'no lookup tracked it');
+			const refreshed = userModule.withCertificateAdmission(await resolve('role_admission_cn'), admitted);
+			assert.strictEqual(refreshed.role, undefined);
+			const gate = grantingByUsername('role_admission_cn');
+			await assert.rejects(
+				async () => gate.Resource.subscribe('topic', undefined, { user: refreshed, authorize: true }),
+				{
+					statusCode: 403,
+				}
+			);
+			assert.strictEqual(_liveSubscriptionCount(), 0, 'it arrived with a role, so every view of it needs one');
+		});
+
 		it('keeps the CONNECT lookup of a certificate principal a component built with no hdb_user', async () => {
 			const built = { username: 'component_cert_cn', active: true };
 			const admission = {};

@@ -899,13 +899,11 @@ function isCertificatePrincipal(user: unknown): boolean {
 	return certificateAdmission(user) !== undefined;
 }
 
-/** The principal whose certificate admission `user` is a view of. */
 function certificateAdmission(user: unknown): object | undefined {
 	const admission = (user as any)?.[CERTIFICATE_PRINCIPAL];
 	return typeof admission === 'object' && admission !== null ? admission : undefined;
 }
 
-/** `view` as a view of `from`'s certificate admission, if it has one. */
 function withCertificateAdmission<T>(view: T, from: unknown): T {
 	const admission = certificateAdmission(from);
 	if (!admission || !view || typeof view !== 'object') return view;

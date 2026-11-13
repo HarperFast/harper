@@ -1215,11 +1215,12 @@ function registerLiveSubscriptionForContext(
 	const fixedPrincipal = Boolean(user._scopedToken) || isRecordlessPrincipal(user, admitted);
 	// #1414 requires a role of a principal re-read by name; #4062 exempts a certificate naming no hdb_user
 	const admission = certificateAdmission(user);
-	// a record behind the admission, when it was admitted or found by a recheck since, requires a role of every view of
-	// it, such as one an MCP refresh built after the record was dropped
+	// an admission that arrived with a role or a record, or whose record a recheck found since, requires a role of every
+	// view of it, such as one an MCP refresh built after the record was dropped
 	const latched =
 		admission !== undefined &&
-		(isLatched(admission, context) || (admission !== user && isRecordBacked(admission as any) === true));
+		(isLatched(admission, context) ||
+			(admission !== user && Boolean(isRecordBacked(admission as any) === true || (admission as any).role)));
 	let roleRequired = admission === undefined || latched || Boolean(isRecordBacked(user, admitted) || user.role);
 	// Without a caller's select or a condition or sort through a relationship, the default allowRead only
 	// narrows what it returns, so its verdict depends on the role's permission for this table alone.
