@@ -1,6 +1,5 @@
 'use strict';
 
-// `/hold` never answers, so a request can be left in flight.
 const { parentPort } = require('node:worker_threads');
 const { realExit } = require('#src/server/threads/workerProcessGuard');
 require('#src/server/threads/manageThreads');

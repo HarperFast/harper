@@ -10,8 +10,9 @@
 import { suite, test, before, after } from 'node:test';
 import { deepStrictEqual, notStrictEqual, ok, strictEqual } from 'node:assert';
 import { once } from 'node:events';
+import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { createRequire } from 'node:module';
 import type { ChildProcess } from 'node:child_process';
 
@@ -20,8 +21,8 @@ import { waitFor } from '../../unitTests/waitFor.js';
 
 function uwsInstalled() {
 	try {
-		createRequire(import.meta.url).resolve('uWebSockets.js');
-		return true;
+		const entry = createRequire(import.meta.url).resolve('uWebSockets.js');
+		return existsSync(join(dirname(entry), `uws_${process.platform}_${process.arch}_${process.versions.modules}.node`));
 	} catch {
 		return false;
 	}

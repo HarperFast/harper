@@ -14,12 +14,11 @@ const { startWorker, forceWorkerExit, setTerminateTimeout, workers } = require('
 const FIXTURE = path.join(__dirname, 'forceWorkerExit-fixture.cjs');
 const NO_UWS = { HARPER_UWS_UDS: '', HARPER_UWS_HTTP: '' };
 
-let uwsAvailable = true;
+let uwsAvailable = false;
 try {
-	require('uWebSockets.js');
-} catch {
-	uwsAvailable = false;
-}
+	const binary = `uws_${process.platform}_${process.arch}_${process.versions.modules}.node`;
+	uwsAvailable = fs.existsSync(path.join(path.dirname(require.resolve('uWebSockets.js')), binary));
+} catch {}
 
 function startFixture(env, name = 'force-worker-exit-fixture') {
 	return new Promise((resolve, reject) => {

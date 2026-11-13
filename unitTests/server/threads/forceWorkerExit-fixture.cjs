@@ -1,7 +1,6 @@
 'use strict';
 
-// Exits with code 7 on FORCE_EXIT when FORCE_EXIT_FIXTURE_HONORS is set, so a test can tell a self-exit from
-// terminate() (code 1); otherwise it ignores the request, as a worker whose event loop never gets to it would.
+// code 7 tells a self-exit apart from terminate() (code 1)
 const { parentPort } = require('node:worker_threads');
 
 parentPort.on('message', (message) => {

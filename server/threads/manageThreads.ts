@@ -428,13 +428,16 @@ function forceWorkerExit(worker: any): Promise<unknown> | undefined {
 			clearTimeout(fallback);
 			worker.terminate().then(() => resolve());
 		};
-		const fallback = setTimeout(() => {
-			harperLogger.warn(
-				'Thread did not exit on request; terminating it, which aborts the process if it holds uWebSockets.js sockets',
-				worker.threadId
-			);
-			terminate();
-		}, threadTerminationTimeout);
+		const fallback = setTimeout(
+			() => {
+				harperLogger.warn(
+					'Thread did not exit on request; terminating it, which aborts the process if it holds uWebSockets.js sockets',
+					worker.threadId
+				);
+				terminate();
+			},
+			Math.min(threadTerminationTimeout, shutdownDrainRuntimeModule.MAX_TIMER_MS)
+		);
 		worker.once('exit', () => {
 			clearTimeout(fallback);
 			resolve();
@@ -449,12 +452,13 @@ function forceWorkerExit(worker: any): Promise<unknown> | undefined {
 
 /** Main exits on a signal without waiting for workers, and Node's exit tears them down as terminate() does. */
 function forceUwsWorkersToExit(): Promise<unknown> {
+	beginProcessShutdown();
 	return Promise.all(workers.filter((worker) => worker.usesUwsBackend).map(forceWorkerExit));
 }
 
-// Node hands a worker its env as strings, so a value counts as set exactly when http.ts will read it as set.
+// Node hands a worker `${value}` for every key it is given, so a key counts as set exactly when http.ts will read it so.
 function usesUwsBackend(env: NodeJS.Dict<unknown>): boolean {
-	return [env.HARPER_UWS_UDS, env.HARPER_UWS_HTTP].some((value) => value != null && String(value) !== '');
+	return ['HARPER_UWS_UDS', 'HARPER_UWS_HTTP'].some((name) => Object.hasOwn(env, name) && `${env[name]}` !== '');
 }
 
 let workersStoppedForExit: Promise<unknown> = Promise.resolve();
@@ -2369,7 +2373,7 @@ function runExitHandler(handler: any, handlerName: string, worker: any, threadId
 async function shutdownWorkersNow(name?: any) {
 	if (name == null) beginProcessShutdown();
 	shutdownWorkers(name); // set the state of all the workers to shut down. this should finish the important stuff synchronously
-	await Promise.all(workers.filter((worker) => name == null || worker.name === name).map(forceWorkerExit));
+	await Promise.all(workers.filter((worker) => !name || typeMatches(name, worker.name)).map(forceWorkerExit));
 }
 
 /**
