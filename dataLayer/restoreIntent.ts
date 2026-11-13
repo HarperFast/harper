@@ -1,10 +1,6 @@
 /**
- * The restart route of restore_backup: a database a component holds cannot be closed online, so the
- * request records a `pending` receipt, the process drains and restarts, and the startup hook — before
- * any component, worker or plugin exists — applies, proves and publishes it through the same steps
- * every other route uses. A failed attempt never exits: the database stays blocked, and the next
- * restart (or `resume`) retries until the attempt limit moves the receipt to `terminal`. See
- * dataLayer/DESIGN.md.
+ * The restart route of restore_backup, for a database a component holds and so cannot be closed online: the
+ * startup hook applies it before any component, worker or plugin exists. See dataLayer/DESIGN.md.
  */
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
@@ -155,7 +151,7 @@ function writeReceiptReconciled(lock: RestoreLock, receipt: RestoreReceipt): Res
 		return writeRestoreReceipt(lock, receipt);
 	} catch (error) {
 		const read = readRestoreReceipt(lock.dbPath);
-		// as the write stores it: its own updated_at, and no undefined fields
+		// as stored: no undefined fields, and the write's own updated_at
 		const intended = { ...JSON.parse(JSON.stringify(receipt)), updated_at: 0 };
 		if (read.kind !== 'valid' || !isDeepStrictEqual({ ...read.receipt, updated_at: 0 }, intended)) throw error;
 		logger.error(
@@ -364,7 +360,6 @@ export async function requestRestartRestore(request: RestartRestoreRequest): Pro
 				}
 				displaced = existing.kind === 'valid' ? existing.receipt : undefined;
 				const earlierRestart = displaced?.route === 'on_restart' ? displaced : undefined;
-				// a restore that did not finish, or no database at all, leaves no generation worth keeping
 				const nothingToRetain = restoreMarkerPresent(databaseDir) || !existsSync(join(databaseDir, 'CURRENT'));
 				const planned = newRestoreReceipt({
 					route: 'on_restart',
@@ -509,8 +504,7 @@ export async function cancelRestartRestore(
 		if (read.kind === 'valid') {
 			cancelled = read.receipt;
 			if (restoreMarkerPresent(databaseDir)) {
-				// it began replacing the target, so the target stays blocked and its pins stay; the receipt stays
-				// too, as terminal, so this boot and the next keep components off the unproved generation
+				// terminal, not removed, so this boot and the next keep components off the unproved generation
 				writeReceiptReconciled(lock, {
 					...cancelled,
 					state: 'terminal',
@@ -703,7 +697,7 @@ async function failAttempt(lock: RestoreLock, receipt: RestoreReceipt, reason: s
 	}
 }
 
-/** One attempt at a pending restart restore, at startup. Returns whether it published; never throws past a failure. */
+/** Resolves whether it published; a failed attempt is recorded on the receipt, not thrown. */
 export async function runRestartAttempt(found: RestoreReceipt): Promise<boolean> {
 	const lock = acquireRestoreLock(found.database_path);
 	// the scan read the receipt before this lock, and a cancel in between (an offline one racing this

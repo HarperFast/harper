@@ -38,10 +38,7 @@ export class JobCompletion {
 	}
 }
 
-/**
- * Records a job handler's return value on its row, and returns what to run once the row is written. A
- * `DeferredJobCompletion` leaves the job IN_PROGRESS, naming the record that will settle it.
- */
+/** What it returns runs only once the row is written; a `DeferredJobCompletion` leaves the job IN_PROGRESS. */
 export function recordJobResult(
 	jobObj: Record<string, any>,
 	results: unknown

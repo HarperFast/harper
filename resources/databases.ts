@@ -3296,11 +3296,7 @@ function throwIfBlockedByRestore(dbPath: string, databaseName: string): void {
 	if (restoreState !== 'clear') throwBlockedByRestore(databaseName, restoreState);
 }
 
-/**
- * A database a restore or an unfinished drop holds is not loaded, so an operation that looks it up by
- * name would report it missing while its directory and data are still on disk. Called where such an operation would answer
- * 404, so the answer names the restore instead.
- */
+/** Where an operation would answer 404 for a database a restore or an unfinished drop keeps unloaded, it names the hold. */
 export function throwIfUnloadedDatabaseHeldByRestore(databaseName: string): void {
 	if (!databaseName || databaseName === '.' || databaseName === '..' || /[/\\\0]/.test(databaseName)) return;
 	throwIfBlockedByRestore(resolveDatabasePath(databaseName), databaseName);

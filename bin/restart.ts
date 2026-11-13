@@ -99,9 +99,8 @@ async function restart(req: any) {
 				// pre-start an HTTP replacement into a process that is already exiting.
 				beginProcessShutdown();
 				// Off Linux the watchdog can never arm, and armRestartExitWatchdog() has already warned.
-				// A restart for a restore drains in-flight work through the same path a SIGTERM takes, so the
-				// pre-restore backup at the next start captures every acknowledged write; the watchdog allows
-				// for that drain on top of the ordinary teardown.
+				// A restore's restart drains as a SIGTERM does, so the next start's pre-restore backup holds every
+				// acknowledged write; the watchdog allows for the drain.
 				const drainMs = req.drain ? getProcessShutdownTimeoutMs() : 0;
 				if (
 					process.env.HARPER_EXIT_ON_RESTART &&

@@ -130,7 +130,6 @@ describe('jobProcess', function () {
 		let exited = false;
 		worker.on('exit', () => (exited = true));
 		try {
-			// the worker exits on its own once it has recorded the row and continued, or decided not to
 			await waitFor(() => exited || errors.length > 0, {
 				timeout: 30000,
 				message: () => `the job worker never finished: ${JSON.stringify(messages)}`,

@@ -550,10 +550,7 @@ export function scanRestoreReceipts(roots: string[] = databaseRoots()): ScannedR
 	return scanned;
 }
 
-/**
- * A receipt removed only after it settles its job: a restart restore's in any state, and any committed one. An
- * online or offline attempt that did not commit leaves its job to the process that ran it, or to the sweep.
- */
+/** An online or offline attempt that did not commit leaves its job to the process that ran it, or to the sweep. */
 function receiptSettlesJob(receipt: RestoreReceipt): boolean {
 	return Boolean(receipt.job_id) && (receipt.route === 'on_restart' || receipt.state === 'committed');
 }

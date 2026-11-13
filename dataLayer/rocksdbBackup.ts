@@ -659,7 +659,7 @@ export async function validateRestoreBackup(request: any) {
 	} catch (error) {
 		throw restoreSourceHint(error, databaseName, requestedBackupId);
 	}
-	// an empty or unloaded database has no root store to check here; the job checks it
+	// the job checks a database not loaded here
 	const loaded = getDatabases()[targetDatabase];
 	if (targetDatabase === databaseName && loaded != null && Object.keys(loaded).length > 0) {
 		requireRocksRootStore(databaseName, OPERATIONS_ENUM.RESTORE_BACKUP);

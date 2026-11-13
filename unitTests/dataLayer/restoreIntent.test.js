@@ -1847,8 +1847,7 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			assert.strictEqual(last.result.restarting, true, 'nothing keeps components off any longer');
 			assert.strictEqual(typeof last.afterRecorded, 'function');
 			assert.strictEqual(unpublishedRestoreBlocksComponents(), undefined);
-			// the restarted process
-			assert.deepStrictEqual(await snapshot(loadedItems(held.name)), held.live);
+			assert.deepStrictEqual(await snapshot(loadedItems(held.name)), held.live, 'the restarted process loads both');
 			assert.deepStrictEqual(await snapshot(loadedItems(stopped.name)), stopped.live);
 		});
 
