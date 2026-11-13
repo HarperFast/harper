@@ -575,7 +575,7 @@ export function confirmationDefaultsConfigured(): boolean {
  * Any later link may arm the lock minimum: a held lock's deferred write is bound before it is saved.
  */
 function laterLinkMayArmConfirmation(link: DatabaseTransaction): boolean {
-	return defaultWriteConfirmation > 0 || (defaultRecordLockConfirmation > 0 && link.next !== undefined);
+	return defaultWriteConfirmation > 0 || (defaultRecordLockConfirmation > 0 && link.next != null);
 }
 
 /** LMDB has no cluster-granted locks, so only the write default can arm a later link. */
