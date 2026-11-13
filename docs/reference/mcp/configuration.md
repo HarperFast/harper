@@ -80,7 +80,7 @@ Default per-profile rate-limit values for `application`: `perToolPerSecond: 25`,
 
 ### `mcp.application.authentication.required`
 
-<VersionBadge version="v5.5.0" />
+<VersionBadge version="v5.4.1" />
 
 Type: `boolean`
 
@@ -103,7 +103,7 @@ The operations profile has no such setting, because Bearer validators do not run
 
 ### `mcp.application.authentication.resourceMetadata`
 
-<VersionBadge version="v5.5.0" />
+<VersionBadge version="v5.4.1" />
 
 Type: `string`
 
