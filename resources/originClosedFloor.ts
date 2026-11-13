@@ -448,7 +448,7 @@ export function opensFenced(rootStore: RocksDatabase): boolean {
 	return newRootFence?.(rootStore) === true;
 }
 
-/** Set the fence at open from a persisted record, unless the fence changed after `fenced` started reading it. */
+/** Set the fence at open when `fenced` says so (a persisted record, or the new-root predicate), unless the fence changed after it started reading. */
 export function restoreLocalWriteFence(rootStore: RocksDatabase, fenced: () => boolean): void {
 	const words = registryFor(rootStore).fenceWords;
 	const before = Atomics.load(words, FENCE_INDEX);
