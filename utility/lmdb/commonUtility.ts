@@ -101,12 +101,15 @@ const timeBits = new BigInt64Array(timeFloat.buffer);
 export function getMonotonicClockBuffer(): SharedArrayBuffer {
 	return monotonicClockBuffer;
 }
+// Captured so a later replacement of the globals (a test stub, fake timers) cannot skew the shared clock.
+const wallClockNow = Date.now;
+const monotonicNow = performance.now.bind(performance);
 let startTime = 0; // the start time of the (current time relative to performance time counter)
 function adjustStartTime(this: any) {
 	// calculate the start time
 	// TODO: We may actually want to implement a gradual time shift if the clock time really changes substantially
 	// and for sub-millisecond updates, may want to average them so we can progressively narrow in on true time
-	startTime = Date.now() - performance.now();
+	startTime = wallClockNow() - monotonicNow();
 }
 adjustStartTime();
 // we periodically update our start time because clock time can drift (but we still ensure monotonic time)
@@ -117,7 +120,7 @@ setInterval(adjustStartTime, TIME_ADJUSTMENT_INTERVAL).unref();
  * across threads. Uses fractional milliseconds as necessary to stay as close to clock time as possible.
  */
 export function getNextMonotonicTime(this: any) {
-	timeFloat[0] = performance.now() + startTime;
+	timeFloat[0] = monotonicNow() + startTime;
 	const nowBits = timeBits[0];
 	let last = Atomics.load(lastTimeBits, 0);
 	for (;;) {

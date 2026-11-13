@@ -180,6 +180,7 @@ import {
 	replicaDeadlinesCatalogKey,
 	REPLICA_DEADLINES_STORE,
 	requestComputedIndexRepair,
+	type StorageEngine,
 } from './databases.ts';
 import { notifyReplicatedApplyFailure } from './replicatedApplyFailure.ts';
 import {
@@ -1148,6 +1149,7 @@ interface TableResourceClass {
 	prototype: TableResourceInstance;
 	name: any;
 	primaryStore: any;
+	storageEngine: StorageEngine;
 	storageGeneration: any;
 	/** Undefined for a table that predates the stamps. */
 	createdTime: number | undefined;
@@ -2554,6 +2556,7 @@ export function makeTable(options): TableResourceClass {
 		// #section: static-config
 		static name = tableName; // for display/debugging purposes
 		static primaryStore = primaryStore;
+		static storageEngine: StorageEngine = isRocksDB ? 'rocksdb' : 'lmdb';
 		static storageGeneration = tableGeneration;
 		static createdTime = createdTime;
 		static auditStore = auditStore;
@@ -3725,6 +3728,14 @@ export function makeTable(options): TableResourceClass {
 					);
 				} else {
 					condition.id = target.id;
+					// the default-scope lock this table would take is refused while cluster record locks are off
+					if (
+						condition.lock &&
+						isRocksDB &&
+						TableResource.replicate !== false &&
+						getClusterLockTransport(databaseName)?.disabled === true
+					)
+						condition.lock = false;
 					txnForContext(request);
 				}
 			}

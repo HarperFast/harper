@@ -221,8 +221,14 @@ suite('PR 3307 mixed-role subscription fan-out over 4 workers', { skip: skipSuit
 			});
 		};
 	}
+	// A QoS 1 PUBLISH already on the wire when a planned end() half-closes the socket still reaches mqtt.js,
+	// which emits 'message' and then fails to write the PUBACK.
+	const retiring = new WeakSet<MqttClient>();
 	function trackMqttClose(sub: Sub, client: MqttClient) {
-		client.on('error', (e) => sub.events.push(`error: ${e?.message ?? e}`));
+		client.on('error', (e: any) => {
+			if (retiring.has(client) && e?.code === 'ERR_STREAM_WRITE_AFTER_END') return;
+			sub.events.push(`error: ${e?.message ?? e}`);
+		});
 		client.on('close', () => {
 			if (shuttingDown || sub.planned || sub.client !== client) return;
 			sub.unplannedClose = true;
@@ -598,6 +604,7 @@ suite('PR 3307 mixed-role subscription fan-out over 4 workers', { skip: skipSuit
 				victims.map(async (s) => {
 					s.planned = true;
 					const old = s.client!;
+					retiring.add(old);
 					await new Promise<void>((res) => {
 						const t = setTimeout(res, 3_000);
 						old.end(false, {}, () => {

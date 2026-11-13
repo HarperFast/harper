@@ -70,6 +70,10 @@ const DEPRECATED_CONFIG = {
 
 let flatDefaultConfigObj;
 let flatConfigObj;
+let configGenerationCount = 0;
+export function configGeneration(): number {
+	return configGenerationCount;
+}
 let configObj;
 
 // Canonical param names that live in CONFIG_PARAM_MAP but do NOT correspond to a path in the
@@ -626,6 +630,7 @@ function composeInstallConfig(
 export function stageInstallConfig(args, baseConfigPath?: string, defaultedArgKeys?: Set<string>): StagedInstallConfig {
 	const staged = composeInstallConfig(args, { baseConfigPath, defaultedArgKeys });
 	flatConfigObj = flattenConfig(staged.configDoc.toJSON());
+	configGenerationCount++;
 	return staged;
 }
 
@@ -633,6 +638,7 @@ export function validateStagedInstallConfig(staged: StagedInstallConfig, skipFsV
 	validateConfig(staged.configDoc, skipFsValidation);
 	staged.validated = true;
 	flatConfigObj = flattenConfig(staged.configDoc.toJSON());
+	configGenerationCount++;
 }
 
 export function writeStagedInstallConfig(
@@ -655,6 +661,7 @@ export function writeStagedInstallConfig(
 	fs.ensureDirSync(path.dirname(configFilePath));
 	atomicWriteFile(configFilePath, String(configDoc), { ownerOnly: true });
 	flatConfigObj = setActiveConfig(configDoc.toJSON());
+	configGenerationCount++;
 	commitEnvConfigState?.();
 	logger.trace(`Config file written to ${configFilePath}`);
 }
@@ -1007,6 +1014,7 @@ export function initConfig(force = false) {
 		const parsedConfig = configDoc.toJSON();
 		(server as any).config = parsedConfig;
 		flatConfigObj = setActiveConfig(parsedConfig);
+		configGenerationCount++;
 
 		// If config has old version of logrotate enabled let user know it has been deprecated.
 		if (flatConfigObj['logging_rotation_rotate']) {
@@ -1187,6 +1195,7 @@ export function updateConfigObject(param: string, value: any) {
 		flatConfigObj = {};
 	}
 
+	configGenerationCount++;
 	const configObjKey = lookupConfigParam(param);
 	if (configObjKey === undefined) {
 		logger.trace(`Unable to update config object because config param '${param}' does not exist`);
@@ -1464,6 +1473,7 @@ export function updateConfigValue(
 	atomicWriteFile(configFilePath, nextDocument, { ownerOnly: true });
 	if (update_config_obj) {
 		flatConfigObj = setActiveConfig(configDoc.toJSON());
+		configGenerationCount++;
 	}
 	logger.trace(`Config parameter: ${param} updated with value: ${value}`);
 }
@@ -1919,6 +1929,7 @@ function applyRuntimeEnvVarConfig(
 export function initOldConfig(oldConfigPath: string) {
 	const oldHdbProperties = PropertiesReader(oldConfigPath);
 	flatConfigObj = {};
+	configGenerationCount++;
 
 	for (const configParam in CONFIG_PARAM_MAP) {
 		const value = oldHdbProperties.get(configParam.toUpperCase());
