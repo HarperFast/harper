@@ -1,8 +1,7 @@
 require('../testUtils');
 const assert = require('node:assert');
 const { join } = require('node:path');
-const { mkdirSync, mkdtempSync, rmSync } = require('node:fs');
-const { tmpdir } = require('node:os');
+const { mkdirSync } = require('node:fs');
 const { setupTestDBPath } = require('../testUtils');
 const {
 	table,
@@ -21,15 +20,10 @@ const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const configuredEngine = process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? 'lmdb' : 'rocksdb';
 
 describe('the opened storage engine of a table and a database', () => {
-	let lmdbDir;
 	let testRoot;
 	before(() => {
 		testRoot = setupTestDBPath();
 		setMainIsWorker(true);
-	});
-	after(async () => {
-		await closeDatabase('engine_legacy');
-		if (lmdbDir) rmSync(lmdbDir, { recursive: true, force: true });
 	});
 
 	it('reports the configured engine for a database created now, in Table.storageEngine and describe_table', async () => {
@@ -45,8 +39,8 @@ describe('the opened storage engine of a table and a database', () => {
 	});
 
 	it('reports lmdb for an existing .mdb root whatever storage.engine says, before it has any table', () => {
-		lmdbDir = mkdtempSync(join(tmpdir(), 'harper-engine-'));
-		readMetaDb(join(lmdbDir, 'engine_legacy.mdb'), null, 'engine_legacy');
+		// in the storage path, so a catalog rescan finds it again and per-file teardown drops it
+		readMetaDb(join(testRoot, 'database', 'engine_legacy.mdb'), null, 'engine_legacy');
 		assert.ok(Object.getOwnPropertyNames(getDatabases()).includes('engine_legacy'));
 		assert.deepStrictEqual([...databaseStorageEngines('engine_legacy')], ['lmdb']);
 		assert.deepStrictEqual([...databaseStorageEngines('engine_absent')], []);

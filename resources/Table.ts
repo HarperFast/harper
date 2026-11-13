@@ -1143,7 +1143,6 @@ interface TableResourceClass {
 	prototype: TableResourceInstance;
 	name: any;
 	primaryStore: any;
-	/** The engine of the store this table is opened on. */
 	storageEngine: StorageEngine;
 	storageGeneration: any;
 	/** Undefined for a table that predates the stamps. */
