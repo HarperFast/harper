@@ -2044,7 +2044,6 @@ describe('Blob test', () => {
 				message: 'a reclamation kept across an aborted restore must still run',
 			});
 		} finally {
-			// Keeps a failed assertion from leaking the fence into the next test.
 			resumeBlobSavesForRestore('restore-aborted', false);
 			await BlobTest.delete(92).catch(() => {});
 			if (condemnedPath && existsSync(condemnedPath)) unlinkSync(condemnedPath);
