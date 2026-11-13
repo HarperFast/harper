@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794477218551,
+  "lastUpdate": 1794554254184,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -9287,6 +9287,63 @@ window.BENCHMARK_DATA = {
           {
             "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 949.38,
+            "unit": "ops/sec"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "d42f5e6fd432f31c054ab6a119308fbe4fc2a60d",
+          "message": "Add the 5.4 release-note fragments that 5.4.0 changes were missing (#4351)\n\n* Add the 5.4 release-note fragments that 5.4.0 changes were missing\n\nChecked v5.3.1..v5.4.0 against docs/release-notes/v5-lincoln/5.4 and added\nfragments for the user-facing changes that had none: an upgrade-notes list,\nsecurity and permission changes, configuration, REST, MQTT, replication,\nstorage, analytics, a Performance section and a Known Issues section.\nRemoves the \"not released yet\" lines that 5.4.0 made false.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01F7groWG2PoCFsmKT2Wejui\nDispatch-Task: release-cut-main-5.4.0\n\n* Qualify the rollback, QoS 2, SQL primary-key, precondition and Bun analytics notes\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01F7groWG2PoCFsmKT2Wejui\nDispatch-Task: release-cut-main-5.4.0\n\n---------\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-11-13T01:07:51Z",
+          "url": "https://github.com/HarperFast/harper/commit/d42f5e6fd432f31c054ab6a119308fbe4fc2a60d"
+        },
+        "date": 1794554251158,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "load — bulk insert",
+            "value": 8551.93,
+            "unit": "records/sec"
+          },
+          {
+            "name": "workload C — Read only (100% read)",
+            "value": 13581.6,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload B — Read mostly (95% read / 5% update)",
+            "value": 13609.31,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload A — Update heavy (50% read / 50% update)",
+            "value": 9436.24,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
+            "value": 6804.09,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
+            "value": 13355.91,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
+            "value": 1438.4,
             "unit": "ops/sec"
           }
         ]
