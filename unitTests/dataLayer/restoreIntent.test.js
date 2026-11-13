@@ -113,7 +113,6 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 	afterEach(function () {
 		if (savedSafeMode === undefined) delete process.env.HARPER_SAFE_MODE;
 		else process.env.HARPER_SAFE_MODE = savedSafeMode;
-		// what a boot's recovery recorded belongs to that boot
 		resetStartupRecoveryForTesting();
 		// the safe-mode decision scans every receipt, so one a failed test leaves would fail every later test
 		for (const dir of testDirs) {
@@ -158,7 +157,6 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 		await data.written;
 	}
 
-	/** Every record, with its blob's exact bytes. */
 	async function snapshot(Items) {
 		const records = {};
 		for await (const record of Items.search([])) {
@@ -1672,8 +1670,8 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			const { jobId } = await requestRestore(fixture.name, { on_restart: true });
 			const { operation_id: operationId } = receiptOf(fixture.dir);
 			await closeDatabase(fixture.name);
-			// a counted attempt is what makes the online cancel restart
-			rewriteReceipt(fixture.dir, { attempts: 1 });
+			// latched, so an online cancel would restart
+			process.env.HARPER_SAFE_MODE = 'restore-unpublished';
 			const restarts = [];
 			const restoreRestart = replaceExport(restartModule, 'restart', async (...args) => {
 				restarts.push(args);
@@ -1870,7 +1868,6 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 				repair();
 			}
 			assert.strictEqual(unpublishedRestoreBlocksComponents(), stopped.name, 'precondition');
-			// what loadRootComponents latches for this boot
 			process.env.HARPER_SAFE_MODE = 'restore-unpublished';
 
 			const first = await restoreBackup({ ...SU, database: held.name, cancel: true });
@@ -2145,7 +2142,6 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 				await closeDatabase(fixture.name);
 				rewriteReceipt(fixture.dir, { state: 'terminal', attempts: 3 }, { marker: true });
 			}
-			// what loadRootComponents latches for this boot
 			process.env.HARPER_SAFE_MODE = 'restore-unpublished';
 			const restarts = [];
 			const restoreRestart = replaceExport(restartModule, 'restart', async (...args) => {
