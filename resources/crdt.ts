@@ -308,6 +308,11 @@ export function readAuditFrame(
 	memo?: HistoryMemo
 ) {
 	if (memo && (memo.tableId !== tableId || memo.store.rootStore.auditStore !== auditStore)) memo = undefined;
+	if (memo) {
+		memo.visits++;
+		if (!(key >= memo.lowest)) memo.lowest = key;
+		if (!memo.cachesFrames) memo = undefined;
+	}
 	const cacheKey = memo?.key('frame', recordId, key, nodeId, followingCommittedRef);
 	const cached = memo?.frame(cacheKey);
 	if (cached) return cached;
@@ -505,7 +510,7 @@ export function getRecordAtTime(
 			return recordAtTime(currentEntry, timestamp, store, tableId, recordId, nodeId, memo);
 		} catch {
 			memo.fallbacks++;
-			memo.stopOptimizing();
+			if (memo.cachesFrames) memo.stopOptimizing();
 		}
 	}
 	return recordAtTime(currentEntry, timestamp, store, tableId, recordId, nodeId);
@@ -546,6 +551,7 @@ function recordAtTime(
 	let replaced = false;
 	const visitedFrames = new Set<string>();
 	while (auditTime > timestamp) {
+		if (memo) memo.newer++;
 		const frame = readAuditFrame(auditStore, tableId, recordId, auditTime, auditNodeId, true, memo);
 		const identity = `${frame[0]?.nodeId ?? auditNodeId ?? 0}:${auditTime}`;
 		if (frame.length === 0 || visitedFrames.has(identity)) break;
