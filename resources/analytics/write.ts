@@ -45,10 +45,9 @@ interface Action {
 }
 
 let activeActions = new Map<string, Action>();
-// activeActions by recordAction's arguments as given (metric -> method -> type -> path), so a repeated
-// call skips building and hashing its key. A tuple enters on its second call in a window, which keeps a
-// path recorded once out of it; path, which has the most distinct values, is the leaf. Its actions are
-// activeActions' own, so it is replaced wherever activeActions is.
+// activeActions by recordAction's arguments as given, metric -> method -> type -> path (the most varied, so
+// the leaf). A tuple enters on its second call in a window, so a path recorded once is not stored twice. It
+// holds activeActions' own actions, so it is replaced wherever activeActions is.
 let actionIndex = new Map<string, Map<string, Map<string, Map<string, Action>>>>();
 let analyticsEnabled = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) > -1;
 let analyticsReadOnlyChecked = false;
@@ -149,20 +148,27 @@ function recordNewAction(key: string, value: Value, metric?: string, path?: stri
  * @param type
  */
 export function recordAction(value: Value, metric: string, path?: string, method?: string, type?: string) {
-	if (!checkAnalyticsEnabled() || analyticsExiting) return;
+	if (!checkAnalyticsEnabled()) return;
 	const actionsByPath = actionIndex.get(metric)?.get(method)?.get(type);
-	let action = actionsByPath?.get(path);
-	if (action !== undefined) recordExistingAction(value, action);
-	else {
-		const key = actionKey(metric, path, method, type);
-		action = activeActions.get(key);
-		if (action === undefined) recordNewAction(key, value, metric, path, method, type);
-		else {
-			(actionsByPath ?? indexedActionsByPath(metric, method, type)).set(path, action);
-			recordExistingAction(value, action);
-		}
+	const action = actionsByPath?.get(path);
+	if (action === undefined) {
+		const existing = recordKeyedAction(actionKey(metric, path, method, type), value, metric, path, method, type);
+		if (existing !== undefined && isPrimitive(path) && isPrimitive(method) && isPrimitive(type))
+			(actionsByPath ?? indexedActionsByPath(metric, method, type)).set(path, existing);
+	} else if (!analyticsExiting) {
+		recordExistingAction(value, action);
+		if (!sendAnalyticsTimeout) contextStorage.exit(sendAnalytics);
 	}
-	if (!sendAnalyticsTimeout) contextStorage.exit(sendAnalytics);
+}
+
+// Keyed by identity, a fresh object per call (a request body's operation) would add an entry per call
+function isPrimitive(value: unknown): boolean {
+	return value === null || (typeof value !== 'object' && typeof value !== 'function');
+}
+
+/** Whether recordAction has indexed this tuple in the current window */
+export function isActionIndexedForTests(metric: string, path?: string, method?: string, type?: string): boolean {
+	return actionIndex.get(metric)?.get(method)?.get(type)?.has(path) ?? false;
 }
 
 function indexedActionsByPath(metric: string, method: string, type: string): Map<string, Action> {
@@ -190,7 +196,15 @@ function actionKey(metric: string, path?: string, method?: string, type?: string
 	return key;
 }
 
-function recordKeyedAction(key: string, value: Value, metric: string, path?: string, method?: string, type?: string) {
+/** Returns the action the window already held for the key, or undefined when this call started it */
+function recordKeyedAction(
+	key: string,
+	value: Value,
+	metric: string,
+	path?: string,
+	method?: string,
+	type?: string
+): Action | undefined {
 	if (analyticsExiting) return;
 	const action = activeActions.get(key);
 	if (action) {
@@ -199,6 +213,7 @@ function recordKeyedAction(key: string, value: Value, metric: string, path?: str
 		recordNewAction(key, value, metric, path, method, type);
 	}
 	if (!sendAnalyticsTimeout) contextStorage.exit(sendAnalytics);
+	return action;
 }
 
 // Let the storage layer emit write-commit latency without statically depending on this module.

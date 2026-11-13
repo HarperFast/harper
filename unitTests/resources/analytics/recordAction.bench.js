@@ -24,9 +24,16 @@ function threadCpuNs() {
 }
 
 function freshPaths(count) {
-	const paths = new Array(count);
-	for (let i = 0; i < count; i++) paths[i] = '/r' + i;
+	const paths = new Array(Math.ceil(count));
+	for (let i = 0; i < paths.length; i++) paths[i] = '/r' + i;
 	return paths;
+}
+
+// Decoded from bytes, as a parsed MQTT topic is, so each is a flat string with no cached hash
+function freshTopics(count) {
+	const topics = new Array(count);
+	for (let i = 0; i < count; i++) topics[i] = Buffer.from(`devices/${i}/telemetry`).toString('latin1');
+	return topics;
 }
 
 function measure(prepare, run) {
@@ -61,6 +68,14 @@ const cases = {
 		() => freshPaths(CALLS),
 		(paths) => {
 			for (let i = 0; i < CALLS; i++) recordAction(1, 'bench-distinct', paths[i], 'GET');
+		},
+	],
+	'a distinct topic every call, beside an indexed topic': [
+		() => freshTopics(CALLS),
+		(topics) => {
+			recordAction(1, 'bench-beside', 'devices/hot/telemetry', 'puback', 'mqtt');
+			recordAction(1, 'bench-beside', 'devices/hot/telemetry', 'puback', 'mqtt');
+			for (let i = 0; i < CALLS; i++) recordAction(1, 'bench-beside', topics[i], 'puback', 'mqtt');
 		},
 	],
 	'each path twice': [
