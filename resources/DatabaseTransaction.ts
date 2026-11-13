@@ -816,8 +816,6 @@ export type TransactionWrite = {
 	// a restage. Unset when no staging has run, or the last fresh one was skipped (it lost to a newer
 	// entry and confirms on that entry, harper#3182).
 	stagedAudit?: 'none' | 'local' | 'replicable';
-	// read from the table's catalog row the first time a confirmation needs it
-	nodeLocalTable?: boolean;
 	// the transaction holding this write in its `writes` (set in addWrite). A deferred write's save() is
 	// only its trigger, so it can be triggered after the context has moved on to another transaction;
 	// this is who commits it when the transaction current at that point is not a scope (#2292).
@@ -893,13 +891,24 @@ const nodeLocalStores = new WeakMap<object, () => boolean>();
 export function registerStoreTable(store: object, isNodeLocal: () => boolean): void {
 	nodeLocalStores.set(store, isNodeLocal);
 }
+// one catalog read per table per commit: refuseUnconfirmable starts a new epoch before each submission
+let classificationEpoch = 0;
+const nodeLocalByStore = new WeakMap<object, { epoch: number; nodeLocal: boolean }>();
+function isNodeLocalStore(store: object): boolean {
+	const isNodeLocal = nodeLocalStores.get(store);
+	if (!isNodeLocal) return false;
+	let classified = nodeLocalByStore.get(store);
+	if (classified?.epoch !== classificationEpoch)
+		nodeLocalByStore.set(store, (classified = { epoch: classificationEpoch, nodeLocal: isNodeLocal() }));
+	return classified.nodeLocal;
+}
 
 export function confirmsNothing(write: TransactionWrite): boolean {
 	return (
 		write.skipReplicationConfirmation ||
 		write.stagedAudit === 'none' ||
 		write.stagedAudit === 'local' ||
-		(write.nodeLocalTable ??= nodeLocalStores.get(write.store)?.() ?? false)
+		isNodeLocalStore(write.store)
 	);
 }
 
@@ -2539,6 +2548,7 @@ export class DatabaseTransaction implements Transaction {
 	 * checked again here, and kept for the waiter.
 	 */
 	refuseUnconfirmable(transaction?: RocksTransaction): void {
+		classificationEpoch++;
 		// a retry of a submitted attempt (the same handle) must reach its native outcome
 		if ((transaction as RocksTransactionWithRetry)?.isRetry) return;
 		this.checkedResidentPeerLists = undefined;
