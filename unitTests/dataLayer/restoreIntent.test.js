@@ -1927,12 +1927,22 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			}
 			assert.strictEqual(cancelled.result.restarting, true);
 			assert.strictEqual(typeof cancelled.afterRecorded, 'function');
-			assert.doesNotMatch(
-				cancelled.result.message,
-				/confirmed durable/,
-				'a record that came back unreadable would only keep the database blocked'
-			);
+			// a read can fail transiently, so what a power loss brings back may be a readable pending restore
+			assert.ok(cancelled.result.message.endsWith(`. ${UNCONFIRMED_REMOVAL}`), cancelled.result.message);
 			assert.strictEqual(readRestoreReceipt(unreadable.dir).kind, 'absent');
+
+			const unreadableOffline = await seededDatabase();
+			await requestRestore(unreadableOffline.name, { on_restart: true });
+			await closeDatabase(unreadableOffline.name);
+			writeFileSync(restoreReceiptPath(unreadableOffline.dir), '{"version":1,"state":');
+			const unreadableOfflineRemoval = flushFailsAfter(unreadableOffline, 'removeUnreadableRestoreReceipt');
+			try {
+				offlineResult = await cancelRestartRestoreOffline({ database: unreadableOffline.name, cancel: true });
+			} finally {
+				unreadableOfflineRemoval();
+			}
+			assert.ok(offlineResult.message.endsWith(`. ${UNCONFIRMED_REMOVAL}`), offlineResult.message);
+			assert.strictEqual(readRestoreReceipt(unreadableOffline.dir).kind, 'absent');
 		});
 
 		it('from applying before the purge: removes the receipt and unblocks the untouched database', async function () {

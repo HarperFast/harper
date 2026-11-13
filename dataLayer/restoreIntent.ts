@@ -290,11 +290,11 @@ function inheritsRollbackCopy(databaseDir: string): boolean {
 /**
  * Once its target began being replaced, a terminal placeholder replaces the unreadable record in one write, never
  * after an unlink: a bare marker blocks only its own database, and a component that opens it itself ignores that.
+ * Returns whether a removal, if one was made, was confirmed durable.
  */
-function cancelUnreadableRestore(lock: RestoreLock, databaseName: string): void {
+function cancelUnreadableRestore(lock: RestoreLock, databaseName: string): boolean {
 	if (!restoreMarkerPresent(lock.dbPath)) {
-		removeReceiptReconciled(lock, databaseName, () => removeUnreadableRestoreReceipt(lock));
-		return;
+		return removeReceiptReconciled(lock, databaseName, () => removeUnreadableRestoreReceipt(lock));
 	}
 	writeReceiptReconciled(
 		lock,
@@ -311,6 +311,7 @@ function cancelUnreadableRestore(lock: RestoreLock, databaseName: string): void 
 			last_error: 'its record could not be read, and it was cancelled after it began replacing the database',
 		})
 	);
+	return true;
 }
 
 export async function requestRestartRestore(request: RestartRestoreRequest): Promise<DeferredJobCompletion> {
@@ -519,7 +520,7 @@ export async function cancelRestartRestore(
 				releaseReceiptPins(cancelled);
 			}
 		} else {
-			cancelUnreadableRestore(lock, databaseName);
+			removalDurable = cancelUnreadableRestore(lock, databaseName);
 		}
 		stillBlocked = restoreMarkerPresent(databaseDir);
 	} finally {
