@@ -33,6 +33,9 @@ set -euo pipefail
 # The operator's own shape and deadline, if given, win over a set's: read before config.sh fills its defaults.
 GEN_OVERRIDE="${YCSB_GEN_MACHINE_TYPE:-}"
 MAX_RUN_OVERRIDE="${YCSB_MAX_RUN_DURATION:-}"
+# A set waits up to 8 hours for capacity (provision.sh): in the first live matrix every us-central1 zone was out of
+# the C4 shapes of five of its six sets, and all five got VMs within half an hour. No VM exists while a set waits.
+export YCSB_CAPACITY_WAIT_MIN="${YCSB_CAPACITY_WAIT_MIN:-480}"
 . "$(dirname "$0")/config.sh"
 
 SETS="warm 2x 8x-cb 8x-fi 8x-chain12 8x-chain4"
@@ -129,6 +132,12 @@ if [ "$ALL" = 1 ]; then
 	[ -n "$BASE" ] || BASE="ycsb-$(date -u +%Y%m%d-%H%M)-$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n')"
 	ycsb_check_run_id "$BASE-8x-chain12"
 	mkdir -p "$YCSB_RUNS_DIR"
+	# Every set builds one commit, recorded at the matrix's start: a set provisioned again later (a resume, a
+	# capacity wait) would otherwise check out whatever HEAD is then.
+	if ! printf '%s\n' "${PASS[@]}" | grep -q '^--commit='; then
+		[ -s "$YCSB_RUNS_DIR/$BASE.commit" ] || git -C "$YCSB_GCP_DIR" rev-parse HEAD >"$YCSB_RUNS_DIR/$BASE.commit"
+		PASS+=(--commit="$(cat "$YCSB_RUNS_DIR/$BASE.commit")")
+	fi
 	pids=()
 	for s in $SETS; do
 		args=(--set="$s" --run-id="$BASE-$s" "${PASS[@]}")

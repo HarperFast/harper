@@ -230,7 +230,10 @@ export interface Session {
 	units: { count: number };
 	/** Hardware counters on every measured window: --perf-counters, or implied by --profile. */
 	perfCounters: boolean;
-	/** --perf-scope: count a measured window per component cgroup, or over each target host's cpus as a whole. */
+	/**
+	 * --perf-scope: count a measured window per component cgroup (the single-host default), or over each target
+	 * host's cpus as a whole (the remote default).
+	 */
 	perfScope: 'cgroups' | 'host';
 	/** Set by --profile: profiler flags on the targets and a separate sampled-profile window after each measured one. */
 	profile?: { dir: string; ops: number };
@@ -1564,7 +1567,9 @@ export async function createSession(
 	const noCounters = argv.includes('--no-perf-counters');
 	if (noCounters && profileDir) throw new Error('--profile counts hardware events; drop --no-perf-counters');
 	const perfCounters = !noCounters && (Boolean(profileDir) || argv.includes('--perf-counters') || Boolean(hostsFile));
-	const perfScope = argValue(argv, '--perf-scope') ?? 'cgroups';
+	// Per-cgroup counting slowed the GCP targets 3-10% at warm and the stack 14-20% at 2x and 8x (README, "Counting
+	// on a VM"), so a remote session counts each target host's cpus whole unless asked otherwise.
+	const perfScope = argValue(argv, '--perf-scope') ?? (hostsFile ? 'host' : 'cgroups');
 	if (perfScope !== 'cgroups' && perfScope !== 'host')
 		throw new Error(`--perf-scope must be cgroups or host, got ${perfScope}`);
 	if (perfCounters && !hostsFile) await perfAvailable();

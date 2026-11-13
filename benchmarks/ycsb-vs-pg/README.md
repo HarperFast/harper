@@ -376,8 +376,30 @@ without sshd, plus `serverCpus` and `--driverCpus` to pin as single-host mode do
 exactly `--target-cpus` physical cores, the target gets all of them and the agent shares them. Each
 row then records the agent's own CPU (`agentCores`) apart from the target's and the rest of the
 host's. Remote mode needs `--auth=token` for Harper on a non-loopback address: local trust covers
-loopback peers only. It always counts perf events, since instructions/op is the stable metric where
-turbo stays on. Rows add `perfClockGHz` (cycles over CPU-seconds). Run remote mode on a network of its own, as `gcp/` does: Harper's operations API listens on the bound address too, with the test helper's fixed admin password until the harness replaces it moments after startup, and topology b's Postgres keeps its fixed benchmark credential.
+loopback peers only. It counts perf events unless given `--no-perf-counters`, since instructions/op is
+the stable metric where turbo stays on, and counts each target host's cpus as a whole rather than each
+component's cgroup (`--perf-scope=host`, below). Rows add `perfClockGHz` (cycles over CPU-seconds). Run remote mode on a network of its own, as `gcp/` does: Harper's operations API listens on the bound address too, with the test helper's fixed admin password until the harness replaces it moments after startup, and topology b's Postgres keeps its fixed benchmark credential.
+
+**Counting on a VM (`--perf-scope`).** `perf stat --for-each-cgroup` switches a cgroup's events out and in
+whenever a cpu moves between cgroups, and on a GCP VM's virtual PMU every counter write traps to the
+hypervisor. That slows the counted target. It slows the stack most, since every request moves between
+Fastify, Redis and Postgres; Harper's work stays in one cgroup. Counting the target cpus whole programs
+each counter once. Measured on c4-standard-8-lssd targets, 2026-11-13: warm, `--auth=token`, 3 rounds per
+mode in a Latin-square order, medians in ops/s:
+
+| cell               | per cgroup | host cpus (`host`) | no counters | per cgroup vs none | host vs none |
+| ------------------ | ---------: | -----------------: | ----------: | -----------------: | -----------: |
+| harper-uws C       |     85,428 |             88,989 |      88,369 |              −3.3% |        +0.7% |
+| pg-redis C         |     90,548 |             98,326 |      97,210 |              −6.9% |        +1.1% |
+| harper-uws chain-4 |     46,368 |             50,750 |      51,165 |              −9.4% |        −0.8% |
+| pg-redis chain-4   |     29,854 |             33,108 |      33,287 |             −10.3% |        −0.5% |
+
+Instructions/op were the same in every mode. The trap's cost does not run guest instructions, so instruction
+counts from either mode compare. At 2x and 8x, where Postgres reads from disk, the stack's measured windows
+under per-cgroup counting ran at 80–86% of its own warmup chunks (which count nothing), against 94–101% for
+Harper. Remote sessions therefore default to `host`; single-host sessions keep per-cgroup counting
+(`cgroups`), the only way to split one host's CPU between components. A profile's counters-only window still
+counts per cgroup for its per-component instructions, so read that window's CPU µs/op as inflated.
 
 **Topologies.** A target name alone is topology (a). A name with `@b` (stack targets only) is
 topology (b). One session can interleave both: `--targets=harper-uws,pg-redis,pg-redis@b`.
@@ -420,8 +442,9 @@ this harness does not run.
 - `run-estimate.sh` is the short estimate. It provisions both topologies, checks the generator's
   ceiling over the VPC (`client-ceiling.mts --serve` on the harper VM, `--base-url` from the generator)
   at one shard per generator vCPU and at half that. The measured cells take whichever served more on C
-  without the driver saturating (over 90% of one core per shard), and nothing is measured if neither
-  qualifies. It then
+  among runs without request errors (half the shards only when more than 5% faster), and nothing is measured
+  if that is under `YCSB_MIN_CEILING_OPS` (150k; the fastest cells, warm C, serve about 90k). Busy cores do
+  not decide: against a server faster than the driver, one shard per vCPU always reads as saturated. It then
   runs a smoke pass, then harper-uws, pg-redis and pg-redis@b on C, inspect and chain-4, warm and 2x,
   `--auth=token`, 3 reps. Results come back to `gcp/runs/<id>/results/` (phase logs to `logs/`) after every phase. Teardown
   runs on exit, after one last copy. Teardown needs a working gcloud session: when it fails, GCE still
@@ -436,15 +459,19 @@ this harness does not run.
   7 minutes). Each set loads each engine's dataset once and restores it for every sample, checks its
   generator's ceiling, and runs a smoke pass of its own phases first. `--all` starts every set and waits;
   `--set=<set>` runs one. `--resume` picks a set up after its orchestrator died without tearing down: it
-  provisions nothing, and phases that already ended on the generator are read, not run again. Run the
-  orchestrator under `systemd-run --user`, since any exit it sees tears its run down.
+  provisions nothing, and phases that already ended on the generator are read, not run again. Every set of
+  an `--all` matrix builds the commit HEAD was at when the matrix started (`runs/<base>.commit`), and waits up
+  to 8 hours for zone capacity (`YCSB_CAPACITY_WAIT_MIN`). Run the orchestrator under `systemd-run --user`,
+  since any exit it sees tears its run down.
 - **SSH.** Every script reaches the VMs with plain ssh, never `gcloud compute ssh`. The startup script
   publishes each VM's ed25519 host key as a guest attribute; `provision.sh` reads it through the API and
   pins it in `runs/<id>/known_hosts` (and the targets' keys on the generator, for the agents' ssh). Nothing
   reads `~/.ssh`, so a resumed session in a fresh `$HOME` still verifies every host, and polls and copies
   keep working if the operator's gcloud session expires mid-run.
 - **Zones.** `YCSB_GCP_ZONES` (space-separated, one region) is tried in order: a zone without capacity
-  for the run's shapes gets that run's VMs deleted and the next zone tried. The zone a run got is in
+  for the run's shapes gets that run's VMs deleted and the next zone tried. When none has capacity, the
+  list is tried again every `YCSB_CAPACITY_RETRY_S` (600) until `YCSB_CAPACITY_WAIT_MIN` minutes have
+  passed (0 for `provision.sh` alone, 480 under `run-matrix.sh`). The zone a run got is in
   `runs/<id>/zone` and its manifest.
 
 Choices, recorded per run in `gcp/runs/<id>/manifest.json` and in every results file (`meta.remote`):
