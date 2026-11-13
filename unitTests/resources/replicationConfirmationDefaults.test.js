@@ -17,7 +17,7 @@ describe('Replication confirmation defaults', () => {
 	let First, Second, Local, Unaudited, Cached, NodeLocal;
 	let sequence = 0;
 	const nextId = () => `confirmation-default-${sequence++}`;
-	let calls;
+	let calls, governed;
 	const fillContexts = [];
 
 	before(() => {
@@ -65,8 +65,10 @@ describe('Replication confirmation defaults', () => {
 	});
 	beforeEach(() => {
 		calls = [];
-		registerConfirmation((databaseName, _version, count, _residents, automatic) => {
+		governed = [];
+		registerConfirmation((databaseName, _version, count, _residents, automatic, lockGoverned) => {
 			calls.push({ databaseName, count, automatic });
+			governed.push(lockGoverned);
 		});
 	});
 	afterEach(() => {
@@ -269,6 +271,45 @@ describe('Replication confirmation defaults', () => {
 				await record.save();
 			});
 			assert.deepStrictEqual(calls, [{ databaseName: 'confirmation-default-first', count: 1, automatic: false }]);
+			assert.deepStrictEqual(governed, [true]);
+		});
+
+		it('lets the lock minimum govern unless an explicit count meets it', async () => {
+			setReplicationConfirmationDefaults({ writes: 1, recordLocks: 2 });
+			for (const [replicatedConfirmation, count, lockGoverned] of [
+				[undefined, 2, true],
+				[0, 2, true],
+				[1, 2, true],
+				[2, 2, false],
+				[3, 3, false],
+			]) {
+				calls = [];
+				governed = [];
+				const feasibility = [];
+				registerConfirmation(
+					(_databaseName, _version, count, _residents, _automatic, lockGoverned) => {
+						calls.push({ count });
+						governed.push(lockGoverned);
+					},
+					(_databaseName, count, _residents, lockGoverned) => feasibility.push([count, lockGoverned])
+				);
+				const context = replicatedConfirmation === undefined ? {} : { replicatedConfirmation };
+				await transaction(context, async () => {
+					const record = await lockAsCluster(context, nextId());
+					record.set('name', 'governed');
+					await record.save();
+				});
+				const label = `explicit ${replicatedConfirmation}`;
+				assert.deepStrictEqual(calls, [{ count }], label);
+				assert.deepStrictEqual(governed, [lockGoverned], label);
+				assert.deepStrictEqual(feasibility, [[count, lockGoverned]], label);
+			}
+		});
+
+		it('does not report an unlocked write as lock-governed', async () => {
+			setReplicationConfirmationDefaults({ writes: 1, recordLocks: 1 });
+			await First.put({ id: nextId() });
+			assert.deepStrictEqual(governed, [false]);
 		});
 
 		it('does not wait for a node-scoped lock', async () => {
@@ -349,6 +390,9 @@ describe('Replication confirmation defaults', () => {
 			);
 			assert.deepStrictEqual(counts, [1]);
 			assert.equal(await First.get(id), null);
+			// the refused commit gave the key back
+			const next = await First.lock(id, { lease: 1000, timeout: 400 });
+			await next.unlock();
 		});
 
 		it('has released the lock when confirmation fails after the local commit', async () => {

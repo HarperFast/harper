@@ -531,12 +531,15 @@ export function confirmingOwnerNames(store: any, owners: readonly string[], coun
 
 let confirmReplication;
 let confirmationFeasibility:
-	((databaseName: string, confirmationCount: number, residentPeerLists?: string[][]) => void) | undefined;
+	| ((databaseName: string, confirmationCount: number, residentPeerLists?: string[][], lockGoverned?: boolean) => void)
+	| undefined;
 /**
  * Register the replication layer's confirmation waiter, and optionally a check that runs before native
  * submission and throws when the requested confirmation can never be met, so the write never lands.
  * The registered waiter owns the explicit/automatic timeout configuration; core wraps post-commit
  * failures as uncertain outcomes and supplies the automatic-confirmation flag as its fifth argument.
+ * Both get a trailing `lockGoverned` flag: the record-lock minimum, not a requested count, sets how
+ * this commit is checked and awaited, so neither may stall it on peers that are gone.
  */
 export function replicationConfirmation(callback, feasibility?: typeof confirmationFeasibility) {
 	confirmReplication = callback;
@@ -562,12 +565,25 @@ export function setReplicationConfirmationDefaults(defaults: { writes?: number; 
 	defaultRecordLockConfirmation = recordLocks;
 }
 
-/**
- * Whether a commit chain's settlement must allow for a confirmation armed by a later link: the root
- * decides before its links do.
- */
+/** Whether either default is set. */
 export function confirmationDefaultsConfigured(): boolean {
 	return defaultWriteConfirmation > 0 || defaultRecordLockConfirmation > 0;
+}
+
+/**
+ * Whether a commit chain's settlement must allow for a confirmation armed by a later link, which the
+ * root decides before its links do. The lock minimum arms only on a link holding record locks.
+ */
+function chainMayArmConfirmation(link: DatabaseTransaction): boolean {
+	if (defaultWriteConfirmation > 0) return true;
+	if (!defaultRecordLockConfirmation) return false;
+	for (let txn = link.root ?? link; txn; txn = txn.next) if (txn.recordLocks || txn.hasLeaseProtectedWrite) return true;
+	return false;
+}
+
+/** LMDB has no cluster-granted locks, so only the write default can arm a later link. */
+export function writeConfirmationDefaultConfigured(): boolean {
+	return defaultWriteConfirmation > 0;
 }
 
 /** An explicitly set count, or undefined when none was set. A numeric string counts; any other non-number is unset. */
@@ -1241,6 +1257,14 @@ export class DatabaseTransaction implements Transaction {
 	}
 	confirmationCountFor(transaction?: RocksTransaction): number {
 		return Math.max(this.confirmationCount, lockConfirmationOf(transaction));
+	}
+	/**
+	 * Whether the record-lock minimum governs this commit: it holds a cluster-granted lock and no explicit
+	 * per-write count meets the minimum. An explicit count that does keeps its own semantics.
+	 */
+	lockGoverned(transaction?: RocksTransaction): boolean {
+		const minimum = lockConfirmationOf(transaction);
+		return minimum > 0 && (explicitConfirmation(this.replicatedConfirmation) ?? 0) < minimum;
 	}
 	get confirmationCount(): number {
 		return Math.max(
@@ -2571,7 +2595,12 @@ export class DatabaseTransaction implements Transaction {
 			if (!this.requestedConfirmationFor(transaction) && !residentPeerLists) return;
 			const databaseName = this.writes.find((write) => write)?.store.rootStore.databaseName;
 			if (databaseName) {
-				const result: any = confirmationFeasibility?.(databaseName, confirmationCount, residentPeerLists);
+				const result: any = confirmationFeasibility?.(
+					databaseName,
+					confirmationCount,
+					residentPeerLists,
+					this.lockGoverned(transaction)
+				);
 				if (result?.then) {
 					result.then(null, () => {});
 					throw new TypeError('A replication confirmation feasibility check must be synchronous');
@@ -3900,7 +3929,8 @@ export class DatabaseTransaction implements Transaction {
 												target.version,
 												confirmationCount,
 												target.residentPeerLists,
-												!this.requestedConfirmationFor(committedTransaction)
+												!this.requestedConfirmationFor(committedTransaction),
+												this.lockGoverned(committedTransaction)
 											)
 										);
 									}
@@ -3949,7 +3979,7 @@ export class DatabaseTransaction implements Transaction {
 							)
 								this.timestamp = 0; // reset the timestamp as well
 							const completed =
-								confirmation || confirmationDefaultsConfigured() || (this.root ?? this).confirmationCount
+								confirmation || chainMayArmConfirmation(this) || (this.root ?? this).confirmationCount
 									? settleCommitCompletions(completions, confirmation)
 									: Promise.all(completions);
 							return completed.then(
