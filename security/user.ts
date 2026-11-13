@@ -21,8 +21,11 @@ export {
 	listUsers,
 	listUsersExternal,
 	findAndValidateUser,
+	getUserImpl,
 	getUserWithRole,
 	isCurrentUser,
+	hasReadRecordChanged,
+	canRetryChangedUser,
 	hasRecordProvenance,
 	isRecordlessPrincipal,
 	userRecordVersions,
@@ -721,7 +724,11 @@ function trackUserRecords(user: User, versions: UserProvenance): UserProvenance 
 	}
 	// a record created under its name since is another principal's
 	else if (first.recordless) provenance.recordless = true;
-	else if (first.userStamp !== null && provenance.userStamp === null) provenance = first;
+	else if (first.userStamp === null && provenance.userStamp !== null && provenance.userStamp !== UNREAD_RECORD) {
+		provenance.recordless = false;
+		firsts.set(provenance.username, provenance);
+	} else if (first.userStamp !== null && (provenance.userStamp === null || provenance.userStamp === UNREAD_RECORD))
+		provenance = first;
 	else provenance.recordless = false;
 	return provenance;
 }
@@ -824,6 +831,24 @@ function isCurrentUser(user: User, admitted?: UserProvenance): boolean {
 	return (
 		provenance.roleId == null || isUnchanged(systemStore(ROLE_TABLE_NAME), provenance.roleId, provenance.roleStamp)
 	);
+}
+
+/**
+ * Whether a record that `user`'s lookup (or first lookup) actually read has changed or been dropped since.
+ * A tombstone found only after resolving under another name (`UNREAD_RECORD`) keeps `isCurrentUser` false so
+ * the cache re-resolves and subscriptions recheck by name, without refusing logins during `logging.auditRetention`.
+ */
+function hasReadRecordChanged(user: User, admitted?: UserProvenance): boolean {
+	const provenance = recordedProvenance(user, admitted);
+	if (!provenance || provenance.userStamp === UNREAD_RECORD) return false;
+	return !isCurrentUser(user, provenance);
+}
+
+// A dropped hdb_user record cannot become current on retry, so skip re-running server.getUser for it.
+function canRetryChangedUser(user: User, admitted?: UserProvenance): boolean {
+	const provenance = recordedProvenance(user, admitted);
+	if (!provenance) return false;
+	return provenance.userStamp === null || readEntry(systemStore(USER_TABLE_NAME), provenance.username) !== undefined;
 }
 
 /**

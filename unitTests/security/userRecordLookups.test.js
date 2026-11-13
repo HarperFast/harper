@@ -9,6 +9,7 @@ const { server } = require('#src/server/Server');
 const { Headers } = require('#src/server/serverHelpers/Headers');
 const user = require('#src/security/user');
 const { authentication } = require('#src/security/auth');
+const { getDeferredCredentialRejection } = require('#src/security/deferredAuthentication');
 const { registerLiveSubscription } = require('#src/server/liveSubscriptionAuth');
 const { VERSION_REUSED } = require('#src/resources/RecordEncoder');
 
@@ -477,10 +478,172 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 				assert.strictEqual(user.isCurrentUser(shared), false, 'the user keeps what its first login read');
 
 				await databases.system.hdb_user.delete('lookup_shared');
-				const dropped = (await authenticate(basic('lookup_shared', 'token'))).user;
-				assert.strictEqual(user.isCurrentUser(dropped), false, 'the record its first login read was dropped');
-				assert.strictEqual(user.isRecordlessPrincipal(dropped), false);
+				const droppedLogin = await authenticate(basic('lookup_shared', 'token'));
+				assert.strictEqual(
+					droppedLogin.status,
+					401,
+					'the Basic login is refused once the record its first login read was dropped'
+				);
+				assert.strictEqual(droppedLogin.user, undefined);
+				const droppedView = user.cloneUserView(
+					shared,
+					user.trackUserRecords(shared, user.userRecordVersions('lookup_shared'))
+				);
+				assert.strictEqual(user.isCurrentUser(droppedView), false, 'the record its first login read was dropped');
+				assert.strictEqual(user.isRecordlessPrincipal(droppedView), false);
 				assert.strictEqual(user.isRecordlessPrincipal(shared), false);
+			} finally {
+				server.getUser = getUser;
+			}
+		});
+
+		it('refuses a Basic login whose view is stale after drop_user or repeated mid-lookup writes, re-resolves a single race, and defers without setting request.user on app routes', async () => {
+			await testUtils.seedUsers([
+				lookupUser({ username: 'lookup_app_dropped' }),
+				lookupUser({ username: 'lookup_roleless_dropped' }),
+				lookupUser({ username: 'lookup_midflight' }),
+				lookupUser({ username: 'lookup_midflight_persistent' }),
+			]);
+			const shared = structuredClone(user.getUserWithRole('lookup_app_dropped'));
+			const roleless = { username: 'lookup_roleless_dropped' };
+			const getUser = server.getUser;
+			let calls = 0;
+			let transientMidflightCalls = 0;
+			let persistentMidflightCalls = 0;
+			server.getUser = async (username) => {
+				calls++;
+				if (username === 'lookup_roleless_dropped') return roleless;
+				if (username === 'lookup_midflight') {
+					transientMidflightCalls++;
+					if (transientMidflightCalls === 1) {
+						await databases.system.hdb_role.put({
+							id: 'lookup_role',
+							role: 'lookup_role',
+							permission: { super_user: true },
+						});
+					}
+					return structuredClone(user.getUserWithRole('lookup_midflight'));
+				}
+				if (username === 'lookup_midflight_persistent') {
+					persistentMidflightCalls++;
+					const copy = structuredClone(user.getUserWithRole('lookup_midflight_persistent'));
+					await databases.system.hdb_role.put({
+						id: 'lookup_role',
+						role: 'lookup_role',
+						permission: { super_user: persistentMidflightCalls % 2 === 0 },
+					});
+					return copy;
+				}
+				return shared;
+			};
+			try {
+				const header = basic('lookup_app_dropped', 'token');
+				assert.strictEqual((await authenticate(header)).status, 200);
+				assert.strictEqual((await authenticate(basic('lookup_roleless_dropped', 'token'))).status, 200);
+				await databases.system.hdb_user.delete('lookup_app_dropped');
+				await databases.system.hdb_user.delete('lookup_roleless_dropped');
+
+				let downstreamUser = 'not-run';
+				let deferred;
+				const appResponse = await authentication(
+					{
+						headers: { asObject: { authorization: header, host: 'localhost' } },
+						method: 'GET',
+						pathname: '/app-catch-all',
+						ip: '10.0.0.1',
+						isOperationsServer: false,
+					},
+					async (request) => {
+						downstreamUser = request.user;
+						deferred = getDeferredCredentialRejection(request);
+						return { status: 200, headers: new Headers(), body: {} };
+					}
+				);
+				assert.strictEqual(appResponse.status, 200, 'deferred rejection lets an unowned app route run');
+				assert.strictEqual(downstreamUser, undefined, 'dropped principal must not leak onto request.user');
+				assert.strictEqual(deferred?.strategy, 'Basic');
+				assert.strictEqual(deferred?.status, 401);
+				assert.strictEqual(deferred?.message, 'Login failed');
+
+				const callsBeforeRepeat = calls;
+				assert.strictEqual((await authenticate(header)).status, 401, 'rejected view was not cached');
+				assert.strictEqual(calls, callsBeforeRepeat + 1);
+				assert.strictEqual(
+					(await authenticate(basic('lookup_roleless_dropped', 'token'))).status,
+					401,
+					'a role-less memoized object is also checked against its lookup provenance'
+				);
+				const transientResult = await authenticate(basic('lookup_midflight', 'token'));
+				assert.strictEqual(transientResult.status, 200, 'a single concurrent write during getUser re-resolves once');
+				assert.strictEqual(transientMidflightCalls, 2);
+				assert.strictEqual(transientResult.user.role.permission.super_user, true);
+				assert.strictEqual(
+					(await authenticate(basic('lookup_midflight_persistent', 'token'))).status,
+					401,
+					'a view that stays stale after the retry is refused'
+				);
+				assert.strictEqual(persistentMidflightCalls, 2);
+			} finally {
+				server.getUser = getUser;
+			}
+		});
+
+		it('admits a principal returned under another name whose own name has a tombstone, unless its first lookup read a live record', async () => {
+			await testUtils.seedUsers([
+				lookupUser({ username: 'lookup_sso_tombstone' }),
+				lookupUser({ username: 'lookup_alias_live' }),
+			]);
+			await databases.system.hdb_user.delete('lookup_sso_tombstone');
+			const memoizedSso = { username: 'lookup_sso_tombstone', role: { role: 'component_role', permission: {} } };
+			const memoizedLive = { username: 'lookup_alias_live', role: { role: 'component_role', permission: {} } };
+			let memoizedCreatedMidflight;
+			const getUser = server.getUser;
+			let aliasCalls = 0;
+			let createdMidflightCalls = 0;
+			server.getUser = async (username) => {
+				if (username === 'lookup_sso_fresh_login') {
+					return { username: 'lookup_sso_tombstone', role: { role: 'component_role', permission: {} } };
+				}
+				if (username === 'lookup_sso_memo_login') return memoizedSso;
+				if (username === 'lookup_created_midflight') {
+					createdMidflightCalls++;
+					if (createdMidflightCalls === 1) {
+						await databases.system.hdb_user.put(lookupUser({ username: 'lookup_created_midflight' }));
+						memoizedCreatedMidflight = structuredClone(user.getUserWithRole('lookup_created_midflight'));
+					}
+					return memoizedCreatedMidflight;
+				}
+				aliasCalls++;
+				return memoizedLive;
+			};
+			try {
+				const freshLogin = await authenticate(basic('lookup_sso_fresh_login', 'token'));
+				assert.strictEqual(freshLogin.status, 200, 'an unread tombstone under the returned name does not refuse login');
+				assert.strictEqual(user.isRecordlessPrincipal(freshLogin.user), false, 'subscriptions still recheck by name');
+				assert.strictEqual(user.isCurrentUser(freshLogin.user), false, 'and the authorization cache still re-resolves');
+
+				assert.strictEqual((await authenticate(basic('lookup_sso_memo_login', 'token'))).status, 200);
+				assert.strictEqual((await authenticate(basic('lookup_sso_memo_login', 'token'))).status, 200);
+
+				assert.strictEqual((await authenticate(basic('lookup_alias_login', 'token'))).status, 200);
+				await databases.system.hdb_user.delete('lookup_alias_live');
+				const aliasCallsBeforeDrop = aliasCalls;
+				assert.strictEqual(
+					(await authenticate(basic('lookup_alias_login', 'token'))).status,
+					401,
+					'a memoized alias whose first lookup read a live record is refused once that record is dropped'
+				);
+				assert.strictEqual(aliasCalls, aliasCallsBeforeDrop + 1, 'a dropped alias record skips the retry');
+
+				const createdMidflight = await authenticate(basic('lookup_created_midflight', 'token'));
+				assert.strictEqual(createdMidflight.status, 200, 'a record created mid-lookup retries once and succeeds');
+				assert.strictEqual(createdMidflightCalls, 2);
+				await databases.system.hdb_user.delete('lookup_created_midflight');
+				assert.strictEqual(
+					(await authenticate(basic('lookup_created_midflight', 'token'))).status,
+					401,
+					'the retry updated firsts to the live stamp, so dropping that record later is refused'
+				);
 			} finally {
 				server.getUser = getUser;
 			}

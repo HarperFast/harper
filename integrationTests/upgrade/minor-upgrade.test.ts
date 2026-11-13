@@ -212,7 +212,7 @@ for (const previousMinor of previousMinorInstalls) {
 					});
 					const described = new Set(desc.attributes.map(({ attribute }: { attribute: string }) => attribute));
 					const missing = systemSchema.hdb_deployment.attributes
-						.map(({ attribute }: { attribute: string }) => attribute)
+						.map(({ attribute, name = attribute }: { attribute?: string; name?: string }) => name)
 						.filter((name: string) => !described.has(name));
 					deepStrictEqual(missing, []);
 				}

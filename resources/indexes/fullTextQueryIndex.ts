@@ -13,6 +13,7 @@ import {
 	subscribeDerivedIndexPublications,
 	type DerivedIndexCoverage,
 	type DerivedIndexPublicationSubscription,
+	type DerivedIndexQuietIdentity,
 	type DerivedIndexReadiness,
 } from '../derivedIndexRuntime.ts';
 import type { FullTextDefinition } from '../fullTextSchema.ts';
@@ -31,7 +32,7 @@ import {
 	type NativeFullTextSearchMode,
 } from './fullTextNativeBinding.ts';
 import { nativeFullTextIndexPath } from './nativeFullTextDerivedIndexLifecycle.ts';
-import { decodeFullTextPublication, type FullTextPublication } from './fullTextDerivedIndex.ts';
+import { decodeFullTextPublication, FULL_TEXT_QUIET_TOKEN, type FullTextPublication } from './fullTextDerivedIndex.ts';
 import {
 	FULL_TEXT_PREPARED_RECORD,
 	fullTextComparatorMode,
@@ -167,6 +168,7 @@ export class FullTextQueryIndex {
 	#binding?: NativeFullTextModule;
 	#queryApiVersion?: number;
 	#readerSlot?: ReaderSlot;
+	#quietIdentity: DerivedIndexQuietIdentity;
 	#readerOperation?: Promise<ReaderSlot>;
 	#retiredReaderSlots = new Set<ReaderSlot>();
 	#maxSearchWindow?: number;
@@ -194,6 +196,7 @@ export class FullTextQueryIndex {
 
 	constructor(options: FullTextQueryIndexOptions) {
 		this.#options = options;
+		this.#quietIdentity = { tableId: options.Table.tableId, token: () => FULL_TEXT_QUIET_TOKEN };
 		this.#definition = options.definition;
 		this.#definitionSnapshot = queryDefinitionSnapshot(options.definition);
 		this.#nativeOptions = {
@@ -1376,7 +1379,8 @@ export class FullTextQueryIndex {
 			this.#options.auditStore,
 			this.#options.readinessId,
 			() => this.#readerSlot?.publication.cursor,
-			maxLagMilliseconds
+			maxLagMilliseconds,
+			this.#quietIdentity
 		);
 	}
 }

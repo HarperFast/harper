@@ -23,6 +23,9 @@
  * the same status and text on both surfaces; the measured status is reported next to the
  * documented one.
  *
+ * On uWS HTTP a legacy route re-authenticates against hdb_user (#4326), so the getUser legacy-route
+ * tests skip there; their server.operation() counterparts run on every transport.
+ *
  * Run:
  *   npm run test:integration -- "integrationTests/security/main-thread-operation-authz.test.ts"
  */
@@ -49,9 +52,20 @@ const LOCAL_SU_OP = 'get_configuration';
 const INACTIVE_USERNAME = 'main_thread_op_inactive';
 const UNKNOWN_USERNAME = 'main_thread_op_nobody';
 const OVERRIDE_PASSWORD = 'Override-pw!2026';
+const GETUSER_LEGACY_SKIP = process.env.HARPER_UWS_HTTP
+	? 'uWS: the legacy route re-authenticates against hdb_user, so a component getUser principal is a 401 (#4326)'
+	: false;
 
 const basic = (username: string, password: string) =>
 	`Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`;
+const ovrLimited = basic('ovr-limited', OVERRIDE_PASSWORD);
+const ovrSuper = basic('ovr-super', OVERRIDE_PASSWORD);
+// `ovr-proto` keeps super_user on a prototype getter: authentication copies own properties only
+// (cloneUserView), so the worker's own view is not super before any hop. `ovr-fn` carries an own
+// function property: super in the worker's own view, but the forward cannot structured-clone it.
+const ovrProto = basic('ovr-proto', OVERRIDE_PASSWORD);
+const ovrFn = basic('ovr-fn', OVERRIDE_PASSWORD);
+const FORWARD_CLONE_ERROR = /could not be forwarded to another thread/;
 
 interface Reply {
 	status: number;
@@ -127,6 +141,16 @@ suite(
 			strictEqual(reply.json.operation.error, denial, `${context}: ${JSON.stringify(reply.json.operation)}`);
 		}
 
+		// A worker-local denial appends the restriction detail to the text a forwarded denial carries.
+		function assertProbeLocalDenied(reply: Reply, context: string): void {
+			strictEqual(reply.status, 200, `${context}: ${reply.status} ${reply.text}`);
+			strictEqual(reply.json?.operation?.statusCode, 403, `${context}: ${JSON.stringify(reply.json?.operation)}`);
+			ok(
+				String(reply.json.operation.error).startsWith(referenceDenial),
+				`${context}: ${JSON.stringify(reply.json.operation)}`
+			);
+		}
+
 		function assertProbeGranted(reply: Reply, context: string): void {
 			strictEqual(reply.status, 200, `${context}: ${reply.status} ${reply.text}`);
 			strictEqual(reply.json.isMainThread, false, `${context}: ${reply.text}`);
@@ -139,6 +163,10 @@ suite(
 				config: {
 					threads: { count: WORKER_COUNT },
 					agent: { enabled: true },
+					// With the fixture's `rest.webSocket: false`, nothing registers a WebSocket listener on the
+					// application port. One would put Bun's port on node:http, where the legacy route is
+					// unreachable (#2355); without it Bun serves the port through Bun.serve.
+					mqtt: { webSocket: false },
 					authentication: { authorizeLocal: false },
 					logging: { console: true, level: 'error' },
 				},
@@ -468,19 +496,48 @@ suite(
 			);
 		});
 
-		test('a component getUser principal is authorized on the main thread as the worker built it', async () => {
-			const ovrLimited = basic('ovr-limited', OVERRIDE_PASSWORD);
-			const ovrSuper = basic('ovr-super', OVERRIDE_PASSWORD);
+		// The override authenticates on the worker, and a worker-local super_user-only operation shows the
+		// privilege the worker's own view carries. (user_info is no oracle here: it re-reads the role from
+		// hdb_role by id, which a recordless role does not have.)
+		test(
+			'a component getUser principal is authorized on the main thread as the worker built it: legacy route',
+			{ skip: GETUSER_LEGACY_SKIP },
+			async () => {
+				assertDenied(await legacy({ operation: LOCAL_SU_OP }, ovrLimited), `ovr-limited local ${LOCAL_SU_OP}`);
+				const localSuper = await legacy({ operation: LOCAL_SU_OP }, ovrSuper);
+				strictEqual(localSuper.status, 200, `ovr-super local ${LOCAL_SU_OP}: ${localSuper.status} ${localSuper.text}`);
+				ok('threads' in (localSuper.json ?? {}), localSuper.text.slice(0, 200));
+				const rejected = await legacy({ operation: LOCAL_SU_OP }, basic('ovr-super', 'nope'));
+				strictEqual(rejected.status, 401, `ovr wrong password: ${rejected.status} ${rejected.text}`);
 
-			// The override authenticates on the worker, and a worker-local super_user-only operation shows
-			// the privilege the worker's own view carries. (user_info is no oracle here: it re-reads the
-			// role from hdb_role by id, which a recordless role does not have.)
-			assertDenied(await legacy({ operation: LOCAL_SU_OP }, ovrLimited), `ovr-limited local ${LOCAL_SU_OP}`);
-			const localSuper = await legacy({ operation: LOCAL_SU_OP }, ovrSuper);
-			strictEqual(localSuper.status, 200, `ovr-super local ${LOCAL_SU_OP}: ${localSuper.status} ${localSuper.text}`);
-			ok('threads' in (localSuper.json ?? {}), localSuper.text.slice(0, 200));
-			const rejected = await legacy({ operation: LOCAL_SU_OP }, basic('ovr-super', 'nope'));
-			strictEqual(rejected.status, 401, `ovr wrong password: ${rejected.status} ${rejected.text}`);
+				const limiteds = await onEveryWorker(async () => {
+					const r = await legacy({ operation: GRANTED_OP }, ovrLimited);
+					assertDenied(r, `ovr-limited legacy (worker ${r.thread})`);
+					return r;
+				}, legacyThread);
+				const supers = await onEveryWorker(async () => {
+					const r = await legacy({ operation: GRANTED_OP }, ovrSuper);
+					strictEqual(r.status, 200, `ovr-super legacy (worker ${r.thread}): ${r.status} ${r.text}`);
+					deepStrictEqual(r.json, referenceConfig, `ovr-super legacy body (worker ${r.thread})`);
+					return r;
+				}, legacyThread);
+				console.log(
+					`getUser legacy: limited ${limiteds.length} × 403 ${workers(limiteds, legacyThread)}, super ${supers.length} × 200 ${workers(supers, legacyThread)}`
+				);
+			}
+		);
+
+		test('a component getUser principal is authorized on the main thread as the worker built it: server.operation()', async () => {
+			assertProbeLocalDenied(await probe(LOCAL_SU_OP, ovrLimited), `ovr-limited local ${LOCAL_SU_OP} probe`);
+			const localSuper = await probe(LOCAL_SU_OP, ovrSuper);
+			strictEqual(
+				localSuper.json?.operation?.ok,
+				true,
+				`ovr-super local ${LOCAL_SU_OP} probe: ${localSuper.text.slice(0, 200)}`
+			);
+			ok('threads' in (localSuper.json.operation.result ?? {}), localSuper.text.slice(0, 200));
+			const rejected = await probe(LOCAL_SU_OP, basic('ovr-super', 'nope'));
+			strictEqual(rejected.status, 401, `ovr wrong password probe: ${rejected.status} ${rejected.text}`);
 			// The component did not load on the main thread, so the operations API cannot authenticate
 			// the override user; the worker's local operation above is its reference.
 			const opsView = await ops({ operation: LOCAL_SU_OP }, ovrSuper);
@@ -490,17 +547,6 @@ suite(
 				`ops API (main) sees ovr-super: ${opsView.status} ${opsView.text.slice(0, 120)}`
 			);
 
-			const limiteds = await onEveryWorker(async () => {
-				const r = await legacy({ operation: GRANTED_OP }, ovrLimited);
-				assertDenied(r, `ovr-limited legacy (worker ${r.thread})`);
-				return r;
-			}, legacyThread);
-			const supers = await onEveryWorker(async () => {
-				const r = await legacy({ operation: GRANTED_OP }, ovrSuper);
-				strictEqual(r.status, 200, `ovr-super legacy (worker ${r.thread}): ${r.status} ${r.text}`);
-				deepStrictEqual(r.json, referenceConfig, `ovr-super legacy body (worker ${r.thread})`);
-				return r;
-			}, legacyThread);
 			const probeLimiteds = await onEveryWorker(async () => {
 				const r = await probe(GRANTED_OP, ovrLimited);
 				strictEqual(r.json?.username, 'ovr-limited', r.text);
@@ -514,32 +560,41 @@ suite(
 				return r;
 			}, probeThread);
 			console.log(
-				`getUser: legacy limited ${limiteds.length} × 403 ${workers(limiteds, legacyThread)}, super ${supers.length} × 200 ${workers(supers, legacyThread)}; ` +
-					`probe limited ${probeLimiteds.length} × 403 ${workers(probeLimiteds, probeThread)}, super ${probeSupers.length} × ok ${workers(probeSupers, probeThread)}`
+				`getUser probe: limited ${probeLimiteds.length} × 403 ${workers(probeLimiteds, probeThread)}, super ${probeSupers.length} × ok ${workers(probeSupers, probeThread)}`
 			);
 		});
 
-		test('a getUser principal is normalized at authentication; one the hop cannot clone is a 500, never a grant', async () => {
-			// `ovr-proto` keeps super_user on a prototype getter: authentication copies own properties only
-			// (cloneUserView), so the worker's own view is not super before any hop.
-			const protoAuth = basic('ovr-proto', OVERRIDE_PASSWORD);
-			assertDenied(await legacy({ operation: LOCAL_SU_OP }, protoAuth), `ovr-proto local ${LOCAL_SU_OP}`);
-			assertDenied(await legacy({ operation: GRANTED_OP }, protoAuth), 'ovr-proto hop');
-			assertProbeDenied(await probe(GRANTED_OP, protoAuth), 'ovr-proto probe');
+		test(
+			'a getUser principal is normalized at authentication; one the hop cannot clone is a 500, never a grant: legacy route',
+			{ skip: GETUSER_LEGACY_SKIP },
+			async () => {
+				assertDenied(await legacy({ operation: LOCAL_SU_OP }, ovrProto), `ovr-proto local ${LOCAL_SU_OP}`);
+				assertDenied(await legacy({ operation: GRANTED_OP }, ovrProto), 'ovr-proto hop');
 
-			// `ovr-fn` carries an own function property: super in the worker's own view, but the forward
-			// cannot structured-clone it and fails as a server error rather than granting or stripping.
-			const fnAuth = basic('ovr-fn', OVERRIDE_PASSWORD);
-			const local = await legacy({ operation: LOCAL_SU_OP }, fnAuth);
-			strictEqual(local.status, 200, `ovr-fn local ${LOCAL_SU_OP}: ${local.status} ${local.text}`);
-			const hop = await legacy({ operation: GRANTED_OP }, fnAuth);
-			strictEqual(hop.status, 500, `ovr-fn hop: ${hop.status} ${hop.text}`);
-			ok(/could not be forwarded to another thread/.test(hop.json?.error ?? ''), `ovr-fn hop text: ${hop.text}`);
-			ok(!hop.text.includes('"permission"') && !hop.text.includes('hdb_user'), `ovr-fn hop body: ${hop.text}`);
-			const hopProbe = await probe(GRANTED_OP, fnAuth);
+				const local = await legacy({ operation: LOCAL_SU_OP }, ovrFn);
+				strictEqual(local.status, 200, `ovr-fn local ${LOCAL_SU_OP}: ${local.status} ${local.text}`);
+				const hop = await legacy({ operation: GRANTED_OP }, ovrFn);
+				strictEqual(hop.status, 500, `ovr-fn hop: ${hop.status} ${hop.text}`);
+				ok(FORWARD_CLONE_ERROR.test(hop.json?.error ?? ''), `ovr-fn hop text: ${hop.text}`);
+				ok(!hop.text.includes('"permission"') && !hop.text.includes('hdb_user'), `ovr-fn hop body: ${hop.text}`);
+			}
+		);
+
+		test('a getUser principal is normalized at authentication; one the hop cannot clone is a 500, never a grant: server.operation()', async () => {
+			assertProbeLocalDenied(await probe(LOCAL_SU_OP, ovrProto), `ovr-proto local ${LOCAL_SU_OP} probe`);
+			assertProbeDenied(await probe(GRANTED_OP, ovrProto), 'ovr-proto probe');
+
+			const local = await probe(LOCAL_SU_OP, ovrFn);
+			strictEqual(local.json?.operation?.ok, true, `ovr-fn local ${LOCAL_SU_OP} probe: ${local.text.slice(0, 200)}`);
+			const hopProbe = await probe(GRANTED_OP, ovrFn);
 			strictEqual(hopProbe.status, 200, `ovr-fn probe transport: ${hopProbe.status} ${hopProbe.text}`);
 			strictEqual(hopProbe.json.operation.ok, false, `ovr-fn probe: ${JSON.stringify(hopProbe.json.operation)}`);
 			strictEqual(hopProbe.json.operation.statusCode, 500, `ovr-fn probe: ${JSON.stringify(hopProbe.json.operation)}`);
+			ok(FORWARD_CLONE_ERROR.test(hopProbe.json.operation.error ?? ''), `ovr-fn probe text: ${hopProbe.text}`);
+			ok(
+				!hopProbe.text.includes('"permission"') && !hopProbe.text.includes('hdb_user'),
+				`ovr-fn probe body: ${hopProbe.text}`
+			);
 			strictEqual(hopProbe.json.operation.result, undefined, `ovr-fn probe leaked a result: ${hopProbe.text}`);
 		});
 	}
