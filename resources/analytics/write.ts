@@ -45,8 +45,9 @@ interface Action {
 }
 
 let activeActions = new Map<string, Action>();
-// activeActions by recordAction's arguments as given, metric -> method -> type -> path. A tuple enters on
-// its second call in a window, so a path recorded once is not stored twice.
+// activeActions by recordAction's arguments as given, metric -> method -> type -> path. A tuple enters only
+// once activeActions holds its action (its second call in a window), so a path recorded once is not
+// stored twice.
 let actionIndex = new Map<string, Map<string, Map<string, Map<string, Action>>>>();
 let analyticsEnabled = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) > -1;
 let analyticsReadOnlyChecked = false;
@@ -194,7 +195,7 @@ function actionKey(metric: string, path?: string, method?: string, type?: string
 	return key;
 }
 
-/** Returns the action the window already held for the key, or undefined when this call started it */
+/** The action the window already held for the key; undefined when this call started it or while exiting */
 function recordKeyedAction(
 	key: string,
 	value: Value,
