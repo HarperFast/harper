@@ -614,10 +614,8 @@ describe('DeploymentRecorder.ingestPayload streaming source', () => {
 		IngestTable = table({
 			table: 'DeploymentIngestStream',
 			database: 'test',
-			attributes: systemSchema[DEPLOYMENT_TABLE].attributes.map(({ attribute }) =>
-				attribute === systemSchema[DEPLOYMENT_TABLE].hash_attribute
-					? { name: attribute, isPrimaryKey: true }
-					: { name: attribute }
+			attributes: systemSchema[DEPLOYMENT_TABLE].attributes.map(({ attribute, name = attribute }) =>
+				name === systemSchema[DEPLOYMENT_TABLE].hash_attribute ? { name, isPrimaryKey: true } : { name }
 			),
 		});
 	});

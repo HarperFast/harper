@@ -312,10 +312,10 @@
 				"attribute": "id"
 			},
 			{
-				"attribute": "time"
+				"name": "action"
 			},
 			{
-				"attribute": "metrics"
+				"name": "metrics"
 			}
 		]
 	},
@@ -441,6 +441,9 @@
 			},
 			{
 				"attribute": "activated_from"
+			},
+			{
+				"name": "routing"
 			},
 			{
 				"attribute": "restart_job_id"
