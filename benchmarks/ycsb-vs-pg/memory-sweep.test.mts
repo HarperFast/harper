@@ -3,12 +3,12 @@
  *   node --test benchmarks/ycsb-vs-pg/
  */
 import { test } from 'node:test';
-import { deepStrictEqual, strictEqual, throws } from 'node:assert';
-import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { deepStrictEqual, rejects, strictEqual, throws } from 'node:assert';
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { recordsForRatio, warmupConverged, checkHarperMemory, parseCells } from './memory-sweep.mts';
-import { checkOwnCgroup, foreignPids, isInstanceMonitor } from './resources.mts';
+import { checkOwnCgroup, foreignPids, isInstanceMonitor, settledMemoryLimit } from './resources.mts';
 import { parsePerfStat, frameName, dedupePerfMap } from './perfProfile.mts';
 import { parseEventLog, summarizeEvents } from './rocksdbLog.mts';
 import { classify, gcPhase, pipelineLayer, rocksdbPart } from './profile-report.mts';
@@ -442,5 +442,20 @@ test('a GC sample goes to the phase of its innermost frame that names one', () =
 	for (const [stack, phase] of cases) {
 		strictEqual(classify(stack, 'harper'), 'gc', `${phase} fixture is in the gc bucket`);
 		strictEqual(gcPhase(stack), phase);
+	}
+});
+
+test("a container's memory limits are waited for briefly, then enforced", async () => {
+	const scope = await mkdtemp(join(tmpdir(), 'limits-'));
+	try {
+		await writeFile(join(scope, 'memory.max'), `${1 << 30}\n`);
+		await writeFile(join(scope, 'memory.swap.max'), 'max\n');
+		const settled = settledMemoryLimit('postgres', scope, 1 << 30, 2000);
+		setTimeout(() => writeFile(join(scope, 'memory.swap.max'), '0\n'), 200);
+		strictEqual((await settled).swapMaxBytes, 0);
+		await writeFile(join(scope, 'memory.swap.max'), 'max\n');
+		await rejects(settledMemoryLimit('postgres', scope, 1 << 30, 300), /memory.swap.max is Infinity, expected 0/);
+	} finally {
+		await rm(scope, { recursive: true });
 	}
 });

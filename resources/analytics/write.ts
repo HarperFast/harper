@@ -45,6 +45,9 @@ interface Action {
 }
 
 let activeActions = new Map<string, Action>();
+// activeActions by recordAction's arguments as given. A tuple enters only once activeActions already holds
+// its action, so an action recorded once in a window is never indexed.
+let actionIndex = new Map<string, Map<string | undefined, Map<string | undefined, Map<string | undefined, Action>>>>();
 let analyticsEnabled = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) > -1;
 let analyticsReadOnlyChecked = false;
 let sendAnalyticsTimeout: NodeJS.Timeout;
@@ -83,6 +86,7 @@ export function setAnalyticsEnabled(enabled: boolean) {
 	analyticsStart = 0;
 	lastFlushAt = 0;
 	activeActions = new Map();
+	actionIndex = new Map();
 	getTransactionQueueDepths(); // restarts the queue high-water marks with the window
 	analyticsGeneration++;
 }
@@ -143,15 +147,43 @@ function recordNewAction(key: string, value: Value, metric?: string, path?: stri
  * @param type
  */
 export function recordAction(value: Value, metric: string, path?: string, method?: string, type?: string) {
-	if (!checkAnalyticsEnabled()) return;
-	recordKeyedAction(actionKey(metric, path, method, type), value, metric, path, method, type);
+	if (!checkAnalyticsEnabled() || analyticsExiting) return;
+	const actionsByPath = actionIndex.get(metric)?.get(method)?.get(type);
+	const action = actionsByPath?.get(path);
+	if (action !== undefined) {
+		recordExistingAction(value, action);
+		armFlush();
+	} else {
+		const existing = recordKeyedAction(actionKey(metric, path, method, type), value, metric, path, method, type);
+		if (existing !== undefined && isPrimitive(path) && isPrimitive(method) && isPrimitive(type))
+			(actionsByPath ?? indexedActionsByPath(metric, method, type)).set(path, existing);
+	}
+}
+
+// Keyed by identity, a fresh object per call (a request body's operation) would add an entry per call
+function isPrimitive(value: unknown): boolean {
+	return value === null || (typeof value !== 'object' && typeof value !== 'function');
+}
+
+export function isActionIndexedForTests(metric: string, path?: string, method?: string, type?: string): boolean {
+	return actionIndex.get(metric)?.get(method)?.get(type)?.has(path) ?? false;
+}
+
+function indexedActionsByPath(metric: string, method?: string, type?: string): Map<string | undefined, Action> {
+	let byMethod = actionIndex.get(metric);
+	if (byMethod === undefined) actionIndex.set(metric, (byMethod = new Map()));
+	let byType = byMethod.get(method);
+	if (byType === undefined) byMethod.set(method, (byType = new Map()));
+	let byPath = byType.get(type);
+	if (byPath === undefined) byType.set(type, (byPath = new Map()));
+	return byPath;
 }
 
 /** recordAction with the key built once, for a hot path that would otherwise concatenate and hash it per call */
 export function actionRecorder(metric: string, path?: string, method?: string, type?: string): (value: Value) => void {
 	const key = actionKey(metric, path, method, type);
 	return (value) => {
-		if (checkAnalyticsEnabled()) recordKeyedAction(key, value, metric, path, method, type);
+		if (checkAnalyticsEnabled() && !analyticsExiting) recordKeyedAction(key, value, metric, path, method, type);
 	};
 }
 
@@ -162,14 +194,26 @@ function actionKey(metric: string, path?: string, method?: string, type?: string
 	return key;
 }
 
-function recordKeyedAction(key: string, value: Value, metric: string, path?: string, method?: string, type?: string) {
-	if (analyticsExiting) return;
+/** The action the window already held for the key; undefined when this call started it */
+function recordKeyedAction(
+	key: string,
+	value: Value,
+	metric: string,
+	path?: string,
+	method?: string,
+	type?: string
+): Action | undefined {
 	const action = activeActions.get(key);
 	if (action) {
 		recordExistingAction(value, action);
 	} else {
 		recordNewAction(key, value, metric, path, method, type);
 	}
+	armFlush();
+	return action;
+}
+
+function armFlush() {
 	if (!sendAnalyticsTimeout) contextStorage.exit(sendAnalytics);
 }
 
@@ -258,6 +302,7 @@ async function collectAnalytics(final: boolean) {
 	// an entry already reported, and dropped with it.
 	const reportingActions = activeActions;
 	activeActions = new Map();
+	actionIndex = new Map();
 	const period = analyticsStart ? performance.now() - analyticsStart : 0;
 	analyticsStart = 0;
 	// Read before the first yield too, so the event loop's samples from the rest of the flush belong

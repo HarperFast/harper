@@ -5,7 +5,7 @@ const { waitFor } = require('../waitFor');
 const { table } = require('#src/resources/databases');
 const { transaction } = require('#src/resources/transaction');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
-const { HistoryMemo, HistoryReader } = require('#src/resources/historyReader');
+const { HistoryMemo, HistoryReader, ReplayReader } = require('#src/resources/historyReader');
 const { getRecordAtTime, readAuditFrame } = require('#src/resources/crdt');
 const {
 	createAuditEntry,
@@ -13,7 +13,9 @@ const {
 	removeAuditEntry,
 	raiseAuditFloor,
 	ENTRY_DATAVIEW,
+	getDatabaseGeneration,
 } = require('#src/resources/auditStore');
+const { ResumeHistoryUnavailableError } = require('#src/utility/errors/hdbError');
 const { ResourceBridge } = require('#src/dataLayer/harperBridge/ResourceBridge');
 const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
 require('#src/server/serverHelpers/serverUtilities');
@@ -57,6 +59,7 @@ describe('bounded history readers', function () {
 	function meter(T) {
 		const store = T.auditStore;
 		let reads = 0;
+		let logReads = 0;
 		let windows = 0;
 		const originals = new Map();
 		for (const name of ['get', 'getSync', 'getRange', 'getBinary']) {
@@ -64,15 +67,24 @@ describe('bounded history readers', function () {
 			originals.set(name, original);
 			store[name] = function (...args) {
 				if (name === 'getRange') {
-					if (args[0]?.snapshot !== false) reads++;
+					if (args[0]?.snapshot !== false) {
+						reads++;
+						logReads++;
+					}
 					if (!args[0]?.exactStart && args[0]?.snapshot !== false) windows++;
-				} else if (name === 'getBinary' || args[1] === T.tableId) reads++;
+				} else if (name === 'getBinary' || args[1] === T.tableId) {
+					reads++;
+					if (name !== 'getBinary') logReads++;
+				}
 				return original.apply(this, args);
 			};
 		}
 		return {
 			get reads() {
 				return reads;
+			},
+			get logReads() {
+				return logReads;
 			},
 			get windows() {
 				return windows;
@@ -723,5 +735,486 @@ describe('bounded history readers', function () {
 		} finally {
 			subscription.end();
 		}
+	});
+
+	async function replay(T, request) {
+		const events = [];
+		const subscription = await T.subscribe({
+			includeSuperseded: true,
+			...request,
+			listener: (event) => events.push(event),
+		});
+		return { subscription, events };
+	}
+	function plainEvents(T, startTime, id) {
+		const counter = meter(T);
+		try {
+			const expected = [];
+			for (const entry of T.auditStore.getRange({ start: startTime, exclusiveStart: true })) {
+				if (entry.tableId !== T.tableId || (id !== undefined && entry.recordId !== id)) continue;
+				const time = entry.txnLogKey;
+				expected.push({ id: entry.recordId, value: entry.getValue(T.primaryStore, true, time), time });
+			}
+			return { expected, logReads: counter.logReads };
+		} finally {
+			counter.close();
+		}
+	}
+	const replayed = (events) => events.map((event) => ({ id: event.id, value: event.value, time: event.localTime }));
+
+	const LINEAR_REPLAY_READS = { true: [8642, 8643], false: [14404, 14405] };
+	for (const isCollection of [true, false]) {
+		it(`replays 2,880 patches with linear audit reads (${isCollection ? 'collection' : 'record'})`, async () => {
+			const T = newTable();
+			const startTime = Date.now() - 1;
+			await T.put({ id: 'a', n: 0, name: 'start' });
+			for (let n = 1; n <= 2880; n++) await T.patch('a', { n });
+			const counter = meter(T);
+			let subscription;
+			try {
+				let events;
+				({ subscription, events } = await replay(T, { id: isCollection ? undefined : 'a', isCollection, startTime }));
+				await waitFor(() => events.length >= 2881, { timeout: 60_000 });
+				assert.strictEqual(events.length, 2881);
+				assert.deepStrictEqual(events[0].value, { id: 'a', n: 0, name: 'start' });
+				assert.deepStrictEqual(events[1440].value, { id: 'a', n: 1440, name: 'start' });
+				assert.deepStrictEqual(events[2880].value, { id: 'a', n: 2880, name: 'start' });
+				assert.deepStrictEqual(
+					events.map((event) => event.value.n),
+					Array.from({ length: 2881 }, (_, n) => n)
+				);
+				assert.strictEqual(counter.logReads, LINEAR_REPLAY_READS[isCollection][lmdb ? 1 : 0]);
+			} finally {
+				counter.close();
+				subscription?.end();
+			}
+		});
+	}
+
+	for (const later of [1, 2]) {
+		it(`reads what the plain rebuild reads when each record changed ${later} time(s) since a long history`, async () => {
+			const T = newTable();
+			for (let r = 0; r < 40; r++) await T.put({ id: `r${r}`, n: 0, name: 'start' });
+			for (let n = 1; n <= 60; n++) for (let r = 0; r < 40; r++) await T.patch(`r${r}`, { n });
+			const startTime = entries(T).at(-1).txnLogKey;
+			for (let n = 61; n <= 60 + later; n++) for (let r = 0; r < 40; r++) await T.patch(`r${r}`, { n });
+			const plain = plainEvents(T, startTime);
+			const counter = meter(T);
+			const { subscription, events } = await replay(T, { startTime });
+			try {
+				await waitFor(() => events.length >= 40 * later);
+				assert.deepStrictEqual(replayed(events), plain.expected);
+				assert.strictEqual(counter.logReads, plain.logReads);
+			} finally {
+				counter.close();
+				subscription.end();
+			}
+		});
+	}
+
+	it('replays a field removal with the plain rebuild values', async () => {
+		const T = newTable();
+		const startTime = Date.now() - 1;
+		await T.put({ id: 'a', n: 0, name: 'base', payload: 'x' });
+		for (let n = 1; n <= 4; n++) await T.patch('a', { n });
+		await T.patch('a', { payload: undefined });
+		await transaction(async (context) => (await T.update('a', context)).deleteProperty('name'));
+		for (let n = 5; n <= 8; n++) await T.patch('a', { n });
+		const plain = plainEvents(T, startTime, 'a');
+		for (const isCollection of [true, false]) {
+			const counter = meter(T);
+			const { subscription, events } = await replay(T, { id: isCollection ? undefined : 'a', isCollection, startTime });
+			try {
+				await waitFor(() => events.length >= plain.expected.length);
+				assert.deepStrictEqual(replayed(events), plain.expected);
+				assert(counter.logReads < plain.logReads, `${counter.logReads} log reads, plain ${plain.logReads}`);
+			} finally {
+				counter.close();
+				subscription.end();
+			}
+		}
+	});
+
+	it('replays a set followed by an add on the same field with the plain rebuild values', async () => {
+		const T = newTable();
+		const startTime = Date.now() - 1;
+		await T.put({ id: 'a', n: '5', name: 'base' });
+		await T.patch('a', { name: 'first' });
+		await T.patch('a', { n: '10' });
+		await T.patch('a', { n: { __op__: 'add', value: 1 } });
+		await T.patch('a', { name: 'last' });
+		const { expected } = plainEvents(T, startTime, 'a');
+		assert.strictEqual(expected[2].value.n, 10, 'precondition: the plain rebuild reverses the add into a number');
+		for (const isCollection of [true, false]) {
+			const { subscription, events } = await replay(T, { id: isCollection ? undefined : 'a', isCollection, startTime });
+			try {
+				await waitFor(() => events.length >= 5);
+				assert.deepStrictEqual(replayed(events), expected);
+			} finally {
+				subscription.end();
+			}
+		}
+	});
+
+	it('carries a chain written by a replicated origin', async function () {
+		if (lmdb) this.skip();
+		const T = newTable();
+		const origin = getIdOfRemoteNode(`replay-reader-origin-${sequence}`, T.auditStore);
+		const startTime = Date.now() - 1;
+		for (let n = 0; n <= 200; n++) {
+			const context = { source: {}, sourceApply: true, timestamp: startTime + 10 + n };
+			await transaction(context, async () => {
+				const resource = await T.getResource('a', context);
+				await resource._writeUpdate('a', n ? { n } : { id: 'a', n }, n === 0, {
+					isNotification: true,
+					nodeId: origin,
+					version: startTime + 10 + n,
+				});
+			});
+		}
+		assert(
+			entries(T).every((entry) => entry.nodeId === origin),
+			'precondition: every write is the remote origin’s'
+		);
+		const plain = plainEvents(T, startTime, 'a');
+		const counter = meter(T);
+		const { subscription, events } = await replay(T, { startTime });
+		try {
+			await waitFor(() => events.length >= 201);
+			assert.deepStrictEqual(replayed(events), plain.expected);
+			assert(counter.logReads < 201 * 4, `${counter.logReads} log reads for 200 remote patches`);
+		} finally {
+			counter.close();
+			subscription.end();
+		}
+	});
+
+	for (const resumeIntact of [true, false]) {
+		it(`${resumeIntact ? 'resumes' : 'refuses'} a record whose history below the floor ${resumeIntact ? 'stays' : 'is lost'} while its values are computed`, async function () {
+			if (lmdb) this.skip();
+			const T = newTable({ database: `${database}_record_floor_${resumeIntact}` });
+			await T.put({ id: 'a', n: 0 });
+			for (let n = 1; n <= 300; n++) await T.patch('a', { n });
+			const keys = entries(T).map((entry) => entry.txnLogKey);
+			raiseAuditFloor(T.auditStore, keys[150]);
+			const getSync = T.auditStore.getSync;
+			let walked = 0;
+			if (!resumeIntact)
+				T.auditStore.getSync = function (key, ...rest) {
+					if (++walked > 300 && key < keys[100]) return;
+					return getSync.call(this, key, ...rest);
+				};
+			try {
+				const { subscription, events } = await replay(T, {
+					id: 'a',
+					startTime: keys[0],
+					databaseGeneration: getDatabaseGeneration(T.auditStore).id,
+				});
+				const verified = await subscription.resumeVerified;
+				assert.strictEqual(verified, resumeIntact);
+				if (resumeIntact) {
+					await waitFor(() => events.length >= 300);
+					assert.deepStrictEqual(
+						events.map((event) => event.value.n),
+						Array.from({ length: 300 }, (_, n) => n + 1)
+					);
+				} else {
+					await waitFor(() => events.at(-1) instanceof ResumeHistoryUnavailableError);
+					assert.strictEqual(events.length, 1);
+				}
+				subscription.end();
+			} finally {
+				T.auditStore.getSync = getSync;
+			}
+		});
+	}
+
+	it('delivers what remains of a record history that loses entries below the floor while its values are computed', async function () {
+		if (lmdb) this.skip();
+		const T = newTable({ database: `${database}_record_floor_unchecked` });
+		await T.put({ id: 'a', n: 0 });
+		for (let n = 1; n <= 300; n++) await T.patch('a', { n });
+		const keys = entries(T).map((entry) => entry.txnLogKey);
+		raiseAuditFloor(T.auditStore, keys[150]);
+		const getSync = T.auditStore.getSync;
+		let calls = 0;
+		T.auditStore.getSync = function (key, ...rest) {
+			if (++calls > 300 && key < keys[100]) return;
+			return getSync.call(this, key, ...rest);
+		};
+		try {
+			const { subscription, events } = await replay(T, { id: 'a', startTime: keys[0] });
+			try {
+				await waitFor(() => events.length >= 201);
+				assert.deepStrictEqual(
+					events.map((event) => event.value.n),
+					Array.from({ length: 201 }, (_, n) => n + 100)
+				);
+			} finally {
+				subscription.end();
+			}
+		} finally {
+			T.auditStore.getSync = getSync;
+		}
+	});
+
+	for (const [patches, raiseAt] of [
+		[300, 150],
+		[2, 2],
+	]) {
+		it(`refuses a record resume when the floor passes what its values read while they are computed (${patches} patch(es))`, async function () {
+			if (lmdb) this.skip();
+			const T = newTable({ database: `${database}_record_floor_base_${patches}` });
+			await T.put({ id: 'a', n: 0, name: 'base' });
+			for (let n = 1; n <= patches; n++) await T.patch('a', { n });
+			const keys = entries(T).map((entry) => entry.txnLogKey);
+			const getEntry = T.primaryStore.getEntry;
+			let calls = 0;
+			T.primaryStore.getEntry = function (...args) {
+				// a prune starting while values are computed, past the put the rebuilds read
+				if (++calls === raiseAt) raiseAuditFloor(T.auditStore, keys[0] + 0.001);
+				return getEntry.apply(this, args);
+			};
+			try {
+				const { subscription, events } = await replay(T, {
+					id: 'a',
+					startTime: keys[0],
+					databaseGeneration: getDatabaseGeneration(T.auditStore).id,
+				});
+				assert.strictEqual(await subscription.resumeVerified, false);
+				await waitFor(() => events.at(-1) instanceof ResumeHistoryUnavailableError);
+				assert.strictEqual(events.length, 1);
+				subscription.end();
+			} finally {
+				T.primaryStore.getEntry = getEntry;
+			}
+		});
+	}
+
+	it('replays a record written during the computation of its values', async () => {
+		const T = newTable();
+		const startTime = Date.now() - 1;
+		await T.put({ id: 'a', n: 0, name: 'start' });
+		for (let n = 1; n <= 1000; n++) await T.patch('a', { n });
+		const { expected } = plainEvents(T, startTime, 'a');
+		const getEntry = T.primaryStore.getEntry;
+		let calls = 0;
+		let written;
+		T.primaryStore.getEntry = function (...args) {
+			if (++calls === 100) written = T.patch('a', { name: 'during' });
+			return getEntry.apply(this, args);
+		};
+		try {
+			const { subscription, events } = await replay(T, { id: 'a', startTime });
+			try {
+				await waitFor(() => events.length >= 1002);
+				await written;
+				assert.deepStrictEqual(replayed(events.slice(0, 1001)), expected);
+				assert.deepStrictEqual(events[1001].value, { id: 'a', n: 1000, name: 'during' });
+			} finally {
+				subscription.end();
+			}
+		} finally {
+			T.primaryStore.getEntry = getEntry;
+		}
+	});
+
+	it('frees a record’s carry state when its replay reaches its current version', async () => {
+		const T = newTable();
+		const startTime = Date.now() - 1;
+		for (let r = 0; r < 300; r++) {
+			await T.put({ id: `r${r}`, n: 0 });
+			for (let n = 1; n <= 10; n++) await T.patch(`r${r}`, { n });
+		}
+		const plain = plainEvents(T, startTime);
+		const counter = meter(T);
+		const { subscription, events } = await replay(T, { startTime });
+		try {
+			await waitFor(() => events.length >= 3300);
+			assert.deepStrictEqual(replayed(events), plain.expected);
+			assert(counter.logReads * 3 < plain.logReads, `${counter.logReads} log reads, plain ${plain.logReads}`);
+		} finally {
+			counter.close();
+			subscription.end();
+		}
+	});
+
+	it('reads no more than the plain rebuild when more records are in progress than it can carry', async () => {
+		const T = newTable();
+		const startTime = Date.now() - 1;
+		for (let r = 0; r < 300; r++) await T.put({ id: `r${r}`, n: 0 });
+		for (let n = 1; n <= 10; n++) for (let r = 0; r < 300; r++) await T.patch(`r${r}`, { n });
+		const plain = plainEvents(T, startTime);
+		const counter = meter(T);
+		const { subscription, events } = await replay(T, { startTime });
+		try {
+			await waitFor(() => events.length >= 3300);
+			assert.deepStrictEqual(replayed(events), plain.expected);
+			assert(counter.logReads < plain.logReads, `${counter.logReads} log reads, plain ${plain.logReads}`);
+		} finally {
+			counter.close();
+			subscription.end();
+		}
+	});
+
+	it('invokes a record replay filter newest-first, as it walks', async () => {
+		const T = newTable();
+		const startTime = Date.now() - 1;
+		await T.put({ id: 'a', n: 0 });
+		for (let n = 1; n <= 5; n++) await T.patch('a', { n });
+		const filtered = [];
+		const { subscription, events } = await replay(T, {
+			id: 'a',
+			startTime,
+			eventFilter: (event) => {
+				filtered.push(event.value.n);
+				return event.value.n % 2 === 1;
+			},
+		});
+		try {
+			await waitFor(() => events.length >= 3);
+			assert.deepStrictEqual(filtered, [5, 4, 3, 2, 1, 0]);
+			assert.deepStrictEqual(
+				events.map((event) => event.value.n),
+				[1, 3, 5]
+			);
+		} finally {
+			subscription.end();
+		}
+	});
+
+	describe('ReplayReader', () => {
+		const patchesOf = (T) => entries(T);
+		const oracle = (T, entry) => entry.getValue(T.primaryStore, true, entry.txnLogKey);
+
+		it('re-derives a record whose current entry changes between reads', async () => {
+			const T = newTable();
+			await T.put({ id: 'a', n: '5', name: 'start' });
+			for (let i = 1; i <= 8; i++) await T.patch('a', { name: `p${i}` });
+			const reader = new ReplayReader(T.primaryStore, T.tableId, () => true);
+			try {
+				const all = patchesOf(T);
+				for (const entry of all.slice(0, 4)) assert.deepStrictEqual(reader.read(entry), oracle(T, entry));
+				await T.patch('a', { n: { __op__: 'add', value: 1 } });
+				for (const entry of all.slice(4)) {
+					const expected = oracle(T, entry);
+					assert.strictEqual(expected.n, 5, 'precondition: the new add changed the plain rebuild');
+					assert.deepStrictEqual(reader.read(entry), expected);
+				}
+			} finally {
+				reader.memo.close();
+			}
+		});
+
+		it('carries again after the audit floor moves', async () => {
+			const T = newTable();
+			await T.put({ id: 'a', n: 0 });
+			for (let n = 1; n <= 20; n++) await T.patch('a', { n });
+			const all = patchesOf(T);
+			const reader = new ReplayReader(T.primaryStore, T.tableId, () => true);
+			try {
+				for (const entry of all.slice(0, 10)) assert.deepStrictEqual(reader.read(entry), oracle(T, entry));
+				assert.strictEqual(reader.memo.carries, 1);
+				raiseAuditFloor(T.auditStore, all[0].txnLogKey);
+				for (const entry of all.slice(10, 12)) assert.deepStrictEqual(reader.read(entry), oracle(T, entry));
+				assert.strictEqual(reader.memo.exhausted, false);
+				assert.strictEqual(reader.memo.carries, 1);
+				for (const entry of all.slice(12)) assert.deepStrictEqual(reader.read(entry), oracle(T, entry));
+			} finally {
+				reader.memo.close();
+			}
+		});
+
+		it('walks for eligibility once across put and patch cycles under one current entry', async () => {
+			const T = newTable();
+			for (let cycle = 0; cycle < 3; cycle++) {
+				await T.put({ id: 'a', n: cycle * 10, name: `cycle ${cycle}` });
+				for (let n = 1; n <= 4; n++) await T.patch('a', { n: cycle * 10 + n });
+			}
+			let walks = 0;
+			const reader = new ReplayReader(T.primaryStore, T.tableId, () => ++walks > 0);
+			try {
+				for (const entry of patchesOf(T)) assert.deepStrictEqual(reader.read(entry), oracle(T, entry));
+				assert.strictEqual(walks, 1);
+			} finally {
+				reader.memo.close();
+			}
+		});
+
+		it('stays within its budget when more records carry than fit, never evicting carry state', async () => {
+			const T = newTable();
+			for (let r = 0; r < 20; r++) await T.put({ id: `r${r}`, n: 0, payload: 'x'.repeat(200) });
+			for (let n = 1; n <= 30; n++) for (let r = 0; r < 20; r++) await T.patch(`r${r}`, { n });
+			const all = patchesOf(T);
+			const counter = meter(T);
+			const expected = all.map((entry) => oracle(T, entry));
+			const plainReads = counter.logReads;
+			const limits = { maxBytes: 4096, maxEntries: 256 };
+			const reader = new ReplayReader(T.primaryStore, T.tableId, () => true, limits);
+			try {
+				let carries = 0;
+				for (let i = 0; i < all.length; i++) {
+					const value = reader.read(all[i]);
+					assert(reader.memo.stats.bytes <= limits.maxBytes);
+					if (reader.memo.carries > carries) carries = reader.memo.carries;
+					assert.deepStrictEqual(value, expected[i]);
+				}
+				assert(carries > 0 && carries < 20, `${carries} records carried at once`);
+				assert.strictEqual(reader.memo.exhausted, false);
+				const replayReads = counter.logReads - plainReads;
+				assert(replayReads < plainReads, `${replayReads} log reads, plain ${plainReads}`);
+			} finally {
+				counter.close();
+				reader.memo.close();
+			}
+		});
+
+		it('stops carrying a record whose image outgrows the budget', async () => {
+			const T = newTable();
+			await T.put({ id: 'a', n: 0, payload: '' });
+			for (let n = 1; n <= 40; n++) await T.patch('a', { n, payload: 'y'.repeat(n * 100) });
+			const reader = new ReplayReader(T.primaryStore, T.tableId, () => true, { maxBytes: 2048, maxEntries: 256 });
+			try {
+				for (const entry of patchesOf(T)) {
+					assert.deepStrictEqual(reader.read(entry), oracle(T, entry));
+					assert(reader.memo.stats.bytes <= 2048);
+				}
+			} finally {
+				reader.memo.close();
+			}
+		});
+
+		it('keeps what its eligibility walk reads out of the lowest key values read', async () => {
+			const T = newTable();
+			await T.put({ id: 'a', n: 0 });
+			await T.patch('a', { n: 1 });
+			await T.put({ id: 'a', n: 2 });
+			for (let n = 3; n <= 12; n++) await T.patch('a', { n });
+			const all = patchesOf(T);
+			const reader = new ReplayReader(T.primaryStore, T.tableId, (id, current, memo) => {
+				readAuditFrame(T.auditStore, T.tableId, id, all[0].txnLogKey, undefined, true, memo);
+				return true;
+			});
+			try {
+				for (const entry of all.slice(4, -1)) assert.deepStrictEqual(reader.read(entry), oracle(T, entry));
+				assert.strictEqual(reader.memo.carries, 1);
+				assert.strictEqual(reader.memo.lowest, all[2].txnLogKey);
+			} finally {
+				reader.memo.close();
+			}
+		});
+
+		it('rebuilds every patch of a chain its eligibility refuses', async () => {
+			const T = newTable();
+			await T.put({ id: 'a', n: 0 });
+			for (let n = 1; n <= 10; n++) await T.patch('a', { n });
+			const reader = new ReplayReader(T.primaryStore, T.tableId, () => false);
+			try {
+				for (const entry of patchesOf(T)) assert.deepStrictEqual(reader.read(entry), oracle(T, entry));
+				assert.strictEqual(reader.memo.carries, 0);
+			} finally {
+				reader.memo.close();
+			}
+		});
 	});
 });

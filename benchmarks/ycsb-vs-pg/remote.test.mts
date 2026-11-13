@@ -9,6 +9,8 @@ import { deepStrictEqual, ok, rejects, strictEqual, throws } from 'node:assert';
 import { createServer } from 'node:http';
 import { execFile } from 'node:child_process';
 import { once } from 'node:events';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import {
@@ -170,6 +172,10 @@ test('perf counters use the hybrid PMU where there is one and cpu elsewhere, and
 			pageFaults: 7,
 		},
 	});
+	// Counted over cpus (-C), not per cgroup: the fourth field is the run time, and everything is one entry.
+	const host = Object.values(counterEvents('cpu')).map((event, i) => `${i + 1},,${event},4000000,100.00,,`);
+	deepStrictEqual(Object.keys(parsePerfStat(host.join('\n'), 'host(harper)')), ['host(harper)']);
+	strictEqual(parsePerfStat(host.join('\n'), 'host(harper)')['host(harper)'].pageFaults, 7);
 });
 
 test('memory peaks across hosts are summed only where the readings coincide', () => {
@@ -651,6 +657,102 @@ test('the full matrix runs every workload once per point, and zones stay in one 
 			maxRun: '3h',
 		}
 	);
+});
+
+test('provisioning tries the zones again while all are out of capacity, up to YCSB_CAPACITY_WAIT_MIN', async () => {
+	const dir = mkdtempSync(join(tmpdir(), 'capacity-'));
+	try {
+		// gcloud refuses the first FAKE_STOCKOUTS instance creates for capacity; the startup script then reports a
+		// failure, which ends provisioning right after the zone is chosen. git says every commit is pushed.
+		writeFileSync(
+			join(dir, 'gcloud'),
+			`#!/usr/bin/env bash
+[ "$1" = --quiet ] && shift
+echo "$*" >>"$FAKE_DIR/calls"
+case "$*" in
+"compute instances create --help") echo "  --performance-monitoring-unit" ;;
+"compute instances create "*)
+	n=$(($(cat "$FAKE_DIR/creates" 2>/dev/null || echo 0) + 1)); echo "$n" >"$FAKE_DIR/creates"
+	[ "$n" -gt "$FAKE_STOCKOUTS" ] || { echo "ERROR: code: ZONE_RESOURCE_POOL_EXHAUSTED" >&2; exit 1; } ;;
+"compute networks describe "*) exit 1 ;;
+"compute instances get-guest-attributes "*) echo failed:1:1 ;;
+esac
+`,
+			{ mode: 0o755 }
+		);
+		writeFileSync(join(dir, 'git'), '#!/usr/bin/env bash\necho "  origin/main"\n', { mode: 0o755 });
+		const provision = (stockouts: number, waitMin: number) =>
+			gcpScript('provision.sh', ['--run-id=ycsb-cap-1', '--commit=abc', '--topology=a'], {
+				PATH: `${dir}:${process.env.PATH}`,
+				FAKE_DIR: dir,
+				FAKE_STOCKOUTS: String(stockouts),
+				YCSB_GCP_PROJECT: 'p',
+				YCSB_BENCH_IP: '203.0.113.7',
+				YCSB_RUNS_DIR: join(dir, 'runs'),
+				YCSB_GCP_ZONES: 'us-central1-c us-central1-a',
+				YCSB_CAPACITY_WAIT_MIN: String(waitMin),
+				YCSB_CAPACITY_RETRY_S: '0',
+			}).catch((error) => error);
+		const once = await provision(2, 0);
+		ok(/no zone of \[us-central1-c us-central1-a\] had capacity/.test(once.stderr), once.stderr);
+		ok(!once.stderr.includes('trying them again'));
+		rmSync(join(dir, 'creates'));
+		const waited = await provision(2, 1);
+		ok(waited.stderr.includes('trying them again in 0 s'), waited.stderr);
+		ok(waited.stdout.includes('ycsb-cap-1: VMs created in us-central1-c'), waited.stdout);
+		ok(waited.stderr.includes('startup script failed:1:1'), 'provisioning went on to the created VMs');
+	} finally {
+		rmSync(dir, { recursive: true });
+	}
+});
+
+test('every set of a matrix builds the commit recorded at its first start', async () => {
+	const dir = mkdtempSync(join(tmpdir(), 'pin-'));
+	try {
+		writeFileSync(
+			join(dir, 'gcloud'),
+			'#!/usr/bin/env bash\ncase "$*" in "config get-value account") echo bench@p.iam.gserviceaccount.com ;; esac\n',
+			{ mode: 0o755 }
+		);
+		// A pin no commit matches: CI's checkout is shallow, so no second real commit is at hand.
+		const pin = '0'.repeat(40);
+		writeFileSync(join(dir, 'ycsb-pin.commit'), `${pin}\n`);
+		const failed = await gcpScript('run-matrix.sh', ['--set=2x', '--run-id=ycsb-pin-2x', '--commit=HEAD'], {
+			PATH: `${dir}:${process.env.PATH}`,
+			CLOUDSDK_CONFIG: dir,
+			YCSB_GCP_PROJECT: 'p',
+			YCSB_RUNS_DIR: dir,
+		}).catch((error) => error);
+		ok(failed.stderr.includes(`matrix ycsb-pin builds ${pin}`), failed.stderr);
+	} finally {
+		rmSync(dir, { recursive: true });
+	}
+});
+
+test('the generator ceiling picks shards by the ops/s it reached, not by how busy the driver looked', async () => {
+	const dir = mkdtempSync(join(tmpdir(), 'ceiling-'));
+	try {
+		const log = (name: string, ops: number, errors = 0, busy = 1) => {
+			writeFileSync(
+				join(dir, name),
+				`CLIENT_CEILING workload=C shards=0 concurrency=64 server_cpus=remote ops_per_sec=${ops} errors=${errors} generator_busy_cores=${busy}\n` +
+					'CLIENT_CEILING workload=E shards=1 concurrency=64 server_cpus=remote ops_per_sec=44527 errors=0 generator_busy_cores=1.05\n'
+			);
+			return join(dir, name);
+		};
+		const choose = async (...pairs: string[]) =>
+			(
+				await execAsync('bash', ['-c', `. ${join(DIR, 'gcp', 'session.sh')}; ceiling_choice "$@"`, 'ceiling', ...pairs])
+			).stdout.trim();
+		// A c4-standard-16 at one shard per vCPU: over 0.9 busy cores per shard, and still 4x the fastest 8x cell.
+		strictEqual(await choose(`16:${log('a16', 250_374, 0, 14.46)}`, `8:${log('a8', 252_115, 0, 8.66)}`), '16 250374');
+		// A c4-standard-32: half the shards more than 5% faster.
+		strictEqual(await choose(`32:${log('b32', 295_134)}`, `16:${log('b16', 342_138)}`), '16 342138');
+		strictEqual(await choose(`16:${log('c16', 400_000, 3)}`, `8:${log('c8', 241_109)}`), '8 241109');
+		await rejects(choose(`16:${join(dir, 'missing')}`));
+	} finally {
+		rmSync(dir, { recursive: true });
+	}
 });
 
 test('remote mode defaults Harper threads and Fastify workers to --target-cpus, not to an empty cpu list', () => {

@@ -35,6 +35,11 @@ export const WORD_INITIAL_CEILING = 4;
 export const WORD_SLOT_LIMIT = 5;
 // The highest issuance ceiling this process has flushed for this database: a key at or below it needs no flush.
 export const WORD_DURABLE_CEILING = 6;
+// Used only through its low 32 bits (`FENCE_INDEX`, little-endian), so every access is the same 32-bit range. Low
+// bit: no new local write reservation is admitted (a node being removed from its cluster). The rest counts changes,
+// so a restore from a record read before a change cannot undo it (`restoreLocalWriteFence`).
+export const WORD_WRITE_FENCE = 7;
+const FENCE_INDEX = WORD_WRITE_FENCE * 2;
 export const HEADER_WORDS = 8;
 const THREAD_WORDS_OFFSET = HEADER_WORDS;
 const BOUND_WORDS_OFFSET = HEADER_WORDS + SLOTS;
@@ -106,6 +111,7 @@ type Reservation = {
  */
 class ThreadRegistry {
 	readonly words: BigInt64Array;
+	readonly fenceWords: Int32Array;
 	readonly rootStore: RocksDatabase;
 	private slot = -1;
 	private readonly heap: Reservation[] = [];
@@ -124,6 +130,7 @@ class ThreadRegistry {
 				`The origin-closed floor buffer has another layout (${buffer.byteLength} bytes); restart the process`
 			);
 		this.words = new BigInt64Array(buffer);
+		this.fenceWords = new Int32Array(buffer);
 		// a reservation's pending bound is `proposed` as it starts, so it must never be 0
 		if (Atomics.load(this.words, WORD_PROPOSED) === 0n)
 			storeMax(this.words, WORD_PROPOSED, rootStore.getMonotonicTimestamp());
@@ -378,6 +385,79 @@ export function reserveLocalKey(rootStore: RocksDatabase, handle: RocksTransacti
 	if (existing) return existing.logKey ?? existing.key;
 	if (explicit !== undefined) assertValidTimestamp(explicit);
 	return registryFor(rootStore).reserve(handle, explicit);
+}
+
+export class LocalWritesFencedError extends ServerError {
+	constructor(rootStore: RocksDatabase) {
+		super(
+			`This node is being removed from its cluster and no longer accepts writes to database ${(rootStore as any).databaseName ?? rootStore.path}`,
+			503
+		);
+	}
+}
+
+/**
+ * `reserveLocalKey` for a write a peer must receive: refused while the database is fenced. Only a new reservation
+ * is checked; a handle that already reserved commits what it staged. The second check follows the bound's
+ * publication, so a reservation it admits was visible to every floor certified after the fence was set.
+ */
+export function reserveLocalWriteKey(rootStore: RocksDatabase, handle: RocksTransaction, explicit?: number): number {
+	const existing: Reservation | undefined = (handle as any)[RESERVATION];
+	if (existing) return existing.logKey ?? existing.key;
+	if (explicit !== undefined) assertValidTimestamp(explicit);
+	const registry = registryFor(rootStore);
+	if (Atomics.load(registry.fenceWords, FENCE_INDEX) & 1) throw new LocalWritesFencedError(rootStore);
+	const key = registry.reserve(handle, explicit);
+	if (Atomics.load(registry.fenceWords, FENCE_INDEX) & 1) {
+		releaseLocalKey(handle);
+		throw new LocalWritesFencedError(rootStore);
+	}
+	return key;
+}
+
+function changeWriteFence(words: Int32Array, from: number, fenced: boolean): boolean {
+	return Atomics.compareExchange(words, FENCE_INDEX, from, (((from >>> 1) + 1) << 1) | (fenced ? 1 : 0) | 0) === from;
+}
+
+/**
+ * Set or clear the write fence on every thread of this process. A floor certified at or above the returned target
+ * was certified once every reservation admitted before the fence had settled, including a retry that re-keyed
+ * above the target (`rekeyLocalRetry`): its original, lower bound holds the floor until it settles.
+ */
+export function setLocalWriteFence(rootStore: RocksDatabase, fenced: boolean): number {
+	// LMDB has no `local` reservations to refuse: a fence there would refuse nothing
+	if (!originFloorsDurable(rootStore))
+		throw new ServerError('A write fence needs a RocksDB database with a durable origin-closed floor', 400);
+	const words = registryFor(rootStore).fenceWords;
+	while (!changeWriteFence(words, Atomics.load(words, FENCE_INDEX), fenced));
+	return timestampAbove(Math.max(rootStore.getMonotonicTimestamp(), localIssuedAheadThrough(rootStore)));
+}
+
+let newRootFence: ((rootStore: RocksDatabase) => boolean) | undefined;
+
+/**
+ * Registered by the cluster layer: whether a root opened now starts fenced. A node being removed persists its
+ * removal before fencing its roots, so a database created after the removal's last scan admits no local write
+ * that the removal's receipts would miss.
+ */
+export function setNewRootWriteFence(fenced: ((rootStore: RocksDatabase) => boolean) | undefined): void {
+	newRootFence = fenced;
+}
+
+export function opensFenced(rootStore: RocksDatabase): boolean {
+	return newRootFence?.(rootStore) === true;
+}
+
+/** Set the fence at open when `fenced` says so (a persisted record, or the new-root predicate), unless the fence changed after it started reading. */
+export function restoreLocalWriteFence(rootStore: RocksDatabase, fenced: () => boolean): void {
+	const words = registryFor(rootStore).fenceWords;
+	const before = Atomics.load(words, FENCE_INDEX);
+	if (!(before & 1) && fenced()) changeWriteFence(words, before, true);
+}
+
+export function localWritesFenced(rootStore: RocksDatabase): boolean {
+	if (typeof rootStore?.getUserSharedBuffer !== 'function') return false;
+	return (Atomics.load(registryFor(rootStore).fenceWords, FENCE_INDEX) & 1) !== 0;
 }
 
 /**
