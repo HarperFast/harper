@@ -2,22 +2,30 @@
 
 require('../testUtils');
 const assert = require('node:assert');
+const { Worker } = require('node:worker_threads');
 const { setTimeout: delay } = require('node:timers/promises');
 const { setupTestDBPath } = require('../testUtils');
 const { waitFor } = require('../waitFor.js');
 const { table, getDatabases } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { logger } = require('#src/utility/logging/logger');
-const { RocksDatabase } = require('@harperfast/rocksdb-js');
+
+function ask(worker, message) {
+	return new Promise((resolve, reject) => {
+		worker.once('message', resolve);
+		worker.once('error', reject);
+		worker.postMessage(message);
+	});
+}
 
 describe('Stale-while-revalidate refreshes', function () {
-	const isLmdb = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 	this.timeout(10_000);
 	let StaleTable;
 	let StaleAllowed;
 	let StaleQueryTable;
 	let sourceCalls;
 	let pendingCalls;
+	let touched;
 	let warnings;
 	let originalWarn;
 	before(function () {
@@ -55,15 +63,23 @@ describe('Stale-while-revalidate refreshes', function () {
 	beforeEach(function () {
 		sourceCalls = 0;
 		pendingCalls = [];
+		touched = [];
 		warnings = [];
 		originalWarn = logger.warn;
 		logger.warn = (...args) => warnings.push(args.map((arg) => arg?.message ?? String(arg)).join(' '));
 	});
-	afterEach(function () {
+	afterEach(async function () {
 		logger.warn = originalWarn;
 		for (const call of pendingCalls ?? []) call.resolve(undefined);
+		// a fill releases its record lock only after it commits
+		await waitFor(() => (touched ?? []).every(([Table, id]) => !Table.primaryStore.hasLock(id)), {
+			message: 'a background refresh did not finish',
+		});
 	});
-	const expire = (id, name = 'stale ' + id) => StaleTable.put(id, { id, name }, { expiresAt: 1 });
+	const expire = (id, name = 'stale ' + id) => {
+		touched.push([StaleTable, id]);
+		return StaleTable.put(id, { id, name }, { expiresAt: 1 });
+	};
 	const refreshFailure = () => Object.assign(new Error('refresh failed'), { statusCode: 503 });
 	const refreshWarnings = () => warnings.filter((warning) => warning.startsWith('refresh failed'));
 
@@ -111,6 +127,7 @@ describe('Stale-while-revalidate refreshes', function () {
 	});
 
 	it('starts one refresh for the stale rows that concurrent queries read', async function () {
+		touched.push([StaleQueryTable, 'queried']);
 		await StaleQueryTable.put('queried', { id: 'queried', name: 'stale-query' }, { expiresAt: 1 });
 		const searches = Array.from({ length: 5 }, async () => {
 			const names = [];
@@ -143,18 +160,53 @@ describe('Stale-while-revalidate refreshes', function () {
 		}
 	});
 
-	it('starts no refresh while another thread is filling the key', async function () {
-		if (isLmdb) this.skip();
-		await expire('foreign');
-		const otherThread = new RocksDatabase(StaleTable.primaryStore.rootStore.path).open();
+	it('releases the lock it took when its refresh throws before calling the source', async function () {
+		await expire('setup-throws');
+		const { primaryStore } = StaleTable;
+		const tryLock = primaryStore.tryLock;
+		let admitted = false;
+		primaryStore.tryLock = function (key, onUnlocked) {
+			const acquired = tryLock.call(this, key, onUnlocked);
+			if (key === 'setup-throws' && acquired) admitted = true;
+			return acquired;
+		};
+		let timestamp;
+		const context = {
+			get timestamp() {
+				if (admitted) throw new Error('context timestamp unreadable');
+				return timestamp;
+			},
+			set timestamp(value) {
+				timestamp = value;
+			},
+		};
 		try {
-			assert.equal(otherThread.tryLock('foreign'), true);
-			assert.equal((await StaleAllowed.get('foreign')).name, 'stale foreign');
-			otherThread.unlock('foreign');
-			await delay(50);
-			assert.equal(sourceCalls, 0);
+			assert.equal((await StaleAllowed.get('setup-throws', context)).name, 'stale setup-throws');
 		} finally {
-			otherThread.close();
+			primaryStore.tryLock = tryLock;
+		}
+		await waitFor(() => warnings.some((warning) => warning.startsWith('context timestamp unreadable')), {
+			message: 'the failed refresh was not reported',
+		});
+		assert.equal(sourceCalls, 0);
+		assert.equal((await StaleAllowed.get('setup-throws')).name, 'stale setup-throws');
+		assert.equal(sourceCalls, 1, 'the lock was released, so the next stale read refreshes');
+	});
+
+	it('starts no refresh while another thread holds the record lock', async function () {
+		this.timeout(30_000);
+		await expire('foreign');
+		const otherThread = new Worker(__dirname + '/staleRefreshOncePerKey-thread.js');
+		try {
+			assert.equal((await ask(otherThread, { type: 'lock', id: 'foreign' })).acquired, true);
+			assert.equal((await StaleAllowed.get('foreign')).name, 'stale foreign');
+			assert.equal((await ask(otherThread, { type: 'unlock', id: 'foreign' })).released, true);
+			await delay(50);
+			assert.equal(sourceCalls, 0, 'the skipped read queued no refresh');
+			assert.equal((await StaleAllowed.get('foreign')).name, 'stale foreign');
+			assert.equal(sourceCalls, 1, 'a read after the other thread released refreshes');
+		} finally {
+			await otherThread.terminate();
 		}
 	});
 });

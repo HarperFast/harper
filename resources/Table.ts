@@ -13677,9 +13677,8 @@ export function makeTable(options): TableResourceClass {
 				recordActionBinary(!needsSourceData, 'cache-hit', tableName);
 			}
 			if (needsSourceData) {
-				// if the resource defines a method for indicating if stale-while-revalidate is allowed for a record
 				const servesStale = Boolean(entry?.value && resource?.allowStaleWhileRevalidate?.(entry, id));
-				// a stale read refreshes only a key no fill holds; queued behind one, it would refetch after a failure
+				// queued behind a running fill, every stale read would refetch once that fill failed
 				if (servesStale) {
 					let acquired: boolean;
 					try {
