@@ -238,10 +238,10 @@ through the OPERATION_REGISTERED announcement (workers also get main's names in 
 never a module-local registry. It carries routing and `grantable` (so `validateOperations` accepts
 the name in an `operations` allowlist); a new consumer extends that message. Mirroring grantability
 only widens what an allowlist may _name_: enforcement stays in `chooseOperation` on the registering
-thread. Main forwards a miss to a registering worker (#1736), a worker one for a main-announced name
-to main (#4134); `operationExecuteRequestHandler` passes `forwarded`, so a request crosses at most
-once. Only a `PermissionResponseObject` denial returns as data: another object body would lose
-`code`/`retryable`.
+thread. Main forwards a miss to a registering worker (#1736); a worker forwards a miss for a
+main-announced name to main (#4134). `operationExecuteRequestHandler` passes `forwarded`, so a
+request that crossed once dispatches locally only and the two directions cannot loop.
+Only a `PermissionResponseObject` denial returns as data.
 
 ### A sealed operation's inner body is untrusted the same way (`components/encryptedOperation.ts`)
 
