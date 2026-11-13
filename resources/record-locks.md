@@ -442,8 +442,8 @@ not arm (c) below: the barrier gets no quorum floor, so the exclusion-only contr
 minimum governs (no explicit per-write count meets it), `lockGoverned(handle)` tells both registered
 callbacks, so the replication layer can refuse the commit before submission while no peer is connected
 and end the wait once the confirming peers are gone, rather than holding the caller for the full
-confirmation timeout. A chain moves onto `settleCommitCompletions` for the lock default only when one
-of its links holds record locks, so unlocked writes keep `Promise.all`.
+confirmation timeout. A commit moves onto `settleCommitCompletions` for the lock default only when it
+has a later link, so single-database writes keep `Promise.all`.
 
 Phase 1 keeps every Phase 0 mechanism and adds a cluster step on top of it. Nothing in core registers
 a `ClusterLockTransport`, so in a core-only build the machinery is inert and `lock()` behaves exactly

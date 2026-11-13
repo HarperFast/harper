@@ -571,14 +571,11 @@ export function confirmationDefaultsConfigured(): boolean {
 }
 
 /**
- * Whether a commit chain's settlement must allow for a confirmation armed by a later link, which the
- * root decides before its links do. The lock minimum arms only on a link holding record locks.
+ * Whether a commit's settlement must allow for a confirmation a later link arms after this one decides.
+ * Any later link may arm the lock minimum: a held lock's deferred write is bound before it is saved.
  */
-function chainMayArmConfirmation(link: DatabaseTransaction): boolean {
-	if (defaultWriteConfirmation > 0) return true;
-	if (!defaultRecordLockConfirmation) return false;
-	for (let txn = link.root ?? link; txn; txn = txn.next) if (txn.recordLocks || txn.hasLeaseProtectedWrite) return true;
-	return false;
+function laterLinkMayArmConfirmation(link: DatabaseTransaction): boolean {
+	return defaultWriteConfirmation > 0 || (defaultRecordLockConfirmation > 0 && link.next !== undefined);
 }
 
 /** LMDB has no cluster-granted locks, so only the write default can arm a later link. */
@@ -3894,8 +3891,7 @@ export class DatabaseTransaction implements Transaction {
 									: !this.saveCommits || !this.hasSiblingCommitInFlight(committedTransaction)
 							)
 								this.releaseRecordLocks();
-							// read before the later links start committing and releasing their own locks
-							const laterLinkMayConfirm = chainMayArmConfirmation(this);
+							const laterLinkMayConfirm = laterLinkMayArmConfirmation(this);
 							if (this.next && !committedImmediate) {
 								// never forward options.transaction (a retry/replay round's HEAD-store handle) to
 								// the next store — it must commit its own writes through its own transaction
