@@ -18,11 +18,18 @@ import type { ChildProcess } from 'node:child_process';
 
 import { startHarper, teardownHarper, sendOperation, type ContextWithHarper } from '@harperfast/integration-testing';
 import { waitFor } from '../../unitTests/waitFor.js';
+import { checkNativeAddon, isPointerCompressionRuntime } from '../../utility/nativeAddonAbi.ts';
 
 function uwsInstalled() {
 	try {
-		const entry = createRequire(import.meta.url).resolve('uWebSockets.js');
-		return existsSync(join(dirname(entry), `uws_${process.platform}_${process.arch}_${process.versions.modules}.node`));
+		const binary = join(
+			dirname(createRequire(import.meta.url).resolve('uWebSockets.js')),
+			`uws_${process.platform}_${process.arch}_${process.versions.modules}.node`
+		);
+		if (!existsSync(binary)) return false;
+		// createUwsServer refuses a binary that does not match a pointer-compression runtime's V8 ABI
+		const verdict = isPointerCompressionRuntime() ? checkNativeAddon(binary) : undefined;
+		return !verdict || (verdict.loadable && verdict.reason !== 'not-elf64');
 	} catch {
 		return false;
 	}

@@ -10,14 +10,20 @@ const path = require('node:path');
 const { once } = require('node:events');
 const { execFile } = require('node:child_process');
 const { startWorker, forceWorkerExit, setTerminateTimeout, workers } = require('#src/server/threads/manageThreads');
+const { checkNativeAddon, isPointerCompressionRuntime } = require('#src/utility/nativeAddonAbi');
 
 const FIXTURE = path.join(__dirname, 'forceWorkerExit-fixture.cjs');
 const NO_UWS = { HARPER_UWS_UDS: '', HARPER_UWS_HTTP: '' };
 
 let uwsAvailable = false;
 try {
-	const binary = `uws_${process.platform}_${process.arch}_${process.versions.modules}.node`;
-	uwsAvailable = fs.existsSync(path.join(path.dirname(require.resolve('uWebSockets.js')), binary));
+	const binary = path.join(
+		path.dirname(require.resolve('uWebSockets.js')),
+		`uws_${process.platform}_${process.arch}_${process.versions.modules}.node`
+	);
+	// createUwsServer refuses a binary that does not match a pointer-compression runtime's V8 ABI
+	const verdict = fs.existsSync(binary) && isPointerCompressionRuntime() ? checkNativeAddon(binary) : undefined;
+	uwsAvailable = fs.existsSync(binary) && (!verdict || (verdict.loadable && verdict.reason !== 'not-elf64'));
 } catch {}
 
 function startFixture(env, name = 'force-worker-exit-fixture') {
