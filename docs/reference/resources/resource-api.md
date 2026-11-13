@@ -361,7 +361,7 @@ Options (all optional; prefer setting these via `@table` schema directives):
 
 Harper automatically serializes concurrent requests for the same missing or stale record — all waiting requests share a single upstream fetch, preventing cache stampedes.
 
-<VersionBadge type="changed" version="v5.4.0" /> If the source throws an `Error` whose own `statusCode` (or `status`) is 404 or 410 (as an HTTP client that throws on any non-2xx response does), the requests waiting on that fetch in the same worker thread receive that error, each its own copy, instead of calling the source again. This does not apply to a thrown non-`Error` value, when the source sets `noCacheStore` on its context, on a read-only node, or while the table is being dropped. After any other failure, the waiting requests fetch again in turn. A failure is never cached, so the next request after them calls the source again.
+<VersionBadge type="changed" version="v5.4.0" /> If the source throws an `Error` whose own `statusCode` (or `status`) is 404 or 410 (as an HTTP client that throws on any non-2xx response does), the requests waiting on that fetch in the same worker thread receive that error, each its own copy, instead of calling the source again. This does not apply to a thrown non-`Error` value; to an error that a copy would not reproduce, because its class defines a getter, its status is a non-enumerable own property, or one of its fields holds a fetch `Response` or stream; when the source sets `noCacheStore` on its context; on a read-only node; or while the table is being dropped. After any other failure, the waiting requests fetch again in turn. A failure is never cached, so the next request after them calls the source again.
 
 #### Observing cache disposition
 
