@@ -7,6 +7,7 @@ const { setTimeout: delay } = require('node:timers/promises');
 const { setupTestDBPath } = require('../testUtils');
 const { waitFor } = require('../waitFor.js');
 const { table, getDatabases } = require('#src/resources/databases');
+const { setSourceFillLockTimeoutForTesting } = require('#src/resources/Table');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { logger } = require('#src/utility/logging/logger');
 
@@ -193,10 +194,29 @@ describe('Stale-while-revalidate refreshes', function () {
 		assert.equal(sourceCalls, 1, 'the lock was released, so the next stale read refreshes');
 	});
 
+	it('refreshes again once a refresh whose source never settles reaches its hold limit', async function () {
+		setSourceFillLockTimeoutForTesting(300);
+		try {
+			await expire('hung');
+			assert.equal((await StaleAllowed.get('hung')).name, 'stale hung');
+			assert.equal((await StaleAllowed.get('hung')).name, 'stale hung');
+			assert.equal(sourceCalls, 1, 'the running refresh keeps the record busy');
+			await waitFor(() => !StaleTable.primaryStore.hasLock('hung'), {
+				message: 'the unsettled refresh never let go of the record',
+			});
+			assert.equal((await StaleAllowed.get('hung')).name, 'stale hung');
+			assert.equal(sourceCalls, 2, 'a read after the hold limit refreshes again');
+		} finally {
+			setSourceFillLockTimeoutForTesting(undefined);
+		}
+	});
+
 	it('starts no refresh while another thread holds the record lock', async function () {
 		this.timeout(30_000);
 		await expire('foreign');
-		const otherThread = new Worker(__dirname + '/staleRefreshOncePerKey-thread.js');
+		const otherThread = new Worker(__dirname + '/staleRefreshOncePerKey-thread.js', {
+			workerData: { holdsRecordLocks: true },
+		});
 		try {
 			assert.equal((await ask(otherThread, { type: 'lock', id: 'foreign' })).acquired, true);
 			assert.equal((await StaleAllowed.get('foreign')).name, 'stale foreign');

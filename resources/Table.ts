@@ -13678,7 +13678,6 @@ export function makeTable(options): TableResourceClass {
 			}
 			if (needsSourceData) {
 				const servesStale = Boolean(entry?.value && resource?.allowStaleWhileRevalidate?.(entry, id));
-				// queued behind a running fill, every stale read would refetch once that fill failed
 				if (servesStale) {
 					let acquired: boolean;
 					try {
@@ -14247,35 +14246,36 @@ export function makeTable(options): TableResourceClass {
 		const existingIdentityRefs = existingEntry?.receivedIdentityRefs;
 		let inheritedTimestamp: number;
 		let fillKey: unknown;
+		let sourceTimestamp: number;
+		let issuanceFailed = false;
 		try {
 			inheritedTimestamp = context?.timestamp || context?.transaction?.timestamp;
 			fillKey = writeKeyId(id);
+			sourceTimestamp = inheritedTimestamp;
+			if (!sourceTimestamp) {
+				if (!isRocksDB) sourceTimestamp = getNextMonotonicTime();
+				else {
+					try {
+						sourceTimestamp = freshLocalKey(tableRootStore);
+					} catch (error) {
+						// Keep the read available, but never cache a version that could repeat an unstaged holder's.
+						issuanceFailed = true;
+						sourceTimestamp = (primaryStore as RocksDatabase).getMonotonicTimestamp();
+						const now = performance.now();
+						if (now - lastIssuanceFailureWarn >= 60_000) {
+							lastIssuanceFailureWarn = now;
+							logger.warn?.(
+								`Failed to allocate local issuance key for source read on ${tableName}; serving uncached`,
+								error
+							);
+						}
+					}
+				}
+			}
 		} catch (error) {
 			// a lock handed over by a stale read has no other owner to release it
 			if (lockHeld) releaseRecordLock(id);
 			throw error;
-		}
-		let sourceTimestamp = inheritedTimestamp;
-		let issuanceFailed = false;
-		if (!sourceTimestamp) {
-			if (!isRocksDB) sourceTimestamp = getNextMonotonicTime();
-			else {
-				try {
-					sourceTimestamp = freshLocalKey(tableRootStore);
-				} catch (error) {
-					// Keep the read available, but never cache a version that could repeat an unstaged holder's.
-					issuanceFailed = true;
-					sourceTimestamp = (primaryStore as RocksDatabase).getMonotonicTimestamp();
-					const now = performance.now();
-					if (now - lastIssuanceFailureWarn >= 60_000) {
-						lastIssuanceFailureWarn = now;
-						logger.warn?.(
-							`Failed to allocate local issuance key for source read on ${tableName}; serving uncached`,
-							error
-						);
-					}
-				}
-			}
 		}
 		let wake: () => void;
 		const heldFill = sourceFills?.get(fillKey);
