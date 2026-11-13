@@ -27,7 +27,8 @@ describe('the opened storage engine of a table and a database', () => {
 		testRoot = setupTestDBPath();
 		setMainIsWorker(true);
 	});
-	after(() => {
+	after(async () => {
+		await closeDatabase('engine_legacy');
 		if (lmdbDir) rmSync(lmdbDir, { recursive: true, force: true });
 	});
 
@@ -49,6 +50,17 @@ describe('the opened storage engine of a table and a database', () => {
 		assert.ok(Object.getOwnPropertyNames(getDatabases()).includes('engine_legacy'));
 		assert.deepStrictEqual([...databaseStorageEngines('engine_legacy')], ['lmdb']);
 		assert.deepStrictEqual([...databaseStorageEngines('engine_absent')], []);
+	});
+
+	it('reports lmdb for a table created in that existing .mdb root', async () => {
+		const Legacy = table({
+			table: 'EngineLegacy',
+			database: 'engine_legacy',
+			attributes: [{ name: 'id', type: 'ID', isPrimaryKey: true }],
+		});
+		assert.strictEqual(Legacy.storageEngine, 'lmdb');
+		const description = await describeTable({ database: 'engine_legacy', table: 'EngineLegacy' });
+		assert.strictEqual(description.engine, 'lmdb');
 	});
 
 	it('reports a root opened by create_database before its first table', () => {

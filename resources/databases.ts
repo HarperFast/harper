@@ -572,6 +572,10 @@ export function openRocksDatabase(path: string, options: RocksDatabaseOptions & 
 const lmdbDatabaseEnvs = new Map<string, LMDBRootDatabase>();
 const rocksdbDatabaseEnvs = new Map<string, RocksRootDatabase>();
 export type StorageEngine = 'rocksdb' | 'lmdb';
+/** Drops an LMDB root whose file has been moved away, so nothing reports or reuses it; its env stays open until exit. */
+export function forgetMovedLmdbRoot(path: string): void {
+	lmdbDatabaseEnvs.delete(path);
+}
 /**
  * The engines of the roots this thread has open for a database. Read from the opened roots, not
  * `storage.engine`: that setting picks the engine of a root created from now on, and an existing
