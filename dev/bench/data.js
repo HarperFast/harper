@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794554254184,
+  "lastUpdate": 1794554258175,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -21894,6 +21894,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "E scan p99 — short ranges",
             "value": 191.23,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "d42f5e6fd432f31c054ab6a119308fbe4fc2a60d",
+          "message": "Add the 5.4 release-note fragments that 5.4.0 changes were missing (#4351)\n\n* Add the 5.4 release-note fragments that 5.4.0 changes were missing\n\nChecked v5.3.1..v5.4.0 against docs/release-notes/v5-lincoln/5.4 and added\nfragments for the user-facing changes that had none: an upgrade-notes list,\nsecurity and permission changes, configuration, REST, MQTT, replication,\nstorage, analytics, a Performance section and a Known Issues section.\nRemoves the \"not released yet\" lines that 5.4.0 made false.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01F7groWG2PoCFsmKT2Wejui\nDispatch-Task: release-cut-main-5.4.0\n\n* Qualify the rollback, QoS 2, SQL primary-key, precondition and Bun analytics notes\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01F7groWG2PoCFsmKT2Wejui\nDispatch-Task: release-cut-main-5.4.0\n\n---------\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-11-13T01:07:51Z",
+          "url": "https://github.com/HarperFast/harper/commit/d42f5e6fd432f31c054ab6a119308fbe4fc2a60d"
+        },
+        "date": 1794554257192,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "C read p99 — read only",
+            "value": 10.17,
+            "unit": "ms"
+          },
+          {
+            "name": "B read p99 — read mostly",
+            "value": 9.94,
+            "unit": "ms"
+          },
+          {
+            "name": "B update p99 — read mostly",
+            "value": 12.65,
+            "unit": "ms"
+          },
+          {
+            "name": "A read p99 — update heavy",
+            "value": 13.99,
+            "unit": "ms"
+          },
+          {
+            "name": "A update p99 — update heavy",
+            "value": 16.64,
+            "unit": "ms"
+          },
+          {
+            "name": "F read p99 — read-modify-write",
+            "value": 14.45,
+            "unit": "ms"
+          },
+          {
+            "name": "F rmw p99 — read-modify-write",
+            "value": 29.14,
+            "unit": "ms"
+          },
+          {
+            "name": "D read p99 — read latest",
+            "value": 10.79,
+            "unit": "ms"
+          },
+          {
+            "name": "D insert p99 — read latest",
+            "value": 12.73,
+            "unit": "ms"
+          },
+          {
+            "name": "E insert p99 — short ranges",
+            "value": 45.99,
+            "unit": "ms"
+          },
+          {
+            "name": "E scan p99 — short ranges",
+            "value": 137.74,
             "unit": "ms"
           }
         ]
