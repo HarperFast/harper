@@ -1605,7 +1605,7 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 		});
 
 		it('requires a role of a subscription by a view held outside its context once a record backed the admission', async () => {
-			// every view a recheck installs on the context, as application code could keep one (getCurrentUser())
+			// application code can keep a view a recheck installed (getCurrentUser())
 			const installed = [];
 			let current = await certificate('retained_latch_cn');
 			const context = {
@@ -1732,6 +1732,24 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 				}
 			);
 			assert.strictEqual(_liveSubscriptionCount(), 0, 'it arrived with a role, so every view of it needs one');
+		});
+
+		it('requires a role of a view built after drop_user once an MCP refresh found a record behind the admission', async () => {
+			const admitted = await certificate('refresh_saw_cn');
+			await testUtils.seedUsers([{ username: 'refresh_saw_cn', active: true, role: readRole('refresh_saw_role') }]);
+			const backed = userModule.withCertificateAdmission(await resolve('refresh_saw_cn'), admitted);
+			assert.strictEqual(userModule.isRecordBacked(backed), true);
+			await testUtils.seedUsers();
+			const dropped = userModule.withCertificateAdmission(await resolve('refresh_saw_cn'), backed);
+			assert.strictEqual(userModule.certificateAdmission(dropped), admitted);
+			const gate = grantingByUsername('refresh_saw_cn');
+			await assert.rejects(
+				async () => gate.Resource.subscribe('topic', undefined, { user: dropped, authorize: true }),
+				{
+					statusCode: 403,
+				}
+			);
+			assert.strictEqual(_liveSubscriptionCount(), 0, 'the refresh saw the record, so the admission needs a role');
 		});
 
 		it('keeps the CONNECT lookup of a certificate principal a component built with no hdb_user', async () => {

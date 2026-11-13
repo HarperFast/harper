@@ -34,6 +34,8 @@ export {
 	isCertificatePrincipal,
 	certificateAdmission,
 	withCertificateAdmission,
+	latchRoleRequirement,
+	isRoleRequirementLatched,
 	userRecordVersions,
 	trackUserRecords,
 	cloneUserView,
@@ -907,7 +909,22 @@ function certificateAdmission(user: unknown): object | undefined {
 function withCertificateAdmission<T>(view: T, from: unknown): T {
 	const admission = certificateAdmission(from);
 	if (!admission || !view || typeof view !== 'object') return view;
+	// a refresh that finds a record behind the admission requires a role of every later view of it
+	if (isRecordBacked(view as unknown as User) === true) roleRequirements.add(admission);
 	return { ...view, [CERTIFICATE_PRINCIPAL]: admission };
+}
+
+// Certificate admissions a record was seen behind, and the subscription contexts that used them: every later
+// subscription of such an admission, by any view of it (an MQTT session reuses its principal for every SUBSCRIBE; a
+// recheck or an MCP refresh installs a new view), or on such a context needs a role, even once the record is dropped.
+const roleRequirements = new WeakSet<object>();
+
+function latchRoleRequirement(key: object): void {
+	roleRequirements.add(key);
+}
+
+function isRoleRequirementLatched(key: unknown): boolean {
+	return typeof key === 'object' && key !== null && roleRequirements.has(key);
 }
 
 /**

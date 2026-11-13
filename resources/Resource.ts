@@ -1158,28 +1158,26 @@ function hasPermissionControl(value: any, seen = new WeakSet<object>()): boolean
 }
 
 let securityUser: typeof import('../security/user.ts') | undefined;
-// Outlives the subscription whose recheck found a record behind a certificate admission, so every later one of that
-// admission, by any view of it (an MQTT session reuses its principal for every SUBSCRIBE; a recheck installs a new
-// view), or on that context needs a role too.
-const recordBacked = new WeakSet<object>();
-
 // module-level, so the closure each subscription keeps holds nothing more for it
 function recordProvenBy(error: unknown, username: string): boolean {
 	return securityUser!.isInactiveUserRejection(error) || securityUser!.userRecordVersions(username).userStamp !== null;
 }
 
+// a recheck found a record behind this admission: it, and the context it used, need a role from now on
 function latchRecordBacked(admission: object, context: any, username: string): void {
-	recordBacked.add(admission);
+	const { latchRoleRequirement, certificateAdmission } = securityUser!;
+	latchRoleRequirement(admission);
 	if (!context) return;
-	recordBacked.add(context);
+	latchRoleRequirement(context);
 	const current = context.user;
 	if (current?.username !== username) return;
-	const held = securityUser!.certificateAdmission(current);
-	if (held) recordBacked.add(held);
+	const held = certificateAdmission(current);
+	if (held) latchRoleRequirement(held);
 }
 
 function isLatched(admission: object | undefined, context: any): boolean {
-	return (admission !== undefined && recordBacked.has(admission)) || (Boolean(context) && recordBacked.has(context));
+	const { isRoleRequirementLatched } = securityUser!;
+	return isRoleRequirementLatched(admission) || isRoleRequirementLatched(context);
 }
 
 const resolveUser = (_scope: unknown, username: string) =>
