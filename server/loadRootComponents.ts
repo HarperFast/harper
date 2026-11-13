@@ -76,7 +76,10 @@ async function loadRootComponents(isWorkerThread: any = false) {
 			try {
 				restoreOwnedJobs = loadRuntimeModule('dataLayer/restorePublication').jobsOwnedByRestoreReceipts();
 			} catch (readError) {
-				harperLogger.error('Could not read which jobs restore records own', readError);
+				harperLogger.error(
+					'Could not read which jobs restore records own, so jobs interrupted by an earlier process are not settled until a later start',
+					readError
+				);
 			}
 		}
 	}
