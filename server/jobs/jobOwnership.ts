@@ -71,11 +71,20 @@ export async function reconcileInterruptedJobs(ownedElsewhere?: ReadonlySet<stri
 
 	// Collect before writing: the search walks the `status` attribute these updates change.
 	const interrupted: Array<{ id: any; owner_pid: any }> = [];
+	const ownedAtRecovery: typeof interrupted = [];
 	for (const status of UNFINISHED_JOB_STATUSES) {
 		for await (const job of table.search([{ attribute: 'status', value: status }])) {
-			if (job.owner_instance === JOB_OWNER_INSTANCE_ID || ownedElsewhere?.has(String(job.id))) continue;
-			interrupted.push({ id: job.id, owner_pid: job.owner_pid });
+			if (job.owner_instance === JOB_OWNER_INSTANCE_ID) continue;
+			(ownedElsewhere?.has(String(job.id)) ? ownedAtRecovery : interrupted).push({
+				id: job.id,
+				owner_pid: job.owner_pid,
+			});
 		}
+	}
+	// necessary, not sufficient: a receipt withdrawn since `ownedElsewhere` was taken no longer owns its job
+	if (ownedAtRecovery.length > 0) {
+		const stillOwned = await jobsStillOwnedByReceipts();
+		if (stillOwned) interrupted.push(...ownedAtRecovery.filter(({ id }) => !stillOwned.has(String(id))));
 	}
 
 	let settled = 0;
@@ -106,6 +115,16 @@ export async function settleAbandonedJob(jobId: any): Promise<boolean> {
 	await settle(jobId, 'its worker thread exited before it finished');
 	log.warn(`Settled job ${jobId}, whose worker thread exited before it finished`);
 	return true;
+}
+
+/** Undefined when the receipts cannot be read, so the caller keeps every job the snapshot named. */
+async function jobsStillOwnedByReceipts(): Promise<Set<string> | undefined> {
+	try {
+		const { jobsOwnedByRestoreReceipts } = await import('../../dataLayer/restorePublication.ts');
+		return jobsOwnedByRestoreReceipts();
+	} catch (error) {
+		log.error('Could not re-read which jobs restore records own; leaving the ones recovery named', error);
+	}
 }
 
 async function deferredJobStillOwned(jobId: any): Promise<boolean> {

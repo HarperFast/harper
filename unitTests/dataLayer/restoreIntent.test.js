@@ -1873,6 +1873,28 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			assert.deepStrictEqual(await snapshot(loadedItems(fixtures[restored].name)), fixtures[restored].backedUp[0]);
 		});
 
+		it('with Harper stopped: a cancel that lands after recovery but before the sweep leaves its job to the sweep', async function () {
+			const fixture = await seededDatabase();
+			const [backupId] = fixture.backupIds;
+			const { jobId } = await requestRestore(fixture.name, { on_restart: true, retain_previous: false });
+			const repair = breakBackup(fixture, backupId);
+			let owned;
+			try {
+				owned = await boot(fixture.name);
+			} finally {
+				repair();
+			}
+			assert.deepStrictEqual([...owned], [jobId], 'precondition: recovery left the failed restore owning its job');
+
+			await cancelRestartRestoreOffline({ database: fixture.name, cancel: true });
+			await reconcileInterruptedJobs(owned);
+
+			const settled = await job(jobId);
+			assert.strictEqual(settled.status, JOB_STATUS_ENUM.ERROR);
+			assert.match(settled.message, /interrupted/);
+			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.live, 'nothing was replaced');
+		});
+
 		it('with Harper stopped: refuses a restore over a pending one, naming only the way out that works offline', async function () {
 			const fixture = await seededDatabase();
 			const [backupId] = fixture.backupIds;
