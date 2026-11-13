@@ -1,5 +1,3 @@
-# harper#4344 — the application-profile /mcp mount with `mcp.application.authentication.required`.
-#
 # `mcpAuthRequiredValidator` is wired in through HARPER_BUILTIN_COMPONENTS (see
 # integrationTests/mcp/application-auth-required.test.ts); it must also appear as a top-level
 # component key here for componentLoader to load it. It registers a Bearer validator that declares

@@ -1,10 +1,4 @@
-/**
- * harper#4344 — `mcp.application.authentication.required`: the application-profile /mcp mount answers a request
- * with no principal with 401 and an RFC 9728 `WWW-Authenticate: Bearer resource_metadata="…"` challenge (Claude's
- * connectors start OAuth only on a 401), names the same metadata on a rejected Bearer token, and still serves an
- * authenticated client. The metadata URL comes from the Bearer validator the fixture registers with `challenge`.
- * The challenge is parsed with the MCP SDK's own client helper, so an off-the-shelf client can discover it.
- */
+/** The MCP SDK's own parser reads the challenge, so an off-the-shelf client can discover it. */
 import { suite, test, before, after } from 'node:test';
 import { deepStrictEqual, ok, strictEqual } from 'node:assert';
 import { resolve } from 'node:path';

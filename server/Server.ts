@@ -35,8 +35,8 @@ export interface BearerValidatorOptions {
 	timeoutMs?: number;
 	/**
 	 * What a client needs to obtain a token this validator accepts. `resourceMetadata` is the absolute
-	 * URL of the RFC 9728 protected-resource metadata document; the MCP application profile names it in
-	 * the `WWW-Authenticate: Bearer resource_metadata="…"` challenge on its 401s.
+	 * URL of the RFC 9728 protected-resource metadata document. The MCP application profile can name it in
+	 * its 401 challenges, unless config overrides it or another validator declares a different URL.
 	 */
 	challenge?: BearerValidatorChallenge;
 }
