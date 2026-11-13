@@ -5,23 +5,14 @@ const assert = require('node:assert');
 const { setupTestDBPath } = require('../../testUtils');
 const { waitFor } = require('../../waitFor.js');
 const analytics = require('#src/resources/analytics/write');
+const { isActionIndexedForTests: isIndexed } = analytics;
 
 const METRIC_PREFIX = 'record-action-';
 
-// actionKey turns the path into a string, so `conversions` counts the keys recordAction built for it.
-class CountedPath {
-	constructor(name) {
-		this.name = name;
-		this.conversions = 0;
-	}
-	toString() {
-		this.conversions++;
-		return this.name;
-	}
-}
-
-function summary(entry) {
-	return { path: String(entry.path), method: entry.method, count: entry.count, mean: entry.mean };
+// A report carries each action's first spelling, which these tests keep a string: aggregationCycle.test.js
+// leaves listeners registered that call startsWith on a reported path.
+function summary({ path, method, type, count, mean }) {
+	return { path, method, type, count, mean };
 }
 
 describe('recordAction', () => {
@@ -42,7 +33,6 @@ describe('recordAction', () => {
 		analytics.setAnalyticsEnabled(wasEnabled);
 	});
 
-	// Each test records under its own metric, so the next report carrying it is that test's window.
 	function nextReport(metric) {
 		return waitFor(
 			() => {
@@ -59,37 +49,52 @@ describe('recordAction', () => {
 		this.timeout(30000);
 		const metric = METRIC_PREFIX + 'spelling';
 		analytics.setAnalyticsEnabled(true);
-		// An empty, absent or null path and a number or its string each build the same key. Three rounds put
-		// every spelling in the index, so its last call reaches the action through its own index entry.
 		for (let round = 0; round < 3; round++) {
 			analytics.recordAction(1, metric, '', 'GET');
 			analytics.recordAction(2, metric, undefined, 'GET');
 			analytics.recordAction(3, metric, null, 'GET');
-			analytics.recordAction(4, metric, 9926);
-			analytics.recordAction(6, metric, '9926');
+			analytics.recordAction(4, metric, '9926');
+			analytics.recordAction(6, metric, 9926);
 		}
+		for (const [path, method] of [['', 'GET'], [undefined, 'GET'], [null, 'GET'], ['9926'], [9926]])
+			assert.ok(isIndexed(metric, path, method), `${typeof path} ${String(path)} is indexed`);
 		assert.deepStrictEqual(await nextReport(metric), [
-			{ path: '', method: 'GET', count: 9, mean: 2 },
-			{ path: '9926', method: undefined, count: 6, mean: 5 },
+			{ path: '', method: 'GET', type: undefined, count: 9, mean: 2 },
+			{ path: '9926', method: undefined, type: undefined, count: 6, mean: 5 },
 		]);
 	});
 
 	it('indexes a tuple from its second call in a window and keeps recording into its action', async function () {
 		this.timeout(30000);
 		const metric = METRIC_PREFIX + 'second-call';
-		const repeated = new CountedPath('Repeated');
 		analytics.setAnalyticsEnabled(true);
-		analytics.recordAction(5, metric, 'Once', 'GET');
-		analytics.recordAction(1, metric, repeated, 'GET');
-		assert.strictEqual(repeated.conversions, 1);
-		analytics.recordAction(2, metric, repeated, 'GET');
-		assert.strictEqual(repeated.conversions, 2, 'the first call left the tuple out of the index');
-		analytics.recordAction(3, metric, repeated, 'GET');
-		analytics.recordAction(6, metric, repeated, 'GET');
-		assert.strictEqual(repeated.conversions, 2, 'the second call indexed the tuple');
+		analytics.recordAction(5, metric, 'Once', 'GET', 'mqtt');
+		analytics.recordAction(1, metric, 'Repeated', 'GET', 'mqtt');
+		assert.ok(!isIndexed(metric, 'Once', 'GET', 'mqtt'), 'a tuple recorded once is not indexed');
+		assert.ok(!isIndexed(metric, 'Repeated', 'GET', 'mqtt'), 'a tuple recorded once is not indexed');
+		analytics.recordAction(2, metric, 'Repeated', 'GET', 'mqtt');
+		assert.ok(isIndexed(metric, 'Repeated', 'GET', 'mqtt'), 'the second call indexed the tuple');
+		analytics.recordAction(3, metric, 'Repeated', 'GET', 'mqtt');
+		analytics.recordAction(6, metric, 'Repeated', 'GET', 'mqtt');
+		assert.ok(!isIndexed(metric, 'Once', 'GET', 'mqtt'), 'a tuple recorded once is not indexed');
 		assert.deepStrictEqual(await nextReport(metric), [
-			{ path: 'Once', method: 'GET', count: 1, mean: 5 },
-			{ path: 'Repeated', method: 'GET', count: 4, mean: 3 },
+			{ path: 'Once', method: 'GET', type: 'mqtt', count: 1, mean: 5 },
+			{ path: 'Repeated', method: 'GET', type: 'mqtt', count: 4, mean: 3 },
+		]);
+	});
+
+	it('records an object argument into the action its key names without indexing it', async function () {
+		this.timeout(30000);
+		const metric = METRIC_PREFIX + 'object';
+		const operations = [{ operation: 'a' }, { operation: 'b' }];
+		analytics.setAnalyticsEnabled(true);
+		analytics.recordAction(1, metric, String(operations[0]), undefined, 'operation');
+		for (let round = 0; round < 2; round++)
+			for (const operation of operations) analytics.recordAction(3, metric, operation, undefined, 'operation');
+		for (const operation of operations)
+			assert.ok(!isIndexed(metric, operation, undefined, 'operation'), 'an object is never indexed');
+		assert.deepStrictEqual(await nextReport(metric), [
+			{ path: '[object Object]', method: undefined, type: 'operation', count: 5, mean: 2.6 },
 		]);
 	});
 
@@ -98,13 +103,21 @@ describe('recordAction', () => {
 		const metric = METRIC_PREFIX + 'window';
 		analytics.setAnalyticsEnabled(true);
 		for (const value of [1, 2, 3]) analytics.recordAction(value, metric, 'Window');
-		assert.deepStrictEqual(await nextReport(metric), [{ path: 'Window', method: undefined, count: 3, mean: 2 }]);
-		// The reported window indexed this tuple; its next calls must reach the new window's action.
+		assert.ok(isIndexed(metric, 'Window'), 'the second call indexed the tuple');
+		assert.deepStrictEqual(await nextReport(metric), [
+			{ path: 'Window', method: undefined, type: undefined, count: 3, mean: 2 },
+		]);
+		assert.ok(!isIndexed(metric, 'Window'), 'the report replaced the index');
 		for (const value of [10, 20]) analytics.recordAction(value, metric, 'Window');
-		assert.deepStrictEqual(await nextReport(metric), [{ path: 'Window', method: undefined, count: 2, mean: 15 }]);
+		assert.deepStrictEqual(await nextReport(metric), [
+			{ path: 'Window', method: undefined, type: undefined, count: 2, mean: 15 },
+		]);
 		for (const value of [1, 2, 3]) analytics.recordAction(value, metric, 'Window');
 		analytics.setAnalyticsEnabled(true);
+		assert.ok(!isIndexed(metric, 'Window'), 'the reset replaced the index');
 		analytics.recordAction(100, metric, 'Window');
-		assert.deepStrictEqual(await nextReport(metric), [{ path: 'Window', method: undefined, count: 1, mean: 100 }]);
+		assert.deepStrictEqual(await nextReport(metric), [
+			{ path: 'Window', method: undefined, type: undefined, count: 1, mean: 100 },
+		]);
 	});
 });
