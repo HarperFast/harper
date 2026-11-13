@@ -375,6 +375,22 @@ describe('mcp/listChanged', () => {
 			assert.deepEqual(rec.lastTools, [{ name: 'get_product' }]);
 		});
 
+		it('latches the certificate admission of a session whose refresh finds an inactive record', async () => {
+			initListChanged();
+			const rec = registerSession(
+				'cert-inactive-sid',
+				'application',
+				certificatePrincipal({ username: 'cert_inactive_cn' })
+			);
+			const admission = certificateAdmission(rec.user);
+			assert.equal(userModule.isRoleRequirementLatched(admission), false);
+			await testUtils.seedUsers([{ username: 'cert_inactive_cn', active: false, role: 'missing_role' }]);
+			fakeItc._fireUser();
+			await waitFor(() => userModule.isRoleRequirementLatched(admission), {
+				message: 'the inactive record backs the name, so the admission needs a role',
+			});
+		});
+
 		it('takes the tools of a dropped record-backed user', async () => {
 			await testUtils.seedUsers([
 				{

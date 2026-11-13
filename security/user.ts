@@ -909,7 +909,6 @@ function certificateAdmission(user: unknown): object | undefined {
 function withCertificateAdmission<T>(view: T, from: unknown): T {
 	const admission = certificateAdmission(from);
 	if (!admission || !view || typeof view !== 'object') return view;
-	// a refresh that finds a record behind the admission requires a role of every later view of it
 	if (isRecordBacked(view as unknown as User) === true) roleRequirements.add(admission);
 	return { ...view, [CERTIFICATE_PRINCIPAL]: admission };
 }

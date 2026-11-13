@@ -76,7 +76,7 @@ export function _setUserResolverForTest(fn: ((username: string) => Promise<Authe
 	_userResolverOverride = fn;
 }
 
-async function resolveUser(username: string | undefined): Promise<AuthedUser | undefined> {
+async function resolveUser(username: string | undefined, from?: unknown): Promise<AuthedUser | undefined> {
 	if (!username) return undefined;
 	if (_userResolverOverride) return _userResolverOverride(username);
 	try {
@@ -84,6 +84,11 @@ async function resolveUser(username: string | undefined): Promise<AuthedUser | u
 		const fresh = await findAndValidateUser(username, null, false);
 		return fresh as AuthedUser;
 	} catch (err) {
+		// an inactive record backs the name, so the certificate admission `from` is a view of needs a role from now on
+		if (userRuntimeModule.isInactiveUserRejection(err)) {
+			const admission = userRuntimeModule.certificateAdmission(from);
+			if (admission) userRuntimeModule.latchRoleRequirement(admission);
+		}
 		harperLogger.trace(`MCP listChanged: user re-resolve failed for ${username}: ${(err as Error).message}`);
 		return undefined;
 	}
@@ -229,7 +234,7 @@ async function refreshSessionUser(record: RegisteredSession): Promise<void> {
 		userRuntimeModule.isRecordlessPrincipal(record.user as userRuntimeModule.User)
 	)
 		return;
-	const fresh = await resolveUser(record.user?.username);
+	const fresh = await resolveUser(record.user?.username, record.user);
 	if (!fresh) return;
 	const view = record.user.authExpiresAt === undefined ? fresh : { ...fresh, authExpiresAt: record.user.authExpiresAt };
 	record.user = userRuntimeModule.withCertificateAdmission(view, record.user);
