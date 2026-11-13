@@ -5,7 +5,7 @@ const { transaction } = require('#src/resources/transaction');
 const { waitFor } = require('../waitFor');
 
 // The apply loop stages every write of a source transaction under its first event (or the transaction
-// wrapper), so that context's expiresAt must not reach a write that carries none (harper#4390).
+// wrapper) as the context.
 const DATABASE = 'source-txn-expiry';
 const NOW = Date.now();
 const HOUR = 3_600_000;
@@ -63,7 +63,7 @@ describe('a source-applied transaction gives each write only its own expiry', fu
 	const entry = (Table, id) => Table.primaryStore.getEntry(id);
 	const applied = (Table, ...ids) => waitFor(() => ids.every((id) => entry(Table, id)));
 	const hasNoExpiry = (Table, id) =>
-		assert.ok(!(entry(Table, id).expiresAt > 0), `${id} stored expiresAt ${entry(Table, id).expiresAt}`);
+		assert.strictEqual(entry(Table, id).expiresAt, undefined, `${id} stored expiresAt ${entry(Table, id).expiresAt}`);
 
 	it('does not give a write with no expiry the first write’s expiry', async () => {
 		const firstExpiresAt = Date.now() + 300;
@@ -119,12 +119,13 @@ describe('a source-applied transaction gives each write only its own expiry', fu
 				type: 'transaction',
 				timestamp: NOW + 3.1,
 				version: NOW + 3.1,
-				expiresAt: Date.now() + 60_000,
+				expiresAt: Date.now() - 1,
 				writes: [put('wrapped', NOW + 3.1)],
 			},
 		]);
 		await applied(Table, 'wrapped');
 		hasNoExpiry(Table, 'wrapped');
+		assert.equal((await Table.get('wrapped'))?.id, 'wrapped');
 	});
 
 	it('keeps each write’s own expiry within one transaction', async () => {
