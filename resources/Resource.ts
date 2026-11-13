@@ -1163,7 +1163,7 @@ function recordProvenBy(error: unknown, username: string): boolean {
 	return securityUser!.isInactiveUserRejection(error) || securityUser!.userRecordVersions(username).userStamp !== null;
 }
 
-// a recheck found a record behind this admission: it, and the context it used, need a role from now on
+// the latch's rules are in security/DESIGN.md, under a certificate's principal
 function latchRecordBacked(admission: object, context: any, username: string): void {
 	const { latchRoleRequirement, certificateAdmission } = securityUser!;
 	latchRoleRequirement(admission);
