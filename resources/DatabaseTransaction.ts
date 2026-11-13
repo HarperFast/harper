@@ -1246,7 +1246,9 @@ export class DatabaseTransaction implements Transaction {
 		return Math.max(
 			this.requestedConfirmationCount,
 			this.requiresOwnerConfirmation &&
-				this.writes.some((write) => write?.saved && !confirmsNothing(write) && write.requiresOwnerConfirmation)
+				this.writes.some(
+					(write) => write?.saved && write.requiresOwnerConfirmation && !confirmsNothing(write, this.nodeLocalByStore)
+				)
 				? 1
 				: 0
 		);
