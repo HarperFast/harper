@@ -72,7 +72,6 @@ describe('Stale-while-revalidate refreshes', function () {
 	afterEach(async function () {
 		logger.warn = originalWarn;
 		for (const call of pendingCalls ?? []) call.resolve(undefined);
-		// a fill releases its record lock only after it commits
 		await waitFor(() => (touched ?? []).every(([Table, id]) => !Table.primaryStore.hasLock(id)), {
 			message: 'a background refresh did not finish',
 		});
