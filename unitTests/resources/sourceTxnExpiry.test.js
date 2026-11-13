@@ -4,8 +4,6 @@ const { table } = require('#src/resources/databases');
 const { transaction } = require('#src/resources/transaction');
 const { waitFor } = require('../waitFor');
 
-// The apply loop stages every write of a source transaction under its first event (or the transaction
-// wrapper) as the context.
 const DATABASE = 'source-txn-expiry';
 const NOW = Date.now();
 const HOUR = 3_600_000;
