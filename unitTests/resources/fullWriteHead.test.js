@@ -1013,7 +1013,7 @@ describe('A record bit for a full-write head (harper#3532)', () => {
 				}
 			});
 
-			it('carries the boundary through a direct update that assigns no metadata flags', async function () {
+			it('carries the boundary through a direct update that passes no metadata flags', async function () {
 				if (isLMDB) return this.skip();
 				const id = newId();
 				const version = Date.now() + DAY;

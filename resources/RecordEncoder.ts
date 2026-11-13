@@ -1035,7 +1035,7 @@ export function recordUpdater(
 		record,
 		existingEntry,
 		newVersion,
-		assignMetadata = -1, // when positive, this has a set of metadata flags for the record
+		assignMetadata = 0, // metadata flags for the record
 		audit?: boolean, // true -> audit this record. false -> do not. null -> retain any audit timestamp
 		options?,
 		type = 'put',
@@ -1073,8 +1073,6 @@ export function recordUpdater(
 					: TIMESTAMP_ASSIGN_NEW | 0x4000 // or just assign a new one
 				: NO_TIMESTAMP;
 		const expiresAt = options?.expiresAt;
-		// -1 means no flags assigned; normalized here, since OR-ing a flag into -1 would stay -1 and drop it
-		if (assignMetadata < 0) assignMetadata = 0;
 		if (expiresAt >= 0) assignMetadata |= HAS_EXPIRATION;
 		metadataInNextEncoding = assignMetadata;
 		expiresAtNextEncoding = expiresAt;
