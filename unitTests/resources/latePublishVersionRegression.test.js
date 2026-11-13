@@ -1,4 +1,3 @@
-// A publish restamps the record it lands on with its own version, even one below the record's.
 require('../testUtils');
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
@@ -13,8 +12,7 @@ const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 const engine = isLMDB ? 'lmdb' : 'rocksdb';
 const RUN_KNOWN_FAILURES = Boolean(process.env.RUN_KNOWN_FAILURES);
 
-// Pins today's wrong result, so CI stays green while it holds and turns red when anything changes it. A fix makes
-// `observe` return `expected`; then this becomes a plain test of that. RUN_KNOWN_FAILURES=1 asserts `expected` now.
+// Green only while the pinned wrong result holds; RUN_KNOWN_FAILURES=1 asserts the expected one instead.
 function failsUntilFixed(title, observe, { expected, observed, engines = ['rocksdb', 'lmdb'] }) {
 	if (RUN_KNOWN_FAILURES || !engines.includes(engine))
 		return it(title, async () => assert.deepEqual(await observe(), expected));
