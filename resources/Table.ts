@@ -14322,6 +14322,8 @@ export function makeTable(options): TableResourceClass {
 			transaction: undefined,
 			expiresAt: undefined,
 			lastModified: undefined,
+			// a fill is a copy the source can supply again, so a configured confirmation default does not apply
+			replicatedConfirmation: 0,
 		};
 		const responseHeaders = (context as any)?.responseHeaders;
 		return new Promise((resolve, reject) => {

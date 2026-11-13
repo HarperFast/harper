@@ -548,11 +548,7 @@ export function registeredReplicationConfirmation() {
 
 let defaultWriteConfirmation = 0;
 let defaultRecordLockConfirmation = 0;
-/**
- * Register the configured confirmation defaults: `writes`, the count a write transaction requests when
- * nothing set one, and `recordLocks`, the minimum a native commit made while holding a cluster record
- * lock requests.
- */
+/** Harper Pro registers these from `replication.confirmation` and `replication.recordLockConfirmation`. */
 export function setReplicationConfirmationDefaults(defaults: { writes?: number; recordLocks?: number }): void {
 	const writes = defaults.writes ?? 0;
 	const recordLocks = defaults.recordLocks ?? 0;
@@ -566,10 +562,22 @@ export function setReplicationConfirmationDefaults(defaults: { writes?: number; 
 	defaultRecordLockConfirmation = recordLocks;
 }
 
-/** An explicitly set count, or undefined when none was set (a non-number counts as unset). */
+/**
+ * Whether a commit chain's settlement must allow for a confirmation armed by a later link: the root
+ * decides before its links do.
+ */
+export function confirmationDefaultsConfigured(): boolean {
+	return defaultWriteConfirmation > 0 || defaultRecordLockConfirmation > 0;
+}
+
+/**
+ * An explicitly set count, or undefined when none was set. A numeric string counts, as it did when the
+ * count was coerced by `Math.max`; anything else that is not a number counts as unset.
+ */
 export function explicitConfirmation(value: unknown): number | undefined {
-	if (typeof value !== 'number' || Number.isNaN(value)) return undefined;
-	return value > 0 ? value : 0;
+	const count = typeof value === 'string' && value.trim() !== '' ? Number(value) : value;
+	if (typeof count !== 'number' || Number.isNaN(count)) return undefined;
+	return count > 0 ? count : 0;
 }
 
 export function confirmReplicationAfterCommit(callback: () => unknown): Promise<void> {
@@ -1215,7 +1223,6 @@ export class DatabaseTransaction implements Transaction {
 			(this.db as any)?.databaseName ?? this.writes.find((write) => write)?.store.rootStore.databaseName;
 		return databaseName === SYSTEM_SCHEMA_NAME ? 0 : defaultWriteConfirmation;
 	}
-	/** The requested count of the native commit `transaction`, including its record-lock minimum. */
 	requestedConfirmationFor(transaction?: RocksTransaction): number {
 		return Math.max(this.requestedConfirmationCount, lockConfirmationOf(transaction));
 	}
@@ -2563,15 +2570,18 @@ export class DatabaseTransaction implements Transaction {
 	}
 
 	/**
-	 * Record on the native commit `transaction` the record-lock minimum it must wait for: set when this
-	 * link holds a cluster-granted lock, or the batch has a write made through one (a hold handle can come
-	 * from another transaction). Expired handles still count: the commit fence refuses their writes.
+	 * The record-lock minimum applies when this link holds a cluster-granted lock, or the batch writes a key
+	 * through one (a hold handle can come from another transaction). A lapsed handle still counts: the
+	 * commit fence refuses the operation its lock() staged before this runs.
 	 */
 	private noteLockConfirmation(transaction: RocksTransaction): void {
 		const txn = transaction as RocksTransactionWithRetry;
-		txn.lockConfirmation = undefined;
-		if (!defaultRecordLockConfirmation || (!this.recordLocks && !this.hasLeaseProtectedWrite)) return;
-		if (this.holdsClusterLock(transaction)) txn.lockConfirmation = defaultRecordLockConfirmation;
+		const applies =
+			defaultRecordLockConfirmation > 0 &&
+			Boolean(this.recordLocks || this.hasLeaseProtectedWrite) &&
+			this.holdsClusterLock(transaction);
+		if (applies) txn.lockConfirmation = defaultRecordLockConfirmation;
+		else if (txn.lockConfirmation !== undefined) txn.lockConfirmation = undefined;
 	}
 
 	private holdsClusterLock(transaction: RocksTransaction): boolean {
@@ -3913,7 +3923,7 @@ export class DatabaseTransaction implements Transaction {
 							)
 								this.timestamp = 0; // reset the timestamp as well
 							const completed =
-								confirmation || (this.root ?? this).confirmationCount
+								confirmation || confirmationDefaultsConfigured() || (this.root ?? this).confirmationCount
 									? settleCommitCompletions(completions, confirmation)
 									: Promise.all(completions);
 							return completed.then(

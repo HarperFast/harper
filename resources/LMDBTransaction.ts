@@ -11,6 +11,7 @@ import {
 	requestAbortedError,
 	transactionOpenTooLongError,
 	confirmReplicationAfterCommit,
+	confirmationDefaultsConfigured,
 	explicitConfirmation,
 	registeredReplicationConfirmation,
 	settleCommitCompletions,
@@ -427,7 +428,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 					this.timestamp = 0;
 					while (this.next) this.detachNext();
 					const completed =
-						confirmation || (this.root ?? this).confirmationCount
+						confirmation || confirmationDefaultsConfigured() || (this.root ?? this).confirmationCount
 							? settleCommitCompletions(completions, confirmation)
 							: Promise.all(completions);
 					return completed.then(() => {

@@ -94,10 +94,35 @@ describe('Replication confirmation defaults', () => {
 			assert.deepStrictEqual(calls, []);
 		});
 
-		it('treats a non-number count as unset', async () => {
+		it('honours a numeric-string count', async () => {
+			await transaction({ replicatedConfirmation: '2' }, () => First.put({ id: nextId() }));
+			assert.deepStrictEqual(calls, [{ databaseName: 'confirmation-default-first', count: 2, automatic: false }]);
+		});
+
+		it('passes an operation-API count, including 0, through to the write', async () => {
+			const { ResourceBridge } = require('#src/dataLayer/harperBridge/ResourceBridge');
+			const bridge = new ResourceBridge();
+			const target = { operation: 'upsert', schema: 'confirmation-default-first', table: 'Records' };
 			setReplicationConfirmationDefaults({ writes: 1 });
-			await transaction({ replicatedConfirmation: Number.NaN }, () => First.put({ id: nextId() }));
-			assert.deepStrictEqual(calls, [{ databaseName: 'confirmation-default-first', count: 1, automatic: false }]);
+			const id = nextId();
+			await bridge.upsertRecords({ ...target, records: [{ id, name: 'zero' }], replicatedConfirmation: 0 });
+			await bridge.deleteRecords({ ...target, operation: 'delete', ids: [id], replicatedConfirmation: 0 });
+			assert.deepStrictEqual(calls, []);
+			await bridge.upsertRecords({ ...target, records: [{ id, name: 'default' }] });
+			await bridge.deleteRecords({ ...target, operation: 'delete', ids: [id] });
+			assert.deepStrictEqual(
+				calls.map(({ count }) => count),
+				[1, 1]
+			);
+		});
+
+		it('treats a count that is not a number as unset', async () => {
+			setReplicationConfirmationDefaults({ writes: 1 });
+			for (const replicatedConfirmation of [Number.NaN, 'all']) {
+				calls = [];
+				await transaction({ replicatedConfirmation }, () => First.put({ id: nextId() }));
+				assert.deepStrictEqual(calls, [{ databaseName: 'confirmation-default-first', count: 1, automatic: false }]);
+			}
 		});
 
 		it('does not apply the default to the system database', async () => {
@@ -119,6 +144,8 @@ describe('Replication confirmation defaults', () => {
 			const id = nextId();
 			assert.strictEqual((await Cached.get(id)).name, 'from source');
 			await waitFor(() => Cached.primaryStore.getEntry(id));
+			// the fill commits in the background; give a confirmation it should not request time to arrive
+			await new Promise((resolve) => setTimeout(resolve, 100));
 			assert.deepStrictEqual(calls, []);
 		});
 
