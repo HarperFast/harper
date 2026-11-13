@@ -98,9 +98,9 @@ Type: `boolean`
 
 Default: `true`
 
-Set to `false` to stop generating verb tools from exported Resources, so the profile exposes only the custom `mcpTools` your components declare (still subject to `allow` and `deny`). This lets a component publish a curated tool set without its other REST exports becoming tools, and without listing each tool name in `allow`. Custom `mcpPrompts` and `mcpResources` are unaffected.
+Set to `false` to stop generating verb tools from exported Resources, so the only tools the profile lists are the custom `mcpTools` your components declare (still subject to `allow` and `deny`). This lets a component publish a curated tool set without its other REST exports becoming tools, and without listing each tool name in `allow`. It changes tools only: custom `mcpPrompts` and `mcpResources` are unaffected, and exported tables stay listed and readable through `resources/list`, `resources/read` and `resources/subscribe`, under the caller's permissions as before.
 
-`allow`, `deny` and `generatedTools` are read whenever the application tool set is rebuilt (at startup, and when schemas or registered Resources change), not on every request.
+`allow`, `deny` and `generatedTools` are read whenever the application tool set is rebuilt (at startup, and when schemas or registered Resources change), not on every request as the operations profile's lists are, so an edited value may not apply until the next rebuild or restart.
 
 ### `mcp.application.searchMaxResults`
 

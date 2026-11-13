@@ -115,6 +115,11 @@ A handful of design points are non-obvious and easy to break:
   _bypassed_ by the seam and is therefore covered at the **integration** level (`integrationTests/mcp/sse-listchanged.test.ts` N3
   record / N4 collection), not in unit tests.
 
+- **Application `allow`/`deny`/`generatedTools` filter at registry insertion, never at list time.**
+  `buildApplicationTools` drops a rejected tool before `addTool`, and `tools/call` resolves through the same
+  registry (`getTool`), so a filtered tool is neither listed nor callable. A list-only filter would advertise
+  less than `tools/call` accepts (`integrationTests/mcp/application-tool-filter.test.ts`, harper#4345).
+
 - **Discovery filtering must mirror dispatch's ORDER _and_ its name namespace.**
   `canRoleInvokeOperation` (`operationVisibility.ts`, shared by `tools/list` and the
   `harper://operations` catalog) answers only the role-level question; per-target schema/table

@@ -24,8 +24,8 @@ export function readNameList(value: unknown): readonly string[] | undefined {
 }
 
 /**
- * Compiles an allow/deny pair into a predicate. An unset or empty `allow` admits every name (the
- * application profile's surface before allow/deny existed); `deny` is applied after `allow`.
+ * Compiles an allow/deny pair into a predicate. An unset or empty `allow` admits every name; `deny` is
+ * applied after `allow`.
  */
 export function compileNameFilter(
 	allow: readonly string[] | undefined,

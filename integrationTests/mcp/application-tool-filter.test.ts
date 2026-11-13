@@ -1,8 +1,4 @@
-/**
- * MCP application profile — `mcp.application.allow`/`deny` and `generatedTools` (#4345), read from
- * the root config of a booted server rather than injected into the registry: the config keys must
- * reach the tool rebuild under the names the validator accepts.
- */
+// Booted from root config, not an injected registry: the keys must reach the tool rebuild under the names the validator accepts.
 import { suite, test, before, after } from 'node:test';
 import { deepStrictEqual, rejects } from 'node:assert';
 import { resolve } from 'node:path';
