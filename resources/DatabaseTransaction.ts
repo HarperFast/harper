@@ -2628,13 +2628,16 @@ export class DatabaseTransaction implements Transaction {
 	/**
 	 * The record-lock minimum applies when this link holds a live cluster-granted lock, or the batch writes
 	 * a key through one, live or not (a hold handle can come from another transaction; the commit fence
-	 * refuses a write through a lapsed one).
+	 * refuses a write through a lapsed one). Only a batch that appends a write has anything to protect: a
+	 * lock-only commit, or a write that lost to a newer entry, would otherwise wait on the key's current
+	 * version, which can be another node's and which this node's peers never acknowledge.
 	 */
 	private noteLockConfirmation(transaction: RocksTransaction): void {
 		const txn = transaction as RocksTransactionWithRetry;
 		const applies =
 			defaultRecordLockConfirmation > 0 &&
 			Boolean(this.recordLocks || this.hasLeaseProtectedWrite) &&
+			this.writes.some((write) => write?.saved && write.appendedTo === transaction) &&
 			this.holdsClusterLock(transaction);
 		if (applies) txn.lockConfirmation = defaultRecordLockConfirmation;
 		else if (txn.lockConfirmation !== undefined) txn.lockConfirmation = undefined;

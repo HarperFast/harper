@@ -325,13 +325,23 @@ describe('Replication confirmation defaults', () => {
 			assert.deepStrictEqual(calls, []);
 		});
 
-		it('does not wait when the locked transaction writes nothing', async () => {
+		it('neither checks nor waits when the locked transaction writes nothing, even on an existing record', async () => {
 			setReplicationConfirmationDefaults({ recordLocks: 1 });
-			const context = {};
-			await transaction(context, async () => {
-				await lockAsCluster(context, nextId());
-			});
+			const feasibility = [];
+			registerConfirmation(
+				(databaseName, _version, count) => calls.push({ databaseName, count }),
+				(_databaseName, count) => feasibility.push(count)
+			);
+			const existing = nextId();
+			await First.put({ id: existing, name: 'existing' });
+			for (const id of [nextId(), existing]) {
+				const context = {};
+				await transaction(context, async () => {
+					await lockAsCluster(context, id);
+				});
+			}
 			assert.deepStrictEqual(calls, []);
+			assert.deepStrictEqual(feasibility, []);
 		});
 
 		it('does not apply a lapsed hold lock to a write of another key', async () => {
