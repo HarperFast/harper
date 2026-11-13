@@ -18,6 +18,7 @@ describe('Replication confirmation defaults', () => {
 	let sequence = 0;
 	const nextId = () => `confirmation-default-${sequence++}`;
 	let calls;
+	const fillContexts = [];
 
 	before(() => {
 		setupTestDBPath();
@@ -44,7 +45,10 @@ describe('Replication confirmation defaults', () => {
 			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
 		});
 		Cached.sourcedFrom({
-			get: (id) => ({ id, name: 'from source' }),
+			get: (id, context) => {
+				fillContexts.push(context);
+				return { id, name: 'from source' };
+			},
 			available: () => true,
 		});
 		Local = table({
@@ -143,6 +147,7 @@ describe('Replication confirmation defaults', () => {
 			setReplicationConfirmationDefaults({ writes: 1 });
 			const id = nextId();
 			assert.strictEqual((await Cached.get(id)).name, 'from source');
+			assert.strictEqual(fillContexts.at(-1).replicatedConfirmation, 0);
 			await waitFor(() => Cached.primaryStore.getEntry(id));
 			// the fill commits in the background; give a confirmation it should not request time to arrive
 			await new Promise((resolve) => setTimeout(resolve, 100));
@@ -235,6 +240,22 @@ describe('Replication confirmation defaults', () => {
 				await lockAsCluster(context, nextId());
 			});
 			assert.deepStrictEqual(calls, []);
+		});
+
+		it('does not apply a lapsed hold lock to a write of another key', async () => {
+			setReplicationConfirmationDefaults({ recordLocks: 1 });
+			const context = {};
+			let held;
+			await transaction(context, async () => {
+				const lockedId = nextId();
+				held = await First.lock(lockedId, { lease: 5000, hold: true });
+				const handle = context.transaction.recordLockFor(First.primaryStore, lockedId);
+				assert.ok(handle.joinClusterRound(Date.now(), 5000, performance.now(), () => {}));
+				handle.revokeLease();
+				await First.put({ id: nextId() });
+			});
+			assert.deepStrictEqual(calls, []);
+			await held.unlock().catch(() => {});
 		});
 
 		it('takes the larger of the lock count and the requested count', async () => {

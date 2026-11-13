@@ -570,10 +570,7 @@ export function confirmationDefaultsConfigured(): boolean {
 	return defaultWriteConfirmation > 0 || defaultRecordLockConfirmation > 0;
 }
 
-/**
- * An explicitly set count, or undefined when none was set. A numeric string counts, as it did when the
- * count was coerced by `Math.max`; anything else that is not a number counts as unset.
- */
+/** An explicitly set count, or undefined when none was set. A numeric string counts; any other non-number is unset. */
 export function explicitConfirmation(value: unknown): number | undefined {
 	const count = typeof value === 'string' && value.trim() !== '' ? Number(value) : value;
 	if (typeof count !== 'number' || Number.isNaN(count)) return undefined;
@@ -1210,9 +1207,8 @@ export class DatabaseTransaction implements Transaction {
 		return explicitConfirmation(this.replicatedConfirmation) ?? this.configuredConfirmation();
 	}
 	/**
-	 * The configured write default for a link no explicit count reached. A root's explicit count of 0
-	 * opts its other links out too; a positive one still reaches only the first database, so the default
-	 * covers the rest.
+	 * A root's explicit count of 0 opts its other links out too; a positive one still reaches only the
+	 * first database, so the default covers the rest.
 	 */
 	configuredConfirmation(): number {
 		if (!defaultWriteConfirmation) return 0;
@@ -2570,9 +2566,9 @@ export class DatabaseTransaction implements Transaction {
 	}
 
 	/**
-	 * The record-lock minimum applies when this link holds a cluster-granted lock, or the batch writes a key
-	 * through one (a hold handle can come from another transaction). A lapsed handle still counts: the
-	 * commit fence refuses the operation its lock() staged before this runs.
+	 * The record-lock minimum applies when this link holds a live cluster-granted lock, or the batch writes
+	 * a key through one, live or not (a hold handle can come from another transaction; the commit fence
+	 * refuses a write through a lapsed one).
 	 */
 	private noteLockConfirmation(transaction: RocksTransaction): void {
 		const txn = transaction as RocksTransactionWithRetry;
@@ -2587,7 +2583,7 @@ export class DatabaseTransaction implements Transaction {
 	private holdsClusterLock(transaction: RocksTransaction): boolean {
 		if (this.recordLocks)
 			for (const storeMap of this.recordLocks.values())
-				for (const handle of storeMap.values()) if (handle.clusterTsR !== undefined) return true;
+				for (const handle of storeMap.values()) if (handle.clusterTsR !== undefined && !handle.isExpired()) return true;
 		if (this.hasLeaseProtectedWrite)
 			for (const write of this.writes)
 				if (
