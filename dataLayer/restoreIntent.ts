@@ -661,10 +661,16 @@ async function failAttempt(lock: RestoreLock, receipt: RestoreReceipt, reason: s
 			`The restore of '${receipt.database}' is past its commit, so a failure (${reason}) is not recorded over it`
 		);
 	}
-	const failed = writeRestoreReceipt(lock, {
+	// reconciled, or a write that landed before its flush failed would re-enter here from runRestartAttempt's catch
+	const failed = writeReceiptReconciled(lock, {
 		...receipt,
 		last_error: reason,
-		...(terminal ? { state: 'terminal' as const, pre_terminal_state: receipt.state as 'pending' | 'applying' } : {}),
+		...(terminal
+			? {
+					state: 'terminal' as const,
+					pre_terminal_state: receipt.state === 'terminal' ? receipt.pre_terminal_state : receipt.state,
+				}
+			: {}),
 	});
 	if (terminal) {
 		logger.error(

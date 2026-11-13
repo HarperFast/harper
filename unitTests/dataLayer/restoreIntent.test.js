@@ -1093,6 +1093,66 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.backedUp[0]);
 		});
 
+		for (const [cause, options, fail, expectedError] of [
+			[
+				'the node has replication peers',
+				{ retain_previous: false },
+				() => {
+					const savedRoutes = env.get(CONFIG_PARAMS.REPLICATION_ROUTES);
+					env.setProperty(CONFIG_PARAMS.REPLICATION_ROUTES, [{ hostname: 'peer.example', port: 9933 }]);
+					return () => env.setProperty(CONFIG_PARAMS.REPLICATION_ROUTES, savedRoutes);
+				},
+				/peer\.example/,
+			],
+			[
+				'the live database cannot be backed up',
+				{},
+				(fixture) => {
+					const currentPath = join(fixture.dir, 'CURRENT');
+					const current = readFileSync(currentPath);
+					writeFileSync(currentPath, 'MANIFEST-999999\n');
+					return () => writeFileSync(currentPath, current);
+				},
+				/retain_previous=false/,
+			],
+		]) {
+			it(`can resume a restore that went terminal on its last attempt because ${cause}, when that write could not be flushed`, async function () {
+				const fixture = await seededDatabase();
+				const [backupId] = fixture.backupIds;
+				const { jobId } = await requestRestore(fixture.name, { on_restart: true, backup_id: backupId, ...options });
+				await closeDatabase(fixture.name);
+				// the last attempt, so a failure recorded twice would be terminal both times
+				rewriteReceipt(fixture.dir, { attempts: 2 });
+				const repair = fail(fixture);
+				let flushFailed = false;
+				const restoreWrite = flushFailsAfter(
+					fixture,
+					'writeRestoreReceipt',
+					(receipt) => receipt.state === 'terminal' && !flushFailed && (flushFailed = true)
+				);
+				try {
+					await boot(fixture.name);
+				} finally {
+					restoreWrite();
+					repair();
+				}
+
+				assert.ok(flushFailed, 'precondition: the terminal write took effect, then threw');
+				const terminal = receiptOf(fixture.dir);
+				assert.strictEqual(terminal.state, 'terminal');
+				assert.strictEqual(terminal.pre_terminal_state, 'pending');
+				assert.strictEqual(terminal.attempts, 3);
+				assert.match(terminal.last_error, expectedError, 'the reason, not the flush failure');
+				assert.strictEqual((await job(jobId)).status, JOB_STATUS_ENUM.ERROR);
+
+				const resumed = await requestRestore(fixture.name, { resume: true });
+				assert.strictEqual(receiptOf(fixture.dir).state, 'pending');
+				await boot(fixture.name);
+				assert.strictEqual((await job(resumed.jobId)).status, JOB_STATUS_ENUM.COMPLETE);
+				assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.backedUp[0]);
+			});
+		}
+
 		it('keeps a rollback copy its child completed before failing, instead of stopping the restore', async function () {
 			const fixture = await seededDatabase();
 			const { jobId } = await requestRestore(fixture.name, { on_restart: true });
