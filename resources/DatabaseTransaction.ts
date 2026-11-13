@@ -3894,6 +3894,8 @@ export class DatabaseTransaction implements Transaction {
 									: !this.saveCommits || !this.hasSiblingCommitInFlight(committedTransaction)
 							)
 								this.releaseRecordLocks();
+							// read before the later links start committing and releasing their own locks
+							const laterLinkMayConfirm = chainMayArmConfirmation(this);
 							if (this.next && !committedImmediate) {
 								// never forward options.transaction (a retry/replay round's HEAD-store handle) to
 								// the next store — it must commit its own writes through its own transaction
@@ -3980,7 +3982,7 @@ export class DatabaseTransaction implements Transaction {
 							)
 								this.timestamp = 0; // reset the timestamp as well
 							const completed =
-								confirmation || chainMayArmConfirmation(this) || (this.root ?? this).confirmationCount
+								confirmation || laterLinkMayConfirm || (this.root ?? this).confirmationCount
 									? settleCommitCompletions(completions, confirmation)
 									: Promise.all(completions);
 							return completed.then(
