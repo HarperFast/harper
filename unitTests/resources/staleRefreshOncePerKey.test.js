@@ -126,6 +126,23 @@ describe('Stale-while-revalidate refreshes', function () {
 		assert.equal(sourceCalls, 1);
 	});
 
+	it('serves stale and reports it when the lock cannot be tried', async function () {
+		await expire('untryable');
+		const { primaryStore } = StaleTable;
+		const tryLock = primaryStore.tryLock;
+		primaryStore.tryLock = function (key, onUnlocked) {
+			if (key === 'untryable') throw new Error('lock table unavailable');
+			return tryLock.call(this, key, onUnlocked);
+		};
+		try {
+			assert.equal((await StaleAllowed.get('untryable')).name, 'stale untryable');
+			assert.equal(sourceCalls, 0);
+			assert.ok(warnings.some((warning) => warning.startsWith('lock table unavailable')));
+		} finally {
+			primaryStore.tryLock = tryLock;
+		}
+	});
+
 	it('starts no refresh while another thread is filling the key', async function () {
 		if (isLmdb) this.skip();
 		await expire('foreign');

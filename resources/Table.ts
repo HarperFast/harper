@@ -13680,7 +13680,16 @@ export function makeTable(options): TableResourceClass {
 				// if the resource defines a method for indicating if stale-while-revalidate is allowed for a record
 				const servesStale = Boolean(entry?.value && resource?.allowStaleWhileRevalidate?.(entry, id));
 				// a stale read refreshes only a key no fill holds; queued behind one, it would refetch after a failure
-				if (servesStale && !tryRecordLock(id)) return;
+				if (servesStale) {
+					let acquired: boolean;
+					try {
+						acquired = primaryStore.tryLock(id);
+					} catch (error) {
+						logger.warn?.(error);
+						return;
+					}
+					if (!acquired) return;
+				}
 				const loadingFromSource = getFromSource(source, id, entry, context, target, servesStale).then((entry) => {
 					if (entry?.value && entry?.value.getRecord?.())
 						logger.error?.('Can not assign a record that is already a resource');
@@ -14237,7 +14246,16 @@ export function makeTable(options): TableResourceClass {
 		const existingRecord = existingEntry?.value;
 		// a 304 stores existingRecord, so it keeps the list that describes that body, not the commit base's
 		const existingIdentityRefs = existingEntry?.receivedIdentityRefs;
-		const inheritedTimestamp = context?.timestamp || context?.transaction?.timestamp;
+		let inheritedTimestamp: number;
+		let fillKey: unknown;
+		try {
+			inheritedTimestamp = context?.timestamp || context?.transaction?.timestamp;
+			fillKey = writeKeyId(id);
+		} catch (error) {
+			// a lock handed over by a stale read has no other owner to release it
+			if (lockHeld) releaseRecordLock(id);
+			throw error;
+		}
 		let sourceTimestamp = inheritedTimestamp;
 		let issuanceFailed = false;
 		if (!sourceTimestamp) {
@@ -14261,7 +14279,6 @@ export function makeTable(options): TableResourceClass {
 			}
 		}
 		let wake: () => void;
-		const fillKey = writeKeyId(id);
 		const heldFill = sourceFills?.get(fillKey);
 		// We start by locking the record so that there is only one resolution happening at once;
 		// if there is already a resolution in process, we want to use the results of that resolution
@@ -14780,13 +14797,6 @@ export function makeTable(options): TableResourceClass {
 	function recordLockHeld(id: Id): boolean {
 		try {
 			return primaryStore.hasLock(id);
-		} catch {
-			return false;
-		}
-	}
-	function tryRecordLock(id: Id): boolean {
-		try {
-			return primaryStore.tryLock(id);
 		} catch {
 			return false;
 		}
