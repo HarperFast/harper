@@ -46,9 +46,9 @@ interface Action {
 
 let activeActions = new Map<string, Action>();
 // activeActions by recordAction's arguments as given, metric -> method -> type -> path. A tuple enters only
-// once activeActions holds its action (its second call in a window), so a path recorded once is not
-// stored twice.
-let actionIndex = new Map<string, Map<string, Map<string, Map<string, Action>>>>();
+// once activeActions already holds its action, normally on its second call in a window, so a path recorded
+// once is not stored twice.
+let actionIndex = new Map<string, Map<string | undefined, Map<string | undefined, Map<string | undefined, Action>>>>();
 let analyticsEnabled = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) > -1;
 let analyticsReadOnlyChecked = false;
 let sendAnalyticsTimeout: NodeJS.Timeout;
@@ -170,7 +170,7 @@ export function isActionIndexedForTests(metric: string, path?: string, method?: 
 	return actionIndex.get(metric)?.get(method)?.get(type)?.has(path) ?? false;
 }
 
-function indexedActionsByPath(metric: string, method: string, type: string): Map<string, Action> {
+function indexedActionsByPath(metric: string, method?: string, type?: string): Map<string | undefined, Action> {
 	let byMethod = actionIndex.get(metric);
 	if (byMethod === undefined) actionIndex.set(metric, (byMethod = new Map()));
 	let byType = byMethod.get(method);

@@ -64,6 +64,22 @@ describe('recordAction', () => {
 		]);
 	});
 
+	it('keeps arguments whose keys collide across fields in one action', async function () {
+		this.timeout(30000);
+		const metric = METRIC_PREFIX + 'collide-x';
+		const other = METRIC_PREFIX + 'collide';
+		analytics.setAnalyticsEnabled(true);
+		// (metric, 'y') and (other, 'x-y') build the same key, so actionKey has always merged them
+		for (let round = 0; round < 3; round++) {
+			analytics.recordAction(1, metric, 'y');
+			analytics.recordAction(3, other, 'x-y');
+		}
+		assert.ok(isIndexed(metric, 'y') && isIndexed(other, 'x-y'), 'both spellings are indexed');
+		assert.deepStrictEqual(await nextReport(metric), [
+			{ path: 'y', method: undefined, type: undefined, count: 6, mean: 2 },
+		]);
+	});
+
 	it('indexes a tuple from its second call in a window and keeps recording into its action', async function () {
 		this.timeout(30000);
 		const metric = METRIC_PREFIX + 'second-call';
