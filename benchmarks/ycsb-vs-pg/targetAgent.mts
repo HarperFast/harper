@@ -317,6 +317,8 @@ function createAgent() {
 			unitPrefix: `${UNIT_PREFIX}${process.pid}`,
 			units: { count: 0 },
 			perfCounters: params.perfCounters,
+			// The orchestrator picks each window's counting; the agent only opens what it is asked for.
+			perfScope: 'cgroups',
 			profile: profileDir ? { dir: profileDir, ops: params.profileOps! } : undefined,
 			auth: params.auth,
 			jwtSecret: params.jwtSecret,

@@ -19,21 +19,63 @@ class HistoryImageUnavailable extends Error {
 }
 
 type Retained = { kind: string; value: any; bytes: number; entries: number };
-export type HistoryReadLimits = { maxEntries?: number; maxBytes?: number };
+/**
+ * `cachesFrames: false`: the memo holds only what its reader admits, so a refusal declines the item instead of
+ * exhausting the memo, and frames are read uncached.
+ */
+export type HistoryReadLimits = { maxEntries?: number; maxBytes?: number; cachesFrames?: boolean };
+
+function copyEntry(entry): Snapshot {
+	const source = entry.encoded;
+	const encoded = Buffer.allocUnsafeSlow(source.byteLength);
+	encoded.set(source);
+	return {
+		encoded,
+		txnLogKey: entry.txnLogKey,
+		previousVersion: entry.previousVersion,
+		previousResidencyId: entry.previousResidencyId,
+		structureVersion: entry.structureVersion,
+		endTxn: entry.endTxn,
+	};
+}
+
+function readSnapshot(snapshot: Snapshot, encoded: Buffer) {
+	const entry = readAuditEntry(encoded);
+	if (entry.type === undefined) return entry;
+	entry.txnLogKey = snapshot.txnLogKey;
+	entry.previousVersion = snapshot.previousVersion;
+	entry.previousResidencyId = snapshot.previousResidencyId;
+	entry.structureVersion = snapshot.structureVersion;
+	entry.endTxn = snapshot.endTxn;
+	return entry;
+}
+
+/** A copy of an audit entry that stays readable after the read that returned it reuses its buffer. */
+export function detachAuditEntry(entry) {
+	if (entry.type === undefined || !entry.encoded) return entry;
+	const snapshot = copyEntry(entry);
+	const detached = readSnapshot(snapshot, snapshot.encoded);
+	return detached.type === undefined ? entry : detached;
+}
 
 export class HistoryMemo {
 	readonly maxEntries: number;
 	readonly maxBytes: number;
+	readonly cachesFrames: boolean;
 	readonly store: any;
 	readonly tableId: number;
 	readonly recordId: any;
 	exhausted = false;
 	closed = false;
 	fallbacks = 0;
+	visits = 0;
+	newer = 0;
+	lowest = Infinity;
 	#retained = new Map<string, Retained>();
 	#bytes = 0;
 	#entries = 0;
 	#images = 0;
+	#carries = 0;
 	#building = new Set<string>();
 	#active = new Map<number, string>();
 	#sequence = 0;
@@ -50,6 +92,7 @@ export class HistoryMemo {
 		this.recordId = recordId;
 		this.maxEntries = limits.maxEntries ?? 16_384;
 		this.maxBytes = limits.maxBytes ?? 8 * 1024 * 1024;
+		this.cachesFrames = limits.cachesFrames !== false;
 		try {
 			this.#floor = getAuditFloor(store.rootStore.auditStore);
 			this.#generation = getDatabaseGeneration(store.rootStore.auditStore)?.id;
@@ -62,8 +105,15 @@ export class HistoryMemo {
 		if (this.closed || this.exhausted) return false;
 		try {
 			const audit = this.store.rootStore.auditStore;
-			if (Object.is(this.#floor, getAuditFloor(audit)) && this.#generation === getDatabaseGeneration(audit)?.id)
+			const floor = getAuditFloor(audit);
+			const generation = getDatabaseGeneration(audit)?.id;
+			if (Object.is(this.#floor, floor) && this.#generation === generation) return true;
+			if (!this.cachesFrames) {
+				for (const key of [...this.#retained.keys()]) this.forget(key);
+				this.#floor = floor;
+				this.#generation = generation;
 				return true;
+			}
 		} catch {}
 		this.stopOptimizing();
 		return false;
@@ -71,6 +121,10 @@ export class HistoryMemo {
 
 	get hasImages() {
 		return this.#images > 0;
+	}
+
+	get carries() {
+		return this.#carries;
 	}
 
 	get stats() {
@@ -95,6 +149,7 @@ export class HistoryMemo {
 		this.#retained.delete(key);
 		this.#building.delete(key);
 		if (old.kind === 'image') this.#images--;
+		else if (old.kind === 'carry') this.#carries--;
 		this.#bytes -= old.bytes;
 		this.#entries -= old.entries;
 	}
@@ -114,7 +169,7 @@ export class HistoryMemo {
 	canFit(bytes: number, entries: number) {
 		if (this.closed || this.exhausted) return false;
 		if (this.#bytes + bytes <= this.maxBytes && this.#entries + entries <= this.maxEntries) return true;
-		this.#exhaust();
+		if (this.cachesFrames) this.#exhaust();
 		return false;
 	}
 
@@ -124,6 +179,7 @@ export class HistoryMemo {
 		if (!this.canFit(bytes, entries)) return false;
 		this.#retained.set(key, { kind, value, bytes, entries });
 		if (kind === 'image') this.#images++;
+		else if (kind === 'carry') this.#carries++;
 		if (kind === 'building') this.#building.add(key);
 		this.#bytes += bytes;
 		this.#entries += entries;
@@ -132,30 +188,15 @@ export class HistoryMemo {
 
 	snapshot(entry): Snapshot {
 		if (this.closed || this.exhausted || entry.type === undefined || !entry.encoded) this.unavailable();
-		const source = entry.encoded;
-		if (!this.canFit(source.byteLength + 256, 1)) this.unavailable();
-		const encoded = Buffer.allocUnsafeSlow(source.byteLength);
-		encoded.set(source);
-		return {
-			encoded,
-			txnLogKey: entry.txnLogKey,
-			previousVersion: entry.previousVersion,
-			previousResidencyId: entry.previousResidencyId,
-			structureVersion: entry.structureVersion,
-			endTxn: entry.endTxn,
-		};
+		if (!this.canFit(entry.encoded.byteLength + 256, 1)) this.unavailable();
+		return copyEntry(entry);
 	}
 
 	restore(snapshot: Snapshot) {
 		const encoded = Buffer.allocUnsafeSlow(snapshot.encoded.byteLength);
 		encoded.set(snapshot.encoded);
-		const entry = readAuditEntry(encoded);
+		const entry = readSnapshot(snapshot, encoded);
 		if (entry.type === undefined) this.unavailable();
-		entry.txnLogKey = snapshot.txnLogKey;
-		entry.previousVersion = snapshot.previousVersion;
-		entry.previousResidencyId = snapshot.previousResidencyId;
-		entry.structureVersion = snapshot.structureVersion;
-		entry.endTxn = snapshot.endTxn;
 		return entry;
 	}
 
@@ -267,7 +308,7 @@ export class HistoryMemo {
 		this.#ended.clear();
 		this.#building.clear();
 		this.#active.clear();
-		this.#bytes = this.#entries = this.#images = 0;
+		this.#bytes = this.#entries = this.#images = this.#carries = 0;
 		this.closed = true;
 	}
 }
@@ -321,6 +362,14 @@ function copyImage(value, limit: number) {
 	return { record: copy(value), bytes };
 }
 
+function recordStamp(current) {
+	return `${current?.version}|${current?.localTime}|${current?.nodeId}|${current?.metadataFlags}|${current?.size}`;
+}
+
+function isMutation(entry) {
+	return entry.type === 'put' || entry.type === 'patch' || entry.type === 'delete' || entry.type === 'invalidate';
+}
+
 export class HistoryReader {
 	readonly memo: HistoryMemo;
 	#eligible: (id: any, current: any, memo: HistoryMemo) => boolean;
@@ -343,7 +392,7 @@ export class HistoryReader {
 			this.memo.stopOptimizing();
 			return false;
 		}
-		const stamp = `${current?.version}|${current?.localTime}|${current?.nodeId}|${current?.metadataFlags}|${current?.size}`;
+		const stamp = recordStamp(current);
 		const key = this.memo.key('eligible', id);
 		let answer = this.memo.get(key);
 		if (answer && answer.stamp !== stamp) {
@@ -383,9 +432,7 @@ export class HistoryReader {
 		try {
 			const image = memo.get(imageKey);
 			const frame = readAuditFrame(memo.store.rootStore.auditStore, memo.tableId, id, time, entry.nodeId, true, memo);
-			const mutations = frame.filter(
-				(item) => item.type === 'put' || item.type === 'patch' || item.type === 'delete' || item.type === 'invalidate'
-			);
+			const mutations = frame.filter(isMutation);
 			if (
 				image &&
 				mutations.length === 1 &&
@@ -439,5 +486,163 @@ export class HistoryReader {
 			}
 			return getRecordAtTime(this.memo.store.getEntry(id), time, this.memo.store, this.memo.tableId, id, origin);
 		};
+	}
+}
+
+export const CARRY_SCAN_LIMIT = 16_384;
+// with fewer later versions than this, the rebuilds left cost less than the walk that would replace them
+const CARRY_MIN_NEWER = 3;
+
+type CarryImage = { record: any; time: number; origin: number; version: number };
+type Carry = { stamp: string; allowed: boolean; image?: CarryImage };
+
+/**
+ * Reads a replay's entries in log order, carrying each eligible record's image from one patch to the next. Carry
+ * state is never evicted, so a record walks for eligibility at most once per current entry. `eligible` must
+ * accept only chains whose carry equals the plain rebuild.
+ */
+export class ReplayReader {
+	readonly memo: HistoryMemo;
+	#eligible: (id: any, current: any, memo: HistoryMemo, limit: number) => boolean;
+
+	constructor(
+		store,
+		tableId: number,
+		eligible: (id: any, current: any, memo: HistoryMemo, limit: number) => boolean,
+		limits: HistoryReadLimits = {}
+	) {
+		this.memo = new HistoryMemo(store, tableId, { ...limits, cachesFrames: false });
+		this.#eligible = eligible;
+	}
+
+	read(entry, time = entry.txnLogKey) {
+		const { memo } = this;
+		if (entry.type === 'patch' || entry.type === 'invalidate') memo.checkState();
+		const rebuild = () => entry.getValue?.(memo.store, true, time, memo.exhausted || memo.closed ? undefined : memo);
+		if (entry.type !== 'patch' || memo.exhausted || memo.closed) {
+			if (entry.type !== 'message' && memo.carries > 0 && entry.recordId !== undefined)
+				this.#dropImage(memo.key('carry', entry.recordId), entry);
+			return rebuild();
+		}
+		const id = entry.recordId;
+		const key = memo.carries > 0 ? memo.key('carry', id) : undefined;
+		let carry: Carry | undefined = key && memo.get(key);
+		let current;
+		if (carry) {
+			current = memo.store.getEntry(id);
+			if (carry.stamp !== recordStamp(current)) {
+				memo.forget(key);
+				carry = undefined;
+			}
+		}
+		let record = carry?.image ? this.#carried(entry, time, carry.image) : undefined;
+		if (record === undefined) {
+			const visits = memo.visits;
+			const newer = memo.newer;
+			const fallbacks = memo.fallbacks;
+			record = rebuild();
+			if (memo.fallbacks !== fallbacks || memo.exhausted || memo.closed) return record;
+			if (record == null || typeof record !== 'object') {
+				if (carry) memo.forget(key);
+				return record;
+			}
+			if (!carry) {
+				const later = memo.newer - newer;
+				if (later >= CARRY_MIN_NEWER) {
+					const limit = Math.min(CARRY_SCAN_LIMIT, ((later - 1) * (memo.visits - visits)) / 2);
+					this.#decide(id, current ?? memo.store.getEntry(id), record, time, entry, limit);
+				}
+				return record;
+			}
+		}
+		if (entry.version >= current.version) memo.forget(key);
+		else if (carry.allowed) this.#keepImage(key, carry.stamp, record, time, entry);
+		return record;
+	}
+
+	#carried(entry, time: number, image: CarryImage) {
+		if (
+			entry.previousAdditionalAuditRefs?.length ||
+			!(entry.version > image.version) ||
+			entry.previousVersion !== image.time ||
+			// a decoded entry has no previousNodeId, so the link is checked as consecutive writes in one origin's log
+			(entry.nodeId ?? 0) !== image.origin
+		)
+			return;
+		const { memo } = this;
+		try {
+			const frame = readAuditFrame(
+				memo.store.rootStore.auditStore,
+				memo.tableId,
+				entry.recordId,
+				time,
+				entry.nodeId,
+				true,
+				memo
+			);
+			const mutations = frame.filter(isMutation);
+			if (mutations.length !== 1 || mutations[0].type !== 'patch') return;
+			const update = entry.getValue(memo.store, false);
+			if (update == null || Object.prototype.toString.call(update) !== '[object Object]') return;
+			const record = copyImage(image.record, memo.maxBytes).record;
+			applyForward(record, update);
+			return record;
+		} catch {
+			return;
+		}
+	}
+
+	#decide(id, current, record, time: number, entry, limit: number) {
+		const { memo } = this;
+		if (!current || current.additionalAuditRefs?.length || !(current.size <= memo.maxBytes)) return;
+		if (!memo.canFit(current.size + 256, 1)) return;
+		const stamp = recordStamp(current);
+		const key = memo.key('carry', id);
+		const overhead = stamp.length * 2 + key.length * 2 + 128;
+		let image: ReturnType<typeof copyImage>;
+		try {
+			image = copyImage(record, memo.maxBytes - memo.stats.bytes - overhead);
+		} catch {
+			memo.keep(key, 'carry', { stamp, allowed: false }, stamp.length * 2);
+			return;
+		}
+		const bytes = image.bytes + stamp.length * 2;
+		let allowed = false;
+		// values never depend on what the eligibility walk reads, so it must not lower the retention bound
+		const lowest = memo.lowest;
+		try {
+			allowed = this.#eligible(id, current, memo, limit);
+		} catch {}
+		memo.lowest = lowest;
+		const carry: Carry = { stamp, allowed };
+		if (allowed) carry.image = { record: image.record, time, origin: entry.nodeId ?? 0, version: entry.version };
+		memo.keep(key, 'carry', carry, allowed ? bytes : stamp.length * 2);
+	}
+
+	#keepImage(key: string, stamp: string, record, time: number, entry) {
+		const { memo } = this;
+		let image: ReturnType<typeof copyImage> | undefined;
+		try {
+			image = copyImage(record, memo.maxBytes);
+		} catch {}
+		if (image) {
+			const carry: Carry = {
+				stamp,
+				allowed: true,
+				image: { record: image.record, time, origin: entry.nodeId ?? 0, version: entry.version },
+			};
+			if (memo.keep(key, 'carry', carry, image.bytes + stamp.length * 2)) return;
+		}
+		memo.keep(key, 'carry', { stamp, allowed: false }, stamp.length * 2);
+	}
+
+	#dropImage(key: string, entry) {
+		const { memo } = this;
+		const carry: Carry | undefined = memo.get(key);
+		if (!carry) return;
+		const current = memo.store.getEntry(entry.recordId);
+		if (!current || entry.version >= current.version) memo.forget(key);
+		else if (carry.image)
+			memo.keep(key, 'carry', { stamp: carry.stamp, allowed: carry.allowed }, carry.stamp.length * 2);
 	}
 }

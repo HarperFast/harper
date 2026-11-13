@@ -15,4 +15,16 @@ describe('Replication confirmation configuration', () => {
 			assert.equal(option.minimum, 1);
 			assert.equal(option.maximum, 2147483647);
 		});
+
+	for (const [constant, name] of [
+		['REPLICATION_CONFIRMATION', 'confirmation'],
+		['REPLICATION_RECORDLOCKCONFIRMATION', 'recordLockConfirmation'],
+	])
+		it(`registers replication.${name} as a non-negative integer count`, () => {
+			assert.equal(CONFIG_PARAMS[constant], `replication_${name}`);
+			assert.equal(CONFIG_PARAM_MAP[`replication_${name.toLowerCase()}`], `replication_${name}`);
+			const option = schema.properties.replication.properties[name];
+			assert.equal(option.type, 'integer');
+			assert.equal(option.minimum, 0);
+		});
 });

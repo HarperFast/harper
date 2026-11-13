@@ -13,6 +13,7 @@ import type { ChildProcess } from 'node:child_process';
 import {
 	verifyAffinity,
 	verifyCgroupCpuset,
+	settledMemoryLimit,
 	verifyMemoryLimit,
 	processCgroup,
 	scopedCommand,
@@ -391,8 +392,8 @@ async function backends(
 	}
 	const memoryLimits: Record<string, MemoryLimit> = {};
 	if (cgroups.postgres)
-		memoryLimits.postgres = verifyMemoryLimit('postgres', cgroups.postgres, memory.postgresMiB * MiB);
-	if (cgroups.redis) memoryLimits.redis = verifyMemoryLimit('redis', cgroups.redis, memory.redisMiB * MiB);
+		memoryLimits.postgres = await settledMemoryLimit('postgres', cgroups.postgres, memory.postgresMiB * MiB);
+	if (cgroups.redis) memoryLimits.redis = await settledMemoryLimit('redis', cgroups.redis, memory.redisMiB * MiB);
 	const hasPostgres = services.includes('postgres');
 	const noPostgres = async (): Promise<never> => {
 		throw new Error('Postgres does not run on this host');

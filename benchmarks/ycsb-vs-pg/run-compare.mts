@@ -230,6 +230,11 @@ export interface Session {
 	units: { count: number };
 	/** Hardware counters on every measured window: --perf-counters, or implied by --profile. */
 	perfCounters: boolean;
+	/**
+	 * --perf-scope: count a measured window per component cgroup (the single-host default), or over each target
+	 * host's cpus as a whole (the remote default).
+	 */
+	perfScope: 'cgroups' | 'host';
 	/** Set by --profile: profiler flags on the targets and a separate sampled-profile window after each measured one. */
 	profile?: { dir: string; ops: number };
 	auth: AuthMode;
@@ -1013,7 +1018,12 @@ export async function measureWindow(
 	const { result, reading, window, generatorHost } = await runInWindow(
 		session,
 		running,
-		{ counters: session.perfCounters, memory: true, clock: true, refaults: true },
+		{
+			counters: session.perfCounters && (session.perfScope === 'host' ? 'host' : true),
+			memory: true,
+			clock: true,
+			refaults: true,
+		},
 		(phaseWindow) => driver.runWorkload(workload, distribution, ops, undefined, phaseWindow)
 	);
 	const { generatorCpuSeconds } = result;
@@ -1042,8 +1052,10 @@ export async function measureWindow(
 		peakTotalMemoryBytes: peaks.peakTotalBytes,
 		meanMemoryBytes: peaks.meanBytes,
 	};
+	// Host-scope cycles include work outside the component cgroups (the agent, kernel threads), so they have no
+	// matching CPU-seconds.
 	const perfClockGHz =
-		perf && meanClockGHz === 0 && resources.totalCpuSeconds > 0
+		perf && session.perfScope !== 'host' && meanClockGHz === 0 && resources.totalCpuSeconds > 0
 			? (perf.total.cyclesUser + perf.total.cyclesKernel) / (resources.totalCpuSeconds * 1e9)
 			: undefined;
 	if (
@@ -1522,9 +1534,10 @@ export async function createSession(
 		'profile-ops',
 		'auth',
 		'hosts',
+		'perf-scope',
 	];
 	const passthrough = argv.filter((a) => {
-		if (a === '--perf-counters') return false;
+		if (a === '--perf-counters' || a === '--no-perf-counters') return false;
 		const name = /^--([^=]+)=/.exec(a)?.[1];
 		return !name || ![...sessionFlags, ...ownFlags].includes(name);
 	});
@@ -1551,8 +1564,16 @@ export async function createSession(
 	const base = hostsFile ? undefined : await prepareTargetHost(serverCpus);
 
 	const profileDir = argValue(argv, '--profile');
-	// instructions/op is the stable metric where turbo cannot be turned off, so a remote session always counts.
-	const perfCounters = Boolean(profileDir) || argv.includes('--perf-counters') || Boolean(hostsFile);
+	// instructions/op is the stable metric where turbo cannot be turned off, so a remote session counts unless
+	// --no-perf-counters says not to: counting per cgroup has a cost of its own on a VM's virtual PMU.
+	const noCounters = argv.includes('--no-perf-counters');
+	if (noCounters && profileDir) throw new Error('--profile counts hardware events; drop --no-perf-counters');
+	const perfCounters = !noCounters && (Boolean(profileDir) || argv.includes('--perf-counters') || Boolean(hostsFile));
+	// Per-cgroup counting slowed the GCP targets 3-10% at warm and the stack 14-20% at 2x and 8x (README, "Counting
+	// on a VM"), so a remote session counts each target host's cpus whole unless asked otherwise.
+	const perfScope = argValue(argv, '--perf-scope') ?? (hostsFile ? 'host' : 'cgroups');
+	if (perfScope !== 'cgroups' && perfScope !== 'host')
+		throw new Error(`--perf-scope must be cgroups or host, got ${perfScope}`);
 	if (perfCounters && !hostsFile) await perfAvailable();
 	let profile: Session['profile'];
 	if (profileDir) {
@@ -1580,6 +1601,7 @@ export async function createSession(
 		unitPrefix: `ycsb-vs-pg-${process.pid}`,
 		units: { count: 0 },
 		perfCounters,
+		perfScope,
 		profile,
 		auth,
 		jwtSecret: auth === 'token' ? randomBytes(32).toString('base64url') : undefined,
@@ -1642,6 +1664,7 @@ export async function createSession(
 			})
 		),
 		perfCounters,
+		perfScope: perfCounters ? perfScope : undefined,
 		profile: profile && { ...profile, nodeOptions: PERF_NODE_OPTIONS },
 		auth:
 			auth === 'token'

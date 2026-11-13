@@ -1350,6 +1350,430 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 			assert.strictEqual(_liveSubscriptionCount(), 0, 'both are revoked once their records are gone');
 		});
 
+		function grantingByUsername(username) {
+			const gate = { grant: true, end: undefined };
+			gate.Resource = class extends Docs {
+				subscribe() {
+					const subscription = super.subscribe();
+					gate.end = subscription.end;
+					return subscription;
+				}
+				allowRead(principal) {
+					return gate.grant && principal?.username === username;
+				}
+			};
+			return gate;
+		}
+		const certificate = async (username) => userModule.certificatePrincipal(await resolve(username));
+
+		it('keeps a certificate principal with no hdb_user while the allowRead that admitted it still grants it', async () => {
+			const user = await certificate('cert_only_cn');
+			assert.strictEqual(user.role, undefined);
+			const gate = grantingByUsername('cert_only_cn');
+			const { context } = await subscribe(gate.Resource, user);
+
+			await _sweepNow();
+			await _tickNow();
+
+			assert.strictEqual(gate.end.calls.length, 0, 'a recheck revoked what admission granted');
+			assert.strictEqual(_liveSubscriptionCount(), 1);
+			assert.strictEqual(context.user.username, 'cert_only_cn');
+
+			gate.grant = false;
+			await _sweepNow();
+			assert.strictEqual(gate.end.calls.length, 1, 'revoked once its allowRead denies it');
+		});
+
+		it('still revokes a principal admitted with a role once its hdb_user is dropped', async () => {
+			await testUtils.seedUsers([{ username: 'dropped_cn', active: true, role: readRole('dropped_role') }]);
+			const user = await resolve('dropped_cn');
+			const gate = grantingByUsername('dropped_cn');
+			await subscribe(gate.Resource, user);
+			await _sweepNow();
+			assert.strictEqual(gate.end.calls.length, 0);
+
+			await testUtils.seedUsers();
+			await _sweepNow();
+
+			assert.strictEqual(gate.end.calls.length, 1, 'losing the role it was admitted with revokes it');
+		});
+
+		it('still requires a role of a certificate principal built from an hdb_user record', async () => {
+			await testUtils.seedUsers([{ username: 'roleless_record', active: true, role: 'missing_role' }]);
+			const user = await certificate('roleless_record');
+			assert.strictEqual(user.role, undefined);
+			const gate = grantingByUsername('roleless_record');
+			await subscribe(gate.Resource, user);
+
+			await _sweepNow();
+
+			assert.strictEqual(gate.end.calls.length, 1, 'a record behind the certificate requires a role');
+		});
+
+		it('requires a role once an hdb_user record appears for a certificate principal admitted without one', async () => {
+			const roleless = grantingByUsername('late_record_cn');
+			await subscribe(roleless.Resource, await certificate('late_record_cn'));
+			await testUtils.seedUsers([{ username: 'late_record_cn', active: true, role: 'missing_role' }]);
+			await _sweepNow();
+			assert.strictEqual(roleless.end.calls.length, 1, 'a record with no role revokes it');
+
+			await testUtils.seedUsers();
+			const dropped = grantingByUsername('late_record_cn');
+			await subscribe(dropped.Resource, await certificate('late_record_cn'));
+			await testUtils.seedUsers([{ username: 'late_record_cn', active: true, role: readRole('late_record_role') }]);
+			await _sweepNow();
+			assert.strictEqual(dropped.end.calls.length, 0, 'a record with a role keeps it');
+			await testUtils.seedUsers();
+			await _sweepNow();
+			assert.strictEqual(dropped.end.calls.length, 1, 'dropping that record revokes it');
+		});
+
+		it('rechecks a certificate principal with no role against an object checkPermission, as MQTT admission passes', async () => {
+			const user = await certificate('cert_permission_cn');
+			const seen = [];
+			const Recorded = class extends Docs {
+				allowRead(principal, target) {
+					seen.push(target?.checkPermission);
+					return principal?.username === 'cert_permission_cn';
+				}
+			};
+			await subscribe(Recorded, user);
+			seen.length = 0;
+
+			await _sweepNow();
+
+			assert.strictEqual(_liveSubscriptionCount(), 1);
+			assert.ok(seen.length > 0, 'the sweep rechecked it');
+			for (const permission of seen) assert.ok(permission && typeof permission === 'object');
+		});
+
+		it('revokes a principal with no hdb_user that no certificate named', async () => {
+			const user = await resolve('no_record_user');
+			assert.strictEqual(userModule.isRecordBacked(user), false);
+			const gate = grantingByUsername('no_record_user');
+			await subscribe(gate.Resource, user);
+
+			await _sweepNow();
+
+			assert.strictEqual(gate.end.calls.length, 1, 'a missing record alone does not exempt it from the role');
+		});
+
+		it('requires the role a certificate principal arrived with, even with no hdb_user', async () => {
+			const user = userModule.certificatePrincipal({
+				...(await resolve('cert_role_cn')),
+				role: readRole('cert_role_role'),
+			});
+			const gate = grantingByUsername('cert_role_cn');
+			await subscribe(gate.Resource, user);
+
+			await _sweepNow();
+
+			assert.strictEqual(gate.end.calls.length, 1, 'the recheck resolved it with no role');
+		});
+
+		it('keeps the certificate mark on the view a recheck installs, for a later subscription on that context', async () => {
+			const gate = grantingByUsername('cert_context_cn');
+			const context = { user: await certificate('cert_context_cn'), authorize: true };
+			const first = await gate.Resource.subscribe('topic', undefined, context);
+			handles.push({ unregister: () => first.end() });
+			await _sweepNow();
+			assert.strictEqual(userModule.isCertificatePrincipal(context.user), true);
+
+			const second = await gate.Resource.subscribe('topic', undefined, context);
+			handles.push({ unregister: () => second.end() });
+			await _sweepNow();
+
+			assert.strictEqual(gate.end.calls.length, 0, 'a recheck revoked a subscription the same certificate admitted');
+		});
+
+		it('revokes a principal with no record provenance and no role unless a certificate named it', async () => {
+			const unnamed = grantingByUsername('component_roleless');
+			await subscribe(unnamed.Resource, { username: 'component_roleless' });
+			const named = grantingByUsername('component_roleless');
+			await subscribe(named.Resource, userModule.certificatePrincipal({ username: 'component_roleless' }));
+
+			await _sweepNow();
+
+			assert.strictEqual(unnamed.end.calls.length, 1, 'no certificate named it');
+			assert.strictEqual(named.end.calls.length, 0, 'a certificate named it');
+		});
+
+		it('requires a role of a later subscription on a context where a record backed the certificate principal', async () => {
+			const context = { user: await certificate('context_latch_cn'), authorize: true };
+			const first = grantingByUsername('context_latch_cn');
+			const firstSubscription = await first.Resource.subscribe('topic', undefined, context);
+			handles.push({ unregister: () => firstSubscription.end() });
+			await testUtils.seedUsers([{ username: 'context_latch_cn', active: true, role: 'missing_role' }]);
+			await _sweepNow();
+			assert.strictEqual(first.end.calls.length, 1, 'a record with no role revokes it');
+
+			await testUtils.seedUsers();
+			const later = grantingByUsername('context_latch_cn');
+			await assert.rejects(later.Resource.subscribe('topic', undefined, context), { statusCode: 403 });
+			assert.strictEqual(_liveSubscriptionCount(), 0, 'a later subscription on that context needs a role too');
+		});
+
+		it('requires a role of a later SUBSCRIBE that reuses the principal a record backed, as an MQTT session does', async () => {
+			const user = await certificate('session_latch_cn');
+			const first = grantingByUsername('session_latch_cn');
+			const firstSubscription = await first.Resource.subscribe('topic', undefined, { user, authorize: true });
+			handles.push({ unregister: () => firstSubscription.end() });
+			await testUtils.seedUsers([{ username: 'session_latch_cn', active: true, role: 'missing_role' }]);
+			await _sweepNow();
+			assert.strictEqual(first.end.calls.length, 1, 'a record with no role revokes it');
+
+			await testUtils.seedUsers();
+			const later = grantingByUsername('session_latch_cn');
+			await assert.rejects(later.Resource.subscribe('topic', undefined, { user, authorize: true }), {
+				statusCode: 403,
+			});
+			assert.strictEqual(
+				_liveSubscriptionCount(),
+				0,
+				'a later SUBSCRIBE with that principal needs a role, before it delivers'
+			);
+		});
+
+		it('requires a role of an earlier subscription once another subscription on its context latched it', async () => {
+			await testUtils.seedUsers([{ username: 'latch_source', active: true, role: 'missing_role' }]);
+			const source = await resolve('latch_source');
+			const context = { user: await certificate('shared_latch_cn'), authorize: true };
+			const earlier = grantingByUsername('shared_latch_cn');
+			const earlierSubscription = await earlier.Resource.subscribe('topic', undefined, context);
+			handles.push({ unregister: () => earlierSubscription.end() });
+
+			// A later subscription on the context, by a principal whose records changed, is rechecked alone at
+			// registration, and finds a record for the name that no notification has brought to the earlier one.
+			const unbacked = await resolve('latch_stale');
+			context.user = userModule.certificatePrincipal({ ...unbacked, username: 'shared_latch_cn' });
+			await databases.system.hdb_user.put({ username: 'latch_stale', active: true, role: 'missing_role' });
+			const findAndValidateUser = userModule.findAndValidateUser;
+			userModule.findAndValidateUser = (name, ...rest) =>
+				name === 'shared_latch_cn'
+					? Promise.resolve({ ...source, username: name })
+					: findAndValidateUser(name, ...rest);
+			try {
+				const later = grantingByUsername('shared_latch_cn');
+				await assert.rejects(later.Resource.subscribe('topic', undefined, context), { statusCode: 403 });
+				assert.strictEqual(earlier.end.calls.length, 0, 'not rechecked yet');
+			} finally {
+				userModule.findAndValidateUser = findAndValidateUser;
+			}
+			await _sweepNow();
+			assert.strictEqual(
+				earlier.end.calls.length,
+				1,
+				'the earlier subscription needs a role too, though no record remains'
+			);
+		});
+
+		it('requires a role of a later SUBSCRIBE once an inactive record appeared for its principal', async () => {
+			const user = await certificate('inactive_latch_cn');
+			const first = grantingByUsername('inactive_latch_cn');
+			const firstSubscription = await first.Resource.subscribe('topic', undefined, { user, authorize: true });
+			handles.push({ unregister: () => firstSubscription.end() });
+			await testUtils.seedUsers([{ username: 'inactive_latch_cn', active: false, role: 'missing_role' }]);
+			await _sweepNow();
+			assert.strictEqual(first.end.calls.length, 1, 'an inactive record revokes it');
+
+			await testUtils.seedUsers();
+			const later = grantingByUsername('inactive_latch_cn');
+			await assert.rejects(later.Resource.subscribe('topic', undefined, { user, authorize: true }), {
+				statusCode: 403,
+			});
+			assert.strictEqual(_liveSubscriptionCount(), 0, 'a later SUBSCRIBE with that principal needs a role');
+		});
+
+		it('requires a role of a subscription by the view a recheck installed before the principal was latched', async () => {
+			const context = { user: await certificate('view_latch_cn'), authorize: true };
+			const first = grantingByUsername('view_latch_cn');
+			const firstSubscription = await first.Resource.subscribe('topic', undefined, context);
+			handles.push({ unregister: () => firstSubscription.end() });
+			await _sweepNow();
+			const view = context.user;
+			assert.strictEqual(userModule.isCertificatePrincipal(view), true, 'a recheck installed a marked view');
+			await testUtils.seedUsers([{ username: 'view_latch_cn', active: true, role: 'missing_role' }]);
+			await _sweepNow();
+			assert.strictEqual(first.end.calls.length, 1, 'a record with no role revokes it');
+
+			await testUtils.seedUsers();
+			const later = grantingByUsername('view_latch_cn');
+			await assert.rejects(later.Resource.subscribe('topic', undefined, { user: view, authorize: true }), {
+				statusCode: 403,
+			});
+			assert.strictEqual(_liveSubscriptionCount(), 0, 'a subscription by that view needs a role');
+		});
+
+		it('requires a role of a subscription by a view held outside its context once a record backed the admission', async () => {
+			// application code can keep a view a recheck installed (getCurrentUser())
+			const installed = [];
+			let current = await certificate('retained_latch_cn');
+			const context = {
+				authorize: true,
+				get user() {
+					return current;
+				},
+				set user(view) {
+					installed.push(view);
+					current = view;
+				},
+			};
+			const first = grantingByUsername('retained_latch_cn');
+			const firstSubscription = await first.Resource.subscribe('topic', undefined, context);
+			handles.push({ unregister: () => firstSubscription.end() });
+			const second = grantingByUsername('retained_latch_cn');
+			const secondSubscription = await second.Resource.subscribe('topic', undefined, context);
+			handles.push({ unregister: () => secondSubscription.end() });
+			await _sweepNow();
+			assert.strictEqual(installed.length, 2, 'each subscription installed its own view');
+			const retained = installed[0];
+			assert.notStrictEqual(context.user, retained, "the other subscription's view replaced it");
+			assert.strictEqual(
+				userModule.certificateAdmission(retained),
+				userModule.certificateAdmission(context.user),
+				'both views carry the one admission'
+			);
+			await testUtils.seedUsers([{ username: 'retained_latch_cn', active: true, role: 'missing_role' }]);
+			await _sweepNow();
+			assert.strictEqual(first.end.calls.length + second.end.calls.length, 2, 'a record with no role revokes both');
+
+			await testUtils.seedUsers();
+			const later = grantingByUsername('retained_latch_cn');
+			// a subscription admitted with no recheck returns synchronously, which assert.rejects needs as a rejection
+			await assert.rejects(
+				async () => later.Resource.subscribe('topic', undefined, { user: retained, authorize: true }),
+				{
+					statusCode: 403,
+				}
+			);
+			assert.strictEqual(_liveSubscriptionCount(), 0, 'a subscription by a retained view needs a role');
+		});
+
+		for (const active of [true, false]) {
+			const kind = active ? 'a record' : 'an inactive record';
+			it(`latches an admission whose recheck finds ${kind} even on a context that already required a role`, async () => {
+				const username = active ? 'relatch_cn' : 'relatch_inactive_cn';
+				const context = { user: await certificate(username), authorize: true };
+				const first = grantingByUsername(username);
+				const firstSubscription = await first.Resource.subscribe('topic', undefined, context);
+				handles.push({ unregister: () => firstSubscription.end() });
+				await testUtils.seedUsers([{ username, active, role: 'missing_role' }]);
+				await _sweepNow();
+				assert.strictEqual(first.end.calls.length, 1, 'the record latches the context');
+
+				await testUtils.seedUsers();
+				const other = await certificate(username);
+				await testUtils.seedUsers([{ username, active, role: 'missing_role' }]);
+				context.user = other;
+				const second = grantingByUsername(username);
+				await assert.rejects(async () => second.Resource.subscribe('topic', undefined, context), { statusCode: 403 });
+
+				await testUtils.seedUsers();
+				const later = grantingByUsername(username);
+				await assert.rejects(
+					async () => later.Resource.subscribe('topic', undefined, { user: other, authorize: true }),
+					{
+						statusCode: 403,
+					}
+				);
+				assert.strictEqual(_liveSubscriptionCount(), 0, 'its own recheck latched that admission');
+			});
+		}
+
+		it('latches the admission of the view a context holds when a record backs that name', async () => {
+			const context = { user: await certificate('held_latch_cn'), authorize: true };
+			const first = grantingByUsername('held_latch_cn');
+			const firstSubscription = await first.Resource.subscribe('topic', undefined, context);
+			handles.push({ unregister: () => firstSubscription.end() });
+			const held = await certificate('held_latch_cn');
+			context.user = held;
+			await testUtils.seedUsers([{ username: 'held_latch_cn', active: true, role: 'missing_role' }]);
+			await _sweepNow();
+			assert.strictEqual(first.end.calls.length, 1, 'a record with no role revokes it');
+
+			await testUtils.seedUsers();
+			const later = grantingByUsername('held_latch_cn');
+			await assert.rejects(async () => later.Resource.subscribe('topic', undefined, { user: held, authorize: true }), {
+				statusCode: 403,
+			});
+			assert.strictEqual(_liveSubscriptionCount(), 0, 'the held view of another admission needs a role');
+		});
+
+		it('requires a role of a view an MCP refresh built after the record that backed the admission was dropped', async () => {
+			await testUtils.seedUsers([{ username: 'refreshed_cn', active: true, role: readRole('refreshed_role') }]);
+			const admitted = await certificate('refreshed_cn');
+			assert.strictEqual(userModule.isRecordBacked(admitted), true);
+			await testUtils.seedUsers();
+			const refreshed = userModule.withCertificateAdmission(await resolve('refreshed_cn'), admitted);
+			assert.strictEqual(userModule.isRecordBacked(refreshed), false, 'the refresh found no record');
+			const gate = grantingByUsername('refreshed_cn');
+			await assert.rejects(
+				async () => gate.Resource.subscribe('topic', undefined, { user: refreshed, authorize: true }),
+				{
+					statusCode: 403,
+				}
+			);
+			assert.strictEqual(_liveSubscriptionCount(), 0, 'a record backed its admission, so it needs a role');
+		});
+
+		it('requires a role of a refreshed view of a certificate admission that arrived with a role and no record', async () => {
+			const admitted = userModule.certificatePrincipal(
+				{ username: 'role_admission_cn', role: readRole('role_admission_role') },
+				async () => undefined
+			);
+			assert.strictEqual(userModule.isRecordBacked(admitted), undefined, 'no lookup tracked it');
+			const refreshed = userModule.withCertificateAdmission(await resolve('role_admission_cn'), admitted);
+			assert.strictEqual(refreshed.role, undefined);
+			const gate = grantingByUsername('role_admission_cn');
+			await assert.rejects(
+				async () => gate.Resource.subscribe('topic', undefined, { user: refreshed, authorize: true }),
+				{
+					statusCode: 403,
+				}
+			);
+			assert.strictEqual(_liveSubscriptionCount(), 0, 'it arrived with a role, so every view of it needs one');
+		});
+
+		it('requires a role of a view built after drop_user once an MCP refresh found a record behind the admission', async () => {
+			const admitted = await certificate('refresh_saw_cn');
+			await testUtils.seedUsers([{ username: 'refresh_saw_cn', active: true, role: readRole('refresh_saw_role') }]);
+			const backed = userModule.withCertificateAdmission(await resolve('refresh_saw_cn'), admitted);
+			assert.strictEqual(userModule.isRecordBacked(backed), true);
+			await testUtils.seedUsers();
+			const dropped = userModule.withCertificateAdmission(await resolve('refresh_saw_cn'), backed);
+			assert.strictEqual(userModule.certificateAdmission(dropped), admitted);
+			const gate = grantingByUsername('refresh_saw_cn');
+			await assert.rejects(
+				async () => gate.Resource.subscribe('topic', undefined, { user: dropped, authorize: true }),
+				{
+					statusCode: 403,
+				}
+			);
+			assert.strictEqual(_liveSubscriptionCount(), 0, 'the refresh saw the record, so the admission needs a role');
+		});
+
+		it('keeps the CONNECT lookup of a certificate principal a component built with no hdb_user', async () => {
+			const built = { username: 'component_cert_cn', active: true };
+			const admission = {};
+			const user = userModule.certificatePrincipal(
+				await userModule.getTrackedUser('component_cert_cn', null, null, admission, { getUser: async () => built })
+			);
+			assert.notStrictEqual(user, built);
+			assert.strictEqual(userModule.isRecordlessPrincipal(user), true, 'the copy keeps the lookup that tracked it');
+			const gate = grantingByUsername('component_cert_cn');
+			const context = { user, authorize: true, session: { user, userProvenance: admission.provenance } };
+			const subscription = await gate.Resource.subscribe('topic', undefined, context);
+			handles.push({ unregister: () => subscription.end() });
+			const resolutions = countResolutions();
+			try {
+				await _sweepNow();
+			} finally {
+				resolutions.restore();
+			}
+			assert.strictEqual(gate.end.calls.length, 0, 'a recheck revoked it');
+			assert.deepStrictEqual(resolutions.calls, [], 'never re-resolved by name');
+		});
+
 		it('rejects a subscription admitted by a user whose records changed before it registered', async () => {
 			await testUtils.seedUsers([{ username: 'stale_user', active: true, role: readRole('stale_role') }]);
 			const user = await resolve('stale_user');

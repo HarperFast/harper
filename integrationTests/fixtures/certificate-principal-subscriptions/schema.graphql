@@ -1,0 +1,4 @@
+type CertSubFeed @table @export {
+	id: ID @primaryKey
+	value: String
+}

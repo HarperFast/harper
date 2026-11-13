@@ -345,6 +345,24 @@ describe('Test configValidator module', () => {
 			expect(configValidator(config).error.message).to.include("'replication.blobGapEscalationMs' must be an integer");
 		});
 
+		it('accepts the replication confirmation defaults only as non-negative integers', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			for (const name of ['confirmation', 'recordLockConfirmation']) {
+				for (const value of [0, 1, 3, null]) {
+					config.replication = { [name]: value };
+					assert.strictEqual(configValidator(config).error, undefined, `${name}: ${value}`);
+				}
+				for (const [value, message] of [
+					[-1, 'must be greater than or equal to 0'],
+					[1.5, 'must be an integer'],
+					['all', 'must be a number'],
+				]) {
+					config.replication = { [name]: value };
+					assert.match(configValidator(config).error?.message, new RegExp(`replication\\.${name}' ${message}`));
+				}
+			}
+		});
+
 		it('accepts a well-formed sql config section', () => {
 			const config = testUtils.deepClone(FAKE_CONFIG);
 			config.sql = { engine: 'new', allowFullScan: true, maxSortRows: 500, maxHashRows: 500 };

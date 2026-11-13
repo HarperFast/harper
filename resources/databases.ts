@@ -3247,6 +3247,8 @@ function openDatabaseRoot(
 		}
 	}
 	if (!rootStore.auditStore) {
+		// the audit store's open consults the cluster's new-root fence, which never fences `system`
+		(rootStore as any).databaseName ??= databaseName;
 		rootStore.auditStore = openAuditStore(rootStore as any);
 	}
 	if (definedDatabase) (definedDatabase as any).rootStore = rootStore;

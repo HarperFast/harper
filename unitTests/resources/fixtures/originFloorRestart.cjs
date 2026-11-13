@@ -9,10 +9,13 @@ const env = require('#src/utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
-const { claimLocalKey } = require('#src/resources/originClosedFloor');
+const { claimLocalKey, localWritesFenced, setLocalWriteFence } = require('#src/resources/originClosedFloor');
 const {
 	coverLocalIssuance,
+	persistLocalWriteFence,
 	persistOriginClosedFloor,
+	readLocalWriteFence,
+	stampDatabaseGeneration,
 	readLocalIssuanceCeiling,
 	readOriginClosedFloor,
 } = require('#src/resources/auditStore');
@@ -108,7 +111,48 @@ async function reopenB({ dir }) {
 	return { wall, key: localKeyOf(B, 'after-reopen', 0) };
 }
 
-const modes = { seed, restart, refusedOpen, crossDatabase, reopenB };
+async function fenceSeed({ dir, database }) {
+	const Tbl = open(dir, database);
+	await Tbl.put({ id: 'before-fence', n: 0 });
+	const target = setLocalWriteFence(Tbl.primaryStore.rootStore, true);
+	await persistLocalWriteFence(Tbl.auditStore, { epoch: 'e1', target, state: 'fenced' });
+	return { target };
+}
+
+async function fenceRestart({ dir, database }) {
+	const Tbl = open(dir, database);
+	const fenced = localWritesFenced(Tbl.primaryStore.rootStore);
+	const record = readLocalWriteFence(Tbl.auditStore);
+	let refusal = null;
+	try {
+		await Tbl.put({ id: 'after-fence', n: 1 });
+	} catch (error) {
+		refusal = { statusCode: error.statusCode, message: error.message };
+	}
+	await persistLocalWriteFence(Tbl.auditStore, undefined);
+	setLocalWriteFence(Tbl.primaryStore.rootStore, false);
+	await Tbl.put({ id: 'after-cancel', n: 2 });
+	return { fenced, record, refusal, cleared: readLocalWriteFence(Tbl.auditStore) ?? null };
+}
+
+// a copy of a fenced database is stamped with a new generation before it is read
+async function fenceCopied({ dir, database }) {
+	const Tbl = open(dir, database);
+	const target = setLocalWriteFence(Tbl.primaryStore.rootStore, true);
+	await persistLocalWriteFence(Tbl.auditStore, { epoch: 'e2', target, state: 'fenced' });
+	const before = readLocalWriteFence(Tbl.auditStore) ?? null;
+	stampDatabaseGeneration(Tbl.auditStore, { carriesLog: true });
+	return { before, after: readLocalWriteFence(Tbl.auditStore) ?? null };
+}
+
+async function openedCopy({ dir, database }) {
+	const Tbl = open(dir, database);
+	const fenced = localWritesFenced(Tbl.primaryStore.rootStore);
+	await Tbl.put({ id: 'after-copy', n: 3 });
+	return { fenced };
+}
+
+const modes = { seed, restart, refusedOpen, crossDatabase, reopenB, fenceSeed, fenceRestart, fenceCopied, openedCopy };
 
 if (!isMainThread) {
 	workerRun(workerData).then((result) => {
