@@ -17,6 +17,12 @@ describe('Source fill lock tenure', function () {
 	let TenureTable;
 	let sourceCalls;
 	let pendingCalls;
+	let reads;
+	const read = (id) => {
+		const reading = TenureTable.get(id);
+		reads.push([id, reading]);
+		return reading;
+	};
 	before(function () {
 		setupTestDBPath();
 		setMainIsWorker(true);
@@ -40,22 +46,29 @@ describe('Source fill lock tenure', function () {
 	beforeEach(function () {
 		sourceCalls = 0;
 		pendingCalls = [];
+		reads = [];
 	});
-	afterEach(function () {
+	afterEach(async function () {
 		for (const call of pendingCalls ?? []) call.resolve(undefined);
+		await Promise.allSettled((reads ?? []).map(([, reading]) => reading));
+		const { primaryStore } = TenureTable;
+		await waitFor(() => !(reads ?? []).some(([id]) => primaryStore.hasLock(id)), {
+			message: 'a fill did not finish',
+		});
+		await primaryStore.committed;
 	});
 
 	it("does not let a fill that outlived its tenure release the next fill's lock", async function () {
-		const first = TenureTable.get('late').catch((error) => error);
+		const first = read('late').catch((error) => error);
 		await waitFor(() => sourceCalls === 1);
-		const second = TenureTable.get('late');
+		const second = read('late');
 		await waitFor(() => sourceCalls === 2, { timeout: 4 * TENURE, message: 'no second fill after the tenure' });
 
 		pendingCalls[0].reject(Object.assign(new Error('the first fill failed late'), { statusCode: 500 }));
 		assert.match((await first).message, /^the first fill failed late/);
 		await delay(50);
 		assert.equal(TenureTable.primaryStore.hasLock('late'), true, 'the second fill still holds the lock');
-		const third = TenureTable.get('late');
+		const third = read('late');
 		await delay(50);
 		assert.equal(sourceCalls, 2, 'a third read waits for the second fill');
 
@@ -77,7 +90,7 @@ describe('Source fill lock tenure', function () {
 		};
 		try {
 			assert.equal(otherThread.tryLock('foreign'), true);
-			const waiter = TenureTable.get('foreign');
+			const waiter = read('foreign');
 			await delay(3.5 * TENURE);
 			assert.equal(sourceCalls, 0, 'the waiter has not called the source');
 			assert.equal(otherThread.hasLock('foreign'), true, 'the other thread still holds its lock');
@@ -94,13 +107,13 @@ describe('Source fill lock tenure', function () {
 	});
 
 	it("does not let a fill that settled early release a later fill's lock when its tenure would have ended", async function () {
-		const first = TenureTable.get('early');
+		const first = read('early');
 		await waitFor(() => sourceCalls === 1);
 		await delay(0.6 * TENURE);
 		pendingCalls[0].resolve(undefined);
 		assert.equal(await first, undefined);
 		await waitFor(() => !TenureTable.primaryStore.hasLock('early'));
-		const second = TenureTable.get('early');
+		const second = read('early');
 		await waitFor(() => sourceCalls === 2);
 		// past the end of the first fill's tenure, inside the second's
 		await delay(0.6 * TENURE);
@@ -110,9 +123,9 @@ describe('Source fill lock tenure', function () {
 	});
 
 	it("keeps the second fill's record when the first fill commits after it", async function () {
-		const first = TenureTable.get('raced');
+		const first = read('raced');
 		await waitFor(() => sourceCalls === 1);
-		const second = TenureTable.get('raced');
+		const second = read('raced');
 		await waitFor(() => sourceCalls === 2, { timeout: 4 * TENURE, message: 'no second fill after the tenure' });
 		pendingCalls[1].resolve({ id: 'raced', name: 'second fill' });
 		assert.equal((await second).name, 'second fill');
@@ -121,13 +134,13 @@ describe('Source fill lock tenure', function () {
 		await first;
 		await delay(50);
 		assert.equal(TenureTable.primaryStore.getEntry('raced').value.name, 'second fill');
-		assert.equal((await TenureTable.get('raced')).name, 'second fill');
+		assert.equal((await read('raced')).name, 'second fill');
 	});
 
 	it('lets a later read fill a key whose source call never settles once the tenure ends', async function () {
-		TenureTable.get('stuck').catch(() => {});
+		read('stuck').catch(() => {});
 		await waitFor(() => sourceCalls === 1);
-		const later = TenureTable.get('stuck');
+		const later = read('stuck');
 		await waitFor(() => sourceCalls === 2, { timeout: 4 * TENURE, message: 'the stuck fill kept the lock' });
 		pendingCalls[1].resolve({ id: 'stuck', name: 'second fill' });
 		assert.equal((await later).name, 'second fill');
