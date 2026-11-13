@@ -180,6 +180,7 @@ import {
 	replicaDeadlinesCatalogKey,
 	REPLICA_DEADLINES_STORE,
 	requestComputedIndexRepair,
+	type StorageEngine,
 } from './databases.ts';
 import { notifyReplicatedApplyFailure } from './replicatedApplyFailure.ts';
 import {
@@ -1142,6 +1143,8 @@ interface TableResourceClass {
 	prototype: TableResourceInstance;
 	name: any;
 	primaryStore: any;
+	/** The engine of the store this table opened, which `storage.engine` does not decide for an existing root. */
+	storageEngine: StorageEngine;
 	storageGeneration: any;
 	/** Undefined for a table that predates the stamps. */
 	createdTime: number | undefined;
@@ -2546,6 +2549,7 @@ export function makeTable(options): TableResourceClass {
 		// #section: static-config
 		static name = tableName; // for display/debugging purposes
 		static primaryStore = primaryStore;
+		static storageEngine: StorageEngine = isRocksDB ? 'rocksdb' : 'lmdb';
 		static storageGeneration = tableGeneration;
 		static createdTime = createdTime;
 		static auditStore = auditStore;

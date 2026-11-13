@@ -118,6 +118,12 @@ A table that has kept [local replicas](../database/schema.md#replicaexpiration-a
 
 See [Local replicas under storage pressure](../database/storage-tuning.md#local-replicas-under-storage-pressure).
 
+#### Storage engine
+
+<VersionBadge version="v5.4.1" />
+
+Each table definition includes `engine`: `rocksdb` or `lmdb`, the engine of the store the table is opened on. `storage.engine` only picks the engine for databases created from then on. A database that already exists on disk opens on the engine it was written with, so a node upgraded in place from v4 keeps its `.mdb` databases on LMDB until they are migrated (`storage.migrateOnStart`).
+
 #### Record-structure dictionaries
 
 <VersionBadge type="changed" version="v5.2.5" />

@@ -571,6 +571,21 @@ export function openRocksDatabase(path: string, options: RocksDatabaseOptions & 
 
 const lmdbDatabaseEnvs = new Map<string, LMDBRootDatabase>();
 const rocksdbDatabaseEnvs = new Map<string, RocksRootDatabase>();
+export type StorageEngine = 'rocksdb' | 'lmdb';
+/**
+ * The engines of the roots this thread has open for a database. Read from the opened roots, not
+ * `storage.engine`: that setting picks the engine of a root created from now on, and an existing
+ * `.mdb` root opens as LMDB whatever it says. A root with no tables yet still counts, since a later
+ * `create_table` in it lands on its engine.
+ */
+export function databaseStorageEngines(databaseName: string): Set<StorageEngine> {
+	const engines = new Set<StorageEngine>();
+	for (const root of lmdbDatabaseEnvs.values())
+		if (root.databaseName === databaseName && root.status !== 'closed') engines.add('lmdb');
+	for (const root of rocksdbDatabaseEnvs.values())
+		if (root.databaseName === databaseName && root.status !== 'closed') engines.add('rocksdb');
+	return engines;
+}
 /**
  * The column-family wrappers this thread opened for each RocksDB root, by path, so a close reaches one
  * the table graph no longer points at. Held weakly, so an unreachable wrapper is still released when it
