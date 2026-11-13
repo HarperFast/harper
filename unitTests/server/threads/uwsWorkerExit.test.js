@@ -42,6 +42,9 @@ function startFixture(env, name = 'force-worker-exit-fixture') {
 
 describe('forceWorkerExit', function () {
 	this.timeout(60000);
+	before(function () {
+		if (process.versions.bun) this.skip(); // Bun is only ever sent FORCE_EXIT
+	});
 
 	afterEach(async function () {
 		setTerminateTimeout(10000);

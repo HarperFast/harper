@@ -1,8 +1,7 @@
 /**
  * The `restart` operation stops every worker from outside. A worker serving through uWebSockets.js
  * (HARPER_UWS_HTTP) holds sockets Node cannot close for it, and stopping it with them open aborted the whole
- * process (SIGABRT) instead of exiting or relaunching (harper-pro#1347). Traffic keeps requests arriving while
- * the workers stop.
+ * process (SIGABRT) instead of exiting or relaunching (harper-pro#1347).
  *
  * Reproduction:
  *   npm run test:integration -- "integrationTests/server/uws-restart.test.ts"
@@ -27,7 +26,6 @@ function uwsInstalled() {
 			`uws_${process.platform}_${process.arch}_${process.versions.modules}.node`
 		);
 		if (!existsSync(binary)) return false;
-		// createUwsServer refuses a binary that does not match a pointer-compression runtime's V8 ABI
 		const verdict = isPointerCompressionRuntime() ? checkNativeAddon(binary) : undefined;
 		return !verdict || (verdict.loadable && verdict.reason !== 'not-elf64');
 	} catch {
@@ -107,29 +105,33 @@ suite('restart with HARPER_EXIT_ON_RESTART and the uWS backend', { skip: skipSui
 	});
 });
 
-suite('SIGTERM with threads.shutdownTimeout 0 and the uWS backend', { skip: skipSuite }, (ctx: ContextWithHarper) => {
-	before(async () => {
-		await startHarper(ctx, {
-			config: { threads: { count: 2, shutdownTimeout: 0 } },
-			env: { HARPER_UWS_HTTP: '1' },
+suite(
+	'SIGTERM with threads.shutdownTimeout 0 and the uWS backend',
+	{ skip: process.platform === 'win32' ? 'Windows cannot deliver SIGTERM to a handler' : skipSuite },
+	(ctx: ContextWithHarper) => {
+		before(async () => {
+			await startHarper(ctx, {
+				config: { threads: { count: 2, shutdownTimeout: 0 } },
+				env: { HARPER_UWS_HTTP: '1' },
+			});
 		});
-	});
 
-	after(async () => {
-		await teardownHarper(ctx);
-	});
+		after(async () => {
+			await teardownHarper(ctx);
+		});
 
-	test('exits cleanly although main does not wait for its workers', async () => {
-		ok(await servedByUws(ctx));
-		const stopTraffic = startTraffic(ctx);
-		try {
-			ctx.harper.process.kill('SIGTERM');
-			deepStrictEqual(await exitOf(ctx.harper.process), { code: 0, signal: null });
-		} finally {
-			await stopTraffic();
-		}
-	});
-});
+		test('exits cleanly although main does not wait for its workers', async () => {
+			ok(await servedByUws(ctx));
+			const stopTraffic = startTraffic(ctx);
+			try {
+				ctx.harper.process.kill('SIGTERM');
+				deepStrictEqual(await exitOf(ctx.harper.process), { code: 0, signal: null });
+			} finally {
+				await stopTraffic();
+			}
+		});
+	}
+);
 
 suite('in-process restart with the uWS backend', { skip: skipSuite }, (ctx: ContextWithHarper) => {
 	before(async () => {

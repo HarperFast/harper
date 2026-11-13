@@ -141,7 +141,7 @@ When the Harper process receives SIGTERM, SIGINT (Ctrl+C) or SIGQUIT, it shuts d
 4. Component scopes close. Their [`'close'` listeners](../components/plugin-api.md#cleanup-on-shutdown) run once requests in flight have had a few seconds to finish.
 5. The process exits with code `0`.
 
-`threads.shutdownTimeout` bounds this sequence. If it has not finished in time, Harper logs `Shutdown did not finish within <n> ms (threads.shutdownTimeout)` and exits anyway. A second signal during the shutdown makes Harper exit at once; running `harper stop` again sends one. Under the uWS HTTP server, Harper first lets each worker close its uWS sockets, waiting up to 10 seconds for a busy one, since stopping a worker that still holds them crashes the process. Harper exits with code `0` in all three cases, so a `0` exit status does not mean every `'close'` listener finished.
+`threads.shutdownTimeout` bounds this sequence. If it has not finished in time, Harper logs `Shutdown did not finish within <n> ms (threads.shutdownTimeout)` and exits anyway. A second signal during the shutdown makes Harper exit at once; running `harper stop` again sends one. Under the uWS HTTP server, every exit first lets each worker close its uWS sockets, which adds up to 10 seconds (30 in dev mode) for a busy worker on top of `threads.shutdownTimeout`; a worker still busy after that is stopped anyway, and the process crashes. Harper exits with code `0` in all three cases, so a `0` exit status does not mean every `'close'` listener finished.
 
 ```yaml
 threads:
