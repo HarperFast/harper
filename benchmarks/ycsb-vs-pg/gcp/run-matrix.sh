@@ -111,7 +111,11 @@ pin_commit() {
 	else
 		sha=$(git -C "$YCSB_GCP_DIR" rev-parse --verify "${given:-HEAD}^{commit}")
 		mkdir -p "$YCSB_RUNS_DIR"
-		echo "$sha" >"$file"
+		# No clobber: of two sets started at once, the first pin stands and the other is checked against it.
+		(set -C && echo "$sha" >"$file") 2>/dev/null || [ "$(cat "$file")" = "$sha" ] || {
+			echo "matrix $1 builds $(cat "$file") ($file), not $sha" >&2
+			exit 2
+		}
 	fi
 	PASS=(--commit="$sha")
 }

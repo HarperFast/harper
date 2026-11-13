@@ -714,16 +714,16 @@ test('every set of a matrix builds the commit recorded at its first start', asyn
 			'#!/usr/bin/env bash\ncase "$*" in "config get-value account") echo bench@p.iam.gserviceaccount.com ;; esac\n',
 			{ mode: 0o755 }
 		);
-		const head = (await execAsync('git', ['-C', DIR, 'rev-parse', 'HEAD'])).stdout.trim();
-		const parent = (await execAsync('git', ['-C', DIR, 'rev-parse', 'HEAD~1'])).stdout.trim();
-		writeFileSync(join(dir, 'ycsb-pin.commit'), `${head}\n`);
-		const failed = await gcpScript('run-matrix.sh', ['--set=2x', '--run-id=ycsb-pin-2x', `--commit=${parent}`], {
+		// A pin no commit matches: CI's checkout is shallow, so no second real commit is at hand.
+		const pin = '0'.repeat(40);
+		writeFileSync(join(dir, 'ycsb-pin.commit'), `${pin}\n`);
+		const failed = await gcpScript('run-matrix.sh', ['--set=2x', '--run-id=ycsb-pin-2x', '--commit=HEAD'], {
 			PATH: `${dir}:${process.env.PATH}`,
 			CLOUDSDK_CONFIG: dir,
 			YCSB_GCP_PROJECT: 'p',
 			YCSB_RUNS_DIR: dir,
 		}).catch((error) => error);
-		ok(failed.stderr.includes(`matrix ycsb-pin builds ${head}`), failed.stderr);
+		ok(failed.stderr.includes(`matrix ycsb-pin builds ${pin}`), failed.stderr);
 	} finally {
 		rmSync(dir, { recursive: true });
 	}
