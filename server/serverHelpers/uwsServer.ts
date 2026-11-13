@@ -136,23 +136,29 @@ function headerName(name: string): string {
 }
 
 // uWS.js keeps its sockets as libuv handles that Node never closes: a thread whose JavaScript stops with one open
-// aborts the whole process at teardown. The thread's last JavaScript closes whatever is still open.
+// aborts the whole process at teardown.
 const openApps = new Set<UwsApp>();
 let exitListenerInstalled = false;
 function trackOpenApp(app: UwsApp): void {
 	openApps.add(app);
 	if (exitListenerInstalled) return;
-	exitListenerInstalled = true;
 	process.on('exit', () => {
-		for (const openApp of openApps) {
+		for (const openApp of [...openApps]) {
 			try {
 				closeApp(openApp);
 			} catch {}
 		}
 	});
+	exitListenerInstalled = true;
 }
 function closeApp(app: UwsApp): void {
-	if (openApps.delete(app)) app.close();
+	if (!openApps.delete(app)) return;
+	try {
+		app.close();
+	} catch (error) {
+		openApps.add(app);
+		throw error;
+	}
 }
 
 export async function createUwsServer(options: UwsServerOptions): Promise<{ app: UwsApp; close: () => void }> {

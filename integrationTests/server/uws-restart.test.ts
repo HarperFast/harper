@@ -20,7 +20,7 @@ import { waitFor } from '../../unitTests/waitFor.js';
 
 function uwsInstalled() {
 	try {
-		createRequire(import.meta.url)('uWebSockets.js');
+		createRequire(import.meta.url).resolve('uWebSockets.js');
 		return true;
 	} catch {
 		return false;
@@ -92,6 +92,30 @@ suite('restart with HARPER_EXIT_ON_RESTART and the uWS backend', { skip: skipSui
 		const stopTraffic = startTraffic(ctx);
 		try {
 			await sendOperation(ctx.harper, { operation: 'restart' });
+			deepStrictEqual(await exitOf(ctx.harper.process), { code: 0, signal: null });
+		} finally {
+			await stopTraffic();
+		}
+	});
+});
+
+suite('SIGTERM with threads.shutdownTimeout 0 and the uWS backend', { skip: skipSuite }, (ctx: ContextWithHarper) => {
+	before(async () => {
+		await startHarper(ctx, {
+			config: { threads: { count: 2, shutdownTimeout: 0 } },
+			env: { HARPER_UWS_HTTP: '1' },
+		});
+	});
+
+	after(async () => {
+		await teardownHarper(ctx);
+	});
+
+	test('exits cleanly although main does not wait for its workers', async () => {
+		ok(await servedByUws(ctx));
+		const stopTraffic = startTraffic(ctx);
+		try {
+			ctx.harper.process.kill('SIGTERM');
 			deepStrictEqual(await exitOf(ctx.harper.process), { code: 0, signal: null });
 		} finally {
 			await stopTraffic();

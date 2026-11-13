@@ -7,7 +7,7 @@ require('../../testUtils.js').preTestPrep();
 const http = require('node:http');
 const path = require('node:path');
 const { once } = require('node:events');
-const { startWorker, shutdownWorkersNow } = require('#src/server/threads/manageThreads');
+const { startWorker, shutdownWorkersNow, forceUwsWorkersToExit } = require('#src/server/threads/manageThreads');
 
 const [mode, socketPath] = process.argv.slice(2);
 const FIXTURE_NAME = 'uws-worker-exit-fixture';
@@ -30,10 +30,15 @@ async function main() {
 		env: { ...process.env, HARPER_UWS_UDS: '1', UWS_EXIT_SOCKET: socketPath },
 	});
 	await nextMessage(worker, 'fixture-ready');
-	if (mode === 'in-flight') {
+	if (mode === 'in-flight' || mode === 'main-exit') {
 		const held = nextMessage(worker, 'held');
 		http.get({ socketPath, path: '/hold' }).on('error', () => {});
 		await held;
+	}
+	if (mode === 'main-exit') {
+		await forceUwsWorkersToExit();
+		process.stdout.write('survived\n');
+		process.exit(0);
 	}
 	const exited = once(worker, 'exit');
 	if (mode === 'shutdown-now') await shutdownWorkersNow(FIXTURE_NAME);

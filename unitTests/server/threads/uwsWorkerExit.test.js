@@ -9,7 +9,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { once } = require('node:events');
 const { execFile } = require('node:child_process');
-const { startWorker, forceWorkerExit, workers } = require('#src/server/threads/manageThreads');
+const { startWorker, forceWorkerExit, setTerminateTimeout, workers } = require('#src/server/threads/manageThreads');
 
 const FIXTURE = path.join(__dirname, 'forceWorkerExit-fixture.cjs');
 const NO_UWS = { HARPER_UWS_UDS: '', HARPER_UWS_HTTP: '' };
@@ -21,11 +21,11 @@ try {
 	uwsAvailable = false;
 }
 
-function startFixture(env) {
+function startFixture(env, name = 'force-worker-exit-fixture') {
 	return new Promise((resolve, reject) => {
 		const worker = startWorker(FIXTURE, {
 			autoRestart: false,
-			name: 'force-worker-exit-fixture',
+			name,
 			env: { ...process.env, ...NO_UWS, ...env },
 		});
 		worker.once('error', reject);
@@ -39,8 +39,9 @@ describe('forceWorkerExit', function () {
 	this.timeout(60000);
 
 	afterEach(async function () {
+		setTerminateTimeout(10000);
 		for (const worker of [...workers]) {
-			if (worker.name !== 'force-worker-exit-fixture') continue;
+			if (worker.name !== 'force-worker-exit-fixture' && worker.name !== 'job') continue;
 			worker.wasShutdown = true;
 			await worker.terminate();
 		}
@@ -53,7 +54,8 @@ describe('forceWorkerExit', function () {
 		assert.deepStrictEqual(await exited, [7]);
 	});
 
-	it('terminates a uWS-backend worker that does not exit within the grace', async function () {
+	it('terminates a uWS-backend worker that does not exit within the termination timeout', async function () {
+		setTerminateTimeout(2000);
 		const worker = await startFixture({ HARPER_UWS_HTTP: '1' });
 		const exited = once(worker, 'exit');
 		const started = Date.now();
@@ -69,6 +71,13 @@ describe('forceWorkerExit', function () {
 		await forceWorkerExit(worker);
 		assert.deepStrictEqual(await exited, [1]);
 		assert.ok(Date.now() - started < 1000, `terminated after ${Date.now() - started} ms`);
+	});
+
+	it('terminates a job worker at once, even with the uWS backend in its env', async function () {
+		const worker = await startFixture({ HARPER_UWS_UDS: '1', FORCE_EXIT_FIXTURE_HONORS: '1' }, 'job');
+		const exited = once(worker, 'exit');
+		await forceWorkerExit(worker);
+		assert.deepStrictEqual(await exited, [1]);
 	});
 
 	it('shares one stop between repeated requests', async function () {
@@ -91,13 +100,15 @@ describe('forceWorkerExit', function () {
 describe('a worker holding uWebSockets.js sockets', function () {
 	this.timeout(60000);
 	before(function () {
-		if (!uwsAvailable) this.skip();
+		// Node's http client reaches a socketPath through a named pipe on Windows, never uWS's AF_UNIX socket
+		if (!uwsAvailable || process.platform === 'win32') this.skip();
 	});
 
 	for (const [mode, how] of [
 		['self-exit', 'exits itself'],
 		['in-flight', 'exits itself with a request in flight'],
 		['shutdown-now', 'is stopped by shutdownWorkersNow'],
+		['main-exit', 'is stopped before main exits'],
 	]) {
 		it(`${how} without aborting the process`, async function () {
 			const socketPath = path.join(os.tmpdir(), `uws-worker-exit-${process.pid}-${mode}.sock`);

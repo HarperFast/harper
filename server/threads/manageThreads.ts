@@ -98,7 +98,6 @@ const ADDED_PORT = 'added-port';
 const ACKNOWLEDGEMENT = 'ack';
 const REMOVE_PORT = 'remove-port';
 const FORCE_EXIT = 'force-exit';
-const FORCE_EXIT_GRACE_MS = 2000;
 // Worker -> main request to push out the force-terminate backstop while the worker gracefully drains
 // in-flight work (e.g. replication blob sends) before shutdown. Carries an absolute epoch deadline.
 const EXTEND_SHUTDOWN_DEADLINE = 'extend-shutdown-deadline';
@@ -198,6 +197,7 @@ export {
 	shutdownWorkers,
 	shutdownWorkersNow,
 	forceWorkerExit,
+	forceUwsWorkersToExit,
 	workers,
 	setMonitorListener,
 	sampleWorkerELU,
@@ -411,7 +411,8 @@ function armWorkerTerminate(worker: any, delay: number) {
  * Stop `worker` from outside, resolving once it has exited (at once on Bun, which is only asked). terminate() stops
  * its JavaScript where it stands, and a worker holding uWebSockets.js sockets cannot survive that: they are libuv
  * handles Node never closes, so its teardown aborts the process, as does a request uWS hands the stopped isolate.
- * Such a worker exits itself instead (its `exit` listener closes them), and is terminated only past the grace.
+ * Such a worker exits itself instead (its `exit` listener closes them). One still busy after
+ * threadTerminationTimeout is terminated anyway, and aborts the process.
  */
 function forceWorkerExit(worker: any): Promise<unknown> | undefined {
 	if (isBun) {
@@ -429,11 +430,11 @@ function forceWorkerExit(worker: any): Promise<unknown> | undefined {
 		};
 		const fallback = setTimeout(() => {
 			harperLogger.warn(
-				'Thread holding uWebSockets.js sockets did not exit on request; terminating it aborts the process',
+				'Thread did not exit on request; terminating it, which aborts the process if it holds uWebSockets.js sockets',
 				worker.threadId
 			);
 			terminate();
-		}, FORCE_EXIT_GRACE_MS);
+		}, threadTerminationTimeout);
 		worker.once('exit', () => {
 			clearTimeout(fallback);
 			resolve();
@@ -446,9 +447,14 @@ function forceWorkerExit(worker: any): Promise<unknown> | undefined {
 	}));
 }
 
-/** The gate `http.ts` serves through uWebSockets.js on, read from the env a worker was started with. */
-function usesUwsBackend(env: NodeJS.Dict<string>): boolean {
-	return Boolean(env.HARPER_UWS_UDS || env.HARPER_UWS_HTTP);
+/** Main exits on a signal without waiting for workers, and Node's exit tears them down as terminate() does. */
+function forceUwsWorkersToExit(): Promise<unknown> {
+	return Promise.all(workers.filter((worker) => worker.usesUwsBackend).map(forceWorkerExit));
+}
+
+// Node hands a worker its env as strings, so a value counts as set exactly when http.ts will read it as set.
+function usesUwsBackend(env: NodeJS.Dict<unknown>): boolean {
+	return [env.HARPER_UWS_UDS, env.HARPER_UWS_HTTP].some((value) => value != null && String(value) !== '');
 }
 
 let workersStoppedForExit: Promise<unknown> = Promise.resolve();
@@ -1596,7 +1602,8 @@ function startWorker(path?: any, options: any = {}, startOptions: any = {}) {
 		);
 	}
 	addPort(worker, true, isJobWorker);
-	worker.usesUwsBackend = usesUwsBackend(options.env && typeof options.env === 'object' ? options.env : process.env);
+	worker.usesUwsBackend =
+		!isJobWorker && usesUwsBackend(options.env && typeof options.env === 'object' ? options.env : process.env);
 	worker.unexpectedRestarts = options.unexpectedRestarts || 0;
 	worker.startCopy = (copyOptions) => {
 		// in a shutdown sequence we use overlapping restarts, starting the new thread while waiting for the old thread
@@ -2362,7 +2369,7 @@ function runExitHandler(handler: any, handlerName: string, worker: any, threadId
 async function shutdownWorkersNow(name?: any) {
 	if (name == null) beginProcessShutdown();
 	shutdownWorkers(name); // set the state of all the workers to shut down. this should finish the important stuff synchronously
-	await Promise.all(workers.map(forceWorkerExit));
+	await Promise.all(workers.filter((worker) => name == null || worker.name === name).map(forceWorkerExit));
 }
 
 /**

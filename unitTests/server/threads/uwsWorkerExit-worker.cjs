@@ -1,7 +1,6 @@
 'use strict';
 
-// A worker serving through uWebSockets.js on UWS_EXIT_SOCKET, with Harper's real worker-side SHUTDOWN and
-// FORCE_EXIT handlers loaded. `/hold` never answers, so a request can be left in flight.
+// `/hold` never answers, so a request can be left in flight.
 const { parentPort } = require('node:worker_threads');
 const { realExit } = require('#src/server/threads/workerProcessGuard');
 require('#src/server/threads/manageThreads');
