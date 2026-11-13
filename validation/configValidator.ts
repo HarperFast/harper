@@ -503,6 +503,8 @@ export function configValidator(configJson, skipFsValidation = false) {
 			copyCursorFlushBytes: number.min(1).optional().empty(null),
 			copyCursorFlushIntervalMs: number.min(1).optional().empty(null),
 			replayTimeout: number.min(1).optional().empty(null),
+			confirmation: number.integer().min(0).max(Number.MAX_SAFE_INTEGER).optional().empty(null),
+			recordLockConfirmation: number.integer().min(0).max(Number.MAX_SAFE_INTEGER).optional().empty(null),
 		}).optional(),
 		node: Joi.object({
 			hostname: bareHostConstraints,

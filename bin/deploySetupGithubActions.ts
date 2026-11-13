@@ -13,7 +13,12 @@ import * as YAML from 'yaml';
 import { prompts } from '../utility/interactivePrompts.ts';
 import { cliOperations, resolveGitRepo } from './cliOperations.ts';
 import { normalizeTarget } from './cliCredentials.ts';
-import { GITHUB_ACTIONS_ISSUER, buildWorkflowRef, canonicalWorkflowPath } from '../utility/previewIdentity.ts';
+import {
+	GITHUB_ACTIONS_ISSUER,
+	PREVIEW_TARGET_VARIABLE,
+	buildWorkflowRef,
+	canonicalWorkflowPath,
+} from '../utility/previewIdentity.ts';
 import {
 	planIdentityReconcile,
 	policyDifferences,
@@ -353,6 +358,13 @@ function checkSameRepositoryCondition(
 
 const ACTION_IS_CLOSED = /^(?:github\.event\.action\s*==\s*'closed'|'closed'\s*==\s*github\.event\.action)$/i;
 const ACTION_IS_NOT_CLOSED = /^(?:github\.event\.action\s*!=\s*'closed'|'closed'\s*!=\s*github\.event\.action)$/i;
+/**
+ * True on every run once setup has finished, since setup ends only with this variable set to the cluster's target. A
+ * workflow, like create-harper's, can test it to stay dormant until then.
+ */
+const TARGET_VARIABLE_IS_SET = new RegExp(
+	`^(?:vars\\.${PREVIEW_TARGET_VARIABLE}(?:\\s*!=\\s*'')?|''\\s*!=\\s*vars\\.${PREVIEW_TARGET_VARIABLE})$`
+);
 
 /** Undefined when a condition says more than that the job runs for a closed same-repository pull request. */
 function runsOnClose(name: string, jobs: Record<string, any>, path = new Set<string>()): boolean | undefined {
@@ -361,7 +373,9 @@ function runsOnClose(name: string, jobs: Record<string, any>, path = new Set<str
 	if (condition) {
 		const terms = conjuncts(withoutEnclosingParentheses(condition));
 		if (terms?.some((term) => ACTION_IS_NOT_CLOSED.test(term))) return false;
-		if (!terms?.every((term) => ACTION_IS_CLOSED.test(term) || SAME_REPOSITORY_TERM.test(term))) return undefined;
+		const readable = (term: string) =>
+			ACTION_IS_CLOSED.test(term) || SAME_REPOSITORY_TERM.test(term) || TARGET_VARIABLE_IS_SET.test(term);
+		if (!terms?.every(readable)) return undefined;
 	}
 	// With no status function in the condition, a needed job that is skipped skips this one.
 	let runs: boolean | undefined = true;

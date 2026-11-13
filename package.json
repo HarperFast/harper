@@ -253,7 +253,7 @@
 		"json-bigint-fixes": "1.1.0",
 		"jsonata": "1.8.9",
 		"jsonwebtoken": "9.0.3",
-		"lmdb": "3.5.9",
+		"lmdb": "3.5.10",
 		"lodash": "^4.17.23",
 		"mathjs": "11.12.0",
 		"micromatch": "^4.0.8",

@@ -19,7 +19,7 @@ Where things are in `resources/`. The rules live in [DESIGN.md](DESIGN.md): read
 - `search.ts` — FIQL parsing, condition planning and estimation, index scans, joins
 - `blob.ts` — file-backed blobs: saving, compression, cleanup, reclamation
 - `tracked.ts`, `crdt.ts` — tracked-instance changes (`mergeUpdateChanges` composes pending patches); CRDT operations and history reconstruction
-- `historyReader.ts` — bounded per-call audit-frame snapshots and incremental history images
+- `historyReader.ts` — bounded per-call audit-frame snapshots and incremental history images; the subscription replay's carrying reader
 - `Resources.ts`, `RequestTarget.ts`, `jsResource.ts` — the path registry and routes; the parsed request target; registering component exports
 - `ResourceInterface.ts` — shared types (`Context`, request body parts)
 - `resolveBody.ts`, `staticResourceDispatch.ts`, `ErrorResource.ts`, `login.ts` — body resolution, the false-mode dispatch marker, the error resource, the login endpoint
@@ -50,7 +50,7 @@ Where things are in `resources/`. The rules live in [DESIGN.md](DESIGN.md): read
 - sorting → `transformToOrderedSelect` in Table.ts; whether the lead already supplies the order → `scansInAttributeOrder` in search.ts
 - record TTL and eviction → `setTTLExpiration`, `_adoptCatalogExpiration`, `evict`, `scheduleCleanup` in Table.ts; `armTableCleanupScans` in databases.ts
 - cache miss to source → `getFromSource` in Table.ts
-- subscriptions and replay → `subscribe`, `eventFromAudit` in Table.ts; `addSubscription` in transactionBroadcast.ts
+- subscriptions and replay → `subscribe`, `eventFromAudit` in Table.ts; `addSubscription` in transactionBroadcast.ts; `ReplayReader` in historyReader.ts
 - history listings and full audit replay → `getHistory`, `getHistoryOfRecord`, `eventFromAudit` in Table.ts; `HistoryReader`, `HistoryMemo` in historyReader.ts; `getRecordAtTime` in crdt.ts
 - replication apply loop → `sourcedFrom` in Table.ts
 - the per-request transaction → `txnForContext` in Table.ts; `transaction()` in transaction.ts

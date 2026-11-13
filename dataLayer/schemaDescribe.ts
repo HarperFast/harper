@@ -220,6 +220,7 @@ async function descTable(describeTableObject: any, attrPerms?: any) {
 		schema_defined: tableObj.schemaDefined,
 		attributes,
 		db_size,
+		engine: tableObj.storageEngine,
 	};
 	if (tableObj.replicate !== undefined) tableResult.replicate = tableObj.replicate;
 	if (tableObj.expirationMS || tableObj.evictionMS) tableResult.expiration = tableObj.expirationMS / 1000 + 's';
