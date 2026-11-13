@@ -565,7 +565,7 @@ export function setReplicationConfirmationDefaults(defaults: { writes?: number; 
 	defaultRecordLockConfirmation = recordLocks;
 }
 
-/** Whether either default is set. */
+/** Harper Pro's tests read this to see what its registration set. */
 export function confirmationDefaultsConfigured(): boolean {
 	return defaultWriteConfirmation > 0 || defaultRecordLockConfirmation > 0;
 }
@@ -1260,7 +1260,8 @@ export class DatabaseTransaction implements Transaction {
 	}
 	/**
 	 * Whether the record-lock minimum governs this commit: it holds a cluster-granted lock and no explicit
-	 * per-write count meets the minimum. An explicit count that does keeps its own semantics.
+	 * per-write count meets the minimum. An explicit count that does keeps its own semantics; the configured
+	 * write default does not count as explicit, so it never takes a locked commit out of governance.
 	 */
 	lockGoverned(transaction?: RocksTransaction): boolean {
 		const minimum = lockConfirmationOf(transaction);

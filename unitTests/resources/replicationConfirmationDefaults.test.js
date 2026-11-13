@@ -275,14 +275,16 @@ describe('Replication confirmation defaults', () => {
 		});
 
 		it('lets the lock minimum govern unless an explicit count meets it', async () => {
-			setReplicationConfirmationDefaults({ writes: 1, recordLocks: 2 });
-			for (const [replicatedConfirmation, count, lockGoverned] of [
-				[undefined, 2, true],
-				[0, 2, true],
-				[1, 2, true],
-				[2, 2, false],
-				[3, 3, false],
+			for (const [writes, replicatedConfirmation, count, lockGoverned] of [
+				[1, undefined, 2, true],
+				[1, 0, 2, true],
+				[1, 1, 2, true],
+				[1, 2, 2, false],
+				[1, 3, 3, false],
+				// a configured write default above the minimum is not an explicit count
+				[3, undefined, 3, true],
 			]) {
+				setReplicationConfirmationDefaults({ writes, recordLocks: 2 });
 				calls = [];
 				governed = [];
 				const feasibility = [];
@@ -299,7 +301,7 @@ describe('Replication confirmation defaults', () => {
 					record.set('name', 'governed');
 					await record.save();
 				});
-				const label = `explicit ${replicatedConfirmation}`;
+				const label = `writes ${writes}, explicit ${replicatedConfirmation}`;
 				assert.deepStrictEqual(calls, [{ count }], label);
 				assert.deepStrictEqual(governed, [lockGoverned], label);
 				assert.deepStrictEqual(feasibility, [[count, lockGoverned]], label);
@@ -390,7 +392,6 @@ describe('Replication confirmation defaults', () => {
 			);
 			assert.deepStrictEqual(counts, [1]);
 			assert.equal(await First.get(id), null);
-			// the refused commit gave the key back
 			const next = await First.lock(id, { lease: 1000, timeout: 400 });
 			await next.unlock();
 		});
