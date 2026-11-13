@@ -8006,6 +8006,7 @@ export function makeTable(options): TableResourceClass {
 								// local-only marks the record so the replication send path skips it (see LOCAL_ONLY)
 								localOnly: options?.localOnly,
 								copyFrame: options?.copyFrame,
+								copyApply: isCopyApply,
 							},
 							type,
 							false,

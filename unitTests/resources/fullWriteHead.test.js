@@ -6,7 +6,7 @@ const { replayLogs } = require('#src/resources/replayLogs');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const { FULL_WRITE_HEAD, fullWriteHeadKey, INVALIDATED } = require('#src/resources/Table');
-const { VERSION_REUSED } = require('#src/resources/RecordEncoder');
+const { VERSION_REUSED, recordUpdater } = require('#src/resources/RecordEncoder');
 const { raiseAuditFloor, getAuditFloor, COPIED_RECORD } = require('#src/resources/auditStore');
 const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
 const { server } = require('#src/server/Server');
@@ -990,6 +990,52 @@ describe('A record bit for a full-write head (harper#3532)', () => {
 				});
 				await apply(T, id, { name: 'between' }, { version: version + 1000, nodeId: lateOrigin });
 				assert.equal(T.primaryStore.getEntry(id).value, null, 'a write the newer delete precedes still loses');
+			});
+
+			it('a copied put over a delete keeps that delete, not an older copied one stamped on it', async function () {
+				if (isLMDB) return this.skip();
+				const stamped = newId();
+				const plain = newId();
+				const version = Date.now() + DAY;
+				for (const id of [stamped, plain]) {
+					await apply(T, id, { name: 'alive' }, { version: version - 5000 });
+					await remove(T, id, { version: version + 2000 });
+				}
+				await copiedDelete(T, stamped, { version });
+				for (const id of [stamped, plain]) {
+					await copiedPut(T, id, { id, name: 'copied' }, { version: version + 3000 });
+					assert.deepEqual(T.primaryStore.getEntry(id).copiedDeleteBoundary, {
+						version: version + 2000,
+						nodeId: headOrigin,
+					});
+					await apply(T, id, { extra: 'between' }, { version: version + 1000, nodeId: lateOrigin });
+					assert.deepEqual({ ...T.primaryStore.getEntry(id).value }, { id, name: 'copied' }, 'the delete precedes it');
+				}
+			});
+
+			it('carries the boundary through a direct update that assigns no metadata flags', async function () {
+				if (isLMDB) return this.skip();
+				const id = newId();
+				const version = Date.now() + DAY;
+				await copiedDelete(T, id, { version });
+				await apply(T, id, { name: 'newer' }, { version: version + 2000 });
+				const head = T.primaryStore.getEntry(id);
+				recordUpdater(T.primaryStore, T.tableId, T.auditStore)(
+					id,
+					{ id, name: 'direct' },
+					head,
+					version + 3000,
+					undefined,
+					false,
+					{
+						nodeId: headOrigin,
+					}
+				);
+				await T.primaryStore.committed;
+				const entry = T.primaryStore.getEntry(id);
+				assert.equal(entry.value.name, 'direct');
+				assert.equal(entry.nodeId, headOrigin);
+				assert.deepEqual(entry.copiedDeleteBoundary, { version, nodeId: headOrigin });
 			});
 
 			it('a relocation over a delete this node made keeps that delete as the boundary', async function () {

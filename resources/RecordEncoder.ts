@@ -1073,12 +1073,12 @@ export function recordUpdater(
 					: TIMESTAMP_ASSIGN_NEW | 0x4000 // or just assign a new one
 				: NO_TIMESTAMP;
 		const expiresAt = options?.expiresAt;
+		// -1 means no flags assigned; normalized here, since OR-ing a flag into -1 would stay -1 and drop it
+		if (assignMetadata < 0) assignMetadata = 0;
 		if (expiresAt >= 0) assignMetadata |= HAS_EXPIRATION;
 		metadataInNextEncoding = assignMetadata;
 		expiresAtNextEncoding = expiresAt;
 		const auditExpiresAt = options?.auditExpiresAt ?? expiresAt;
-		// Math.max normalizes the -1 "no metadata word" sentinel to 0 first: OR-ing the flag into
-		// -1 directly would stay -1 and silently drop the metadata word (and the flag with it).
 		// A rewrite of the unchanged value keeps the row's own answer: its version still identifies that value.
 		if (
 			isRocksDB &&
@@ -1087,7 +1087,7 @@ export function recordUpdater(
 				? existingEntry?.metadataFlags & VERSION_REUSED
 				: versionIsReused(newVersion, existingEntry))
 		)
-			metadataInNextEncoding = Math.max(metadataInNextEncoding, 0) | VERSION_REUSED;
+			metadataInNextEncoding |= VERSION_REUSED;
 		const putOptions: {
 			version: number;
 			instructedWrite?: boolean;
@@ -1127,9 +1127,14 @@ export function recordUpdater(
 			const receivedIdentityRefs = options?.receivedIdentityRefs;
 			additionalAuditRefsNextEncoding = additionalAuditRefs?.length > 0 ? additionalAuditRefs : undefined;
 			receivedIdentityRefsNextEncoding = receivedIdentityRefs?.length > 0 ? receivedIdentityRefs : undefined;
-			// a record-less write over a delete keeps that delete's identity, native or copied, unless the stored boundary is later
+			// a record-less or unaudited copied write over a delete keeps that delete's identity, native or copied, unless the
+			// stored boundary is later
 			const headDelete =
-				(type === 'message' || type === 'publish' || type === 'invalidate' || type === 'relocate') &&
+				(type === 'message' ||
+					type === 'publish' ||
+					type === 'invalidate' ||
+					type === 'relocate' ||
+					options?.copyApply) &&
 				existingEntry &&
 				existingEntry.value == null &&
 				existingEntry.metadataFlags & FULL_WRITE_HEAD &&
@@ -1145,16 +1150,13 @@ export function recordUpdater(
 				!(
 					audit &&
 					(type === 'put' || type === 'delete') &&
-					assignMetadata >= 0 &&
 					assignMetadata & FULL_WRITE_HEAD &&
 					(options?.recordVersion ?? newVersion) > existingBoundary.version
 				)
 					? existingBoundary
 					: undefined);
 			copiedDeleteBoundaryNextEncoding = isRocksDB && record !== undefined ? copiedDeleteBoundary : undefined;
-			if (copiedDeleteBoundaryNextEncoding)
-				metadataInNextEncoding = Math.max(metadataInNextEncoding, 0) | HAS_ADDITIONAL_AUDIT_REFS;
-			else if (additionalAuditRefsNextEncoding || receivedIdentityRefsNextEncoding)
+			if (copiedDeleteBoundaryNextEncoding || additionalAuditRefsNextEncoding || receivedIdentityRefsNextEncoding)
 				metadataInNextEncoding |= HAS_ADDITIONAL_AUDIT_REFS;
 			const previousAdditionalAuditRefs = existingEntry?.additionalAuditRefs;
 			if (previousAdditionalAuditRefs && previousAdditionalAuditRefs.length > 0) {
