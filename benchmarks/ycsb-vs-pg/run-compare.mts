@@ -1524,7 +1524,7 @@ export async function createSession(
 		'hosts',
 	];
 	const passthrough = argv.filter((a) => {
-		if (a === '--perf-counters') return false;
+		if (a === '--perf-counters' || a === '--no-perf-counters') return false;
 		const name = /^--([^=]+)=/.exec(a)?.[1];
 		return !name || ![...sessionFlags, ...ownFlags].includes(name);
 	});
@@ -1551,8 +1551,11 @@ export async function createSession(
 	const base = hostsFile ? undefined : await prepareTargetHost(serverCpus);
 
 	const profileDir = argValue(argv, '--profile');
-	// instructions/op is the stable metric where turbo cannot be turned off, so a remote session always counts.
-	const perfCounters = Boolean(profileDir) || argv.includes('--perf-counters') || Boolean(hostsFile);
+	// instructions/op is the stable metric where turbo cannot be turned off, so a remote session counts unless
+	// --no-perf-counters says not to: counting per cgroup has a cost of its own on a VM's virtual PMU.
+	const noCounters = argv.includes('--no-perf-counters');
+	if (noCounters && profileDir) throw new Error('--profile counts hardware events; drop --no-perf-counters');
+	const perfCounters = !noCounters && (Boolean(profileDir) || argv.includes('--perf-counters') || Boolean(hostsFile));
 	if (perfCounters && !hostsFile) await perfAvailable();
 	let profile: Session['profile'];
 	if (profileDir) {
