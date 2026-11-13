@@ -406,6 +406,8 @@ export function configValidator(configJson, skipFsValidation = false) {
 	});
 	const mcpApplicationSchema = mcpOperationsSchema.keys({
 		searchMaxResults: number.min(1).optional(),
+		// `convert: false`, as for `enabled`: a quoted "false" would pass coerced and still leave generated tools on.
+		generatedTools: boolean.optional().prefs({ convert: false }),
 	});
 	const mcpSessionSchema = Joi.object({
 		idleTimeoutSeconds: number.min(1).optional(),

@@ -60,6 +60,7 @@ import { notifyPromptsListChanged, notifyResourcesListChanged, notifyToolsListCh
 import { decodeCursor, encodeCursor } from '../pagination.ts';
 import { resolveAttributes } from '../../../resources/jsonSchemaTypes.ts';
 import { serializesToArray, wrapToolResult } from './results.ts';
+import { compileNameFilter, readNameList } from './nameFilter.ts';
 import {
 	type AttributePermissionEntry,
 	type HarperAttribute,
@@ -1066,7 +1067,11 @@ export function _resetCustomToolWarningsForTest(): void {
 	_warnedMissingInput.clear();
 }
 
-function registerCustomMcpTools(ResourceClass: ResourceClassLike, path: string): number {
+function registerCustomMcpTools(
+	ResourceClass: ResourceClassLike,
+	path: string,
+	isToolAllowed: (name: string) => boolean
+): number {
 	const tools = ResourceClass.mcpTools;
 	if (!Array.isArray(tools) || tools.length === 0) return 0;
 	let count = 0;
@@ -1077,6 +1082,7 @@ function registerCustomMcpTools(ResourceClass: ResourceClassLike, path: string):
 			);
 			continue;
 		}
+		if (!isToolAllowed(def.name)) continue;
 		const methodName = def.method;
 		if (typeof (ResourceClass.prototype as Record<string, unknown>)?.[methodName] !== 'function') {
 			harperLogger.warn(
@@ -1473,6 +1479,12 @@ function buildApplicationTools(resources: ResourcesRegistry): void {
 	const claimedSuffixes = new Set<string>();
 	let toolsRegistered = 0;
 	let resourcesConsidered = 0;
+	// Read once per rebuild so tools/list and tools/call resolve against the same filtered registry.
+	const isToolAllowed = compileNameFilter(
+		readNameList(env.get(CONFIG_PARAMS.MCP_APPLICATION_ALLOW)),
+		readNameList(env.get(CONFIG_PARAMS.MCP_APPLICATION_DENY))
+	);
+	const generatedToolsEnabled = env.get(CONFIG_PARAMS.MCP_APPLICATION_GENERATEDTOOLS) !== false;
 
 	// How much of a param route the GENERATED verb handlers can bind:
 	// 'id'   — single-`:id` routes: get/update/patch/delete bind `target.id = args.id`,
@@ -1514,7 +1526,9 @@ function buildApplicationTools(resources: ResourcesRegistry): void {
 				verbs.get = verbs.search = verbs.create = verbs.updatePut = verbs.updatePatch = verbs.delete = false;
 			}
 		}
-		const hasVerbs = verbs.get || verbs.search || verbs.create || verbs.updatePut || verbs.updatePatch || verbs.delete;
+		const hasVerbs =
+			generatedToolsEnabled &&
+			(verbs.get || verbs.search || verbs.create || verbs.updatePut || verbs.updatePatch || verbs.delete);
 		const hasCustomTools = Array.isArray(ResourceClass?.mcpTools) && ResourceClass.mcpTools.length > 0;
 		const hasCustomPrompts = Array.isArray(ResourceClass?.mcpPrompts) && ResourceClass.mcpPrompts.length > 0;
 		const hasCustomResources = Array.isArray(ResourceClass?.mcpResources) && ResourceClass.mcpResources.length > 0;
@@ -1546,12 +1560,15 @@ function buildApplicationTools(resources: ResourcesRegistry): void {
 					warnInvalidResourceSchema(ResourceClass, path, error);
 				}
 				if (definitions) {
-					for (const definition of definitions) addTool(definition);
-					toolsRegistered += definitions.length;
+					for (const definition of definitions) {
+						if (!isToolAllowed(definition.name)) continue;
+						addTool(definition);
+						toolsRegistered++;
+					}
 				}
 			}
 		}
-		toolsRegistered += registerCustomMcpTools(ResourceClass, path);
+		toolsRegistered += registerCustomMcpTools(ResourceClass, path, isToolAllowed);
 		registerCustomMcpPrompts(ResourceClass, path);
 		registerCustomMcpResources(ResourceClass, path);
 	};

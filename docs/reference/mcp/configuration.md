@@ -66,7 +66,41 @@ Default per-profile values for `operations`: `perToolPerSecond: 10`, `perToolBur
 
 ## `mcp.application.*`
 
-Configures the application-profile MCP endpoint that walks your exported `Resource` classes. All `mcp.operations.*` keys above also apply here; the additional knob is:
+Configures the application-profile MCP endpoint that walks your exported `Resource` classes. `mountPath`, `maxTools` and `rateLimit` work as they do for `mcp.operations`. `allow` and `deny` filter tool names here too, with a different default, described below.
+
+### `mcp.application.allow`
+
+<VersionBadge type="changed" version="v5.4.0" />
+
+Type: `array<string>` (glob patterns or literal tool names)
+
+Default: unset (every tool)
+
+Tools the application profile exposes, matched by tool name with the same glob rules as `mcp.operations.allow`. Unlike the operations profile there is no curated default: when `allow` is unset or empty, every generated verb tool (`get_<resource>`, `search_<resource>`, `create_<resource>`, ...) and every custom [`mcpTools`](./tools-and-resources.md#custom-mcptools-opt-in) entry is exposed. When set, it applies to both kinds, and a tool it filters out is neither listed by `tools/list` nor callable through `tools/call`.
+
+Before v5.4.0 this key was accepted but ignored.
+
+### `mcp.application.deny`
+
+<VersionBadge type="changed" version="v5.4.0" />
+
+Type: `array<string>` (glob patterns or literal tool names)
+
+Default: `[]`
+
+Tool names to filter out after `allow` has been applied. Before v5.4.0 this key was accepted but ignored.
+
+### `mcp.application.generatedTools`
+
+<VersionBadge version="v5.4.0" />
+
+Type: `boolean`
+
+Default: `true`
+
+Set to `false` to stop generating verb tools from exported Resources, so the profile exposes only the custom `mcpTools` your components declare (still subject to `allow` and `deny`). This lets a component publish a curated tool set without its other REST exports becoming tools, and without listing each tool name in `allow`. Custom `mcpPrompts` and `mcpResources` are unaffected.
+
+`allow`, `deny` and `generatedTools` are read whenever the application tool set is rebuilt (at startup, and when schemas or registered Resources change), not on every request.
 
 ### `mcp.application.searchMaxResults`
 
