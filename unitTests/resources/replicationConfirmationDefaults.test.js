@@ -149,8 +149,8 @@ describe('Replication confirmation defaults', () => {
 			assert.strictEqual((await Cached.get(id)).name, 'from source');
 			assert.strictEqual(fillContexts.at(-1).replicatedConfirmation, 0);
 			await waitFor(() => Cached.primaryStore.getEntry(id));
-			// the fill commits in the background; give a confirmation it should not request time to arrive
-			await new Promise((resolve) => setTimeout(resolve, 100));
+			// the fill commits in the background and releases its key lock once that commit settles
+			await waitFor(() => !Cached.primaryStore.hasLock(id));
 			assert.deepStrictEqual(calls, []);
 		});
 
