@@ -156,6 +156,26 @@ describe('Replication confirmation defaults', () => {
 			assert.deepStrictEqual(calls, []);
 		});
 
+		it("reads replicate: false from the table's catalog row, not a stale class flag", async () => {
+			setReplicationConfirmationDefaults({ writes: 1 });
+			const catalog = First.dbisDB;
+			const row = catalog.getSync('Records/');
+			try {
+				First.replicate = false;
+				catalog.putSync('Records/', { ...row, replicate: true });
+				await transaction({}, () => First.put({ id: nextId() }));
+				assert.strictEqual(calls.length, 1, 'the declaration on disk replicates');
+				calls = [];
+				First.replicate = undefined;
+				catalog.putSync('Records/', { ...row, replicate: false });
+				await transaction({}, () => First.put({ id: nextId() }));
+				assert.deepStrictEqual(calls, [], 'the declaration on disk does not replicate');
+			} finally {
+				First.replicate = undefined;
+				catalog.putSync('Records/', row);
+			}
+		});
+
 		it('does not apply the default to a cache fill from a source', async () => {
 			setReplicationConfirmationDefaults({ writes: 1 });
 			const id = nextId();

@@ -816,6 +816,8 @@ export type TransactionWrite = {
 	// a restage. Unset when no staging has run, or the last fresh one was skipped (it lost to a newer
 	// entry and confirms on that entry, harper#3182).
 	stagedAudit?: 'none' | 'local' | 'replicable';
+	// read from the table's catalog row the first time a confirmation needs it
+	nodeLocalTable?: boolean;
 	// the transaction holding this write in its `writes` (set in addWrite). A deferred write's save() is
 	// only its trigger, so it can be triggered after the context has moved on to another transaction;
 	// this is who commits it when the transaction current at that point is not a scope (#2292).
@@ -887,9 +889,9 @@ export type TransactionWrite = {
 };
 
 // the replication sender skips a table declared `replicate: false`, so no peer acknowledges its writes
-const storeTables = new WeakMap<object, { replicate?: boolean }>();
-export function registerStoreTable(store: object, table: { replicate?: boolean }): void {
-	storeTables.set(store, table);
+const nodeLocalStores = new WeakMap<object, () => boolean>();
+export function registerStoreTable(store: object, isNodeLocal: () => boolean): void {
+	nodeLocalStores.set(store, isNodeLocal);
 }
 
 export function confirmsNothing(write: TransactionWrite): boolean {
@@ -897,7 +899,7 @@ export function confirmsNothing(write: TransactionWrite): boolean {
 		write.skipReplicationConfirmation ||
 		write.stagedAudit === 'none' ||
 		write.stagedAudit === 'local' ||
-		storeTables.get(write.store)?.replicate === false
+		(write.nodeLocalTable ??= nodeLocalStores.get(write.store)?.() ?? false)
 	);
 }
 

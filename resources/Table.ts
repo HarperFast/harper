@@ -171,6 +171,7 @@ import {
 	isDeadGeneration,
 	recordTableDrop,
 	replicateIsFalse,
+	isNodeLocalTable,
 	OMIT_LIFECYCLE_STAMPS_FOR_TEST,
 	sweepDroppedTableBlobs,
 	storeNameFor,
@@ -12751,7 +12752,7 @@ export function makeTable(options): TableResourceClass {
 			if (replicaExpirationMs) armReplicaEviction();
 		}
 	}
-	registerStoreTable(primaryStore, TableResource);
+	registerStoreTable(primaryStore, () => isNodeLocalTable(TableResource));
 	return TableResource;
 	function resolveOverStub(resolver: (record: any) => any, stub: any, name: string) {
 		try {
