@@ -32,7 +32,7 @@ A handful of design points are non-obvious and easy to break:
   exists; OAuth MCP clients such as Claude start sign-in only on that 401. The response is marked with
   `ownAuthenticationChallenge` so `security/auth.ts` keeps its `Bearer resource_metadata` challenge instead
   of replacing it or redirecting a browser; unmarked route 401s are rewritten as before. The metadata URL
-  is the configured one, else the active Bearer validators' `challenge` only when every declaration agrees
+  is the configured one, else the active Bearer validators' `challenge` only when every validator that declares one names the same URL (undeclared validators are not counted)
   (`declaredResourceMetadata`): registrations are worker-global and load in no fixed order, so a
   disagreement could point a client at an authorization server that does not protect this mount.
 - **Per-call POST SSE streaming has a close-before-subscribe race.** A `tools/call` that opts into streaming

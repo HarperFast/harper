@@ -415,7 +415,10 @@ export function configValidator(configJson, skipFsValidation = false) {
 					'string.challengeUrl': '{#label} must be an https URL (http only for a loopback host) with no fragment',
 				})
 				.optional(),
-		}).optional(),
+		})
+			// a misspelled key would otherwise leave the mount anonymous with no error
+			.unknown(false)
+			.optional(),
 	});
 	const mcpSessionSchema = Joi.object({
 		idleTimeoutSeconds: number.min(1).optional(),

@@ -469,8 +469,7 @@ export async function authentication(request, nextHandler) {
 		if (!response) return response;
 		if (response.status === 401) {
 			wasUnauthorized = true;
-			// Downstream owns the challenge or redirect after Harper deferred the credential decision, or
-			// when it marked its 401 as carrying its own challenge.
+			// Downstream owns the challenge or redirect after Harper deferred the credential decision.
 			if (!getDeferredCredentialRejection(request) && !ownsAuthenticationChallenge(response)) {
 				if (
 					headers['user-agent']?.startsWith('Mozilla') &&

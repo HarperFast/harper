@@ -63,7 +63,6 @@ interface HarperHttpResponse {
 	body?: unknown;
 }
 
-/** `mcp.application.authentication`: whether the mount requires a principal, and the metadata URL its challenge names. */
 export interface McpAuthentication {
 	required: boolean;
 	resourceMetadata?: string;
@@ -92,8 +91,6 @@ export function createHarperHttpHandler(
 			return settledCredentialRejection;
 		}
 		const username = request.user?.username ?? '';
-		// A required mount lets no request without a principal reach the transport, so no anonymous session or
-		// tool call exists there; the 401 is also what makes an OAuth client start authorization.
 		if (requirePrincipal && !username && request.method !== 'OPTIONS') {
 			discardBody(request.body);
 			const response = credentialRejectionResponse(request, 401, 'Authentication required', 'Bearer', false);

@@ -1071,6 +1071,11 @@ describe('Test configValidator module', () => {
 				config.mcp = { application: { authentication: { resourceMetadata } } };
 				expect(configValidator(config, true).error, resourceMetadata).to.not.be.undefined;
 			}
+
+			for (const authentication of [{ require: true }, { resource_metadata: 'https://x.example/prm' }]) {
+				config.mcp = { application: { authentication } };
+				expect(configValidator(config, true).error, JSON.stringify(authentication)).to.not.be.undefined;
+			}
 		});
 	});
 
