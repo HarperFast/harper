@@ -64,8 +64,9 @@ describe('a source-applied transaction gives each write only its own expiry', fu
 		assert.strictEqual(entry(Table, id).expiresAt, undefined, `${id} stored expiresAt ${entry(Table, id).expiresAt}`);
 
 	it('does not give a write with no expiry the first write’s expiry', async () => {
-		const firstExpiresAt = Date.now() + 300;
-		const Table = subscribe(newTable(), [
+		const Table = newTable();
+		const firstExpiresAt = Date.now() + 1500;
+		subscribe(Table, [
 			put('expiring', NOW + 0.1, { beginTxn: true, expiresAt: firstExpiresAt }),
 			put('plain', NOW + 0.1),
 			{ type: 'end_txn' },
