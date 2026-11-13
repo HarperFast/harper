@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794554258175,
+  "lastUpdate": 1794560924587,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -28785,6 +28785,58 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw write ops",
             "value": 1476,
+            "unit": "ops"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "d42f5e6fd432f31c054ab6a119308fbe4fc2a60d",
+          "message": "Add the 5.4 release-note fragments that 5.4.0 changes were missing (#4351)\n\n* Add the 5.4 release-note fragments that 5.4.0 changes were missing\n\nChecked v5.3.1..v5.4.0 against docs/release-notes/v5-lincoln/5.4 and added\nfragments for the user-facing changes that had none: an upgrade-notes list,\nsecurity and permission changes, configuration, REST, MQTT, replication,\nstorage, analytics, a Performance section and a Known Issues section.\nRemoves the \"not released yet\" lines that 5.4.0 made false.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01F7groWG2PoCFsmKT2Wejui\nDispatch-Task: release-cut-main-5.4.0\n\n* Qualify the rollback, QoS 2, SQL primary-key, precondition and Bun analytics notes\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01F7groWG2PoCFsmKT2Wejui\nDispatch-Task: release-cut-main-5.4.0\n\n---------\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-11-13T01:07:51Z",
+          "url": "https://github.com/HarperFast/harper/commit/d42f5e6fd432f31c054ab6a119308fbe4fc2a60d"
+        },
+        "date": 1794560920601,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "value": 16997,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed3",
+            "value": 10154,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed5",
+            "value": 8877,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "value": 11596224,
+            "unit": "records"
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "value": 9412,
+            "unit": "ops"
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "value": 2553,
             "unit": "ops"
           }
         ]
