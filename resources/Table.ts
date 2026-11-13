@@ -91,6 +91,7 @@ import {
 	heldByAncestorHook,
 	instanceWriteInSyncCommitHook,
 	commitHooksRunning,
+	registerStoreTable,
 } from './DatabaseTransaction.ts';
 import { readOnlyModeError } from './readOnlyMode.ts';
 import {
@@ -12750,6 +12751,7 @@ export function makeTable(options): TableResourceClass {
 			if (replicaExpirationMs) armReplicaEviction();
 		}
 	}
+	registerStoreTable(primaryStore, TableResource);
 	return TableResource;
 	function resolveOverStub(resolver: (record: any) => any, stub: any, name: string) {
 		try {

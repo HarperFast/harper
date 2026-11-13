@@ -886,8 +886,19 @@ export type TransactionWrite = {
 	instanceClosed?: boolean;
 };
 
+// the replication sender skips a table declared `replicate: false`, so no peer acknowledges its writes
+const storeTables = new WeakMap<object, { replicate?: boolean }>();
+export function registerStoreTable(store: object, table: { replicate?: boolean }): void {
+	storeTables.set(store, table);
+}
+
 export function confirmsNothing(write: TransactionWrite): boolean {
-	return write.skipReplicationConfirmation || write.stagedAudit === 'none' || write.stagedAudit === 'local';
+	return (
+		write.skipReplicationConfirmation ||
+		write.stagedAudit === 'none' ||
+		write.stagedAudit === 'local' ||
+		storeTables.get(write.store)?.replicate === false
+	);
 }
 
 export function closeWriteInstance(operation: TransactionWrite | null | undefined): void {

@@ -14,7 +14,7 @@ const { ServerError } = require('#src/utility/errors/hdbError');
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
 describe('Replication confirmation defaults', () => {
-	let First, Second, Local, Unaudited, Cached;
+	let First, Second, Local, Unaudited, Cached, NodeLocal;
 	let sequence = 0;
 	const nextId = () => `confirmation-default-${sequence++}`;
 	let calls;
@@ -38,6 +38,12 @@ describe('Replication confirmation defaults', () => {
 			table: 'Unaudited',
 			attributes: [{ name: 'id', isPrimaryKey: true }],
 			audit: false,
+		});
+		NodeLocal = table({
+			database: 'confirmation-default-first',
+			table: 'NodeLocal',
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+			replicate: false,
 		});
 		Cached = table({
 			database: 'confirmation-default-first',
@@ -140,6 +146,13 @@ describe('Replication confirmation defaults', () => {
 		it('does not apply the default to a write that replicates nothing', async () => {
 			setReplicationConfirmationDefaults({ writes: 1 });
 			await transaction({}, () => Unaudited.put({ id: nextId() }));
+			assert.deepStrictEqual(calls, []);
+		});
+
+		it('waits for nothing on a table declared replicate: false, which no peer receives', async () => {
+			setReplicationConfirmationDefaults({ writes: 1 });
+			await transaction({}, () => NodeLocal.put({ id: nextId() }));
+			await transaction({ replicatedConfirmation: 1 }, () => NodeLocal.put({ id: nextId() }));
 			assert.deepStrictEqual(calls, []);
 		});
 
