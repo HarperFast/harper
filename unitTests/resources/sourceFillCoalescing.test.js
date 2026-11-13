@@ -256,6 +256,39 @@ describe('Concurrent source misses on one key', function () {
 		);
 	});
 
+	it('do not share a not-found whose class reads private state or that carries a one-shot body', async function () {
+		class PrivateError extends Error {
+			#detail = 'private';
+			get detail() {
+				return this.#detail;
+			}
+		}
+		const shapes = [
+			() => Object.assign(new PrivateError('origin answered 404'), { statusCode: 404 }),
+			() => Object.assign(new OriginError('origin answered 404'), { statusCode: 404, response: new Response('gone') }),
+		];
+		for (const [index, shape] of shapes.entries()) {
+			respond = () => {
+				throw shape();
+			};
+			sourceCalls = 0;
+			const reasons = (await concurrentGets(CoalescingTable, 'uncopyable-' + index)).map(({ reason }) => reason);
+			assert.equal(sourceCalls, 20);
+			assert.ok(reasons.every((reason) => reason.statusCode === 404));
+			await settle('uncopyable-' + index);
+		}
+	});
+
+	it('carry the cause of a shared not-found', async function () {
+		const cause = new Error('upstream detail');
+		respond = () => {
+			throw Object.assign(new OriginError('origin answered 404', { cause }), { statusCode: 404 });
+		};
+		const reasons = (await concurrentGets(CoalescingTable, 'with-cause')).map(({ reason }) => reason);
+		assert.equal(sourceCalls, 1);
+		assert.ok(reasons.every((reason) => reason.cause === cause));
+	});
+
 	it('call the source again for a thrown not-found on the next burst', async function () {
 		respond = () => {
 			throw sourceError(404);
