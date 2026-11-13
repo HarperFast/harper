@@ -2527,9 +2527,12 @@ export class DatabaseTransaction implements Transaction {
 		)
 			? committedLogKey
 			: undefined;
+		// A skipped write landed nothing, and the key's version may be another node's, which this node's
+		// peers never acknowledge; under the lock minimum such a write has nothing to protect.
+		const skipLanded = version === undefined && this.lockGoverned(committedTransaction);
 		for (let i = this.writes.length - 1; i >= 0 && version === undefined; i--) {
 			const write = this.writes[i];
-			if (!write?.saved || confirmsNothing(write, classified)) continue;
+			if (!write?.saved || confirmsNothing(write, classified) || (skipLanded && write.skipped)) continue;
 			version = write.store.getEntry(write.key)?.version;
 		}
 		if (version === undefined) return;

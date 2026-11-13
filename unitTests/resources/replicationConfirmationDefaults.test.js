@@ -350,6 +350,28 @@ describe('Replication confirmation defaults', () => {
 			await held.unlock().catch(() => {});
 		});
 
+		it('does not wait for a held write that lost to a newer full write, and so landed nothing', async () => {
+			setReplicationConfirmationDefaults({ recordLocks: 1 });
+			const id = nextId();
+			await First.put({ id, name: 'before' });
+			const context = {};
+			let held;
+			await transaction(context, async () => {
+				held = await First.lock(id, { lease: 5000, hold: true });
+				const handle = context.transaction.recordLockFor(First.primaryStore, id);
+				assert.ok(handle.joinClusterRound(Date.now() - 1000, 5000, performance.now(), () => {}));
+			});
+			await First.put({ id, name: 'newer' });
+			calls = [];
+			await transaction({}, async () => {
+				held.set('name', 'held');
+				await held.save();
+			});
+			assert.strictEqual((await First.get(id)).name, 'newer');
+			assert.deepStrictEqual(calls, []);
+			await held.unlock().catch(() => {});
+		});
+
 		it('takes the larger of the lock count and the requested count', async () => {
 			setReplicationConfirmationDefaults({ recordLocks: 1 });
 			for (const [replicatedConfirmation, expected] of [
