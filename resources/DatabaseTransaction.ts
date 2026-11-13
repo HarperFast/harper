@@ -891,25 +891,19 @@ const nodeLocalStores = new WeakMap<object, () => boolean>();
 export function registerStoreTable(store: object, isNodeLocal: () => boolean): void {
 	nodeLocalStores.set(store, isNodeLocal);
 }
-// one catalog read per table per commit: refuseUnconfirmable starts a new epoch before each submission
-let classificationEpoch = 0;
-const nodeLocalByStore = new WeakMap<object, { epoch: number; nodeLocal: boolean }>();
-function isNodeLocalStore(store: object): boolean {
-	const isNodeLocal = nodeLocalStores.get(store);
-	if (!isNodeLocal) return false;
-	let classified = nodeLocalByStore.get(store);
-	if (classified?.epoch !== classificationEpoch)
-		nodeLocalByStore.set(store, (classified = { epoch: classificationEpoch, nodeLocal: isNodeLocal() }));
-	return classified.nodeLocal;
-}
 
-export function confirmsNothing(write: TransactionWrite): boolean {
-	return (
-		write.skipReplicationConfirmation ||
-		write.stagedAudit === 'none' ||
-		write.stagedAudit === 'local' ||
-		isNodeLocalStore(write.store)
-	);
+/**
+ * `classified` is the commit's own record of which stores are node-local, filled from the catalog once
+ * per table, so its feasibility check and its confirmation waiter agree.
+ */
+export function confirmsNothing(write: TransactionWrite, classified?: Map<object, boolean>): boolean {
+	if (write.skipReplicationConfirmation || write.stagedAudit === 'none' || write.stagedAudit === 'local') return true;
+	const isNodeLocal = nodeLocalStores.get(write.store);
+	if (!isNodeLocal) return false;
+	if (!classified) return isNodeLocal();
+	let nodeLocal = classified.get(write.store);
+	if (nodeLocal === undefined) classified.set(write.store, (nodeLocal = isNodeLocal()));
+	return nodeLocal;
 }
 
 export function closeWriteInstance(operation: TransactionWrite | null | undefined): void {
@@ -990,6 +984,7 @@ type RocksTransactionWithRetry = RocksTransaction & {
 	// the record-lock minimum, decided before submission: the batch's locks are released before its
 	// confirmation waiter starts, and a logged retry reuses the handle
 	lockConfirmation?: number;
+	nodeLocalByStore?: Map<object, boolean>;
 };
 
 function lockConfirmationOf(transaction: RocksTransaction | undefined): number {
@@ -1258,6 +1253,11 @@ export class DatabaseTransaction implements Transaction {
 	}
 	checkedResidentPeerLists?: string[][] | null;
 	checkedFor?: RocksTransaction;
+	// LMDB submits with no native handle, so its commit's classification lives here
+	declare nodeLocalByStore?: Map<object, boolean>;
+	classifiedStores(transaction?: RocksTransaction): Map<object, boolean> | undefined {
+		return (transaction as RocksTransactionWithRetry | undefined)?.nodeLocalByStore ?? this.nodeLocalByStore;
+	}
 	// Set when this transaction is applying data from a canonical source of truth (replication peer
 	// or external caching source); its commits retry transient conflicts without the request-path
 	// retry cap. Propagated to chained (multi-store) transactions in txnForContext.
@@ -2497,14 +2497,15 @@ export class DatabaseTransaction implements Transaction {
 		if (!this.requestedConfirmationFor(committedTransaction) && !residentPeerLists) return;
 		// writes that lost to newer entries appended nothing at the key, which peers would then pass only
 		// when some later write replicates
+		const classified = this.classifiedStores(committedTransaction);
 		let version = this.writes.some(
-			(write) => write?.saved && !confirmsNothing(write) && write.appendedTo === committedTransaction
+			(write) => write?.saved && !confirmsNothing(write, classified) && write.appendedTo === committedTransaction
 		)
 			? committedLogKey
 			: undefined;
 		for (let i = this.writes.length - 1; i >= 0 && version === undefined; i--) {
 			const write = this.writes[i];
-			if (!write?.saved || confirmsNothing(write)) continue;
+			if (!write?.saved || confirmsNothing(write, classified)) continue;
 			version = write.store.getEntry(write.key)?.version;
 		}
 		if (version === undefined) return;
@@ -2519,9 +2520,10 @@ export class DatabaseTransaction implements Transaction {
 	residentPeerLists(submitted?: RocksTransaction): string[][] | undefined {
 		const count = this.confirmationCountFor(submitted);
 		const requested = this.requestedConfirmationFor(submitted);
+		const classified = this.classifiedStores(submitted);
 		let lists: Map<number | readonly string[], string[]> | undefined;
 		for (const write of this.writes) {
-			if (!write?.saved || confirmsNothing(write)) continue;
+			if (!write?.saved || confirmsNothing(write, classified)) continue;
 			if (!requested && !write.requiresOwnerConfirmation) continue;
 			if (write.residencyOwners) {
 				if (submitted && write.appendedTo !== submitted) continue;
@@ -2548,7 +2550,6 @@ export class DatabaseTransaction implements Transaction {
 	 * checked again here, and kept for the waiter.
 	 */
 	refuseUnconfirmable(transaction?: RocksTransaction): void {
-		classificationEpoch++;
 		// a retry of a submitted attempt (the same handle) must reach its native outcome
 		if ((transaction as RocksTransactionWithRetry)?.isRetry) return;
 		this.checkedResidentPeerLists = undefined;
@@ -2558,7 +2559,11 @@ export class DatabaseTransaction implements Transaction {
 			if (this.hasExclusiveWrites)
 				for (const write of this.writes) if (write?.saved && !write.skipped) write.checkResidency?.();
 			const confirmationCount = this.confirmationCountFor(transaction);
-			if (!confirmationCount || !this.writes.some((write) => write?.saved && !confirmsNothing(write))) return;
+			if (!confirmationCount) return;
+			const classified = new Map<object, boolean>();
+			if (transaction) (transaction as RocksTransactionWithRetry).nodeLocalByStore = classified;
+			else this.nodeLocalByStore = classified;
+			if (!this.writes.some((write) => write?.saved && !confirmsNothing(write, classified))) return;
 
 			const residentPeerLists = this.residentPeerLists(transaction);
 			if (!this.requestedConfirmationFor(transaction) && !residentPeerLists) return;
