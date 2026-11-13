@@ -30,6 +30,7 @@ import {
 	publishOriginFloor,
 	originFloorsDurable,
 	restoreLocalWriteFence,
+	opensFenced,
 	seedLocalIssuance,
 	timestampAbove,
 } from './originClosedFloor.ts';
@@ -237,7 +238,7 @@ export function openAuditStore(rootStore) {
 			(key) => coverLocalIssuance(auditStore, key),
 			readOriginClosedFloor(auditStore)
 		);
-		restoreLocalWriteFence(rootStore, () => readLocalWriteFence(auditStore) !== undefined);
+		restoreLocalWriteFence(rootStore, () => readLocalWriteFence(auditStore) !== undefined || opensFenced(rootStore));
 	} else {
 		auditStore = rootStore.openDB(AUDIT_STORE_NAME, {
 			create: false,

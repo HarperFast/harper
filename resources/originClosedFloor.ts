@@ -433,6 +433,21 @@ export function setLocalWriteFence(rootStore: RocksDatabase, fenced: boolean): n
 	return timestampAbove(Math.max(rootStore.getMonotonicTimestamp(), localIssuedAheadThrough(rootStore)));
 }
 
+let newRootFence: ((rootStore: RocksDatabase) => boolean) | undefined;
+
+/**
+ * Registered by the cluster layer: whether a root opened now starts fenced. A node being removed persists its
+ * removal before fencing its roots, so a database created after the removal's last scan admits no local write
+ * that the removal's receipts would miss.
+ */
+export function setNewRootWriteFence(fenced: ((rootStore: RocksDatabase) => boolean) | undefined): void {
+	newRootFence = fenced;
+}
+
+export function opensFenced(rootStore: RocksDatabase): boolean {
+	return newRootFence?.(rootStore) === true;
+}
+
 /** Set the fence at open from a persisted record, unless the fence changed after `fenced` started reading it. */
 export function restoreLocalWriteFence(rootStore: RocksDatabase, fenced: () => boolean): void {
 	const words = registryFor(rootStore).fenceWords;

@@ -38,6 +38,7 @@ const {
 	setLocalWriteFence,
 	localWritesFenced,
 	restoreLocalWriteFence,
+	setNewRootWriteFence,
 	rekeyLocalRetry,
 	timestampAbove,
 } = require('#src/resources/originClosedFloor');
@@ -378,6 +379,23 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 		assert(localWritesFenced(rootStore));
 		setLocalWriteFence(rootStore, false);
 		assert(!localWritesFenced(rootStore));
+	});
+
+	it('a root opened while the new-root fence says so starts fenced, and the fence is told which database it is', () => {
+		const asked = [];
+		setNewRootWriteFence((root) => (asked.push(root.databaseName), root.databaseName === 'fenced_new_root'));
+		try {
+			const open = (database) =>
+				table({ table: 'NewRoot', database, attributes: [{ name: 'id', isPrimaryKey: true }] }).primaryStore.rootStore;
+			const fenced = open('fenced_new_root');
+			const unfenced = open('unfenced_new_root');
+			assert.deepStrictEqual(asked, ['fenced_new_root', 'unfenced_new_root']);
+			assert(localWritesFenced(fenced));
+			assert(!localWritesFenced(unfenced));
+			setLocalWriteFence(fenced, false);
+		} finally {
+			setNewRootWriteFence(undefined);
+		}
 	});
 
 	it('a plain write commits at or above every floor published before it', async () => {
