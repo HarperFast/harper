@@ -30,6 +30,9 @@ interface Sample {
 			total: { instructionsUser: number; instructionsKernel: number; cyclesUser: number; cyclesKernel: number };
 		};
 		result: { throughput: number; ops: number; errors: number; latency: Record<string, any> };
+		window?: { startMs: number; endMs: number };
+		/** Remote mode: the target host's busy cores over the window, by whose work they were. */
+		hosts?: { target?: { ownCores: number; agentCores: number; otherCores: number } };
 	};
 }
 
@@ -142,16 +145,21 @@ function readSet(runsDir: string, base: string, set: string): SetReport {
 }
 
 /**
- * A target VM's speed over the set: the median, across its measured samples, of cycles per CPU-second of the target's
- * cgroups (GHz; under host counting the cycles also cover the agent and kernel work on those cpus, about 1%) and of
- * instructions per cycle. Turbo is on and VMs share hosts, so this differs between VMs and over time.
+ * A target VM's speed over the set: the median, across its measured samples, of cycles per busy CPU-second on the VM
+ * (GHz) and of instructions per cycle. Host-scope counts cover every cpu of the VM, so the busy time is the whole VM's:
+ * the target's, its agent's and the rest (kernel threads included). Turbo is on and VMs share hosts, so both differ
+ * between VMs and over time.
  */
 function vmClock(samples: Sample[], targets: string[]): string {
 	const median = (xs: number[]) => xs.sort((a, b) => a - b)[Math.floor((xs.length - 1) / 2)];
-	const rows = samples.filter((s) => targets.includes(s.target) && s.measured?.perf);
+	const rows = samples.filter((s) => targets.includes(s.target) && s.measured?.perf && s.measured.hosts?.target);
 	if (rows.length === 0) return '?';
 	const cycles = (s: Sample) => s.measured!.perf!.total.cyclesUser + s.measured!.perf!.total.cyclesKernel;
-	const ghz = median(rows.map((s) => cycles(s) / (s.measured!.cpuMicrosPerOp * s.measured!.result.ops * 1e3)));
+	const busySeconds = (s: Sample) => {
+		const { ownCores, agentCores, otherCores } = s.measured!.hosts!.target!;
+		return ((ownCores + agentCores + otherCores) * (s.measured!.window!.endMs - s.measured!.window!.startMs)) / 1000;
+	};
+	const ghz = median(rows.map((s) => cycles(s) / (busySeconds(s) * 1e9)));
 	const ipc = median(
 		rows.map((s) => (s.measured!.perf!.total.instructionsUser + s.measured!.perf!.total.instructionsKernel) / cycles(s))
 	);

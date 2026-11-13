@@ -79,18 +79,18 @@ Cost of each additional dependent read, from the median reps. (chain-4 − C) / 
 - Generators: `c4-standard-32` for warm and `c4-standard-16` for 2x and 8x, Emerald Rapids, Node's sharded driver. Each set's own client-ceiling check picked its shard count (table below). Every cell stayed under half its generator's ceiling.
 - `--auth=token`, 3 reps per cell, targets interleaved within each session (forward and reversed per rep), Harper's default record cache. Linux 7.0.0-1017-gcp, Node v26.13.1, Harper `f39c1a1831` (main), harness `da839bf`.
 - Hardware events counted over each target VM's cpus (`--perf-scope=host`; see "Counting on a VM" under [Remote targets and GCP](#remote-targets-and-gcp---hosts-gcp)). An earlier run of this matrix counted per cgroup, and that counting slowed both targets, the stack more. Its ops/s, latencies and CPU µs/op are discarded. Its instructions/op agree with these within 4%, most cells within 2%. With host counting, every target's 2x and 8x measured windows averaged 99–101% of their own warmup chunks, where the stack's had run at 80–86%.
-- **Turbo stays on, and VMs share physical hosts**, so a VM's speed varies by host and over time. Target VMs ran at 3.78–4.08 GHz, by cycles per target CPU-second. Across VM sets, unbiased warm-C ratios came out at 0.84 and 0.91, while instructions/op agreed within 2%. Read instructions/op as the host-independent cost, and ops/s ratios as ±10%.
+- **Turbo stays on, and VMs share physical hosts**, so a VM's speed varies by host and over time. Target VMs ran at 3.78–4.08 GHz, by cycles per busy CPU-second on the VM. Across VM sets, unbiased warm-C ratios came out at 0.84 and 0.91, while instructions/op agreed within 2%. Read instructions/op as the host-independent cost, and ops/s ratios as ±10%.
 
 <details><summary>Per set: zone, VMs, generator, shards, clock</summary>
 
 | set        | zone          | target VMs                                                                                        | generator                                                               | target CPU                             | kernel         | Node     | target VM clock and IPC (medians)                   |
 | ---------- | ------------- | ------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- | -------------------------------------- | -------------- | -------- | --------------------------------------------------- |
-| warm       | us-central1-c | harper c4-standard-8-lssd (Intel Granite Rapids), stack c4-standard-8-lssd (Intel Granite Rapids) | c4-standard-32 (Intel Emerald Rapids), 32 shards, ceiling 307,341 ops/s | Intel(R) Xeon(R) 6985P-C CPU @ 2.30GHz | 7.0.0-1017-gcp | v26.13.1 | harper 3.90 GHz, IPC 1.21, stack 3.90 GHz, IPC 1.53 |
+| warm       | us-central1-c | harper c4-standard-8-lssd (Intel Granite Rapids), stack c4-standard-8-lssd (Intel Granite Rapids) | c4-standard-32 (Intel Emerald Rapids), 32 shards, ceiling 307,341 ops/s | Intel(R) Xeon(R) 6985P-C CPU @ 2.30GHz | 7.0.0-1017-gcp | v26.13.1 | harper 3.90 GHz, IPC 1.21, stack 3.92 GHz, IPC 1.53 |
 | 2x         | us-central1-c | harper c4-standard-8-lssd (Intel Granite Rapids), stack c4-standard-8-lssd (Intel Granite Rapids) | c4-standard-16 (Intel Emerald Rapids), 16 shards, ceiling 218,431 ops/s | Intel(R) Xeon(R) 6985P-C CPU @ 2.30GHz | 7.0.0-1017-gcp | v26.13.1 | harper 3.89 GHz, IPC 1.04, stack 4.02 GHz, IPC 0.95 |
 | 8x-cb      | us-central1-c | harper c4-standard-8-lssd (Intel Granite Rapids), stack c4-standard-8-lssd (Intel Granite Rapids) | c4-standard-16 (Intel Emerald Rapids), 8 shards, ceiling 238,428 ops/s  | Intel(R) Xeon(R) 6985P-C CPU @ 2.30GHz | 7.0.0-1017-gcp | v26.13.1 | harper 3.87 GHz, IPC 1.03, stack 4.04 GHz, IPC 0.86 |
-| 8x-fi      | us-central1-c | harper c4-standard-8-lssd (Intel Granite Rapids), stack c4-standard-8-lssd (Intel Granite Rapids) | c4-standard-16 (Intel Emerald Rapids), 8 shards, ceiling 228,083 ops/s  | Intel(R) Xeon(R) 6985P-C CPU @ 2.30GHz | 7.0.0-1017-gcp | v26.13.1 | harper 4.08 GHz, IPC 0.84, stack 3.94 GHz, IPC 0.81 |
-| 8x-chain12 | us-central1-c | harper c4-standard-8-lssd (Intel Granite Rapids), stack c4-standard-8-lssd (Intel Granite Rapids) | c4-standard-16 (Intel Emerald Rapids), 16 shards, ceiling 216,083 ops/s | Intel(R) Xeon(R) 6985P-C CPU @ 2.30GHz | 7.0.0-1017-gcp | v26.13.1 | harper 3.88 GHz, IPC 1.02, stack 3.78 GHz, IPC 0.95 |
-| 8x-chain4  | us-central1-c | harper c4-standard-8-lssd (Intel Granite Rapids), stack c4-standard-8-lssd (Intel Granite Rapids) | c4-standard-16 (Intel Emerald Rapids), 16 shards, ceiling 221,789 ops/s | Intel(R) Xeon(R) 6985P-C CPU @ 2.30GHz | 7.0.0-1017-gcp | v26.13.1 | harper 3.88 GHz, IPC 1.02, stack 4.03 GHz, IPC 0.98 |
+| 8x-fi      | us-central1-c | harper c4-standard-8-lssd (Intel Granite Rapids), stack c4-standard-8-lssd (Intel Granite Rapids) | c4-standard-16 (Intel Emerald Rapids), 8 shards, ceiling 228,083 ops/s  | Intel(R) Xeon(R) 6985P-C CPU @ 2.30GHz | 7.0.0-1017-gcp | v26.13.1 | harper 4.08 GHz, IPC 0.84, stack 3.93 GHz, IPC 0.81 |
+| 8x-chain12 | us-central1-c | harper c4-standard-8-lssd (Intel Granite Rapids), stack c4-standard-8-lssd (Intel Granite Rapids) | c4-standard-16 (Intel Emerald Rapids), 16 shards, ceiling 216,083 ops/s | Intel(R) Xeon(R) 6985P-C CPU @ 2.30GHz | 7.0.0-1017-gcp | v26.13.1 | harper 3.89 GHz, IPC 1.02, stack 3.78 GHz, IPC 0.95 |
+| 8x-chain4  | us-central1-c | harper c4-standard-8-lssd (Intel Granite Rapids), stack c4-standard-8-lssd (Intel Granite Rapids) | c4-standard-16 (Intel Emerald Rapids), 16 shards, ceiling 221,789 ops/s | Intel(R) Xeon(R) 6985P-C CPU @ 2.30GHz | 7.0.0-1017-gcp | v26.13.1 | harper 3.88 GHz, IPC 1.02, stack 4.05 GHz, IPC 0.98 |
 
 </details>
 
@@ -183,10 +183,13 @@ Median rep by ops/s; spread is (max − min) / median of the three reps; latency
 Reproduce (from the operator's host, with a service account active in its own gcloud directory):
 
 ```sh
-CLOUDSDK_CONFIG=<dir> YCSB_GCP_PROJECT=<project> YCSB_GCP_ZONES="us-central1-c us-central1-a us-central1-b us-central1-f" \
-  systemd-run --user --unit=ycsb-matrix benchmarks/ycsb-vs-pg/gcp/run-matrix.sh --all
+# From the repository root. systemd-run passes on only the environment it is given.
+export CLOUDSDK_CONFIG=<dir> YCSB_GCP_PROJECT=<project> YCSB_GCP_ZONES="us-central1-c us-central1-a us-central1-b us-central1-f"
+systemd-run --user --unit=ycsb-matrix --same-dir --setenv=PATH --setenv=CLOUDSDK_CONFIG --setenv=YCSB_GCP_PROJECT \
+  --setenv=YCSB_GCP_ZONES benchmarks/ycsb-vs-pg/gcp/run-matrix.sh --all
 node benchmarks/ycsb-vs-pg/gcp/matrix-report.mts --base=<the matrix base>
-node benchmarks/ycsb-vs-pg/profile-report.mts gcp/runs/<base>-warm/results/<the profile phase's file> --summary --pipeline
+node benchmarks/ycsb-vs-pg/profile-report.mts \
+  benchmarks/ycsb-vs-pg/gcp/runs/<base>-warm/results/<the profile phase's file> --summary --pipeline
 ```
 
 ## Running
