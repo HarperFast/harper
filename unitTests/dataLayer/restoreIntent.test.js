@@ -1745,6 +1745,45 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			assert.deepStrictEqual(await snapshot(loadedItems(fixtures[restored].name)), fixtures[restored].backedUp[0]);
 		});
 
+		it('with Harper stopped: a cancel that lands after the boot retried the restore leaves its job to the sweep', async function () {
+			const fixtures = [await seededDatabase(), await seededDatabase()];
+			const jobs = [];
+			for (const fixture of fixtures) {
+				jobs.push((await requestRestore(fixture.name, { on_restart: true, retain_previous: false })).jobId);
+				await closeDatabase(fixture.name);
+			}
+			// the first restore the boot runs fails and stays scheduled; it is cancelled while the other runs
+			let failed;
+			const restoreChild = replaceExport(
+				restoreChildRunnerModule,
+				'runRestoreChild',
+				async (command, args, options) => {
+					if (failed === undefined) {
+						failed = fixtures.findIndex((fixture) => fixture.name === args.databaseName);
+						throw new Error('the restore child exited');
+					}
+					await cancelRestartRestoreOffline({ database: fixtures[failed].name, cancel: true });
+					return runRestoreChild(command, args, options);
+				}
+			);
+			let owned;
+			try {
+				resetStartupRecoveryForTesting();
+				owned = await recoverRestoresAtStartup();
+			} finally {
+				restoreChild();
+			}
+			const restored = 1 - failed;
+
+			assert.strictEqual(readRestoreReceipt(fixtures[failed].dir).kind, 'absent');
+			assert.deepStrictEqual([...owned], [], 'no receipt names the cancelled job any longer');
+			await reconcileInterruptedJobs(owned);
+			assert.strictEqual((await job(jobs[failed])).status, JOB_STATUS_ENUM.ERROR);
+			assert.strictEqual((await job(jobs[restored])).status, JOB_STATUS_ENUM.COMPLETE);
+			assert.deepStrictEqual(await snapshot(loadedItems(fixtures[failed].name)), fixtures[failed].live);
+			assert.deepStrictEqual(await snapshot(loadedItems(fixtures[restored].name)), fixtures[restored].backedUp[0]);
+		});
+
 		it('with Harper stopped: refuses a restore over a pending one, naming only the way out that works offline', async function () {
 			const fixture = await seededDatabase();
 			const [backupId] = fixture.backupIds;

@@ -555,9 +555,9 @@ function receiptSettlesJob(receipt: RestoreReceipt): boolean {
 	return Boolean(receipt.job_id) && (receipt.route === 'on_restart' || receipt.state === 'committed');
 }
 
-export function jobsOwnedByRestoreReceipts(): Set<string> {
+export function jobsOwnedByRestoreReceipts(scanned: ScannedReceipt[] = scanRestoreReceipts()): Set<string> {
 	const owned = new Set<string>();
-	for (const { read } of scanRestoreReceipts()) {
+	for (const { read } of scanned) {
 		if (read.kind === 'valid' && receiptSettlesJob(read.receipt)) owned.add(read.receipt.job_id!);
 	}
 	return owned;
@@ -687,8 +687,7 @@ async function recoverRestoresOnce(): Promise<Set<string>> {
 			} else if (receipt.route === 'on_restart' && receipt.state !== 'terminal') {
 				const { runRestartAttempt } = await import('./restoreIntent.ts');
 				if (await runRestartAttempt(receipt)) published = true;
-				// still scheduled, so its job is the receipt's; a terminal one already settled its job as failed,
-				// and one cancelled since the scan leaves its job to the sweep
+				// still scheduled, so its job is the receipt's; a terminal one already settled its job as failed
 				else if (receipt.job_id && restartRestoreStillScheduled(receipt)) owned.add(receipt.job_id);
 			} else if (receipt.route === 'on_restart' && receipt.job_id) {
 				// terminal: the job failed when the receipt did, but that settle may not have landed
@@ -705,13 +704,14 @@ async function recoverRestoresOnce(): Promise<Set<string>> {
 		}
 	}
 	if (published) resetDatabases();
+	const scanned = scanRestoreReceipts();
 	setEnvironmentData(
 		HELD_AT_BOOT_KEY,
-		scanRestoreReceipts()
-			.filter(({ read }) => receiptBlocksDiscovery(read))
-			.map(({ file }) => resolve(file))
+		scanned.filter(({ read }) => receiptBlocksDiscovery(read)).map(({ file }) => resolve(file))
 	);
-	return owned;
+	// a receipt withdrawn while a later one recovered no longer owns its job
+	const stillOwned = jobsOwnedByRestoreReceipts(scanned);
+	return new Set([...owned].filter((jobId) => stillOwned.has(jobId)));
 }
 
 function restartRestoreStillScheduled(receipt: RestoreReceipt): boolean {

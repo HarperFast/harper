@@ -166,7 +166,7 @@ restore and the next startup applies it, before anything can open the target.
   row is written. A supersede (another `backup_id` with `on_restart`) inherits the displaced receipt's
   pins as `superseded_pin_ids`, retired only when the successor commits, and its rollback copy.
 - **Job ownership.** The receipt, not the row, decides the outcome. The boot sweep skips the job ids
-  `recoverRestoresAtStartup` returns, and `settleAbandonedJob` skips a `deferred_to` row only while
+  `recoverRestoresAtStartup` returns, as its last scan finds them owned, and `settleAbandonedJob` skips a `deferred_to` row only while
   `restoreReceiptOwnsJob` finds a receipt that settles it (`receiptSettlesJob`, committed ones
   included), so a crash between receipt and row cannot strand a job. A `cancel` with Harper stopped (`cancelRestartRestoreOffline`) can reach neither
   the row nor a restart; it changes the files only, and the next boot settles the row.
