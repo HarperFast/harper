@@ -21,6 +21,7 @@ const { waitFor } = require('../waitFor');
 const commonUtility = require('#src/utility/lmdb/commonUtility');
 const { getOriginClosedFloor, localStartBound } = require('#src/resources/originClosedFloor');
 const { setOriginCaptureIntervalForTests } = require('#src/resources/transactionBroadcast');
+const { ORIGIN_FLOOR_TICK_MS } = require('#src/resources/originClosedFloor');
 require('#src/server/serverHelpers/serverUtilities');
 
 const isRocksDB = process.env.HARPER_STORAGE_ENGINE !== 'lmdb';
@@ -3052,10 +3053,18 @@ describe('MQTT durable collection topics on retained delivery', function () {
 		await T.put('kick', { value: 'kick' });
 		await waitFor(() => delivery(received, 'late') && delivery(received, 'kick'));
 		await ackAll(session, received);
-		session.advancePositions();
-		assert.ok(
-			state.entry.startTime >= T.primaryStore.getEntry('kick').version,
-			'the position advances once dispatched'
+		// the pass that dispatched 'kick' can be held below it, so a follow-up pass (or the recapture tick) certifies it,
+		// within two ticks at the default capture interval this test runs at
+		const kickKey = T.primaryStore.getEntry('kick').version;
+		await waitFor(
+			() => {
+				session.advancePositions();
+				return state.entry.startTime >= kickKey;
+			},
+			{
+				timeout: 2 * ORIGIN_FLOOR_TICK_MS,
+				message: () => `the position ${state.entry.startTime} stayed below ${kickKey} once dispatched`,
+			}
 		);
 		session.disconnect(true);
 	});
