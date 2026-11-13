@@ -159,6 +159,7 @@ class FakeCluster {
 			mapless: false,
 			/** Set to make this node's map read below a generation it already acted under: refused at once, never ridden through. */
 			staleMap: false,
+			mapReason: undefined,
 			written: [],
 		};
 		node.coordinator = this.#buildCoordinator(node, { grantableAfterMono: this.grantableAfterMono });
@@ -181,6 +182,7 @@ class FakeCluster {
 								homes: [...this.homes],
 								homeIncarnation: node.incarnation,
 							},
+				homeMapUnavailableReason: () => node.mapReason,
 				ownsCoordination: () => node.owns,
 				requestDelegation: (target, database, table, request) => this.#deliverRequest(name, target, request),
 				recallDelegation: (target, database, table, recall) => this.#deliverRecall(name, target, recall),
@@ -1418,6 +1420,67 @@ describe('record lock delegations', () => {
 				assert.strictEqual(reply.granted, false, `granted on ${JSON.stringify(bad)}`);
 			}
 			assert.strictEqual(beta.stats.granted, 0);
+		});
+
+		it("appends the transport's reason to a missing-map refusal, and only to one", async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const alpha = cluster.node('alpha');
+			const refusal = (pattern) => (error) => {
+				assert.strictEqual(error.statusCode, 503);
+				assert.match(error.message, pattern);
+				return true;
+			};
+			alpha.mapless = true;
+			await assert.rejects(alpha.coordinator.acquire(key, LEASE, 50), refusal(/until one is established$/));
+			alpha.mapReason = '';
+			await assert.rejects(alpha.coordinator.acquire(key, LEASE, 50), refusal(/until one is established$/));
+			const { transport } = alpha.coordinator;
+			const reason = transport.homeMapUnavailableReason;
+			transport.homeMapUnavailableReason = () => {
+				throw new Error('the transport could not read its own state');
+			};
+			await assert.rejects(alpha.coordinator.acquire(key, LEASE, 50), refusal(/until one is established$/));
+			transport.homeMapUnavailableReason = reason;
+			alpha.mapReason = 'apply one with record_lock_apply_homes';
+			await assert.rejects(
+				alpha.coordinator.acquire(key, LEASE, 50),
+				refusal(/until one is established: apply one with record_lock_apply_homes$/)
+			);
+
+			// A map below a generation this node acted under is not a missing map: the hint would send the
+			// operator to publish a map every peer already agrees on.
+			alpha.mapless = false;
+			const first = await alpha.coordinator.acquire(key, LEASE, WAIT);
+			alpha.coordinator.release(key, first.admissionId);
+			alpha.staleMap = true;
+			await assert.rejects(alpha.coordinator.acquire(key, LEASE, 50), refusal(/until one is established$/));
+		});
+
+		it("appends the transport's reason when the map is gone at the end of a wait, not to a home's answer", async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const gamma = cluster.node('gamma').coordinator;
+			const held = await gamma.acquire(key, LEASE, WAIT);
+			const alpha = cluster.node('alpha');
+			alpha.mapReason = 'apply one with record_lock_apply_homes';
+			cluster.beforeReply = (from) => {
+				if (from !== 'alpha') return;
+				cluster.beforeReply = undefined;
+				alpha.mapless = true;
+				alpha.mono += WAIT;
+			};
+			await assert.rejects(alpha.coordinator.acquire(key, LEASE, WAIT), (error) => {
+				assert.strictEqual(error.statusCode, 503);
+				assert.match(
+					error.message,
+					/within the wait: this node has no current record lock home map: apply one with record_lock_apply_homes$/
+				);
+				return true;
+			});
+			alpha.mapless = false;
+			await assert.rejects(alpha.coordinator.acquire(key, LEASE, 50), { statusCode: 423 });
+			gamma.release(key, held.admissionId);
 		});
 	});
 
@@ -4912,6 +4975,15 @@ describe('a restarted home ends its quarantine by recall (harper#3254)', () => {
 					() => recallDelegationsFromHome(cluster.database, 'gamma', 1, 2),
 					(error) => error.statusCode === 503
 				);
+				alpha.mapReason = 'apply one with record_lock_apply_homes';
+				for (const refused of [
+					() => recallDelegationsFromHome(cluster.database, 'gamma', 1, 2),
+					() => retireDelegateEpoch(cluster.database, 'gamma', 2),
+				])
+					await assert.rejects(refused, {
+						statusCode: 503,
+						message: `No agreed record lock home map for ${cluster.database}: apply one with record_lock_apply_homes`,
+					});
 				alpha.mapless = false;
 				const key = cluster.keyHomedOn('gamma');
 				const round = await alpha.coordinator.acquire(key, LEASE, WAIT);

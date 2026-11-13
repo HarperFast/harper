@@ -808,18 +808,59 @@ export function addToChanges(target, property: string, value: number | bigint, f
 		// a tracked wrapper that was only read is not a prior value
 		if (isTracked(prior) && prior.getRecord() === target.getRecord?.()?.[property] && !hasChanges(prior))
 			target.set(property, new Addition(value));
-		else if (prior?.__op__ === 'add')
-			target.set(property, new Addition(addDeltas(prior.value, value, target.getRecord?.()?.[property])));
+		else if (prior?.__op__ === 'add') target.set(property, new Addition(addDeltas(prior.value, value)));
 		else target.set(property, crdtOperations.addValues(prior, value));
 	} else target.set(property, new Addition(value));
 }
 
-// Sum two deltas in the stored value's numeric type, so folding them gives what applying them in turn
-// would (a bigint field keeps full precision; a number field accepts a bigint then a fractional delta)
-function addDeltas(first, second, stored) {
-	if (typeof stored === 'bigint') return BigInt(first) + BigInt(second);
-	if (stored == null || isNaN(+stored)) return crdtOperations.addValues(first, second);
-	return Number(first) + Number(second);
+function isUpdateObject(value: any): boolean {
+	return (
+		value !== null &&
+		typeof value === 'object' &&
+		!Array.isArray(value) &&
+		!ArrayBuffer.isView(value) &&
+		!(value instanceof ArrayBuffer)
+	);
+}
+
+export function mergeUpdateChanges(previous, changes, validateField, fullUpdate = false) {
+	if (changes === undefined) return previous;
+	if (!isUpdateObject(previous) || !isUpdateObject(changes)) return changes;
+	const merged = { ...previous, ...changes };
+	for (const name of Object.keys(changes)) {
+		const value = changes[name];
+		if (!value?.__op__ || (!fullUpdate && !Object.hasOwn(previous, name))) continue;
+		const next = validateField(name, value, false);
+		if (!next || value.__op__ !== 'add') continue;
+		const previousValue = previous[name];
+		// An add establishes a missing value; only its result must satisfy a required field.
+		const first = previousValue == null ? { [name]: previousValue } : validateField(name, previousValue, true);
+		if (!first) {
+			merged[name] = previous[name];
+			continue;
+		}
+		const prior = first[name];
+		const delta = next[name].value;
+		if (!fullUpdate && prior?.__op__ === 'add') merged[name] = new Addition(addDeltas(prior.value, delta));
+		else if (fullUpdate || !prior?.__op__) merged[name] = crdtOperations.addValues(prior, delta);
+	}
+	return merged;
+}
+
+function addDeltas(first, second) {
+	const firstType = typeof first;
+	const secondType = typeof second;
+	if ((firstType !== 'number' && firstType !== 'bigint') || (secondType !== 'number' && secondType !== 'bigint'))
+		return crdtOperations.addValues(first, second);
+	if (firstType !== secondType) {
+		if ((firstType === 'bigint' || Number.isInteger(first)) && (secondType === 'bigint' || Number.isInteger(second)))
+			return BigInt(first) + BigInt(second);
+		return Number(first) + Number(second);
+	}
+	const sum = first + second;
+	return typeof sum === 'number' && !Number.isFinite(sum) && Number.isInteger(first) && Number.isInteger(second)
+		? BigInt(first) + BigInt(second)
+		: sum;
 }
 
 const HAS_ARRAY_CHANGES = Symbol.for('has-array-changes');
