@@ -108,7 +108,6 @@ export async function settleAbandonedJob(jobId: any): Promise<boolean> {
 	return true;
 }
 
-/** A `deferred_to` with no restore record to settle it settles as abandoned. */
 async function deferredJobStillOwned(jobId: any): Promise<boolean> {
 	const { restoreReceiptOwnsJob } = await import('../../dataLayer/restorePublication.ts');
 	return restoreReceiptOwnsJob(String(jobId));

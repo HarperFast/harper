@@ -373,12 +373,12 @@ export async function requestRestartRestore(request: RestartRestoreRequest): Pro
 					job_id: request.jobId,
 					requested_by: request.requestedBy,
 					max_attempts: DEFAULT_RESTORE_MAX_ATTEMPTS,
-					// a supersede keeps the rollback copy it inherits instead of taking a second one; with none to
-					// inherit it takes its own, so the live generation is never replaced without one by accident
+					superseded_from: displaced?.operation_id,
+					// a supersede is how an operator rolls back, so it keeps the rollback copy it inherits instead of
+					// taking a second; with none to inherit it takes its own, so the live generation is never replaced
+					// without one by accident
 					retain_previous:
 						nothingToRetain || earlierRestart?.pre_restore_backup_id !== undefined ? false : request.retainPrevious,
-					superseded_from: displaced?.operation_id,
-					// a supersede is how an operator rolls back, so it keeps the rollback copy it inherits
 					pre_restore_backup_id: earlierRestart?.pre_restore_backup_id,
 					pre_restore_pin_id: earlierRestart?.pre_restore_pin_id,
 					options: {
@@ -565,7 +565,6 @@ function withRemovalCaveat(message: string, removalDurable: boolean): string {
 	return removalDurable ? message : `${message}. ${UNCONFIRMED_REMOVAL}`;
 }
 
-/** With Harper stopped, the next start settles the job. */
 function cancelledOffline(
 	databaseName: string,
 	cancelled: RestoreReceipt | undefined,

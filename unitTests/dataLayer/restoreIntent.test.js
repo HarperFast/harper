@@ -1899,7 +1899,6 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			assert.deepStrictEqual(pinsOf(fixture), []);
 			assert.strictEqual((await job(jobId)).message, 'Cancelled');
 
-			// with Harper stopped, the same
 			const offline = await seededDatabase();
 			await requestRestore(offline.name, { on_restart: true, retain_previous: false });
 			await closeDatabase(offline.name);
@@ -1914,7 +1913,6 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			assert.ok(offlineResult.message.endsWith(`. ${UNCONFIRMED_REMOVAL}`), offlineResult.message);
 			assert.strictEqual(readRestoreReceipt(offline.dir).kind, 'absent');
 
-			// an unreadable record, removed the same way
 			const unreadable = await seededDatabase();
 			await requestRestore(unreadable.name, { on_restart: true });
 			await closeDatabase(unreadable.name);

@@ -38,7 +38,6 @@ export class JobCompletion {
 	}
 }
 
-/** What it returns runs only once the row is written; a `DeferredJobCompletion` leaves the job IN_PROGRESS. */
 export function recordJobResult(
 	jobObj: Record<string, any>,
 	results: unknown

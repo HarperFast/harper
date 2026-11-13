@@ -668,7 +668,6 @@ export async function validateRestoreBackup(request: any) {
 
 const RESTART_RESTORE_OPTIONS = ['allow_engine_only', 'accept_incompatible_backup', 'accept_unverified_blobs'];
 
-/** The options restore_backup accepts, validated the same way at submission, in the job and offline. */
 function readRestoreRequest(request: any, { offline = false } = {}) {
 	const databaseName = getDatabaseName(request);
 	const allowEngineOnly = requireBooleanOption(request.allow_engine_only, 'allow_engine_only');
