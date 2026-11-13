@@ -1,6 +1,7 @@
 const assert = require('node:assert');
 const { performance } = require('node:perf_hooks');
 const { setupTestDBPath } = require('../testUtils');
+const { waitFor } = require('../waitFor');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
@@ -13,7 +14,7 @@ const { ServerError } = require('#src/utility/errors/hdbError');
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
 describe('Replication confirmation defaults', () => {
-	let First, Second, Local, Unaudited;
+	let First, Second, Local, Unaudited, Cached;
 	let sequence = 0;
 	const nextId = () => `confirmation-default-${sequence++}`;
 	let calls;
@@ -36,6 +37,15 @@ describe('Replication confirmation defaults', () => {
 			table: 'Unaudited',
 			attributes: [{ name: 'id', isPrimaryKey: true }],
 			audit: false,
+		});
+		Cached = table({
+			database: 'confirmation-default-first',
+			table: 'Cached',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+		});
+		Cached.sourcedFrom({
+			get: (id) => ({ id, name: 'from source' }),
+			available: () => true,
 		});
 		Local = table({
 			database: 'system',
@@ -101,6 +111,14 @@ describe('Replication confirmation defaults', () => {
 		it('does not apply the default to a write that replicates nothing', async () => {
 			setReplicationConfirmationDefaults({ writes: 1 });
 			await transaction({}, () => Unaudited.put({ id: nextId() }));
+			assert.deepStrictEqual(calls, []);
+		});
+
+		it('does not apply the default to a cache fill from a source', async () => {
+			setReplicationConfirmationDefaults({ writes: 1 });
+			const id = nextId();
+			assert.strictEqual((await Cached.get(id)).name, 'from source');
+			await waitFor(() => Cached.primaryStore.getEntry(id));
 			assert.deepStrictEqual(calls, []);
 		});
 
