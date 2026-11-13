@@ -345,6 +345,19 @@ describe('Test configValidator module', () => {
 			expect(configValidator(config).error.message).to.include("'replication.blobGapEscalationMs' must be an integer");
 		});
 
+		it('accepts replication.region as a string', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.replication = { region: 'us-east' };
+			assert.equal(configValidator(config).error, undefined);
+			config.replication = { region: '' };
+			assert.equal(configValidator(config).error, undefined);
+			config.replication = { region: null };
+			assert.equal(configValidator(config).error, undefined);
+
+			config.replication = { region: 5 };
+			assert.match(configValidator(config).error?.message, /'replication\.region' must be a string/);
+		});
+
 		it('accepts a well-formed sql config section', () => {
 			const config = testUtils.deepClone(FAKE_CONFIG);
 			config.sql = { engine: 'new', allowFullScan: true, maxSortRows: 500, maxHashRows: 500 };

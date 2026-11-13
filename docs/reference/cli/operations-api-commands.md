@@ -74,7 +74,6 @@ This is just a brief overview of all operations available as CLI commands. Revie
 | `list_ssh_keys`                  | List all SSH keys                     | [Components](../operations-api/operations.md#components)               | v4.4.0          |
 | `set_ssh_known_hosts`            | Set SSH known hosts                   | [Components](../operations-api/operations.md#components)               | v4.4.0          |
 | `get_ssh_known_hosts`            | Get SSH known hosts                   | [Components](../operations-api/operations.md#components)               | v4.4.0          |
-| `cluster_get_routes`             | Get cluster routing information       | [Clustering](../operations-api/operations.md#replication--clustering)  | v4.3.0          |
 | `cluster_network`                | Get cluster network status            | [Clustering](../operations-api/operations.md#replication--clustering)  | v4.3.0          |
 | `cluster_status`                 | Get cluster status                    | [Clustering](../operations-api/operations.md#replication--clustering)  | v4.3.0          |
 | `remove_node`                    | Remove node from cluster              | [Clustering](../operations-api/operations.md#replication--clustering)  | v4.3.0          |

@@ -347,16 +347,13 @@ Setting `read: false` on an attribute prevents the **value** from appearing in r
 
 ### Clustering
 
-| Operation               | Restricted to Super User |
-| ----------------------- | :----------------------: |
-| `cluster_set_routes`    |            X             |
-| `cluster_get_routes`    |            X             |
-| `cluster_delete_routes` |            X             |
-| `add_node`              |            X             |
-| `update_node`           |            X             |
-| `cluster_status`        |            X             |
-| `remove_node`           |            X             |
-| `configure_cluster`     |            X             |
+| Operation           | Restricted to Super User |
+| ------------------- | :----------------------: |
+| `add_node`          |            X             |
+| `update_node`       |            X             |
+| `cluster_status`    |            X             |
+| `remove_node`       |            X             |
+| `configure_cluster` |            X             |
 
 ### Components
 

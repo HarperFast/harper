@@ -366,6 +366,27 @@ function qualifies(state: OriginState): boolean {
 	);
 }
 
+export interface QualifiedOriginFloors {
+	/**
+	 * By local origin id, the floor and current generation of the route that certifies it highest, when that route
+	 * qualifies and certified from the origin's first entry. Unlike a position, such a floor marks a complete prefix
+	 * whichever route delivered it, so a route that switches which peer supplies the origin can resume from it.
+	 */
+	floors: Map<number, { floor: number; generation: string }>;
+	/** The origin-state epoch read before the scan: a qualifier or copy bound committed since may void a floor. */
+	epoch: number;
+}
+
+export function readQualifiedOriginFloors(auditStore: any, dbisDb: any): QualifiedOriginFloors {
+	const epoch = readOriginStateEpoch(auditStore.rootStore);
+	const floors = new Map<number, { floor: number; generation: string }>();
+	for (const [nodeId, state] of readOriginStates(auditStore, dbisDb)) {
+		if (nodeId !== 0 && qualifies(state) && state.certifiedFrom === 0)
+			floors.set(nodeId, { floor: state.floor!, generation: state.generation! });
+	}
+	return { floors, epoch };
+}
+
 /** The logs the audit store holds, by name; each is an origin this node has history of. */
 function knownLogNames(auditStore: any): string[] {
 	const names: string[] = [];

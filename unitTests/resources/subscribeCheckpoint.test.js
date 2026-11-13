@@ -16,6 +16,7 @@ const {
 	positionBefore,
 	readCopyBounds,
 	readOriginStateEpoch,
+	readQualifiedOriginFloors,
 	resolveMembership,
 	validateCheckpoint,
 	writeCopyBounds,
@@ -549,6 +550,40 @@ describe('Per-origin subscription checkpoints (harper-pro#922 items 3–4)', fun
 			// an older token that never certified it is refused too: a revoked route cannot be shown whole
 			await assert.rejects(T.subscribe({ resume: checkpoint, omitCurrent: true }), (error) => error.statusCode === 410);
 			subscription.end();
+		});
+		it('reads each qualifying origin floor across routes, skipping unqualified ones', async () => {
+			const T = tableInOwnDatabase();
+			await T.put('seed', { value: 0 });
+			const qualified = { originGeneration: 'peer-generation', fullCoverage: true, certifiedFrom: 0 };
+			const relayed = getIdOfRemoteNode('relayed-origin', T.auditStore);
+			const relay = writeSeqRow(T, 'relay-peer', { closedFloor: 50, ...qualified });
+			T.dbisDB.putSync([SEQ, relay], {
+				seqId: 1,
+				nodes: [
+					{ id: relay, closedFloor: 50, ...qualified },
+					{ id: relayed, closedFloor: 100, ...qualified },
+				],
+			});
+			const other = writeSeqRow(T, 'other-peer', { closedFloor: 70, ...qualified });
+			T.dbisDB.putSync([SEQ, other], {
+				seqId: 1,
+				nodes: [
+					{ id: other, closedFloor: 70, ...qualified },
+					{ id: relayed, closedFloor: 200, ...qualified, partialHistory: true },
+				],
+			});
+			const legacy = writeSeqRow(T, 'legacy-peer', { closedFloor: 80, relayable: true });
+			const revoked = writeSeqRow(T, 'revoked-peer', { closedFloor: 90, ...qualified, floorRevoked: true });
+			const late = writeSeqRow(T, 'late-peer', { closedFloor: 95, ...qualified, certifiedFrom: 40 });
+			const epochBefore = readOriginStateEpoch(T.primaryStore.rootStore);
+			const { floors, epoch } = readQualifiedOriginFloors(T.auditStore, T.dbisDB);
+			assert.strictEqual(epoch, epochBefore);
+			assert.deepStrictEqual(floors.get(relay), { floor: 50, generation: 'peer-generation' });
+			assert.deepStrictEqual(floors.get(other), { floor: 70, generation: 'peer-generation' });
+			assert.deepStrictEqual(floors.get(relayed), { floor: 100, generation: 'peer-generation' });
+			assert.strictEqual(floors.has(legacy), false, 'a level-1 route names no generation');
+			assert.strictEqual(floors.has(revoked), false);
+			assert.strictEqual(floors.has(late), false, 'a floor certified from after the first entry vouches for no prefix');
 		});
 		it('refuses a route a copy bound covers, certifies nothing under it, and admits once the route starts above it', async () => {
 			const T = tableInOwnDatabase();
