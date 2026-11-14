@@ -22,6 +22,7 @@ Declarations compile to `fullTextIndexes`, never `attributes` (no stored value).
 - `receivedIdentityRefs` holds received identities, never log keys: unaudited, the only re-delivery proof ([receipt rules](receipt-rules.md)). **Never "fix" a log key to the version** (`auditRefKinds.test.js`).
 - LMDB merges keep the older version (`noAuditOutOfOrderPatch.test.js`). Duplicates use committed identity; only minted keys mark a retry's own staging (`readsOwnStaging`, `replicatedRetryDuplicate.test.js`).
 - RocksDB's watermark stalls at uncommitted entries, so ref walks pass `followingCommittedRef`. Gap: history walks follow one chain, plus late messages (#3977).
+- A replicated publish is skipped only on its logged entry (`isMessageLogged`), at or below the record's version, with abort markers on; in history older than the process only a record vouches for it (`replicatedPublishRedelivery.test.js`).
 - **A record's version never moves back**: a message older than it keeps the version and refs its entry, which history walks reach by `isLateEntry` (`latePublishVersionRegression.test.js`).
 - `FULL_WRITE_HEAD`: the head replaced the record and is unchanged since; any other write clears it (`fullWriteHead.test.js`).
 - Named-log misses never fall back to `local`; `local` reads filter by `nodeId` (`auditLog.test.js`).

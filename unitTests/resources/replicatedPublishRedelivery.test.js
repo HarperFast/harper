@@ -1,5 +1,3 @@
-// A record's version never moves back, so only a publish at or below it can be a re-delivery, and only the entry
-// its first delivery logged shows it applied.
 require('../testUtils');
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
@@ -324,6 +322,29 @@ describe('Re-delivered replicated publishes', function () {
 		} finally {
 			setAbortMarkersForTests(prior ?? true);
 		}
+	});
+
+	it('reads no log for a re-delivery below the first entry of its origin log, and applies it again', async () => {
+		const logKey = Date.now() - 7_200_000;
+		await applyFrame(logKey, [{ id: 'purged/1', n: 1 }]);
+		const log = Topics.auditStore.logById(peer);
+		const originalQuery = log.query;
+		let probes = 0;
+		Object.defineProperty(log, 'query', {
+			configurable: true,
+			value(options, ...args) {
+				if (options?.start === logKey) probes++;
+				return originalQuery.call(this, options, ...args);
+			},
+		});
+		try {
+			await applyFrame(logKey, [{ id: 'purged/1', n: 1 }]);
+		} finally {
+			delete log.query;
+			await drain();
+		}
+		assert.equal(probes, 0);
+		assert.deepEqual(received, ['purged/1:1', 'purged/1:1']);
 	});
 
 	it('still delivers every local publish', async () => {
