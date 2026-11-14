@@ -151,18 +151,27 @@ suite('in-process restart with the uWS backend', { skip: skipSuite }, (ctx: Cont
 		const before = await threadIds();
 		const stopTraffic = startTraffic(ctx);
 		try {
-			await sendOperation(ctx.harper, { operation: 'restart_service', service: 'http_workers' });
+			const { job_id: jobId } = await sendOperation(ctx.harper, {
+				operation: 'restart_service',
+				service: 'http_workers',
+			});
+			let status: string | undefined;
 			await waitFor(
 				async () => {
-					const now = await threadIds();
-					return now.length === before.length && !now.some((threadId) => before.includes(threadId));
+					const job = await sendOperation(ctx.harper, { operation: 'get_job', id: jobId });
+					status = (Array.isArray(job) ? job[0] : job)?.status;
+					return status === 'COMPLETE' || status === 'ERROR';
 				},
 				60_000,
 				250
 			);
+			strictEqual(status, 'COMPLETE');
 		} finally {
 			await stopTraffic();
 		}
+		const after = await threadIds();
+		strictEqual(after.length, before.length);
+		ok(!after.some((threadId) => before.includes(threadId)), 'every http worker was replaced');
 		strictEqual(await readPid(ctx), pid);
 		ok(await servedByUws(ctx));
 	});

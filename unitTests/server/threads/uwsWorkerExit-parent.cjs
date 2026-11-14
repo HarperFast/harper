@@ -1,7 +1,7 @@
 'use strict';
 
 // Runs in its own process: a worker that stops with uWebSockets.js sockets open aborts the whole process,
-// which must not take the mocha process with it. Exits 0 once the worker is gone and the process survived.
+// which must not take the mocha process with it.
 require('../../testUtils.js').preTestPrep();
 
 const http = require('node:http');
@@ -44,7 +44,7 @@ async function main() {
 	if (mode === 'shutdown-now') await shutdownWorkersNow(FIXTURE_NAME);
 	else worker.postMessage({ type: 'exit-now' });
 	await exited;
-	// Node's teardown of the worker runs before 'exit' is emitted; reaching here is the process surviving it.
+	// Node tears the worker down before emitting 'exit'.
 	process.stdout.write('survived\n');
 	process.exit(0);
 }
