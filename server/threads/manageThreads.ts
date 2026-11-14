@@ -1982,9 +1982,12 @@ async function replaceWorkers(
 							'Replacement worker did not start in time; leaving the existing worker in place',
 							newWorker.threadId
 						);
-						forceWorkerExit(newWorker);
 						cleanup();
-						resolve(false);
+						// The slot can be started again next, so give this replacement time to free any port it bound. Bounded,
+						// since terminate() waits on a thread stuck in native code.
+						const settle = () => resolve(false);
+						Promise.resolve(forceWorkerExit(newWorker)).then(settle, settle);
+						setTimeout(settle, Math.min(threadTerminationTimeout * 2, shutdownDrainRuntimeModule.MAX_TIMER_MS)).unref();
 					};
 					let timeout = setTimeout(
 						giveUp,

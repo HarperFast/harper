@@ -144,17 +144,22 @@ suite('in-process restart with the uWS backend', { skip: skipSuite }, (ctx: Cont
 
 	test('a rolling worker restart keeps the process', async () => {
 		const pid = await readPid(ctx);
-		const threadIds = async () =>
+		const threadIds = async (): Promise<number[]> =>
 			(await sendOperation(ctx.harper, { operation: 'system_information', attributes: ['threads'] })).threads
 				.filter((thread: { name: string }) => thread.name === 'http')
-				.map((thread: { threadId: number }) => thread.threadId)
-				.sort()
-				.join();
+				.map((thread: { threadId: number }) => thread.threadId);
 		const before = await threadIds();
 		const stopTraffic = startTraffic(ctx);
 		try {
 			await sendOperation(ctx.harper, { operation: 'restart_service', service: 'http_workers' });
-			await waitFor(async () => (await threadIds()) !== before, 60_000, 250);
+			await waitFor(
+				async () => {
+					const now = await threadIds();
+					return now.length === before.length && !now.some((threadId) => before.includes(threadId));
+				},
+				60_000,
+				250
+			);
 		} finally {
 			await stopTraffic();
 		}
