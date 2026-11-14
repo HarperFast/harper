@@ -237,16 +237,22 @@ describe('Relayed head-tie duplicates (harper#3467)', function () {
 			],
 		});
 		await apply(transaction());
-		const puts = async () => (await T.getHistoryOfRecord('r')).filter((entry) => entry.type === 'put').length;
-		const putsBefore = await puts();
+		const logged = async (type) => (await T.getHistoryOfRecord('r')).filter((entry) => entry.type === type).length;
+		const putsBefore = await logged('put');
+		const messagesBefore = await logged('message');
 		const spy = spyRecordLogReads(T, version, origin);
 		try {
 			await apply(transaction());
 		} finally {
 			spy.restore();
 		}
-		assert.deepEqual(spy.reads, [], 'the publish runs after the put, so the put reads no committed base');
-		assert.equal(await puts(), putsBefore, 'the re-delivered put must not be logged again');
+		assert.deepEqual(
+			spy.reads,
+			[{ getRange: version, log: origin }],
+			'the publish runs after the put, so the put reads no committed base; only the publish looks up its entry'
+		);
+		assert.equal(await logged('put'), putsBefore, 'the re-delivered put must not be logged again');
+		assert.equal(await logged('message'), messagesBefore, 'the re-delivered publish must not be logged again');
 		assert.equal((await T.get('r')).name, 'first');
 	});
 

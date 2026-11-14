@@ -223,7 +223,7 @@ import {
 	GET_TRACKED_WRITE_GENERATION,
 } from './tracked.ts';
 import { transaction, contextStorage } from './transaction.ts';
-import { MAXIMUM_KEY, writeKey, compareKeys } from 'ordered-binary';
+import { MAXIMUM_KEY, writeKey, compareKeys, toBufferKey } from 'ordered-binary';
 import {
 	getWorkerIndex,
 	applicationWorkerIndex,
@@ -251,6 +251,7 @@ import {
 	auditHistoryAbortMarked,
 	type AuditRecord,
 } from './auditStore.ts';
+import { abortMarkersEnabled } from './transactionLogAbortMarkers.ts';
 import {
 	acquireFullTextClearFence,
 	acquireFullTextRetirementFence,
@@ -389,6 +390,10 @@ type MaybePromise<T> = T | Promise<T>;
 const NULL_WITH_TIMESTAMP = new Uint8Array(9);
 NULL_WITH_TIMESTAMP[8] = 0xc0; // null
 const sourceWriteTypes = new Set(['put', 'patch', 'delete', 'publish', 'message', 'invalidate', 'relocate']);
+const loggedMessagesByTransaction = new WeakMap<object, Map<string, Set<string> | null>>();
+// the storage-key encoding, so ids the store treats as one key match
+const messageIdentity = (tableId: number, id: Id, version: number) =>
+	`${tableId}:${version}:${toBufferKey(id).toString('latin1')}`;
 const isSourceWriteType = (type: string) => sourceWriteTypes.has(type);
 // declared types `validate` holds to one value on validated writes: `ID` admits an array of strings
 const SCALAR_TYPES = new Set(['String', 'Int', 'Long', 'Float', 'Boolean', 'Date', 'BigInt']);
@@ -11351,10 +11356,30 @@ export function makeTable(options): TableResourceClass {
 					(this.constructor as any).source?.publish && !(context as any)?.source
 						? (this.constructor as any).source.publish.bind((this.constructor as any).source, id, message, context)
 						: undefined,
-				commit: (txnTime, existingEntry, _retry, transaction: any) => {
+				commit: (txnTime, existingEntry, retry, transaction: any, committedBy?: DatabaseTransaction) => {
+					write.skipped = false;
 					write.stagedEntry = undefined;
 					write.completeResidencyRecord = undefined;
 					write.superseded = false;
+					const precedes =
+						existingEntry?.version !== undefined ? precedesExistingVersion(txnTime, existingEntry, options?.nodeId) : 1;
+					// The record's version never moves back, so only a message at or below it, or one to a record the table can
+					// drop, can have been logged here, and the logged entry is the proof. A retry recommits the batch its first
+					// attempt staged; an earlier process's file can hold an unmarked aborted batch, so there only a record vouches.
+					if (
+						committedBy?.sourceApply &&
+						!committedBy.isReplay &&
+						isRocksDB &&
+						abortMarkersEnabled() &&
+						!(retry && write.appendedAuditEntry === true) &&
+						(existingEntry === undefined
+							? (evictsRecords() || !audit) && auditHistoryAbortMarked(auditStore, options?.nodeId)
+							: precedes <= 0) &&
+						isMessageLogged(committedBy, (context as any)?.timestamp, id, options?.nodeId, options?.version ?? txnTime)
+					) {
+						write.skipped = true;
+						return;
+					}
 					if (existingEntry === undefined && trackDeletes && !audit) {
 						scheduleCleanup();
 					}
@@ -11365,9 +11390,7 @@ export function makeTable(options): TableResourceClass {
 					const base = priorStagedOp?.stagedEntry ?? existingEntry;
 					const value = base?.value ?? null;
 					const metadataFlags = (base?.metadataFlags ?? 0) & (LOCAL_ONLY | INVALIDATED | REPLICA);
-					const late =
-						existingEntry?.version !== undefined &&
-						precedesExistingVersion(txnTime, existingEntry, options?.nodeId) < 0;
+					const late = precedes < 0;
 					const ownRefs = late
 						? isRocksDB
 							? withAuditRef(existingEntry.additionalAuditRefs, appendedLogKey, options?.nodeId)
@@ -14391,6 +14414,38 @@ export function makeTable(options): TableResourceClass {
 	 */
 	function isStubLeftBy(entry: Partial<Entry> | undefined, txnLogKey: number, nodeId: number | undefined): boolean {
 		return Boolean(entry?.metadataFlags & INVALIDATED) && isAuditEntryWrite(entry, { txnLogKey, nodeId });
+	}
+
+	/**
+	 * An origin transaction commits here all at once, so one read answers for all its messages for the applying
+	 * transaction; no write that staged its entry asks again on a retry.
+	 */
+	function isMessageLogged(
+		applying: DatabaseTransaction,
+		txnLogKey: number | undefined,
+		id: Id,
+		nodeId: number | undefined,
+		version: number
+	): boolean {
+		if (txnLogKey === undefined || !nodeId) return false;
+		// an unnamed origin's entries sit in `local` under minted keys, never at its received key
+		if (!auditStore.logById(nodeId)) return false;
+		let byOriginKey = loggedMessagesByTransaction.get(applying);
+		if (!byOriginKey) loggedMessagesByTransaction.set(applying, (byOriginKey = new Map()));
+		const originKey = `${nodeId}:${txnLogKey}`;
+		let logged = byOriginKey.get(originKey);
+		if (logged === undefined) byOriginKey.set(originKey, (logged = loggedMessagesAt(txnLogKey, nodeId)));
+		return logged !== null && logged.has(messageIdentity(tableId, id, version));
+	}
+
+	function loggedMessagesAt(txnLogKey: number, nodeId: number): Set<string> | null {
+		let logged: Set<string> | null = null;
+		for (const entry of auditStore.getRange({ start: txnLogKey, exactStart: true, log: nodeId })) {
+			if (entry.txnLogKey !== txnLogKey) break;
+			if (entry.type === 'message')
+				(logged ??= new Set()).add(messageIdentity(entry.tableId, entry.recordId, entry.version));
+		}
+		return logged;
 	}
 
 	// Not stagedEntry: a relocate restamps the record without staging it, and a publish's restamp counts too.
