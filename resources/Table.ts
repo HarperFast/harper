@@ -11363,16 +11363,18 @@ export function makeTable(options): TableResourceClass {
 					write.superseded = false;
 					const precedes =
 						existingEntry?.version !== undefined ? precedesExistingVersion(txnTime, existingEntry, options?.nodeId) : 1;
-					// The record's version never moves back, so only a message at or below it can have been logged here,
-					// and the logged entry is the proof. A retry recommits the batch its first attempt staged; an earlier
-					// process's file can hold an unmarked aborted batch, so there only a record vouches for the entry.
+					// The record's version never moves back, so only a message at or below it, or one to a record the table can
+					// drop, can have been logged here, and the logged entry is the proof. A retry recommits the batch its first
+					// attempt staged; an earlier process's file can hold an unmarked aborted batch, so there only a record vouches.
 					if (
 						committedBy?.sourceApply &&
 						!committedBy.isReplay &&
 						isRocksDB &&
 						abortMarkersEnabled() &&
 						!(retry && write.appendedAuditEntry === true) &&
-						(existingEntry === undefined ? auditHistoryAbortMarked(auditStore, options?.nodeId) : precedes <= 0) &&
+						(existingEntry === undefined
+							? (evictsRecords() || !audit) && auditHistoryAbortMarked(auditStore, options?.nodeId)
+							: precedes <= 0) &&
 						isMessageLogged(committedBy, (context as any)?.timestamp, id, options?.nodeId, options?.version ?? txnTime)
 					) {
 						write.skipped = true;
