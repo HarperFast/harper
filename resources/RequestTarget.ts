@@ -1,9 +1,122 @@
 import type { UserRoleDatabasePermissions } from '../security/user.ts';
 import type { Conditions, Context, DirectCondition, Id, Select, Sort } from './ResourceInterface.ts';
 import { parseQuery } from './search.ts';
+import { ServerError } from '../utility/errors/hdbError.ts';
+
+export const AUTHORIZATION_SELECT = Symbol.for('harper.authorizationSelect');
+
+export let markDispatchTarget: (target: RequestTarget) => RequestTarget;
+let isDispatchTarget: (target: any) => boolean;
+let copyRequestTarget: (source: RequestTarget) => RequestTarget;
+
+// Reusing a caller-owned query must not lose predicates when its iterator has already been consumed.
+const iteratorSnapshots = new WeakMap<object, { values?: any[]; error?: unknown }>();
+
+function replayIterator(source: any, iteratorMethod?: () => Iterator<any>): Iterator<any> {
+	const iterator = (iteratorMethod ?? source[Symbol.iterator]).call(source);
+	let snapshot = iteratorSnapshots.get(iterator);
+	if (!snapshot) {
+		snapshot = {};
+		iteratorSnapshots.set(iterator, snapshot);
+		try {
+			snapshot.values = Array.from({ [Symbol.iterator]: () => iterator });
+		} catch (error) {
+			snapshot.error = error;
+		}
+	}
+	if (Object.hasOwn(snapshot, 'error')) throw snapshot.error;
+	if (!snapshot.values) throw new TypeError('Cannot reuse a query iterator while it is running');
+	return snapshot.values[Symbol.iterator]();
+}
+
+export function setLoadedFromSource(target: any, loadedFromSource: boolean): void {
+	if (target && typeof target === 'object') Reflect.set(target, 'loadedFromSource', loadedFromSource);
+}
+
+export function copyQueryConditions(value: any): any {
+	return value && !Array.isArray(value) && typeof value[Symbol.iterator] === 'function'
+		? { [Symbol.iterator]: () => replayIterator(value) }
+		: value;
+}
+
+function copyQueryFields(source: any, stop = Object.prototype, skipArrayIndices = false): PropertyDescriptorMap {
+	const descriptors: PropertyDescriptorMap = Object.create(null);
+	const seen = new Set<string | symbol>();
+	for (let object = source; object && object !== stop; object = Object.getPrototypeOf(object)) {
+		for (const name of Reflect.ownKeys(object)) {
+			if (
+				skipArrayIndices &&
+				typeof name === 'string' &&
+				(name === 'length' || (name !== '4294967295' && String(Number(name) >>> 0) === name))
+			)
+				continue;
+			if (seen.has(name)) continue;
+			seen.add(name);
+			const descriptor = Object.getOwnPropertyDescriptor(object, name);
+			if (!descriptor) continue;
+			if ('value' in descriptor) {
+				if (name === Symbol.iterator && typeof descriptor.value === 'function') {
+					descriptors[name] = {
+						value: () => replayIterator(source),
+						writable: true,
+						enumerable: descriptor.enumerable,
+						configurable: true,
+					};
+					continue;
+				}
+				if (object !== source && typeof descriptor.value === 'function') continue;
+				descriptors[name] = { ...descriptor, writable: true, configurable: true };
+			} else {
+				const materialize = (receiver: any, value: any) => {
+					if (name === Symbol.iterator && typeof value === 'function') {
+						const iteratorMethod = value;
+						value = () => replayIterator(source, iteratorMethod);
+					} else if (name === 'conditions') value = copyQueryConditions(value);
+					Object.defineProperty(receiver, name, {
+						value,
+						writable: true,
+						enumerable: descriptor.enumerable,
+						configurable: true,
+					});
+					return value;
+				};
+				descriptors[name] = {
+					get() {
+						return materialize(this, Reflect.get(source, name, source));
+					},
+					set(value) {
+						materialize(this, value);
+					},
+					enumerable: descriptor.enumerable,
+					configurable: true,
+				};
+			}
+		}
+	}
+	return descriptors;
+}
 
 export class RequestTarget extends URLSearchParams {
 	#target?: string;
+	#dispatchOwned?: boolean;
+	static {
+		markDispatchTarget = (target) => {
+			target.#dispatchOwned = true;
+			return target;
+		};
+		isDispatchTarget = (target) => #dispatchOwned in target && target.#dispatchOwned === true;
+		copyRequestTarget = (source) => {
+			const copy = new RequestTarget();
+			for (const [name, value] of URLSearchParams.prototype.entries.call(source))
+				URLSearchParams.prototype.append.call(copy, name, value);
+			copy.#target = source.#target;
+			copy.#dispatchOwned = true;
+			const prototype = Object.getPrototypeOf(source);
+			Object.defineProperties(copy, copyQueryFields(source, RequestTarget.prototype));
+			Object.setPrototypeOf(copy, prototype);
+			return copy;
+		};
+	}
 	pathname: string;
 	search?: string;
 	/** Target a specific record, but can be combined with select */
@@ -173,3 +286,41 @@ export class RequestTarget extends URLSearchParams {
 	}
 }
 export type RequestTargetOrId = RequestTarget | Id;
+
+export function copyQueryTarget<T>(source: T): T {
+	const copy = copyQueryTargetShell(source);
+	const conditions = Object.getOwnPropertyDescriptor(copy, 'conditions');
+	if (conditions && 'value' in conditions) (copy as any).conditions = copyQueryConditions(conditions.value);
+	return copy;
+}
+
+function copyQueryTargetShell<T>(source: T): T {
+	if (source instanceof RequestTarget) return copyRequestTarget(source) as T;
+	const prototype = Object.getPrototypeOf(source);
+	if (source instanceof URLSearchParams) {
+		const copy = new URLSearchParams(URLSearchParams.prototype.entries.call(source));
+		Object.defineProperties(copy, copyQueryFields(source, URLSearchParams.prototype));
+		return Object.setPrototypeOf(copy, prototype);
+	}
+	if (Array.isArray(source)) {
+		if (prototype === Array.prototype && !Object.hasOwn(source, 'constructor'))
+			return Object.defineProperties(
+				Array.prototype.slice.call(source),
+				copyQueryFields(source, Array.prototype, true)
+			);
+		const descriptors = copyQueryFields(source, Array.prototype);
+		descriptors.length.configurable = false;
+		return Object.setPrototypeOf(Object.defineProperties([], descriptors), prototype);
+	}
+	return Object.create(prototype, copyQueryFields(source));
+}
+
+/** Authorization writes only on a target this dispatch owns, so a caller's query object stays reusable. */
+export function dispatchTarget<T>(target: T): T {
+	if (isDispatchTarget(target)) return target;
+	if ((target as any)[AUTHORIZATION_SELECT])
+		throw new ServerError(
+			'Can not authorize a query object that an earlier authorization already narrowed; pass a query object that has not been authorized'
+		);
+	return copyQueryTarget(target);
+}

@@ -329,7 +329,14 @@ import {
 	getStorageSpaceStats,
 	type StorageSpaceStats,
 } from '../server/storageReclamation.ts';
-import { RequestTarget } from './RequestTarget.ts';
+import {
+	AUTHORIZATION_SELECT,
+	RequestTarget,
+	dispatchTarget,
+	copyQueryTarget,
+	copyQueryConditions,
+	setLoadedFromSource,
+} from './RequestTarget.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
 import { throttle } from '../server/throttle.ts';
 import {
@@ -891,7 +898,6 @@ class ConditionLockWait {
 		this.fullUpdate = fullUpdate;
 	}
 }
-const AUTHORIZATION_SELECT = Symbol.for('harper.authorizationSelect');
 // On a select written by allowRead: its '*' leaves out relationships, because the select lists each one it returns
 const RELATIONSHIPS_LISTED = Symbol.for('harper.relationshipsListed');
 const SEARCH_AUTHORIZATION_TRANSFORMS = Symbol.for('harper.searchAuthorizationTransforms');
@@ -1653,8 +1659,10 @@ function copySelection(select) {
 
 function searchConditions(target: any): any[] {
 	const conditions = target.conditions;
-	if (!conditions) return Array.isArray(target) ? target : target[Symbol.iterator] ? Array.from(target) : [];
-	if (conditions.length === undefined) return conditions[Symbol.iterator] ? Array.from(conditions) : [conditions];
+	if (!conditions)
+		return Array.isArray(target) ? target : target[Symbol.iterator] ? Array.from(copyQueryConditions(target)) : [];
+	if (conditions.length === undefined)
+		return conditions[Symbol.iterator] ? Array.from(copyQueryConditions(conditions)) : [conditions];
 	return conditions;
 }
 
@@ -2693,6 +2701,7 @@ export function makeTable(options): TableResourceClass {
 			const relatedTable = propertyResolvers[property?.name || property]?.definition?.tableClass;
 			if (!relatedTable) return property;
 			if (!property.name) property = { name: property };
+			else property = copyQueryTarget(property);
 			// a REST property set (`related{a,b}`) is an Array whose entries are the sub-selection
 			if (Array.isArray(property) && (property as any).select == null) (property as any).select = [...property];
 			// authority comes from the request being authorized, never from the selection itself
@@ -4674,10 +4683,12 @@ export function makeTable(options): TableResourceClass {
 				const id = requestTargetToId(target);
 				checkValidId(id);
 				let allowed = true;
+				// loadedFromSource is reported on the caller's target, which authorization must not write
+				let authorizedTarget = target;
 				if ((target as any)?.checkPermission) {
-					// requesting authorization verification
+					authorizedTarget = dispatchTarget(target);
 					try {
-						allowed = this.allowRead(context.user, target, context);
+						allowed = this.allowRead(context.user, authorizedTarget, context);
 					} catch {
 						// allow* threw — fail closed rather than letting the request proceed
 						throw new AccessViolation(context.user);
@@ -4716,13 +4727,13 @@ export function makeTable(options): TableResourceClass {
 							});
 						}),
 						(record) => {
-							const select = target?.select;
+							const select = authorizedTarget?.select;
 							if (select && record != null) {
 								const transform = transformForSelect(select, this.constructor);
 								return recordAppliedSelect(this.getContext(), select, false, transform(record));
 							}
-							if (target?.property) {
-								return record?.[target.property];
+							if (authorizedTarget?.property) {
+								return record?.[authorizedTarget.property];
 							}
 							return record;
 						}
@@ -8168,10 +8179,7 @@ export function makeTable(options): TableResourceClass {
 					if (!allowed) throw new AccessViolation(context?.user);
 					// The delete's internal scan is private dispatch state. Do not mutate or mark the
 					// caller target: another concurrent search using that identity must still run allowRead.
-					scanTarget = Object.assign(
-						new RequestTarget(target instanceof URLSearchParams ? target.toString() : undefined),
-						target
-					);
+					scanTarget = copyQueryTarget(target);
 					(scanTarget as any).checkPermission = false;
 				}
 				(scanTarget as any).select = ['$id']; // just get the primary key of each record so we can delete them
@@ -8382,6 +8390,7 @@ export function makeTable(options): TableResourceClass {
 			if (target.checkPermission) {
 				// Direct instance callers may request the same one-shot operation gate used by the
 				// transactional Resource API. Application row filtering is explicit via target.rowFilter.
+				target = dispatchTarget(target);
 				let allowed;
 				try {
 					allowed = this.allowRead((context as any).user, target, context);
@@ -10033,6 +10042,7 @@ export function makeTable(options): TableResourceClass {
 			if (!request) request = {} as any;
 			const loadAsInstance = (this.constructor as any).loadAsInstance;
 			if (loadAsInstance === false && (request as any).checkPermission) {
+				request = dispatchTarget(request);
 				const context = this.getContext() as any;
 				let allowed;
 				try {
@@ -13608,11 +13618,6 @@ export function makeTable(options): TableResourceClass {
 		throw new ClientError('Full-text comparator requires a declared @fullText index', 400);
 	}
 
-	function setLoadedFromSource(target: RequestTarget | undefined, loadedFromSource: boolean) {
-		// cache disposition is a per-get result, recorded on the RequestTarget of the get (#1576)
-		// target may be a primitive id on instance-API calls, which can't hold the flag
-		if (target && typeof target === 'object') target.loadedFromSource = loadedFromSource;
-	}
 	function isHiddenExpiry(expiresAt: number | undefined, now?: number) {
 		return !hasSourceGet && expiresAt != undefined && expiresAt < (now ?? Date.now());
 	}

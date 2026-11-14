@@ -31,6 +31,8 @@ Declarations compile to `fullTextIndexes`, never `attributes` (no stored value).
 
 `transactional()` drops client `checkPermission` and gives a QUERY `select` to `allowRead`; only that projection is searched (`permissions.test.js`). In false mode `search`/`query`/`get` await `Table.search`'s `SEARCH_AUTHORIZATION` verdict, so a denial is never a truncated success (`asyncAllowReadSearchResults.test.js`); array PUT, query DELETE and publish take one each (`staticResourceDispatch.ts`). `rowFilter` is rechecked on the materialized record, before `limit`.
 
+Transport roots narrow in place; `dispatchTarget` copies caller roots. Unowned narrowed roots fail closed; context arming persists. Changed predicates require a fresh iterator; resetting a snapshotted cursor is unsupported (`delegatedQueryReuse.test.js`).
+
 ## Array PUT is a collection dispatch that settles every element before it fails
 
 Each element gets its own target (`elementTargetFactory`) without `checkPermission` (it would stage as data). `settleElements`, never `Promise.all`, so a slow element cannot leave a partial PUT; the earliest-index error wins. Gap: static-mode classes get the array unguarded (`arrayPutCallerImpact.test.js`).
@@ -85,6 +87,7 @@ The operations thread loads no schema; `table()` stores `@relationship` targets 
 - **Never remove `transactional()` from a static `Resource` method**: it owns the context's lifetime. It resolves the body before `allow*` (`requestBody.test.js`).
 - **A static override owns the whole contract**: it resolves `data` and decides access; no `allow*` runs (`login.ts`).
 - Predicates never mutate projection maps (`nestedRelationshipConstraints.test.js`); plain JSON skips resolvers (`searchSelectProjection.test.js`).
+- `_authorizeRelatedSelection` copies named selectors before writes. Request authority wins; arrays isolate `select` from metadata (`selectorAuthorization.test.js`).
 - **`relationship.from` accessors are synchronous** (v4 parity: `getSync`, never `get()`; `query.test.js`) and mark the request uncacheable, else a stale ETag 304s (gap: unselected `@enumerable` links).
 - **Async query iteration reads related records via `loadEntries`**, checking `getReadTransactionGuard` after each await (`relationshipAsyncReads.test.js`; gaps: `.to` `asArray` on a caching table, #3588; the index switch uses `getSync`).
 - **Each AND condition on a to-many relationship is existential**; a `rel[...]` group (`isRelationshipGroup`) binds to one related record. `select()` keeps what an AND matched, never an OR (`relationshipSameRecordGroup.test.js`; gap: #3762).
