@@ -788,6 +788,8 @@ describe('cliOperations', () => {
 
 	describe('"Harper is not running" messaging (harper#658)', () => {
 		const NOT_RUNNING_MESSAGE = 'Harper is not running. Use `harperdb run` (or `harperdb start`) to start it.';
+		const UNREACHABLE_MESSAGE =
+			'Harper is running (pid 12345), but its Operations API domain socket could not be reached; it may be starting or stopping, or `operationsApi.network.domainSocket` is disabled.';
 
 		let originalGetHdbPid;
 		let originalInitConfig;
@@ -840,8 +842,20 @@ describe('cliOperations', () => {
 			assert.ok(consoleErrors.includes(NOT_RUNNING_MESSAGE));
 		});
 
-		it('shows the friendly message (and non-zero exit) when the domain socket file is missing', async () => {
+		it('says a running Harper is unreachable (and exits non-zero) when the domain socket file is missing', async () => {
 			configUtilsModule.getConfigPath = () => path.join(testDir, 'no-such-operations-server.sock');
+
+			await assert.rejects(() => cliOperationsModule.cliOperations({ operation: 'status' }, true), ProcessExitSignal);
+
+			assert.strictEqual(exitCode, 1);
+			assert.ok(consoleErrors.includes(UNREACHABLE_MESSAGE));
+			assert.ok(!consoleErrors.includes(NOT_RUNNING_MESSAGE));
+		});
+
+		it('shows the friendly message when the domain socket file is missing and the pid has exited', async () => {
+			configUtilsModule.getConfigPath = () => path.join(testDir, 'no-such-operations-server.sock');
+			let pidChecks = 0;
+			processManagementModule.getHdbPid = () => (pidChecks++ === 0 ? 12345 : undefined);
 
 			await assert.rejects(() => cliOperationsModule.cliOperations({ operation: 'status' }, true), ProcessExitSignal);
 
@@ -849,7 +863,7 @@ describe('cliOperations', () => {
 			assert.ok(consoleErrors.includes(NOT_RUNNING_MESSAGE));
 		});
 
-		it('shows the friendly message (and non-zero exit) for a local ECONNREFUSED', async () => {
+		it('says a running Harper is unreachable (and exits non-zero) for a local ECONNREFUSED', async () => {
 			commonUtilsModule.httpRequest = async () => {
 				const err = new Error('connect ECONNREFUSED /fake/operations-server.sock');
 				err.code = 'ECONNREFUSED';
@@ -859,11 +873,11 @@ describe('cliOperations', () => {
 			await assert.rejects(() => cliOperationsModule.cliOperations({ operation: 'status' }, true), ProcessExitSignal);
 
 			assert.strictEqual(exitCode, 1);
-			assert.ok(consoleErrors.includes(NOT_RUNNING_MESSAGE));
+			assert.ok(consoleErrors.includes(UNREACHABLE_MESSAGE));
 			assert.ok(!consoleErrors.some((line) => line.includes('ECONNREFUSED')));
 		});
 
-		it('shows the friendly message (and non-zero exit) for a local ENOENT (stale/missing socket)', async () => {
+		it('says a running Harper is unreachable (and exits non-zero) for a local ENOENT (stale/missing socket)', async () => {
 			commonUtilsModule.httpRequest = async () => {
 				const err = new Error('ENOENT: no such file or directory, connect /fake/operations-server.sock');
 				err.code = 'ENOENT';
@@ -873,7 +887,7 @@ describe('cliOperations', () => {
 			await assert.rejects(() => cliOperationsModule.cliOperations({ operation: 'status' }, true), ProcessExitSignal);
 
 			assert.strictEqual(exitCode, 1);
-			assert.ok(consoleErrors.includes(NOT_RUNNING_MESSAGE));
+			assert.ok(consoleErrors.includes(UNREACHABLE_MESSAGE));
 			assert.ok(!consoleErrors.some((line) => line.includes('ENOENT')));
 		});
 
@@ -891,6 +905,7 @@ describe('cliOperations', () => {
 
 			assert.strictEqual(exitCode, 1);
 			assert.ok(!consoleErrors.includes(NOT_RUNNING_MESSAGE));
+			assert.ok(!consoleErrors.includes(UNREACHABLE_MESSAGE));
 			assert.ok(consoleErrors.some((line) => line.includes('error: Failed to connect to Harper (ECONNREFUSED)')));
 		});
 
@@ -915,6 +930,8 @@ describe('cliOperations', () => {
 
 	describe('local packaging errors are not misclassified as "Harper is not running" (PR #1808)', () => {
 		const NOT_RUNNING_MESSAGE = 'Harper is not running. Use `harperdb run` (or `harperdb start`) to start it.';
+		const UNREACHABLE_MESSAGE =
+			'Harper is running (pid 12345), but its Operations API domain socket could not be reached; it may be starting or stopping, or `operationsApi.network.domainSocket` is disabled.';
 
 		let originalGetHdbPid;
 		let originalInitConfig;
@@ -1002,8 +1019,8 @@ describe('cliOperations', () => {
 
 			assert.strictEqual(exitCode, 1);
 			assert.ok(
-				!consoleErrors.includes(NOT_RUNNING_MESSAGE),
-				`expected the packaging error not to be shown as "Harper is not running", got: ${JSON.stringify(consoleErrors)}`
+				!consoleErrors.includes(NOT_RUNNING_MESSAGE) && !consoleErrors.includes(UNREACHABLE_MESSAGE),
+				`expected the packaging error not to be shown as a connection failure, got: ${JSON.stringify(consoleErrors)}`
 			);
 			assert.ok(
 				consoleErrors.some((line) => line.includes('Failed to package component directory')),

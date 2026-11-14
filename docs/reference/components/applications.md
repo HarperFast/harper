@@ -52,7 +52,7 @@ To mimic interaction with a hosted Harper instance locally:
    - Setting `package=<path-to-project>` creates a symlink so file changes are picked up automatically between restarts.
    - `restart=true` restarts worker threads after deploy. Use `restart=rolling` for a rolling restart.
 
-3. Use `harper restart` in another terminal to restart threads at any time.
+3. Use `harper restart_service service=http_workers` in another terminal to restart the worker threads at any time, or `harper restart` to restart the whole Harper process.
 4. Remove an application: `harper drop_component project=<name>`
 
 > Not all [component operations](#operations-api) are available via CLI. When in doubt, use the Operations API via direct HTTP requests to the local Harper instance.
