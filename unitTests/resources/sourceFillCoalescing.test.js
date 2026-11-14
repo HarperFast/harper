@@ -195,18 +195,15 @@ describe('Concurrent source misses on one key', function () {
 			const reasons = (await concurrentGets(CoalescingTable, `thrown-${statusCode}`)).map(({ reason }) => reason);
 			assert.equal(sourceCalls, 1);
 			assert.equal(tryLocks, 20, 'no queued read went back for the lock');
-			assert.equal(new Set(reasons).size, 20, 'each read rejects with its own error');
-			for (const reason of reasons) {
-				assert.ok(reason instanceof OriginError);
-				assert.equal(reason.statusCode, statusCode);
-				assert.equal(reason.code, 'ORIGIN_' + statusCode);
-				assert.equal(reason.message, reasons[0].message);
-			}
+			assert.equal(new Set(reasons).size, 1, 'every read rejects with the error the source threw');
+			assert.ok(reasons[0] instanceof OriginError);
+			assert.equal(reasons[0].statusCode, statusCode);
+			assert.equal(reasons[0].code, 'ORIGIN_' + statusCode);
 			assert.match(reasons[0].message, new RegExp(`^origin answered ${statusCode} while resolving record`));
 		});
 	}
 
-	it('keep the context each caller adds to a shared not-found its own', async function () {
+	it('share a nested source not-found with the outer reads waiting on it', async function () {
 		const OuterTable = table({
 			table: 'SourceFillCoalescingOuterTable',
 			database: 'test',
@@ -221,10 +218,8 @@ describe('Concurrent source misses on one key', function () {
 		holdFirstCall('nested-missing', 1);
 		const [first, second] = await Promise.allSettled([OuterTable.get('outer-a'), OuterTable.get('outer-b')]);
 		assert.equal(sourceCalls, 1);
-		assert.match(first.reason.message, /record outer-a for SourceFillCoalescingOuterTable$/);
-		assert.match(second.reason.message, /record outer-b for SourceFillCoalescingOuterTable$/);
-		assert.doesNotMatch(first.reason.message, /outer-b/);
-		assert.doesNotMatch(second.reason.message, /outer-a/);
+		assert.equal(first.reason, second.reason);
+		assert.equal(first.reason.statusCode, 404);
 	});
 
 	it('serve a record written while the source was failing instead of the failure', async function () {
@@ -244,19 +239,7 @@ describe('Concurrent source misses on one key', function () {
 		assert.equal(results.filter((outcome) => outcome === 'written meanwhile').length, 19);
 	});
 
-	it('do not share a not-found whose status a copy would lose', async function () {
-		respond = () => {
-			throw Object.defineProperty(new OriginError('origin answered 404'), 'statusCode', { value: 404 });
-		};
-		const reasons = (await concurrentGets(CoalescingTable, 'hidden-status')).map(({ reason }) => reason);
-		assert.equal(sourceCalls, 20);
-		assert.deepEqual(
-			reasons.map((reason) => reason.statusCode),
-			Array(20).fill(404)
-		);
-	});
-
-	it('do not share a not-found whose class reads private state or that carries a one-shot body', async function () {
+	it('share a not-found whatever its shape', async function () {
 		class PrivateError extends Error {
 			#detail = 'private';
 			get detail() {
@@ -264,29 +247,21 @@ describe('Concurrent source misses on one key', function () {
 			}
 		}
 		const shapes = [
+			() => Object.defineProperty(new OriginError('origin answered 404'), 'statusCode', { value: 404 }),
 			() => Object.assign(new PrivateError('origin answered 404'), { statusCode: 404 }),
 			() => Object.assign(new OriginError('origin answered 404'), { statusCode: 404, response: new Response('gone') }),
+			() => ({ status: 404, message: 'origin answered 404' }),
 		];
 		for (const [index, shape] of shapes.entries()) {
 			respond = () => {
 				throw shape();
 			};
 			sourceCalls = 0;
-			const reasons = (await concurrentGets(CoalescingTable, 'uncopyable-' + index)).map(({ reason }) => reason);
-			assert.equal(sourceCalls, 20);
-			assert.ok(reasons.every((reason) => reason.statusCode === 404));
-			await settle('uncopyable-' + index);
+			const reasons = (await concurrentGets(CoalescingTable, 'shape-' + index)).map(({ reason }) => reason);
+			assert.equal(sourceCalls, 1, `shape ${index}`);
+			assert.equal(new Set(reasons).size, 1, `shape ${index}`);
+			await settle('shape-' + index);
 		}
-	});
-
-	it('carry the cause of a shared not-found', async function () {
-		const cause = new Error('upstream detail');
-		respond = () => {
-			throw Object.assign(new OriginError('origin answered 404', { cause }), { statusCode: 404 });
-		};
-		const reasons = (await concurrentGets(CoalescingTable, 'with-cause')).map(({ reason }) => reason);
-		assert.equal(sourceCalls, 1);
-		assert.ok(reasons.every((reason) => reason.cause === cause));
 	});
 
 	it('call the source again for a thrown not-found on the next burst', async function () {
