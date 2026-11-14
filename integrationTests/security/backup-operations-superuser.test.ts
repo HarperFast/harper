@@ -6,7 +6,8 @@
  * `get_backup` "cannot be granted by listing them".
  *
  * A role that lists the managed-backup operations passes the authorization step and is refused only by the
- * handlers' own check, so the roles here are real role records and two of them list every backup operation. Each
+ * handlers' own check (`get_backup` is refused at the authorization step, whatever the role lists), so the
+ * roles here are real role records and two of them list every backup operation. Each
  * request is sent over the operations API and as an MCP operations-profile tool call, and each refusal is
  * paired with the super_user's same request taking effect. HARPER_EXIT_ON_RESTART makes an admitted
  * `on_restart` exit the process, so a restart is observable.
@@ -71,8 +72,15 @@ const ROLES: Record<string, Record<string, unknown>> = {
 };
 const NON_SUPER_USERS = Object.keys(ROLES).map((role) => `${role}_user`);
 const LISTED_USER = 'backup_authz_listed_user';
-/** The users whose role lists every backup operation. */
 const LISTING_USERS = [LISTED_USER, 'backup_authz_structure_user'];
+
+function parseJson(text: string): any {
+	try {
+		return JSON.parse(text);
+	} catch {
+		return text;
+	}
+}
 
 interface BackupRequest {
 	name: string;
@@ -125,17 +133,11 @@ suite('backup operations are super_user only for real roles', { skip: skipSuite 
 		});
 		const buffer = Buffer.from(await res.arrayBuffer());
 		const prefix = buffer.subarray(0, 4000).toString();
-		// a get_backup archive is binary: describe it instead of printing it
+		// get_backup answers with a binary archive
 		const text = /^[\x20-\x7e\s]*$/.test(prefix)
 			? prefix
 			: `<${buffer.length} bytes of ${res.headers.get('content-type')}>`;
-		let body: any = text;
-		try {
-			body = JSON.parse(buffer.toString());
-		} catch {
-			// not JSON: `body` stays the text
-		}
-		return { status: res.status, body, text, bytes: buffer.length };
+		return { status: res.status, body: parseJson(buffer.toString()), text, bytes: buffer.length };
 	}
 
 	const admin = (operation: Record<string, unknown>) => operationAs(ctx.harper.admin.username, operation);
@@ -153,7 +155,7 @@ suite('backup operations are super_user only for real roles', { skip: skipSuite 
 		}
 	}
 
-	/** A thrown call (unknown tool, transport) is reported as not accepted, with a text no refusal pattern matches. */
+	/** A thrown call (unknown tool, transport) is not accepted, and its text never matches ROLE_REFUSAL. */
 	async function toolCall(
 		client: Client,
 		name: string,
@@ -184,6 +186,14 @@ suite('backup operations are super_user only for real roles', { skip: skipSuite 
 			await delay(500);
 		}
 		throw new Error(`job ${jobId} did not settle within ${JOB_TIMEOUT_MS}ms; last=${last}`);
+	}
+
+	async function completedToolJob(client: Client, name: string, args: Record<string, unknown>): Promise<any> {
+		const started = await toolCall(client, name, args);
+		ok(started.accepted, `${name} tool: ${started.text.slice(0, 300)}`);
+		const job = await settledJob(jobIdOf(started.text));
+		strictEqual(job.status, 'COMPLETE', JSON.stringify(job));
+		return job;
 	}
 
 	async function completedJob(started: { status: number; body: any; text: string }): Promise<any> {
@@ -228,7 +238,6 @@ suite('backup operations are super_user only for real roles', { skip: skipSuite 
 		return r.body.map((row: any) => `${row.type}:${row.user}:${row.id}`).sort();
 	}
 
-	/** Database directories, and every restore record (intent, marker, lock) beside them. */
 	function diskState(): { databases: string[]; restoreRecords: string[] } {
 		const root = join(ctx.harper.dataRootDir, 'database');
 		const databases: string[] = [];
@@ -349,8 +358,8 @@ suite('backup operations are super_user only for real roles', { skip: skipSuite 
 		for (const request of backupRequests(backupId)) {
 			for (const principal of [null, ...NON_SUPER_USERS]) {
 				const r = await operationAs(principal, { operation: request.operation, ...request.args });
-				const expected = principal === null ? 401 : 403;
-				if (r.status !== expected)
+				const refused = principal === null ? r.status === 401 : r.status === 403 && ROLE_REFUSAL.test(r.text);
+				if (!refused)
 					failures.push(`${request.name} as ${principal ?? 'no credentials'}: ${r.status} ${r.text.slice(0, 200)}`);
 			}
 		}
@@ -378,7 +387,8 @@ suite('backup operations are super_user only for real roles', { skip: skipSuite 
 		for (const username of NON_SUPER_USERS) {
 			await withMcpClient(username, async (client) => {
 				for (const request of backupRequests(backupId)) {
-					// get_backup streams bytes and has no tool form for any caller, so its refusal says nothing about the role
+					// get_backup is a STREAMING_RESPONSE_OPERATIONS member: its tool is refused before dispatch for every
+					// caller, so that refusal says nothing about the role
 					if (request.operation === 'get_backup') continue;
 					const r = await toolCall(client, request.operation, request.args);
 					if (r.accepted || !ROLE_REFUSAL.test(r.text))
@@ -398,33 +408,32 @@ suite('backup operations are super_user only for real roles', { skip: skipSuite 
 	});
 
 	test('control: the same requests from the super_user take effect on both surfaces', async () => {
+		// nothing is pending and `system` is never restorable online, so the super_user gets the handler's own answer
+		const handlerAnswered: Array<[Record<string, unknown>, number]> = [
+			[{ resume: true }, 404],
+			[{ cancel: true }, 404],
+			[{ database: 'system' }, 400],
+		];
+
 		await withMcpClient(ctx.harper.admin.username, async (client) => {
 			const listed = await toolCall(client, 'list_backups', { database: DATABASE });
-			ok(listed.accepted, `list_backups tool: ${listed.text.slice(0, 300)}`);
-			ok(listed.text.includes(`"backup_id":${backupId}`), `list_backups names backup ${backupId}: ${listed.text}`);
-
-			const verified = await toolCall(client, 'verify_backup', { database: DATABASE, backup_id: backupId });
-			ok(verified.accepted, `verify_backup tool: ${verified.text.slice(0, 300)}`);
-			strictEqual((await settledJob(jobIdOf(verified.text))).status, 'COMPLETE');
-
-			const created = await toolCall(client, 'create_backup', { database: DATABASE });
-			ok(created.accepted, `create_backup tool: ${created.text.slice(0, 300)}`);
-			const createdJob = await settledJob(jobIdOf(created.text));
-			strictEqual(createdJob.status, 'COMPLETE', JSON.stringify(createdJob));
-			const secondBackup = createdJob.result?.backup_id;
-			deepStrictEqual(await backupIds(), [backupId, secondBackup]);
-
-			const deleted = await toolCall(client, 'delete_backup', { database: DATABASE, backup_id: secondBackup });
-			ok(deleted.accepted, `delete_backup tool: ${deleted.text.slice(0, 300)}`);
-			deepStrictEqual(await backupIds(), [backupId]);
-
-			const copied = await toolCall(client, 'restore_backup', {
+			ok(
+				listed.accepted && listed.text.includes(`"backup_id":${backupId}`),
+				`list_backups tool names backup ${backupId}: ${listed.text.slice(0, 300)}`
+			);
+			await completedToolJob(client, 'verify_backup', { database: DATABASE, backup_id: backupId });
+			for (const [args] of handlerAnswered) {
+				const r = await toolCall(client, 'restore_backup', { database: DATABASE, ...args });
+				ok(
+					r.text.includes('"kind":"harper_error"') && !ROLE_REFUSAL.test(r.text),
+					`restore_backup tool ${JSON.stringify(args)}: ${r.text.slice(0, 300)}`
+				);
+			}
+			await completedToolJob(client, 'restore_backup', {
 				database: DATABASE,
 				backup_id: backupId,
 				target_database: MCP_COPY,
 			});
-			ok(copied.accepted, `restore_backup tool into ${MCP_COPY}: ${copied.text.slice(0, 300)}`);
-			strictEqual((await settledJob(jobIdOf(copied.text))).status, 'COMPLETE');
 			strictEqual(await rowIds(MCP_COPY), 'a,b', 'the copy holds the backed-up rows');
 		});
 
@@ -435,34 +444,48 @@ suite('backup operations are super_user only for real roles', { skip: skipSuite 
 			[backupId]
 		);
 		await completedJob(await admin({ operation: 'verify_backup', database: DATABASE, backup_id: backupId }));
-
 		const archive = await admin({ operation: 'get_backup', database: DATABASE });
 		strictEqual(archive.status, 200, `get_backup: ${archive.status} ${archive.text.slice(0, 200)}`);
 		ok(archive.bytes > 100, `get_backup returned ${archive.bytes} bytes`);
-
-		// nothing is pending, so the super_user reaches the handler's own answer instead of a 403
-		for (const mode of ['resume', 'cancel']) {
-			const r = await admin({ operation: 'restore_backup', database: DATABASE, [mode]: true });
-			strictEqual(r.status, 404, `${mode} with nothing pending: ${r.status} ${r.text}`);
+		for (const [args, status] of handlerAnswered) {
+			const r = await admin({ operation: 'restore_backup', database: DATABASE, ...args });
+			strictEqual(r.status, status, `restore_backup ${JSON.stringify(args)}: ${r.status} ${r.text}`);
 		}
-
 		await completedJob(
 			await admin({ operation: 'restore_backup', database: DATABASE, backup_id: backupId, target_database: HTTP_COPY })
 		);
 		strictEqual(await rowIds(HTTP_COPY), 'a,b', 'the copy holds the backed-up rows');
 		strictEqual(await rowIds(), 'a,b,c', 'the source is untouched by a target_database restore');
-
 		await completedJob(await admin({ operation: 'restore_backup', database: DATABASE, backup_id: backupId }));
 		strictEqual(await rowIds(), 'a,b', 'the in-place restore removed the row written after the backup');
 
-		const newest = (await completedJob(await admin({ operation: 'create_backup', database: DATABASE }))).result
-			?.backup_id;
-		const beforePurge = await backupIds();
-		ok(beforePurge.length >= 2 && beforePurge.at(-1) === newest, `backups before the purge: ${beforePurge}`);
-		const purged = await admin({ operation: 'purge_backups', database: DATABASE, keep_count: 1 });
-		strictEqual(purged.status, 200, `purge_backups: ${purged.status} ${purged.text}`);
-		deepStrictEqual(await backupIds(), [newest], 'the purge kept only the newest backup');
-		backupId = newest;
+		// create, delete and purge on both surfaces; every backup taken from here holds rows a,b
+		const createOverHttp = async () =>
+			(await completedJob(await admin({ operation: 'create_backup', database: DATABASE }))).result?.backup_id;
+		await withMcpClient(ctx.harper.admin.username, async (client) => {
+			const createTool = async () =>
+				(await completedToolJob(client, 'create_backup', { database: DATABASE })).result?.backup_id;
+
+			const second = await createTool();
+			deepStrictEqual(await backupIds(), [backupId, second]);
+			const deleted = await admin({ operation: 'delete_backup', database: DATABASE, backup_id: backupId });
+			strictEqual(deleted.status, 200, `delete_backup: ${deleted.status} ${deleted.text}`);
+			deepStrictEqual(await backupIds(), [second]);
+
+			const third = await createOverHttp();
+			const deletedTool = await toolCall(client, 'delete_backup', { database: DATABASE, backup_id: second });
+			ok(deletedTool.accepted, `delete_backup tool: ${deletedTool.text.slice(0, 300)}`);
+			deepStrictEqual(await backupIds(), [third]);
+
+			const fourth = await createTool();
+			const fifth = await createOverHttp();
+			const purgedTool = await toolCall(client, 'purge_backups', { database: DATABASE, keep_count: 2 });
+			ok(purgedTool.accepted, `purge_backups tool: ${purgedTool.text.slice(0, 300)}`);
+			deepStrictEqual(await backupIds(), [fourth, fifth]);
+			const purged = await admin({ operation: 'purge_backups', database: DATABASE, keep_count: 1 });
+			strictEqual(purged.status, 200, `purge_backups: ${purged.status} ${purged.text}`);
+			deepStrictEqual(await backupIds(), [fifth]);
+		});
 	});
 
 	test('on_restart: refused for a role that lists restore_backup, and the super_user restarts into the backup', async () => {
@@ -470,7 +493,9 @@ suite('backup operations are super_user only for real roles', { skip: skipSuite 
 		strictEqual(later.status, 200, `insert failed: ${later.text}`);
 		const liveRows = await rowIds();
 		ok(liveRows.split(',').includes('d'), `precondition: the live rows hold d: ${liveRows}`);
-		const args = { database: DATABASE, backup_id: backupId, on_restart: true };
+		const newestBackup = (await backupIds()).at(-1);
+		ok(newestBackup !== undefined, 'precondition: a backup to restore');
+		const args = { database: DATABASE, backup_id: newestBackup, on_restart: true };
 		const request = { operation: 'restore_backup', ...args };
 
 		const firstProcess = ctx.harper.process;
@@ -481,7 +506,10 @@ suite('backup operations are super_user only for real roles', { skip: skipSuite 
 
 		for (const username of LISTING_USERS) {
 			const refused = await operationAs(username, request);
-			strictEqual(refused.status, 403, `on_restart as ${username}: ${refused.status} ${refused.text}`);
+			ok(
+				refused.status === 403 && ROLE_REFUSAL.test(refused.text),
+				`on_restart as ${username}: ${refused.status} ${refused.text}`
+			);
 			const refusedTool = await withMcpClient(username, (client) => toolCall(client, 'restore_backup', args));
 			ok(
 				!refusedTool.accepted && ROLE_REFUSAL.test(refusedTool.text),
