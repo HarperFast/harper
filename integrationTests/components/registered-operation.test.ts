@@ -13,7 +13,7 @@
  * thread, so the topology, and therefore the gap, is invisible to them.
  */
 import { suite, test, before, after } from 'node:test';
-import { strictEqual, ok } from 'node:assert';
+import { strictEqual, deepStrictEqual, ok } from 'node:assert';
 import { resolve } from 'node:path';
 
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
@@ -21,6 +21,7 @@ import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '
 const FIXTURE_PATH = resolve(import.meta.dirname, 'fixtures/registered-operation');
 
 const GRANTABLE_OP = 'component_registered_grantable';
+const DENIAL_PROBE_OP = 'component_registered_denial_probe';
 const GRANTED_ROLE = 'component_op_granted_role';
 const GRANTED_USER = 'component_op_granted_user';
 const UNGRANTED_ROLE = 'component_op_ungranted_role';
@@ -130,11 +131,13 @@ suite('Component: registered-operation (#1736)', (ctx: ContextWithHarper) => {
 			// it carries the grantable flag in the same message — so this gates on the exact state
 			// these tests depend on, rather than on elapsed time.
 			const deadline = Date.now() + 15_000;
-			for (;;) {
-				const { status } = await op({ operation: GRANTABLE_OP });
-				if (status === 200) break;
-				if (Date.now() > deadline) throw new Error(`main thread never registered '${GRANTABLE_OP}'`);
-				await new Promise((resolve) => setTimeout(resolve, 100));
+			for (const name of [GRANTABLE_OP, DENIAL_PROBE_OP]) {
+				for (;;) {
+					const { status } = await op({ operation: name });
+					if (status === 200) break;
+					if (Date.now() > deadline) throw new Error(`main thread never registered '${name}'`);
+					await new Promise((resolve) => setTimeout(resolve, 100));
+				}
 			}
 		});
 
@@ -190,7 +193,7 @@ suite('Component: registered-operation (#1736)', (ctx: ContextWithHarper) => {
 			const role = await op({
 				operation: 'add_role',
 				role: UNGRANTED_ROLE,
-				permission: { operations: ['user_info'] },
+				permission: { operations: ['user_info', DENIAL_PROBE_OP] },
 			});
 			strictEqual(role.status, 200, JSON.stringify(role.body));
 			const added = await op({
@@ -204,6 +207,13 @@ suite('Component: registered-operation (#1736)', (ctx: ContextWithHarper) => {
 
 			const { status, body } = await asUser(UNGRANTED_USER, { operation: GRANTABLE_OP });
 			strictEqual(status, 403, JSON.stringify(body));
+
+			const local = await asUser(UNGRANTED_USER, { operation: DENIAL_PROBE_OP });
+			strictEqual(local.status, 200, JSON.stringify(local.body));
+			strictEqual(local.body.denied, true, JSON.stringify(local.body));
+			strictEqual(local.body.statusCode, status);
+			ok(local.body.body.unauthorized_access.length > 0, JSON.stringify(local.body));
+			deepStrictEqual(body, local.body.body);
 		});
 
 		test('add_oidc_trust accepts the op in a trust policy scope', async () => {

@@ -50,3 +50,18 @@ server.registerOperation({
 		};
 	},
 });
+
+// Raises the denial `component_registered_grantable` gives an unauthorized caller on this worker
+// itself, for comparison with the same denial arriving over the main -> worker forward.
+server.registerOperation({
+	name: 'component_registered_denial_probe',
+	requiresSuperUser: false,
+	execute: async function componentRegisteredDenialProbe(op) {
+		try {
+			await server.operation({ operation: 'component_registered_grantable' }, { user: op.hdb_user }, true);
+			return { denied: false };
+		} catch (error) {
+			return { denied: true, statusCode: error.statusCode, body: error.http_resp_msg };
+		}
+	},
+});

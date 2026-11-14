@@ -23,7 +23,7 @@ export class Probe extends Resource {
 			const value = await server.operation({ operation }, { user }, authorize);
 			result = { ok: true, result: value };
 		} catch (error) {
-			result = { ok: false, error: error.message, statusCode: error.statusCode };
+			result = { ok: false, error: error.message, statusCode: error.statusCode, body: error.http_resp_msg };
 		}
 		return { threadId, isMainThread, username: user?.username ?? null, operation: result };
 	}
