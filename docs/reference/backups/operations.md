@@ -36,7 +36,7 @@ A target saved by `harper login` is also forwarded, with one exception. If the s
 
 To run one of the failing commands on this installation's files, first run `harper logout <target>`, which also removes that saved login. To run it on the saved target, pass `target=<url>`.
 
-Offline invocation matters most for restore: an in-place `restore_backup` of the `system` database, or of any database a loaded component keeps open, must be run with the server stopped. See ["when can a database be restored"](./overview.md#when-can-a-database-be-restored).
+Offline invocation matters most for restore: an in-place `restore_backup` of the `system` database must be run with the server stopped. A database a loaded component keeps open can be restored with the server stopped, or, as of v5.4.0, with the server running through [`on_restart`](#restoring-at-the-next-startup), which applies it at the next startup. See ["when can a database be restored"](./overview.md#when-can-a-database-be-restored).
 
 ## `create_backup`
 
@@ -130,16 +130,30 @@ harper purge_backups database=data keep_count=3
 
 Restores a database in place from a managed backup. `backup_id` defaults to the latest backup. The audit/transaction log is restored alongside the data, and — for a database with file-backed blobs — the blob roots are purged and rewritten from the backup's blob snapshot.
 
-Through a running server this runs as a background [job](../operations-api/operations.md#jobs): Harper closes the database across all worker threads, checks the backup, restores it, and reloads it. As of v5.4.0, the check and the restore run in a separate process, and only one restore or [verification](#verify_backup) runs at a time on an instance; another one fails with status code 409 until it finishes. This works only when no loaded component is holding the database open — if one does, the job ends in `ERROR` (surfaced by [`get_job`](../operations-api/operations.md#get_job)) telling you to restore offline. Restoring the `system` database is rejected up front, before a job is created. It requires running the command from the CLI with the server stopped. See [when can a database be restored?](./overview.md#when-can-a-database-be-restored)
+Through a running server this runs as a background [job](../operations-api/operations.md#jobs): Harper closes the database across all worker threads, checks the backup, restores it, and reloads it. As of v5.4.0, the check and the restore run in a separate process, and only one restore or [verification](#verify_backup) runs at a time on an instance; another one fails with status code 409 until it finishes. This works only when no loaded component is holding the database open — if one does, the job ends in `ERROR` (surfaced by [`get_job`](../operations-api/operations.md#get_job)) telling you to pass `on_restart: true` or restore offline. As of v5.4.0, [`on_restart: true`](#restoring-at-the-next-startup) restores such a database at the next startup, before any component loads. Restoring the `system` database is rejected up front, before a job is created. It requires running the command from the CLI with the server stopped. See [when can a database be restored?](./overview.md#when-can-a-database-be-restored)
 
-| Parameter                    | Description                                                                                                                                                                                                                                                                                                                        |
-| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `backup_id`                  | The backup to restore. Defaults to the latest.                                                                                                                                                                                                                                                                                     |
-| `target_database`            | Restore into a separate, new database instead of overwriting the source. The target must not exist, or must be an empty directory. As of v5.4.0 this works with the server running too: the source stays online, and the new database loads on every thread when the restore publishes.                                            |
-| `allow_engine_only`          | <VersionBadge version="v5.3.0" /> Default `false`. Permits restoring a backup created with `exclude_blobs: true`; without it that restore is refused, including with `target_database`. Enabling it accepts the risk that restored records reference missing or unrelated blob files; recover and validate those blobs separately. |
-| `accept_incompatible_backup` | <VersionBadge version="v5.4.0" /> Restore a backup taken by a newer version of Harper whose archive manifest major is higher than this version understands. What it waived is logged and returned as `compatibility_waived`. A capability this version lacks is still refused.                                                     |
-| `accept_unverified_blobs`    | <VersionBadge version="v5.4.0" /> Publish the restore even if records reference blob files the backup does not contain. The result reports `blob_integrity: unverified`.                                                                                                                                                           |
-| `immutable_source`           | <VersionBadge version="v5.4.0" /> Restore from a repository Harper cannot write to, such as a read-only mount, without locking or pinning it. Use it only if nothing can modify the repository until the restore finishes.                                                                                                         |
+| Parameter                    | Description                                                                                                                                                                                                                                                                                                                           |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `backup_id`                  | The backup to restore. Defaults to the latest.                                                                                                                                                                                                                                                                                        |
+| `target_database`            | Restore into a separate, new database instead of overwriting the source. The target must not exist, or must be an empty directory. As of v5.4.0 this works with the server running too: the source stays online, and the new database loads on every thread when the restore publishes.                                               |
+| `allow_engine_only`          | <VersionBadge version="v5.3.0" /> Default `false`. Permits restoring a backup created with `exclude_blobs: true`; without it that restore is refused, including with `target_database`. Enabling it accepts the risk that restored records reference missing or unrelated blob files; recover and validate those blobs separately.    |
+| `accept_incompatible_backup` | <VersionBadge version="v5.4.0" /> Restore a backup taken by a newer version of Harper whose archive manifest major is higher than this version understands. What it waived is logged and returned as `compatibility_waived`. A capability this version lacks is still refused.                                                        |
+| `accept_unverified_blobs`    | <VersionBadge version="v5.4.0" /> Publish the restore even if records reference blob files the backup does not contain. The result reports `blob_integrity: unverified`.                                                                                                                                                              |
+| `immutable_source`           | <VersionBadge version="v5.4.0" /> Restore from a repository Harper cannot write to, such as a read-only mount, without locking or pinning it. Use it only if nothing can modify the repository until the restore finishes.                                                                                                            |
+| `on_restart`                 | <VersionBadge version="v5.4.0" /> Default `false`. Record the restore and restart Harper, which applies it at startup before any component loads. For a database a loaded component keeps open. Cannot be combined with `target_database` or `immutable_source`. See [restoring at the next startup](#restoring-at-the-next-startup). |
+| `retain_previous`            | <VersionBadge version="v5.4.0" /> Only with `on_restart`. Default `true`. Before replacing the database, the startup takes a managed backup of it as it is, so the restore can be rolled back. `false` replaces it without one.                                                                                                       |
+| `resume`                     | <VersionBadge version="v5.4.0" /> Run a pending or stopped restart restore again, with the options it was requested with and its attempt count reset, and restart Harper. Takes only `database`.                                                                                                                                      |
+| `cancel`                     | <VersionBadge version="v5.4.0" /> Withdraw a pending or stopped restart restore. Takes only `database`. Works with Harper stopped too.                                                                                                                                                                                                |
+
+```json
+{ "operation": "restore_backup", "database": "data", "backup_id": 1 }
+```
+
+```bash
+harper restore_backup database=data backup_id=1
+# restore into a new database instead of overwriting the source
+harper restore_backup database=data backup_id=1 target_database=data_restored
+```
 
 As of v5.3.1, subscriptions opened before a restore do not carry over to the restored data. When Harper reloads the database, each one ends, and its last message is a `DatabaseGenerationChangedError` (status code 409, code `DATABASE_GENERATION_CHANGED`). Resubscribe to resynchronize against the restored state. A restore that fails before it changes anything reloads the database as it was; those subscriptions end instead with a retryable `DatabaseClosingError` (status code 503, code `DATABASE_CLOSING`); resubscribe to continue.
 
@@ -170,15 +184,98 @@ As of v5.4.0, every restore records its decision on disk before it changes anyth
 
 As of v5.4.0, a restore refuses to run on a node that has replication peers, whether from `system.hdb_nodes` or `replication.routes`, because replication would either undo the restore or spread it to the cluster. Through a running server the job ends in `ERROR`, with a message naming the peers; offline the command fails with the same message. Peers count even when replication to them is blocked by the network. Restore on a standalone node, then add fresh peers. While a restore runs, operations that add a peer, such as `add_node` or a `set_configuration` that sets replication routes, fail with status code 409. An offline restore of the `system` database checks only `replication.routes`, since it replaces the node list itself.
 
+### Restoring at the next startup
+
+<VersionBadge version="v5.4.0" />
+
+Harper cannot close a database that a loaded component keeps open, so an ordinary restore of it fails while the server runs. With `on_restart: true`, the restore is recorded and Harper restarts, and the startup applies it before any component loads:
+
 ```json
-{ "operation": "restore_backup", "database": "data", "backup_id": 1 }
+{ "operation": "restore_backup", "database": "data", "backup_id": 3, "on_restart": true }
 ```
 
 ```bash
-harper restore_backup database=data backup_id=1
-# restore into a new database instead of overwriting the source
-harper restore_backup database=data backup_id=1 target_database=data_restored
+harper restore_backup database=data backup_id=3 on_restart=true
 ```
+
+The request selects the backup and checks that it is complete, records the restore, and then restarts Harper, which shuts down as it does on SIGTERM (bounded by [`threads.shutdownTimeout`](../configuration/options.md#shutting-down-on-a-termination-signal)). Until the restart, threads that already have the database open keep serving it. The startup checks, applies and proves the backup as every restore does ([what a restore checks](#what-a-restore-checks)), then loads the database and the components. From the restart until the restore publishes, the database is not loaded, and operations such as `drop_database`, `create_backup` and `get_backup` on it fail with status code 409 naming the restore.
+
+`on_restart` works for any user database, and restarts Harper even when nothing holds the database open, so use an ordinary restore for a database no component opens. It cannot be combined with `target_database`, since a new database is never held by a component and restores online, or with `immutable_source`, since a restart restore keeps its source protected from deletion until it publishes. The `system` database still needs the offline CLI. If another restore, a drop, or a database open holds the database when the request is recorded, the job ends in `ERROR` without restarting Harper; retry once that finishes.
+
+#### The job
+
+`get_job` reports the job as `IN_PROGRESS` with `deferred_to: "restore-intent"` from the moment the restore is recorded until a startup settles it, across the restart; its `result` names the `database`, `backup_id` and the restore's `operation_id`. Once the restore publishes, the job is `COMPLETE` and its `result` is that of an ordinary restore, plus `pre_restore_backup_id` when a pre-restore backup was taken, or `retain_previous: false`. The job ends in `ERROR` when the restore stops after its last attempt, is cancelled, or is replaced by another request. An attempt that fails but will be retried does not change the job; `hdb.log` records it at error level as `Attempt <n> of 3 to restore '<database>' failed (<reason>)`.
+
+If the job's record cannot be updated to show the deferral, the job fails and the restore is withdrawn, so it does not run at some later, unrelated restart. If Harper cannot withdraw it within about 10 seconds, it logs an error naming `restore_backup cancel=true`; run that before the next restart.
+
+#### The pre-restore backup
+
+Unless `retain_previous` is `false`, the startup first takes a managed backup of the database as it is, blob files included, and then replaces it. The result reports its id as `pre_restore_backup_id`. It is protected from `delete_backup` and `purge_backups` until the restore publishes, and is then an ordinary managed backup: restore it to roll back.
+
+- **Space.** When the backup root lacks room for it, the request's job ends in `ERROR` without restarting Harper; free space, or pass `retain_previous: false`.
+- **A database that cannot be backed up.** A backup refused because another restore or backup holds what it needs counts as a failed attempt and is retried at the next restart. Any other failure to take the backup, such as a live database that cannot be read, stops the restore at once, without retrying, and its error suggests requesting it again with `retain_previous: false`. A backup that completed before its process failed is kept and used, and the restore carries on. A completed backup that is deleted before Harper protects it, or that Harper then fails to protect, counts as a failed attempt instead: the job stays `IN_PROGRESS` and the restore is retried at the next restart.
+- **No backup is taken** when the database does not exist yet or an earlier restore left it incomplete. A request that replaces a pending restore keeps the pre-restore backup that one already took instead of taking another, unless the backup root has changed since; it then takes its own.
+
+#### Failed attempts
+
+A startup that cannot apply the restore records the error, leaves the database unloaded, and tries again at the next restart, up to 3 attempts. After the third, or at once if the node has [replication peers](#replication-peers), the restore stops and its job ends in `ERROR`. The database stays unloaded until one of these finishes or withdraws it:
+
+- `resume: true` runs it again with the options it was requested with and its attempt count reset, and restarts Harper. Its job continues the restore, and the earlier job, if it had not already failed, ends in `ERROR`.
+- Another request with `on_restart: true` replaces the pending restore, with the same or another `backup_id`. This is also how to change an option. The replaced restore's job ends in `ERROR`.
+- An ordinary restore (without `on_restart`) can replace a restore that has stopped. While a restart restore is still pending, an ordinary restore's job ends in `ERROR` naming `resume=true`, `cancel=true` and another `backup_id` with `on_restart=true`; offline, the command fails telling you to withdraw it with `cancel=true` first.
+- `cancel: true` withdraws it ([cancelling](#cancelling-a-restart-restore)).
+
+`resume` and `cancel` take only `database`. Each refuses `backup_id`, `on_restart`, `retain_previous`, `target_database`, `immutable_source`, `allow_engine_only`, `accept_incompatible_backup` and `accept_unverified_blobs` with status code 400. They are checked when submitted, before a job is created: `resume` fails with status code 404 when there is no restart restore to resume, and `cancel` with 404 when there is no restore to cancel and 409 when the restore has already been applied and is being finished.
+
+#### Cancelling a restart restore
+
+`cancel: true` withdraws the pending or stopped restore. A job still waiting on it ends in `ERROR` with the message `Cancelled`. Unless the restore had begun replacing the database, its backup is no longer protected from deletion:
+
+```json
+{ "operation": "restore_backup", "database": "data", "cancel": true }
+```
+
+| Result field    | Description                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `database`      | The database.                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `cancelled`     | The id of the withdrawn restore, or `unreadable restore record`.                                                                                                                                                                                                                                                                                                                                                                 |
+| `still_blocked` | `true` when the restore had already begun replacing the database. The database stays unloaded until a restore of it succeeds.                                                                                                                                                                                                                                                                                                    |
+| `restarting`    | `true` when Harper restarts to load the database and the components that use it, because this boot started without it or in restore safe mode. `false` when the restore was requested after this boot started, since the database is still loaded, and when `still_blocked` is `true`. Also `false` while another restore would start Harper without components: `message` names it, and the database loads at the next restart. |
+| `message`       | What happened, in words.                                                                                                                                                                                                                                                                                                                                                                                                         |
+
+If the restore's record was removed but the disk could not confirm the removal durable, `message`, here and from the CLI below, ends by saying so: a power loss soon after can bring the restore back, and if it does, cancel it again with `restore_backup cancel=true`.
+
+When `still_blocked` is `true`, recover with an ordinary restore or an `on_restart` restore of the database, or with `resume: true`. If the restore's record could not be read, `resume` fails with status code 404, but the other two still recover it.
+
+Starting Harper would run a pending restore, so to withdraw one while Harper is stopped, run the same command from the CLI:
+
+```bash
+harper restore_backup database=data cancel=true
+```
+
+This changes only the files: it restarts nothing, always reports `restarting: false`, and the restore's job is marked failed when Harper next starts. With Harper stopped, the CLI refuses `on_restart=true`, `resume=true` and `retain_previous=true`, which need the server running; passing them as `false` is the same as omitting them.
+
+#### An unreadable restore record
+
+If a restore's record on disk cannot be read, its database stays unloaded, and a restore of that database fails, telling you to remove the record with `restore_backup cancel=true`. Offline, the error names the file instead.
+
+#### Restore safe mode
+
+A component that opens the database itself would see a database that is only partly replaced, or write to one that is about to be replaced after its pre-restore backup was taken. So Harper starts without loading any component, in restore safe mode, while any of these is true of a restart restore, or of a restore that replaced one:
+
+- it has stopped after its last attempt,
+- it has begun replacing its database and has not published, or
+- it has taken, or begun taking, its pre-restore backup and has not published.
+
+The same applies while any restore record cannot be read. For that boot Harper sets [`HARPER_SAFE_MODE`](../configuration/overview.md#harper_safe_mode) to `restore-unpublished` and logs at error level in `hdb.log` (with the record's path in place of the database name when it cannot be read):
+
+```
+A restore (<database>) has not published, so this boot starts in safe mode and loads no component. Finish it with restore_backup for that database: resume=true or another backup_id with on_restart=true, or, once it has stopped retrying, an ordinary restore; Harper restarts by itself once no restore keeps components off. cancel=true withdraws a restore that had not begun replacing the database.
+```
+
+The operations API keeps running, so finish or withdraw the restore as [above](#failed-attempts). Once no restore keeps components off, Harper restarts by itself and loads them. An ordinary restore that does so reports `restarting: true` in its result. If you start Harper with `HARPER_SAFE_MODE` already set, Harper keeps your value, across its own restarts too, and does not log this message.
+
+An incomplete restore that is not a restart restore, including one an earlier version of Harper left, blocks only its own database ([if a restore is interrupted](#if-a-restore-is-interrupted)).
 
 ## `get_backup`
 

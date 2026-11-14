@@ -86,6 +86,53 @@ describeUnlessLmdb('offline restore_backup in a fresh CLI process', function () 
 		assert.deepStrictEqual(await inspect(), restored);
 	});
 
+	it('withdraws a pending restart restore with cancel=true, opening nothing, so the restore can run', async function () {
+		const { backupId } = await seed();
+		await install.runToReport(`
+			const marker = require(paths.restoreMarker);
+			const receipts = require(paths.restoreReceipt);
+			const dir = require(paths.databases).resolveDatabasePath(${JSON.stringify(NAME)});
+			const lock = marker.acquireRestoreLock(dir);
+			receipts.writeRestoreReceipt(lock, receipts.newRestoreReceipt({
+				route: 'on_restart',
+				state: 'pending',
+				database: ${JSON.stringify(NAME)},
+				database_path: dir,
+				source_database: ${JSON.stringify(NAME)},
+				backup_dir: require(paths.rocksdbBackup).backupDirForDatabase(${JSON.stringify(NAME)}),
+				backup_id: ${backupId},
+				job_id: 'restart-restore-job',
+				options: {},
+			}));
+			marker.releaseRestoreLock(lock);
+			report({});
+		`);
+		const refused = await restore(backupId);
+		assert.strictEqual(refused.statusCode, 409, refused.error);
+		assert.match(refused.error, /pending restart restore .*cancel=true/);
+
+		const cancel = await install.runToReport(`
+			const { databasesLoaded } = require(paths.databases);
+			try {
+				const result = await require(paths.rocksdbBackup).cancelRestartRestoreOffline({ database: ${JSON.stringify(NAME)}, cancel: true });
+				report({ result, scanned: databasesLoaded() === true });
+			} catch (error) {
+				report({ error: error.message, statusCode: error.statusCode });
+			}
+		`);
+		assert.strictEqual(cancel.error, undefined, `the cancel failed: ${cancel.error}`);
+		assert.strictEqual(cancel.scanned, false, 'a cancel opens no database');
+		assert.deepStrictEqual(
+			{ still_blocked: cancel.result.still_blocked, restarting: cancel.result.restarting },
+			{ still_blocked: false, restarting: false }
+		);
+		assert.match(cancel.result.message, /job restart-restore-job is marked failed when Harper starts/);
+
+		const outcome = await restore(backupId);
+		assert.strictEqual(outcome.error, undefined, `the restore failed: ${outcome.error}`);
+		assert.deepStrictEqual(await inspect(), restored);
+	});
+
 	it('is not stopped by a corrupt sibling database it has no reason to open', async function () {
 		const { backupId } = await seed();
 		const sibling = join(install.root, 'database', `${NAME}_corrupt`);

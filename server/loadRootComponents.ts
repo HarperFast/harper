@@ -14,7 +14,7 @@ import { dirname } from 'node:path';
 import { loadCertificates } from '../security/keys.ts';
 import { installApplications, recoverInterruptedActivations } from '../components/Application.ts';
 import { failClosedReleases, liveDeploymentId, RejectedReleaseError } from '../components/releaseCertification.ts';
-import { errorForLog } from '../utility/logging/harper_logger.ts';
+import harperLogger, { errorForLog } from '../utility/logging/harper_logger.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import { settleInterruptedRolloutsOnce } from '../components/deploymentRecorder.ts';
 import { sweepFailedPayloadsOnce } from '../components/payloadRetention.ts';
@@ -54,6 +54,35 @@ async function loadRootComponents(isWorkerThread: any = false) {
 	// would assert "nothing is unreconciled" on a thread that never checked. The loader treats undefined as
 	// "no verdict from boot" instead.
 	let interruptedActivationFailures;
+	// Startup only (it latches), and first: restart restores run before secret custody, application install
+	// or any component could open the database they replace.
+	let restoreOwnedJobs: Set<string> | undefined;
+	if (isMainThread) {
+		try {
+			const restorePublication = loadRuntimeModule('dataLayer/restorePublication');
+			restoreOwnedJobs = await restorePublication.recoverRestoresAtStartup();
+			const blocked = restorePublication.unpublishedRestoreBlocksComponents();
+			if (blocked && !process.env.HARPER_SAFE_MODE) {
+				process.env.HARPER_SAFE_MODE = 'restore-unpublished';
+				// the log file, not the console: a detached start discards stderr, and logging.console is off by default
+				harperLogger.error(
+					`A restore (${blocked}) has not published, so this boot starts in safe mode and loads no component. Finish it with restore_backup for that database: resume=true or another backup_id with on_restart=true, or, once it has stopped retrying, an ordinary restore; Harper restarts by itself once no restore keeps components off. cancel=true withdraws a restore that had not begun replacing the database.`
+				);
+			}
+		} catch (error) {
+			// what recovery left is unknown, so components stay off whatever it may have half-replaced
+			harperLogger.error('Could not recover restores at startup, so this boot starts in safe mode', error);
+			if (!process.env.HARPER_SAFE_MODE) process.env.HARPER_SAFE_MODE = 'restore-unpublished';
+			try {
+				restoreOwnedJobs = loadRuntimeModule('dataLayer/restorePublication').jobsOwnedByRestoreReceipts();
+			} catch (readError) {
+				harperLogger.error(
+					'Could not read which jobs restore records own, so jobs interrupted by an earlier process are not settled until a later start',
+					readError
+				);
+			}
+		}
+	}
 	try {
 		if (isMainThread && !process.env.HARPER_SAFE_MODE) {
 			interruptedActivationFailures = await recoverInterruptedActivations(
@@ -96,18 +125,13 @@ async function loadRootComponents(isWorkerThread: any = false) {
 	// An unreconciled job row is misleading, but it is no reason to refuse to start. This function re-runs
 	// on every root component reload; the sweep itself holds the once-per-process guard.
 	if (isMainThread) {
-		// Startup only (it latches): a restore that committed but could not finish its bookkeeping is
-		// finished here, after `system` is open and before any component could hold its database.
-		try {
-			await loadRuntimeModule('dataLayer/restorePublication').recoverRestoresAtStartup();
-		} catch (error) {
-			console.error(errorForLog(error));
-		}
-		jobOwnershipRuntimeModule
-			.reconcileInterruptedJobsOnce()
-			// A rolling deploy's record is ended by its job, so settle the records once their jobs are.
-			.then(() => settleInterruptedRolloutsOnce())
-			.catch((error) => console.error(errorForLog(error)));
+		// without the owned set the sweep would fail a pending restart restore's job as interrupted
+		if (restoreOwnedJobs)
+			jobOwnershipRuntimeModule
+				.reconcileInterruptedJobsOnce(restoreOwnedJobs)
+				// A rolling deploy's record is ended by its job, so settle the records once their jobs are.
+				.then(() => settleInterruptedRolloutsOnce())
+				.catch((error) => console.error(errorForLog(error)));
 		// Same shape: once per process, not awaited; expiring old payloads is no reason to hold up boot.
 		sweepFailedPayloadsOnce().catch((error) => console.error(errorForLog(error)));
 	}
