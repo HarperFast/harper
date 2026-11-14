@@ -6,6 +6,7 @@ import type { McpQuotaHandler } from '../components/mcp/quota.ts';
 import type { OperationDefinition } from './serverHelpers/serverUtilities.ts';
 import type { Duplex } from 'node:stream';
 import type { Request } from './serverHelpers/Request.ts';
+import { isValidChallengeUrl } from '../security/challengeUrl.ts';
 
 export type HttpListener = (request: Request, nextLayer: (request: Request) => Response) => void;
 // based on `upgrade` event in Node.js http server: https://nodejs.org/docs/latest/api/http.html#event-upgrade-1
@@ -32,6 +33,15 @@ export interface BearerValidatorOptions {
 	 * interrupt synchronous work.
 	 */
 	timeoutMs?: number;
+	/**
+	 * What a client needs to obtain a token this validator accepts. `resourceMetadata` is the absolute
+	 * URL of the RFC 9728 protected-resource metadata document. The MCP application profile can name it in
+	 * its 401 challenges, unless config overrides it or another validator declares a different URL.
+	 */
+	challenge?: BearerValidatorChallenge;
+}
+export interface BearerValidatorChallenge {
+	resourceMetadata: string;
 }
 export type BearerValidatorResult = BearerValidatorIdentity | null | undefined;
 export type BearerValidator = (
@@ -43,6 +53,7 @@ export type BearerValidator = (
 export interface BearerValidatorEntry {
 	readonly validator: BearerValidator;
 	readonly timeoutMs: number;
+	readonly challenge?: Readonly<BearerValidatorChallenge>;
 	active: boolean;
 }
 
@@ -173,6 +184,16 @@ export function getBearerValidators(): readonly BearerValidatorEntry[] {
 	return bearerValidatorsSnapshot;
 }
 
+function validChallenge(challenge: unknown): Readonly<BearerValidatorChallenge> {
+	const resourceMetadata = (challenge as BearerValidatorChallenge | null)?.resourceMetadata;
+	if (!isValidChallengeUrl(resourceMetadata)) {
+		throw new TypeError(
+			'Bearer validator challenge.resourceMetadata must be an https URL (http only for a loopback host) with no fragment'
+		);
+	}
+	return Object.freeze({ resourceMetadata });
+}
+
 /** What Harper core's replication stand-ins throw, so a caller can tell no replication from a failure of it. */
 export const REPLICATION_NOT_IMPLEMENTED = 'REPLICATION_NOT_IMPLEMENTED';
 const replicationNotImplemented = () =>
@@ -192,7 +213,8 @@ export const server: Server = {
 		) {
 			throw new TypeError('Bearer validator timeoutMs must be a positive finite number <= 60000');
 		}
-		const entry: BearerValidatorEntry = { validator, timeoutMs, active: true };
+		const challenge = options?.challenge === undefined ? undefined : validChallenge(options.challenge);
+		const entry: BearerValidatorEntry = { validator, timeoutMs, challenge, active: true };
 		bearerValidatorEntries.push(entry);
 		bearerValidatorsSnapshot = Object.freeze(bearerValidatorEntries.slice());
 		return () => {

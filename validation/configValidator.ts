@@ -4,6 +4,7 @@ import fs from 'fs-extra';
 import Joi from 'joi';
 import { resolveFullTextSearchLimits, resolveFullTextQueryLimits } from '../resources/indexes/fullTextSearchLimits.ts';
 import { validateHeaderValue } from 'node:http';
+import { isValidChallengeUrl } from '../security/challengeUrl.ts';
 import * as os from 'node:os';
 const { boolean, string, number, array } = Joi.types();
 const v8Flag = string.trim().allow('').pattern(/^--/, 'V8 flag starting with --');
@@ -406,6 +407,18 @@ export function configValidator(configJson, skipFsValidation = false) {
 	});
 	const mcpApplicationSchema = mcpOperationsSchema.keys({
 		searchMaxResults: number.min(1).optional(),
+		authentication: Joi.object({
+			required: boolean.optional().prefs({ convert: false }),
+			resourceMetadata: string
+				.custom((value, helpers) => (isValidChallengeUrl(value) ? value : helpers.error('string.challengeUrl')))
+				.messages({
+					'string.challengeUrl': '{#label} must be an https URL (http only for a loopback host) with no fragment',
+				})
+				.optional(),
+		})
+			// a misspelled key would otherwise leave the mount anonymous with no error
+			.unknown(false)
+			.optional(),
 	});
 	const mcpSessionSchema = Joi.object({
 		idleTimeoutSeconds: number.min(1).optional(),

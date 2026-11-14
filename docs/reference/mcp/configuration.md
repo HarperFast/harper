@@ -78,6 +78,39 @@ Hard cap on the number of records a generated `search_<resource>` tool can retur
 
 Default per-profile rate-limit values for `application`: `perToolPerSecond: 25`, `perToolBurst: 50`, `sessionConcurrency: 50`, `sessionPerSecond: 200`, `initializePerSecond: 10`, `initializeBurst: 50`.
 
+### `mcp.application.authentication.required`
+
+<VersionBadge version="v5.4.1" />
+
+Type: `boolean`
+
+Default: `false`
+
+When `true`, the application profile serves only authenticated requests. A `POST`, `GET` or `DELETE` to the mount with no principal is answered with `401` and is not processed: no session is created, and no tool, prompt or resource is listed or called. The `401` carries the challenge an OAuth MCP client follows to sign in ([RFC 9728](https://www.rfc-editor.org/rfc/rfc9728.html)):
+
+```http
+HTTP/1.1 401 Unauthorized
+WWW-Authenticate: Bearer resource_metadata="https://app.example.com/.well-known/oauth-protected-resource/mcp"
+```
+
+Some clients, such as Claude's connectors, start their OAuth flow only after this `401`. When the profile allows anonymous access, those clients take its `200` to mean the server needs no sign-in.
+
+The metadata URL is [`resourceMetadata`](#mcpapplicationauthenticationresourcemetadata) when set. Otherwise it is the URL the registered [Bearer validators](../http/api.md#serverregisterbearervalidatorvalidator-options) declare with `challenge`, provided every validator that declares one names the same URL. With neither, the challenge is `Bearer realm="Harper"`, and Harper logs a warning once.
+
+A Bearer token that Harper or a validator rejects is answered with the same metadata URL and `error="invalid_token"`, whether or not this setting is on. Any Harper principal still authenticates: Basic credentials, Harper's own tokens, a session, a validator's token, or a connection trusted by [`authorizeLocal`](../security/configuration.md#authorizelocal). The value must be the boolean `true`; a quoted `"true"` fails validation.
+
+The operations profile has no such setting, because Bearer validators do not run on the operations API.
+
+### `mcp.application.authentication.resourceMetadata`
+
+<VersionBadge version="v5.4.1" />
+
+Type: `string`
+
+Default: unset
+
+The URL of the protected-resource metadata document that the application profile's `401` challenges name. It takes precedence over a validator's `challenge`. It must be an `https:` URL with no fragment; `http:` is accepted only for a loopback host (`localhost`, `127.x.x.x` or `[::1]`), for local development. The URL is written into the header as given, so it may contain only visible ASCII characters other than `"` and `\`.
+
 ## `mcp.<profile>.rateLimit.*`
 
 Per-session, per-tool token-bucket rate limits. A bucket exists per `(session, tool)` pair plus one per-session bucket across all tools. When either bucket is exhausted, `tools/call` returns `result.isError = true` with `kind: "rate_limited"` — **not** a JSON-RPC error — so the LLM can read the message and back off without the transport tearing down. The one exception is the [`initialize` limit](#mcpprofileratelimitinitializepersecond), which rejects the request with HTTP `429`.

@@ -78,6 +78,7 @@ In `vm` and `vm-current-context`, all four entry points (ESM `linker`, both `imp
 
 - `server/REST.ts` and `server/mqtt.ts` discard `await chainCompletion`, so `rejectAuthenticationInPlace` sets `markAuthenticationRejectedInPlace` for `assertNoDeferredCredentialRejection` to fail WebSocket/MQTT upgrades closed.
 - Route owners call `settleDeferredCredentialRejection` before reading `request.user`, so a rejected cert never falls through to Basic, session, or local bypass.
+- A route 401 keeps its own challenge only when marked with `ownAuthenticationChallenge`; an unmarked one still gets Harper's challenge or the login redirect, so routes that set `WWW-Authenticate` today keep working.
 
 ## A request's session helpers are bound module functions, never function literals assigned to a property (`security/auth.ts`)
 

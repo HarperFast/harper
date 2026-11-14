@@ -730,6 +730,8 @@ export const CONFIG_PARAMS = {
 	MCP_APPLICATION_RATELIMIT_IDENTITYHEADER: 'mcp_application_rateLimit_identityHeader',
 	MCP_APPLICATION_RATELIMIT_INITIALIZEPERSECOND: 'mcp_application_rateLimit_initializePerSecond',
 	MCP_APPLICATION_RATELIMIT_INITIALIZEBURST: 'mcp_application_rateLimit_initializeBurst',
+	MCP_APPLICATION_AUTHENTICATION_REQUIRED: 'mcp_application_authentication_required',
+	MCP_APPLICATION_AUTHENTICATION_RESOURCEMETADATA: 'mcp_application_authentication_resourceMetadata',
 	MCP_SESSION_IDLETIMEOUTSECONDS: 'mcp_session_idleTimeoutSeconds',
 	MCP_SESSION_ALLOWCLIENTDELETE: 'mcp_session_allowClientDelete',
 	AGENT_ENABLED: 'agent_enabled',
