@@ -196,6 +196,8 @@ export {
 	setHeldReplacementTimeout,
 	shutdownWorkers,
 	shutdownWorkersNow,
+	forceWorkerExit,
+	forceUwsWorkersToExit,
 	workers,
 	setMonitorListener,
 	sampleWorkerELU,
@@ -399,16 +401,64 @@ function armWorkerTerminate(worker: any, delay: number) {
 	worker.terminateTimer = setTimeout(
 		() => {
 			harperLogger.warn('Thread did not voluntarily terminate, terminating from the outside', worker.threadId);
-			if (isBun) {
-				try {
-					worker.postMessage({ type: FORCE_EXIT });
-				} catch {}
-			} else {
-				worker.terminate();
-			}
+			forceWorkerExit(worker);
 		},
 		Math.min(delay, shutdownDrainRuntimeModule.MAX_TIMER_MS)
 	).unref();
+}
+
+/**
+ * Stop `worker` from outside, resolving once it has exited (at once on Bun, which is only asked). terminate() stops
+ * its JavaScript where it stands, and a worker holding uWebSockets.js sockets cannot survive that: they are libuv
+ * handles Node never closes, so its teardown aborts the process, as does a request uWS hands the stopped isolate.
+ * Such a worker exits itself instead (its `exit` listener closes them). One still busy after
+ * threadTerminationTimeout is terminated anyway, and aborts the process.
+ */
+function forceWorkerExit(worker: any): Promise<unknown> | undefined {
+	if (isBun) {
+		try {
+			worker.postMessage({ type: FORCE_EXIT });
+		} catch {}
+		return;
+	}
+	if (!worker.usesUwsBackend) return worker.terminate();
+	return (worker.forcedExit ??= new Promise<void>((resolve) => {
+		if (worker.threadId === -1) return resolve();
+		const terminate = () => {
+			clearTimeout(fallback);
+			worker.terminate().then(() => resolve());
+		};
+		const fallback = setTimeout(
+			() => {
+				harperLogger.warn(
+					'Thread did not exit on request; terminating it, which aborts the process if it holds uWebSockets.js sockets',
+					worker.threadId
+				);
+				terminate();
+			},
+			Math.min(threadTerminationTimeout, shutdownDrainRuntimeModule.MAX_TIMER_MS)
+		);
+		worker.once('exit', () => {
+			clearTimeout(fallback);
+			resolve();
+		});
+		try {
+			worker.postMessage({ type: FORCE_EXIT });
+		} catch {
+			terminate();
+		}
+	}));
+}
+
+/** Main exits on a signal without waiting for workers, and Node's exit tears them down as terminate() does. */
+function forceUwsWorkersToExit(): Promise<unknown> {
+	beginProcessShutdown();
+	return Promise.all(workers.filter((worker) => worker.usesUwsBackend).map(forceWorkerExit));
+}
+
+// Node hands a worker `${value}` for every key it is given, so a key counts as set exactly when http.ts will read it so.
+function usesUwsBackend(env: NodeJS.Dict<unknown>): boolean {
+	return ['HARPER_UWS_UDS', 'HARPER_UWS_HTTP'].some((name) => Object.hasOwn(env, name) && `${env[name]}` !== '');
 }
 
 let workersStoppedForExit: Promise<unknown> = Promise.resolve();
@@ -1556,6 +1606,8 @@ function startWorker(path?: any, options: any = {}, startOptions: any = {}) {
 		);
 	}
 	addPort(worker, true, isJobWorker);
+	worker.usesUwsBackend =
+		!isJobWorker && usesUwsBackend(options.env && typeof options.env === 'object' ? options.env : process.env);
 	worker.unexpectedRestarts = options.unexpectedRestarts || 0;
 	worker.startCopy = (copyOptions) => {
 		// in a shutdown sequence we use overlapping restarts, starting the new thread while waiting for the old thread
@@ -1930,9 +1982,12 @@ async function replaceWorkers(
 							'Replacement worker did not start in time; leaving the existing worker in place',
 							newWorker.threadId
 						);
-						newWorker.terminate();
 						cleanup();
-						resolve(false);
+						// The slot can be started again next, so give this replacement time to free any port it bound. Bounded,
+						// since terminate() waits on a thread stuck in native code.
+						const settle = () => resolve(false);
+						Promise.resolve(forceWorkerExit(newWorker)).then(settle, settle);
+						setTimeout(settle, Math.min(threadTerminationTimeout * 2, shutdownDrainRuntimeModule.MAX_TIMER_MS)).unref();
 					};
 					let timeout = setTimeout(
 						giveUp,
@@ -2273,12 +2328,7 @@ function whenWorkerStarted(newWorker?: any) {
 				cleanup();
 				// Its predecessor is already gone, so a replacement wedged in boot is a worker slot serving
 				// nothing until the process restarts. Stop it and let startWorker's exit handling replace it.
-				if (isBun) {
-					// terminate() triggers a NAPI segfault in Bun; ask the worker to self-exit instead.
-					try {
-						newWorker.postMessage({ type: FORCE_EXIT });
-					} catch {}
-				} else newWorker.terminate();
+				forceWorkerExit(newWorker);
 				resolve(false);
 			},
 			Math.max(threadTerminationTimeout * 2, 60000)
@@ -2326,16 +2376,7 @@ function runExitHandler(handler: any, handlerName: string, worker: any, threadId
 async function shutdownWorkersNow(name?: any) {
 	if (name == null) beginProcessShutdown();
 	shutdownWorkers(name); // set the state of all the workers to shut down. this should finish the important stuff synchronously
-	if (isBun) {
-		// worker.terminate() triggers a NAPI segfault in Bun; ask workers to self-exit instead
-		workers.forEach((worker) => {
-			try {
-				worker.postMessage({ type: FORCE_EXIT });
-			} catch {}
-		});
-	} else {
-		await Promise.all(workers.map((worker) => worker.terminate()));
-	}
+	await Promise.all(workers.filter((worker) => !name || typeMatches(name, worker.name)).map(forceWorkerExit));
 }
 
 /**
@@ -3522,8 +3563,8 @@ if (isMainThread) {
 		armSelfExit(threadTerminationTimeout);
 	});
 	onMessageByType(ALL_REQUESTS_DRAINED, () => allRequestsDrained.resolve());
-	// In Bun, worker.terminate() triggers a NAPI segfault; the main thread sends FORCE_EXIT
-	// instead, and the worker self-exits cleanly to avoid the crash.
+	// Sent where terminate() would crash the process: always on Bun (a NAPI segfault), and to a worker serving
+	// through uWebSockets.js, whose exit listener closes its sockets.
 	onMessageByType(FORCE_EXIT, () => {
 		realExit(0);
 	});

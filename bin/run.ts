@@ -27,7 +27,7 @@ import minimist from 'minimist';
 import * as keys from '../security/keys.ts';
 import { startHTTPThreads } from '../server/threads/socketRouter.ts';
 import { configuredHttpThreadCount } from '../server/threads/workerPools.ts';
-import { beginProcessShutdown } from '../server/threads/manageThreads.ts';
+import { beginProcessShutdown, forceUwsWorkersToExit } from '../server/threads/manageThreads.ts';
 import { createTerminationHandler, shutdownProcess } from '../server/threads/processShutdown.ts';
 import { getProcessShutdownTimeoutMs } from '../components/shutdownDrain.ts';
 import * as hdbInfoController from '../dataLayer/hdbInfoController.ts';
@@ -76,7 +76,7 @@ function addExitListeners() {
 		const onSignal = createTerminationHandler({
 			getTimeoutMs: getProcessShutdownTimeoutMs,
 			shutdown: shutdownProcess,
-			exit: () => process.exit(0),
+			exit: () => void forceUwsWorkersToExit().then(() => process.exit(0)),
 		});
 		process.on('SIGINT', onSignal);
 		process.on('SIGQUIT', onSignal);

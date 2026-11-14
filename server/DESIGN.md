@@ -87,7 +87,7 @@ Process-wide shutdown begins by calling `beginProcessShutdown()` in `threads/man
 Once set, it blocks every worker replacement path and makes new `startWorker()`
 calls fail with `ERR_HARPER_PROCESS_SHUTTING_DOWN`; scoped worker-type restarts do not set it on main. In an outgoing worker, any SHUTDOWN is terminal. HTTP startup checks the flag after each await and before binding or reporting ready. Its idempotent shutdown chain waits for component loading, drains, scope disposal and branch-database closure. Main startup and rolling reloads recheck it before starting replacements.
 A signal runs `shutdownProcess()`: SHUTDOWN with `exitDeadline` reaches every live worker (`wasShutdown` precedes a restart's SHUTDOWN). Scopes close after servers drain, main disposes after workers exit, and `process.exit` runs once; the storage close stays unbounded (rocksdb-js#1001).
-`shutdownWorkersNow()` stays immediate: best-effort SHUTDOWN, then force-termination.
+`shutdownWorkersNow()`: best-effort SHUTDOWN, then a forced exit.
 
 A rolling restart serves the _old_ code until each worker is replaced, and where the OS grants
 `SO_REUSEPORT` the not-yet-replaced workers keep accepting connections for the whole restart — so a
