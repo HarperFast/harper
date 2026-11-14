@@ -10522,6 +10522,7 @@ export function makeTable(options): TableResourceClass {
 						// handled; an early return leaves it before a partly delivered transaction.
 						let handledTxnLogKey: number | undefined;
 						const liveRange = broadcastRange(subscription);
+						const sameThread = subscription.subscriptions.tables.envs.sameThread === true;
 						// from a listener: the entry being dispatched is already past the bound, and may still reach this subscription
 						if (liveRange && isDispatching(subscription)) {
 							await rest();
@@ -10537,8 +10538,10 @@ export function makeTable(options): TableResourceClass {
 							// live delivery finishes a transaction the bound split, so a resume must start below it
 							const open = replayRange.openTransactionFloor?.();
 							subscription.replayedThrough = open <= key ? positionBefore(open) : key;
-							// LMDB and same-thread replays hand off by key
-							if (!liveRange) subscription.startTime = key;
+							// LMDB has no shared log cursor, so it hands off by key. A same-thread RocksDB
+							// replay also has no shared cursor, but must retain the requested startTime:
+							// its aftercommit delivery may arrive later for a lower reserved key.
+							if (!liveRange && !sameThread) subscription.startTime = key;
 						};
 						let replayIterator = replayRange[Symbol.iterator]();
 						let replayEnded = false;
