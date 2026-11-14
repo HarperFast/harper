@@ -179,6 +179,10 @@ Drops a database and all its tables/records. **Replicates to all cluster nodes b
 { "operation": "drop_database", "database": "dev" }
 ```
 
+:::warning
+If a component uses this database, restart Harper after dropping it. On a cluster, use a [rolling restart](#restart_service-replicated).
+:::
+
 ### `create_table`
 
 Creates a new table. Optional fields: `database` (defaults to `data`), `attributes` (array defining schema), `expiration` (TTL in seconds), `eviction` (seconds after `expiration` before a record is removed; see [`@table`](../database/schema.md#table)). A negative or non-numeric `expiration` or `eviction` is rejected with a 400 error.
@@ -199,6 +203,10 @@ Drops a table and all associated records. **Replicates to all cluster nodes by d
 ```json
 { "operation": "drop_table", "database": "dev", "table": "dog" }
 ```
+
+:::warning
+If a component uses this table, restart Harper after dropping it. On a cluster, use a [rolling restart](#restart_service-replicated).
+:::
 
 ### `create_attribute`
 
