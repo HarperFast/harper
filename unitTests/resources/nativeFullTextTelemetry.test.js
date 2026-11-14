@@ -617,18 +617,21 @@ describe('Harper full-text analytics lifecycle and persistence', function () {
 			assert.strictEqual(live.scheduled, false);
 			assert.deepStrictEqual(rows(), []);
 			change(true);
-			await waitFor(() => live.collecting, 5000).catch((error) => {
-				const watcher = require('#src/config/RootConfigWatcher').getSharedRootConfigWatcher();
-				error.message += `; activation state ${JSON.stringify({
-					file: YAML.parse(fs.readFileSync(file, 'utf8')).analytics?.fullText,
-					watched: watcher.config?.analytics?.fullText,
-					analyticsEnabled: analytics.checkAnalyticsEnabled(false),
-					armed: watcher._armedForTests,
-					polling: watcher._usingPollingForTests,
-					reads: watcher._readCountForTests,
-					listeners: watcher.listenerCount('change'),
-				})}`;
-				throw error;
+			await waitFor(() => live.collecting, {
+				timeout: 5000,
+				message: () => {
+					const watcher = require('#src/config/RootConfigWatcher').getSharedRootConfigWatcher();
+					return `Collection did not start; activation state ${JSON.stringify({
+						file: YAML.parse(fs.readFileSync(file, 'utf8')).analytics?.fullText,
+						watched: watcher.config?.analytics?.fullText,
+						analyticsEnabled: analytics.checkAnalyticsEnabled(false),
+						armed: watcher._armedForTests,
+						polling: watcher._usingPollingForTests,
+						reads: watcher._readCountForTests,
+						opens: watcher._openCountForTests,
+						listeners: watcher.listenerCount('change'),
+					})}`;
+				},
 			});
 			await waitFor(
 				() => rows().some((row) => row.method === 'writer') && rows().some((row) => row.method === 'reader'),
