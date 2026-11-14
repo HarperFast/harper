@@ -1,49 +1,37 @@
-/**
- * MCP `initialize` admission limit across HTTP workers (PR #3537): the bucket is per http worker
- * (`components/mcp/DESIGN.md` "The bucket is per worker thread"; `docs/reference/mcp/configuration.md`
- * "initializePerSecond"), so one source address is admitted up to `initializeBurst` on each worker before
- * it sees a 429 — the effective per-identity creation limit is the configured value times `threads.count`.
- *
- * Needs fresh connections spread across workers by SO_REUSEPORT, so the suite runs on Linux only (Windows
- * serves http from one thread, macOS binds without `reusePort`). Under Bun one worker serves the port
- * (`server/DESIGN.md` "Under Bun, the main HTTP port is served by `node:http`"), so there the suite pins
- * exactly one bucket. Own instance (own thread count); shares the `mcp-initialize-limit` fixture.
- */
+/** MCP initialize budgets are independent on deterministically selected HTTP workers. */
 import { suite, test, before, after } from 'node:test';
 import assert from 'node:assert';
-import { resolve } from 'node:path';
-import { request as httpRequest } from 'node:http';
+import { resolve, join } from 'node:path';
+import { readdir } from 'node:fs/promises';
+import { createConnection } from 'node:net';
+import { Agent, request as httpRequest } from 'node:http';
 import { setTimeout as delay } from 'node:timers/promises';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, '../fixtures/mcp-initialize-limit');
 const WORKERS = 4;
-const SERVING_WORKERS = process.env.HARPER_RUNTIME === 'bun' ? 1 : WORKERS;
 const RATE = 0.01;
 const BURST = 5;
-const ATTEMPTS = 40;
 const OPTIONS = {
 	config: {
 		threads: { count: WORKERS },
+		tls: { unixDomainSockets: true },
 		mcp: { application: { mountPath: '/mcp', rateLimit: { initializePerSecond: RATE, initializeBurst: BURST } } },
 		authentication: { authorizeLocal: false },
 	},
 	env: { AUTHENTICATION_AUTHORIZELOCAL: 'false' },
 };
-const SRC = '127.0.0.204';
 
 suite(
 	'MCP initialize admission limit is per http worker',
-	{
-		skip:
-			process.platform !== 'linux' &&
-			'per-worker buckets need SO_REUSEPORT to spread fresh connections across workers (Windows serves http from one thread, macOS binds without reusePort)',
-	},
+	{ skip: process.platform === 'win32' && 'Windows serves HTTP from one thread' },
 	(ctx: ContextWithHarper) => {
 		let admin: string;
 		let mcpUrl: URL;
 
-		function initialize(): Promise<{ status: number; sessionId: string | undefined; retryAfter: string | undefined }> {
+		function initialize(
+			agent: Agent
+		): Promise<{ status: number; sessionId: string | undefined; retryAfter: string | undefined }> {
 			const payload = JSON.stringify({
 				jsonrpc: '2.0',
 				id: 1,
@@ -61,8 +49,7 @@ suite(
 						port: Number(mcpUrl.port),
 						path: mcpUrl.pathname,
 						method: 'POST',
-						localAddress: SRC,
-						agent: false, // a fresh connection per request, so the worker routing is the listener's
+						agent,
 						headers: {
 							'content-type': 'application/json',
 							'accept': 'application/json, text/event-stream',
@@ -74,8 +61,7 @@ suite(
 						res.resume();
 						res.on('error', reject);
 						res.on('close', () => {
-							if (!res.complete)
-								reject(new Error(`initialize from ${SRC}: connection closed before the response completed`));
+							if (!res.complete) reject(new Error(`initialize: connection closed before the response completed`));
 						});
 						res.on('end', () =>
 							resolveReply({
@@ -128,33 +114,64 @@ suite(
 			await teardownHarper(ctx);
 		});
 
-		test('W one address is admitted up to BURST per worker, never more', async () => {
-			const replies = [];
-			for (let i = 0; i < ATTEMPTS; i++) replies.push(await initialize());
-			const admitted = replies.filter((reply) => reply.status === 200);
-			const denied = replies.filter((reply) => reply.status === 429);
-			assert.strictEqual(
-				admitted.length + denied.length,
-				ATTEMPTS,
-				`other statuses: ${JSON.stringify(replies.map((r) => r.status))}`
-			);
-			for (const reply of denied) assert.strictEqual(reply.retryAfter, String(Math.ceil(1 / RATE)));
-			const ids = new Set(admitted.map((reply) => reply.sessionId));
-			assert.strictEqual(ids.size, admitted.length, 'every admit carries a distinct session id');
-			// the oracle reads one worker's view; the table is shared, so every admitted id must be there
-			const rows = await sessionRows();
-			const rowIds = new Set(rows.map((row) => row.id));
-			for (const id of ids) assert.ok(rowIds.has(id as string), `admitted session ${id} has no row`);
-			console.log(
-				`INITIALIZE-ARM W ${JSON.stringify({ attempts: ATTEMPTS, admitted: admitted.length, denied: denied.length, workers: WORKERS, servingWorkers: SERVING_WORKERS, burst: BURST })}`
-			);
-			if (SERVING_WORKERS > 1)
-				assert.ok(admitted.length > BURST, `admitted ${admitted.length}: a single bucket would have admitted ${BURST}`);
-			else assert.strictEqual(admitted.length, BURST, `admitted ${admitted.length}: one serving worker, one bucket`);
-			assert.ok(
-				admitted.length <= BURST * SERVING_WORKERS,
-				`admitted ${admitted.length} > ${BURST} x ${SERVING_WORKERS} serving workers`
-			);
+		test('W each selected worker admits BURST then denies the same identity', async () => {
+			const socketDir = join(ctx.harper.dataRootDir, 'sockets');
+			const mirrors = (await readdir(socketDir)).filter((name) => /^\d+-.*9927\.sock$/.test(name)).sort();
+			assert.strictEqual(mirrors.length, WORKERS);
+			const workerIds = new Set<number>();
+			const ids = new Set<string>();
+			for (const mirror of mirrors) {
+				const agent = new Agent({ keepAlive: true, maxSockets: 1 });
+				agent.createConnection = () => createConnection(join(socketDir, mirror));
+				try {
+					const workerId = await new Promise<number>((resolveId, reject) => {
+						const req = httpRequest(
+							new URL('/WorkerIdentity', ctx.harper.httpURL),
+							{
+								agent,
+								headers: { authorization: admin },
+								timeout: 10_000,
+							},
+							(res) => {
+								let body = '';
+								res.on('data', (chunk) => {
+									body += chunk;
+								});
+								res.on('error', reject);
+								res.on('end', () => {
+									try {
+										assert.strictEqual(res.statusCode, 200, body);
+										resolveId(JSON.parse(body).threadId);
+									} catch (error) {
+										reject(error);
+									}
+								});
+							}
+						);
+						req.on('error', reject);
+						req.on('timeout', () => req.destroy(new Error('worker probe timed out')));
+						req.end();
+					});
+					assert.ok(Number.isInteger(workerId));
+					assert.ok(!workerIds.has(workerId), `mirror ${mirror} repeated worker ${workerId}`);
+					workerIds.add(workerId);
+					for (let i = 0; i < BURST; i++) {
+						const reply = await initialize(agent);
+						assert.strictEqual(reply.status, 200, `worker ${workerId} admission ${i + 1}`);
+						assert.ok(reply.sessionId);
+						assert.ok(!ids.has(reply.sessionId));
+						ids.add(reply.sessionId);
+					}
+					const denied = await initialize(agent);
+					assert.strictEqual(denied.status, 429, `worker ${workerId} must exhaust its own bucket`);
+					assert.strictEqual(denied.retryAfter, String(Math.ceil(1 / RATE)));
+				} finally {
+					agent.destroy();
+				}
+			}
+			const rowIds = new Set((await sessionRows()).map((row) => row.id));
+			for (const id of ids) assert.ok(rowIds.has(id), `admitted session ${id} has no row`);
+			console.log(`INITIALIZE-ARM W ${JSON.stringify({ workers: [...workerIds], admitted: ids.size, burst: BURST })}`);
 		});
 	}
 );

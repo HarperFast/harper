@@ -1,0 +1,14 @@
+type Product @table(audit: true) @export {
+	id: ID @primaryKey
+	title: String
+	category: String @indexed
+	rank: Int @indexed
+	catalogSearch: FullText
+		@fullText(fields: [{ name: "title", highlight: true }], highlighting: { maxFragments: 2, fragmentLength: 80 })
+}
+type PlainProduct @table(audit: true) @export {
+	id: ID @primaryKey
+	title: String
+	category: String @indexed
+	rank: Int @indexed
+}

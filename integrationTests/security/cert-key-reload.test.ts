@@ -1,10 +1,11 @@
 /**
  * TLS renewal (#2978): rename-install both files in either order with polling disabled.
- * Incomplete pairs must stay unpublished; every worker must serve complete generations
+ * Incomplete pairs must stay unpublished; every TLS-serving worker must serve complete generations
  * without a self-signed fallback or a logged key mismatch.
  */
 
 import { suite, test, before, after } from 'node:test';
+import { NO_MULTI_WORKER_HTTP } from '../database/recordCachingWorkers.ts';
 import { ok, strictEqual as equal } from 'node:assert';
 import { mkdtemp, mkdir, rm, writeFile, rename, readFile, unlink, symlink, chmod } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -24,6 +25,7 @@ import {
 const HTTPS_PORT = 9927;
 const FIXTURE_PATH = join(import.meta.dirname, 'cert-key-reload-fixture');
 const WORKERS = 2;
+const EXPECTED_TLS_SERVERS = NO_MULTI_WORKER_HTTP ? 1 : WORKERS;
 const CERT_CN = 'cert-key-reload-test.harper.local';
 const SERVER_AUTH_OID = '1.3.6.1.5.5.7.3.1';
 const skipSuite = process.platform === 'win32' || process.env.HARPER_RUNTIME === 'bun';
@@ -84,7 +86,7 @@ async function renameInstall(filePath: string, pem: string) {
 
 for (const readableKeyDirectory of [true, false])
 	suite(
-		`TLS certificate + private-key hot-reload propagates to all workers (${readableKeyDirectory ? 'readable' : 'traverse-only'} key directory)`,
+		`TLS certificate + private-key hot-reload propagates to all TLS-serving workers (${readableKeyDirectory ? 'readable' : 'traverse-only'} key directory)`,
 		{ skip: skipSuite || (!readableKeyDirectory && process.getuid?.() === 0) },
 		(ctx: ContextWithHarper) => {
 			let certsDir: string;
@@ -141,16 +143,17 @@ for (const readableKeyDirectory of [true, false])
 						ok(Number.isInteger(generation.threadId), 'missing worker identity');
 						if (generation.serial === nextSerial) renewedWorkers.add(generation.threadId);
 					}
-					if (renewedWorkers.size === WORKERS && generations.every(({ serial }) => serial === nextSerial)) break;
+					if (renewedWorkers.size === EXPECTED_TLS_SERVERS && generations.every(({ serial }) => serial === nextSerial))
+						break;
 					await delay(100);
 				}
-				equal(renewedWorkers.size, WORKERS, 'the renewed pair did not reach every worker');
+				equal(renewedWorkers.size, EXPECTED_TLS_SERVERS, 'the renewed pair did not reach every TLS-serving worker');
 				const finalGenerations = await Promise.all(
 					Array.from({ length: 40 }, () => servedGeneration(ctx.harper.hostname))
 				);
 				ok(
 					finalGenerations.every(({ serial }) => serial === nextSerial),
-					'a worker still serves the old certificate'
+					'a TLS-serving worker still serves the old certificate'
 				);
 				ok(await tableHasSerial(ctx, nextSerial), 'the matching certificate was never published');
 				const log = await readFile(logPath(), 'utf8');
@@ -159,7 +162,7 @@ for (const readableKeyDirectory of [true, false])
 			}
 
 			for (const first of ['certificate', 'private key']) {
-				test(`rename-install ${first} first publishes only a matching pair and reaches every worker`, async () => {
+				test(`rename-install ${first} first publishes only a matching pair and reaches every TLS-serving worker`, async () => {
 					const logOffset = (await readFile(logPath(), 'utf8')).length;
 					const nextSerial = currentSerial + 1;
 					const keyPair = await generateEd25519KeyPair();

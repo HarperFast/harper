@@ -11,6 +11,7 @@ const {
 } = require('#src/resources/originClosedFloor');
 const {
 	persistOriginClosedFloor,
+	getAuditFloor,
 	createAuditEntry,
 	HAS_ADDITIONAL_AUDIT_REFS,
 	ENTRY_DATAVIEW,
@@ -20,7 +21,7 @@ const { getFileId, getFilePathForBlob, isSaving, setDeletionDelay } = require('#
 const { transaction } = require('#src/resources/transaction');
 const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 function permutations(values) {
 	if (values.length === 0) return [[]];
@@ -30,6 +31,12 @@ function permutations(values) {
 }
 
 let nextTimestamp = Date.now() + 1_000_000;
+
+function timestampAfterBootstrap(auditStore, candidate) {
+	const floor = getAuditFloor(auditStore);
+	assert.ok(Number.isFinite(floor), 'fixture audit floor must be initialized');
+	return Math.max(candidate, floor + 1_000_000);
+}
 
 const cases = [
 	{
@@ -101,6 +108,16 @@ for (const loadAsInstance of [true, false]) {
 				audit: true,
 			});
 			T.loadAsInstance = loadAsInstance;
+			nextTimestamp = timestampAfterBootstrap(T.auditStore, nextTimestamp);
+		});
+
+		it('clamps a pre-bootstrap seed before reconciling replacements', async () => {
+			const timestamp = timestampAfterBootstrap(T.auditStore, getAuditFloor(T.auditStore) - 200_000);
+			const id = 'aged-seed';
+			await T.put(id, { a: 'old', c: 'stale', counter: 10 }, { timestamp });
+			await T.patch(id, { b: 'newer', counter: { __op__: 'add', value: 5 } }, { timestamp: timestamp + 2 });
+			await T.put(id, { a: 'replacement', counter: 100 }, { timestamp: timestamp + 1 });
+			assert.deepStrictEqual({ ...(await T.get(id)) }, { id, a: 'replacement', b: 'newer', counter: 105 });
 		});
 
 		for (const [caseIndex, { name, writes, expected, lmdbVersionRegressionOrders = [] }] of cases.entries()) {
@@ -137,6 +154,7 @@ for (const loadAsInstance of [true, false]) {
 				audit: true,
 			});
 			T.loadAsInstance = loadAsInstance;
+			nextTimestamp = timestampAfterBootstrap(T.auditStore, nextTimestamp);
 		});
 
 		it('preserves uncollected newer fields when the audit walk reaches its depth cap', async function () {

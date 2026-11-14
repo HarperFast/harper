@@ -2,4 +2,5 @@ graphqlSchema:
   files: '*.graphql'
 jsResource:
   files: resources.ts
-rest: true
+rest:
+  exactCount: true

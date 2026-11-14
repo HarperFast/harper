@@ -181,7 +181,7 @@ describe('logBridge', function () {
 		}
 	});
 
-	it('extends the original expiry when the same duration is reported again', async function () {
+	it('keeps a repeated same-duration report active for its full expiry', async function () {
 		const logger = createLogger({ level: 'error', writeToLog: () => {} });
 		const key = 'test.refresh-expiry';
 		try {

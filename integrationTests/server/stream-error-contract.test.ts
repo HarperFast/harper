@@ -21,12 +21,13 @@
  * Each run prints a per-case capture table to stdout.
  */
 import { suite, test, before, after } from 'node:test';
-import { deepStrictEqual, ok, strictEqual, throws } from 'node:assert';
+import { deepStrictEqual, ok, strictEqual, throws, rejects } from 'node:assert';
 import { resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import net from 'node:net';
 import http from 'node:http';
 import { URL } from 'node:url';
+import { requestJson } from '../utils/requestJson.ts';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error utils/client.mjs has no type declarations; runtime resolves fine
 import { createApiClient } from '../apiTests/utils/client.mjs';
@@ -463,6 +464,25 @@ suite(
 			assertCleanCompletion(cap);
 		});
 
+		test(
+			'Node HTTP request helper distinguishes interrupted JSON arrays from complete responses',
+			{ timeout: 20_000 },
+			async () => {
+				const headers = { Authorization: authHeader, Accept: 'application/json', Connection: 'close' };
+				for (const path of ['/IterDelayedError/', '/IterMidStream/']) {
+					const response = await requestJson(`${restBase}${path}`, { headers });
+					strictEqual(response.status, 200);
+					strictEqual(response.aborted, true);
+					strictEqual(response.body, undefined);
+					throws(() => JSON.parse(response.text), SyntaxError);
+				}
+				const response = await requestJson(`${restBase}/IterHealth/`, { headers });
+				strictEqual(response.status, 200);
+				strictEqual(response.aborted, false);
+				deepStrictEqual(response.body, [{ n: 0 }, { n: 1 }, { n: 2 }]);
+			}
+		);
+
 		test('control: IterHealth ndjson clean completion', { timeout: 20_000 }, async () => {
 			const cap = await captureWithLifecycle('iterHealth', () =>
 				rawCapture(restBase, '/IterHealth/', 'application/x-ndjson', authHeader, 'ndjson', 'control')
@@ -700,5 +720,38 @@ suite(
 				strictEqual(p[name]?.opened, p[name]?.closed, `${name} generator was not closed`);
 			}
 		});
+	}
+);
+
+test(
+	'Node HTTP request helper rejects complete invalid JSON and preserves client aborts',
+	{ timeout: 20_000 },
+	async () => {
+		const controller = new AbortController();
+		const reason = new Error('caller cancelled request');
+		const server = http.createServer((request, response) => {
+			if (request.url === '/invalid') return response.end('[invalid');
+			if (request.url === '/abort') {
+				controller.abort(reason);
+				return;
+			}
+			response.writeHead(200, { 'Content-Type': 'application/json' });
+			response.write('[');
+			const timer = setInterval(() => response.write(' '), 5);
+			response.on('close', () => clearInterval(timer));
+		});
+		await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+		try {
+			const address = server.address();
+			ok(address && typeof address !== 'string');
+			const base = `http://127.0.0.1:${address.port}`;
+			await rejects(requestJson(`${base}/invalid`), SyntaxError);
+			await rejects(requestJson(`${base}/abort`, { signal: controller.signal }), (error) => error === reason);
+			const deadline = AbortSignal.timeout(40);
+			await rejects(requestJson(`${base}/trickle`, { signal: deadline }), (error) => error === deadline.reason);
+		} finally {
+			server.closeAllConnections();
+			await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+		}
 	}
 );
