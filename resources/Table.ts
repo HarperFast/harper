@@ -14438,6 +14438,12 @@ export function makeTable(options): TableResourceClass {
 	}
 
 	function loggedMessagesAt(log: any, txnLogKey: number, nodeId: number): Set<string> | null {
+		// an exact-start miss below the log's first entry scans to its end; retention purged that range, so a
+		// re-delivery there, or a late-relayed entry appended below it, is applied again
+		for (const first of auditStore.getRange({ start: 1, log: nodeId })) {
+			if (txnLogKey < first.txnLogKey) return null;
+			break;
+		}
 		let probe;
 		try {
 			probe = log.query({ start: txnLogKey, exactStart: true });
