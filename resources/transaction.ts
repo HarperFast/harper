@@ -60,7 +60,7 @@ export function transaction<T>(
 	const transaction = new DatabaseTransaction({ scopeOwned: true });
 	context.transaction = transaction;
 	if (context.timestamp) transaction.timestamp = context.timestamp;
-	if (context.replicatedConfirmation) transaction.replicatedConfirmation = context.replicatedConfirmation;
+	if (context.replicatedConfirmation != null) transaction.replicatedConfirmation = context.replicatedConfirmation;
 	if (context.sourceApply) transaction.sourceApply = true;
 	transaction.setContext(context);
 

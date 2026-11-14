@@ -45,8 +45,11 @@ export type Counters = Record<(typeof COUNTER_KEYS)[number], number>;
 /** perf names a cgroup by its path under the cgroup2 mount. */
 const perfCgroupName = (scopePath: string): string => scopePath.replace(/^\/sys\/fs\/cgroup\/?/, '');
 
-/** Parses `perf stat -x, --for-each-cgroup` output (either PMU's event names) into counters per cgroup path. */
-export function parsePerfStat(output: string): Record<string, Counters> {
+/**
+ * Parses `perf stat -x,` output (either PMU's event names) into counters per cgroup path (`--for-each-cgroup`), or,
+ * given `label`, into one entry under that name for everything counted.
+ */
+export function parsePerfStat(output: string, label?: string): Record<string, Counters> {
 	const byEvent = Object.fromEntries(
 		(['cpu_core', 'cpu'] as const).flatMap((pmu) =>
 			Object.entries(counterEvents(pmu)).map(([key, event]) => [event, key])
@@ -56,9 +59,10 @@ export function parsePerfStat(output: string): Record<string, Counters> {
 	for (const line of output.split('\n')) {
 		const [value, , event, cgroup] = line.split(',');
 		const key = byEvent[event];
-		if (!key || cgroup === undefined) continue;
-		if (!/^\d+$/.test(value)) throw new Error(`perf stat could not count ${event} for ${cgroup}: ${line}`);
-		(out[cgroup] ??= {} as Counters)[key] = Number(value);
+		const name = label ?? cgroup;
+		if (!key || name === undefined) continue;
+		if (!/^\d+$/.test(value)) throw new Error(`perf stat could not count ${event} for ${name}: ${line}`);
+		(out[name] ??= {} as Counters)[key] = Number(value);
 	}
 	return out;
 }
@@ -126,12 +130,21 @@ async function startEnabled(args: string[], dir: string): Promise<{ stop(): Prom
 }
 let fifoCount = 0;
 
-/** Counts over a window, per component; `dir` holds the control FIFOs. */
+/**
+ * Counts over a window, per component; `dir` holds the control FIFOs. Given `hostCpus`, counts those cpus whole
+ * instead, as one entry named `host(<components>)`. A cgroup's events are switched out and in whenever a cpu moves
+ * between cgroups, and on a VM's virtual PMU every counter write traps to the hypervisor, so per-cgroup counting
+ * slows a target whose components hand work to each other; per-cpu counters are programmed once.
+ */
 export async function startCounters(
 	cgroups: Record<string, string>,
-	dir: string
+	dir: string,
+	hostCpus?: number[]
 ): Promise<{ stop(): Promise<Record<string, Counters>> }> {
-	const names = Object.entries(cgroups).map(([component, scope]) => [component, perfCgroupName(scope)]);
+	const hostName = `host(${Object.keys(cgroups).join('+')})`;
+	const names = hostCpus
+		? [[hostName, hostName]]
+		: Object.entries(cgroups).map(([component, scope]) => [component, perfCgroupName(scope)]);
 	const perf = await startEnabled(
 		[
 			'stat',
@@ -140,15 +153,14 @@ export async function startCounters(
 			',',
 			'-e',
 			Object.values(counterEvents(detectPmu())).join(','),
-			'--for-each-cgroup',
-			names.map(([, name]) => name).join(','),
+			...(hostCpus ? ['-C', hostCpus.join(',')] : ['--for-each-cgroup', names.map(([, name]) => name).join(',')]),
 		],
 		dir
 	);
 	return {
 		async stop() {
 			const err = await perf.stop();
-			const parsed = parsePerfStat(err);
+			const parsed = parsePerfStat(err, hostCpus && hostName);
 			const out: Record<string, Counters> = {};
 			for (const [component, name] of names) {
 				const counters = parsed[name];

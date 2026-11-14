@@ -91,6 +91,7 @@ import {
 	heldByAncestorHook,
 	instanceWriteInSyncCommitHook,
 	commitHooksRunning,
+	registerStoreTable,
 } from './DatabaseTransaction.ts';
 import { readOnlyModeError } from './readOnlyMode.ts';
 import {
@@ -170,6 +171,7 @@ import {
 	isDeadGeneration,
 	recordTableDrop,
 	replicateIsFalse,
+	isNodeLocalTable,
 	OMIT_LIFECYCLE_STAMPS_FOR_TEST,
 	sweepDroppedTableBlobs,
 	storeNameFor,
@@ -305,7 +307,7 @@ import {
 	remainingAgainstRecord,
 	readAuditFrame,
 } from './crdt.ts';
-import { HistoryMemo, HistoryReader } from './historyReader.ts';
+import { CARRY_SCAN_LIMIT, HistoryMemo, HistoryReader, ReplayReader, detachAuditEntry } from './historyReader.ts';
 import { appendHeader } from '../server/serverHelpers/Headers.ts';
 import fs from 'node:fs';
 import {
@@ -462,6 +464,11 @@ try {
 }
 const LMDB_PREFETCH_WRITES = envMngr.get(CONFIG_PARAMS.STORAGE_PREFETCHWRITES);
 const LOCK_TIMEOUT = 10000;
+let sourceFillLockTimeout = LOCK_TIMEOUT;
+/** Tests only: how long a source fill's record lock is held before it is released; `undefined` restores it. */
+export function setSourceFillLockTimeoutForTesting(ms: number | undefined) {
+	sourceFillLockTimeout = ms ?? LOCK_TIMEOUT;
+}
 export const UPDATE_ATTRIBUTES_LOCK_TIMEOUT = 10000;
 const UPDATE_ATTRIBUTES_LOCK = 'update-attributes';
 // Contention is otherwise only visible once it becomes a timeout (harper#2251).
@@ -10397,10 +10404,14 @@ export function makeTable(options): TableResourceClass {
 			// in subscription.queue. Without this, the IIFE can fill the queue past
 			// EVENT_HIGH_WATER_MARK and hit waitForDrain before the consumer's listener exists.
 			if (request.listener) subscription!.on('data', request.listener);
-			let replayMemo =
+			let replayReader =
 				includeSuperseded && getFullRecord
-					? new HistoryMemo(primaryStore, tableId, { maxBytes: 128 * 1024, maxEntries: 256 })
+					? new ReplayReader(primaryStore, tableId, replayCanCarry, { maxBytes: 128 * 1024, maxEntries: 256 })
 					: undefined;
+			let replayMemo: HistoryMemo | undefined;
+			const newestFirstMemo = () =>
+				(replayMemo ??=
+					replayReader && new HistoryMemo(primaryStore, tableId, { maxBytes: 128 * 1024, maxEntries: 256 }));
 			const result = (async () => {
 				const isCollection = request.isCollection ?? thisId == null;
 				if (isCollection) {
@@ -10495,7 +10506,7 @@ export function makeTable(options): TableResourceClass {
 							if (!inScope(id)) continue;
 							// a lagging origin's write can be merged into another origin's newer one already delivered below
 							// that origin's boundary, so it is the only delivery of the merged state, as live
-							const event = eventFromAudit(id, auditRecord, auditRecord.txnLogKey, undefined, true, replayMemo);
+							const event = eventFromAudit(id, auditRecord, auditRecord.txnLogKey, undefined, true, replayReader);
 							if (!event) continue;
 							event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
 							if (!send(event)) return;
@@ -10611,7 +10622,7 @@ export function makeTable(options): TableResourceClass {
 								if (resnapshots) reloadPending = true;
 								else if (thisId == null || isReload || isDescendantId(thisId, id)) {
 									// as live delivery converts it: a live entry dropped during the replay is delivered only here
-									const event = eventFromAudit(id, auditRecord, auditRecord.txnLogKey, undefined, true, replayMemo);
+									const event = eventFromAudit(id, auditRecord, auditRecord.txnLogKey, undefined, true, replayReader);
 									if (event) {
 										if (reportingProgress) event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
 										if (!send(event)) return;
@@ -10702,7 +10713,7 @@ export function makeTable(options): TableResourceClass {
 										auditRecord.txnLogKey,
 										undefined,
 										undefined,
-										replayMemo
+										newestFirstMemo()
 									);
 									if (!historyEntry) continue;
 									// Filter rows before they consume a previousCount slot.
@@ -10812,6 +10823,10 @@ export function makeTable(options): TableResourceClass {
 						let inspected = 0;
 						let missingVersion = false;
 						let nextTime = localTime;
+						// [entry, key, nodeId] newest-first; values are computed after the walk, oldest-first, so each patch
+						// can carry the one before it
+						const walked: any[] | undefined = replayReader && !count && !allowsEvent ? [] : undefined;
+						const floorBefore = walked && getAuditFloor(auditStore);
 						do {
 							if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
 								recordsSinceYield = 0;
@@ -10822,13 +10837,23 @@ export function makeTable(options): TableResourceClass {
 							const auditRecord = auditStore.getSync(nextTime, tableId, thisId, nodeId, true);
 							if (auditRecord && !(checkResume && auditRecord.type === undefined)) {
 								if (startTime < nextTime) {
-									const event = eventFromAudit(thisId, auditRecord, nextTime, undefined, undefined, replayMemo);
-									if (event && reportingProgress) event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
-									if (event && (!allowsEvent || allowsEvent(event))) {
-										request.omitCurrent = true;
-										history.push(event);
-										if (count) count--;
-									} else if (!isActive()) return;
+									if (walked) walked.push(detachAuditEntry(auditRecord), nextTime, nodeId);
+									else {
+										const event = eventFromAudit(
+											thisId,
+											auditRecord,
+											nextTime,
+											undefined,
+											undefined,
+											newestFirstMemo()
+										);
+										if (event && reportingProgress) event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
+										if (event && (!allowsEvent || allowsEvent(event))) {
+											request.omitCurrent = true;
+											history.push(event);
+											if (count) count--;
+										} else if (!isActive()) return;
+									}
 								}
 								const previousHead = isRocksDB
 									? resolveAuditHead(
@@ -10854,6 +10879,53 @@ export function makeTable(options): TableResourceClass {
 							// a first version may be a record recreated after retention pruned its tombstone
 							if (!(nextTime > 0) && !checkResume()) return;
 						}
+						if (walked?.length) {
+							for (let i = walked.length - 3; i >= 0; i -= 3) {
+								if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
+									recordsSinceYield = 0;
+									await rest();
+									if (!isActive()) return;
+								}
+								const auditRecord = walked[i];
+								const event = eventFromAudit(thisId, auditRecord, walked[i + 1], undefined, undefined, replayReader);
+								if (event && reportingProgress) event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
+								walked[i] = event;
+							}
+							// The walk proved the walked entries present, but values were computed after it and read further
+							// back, so a prune since may have deleted what they read. A prune raises the floor before it removes
+							// anything below it.
+							const floor = getAuditFloor(auditStore);
+							const read = replayReader.memo;
+							let retained =
+								Object.is(floor, floorBefore) || (!read.exhausted && !read.closed && !(floor > read.lowest));
+							for (let i = walked.length - 3; retained && i >= 0 && walked[i + 1] < floor; i -= 3) {
+								if (!auditStore.getSync(walked[i + 1], tableId, thisId, walked[i + 2], true)) {
+									retained = false;
+									break;
+								}
+							}
+							if (!retained && checkResume) {
+								checkResume(new ResumeHistoryUnavailableError());
+								return;
+							}
+							for (let i = 0; i < walked.length; i += 3) {
+								let event = walked[i];
+								if (!retained) {
+									if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
+										recordsSinceYield = 0;
+										await rest();
+										if (!isActive()) return;
+									}
+									const auditRecord = auditStore.getSync(walked[i + 1], tableId, thisId, walked[i + 2], true);
+									if (!auditRecord) break;
+									event = eventFromAudit(thisId, auditRecord, walked[i + 1], undefined, undefined, newestFirstMemo());
+									if (event && reportingProgress) event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
+								}
+								if (!event) continue;
+								request.omitCurrent = true;
+								history.push(event);
+							}
+						}
 						for (let i = history.length; i > 0;) {
 							if (!send(history[--i], true)) return;
 						}
@@ -10875,8 +10947,9 @@ export function makeTable(options): TableResourceClass {
 				settleResume?.(isActive());
 				goLive?.();
 			})().finally(() => {
+				replayReader?.memo.close();
 				replayMemo?.close();
-				replayMemo = undefined;
+				replayMemo = replayReader = undefined;
 			});
 			result.catch(failSubscription);
 			if (settleResume) {
@@ -10936,7 +11009,7 @@ export function makeTable(options): TableResourceClass {
 				localTime: number,
 				beginTxn?: boolean,
 				live?: boolean,
-				historyMemo?: HistoryMemo
+				history?: ReplayReader | HistoryMemo
 			) {
 				let type = auditRecord.type;
 				let value;
@@ -10957,7 +11030,10 @@ export function makeTable(options): TableResourceClass {
 						type = entry?.metadataFlags & INVALIDATED ? 'invalidate' : value ? 'put' : 'delete';
 					} else value = auditRecord.getValue?.(primaryStore, false, localTime);
 				} else {
-					value = auditRecord.getValue?.(primaryStore, getFullRecord, localTime, historyMemo);
+					value =
+						history instanceof ReplayReader
+							? history.read(auditRecord, localTime)
+							: auditRecord.getValue?.(primaryStore, getFullRecord, localTime, history);
 					if (getFullRecord && type === 'patch') type = 'put';
 				}
 				return { id, localTime, value, version, type, beginTxn, size: auditRecord.size };
@@ -12759,6 +12835,7 @@ export function makeTable(options): TableResourceClass {
 			if (replicaExpirationMs) armReplicaEviction();
 		}
 	}
+	registerStoreTable(primaryStore, () => isNodeLocalTable(TableResource));
 	return TableResource;
 	function resolveOverStub(resolver: (record: any) => any, stub: any, name: string) {
 		try {
@@ -13553,7 +13630,8 @@ export function makeTable(options): TableResourceClass {
 	function isHistoryEntry(auditRecord): boolean {
 		return auditRecord.tableId === tableId && !isNonHistoryType(auditRecord.type);
 	}
-	function historyCanCarry(id, current, memo: HistoryMemo) {
+	/** `plainOnly`: refuse a chain with any operation, whose reversal the plain rebuild can type differently. */
+	function historyCanCarry(id, current, memo: HistoryMemo, limit = CARRY_SCAN_LIMIT, plainOnly = false) {
 		if (!TableResource.schemaDefined || residencyPolicy || !current) return false;
 		if (current.metadataFlags & (INVALIDATED | REPLICA | VERSION_REUSED) || current.additionalAuditRefs?.length)
 			return false;
@@ -13563,7 +13641,7 @@ export function makeTable(options): TableResourceClass {
 				: { txnLogKey: current.localTime, nodeId: current.nodeId };
 			let newer = Infinity;
 			let inspected = 0;
-			while (key > 0 && ++inspected <= 16_384) {
+			while (key > 0 && ++inspected <= limit) {
 				const frame = readAuditFrame(auditStore, tableId, id, key, nodeId, true, memo);
 				const audited = frame[0];
 				if (frame.length !== 1 || !audited || audited.previousAdditionalAuditRefs?.length || !(audited.version < newer))
@@ -13578,7 +13656,7 @@ export function makeTable(options): TableResourceClass {
 							value &&
 							typeof value === 'object' &&
 							value.__op__ &&
-							typeof crdtOperations[value.__op__] !== 'function'
+							(plainOnly || typeof crdtOperations[value.__op__] !== 'function')
 						)
 							return false;
 				}
@@ -13588,6 +13666,9 @@ export function makeTable(options): TableResourceClass {
 			}
 		} catch {}
 		return false;
+	}
+	function replayCanCarry(id, current, memo: HistoryMemo, limit: number) {
+		return historyCanCarry(id, current, memo, limit, true);
 	}
 	function historyEntryReader(recordId?, deferred = false) {
 		const reader = new HistoryReader(
@@ -13678,7 +13759,18 @@ export function makeTable(options): TableResourceClass {
 				recordActionBinary(!needsSourceData, 'cache-hit', tableName);
 			}
 			if (needsSourceData) {
-				const loadingFromSource = getFromSource(source, id, entry, context, target).then((entry) => {
+				const servesStale = Boolean(entry?.value && resource?.allowStaleWhileRevalidate?.(entry, id));
+				if (servesStale) {
+					let acquired: boolean;
+					try {
+						acquired = primaryStore.tryLock(id);
+					} catch (error) {
+						logger.warn?.(error);
+						return;
+					}
+					if (!acquired) return;
+				}
+				const loadingFromSource = getFromSource(source, id, entry, context, target, servesStale).then((entry) => {
 					if (entry?.value && entry?.value.getRecord?.())
 						logger.error?.('Can not assign a record that is already a resource');
 					if (context) {
@@ -13687,8 +13779,7 @@ export function makeTable(options): TableResourceClass {
 					}
 					return entry;
 				});
-				// if the resource defines a method for indicating if stale-while-revalidate is allowed for a record
-				if (entry?.value && resource?.allowStaleWhileRevalidate?.(entry, id)) {
+				if (servesStale) {
 					// since we aren't waiting for it any errors won't propagate so we should at least log them
 					loadingFromSource.catch((error) => logger.warn?.(error));
 					return; // go ahead and return and let the current stale value be used while we re-validate
@@ -14226,7 +14317,8 @@ export function makeTable(options): TableResourceClass {
 		id: Id,
 		existingEntry: Entry,
 		context: Context,
-		target?
+		target?,
+		lockHeld?: boolean
 	): Promise<Entry> {
 		const metadataFlags = existingEntry?.metadataFlags;
 
@@ -14234,31 +14326,40 @@ export function makeTable(options): TableResourceClass {
 		const existingRecord = existingEntry?.value;
 		// a 304 stores existingRecord, so it keeps the list that describes that body, not the commit base's
 		const existingIdentityRefs = existingEntry?.receivedIdentityRefs;
-		const inheritedTimestamp = context?.timestamp || context?.transaction?.timestamp;
-		let sourceTimestamp = inheritedTimestamp;
+		let inheritedTimestamp: number;
+		let fillKey: unknown;
+		let sourceTimestamp: number;
 		let issuanceFailed = false;
-		if (!sourceTimestamp) {
-			if (!isRocksDB) sourceTimestamp = getNextMonotonicTime();
-			else {
-				try {
-					sourceTimestamp = freshLocalKey(tableRootStore);
-				} catch (error) {
-					// Keep the read available, but never cache a version that could repeat an unstaged holder's.
-					issuanceFailed = true;
-					sourceTimestamp = (primaryStore as RocksDatabase).getMonotonicTimestamp();
-					const now = performance.now();
-					if (now - lastIssuanceFailureWarn >= 60_000) {
-						lastIssuanceFailureWarn = now;
-						logger.warn?.(
-							`Failed to allocate local issuance key for source read on ${tableName}; serving uncached`,
-							error
-						);
+		try {
+			inheritedTimestamp = context?.timestamp || context?.transaction?.timestamp;
+			fillKey = writeKeyId(id);
+			sourceTimestamp = inheritedTimestamp;
+			if (!sourceTimestamp) {
+				if (!isRocksDB) sourceTimestamp = getNextMonotonicTime();
+				else {
+					try {
+						sourceTimestamp = freshLocalKey(tableRootStore);
+					} catch (error) {
+						// Keep the read available, but never cache a version that could repeat an unstaged holder's.
+						issuanceFailed = true;
+						sourceTimestamp = (primaryStore as RocksDatabase).getMonotonicTimestamp();
+						const now = performance.now();
+						if (now - lastIssuanceFailureWarn >= 60_000) {
+							lastIssuanceFailureWarn = now;
+							logger.warn?.(
+								`Failed to allocate local issuance key for source read on ${tableName}; serving uncached`,
+								error
+							);
+						}
 					}
 				}
 			}
+		} catch (error) {
+			// a lock handed over by a stale read has no other owner to release it
+			if (lockHeld) releaseRecordLock(id);
+			throw error;
 		}
 		let wake: () => void;
-		const fillKey = writeKeyId(id);
 		const heldFill = sourceFills?.get(fillKey);
 		// We start by locking the record so that there is only one resolution happening at once;
 		// if there is already a resolution in process, we want to use the results of that resolution
@@ -14267,18 +14368,20 @@ export function makeTable(options): TableResourceClass {
 		// the other thread releases the lock.
 		// The callback only wakes this request: it can fire during a database close, where reading
 		// the store would throw inside a native callback and leave the request unsettled.
-		const lockAcquired = primaryStore.tryLock(id, () => wake());
+		const lockAcquired = lockHeld || primaryStore.tryLock(id, () => wake());
 
 		if (!lockAcquired) {
 			let timer: ReturnType<typeof setTimeout>;
 			const waiting = noteSourceFillWaiter(fillKey, id);
 			await new Promise<void>((resolve) => {
 				wake = resolve;
-				// closing this thread's handle does not notify a wait on another thread's lock
-				timer = setTimeout(() => {
-					releaseRecordLock(id);
-					resolve();
-				}, LOCK_TIMEOUT);
+				// only the fill holding the lock releases it; this thread's closed handle never hears of another
+				// thread's release, and its hasLock() throws, so a wait still settles
+				const recheck = () => {
+					if (recordLockHeld(id)) timer = setTimeout(recheck, sourceFillLockTimeout);
+					else resolve();
+				};
+				timer = setTimeout(recheck, sourceFillLockTimeout);
 			});
 			clearTimeout(timer);
 			if (--waiting.count === 0) sourceFillWaiters.delete(fillKey);
@@ -14310,10 +14413,18 @@ export function makeTable(options): TableResourceClass {
 		setLoadedFromSource(target, true);
 		const fill: SourceFill = { source };
 		(sourceFills ??= new Map()).set(fillKey, fill);
+		let tenure: ReturnType<typeof setTimeout>;
+		let lockReleased = false;
 		const releaseFill = () => {
+			if (lockReleased) return;
+			lockReleased = true;
+			clearTimeout(tenure);
 			if (sourceFills.get(fillKey) === fill) sourceFills.delete(fillKey);
 			releaseRecordLock(id);
 		};
+		// a fill still running after its tenure lets the next request have the key; its late release is a no-op
+		tenure = setTimeout(releaseFill, sourceFillLockTimeout);
+		tenure.unref?.();
 
 		// it is important to remember that this is _NOT_ part of the current transaction; nothing is changing
 		// with the canonical data, we are simply fulfilling our local copy of the canonical data.
@@ -14333,6 +14444,8 @@ export function makeTable(options): TableResourceClass {
 			transaction: undefined,
 			expiresAt: undefined,
 			lastModified: undefined,
+			// a fill is a copy the source can supply again, so a configured confirmation default does not apply
+			replicatedConfirmation: 0,
 		};
 		const responseHeaders = (context as any)?.responseHeaders;
 		return new Promise((resolve, reject) => {
@@ -14788,6 +14901,13 @@ export function makeTable(options): TableResourceClass {
 		} catch (error) {
 			if (primaryStore.status === 'open' && tableRootStore.status === 'open')
 				logger.error?.(`Error releasing the cache resolution lock for ${id} in ${tableName}`, error);
+		}
+	}
+	function recordLockHeld(id: Id): boolean {
+		try {
+			return primaryStore.hasLock(id);
+		} catch {
+			return false;
 		}
 	}
 

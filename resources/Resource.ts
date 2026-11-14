@@ -1158,6 +1158,27 @@ function hasPermissionControl(value: any, seen = new WeakSet<object>()): boolean
 }
 
 let securityUser: typeof import('../security/user.ts') | undefined;
+// module-level, so the closure each subscription keeps holds nothing more for it
+function recordProvenBy(error: unknown, username: string): boolean {
+	return securityUser!.isInactiveUserRejection(error) || securityUser!.userRecordVersions(username).userStamp !== null;
+}
+
+// the latch's rules are in security/DESIGN.md, under a certificate's principal
+function latchRecordBacked(admission: object, context: any, username: string): void {
+	const { latchRoleRequirement, certificateAdmission } = securityUser!;
+	latchRoleRequirement(admission);
+	if (!context) return;
+	latchRoleRequirement(context);
+	const current = context.user;
+	if (current?.username !== username) return;
+	const held = certificateAdmission(current);
+	if (held) latchRoleRequirement(held);
+}
+
+function isLatched(admission: object | undefined, context: any): boolean {
+	const { isRoleRequirementLatched } = securityUser!;
+	return isRoleRequirementLatched(admission) || isRoleRequirementLatched(context);
+}
 
 const resolveUser = (_scope: unknown, username: string) =>
 	securityUser!.findAndValidateUser(username, undefined, false);
@@ -1178,11 +1199,27 @@ function registerLiveSubscriptionForContext(
 	if (!username || securityUser!.isLocalPrincipal(user)) return subscription;
 	// no subscription, or one already closed (a refused resume): nothing will be delivered to revoke
 	if (!subscription || typeof subscription !== 'object' || subscription.closed) return subscription;
-	const { cloneUserView, hasRecordProvenance, isCurrentUser, isRecordlessPrincipal } = securityUser!;
+	const {
+		cloneUserView,
+		hasRecordProvenance,
+		certificateAdmission,
+		isCurrentUser,
+		isRecordBacked,
+		isRecordlessPrincipal,
+	} = securityUser!;
 	// a memoizing server.getUser's user does not carry what an MQTT connection's own CONNECT recorded
 	const session = (context as any)?.session;
 	const admitted = session?.user === user ? session.userProvenance : undefined;
 	const fixedPrincipal = Boolean(user._scopedToken) || isRecordlessPrincipal(user, admitted);
+	// #1414 requires a role of a principal re-read by name; #4062 exempts a certificate naming no hdb_user
+	const admission = certificateAdmission(user);
+	// an admission that arrived with a role or a record, or whose record a recheck found since, requires a role of every
+	// view of it, such as one an MCP refresh built after the record was dropped
+	const latched =
+		admission !== undefined &&
+		(isLatched(admission, context) ||
+			(admission !== user && Boolean(isRecordBacked(admission as any) === true || (admission as any).role)));
+	let roleRequired = admission === undefined || latched || Boolean(isRecordBacked(user, admitted) || user.role);
 	// Without a caller's select or a condition or sort through a relationship, the default allowRead only
 	// narrows what it returns, so its verdict depends on the role's permission for this table alone.
 	const sharedDecision =
@@ -1191,7 +1228,7 @@ function registerLiveSubscriptionForContext(
 		!resource.constructor._referencesRelationship?.(admittedTarget);
 	const evaluate = (principal: any) => {
 		const reTarget: any = cloneRequestTarget(admittedTarget);
-		reTarget.checkPermission = principal.role?.permission;
+		reTarget.checkPermission = principal.role?.permission ?? {};
 		return resource.allowRead(principal, reTarget, context);
 	};
 	const handle = registerLiveSubscription({
@@ -1214,13 +1251,33 @@ function registerLiveSubscriptionForContext(
 			} else {
 				// Re-read current user state from hdb_user/hdb_role, once per username per pass, so a dropped
 				// or role-stripped user no longer authorizes.
-				fresh = await pass.memo(resolveUser, username, resolveUser);
-				if (!fresh?.role) return false;
+				try {
+					fresh = await pass.memo(resolveUser, username, resolveUser);
+				} catch (error) {
+					// an inactive record still backs the name; its refusal proves one, even if it was dropped since
+					if (admission !== undefined && recordProvenBy(error, username)) {
+						roleRequired = true;
+						latchRecordBacked(admission, context, username);
+					}
+					throw error;
+				}
+				if (!fresh) return false;
+				if (admission !== undefined) {
+					// whatever its context required: a later subscription of this admission may use another context
+					if (isRecordBacked(fresh)) {
+						roleRequired = true;
+						latchRecordBacked(admission, context, username);
+					}
+					// another subscription's recheck may have latched it since it registered
+					else if (!roleRequired && isLatched(admission, context)) roleRequired = true;
+				}
+				if (!fresh.role && roleRequired) return false;
 				// Advance the subscription's context to the fresh user so downstream checks — context.user
 				// and getCurrentUser() (which reads the resource's context) — evaluate against current state,
 				// not the stale user captured at subscribe time. Each context gets its own view, which its
-				// code may modify.
-				viewer = cloneUserView(fresh);
+				// code may modify; a certificate principal's carries its admission, so a later subscription by
+				// it is admitted, and latched, as the same certificate.
+				viewer = cloneUserView(fresh, undefined, admission);
 				if (context) (context as any).user = viewer;
 			}
 			// Re-run the same operation-level allowRead that granted the subscription.
@@ -1229,7 +1286,8 @@ function registerLiveSubscriptionForContext(
 	});
 	let stale: boolean;
 	try {
-		stale = !fixedPrincipal && !isCurrentUser(user, admitted);
+		// a latched principal with no role would otherwise deliver until its first recheck
+		stale = !fixedPrincipal && ((latched && !user.role) || !isCurrentUser(user, admitted));
 	} catch {
 		stale = true;
 	}

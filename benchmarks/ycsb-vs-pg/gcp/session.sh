@@ -102,13 +102,28 @@ phase() {
 	}
 }
 
-# The generator's own ceiling over the VPC: a fixed record served from the harper VM's 4 cores, driven at one
-# shard per generator vCPU and at half that. Prints the shard count the measured cells use: whichever served
-# more on C without the driver saturating (over 90% of one core per shard busy), since the fixed-record server
-# answers several times faster than any target, so a driver short of saturation there has headroom for every
-# cell. Fails if neither qualifies. Kept in $RUN_DIR/shards, so a resumed session does not measure it again.
+# Ceiling logs as <shards>:<log> pairs; prints the shard count the measured cells use and the ops/s it reached on C.
+# A run with request errors does not count, and the second (half the shards) wins only if more than 5% faster. Busy
+# cores do not decide: against a server faster than the driver, one shard per vCPU always reads as saturated, while
+# on an SMT shape a shard per vCPU saturates the physical cores and still reads as two thirds busy. What bounds the
+# cells is the ops/s the generator reached.
+ceiling_choice() {
+	local best="" best_ops=0 pair shards log ops
+	for pair in "$@"; do
+		shards=${pair%%:*} log=${pair#*:}
+		ops=$(sed -n 's/.*CLIENT_CEILING workload=C .*ops_per_sec=\([0-9]*\).*/\1/p' "$log" 2>/dev/null | tail -1)
+		[ -n "$ops" ] && ! grep -q 'workload=C .*errors=[1-9]' "$log" || continue
+		if [ -z "$best" ] || [ "$ops" -gt $((best_ops * 105 / 100)) ]; then best=$shards best_ops=$ops; fi
+	done
+	[ -n "$best" ] && echo "$best $best_ops"
+}
+
+# The generator's own ceiling over the VPC: a fixed record served from the harper VM's 4 cores, driven at one shard
+# per generator vCPU and at half that (ceiling_choice picks). The fixed-record server answers several times faster
+# than any target, so the ceiling is the generator's; fails if it is under YCSB_MIN_CEILING_OPS. Prints the shard
+# count, kept in $RUN_DIR/shards so a resumed session does not measure it again.
 choose_shards() {
-	local harper_ip gen_cpus best="" best_ops=0 shards ops log
+	local harper_ip gen_cpus best best_ops shards pairs=()
 	if [ -s "$RUN_DIR/shards" ]; then
 		cat "$RUN_DIR/shards"
 		return 0
@@ -121,18 +136,15 @@ choose_shards() {
 	gen_cpus=$(on_vm_retry generator nproc)
 	for shards in "$gen_cpus" $((gen_cpus / 2)); do
 		phase "ceiling-$shards" "node benchmarks/ycsb-vs-pg/client-ceiling.mts --base-url=http://$harper_ip:9941 \
-			--concurrency=64 --shards=$shards --max-generator-busy=0.9" >&2 || true
-		log="$RUN_DIR/logs/ceiling-$shards.log"
-		ops=$(sed -n 's/.*CLIENT_CEILING workload=C .*ops_per_sec=\([0-9]*\).*/\1/p' "$log" 2>/dev/null | tail -1)
-		if [ -n "$ops" ] && ! grep -q -e CLIENT_CEILING_FAILED -e 'workload=C .*errors=[1-9]' "$log" && [ "$ops" -gt "$best_ops" ]; then
-			best=$shards best_ops=$ops
-		fi
+			--concurrency=64 --shards=$shards" >&2 || true
+		pairs+=("$shards:$RUN_DIR/logs/ceiling-$shards.log")
 	done
 	on_vm_retry harper 'systemctl --user stop ycsb-ceiling-server' >&2
-	[ -n "$best" ] || {
-		echo "the generator was the limit at every shard count tried; raise YCSB_GEN_MACHINE_TYPE" >&2
+	read -r best best_ops < <(ceiling_choice "${pairs[@]}") || true
+	if [ -z "${best:-}" ] || [ "$best_ops" -lt "$YCSB_MIN_CEILING_OPS" ]; then
+		echo "the generator reached ${best_ops:-no error-free} ops/s on C, under YCSB_MIN_CEILING_OPS=$YCSB_MIN_CEILING_OPS; raise YCSB_GEN_MACHINE_TYPE" >&2
 		return 1
-	}
+	fi
 	echo "measured cells run with --shards=$best (client-ceiling: $best_ops ops/s on C)" >&2
 	echo "$best" >"$RUN_DIR/shards"
 	echo "$best"

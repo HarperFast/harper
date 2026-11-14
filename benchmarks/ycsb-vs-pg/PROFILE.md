@@ -28,6 +28,8 @@ Added 2026-11-01: [the record cache's weak tier](#the-record-caches-weak-tier-20
 
 Added 2026-11-02: [a Redis-sized record cache](#a-redis-sized-record-cache-2026-11-02). Giving the record cache Redis's 3 GiB on 4 threads does not pay at 2x: hit rate +7–10 points, throughput flat to −7%, because the memory comes out of the page and block caches. Two threads with twice the cache use only 2.7 of 4 cores. The section has the per-record heap cost, GC by phase, a recommendation for a byte-sized cache, and two rocksdb-js read-path gaps.
 
+Added 2026-11-12: [warm C and chain-4 on GCP with token auth](#warm-c-and-chain-4-on-gcp-token-auth-2026-11-12). Harper's fixed cost per request is about 11 µs/op higher than the stack's, but each additional dependent read costs it 8.2 µs/op against the stack's 17.4. The largest part of the stack's per-read cost is GC, not the Redis round trip.
+
 ## Ranked optimization candidates
 
 Estimates are CPU µs/op at the point named, from the bucket and frame costs below; only 8 is measured as a change. All are proposals for separate work: this PR changes no product code.
@@ -361,6 +363,80 @@ Estimates are CPU µs/op at warm C, from the self time of the named frames plus 
 
 Remaining share of header assembly, for the header task: 2.9 µs/op own and 1.6 KB / 34 objects per request. That covers `applyResponseHeaders` 0.51, `writeHeaders` 0.35, `addVaryHeader` 0.24, the `Vary` split and lowercase, the internalization of header names, and the `Server-Timing` value (`http.ts:1170`, `:1237`: two `performance.now()` calls and a `toFixed(2)` per request, 0.2 µs/op in the `http.ts` layer).
 
+## Warm C and chain-4 on GCP, token auth (2026-11-12)
+
+The profile cells of the full matrix ([README](README.md#results-full-matrix-on-gcp-2026-11-12)): harper-uws and pg-redis, each on its own c4-standard-8-lssd VM (4 physical cores of an Intel Xeon 6985P-C, Granite Rapids, SMT off, turbo on, 8 GiB cap), us-central1-c, `--auth=token`, harness `da839bf` on Harper main `f39c1a1831`. After each cell's measured run come a 1M-op counters-only window and a 1M-op `perf record` window. One rep per cell, run after the matrix's measured cells on the same VMs, because the profiler's V8 flags change what they measure. chain-4 reads five records per request where C reads one, so "per extra read" below is (chain-4 − C) / 4. An earlier run of the same cells on other VMs, the night before, gave every bucket within 1.2 µs/op of these.
+
+| CPU µs/op                                                                                                                                        | harper-uws C | pg-redis C | harper-uws chain-4 | pg-redis chain-4 | harper-uws per extra read | pg-redis per extra read |
+| ------------------------------------------------------------------------------------------------------------------------------------------------ | -----------: | ---------: | -----------------: | ---------------: | ------------------------: | ----------------------: |
+| HTTP parse + write, socket I/O and syscalls                                                                                                      |          8.3 |       13.3 |                9.3 |             20.5 |                       0.2 |                     1.8 |
+| routing, request/context setup, handler                                                                                                          |          3.4 |        1.7 |                6.7 |              3.0 |                       0.8 |                     0.3 |
+| authentication, permissions                                                                                                                      |          1.9 |        8.2 |                2.1 |              9.6 |                       0.1 |                     0.3 |
+| data access: Harper's Table.get, transaction, record cache, RocksDB, decode; the stack's ioredis, Redis server and JSON.parse of a cached record |         18.5 |        6.4 |               35.7 |             29.3 |                       4.3 |                     5.7 |
+| response serialization (JSON)                                                                                                                    |          1.7 |          – |                3.3 |              2.6 |                       0.4 |                     0.7 |
+| event loop, promise/microtask machinery                                                                                                          |          1.8 |        2.0 |                4.3 |              6.6 |                       0.6 |                     1.2 |
+| GC                                                                                                                                               |          6.0 |        8.5 |               12.7 |             37.5 |                       1.7 |                     7.3 |
+| JIT compilation, other                                                                                                                           |          0.8 |        0.4 |                1.3 |              1.1 |                       0.1 |                     0.2 |
+| **total**                                                                                                                                        |     **42.6** |   **40.6** |           **75.4** |        **110.3** |                   **8.2** |                **17.4** |
+| instructions/op, counters window                                                                                                                 |       220.9k |     239.9k |             367.7k |           636.2k |                     36.7k |                   99.1k |
+| throughput in the profile window, ops/s                                                                                                          |       89,955 |     92,277 |             46,640 |           30,478 |                           |                         |
+
+**The hypothesis holds: Harper's fixed cost per request is larger and each extra read is cheaper. Its mechanism for the stack's side needs one correction.**
+
+- **Fixed cost.** Fitting C as fixed + 1 read and chain-4 as fixed + 5 reads gives Harper 34.4 µs/op fixed and 8.2 per read, and the stack 23.2 fixed and 17.4 per read. Harper's fixed cost is higher in data access (+13.5: the request's transaction, the RocksDB get path, the record cache) and GC (+3.1). It is lower in authentication (−6.1: a token cache against an HMAC verification per request) and HTTP (−3.4: uWS against Node's HTTP server). At C the two nearly cancel: 42.6 against 40.6 µs/op.
+- **Harper's extra read, 8.2 µs/op:**
+  - RocksDB read +2.8;
+  - resource resolution, `Table.get`, record cache and decode +1.8;
+  - GC +1.7;
+  - the larger response (uWS write and JSON) +1.2;
+  - its request transaction +0.3. The hop reads through the request's transaction and opens no new one.
+- **The stack's extra read, 17.4 µs/op:**
+  - GC +7.3: concurrent major-GC marking +3.4, scavenge +2.6, sweeping +1.0;
+  - the Redis round trip +6.2: ioredis +2.1, the Redis server +2.3, and socket reads charged to HTTP +1.8;
+  - `JSON.parse` of the record +1.3;
+  - event loop and promises +1.2.
+- **The correction.** The round trip and `JSON.parse` account for about 7.5 of the 17.4 µs. The largest part is GC, and most of it is major-GC marking (4.1 → 17.5 µs/op from C to chain-4), which garbage that dies within one request does not explain. What drives it was not isolated here: old-generation growth, or external memory from ioredis's reply buffers.
+- **Instructions agree.** In the measured cells, an extra read costs 43.0k instructions for harper-uws and 99.6k for pg-redis. By component, the stack's extra read is Fastify +92.3k and Redis +8.6k.
+
+The stack's C returns Redis's bytes without parsing them, so its per-read figure also carries one `JSON.parse` and the projection's serialization that C skips. Measured from chain-1 instead, where both requests parse every record, an extra read costs 14.0 µs/op and 92.6k instructions for pg-redis, and 7.6 µs/op and 35.0k instructions for harper-uws ([README](README.md#results-full-matrix-on-gcp-2026-11-12)).
+
+Against the [2026-10-30 XPS table](#where-harpers-read-path-spends-its-cpu), Harper's shares barely moved: HTTP 23% → 19%, data access 37% → 43%, GC 15% → 14%. The stack's moved into authentication (0 → 20%, now that the token is verified on every request), out of HTTP (43% → 33%) and data access (24% → 16%). Compare shares, not µs/op: the VMs ran at about 3.9–4.1 GHz against the XPS's 2.3 GHz, with AVX-512, token auth instead of local trust, and Harper since #3837, #3850 and weak-lru-cache 1.2.3.
+
+<details><summary>Every bucket, Harper's pipeline, GC parts</summary>
+
+| bucket                                      | harper-uws C | pg-redis C | harper-uws chain-4 | pg-redis chain-4 |
+| ------------------------------------------- | -----------: | ---------: | -----------------: | ---------------: |
+| HTTP parse + write, socket I/O and syscalls |          8.3 |       13.3 |                9.3 |             20.5 |
+| routing, request/context setup, handler     |          3.4 |        1.7 |                6.7 |              3.0 |
+| authentication, permissions                 |          1.9 |        8.2 |                2.1 |              9.6 |
+| Resource/Table.get, transactions            |          7.0 |          – |                8.6 |                – |
+| record cache lookup                         |          1.3 |          – |                4.3 |                – |
+| RocksDB read                                |          8.9 |          – |               19.9 |                – |
+| record decode (the stack: JSON.parse)       |          1.4 |          – |                2.9 |              5.3 |
+| response serialization (JSON)               |          1.7 |          – |                3.3 |              2.6 |
+| Redis client (ioredis)                      |            – |        2.7 |                  – |             11.0 |
+| Redis server                                |            – |        3.7 |                  – |             12.8 |
+| Postgres client                             |            – |          – |                  – |              0.2 |
+| event loop, promise/microtask machinery     |          1.8 |        2.0 |                4.3 |              6.6 |
+| GC                                          |          6.0 |        8.5 |               12.7 |             37.5 |
+| JIT compilation                             |          0.2 |        0.1 |                0.4 |              0.2 |
+| other                                       |          0.5 |        0.4 |                0.9 |              0.9 |
+
+| counters window, all components | harper-uws C | pg-redis C | harper-uws chain-4 | pg-redis chain-4 |
+| ------------------------------- | -----------: | ---------: | -----------------: | ---------------: |
+| cycles/op                       |       163.4k |     163.4k |             281.7k |           430.1k |
+| IPC                             |         1.35 |       1.47 |               1.31 |             1.48 |
+| kernel share of instructions    |          12% |        16% |                10% |              13% |
+| context switches/op             |         0.11 |       0.28 |               0.12 |             1.17 |
+
+The counters window counts per cgroup, for the stack's per-component split, so its CPU µs/op carries the counting cost described in the [README](README.md#remote-targets-and-gcp---hosts-gcp) and is left out here. The bucket µs/op above come from the `perf record` window, whose sampling does not switch counters per cgroup.
+
+Harper's pipeline (own µs/op, innermost layer on the stack), C → chain-4: uWS 9.05 → 12.33, `http.ts` 0.71 → 0.89, authentication 1.85 → 2.11, REST 1.08 → 1.80, request transaction 7.47 → 8.50, resource resolution 0.82 → 2.80, `Table.get` 1.04 → 1.73, record cache 1.32 → 4.27, RocksDB read 7.30 → 18.27, record decode 1.37 → 2.87, serialization 1.73 → 3.29.
+
+GC by phase, C → chain-4 (µs/op). harper-uws: major marking 2.41 → 5.12, scavenge 2.12 → 4.49, sweeping 1.09 → 2.20. pg-redis: major marking 4.10 → 17.53, scavenge 2.43 → 12.68, sweeping 1.32 → 5.28.
+
+</details>
+
 ## Flame graphs
 
 Static SVGs (root at the bottom; hover a frame for its share), colored by bucket:
@@ -370,6 +446,12 @@ Static SVGs (root at the bottom; hover a frame for its share), colored by bucket
 [pg-redis B warm](profiles/pg-redis-B-warm-rep1.svg) ·
 [harper-uws C 2x](profiles/harper-uws-C-2x-rep1.svg) ·
 [harper-uws B 2x](profiles/harper-uws-B-2x-rep1.svg) ⚠
+
+GCP, token auth (2026-11-12):
+[harper-uws C warm](profiles/gcp-2026-11-12/harper-uws-C-warm-rep1.svg) ·
+[pg-redis C warm](profiles/gcp-2026-11-12/pg-redis-C-warm-rep1.svg) ·
+[harper-uws chain-4 warm](profiles/gcp-2026-11-12/harper-uws-chain-4-warm-rep1.svg) ·
+[pg-redis chain-4 warm](profiles/gcp-2026-11-12/pg-redis-chain-4-warm-rep1.svg)
 
 ## Method
 

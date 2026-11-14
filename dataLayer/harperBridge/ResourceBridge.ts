@@ -20,6 +20,7 @@ import {
 	databaseDropPreparationTargets,
 	dropDatabase,
 	type Table,
+	throwIfUnloadedDatabaseHeldByRestore,
 } from '../../resources/databases.ts';
 import {
 	claimDatabaseDropPreparations,
@@ -291,7 +292,7 @@ export class ResourceBridge extends BridgeMethods {
 			originatingOperation: upsertObj.operation,
 		};
 		if (upsertObj.replicateTo) context.replicateTo = upsertObj.replicateTo;
-		if (upsertObj.replicatedConfirmation) context.replicatedConfirmation = upsertObj.replicatedConfirmation;
+		if (upsertObj.replicatedConfirmation != null) context.replicatedConfirmation = upsertObj.replicatedConfirmation;
 		return transaction(context, async (transaction) => {
 			if (!Table.schemaDefined) {
 				new_attributes = [];
@@ -371,7 +372,7 @@ export class ResourceBridge extends BridgeMethods {
 		const Table: any = getTable(deleteObj);
 		const context: Context = { user: deleteObj.hdb_user };
 		if (deleteObj.replicateTo) context.replicateTo = deleteObj.replicateTo;
-		if (deleteObj.replicatedConfirmation) context.replicatedConfirmation = deleteObj.replicatedConfirmation;
+		if (deleteObj.replicatedConfirmation != null) context.replicatedConfirmation = deleteObj.replicatedConfirmation;
 		return transaction(context, async (transaction) => {
 			const ids: Id[] =
 				deleteObj.ids || deleteObj.hash_values || deleteObj.records.map((record) => record[Table.primaryKey]);
@@ -717,6 +718,7 @@ export class ResourceBridge extends BridgeMethods {
 		const database = getDatabases()[databaseName];
 		assertDatabaseResidencyAvailable(databaseName);
 		if (!database) {
+			throwIfUnloadedDatabaseHeldByRestore(databaseName);
 			throw new ClientError(`Database '${databaseName}' does not exist`, 404);
 		}
 		const firstTable = database[Object.keys(database)[0]];
