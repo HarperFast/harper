@@ -91,7 +91,7 @@ Full-text queries cannot provide an exact total after authorization, structured 
 
 `fuzzyDistance` and `fuzzyTranspositions` can be set on structured `matches_fuzzy` and `matches_fuzzy_prefix` conditions, including their negated forms. Supplying them on another match mode or a group object returns HTTP 400; put the controls on its individual fuzzy conditions. Values with the wrong type also return HTTP 400. `fuzzyDistance` must be an integer from 0 to 2. `fuzzyTranspositions` must be a boolean. Omitted values default to `1` and `true`, respectively.
 
-The server setting `storage.fullText.query.maxFuzzyDistance` accepts integers from `0` to `2`, defaults to `1`, and caps accepted distances. With a cap of `0`, a fuzzy condition must explicitly set `fuzzyDistance: 0`. Omitting it still defaults to `1` and returns HTTP 400. Distance `2` requires a cap of `2`.
+The server setting `storage.fullText.query.maxFuzzyDistance` accepts integers from `0` to `2`, defaults to `1`, and caps accepted distances. With a cap of `0`, a fuzzy condition must explicitly set `fuzzyDistance: 0`. Omitting it still defaults to `1` and is rejected as over capacity. Distance `2` requires a cap of `2`. The cap is checked when the query executes, so the rejection can arrive after the response has started; see [how a capacity rejection reaches the client](#how-a-capacity-rejection-reaches-the-client).
 
 Fuzzy edits apply only to eligible analyzed surface terms: at least four characters, alphabetic content, and no numeric characters, hyphens, underscores or slashes. Other terms receive no fuzzy expansion; fuzzy controls do not override native eligibility or the normal final-term prefix behavior.
 
@@ -136,7 +136,7 @@ Optional descriptors use the same [fuzzy controls](#fuzzy-controls-in-v54) as re
 
 `boost` and `should` are reserved query-object keys on all tables in v5.4. Misplaced controls return HTTP 400 even without a full-text index; applications that previously passed ignored custom keys must rename them. An attribute named `boost` or `should` can still be queried through the `attribute` property.
 
-Each descriptor searches the parent index. An `attribute` property is rejected even if it repeats the parent index name. The list must be nonempty and contain at most `storage.fullText.query.maxQueryClauses` descriptors (default `256`). This is a coarse host precheck: native compilation also counts required clauses, Boolean structure, boosts, analyzed terms and field expansion, so a smaller list can still exceed the compiled-clause budget and return HTTP 400. A positive full-text leaf condition inside an `and` or `or` group can use these controls. The following shapes return HTTP 400:
+Each descriptor searches the parent index. An `attribute` property is rejected even if it repeats the parent index name. The list must be nonempty and contain at most `storage.fullText.query.maxQueryClauses` descriptors (default `256`). This is a coarse host precheck: native compilation also counts required clauses, Boolean structure, boosts, analyzed terms and field expansion, so a smaller list can still exceed the compiled-clause budget. That overflow is found while the query executes and does not always return HTTP 400; see [how a capacity rejection reaches the client](#how-a-capacity-rejection-reaches-the-client). A positive full-text leaf condition inside an `and` or `or` group can use these controls. The following shapes return HTTP 400:
 
 - `should` inside an optional descriptor;
 - a `not_*` comparator inside `should`;
@@ -293,7 +293,43 @@ Each offset request runs a new query and revisits earlier matches, so deeper off
 
 The default native policy allows 64 analyzed terms per text condition and 256 compiled clauses per query. Operators can configure `storage.fullText.query.maxQueryTerms` (1-1,024) and `storage.fullText.query.maxQueryClauses` (1-4,096), within the loaded native runtime's ceilings. Boolean groups, NOT, field expansion, fuzzy branches and prefix expansion also consume clause capacity. Raising fetched-hit or retained-result budgets does not raise these limits.
 
-The host policy is captured once for the full Harper process, inherited by workers and applied to reader handles, including reopened readers. A full process restart is required; a worker-only restart does not apply changes. Requests cannot raise the policy. Overflow rejects the query rather than executing a truncated one. Query-capacity validation failures return `400` before the response starts. If an operations JSON stream has already started, it instead aborts and may include an error diagnostic; treat an incomplete response as failed and discard its rows. Other depth, byte, phrase/fuzzy construction, queue, response and deadline safeguards continue to apply. Native deadlines are cooperative; they cannot interrupt every construction step immediately. Fuzzy queries still have fixed native limits of 16 eligible terms and 256 construction-work units; distance two costs four times as much construction work per term and field as distance one. Raising term or clause policy does not raise those limits. Raised-policy handles also route non-ASCII text and larger ASCII queries through expensive-search admission, which can increase busy rejections under concurrency. See [storage configuration](../configuration/options.md#storage) and the [native limits](https://github.com/HarperFast/fulltext/blob/v0.9.0/docs/limits.md#query-capacity-policy).
+The host policy is captured once for the full Harper process, inherited by workers and applied to reader handles, including reopened readers. A full process restart is required; a worker-only restart does not apply changes. Requests cannot raise the policy. Overflow rejects the query rather than executing a truncated one. The rejection is a `ClientError` with status `400`, but that status does not always reach the client; see [how a capacity rejection reaches the client](#how-a-capacity-rejection-reaches-the-client). Other depth, byte, phrase/fuzzy construction, queue, response and deadline safeguards continue to apply. Native deadlines are cooperative; they cannot interrupt every construction step immediately. Fuzzy queries still have fixed native limits of 16 eligible terms and 256 construction-work units; distance two costs four times as much construction work per term and field as distance one. Raising term or clause policy does not raise those limits. Raised-policy handles also route non-ASCII text and larger ASCII queries through expensive-search admission, which can increase busy rejections under concurrency. See [storage configuration](../configuration/options.md#storage) and the [native limits](https://github.com/HarperFast/fulltext/blob/v0.9.0/docs/limits.md#query-capacity-policy).
+
+### How a capacity rejection reaches the client
+
+Harper returns `400` for a capacity failure only when it finds the problem before it writes the response head. Of the `storage.fullText.query` limits, the only one checked before the query runs is the `should` list length against `maxQueryClauses`. It returns `400` in every response format, like the other malformed-control errors on this page.
+
+Harper finds the other limits while the query runs:
+
+- more analyzed terms than `storage.fullText.query.maxQueryTerms`;
+- more compiled clauses than `storage.fullText.query.maxQueryClauses`, including Boolean structure, field expansion and a `should` list that passed the precheck;
+- a fuzzy distance above `storage.fullText.query.maxFuzzyDistance`;
+- the fixed native fuzzy limits described above, such as more than 16 eligible fuzzy terms.
+
+A REST collection read normally streams its results, so the response can already have started by then. The error is still a `ClientError` with status `400`, but it arrives in the body instead of the status line:
+
+| Format           | `GET`                                                                                                                                                                  | `QUERY`                                                |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| NDJSON           | `400` if Harper finds the problem within the stream's short startup window; otherwise `200` and a final `{"$harperStreamError": {...}}` line                           | `200` and a final `{"$harperStreamError": {...}}` line |
+| JSON             | `200`; the array ends at an `{"error": "ClientError: ..."}` element with no closing `]`, and the connection closes                                                     | Same as `GET`                                          |
+| CBOR             | `200`; the body is cut off                                                                                                                                             | Same as `GET`                                          |
+| CSV, MessagePack | If the failure comes before the first row, no status at all: over HTTP/1.1 the connection closes and the client reports a network error. Otherwise the body is cut off | Same as `GET`                                          |
+
+Of these formats, only NDJSON has a startup window, and only on `GET` and `HEAD`. A rejection found inside it returns `400`; one found after it does not. The same limit can land on either side, so do not rely on a `400`. A `HEAD` that misses the NDJSON window, or uses another format, returns an empty `200` without streaming rows, so a `200` from `HEAD` does not show that the query is within capacity. Other methods, such as a custom resource's `POST` that returns the search iterator, have no startup window and behave like `QUERY`. The operations API `search_by_conditions` operation behaves like `QUERY` for JSON and NDJSON.
+
+Two cases return an ordinary `400` in every format, because the query finishes before Harper writes the response head:
+
+- a `GET` or `HEAD` with `Prefer: count=exact` or `Prefer: count=estimated` and a page within the [count limits](../rest/querying.md#pagination-and-total-count), which builds the whole page before it responds. A page or offset beyond those limits streams without a count;
+- a resource that finishes consuming the `Table.search()` iterator before it returns, for example by collecting rows into an array. A resource that returns the iterator is streamed like a REST read.
+
+See [When a Streamed Response Fails](../rest/content-types.md#when-a-streamed-response-fails) for the stream formats.
+
+When you send a full-text query, check for all of these:
+
+- Treat an HTTP `400`, an NDJSON `$harperStreamError` record with `status: 400`, and a JSON `error` element that begins `ClientError:` as the same result. The query is invalid or over the host policy. Do not retry it unchanged: shorten the text, reduce the conditions or fuzzy distance, or ask the operator to raise the policy.
+- Do not treat `200` as success until the whole body has been read. A body that is cut off, fails to parse, or ends the read with a network error is a failed read. Discard its rows.
+- Only NDJSON gives a client that reads the whole body a parseable error. With JSON, CBOR, CSV or MessagePack the client usually sees only a failed read, which looks like a dropped connection. Request NDJSON when you need to tell a rejected query from a network failure. A rejected query fails the same way on every retry, so retry a failed read automatically only when you can tell it was a network failure.
+- The message for term, clause and fixed fuzzy-limit overflow is the same text, `Full-text query on '<index>' is invalid; check its syntax and storage.fullText.query limits`, and does not say which limit was exceeded. Count analyzed terms and Boolean branches before sending a query built from user text.
 
 ## REST
 
