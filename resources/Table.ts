@@ -330,7 +330,7 @@ import {
 	type StorageSpaceStats,
 } from '../server/storageReclamation.ts';
 import { RequestTarget } from './RequestTarget.ts';
-import harperLogger from '../utility/logging/harper_logger.ts';
+import harperLogger, { inspectForLog } from '../utility/logging/harper_logger.ts';
 import { throttle } from '../server/throttle.ts';
 import {
 	RocksDatabase,
@@ -399,7 +399,10 @@ type SourceTxnStream = {
 	failure?: { error: unknown; position: number | undefined; event: any };
 	held?: boolean;
 };
-type SourceFill = { source: unknown; outcome?: Entry; unstoredRecord?: boolean; sharable?: boolean };
+type SourceFill = { source: unknown; outcome?: Entry; unstoredRecord?: boolean; sharable?: boolean; waiters?: number };
+// a busy record's refill can gather this many waiters; only a failed one sends them back to the source in turn
+const SOURCE_FILL_WAITERS_WARNING = 50;
+const KEY_FOR_LOG = { maxStringLength: 100, maxArrayLength: 4, depth: 1, breakLength: Infinity };
 const UNCACHEABLE_TIMESTAMP = Infinity; // we use this when dynamic content is accessed that we can't safely cache, and this prevents earlier timestamps from change the "last" modification
 const MAX_DATE_TIMESTAMP = 8.64e15;
 const RECORD_PRUNING_INTERVAL = 60000; // one minute
@@ -2039,6 +2042,7 @@ export function makeTable(options): TableResourceClass {
 	let warnedNullSourcePut = false; // latched: one warn per table per worker (see _writeUpdate)
 	let warnedFutureSourceVersion = false; // likewise (see getFromSource)
 	let lastIssuanceFailureWarn = -Infinity;
+	let lastSourceFillWaitersWarn = -Infinity;
 	let sourceLoad: any; // if a source has a load function (replicator), record it here
 	let hasSourceGet: any;
 	let sourceFills: Map<unknown, SourceFill> | undefined;
@@ -14366,6 +14370,7 @@ export function makeTable(options): TableResourceClass {
 
 		if (!lockAcquired) {
 			let timer: ReturnType<typeof setTimeout>;
+			if (heldFill) heldFill.waiters = (heldFill.waiters ?? 0) + 1;
 			await new Promise<void>((resolve) => {
 				wake = resolve;
 				// only the fill holding the lock releases it; this thread's closed handle never hears of another
@@ -14377,6 +14382,7 @@ export function makeTable(options): TableResourceClass {
 				timer = setTimeout(recheck, sourceFillLockTimeout);
 			});
 			clearTimeout(timer);
+			if (heldFill) heldFill.waiters--;
 			const entry = primaryStore.getEntry(id);
 			if (
 				!entry ||
@@ -14641,6 +14647,7 @@ export function makeTable(options): TableResourceClass {
 					recordAction(resolveDuration, 'cache-resolution', tableName, null, 'fail');
 					if (responseHeaders)
 						appendHeader(responseHeaders, 'Server-Timing', `cache-resolve;dur=${resolveDuration.toFixed(2)}`, true);
+					warnWaitersOfFailedFill(fill, id, error);
 					sourceContext.transaction.abort();
 					return;
 				}
@@ -14850,15 +14857,34 @@ export function makeTable(options): TableResourceClass {
 					}
 				},
 				(error) => {
+					const dropped = disposed && error?.code === 'ERR_COLUMN_FAMILY_DROPPED';
+					if (!dropped) warnWaitersOfFailedFill(fill, id, error);
 					releaseFill();
-					if (resolved && !(disposed && error?.code === 'ERR_COLUMN_FAMILY_DROPPED'))
-						logger.error?.('Error committing cache update', error);
+					if (resolved && !dropped) logger.error?.('Error committing cache update', error);
 					// else the error was already propagated as part of the promise that we returned
 				}
 			);
 		});
 	}
 
+	function warnWaitersOfFailedFill(fill: SourceFill, id: Id, error: any): void {
+		const waiting = fill.waiters;
+		if (!(waiting >= SOURCE_FILL_WAITERS_WARNING)) return;
+		const now = performance.now();
+		if (now - lastSourceFillWaitersWarn < 60_000) return;
+		lastSourceFillWaitersWarn = now;
+		try {
+			const failure =
+				error?.statusCode ??
+				error?.status ??
+				(typeof error?.code === 'string' ? error.code : undefined) ??
+				(typeof error?.cause?.code === 'string' ? error.cause.code : undefined) ??
+				(error?.name && error.name !== 'Error' ? error.name : error?.message || error?.name || error);
+			logger.warn?.(
+				`A fetch of record ${inspectForLog(id, KEY_FOR_LOG)} of ${tableName} from its source failed with ${inspectForLog(failure, KEY_FOR_LOG)} while ${waiting} requests on this thread waited on it; they now fetch it again in turn`
+			);
+		} catch {}
+	}
 	/**
 	 * Closing the handle that owns a record lock releases it (the RocksDB handle, or the LMDB
 	 * environment), so an unlock that fails after close had nothing left to release.
