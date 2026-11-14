@@ -361,6 +361,8 @@ Options (all optional; prefer setting these via `@table` schema directives):
 
 Harper automatically serializes concurrent requests for the same missing or stale record — all waiting requests share a single upstream fetch, preventing cache stampedes.
 
+<VersionBadge type="changed" version="v5.4.1" /> A fetch holds the record for at most 10 seconds. If it is still running then, the next waiting request starts a fresh fetch while the first one finishes; a late result is cached only if nothing newer was cached meanwhile. At most one fetch at a time holds the record, and only that fetch releases it.
+
 <VersionBadge type="changed" version="v5.4.1" /> If the source throws an `Error` whose `statusCode` (or `status`) is 404 or 410 (as an HTTP client that throws on any non-2xx response does), the requests waiting on that fetch in the same worker thread receive that same error object instead of calling the source again, so anything one of them adds to it, such as a nested source's record context in its message, shows on all of them. This does not apply to a thrown `Response` or other non-`Error` value, when the source sets `noCacheStore` on its context, on a read-only node, or while the table is being dropped. After any other failure, the waiting requests fetch again in turn. A failure is never cached, so the next request after them calls the source again.
 
 #### Observing cache disposition
@@ -974,6 +976,8 @@ Returns the expiration time, if one is set.
 ### `allowStaleWhileRevalidate(entry, id): boolean`
 
 For caching tables: return `true` to serve the stale entry while revalidation happens concurrently; `false` to wait for the fresh value.
+
+<VersionBadge type="changed" version="v5.4.1" /> A read that serves the stale entry starts a revalidation only if no other request is holding that record's fetch; otherwise it just returns the stale entry. If the revalidation fails, the next read starts another one. This hook is now called before the revalidation starts.
 
 Entry properties:
 

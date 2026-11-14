@@ -121,7 +121,7 @@ A source's `lastModified` caps at local time: the version is the last-writer-win
 
 ## getFromSource() record locks outlive neither their handle nor a close
 
-Closing the owning handle releases the fill's lock (`releaseRecordLock` ignores closed stores); waiters wake on `LOCK_TIMEOUT` (a close notifies no other thread) (`cacheFillClose.test.js`).
+Closing the owning handle releases the fill's lock (`releaseRecordLock` ignores closed stores); otherwise `releaseFill` frees it once, at commit or `LOCK_TIMEOUT`. Waiters never unlock; they recheck on timeout, as a close notifies no other thread (`cacheFillClose.test.js`, `sourceFillLockTenure.test.js`).
 
 ## Blob orphan cleanup: pre-saved files outlive cancelled commits
 

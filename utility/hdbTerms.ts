@@ -782,6 +782,8 @@ export const CONFIG_PARAMS = {
 	REPLICATION_SPARESHARDS: 'replication_spareShards',
 	REPLICATION_EXPERIMENTALATTRIBUTESLOTS: 'replication_experimentalAttributeSlots',
 	REPLICATION_BLOBTIMEOUT: 'replication_blobTimeout',
+	REPLICATION_CONFIRMATION: 'replication_confirmation',
+	REPLICATION_RECORDLOCKCONFIRMATION: 'replication_recordLockConfirmation',
 	REPLICATION_CONFIRMATIONTIMEOUT: 'replication_confirmationTimeout',
 	REPLICATION_SHARDINGCONFIRMATIONTIMEOUT: 'replication_shardingConfirmationTimeout',
 	REPLICATION_BLOBGAPRECONNECTMS: 'replication_blobGapReconnectMs',

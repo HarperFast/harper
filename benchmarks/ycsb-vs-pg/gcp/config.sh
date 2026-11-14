@@ -6,6 +6,10 @@ YCSB_GCP_ZONE="${YCSB_GCP_ZONE:-us-central1-a}"
 # placement policy are regional. The zone a run got is in runs/<id>/zone and its manifest.
 YCSB_GCP_ZONES="${YCSB_GCP_ZONES:-$YCSB_GCP_ZONE}"
 YCSB_GCP_ZONE="${YCSB_GCP_ZONES%% *}"
+# How long provisioning keeps retrying the zone list while every zone is out of capacity (0: give up after one
+# pass), and the pause between passes.
+YCSB_CAPACITY_WAIT_MIN="${YCSB_CAPACITY_WAIT_MIN:-0}"
+YCSB_CAPACITY_RETRY_S="${YCSB_CAPACITY_RETRY_S:-600}"
 YCSB_GCP_REGION="${YCSB_GCP_ZONE%-*}"
 for _zone in $YCSB_GCP_ZONES; do
 	if [ "${_zone%-*}" != "$YCSB_GCP_REGION" ]; then
@@ -47,6 +51,9 @@ fi
 # The Node driver spent 70-100 us of CPU per op on the XPS (README, "Load generator"), so a 4-core target serving
 # 60-80k ops/s needs up to ~8 of the generator's cores; run-estimate.sh checks it is not the ceiling first.
 YCSB_GEN_MACHINE_TYPE="${YCSB_GEN_MACHINE_TYPE:-c4-standard-32}"
+# The C ops/s a generator must reach against the fixed-record server before anything is measured (session.sh
+# choose_shards). The fastest cells, warm C on a 4-core target VM, serve about 90k.
+YCSB_MIN_CEILING_OPS="${YCSB_MIN_CEILING_OPS:-150000}"
 YCSB_IMAGE_FAMILY="${YCSB_IMAGE_FAMILY:-ubuntu-2404-lts-amd64}"
 YCSB_IMAGE_PROJECT="${YCSB_IMAGE_PROJECT:-ubuntu-os-cloud}"
 # GCE deletes every VM of a run this long after it starts, whatever happens to the script that made it.
