@@ -111,6 +111,14 @@ export type Entry = {
 	additionalAuditRefs?: Array<{ version: number; nodeId: number }>;
 	/** What a re-delivery of a write carries when that is not its log key; addresses no entry. */
 	receivedIdentityRefs?: Array<{ version: number; nodeId: number }>;
+	/**
+	 * A delete a copied-delete tombstone has no audit entry for, or a native delete a record-less write landed on:
+	 * every write it precedes loses (Table.ts `precedesDeleteBoundary`), except a publish, which keeps the row's
+	 * value. Kept by later writes until an audited put or delete above it, whose own entry ends the walk. A stamp
+	 * onto a newer head keeps the head's version, so another worker's cache can still vouch for the entry without
+	 * it: a write must read its base uncached.
+	 */
+	copiedDeleteBoundary?: { version: number; nodeId: number };
 };
 
 // these are matched by lmdb-js for timestamp replacement. the first byte here is used to xor with the first byte of the date as a double so that it ends up less than 32 for easier identification (otherwise dates start with 66)
@@ -142,6 +150,12 @@ export const HAS_ADDITIONAL_AUDIT_REFS = 0x80;
 // small mapping indexes (nodeIdMapping.ts), so the bit is never part of one. Released builds before it
 // wrote log keys only.
 export const RECEIVED_IDENTITY_REF = 0x80000000;
+// Marks the persisted ref that is the record's copied-delete boundary (bit 30 of its node-id word). A reader before
+// it (5.3, 5.4 betas) decodes the row correctly but files the ref as a log key under node id `origin | bit 30`, which
+// names no log: a walk that follows it misses and merges, an in-order write drops it, and an out-of-order write can
+// copy it into an audit entry's previous refs, where it later reads as missing history. Each degrades that row to
+// the behavior before boundaries existed, and only rows that held a delete under a record-less or later write carry one.
+const COPIED_DELETE_REF = 0x40000000;
 // A resequenced write keeps the (newer) version it merged onto, so one version identifies two
 // different stored values and version equality proves nothing. The metadata word this is set in is
 // the same header word the VerificationTable reads at value offset 8 — ACTION_32_BIT is the tag
@@ -169,6 +183,8 @@ function versionIsReused(newVersion: number, existingEntry: { version?: number }
 	return existingEntry?.version != null && newVersion <= existingEntry.version;
 }
 
+// Table.ts INVALIDATED | REPLICA: a stub holds no delete
+const STUB_FLAGS = 1 | 4;
 const TRACKED_WRITE_TYPES = new Set(['put', 'patch', 'delete', 'message', 'publish']);
 // For now we use this as the private property mechanism for mapping records to entries.
 // WeakMaps are definitely not the fastest form of private properties, but they are the only
@@ -199,7 +215,8 @@ let timestampNextEncoding = 0,
 	residencySlotAtNextEncoding: number | undefined,
 	nodeIdAtNextEncoding = -1,
 	additionalAuditRefsNextEncoding: Array<{ version: number; nodeId: number }> | undefined,
-	receivedIdentityRefsNextEncoding: Array<{ version: number; nodeId: number }> | undefined;
+	receivedIdentityRefsNextEncoding: Array<{ version: number; nodeId: number }> | undefined,
+	copiedDeleteBoundaryNextEncoding: { version: number; nodeId: number } | undefined;
 // tracking metadata with a singleton works better than trying to alter response of getEntry/get and coordinating that across caching layers
 export let lastMetadata: Entry | null = null;
 let strictDecodeDepth = 0;
@@ -402,8 +419,10 @@ export class RecordEncoder extends StructonEncoder {
 				const nodeId = nodeIdAtNextEncoding;
 				const logKeyRefs = additionalAuditRefsNextEncoding;
 				const identityRefs = receivedIdentityRefsNextEncoding;
+				const deleteBoundary = copiedDeleteBoundaryNextEncoding;
 				const logKeyRefCount = logKeyRefs?.length ?? 0;
 				const identityRefCount = identityRefs?.length ?? 0;
+				const boundaryRefCount = deleteBoundary ? 1 : 0;
 				let auditRefsToEncode = 0;
 				let logKeyRefsToDrop = 0;
 				let identityRefsToDrop = 0;
@@ -436,7 +455,7 @@ export class RecordEncoder extends StructonEncoder {
 							throw new Error('Node id included, but not in metadata flags');
 						}
 					}
-					if (logKeyRefCount + identityRefCount > 0) {
+					if (logKeyRefCount + identityRefCount + boundaryRefCount > 0) {
 						// `valueStart` is OR'd into msgpackr's encode options below, where the reserved-space field
 						// is the LOW BYTE (RESERVE_START_SPACE): a valueStart over 255 wraps, so the record is
 						// written with a prefix neither side agrees on and decodes as garbage. The persisted ref
@@ -444,15 +463,17 @@ export class RecordEncoder extends StructonEncoder {
 						// so over budget the oldest are dropped, identities first (they only answer a re-delivery, a
 						// log key also leads the walk to a branch), and never the first log key (the addressable audit
 						// head when the record and log clocks diverge) nor the last of either kind (the newest receipt
-						// the re-delivery guard matches, whichever kind it is). (harper#2642)
-						const budget = Math.floor((MAX_RESERVED_START_SPACE - valueStart - 1) / 12);
+						// the re-delivery guard matches, whichever kind it is). (harper#2642) A copied-delete boundary
+						// is never dropped: nothing else records the delete.
+						const budget = Math.floor((MAX_RESERVED_START_SPACE - valueStart - 1) / 12) - boundaryRefCount;
 						const excess = Math.max(0, logKeyRefCount + identityRefCount - budget);
 						identityRefsToDrop = Math.min(excess, Math.max(0, identityRefCount - 1));
 						logKeyRefsToDrop = excess - identityRefsToDrop;
-						auditRefsToEncode = logKeyRefCount + identityRefCount - excess;
+						auditRefsToEncode = logKeyRefCount + identityRefCount - excess + boundaryRefCount;
 						valueStart += 1 + auditRefsToEncode * 12; // 1 byte for count + 8 bytes version + 4 bytes nodeId per ref
 						additionalAuditRefsNextEncoding = undefined;
 						receivedIdentityRefsNextEncoding = undefined;
+						copiedDeleteBoundaryNextEncoding = undefined;
 					}
 				}
 				const encoded = superEncode.call(this, record, options | 2048 | valueStart); // encode with 8 bytes reserved space for txnId
@@ -508,6 +529,12 @@ export class RecordEncoder extends StructonEncoder {
 							dataView.setFloat64(position, ref.version);
 							position += 8;
 							dataView.setUint32(position, ((ref.nodeId ?? 0) | RECEIVED_IDENTITY_REF) >>> 0);
+							position += 4;
+						}
+						if (deleteBoundary) {
+							dataView.setFloat64(position, deleteBoundary.version);
+							position += 8;
+							dataView.setUint32(position, ((deleteBoundary.nodeId ?? 0) | COPIED_DELETE_REF) >>> 0);
 							position += 4;
 						}
 					}
@@ -662,7 +689,13 @@ export class RecordEncoder extends StructonEncoder {
 					localTime = getTimestamp();
 					nextByte = buffer[position];
 				}
-				let expiresAt, residencyId, residencySlot, nodeId, additionalAuditRefs, receivedIdentityRefs;
+				let expiresAt,
+					residencyId,
+					residencySlot,
+					nodeId,
+					additionalAuditRefs,
+					receivedIdentityRefs,
+					copiedDeleteBoundary;
 				if (nextByte < 32) {
 					if (nextByte === ACTION_32_BIT) {
 						const dataView =
@@ -711,6 +744,8 @@ export class RecordEncoder extends StructonEncoder {
 							position += 4;
 							if (refNodeId >= RECEIVED_IDENTITY_REF)
 								(receivedIdentityRefs ??= []).push({ version, nodeId: refNodeId - RECEIVED_IDENTITY_REF });
+							else if (refNodeId & COPIED_DELETE_REF)
+								copiedDeleteBoundary = { version, nodeId: refNodeId - COPIED_DELETE_REF };
 							else (additionalAuditRefs ??= []).push({ version, nodeId: refNodeId });
 						}
 					}
@@ -732,6 +767,7 @@ export class RecordEncoder extends StructonEncoder {
 					nodeId,
 					additionalAuditRefs,
 					receivedIdentityRefs,
+					copiedDeleteBoundary,
 					size: end - start,
 					value,
 				} as any;
@@ -811,6 +847,7 @@ export function handleLocalTimeForGets(store, rootStore) {
 			entry.nodeId = lastMetadata.nodeId;
 			entry.additionalAuditRefs = lastMetadata.additionalAuditRefs;
 			entry.receivedIdentityRefs = lastMetadata.receivedIdentityRefs;
+			if (lastMetadata.copiedDeleteBoundary) entry.copiedDeleteBoundary = lastMetadata.copiedDeleteBoundary;
 			entry.size = lastMetadata.size;
 			if (lastMetadata.expiresAt >= 0) {
 				entry.expiresAt = lastMetadata.expiresAt;
@@ -868,6 +905,7 @@ export function handleLocalTimeForGets(store, rootStore) {
 				entry.nodeId = lastMetadata.nodeId;
 				entry.additionalAuditRefs = lastMetadata.additionalAuditRefs;
 				entry.receivedIdentityRefs = lastMetadata.receivedIdentityRefs;
+				if (lastMetadata.copiedDeleteBoundary) entry.copiedDeleteBoundary = lastMetadata.copiedDeleteBoundary;
 				entry.size = lastMetadata.size;
 				if (lastMetadata.expiresAt >= 0) entry.expiresAt = lastMetadata.expiresAt;
 				lastMetadata = null;
@@ -984,6 +1022,7 @@ export function clearNextEncoding() {
 	residencySlotAtNextEncoding = undefined;
 	additionalAuditRefsNextEncoding = undefined;
 	receivedIdentityRefsNextEncoding = undefined;
+	copiedDeleteBoundaryNextEncoding = undefined;
 }
 export function recordUpdater(
 	store,
@@ -996,7 +1035,7 @@ export function recordUpdater(
 		record,
 		existingEntry,
 		newVersion,
-		assignMetadata = -1, // when positive, this has a set of metadata flags for the record
+		assignMetadata = 0, // metadata flags for the record
 		audit?: boolean, // true -> audit this record. false -> do not. null -> retain any audit timestamp
 		options?,
 		type = 'put',
@@ -1038,10 +1077,15 @@ export function recordUpdater(
 		metadataInNextEncoding = assignMetadata;
 		expiresAtNextEncoding = expiresAt;
 		const auditExpiresAt = options?.auditExpiresAt ?? expiresAt;
-		// Math.max normalizes the -1 "no metadata word" sentinel to 0 first: OR-ing the flag into
-		// -1 directly would stay -1 and silently drop the metadata word (and the flag with it).
-		if (isRocksDB && record !== undefined && versionIsReused(newVersion, existingEntry))
-			metadataInNextEncoding = Math.max(metadataInNextEncoding, 0) | VERSION_REUSED;
+		// A rewrite of the unchanged value keeps the row's own answer: its version still identifies that value.
+		if (
+			isRocksDB &&
+			record !== undefined &&
+			(options?.unchangedValue
+				? existingEntry?.metadataFlags & VERSION_REUSED
+				: versionIsReused(newVersion, existingEntry))
+		)
+			metadataInNextEncoding |= VERSION_REUSED;
 		const putOptions: {
 			version: number;
 			instructedWrite?: boolean;
@@ -1081,7 +1125,36 @@ export function recordUpdater(
 			const receivedIdentityRefs = options?.receivedIdentityRefs;
 			additionalAuditRefsNextEncoding = additionalAuditRefs?.length > 0 ? additionalAuditRefs : undefined;
 			receivedIdentityRefsNextEncoding = receivedIdentityRefs?.length > 0 ? receivedIdentityRefs : undefined;
-			if (additionalAuditRefsNextEncoding || receivedIdentityRefsNextEncoding)
+			// a record-less or unaudited copied write over a delete keeps that delete's identity, native or copied, unless the
+			// stored boundary is later
+			const headDelete =
+				(type === 'message' ||
+					type === 'publish' ||
+					type === 'invalidate' ||
+					type === 'relocate' ||
+					options?.copyApply) &&
+				existingEntry &&
+				existingEntry.value == null &&
+				existingEntry.metadataFlags & FULL_WRITE_HEAD &&
+				!(existingEntry.metadataFlags & STUB_FLAGS)
+					? { version: existingEntry.version, nodeId: existingEntry.nodeId ?? 0 }
+					: undefined;
+			const storedBoundary = existingEntry?.copiedDeleteBoundary;
+			const existingBoundary =
+				headDelete && !(storedBoundary?.version > headDelete.version) ? headDelete : storedBoundary;
+			const copiedDeleteBoundary =
+				options?.copiedDeleteBoundary ??
+				(existingBoundary &&
+				!(
+					audit &&
+					(type === 'put' || type === 'delete') &&
+					assignMetadata & FULL_WRITE_HEAD &&
+					(options?.recordVersion ?? newVersion) > existingBoundary.version
+				)
+					? existingBoundary
+					: undefined);
+			copiedDeleteBoundaryNextEncoding = isRocksDB && record !== undefined ? copiedDeleteBoundary : undefined;
+			if (copiedDeleteBoundaryNextEncoding || additionalAuditRefsNextEncoding || receivedIdentityRefsNextEncoding)
 				metadataInNextEncoding |= HAS_ADDITIONAL_AUDIT_REFS;
 			const previousAdditionalAuditRefs = existingEntry?.additionalAuditRefs;
 			if (previousAdditionalAuditRefs && previousAdditionalAuditRefs.length > 0) {
