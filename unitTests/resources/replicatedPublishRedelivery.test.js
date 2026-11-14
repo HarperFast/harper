@@ -181,8 +181,8 @@ describe('Re-delivered replicated publishes', function () {
 			return { ...reads };
 		};
 		try {
-			// one decoded range read, which queries the log once, per delivery of the transaction
-			assert.deepEqual(await counted(), { probes: 1, ranges: 1 }, 'a first delivery');
+			assert.deepEqual(await counted(), { probes: 0, ranges: 0 }, 'a first delivery to new topics');
+			// one decoded range read, which queries the log once, for the whole re-delivered transaction
 			assert.deepEqual(await counted(), { probes: 1, ranges: 1 }, 'a re-delivery');
 		} finally {
 			delete log.query;
@@ -217,6 +217,28 @@ describe('Re-delivered replicated publishes', function () {
 		}
 		assert.equal(probes, 0);
 		assert.equal(received.filter((delivery) => delivery.endsWith(':2')).length, 50);
+	});
+
+	it('reads no log for the first publish to a new topic', async () => {
+		await applyFrame(originClock(), [{ id: 'warm/0', n: 0 }]);
+		const log = Topics.auditStore.logById(peer);
+		const originalQuery = log.query;
+		let probes = 0;
+		Object.defineProperty(log, 'query', {
+			configurable: true,
+			value(...args) {
+				probes++;
+				return originalQuery.apply(this, args);
+			},
+		});
+		try {
+			await applyFrame(originClock(), [{ id: 'fresh/1', n: 1 }]);
+		} finally {
+			delete log.query;
+			await drain();
+		}
+		assert.equal(probes, 0);
+		assert.ok(received.includes('fresh/1:1'));
 	});
 
 	it('delivers publishes from two origins at the same key and topic', async () => {
