@@ -151,7 +151,6 @@ describe('Requests waiting on one source fill', function () {
 			const hot = reads(fixture, 'loud-write', 60);
 			await waitFor(() => fixture.parked >= 59);
 			fixture.pending.shift().resolve({ name: 'loud-write' });
-			// the next waiter can fetch only once the failed write let go of the record
 			await waitFor(() => fixture.sourceCalls === 2, { timeout: 2_000 });
 			fixture.WaitTable.getResidency = getResidency;
 			await settle(fixture, hot);
@@ -160,12 +159,17 @@ describe('Requests waiting on one source fill', function () {
 		}
 	});
 
-	it('names a timeout by its error name and an empty error by its record context', async function () {
+	it('names a timeout by its error name, a fetch failure by its cause code and an empty error by its record context', async function () {
 		const timeout = AbortSignal.timeout(0);
 		await waitFor(() => timeout.aborted);
 		for (const [key, reason, expected] of [
 			['timed-out', timeout.reason, " failed with 'TimeoutError' while "],
 			['unnamed', new Error(), " failed with ' while resolving record unnamed for SourceFillWaiters"],
+			[
+				'unreachable',
+				new TypeError('fetch failed', { cause: Object.assign(new Error('connect refused'), { code: 'ECONNREFUSED' }) }),
+				" failed with 'ECONNREFUSED' while ",
+			],
 		]) {
 			const fixture = setUpTable();
 			const hot = reads(fixture, key, 60);
@@ -183,7 +187,6 @@ describe('Requests waiting on one source fill', function () {
 			const fixture = setUpTable();
 			const hot = reads(fixture, 'handed-over', 60);
 			await waitFor(() => fixture.parked >= 59);
-			// the first fill outlives its hold, so the waiters move on to a second one
 			await waitFor(() => fixture.sourceCalls === 2);
 			fixture.pending.shift().reject(Object.assign(new Error('origin unavailable'), { statusCode: 503 }));
 			await new Promise((resolve) => setTimeout(resolve, 20));

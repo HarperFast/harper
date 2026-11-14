@@ -14857,10 +14857,10 @@ export function makeTable(options): TableResourceClass {
 					}
 				},
 				(error) => {
-					warnWaitersOfFailedFill(fill, id, error);
+					const dropped = disposed && error?.code === 'ERR_COLUMN_FAMILY_DROPPED';
+					if (!dropped) warnWaitersOfFailedFill(fill, id, error);
 					releaseFill();
-					if (resolved && !(disposed && error?.code === 'ERR_COLUMN_FAMILY_DROPPED'))
-						logger.error?.('Error committing cache update', error);
+					if (resolved && !dropped) logger.error?.('Error committing cache update', error);
 					// else the error was already propagated as part of the promise that we returned
 				}
 			);
@@ -14878,6 +14878,7 @@ export function makeTable(options): TableResourceClass {
 				error?.statusCode ??
 				error?.status ??
 				(typeof error?.code === 'string' ? error.code : undefined) ??
+				(typeof error?.cause?.code === 'string' ? error.cause.code : undefined) ??
 				(error?.name && error.name !== 'Error' ? error.name : error?.message || error?.name || error);
 			logger.warn?.(
 				`A fetch of record ${inspectForLog(id, KEY_FOR_LOG)} of ${tableName} from its source failed with ${inspectForLog(failure, KEY_FOR_LOG)} while ${waiting} requests on this thread waited on it; they now fetch it again in turn`
