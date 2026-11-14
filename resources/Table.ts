@@ -6826,10 +6826,16 @@ export function makeTable(options): TableResourceClass {
 					let residencyId: number | undefined;
 					let residencySlot: number | undefined;
 					if (options?.residencyId != undefined) residencyId = options.residencyId;
-					// options/context expiresAt are the most specific overrides; a record @expiresAt field
-					// (resolved below, once recordToStore is merged) overrides the table default in both
-					// directions; the table default is the final fallback. -1 means no expiration.
-					let expiresAt: number | undefined = options?.expiresAt ?? context?.expiresAt;
+					// options/context expiresAt are the most specific overrides, except that a source-applied write
+					// skips the context's: the apply loop shares one context (its first event, or the transaction
+					// event) across the whole source transaction. A record @expiresAt field (resolved below, once
+					// recordToStore is merged) overrides the table default in both directions; the table default is
+					// the final fallback. -1 means no expiration.
+					let expiresAt: number | undefined = options?.expiresAt ?? undefined;
+					if (expiresAt === undefined) {
+						const contextExpiresAt = context?.expiresAt;
+						if (contextExpiresAt != undefined && !options?.isNotification) expiresAt = contextExpiresAt;
+					}
 					let auditExpiresAt: number | undefined;
 					let additionalAuditRefs: Array<{ version: number; nodeId: number }> = []; // track additional audit refs to store
 					let receivedIdentityRefs: Array<{ version: number; nodeId: number }> | undefined;

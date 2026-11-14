@@ -480,6 +480,8 @@ class MySource extends Resource {
 | `table`     | Target table name (for cross-table writes inside a `transaction`) |
 | `timestamp` | Timestamp of the change                                           |
 
+An event can also carry `expiresAt`: when its record expires (milliseconds epoch), or `-1` for never. Without it, the record's `@expiresAt` field or the table's `expiration` applies. Each write in a `transaction` uses only its own `expiresAt`, never the `transaction` event's or another write's.
+
 By default, `subscribe` runs on a single thread to avoid duplicate notifications and race conditions. To run on multiple threads:
 
 ```javascript
