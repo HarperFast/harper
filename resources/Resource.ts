@@ -1022,7 +1022,7 @@ function transactional(
 			const isSubscribeAction = options.method === 'subscribe' || options.method === 'connect';
 			// read before allowRead, which may write a select of its own
 			const selectedByCaller = isSubscribeAction && query?.select != null;
-			const runAction = (data: any) => {
+			const runAction = (data: any, admittedUser: any) => {
 				// Capture the complete target after the initial allowRead has narrowed it, but before
 				// subscribe/connect implementations can mutate it. Every later recheck gets a fresh clone.
 				const admittedTarget = isSubscribeAction ? cloneRequestTarget(query) : undefined;
@@ -1033,7 +1033,14 @@ function transactional(
 				const result = action(resource, query, context, data);
 				if (!isSubscribeAction) return result;
 				return when(result, (subscription: any) =>
-					registerLiveSubscriptionForContext(subscription, resource, admittedTarget, selectedByCaller, context)
+					registerLiveSubscriptionForContext(
+						subscription,
+						resource,
+						admittedTarget,
+						selectedByCaller,
+						context,
+						admittedUser
+					)
 				);
 			};
 			let checkPermission = false;
@@ -1049,6 +1056,9 @@ function transactional(
 			}
 			return resolveBody(data, collectForms, authorizeResolvedBody);
 			function authorizeResolvedBody(data: any) {
+				// Snapshot the principal allowRead admits against before an async allowRead or subscribe yields and a
+				// sibling subscription on a shared context advances context.user.
+				const admittedUser = isSubscribeAction ? context?.user : undefined;
 				if (checkPermission) {
 					if (loadAsInstance !== false) {
 						// do permission checks, with allow methods
@@ -1075,7 +1085,7 @@ function transactional(
 									if (!allowed) {
 										throw new AccessViolation(context.user);
 									}
-									return runAction(data);
+									return runAction(data, admittedUser);
 								},
 								() => {
 									// async allow* rejected — fail closed
@@ -1089,7 +1099,7 @@ function transactional(
 						}
 					}
 				}
-				return runAction(data);
+				return runAction(data, admittedUser);
 			}
 		}
 	}
@@ -1182,6 +1192,7 @@ function isLatched(admission: object | undefined, context: any): boolean {
 
 const resolveUser = (_scope: unknown, username: string) =>
 	securityUser!.findAndValidateUser(username, undefined, false);
+const UNWATCHED_ATTRIBUTES = Symbol('unwatchedAttributes');
 
 /** Returns `subscription`, or a promise of it once a principal stale at admission has been rechecked. */
 function registerLiveSubscriptionForContext(
@@ -1189,9 +1200,9 @@ function registerLiveSubscriptionForContext(
 	resource: any,
 	admittedTarget: any,
 	selectedByCaller: boolean,
-	context: Context
+	context: Context,
+	user: any
 ) {
-	const user: any = context?.user;
 	const username = user?.username;
 	securityUser ??= userRuntimeModule;
 	// Internal watchers and replication have no user principal, and no record backs the local
@@ -1231,12 +1242,11 @@ function registerLiveSubscriptionForContext(
 		reTarget.checkPermission = principal.role?.permission ?? {};
 		return resource.allowRead(principal, reTarget, context);
 	};
-	const resourceClass = resource.constructor;
 	// allowRead narrows rather than denies an attribute the role lost, so the recheck compares the role's readable sets
-	const watchesAttributes = typeof resourceClass._readableAttributes === 'function';
-	const admittedAttributes: ReadonlySet<string> | undefined = watchesAttributes
-		? resourceClass._readableAttributes(user)
-		: undefined;
+	const admittedAttributes: ReadonlySet<string> | undefined | typeof UNWATCHED_ATTRIBUTES =
+		typeof resource.constructor._readableAttributes === 'function'
+			? resource.constructor._readableAttributes(user)
+			: UNWATCHED_ATTRIBUTES;
 	// the last current set found to hold every admitted attribute; the sets are shared and never mutated
 	let verifiedAttributes = admittedAttributes;
 	const handle = registerLiveSubscription({
@@ -1289,9 +1299,9 @@ function registerLiveSubscriptionForContext(
 				if (context) (context as any).user = viewer;
 			}
 			// Re-run the same operation-level allowRead that granted the subscription.
-			if (!(await (sharedDecision ? pass.memo(fresh, resourceClass, evaluate) : evaluate(viewer)))) return false;
-			if (!watchesAttributes) return true;
-			const current: ReadonlySet<string> | undefined = resourceClass._readableAttributes(fresh);
+			if (!(await (sharedDecision ? pass.memo(fresh, resource.constructor, evaluate) : evaluate(viewer)))) return false;
+			if (admittedAttributes === UNWATCHED_ATTRIBUTES) return true;
+			const current: ReadonlySet<string> | undefined = resource.constructor._readableAttributes(fresh);
 			if (current !== verifiedAttributes) {
 				if (!readsEveryAttribute(current, admittedAttributes)) return false;
 				verifiedAttributes = current;

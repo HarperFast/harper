@@ -1845,6 +1845,7 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 
 		describe('attribute read permissions', () => {
 			let Notes;
+			let Parents;
 			const roleId = 'notes_role';
 			const narrowerRoleId = 'notes_narrower_role';
 
@@ -1854,6 +1855,13 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 					database: 'test',
 					attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
 				});
+				Parents = class extends NoteParents {
+					subscribe() {
+						const subscription = fakeSubscription();
+						subscription.endSpy = subscription.end;
+						return subscription;
+					}
+				};
 				const Table = table({
 					table: 'ReauthNotes',
 					database: 'test',
@@ -2083,6 +2091,43 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 
 				await assert.rejects(subscribeAs(user), { statusCode: 403 });
 				assert.strictEqual(_liveSubscriptionCount(), 0);
+			});
+
+			it('rejects an async subscription whose shared context was refreshed by a sibling recheck after narrowing', async () => {
+				await testUtils.seedUsers([
+					{ username: 'notes_shared_ctx', active: true, role: notesRole(roleId, ['title', 'note']) },
+				]);
+				const context = { user: await resolve('notes_shared_ctx'), authorize: true };
+				const sibling = await Parents.subscribe('topic', undefined, context);
+				handles.push({ unregister: () => sibling.end() });
+
+				let admitted = false;
+				let release;
+				const gate = new Promise((resolveGate) => {
+					release = resolveGate;
+				});
+				let pendingSubscription;
+				class AsyncNotes extends Notes {
+					async subscribe() {
+						admitted = true;
+						await gate;
+						pendingSubscription = super.subscribe();
+						return pendingSubscription;
+					}
+				}
+
+				context.authorize = true;
+				const pending = AsyncNotes.subscribe('topic', undefined, context);
+				await waitFor(() => admitted, { message: 'subscribe never started after allowRead' });
+				await testUtils.seedUsers([{ username: 'notes_shared_ctx', active: true, role: notesRole(roleId, ['title']) }]);
+				await _sweepNow();
+				assert.ok(!ended(sibling));
+				assert.ok(userModule.isCurrentUser(context.user), 'the sibling recheck refreshed context.user');
+				release();
+
+				await assert.rejects(pending, { statusCode: 403 });
+				assert.ok(ended(pendingSubscription));
+				assert.strictEqual(_liveSubscriptionCount(), 1);
 			});
 
 			it('admits a stale principal whose role still reads every attribute it read', async () => {
