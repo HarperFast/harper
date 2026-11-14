@@ -1,4 +1,5 @@
 import { table, isReadOnlyMode } from '../databases.ts';
+import { contextStorage, transaction } from '../transaction.ts';
 import { getNextMonotonicTime } from '../../utility/lmdb/commonUtility.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
 
@@ -44,10 +45,8 @@ let _table: any;
  * the structural shape (e.g. no spurious `indexed: true`) without parsing
  * TypeScript source.
  *
- * flush() writes via tbl.primaryStore.put and cleanup() removes via
- * primaryStore.remove — both bypass updateIndices, so secondary indexes
- * would stay permanently empty. Match hdb_raw_analytics (write.ts) which
- * intentionally omits `indexed` from all non-PK attributes for the same reason.
+ * Retention cleanup removes primary rows directly, so secondary indexes would retain stale entries.
+ * Match hdb_raw_analytics by keeping this local telemetry table unindexed and unaudited.
  */
 export const MODEL_CALL_ATTRIBUTES = [
 	{ name: 'id', isPrimaryKey: true },
@@ -78,7 +77,7 @@ export function getModelCallsTable(): any {
 	_table = table({
 		table: 'hdb_model_calls',
 		database: 'system',
-		audit: true,
+		audit: false,
 		trackDeletes: false,
 		attributes: MODEL_CALL_ATTRIBUTES,
 	});
@@ -88,7 +87,7 @@ export function getModelCallsTable(): any {
 export interface ModelCallAnalyticsWriterOpts {
 	/** Default 10s. Buffer is flushed at this cadence regardless of size. */
 	flushIntervalMs?: number;
-	/** Default 1000. Reaching this size triggers an out-of-cadence flush. */
+	/** Default 1000. Batch and waiting-buffer limit; excess rows are dropped and reported. */
 	maxBufferSize?: number;
 	/** Default 1h. How often `cleanup()` runs to remove expired rows. */
 	cleanupIntervalMs?: number;
@@ -100,7 +99,7 @@ export interface ModelCallAnalyticsWriterOpts {
 
 /**
  * In-memory buffered writer for per-call model analytics. Rows are batched and
- * flushed periodically (or when the buffer is full) to keep the analytics path
+ * flushed periodically (or scheduled when full) to keep the analytics path
  * off the hot model-call path. Shape mirrors the pattern in
  * `resources/analytics/write.ts` but writes per-call rows rather than
  * aggregating counters.
@@ -117,6 +116,19 @@ export class ModelCallAnalyticsWriter {
 	#retentionMs: number;
 	#getTable: () => any;
 	#stopped = false;
+	#flushPromise?: Promise<void>;
+	#flushRequested = false;
+	#flushImmediate?: NodeJS.Immediate;
+	#scheduledResolve?: () => void;
+	#lastAdmittedId = 0;
+	#attemptedThrough = 0;
+	#dropped = 0;
+	#runScheduled = () => {
+		this.#flushImmediate = undefined;
+		const resolve = this.#scheduledResolve;
+		this.#scheduledResolve = undefined;
+		resolve?.();
+	};
 
 	constructor(opts: ModelCallAnalyticsWriterOpts = {}) {
 		const flushIntervalMs = opts.flushIntervalMs ?? DEFAULT_FLUSH_INTERVAL_MS;
@@ -124,60 +136,133 @@ export class ModelCallAnalyticsWriter {
 		this.#maxBufferSize = opts.maxBufferSize ?? DEFAULT_MAX_BUFFER_SIZE;
 		this.#retentionMs = opts.retentionMs ?? DEFAULT_RETENTION_MS;
 		this.#getTable = opts.getTable ?? getModelCallsTable;
-		this.#flushTimer = setInterval(() => {
-			this.flush().catch((err) => log.warn?.(`Model-call analytics flush failed: ${err?.message ?? err}`));
-		}, flushIntervalMs);
-		this.#flushTimer.unref?.();
-		this.#cleanupTimer = setInterval(() => {
-			this.cleanup().catch((err) => log.warn?.(`Model-call analytics cleanup failed: ${err?.message ?? err}`));
-		}, cleanupIntervalMs);
-		this.#cleanupTimer.unref?.();
+		if (!Number.isSafeInteger(this.#maxBufferSize) || this.#maxBufferSize <= 0)
+			throw new RangeError('maxBufferSize must be a positive safe integer');
+		contextStorage.exit(() => {
+			this.#flushTimer = setInterval(() => {
+				this.#reportDropped();
+				this.#scheduleFlush();
+			}, flushIntervalMs);
+			this.#flushTimer.unref?.();
+			this.#cleanupTimer = setInterval(() => {
+				this.cleanup().catch((err) => log.warn?.(`Model-call analytics cleanup failed: ${err?.message ?? err}`));
+			}, cleanupIntervalMs);
+			this.#cleanupTimer.unref?.();
+		});
 	}
 
+	/** Returns a best-effort ID, including when overload or stop prevents admission. */
 	write(record: ModelCallRecord): number {
 		const id = getNextMonotonicTime();
 		if (this.#stopped) return id;
+		if (this.#buffer.length >= this.#maxBufferSize) {
+			this.#dropped++;
+			return id;
+		}
 		// id last so a record that accidentally carries an `id` field can't override
 		// the monotonic primary key.
 		this.#buffer.push({ ...record, id });
-		if (this.#buffer.length >= this.#maxBufferSize) {
-			// Out-of-cadence flush; swallow errors so a failing flush doesn't escape into the caller.
-			this.flush().catch((err) => log.warn?.(`Model-call analytics flush failed: ${err?.message ?? err}`));
-		}
+		this.#lastAdmittedId = id;
+		if (this.#buffer.length >= this.#maxBufferSize) this.#scheduleFlush();
 		return id;
 	}
 
 	async flush(): Promise<void> {
-		if (this.#buffer.length === 0) return;
-		// Read-only nodes (followers, recovery mode) shouldn't accumulate doomed writes —
-		// drop the buffer and skip. Matches `resources/analytics/write.ts:643-650`.
-		if (isReadOnlyMode()) {
-			this.#buffer = [];
-			return;
-		}
-		const batch = this.#buffer;
-		this.#buffer = [];
-		const tbl = this.#getTable();
-		const puts: Array<{ id: number; promise: Promise<unknown> }> = [];
-		for (const record of batch) {
+		const target = this.#lastAdmittedId;
+		let failed = false;
+		let failure: unknown;
+		while (this.#attemptedThrough < target) {
+			this.#flushImmediate?.ref?.();
 			try {
-				const result = tbl.primaryStore.put(record.id, record);
-				if (result && typeof (result as { then?: unknown }).then === 'function') {
-					puts.push({ id: record.id, promise: result as Promise<unknown> });
-				}
-			} catch (err) {
-				log.warn?.(`Model-call analytics put failed for id=${record.id}: ${(err as Error)?.message ?? err}`);
+				await (this.#flushPromise ?? this.#startBatch(false));
+			} catch (error) {
+				if (!failed) failure = error;
+				failed = true;
 			}
 		}
-		if (puts.length > 0) {
-			const results = await Promise.allSettled(puts.map((p) => p.promise));
-			for (let i = 0; i < results.length; i++) {
-				const r = results[i];
-				if (r.status === 'rejected') {
-					const reason = r.reason as { message?: string } | undefined;
-					log.warn?.(`Model-call analytics async put failed for id=${puts[i].id}: ${reason?.message ?? r.reason}`);
+		if (failed) throw failure;
+	}
+
+	#scheduleFlush(): void {
+		if (this.#stopped || !this.#buffer.length) return;
+		if (this.#flushPromise) this.#flushRequested = true;
+		else this.#startBatch(true);
+	}
+
+	#startBatch(defer: boolean): Promise<void> {
+		return contextStorage.exit(() => {
+			this.#flushRequested = false;
+			const batch = this.#buffer;
+			this.#buffer = [];
+			const ready = defer
+				? new Promise<void>((resolve) => {
+						this.#scheduledResolve = resolve;
+						this.#flushImmediate = setImmediate(this.#runScheduled);
+						this.#flushImmediate.unref?.();
+					})
+				: Promise.resolve();
+			const pending = ready
+				.then(() => this.#writeBatch(batch))
+				.finally(() => {
+					this.#attemptedThrough = batch[batch.length - 1].id;
+					this.#flushPromise = undefined;
+					this.#reportDropped();
+					if (this.#flushRequested || this.#buffer.length >= this.#maxBufferSize) this.#scheduleFlush();
+				});
+			this.#flushPromise = pending;
+			pending.catch(() => {});
+			return pending;
+		});
+	}
+
+	#reportDropped(): void {
+		if (!this.#dropped) return;
+		const dropped = this.#dropped;
+		try {
+			log.warn?.('Model-call analytics waiting buffer full; records dropped', { dropped });
+			this.#dropped = 0;
+		} catch {}
+	}
+
+	async #writeBatch(batch: BufferedRecord[]): Promise<void> {
+		try {
+			if (isReadOnlyMode()) return;
+			const tbl = this.#getTable();
+			// A batch must not join the request that filled the buffer or created the timer.
+			await transaction({}, async (txn) => {
+				const puts: Array<{ id: number; promise: Promise<unknown> }> = [];
+				for (const record of batch) {
+					try {
+						const result = tbl.put(record, txn);
+						if (result && typeof (result as { then?: unknown }).then === 'function') {
+							puts.push({ id: record.id, promise: result as Promise<unknown> });
+						}
+					} catch (err) {
+						log.warn?.(`Model-call analytics put failed for id=${record.id}: ${(err as Error)?.message ?? err}`);
+					}
 				}
-			}
+				if (puts.length > 0) {
+					const results = await Promise.allSettled(puts.map((p) => p.promise));
+					for (let i = 0; i < results.length; i++) {
+						const r = results[i];
+						if (r.status === 'rejected') {
+							const reason = r.reason as { message?: string } | undefined;
+							log.warn?.(`Model-call analytics async put failed for id=${puts[i].id}: ${reason?.message ?? r.reason}`);
+						}
+					}
+				}
+			});
+		} catch (error) {
+			log[(error as { statusCode?: number })?.statusCode === 503 ? 'debug' : 'warn']?.(
+				'Model-call analytics batch commit failed',
+				{
+					batchSize: batch.length,
+					firstId: batch[0].id,
+					lastId: batch[batch.length - 1].id,
+				},
+				error
+			);
+			throw error;
 		}
 	}
 
@@ -190,7 +275,7 @@ export class ModelCallAnalyticsWriter {
 		}
 	}
 
-	/** Stop the periodic timers. After stop, `write()` is a no-op and `flush()` still works. */
+	/** Stop admission and intervals. An armed batch may finish; flush() drains any waiting rows. */
 	stop(): void {
 		this.#stopped = true;
 		if (this.#flushTimer) clearInterval(this.#flushTimer);
