@@ -100,7 +100,10 @@ const fencePath = (componentsRoot: string, app: string) =>
 const isOwnerAlive = (owner: ComponentPreparationLockOwner) =>
 	owner.pid !== process.pid || isThreadRunning(owner.threadId);
 
-async function revokedGenerations(app: string, componentsRoot: string): Promise<string[]> {
+export async function revokedGenerations(
+	app: string,
+	componentsRoot: string = componentsRootPath()
+): Promise<string[]> {
 	const path = fencePath(componentsRoot, app);
 	const raw = await readFile(path, 'utf8').catch((error) => {
 		if (error?.code === 'ENOENT') return undefined;
