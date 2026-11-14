@@ -53,46 +53,100 @@ describe('Requests waiting on one source fill', function () {
 		Array.from({ length: count }, () => fixture.WaitTable.get(id).catch((error) => error));
 	const warningsFor = (fixture) => warnings.filter((warning) => warning.includes(fixture.name));
 
-	it('names the table and key once when many requests wait on one fill', async function () {
-		const fixture = setUpTable();
-		const hot = reads(fixture, 'hot', 60);
-		await waitFor(() => fixture.parked >= 59);
-		assert.deepEqual(warningsFor(fixture), [
-			`50 requests on this thread are waiting for record 'hot' of ${fixture.name} to load from its source`,
-		]);
+	const failedFillWarning = (key, failure) =>
+		new RegExp(
+			`^A fetch of record '${key}' of SourceFillWaiters\\d+ from its source failed with ${failure} while \\d+ requests on this thread waited on it; they now fetch it again in turn$`
+		);
+	const settle = async (fixture, waiting) => {
+		while (true) {
+			const unsettled = fixture.pending.splice(0);
+			for (const call of unsettled) call.resolve(undefined);
+			const done = await Promise.race([Promise.all(waiting).then(() => true), new Promise((r) => setTimeout(r, 20))]);
+			if (done) return;
+		}
+	};
 
-		const second = reads(fixture, 'hot-again', 60);
-		await waitFor(() => fixture.parked >= 59 + 59 && fixture.sourceCalls === 2);
-		assert.equal(warningsFor(fixture).length, 1, 'one warning per table per interval');
-		for (const call of fixture.pending) call.resolve(undefined);
-		await Promise.all([...hot, ...second]);
+	it('stays quiet while many requests wait on a fill that succeeds', async function () {
+		const fixture = setUpTable();
+		const hot = reads(fixture, 'refilled', 60);
+		await waitFor(() => fixture.parked >= 59);
+		fixture.pending[0].resolve({ name: 'refilled' });
+		const results = await Promise.all(hot);
+		assert.ok(results.every((result) => result?.name === 'refilled'));
+		assert.equal(fixture.sourceCalls, 1);
+		assert.deepEqual(warningsFor(fixture), []);
 	});
 
-	it("reports the status of the key's last failed fill on this thread", async function () {
+	it('names the table, key, failure and waiter count once when a fill fails with many waiting', async function () {
 		const fixture = setUpTable();
-		const first = reads(fixture, 'failing', 10);
-		await waitFor(() => fixture.parked >= 9);
-		fixture.pending[0].reject(Object.assign(new Error('origin unavailable'), { statusCode: 503 }));
+		const hot = reads(fixture, 'failing', 60);
+		await waitFor(() => fixture.parked >= 59);
+		fixture.pending.shift().reject(Object.assign(new Error('origin unavailable'), { statusCode: 503 }));
 		await waitFor(() => fixture.sourceCalls === 2);
-		const more = reads(fixture, 'failing', 50);
-		await waitFor(() => warningsFor(fixture).length > 0);
-		assert.match(
-			warningsFor(fixture)[0],
-			/^\d+ requests on this thread are waiting for record 'failing' of SourceFillWaiters\d+ to load from its source; while they waited, a fill of it on this thread failed with 503$/
-		);
-		for (const call of fixture.pending) call.resolve(undefined);
-		await Promise.all([...first, ...more]);
+		assert.equal(warningsFor(fixture).length, 1);
+		assert.match(warningsFor(fixture)[0], failedFillWarning('failing', 503));
+		assert.match(warningsFor(fixture)[0], / while 59 requests /);
+
+		fixture.pending.shift().reject(Object.assign(new Error('origin unavailable'), { statusCode: 503 }));
+		await waitFor(() => fixture.sourceCalls === 3);
+		assert.equal(warningsFor(fixture).length, 1, 'one warning per table per interval');
+		await settle(fixture, hot);
+	});
+
+	it('stays quiet when a fill fails with few waiting', async function () {
+		const fixture = setUpTable();
+		const few = reads(fixture, 'few', 10);
+		await waitFor(() => fixture.parked >= 9);
+		fixture.pending.shift().reject(Object.assign(new Error('origin unavailable'), { statusCode: 503 }));
+		await waitFor(() => fixture.sourceCalls === 2);
+		assert.deepEqual(warningsFor(fixture), []);
+		await settle(fixture, few);
+	});
+
+	it('warns when caching the source answer fails with many waiting', async function () {
+		const fixture = setUpTable();
+		const getResidency = fixture.WaitTable.getResidency;
+		fixture.WaitTable.getResidency = () => {
+			throw new Error('cache write refused');
+		};
+		try {
+			const hot = reads(fixture, 'unwritable', 60);
+			await waitFor(() => fixture.parked >= 59);
+			fixture.pending.shift().resolve({ name: 'unwritable' });
+			await waitFor(() => warningsFor(fixture).length > 0);
+			assert.match(warningsFor(fixture)[0], failedFillWarning('unwritable', "'cache write refused'"));
+			fixture.WaitTable.getResidency = getResidency;
+			await settle(fixture, hot);
+		} finally {
+			fixture.WaitTable.getResidency = getResidency;
+		}
+	});
+
+	it('settles every request when the warning itself throws', async function () {
+		const fixture = setUpTable();
+		logger.warn = () => {
+			throw new Error('log sink failed');
+		};
+		const hot = reads(fixture, 'loud', 60);
+		await waitFor(() => fixture.parked >= 59);
+		fixture.pending.shift().reject(Object.assign(new Error('origin unavailable'), { statusCode: 503 }));
+		await waitFor(() => fixture.sourceCalls === 2);
+		fixture.pending.shift().resolve({ name: 'loud' });
+		const results = await Promise.all(hot);
+		assert.equal(results.filter((result) => result?.statusCode === 503).length, 1);
+		assert.ok(results.filter((result) => result?.statusCode !== 503).every((result) => result?.name === 'loud'));
 	});
 
 	it('bounds a long key in the warning', async function () {
 		const fixture = setUpTable();
 		const longKey = 'k'.repeat(1_500);
 		const waiting = reads(fixture, longKey, 60);
-		await waitFor(() => warningsFor(fixture).length > 0 && fixture.sourceCalls === 1);
+		await waitFor(() => fixture.parked >= 59);
+		fixture.pending.shift().reject(Object.assign(new Error('origin unavailable'), { statusCode: 503 }));
+		await waitFor(() => warningsFor(fixture).length > 0);
 		const [warning] = warningsFor(fixture);
 		assert.ok(warning.length < 400, `the warning is ${warning.length} characters long`);
 		assert.ok(!warning.includes(longKey));
-		for (const call of fixture.pending) call.resolve(undefined);
-		await Promise.all(waiting);
+		await settle(fixture, waiting);
 	});
 });

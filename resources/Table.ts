@@ -400,8 +400,7 @@ type SourceTxnStream = {
 	held?: boolean;
 };
 type SourceFill = { source: unknown; outcome?: Entry; unstoredRecord?: boolean; sharable?: boolean };
-type SourceFillWaiters = { count: number; lastFailure?: unknown };
-// concurrent misses on one key normally coalesce into one fill, so this many waiting on one is a hot key
+// a refill never fails, so this many requests retrying a failed fill in turn is a stall, not a busy key
 const SOURCE_FILL_WAITERS_WARNING = 50;
 const KEY_FOR_LOG = { maxStringLength: 100, maxArrayLength: 4, depth: 1 };
 const UNCACHEABLE_TIMESTAMP = Infinity; // we use this when dynamic content is accessed that we can't safely cache, and this prevents earlier timestamps from change the "last" modification
@@ -2047,7 +2046,7 @@ export function makeTable(options): TableResourceClass {
 	let sourceLoad: any; // if a source has a load function (replicator), record it here
 	let hasSourceGet: any;
 	let sourceFills: Map<unknown, SourceFill> | undefined;
-	let sourceFillWaiters: Map<unknown, SourceFillWaiters> | undefined;
+	let sourceFillWaiters: Map<unknown, number> | undefined;
 	let primaryKeyAttribute: Attribute | undefined;
 	let lastEvictionCompletion: Promise<void> = Promise.resolve();
 	let recordExpirationCompletion: Promise<void> = Promise.resolve();
@@ -14372,7 +14371,7 @@ export function makeTable(options): TableResourceClass {
 
 		if (!lockAcquired) {
 			let timer: ReturnType<typeof setTimeout>;
-			const waiting = noteSourceFillWaiter(fillKey, id);
+			(sourceFillWaiters ??= new Map()).set(fillKey, (sourceFillWaiters.get(fillKey) ?? 0) + 1);
 			await new Promise<void>((resolve) => {
 				wake = resolve;
 				// only the fill holding the lock releases it; this thread's closed handle never hears of another
@@ -14384,7 +14383,9 @@ export function makeTable(options): TableResourceClass {
 				timer = setTimeout(recheck, sourceFillLockTimeout);
 			});
 			clearTimeout(timer);
-			if (--waiting.count === 0) sourceFillWaiters.delete(fillKey);
+			const stillWaiting = sourceFillWaiters.get(fillKey) - 1;
+			if (stillWaiting > 0) sourceFillWaiters.set(fillKey, stillWaiting);
+			else sourceFillWaiters.delete(fillKey);
 			const entry = primaryStore.getEntry(id);
 			if (
 				!entry ||
@@ -14614,8 +14615,6 @@ export function makeTable(options): TableResourceClass {
 						entryMap.set(updatedRecord, resolvedEntry);
 					}
 					if (!issuanceFailed && !sourceContext.noCacheStore) sharedEntry = resolvedEntry;
-					const waiting = sourceFillWaiters?.get(fillKey);
-					if (waiting) waiting.lastFailure = undefined;
 					resolve(resolvedEntry);
 				} catch (error) {
 					// A source may reject with anything at all, so deciding how to settle is itself
@@ -14643,11 +14642,7 @@ export function makeTable(options): TableResourceClass {
 								receivedIdentityRefs: audit ? undefined : existingIdentityRefs,
 							} as any);
 							logger.trace?.((error as Error)?.message, '(returned stale record)');
-						} else {
-							const waiting = sourceFillWaiters?.get(fillKey);
-							if (waiting) waiting.lastFailure = error?.statusCode ?? error?.status ?? error?.name ?? 'an error';
-							reject(error);
-						}
+						} else reject(error);
 					} catch (settlingError) {
 						reject(error ?? settlingError);
 					}
@@ -14655,6 +14650,7 @@ export function makeTable(options): TableResourceClass {
 					recordAction(resolveDuration, 'cache-resolution', tableName, null, 'fail');
 					if (responseHeaders)
 						appendHeader(responseHeaders, 'Server-Timing', `cache-resolve;dur=${resolveDuration.toFixed(2)}`, true);
+					warnWaitersOfFailedFill(fillKey, id, error);
 					sourceContext.transaction.abort();
 					return;
 				}
@@ -14864,6 +14860,7 @@ export function makeTable(options): TableResourceClass {
 					}
 				},
 				(error) => {
+					warnWaitersOfFailedFill(fillKey, id, error);
 					releaseFill();
 					if (resolved && !(disposed && error?.code === 'ERR_COLUMN_FAMILY_DROPPED'))
 						logger.error?.('Error committing cache update', error);
@@ -14873,23 +14870,20 @@ export function makeTable(options): TableResourceClass {
 		});
 	}
 
-	function noteSourceFillWaiter(fillKey: unknown, id: Id): SourceFillWaiters {
-		let waiting = (sourceFillWaiters ??= new Map()).get(fillKey);
-		if (!waiting) sourceFillWaiters.set(fillKey, (waiting = { count: 0 }));
-		if (++waiting.count >= SOURCE_FILL_WAITERS_WARNING) {
-			const now = performance.now();
-			if (now - lastSourceFillWaitersWarn >= 60_000) {
-				lastSourceFillWaitersWarn = now;
-				const lastFailure =
-					waiting.lastFailure === undefined
-						? ''
-						: `; while they waited, a fill of it on this thread failed with ${inspectForLog(waiting.lastFailure, KEY_FOR_LOG)}`;
-				logger.warn?.(
-					`${waiting.count} requests on this thread are waiting for record ${inspectForLog(id, KEY_FOR_LOG)} of ${tableName} to load from its source${lastFailure}`
-				);
-			}
+	function warnWaitersOfFailedFill(fillKey: unknown, id: Id, error: any): void {
+		const waiting = sourceFillWaiters?.get(fillKey);
+		if (!(waiting >= SOURCE_FILL_WAITERS_WARNING)) return;
+		const now = performance.now();
+		if (now - lastSourceFillWaitersWarn < 60_000) return;
+		lastSourceFillWaitersWarn = now;
+		try {
+			const failure = error?.statusCode ?? error?.status ?? error?.code ?? error?.message ?? error;
+			logger.warn?.(
+				`A fetch of record ${inspectForLog(id, KEY_FOR_LOG)} of ${tableName} from its source failed with ${inspectForLog(failure, KEY_FOR_LOG)} while ${waiting} requests on this thread waited on it; they now fetch it again in turn`
+			);
+		} catch {
+			// a warning must not leave the fill or its waiters unsettled
 		}
-		return waiting;
 	}
 	/**
 	 * Closing the handle that owns a record lock releases it (the RocksDB handle, or the LMDB
