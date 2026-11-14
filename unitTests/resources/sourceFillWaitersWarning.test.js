@@ -187,7 +187,7 @@ describe('Requests waiting on one source fill', function () {
 			const fixture = setUpTable();
 			const hot = reads(fixture, 'handed-over', 60);
 			await waitFor(() => fixture.parked >= 59);
-			await waitFor(() => fixture.sourceCalls === 2);
+			await waitFor(() => fixture.sourceCalls >= 2 && fixture.parked >= 59 + 58);
 			fixture.pending.shift().reject(Object.assign(new Error('origin unavailable'), { statusCode: 503 }));
 			await new Promise((resolve) => setTimeout(resolve, 20));
 			assert.deepEqual(warningsFor(fixture), []);
