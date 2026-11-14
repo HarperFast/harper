@@ -38,6 +38,7 @@ import { Readable } from 'node:stream';
 import * as env from '../../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS, STREAMING_RESPONSE_OPERATIONS } from '../../../utility/hdbTerms.ts';
 import harperLogger from '../../../utility/logging/harper_logger.ts';
+import { matchesAny } from './nameFilter.ts';
 import {
 	canRoleInvokeOperation,
 	setProfileToolProvider,
@@ -235,26 +236,6 @@ function isDestructive(operationName: string): boolean {
 
 function isIdempotent(operationName: string): boolean {
 	return IDEMPOTENT_OPERATIONS.has(operationName);
-}
-
-/**
- * Translates a single glob pattern (only `*` is supported) into a regex.
- * `describe_*` matches `describe_schema`, `describe_table`, etc.; literals
- * like `system_information` match exactly. No escape hatch yet — operators
- * should use literals when they need them; the glob language is delibarately
- * minimal to keep behavior predictable in audit/security reviews.
- */
-function globToRegex(pattern: string): RegExp {
-	const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
-	return new RegExp(`^${escaped}$`);
-}
-
-function matchesAny(operation: string, patterns: readonly string[] | undefined): boolean {
-	if (!patterns || patterns.length === 0) return false;
-	for (const p of patterns) {
-		if (globToRegex(p).test(operation)) return true;
-	}
-	return false;
 }
 
 function isOperationAllowed(operation: string, config: OperationsConfig): boolean {

@@ -719,6 +719,7 @@ export const CONFIG_PARAMS = {
 	MCP_APPLICATION_MOUNTPATH: 'mcp_application_mountPath',
 	MCP_APPLICATION_ALLOW: 'mcp_application_allow',
 	MCP_APPLICATION_DENY: 'mcp_application_deny',
+	MCP_APPLICATION_GENERATEDTOOLS: 'mcp_application_generatedTools',
 	MCP_APPLICATION_MAXTOOLS: 'mcp_application_maxTools',
 	MCP_APPLICATION_SEARCHMAXRESULTS: 'mcp_application_searchMaxResults',
 	MCP_APPLICATION_RATELIMIT_PERTOOLPERSECOND: 'mcp_application_rateLimit_perToolPerSecond',

@@ -400,16 +400,11 @@ describe('mcp/tools/operations — catalog coverage lint', () => {
 
 	const allOpNames = Object.values(OPERATIONS_ENUM);
 
-	function globToRegex(pattern) {
-		const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
-		return new RegExp(`^${escaped}$`);
-	}
+	const { matchesAny } = require('#src/components/mcp/tools/nameFilter');
 
 	// Mirrors production isOperationAllowed: glob expansion minus the DEFAULT_EXCLUDED set
 	// (secret-store ops match `list_*` etc. but are never on the default surface).
-	const expandedAllow = allOpNames.filter(
-		(name) => !DEFAULT_EXCLUDED.has(name) && DEFAULT_ALLOW.some((p) => globToRegex(p).test(name))
-	);
+	const expandedAllow = allOpNames.filter((name) => !DEFAULT_EXCLUDED.has(name) && matchesAny(name, DEFAULT_ALLOW));
 
 	it('expansion covers a non-trivial set of operations (sanity check)', () => {
 		// Catches the case where OPERATIONS_ENUM goes missing in a build refactor.
