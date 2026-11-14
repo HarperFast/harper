@@ -181,9 +181,9 @@ describe('Re-delivered replicated publishes', function () {
 			return { ...reads };
 		};
 		try {
-			assert.deepEqual(await counted(), { probes: 1, ranges: 0 }, 'a first delivery');
-			// a decoded range read queries the log too
-			assert.deepEqual(await counted(), { probes: 2, ranges: 1 }, 'a re-delivery');
+			// one decoded range read, which queries the log once, per delivery of the transaction
+			assert.deepEqual(await counted(), { probes: 1, ranges: 1 }, 'a first delivery');
+			assert.deepEqual(await counted(), { probes: 1, ranges: 1 }, 'a re-delivery');
 		} finally {
 			delete log.query;
 			Topics.auditStore.getRange = originalRange;
@@ -322,29 +322,6 @@ describe('Re-delivered replicated publishes', function () {
 		} finally {
 			setAbortMarkersForTests(prior ?? true);
 		}
-	});
-
-	it('reads no log for a re-delivery below the first entry of its origin log, and applies it again', async () => {
-		const logKey = Date.now() - 7_200_000;
-		await applyFrame(logKey, [{ id: 'purged/1', n: 1 }]);
-		const log = Topics.auditStore.logById(peer);
-		const originalQuery = log.query;
-		let probes = 0;
-		Object.defineProperty(log, 'query', {
-			configurable: true,
-			value(options, ...args) {
-				if (options?.start === logKey) probes++;
-				return originalQuery.call(this, options, ...args);
-			},
-		});
-		try {
-			await applyFrame(logKey, [{ id: 'purged/1', n: 1 }]);
-		} finally {
-			delete log.query;
-			await drain();
-		}
-		assert.equal(probes, 0);
-		assert.deepEqual(received, ['purged/1:1', 'purged/1:1']);
 	});
 
 	it('still delivers every local publish', async () => {

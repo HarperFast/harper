@@ -14427,32 +14427,16 @@ export function makeTable(options): TableResourceClass {
 	): boolean {
 		if (txnLogKey === undefined || !nodeId) return false;
 		// an unnamed origin's entries sit in `local` under minted keys, never at its received key
-		const log = auditStore.logById(nodeId);
-		if (!log) return false;
+		if (!auditStore.logById(nodeId)) return false;
 		let byOriginKey = loggedMessagesByTransaction.get(applying);
 		if (!byOriginKey) loggedMessagesByTransaction.set(applying, (byOriginKey = new Map()));
 		const originKey = `${nodeId}:${txnLogKey}`;
 		let logged = byOriginKey.get(originKey);
-		if (logged === undefined) byOriginKey.set(originKey, (logged = loggedMessagesAt(log, txnLogKey, nodeId)));
+		if (logged === undefined) byOriginKey.set(originKey, (logged = loggedMessagesAt(txnLogKey, nodeId)));
 		return logged !== null && logged.has(messageIdentity(tableId, id, version));
 	}
 
-	function loggedMessagesAt(log: any, txnLogKey: number, nodeId: number): Set<string> | null {
-		// an exact-start miss below the log's first entry scans to its end; retention purged that range, so a
-		// re-delivery there, or a late-relayed entry appended below it, is applied again
-		for (const first of auditStore.getRange({ start: 1, log: nodeId })) {
-			if (txnLogKey < first.txnLogKey) return null;
-			break;
-		}
-		let probe;
-		try {
-			probe = log.query({ start: txnLogKey, exactStart: true });
-			if (probe.next().done) return null;
-		} catch {
-			// the range read below reports a frame the probe could not read
-		} finally {
-			probe?.close();
-		}
+	function loggedMessagesAt(txnLogKey: number, nodeId: number): Set<string> | null {
 		let logged: Set<string> | null = null;
 		for (const entry of auditStore.getRange({ start: txnLogKey, exactStart: true, log: nodeId })) {
 			if (entry.txnLogKey !== txnLogKey) break;

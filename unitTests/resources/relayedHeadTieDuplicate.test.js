@@ -248,11 +248,8 @@ describe('Relayed head-tie duplicates (harper#3467)', function () {
 		}
 		assert.deepEqual(
 			spy.reads,
-			[
-				{ getRange: 1, log: origin },
-				{ getRange: version, log: origin },
-			],
-			'the publish runs after the put, so the put reads no committed base; only the publish reads the log, its first entry and then its own'
+			[{ getRange: version, log: origin }],
+			'the publish runs after the put, so the put reads no committed base; only the publish looks up its entry'
 		);
 		assert.equal(await logged('put'), putsBefore, 'the re-delivered put must not be logged again');
 		assert.equal(await logged('message'), messagesBefore, 'the re-delivered publish must not be logged again');
