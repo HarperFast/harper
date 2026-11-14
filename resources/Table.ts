@@ -13677,7 +13677,18 @@ export function makeTable(options): TableResourceClass {
 				recordActionBinary(!needsSourceData, 'cache-hit', tableName);
 			}
 			if (needsSourceData) {
-				const loadingFromSource = getFromSource(source, id, entry, context, target).then((entry) => {
+				const servesStale = Boolean(entry?.value && resource?.allowStaleWhileRevalidate?.(entry, id));
+				if (servesStale) {
+					let acquired: boolean;
+					try {
+						acquired = primaryStore.tryLock(id);
+					} catch (error) {
+						logger.warn?.(error);
+						return;
+					}
+					if (!acquired) return;
+				}
+				const loadingFromSource = getFromSource(source, id, entry, context, target, servesStale).then((entry) => {
 					if (entry?.value && entry?.value.getRecord?.())
 						logger.error?.('Can not assign a record that is already a resource');
 					if (context) {
@@ -13686,8 +13697,7 @@ export function makeTable(options): TableResourceClass {
 					}
 					return entry;
 				});
-				// if the resource defines a method for indicating if stale-while-revalidate is allowed for a record
-				if (entry?.value && resource?.allowStaleWhileRevalidate?.(entry, id)) {
+				if (servesStale) {
 					// since we aren't waiting for it any errors won't propagate so we should at least log them
 					loadingFromSource.catch((error) => logger.warn?.(error));
 					return; // go ahead and return and let the current stale value be used while we re-validate
@@ -14225,7 +14235,8 @@ export function makeTable(options): TableResourceClass {
 		id: Id,
 		existingEntry: Entry,
 		context: Context,
-		target?
+		target?,
+		lockHeld?: boolean
 	): Promise<Entry> {
 		const metadataFlags = existingEntry?.metadataFlags;
 
@@ -14233,31 +14244,40 @@ export function makeTable(options): TableResourceClass {
 		const existingRecord = existingEntry?.value;
 		// a 304 stores existingRecord, so it keeps the list that describes that body, not the commit base's
 		const existingIdentityRefs = existingEntry?.receivedIdentityRefs;
-		const inheritedTimestamp = context?.timestamp || context?.transaction?.timestamp;
-		let sourceTimestamp = inheritedTimestamp;
+		let inheritedTimestamp: number;
+		let fillKey: unknown;
+		let sourceTimestamp: number;
 		let issuanceFailed = false;
-		if (!sourceTimestamp) {
-			if (!isRocksDB) sourceTimestamp = getNextMonotonicTime();
-			else {
-				try {
-					sourceTimestamp = freshLocalKey(tableRootStore);
-				} catch (error) {
-					// Keep the read available, but never cache a version that could repeat an unstaged holder's.
-					issuanceFailed = true;
-					sourceTimestamp = (primaryStore as RocksDatabase).getMonotonicTimestamp();
-					const now = performance.now();
-					if (now - lastIssuanceFailureWarn >= 60_000) {
-						lastIssuanceFailureWarn = now;
-						logger.warn?.(
-							`Failed to allocate local issuance key for source read on ${tableName}; serving uncached`,
-							error
-						);
+		try {
+			inheritedTimestamp = context?.timestamp || context?.transaction?.timestamp;
+			fillKey = writeKeyId(id);
+			sourceTimestamp = inheritedTimestamp;
+			if (!sourceTimestamp) {
+				if (!isRocksDB) sourceTimestamp = getNextMonotonicTime();
+				else {
+					try {
+						sourceTimestamp = freshLocalKey(tableRootStore);
+					} catch (error) {
+						// Keep the read available, but never cache a version that could repeat an unstaged holder's.
+						issuanceFailed = true;
+						sourceTimestamp = (primaryStore as RocksDatabase).getMonotonicTimestamp();
+						const now = performance.now();
+						if (now - lastIssuanceFailureWarn >= 60_000) {
+							lastIssuanceFailureWarn = now;
+							logger.warn?.(
+								`Failed to allocate local issuance key for source read on ${tableName}; serving uncached`,
+								error
+							);
+						}
 					}
 				}
 			}
+		} catch (error) {
+			// a lock handed over by a stale read has no other owner to release it
+			if (lockHeld) releaseRecordLock(id);
+			throw error;
 		}
 		let wake: () => void;
-		const fillKey = writeKeyId(id);
 		const heldFill = sourceFills?.get(fillKey);
 		// We start by locking the record so that there is only one resolution happening at once;
 		// if there is already a resolution in process, we want to use the results of that resolution
@@ -14266,7 +14286,7 @@ export function makeTable(options): TableResourceClass {
 		// the other thread releases the lock.
 		// The callback only wakes this request: it can fire during a database close, where reading
 		// the store would throw inside a native callback and leave the request unsettled.
-		const lockAcquired = primaryStore.tryLock(id, () => wake());
+		const lockAcquired = lockHeld || primaryStore.tryLock(id, () => wake());
 
 		if (!lockAcquired) {
 			let timer: ReturnType<typeof setTimeout>;

@@ -975,6 +975,8 @@ Returns the expiration time, if one is set.
 
 For caching tables: return `true` to serve the stale entry while revalidation happens concurrently; `false` to wait for the fresh value.
 
+<VersionBadge type="changed" version="v5.4.1" /> A read that serves the stale entry starts a revalidation only if no other request is holding that record's fetch; otherwise it just returns the stale entry. If the revalidation fails, the next read starts another one. This hook is now called before the revalidation starts.
+
 Entry properties:
 
 - `version` — Timestamp/version from the source
