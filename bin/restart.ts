@@ -25,6 +25,8 @@ import { REPLICATION_NOT_IMPLEMENTED } from '../server/Server.ts';
 import { armRestartExitWatchdog } from './restartExitWatchdog.ts';
 import { PRODUCT_NAME } from '../utility/packageUtils.js';
 import { enableCompileCache } from '../server/threads/compileCache.ts';
+import { shutdownProcess } from '../server/threads/processShutdown.ts';
+import { getProcessShutdownTimeoutMs } from '../components/shutdownDrain.ts';
 
 try {
 	envMgr.initSync();
@@ -33,6 +35,8 @@ try {
 }
 const RESTART_RESPONSE = `Restarting ${PRODUCT_NAME}. This may take up to ${hdbTerms.RESTART_TIMEOUT_MS / 1000} seconds.`;
 const INVALID_SERVICE_ERR = 'Invalid service';
+// setTimeout fires at once past a signed 32-bit delay
+const MAX_TIMER_MS = 2 ** 31 - 1;
 const ISOLATED_TOPOLOGY_REQUEST_TIMEOUT_MS = 5000;
 
 let calledFromCli;
@@ -50,7 +54,7 @@ if (isMainThread) {
 					scope: message.scope,
 					scopeFallback: message.scopeFallback,
 				});
-			else restart({ operation: 'restart' });
+			else restart({ operation: 'restart', drain: message.drain === true });
 		} finally {
 			port.postMessage({ type: 'restart-complete' });
 		}
@@ -89,9 +93,12 @@ async function restart(req: any) {
 				// pre-start an HTTP replacement into a process that is already exiting.
 				beginProcessShutdown();
 				// Off Linux the watchdog can never arm, and armRestartExitWatchdog() has already warned.
+				// A restore's restart drains as a SIGTERM does, so the next start's pre-restore backup holds every
+				// acknowledged write; the watchdog allows for the drain.
+				const drainMs = req.drain ? getProcessShutdownTimeoutMs() : 0;
 				if (
 					process.env.HARPER_EXIT_ON_RESTART &&
-					!(await armRestartExitWatchdog(hdbTerms.RESTART_TIMEOUT_MS)) &&
+					!(await armRestartExitWatchdog(Math.min(hdbTerms.RESTART_TIMEOUT_MS + drainMs, MAX_TIMER_MS))) &&
 					process.platform === 'linux'
 				)
 					hdbLogger.error('Restart exit watchdog is unavailable; restart teardown is unbounded');
@@ -100,10 +107,19 @@ async function restart(req: any) {
 				// child process if they are not explicitly closed. And when transferred they are orphaned listening, accepting
 				// connections and hanging. So we need to explicitly close down all the workers and then start the new process
 				// and shut down.
-				hdbLogger.debug('Shutdown workers');
-				await shutdownWorkersNow();
-				const { closeServers } = await import('../server/threads/threadServer.ts');
-				await closeServers();
+				if (req.drain) {
+					hdbLogger.debug('Draining workers and the main thread before restarting');
+					// bounded here too, where the watchdog does not run (no HARPER_EXIT_ON_RESTART)
+					await Promise.race([
+						shutdownProcess(Date.now() + drainMs),
+						delay(Math.min(drainMs + hdbTerms.RESTART_TIMEOUT_MS, MAX_TIMER_MS)),
+					]);
+				} else {
+					hdbLogger.debug('Shutdown workers');
+					await shutdownWorkersNow();
+					const { closeServers } = await import('../server/threads/threadServer.ts');
+					await closeServers();
+				}
 				await processMan.cleanupChildrenProcesses(false);
 				// remove pid file so it doesn't trip up the launch
 				rmSync(path.join(envMgr.get(hdbTerms.CONFIG_PARAMS.ROOTPATH), hdbTerms.HDB_PID_FILE), { force: true });
@@ -114,6 +130,8 @@ async function restart(req: any) {
 					hdbLogger.warn(`Exiting ${PRODUCT_NAME} process to trigger a container restart`);
 					process.exit(0);
 				}
+				// safe mode a restore recovery chose belongs to this boot; the next one decides again
+				if (process.env.HARPER_SAFE_MODE === 'restore-unpublished') delete process.env.HARPER_SAFE_MODE;
 				// now launch the new process and exit this process
 				await (await import('./run.ts')).launch(true);
 			} catch (error) {
@@ -126,6 +144,7 @@ async function restart(req: any) {
 		// Post msg to main parent thread requesting it restart (so the main thread can process.exit())
 		parentPort.postMessage({
 			type: hdbTerms.ITC_EVENT_TYPES.RESTART,
+			drain: req.drain === true,
 		});
 	}
 

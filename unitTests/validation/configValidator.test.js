@@ -276,6 +276,28 @@ describe('Test configValidator module', () => {
 			expect(schema.error.message).to.eql(expected_schema_message);
 		});
 
+		it('bounds operationsApi.encryptedOperation maxAge and maxSize to integers in range', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.operationsApi.encryptedOperation = { maxAge: 1000, maxSize: 1024 };
+			assert.strictEqual(configValidator(config).error, undefined);
+			config.operationsApi.encryptedOperation = { maxAge: 600000, maxSize: 64 * 1024 * 1024 };
+			assert.strictEqual(configValidator(config).error, undefined);
+			for (const [encryptedOperation, field] of [
+				[{ maxAge: 999 }, 'maxAge'],
+				[{ maxAge: 600001 }, 'maxAge'],
+				[{ maxAge: 1500.5 }, 'maxAge'],
+				[{ maxSize: 1023 }, 'maxSize'],
+				[{ maxSize: 64 * 1024 * 1024 + 1 }, 'maxSize'],
+			]) {
+				config.operationsApi.encryptedOperation = encryptedOperation;
+				assert.match(
+					configValidator(config).error?.message,
+					new RegExp(`operationsApi\\.encryptedOperation\\.${field}`),
+					JSON.stringify(encryptedOperation)
+				);
+			}
+		});
+
 		it('enforces the blob-gap reconnect floor', () => {
 			const config = testUtils.deepClone(FAKE_CONFIG);
 			config.replication = { blobGapReconnectMs: 999 };
@@ -321,6 +343,24 @@ describe('Test configValidator module', () => {
 			);
 			config.replication = { blobGapEscalationMs: 2.5 };
 			expect(configValidator(config).error.message).to.include("'replication.blobGapEscalationMs' must be an integer");
+		});
+
+		it('accepts the replication confirmation defaults only as non-negative integers', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			for (const name of ['confirmation', 'recordLockConfirmation']) {
+				for (const value of [0, 1, 3, null]) {
+					config.replication = { [name]: value };
+					assert.strictEqual(configValidator(config).error, undefined, `${name}: ${value}`);
+				}
+				for (const [value, message] of [
+					[-1, 'must be greater than or equal to 0'],
+					[1.5, 'must be an integer'],
+					['all', 'must be a number'],
+				]) {
+					config.replication = { [name]: value };
+					assert.match(configValidator(config).error?.message, new RegExp(`replication\\.${name}' ${message}`));
+				}
+			}
 		});
 
 		it('accepts a well-formed sql config section', () => {

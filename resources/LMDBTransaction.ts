@@ -11,6 +11,8 @@ import {
 	requestAbortedError,
 	transactionOpenTooLongError,
 	confirmReplicationAfterCommit,
+	writeConfirmationDefaultConfigured,
+	explicitConfirmation,
 	registeredReplicationConfirmation,
 	settleCommitCompletions,
 	type CommitOptions,
@@ -52,10 +54,15 @@ export class LMDBTransaction extends DatabaseTransaction {
 	declare overloadChecked: boolean;
 	open = TRANSACTION_STATE.OPEN;
 	get requestedConfirmationCount(): number {
-		if (this.replicatedConfirmation) return this.replicatedConfirmation;
+		const explicit = explicitConfirmation(this.replicatedConfirmation);
+		if (explicit !== undefined) return explicit;
 		const root = this.root;
 		// A root without a database passes its request to its first child; later database children use their own count.
-		return root && root.next === this && !root.db ? root.replicatedConfirmation || 0 : 0;
+		if (root && root.next === this && !root.db) {
+			const requested = explicitConfirmation(root.replicatedConfirmation);
+			if (requested !== undefined) return requested;
+		}
+		return this.configuredConfirmation();
 	}
 
 	renewIdleTimeout(): void {
@@ -159,6 +166,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 			throw new Error('Can not use a transaction that is no longer open');
 		}
 
+		if (operation.stagedIn === this && !operation.saved && this.ownedWrites?.has(operation)) return operation;
 		this.linkWrite(operation);
 		this.writes.push(operation); // standard path, add to current transaction
 		(this.ownedWrites ??= new WeakSet()).add(operation);
@@ -420,7 +428,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 					this.timestamp = 0;
 					while (this.next) this.detachNext();
 					const completed =
-						confirmation || (this.root ?? this).confirmationCount
+						confirmation || writeConfirmationDefaultConfigured() || (this.root ?? this).confirmationCount
 							? settleCommitCompletions(completions, confirmation)
 							: Promise.all(completions);
 					return completed.then(() => {
@@ -491,7 +499,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 	private confirmationPosition(committedLogPosition?: number): number | undefined {
 		let position: number | undefined;
 		for (const write of this.writes) {
-			if (!write || confirmsNothing(write)) continue;
+			if (!write || confirmsNothing(write, this.nodeLocalByStore)) continue;
 			// A placed write may omit the primary row or leave its older value in place.
 			// The captured audit position still covers that write and the rest of its batch.
 			const localTime =

@@ -502,6 +502,8 @@ export function configValidator(configJson, skipFsValidation = false) {
 			copyCursorFlushBytes: number.min(1).optional().empty(null),
 			copyCursorFlushIntervalMs: number.min(1).optional().empty(null),
 			replayTimeout: number.min(1).optional().empty(null),
+			confirmation: number.integer().min(0).max(Number.MAX_SAFE_INTEGER).optional().empty(null),
+			recordLockConfirmation: number.integer().min(0).max(Number.MAX_SAFE_INTEGER).optional().empty(null),
 		}).optional(),
 		node: Joi.object({
 			hostname: bareHostConstraints,
@@ -540,6 +542,14 @@ export function configValidator(configJson, skipFsValidation = false) {
 				domainSocket: Joi.optional().empty('hdb/operations-server').default(setDefaultRoot),
 				securePort: portConstraints,
 				timeout: number.min(1).optional(),
+			}).optional(),
+			encryptedOperation: Joi.object({
+				maxAge: number.integer().min(1000).max(600000).optional(),
+				maxSize: number
+					.integer()
+					.min(1024)
+					.max(64 * 1024 * 1024)
+					.optional(),
 			}).optional(),
 			tls: Joi.alternatives([Joi.array().items(tlsConstraints), tlsConstraints]),
 		}).required(),

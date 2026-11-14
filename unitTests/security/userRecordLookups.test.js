@@ -9,6 +9,7 @@ const { server } = require('#src/server/Server');
 const { Headers } = require('#src/server/serverHelpers/Headers');
 const user = require('#src/security/user');
 const { authentication } = require('#src/security/auth');
+const { getDeferredCredentialRejection } = require('#src/security/deferredAuthentication');
 const { registerLiveSubscription } = require('#src/server/liveSubscriptionAuth');
 const { VERSION_REUSED } = require('#src/resources/RecordEncoder');
 
@@ -213,6 +214,160 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 			assert.strictEqual(user.isCurrentUser(unknown), true);
 			await testUtils.seedUsers([lookupUser()]);
 			assert.strictEqual(user.isCurrentUser(unknown), false);
+		});
+
+		it('tells a user built from an hdb_user record from one with no record', async () => {
+			const unknown = await user.findAndValidateUser('lookup_user', null, false);
+			assert.strictEqual(user.isRecordBacked(unknown), false);
+			assert.strictEqual(user.isRecordBacked(user.cloneUserView(unknown)), false, 'a role-less clone');
+			await testUtils.seedUsers([lookupUser({ role: 'missing_role' })]);
+			const roleless = await user.findAndValidateUser('lookup_user', null, false);
+			assert.strictEqual(roleless.role, undefined);
+			assert.strictEqual(user.isRecordBacked(roleless), true, 'a record whose role is missing');
+			assert.strictEqual(user.isRecordBacked({ username: 'scoped', role: { permission: {} } }), undefined);
+		});
+
+		it('tells the refusal of an inactive user from other lookup failures', async () => {
+			await testUtils.seedUsers([lookupUser({ active: false })]);
+			const inactive = await user.findAndValidateUser('lookup_user', null, false).catch((error) => error);
+			assert.strictEqual(user.isInactiveUserRejection(inactive), true);
+			const wrongPassword = await user.findAndValidateUser('nobody_cn', 'x').catch((error) => error);
+			assert.strictEqual(user.isInactiveUserRejection(wrongPassword), false);
+			assert.strictEqual(
+				user.isInactiveUserRejection(new Error(inactive.message)),
+				false,
+				"only the lookup's own refusal"
+			);
+		});
+
+		it('marks a copy as a certificate principal, never the object server.getUser returned', async () => {
+			const unknown = await user.findAndValidateUser('lookup_user', null, false);
+			const named = user.certificatePrincipal(unknown);
+			assert.notStrictEqual(named, unknown);
+			assert.strictEqual(user.isCertificatePrincipal(named), true);
+			assert.strictEqual(user.isCertificatePrincipal(unknown), false, 'the shared object stays unmarked');
+			assert.strictEqual(user.isRecordBacked(named), false, 'the copy keeps its record provenance');
+			assert.strictEqual(user.isCertificatePrincipal(user.cloneUserView(named)), true, 'a clone keeps the mark');
+			assert.strictEqual(user.certificateAdmission(named), named, 'the copy is the admission');
+			assert.strictEqual(user.certificateAdmission(user.cloneUserView(named)), named, 'a clone keeps the admission');
+			const again = user.certificatePrincipal(named);
+			assert.strictEqual(user.certificateAdmission(again), again, 'a new admission of a marked object is its own');
+			assert.strictEqual(
+				user.certificateAdmission(user.cloneUserView(unknown, undefined, named)),
+				named,
+				"a recheck's view carries the admission it replaced"
+			);
+			const carried = user.withCertificateAdmission({ username: 'lookup_user' }, named);
+			assert.strictEqual(user.certificateAdmission(carried), named);
+			const plain = { username: 'lookup_user' };
+			assert.strictEqual(
+				user.withCertificateAdmission(plain, unknown),
+				plain,
+				'nothing to carry from an unmarked user'
+			);
+			assert.strictEqual(
+				user.isCertificatePrincipal(JSON.parse(JSON.stringify(named))),
+				false,
+				'data never carries it'
+			);
+			assert.strictEqual(user.isCertificatePrincipal(structuredClone(named)), false);
+
+			const frozen = Object.freeze({ username: 'frozen_cn' });
+			assert.strictEqual(user.isCertificatePrincipal(user.certificatePrincipal(frozen)), true);
+			for (const none of [null, undefined]) assert.strictEqual(user.certificatePrincipal(none), none);
+
+			const component = { username: 'component_cn', role: { permission: {} } };
+			user.trackUserRecords(component, user.userRecordVersions('component_cn'));
+			await testUtils.seedUsers([lookupUser({ username: 'component_cn' })]);
+			assert.strictEqual(
+				user.isCurrentUser(user.certificatePrincipal(component)),
+				false,
+				'tracked versions carry over'
+			);
+		});
+
+		it('keeps a certificate view of a record-backed user current only while its records are', async () => {
+			await testUtils.seedUsers([lookupUser()]);
+			const view = user.certificatePrincipal(await user.findAndValidateUser('lookup_user', null, false));
+			assert.strictEqual(user.isRecordBacked(view), true);
+			assert.strictEqual(user.isCurrentUser(view), true);
+			await databases.system.hdb_role.put({ id: 'lookup_role', role: 'lookup_role', permission: {} });
+			assert.strictEqual(user.isCurrentUser(view), false, 'a role change');
+		});
+
+		it("marks the built-in lookup's new view in place, and copies what another resolver returned", async () => {
+			const { server } = require('#src/server/Server');
+			const builtIn = await server.getUser('lookup_user', null);
+			assert.strictEqual(
+				user.certificatePrincipal(builtIn, server.getUser),
+				builtIn,
+				'no copy of a view only it holds'
+			);
+			assert.strictEqual(user.isCertificatePrincipal(builtIn), true);
+			assert.strictEqual(user.certificateAdmission(builtIn), builtIn, 'the view is its own admission');
+
+			const fromOverride = await user.findAndValidateUser('lookup_user', null, false);
+			const named = user.certificatePrincipal(fromOverride, async () => fromOverride);
+			assert.notStrictEqual(named, fromOverride);
+			assert.strictEqual(user.isCertificatePrincipal(fromOverride), false, 'another resolver may share it');
+			assert.strictEqual(user.isCertificatePrincipal(named), true);
+		});
+
+		it('copies and marks a plain object from another realm, or with a null prototype', () => {
+			const vm = require('node:vm');
+			const otherRealm = vm.runInNewContext('({ username: "realm_cn" })');
+			assert.notStrictEqual(Object.getPrototypeOf(otherRealm), Object.prototype);
+			const bare = Object.assign(Object.create(null), { username: 'bare_cn' });
+			for (const principal of [otherRealm, bare]) {
+				const named = user.certificatePrincipal(principal);
+				assert.notStrictEqual(named, principal);
+				assert.strictEqual(user.isCertificatePrincipal(named), true);
+				assert.strictEqual(named.username, principal.username);
+			}
+		});
+
+		it('leaves a plain object with a non-enumerable own property as it is, unmarked', () => {
+			const hidden = Object.defineProperty({ username: 'hidden_cn' }, 'authExpiresAt', { value: 1, enumerable: false });
+			assert.strictEqual(user.certificatePrincipal(hidden), hidden, 'a copy would drop its expiry');
+			assert.strictEqual(user.isCertificatePrincipal(hidden), false);
+		});
+
+		it('leaves an object on any other null-rooted prototype as it is, unmarked', () => {
+			class Detached extends null {
+				constructor() {
+					return Object.create(Detached.prototype);
+				}
+				get authExpiresAt() {
+					return 1;
+				}
+			}
+			const detached = new Detached();
+			detached.username = 'detached_cn';
+			const prototype = Object.create(null, { authExpiresAt: { get: () => 1 } });
+			const custom = Object.assign(Object.create(prototype), { username: 'custom_cn' });
+			for (const principal of [detached, custom]) {
+				assert.strictEqual(user.certificatePrincipal(principal), principal, 'a copy would drop its getters');
+				assert.strictEqual(user.isCertificatePrincipal(principal), false);
+			}
+		});
+
+		it('leaves a class-instance principal as it is, unmarked', () => {
+			class GetterRole {
+				username = 'getter_cn';
+				get role() {
+					return { permission: {} };
+				}
+			}
+			class PrivateName {
+				#name = 'private_cn';
+				get username() {
+					return this.#name;
+				}
+			}
+			for (const principal of [new GetterRole(), new PrivateName()]) {
+				assert.strictEqual(user.certificatePrincipal(principal), principal);
+				assert.strictEqual(user.isCertificatePrincipal(principal), false);
+			}
 		});
 
 		it('treats a user this module did not build as current', () => {
@@ -477,10 +632,172 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 				assert.strictEqual(user.isCurrentUser(shared), false, 'the user keeps what its first login read');
 
 				await databases.system.hdb_user.delete('lookup_shared');
-				const dropped = (await authenticate(basic('lookup_shared', 'token'))).user;
-				assert.strictEqual(user.isCurrentUser(dropped), false, 'the record its first login read was dropped');
-				assert.strictEqual(user.isRecordlessPrincipal(dropped), false);
+				const droppedLogin = await authenticate(basic('lookup_shared', 'token'));
+				assert.strictEqual(
+					droppedLogin.status,
+					401,
+					'the Basic login is refused once the record its first login read was dropped'
+				);
+				assert.strictEqual(droppedLogin.user, undefined);
+				const droppedView = user.cloneUserView(
+					shared,
+					user.trackUserRecords(shared, user.userRecordVersions('lookup_shared'))
+				);
+				assert.strictEqual(user.isCurrentUser(droppedView), false, 'the record its first login read was dropped');
+				assert.strictEqual(user.isRecordlessPrincipal(droppedView), false);
 				assert.strictEqual(user.isRecordlessPrincipal(shared), false);
+			} finally {
+				server.getUser = getUser;
+			}
+		});
+
+		it('refuses a Basic login whose view is stale after drop_user or repeated mid-lookup writes, re-resolves a single race, and defers without setting request.user on app routes', async () => {
+			await testUtils.seedUsers([
+				lookupUser({ username: 'lookup_app_dropped' }),
+				lookupUser({ username: 'lookup_roleless_dropped' }),
+				lookupUser({ username: 'lookup_midflight' }),
+				lookupUser({ username: 'lookup_midflight_persistent' }),
+			]);
+			const shared = structuredClone(user.getUserWithRole('lookup_app_dropped'));
+			const roleless = { username: 'lookup_roleless_dropped' };
+			const getUser = server.getUser;
+			let calls = 0;
+			let transientMidflightCalls = 0;
+			let persistentMidflightCalls = 0;
+			server.getUser = async (username) => {
+				calls++;
+				if (username === 'lookup_roleless_dropped') return roleless;
+				if (username === 'lookup_midflight') {
+					transientMidflightCalls++;
+					if (transientMidflightCalls === 1) {
+						await databases.system.hdb_role.put({
+							id: 'lookup_role',
+							role: 'lookup_role',
+							permission: { super_user: true },
+						});
+					}
+					return structuredClone(user.getUserWithRole('lookup_midflight'));
+				}
+				if (username === 'lookup_midflight_persistent') {
+					persistentMidflightCalls++;
+					const copy = structuredClone(user.getUserWithRole('lookup_midflight_persistent'));
+					await databases.system.hdb_role.put({
+						id: 'lookup_role',
+						role: 'lookup_role',
+						permission: { super_user: persistentMidflightCalls % 2 === 0 },
+					});
+					return copy;
+				}
+				return shared;
+			};
+			try {
+				const header = basic('lookup_app_dropped', 'token');
+				assert.strictEqual((await authenticate(header)).status, 200);
+				assert.strictEqual((await authenticate(basic('lookup_roleless_dropped', 'token'))).status, 200);
+				await databases.system.hdb_user.delete('lookup_app_dropped');
+				await databases.system.hdb_user.delete('lookup_roleless_dropped');
+
+				let downstreamUser = 'not-run';
+				let deferred;
+				const appResponse = await authentication(
+					{
+						headers: { asObject: { authorization: header, host: 'localhost' } },
+						method: 'GET',
+						pathname: '/app-catch-all',
+						ip: '10.0.0.1',
+						isOperationsServer: false,
+					},
+					async (request) => {
+						downstreamUser = request.user;
+						deferred = getDeferredCredentialRejection(request);
+						return { status: 200, headers: new Headers(), body: {} };
+					}
+				);
+				assert.strictEqual(appResponse.status, 200, 'deferred rejection lets an unowned app route run');
+				assert.strictEqual(downstreamUser, undefined, 'dropped principal must not leak onto request.user');
+				assert.strictEqual(deferred?.strategy, 'Basic');
+				assert.strictEqual(deferred?.status, 401);
+				assert.strictEqual(deferred?.message, 'Login failed');
+
+				const callsBeforeRepeat = calls;
+				assert.strictEqual((await authenticate(header)).status, 401, 'rejected view was not cached');
+				assert.strictEqual(calls, callsBeforeRepeat + 1);
+				assert.strictEqual(
+					(await authenticate(basic('lookup_roleless_dropped', 'token'))).status,
+					401,
+					'a role-less memoized object is also checked against its lookup provenance'
+				);
+				const transientResult = await authenticate(basic('lookup_midflight', 'token'));
+				assert.strictEqual(transientResult.status, 200, 'a single concurrent write during getUser re-resolves once');
+				assert.strictEqual(transientMidflightCalls, 2);
+				assert.strictEqual(transientResult.user.role.permission.super_user, true);
+				assert.strictEqual(
+					(await authenticate(basic('lookup_midflight_persistent', 'token'))).status,
+					401,
+					'a view that stays stale after the retry is refused'
+				);
+				assert.strictEqual(persistentMidflightCalls, 2);
+			} finally {
+				server.getUser = getUser;
+			}
+		});
+
+		it('admits a principal returned under another name whose own name has a tombstone, unless its first lookup read a live record', async () => {
+			await testUtils.seedUsers([
+				lookupUser({ username: 'lookup_sso_tombstone' }),
+				lookupUser({ username: 'lookup_alias_live' }),
+			]);
+			await databases.system.hdb_user.delete('lookup_sso_tombstone');
+			const memoizedSso = { username: 'lookup_sso_tombstone', role: { role: 'component_role', permission: {} } };
+			const memoizedLive = { username: 'lookup_alias_live', role: { role: 'component_role', permission: {} } };
+			let memoizedCreatedMidflight;
+			const getUser = server.getUser;
+			let aliasCalls = 0;
+			let createdMidflightCalls = 0;
+			server.getUser = async (username) => {
+				if (username === 'lookup_sso_fresh_login') {
+					return { username: 'lookup_sso_tombstone', role: { role: 'component_role', permission: {} } };
+				}
+				if (username === 'lookup_sso_memo_login') return memoizedSso;
+				if (username === 'lookup_created_midflight') {
+					createdMidflightCalls++;
+					if (createdMidflightCalls === 1) {
+						await databases.system.hdb_user.put(lookupUser({ username: 'lookup_created_midflight' }));
+						memoizedCreatedMidflight = structuredClone(user.getUserWithRole('lookup_created_midflight'));
+					}
+					return memoizedCreatedMidflight;
+				}
+				aliasCalls++;
+				return memoizedLive;
+			};
+			try {
+				const freshLogin = await authenticate(basic('lookup_sso_fresh_login', 'token'));
+				assert.strictEqual(freshLogin.status, 200, 'an unread tombstone under the returned name does not refuse login');
+				assert.strictEqual(user.isRecordlessPrincipal(freshLogin.user), false, 'subscriptions still recheck by name');
+				assert.strictEqual(user.isCurrentUser(freshLogin.user), false, 'and the authorization cache still re-resolves');
+
+				assert.strictEqual((await authenticate(basic('lookup_sso_memo_login', 'token'))).status, 200);
+				assert.strictEqual((await authenticate(basic('lookup_sso_memo_login', 'token'))).status, 200);
+
+				assert.strictEqual((await authenticate(basic('lookup_alias_login', 'token'))).status, 200);
+				await databases.system.hdb_user.delete('lookup_alias_live');
+				const aliasCallsBeforeDrop = aliasCalls;
+				assert.strictEqual(
+					(await authenticate(basic('lookup_alias_login', 'token'))).status,
+					401,
+					'a memoized alias whose first lookup read a live record is refused once that record is dropped'
+				);
+				assert.strictEqual(aliasCalls, aliasCallsBeforeDrop + 1, 'a dropped alias record skips the retry');
+
+				const createdMidflight = await authenticate(basic('lookup_created_midflight', 'token'));
+				assert.strictEqual(createdMidflight.status, 200, 'a record created mid-lookup retries once and succeeds');
+				assert.strictEqual(createdMidflightCalls, 2);
+				await databases.system.hdb_user.delete('lookup_created_midflight');
+				assert.strictEqual(
+					(await authenticate(basic('lookup_created_midflight', 'token'))).status,
+					401,
+					'the retry updated firsts to the live stamp, so dropping that record later is refused'
+				);
 			} finally {
 				server.getUser = getUser;
 			}

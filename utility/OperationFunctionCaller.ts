@@ -2,6 +2,7 @@
 
 import log, { isErrorLike, inspectForLog } from './logging/harper_logger.ts';
 import * as terms from './hdbTerms.ts';
+import { operationLogViewOf } from './operationLogView.ts';
 
 /**
  * Calls the operation function specified in the parameter with the input specified in the parameter.  Once complete,
@@ -45,6 +46,13 @@ export async function callOperationFunctionAsAwait(
 
 		return result;
 	} catch (err) {
+		// An error message can echo a request value, so a sealed request's failure logs no message.
+		if (operationLogViewOf(functionInput)) {
+			log.error(
+				`Error calling operation: ${promisifiedFunction.name} (sealed request, status ${err?.statusCode ?? 500})`
+			);
+			throw err;
+		}
 		// This specific check was added to avoid an error message in the log which could make the error look worse than it
 		// seems when scanning a log.  In reality a schema already existing isn't really an error, just a failure.
 		if (err.message && typeof err.message === 'string' && err.message.includes('already exists')) {

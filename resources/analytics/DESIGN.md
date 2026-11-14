@@ -45,7 +45,11 @@ persisted with the rows.
 
 After `setAnalyticsEnabled()` returns, no listener or sink on that thread receives a sample recorded on
 it before the call; other threads keep their own windows. Dropping `activeActions` and the timer covers
-the window still being recorded, and the queue-depth high-water marks restart with it.
+the window still being recorded, and the queue-depth high-water marks restart with it. `actionIndex`
+holds only actions an `activeActions` lookup returned, and only for primitive arguments (an object
+would key by identity and split per call), so alias spellings and key collisions that `actionKey`
+merges stay one action; it is replaced with `activeActions` here and at each rotation, since
+a stale index would take later samples into an action nothing reports.
 `flushAnalytics()` has already rotated the previous window out and yields once per action, so it also
 captures `analyticsGeneration`, which every reset advances, and stops after a yield, before each
 listener and before the sink once it changes. A listener that resets keeps the report it was handed, as

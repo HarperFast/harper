@@ -55,6 +55,10 @@ async function rootConfigEntry(ctx: ContextWithHarper, project: string): Promise
 	return parse(await readFile(join(ctx.harper.dataRootDir, 'harper-config.yaml'), 'utf8'))?.[project];
 }
 
+async function recordedRouting(ctx: ContextWithHarper, deploymentId: string): Promise<unknown> {
+	return (await operation(ctx, { operation: 'get_deployment', deployment_id: deploymentId })).routing;
+}
+
 async function liveVersion(ctx: ContextWithHarper, project: string): Promise<string> {
 	return readFile(join(componentsRoot(ctx), project, 'version.txt'), 'utf8');
 }
@@ -121,7 +125,7 @@ suite('deploy_component publishes root config as an effect of the activation', (
 
 	test('a payload deploy publishes the routing it sets, and a redeploy that omits it keeps it (harper#3043)', async () => {
 		const project = `${PREFIX}-payload-routing`;
-		await operation(ctx, {
+		const routed = await operation(ctx, {
 			operation: 'deploy_component',
 			project,
 			payload: await buildPayload(project, 1),
@@ -132,8 +136,9 @@ suite('deploy_component publishes root config as an effect of the activation', (
 		});
 		const published = { host: 'pr-12.app.example.com', urlPath: '/preview', branchedDatabases: ['data'] };
 		deepStrictEqual(await rootConfigEntry(ctx, project), published);
+		deepStrictEqual(await recordedRouting(ctx, routed.deployment_id), { ...published, isolated: null });
 
-		await operation(ctx, {
+		const unrouted = await operation(ctx, {
 			operation: 'deploy_component',
 			project,
 			payload: await buildPayload(project, 2),
@@ -141,6 +146,7 @@ suite('deploy_component publishes root config as an effect of the activation', (
 		});
 		strictEqual(await liveVersion(ctx, project), '2');
 		deepStrictEqual(await rootConfigEntry(ctx, project), published);
+		strictEqual(await recordedRouting(ctx, unrouted.deployment_id), null, 'it puts back no routing of its own');
 	});
 
 	test('a payload deploy whose build fails leaves the routing it set unpublished', async () => {
@@ -168,10 +174,17 @@ suite('deploy_component publishes root config as an effect of the activation', (
 		});
 		strictEqual(await rootConfigEntry(ctx, project), undefined, 'nothing is live, so nothing is published');
 
-		await operation(ctx, { operation: 'deploy_component', project, deployment_id: staged.deployment_id });
+		const activated = await operation(ctx, {
+			operation: 'deploy_component',
+			project,
+			deployment_id: staged.deployment_id,
+		});
 
 		strictEqual(await liveVersion(ctx, project), '2');
 		deepStrictEqual(await rootConfigEntry(ctx, project), { package: packagedV2 });
+		const none = { host: null, urlPath: null, isolated: null, branchedDatabases: null };
+		deepStrictEqual(await recordedRouting(ctx, staged.deployment_id), none);
+		deepStrictEqual(await recordedRouting(ctx, activated.deployment_id), none);
 	});
 
 	test('drop_component removes the entry through the same writer', async () => {

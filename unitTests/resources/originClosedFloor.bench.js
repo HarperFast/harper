@@ -45,15 +45,21 @@ describe('Benchmark: origin-closed floor write overhead', function () {
 	});
 
 	function withFloor(enabled, run) {
-		const original = { reserve: floor.reserveLocalKey, reserved: floor.isReservedForLocalAppend };
+		const original = {
+			reserve: floor.reserveLocalKey,
+			reserveWrite: floor.reserveLocalWriteKey,
+			reserved: floor.isReservedForLocalAppend,
+		};
 		if (!enabled) {
 			floor.reserveLocalKey = () => 0;
+			floor.reserveLocalWriteKey = () => 0;
 			floor.isReservedForLocalAppend = () => true;
 		}
 		return Promise.resolve()
 			.then(run)
 			.finally(() => {
 				floor.reserveLocalKey = original.reserve;
+				floor.reserveLocalWriteKey = original.reserveWrite;
 				floor.isReservedForLocalAppend = original.reserved;
 			});
 	}
@@ -111,6 +117,12 @@ describe('Benchmark: origin-closed floor write overhead', function () {
 			floor.releaseLocalKey(handle);
 		}
 		const pairMs = performance.now() - start;
+		const fencedStart = performance.now();
+		for (let n = 0; n < pairs; n++) {
+			floor.reserveLocalWriteKey(rootStore, handle);
+			floor.releaseLocalKey(handle);
+		}
+		const fencedPairMs = performance.now() - fencedStart;
 		handle.abort();
 		const rounds = 200;
 		const roundStart = performance.now();
@@ -124,6 +136,7 @@ describe('Benchmark: origin-closed floor write overhead', function () {
 		const roundMs = performance.now() - roundStart;
 		console.log('');
 		console.log(`  reserve+release pair          ${((pairMs / pairs) * 1e6).toFixed(0).padStart(6)} ns`);
+		console.log(`  same, write-fence checked     ${((fencedPairMs / pairs) * 1e6).toFixed(0).padStart(6)} ns`);
 		console.log(`  certify + persist + publish   ${((roundMs / rounds) * 1e3).toFixed(0).padStart(6)} µs per round`);
 	});
 

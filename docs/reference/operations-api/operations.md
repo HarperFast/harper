@@ -53,7 +53,7 @@ Detailed documentation: [Database Overview](../database/overview.md)
 
 ### `describe_all`
 
-Returns the definitions of all databases and tables within the database. Record counts above 5000 records are estimated; the response includes `estimated_record_range` when estimated. To force an exact count (requires full table scan), include `"exact_count": true`. Each table definition includes the [record-structure dictionary fields](#record-structure-dictionaries) described for `describe_table`.
+Returns the definitions of all databases and tables within the database. Record counts above 5000 records are estimated; the response includes `estimated_record_range` when estimated. To force an exact count (requires full table scan), include `"exact_count": true`. Each table definition includes the [record-structure dictionary fields](#record-structure-dictionaries) and the [storage `engine`](#storage-engine) described for `describe_table`.
 
 ```json
 { "operation": "describe_all" }
@@ -61,7 +61,7 @@ Returns the definitions of all databases and tables within the database. Record 
 
 ### `describe_database`
 
-Returns all table definitions within the specified database. Each table definition includes the [record-structure dictionary fields](#record-structure-dictionaries) described for `describe_table`.
+Returns all table definitions within the specified database. Each table definition includes the [record-structure dictionary fields](#record-structure-dictionaries) and the [storage `engine`](#storage-engine) described for `describe_table`.
 
 ```json
 { "operation": "describe_database", "database": "dev" }
@@ -117,6 +117,12 @@ A table that has kept [local replicas](../database/schema.md#replicaexpiration-a
 | `replica_size_estimate`   | Estimated bytes of those replicas: the average size of up to 100 of their rows, blobs included, times the count. A rough figure, since the rows sampled are the first by key                                                                   |
 
 See [Local replicas under storage pressure](../database/storage-tuning.md#local-replicas-under-storage-pressure).
+
+#### Storage engine
+
+<VersionBadge version="v5.4.1" />
+
+Each table definition includes `engine`: `rocksdb` or `lmdb`, the engine of the store the table is opened on. `storage.engine` only picks the engine for databases created from then on. A database that already exists on disk opens on the engine it was written with, so a node upgraded in place from v4 keeps its `.mdb` databases on LMDB until they are migrated (`storage.migrateOnStart`).
 
 #### Record-structure dictionaries
 
@@ -1117,7 +1123,7 @@ When a deploy replaces the release that is live, Harper keeps the replaced one u
 }
 ```
 
-[`list_deployments`](#list_deployments) shows each deployment's id. The activation publishes the root config entry published by that deployment, so a `package` release gets its `package` entry back and a `payload` release removes the one a later deploy added. The release it replaces is kept in turn, so you can go forward again the same way.
+[`list_deployments`](#list_deployments) shows each deployment's id. The activation publishes the root config entry published by that deployment, so a `package` release gets its `package` entry back and a `payload` release removes the one a later deploy added. That includes the release's `host`, `urlPath`, `isolated` and `branchedDatabases`, so going back can move an application onto or off its private database copy; from v5.4.0, the deployment's record says which as [`routing`](#get_deployment). The release it replaces is kept in turn, so you can go forward again the same way.
 
 - **Kept releases count against [`deployment.stagingRetention.maxCount`](../configuration/options.md#deployment)**, with staged builds. The most recently replaced ones are kept.
 - **Each kept release is a full installed copy of the component, `node_modules` included.** At the default of `5`, budget disk for up to five extra copies per component. `0` keeps no replaced release.
@@ -1559,6 +1565,7 @@ The deployment record includes:
 | `credentials`          | The deploy's `credentials`, in reference form (`secret` names, never a token), or `null`                                                                                                                                                                                                                                                                                                                                                                                                |
 | `preview`              | (v5.4.0) A [preview deployment](#preview-deployments)'s `preview`, as recorded: under a role's `maxTtlDays`, with its `expiresAt` lowered. `null` otherwise                                                                                                                                                                                                                                                                                                                             |
 | `activated_from`       | (v5.3.0) On an activation, the id of the deployment it made live: a staged build, or a release a later deploy replaced. [Going back to a previous release](#going-back-to-a-previous-release) writes a new `success` record with this set                                                                                                                                                                                                                                               |
+| `routing`              | (v5.4.0) What the release puts back when it is [activated](#going-back-to-a-previous-release): `host`, `urlPath`, `isolated` and `branchedDatabases`, `null` for each it leaves unset. A package release has all four, as its entry replaces the whole entry; a payload release has them once it sets any, and is `null` if it sets none, which leaves them as they are. On an activation, the activated release's. Absent before v5.4.0, and until the deploy determines it            |
 | `error`                | For a deploy that failed, or a stage whose peers failed: an object with `message`, `code`, and `phase`, the phase it failed in. On a `partial` rolling deploy, also `nodes`, the nodes that did not take the release                                                                                                                                                                                                                                                                    |
 
 ### `get_deployment_payload`
@@ -1976,6 +1983,94 @@ Response:
 ```json
 { "public_key": "-----BEGIN PUBLIC KEY-----\n...", "fingerprint": "<hex sha256>" }
 ```
+
+---
+
+## Encrypted Operations
+
+<VersionBadge version="v5.4.0" />
+
+`encrypted_operation` runs an operation that the client sealed to the node's [secrets custody](../security/secrets.md) key, and seals the result back. Anything that relays the request between the client and the node, such as a proxy or a control plane, sees only ciphertext in both directions. The node must hold secret custody (Harper Pro).
+
+| Operation             | Description                                         | Role Required                                     |
+| --------------------- | --------------------------------------------------- | ------------------------------------------------- |
+| `encrypted_operation` | Runs a sealed operation and returns a sealed result | any (the sealed operation is authorized as usual) |
+
+### `encrypted_operation`
+
+In the default `sealed` mode the whole operation is inside the envelope:
+
+```json
+{
+	"operation": "encrypted_operation",
+	"envelope": "enc:v1:<base64url envelope>"
+}
+```
+
+The envelope is an ordinary [`enc:v1:` envelope](../security/secrets.md#envelope-format), encrypted with the key `get_secrets_public_key` returns and carrying its `fingerprint` as `kid`. Its plaintext is the sealed request:
+
+```jsonc
+{
+	"v": 1,
+	"rk": "<base64: 32 random bytes, the key the result is sealed with>",
+	"nonce": "<base64: 16 random bytes, unique per request>",
+	"ts": 1760900000000, // the client's clock, in milliseconds
+	"actor": "jane@example.com", // optional attribution for the node's log
+	"op": { "operation": "insert", "database": "data", "table": "dog", "records": [{ "id": 1, "name": "Harper" }] },
+}
+```
+
+Once the node has opened the request, the answer is always HTTP 200:
+
+```json
+{ "encrypted_response": { "v": 1, "iv": "<base64>", "ct": "<base64>", "tag": "<base64>" } }
+```
+
+To read it, decrypt `ct` with AES-256-GCM using `rk`, `iv` and `tag`, with additional authenticated data `harper.encrypted_operation.response:` followed by the `nonce` exactly as sent. The plaintext is `{ "status": 200, "body": <the operation's result> }`, or the status and error body the operation would have answered directly. When it also has `"executed": true`, the operation ran but its result could not be returned: it was a byte stream (406), larger than `maxSize` (413), or it failed to serialize or failed partway through (500). Do not resend a non-idempotent operation in that case, nor after a 5xx status, whose outcome is as unknown as it is on a direct request.
+
+#### Fields mode
+
+`"mode": "fields"` keeps the operation's keys visible, so a relay can record what was attempted, and seals only chosen values:
+
+```json
+{
+	"operation": "encrypted_operation",
+	"mode": "fields",
+	"op": "{\"operation\":\"insert\",\"database\":\"data\",\"table\":\"dog\",\"records\":{\"$sealed\":\"<base64>\"}}",
+	"envelope": "enc:v1:<base64url envelope>"
+}
+```
+
+- `op` is the operation as JSON text. The sealed request carries `oph`, the base64 SHA-256 of that text's UTF-8 bytes, instead of `op`, so a relay cannot change a visible value.
+- A sealed value is `{ "$sealed": "<base64 of iv (12 bytes), ciphertext, tag (16 bytes)>" }`: AES-256-GCM under `rk`, with additional authenticated data `harper.encrypted_operation.field:<nonce>:<JSON Pointer of the value>`, over the value's JSON text. A value moved to another place fails to open. `operation` must stay plaintext.
+- The answer also carries the result's `status` in plaintext, for the relay. The status inside the sealed answer is the one to trust.
+
+#### Authorization
+
+The sealed operation runs as the user who sent `encrypted_operation` and is authorized exactly as if that user had sent it directly. A role with an `operations` allowlist, or a scoped token, must allow both `encrypted_operation` and the sealed operation. The sealed operation may not set `hdb_user`, `impersonate` or `bypass_auth`. `login`, `logout`, `exchange_oidc_token` and `refresh_operation_token` cannot be sealed, and `get_backup` and `get_deployment_payload` are refused because they return byte streams. Operations that run as a background job, such as `csv_data_load`, `import_from_s3` and `restart_service`, are refused too, because a job's request and result are stored unencrypted for `get_job`; send those directly.
+
+#### Errors
+
+Only these answers are in plaintext. Every failure after the node has opened the request, including the sealed operation's own errors, is inside `encrypted_response`.
+
+| Status | When                                                                                                                                                                                           |
+| ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 400    | The request, envelope or sealed request is malformed, the envelope has no `kid` or does not decrypt, or `ts` is outside the accepted window (the body then includes the node's `server_time`). |
+| 401    | There is no authenticated user.                                                                                                                                                                |
+| 409    | The envelope's `kid` is not this node's key (the body then includes `custody_fingerprint`; fetch the key again), or this envelope was already received.                                        |
+| 413    | The envelope (sealed mode) or `op` (fields mode) is larger than `maxSize`. A fields-mode envelope carries only the sealed request and may not exceed 16 KiB.                                   |
+| 503    | The node holds no secret custody, or it has accepted too many sealed requests within the window. Once half that capacity is in use, each user may hold only an equal share of the rest.        |
+
+Each `nonce` is accepted once per process within the window. A restart forgets them, so after a restart an envelope can be accepted again until its `ts` leaves the window. A backward step of the node's clock can have the same effect. Each node of a cluster keeps its own record, so an envelope sent to several nodes is accepted once by each.
+
+The node's request handling never logs sealed values or results. It logs the operation's name and `actor` (sealed mode) or the operation with sealed values shown as `[sealed]` (fields mode), and an operation's failure by its status only. An operation that writes its own input to the log is not covered by this, nor is a peer that the node replicates the operation to, which logs it as it logs any replicated operation.
+
+#### Configuration
+
+| Key                                        | Type                    | Default    | Description                                                                                                          |
+| ------------------------------------------ | ----------------------- | ---------- | -------------------------------------------------------------------------------------------------------------------- |
+| `operationsApi.encryptedOperation.maxAge`  | `number` (milliseconds) | `300000`   | How far `ts` may be from the node's clock, either way. 1000 to 600000.                                               |
+| `operationsApi.encryptedOperation.maxSize` | `number` (bytes)        | `16777216` | The largest envelope (sealed mode), `op` text (fields mode), serialized result and error. 1024 to 67108864 (64 MiB). |
 
 ---
 
@@ -2451,7 +2546,7 @@ Deletes all but the newest `keep_count` managed backups.
 
 ### `restore_backup`
 
-Restores a database in place from a managed backup, as a background [job](#jobs). `backup_id` defaults to the latest backup. Restoring the `system` database, or a database a loaded component keeps open, requires the server to be stopped — see [when can a database be restored?](../backups/overview.md#when-can-a-database-be-restored)
+Restores a database in place from a managed backup, as a background [job](#jobs). `backup_id` defaults to the latest backup. Restoring the `system` database requires the server to be stopped. A database a loaded component keeps open can be restored with the server stopped, or, from v5.4.0, with `"on_restart": true`, which restores it at the next startup — see [when can a database be restored?](../backups/overview.md#when-can-a-database-be-restored)
 
 ```json
 { "operation": "restore_backup", "database": "dev", "backup_id": 1 }
@@ -2481,6 +2576,8 @@ Detailed documentation: [Database Jobs](../database/jobs.md)
 ### `get_job`
 
 Returns job status (`CREATED`, `IN_PROGRESS`, `COMPLETE`, `ERROR`), timing, and result message for the specified job ID. Bulk import/export operations return a job ID on initiation, as does a `deploy_component` with `"restart": "rolling"`, as `restartJobId`. [`restart_service`](#restart_service) also returns one; with `"replicated": true`, its job's `status` and `result.replicated` report whether each node restarted, as [`replicated`](#restart_service-replicated) describes.
+
+From v5.4.0, a job whose work is deferred to the next startup stays `IN_PROGRESS` across the restart and names what will settle it in `deferred_to`. A [`restore_backup`](../backups/operations.md#restoring-at-the-next-startup) with `"on_restart": true` reports `"deferred_to": "restore-intent"` until the startup applies the restore.
 
 ```json
 { "operation": "get_job", "id": "4a982782-929a-4507-8794-26dae1132def" }

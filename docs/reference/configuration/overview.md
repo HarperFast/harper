@@ -341,6 +341,12 @@ Safe mode skips:
 
 Built-in plugins (REST, HTTP, operations API, etc.) and the core database are unaffected.
 
+### Restore safe mode
+
+<VersionBadge version="v5.4.0" />
+
+Harper also enters safe mode by itself when a restore of a database has not published and a component could otherwise open that database, for example a [restore at the next startup](../backups/operations.md#restoring-at-the-next-startup) that has stopped after its last attempt. For that boot only, it sets `HARPER_SAFE_MODE` to `restore-unpublished` and logs the reason, with the ways to finish the restore, at error level in `hdb.log`. Once no restore keeps components off, Harper restarts by itself and loads them. When you start Harper with `HARPER_SAFE_MODE` already set, Harper keeps your value. See [restore safe mode](../backups/operations.md#restore-safe-mode).
+
 ## See Also
 
 - [Configuration Options](./options.md) — complete reference for every `harper-config.yaml` key

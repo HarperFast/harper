@@ -21,10 +21,21 @@ export {
 	listUsers,
 	listUsersExternal,
 	findAndValidateUser,
+	getUserImpl,
 	getUserWithRole,
 	isCurrentUser,
+	hasReadRecordChanged,
+	canRetryChangedUser,
 	hasRecordProvenance,
 	isRecordlessPrincipal,
+	isRecordBacked,
+	isInactiveUserRejection,
+	certificatePrincipal,
+	isCertificatePrincipal,
+	certificateAdmission,
+	withCertificateAdmission,
+	latchRoleRequirement,
+	isRoleRequirementLatched,
 	userRecordVersions,
 	trackUserRecords,
 	cloneUserView,
@@ -123,7 +134,7 @@ import { server } from '../server/Server.ts';
 import * as terms from '../utility/hdbTerms.ts';
 import { expandOperationsPerms } from '../utility/operationPermissions.ts';
 import { activeSuperUserRemains } from './superUserGuard.ts';
-import { credentialRejectionError } from './credentialRejection.ts';
+import { credentialRejectionError, isCredentialRejection } from './credentialRejection.ts';
 import { databases, getDatabases, onUpdatedTable, onRemovedTable } from '../resources/databases.ts';
 import { VERSION_REUSED } from '../resources/RecordEncoder.ts';
 import { contextStorage } from '../resources/transaction.ts';
@@ -721,7 +732,11 @@ function trackUserRecords(user: User, versions: UserProvenance): UserProvenance 
 	}
 	// a record created under its name since is another principal's
 	else if (first.recordless) provenance.recordless = true;
-	else if (first.userStamp !== null && provenance.userStamp === null) provenance = first;
+	else if (first.userStamp === null && provenance.userStamp !== null && provenance.userStamp !== UNREAD_RECORD) {
+		provenance.recordless = false;
+		firsts.set(provenance.username, provenance);
+	} else if (first.userStamp !== null && (provenance.userStamp === null || provenance.userStamp === UNREAD_RECORD))
+		provenance = first;
 	else provenance.recordless = false;
 	return provenance;
 }
@@ -741,10 +756,12 @@ function firstLookup(user: User, name: unknown = user?.username): UserProvenance
  * `isCurrentUser` checks it against `provenance`, what `trackUserRecords` returned for this lookup, or else
  * against the records `user` was built from.
  */
-function cloneUserView(user: User & { role: UserRole }, provenance?: UserProvenance): User {
-	const clone: User = { ...user, role: { ...user.role, permission: { ...user.role.permission } } };
+function cloneUserView(user: User, provenance?: UserProvenance, admission?: object): User {
+	const clone: User = { ...user };
+	if (user.role) clone.role = { ...user.role, permission: { ...user.role.permission } };
 	provenance ??= (clone as any)[PROVENANCE] ?? firstLookup(user);
 	if (provenance) (clone as any)[PROVENANCE] = provenance;
+	if (admission) (clone as any)[CERTIFICATE_PRINCIPAL] = admission;
 	return clone;
 }
 
@@ -814,6 +831,102 @@ function isRecordlessPrincipal(user: User, admitted?: UserProvenance): boolean {
 }
 
 /**
+ * Whether an hdb_user record backed `user` when it was resolved, its own or the login name's that admitted it
+ * (`admitted`, as for `hasRecordProvenance`); undefined when it has no record provenance (a scoped token, or a user
+ * resolved outside this module and not tracked).
+ */
+function isRecordBacked(user: User, admitted?: UserProvenance): boolean | undefined {
+	const provenance = recordedProvenance(user, admitted);
+	return provenance && provenance.userStamp !== null;
+}
+
+/** Whether `error` is `findAndValidateUser` refusing an inactive user, which proves a record had the name. */
+function isInactiveUserRejection(error: unknown): boolean {
+	return isCredentialRejection(error) && (error as Error).message === AUTHENTICATION_ERROR_MSGS.USER_INACTIVE;
+}
+
+// holds the admission: the principal a certificate named, shared by every view of it
+const CERTIFICATE_PRINCIPAL = Symbol('certificate principal');
+
+/**
+ * `user` marked as named by a verified client certificate, which live-subscription rechecks exempt from the role
+ * requirement (#4062). The mark holds the admission, the principal it was set on, so every view of it shares one
+ * identity; a by-name re-resolve that replaces such a principal must carry the admission to the fresh view
+ * (`cloneUserView`, `withCertificateAdmission`), or it fails closed. Only the built-in resolver's view, new per call,
+ * is marked in place: an override may hand the same object to a session or password lookup, so its result is copied,
+ * and only when a copy loses nothing (`isPlainObject`).
+ */
+function certificatePrincipal<T>(user: T, getUser?: unknown): T {
+	if (!user || typeof user !== 'object') return user;
+	if (getUser === getUserImpl && (user as any)[PROVENANCE]) {
+		(user as any)[CERTIFICATE_PRINCIPAL] = user;
+		return user;
+	}
+	if (!isPlainObject(user) || hasHiddenProperty(user)) return user;
+	const view: any = { ...user };
+	view[CERTIFICATE_PRINCIPAL] = view;
+	if (!view[PROVENANCE]) {
+		const tracked = firstLookup(user as unknown as User, view.username);
+		if (tracked) view[PROVENANCE] = tracked;
+	}
+	return view;
+}
+
+const nativeObjectSource = Function.prototype.toString.call(Object);
+
+/**
+ * An object literal, or an object with a null prototype. A literal's prototype is its realm's Object.prototype, and a
+ * vm module loader's context has its own, recognized by its native Object constructor; a class's prototype, even one
+ * that extends null, has its own constructor.
+ */
+function isPlainObject(value: object): boolean {
+	const prototype = Object.getPrototypeOf(value);
+	if (prototype === null || prototype === Object.prototype) return true;
+	if (Object.getPrototypeOf(prototype) !== null || !Object.hasOwn(prototype, 'constructor')) return false;
+	const constructor = prototype.constructor;
+	return (
+		typeof constructor === 'function' &&
+		constructor.prototype === prototype &&
+		Function.prototype.toString.call(constructor) === nativeObjectSource
+	);
+}
+
+// a spread copies only own enumerable properties, so it would drop a non-enumerable authExpiresAt or role
+function hasHiddenProperty(value: object): boolean {
+	for (const key of Reflect.ownKeys(value)) if (!Object.prototype.propertyIsEnumerable.call(value, key)) return true;
+	return false;
+}
+
+function isCertificatePrincipal(user: unknown): boolean {
+	return certificateAdmission(user) !== undefined;
+}
+
+function certificateAdmission(user: unknown): object | undefined {
+	const admission = (user as any)?.[CERTIFICATE_PRINCIPAL];
+	return typeof admission === 'object' && admission !== null ? admission : undefined;
+}
+
+function withCertificateAdmission<T>(view: T, from: unknown): T {
+	const admission = certificateAdmission(from);
+	if (!admission || !view || typeof view !== 'object') return view;
+	if (isRecordBacked(view as unknown as User) === true) roleRequirements.add(admission);
+	return { ...view, [CERTIFICATE_PRINCIPAL]: admission };
+}
+
+// Certificate admissions a record was seen behind, and the subscription contexts that used them: every later
+// subscription of such an admission, by any view of it (an MQTT session reuses its principal for every SUBSCRIBE; a
+// recheck or an MCP refresh installs a new view), or on such a context needs a role, even once the record is dropped.
+const roleRequirements = new WeakSet<object>();
+
+function latchRoleRequirement(key: object): void {
+	roleRequirements.add(key);
+}
+
+function isRoleRequirementLatched(key: unknown): boolean {
+	return typeof key === 'object' && key !== null && roleRequirements.has(key);
+}
+
+/**
  * Whether the user and role records a user was built from are still the committed ones. A user with
  * no recorded versions (a scoped token, whose role it carries itself) is current.
  */
@@ -824,6 +937,24 @@ function isCurrentUser(user: User, admitted?: UserProvenance): boolean {
 	return (
 		provenance.roleId == null || isUnchanged(systemStore(ROLE_TABLE_NAME), provenance.roleId, provenance.roleStamp)
 	);
+}
+
+/**
+ * Whether a record that `user`'s lookup (or first lookup) actually read has changed or been dropped since.
+ * A tombstone found only after resolving under another name (`UNREAD_RECORD`) keeps `isCurrentUser` false so
+ * the cache re-resolves and subscriptions recheck by name, without refusing logins during `logging.auditRetention`.
+ */
+function hasReadRecordChanged(user: User, admitted?: UserProvenance): boolean {
+	const provenance = recordedProvenance(user, admitted);
+	if (!provenance || provenance.userStamp === UNREAD_RECORD) return false;
+	return !isCurrentUser(user, provenance);
+}
+
+// A dropped hdb_user record cannot become current on retry, so skip re-running server.getUser for it.
+function canRetryChangedUser(user: User, admitted?: UserProvenance): boolean {
+	const provenance = recordedProvenance(user, admitted);
+	if (!provenance) return false;
+	return provenance.userStamp === null || readEntry(systemStore(USER_TABLE_NAME), provenance.username) !== undefined;
 }
 
 /**

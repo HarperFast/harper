@@ -1,5 +1,9 @@
 import {
+	canRetryChangedUser,
+	certificatePrincipal,
 	cloneUserView,
+	getUserImpl,
+	hasReadRecordChanged,
 	isCurrentUser,
 	isLocalPrincipal,
 	localPrincipal,
@@ -73,8 +77,10 @@ function envFlag(value: string | undefined): boolean | undefined {
 
 const DEFAULT_COOKIE_EXPIRES = 'Tue, 01 Oct 8307 19:33:20 GMT';
 
+const MAX_WARNED_STALE_CREDENTIALS = 1024;
 let authorizationCache = new Map<string, User | null>();
 let failedCredentials = new Set<string>();
+let warnedStaleCredentials = new Set<string>();
 const validatorClaims = new WeakMap<object, BearerValidatorEntry>();
 let invalidationGeneration = 0;
 
@@ -103,10 +109,12 @@ onStartup(() => {
 		invalidationGeneration++;
 		authorizationCache = new Map();
 		failedCredentials = new Set();
+		warnedStaleCredentials = new Set();
 	});
 	setInterval(() => {
 		authorizationCache = new Map();
 		failedCredentials = new Set();
+		warnedStaleCredentials = new Set();
 	}, env.get(CONFIG_PARAMS.AUTHENTICATION_CACHETTL)).unref();
 });
 let authorizeAllAsLocal = false;
@@ -239,7 +247,8 @@ export async function authentication(request, nextHandler) {
 					username = request.peerCertificate.subject.CN;
 				let mtlsUser;
 				try {
-					mtlsUser = await server.getUser(username, null, request);
+					const getUser = server.getUser;
+					mtlsUser = certificatePrincipal(await server.getUser(username, null, request), getUser);
 				} catch (error) {
 					if (LOG_AUTH_FAILED) authAuditLog(request, sessionId, username, AUTH_AUDIT_STATUS.FAILURE, 'mTLS');
 					const failureResponse = settleAuthFailure(request, error, 'mTLS');
@@ -303,12 +312,39 @@ export async function authentication(request, nextHandler) {
 							password = decoded.slice(colonIndex + 1);
 							// legacy support for passing in blank username and password to indicate no auth
 							if (username || password) {
-								// read first: a component's server.getUser principal carries no record versions itself
-								const versions = userRecordVersions(username);
-								newUser = await server.getUser(username, password, request);
-								// a memoizing server.getUser hands later lookups this same user, so the cache holds a view of it
-								const provenance = trackUserRecords(newUser, versions);
-								if (provenance && newUser.role) newUser = cloneUserView(newUser, provenance);
+								if (server.getUser === getUserImpl) {
+									newUser = await getUserImpl(username, password);
+								} else {
+									// read first: a component's server.getUser principal carries no record versions itself
+									let versions = userRecordVersions(username);
+									let resolved = await server.getUser(username, password, request);
+									let provenance = trackUserRecords(resolved, versions);
+									let changed =
+										Boolean(resolved) && typeof resolved === 'object' && hasReadRecordChanged(resolved, provenance);
+									if (changed && canRetryChangedUser(resolved, provenance)) {
+										versions = userRecordVersions(username);
+										resolved = await server.getUser(username, password, request);
+										provenance = trackUserRecords(resolved, versions);
+										changed =
+											Boolean(resolved) && typeof resolved === 'object' && hasReadRecordChanged(resolved, provenance);
+									}
+									if (changed) {
+										if (!warnedStaleCredentials.has(authorization)) {
+											if (warnedStaleCredentials.size >= MAX_WARNED_STALE_CREDENTIALS) warnedStaleCredentials.clear();
+											warnedStaleCredentials.add(authorization);
+											authLogger.warn?.(
+												`HTTP Basic's server.getUser view for '${username}' no longer matches the hdb_user/hdb_role records read for it (record dropped since first lookup, or changed while server.getUser resolved it)`
+											);
+										}
+										throw credentialRejectionError(
+											AUTHENTICATION_ERROR_MSGS.GENERIC_AUTH_FAIL,
+											HTTP_STATUS_CODES.UNAUTHORIZED
+										);
+									}
+									// a memoizing server.getUser hands later lookups this same user, so the cache holds a view of it
+									if (provenance && resolved.role) resolved = cloneUserView(resolved, provenance);
+									newUser = resolved;
+								}
 							} else newUser = null;
 							break;
 						case 'Bearer': {

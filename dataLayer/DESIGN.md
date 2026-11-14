@@ -34,7 +34,7 @@ A new system table needs three changes:
 
 Set `audit = true` on the directive's `CreateTableObject`: `createTables()` audits every system table on a fresh install, so a directive without it makes upgraded nodes diverge. System tables replicate unless named in `NON_REPLICATING_SYSTEM_TABLES` (`resources/databases.ts`).
 
-**Adding an attribute to an existing system table** needs only the schema entry, provided the shipping release's directive runs `registerSystemSchemaAttributes` (`upgrade/systemSchemaAttributes.ts`): an upgraded install keeps the catalog its table was created with (#2659). It adds what each catalog lacks, never removes or changes, so every directive can list it again. `mount_hdb` and the directives pass `table()` a copy of each attribute list, since `table()` keeps the array as the live attribute list.
+**Adding an attribute to an existing system table** needs only the schema entry, provided the shipping release's directive runs `registerSystemSchemaAttributes` (`upgrade/systemSchemaAttributes.ts`): an upgraded install keeps the catalog its table was created with (#2659). It adds what each catalog lacks, never removes or changes, so every directive can list it again. `mount_hdb` and the directives pass `table()` a copy of each attribute list, since `table()` keeps the array as the live attribute list. A system table its owner also declares at runtime (the analytics tables in `resources/analytics/write.ts`) lists the same attributes, indexed the same, in the schema: a runtime declaration replaces the list, so an attribute only the schema names is dropped there and registered again, indexed, at the next upgrade.
 
 **A replicated system table whose owner declares more than a name list** (a table-level `expiration`, an index) needs that declaration on every node, every boot. `hdb_oidc_token_use` is the case: `security/authn/oidc/tokenUseTable.ts` holds its one definition, which `bin/run.ts initialize()` applies after the upgrade step and before workers start, as do the 5.3.0 directive and the exchange path. Rows carry their expiry as record metadata, which replication applies; the table's `expiration` arms the cleanup scan. Every other route to a copy leaves it partial:
 
@@ -72,10 +72,10 @@ What keeps that safe:
   other's. Lifting it discards queued reclamations (their paths are reused) unless the restore aborted
   before destruction, and precedes the reload's rescan, whose replay saves blobs.
 - **A component-held database cannot be restored online.** rocksdb-js counts handles per path with no
-  owner, so `verifyDatabaseClosed` waits `DATABASE_CLOSE_WAIT_MS`, then 409s naming the offline CLI;
-  `system` is refused online up front. The CLI falls back offline only when the local server is
-  stopped, and a saved loopback `last_target` does not prove this install, so destructive operations
-  refuse rather than fall back (harper#2032).
+  owner, so `verifyDatabaseClosed` waits `DATABASE_CLOSE_WAIT_MS`, then 409s naming `on_restart=true`
+  and the offline CLI; `system` is refused online up front. The CLI falls back offline only when the
+  local server is stopped, and a saved loopback `last_target` does not prove this install, so
+  destructive operations refuse rather than fall back (harper#2032).
 - **Job workers close their handles on exit** (`closeLoadedDatabases` in `jobProcess`), or every
   restore after a `create_backup` job would fail its closure check.
 - **The child stamps a new generation before proving it** (`stampDatabaseDirectory`,
@@ -130,7 +130,9 @@ restored generation is usable.
   is the publication boundary: before it a failure leaves the target blocked and rerunnable; after it
   the restore is only finished, by the next claim (`finishOutstandingRestore`) or startup, never
   re-applied. Online, the job reads `COMPLETE` only after the reload broadcast returns. A receipt not
-  committed, or unreadable, reserves its database as a marker does.
+  committed, or unreadable, reserves its database: no thread opens it. A readable one leaves a handle a
+  thread already holds loaded through a rescan (`databasesBlockedByRestore`), since `on_restart`
+  reserves a database every thread still serves; only a marker or the restore's own close unloads it.
 - **The proof.** Required column families are checked against `requiredStoreNames`
   (`openRestoredGeneration`); replay runs with `policy: 'restore'`, failing on any skipped entry, torn
   transaction or corrupt frame; `assessBlobReferences` decodes every record strictly, and a reference
@@ -147,9 +149,59 @@ restored generation is usable.
   exclusive from its peer check to the boundary. Startup finalizers publish without it (#4043). This
   relies on harper-pro's `add_node_back` also running through `chooseOperation`.
 - **Startup.** `finishCommittedRestoresBeforeStartup` (`bin/run.ts`) finishes committed receipts with
-  no job row before `system` loads, and drops `applying` receipts with no marker.
-  `recoverRestoresAtStartup` runs once, before any component, settling the rest. Without directory
-  fsync (Windows) the evidence says `durability: 'no-directory-fsync'`.
+  no job row before `system` loads, and drops `applying` receipts with no marker (never a restart
+  receipt, which is its request). `recoverRestoresAtStartup` runs once, first on the main thread in
+  `loadRootComponents` (before secret custody, application install or any component, never from a
+  worker-replacing reload), settling the rest and running restart restores. Without directory fsync
+  (Windows) the evidence says `durability: 'no-directory-fsync'`.
+
+### Restart restores (`dataLayer/restoreIntent.ts`)
+
+A database a component holds cannot be closed while the server runs, so `on_restart=true` records the
+restore and the next startup applies it, before anything can open the target.
+
+- **Request.** Under the membership fence and the target's lock: a `pending` receipt with its source
+  pinned under its own operation id (`restore-intent-<id>`). The job returns a `DeferredJobCompletion`:
+  the row stays `IN_PROGRESS` with `deferred_to`, and the drained restart is requested only after that
+  row is written. A supersede (another `backup_id` with `on_restart`) inherits the displaced receipt's
+  pins as `superseded_pin_ids`, retired only when the successor commits, and its rollback copy, both
+  only from its own repository (`rollbackCopyToInherit`): pins in another lapse with the receipt.
+- **Job ownership.** The receipt, not the row, decides the outcome. The boot sweep skips the job ids
+  `recoverRestoresAtStartup` returns, as its last scan finds them owned, while a receipt still owns them, and `settleAbandonedJob` skips a `deferred_to` row only while
+  `restoreReceiptOwnsJob` finds a receipt that settles it (`receiptSettlesJob`, committed ones
+  included), so a crash between receipt and row cannot strand a job. A `cancel` with Harper stopped (`cancelRestartRestoreOffline`) can reach neither
+  the row nor a restart; it changes the files only, and the next boot settles the row.
+- **A throwing receipt write or removal may have landed.** `writeFileDurably` renames and
+  `removeFileDurably` unlinks before the directory flush, so after a throw the record re-read under the
+  held lock decides (`writeReceiptReconciled`, `removeReceiptReconciled`, `runRestartAttempt`'s catch);
+  a cancel names an unconfirmed removal in its `message`, since a power loss can bring that restore back.
+  `failAttempt` never writes over a `committed` receipt.
+- **Drain.** `bin/restart.ts` with `drain` runs `shutdownProcess(deadline)`, the path a SIGTERM takes,
+  so main-thread components flush too (`threads.count=0`); the exit watchdog adds
+  `threads.shutdownTimeout`.
+- **Attempt.** Counted before any native work. Peers are re-checked under the fence (`terminal` if
+  any). A `pending` receipt with `retain_previous` takes the pre-restore backup in the restore child
+  (`createPreRestoreBackup`, the one backup allowed past the reservation; `pre_restore_for` lets a
+  retry, or this attempt once its child fails after the manifest, adopt it) and pins it. Only the copy's
+  own failure, a conflict aside, is terminal (`preRestoreBackupFailed`); a pin failure uses the budget. Then `applyProveAndCommit`, the step online and offline restores share,
+  with the engine-lock probe on: it aborts only on a lock conflict, so a corrupt old directory stays
+  replaceable.
+- **Failure never exits.** The receipt keeps its error and the target stays blocked; the next restart
+  or `resume` retries, and at `max_attempts` it is `terminal`. A `terminal` restart receipt, one whose
+  marker shows destruction began, or one whose rollback copy has started but is not applied starts that boot in safe
+  mode (`unpublishedRestoreBlocksComponents`): a component that opens RocksDB itself ignores the
+  marker, and a write it makes after the copy would be replaced uncaptured by the next attempt. A
+  marker alone never does: older versions leave one, and it blocks only its database.
+  `cancel` removes a receipt, keeping marker and pins once destruction began (an unreadable one is then
+  replaced by a `record_lost` terminal receipt, so safe mode holds); if this boot started without the
+  database, it then restarts (`JobCompletion`) so the components that loaded without it load, as a
+  withdrawn resume or supersede does, unless another restore would keep them off the next boot too
+  (`restartAfterWithdrawal`). That hold is recorded, never inferred from `attempts` (an attempt
+  can fail before counting): `recoverRestoresOnce` ends by publishing the receipts it left reserved as
+  worker environment data, which job workers inherit and a relaunched process lacks (`restoreHeldAtBoot`).
+  An online restore after which nothing keeps components off restarts too, published or failed (the
+  error carries `afterRecorded`), since safe mode stays latched on every thread until a restart
+  (`restoreSafeModeLifted`).
 
 ## RocksDB managed backups: blob snapshots (`dataLayer/blobBackup.ts`)
 

@@ -168,6 +168,7 @@ import {
 	type BlockedRestoreState,
 	type DatabaseDropLock,
 } from '../dataLayer/restoreMarker.ts';
+import { readRestoreReceipt } from '../dataLayer/restoreReceipt.ts';
 import {
 	claimDatabaseDropPreparations,
 	databaseDropPrepared,
@@ -571,6 +572,26 @@ export function openRocksDatabase(path: string, options: RocksDatabaseOptions & 
 
 const lmdbDatabaseEnvs = new Map<string, LMDBRootDatabase>();
 const rocksdbDatabaseEnvs = new Map<string, RocksRootDatabase>();
+export type StorageEngine = 'rocksdb' | 'lmdb';
+/** Drops an LMDB root whose file has been moved away, so nothing reports or reuses it; its env stays open until exit. */
+export function forgetMovedLmdbRoot(path: string): void {
+	lmdbDatabaseEnvs.delete(path);
+}
+/**
+ * The engines of the roots this thread has open for a database. Read from the opened roots, not
+ * `storage.engine`: that setting picks the engine of a root created from now on, and an existing
+ * `.mdb` root opens as LMDB whatever it says. A root with no tables yet still counts, since a later
+ * `create_table` in it lands on its engine. `databaseName` on a root names only the first database
+ * that loaded it, so an alias of a shared root is found through `databaseUsesRootStore`.
+ */
+export function databaseStorageEngines(databaseName: string): Set<StorageEngine> {
+	const engines = new Set<StorageEngine>();
+	const owns = (root: RootDatabaseKind) =>
+		root.status !== 'closed' && (root.databaseName === databaseName || databaseUsesRootStore(databaseName, root));
+	for (const root of lmdbDatabaseEnvs.values()) if (owns(root)) engines.add('lmdb');
+	for (const root of rocksdbDatabaseEnvs.values()) if (owns(root)) engines.add('rocksdb');
+	return engines;
+}
 /**
  * The column-family wrappers this thread opened for each RocksDB root, by path, so a close reaches one
  * the table graph no longer points at. Held weakly, so an unreachable wrapper is still released when it
@@ -1756,6 +1777,14 @@ function databasesBlockedByRestore(databasePath: string): Set<string> {
 			);
 			blocked.add(dbName);
 		} else if (state === 'pending') {
+			// A reservation stops new opens, not a handle this thread holds: on_restart reserves a database every
+			// thread still serves. The re-read also tolerates a receipt cancelled or committed since the scan.
+			const rootPath = join(databasePath, dbName);
+			if (
+				(rocksdbDatabaseEnvs.has(rootPath) || lmdbDatabaseEnvs.has(rootPath)) &&
+				readRestoreReceipt(rootPath).kind !== 'unreadable'
+			)
+				continue;
 			logger.warn(`Database '${dbName}' is reserved by a restore that has not finished; not loading it`);
 			blocked.add(dbName);
 		}
@@ -3218,6 +3247,8 @@ function openDatabaseRoot(
 		}
 	}
 	if (!rootStore.auditStore) {
+		// the audit store's open consults the cluster's new-root fence, which never fences `system`
+		(rootStore as any).databaseName ??= databaseName;
 		rootStore.auditStore = openAuditStore(rootStore as any);
 	}
 	if (definedDatabase) (definedDatabase as any).rootStore = rootStore;
@@ -3285,6 +3316,12 @@ function throwIfBlockedByRestore(dbPath: string, databaseName: string): void {
 	if (databaseDropMarkerPresent(dbPath)) throwBlockedByDrop(databaseName);
 	const restoreState = checkRestoreState(dbPath);
 	if (restoreState !== 'clear') throwBlockedByRestore(databaseName, restoreState);
+}
+
+/** Where an operation would answer 404 for a database a restore or an unfinished drop keeps unloaded, it names the hold. */
+export function throwIfUnloadedDatabaseHeldByRestore(databaseName: string): void {
+	if (!databaseName || databaseName === '.' || databaseName === '..' || /[/\\\0]/.test(databaseName)) return;
+	throwIfBlockedByRestore(resolveDatabasePath(databaseName), databaseName);
 }
 
 function lockDatabaseForDrop(
