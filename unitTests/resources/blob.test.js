@@ -2022,16 +2022,15 @@ describe('Blob test', () => {
 		const databaseName = store.databaseName;
 		setDeletionDelay(200);
 		let condemnedPath;
-		let survivor;
 		try {
 			const first = await createBlob(Readable.from('aborted-restore-generation'.repeat(64)));
 			await BlobTest.put({ id: 92, blob: first });
 			condemnedPath = getFilePathForBlob(first);
-			const second = await createBlob(Readable.from('still-valid-generation'.repeat(64)));
-			await BlobTest.put({ id: 92, blob: second });
-			survivor = getFilePathForBlob(second);
 
 			await blockBlobSavesForRestore(databaseName, 'restore-aborted');
+			// Fence before superseding: reclamation is queued when the write is issued, not when it
+			// commits. A blob-less put saves nothing, so the fence admits it.
+			await BlobTest.put({ id: 92 });
 			// Let the drain run and skip the entry while fenced -- that pass records no next deadline, so
 			// without a wakeup on release the entry is kept but never comes due again.
 			await new Promise((resolve) => setTimeout(resolve, 400));
@@ -2045,8 +2044,9 @@ describe('Blob test', () => {
 				message: 'a reclamation kept across an aborted restore must still run',
 			});
 		} finally {
+			resumeBlobSavesForRestore('restore-aborted', false);
 			await BlobTest.delete(92).catch(() => {});
-			for (const path of [condemnedPath, survivor]) if (path && existsSync(path)) unlinkSync(path);
+			if (condemnedPath && existsSync(condemnedPath)) unlinkSync(condemnedPath);
 			setDeletionDelay(500);
 		}
 	});
