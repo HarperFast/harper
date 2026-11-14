@@ -3560,8 +3560,8 @@ if (isMainThread) {
 		armSelfExit(threadTerminationTimeout);
 	});
 	onMessageByType(ALL_REQUESTS_DRAINED, () => allRequestsDrained.resolve());
-	// In Bun, worker.terminate() triggers a NAPI segfault; the main thread sends FORCE_EXIT
-	// instead, and the worker self-exits cleanly to avoid the crash.
+	// Sent where terminate() would crash the process: always on Bun (a NAPI segfault), and to a worker serving
+	// through uWebSockets.js, whose exit listener closes its sockets.
 	onMessageByType(FORCE_EXIT, () => {
 		realExit(0);
 	});
