@@ -26,7 +26,7 @@ import {
 	RESIDENCY_MAP_TABLE,
 	ResidencyPlacementError,
 } from './residencyMaps.ts';
-import { isDeepStrictEqual, types as utilTypes } from 'node:util';
+import { isDeepStrictEqual } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -397,7 +397,7 @@ type SourceTxnStream = {
 	failure?: { error: unknown; position: number | undefined; event: any };
 	held?: boolean;
 };
-type SourceFill = { source: unknown; outcome?: Entry; unstoredRecord?: boolean; sharable?: boolean; failure?: Error };
+type SourceFill = { source: unknown; outcome?: Entry; unstoredRecord?: boolean; sharable?: boolean; failure?: unknown };
 const UNCACHEABLE_TIMESTAMP = Infinity; // we use this when dynamic content is accessed that we can't safely cache, and this prevents earlier timestamps from change the "last" modification
 const MAX_DATE_TIMESTAMP = 8.64e15;
 const RECORD_PRUNING_INTERVAL = 60000; // one minute
@@ -656,46 +656,8 @@ function finishDroppedTableBlobSweep(rootStore: RocksDatabase, primaryStore, lab
 		});
 }
 const NOT_FOUND_STATUSES = new Set([404, 410]);
-const copyableErrorPrototypes = new WeakMap<object, boolean>();
-function notFoundFailureSnapshot(error: unknown): Error | undefined {
-	try {
-		if (!utilTypes.isNativeError(error)) return;
-		const status = (error as any).statusCode ?? (error as any).status;
-		if (!NOT_FOUND_STATUSES.has(status) || !isCopyableError(error)) return;
-		const snapshot: any = copyError(error);
-		if ((snapshot.statusCode ?? snapshot.status) === status) return snapshot;
-	} catch {}
-}
-// A copy has no private fields, so an accessor may throw on it, and a fetch body can be read only once.
-function isCopyableError(error: Error): boolean {
-	const prototype = Object.getPrototypeOf(error);
-	let copyable = copyableErrorPrototypes.get(prototype);
-	if (copyable === undefined) {
-		copyable = true;
-		for (let link = prototype; copyable && link && link !== Error.prototype; link = Object.getPrototypeOf(link))
-			for (const key of Reflect.ownKeys(link)) if (Object.getOwnPropertyDescriptor(link, key).get) copyable = false;
-		copyableErrorPrototypes.set(prototype, copyable);
-	}
-	return (
-		copyable &&
-		Object.values(error).every(
-			(value) => !(value && typeof value === 'object' && ('bodyUsed' in value || 'getReader' in value))
-		)
-	);
-}
-function copyError(error: Error): Error {
-	const stackTraceLimit = Error.stackTraceLimit;
-	Error.stackTraceLimit = 0;
-	let copy: Error;
-	try {
-		copy = new Error(error.message);
-	} finally {
-		Error.stackTraceLimit = stackTraceLimit;
-	}
-	Object.assign(Object.setPrototypeOf(copy, Object.getPrototypeOf(error)), error);
-	copy.stack = error.stack;
-	if (Object.hasOwn(error, 'cause')) copy.cause = error.cause;
-	return copy;
+function isNotFoundFailure(error: any): boolean {
+	return NOT_FOUND_STATUSES.has(error?.statusCode ?? error?.status);
 }
 // A response consumes a stream or iterator once, merges into Headers in place and assigns onto a record
 // it cannot copy, so only a copyable record of plain data goes to several requests.
@@ -14332,7 +14294,7 @@ export function makeTable(options): TableResourceClass {
 					setLoadedFromSource(target, false);
 					return outcome;
 				}
-				if (heldFill?.source === source && heldFill.failure) throw copyError(heldFill.failure);
+				if (heldFill?.source === source && heldFill.failure) throw heldFill.failure;
 				// try again — entry still not valid, need to actually fetch from source
 				return getFromSource(source, id, primaryStore.getEntry(id), context, target);
 			} else {
@@ -14564,7 +14526,7 @@ export function makeTable(options): TableResourceClass {
 							} as any);
 							logger.trace?.((error as Error)?.message, '(returned stale record)');
 						} else {
-							if (!issuanceFailed && !sourceContext.noCacheStore) fill.failure = notFoundFailureSnapshot(error);
+							if (!issuanceFailed && !sourceContext.noCacheStore && isNotFoundFailure(error)) fill.failure = error;
 							reject(error);
 						}
 					} catch (settlingError) {
