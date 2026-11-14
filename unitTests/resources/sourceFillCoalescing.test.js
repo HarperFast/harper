@@ -239,7 +239,16 @@ describe('Concurrent source misses on one key', function () {
 		assert.equal(results.filter((outcome) => outcome === 'written meanwhile').length, 19);
 	});
 
-	it('share a not-found whatever its shape', async function () {
+	it('do not share a thrown Response, which each request serves as its own response', async function () {
+		respond = () => {
+			throw new Response('gone', { status: 404 });
+		};
+		const reasons = (await concurrentGets(CoalescingTable, 'thrown-response')).map(({ reason }) => reason);
+		assert.equal(sourceCalls, 20);
+		assert.equal(new Set(reasons).size, 20);
+	});
+
+	it('share a not-found error whatever its shape', async function () {
 		class PrivateError extends Error {
 			#detail = 'private';
 			get detail() {
@@ -250,7 +259,6 @@ describe('Concurrent source misses on one key', function () {
 			() => Object.defineProperty(new OriginError('origin answered 404'), 'statusCode', { value: 404 }),
 			() => Object.assign(new PrivateError('origin answered 404'), { statusCode: 404 }),
 			() => Object.assign(new OriginError('origin answered 404'), { statusCode: 404, response: new Response('gone') }),
-			() => ({ status: 404, message: 'origin answered 404' }),
 		];
 		for (const [index, shape] of shapes.entries()) {
 			respond = () => {

@@ -26,7 +26,7 @@ import {
 	RESIDENCY_MAP_TABLE,
 	ResidencyPlacementError,
 } from './residencyMaps.ts';
-import { isDeepStrictEqual } from 'node:util';
+import { isDeepStrictEqual, types as utilTypes } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -656,8 +656,9 @@ function finishDroppedTableBlobSweep(rootStore: RocksDatabase, primaryStore, lab
 		});
 }
 const NOT_FOUND_STATUSES = new Set([404, 410]);
-function isNotFoundFailure(error: any): boolean {
-	return NOT_FOUND_STATUSES.has(error?.statusCode ?? error?.status);
+// Not a thrown Response: REST serves it as the response, reading its body once and merging into its headers.
+function isNotFoundFailure(error: unknown): boolean {
+	return utilTypes.isNativeError(error) && NOT_FOUND_STATUSES.has((error as any).statusCode ?? (error as any).status);
 }
 // A response consumes a stream or iterator once, merges into Headers in place and assigns onto a record
 // it cannot copy, so only a copyable record of plain data goes to several requests.
