@@ -272,6 +272,8 @@ Each table entry defines CRUD access:
 
 Subscriptions follow the same rule. When `attribute_permissions` is non-empty, each record or message a role receives over SSE, WebSocket or MQTT holds only the stored attributes it may read. Computed and relationship attributes are left out of these messages, even when the role may read them.
 
+If a role change takes away read on a stored attribute the role could read when a subscription opened, Harper ends that subscription, as it does when the role loses read on the table. This covers an `alter_role` that narrows `attribute_permissions` (or adds them to a role that had none) and an `alter_user` that moves the user to a narrower role. Reconnect to subscribe with the new list; an MQTT connection that authenticated before the change has its next `SUBSCRIBE` refused until it reconnects. A change that only adds readable attributes leaves an open subscription delivering the attributes it started with.
+
 **Relationship attributes:**
 
 <VersionBadge type="changed" version="v5.4.0" />

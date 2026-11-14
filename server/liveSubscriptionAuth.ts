@@ -10,8 +10,8 @@ import type { UserChange } from '../security/user.ts';
  * Subscribe-time authorization is a point-in-time check: once a stream (SSE / WebSocket / MQTT)
  * is open, it keeps delivering even if the principal later loses access (drop_user, role/permission
  * change) or its bearer token expires. This registry re-evaluates each live subscription's
- * authorization — at the TABLE/RBAC level, matching how the subscription was granted; there is no
- * per-record evaluation — and terminates any that no longer authorize.
+ * authorization — at the table and attribute RBAC level, matching how the subscription was
+ * granted; there is no per-record evaluation — and terminates any that no longer authorize.
  *
  * Targeting invariant: an entry is rechecked after every committed change to its username's hdb_user
  * record or to the hdb_role record that user names, and terminated by a timer at its token's expiry.
