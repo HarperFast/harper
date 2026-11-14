@@ -1,6 +1,6 @@
 import { databaseLiveHoldReason } from './databaseLiveGuard.ts';
 export { databaseLiveHoldReason } from './databaseLiveGuard.ts';
-import { cleanupUnusedBlobs, collectRetainedFileIds } from './blob.ts';
+import { cleanupUnusedBlobs, collectRetainedFileIds, withRestagedBlobSizes } from './blob.ts';
 import type { Transaction as LMDBTransaction } from 'lmdb';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
 import {
@@ -998,6 +998,7 @@ type RocksTransactionWithRetry = RocksTransaction & {
 	// confirmation waiter starts, and a logged retry reuses the handle
 	lockConfirmation?: number;
 	nodeLocalByStore?: Map<object, boolean>;
+	blobsAwaitingSize?: Blob[];
 };
 
 function lockConfirmationOf(transaction: RocksTransaction | undefined): number {
@@ -3125,7 +3126,15 @@ export class DatabaseTransaction implements Transaction {
 				let result: Promise<void> = (operation.before && runCommitHook(this, operation)) as Promise<void>;
 				if (result?.then) this.stageCompletion(result, transaction);
 				result = operation.beforeIntermediate?.() as Promise<void>;
-				if (result?.then) this.stageCompletion(result, transaction);
+				if (result?.then) {
+					this.stageCompletion(result, transaction);
+					// Not a source apply, as a policy until harper#4329: most of its writes do not await their blobs
+					if (operation.savedBlobs !== undefined && !this.sourceApply && !this.isReplay) {
+						for (const blob of operation.savedBlobs) {
+							if (blob.size == null) ((transaction as RocksTransactionWithRetry).blobsAwaitingSize ??= []).push(blob);
+						}
+					}
+				}
 			} else if (shouldStampStagedOn) operation.stagedOn = transaction;
 			if (lockHandle || this.recordLocks) operation.trackRecordVersion = true;
 			appliedByPriorAttempt = operation.appliedRecordVersion;
@@ -3539,6 +3548,118 @@ export class DatabaseTransaction implements Transaction {
 		return Boolean((this.root ?? this).committingWrites) && this.isChainCommitting();
 	}
 
+	/**
+	 * A fresh handle to re-stage `transaction`'s writes onto, taking over its log-key reservation and
+	 * active-commit slot. Not an isRetry round: the original never attempts a commit, so its log batch is
+	 * never written and the re-staged entries append to the new handle's own batch (installing its own
+	 * commit hook). Commit handlers re-base on entries reloaded through it, as on a retry.
+	 */
+	private openReplayTransaction(
+		transaction: RocksTransaction | undefined,
+		timestamp: number | undefined
+	): RocksTransactionWithRetry {
+		const original = transaction as RocksTransactionWithRetry | undefined;
+		const replayTransaction = new RocksTransaction((this.writes[0].store.store ?? this.db.store) as RocksStore, {
+			coordinatedRetry: true,
+		}) as RocksTransactionWithRetry;
+		if (original?.immediateCommit) replayTransaction.immediateCommit = true;
+		if (original?.blobsAwaitingSize) replayTransaction.blobsAwaitingSize = original.blobsAwaitingSize;
+		if (timestamp) replayTransaction.setTimestamp(timestamp);
+		transferLocalKey(transaction, replayTransaction);
+		const retries = (original?.retries ?? this.retries) + 1;
+		replayTransaction.retries = retries;
+		if (!replayTransaction.immediateCommit || this.open !== TRANSACTION_STATE.OPEN) this.retries = retries;
+		const prevStagedTxnTime = this.getHandleStagedTxnTime(transaction);
+		if (transaction) this.releaseActiveCommitHandle(transaction);
+		this.trackActiveCommitHandle(replayTransaction);
+		if (prevStagedTxnTime) this.setHandleStagedTxnTime(replayTransaction, prevStagedTxnTime);
+		return replayTransaction;
+	}
+
+	private restageOnto(
+		replayTransaction: RocksTransactionWithRetry,
+		options: CommitOptions,
+		writes: TransactionWrite[],
+		blobs: Blob[] | undefined
+	): void {
+		try {
+			withRestagedBlobSizes(blobs, () => {
+				for (const operation of writes) {
+					if (operation?.saved) this.save(operation, replayTransaction, true, options);
+				}
+			});
+		} catch (error) {
+			abortNativeTransaction(
+				replayTransaction,
+				'aborting a replay transaction whose re-save threw',
+				this.writes[0]?.store ?? this.db,
+				this.startedFrom
+			);
+			this.releaseActiveCommitHandle(replayTransaction);
+			this.abort(
+				false,
+				true,
+				replayTransaction.immediateCommit || this.hasSiblingCommitInFlight(replayTransaction)
+					? replayTransaction
+					: undefined
+			);
+			throw error;
+		}
+	}
+
+	private stagedBeforeBlobSizes(transaction: RocksTransaction): boolean {
+		const awaiting = (transaction as RocksTransactionWithRetry).blobsAwaitingSize;
+		return awaiting !== undefined && !hasDurableLog(transaction) && awaiting.some((blob) => blob.size != null);
+	}
+
+	private restageForBlobSizes(
+		original: RocksTransaction,
+		replayTransaction: RocksTransactionWithRetry,
+		options: CommitOptions,
+		isImmediateCommit: boolean
+	): void {
+		try {
+			const writes: TransactionWrite[] = [];
+			for (const write of this.writes) {
+				if (!write?.saved) continue;
+				if (isImmediateCommit ? write.stagedOn !== original : write.stagedOn && write.stagedOn !== original) continue;
+				if (write.stagedOn) write.stagedOn = replayTransaction;
+				writes.push(write);
+			}
+			this.restageOnto(replayTransaction, options, writes, (original as RocksTransactionWithRetry).blobsAwaitingSize);
+		} finally {
+			abortNativeTransaction(
+				original,
+				'releasing a transaction re-staged once its blob sizes were known',
+				this.writes[0]?.store ?? this.db,
+				this.startedFrom
+			);
+		}
+	}
+
+	private saveForCommit(
+		transaction: RocksTransaction | undefined,
+		options: CommitOptions,
+		retryRound: boolean,
+		isImmediateCommit: boolean
+	): RocksTransaction | undefined {
+		for (let i = 0; i < this.writes.length; i++) {
+			const operation = this.writes[i];
+			if (
+				!operation ||
+				(isImmediateCommit
+					? !retryRound || !operation.saved || operation.stagedOn !== transaction
+					: retryRound
+						? !operation.saved || (Boolean(operation.stagedOn) && operation.stagedOn !== transaction)
+						: Boolean(operation.saved) || (this.saveCommits && Boolean(operation.deferSave)))
+			)
+				continue;
+			this.save(operation, transaction, Boolean(operation.saved) || i < this.validated, options);
+			if (!transaction) transaction = this.transaction;
+		}
+		return transaction;
+	}
+
 	// A state this handles specially must also send a final commit away from endsScopeUnwritten()'s fast path.
 	protected performCommit(options: CommitOptions = {}): MaybePromise<CommitResolution> {
 		// reused across retries — the native layer resets it in place (fresh snapshot) on IsBusy/TryAgain —
@@ -3550,20 +3671,13 @@ export class DatabaseTransaction implements Transaction {
 			if (retryRound && this.activeCommitHandle && this.activeCommitHandle !== transaction) {
 				this.backfillActiveHandleWrites(this.activeCommitHandle);
 			}
-			for (let i = 0; i < this.writes.length; i++) {
-				let operation = this.writes[i];
-				if (
-					!operation ||
-					(isImmediateCommit
-						? !retryRound || !operation.saved || operation.stagedOn !== transaction
-						: retryRound
-							? !operation.saved || (Boolean(operation.stagedOn) && operation.stagedOn !== transaction)
-							: Boolean(operation.saved) || (this.saveCommits && Boolean(operation.deferSave)))
-				)
-					continue;
-				this.save(operation, transaction, Boolean(operation.saved) || i < this.validated, options);
-				if (!transaction) transaction = this.transaction;
-			}
+			const retrySizes = retryRound ? (transaction as RocksTransactionWithRetry).blobsAwaitingSize : undefined;
+			transaction =
+				retrySizes === undefined
+					? this.saveForCommit(transaction, options, retryRound, isImmediateCommit)
+					: withRestagedBlobSizes(retrySizes, () =>
+							this.saveForCommit(transaction, options, retryRound, isImmediateCommit)
+						);
 			if (transaction && (this.writes.length > 0 || hasDurableLog(transaction)))
 				this.trackActiveCommitHandle(transaction);
 		} catch (error) {
@@ -3670,40 +3784,10 @@ export class DatabaseTransaction implements Transaction {
 							// attempt already wrote its log batch). The original handle here never attempts a
 							// commit, so the replayed stagings must re-append their entries into the replay
 							// transaction's own batch — which also installs the replay's own commit hook.
-							const replayTransaction = new RocksTransaction(
-								(this.writes[0].store.store ?? this.db.store) as RocksStore,
-								{ coordinatedRetry: true }
-							);
-							if (this.timestamp) replayTransaction.setTimestamp(this.timestamp);
-							transferLocalKey(transaction, replayTransaction);
-							const retries = ((transaction as RocksTransactionWithRetry | undefined)?.retries ?? this.retries) + 1;
-							(replayTransaction as RocksTransactionWithRetry).retries = retries;
-							this.retries = retries; // a replay round: commit handlers re-base on the reloaded entries
-							const prevStagedTxnTime = this.getHandleStagedTxnTime(transaction);
-							if (transaction) this.releaseActiveCommitHandle(transaction);
-							this.trackActiveCommitHandle(replayTransaction);
-							if (prevStagedTxnTime) this.setHandleStagedTxnTime(replayTransaction, prevStagedTxnTime);
+							const retainedBlobs = (transaction as RocksTransactionWithRetry | undefined)?.blobsAwaitingSize;
+							const replayTransaction = this.openReplayTransaction(transaction, this.timestamp);
 							transaction = replayTransaction;
-							try {
-								for (const operation of this.writes) {
-									if (!operation?.saved) continue;
-									this.save(operation, replayTransaction, true, options);
-								}
-							} catch (error) {
-								abortNativeTransaction(
-									replayTransaction,
-									'aborting a replay transaction whose re-save threw',
-									this.writes[0]?.store ?? this.db,
-									this.startedFrom
-								);
-								this.releaseActiveCommitHandle(replayTransaction);
-								this.abort(
-									false,
-									true,
-									this.hasSiblingCommitInFlight(replayTransaction) ? replayTransaction : undefined
-								);
-								throw error;
-							}
+							this.restageOnto(replayTransaction, options, this.writes, retainedBlobs);
 						}
 						// with options.transaction set this is a retry round — the save loop above already
 						// re-staged the writes into it
@@ -3739,6 +3823,11 @@ export class DatabaseTransaction implements Transaction {
 					if (transaction) {
 						this.writes = this.writes.filter((write) => write); // filter out removed entries
 						if (this.hasSavedWriteForHandle(transaction, isImmediateCommit) || hasDurableLog(transaction)) {
+							if (!retryRound && this.stagedBeforeBlobSizes(transaction)) {
+								const original = transaction;
+								transaction = this.openReplayTransaction(original, original.getTimestamp());
+								this.restageForBlobSizes(original, transaction, options, isImmediateCommit);
+							}
 							// Commit retries can construct fresh ranges on this live handle after read ownership ends.
 							(transaction as OwnedHandle)[READ_OWNER] = undefined;
 							// Re-fence before submitting: the loop above skips operations already marked saved, so
