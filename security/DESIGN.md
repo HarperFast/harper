@@ -81,7 +81,9 @@ In `vm` and `vm-current-context`, all four entry points (ESM `linker`, both `imp
 
 ## A request's session helpers are bound module functions, never function literals assigned to a property (`security/auth.ts`)
 
-`request.session.update` and `request.login` bind module functions `updateSession` / `loginWithSession` to a per-request `SessionState` after copying stored session fields (overwriting stored `update`, working detached). Never assign function literals directly to properties (`request.login = async function ...`) on hot paths: V8's `CheckAssigningFunctionLiteralToProperty` pretenures them in old space, pinning the young context (`request`, headers, `response`) until major GC; bind module functions or assign locals first (`unitTests/security/authSessions.test.js`).
+`request.session.update` and `request.login` bind module functions `updateSession` / `loginWithSession` to a per-request `SessionState` after copying stored session fields (overwriting stored `update`, working detached). Never assign function literals directly to properties (`request.login = async function ...`) on hot paths: V8's `CheckAssigningFunctionLiteralToProperty` pretenures them in old space, pinning the young context (`request`, headers, `response`) until major GC; bind module functions or assign locals first (`unitTests/security/authSessions.test.js`). `SESSION_VERSION` shares accessor functions: fresh functions put the clone in dictionary mode. `loadedSessions` keeps the record outside the request's function context.
+
+`updateSession` reads outside the request snapshot: RocksDB uses `COMMITTED_SESSION_READ`; LMDB renews its shared reader. It rejects non-live, changed, `VERSION_REUSED`, payload `version`, or versions beyond the clock before the ordinary put. In-flight, later or unreplicated writes can still race (#2983, `unitTests/security/sessionUpdateIfVersion.test.js`).
 
 ## User and role lookups read the records, and nothing derived from them outlives them (`security/user.ts`)
 
