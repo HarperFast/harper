@@ -22,15 +22,15 @@ import { startHarper, teardownHarper, type ContextWithHarper } from '@harperfast
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
-const DATABASE = 'backup_authz';
-const MISSING_DATABASE = 'backup_authz_missing';
+const DATABASE = 'backup_authz_db';
+const MISSING_DATABASE = 'backup_authz_missing_db';
 const HTTP_COPY = 'backup_authz_http_copy';
 const MCP_COPY = 'backup_authz_mcp_copy';
 const TABLE = 'Items';
 const PASSWORD = 'BackupAuthz-1!';
 const JOB_TIMEOUT_MS = 120_000;
 const RESTART_EXIT_TIMEOUT_MS = 60_000;
-/** An admitted `on_restart` exits the process within a second; a refused one is given this long to. */
+/** How long a refused `on_restart` is given to restart Harper anyway. */
 const NO_RESTART_WAIT_MS = 3000;
 const BACKUP_OPERATIONS = [
 	'create_backup',
@@ -72,7 +72,6 @@ const ROLES: Record<string, Record<string, unknown>> = {
 };
 const NON_SUPER_USERS = Object.keys(ROLES).map((role) => `${role}_user`);
 const LISTED_USER = 'backup_authz_listed_user';
-const LISTING_USERS = [LISTED_USER, 'backup_authz_structure_user'];
 
 function parseJson(text: string): any {
 	try {
@@ -102,8 +101,6 @@ function backupRequests(backupId: number): BackupRequest[] {
 		{ name: 'purge_backups', operation: 'purge_backups', args: { database: DATABASE, keep_count: 0 } },
 		restore('in place', { backup_id: backupId }),
 		restore('target_database', { backup_id: backupId, target_database: HTTP_COPY }),
-		restore('on_restart', { backup_id: backupId, on_restart: true }),
-		restore('on_restart retain_previous:false', { on_restart: true, retain_previous: false }),
 		restore('resume', { resume: true }),
 		restore('cancel', { cancel: true }),
 		restore('system', { database: 'system' }),
@@ -155,7 +152,6 @@ suite('backup operations are super_user only for real roles', { skip: skipSuite 
 		}
 	}
 
-	/** A thrown call (unknown tool, transport) is not accepted, and its text never matches ROLE_REFUSAL. */
 	async function toolCall(
 		client: Client,
 		name: string,
@@ -266,7 +262,6 @@ suite('backup operations are super_user only for real roles', { skip: skipSuite 
 		};
 	}
 
-	/** Statuses are asserted before the state read: an admitted request can leave an instance it cannot reach. */
 	async function assertRefusedAndUnchanged(before: Awaited<ReturnType<typeof state>>, failures: string[]) {
 		await delay(NO_RESTART_WAIT_MS);
 		deepStrictEqual(failures, [], 'backup requests answered other than with a refusal');
@@ -387,12 +382,11 @@ suite('backup operations are super_user only for real roles', { skip: skipSuite 
 		for (const username of NON_SUPER_USERS) {
 			await withMcpClient(username, async (client) => {
 				for (const request of backupRequests(backupId)) {
+					const r = await toolCall(client, request.operation, request.args);
 					// get_backup is a STREAMING_RESPONSE_OPERATIONS member: its tool is refused before dispatch for every
 					// caller, so that refusal says nothing about the role
-					if (request.operation === 'get_backup') continue;
-					const r = await toolCall(client, request.operation, request.args);
-					if (r.accepted || !ROLE_REFUSAL.test(r.text))
-						failures.push(`${request.name} as ${username}: ${r.text.slice(0, 200)}`);
+					const refused = request.operation === 'get_backup' ? !r.accepted : !r.accepted && ROLE_REFUSAL.test(r.text);
+					if (!refused) failures.push(`${request.name} as ${username}: ${r.text.slice(0, 200)}`);
 				}
 				for (const operation of ['list_backups', 'restore_backup', 'create_backup']) {
 					const existing = await toolCall(client, operation, { database: DATABASE });
@@ -425,7 +419,7 @@ suite('backup operations are super_user only for real roles', { skip: skipSuite 
 			for (const [args] of handlerAnswered) {
 				const r = await toolCall(client, 'restore_backup', { database: DATABASE, ...args });
 				ok(
-					r.text.includes('"kind":"harper_error"') && !ROLE_REFUSAL.test(r.text),
+					!r.accepted && r.text.includes('"kind":"harper_error"') && !ROLE_REFUSAL.test(r.text),
 					`restore_backup tool ${JSON.stringify(args)}: ${r.text.slice(0, 300)}`
 				);
 			}
@@ -459,13 +453,18 @@ suite('backup operations are super_user only for real roles', { skip: skipSuite 
 		await completedJob(await admin({ operation: 'restore_backup', database: DATABASE, backup_id: backupId }));
 		strictEqual(await rowIds(), 'a,b', 'the in-place restore removed the row written after the backup');
 
-		// create, delete and purge on both surfaces; every backup taken from here holds rows a,b
 		const createOverHttp = async () =>
 			(await completedJob(await admin({ operation: 'create_backup', database: DATABASE }))).result?.backup_id;
 		await withMcpClient(ctx.harper.admin.username, async (client) => {
 			const createTool = async () =>
 				(await completedToolJob(client, 'create_backup', { database: DATABASE })).result?.backup_id;
 
+			const rewritten = await admin({ operation: 'insert', database: DATABASE, table: TABLE, records: [{ id: 'c' }] });
+			strictEqual(rewritten.status, 200, `insert failed: ${rewritten.text}`);
+			await completedToolJob(client, 'restore_backup', { database: DATABASE, backup_id: backupId });
+			strictEqual(await rowIds(), 'a,b', 'the in-place restore tool removed the row written after the backup');
+
+			// every backup taken from here holds rows a,b, which the on_restart test restores
 			const second = await createTool();
 			deepStrictEqual(await backupIds(), [backupId, second]);
 			const deleted = await admin({ operation: 'delete_backup', database: DATABASE, backup_id: backupId });
@@ -488,7 +487,7 @@ suite('backup operations are super_user only for real roles', { skip: skipSuite 
 		});
 	});
 
-	test('on_restart: refused for a role that lists restore_backup, and the super_user restarts into the backup', async () => {
+	test('on_restart: refused for every non-super_user without a restart, and the super_user restarts into the backup', async () => {
 		const later = await admin({ operation: 'insert', database: DATABASE, table: TABLE, records: [{ id: 'd' }] });
 		strictEqual(later.status, 200, `insert failed: ${later.text}`);
 		const liveRows = await rowIds();
@@ -504,17 +503,18 @@ suite('backup operations are super_user only for real roles', { skip: skipSuite 
 			else firstProcess.once('exit', () => resolveExit());
 		});
 
-		for (const username of LISTING_USERS) {
-			const refused = await operationAs(username, request);
-			ok(
-				refused.status === 403 && ROLE_REFUSAL.test(refused.text),
-				`on_restart as ${username}: ${refused.status} ${refused.text}`
-			);
-			const refusedTool = await withMcpClient(username, (client) => toolCall(client, 'restore_backup', args));
-			ok(
-				!refusedTool.accepted && ROLE_REFUSAL.test(refusedTool.text),
-				`on_restart tool as ${username}: ${refusedTool.text.slice(0, 300)}`
-			);
+		// asserted one request at a time: an admitted on_restart exits the process, and the failure must name it
+		for (const username of NON_SUPER_USERS) {
+			for (const form of [args, { database: DATABASE, on_restart: true, retain_previous: false }]) {
+				const label = `on_restart ${JSON.stringify(form)} as ${username}`;
+				const refused = await operationAs(username, { operation: 'restore_backup', ...form });
+				ok(refused.status === 403 && ROLE_REFUSAL.test(refused.text), `${label}: ${refused.status} ${refused.text}`);
+				const refusedTool = await withMcpClient(username, (client) => toolCall(client, 'restore_backup', form));
+				ok(
+					!refusedTool.accepted && ROLE_REFUSAL.test(refusedTool.text),
+					`${label} (tool): ${refusedTool.text.slice(0, 300)}`
+				);
+			}
 		}
 		await delay(NO_RESTART_WAIT_MS);
 		ok(firstProcess.exitCode === null && firstProcess.signalCode === null, 'a refused on_restart restarted Harper');
