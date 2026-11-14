@@ -27,7 +27,10 @@ CoalescedCache.sourcedFrom({
 		const response = await fetch(
 			`http://127.0.0.1:${process.env.COALESCING_ORIGIN_PORT}/item/${encodeURIComponent(id)}`
 		);
-		if (response.status === 404) return undefined;
+		if (response.status === 404) {
+			if (id.startsWith('thrown-')) throw Object.assign(new Error(`The origin has no ${id}`), { statusCode: 404 });
+			return undefined;
+		}
 		return response.json();
 	},
 });

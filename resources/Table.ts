@@ -26,7 +26,7 @@ import {
 	RESIDENCY_MAP_TABLE,
 	ResidencyPlacementError,
 } from './residencyMaps.ts';
-import { isDeepStrictEqual } from 'node:util';
+import { isDeepStrictEqual, types as utilTypes } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -399,7 +399,7 @@ type SourceTxnStream = {
 	failure?: { error: unknown; position: number | undefined; event: any };
 	held?: boolean;
 };
-type SourceFill = { source: unknown; outcome?: Entry; unstoredRecord?: boolean; sharable?: boolean };
+type SourceFill = { source: unknown; outcome?: Entry; unstoredRecord?: boolean; sharable?: boolean; failure?: unknown };
 const UNCACHEABLE_TIMESTAMP = Infinity; // we use this when dynamic content is accessed that we can't safely cache, and this prevents earlier timestamps from change the "last" modification
 const MAX_DATE_TIMESTAMP = 8.64e15;
 const RECORD_PRUNING_INTERVAL = 60000; // one minute
@@ -661,6 +661,11 @@ function finishDroppedTableBlobSweep(rootStore: RocksDatabase, primaryStore, lab
 				finishDroppedTableBlobSweep(rootStore, store, storeLabel);
 			}
 		});
+}
+const NOT_FOUND_STATUSES = new Set([404, 410]);
+// Not a thrown Response: REST serves it as the response, reading its body once and merging into its headers.
+function isNotFoundFailure(error: unknown): boolean {
+	return utilTypes.isNativeError(error) && NOT_FOUND_STATUSES.has((error as any).statusCode ?? (error as any).status);
 }
 // A response consumes a stream or iterator once, merges into Headers in place and assigns onto a record
 // it cannot copy, so only a copyable record of plain data goes to several requests.
@@ -14393,8 +14398,9 @@ export function makeTable(options): TableResourceClass {
 					setLoadedFromSource(target, false);
 					return outcome;
 				}
+				if (heldFill?.source === source && heldFill.failure) throw heldFill.failure;
 				// try again — entry still not valid, need to actually fetch from source
-				else return getFromSource(source, id, primaryStore.getEntry(id), context, target);
+				return getFromSource(source, id, primaryStore.getEntry(id), context, target);
 			} else {
 				// served from cache after waiting for another request to resolve
 				setLoadedFromSource(target, false);
@@ -14633,7 +14639,10 @@ export function makeTable(options): TableResourceClass {
 								receivedIdentityRefs: audit ? undefined : existingIdentityRefs,
 							} as any);
 							logger.trace?.((error as Error)?.message, '(returned stale record)');
-						} else reject(error);
+						} else {
+							if (!issuanceFailed && !sourceContext.noCacheStore && isNotFoundFailure(error)) fill.failure = error;
+							reject(error);
+						}
 					} catch (settlingError) {
 						reject(error ?? settlingError);
 					}

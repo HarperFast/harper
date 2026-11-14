@@ -363,6 +363,8 @@ Harper automatically serializes concurrent requests for the same missing or stal
 
 <VersionBadge type="changed" version="v5.4.1" /> A fetch holds the record for at most 10 seconds. If it is still running then, the next waiting request starts a fresh fetch while the first one finishes; a late result is cached only if nothing newer was cached meanwhile. At most one fetch at a time holds the record, and only that fetch releases it.
 
+<VersionBadge type="changed" version="v5.4.1" /> If the source throws an `Error` whose `statusCode` (or `status`) is 404 or 410 (as an HTTP client that throws on any non-2xx response does), the requests waiting on that fetch in the same worker thread receive that same error object instead of calling the source again, so anything one of them adds to it, such as a nested source's record context in its message, shows on all of them. This does not apply to a thrown `Response` or other non-`Error` value, when the source sets `noCacheStore` on its context, on a read-only node, or while the table is being dropped. After any other failure, the waiting requests fetch again in turn. A failure is never cached, so the next request after them calls the source again.
+
 #### Observing cache disposition
 
 Each `get` on a caching table records whether the record came from the cache or from the source in the `loadedFromSource` property of the **`RequestTarget`** for that get. Cache disposition is a per-get result, so it lives on the per-get target — pass an explicit `RequestTarget` to observe it:
