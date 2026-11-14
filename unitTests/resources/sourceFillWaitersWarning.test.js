@@ -7,6 +7,7 @@ const { waitFor } = require('../waitFor.js');
 const { table, getDatabases } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { logger } = require('#src/utility/logging/logger');
+const { setSourceFillLockTimeoutForTesting } = require('#src/resources/Table');
 
 describe('Requests waiting on one source fill', function () {
 	this.timeout(10_000);
@@ -135,6 +136,63 @@ describe('Requests waiting on one source fill', function () {
 		const results = await Promise.all(hot);
 		assert.equal(results.filter((result) => result?.statusCode === 503).length, 1);
 		assert.ok(results.filter((result) => result?.statusCode !== 503).every((result) => result?.name === 'loud'));
+	});
+
+	it('releases the record when the warning throws after a failed cache write', async function () {
+		const fixture = setUpTable();
+		const getResidency = fixture.WaitTable.getResidency;
+		fixture.WaitTable.getResidency = () => {
+			throw new Error('cache write refused');
+		};
+		logger.warn = () => {
+			throw new Error('log sink failed');
+		};
+		try {
+			const hot = reads(fixture, 'loud-write', 60);
+			await waitFor(() => fixture.parked >= 59);
+			fixture.pending.shift().resolve({ name: 'loud-write' });
+			// the next waiter can fetch only once the failed write let go of the record
+			await waitFor(() => fixture.sourceCalls === 2, { timeout: 2_000 });
+			fixture.WaitTable.getResidency = getResidency;
+			await settle(fixture, hot);
+		} finally {
+			fixture.WaitTable.getResidency = getResidency;
+		}
+	});
+
+	it('names a timeout by its error name and an empty error by its record context', async function () {
+		const timeout = AbortSignal.timeout(0);
+		await waitFor(() => timeout.aborted);
+		for (const [key, reason, expected] of [
+			['timed-out', timeout.reason, " failed with 'TimeoutError' while "],
+			['unnamed', new Error(), " failed with ' while resolving record unnamed for SourceFillWaiters"],
+		]) {
+			const fixture = setUpTable();
+			const hot = reads(fixture, key, 60);
+			await waitFor(() => fixture.parked >= 59);
+			fixture.pending.shift().reject(reason);
+			await waitFor(() => warningsFor(fixture).length > 0);
+			assert.ok(warningsFor(fixture)[0].includes(expected), warningsFor(fixture)[0]);
+			await settle(fixture, hot);
+		}
+	});
+
+	it('does not report waiters that moved on to a later fill', async function () {
+		setSourceFillLockTimeoutForTesting(200);
+		try {
+			const fixture = setUpTable();
+			const hot = reads(fixture, 'handed-over', 60);
+			await waitFor(() => fixture.parked >= 59);
+			// the first fill outlives its hold, so the waiters move on to a second one
+			await waitFor(() => fixture.sourceCalls === 2);
+			fixture.pending.shift().reject(Object.assign(new Error('origin unavailable'), { statusCode: 503 }));
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			assert.deepEqual(warningsFor(fixture), []);
+			fixture.pending.shift().resolve({ name: 'handed-over' });
+			await settle(fixture, hot);
+		} finally {
+			setSourceFillLockTimeoutForTesting(undefined);
+		}
 	});
 
 	it('bounds a long key in the warning', async function () {
