@@ -460,6 +460,11 @@ try {
 }
 const LMDB_PREFETCH_WRITES = envMngr.get(CONFIG_PARAMS.STORAGE_PREFETCHWRITES);
 const LOCK_TIMEOUT = 10000;
+let sourceFillLockTimeout = LOCK_TIMEOUT;
+/** Tests only: how long a source fill's record lock is held before it is released; `undefined` restores it. */
+export function setSourceFillLockTimeoutForTesting(ms: number | undefined) {
+	sourceFillLockTimeout = ms ?? LOCK_TIMEOUT;
+}
 export const UPDATE_ATTRIBUTES_LOCK_TIMEOUT = 10000;
 const UPDATE_ATTRIBUTES_LOCK = 'update-attributes';
 // Contention is otherwise only visible once it becomes a timeout (harper#2251).
@@ -13748,7 +13753,18 @@ export function makeTable(options): TableResourceClass {
 				recordActionBinary(!needsSourceData, 'cache-hit', tableName);
 			}
 			if (needsSourceData) {
-				const loadingFromSource = getFromSource(source, id, entry, context, target).then((entry) => {
+				const servesStale = Boolean(entry?.value && resource?.allowStaleWhileRevalidate?.(entry, id));
+				if (servesStale) {
+					let acquired: boolean;
+					try {
+						acquired = primaryStore.tryLock(id);
+					} catch (error) {
+						logger.warn?.(error);
+						return;
+					}
+					if (!acquired) return;
+				}
+				const loadingFromSource = getFromSource(source, id, entry, context, target, servesStale).then((entry) => {
 					if (entry?.value && entry?.value.getRecord?.())
 						logger.error?.('Can not assign a record that is already a resource');
 					if (context) {
@@ -13757,8 +13773,7 @@ export function makeTable(options): TableResourceClass {
 					}
 					return entry;
 				});
-				// if the resource defines a method for indicating if stale-while-revalidate is allowed for a record
-				if (entry?.value && resource?.allowStaleWhileRevalidate?.(entry, id)) {
+				if (servesStale) {
 					// since we aren't waiting for it any errors won't propagate so we should at least log them
 					loadingFromSource.catch((error) => logger.warn?.(error));
 					return; // go ahead and return and let the current stale value be used while we re-validate
@@ -14296,7 +14311,8 @@ export function makeTable(options): TableResourceClass {
 		id: Id,
 		existingEntry: Entry,
 		context: Context,
-		target?
+		target?,
+		lockHeld?: boolean
 	): Promise<Entry> {
 		const metadataFlags = existingEntry?.metadataFlags;
 
@@ -14304,31 +14320,40 @@ export function makeTable(options): TableResourceClass {
 		const existingRecord = existingEntry?.value;
 		// a 304 stores existingRecord, so it keeps the list that describes that body, not the commit base's
 		const existingIdentityRefs = existingEntry?.receivedIdentityRefs;
-		const inheritedTimestamp = context?.timestamp || context?.transaction?.timestamp;
-		let sourceTimestamp = inheritedTimestamp;
+		let inheritedTimestamp: number;
+		let fillKey: unknown;
+		let sourceTimestamp: number;
 		let issuanceFailed = false;
-		if (!sourceTimestamp) {
-			if (!isRocksDB) sourceTimestamp = getNextMonotonicTime();
-			else {
-				try {
-					sourceTimestamp = freshLocalKey(tableRootStore);
-				} catch (error) {
-					// Keep the read available, but never cache a version that could repeat an unstaged holder's.
-					issuanceFailed = true;
-					sourceTimestamp = (primaryStore as RocksDatabase).getMonotonicTimestamp();
-					const now = performance.now();
-					if (now - lastIssuanceFailureWarn >= 60_000) {
-						lastIssuanceFailureWarn = now;
-						logger.warn?.(
-							`Failed to allocate local issuance key for source read on ${tableName}; serving uncached`,
-							error
-						);
+		try {
+			inheritedTimestamp = context?.timestamp || context?.transaction?.timestamp;
+			fillKey = writeKeyId(id);
+			sourceTimestamp = inheritedTimestamp;
+			if (!sourceTimestamp) {
+				if (!isRocksDB) sourceTimestamp = getNextMonotonicTime();
+				else {
+					try {
+						sourceTimestamp = freshLocalKey(tableRootStore);
+					} catch (error) {
+						// Keep the read available, but never cache a version that could repeat an unstaged holder's.
+						issuanceFailed = true;
+						sourceTimestamp = (primaryStore as RocksDatabase).getMonotonicTimestamp();
+						const now = performance.now();
+						if (now - lastIssuanceFailureWarn >= 60_000) {
+							lastIssuanceFailureWarn = now;
+							logger.warn?.(
+								`Failed to allocate local issuance key for source read on ${tableName}; serving uncached`,
+								error
+							);
+						}
 					}
 				}
 			}
+		} catch (error) {
+			// a lock handed over by a stale read has no other owner to release it
+			if (lockHeld) releaseRecordLock(id);
+			throw error;
 		}
 		let wake: () => void;
-		const fillKey = writeKeyId(id);
 		const heldFill = sourceFills?.get(fillKey);
 		// We start by locking the record so that there is only one resolution happening at once;
 		// if there is already a resolution in process, we want to use the results of that resolution
@@ -14337,17 +14362,19 @@ export function makeTable(options): TableResourceClass {
 		// the other thread releases the lock.
 		// The callback only wakes this request: it can fire during a database close, where reading
 		// the store would throw inside a native callback and leave the request unsettled.
-		const lockAcquired = primaryStore.tryLock(id, () => wake());
+		const lockAcquired = lockHeld || primaryStore.tryLock(id, () => wake());
 
 		if (!lockAcquired) {
 			let timer: ReturnType<typeof setTimeout>;
 			await new Promise<void>((resolve) => {
 				wake = resolve;
-				// closing this thread's handle does not notify a wait on another thread's lock
-				timer = setTimeout(() => {
-					releaseRecordLock(id);
-					resolve();
-				}, LOCK_TIMEOUT);
+				// only the fill holding the lock releases it; this thread's closed handle never hears of another
+				// thread's release, and its hasLock() throws, so a wait still settles
+				const recheck = () => {
+					if (recordLockHeld(id)) timer = setTimeout(recheck, sourceFillLockTimeout);
+					else resolve();
+				};
+				timer = setTimeout(recheck, sourceFillLockTimeout);
 			});
 			clearTimeout(timer);
 			const entry = primaryStore.getEntry(id);
@@ -14378,10 +14405,18 @@ export function makeTable(options): TableResourceClass {
 		setLoadedFromSource(target, true);
 		const fill: SourceFill = { source };
 		(sourceFills ??= new Map()).set(fillKey, fill);
+		let tenure: ReturnType<typeof setTimeout>;
+		let lockReleased = false;
 		const releaseFill = () => {
+			if (lockReleased) return;
+			lockReleased = true;
+			clearTimeout(tenure);
 			if (sourceFills.get(fillKey) === fill) sourceFills.delete(fillKey);
 			releaseRecordLock(id);
 		};
+		// a fill still running after its tenure lets the next request have the key; its late release is a no-op
+		tenure = setTimeout(releaseFill, sourceFillLockTimeout);
+		tenure.unref?.();
 
 		// it is important to remember that this is _NOT_ part of the current transaction; nothing is changing
 		// with the canonical data, we are simply fulfilling our local copy of the canonical data.
@@ -14834,6 +14869,13 @@ export function makeTable(options): TableResourceClass {
 		} catch (error) {
 			if (primaryStore.status === 'open' && tableRootStore.status === 'open')
 				logger.error?.(`Error releasing the cache resolution lock for ${id} in ${tableName}`, error);
+		}
+	}
+	function recordLockHeld(id: Id): boolean {
+		try {
+			return primaryStore.hasLock(id);
+		} catch {
+			return false;
 		}
 	}
 

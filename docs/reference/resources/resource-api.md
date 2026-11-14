@@ -361,6 +361,8 @@ Options (all optional; prefer setting these via `@table` schema directives):
 
 Harper automatically serializes concurrent requests for the same missing or stale record — all waiting requests share a single upstream fetch, preventing cache stampedes.
 
+<VersionBadge type="changed" version="v5.4.1" /> A fetch holds the record for at most 10 seconds. If it is still running then, the next waiting request starts a fresh fetch while the first one finishes; a late result is cached only if nothing newer was cached meanwhile. At most one fetch at a time holds the record, and only that fetch releases it.
+
 #### Observing cache disposition
 
 Each `get` on a caching table records whether the record came from the cache or from the source in the `loadedFromSource` property of the **`RequestTarget`** for that get. Cache disposition is a per-get result, so it lives on the per-get target — pass an explicit `RequestTarget` to observe it:
@@ -972,6 +974,8 @@ Returns the expiration time, if one is set.
 ### `allowStaleWhileRevalidate(entry, id): boolean`
 
 For caching tables: return `true` to serve the stale entry while revalidation happens concurrently; `false` to wait for the fresh value.
+
+<VersionBadge type="changed" version="v5.4.1" /> A read that serves the stale entry starts a revalidation only if no other request is holding that record's fetch; otherwise it just returns the stale entry. If the revalidation fails, the next read starts another one. This hook is now called before the revalidation starts.
 
 Entry properties:
 
