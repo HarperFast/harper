@@ -223,7 +223,7 @@ import {
 	GET_TRACKED_WRITE_GENERATION,
 } from './tracked.ts';
 import { transaction, contextStorage } from './transaction.ts';
-import { MAXIMUM_KEY, writeKey, compareKeys } from 'ordered-binary';
+import { MAXIMUM_KEY, writeKey, compareKeys, toBufferKey } from 'ordered-binary';
 import {
 	getWorkerIndex,
 	applicationWorkerIndex,
@@ -251,6 +251,7 @@ import {
 	auditHistoryAbortMarked,
 	type AuditRecord,
 } from './auditStore.ts';
+import { abortMarkersEnabled } from './transactionLogAbortMarkers.ts';
 import {
 	acquireFullTextClearFence,
 	acquireFullTextRetirementFence,
@@ -330,7 +331,7 @@ import {
 	type StorageSpaceStats,
 } from '../server/storageReclamation.ts';
 import { RequestTarget } from './RequestTarget.ts';
-import harperLogger from '../utility/logging/harper_logger.ts';
+import harperLogger, { inspectForLog } from '../utility/logging/harper_logger.ts';
 import { throttle } from '../server/throttle.ts';
 import {
 	RocksDatabase,
@@ -389,6 +390,10 @@ type MaybePromise<T> = T | Promise<T>;
 const NULL_WITH_TIMESTAMP = new Uint8Array(9);
 NULL_WITH_TIMESTAMP[8] = 0xc0; // null
 const sourceWriteTypes = new Set(['put', 'patch', 'delete', 'publish', 'message', 'invalidate', 'relocate']);
+const loggedMessagesByTransaction = new WeakMap<object, Map<string, Set<string> | null>>();
+// the storage-key encoding, so ids the store treats as one key match
+const messageIdentity = (tableId: number, id: Id, version: number) =>
+	`${tableId}:${version}:${toBufferKey(id).toString('latin1')}`;
 const isSourceWriteType = (type: string) => sourceWriteTypes.has(type);
 // declared types `validate` holds to one value on validated writes: `ID` admits an array of strings
 const SCALAR_TYPES = new Set(['String', 'Int', 'Long', 'Float', 'Boolean', 'Date', 'BigInt']);
@@ -399,7 +404,17 @@ type SourceTxnStream = {
 	failure?: { error: unknown; position: number | undefined; event: any };
 	held?: boolean;
 };
-type SourceFill = { source: unknown; outcome?: Entry; unstoredRecord?: boolean; sharable?: boolean; failure?: unknown };
+type SourceFill = {
+	source: unknown;
+	outcome?: Entry;
+	unstoredRecord?: boolean;
+	sharable?: boolean;
+	failure?: unknown;
+	waiters?: number;
+};
+// a busy record's refill can gather this many waiters; only a failed one sends them back to the source in turn
+const SOURCE_FILL_WAITERS_WARNING = 50;
+const KEY_FOR_LOG = { maxStringLength: 100, maxArrayLength: 4, depth: 1, breakLength: Infinity };
 const UNCACHEABLE_TIMESTAMP = Infinity; // we use this when dynamic content is accessed that we can't safely cache, and this prevents earlier timestamps from change the "last" modification
 const MAX_DATE_TIMESTAMP = 8.64e15;
 const RECORD_PRUNING_INTERVAL = 60000; // one minute
@@ -875,6 +890,8 @@ const MAX_OUT_OF_ORDER_AUDIT_DEPTH = 1000;
 // a full walk of the retained audit log — this bounds that walk regardless of how many
 // records the filter accepts.
 const MAX_PREVIOUS_COUNT_SCAN = 10_000;
+const MAX_LATE_SCAN_ENTRIES = 100_000;
+const QUEUED_ORIGIN = Symbol('queued-origin');
 const VERSION_CAP_REFUSAL = `More than ${MAX_PREVIOUS_COUNT_SCAN} versions follow this resume position; resubscribe to resynchronize`;
 const RELOAD_REFUSAL =
 	'A bulk reload after this resume position left rows with no history; resubscribe to resynchronize';
@@ -2044,6 +2061,7 @@ export function makeTable(options): TableResourceClass {
 	let warnedNullSourcePut = false; // latched: one warn per table per worker (see _writeUpdate)
 	let warnedFutureSourceVersion = false; // likewise (see getFromSource)
 	let lastIssuanceFailureWarn = -Infinity;
+	let lastSourceFillWaitersWarn = -Infinity;
 	let sourceLoad: any; // if a source has a load function (replicator), record it here
 	let hasSourceGet: any;
 	let sourceFills: Map<unknown, SourceFill> | undefined;
@@ -2320,6 +2338,77 @@ export function makeTable(options): TableResourceClass {
 			}
 		}
 		return refs;
+	}
+	// RocksDB stores no previous node, so a tie counts as late
+	function isLateEntry(entry: AuditRecord): boolean {
+		return entry.previousVersion >= entry.version;
+	}
+	const transactionIdentity = (nodeId: number | undefined, key: number) =>
+		`${nodeId ?? getThisNodeId(auditStore) ?? 0}:${key}`;
+	/** A write older than its record is off the version chain; only refs, and late entries' own refs, reach it. */
+	function* lateTransactions(
+		id: Id,
+		pending: Array<{ version: number; nodeId: number }>,
+		seen: Set<string>,
+		budget: { remaining: number }
+	): Generator<{
+		pause?: true;
+		key?: number;
+		entries?: AuditRecord[];
+		found?: boolean;
+		capped?: boolean;
+		range?: any;
+	}> {
+		while (pending.length > 0) {
+			const ref = pending.pop()!;
+			const identity = transactionIdentity(ref.nodeId, ref.version);
+			if (seen.has(identity)) continue;
+			seen.add(identity);
+			const sharedLog = typeof ref.nodeId === 'number' && ref.nodeId !== 0 && !auditStore.logById(ref.nodeId);
+			const range = auditStore.getRange({
+				start: ref.version,
+				exactStart: true,
+				log: ref.nodeId,
+				readUncommitted: true,
+			});
+			const entries: AuditRecord[] = [];
+			let found = false;
+			let unreadable = false;
+			let capped = false;
+			let sincePause = 0;
+			for (const entry of range) {
+				if (entry.txnLogKey !== ref.version) break;
+				if (--budget.remaining < 0) {
+					capped = true;
+					break;
+				}
+				if (++sincePause >= REPLAY_YIELD_INTERVAL) {
+					sincePause = 0;
+					yield { pause: true };
+				}
+				if (
+					!entry.type ||
+					!Number.isFinite(entry.version) ||
+					entry.tableId === undefined ||
+					entry.recordId === undefined
+				)
+					unreadable = true;
+				if (
+					entry.tableId !== tableId ||
+					compareKeys(entry.recordId, id) !== 0 ||
+					(sharedLog && entry.nodeId !== ref.nodeId)
+				)
+					continue;
+				found = true;
+				if (!isLateEntry(entry)) continue;
+				entries.push(entry);
+				const previousRefs = entry.previousAdditionalAuditRefs;
+				if (previousRefs)
+					for (let index = previousRefs.length - 1; index >= 0; index--) pending.push(previousRefs[index]);
+			}
+			yield { key: ref.version, entries, found: found && !unreadable, capped, range };
+			if (capped) return;
+		}
 	}
 	function resolveAuditHead(
 		id: Id,
@@ -7331,6 +7420,10 @@ export function makeTable(options): TableResourceClass {
 										write.skipped = true;
 										return;
 									}
+									if (auditRecord.type === 'message' && auditRecord.version < txnTime && !extraFrameEntries) {
+										advanceToPreviousAudit(auditRecord);
+										continue;
+									}
 									auditedVersion = auditRecord.version;
 									let hasNewerEntryInFrame = false;
 									if (auditedVersion >= txnTime) {
@@ -10200,8 +10293,10 @@ export function makeTable(options): TableResourceClass {
 						if (reportingProgress) event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
 						// Queued events are filtered when the queue drains through send() below; events sent
 						// directly (queue already drained) are filtered here. Each event is filtered once.
-						if (pendingRealTimeQueue) pendingRealTimeQueue.push(event);
-						else {
+						if (pendingRealTimeQueue) {
+							event[QUEUED_ORIGIN] = auditRecord.nodeId ?? 0;
+							pendingRealTimeQueue.push(event);
+						} else {
 							if (allowsEvent && !allowsEvent(event)) return;
 							if (databaseName !== 'system') {
 								recordAction(auditRecord.size ?? 1, 'db-message', tableName, null);
@@ -10812,7 +10907,11 @@ export function makeTable(options): TableResourceClass {
 						nodeId = head.nodeId;
 					}
 					logger.trace?.('Subscription from', startTime, 'from', thisId, localTime);
-					if (startTime < localTime) {
+					let newestRefKey = 0;
+					if (isRocksDB)
+						for (const ref of entry?.additionalAuditRefs ?? [])
+							if (ref.version > newestRefKey) newestRefKey = ref.version;
+					if (startTime < localTime || startTime < newestRefKey) {
 						// start time specified, get the audit history for this record. Set startTime up
 						// front so the listener gate skips any in-flight 'committed' for this version
 						// during the yields below — otherwise that event would be queued and drained as a
@@ -10826,6 +10925,9 @@ export function makeTable(options): TableResourceClass {
 						// can carry the one before it
 						const walked: any[] | undefined = replayReader && !count && !allowsEvent ? [] : undefined;
 						const floorBefore = walked && getAuditFloor(auditStore);
+						const lateRefs = isRocksDB && entry?.additionalAuditRefs ? [...entry.additionalAuditRefs] : [];
+						const chainTransactions = new Set<string>();
+						const wanted = count;
 						do {
 							if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
 								recordsSinceYield = 0;
@@ -10835,6 +10937,12 @@ export function makeTable(options): TableResourceClass {
 							if (++inspected > MAX_PREVIOUS_COUNT_SCAN) break;
 							const auditRecord = auditStore.getSync(nextTime, tableId, thisId, nodeId, true);
 							if (auditRecord && !(checkResume && auditRecord.type === undefined)) {
+								if (isRocksDB) {
+									chainTransactions.add(transactionIdentity(auditRecord.nodeId, nextTime));
+									chainTransactions.add(transactionIdentity(nodeId, nextTime));
+									if (auditRecord.previousAdditionalAuditRefs)
+										lateRefs.push(...auditRecord.previousAdditionalAuditRefs);
+								}
 								if (startTime < nextTime) {
 									if (walked) walked.push(detachAuditEntry(auditRecord), nextTime, nodeId);
 									else {
@@ -10864,11 +10972,45 @@ export function makeTable(options): TableResourceClass {
 									: { txnLogKey: auditRecord.previousVersion, nodeId: auditRecord.previousNodeId };
 								nextTime = previousHead.txnLogKey;
 								nodeId = previousHead.nodeId;
+								if (isRocksDB) chainTransactions.add(transactionIdentity(nodeId, nextTime));
 							} else {
 								missingVersion = true;
 								break;
 							}
 						} while (nextTime > startTime && count !== 0);
+						let lateEvents: any[] | undefined;
+						const lateOrigins = new Map<any, number>();
+						if (lateRefs.length > 0 && inspected <= MAX_PREVIOUS_COUNT_SCAN) {
+							const budget = { remaining: MAX_LATE_SCAN_ENTRIES };
+							for (const { pause, key, entries, found, capped } of lateTransactions(
+								thisId,
+								lateRefs,
+								chainTransactions,
+								budget
+							)) {
+								if (pause || ++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
+									recordsSinceYield = 0;
+									await rest();
+									if (!isActive()) return;
+									if (pause) continue;
+								}
+								if (capped || ++inspected > MAX_PREVIOUS_COUNT_SCAN) {
+									inspected = MAX_PREVIOUS_COUNT_SCAN + 1;
+									break;
+								}
+								if (!(startTime < key)) continue;
+								if (!found) missingVersion = true;
+								for (const auditRecord of entries) {
+									if (auditRecord.type !== 'message') continue;
+									const event = eventFromAudit(thisId, auditRecord, key, undefined, undefined, newestFirstMemo());
+									if (event && reportingProgress) event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
+									if (event && (!allowsEvent || allowsEvent(event))) {
+										(lateEvents ??= []).push(event);
+										lateOrigins.set(event, auditRecord.nodeId ?? 0);
+									} else if (!isActive()) return;
+								}
+							}
+						}
 						const capped = inspected > MAX_PREVIOUS_COUNT_SCAN;
 						if (checkResume) {
 							if (capped || missingVersion) {
@@ -10923,6 +11065,31 @@ export function makeTable(options): TableResourceClass {
 								if (!event) continue;
 								request.omitCurrent = true;
 								history.push(event);
+							}
+						}
+						if (lateEvents) {
+							request.omitCurrent = true;
+							for (const event of lateEvents) history.push(event);
+							history.sort((a, b) => b.version - a.version);
+							if (wanted > 0 && history.length > wanted) history.length = wanted;
+							// the live gate is one key across origins, so a replayed late message that also committed during
+							// the replay is dropped from the queue rather than by raising the gate
+							if (pendingRealTimeQueue) {
+								const replayed = new Map<string, number>();
+								for (const event of history) {
+									const origin = lateOrigins.get(event);
+									if (origin === undefined) continue;
+									const identity = `${origin}|${event.localTime}|${event.version}`;
+									replayed.set(identity, (replayed.get(identity) ?? 0) + 1);
+								}
+								pendingRealTimeQueue = pendingRealTimeQueue.filter((event) => {
+									if (event.type !== 'message') return true;
+									const identity = `${event[QUEUED_ORIGIN]}|${event.localTime}|${event.version}`;
+									const left = replayed.get(identity);
+									if (!left) return true;
+									replayed.set(identity, left - 1);
+									return false;
+								});
 							}
 						}
 						for (let i = history.length; i > 0;) {
@@ -11210,10 +11377,30 @@ export function makeTable(options): TableResourceClass {
 					(this.constructor as any).source?.publish && !(context as any)?.source
 						? (this.constructor as any).source.publish.bind((this.constructor as any).source, id, message, context)
 						: undefined,
-				commit: (txnTime, existingEntry, _retry, transaction: any) => {
+				commit: (txnTime, existingEntry, retry, transaction: any, committedBy?: DatabaseTransaction) => {
+					write.skipped = false;
 					write.stagedEntry = undefined;
 					write.completeResidencyRecord = undefined;
 					write.superseded = false;
+					const precedes =
+						existingEntry?.version !== undefined ? precedesExistingVersion(txnTime, existingEntry, options?.nodeId) : 1;
+					// The record's version never moves back, so only a message at or below it, or one to a record the table can
+					// drop, can have been logged here, and the logged entry is the proof. A retry recommits the batch its first
+					// attempt staged; an earlier process's file can hold an unmarked aborted batch, so there only a record vouches.
+					if (
+						committedBy?.sourceApply &&
+						!committedBy.isReplay &&
+						isRocksDB &&
+						abortMarkersEnabled() &&
+						!(retry && write.appendedAuditEntry === true) &&
+						(existingEntry === undefined
+							? (evictsRecords() || !audit) && auditHistoryAbortMarked(auditStore, options?.nodeId)
+							: precedes <= 0) &&
+						isMessageLogged(committedBy, (context as any)?.timestamp, id, options?.nodeId, options?.version ?? txnTime)
+					) {
+						write.skipped = true;
+						return;
+					}
 					if (existingEntry === undefined && trackDeletes && !audit) {
 						scheduleCleanup();
 					}
@@ -11224,15 +11411,25 @@ export function makeTable(options): TableResourceClass {
 					const base = priorStagedOp?.stagedEntry ?? existingEntry;
 					const value = base?.value ?? null;
 					const metadataFlags = (base?.metadataFlags ?? 0) & (LOCAL_ONLY | INVALIDATED | REPLICA);
+					const late = precedes < 0;
+					const ownRefs = late
+						? isRocksDB
+							? withAuditRef(existingEntry.additionalAuditRefs, appendedLogKey, options?.nodeId)
+							: undefined
+						: appendedLogKey !== txnTime
+							? [{ version: appendedLogKey, nodeId: options?.nodeId }]
+							: undefined;
 					// TODO: Use direct writes in the future (copying binary data is hard because it invalidates the cache)
 					const result = updateRecord(
 						id,
 						value,
 						existingEntry,
-						txnTime,
+						late ? existingEntry.version : txnTime,
 						metadataFlags,
 						true,
 						{
+							recordVersion: late ? txnTime : undefined,
+							recordNodeId: late ? (existingEntry.nodeId ?? -1) : undefined,
 							user: (context as any)?.user,
 							// the message's residency routes it; the record keeps its own
 							residencyId: residencyPolicy ? undefined : options?.residencyId,
@@ -11249,18 +11446,8 @@ export function makeTable(options): TableResourceClass {
 							auditLocalOnly: options?.localOnly,
 							additionalAuditRefs:
 								transaction?.isRetry || options?.auditEntry
-									? withRefsMissedByLoggedEntry(
-											appendedLogKey !== txnTime ? [{ version: appendedLogKey, nodeId: options?.nodeId }] : undefined,
-											id,
-											existingEntry,
-											appendedLogKey,
-											write,
-											transaction,
-											options
-										)
-									: appendedLogKey !== txnTime
-										? [{ version: appendedLogKey, nodeId: options?.nodeId }]
-										: undefined,
+									? withRefsMissedByLoggedEntry(ownRefs, id, existingEntry, appendedLogKey, write, transaction, options)
+									: ownRefs,
 							receivedIdentityRefs: audit ? undefined : base?.receivedIdentityRefs,
 						},
 						'message',
@@ -12569,6 +12756,8 @@ export function makeTable(options): TableResourceClass {
 				const auditWindow = 100;
 				let start: number;
 				let endsAtUnlinkedWrite: boolean;
+				const lateRefs = isRocksDB && entry.additionalAuditRefs ? [...entry.additionalAuditRefs] : [];
+				const returned = new Set<string>();
 				do {
 					await rest(); // yield to other async operations
 					const windowItems = [];
@@ -12583,6 +12772,10 @@ export function makeTable(options): TableResourceClass {
 						if (matches && isHistoryEntry(auditRecord)) {
 							const oldestInWindow = windowItems.length === 0;
 							windowItems.push(historyEntry(auditRecord));
+							if (isRocksDB) {
+								returned.add(transactionIdentity(auditRecord.nodeId, auditRecord.txnLogKey));
+								if (auditRecord.previousAdditionalAuditRefs) lateRefs.push(...auditRecord.previousAdditionalAuditRefs);
+							}
 							const previousVersion = isRocksDB
 								? resolveAuditHead(
 										id,
@@ -12602,6 +12795,28 @@ export function makeTable(options): TableResourceClass {
 					nextVersion = highestPreviousVersion;
 				} while (nextVersion);
 				history.reverse();
+				if (lateRefs.length > 0) {
+					let lateItems: any[] | undefined;
+					let sinceYield = 0;
+					const budget = { remaining: Infinity };
+					for (const { pause, entries, range } of lateTransactions(id, lateRefs, returned, budget)) {
+						if (pause || ++sinceYield >= REPLAY_YIELD_INTERVAL) {
+							sinceYield = 0;
+							await rest();
+							if (pause) continue;
+						}
+						historyEntry.memo.beginRange();
+						for (const auditRecord of entries) {
+							historyEntry.memo.observe(auditRecord, true);
+							if (auditRecord.type === 'message') (lateItems ??= []).push(historyEntry(auditRecord));
+						}
+						historyEntry.memo.finishRange(range);
+					}
+					if (lateItems) {
+						for (const item of lateItems) history.push(item);
+						history.sort((a, b) => a.version - b.version);
+					}
+				}
 				// a re-insert after eviction has no predecessor link, so an evictable record may have older history
 				if (endsAtUnlinkedWrite && (evictsRecords() || entry.expiresAt != undefined))
 					return await historyEntry.settle((await unlinkedEntries(start)).concat(history));
@@ -14232,6 +14447,38 @@ export function makeTable(options): TableResourceClass {
 		return Boolean(entry?.metadataFlags & INVALIDATED) && isAuditEntryWrite(entry, { txnLogKey, nodeId });
 	}
 
+	/**
+	 * An origin transaction commits here all at once, so one read answers for all its messages for the applying
+	 * transaction; no write that staged its entry asks again on a retry.
+	 */
+	function isMessageLogged(
+		applying: DatabaseTransaction,
+		txnLogKey: number | undefined,
+		id: Id,
+		nodeId: number | undefined,
+		version: number
+	): boolean {
+		if (txnLogKey === undefined || !nodeId) return false;
+		// an unnamed origin's entries sit in `local` under minted keys, never at its received key
+		if (!auditStore.logById(nodeId)) return false;
+		let byOriginKey = loggedMessagesByTransaction.get(applying);
+		if (!byOriginKey) loggedMessagesByTransaction.set(applying, (byOriginKey = new Map()));
+		const originKey = `${nodeId}:${txnLogKey}`;
+		let logged = byOriginKey.get(originKey);
+		if (logged === undefined) byOriginKey.set(originKey, (logged = loggedMessagesAt(txnLogKey, nodeId)));
+		return logged !== null && logged.has(messageIdentity(tableId, id, version));
+	}
+
+	function loggedMessagesAt(txnLogKey: number, nodeId: number): Set<string> | null {
+		let logged: Set<string> | null = null;
+		for (const entry of auditStore.getRange({ start: txnLogKey, exactStart: true, log: nodeId })) {
+			if (entry.txnLogKey !== txnLogKey) break;
+			if (entry.type === 'message')
+				(logged ??= new Set()).add(messageIdentity(entry.tableId, entry.recordId, entry.version));
+		}
+		return logged;
+	}
+
 	// Not stagedEntry: a relocate restamps the record without staging it, and a publish's restamp counts too.
 	function followsAppliedWrite(write: any): boolean {
 		for (let prior = write.priorWrite; prior; prior = prior.priorWrite) {
@@ -14371,6 +14618,7 @@ export function makeTable(options): TableResourceClass {
 
 		if (!lockAcquired) {
 			let timer: ReturnType<typeof setTimeout>;
+			if (heldFill) heldFill.waiters = (heldFill.waiters ?? 0) + 1;
 			await new Promise<void>((resolve) => {
 				wake = resolve;
 				// only the fill holding the lock releases it; this thread's closed handle never hears of another
@@ -14382,6 +14630,7 @@ export function makeTable(options): TableResourceClass {
 				timer = setTimeout(recheck, sourceFillLockTimeout);
 			});
 			clearTimeout(timer);
+			if (heldFill) heldFill.waiters--;
 			const entry = primaryStore.getEntry(id);
 			if (
 				!entry ||
@@ -14650,6 +14899,7 @@ export function makeTable(options): TableResourceClass {
 					recordAction(resolveDuration, 'cache-resolution', tableName, null, 'fail');
 					if (responseHeaders)
 						appendHeader(responseHeaders, 'Server-Timing', `cache-resolve;dur=${resolveDuration.toFixed(2)}`, true);
+					if (!fill.failure) warnWaitersOfFailedFill(fill, id, error);
 					sourceContext.transaction.abort();
 					return;
 				}
@@ -14859,15 +15109,34 @@ export function makeTable(options): TableResourceClass {
 					}
 				},
 				(error) => {
+					const dropped = disposed && error?.code === 'ERR_COLUMN_FAMILY_DROPPED';
+					if (!dropped) warnWaitersOfFailedFill(fill, id, error);
 					releaseFill();
-					if (resolved && !(disposed && error?.code === 'ERR_COLUMN_FAMILY_DROPPED'))
-						logger.error?.('Error committing cache update', error);
+					if (resolved && !dropped) logger.error?.('Error committing cache update', error);
 					// else the error was already propagated as part of the promise that we returned
 				}
 			);
 		});
 	}
 
+	function warnWaitersOfFailedFill(fill: SourceFill, id: Id, error: any): void {
+		const waiting = fill.waiters;
+		if (!(waiting >= SOURCE_FILL_WAITERS_WARNING)) return;
+		const now = performance.now();
+		if (now - lastSourceFillWaitersWarn < 60_000) return;
+		lastSourceFillWaitersWarn = now;
+		try {
+			const failure =
+				error?.statusCode ??
+				error?.status ??
+				(typeof error?.code === 'string' ? error.code : undefined) ??
+				(typeof error?.cause?.code === 'string' ? error.cause.code : undefined) ??
+				(error?.name && error.name !== 'Error' ? error.name : error?.message || error?.name || error);
+			logger.warn?.(
+				`A fetch of record ${inspectForLog(id, KEY_FOR_LOG)} of ${tableName} from its source failed with ${inspectForLog(failure, KEY_FOR_LOG)} while ${waiting} requests on this thread waited on it; they now fetch it again in turn`
+			);
+		} catch {}
+	}
 	/**
 	 * Closing the handle that owns a record lock releases it (the RocksDB handle, or the LMDB
 	 * environment), so an unlock that fails after close had nothing left to release.
@@ -16302,6 +16571,16 @@ function auditRefIndex(refs: Array<{ version?: number; nodeId?: number }>, versi
 		if (refs[index].version === version && (refs[index].nodeId ?? 0) === (nodeId ?? 0)) return index;
 	}
 	return -1;
+}
+// last, because the encoder never drops a record's last ref
+function withAuditRef(
+	refs: Array<{ version: number; nodeId: number }> | undefined,
+	version: number,
+	nodeId: number | undefined
+): Array<{ version: number; nodeId: number }> {
+	const result = refs ? refs.filter((ref) => ref.version !== version || (ref.nodeId ?? 0) !== (nodeId ?? 0)) : [];
+	result.push({ version, nodeId });
+	return result;
 }
 
 const RELATED_READS_IN_FLIGHT = 16;
