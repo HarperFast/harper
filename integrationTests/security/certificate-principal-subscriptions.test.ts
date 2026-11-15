@@ -28,7 +28,6 @@ const HTTPS_PORT = 9927;
 const MQTTS_PORT = 8883;
 const DEVICE_CN = 'certsub-device';
 const DROPPED = { username: 'certsub_dropped', password: 'Dropped-pw-4062!' };
-// CertSubTopic clients: each reads the record named for its certificate's CN
 const PEER_CN = 'certsub-peer';
 const GATED_CN = 'certsub-gated';
 const DURABLE_CN = 'certsub-durable';
@@ -247,7 +246,6 @@ suite('Subscriptions of principals with no hdb_user (#4062)', { skip: skipSuite 
 
 	const operation = (body: Record<string, unknown>) => client.req().send(body).expect(200);
 
-	/** Writes the CertSubTopic record `id`; resolves to the value a subscriber's delivery will carry. */
 	async function writeTopic(id: string): Promise<string> {
 		const value = `certsub-topic-${seq++}`;
 		await operation({ operation: 'upsert', schema: 'data', table: 'CertSubTopic', records: [{ id, value }] });
@@ -259,7 +257,6 @@ suite('Subscriptions of principals with no hdb_user (#4062)', { skip: skipSuite 
 		return waitFor(() => subscriber.payloads.some((payload) => payload.includes(`"${value}"`)), timeoutMs);
 	}
 
-	/** A client whose certificate names `cn`, subscribed over MQTT-over-TLS to the record named for it. */
 	async function subscribeOwnTopic(cn: string, options: IClientOptions = {}): Promise<TopicSubscriber> {
 		const mqttClient = await connectDevice(`mqtts://${ctx.harper.hostname}:${MQTTS_PORT}`, {
 			...tlsByCn.get(cn),
@@ -284,9 +281,9 @@ suite('Subscriptions of principals with no hdb_user (#4062)', { skip: skipSuite 
 	}
 
 	/**
-	 * Resolves true once two consecutive writes miss `subscriber` while each reaches the peer, false if it is
-	 * still served at the deadline. A revoked MQTT subscription is not disconnected (#4327), so there is no
-	 * close to wait for.
+	 * Resolves true once two consecutive writes miss `subscriber`, false if it is still served at the deadline;
+	 * every iteration also requires a write to reach the peer. A revoked MQTT subscription is not disconnected
+	 * (#4327), so there is no close to wait for.
 	 */
 	async function cutOffWhilePeerReceives(subscriber: TopicSubscriber, cn: string): Promise<boolean> {
 		const peerClient = await peerSubscriber();
@@ -300,6 +297,8 @@ suite('Subscriptions of principals with no hdb_user (#4062)', { skip: skipSuite 
 	}
 
 	test('withdrawing an allowRead grant ends that certificate client alone', async () => {
+		// admitted before the grant is withdrawn, so a teardown of every subscription at that moment fails the peer
+		await peerSubscriber();
 		const gated = await subscribeOwnTopic(GATED_CN);
 		ok(
 			await keptAcrossRechecks(gated, GATED_CN),
@@ -328,7 +327,6 @@ suite('Subscriptions of principals with no hdb_user (#4062)', { skip: skipSuite 
 		});
 		const resumed = { mqttClient, payloads: [] as string[] };
 		mqttClient.on('message', (_topic, payload) => resumed.payloads.push(payload.toString()));
-		// no SUBSCRIBE: only the resumed session's subscription can deliver
 		ok(await receives(resumed, DURABLE_CN), 'the session was not resumed with its subscription');
 		ok(
 			await keptAcrossRechecks(resumed, DURABLE_CN),
@@ -350,8 +348,10 @@ suite('Subscriptions of principals with no hdb_user (#4062)', { skip: skipSuite 
 			username: LATCH_CN,
 			password: 'Latch-pw-4062!',
 		});
-		// the record has a role, and allowRead still grants: kept, while a recheck finds the record
-		ok(await keptAcrossRechecks(latched, LATCH_CN), 'a role-bearing record ended a subscription allowRead grants');
+		// Only a recheck that finds the record sets the latch, and nothing reports one: two windows before the drop.
+		for (let window = 0; window < 2; window++) {
+			ok(await keptAcrossRechecks(latched, LATCH_CN), 'a role-bearing record ended a subscription allowRead grants');
+		}
 		await operation({ operation: 'drop_user', username: LATCH_CN });
 		ok(
 			await cutOffWhilePeerReceives(latched, LATCH_CN),
