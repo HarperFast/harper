@@ -123,6 +123,14 @@ describe('Requests waiting on one source fill', function () {
 		assert.equal(results.filter((result) => result?.statusCode === 503).length, 1);
 		assert.equal(results.filter((result) => result?.name === 'cached').length, 59);
 		assert.deepEqual(warningsFor(fixture), []);
+
+		const parkedForMiss = fixture.parked;
+		const misses = reads(fixture, 'missing', 60);
+		await waitFor(() => fixture.parked >= parkedForMiss + 59 && fixture.pending.length === 1);
+		fixture.pending.shift().reject(Object.assign(new Error('origin unavailable'), { statusCode: 503 }));
+		await waitFor(() => warningsFor(fixture).length > 0);
+		assert.match(warningsFor(fixture)[0], failedFillWarning('missing', 503), 'the skipped warning left the cooldown');
+		await settle(fixture, misses);
 	});
 
 	it('warns when caching the source answer fails with many waiting', async function () {
