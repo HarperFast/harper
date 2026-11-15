@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794726761838,
+  "lastUpdate": 1794726765358,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -22162,6 +22162,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "E insert p99 — short ranges",
             "value": 39.6,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Lavinia",
+            "username": "ldt1996",
+            "email": "lavinia@harperdb.io"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "33eb0b869e7affcade440ae71993afae28c893de",
+          "message": "Warn when many requests wait on one record's source fetch (#4365)\n\n* Warn when requests pile up waiting on one record's source fetch\n\nWhen many requests wait on one key's source fill (a missing key under\nheavy traffic, or a failing or slow origin), nothing in the log named\nthe table or the key; finding it took a CPU profile and debugger.\n\ngetFromSource now counts, per thread, the requests parked on each key's\nfill lock. When a key's count reaches 50, it logs one warning, at most\nonce per table per minute, naming the table, the key (rendered with\ninspectForLog, bounded to 100 characters) and how many requests on this\nthread are waiting, plus the status of the key's last failed fill on\nthis thread when there was one. A cache hit does no new work; a miss\nthat waits does one map update when it parks and one when it wakes.\n\nRefs #1398\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* Keep the waiters warning from throwing and from reporting a stale failure\n\nThe failure status is rendered through inspectForLog, like the key, so\nan exotic status value cannot throw between tryLock and the waiter's\nwake assignment. A fill that succeeds clears the recorded failure, and\nthe message says the failure happened while the requests waited. The\nhelper no longer sits under releaseRecordLock's comment, and a guard\nthat could never be false is gone.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* Warn when a fill fails with many requests waiting, not whenever many wait\n\nA busy key refilling after an expiry or a cache clear gathers 50 waiters\nin normal operation, so the waiter-count warning fired every minute on\nhealthy tables. Only a failed fill sends its waiters to the source again\nin turn, so the warning now fires there: on a source failure and on a\nfailed cache write, which the old warning never reported. The warning\nalso no longer runs before a waiter registers its wake-up, and a\nthrowing log sink cannot fail a fill or its waiters.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* Count a fill's waiters on the fill, and name its failure readably\n\nWaiters now count on the SourceFill they wait on, so a fill that fails\nafter its hold passed to a later fill reports none of the waiters that\nmoved on, and no per-table map is kept. The failure prefers a status,\na string code or a specific error name, so a timeout reads TimeoutError\nrather than a DOMException's numeric code. Keys stay on one log line.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* Skip the waiters warning for a dropped table, and name a fetch failure's cause\n\nA commit that fails because the table was disposed is not a source\nfailure and starts no retries worth reporting, so it no longer warns\nor uses up the table's quiet minute. A fetch() network failure carries\nits code only in cause.code, which the label now reads.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* Wait for the waiters to leave a timed-out fill before failing it in the test\n\nThe unlock wakes each waiter in its own callback, so on a slow runner the\nsecond fill could start before the rest had left the first, and a later\nhold could expire between polls of an exact source-call count.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Lavinia <lavinia@Lavinias-MacBook-Pro.local>\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-11-15T02:03:51Z",
+          "url": "https://github.com/HarperFast/harper/commit/33eb0b869e7affcade440ae71993afae28c893de"
+        },
+        "date": 1794726764587,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "C read p99 — read only",
+            "value": 6.06,
+            "unit": "ms"
+          },
+          {
+            "name": "B read p99 — read mostly",
+            "value": 5.47,
+            "unit": "ms"
+          },
+          {
+            "name": "B update p99 — read mostly",
+            "value": 7.52,
+            "unit": "ms"
+          },
+          {
+            "name": "A read p99 — update heavy",
+            "value": 9.44,
+            "unit": "ms"
+          },
+          {
+            "name": "A update p99 — update heavy",
+            "value": 13.16,
+            "unit": "ms"
+          },
+          {
+            "name": "F read p99 — read-modify-write",
+            "value": 10.08,
+            "unit": "ms"
+          },
+          {
+            "name": "F rmw p99 — read-modify-write",
+            "value": 19.37,
+            "unit": "ms"
+          },
+          {
+            "name": "D read p99 — read latest",
+            "value": 6.86,
+            "unit": "ms"
+          },
+          {
+            "name": "D insert p99 — read latest",
+            "value": 8.51,
+            "unit": "ms"
+          },
+          {
+            "name": "E insert p99 — short ranges",
+            "value": 40.52,
+            "unit": "ms"
+          },
+          {
+            "name": "E scan p99 — short ranges",
+            "value": 95.69,
             "unit": "ms"
           }
         ]
