@@ -104,6 +104,17 @@ describe('Requests waiting on one source fill', function () {
 		await settle(fixture, few);
 	});
 
+	it('stays quiet when a not-found is shared with many waiting', async function () {
+		const fixture = setUpTable();
+		const hot = reads(fixture, 'gone', 60);
+		await waitFor(() => fixture.parked >= 59);
+		fixture.pending.shift().reject(Object.assign(new Error('not found'), { statusCode: 404 }));
+		const results = await Promise.all(hot);
+		assert.ok(results.every((result) => result?.statusCode === 404));
+		assert.equal(fixture.sourceCalls, 1);
+		assert.deepEqual(warningsFor(fixture), []);
+	});
+
 	it('warns when caching the source answer fails with many waiting', async function () {
 		const fixture = setUpTable();
 		const getResidency = fixture.WaitTable.getResidency;
