@@ -31,7 +31,7 @@ describe('Requests waiting on one source fill', function () {
 		const fixture = { name: `SourceFillWaiters${tableIndex++}`, sourceCalls: 0, pending: [], parked: 0 };
 		fixture.WaitTable = table({
 			table: fixture.name,
-			database: 'test',
+			database: 'sourceFillWaiters',
 			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
 		});
 		getDatabases();
@@ -102,6 +102,27 @@ describe('Requests waiting on one source fill', function () {
 		await waitFor(() => fixture.sourceCalls === 2);
 		assert.deepEqual(warningsFor(fixture), []);
 		await settle(fixture, few);
+	});
+
+	it('stays quiet when the waiters serve a valid cached record after a failed revalidation', async function () {
+		const fixture = setUpTable();
+		const seeded = fixture.WaitTable.get('cached');
+		await waitFor(() => fixture.pending.length === 1);
+		fixture.pending.shift().resolve({ name: 'cached' });
+		assert.equal((await seeded).name, 'cached');
+		const { primaryStore } = fixture.WaitTable;
+		await waitFor(() => primaryStore.tryLock('cached') && (primaryStore.unlock('cached'), true));
+		const parkedBefore = fixture.parked;
+		const revalidations = Array.from({ length: 60 }, () =>
+			fixture.WaitTable.get('cached', { noCache: true }).catch((error) => error)
+		);
+		await waitFor(() => fixture.parked >= parkedBefore + 59 && fixture.pending.length === 1);
+		fixture.pending.shift().reject(Object.assign(new Error('origin unavailable'), { statusCode: 503 }));
+		const results = await Promise.all(revalidations);
+		assert.equal(fixture.sourceCalls, 2);
+		assert.equal(results.filter((result) => result?.statusCode === 503).length, 1);
+		assert.equal(results.filter((result) => result?.name === 'cached').length, 59);
+		assert.deepEqual(warningsFor(fixture), []);
 	});
 
 	it('warns when caching the source answer fails with many waiting', async function () {

@@ -670,6 +670,13 @@ function finishDroppedTableBlobSweep(rootStore: RocksDatabase, primaryStore, lab
 			}
 		});
 }
+function isServableToWaiter(entry: Entry | undefined): boolean {
+	return Boolean(
+		entry?.value &&
+		!(entry.metadataFlags & (INVALIDATED | EVICTED)) &&
+		!(entry.expiresAt != undefined && entry.expiresAt < Date.now())
+	);
+}
 // A response consumes a stream or iterator once, merges into Headers in place and assigns onto a record
 // it cannot copy, so only a copyable record of plain data goes to several requests.
 function isSharableRecord(record: any): boolean {
@@ -14620,12 +14627,7 @@ export function makeTable(options): TableResourceClass {
 			clearTimeout(timer);
 			if (heldFill) heldFill.waiters--;
 			const entry = primaryStore.getEntry(id);
-			if (
-				!entry ||
-				!entry.value ||
-				entry.metadataFlags & (INVALIDATED | EVICTED) ||
-				(entry.expiresAt != undefined && entry.expiresAt < Date.now())
-			) {
+			if (!isServableToWaiter(entry)) {
 				const outcome = heldFill?.source === source ? heldFill.outcome : undefined;
 				if (
 					outcome &&
@@ -15108,8 +15110,9 @@ export function makeTable(options): TableResourceClass {
 		if (!(waiting >= SOURCE_FILL_WAITERS_WARNING)) return;
 		const now = performance.now();
 		if (now - lastSourceFillWaitersWarn < 60_000) return;
-		lastSourceFillWaitersWarn = now;
 		try {
+			if (isServableToWaiter(primaryStore.getEntry(id))) return;
+			lastSourceFillWaitersWarn = now;
 			const failure =
 				error?.statusCode ??
 				error?.status ??
