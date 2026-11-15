@@ -293,6 +293,12 @@ function encryptSecret(plaintext, publicKeyPem, kid) {
 }
 ```
 
+### Sealing a whole operation
+
+<VersionBadge version="v5.4.0" />
+
+The same key can seal an entire operation and its result, not only a secret value. [`encrypted_operation`](../operations-api/operations.md#encrypted_operation) takes an operation sealed in an `enc:v1:` envelope, runs it as the caller, and returns the result encrypted under a key the client chose, so a proxy or control plane relaying the request sees only ciphertext. This protects what passes through and is logged by the relay. It does not stop a relay that can itself call the node from sending its own sealed request, and it does not protect against anyone who holds the custody private key.
+
 ## Private-source deploy credentials
 
 `deploy_component` accepts a `credentials` array so a component installed from a private **npm registry** or private **git repository** can authenticate. A provided token is ingested into the secrets store (as a reference, encrypted) rather than travelling in the operation body, persisting as a plaintext `.npmrc`, or being written to disk for git — so package-reference deploys survive rollback, reboot, and new peers joining. Ingested tokens are stored under a derived name (`deploy.<component>.<registry>` or `deploy.<component>.git.<host>`) granted to the component. See [`deploy_component`](../operations-api/operations.md#deploy_component).

@@ -114,6 +114,7 @@ const OFFLINE_FUNCTIONS = [
 	'deleteBackupOffline',
 	'purgeBackupsOffline',
 	'restoreBackupOffline',
+	'cancelRestartRestoreOffline',
 ];
 
 describe('backup.ts offline routing (useOperationApi)', () => {
@@ -249,6 +250,48 @@ describe('backup.ts offline routing (useOperationApi)', () => {
 			return true;
 		});
 	});
+
+	for (const field of ['on_restart=true', 'resume=true', 'retain_previous=true']) {
+		it(`refuses ${field.split('=')[0]} offline instead of restoring immediately`, async () => {
+			cliCredentialsModule.loadCredentials = () => null;
+			processMgmtModule.getHdbPid = () => null;
+			const calls = trackRouting();
+			process.argv = ['node', 'harper', 'restore_backup', 'database=dev', field];
+			await assert.rejects(runBackupCommand('restore_backup'), (error) => {
+				assert.strictEqual(error.statusCode, 400);
+				assert.match(error.message, new RegExp(`${field.split('=')[0]}.*needs the server running`));
+				assert.match(error.message, /backup_id=<id>.*cancel=true/, 'names what works with Harper stopped');
+				return true;
+			});
+			assert.deepStrictEqual(calls, { offline: false, api: false });
+		});
+	}
+
+	it('withdraws a pending restart restore offline with cancel=true, without restoring', async () => {
+		cliCredentialsModule.loadCredentials = () => null;
+		processMgmtModule.getHdbPid = () => null;
+		const calls = trackRouting();
+		let cancelled;
+		rocksdbBackupModule.cancelRestartRestoreOffline = async (request) => {
+			cancelled = request;
+			return {};
+		};
+		process.argv = ['node', 'harper', 'restore_backup', 'database=dev', 'cancel=true'];
+		await runBackupCommand('restore_backup');
+		assert.strictEqual(cancelled?.database, 'dev');
+		assert.deepStrictEqual(calls, { offline: false, api: false });
+	});
+
+	for (const field of ['on_restart=false', 'resume=false', 'cancel=false', 'retain_previous=false']) {
+		it(`restores offline with ${field}, which asks for nothing the server must do`, async () => {
+			cliCredentialsModule.loadCredentials = () => null;
+			processMgmtModule.getHdbPid = () => null;
+			const calls = trackRouting();
+			process.argv = ['node', 'harper', 'restore_backup', 'database=dev', field];
+			await runBackupCommand('restore_backup');
+			assert.deepStrictEqual(calls, { offline: true, api: false });
+		});
+	}
 
 	it('passes immutable_source through to the offline restore', async () => {
 		cliCredentialsModule.loadCredentials = () => null;

@@ -573,6 +573,44 @@ jobs:
 			assert.deepStrictEqual(check(looped).unverified, [unknown]);
 		});
 
+		it('reads a test that the variable setup sets is set as true, and no other variable', () => {
+			const clean = { problems: [], unverified: [], unsafe: [] };
+			// create-harper's workflow stays dormant on this gate until setup sets the variable.
+			const createHarper = starter.replace(/^ {4}if: /gm, "    if: vars.HARPER_PREVIEW_TARGET != '' && ");
+			assert.strictEqual(createHarper.match(/HARPER_PREVIEW_TARGET != '' && /g).length, 2);
+			assert.deepStrictEqual(check(createHarper), clean);
+			// In `${{ }}`, so YAML reads a leading quote or `!` as part of the condition.
+			const gatedWith = (gate, content = starter) =>
+				content.replace(/^ {4}if: (.*)$/gm, (_, condition) => `    if: \${{ ${gate} && ${condition} }}`);
+			for (const gate of [
+				"vars.HARPER_PREVIEW_TARGET != ''",
+				"'' != vars.HARPER_PREVIEW_TARGET",
+				'vars.HARPER_PREVIEW_TARGET',
+				"(vars.HARPER_PREVIEW_TARGET != '')",
+			]) {
+				assert.deepStrictEqual(check(gatedWith(gate)), clean, gate);
+			}
+			const unknown = `that job "cleanup" runs when a pull request closes, which is what drops its preview before it expires`;
+			for (const gate of [
+				"vars.HARPER_CLI_TARGET != ''",
+				"vars.HARPER_PREVIEW_TARGET_NEXT != ''",
+				"env.HARPER_PREVIEW_TARGET != ''",
+				"vars.HARPER_PREVIEW_TARGET == ''",
+				"vars.HARPER_PREVIEW_TARGET != 'https://cluster.example.com:9925/'",
+				'!vars.HARPER_PREVIEW_TARGET',
+			]) {
+				assert.deepStrictEqual(check(gatedWith(gate)), { ...clean, unverified: [unknown] }, gate);
+			}
+			const cleanupIf = `    if: github.event.action == 'closed'${sameRepository}\n`;
+			const excluded = gatedWith("vars.HARPER_PREVIEW_TARGET != ''", starter.replace(cleanupIf, deployIf));
+			assert.deepStrictEqual(check(excluded), {
+				...clean,
+				unverified: [
+					`that a closed pull request's preview is dropped before it expires, since job "cleanup" does not run when a pull request closes`,
+				],
+			});
+		});
+
 		it("accepts a checkout of the workflow's own branch, and cannot read a ref given as an expression", () => {
 			assert.deepStrictEqual(check(withDeployStep('      - uses: actions/checkout@v5\n')).problems, []);
 			const expression = withDeployStep(

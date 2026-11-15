@@ -13,6 +13,7 @@ import type { ChildProcess } from 'node:child_process';
 import {
 	verifyAffinity,
 	verifyCgroupCpuset,
+	settledMemoryLimit,
 	verifyMemoryLimit,
 	processCgroup,
 	scopedCommand,
@@ -87,15 +88,23 @@ export const SWEEP_STACK_MEMORY: Record<'pg-redis' | 'pg-only', StackMemory> = {
 	},
 };
 
-const composeEnv = (cpuset: string, memory: StackMemory, restore = ''): NodeJS.ProcessEnv => ({
+const composeEnv = (
+	cpuset: string,
+	memory: StackMemory,
+	restore = '',
+	{ pgListen = '127.0.0.1', redisBind = '127.0.0.1', redisPassword = '' } = {}
+): NodeJS.ProcessEnv => ({
 	...process.env,
 	YCSB_VS_PG_DATA_DIR: dataDir(),
 	YCSB_TARGET_CPUSET: cpuset,
 	YCSB_PG_MEM_LIMIT: `${memory.postgresMiB}m`,
 	YCSB_PG_SHARED_BUFFERS: `${memory.sharedBuffersMiB}MB`,
 	YCSB_PG_EFFECTIVE_CACHE_SIZE: `${memory.effectiveCacheMiB}MB`,
+	YCSB_PG_LISTEN: pgListen,
 	YCSB_REDIS_MEM_LIMIT: `${memory.redisMiB}m`,
 	YCSB_REDIS_MAXMEMORY: process.env.YCSB_REDIS_MAXMEMORY || `${memory.redisMaxmemoryMiB}mb`,
+	YCSB_REDIS_BIND: redisBind,
+	YCSB_REDIS_PASSWORD: redisPassword,
 	YCSB_PG_RESTORE: restore,
 });
 
@@ -117,6 +126,32 @@ async function asRootInDataDir(script: string, timeoutMs: number): Promise<void>
 const wipePgData = () => asRootInDataDir('rm -rf /host-data/pgdata', 30 * 60_000);
 
 export const removePgSnapshots = () => asRootInDataDir('rm -rf /host-data/snapshots/pg-*', 30 * 60_000);
+
+/** Bytes under `path` in the data dir, measured as root in a throwaway container (PGDATA is postgres' uid's). */
+export async function dataDirBytes(path: string): Promise<number> {
+	const { stdout } = await exec(
+		'docker',
+		['run', '--rm', '-v', `${dataDir()}:/host-data:ro`, 'alpine:latest', 'du', '-sb', `/host-data/${path}`],
+		{ timeout: 10 * 60_000 }
+	);
+	return Number(stdout.split('\t')[0]);
+}
+
+/** Stops and removes every container of the compose project on this host (a target agent's leftovers). */
+export async function composeDownProject(): Promise<void> {
+	await exec('docker', [...COMPOSE, 'down', '-v', '-t', '300'], {
+		env: composeEnv('0', WARM_STACK_MEMORY['pg-redis']),
+		timeout: 10 * 60_000,
+	});
+}
+
+/** IDs of the compose project's running containers on this host. */
+export async function runningProjectContainers(): Promise<string[]> {
+	const { stdout } = await exec('docker', ['ps', '-q', '--filter', 'label=com.docker.compose.project=ycsb-vs-pg'], {
+		timeout: 60_000,
+	});
+	return stdout.split('\n').filter(Boolean);
+}
 
 export const PG_URL = 'postgres://ycsb:ycsb@127.0.0.1:5433/ycsb';
 export const REDIS_URL = 'redis://127.0.0.1:6380';
@@ -140,12 +175,28 @@ export interface PgStackOptions {
 	nodeOptions?: string;
 	/** HS256 secret: the app then requires a JWT on every request. */
 	jwtSecret?: string;
+	/**
+	 * The services this host runs (topology b runs each on its own host); default all three. A host
+	 * without Fastify exposes its Postgres or Redis on `listen` as well as loopback.
+	 */
+	services?: StackService[];
+	/** Address Fastify listens on (and, without Fastify here, Postgres and Redis too); default loopback. */
+	listen?: string;
+	/** Where Fastify reaches a Postgres or Redis that runs on another host. */
+	pgUrl?: string;
+	redisUrl?: string;
+	/** requirepass for a Redis reachable off-host; the app and the INFO reader send it. */
+	redisPassword?: string;
 }
 
+export type StackService = 'postgres' | 'redis' | 'fastify';
+const STACK_SERVICES: StackService[] = ['postgres', 'redis', 'fastify'];
+
 export interface PgStack {
-	baseUrl: string;
+	/** Fastify's URL; undefined on a host that runs only Postgres or Redis. */
+	baseUrl?: string;
 	/** The Fastify cluster's primary; its workers are its children. */
-	appPid: number;
+	appPid?: number;
 	/**
 	 * VACUUM ANALYZE after the bulk load: sets hint bits and planner stats up front, as an
 	 * operator would, so neither they nor an autovacuum triggered by the load land in a
@@ -163,8 +214,9 @@ export interface PgStack {
 	/** Every component's cgroup: the Fastify scope and the containers. */
 	cgroups: Record<string, string>;
 	memoryLimits: Record<string, MemoryLimit>;
-	/** Command that prints Redis INFO stats, for cache hit-rate sampling. */
-	redisExec: string[];
+	/** Command that prints Redis INFO stats, for cache hit-rate sampling; set when Redis runs on this host. */
+	redisExec?: string[];
+	services: StackService[];
 	/** Milliseconds from `compose up` to Postgres accepting connections: the snapshot copy, when restoring. */
 	startupMs: number;
 	stop(): Promise<void>;
@@ -172,14 +224,25 @@ export interface PgStack {
 
 export async function startPgStack(options: PgStackOptions): Promise<PgStack> {
 	if (options.restore && !SNAPSHOT_NAME.test(options.restore)) throw new Error(`bad snapshot name ${options.restore}`);
-	const env = composeEnv(options.serverCpus.join(','), options.memory, options.restore);
+	const services = options.services ?? STACK_SERVICES;
+	const exposed = !services.includes('fastify') && options.listen ? options.listen : undefined;
+	// The password reaches redis-cli through the environment, never argv, so a failed command's error text
+	// (which carries its argv into logs and results) cannot hold it.
+	if (options.redisPassword) process.env.REDISCLI_AUTH = options.redisPassword;
+	else delete process.env.REDISCLI_AUTH;
+	const env = composeEnv(options.serverCpus.join(','), options.memory, options.restore, {
+		pgListen: exposed ? `127.0.0.1,${exposed}` : '127.0.0.1',
+		redisBind: exposed ? `127.0.0.1 ${exposed}` : '127.0.0.1',
+		redisPassword: options.redisPassword,
+	});
 	const compose = (args: string[], timeoutMs = 10 * 60_000) =>
 		exec('docker', [...COMPOSE, ...args], { maxBuffer: 1 << 24, env, timeout: timeoutMs });
 	const composeDown = () => compose(['down', '-v', '-t', '300']);
 	// Stop first, and let a failure abort: `up -d` will not recreate an already-running
 	// container, so wiping PGDATA while one is live deletes the data directory out from under it.
+	// The project's containers on this host all belong to this sample, whichever services it runs.
 	await composeDown();
-	await wipePgData();
+	if (services.includes('postgres')) await wipePgData();
 	// Created as the host user before compose would create it as root.
 	await mkdir(join(dataDir(), 'snapshots'), { recursive: true });
 	let child: ChildProcess | undefined;
@@ -189,7 +252,7 @@ export async function startPgStack(options: PgStackOptions): Promise<PgStack> {
 		await composeDown();
 	};
 	try {
-		return await startServices(options, compose, (spawned) => (child = spawned), stop);
+		return await startServices({ ...options, services }, compose, (spawned) => (child = spawned), stop);
 	} catch (error) {
 		await stop().catch(() => {});
 		throw error;
@@ -197,11 +260,22 @@ export async function startPgStack(options: PgStackOptions): Promise<PgStack> {
 }
 
 async function startServices(
-	options: PgStackOptions,
+	options: PgStackOptions & { services: StackService[] },
 	compose: (args: string[], timeoutMs?: number) => Promise<{ stdout: string }>,
 	onSpawn: (child: ChildProcess) => void,
 	stop: () => Promise<void>
 ): Promise<PgStack> {
+	const { services } = options;
+	const has = (service: StackService) => services.includes(service);
+	const redisCli = [
+		'exec',
+		'-T',
+		...(options.redisPassword ? ['-e', 'REDISCLI_AUTH'] : []),
+		'redis',
+		'redis-cli',
+		'-p',
+		'6380',
+	];
 	const psql = (sql: string, timeoutMs = 60_000) =>
 		compose(['exec', '-T', 'postgres', 'psql', '-p', '5433', '-U', 'ycsb', '-d', 'ycsb', '-tAc', sql], timeoutMs);
 	const containerCgroup = async (service: string): Promise<string> => {
@@ -214,17 +288,28 @@ async function startServices(
 	// The containers get their cpuset at creation (compose `cpuset`), so initdb and every
 	// Postgres backend forked later are inside it from the start.
 	const upAt = Date.now();
-	await compose(['up', '-d']);
-	// A restore copies the snapshot before Postgres listens; the probe only succeeds once it has.
-	await waitForPostgres(compose, options.restore ? 60 * 60_000 : 120_000);
-	const startupMs = Date.now() - upAt;
-
-	if (!options.restore) {
-		// Fresh dataset per run: the harness load phase inserts sequential keys, and
-		// leftover rows would change both the row count and the cache hit profile.
-		await psql('DROP TABLE IF EXISTS usertable');
+	const containers = services.filter((s) => s !== 'fastify');
+	if (containers.length > 0) await compose(['up', '-d', ...containers]);
+	if (has('postgres')) {
+		// A restore copies the snapshot before Postgres listens; the probe only succeeds once it has.
+		await waitForPostgres(compose, options.restore ? 60 * 60_000 : 120_000);
+		if (!options.restore) {
+			// Fresh dataset per run: the harness load phase inserts sequential keys, and
+			// leftover rows would change both the row count and the cache hit profile.
+			await psql('DROP TABLE IF EXISTS usertable');
+		}
 	}
-	await compose(['exec', '-T', 'redis', 'redis-cli', '-p', '6380', 'flushall']);
+	const startupMs = Date.now() - upAt;
+	if (has('redis')) {
+		// On a host without Postgres nothing above waited, and redis-server may not be listening yet.
+		await waitForRedis(compose, redisCli, 120_000);
+		await compose([...redisCli, 'flushall']);
+	}
+
+	const cgroups: Record<string, string> = {};
+	if (has('postgres')) cgroups.postgres = await containerCgroup('postgres');
+	if (has('redis') && (options.useCache || !has('fastify'))) cgroups.redis = await containerCgroup('redis');
+	if (!has('fastify')) return backends(options, cgroups, startupMs, psql, compose, redisCli, stop);
 
 	// The scope and taskset are both in place before node starts: the cluster primary and every
 	// worker it forks inherit the cpuset and the memory cap.
@@ -236,16 +321,18 @@ async function startServices(
 		process.execPath,
 		join(DIR, 'pg-app', 'server.mjs'),
 	];
+	const listen = options.listen ?? '127.0.0.1';
 	const child: ChildProcess = spawn(command, args, {
 		env: {
 			...process.env,
+			LISTEN_HOST: listen,
 			PORT: String(PG_APP_PORT),
 			WORKERS: String(options.workers),
 			FIELDS: String(options.fields),
 			PG_POOL: String(options.poolSize),
 			USE_CACHE: String(options.useCache),
-			PG_URL,
-			REDIS_URL,
+			PG_URL: options.pgUrl ?? PG_URL,
+			REDIS_URL: options.redisUrl ?? REDIS_URL,
 			...(options.nodeOptions ? { NODE_OPTIONS: options.nodeOptions } : {}),
 			// set either way: an inherited secret would otherwise turn authentication on
 			JWT_SECRET: options.jwtSecret ?? '',
@@ -269,55 +356,100 @@ async function startServices(
 		child.on('exit', (code) => reject(new Error(`pg-app exited early with ${code}`)));
 	});
 
-	const cgroups: Record<string, string> = {
-		fastify: processCgroup(child.pid!),
-		postgres: await containerCgroup('postgres'),
+	const withApp = { fastify: processCgroup(child.pid!), ...cgroups };
+	verifyAffinity('fastify', child.pid!, options.serverCpus);
+	const stack = await backends(options, withApp, startupMs, psql, compose, redisCli, stop);
+	stack.memoryLimits = {
+		fastify: verifyMemoryLimit('fastify', withApp.fastify, options.memory.fastifyMiB * MiB),
+		...stack.memoryLimits,
 	};
-	if (options.useCache) cgroups.redis = await containerCgroup('redis');
+	const snapshotBackend = stack.snapshot;
+	return {
+		...stack,
+		baseUrl: `http://${listen}:${PG_APP_PORT}`,
+		appPid: child.pid!,
+		async snapshot(name: string): Promise<void> {
+			child.kill('SIGKILL');
+			await stopScope(options.fastifyUnit);
+			await snapshotBackend(name);
+		},
+	};
+}
+
+async function backends(
+	options: PgStackOptions & { services: StackService[] },
+	cgroups: Record<string, string>,
+	startupMs: number,
+	psql: (sql: string, timeoutMs?: number) => Promise<{ stdout: string }>,
+	compose: (args: string[], timeoutMs?: number) => Promise<{ stdout: string }>,
+	redisCli: string[],
+	stop: () => Promise<void>
+): Promise<PgStack> {
+	const { memory, services } = options;
 	for (const [name, scope] of Object.entries(cgroups)) {
+		// Fastify's scope has no cpuset of its own; its threads' affinity is checked instead.
 		if (name !== 'fastify') await verifyCgroupCpuset(name, scope, options.serverCpus);
 	}
-	verifyAffinity('fastify', child.pid!, options.serverCpus);
-	const { memory } = options;
-	const memoryLimits: Record<string, MemoryLimit> = {
-		fastify: verifyMemoryLimit('fastify', cgroups.fastify, memory.fastifyMiB * MiB),
-		postgres: verifyMemoryLimit('postgres', cgroups.postgres, memory.postgresMiB * MiB),
+	const memoryLimits: Record<string, MemoryLimit> = {};
+	if (cgroups.postgres)
+		memoryLimits.postgres = await settledMemoryLimit('postgres', cgroups.postgres, memory.postgresMiB * MiB);
+	if (cgroups.redis) memoryLimits.redis = await settledMemoryLimit('redis', cgroups.redis, memory.redisMiB * MiB);
+	const hasPostgres = services.includes('postgres');
+	const noPostgres = async (): Promise<never> => {
+		throw new Error('Postgres does not run on this host');
 	};
-	if (cgroups.redis) memoryLimits.redis = verifyMemoryLimit('redis', cgroups.redis, memory.redisMiB * MiB);
-
 	return {
-		baseUrl: `http://127.0.0.1:${PG_APP_PORT}`,
-		appPid: child.pid!,
 		cgroups,
 		memoryLimits,
 		startupMs,
-		async vacuum(): Promise<void> {
-			await psql('VACUUM (ANALYZE) usertable', 4 * 60 * 60_000);
-		},
-		async checkpoints(): Promise<number> {
-			const { stdout } = await psql('SELECT num_timed + num_requested FROM pg_stat_checkpointer');
-			return Number(stdout.trim());
-		},
-		async snapshot(name: string): Promise<void> {
-			if (!SNAPSHOT_NAME.test(name)) throw new Error(`bad snapshot name ${name}`);
-			await psql('CHECKPOINT', 60 * 60_000);
-			child.kill('SIGKILL');
-			await stopScope(options.fastifyUnit);
-			await compose(['stop', '-t', '300', 'postgres'], 15 * 60_000);
-			const id = (await compose(['ps', '-a', '-q', 'postgres'])).stdout.trim();
-			const { stdout } = await exec('docker', ['inspect', '-f', '{{.State.ExitCode}}', id], { timeout: 60_000 });
-			// A Postgres that did not shut down cleanly would replay WAL on every restore.
-			if (stdout.trim() !== '0') throw new Error(`postgres exited ${stdout.trim()} on shutdown; snapshot not taken`);
-			await asRootInDataDir(
-				`rm -rf /host-data/snapshots/${name} && mv /host-data/pgdata /host-data/snapshots/${name}`,
-				10 * 60_000
-			);
-		},
+		services,
+		vacuum: hasPostgres
+			? async () => {
+					await psql('VACUUM (ANALYZE) usertable', 4 * 60 * 60_000);
+				}
+			: noPostgres,
+		checkpoints: hasPostgres
+			? async () => Number((await psql('SELECT num_timed + num_requested FROM pg_stat_checkpointer')).stdout.trim())
+			: noPostgres,
+		snapshot: hasPostgres
+			? async (name: string) => {
+					if (!SNAPSHOT_NAME.test(name)) throw new Error(`bad snapshot name ${name}`);
+					await psql('CHECKPOINT', 60 * 60_000);
+					await compose(['stop', '-t', '300', 'postgres'], 15 * 60_000);
+					const id = (await compose(['ps', '-a', '-q', 'postgres'])).stdout.trim();
+					const { stdout } = await exec('docker', ['inspect', '-f', '{{.State.ExitCode}}', id], { timeout: 60_000 });
+					// A Postgres that did not shut down cleanly would replay WAL on every restore.
+					if (stdout.trim() !== '0')
+						throw new Error(`postgres exited ${stdout.trim()} on shutdown; snapshot not taken`);
+					await asRootInDataDir(
+						`rm -rf /host-data/snapshots/${name} && mv /host-data/pgdata /host-data/snapshots/${name}`,
+						10 * 60_000
+					);
+				}
+			: noPostgres,
 		// pg-only still runs the redis container (idle, never connected to) so both stacks share
 		// one compose file; its CPU and memory are not charged since the app never uses it.
-		redisExec: ['docker', ...COMPOSE, 'exec', '-T', 'redis', 'redis-cli', '-p', '6380', 'info'],
+		redisExec: cgroups.redis ? ['docker', ...COMPOSE, ...redisCli, 'info'] : undefined,
 		stop,
 	};
+}
+
+async function waitForRedis(
+	compose: (args: string[], timeoutMs?: number) => Promise<{ stdout: string }>,
+	redisCli: string[],
+	timeoutMs: number
+): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	let lastError: unknown;
+	while (Date.now() < deadline) {
+		try {
+			if ((await compose([...redisCli, 'ping'], 30_000)).stdout.trim() === 'PONG') return;
+		} catch (error) {
+			lastError = error;
+		}
+		await delay(500);
+	}
+	throw new Error(`redis did not become ready: ${(lastError as Error)?.message ?? 'no PONG'}`);
 }
 
 /**

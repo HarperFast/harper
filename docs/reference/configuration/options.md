@@ -141,17 +141,17 @@ When the Harper process receives SIGTERM, SIGINT (Ctrl+C) or SIGQUIT, it shuts d
 4. Component scopes close. Their [`'close'` listeners](../components/plugin-api.md#cleanup-on-shutdown) run once requests in flight have had a few seconds to finish.
 5. The process exits with code `0`.
 
-`threads.shutdownTimeout` bounds this sequence. If it has not finished in time, Harper logs `Shutdown did not finish within <n> ms (threads.shutdownTimeout)` and exits anyway. A second signal during the shutdown makes Harper exit at once; running `harper stop` again sends one. Harper exits with code `0` in all three cases, so a `0` exit status does not mean every `'close'` listener finished.
+`threads.shutdownTimeout` bounds this sequence. If it has not finished in time, Harper logs `Shutdown did not finish within <n> ms (threads.shutdownTimeout)` and exits anyway. A second signal during the shutdown makes Harper exit at once; running `harper stop` again sends one. Under the uWS HTTP server, every exit first lets each worker close its uWS sockets, which adds up to 10 seconds (30 in dev mode) for a busy worker on top of `threads.shutdownTimeout`; a worker still busy after that is stopped anyway, and the process crashes. Otherwise Harper exits with code `0` in all three cases, so a `0` exit status does not mean every `'close'` listener finished.
 
 ```yaml
 threads:
   shutdownTimeout: 25000 # Kubernetes' default 30-second grace period, no preStop hook
 ```
 
-The environment variable is `THREADS_SHUTDOWNTIMEOUT`. Like other settings, a changed value takes effect when Harper restarts; `harper stop` reads the configuration file, so its wait uses the new value right away. `0` restores the behavior from before v5.4.0: Harper exits when the signal arrives, without draining requests or closing scopes.
+The environment variable is `THREADS_SHUTDOWNTIMEOUT`. Like other settings, a changed value takes effect when Harper restarts; `harper stop` reads the configuration file, so its wait uses the new value right away. `0` restores the behavior from before v5.4.0: Harper exits when the signal arrives (under the uWS HTTP server, once its workers have closed their uWS sockets), without draining requests or closing scopes.
 
 - **Requests get a few seconds, not the whole timeout.** After it stops accepting connections, Harper waits a few seconds for requests in flight (about 2.5 seconds on Node.js, 5 on Bun), however high `threads.shutdownTimeout` is set. A request still running then may not finish: on Node.js its connection is closed, and its handler can still be running when `'close'` listeners start. The rest of the timeout is for component cleanup.
-- **Fit it inside your orchestrator's grace period.** A container platform or service manager sends SIGTERM, waits for its grace period, then kills the process. After the shutdown above, Harper closes its databases as the process exits, and `threads.shutdownTimeout` does not limit that step. Set `threads.shutdownTimeout` a few seconds below the grace period to leave time for it. The default of 8 seconds fits Docker's default. On Kubernetes, the grace period also covers a `preStop` hook, which runs before SIGTERM, so subtract its time too.
+- **Fit it inside your orchestrator's grace period.** A container platform or service manager sends SIGTERM, waits for its grace period, then kills the process. After the shutdown above, Harper closes its databases as the process exits, and `threads.shutdownTimeout` does not limit that step. Set `threads.shutdownTimeout` a few seconds below the grace period to leave time for it. The default of 8 seconds fits Docker's default, except under the uWS HTTP server when a worker is busy, because of the wait above. On Kubernetes, the grace period also covers a `preStop` hook, which runs before SIGTERM, so subtract its time too.
 
 | Platform               | Grace period setting            | Default    |
 | ---------------------- | ------------------------------- | ---------- |
@@ -323,12 +323,17 @@ storage:
   - `maxRawHitsPerRequest` — Maximum fetched hits per request, including bounded prefix replay when traversal is needed; default `10000`.
   - `maxResultsPerRequest` — Maximum retained offset plus limit. A request must also fit the separate raw-hit budget; default `10000`.
   - `requestBudgetMilliseconds` — Execution budget across native batches, source checks and highlights, capped by the native execution limit; default `5000` ms. Reader acquisition and freshness waiting have separate bounds.
+  - `query.maxQueryTerms` — Maximum analyzed terms per full-text leaf; integer `1`–`1024`, default `64`, also bounded by the loaded native runtime.
+  - `query.maxQueryClauses` — Maximum compiled clauses, including Boolean structure and field expansion; integer `1`–`4096`, default `256`, also bounded by the loaded native runtime.
+  - `query.maxFuzzyDistance` — Maximum accepted fuzzy edit distance; integer `0`–`2`, default `1`. A cap of `0` requires explicit `fuzzyDistance: 0` on fuzzy conditions; the omitted distance still defaults to `1` and is rejected. Distance `2` requires operator opt-in and workload qualification.
   - `runtime.maxResidentIndexes` — Maximum resident native indexes; default `128`.
   - `runtime.maxIndexingThreads` — Maximum aggregate indexing-thread reservations across resident native indexes; default `128`.
   - `runtime.maxSearchThreads` — Maximum aggregate search-thread reservations across resident native indexes; default `256`.
   - `runtime.maxWriterMemoryBytes` — Aggregate writer-memory reservations across resident native indexes; default `4294967296` (4 GiB).
   - `runtime.maxQueuedBytes` — Aggregate queued-write reservations across resident native indexes; default `8589934592` (8 GiB).
   - `runtime.maxExpensiveSearches` — Maximum concurrent expensive native searches; default `8`.
+
+  The `query` policy is captured for the whole process and inherited by application and HTTP workers. A full Harper process restart is required; restarting only workers does not change it. Omitted keys keep their defaults. Requests cannot raise the policy. It changes query admission, not persisted index identity. Harper 5.4.0-alpha.1/alpha.2 reject an explicit `storage.fullText.query` block.
 
   The runtime budgets apply together and are not hard bounds on total process memory. See [Set Configuration](./operations.md#set-configuration) for when request and native runtime changes take effect. Use the usual underscore-separated parameter names, such as `storage_fullText_maxRawHitsPerRequest`. See [full-text query execution](../resources/query-optimization.md#full-text-search-work-and-paging) for costs; see [readiness and recovery](../resources/query-optimization.md#readiness-and-recovery) for failures.
 

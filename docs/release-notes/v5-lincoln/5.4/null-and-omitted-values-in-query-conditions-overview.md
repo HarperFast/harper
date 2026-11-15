@@ -12,5 +12,3 @@ order: 10
 - In SQL, a range compared with a `NULL` literal (`discount >= NULL`, `discount BETWEEN NULL AND 10`) now matches no rows. Before, it could fail with an `Invalid value for attribute` error, or `BETWEEN NULL AND x` could return rows whose value is `NULL`. `<>`, `NOT IN`, and `IS NULL` are unchanged.
 
 **Upgrade impact:** `ne` queries can return more records, and `ge=null` or `between=(null,x)` queries fewer. A sorted `ne` query such as `?discount=ne=5&sort(discount)&limit(10)` now reads every record and sorts in memory, where it used to read its page from the index and skip null and omitted values, so it takes longer on a large table. See [Null and Omitted Values](/reference/v5/rest/querying#null-and-omitted-values), [NULL and omitted values in SQL](/reference/v5/operations-api/sql#null-and-omitted-values), and [Sorting](/reference/v5/resources/query-optimization#sorting).
-
-This change is not released yet.

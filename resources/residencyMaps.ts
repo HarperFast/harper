@@ -1,5 +1,6 @@
 import { setDatabaseLiveGuard, setDatabaseBaselineGuard } from './databaseLiveGuard.ts';
 import { ensureShardingConfiguration, shardingRecoveryConfiguration } from '../config/shardingConfiguration.ts';
+import { configGeneration } from '../config/configUtils.ts';
 import { isMainThread } from 'node:worker_threads';
 import { databases, database as openDatabase, getDatabaseCatalog, getDatabases, table } from './databases.ts';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
@@ -15,6 +16,7 @@ import {
 	compileResidencyPolicy,
 	residencyMapExtends,
 	canonicalShards,
+	canonicalSpareList,
 	createResidencyMap,
 	defaultResidencyMap,
 	expandResidencyMap,
@@ -155,9 +157,19 @@ export function residencyDeclarationDatabases(): string[] {
 }
 
 let configuredList: unknown;
+let configuredGeneration = -1;
 let configuredShards: number[] | undefined;
+let configuredSpares: number[] | undefined;
+let configuredSparesError: string | undefined;
 let configuredDigest: string | null = null;
-let configuration: Readonly<{ shards: readonly number[] | undefined; shard: number; digest: string | null }>;
+let configuration: Readonly<{
+	shards: readonly number[] | undefined;
+	spares: readonly number[] | undefined;
+	/** A malformed spare list: peers see an invalid digest, and only a default map is refused. */
+	sparesError?: string;
+	shard: number;
+	digest: string | null;
+}>;
 let recoveryConfiguration: typeof configuration;
 export function getResidencyConfiguration(forRecovery = false) {
 	if (forRecovery && shardingRecoveryConfiguration) {
@@ -166,10 +178,19 @@ export function getResidencyConfiguration(forRecovery = false) {
 			throw new ClientError('replication.shard must be an integer from 0 through 65535', 400);
 		if (!recoveryConfiguration) {
 			const shards = canonicalShards(shardingRecoveryConfiguration.shards);
+			let spares: number[] | undefined;
+			let sparesError: string | undefined;
+			try {
+				spares = canonicalSpareList(shardingRecoveryConfiguration.spareShards);
+			} catch (error) {
+				sparesError = error.message;
+			}
 			recoveryConfiguration = Object.freeze({
 				shards,
+				spares,
+				sparesError,
 				shard: shardingRecoveryConfiguration.shard,
-				digest: shardListDigest(shards),
+				digest: sparesError ? 'invalid' : shardListDigest(shards, spares),
 			});
 		}
 		return recoveryConfiguration;
@@ -178,15 +199,32 @@ export function getResidencyConfiguration(forRecovery = false) {
 	const shard = env.get(CONFIG_PARAMS.REPLICATION_SHARD);
 	if (shard !== undefined && (!Number.isInteger(shard) || shard < 0 || shard > 65535))
 		throw new ClientError('replication.shard must be an integer from 0 through 65535', 400);
-	if (value !== configuredList) {
+	const generation = configGeneration();
+	if (value !== configuredList || generation !== configuredGeneration) {
 		const shards = canonicalShards(value);
+		let spares: number[] | undefined;
+		let sparesError: string | undefined;
+		try {
+			spares = canonicalSpareList(env.get(CONFIG_PARAMS.REPLICATION_SPARESHARDS));
+		} catch (error) {
+			sparesError = error.message;
+		}
 		configuredList = value;
+		configuredGeneration = generation;
 		configuredShards = shards;
-		configuredDigest = shardListDigest(shards);
+		configuredSpares = spares;
+		configuredSparesError = sparesError;
+		configuredDigest = sparesError ? 'invalid' : shardListDigest(shards, spares);
 		configuration = undefined;
 	}
 	if (!configuration || configuration.shard !== shard)
-		configuration = Object.freeze({ shards: configuredShards, shard, digest: configuredDigest });
+		configuration = Object.freeze({
+			shards: configuredShards,
+			spares: configuredSpares,
+			sparesError: configuredSparesError,
+			shard,
+			digest: configuredDigest,
+		});
 	return configuration;
 }
 
@@ -203,8 +241,9 @@ function assertResidencyConfiguration(
 	} catch (error) {
 		residencyFailure(database, error.message);
 	}
-	const { shards, shard } = current;
+	const { shards, shard, sparesError } = current;
 	if (!shards && !hasMap) residencyFailure(database, 'replication.shards is required before a map is installed');
+	if (sparesError && !hasMap) residencyFailure(database, sparesError);
 	if (shards && !shards.includes(shard)) residencyFailure(database, 'replication.shard is not in replication.shards');
 	if (!forRecovery) placementGuard?.(database, undefined, undefined, undefined, undefined, forDeclaration);
 }
@@ -391,7 +430,7 @@ export async function prepareResidencyDeclaration(
 	}
 	if (existing) residencyFailure(database, 'an existing table requires its custom map before @sharded activation');
 	try {
-		await installResidencyMap(defaultResidencyMap(database, resolved.slots, current.shards));
+		await installResidencyMap(defaultResidencyMap(database, resolved.slots, current.shards, current.spares));
 	} catch (error) {
 		if (!(error instanceof ClientError) || !readResidencyMap(database)) throw error;
 	}

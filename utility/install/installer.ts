@@ -857,7 +857,11 @@ async function createConfigFile(staged: configUtils.StagedInstallConfig) {
 	const backupConfigPath = resolvedConfigPath ? `${resolvedConfigPath}.install-backup-${process.pid}` : undefined;
 	if (resolvedConfigPath && backupConfigPath) {
 		try {
-			fs.copyFileSync(resolvedConfigPath, backupConfigPath);
+			// Not a copy: rollback renames this over the config, and a copy would carry the source's mode back.
+			configUtils.atomicWriteFile(backupConfigPath, fs.readFileSync(resolvedConfigPath), {
+				ownerOnly: true,
+				replaces: resolvedConfigPath,
+			});
 		} catch (copyErr) {
 			hdbLogger.warn(`Could not create backup copy of ${hdbConfigPath} at ${backupConfigPath}: ${copyErr}`);
 		}
@@ -879,7 +883,7 @@ async function createConfigFile(staged: configUtils.StagedInstallConfig) {
 			}
 			if (!restored && originalHdbConfigContent !== undefined) {
 				try {
-					configUtils.atomicWriteFile(resolvedConfigPath, originalHdbConfigContent);
+					configUtils.atomicWriteFile(resolvedConfigPath, originalHdbConfigContent, { ownerOnly: true });
 					restored = true;
 				} catch {
 					try {
@@ -889,7 +893,10 @@ async function createConfigFile(staged: configUtils.StagedInstallConfig) {
 						} catch {}
 						// writeFileSync truncates first, so never use it on a file that is still intact
 						if (!intact) {
-							fs.writeFileSync(resolvedConfigPath, originalHdbConfigContent, 'utf8');
+							fs.writeFileSync(resolvedConfigPath, originalHdbConfigContent, {
+								encoding: 'utf8',
+								mode: hdbTerms.SECRET_FILE_PERMISSIONS,
+							});
 						}
 						restored = true;
 					} catch (restoreErr) {

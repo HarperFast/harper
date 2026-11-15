@@ -9,6 +9,7 @@ const assert = require('node:assert');
 const auditStore = require('#src/resources/auditStore');
 const { purgeAgedLogs, setAuditRetention } = auditStore;
 const { RocksTransactionLogStore } = require('#src/resources/RocksTransactionLogStore');
+const harperLogger = require('#js/utility/logging/harper_logger');
 
 describe('purgeAgedLogs', () => {
 	let originalRetention;
@@ -21,18 +22,34 @@ describe('purgeAgedLogs', () => {
 		setAuditRetention(originalRetention);
 	});
 
-	// purgeAgedLogs raises the floor before purging (harper#2447); `order` records both steps, because
-	// a crash between them leaves a floor certifying purged history if the write came second.
-	function fakeStore(purgedFiles = ['000001.txnlog', '000002.txnlog']) {
+	// purgeAgedLogs raises the floor and makes it durable before purging (harper#2447, harper#2912); `order`
+	// records each step, because a crash or power loss between them leaves a floor certifying purged history
+	// if the write, or its barrier, came after the purge.
+	function fakeStore(
+		purgedFiles = ['000001.txnlog', '000002.txnlog'],
+		{ oldestFileAgeMs = 10 * 365 * 86_400_000 } = {}
+	) {
 		const calls = [];
 		const order = [];
 		const store = {
 			calls,
 			order,
 			floorWrites: [],
+			path: 'fake-store',
+			listLogs: () => ['local'],
+			useLog: () => ({ getStats: () => ({ purge: { oldestFileAgeMs }, config: { retentionMs: 3 * 86_400_000 } }) }),
+			flushSync() {
+				order.push('flush');
+				if (failFlush) throw new Error('IO error: No space left on device');
+			},
+			resume() {
+				order.push('resume');
+				if (refuseWrites) throw new Error('Resume failed: Resource busy: Recovery in progress');
+			},
 			purgeLogs(options) {
 				calls.push(options);
 				order.push('purge');
+				if (failPurge) throw new Error('could not sync txn.purged');
 				return purgedFiles;
 			},
 		};
@@ -61,6 +78,18 @@ describe('purgeAgedLogs', () => {
 			},
 		};
 		let failFloorWrite = false;
+		let failFlush = false;
+		let failPurge = false;
+		let refuseWrites = false;
+		store.refuseWrites = () => {
+			refuseWrites = true;
+		};
+		store.failPurge = () => {
+			failPurge = true;
+		};
+		store.failFlush = () => {
+			failFlush = true;
+		};
 		store.failFloorWrite = () => {
 			failFloorWrite = true;
 		};
@@ -123,7 +152,11 @@ describe('purgeAgedLogs', () => {
 		const before = Date.now();
 		purgeAgedLogs(store);
 
-		assert.deepStrictEqual(store.order, ['floor', 'purge'], 'the floor must be recorded before the purge runs');
+		assert.deepStrictEqual(
+			store.order,
+			['floor', 'flush', 'purge'],
+			'the floor must be recorded, then made durable, before the purge runs'
+		);
 		assert.strictEqual(store.floorWrites.length, 1, 'exactly one floor write');
 		assert.strictEqual(
 			store.floorWrites[0],
@@ -131,6 +164,52 @@ describe('purgeAgedLogs', () => {
 			'the floor and the purge cutoff must be the same instant'
 		);
 		assert.ok(store.floorWrites[0] >= before - 60_000, 'floor should track the retention window');
+	});
+
+	it('purges behind the committed floor when only the flush that makes it durable fails (harper#2486)', () => {
+		setAuditRetention(60_000);
+		const store = fakeStore();
+		store.failFlush();
+		assert.deepStrictEqual(purgeAgedLogs(store), ['000001.txnlog', '000002.txnlog']);
+		assert.deepStrictEqual(
+			store.order,
+			['floor', 'flush', 'purge', 'resume'],
+			'the floor is still committed first, and writes resume before replay'
+		);
+		assert.strictEqual(store.floorWrites[0], store.calls[0].before);
+	});
+
+	it('still waits for writes to resume when the purge behind a failed flush throws', () => {
+		setAuditRetention(60_000);
+		const store = fakeStore();
+		store.failFlush();
+		store.failPurge();
+		assert.throws(() => purgeAgedLogs(store), /could not sync txn.purged/);
+		assert.deepStrictEqual(store.order, ['floor', 'flush', 'purge', 'resume']);
+	});
+
+	it('stops waiting for writes to resume after its deadline, and reports it as an error', () => {
+		setAuditRetention(60_000);
+		const store = fakeStore();
+		store.failFlush();
+		store.refuseWrites();
+		const errors = [];
+		const { error } = harperLogger;
+		harperLogger.error = (...args) => errors.push(args);
+		try {
+			assert.deepStrictEqual(purgeAgedLogs(store), ['000001.txnlog', '000002.txnlog']);
+		} finally {
+			harperLogger.error = error;
+		}
+		assert.ok(store.order.filter((step) => step === 'resume').length > 1, 'it retried before giving up');
+		assert.match(errors[0]?.[0], /still refuses writes/);
+	});
+
+	it('writes no barrier and purges nothing when no log file is old enough to purge', () => {
+		setAuditRetention(60_000);
+		const store = fakeStore(undefined, { oldestFileAgeMs: 1000 });
+		assert.deepStrictEqual(purgeAgedLogs(store), []);
+		assert.deepStrictEqual(store.order, ['floor'], 'the floor is still raised for the next purge');
 	});
 
 	it('refuses the purge when the RocksDB floor write does not stick', () => {

@@ -701,5 +701,59 @@ suite(
 				`Operations API must reject a validator-claimed Bearer token even when cached in authorizationCache: ${await warmOpsRes.text()}`
 			);
 		});
+
+		test('a memoizing server.getUser override refuses HTTP Basic after drop_user on the same worker and defers on an app route', async () => {
+			const username = 'memoized-dropped-staff';
+			const password = 'memoized-staff-password';
+			const credentials = basic(username, password);
+
+			await client
+				.req()
+				.send({
+					operation: 'add_user',
+					role: BEARER_ROLE,
+					username,
+					password,
+					active: true,
+				})
+				.expect(200);
+
+			const firstRes = await get(PROTECTED_ROUTE, credentials, { Accept: 'application/json' });
+			equal(firstRes.status, 200, `expected initial Basic login through memoizing override to 200: ${firstRes.text}`);
+			equal(await getUserCalls(username), 1, 'expected initial login to resolve through server.getUser once');
+
+			await client.req().send({ operation: 'drop_user', username }).expect(200);
+
+			const afterDropRes = await get(PROTECTED_ROUTE, credentials, { Accept: 'application/json' });
+			assertChallengedUnauthorized(afterDropRes);
+			equal(afterDropRes.body?.error, 'Login failed');
+			equal(
+				await getUserCalls(username),
+				2,
+				'expected cache eviction after drop_user to invoke the memoizing override and reject its stale view'
+			);
+
+			const appRes = await get(APP_ROUTE, credentials);
+			equal(appRes.status, 200, `expected catch-all to answer on deferred rejection: ${appRes.text}`);
+			equal(appRes.body.servedBy, 'application-catch-all');
+			equal(appRes.body.authorization, credentials);
+			equal(appRes.body.harperUser, null, 'dropped memoized user must not leak onto request.user');
+			equal(await getUserCalls(username), 3, 'rejected view must not be re-cached in authorizationCache');
+
+			const opsDroppedRes = await fetch(ctx.harper.operationsAPIURL, {
+				method: 'POST',
+				headers: { 'Authorization': credentials, 'Content-Type': 'application/json', 'Accept': 'application/json' },
+				body: JSON.stringify({ operation: 'describe_all' }),
+			});
+			equal(opsDroppedRes.status, 401);
+			equal(opsDroppedRes.headers.get('www-authenticate'), null);
+
+			const opsAdminRes = await fetch(ctx.harper.operationsAPIURL, {
+				method: 'POST',
+				headers: { 'Authorization': adminAuthorization, 'Content-Type': 'application/json' },
+				body: JSON.stringify({ operation: 'describe_all' }),
+			});
+			equal(opsAdminRes.status, 200);
+		});
 	}
 );

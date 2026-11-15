@@ -1,3 +1,7 @@
+import {
+	fullTextComparatorMode,
+	validateFullTextScoringOptions,
+} from '../../resources/indexes/fullTextQueryProtocol.ts';
 import searchValidator from '../../validation/searchValidator.ts';
 import { randomUUID } from 'node:crypto';
 import { threadId } from 'node:worker_threads';
@@ -16,6 +20,7 @@ import {
 	databaseDropPreparationTargets,
 	dropDatabase,
 	type Table,
+	throwIfUnloadedDatabaseHeldByRestore,
 } from '../../resources/databases.ts';
 import {
 	claimDatabaseDropPreparations,
@@ -77,6 +82,7 @@ export type SearchByConditionsRequest = Query &
  */
 export class ResourceBridge extends BridgeMethods {
 	async searchByConditions(searchObject: SearchByConditionsRequest) {
+		validateFullTextScoringOptions(searchObject);
 		if (searchObject.select !== undefined) searchObject.get_attributes = searchObject.select;
 
 		const table = getTable(searchObject);
@@ -91,6 +97,7 @@ export class ResourceBridge extends BridgeMethods {
 				return condition;
 			} else {
 				const c = condition as DirectCondition;
+				validateFullTextScoringOptions(c, fullTextComparatorMode(c.comparator ?? c.search_type));
 				return {
 					attribute: c.attribute ?? c.search_attribute,
 					comparator: c.comparator ?? c.search_type,
@@ -98,6 +105,8 @@ export class ResourceBridge extends BridgeMethods {
 					...(c.fuzzyDistance === undefined ? null : { fuzzyDistance: c.fuzzyDistance }),
 					...(c.fuzzyTranspositions === undefined ? null : { fuzzyTranspositions: c.fuzzyTranspositions }),
 					...(c.fields === undefined ? null : { fields: c.fields }),
+					...(c.boost === undefined ? null : { boost: c.boost }),
+					...(c.should === undefined ? null : { should: c.should }),
 					...(c.includeHighlights === undefined ? null : { includeHighlights: c.includeHighlights }),
 					...(c.maxIndexLagMilliseconds === undefined ? null : { maxIndexLagMilliseconds: c.maxIndexLagMilliseconds }),
 					...(c.waitForIndexMilliseconds === undefined
@@ -168,6 +177,7 @@ export class ResourceBridge extends BridgeMethods {
 			attributes,
 			schemaDefined,
 			expiration: tableCreateObj.expiration,
+			eviction: tableCreateObj.eviction,
 			audit: tableCreateObj.audit,
 		});
 	}
@@ -282,7 +292,7 @@ export class ResourceBridge extends BridgeMethods {
 			originatingOperation: upsertObj.operation,
 		};
 		if (upsertObj.replicateTo) context.replicateTo = upsertObj.replicateTo;
-		if (upsertObj.replicatedConfirmation) context.replicatedConfirmation = upsertObj.replicatedConfirmation;
+		if (upsertObj.replicatedConfirmation != null) context.replicatedConfirmation = upsertObj.replicatedConfirmation;
 		return transaction(context, async (transaction) => {
 			if (!Table.schemaDefined) {
 				new_attributes = [];
@@ -362,7 +372,7 @@ export class ResourceBridge extends BridgeMethods {
 		const Table: any = getTable(deleteObj);
 		const context: Context = { user: deleteObj.hdb_user };
 		if (deleteObj.replicateTo) context.replicateTo = deleteObj.replicateTo;
-		if (deleteObj.replicatedConfirmation) context.replicatedConfirmation = deleteObj.replicatedConfirmation;
+		if (deleteObj.replicatedConfirmation != null) context.replicatedConfirmation = deleteObj.replicatedConfirmation;
 		return transaction(context, async (transaction) => {
 			const ids: Id[] =
 				deleteObj.ids || deleteObj.hash_values || deleteObj.records.map((record) => record[Table.primaryKey]);
@@ -708,6 +718,7 @@ export class ResourceBridge extends BridgeMethods {
 		const database = getDatabases()[databaseName];
 		assertDatabaseResidencyAvailable(databaseName);
 		if (!database) {
+			throwIfUnloadedDatabaseHeldByRestore(databaseName);
 			throw new ClientError(`Database '${databaseName}' does not exist`, 404);
 		}
 		const firstTable = database[Object.keys(database)[0]];

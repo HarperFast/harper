@@ -29,6 +29,169 @@ mixes and the 10 × 100 B record shape. The only variable is the server. See
 `benchmarks/ycsb/README.md` for the workload definitions and the REST operation
 mapping.
 
+## Results: full matrix on GCP (2026-11-12)
+
+harper-uws, harper (Node's HTTP server) and pg-redis, each on its own 4-core VM, on seven workloads at three dataset sizes: 3 targets × 7 workloads × 3 points × 3 reps, `--auth=token`. Run with `gcp/run-matrix.sh --all` (matrix `ycsb-20261113-0157-cf6c`). Profiles of warm C and chain-4 are in [PROFILE.md](PROFILE.md#warm-c-and-chain-4-on-gcp-token-auth-2026-11-12).
+
+**Where each side wins.**
+
+- **Warm, one stored record per request (C, B, inspect, F): pg-redis, by 14–20%.** Each read is one Redis `GET` that returns the record's stored bytes. Harper's fixed cost per request is about 11 µs/op higher: its read transaction, the RocksDB get path and the record cache. uWS and Harper's token cache win part of that back. On C both retire about 231k instructions per op; the gap is in instructions per cycle, 1.22 against 1.53 on these VMs. Part of that is the harper VM's host: the counting A/B's harper VM ran C at IPC 1.30–1.36, for a ratio of 0.91 instead of 0.84.
+- **Warm, dependent reads: Harper, by 4% at chain-1 rising to 39% at chain-4.** Each extra read costs harper-uws 43k instructions and 8.3 µs/op of CPU, against 100k and 15.6 µs/op for pg-redis. The stack's extra read is a Redis round trip, a `JSON.parse` and the garbage collection they cause. Harper's is an in-process read through the request's own transaction.
+- **2x and 8x, dataset larger than memory: Harper, on every workload.** C is 1.48× and 1.63×, chain-4 1.89× and 1.88×, F 1.05× and 1.15×. Redis holds 3 GiB of a 17 or 69 GB dataset, so about 40% (2x) and 45% (8x) of single-record reads miss it. Each miss goes to Postgres on the same VM and then fills Redis. Harper's misses stay in-process: a record-cache miss is a RocksDB block-cache, page-cache or SSD read. On C the stack retires 400k instructions per op at 2x, against 232k warm; Harper 293k, against 230k.
+- **harper-uws over harper: uWS by 2–14% warm and 8–20% at 2x and 8x.** Node's HTTP server costs Harper 18–70k more instructions per request.
+
+Throughput ratios, median reps:
+
+| workload | warm uws/pg-redis | warm uws/harper | 2x uws/pg-redis | 2x uws/harper | 8x uws/pg-redis | 8x uws/harper |
+| -------- | ----------------: | --------------: | --------------: | ------------: | --------------: | ------------: |
+| C        |              0.84 |            1.11 |            1.48 |          1.20 |            1.63 |          1.18 |
+| B        |              0.85 |            1.14 |            1.30 |          1.18 |            1.39 |          1.19 |
+| inspect  |              0.83 |            1.06 |            1.46 |          1.17 |            1.64 |          1.16 |
+| chain-1  |              1.04 |            1.13 |            1.55 |          1.13 |            1.76 |          1.11 |
+| chain-2  |              1.11 |            1.03 |            1.74 |          1.14 |            1.77 |          1.09 |
+| chain-4  |              1.39 |            1.02 |            1.89 |          1.09 |            1.88 |          1.08 |
+| F        |              0.88 |            1.10 |            1.05 |          1.08 |            1.15 |          1.09 |
+
+Cost of each additional dependent read, from the median reps. (chain-4 − C) / 4 also charges the stack one `JSON.parse` that C skips (its C returns Redis's bytes), so the chain-1 column compares requests of one shape:
+
+| point | target     | instructions/op C, chain-1, chain-4 | per extra read | same, from chain-1 | CPU µs/op C, chain-1, chain-4 | per extra read | same, from chain-1 |
+| ----- | ---------- | ----------------------------------: | -------------: | -----------------: | ----------------------------: | -------------: | -----------------: |
+| warm  | harper-uws |              230.4k, 297.4k, 402.4k |          43.0k |              35.0k |              48.5, 59.0, 81.8 |            8.3 |                7.6 |
+| warm  | harper     |              262.2k, 316.5k, 421.7k |          39.9k |              35.1k |              55.6, 65.8, 82.2 |            6.6 |                5.5 |
+| warm  | pg-redis   |              231.6k, 352.5k, 630.1k |          99.6k |              92.6k |             39.0, 59.4, 101.5 |           15.6 |               14.0 |
+| 2x    | harper-uws |              292.7k, 376.9k, 512.9k |          55.1k |              45.4k |             67.9, 93.3, 123.5 |           13.9 |               10.0 |
+| 2x    | harper     |              348.6k, 421.3k, 555.2k |          51.7k |              44.6k |            81.9, 105.3, 137.1 |           13.8 |               10.6 |
+| 2x    | pg-redis   |              399.7k, 584.5k, 924.3k |         131.2k |             113.3k |           105.4, 150.1, 231.7 |           31.6 |               27.2 |
+| 8x    | harper-uws |              301.0k, 384.8k, 524.5k |          55.9k |              46.6k |             69.3, 96.9, 130.7 |           15.4 |               11.3 |
+| 8x    | harper     |              358.4k, 433.3k, 572.5k |          53.5k |              46.4k |            83.0, 109.2, 144.5 |           15.4 |               11.8 |
+| 8x    | pg-redis   |              435.4k, 643.0k, 994.1k |         139.7k |             117.0k |           119.8, 180.2, 252.8 |           33.2 |               24.2 |
+
+**Not settled or short.**
+
+- pg-redis chain-4 at 2x and 8x hit the warmup ceiling (12 chunks) in all three reps. Its Redis hit rate was still climbing, 72% → 84% at 8x and still gaining 0.3–0.4 points a chunk, while its throughput was flat in two of the three reps. The cells are measured but not settled.
+- 2x chain-2 pg-redis has 2 reps. The third failed at start when Postgres's `memory.swap.max` still read `max`; the stack now re-reads its container limits for up to 5 s (`settledMemoryLimit`).
+- F at 2x and 8x: Harper's read p99 is 25–35 ms against the stack's 10–12 ms, while its p50 is lower (0.7 against 1.6 ms). Each Harper window carried 45–48 RocksDB flushes and 15–21 compactions (3–5 GB written). Not investigated here.
+
+**Conditions.**
+
+- GCP us-central1-c, every set. Each target on its own `c4-standard-8-lssd` VM: 4 physical cores (SMT off) of an Intel Xeon 6985P-C (Granite Rapids), 30 GB, one local SSD. Every target runs under the 8 GiB cap. Topology (a): Fastify, Redis and Postgres share the stack's VM.
+- One VM set per matrix set: a generator, a harper VM (harper-uws and harper take turns on it) and a stack VM. The six sets ran at the same time on 18 VMs.
+- Generators: `c4-standard-32` for warm and `c4-standard-16` for 2x and 8x, Emerald Rapids, Node's sharded driver. Each set's own client-ceiling check picked its shard count (table below). Every cell stayed under half its generator's ceiling.
+- `--auth=token`, 3 reps per cell, targets interleaved within each session (forward and reversed per rep), Harper's default record cache. Linux 7.0.0-1017-gcp, Node v26.13.1, Harper `f39c1a1831` (main), harness `da839bf`.
+- Hardware events counted over each target VM's cpus (`--perf-scope=host`; see "Counting on a VM" under [Remote targets and GCP](#remote-targets-and-gcp---hosts-gcp)). An earlier run of this matrix counted per cgroup, and that counting slowed both targets, the stack more. Its ops/s, latencies and CPU µs/op are discarded. Its instructions/op agree with these within 4%, most cells within 2%. With host counting, every target's 2x and 8x measured windows averaged 99–101% of their own warmup chunks, where the stack's had run at 80–86%.
+- **Turbo stays on, and VMs share physical hosts**, so a VM's speed varies by host and over time. Target VMs ran at 3.78–4.08 GHz, by cycles per busy CPU-second on the VM. Across VM sets, unbiased warm-C ratios came out at 0.84 and 0.91, while instructions/op agreed within 2%. Read instructions/op as the host-independent cost, and ops/s ratios as ±10%.
+
+<details><summary>Per set: zone, VMs, generator, shards, clock</summary>
+
+| set        | zone          | target VMs                                                                                        | generator                                                               | target CPU                             | kernel         | Node     | target VM clock and IPC (medians)                   |
+| ---------- | ------------- | ------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- | -------------------------------------- | -------------- | -------- | --------------------------------------------------- |
+| warm       | us-central1-c | harper c4-standard-8-lssd (Intel Granite Rapids), stack c4-standard-8-lssd (Intel Granite Rapids) | c4-standard-32 (Intel Emerald Rapids), 32 shards, ceiling 307,341 ops/s | Intel(R) Xeon(R) 6985P-C CPU @ 2.30GHz | 7.0.0-1017-gcp | v26.13.1 | harper 3.90 GHz, IPC 1.21, stack 3.92 GHz, IPC 1.53 |
+| 2x         | us-central1-c | harper c4-standard-8-lssd (Intel Granite Rapids), stack c4-standard-8-lssd (Intel Granite Rapids) | c4-standard-16 (Intel Emerald Rapids), 16 shards, ceiling 218,431 ops/s | Intel(R) Xeon(R) 6985P-C CPU @ 2.30GHz | 7.0.0-1017-gcp | v26.13.1 | harper 3.89 GHz, IPC 1.04, stack 4.02 GHz, IPC 0.95 |
+| 8x-cb      | us-central1-c | harper c4-standard-8-lssd (Intel Granite Rapids), stack c4-standard-8-lssd (Intel Granite Rapids) | c4-standard-16 (Intel Emerald Rapids), 8 shards, ceiling 238,428 ops/s  | Intel(R) Xeon(R) 6985P-C CPU @ 2.30GHz | 7.0.0-1017-gcp | v26.13.1 | harper 3.87 GHz, IPC 1.03, stack 4.04 GHz, IPC 0.86 |
+| 8x-fi      | us-central1-c | harper c4-standard-8-lssd (Intel Granite Rapids), stack c4-standard-8-lssd (Intel Granite Rapids) | c4-standard-16 (Intel Emerald Rapids), 8 shards, ceiling 228,083 ops/s  | Intel(R) Xeon(R) 6985P-C CPU @ 2.30GHz | 7.0.0-1017-gcp | v26.13.1 | harper 4.08 GHz, IPC 0.84, stack 3.93 GHz, IPC 0.81 |
+| 8x-chain12 | us-central1-c | harper c4-standard-8-lssd (Intel Granite Rapids), stack c4-standard-8-lssd (Intel Granite Rapids) | c4-standard-16 (Intel Emerald Rapids), 16 shards, ceiling 216,083 ops/s | Intel(R) Xeon(R) 6985P-C CPU @ 2.30GHz | 7.0.0-1017-gcp | v26.13.1 | harper 3.89 GHz, IPC 1.02, stack 3.78 GHz, IPC 0.95 |
+| 8x-chain4  | us-central1-c | harper c4-standard-8-lssd (Intel Granite Rapids), stack c4-standard-8-lssd (Intel Granite Rapids) | c4-standard-16 (Intel Emerald Rapids), 16 shards, ceiling 221,789 ops/s | Intel(R) Xeon(R) 6985P-C CPU @ 2.30GHz | 7.0.0-1017-gcp | v26.13.1 | harper 3.88 GHz, IPC 1.02, stack 4.05 GHz, IPC 0.98 |
+
+</details>
+
+<details><summary>Every cell, warm</summary>
+
+Median rep by ops/s; spread is (max − min) / median of the three reps; latency is the primary operation's (read, inspect or chain).
+
+| workload | target     |  ops/s | spread | p50 ms | p99 ms | CPU µs/op | instructions/op | notes |
+| -------- | ---------- | -----: | -----: | -----: | -----: | --------: | --------------: | ----- |
+| C        | harper-uws | 76,589 |   6.3% |   0.55 |   3.74 |      48.5 |          230.4k |       |
+| C        | harper     | 69,209 |  14.7% |   0.66 |   3.83 |      55.6 |          262.2k |       |
+| C        | pg-redis   | 91,628 |   7.8% |   0.51 |   3.50 |      39.0 |          231.6k |       |
+| B        | harper-uws | 59,734 |   1.6% |   0.72 |   3.97 |      61.6 |          262.7k |       |
+| B        | harper     | 52,172 |   1.3% |   0.85 |   3.91 |      70.1 |          289.2k |       |
+| B        | pg-redis   | 70,251 |   1.1% |   0.58 |   3.83 |      51.7 |          258.8k |       |
+| inspect  | harper-uws | 74,441 |   8.6% |   0.57 |   3.86 |      48.4 |          236.7k |       |
+| inspect  | harper     | 70,009 |  15.3% |   0.62 |   3.87 |      50.8 |          254.9k |       |
+| inspect  | pg-redis   | 89,901 |  10.0% |   0.49 |   3.76 |      40.6 |          248.2k |       |
+| chain-1  | harper-uws | 62,974 |   1.0% |   0.67 |   4.48 |      59.0 |          297.4k |       |
+| chain-1  | harper     | 55,843 |  14.5% |   0.79 |   4.67 |      65.8 |          316.5k |       |
+| chain-1  | pg-redis   | 60,658 |  13.0% |   0.72 |   5.61 |      59.4 |          352.5k |       |
+| chain-2  | harper-uws | 53,478 |   7.4% |   0.77 |   4.71 |      66.8 |          335.9k |       |
+| chain-2  | harper     | 51,884 |  16.7% |   0.86 |   5.14 |      72.9 |          358.2k |       |
+| chain-2  | pg-redis   | 47,982 |  11.7% |   0.89 |   6.31 |      72.9 |          445.3k |       |
+| chain-4  | harper-uws | 46,131 |   2.9% |   0.96 |   5.41 |      81.8 |          402.4k |       |
+| chain-4  | harper     | 45,162 |   7.8% |   1.01 |   5.14 |      82.2 |          421.7k |       |
+| chain-4  | pg-redis   | 33,305 |   5.4% |   1.32 |   8.52 |     101.5 |          630.1k |       |
+| F        | harper-uws | 20,809 |   8.3% |   0.43 |   2.72 |     173.5 |          572.4k |       |
+| F        | harper     | 18,972 |   1.7% |   0.51 |   2.86 |     196.0 |          612.8k |       |
+| F        | pg-redis   | 23,761 |   2.3% |   0.95 |   5.10 |     154.7 |          587.4k |       |
+
+</details>
+
+<details><summary>Every cell, 2x</summary>
+
+| workload | target     |  ops/s | spread | p50 ms | p99 ms | CPU µs/op | instructions/op | notes                     |
+| -------- | ---------- | -----: | -----: | -----: | -----: | --------: | --------------: | ------------------------- |
+| C        | harper-uws | 54,498 |   3.6% |   0.81 |   5.17 |      67.9 |          292.7k |                           |
+| C        | harper     | 45,335 |   4.4% |   0.98 |   6.34 |      81.9 |          348.6k |                           |
+| C        | pg-redis   | 36,801 |   0.9% |   1.31 |   6.74 |     105.4 |          399.7k |                           |
+| B        | harper-uws | 41,884 |   4.0% |   1.11 |   6.25 |      88.0 |          336.3k |                           |
+| B        | harper     | 35,475 |   1.2% |   1.32 |   7.33 |     104.5 |          391.9k |                           |
+| B        | pg-redis   | 32,327 |   2.1% |   1.42 |   7.94 |     118.5 |          424.2k |                           |
+| inspect  | harper-uws | 53,949 |   1.7% |   0.85 |   5.09 |      68.7 |          287.3k |                           |
+| inspect  | harper     | 46,133 |   4.6% |   0.97 |   6.16 |      80.8 |          333.4k |                           |
+| inspect  | pg-redis   | 37,056 |   1.1% |   1.27 |   6.61 |     104.2 |          407.0k |                           |
+| chain-1  | harper-uws | 39,978 |   2.8% |   1.16 |   6.71 |      93.3 |          376.9k |                           |
+| chain-1  | harper     | 35,254 |   1.6% |   1.24 |   7.61 |     105.3 |          421.3k |                           |
+| chain-1  | pg-redis   | 25,730 |   2.1% |   1.89 |   9.43 |     150.1 |          584.5k |                           |
+| chain-2  | harper-uws | 35,718 |   0.6% |   1.29 |   7.78 |     105.1 |          427.8k |                           |
+| chain-2  | harper     | 31,241 |   3.1% |   1.45 |   8.73 |     120.1 |          478.8k |                           |
+| chain-2  | pg-redis   | 20,506 |   7.2% |   2.31 |  12.15 |     185.7 |          720.1k | 2 reps; 1 failed at start |
+| chain-4  | harper-uws | 29,935 |   0.9% |   1.41 |   9.19 |     123.5 |          512.9k |                           |
+| chain-4  | harper     | 27,387 |   2.3% |   1.61 |  10.35 |     137.1 |          555.2k |                           |
+| chain-4  | pg-redis   | 15,881 |  11.5% |   3.31 |  13.65 |     231.7 |          924.3k | 3/3 warmup-ceiling        |
+| F        | harper-uws | 15,054 |   1.1% |   0.69 |  28.39 |     208.3 |          663.6k |                           |
+| F        | harper     | 13,941 |   5.3% |   0.76 |  25.79 |     229.8 |          710.7k |                           |
+| F        | pg-redis   | 14,369 |   2.4% |   1.56 |  10.18 |     240.2 |          803.7k |                           |
+
+</details>
+
+<details><summary>Every cell, 8x</summary>
+
+| workload | target     |  ops/s | spread | p50 ms | p99 ms | CPU µs/op | instructions/op | notes              |
+| -------- | ---------- | -----: | -----: | -----: | -----: | --------: | --------------: | ------------------ |
+| C        | harper-uws | 52,959 |   0.5% |   0.91 |   5.14 |      69.3 |          301.0k |                    |
+| C        | harper     | 44,811 |   8.3% |   1.00 |   6.30 |      83.0 |          358.4k |                    |
+| C        | pg-redis   | 32,464 |   5.3% |   1.51 |   7.48 |     119.8 |          435.4k |                    |
+| B        | harper-uws | 41,046 |   3.1% |   1.16 |   6.52 |      88.5 |          352.0k |                    |
+| B        | harper     | 34,616 |   3.9% |   1.31 |   7.96 |     105.5 |          421.6k |                    |
+| B        | pg-redis   | 29,566 |   2.6% |   1.65 |   8.55 |     131.0 |          457.4k |                    |
+| inspect  | harper-uws | 55,940 |   1.4% |   0.88 |   4.83 |      66.6 |          293.6k |                    |
+| inspect  | harper     | 48,138 |   4.9% |   0.95 |   5.88 |      77.8 |          342.3k |                    |
+| inspect  | pg-redis   | 34,119 |   2.3% |   1.48 |   7.00 |     114.3 |          438.7k |                    |
+| chain-1  | harper-uws | 37,815 |   1.4% |   1.24 |   6.64 |      96.9 |          384.8k |                    |
+| chain-1  | harper     | 33,943 |   1.5% |   1.33 |   7.64 |     109.2 |          433.3k |                    |
+| chain-1  | pg-redis   | 21,531 |   0.7% |   2.29 |  10.80 |     180.2 |          643.0k |                    |
+| chain-2  | harper-uws | 32,056 |   0.9% |   1.39 |   8.05 |     112.7 |          449.6k |                    |
+| chain-2  | harper     | 29,494 |   1.5% |   1.50 |   9.06 |     126.1 |          496.4k |                    |
+| chain-2  | pg-redis   | 18,157 |   2.7% |   2.77 |  12.80 |     212.2 |          775.0k |                    |
+| chain-4  | harper-uws | 27,969 |   1.9% |   1.46 |  10.20 |     130.7 |          524.5k |                    |
+| chain-4  | harper     | 25,909 |   7.8% |   1.62 |  10.91 |     144.5 |          572.5k |                    |
+| chain-4  | pg-redis   | 14,843 |   5.4% |   3.49 |  14.97 |     252.8 |          994.1k | 3/3 warmup-ceiling |
+| F        | harper-uws | 15,322 |   4.0% |   0.70 |  32.35 |     198.2 |          680.7k |                    |
+| F        | harper     | 14,111 |   3.3% |   0.77 |  32.37 |     220.9 |          736.3k |                    |
+| F        | pg-redis   | 13,279 |   1.0% |   1.79 |  11.92 |     260.3 |          842.3k |                    |
+
+</details>
+
+Reproduce (from the operator's host, with a service account active in its own gcloud directory):
+
+```sh
+# From the repository root. systemd-run passes on only the environment it is given.
+export CLOUDSDK_CONFIG=<dir> YCSB_GCP_PROJECT=<project> YCSB_GCP_ZONES="us-central1-c us-central1-a us-central1-b us-central1-f"
+systemd-run --user --unit=ycsb-matrix --same-dir --setenv=PATH --setenv=CLOUDSDK_CONFIG --setenv=YCSB_GCP_PROJECT \
+  --setenv=YCSB_GCP_ZONES benchmarks/ycsb-vs-pg/gcp/run-matrix.sh --all
+node benchmarks/ycsb-vs-pg/gcp/matrix-report.mts --base=<the matrix base>
+node benchmarks/ycsb-vs-pg/profile-report.mts \
+  benchmarks/ycsb-vs-pg/gcp/runs/<base>-warm/results/<the profile phase's file> --summary --pipeline
+```
+
 ## Running
 
 ```sh
@@ -53,7 +216,7 @@ All `benchmarks/ycsb` flags apply, plus:
 | `--serverCpus`, `--driverCpus` | derived           | Explicit CPU lists instead of `--target-cpus`                                                               |
 | `--cache`                      | `warm`            | `warm` or `cold` (below)                                                                                    |
 | `--base-harper`                | —                 | `dist/bin/harper.js` of the build `harper-base` runs                                                        |
-| `--shards`                     | `4`               | Load-generator processes                                                                                    |
+| `--shards`                     | generator CPUs    | Load-generator processes: one per generator CPU, at most `--concurrency` (below)                            |
 | `--reps`                       | `1`               | Independent samples per target × workload                                                                   |
 | `--perf-counters`              | off               | `perf stat` per component over each measured run                                                            |
 | `--profile=<dir>`              | off               | Counters, then a sampled profile window (below)                                                             |
@@ -61,11 +224,33 @@ All `benchmarks/ycsb` flags apply, plus:
 | `--auth`                       | `none`            | `none` or `token` (below); recorded in every row                                                            |
 | `--host-quiet-cores=N`         | off               | Before each sample, wait for the rest of the host to use < N cores; refuses a shared cgroup, like the sweep |
 | `--host-quiet-max-min`         | `20`              | Longest that wait, in minutes                                                                               |
+| `--hosts=<file>`               | off               | Remote-target mode: targets on other hosts, this host only generates load (below)                           |
 
 `--threads` (Harper's worker threads and the Fastify cluster size) defaults to K.
 Results land in `benchmarks/ycsb-vs-pg/results/`, written after every sample, with
 a printed table at the end. Runtime scales with reps × workloads × targets: every
 sample starts a fresh server and reloads the dataset.
+
+### Load generator
+
+`shardedDriver.mts` keeps `--concurrency` requests in flight from `--shards` Node processes, each with its
+own `KeyState` and REST client. Every key, op, record and link comes from `../ycsb/workload.mts`, and
+`--shards` defaults to one process per generator CPU (at most `--concurrency`). A measured window opens
+as the shards start a phase's requests and closes as they finish, and the shards' CPU over it is the
+row's generator CPU.
+
+**Shards matter.** Measured on the XPS (i7-12700H) at turbo off, with the generator on 8 CPUs (two
+P-cores with their SMT siblings, plus four E-cores), 64 requests in flight and `--auth=token`, 2 runs each:
+
+| shards |         client-ceiling C | harper-uws warm C | pg-redis warm C |
+| ------ | -----------------------: | ----------------: | --------------: |
+| 4      | 56k ops/s, 3.7 CPUs busy |               50k |             49k |
+| 8      | 66k ops/s, 6.7 CPUs busy |               59k |             52k |
+
+Four shards, the old default, held harper-uws on 4 target cores below what it serves, and moved the
+warm-C harper-uws/pg-redis ratio from 1.13 to about 1.02. Rows recorded with 4 shards (`meta.shards`)
+understate Harper on read-only workloads. Run `client-ceiling.mts` on the generator's CPUs before trusting
+a cell that comes within reach of its ceiling.
 
 ## Method
 
@@ -156,7 +341,7 @@ sample starts a fresh server and reloads the dataset.
 - **The read-all pass touches every key through the target's own read path** —
   Redis for `pg-redis`, Postgres for `pg-only`, the record cache and RocksDB for
   Harper — so first-touch costs land before the measured run.
-- **Everything is on one host**, including the load generator. Run
+- **Everything is on one host**, including the load generator (unless `--hosts`, below). Run
   `client-ceiling.mts` to confirm the reported numbers are server-bound rather
   than client-bound:
 
@@ -168,7 +353,9 @@ sample starts a fresh server and reloads the dataset.
   CPUs and drives it with the same sharded driver on the same generator CPUs,
   for workload C (all shards) and E (one shard, since it inserts). Every route
   returns one ~1 KB record, so it bounds the generator's request rate, not the
-  cost of receiving E's multi-record scan bodies.
+  cost of receiving E's multi-record scan bodies. Each line reports the shards'
+  busy cores; `--max-generator-busy=<fraction>` exits 1 when C kept more than
+  that share of the driver's capacity busy (one core per shard, at most one per CPU).
 
 ## Authentication (`--auth`)
 
@@ -315,6 +502,165 @@ with (`measured.harperSettings`; `meta.harperSettings` per target):
 - The record-cache counts in [PROFILE.md](PROFILE.md) come from a temporary probe patched
   into `dist/` for those runs, never committed. `meta.harper.digests` holds the SHA-256 of the
   two files such probes patch, so a results file says whether its build was instrumented.
+
+## Remote targets and GCP (`--hosts`, `gcp/`)
+
+Single-host mode shares one machine between the target and the load generator. With `--hosts=<file>`,
+`run-compare.mts`, `memory-sweep.mts` and their flags work the same way, but this host only runs the
+orchestrator and the load generator. Each target host runs a target agent (`targetAgent.mts`, started
+over `ssh <host> -- node ...`). The agent launches its part with the single-host code: the same capped
+scopes, compose cpusets, restore inside the sample's cgroup, credentials and teardown. It takes that
+part's readings on its host: cgroup CPU and memory, perf counters and records, thread affinity, and
+the host-quiet gate. Nothing crosses the network while a window runs except the load: each host's
+readings for a window are taken in one call before it and one after it. The hosts file names a host
+for each role:
+
+```json
+{
+	"repoDir": "/opt/ycsb/harper",
+	"roles": {
+		"harper": {
+			"ssh": "ycsb@10.77.0.3",
+			"address": "10.77.0.3",
+			"dataDir": "/mnt/ycsb/data",
+			"requireMount": "/mnt/ycsb"
+		},
+		"stack": { "ssh": "ycsb@10.77.0.4", "address": "10.77.0.4" },
+		"redis": { "ssh": "ycsb@10.77.0.5", "address": "10.77.0.5" },
+		"postgres": { "ssh": "ycsb@10.77.0.6", "address": "10.77.0.6" }
+	}
+}
+```
+
+`address` is where the target listens and other hosts reach it. Without it, the host keeps
+single-host loopback addresses, which is how the local validation runs both "hosts" on one
+machine (`"ssh": "localhost"`, or `"command": ["node", "benchmarks/ycsb-vs-pg/targetAgent.mts"]`
+without sshd, plus `serverCpus` and `--driverCpus` to pin as single-host mode does). On a host with
+exactly `--target-cpus` physical cores, the target gets all of them and the agent shares them. Each
+row then records the agent's own CPU (`agentCores`) apart from the target's and the rest of the
+host's. Remote mode needs `--auth=token` for Harper on a non-loopback address: local trust covers
+loopback peers only. It counts perf events unless given `--no-perf-counters`, since instructions/op is
+the stable metric where turbo stays on, and counts each target host's cpus as a whole rather than each
+component's cgroup (`--perf-scope=host`, below). Rows add `perfClockGHz` (cycles over CPU-seconds) under
+per-cgroup counting only. Run remote mode on a network of its own, as `gcp/` does: Harper's operations API listens on the bound address too, with the test helper's fixed admin password until the harness replaces it moments after startup, and topology b's Postgres keeps its fixed benchmark credential.
+
+**Counting on a VM (`--perf-scope`).** `perf stat --for-each-cgroup` switches a cgroup's events out and in
+whenever a cpu moves between cgroups, and on a GCP VM's virtual PMU every counter write traps to the
+hypervisor. That slows the counted target. It slows the stack most, since every request moves between
+Fastify, Redis and Postgres; Harper's work stays in one cgroup. Counting the target cpus whole programs
+each counter once. Measured on c4-standard-8-lssd targets, 2026-11-13: warm, `--auth=token`, 3 rounds per
+mode in a Latin-square order, medians in ops/s:
+
+| cell               | per cgroup | host cpus (`host`) | no counters | per cgroup vs none | host vs none |
+| ------------------ | ---------: | -----------------: | ----------: | -----------------: | -----------: |
+| harper-uws C       |     85,428 |             88,989 |      88,369 |              −3.3% |        +0.7% |
+| pg-redis C         |     90,548 |             98,326 |      97,210 |              −6.9% |        +1.1% |
+| harper-uws chain-4 |     46,368 |             50,750 |      51,165 |              −9.4% |        −0.8% |
+| pg-redis chain-4   |     29,854 |             33,108 |      33,287 |             −10.3% |        −0.5% |
+
+Instructions/op were the same in every mode. The trap's cost does not run guest instructions, so instruction
+counts from either mode compare. At 2x and 8x, where Postgres reads from disk, the stack's measured windows
+under per-cgroup counting ran at 80–86% of its own warmup chunks (which count nothing), against 94–101% for
+Harper. Remote sessions therefore default to `host`. Its counts cover everything on the target cpus: the
+target, its agent, and kernel work outside the target's cgroups (I/O completion, network softirqs); in the
+A/B that came to about 1% more instructions/op. Single-host sessions keep per-cgroup counting
+(`cgroups`), the only way to split one host's CPU between components. A profile's counters-only window still
+counts per cgroup for its per-component instructions, so read that window's CPU µs/op as inflated.
+
+**Topologies.** A target name alone is topology (a). A name with `@b` (stack targets only) is
+topology (b). One session can interleave both: `--targets=harper-uws,pg-redis,pg-redis@b`.
+
+- **(a) co-located, the publishable one.** Each target gets its own target VM of the same shape.
+  Harper runs alone on its VM; Fastify, Redis and Postgres share theirs. The rules are the ones
+  above: 4 cores and 8 GiB per target, and the stack's per-component split (memory-sweep: Fastify
+  1 GiB, Redis 3.5 GiB with `maxmemory 3gb`, Postgres 3.5 GiB). The stack's hops stay on loopback.
+- **(b) separate hosts.** Fastify runs on the stack VM; Redis and Postgres each run on a VM of the
+  same shape in the same zone and placement group, with the same per-component memory caps.
+  Every (b) row carries `topology: "b"`, a `note` saying what it is, and `rtt`: TCP ping-pong
+  p50/p99 from Fastify's host to Redis's and Postgres's, before each sample. Session meta holds
+  the same at session start, the generator's round trip to every host, and the probe's
+  loopback floor.
+
+What (b) does and does not claim. It measures a common production layout: a cache-aside app whose
+cache and database are network services. It gives the stack three VMs, so 3x the cores of (a),
+on purpose. Its numbers are therefore a deployment comparison, not an equal-budget one, and the
+(b)/(a) ratio is not the cost of the network hops alone: hops and cores change together. Per-component
+CPU in each row shows whether the stack was CPU-bound in (a). Attributing a gap to the hops alone would
+need a matched-resource variant, for example (b) with its components pinned to 4 cores in total, which
+this harness does not run.
+
+**GCP.** The `gcp/` scripts provision a run with the gcloud CLI. The project comes from
+`YCSB_GCP_PROJECT`; zone, shapes and limits are in `gcp/config.sh`.
+
+- `provision.sh --run-id=<id> --topology=a|ab [--commit=<sha>]` creates a network of its own
+  (internal traffic between the run's VMs, SSH only from this host's address), one compact
+  placement policy, and VMs `generator`, `harper`, `stack` (plus `redis` and `postgres` for ab).
+  Every VM is labeled `ycsb-bench=true,ycsb-run=<id>,ycsb-role=<role>` and created with
+  `--max-run-duration` (12 h) and `--instance-termination-action=DELETE`, so GCE deletes it even if no script
+  ever runs again. A failure part way tears the run down. `--dry-run` prints the gcloud commands.
+- `startup.sh` (the VMs' startup script) mounts the local SSD at `/mnt/ycsb`, installs Docker, the
+  latest Node of CI's major, perf for the running kernel and git. It sets up user `ycsb` (docker, user
+  systemd with the memory controller delegated, linger), checks out the harness at the run's commit and
+  builds what the role runs.
+- `teardown.sh <id>` deletes the run's VMs by label, then its placement policy, firewall rules,
+  subnet, network and disks by name (none of those take labels). It fails unless none is left.
+  `teardown.sh --all --yes` does the same for every run.
+- `run-estimate.sh` is the short estimate. It provisions both topologies, checks the generator's
+  ceiling over the VPC (`client-ceiling.mts --serve` on the harper VM, `--base-url` from the generator)
+  at one shard per generator vCPU and at half that. The measured cells take whichever served more on C
+  among runs without request errors (half the shards only when more than 5% faster), and nothing is measured
+  if that is under `YCSB_MIN_CEILING_OPS` (150k; the fastest cells, warm C, serve about 90k). Busy cores do
+  not decide: against a server faster than the driver, one shard per vCPU always reads as saturated. It then
+  runs a smoke pass, then harper-uws, pg-redis and pg-redis@b on C, inspect and chain-4, warm and 2x,
+  `--auth=token`, 3 reps. Results come back to `gcp/runs/<id>/results/` (phase logs to `logs/`) after every phase. Teardown
+  runs on exit, after one last copy. Teardown needs a working gcloud session: when it fails, GCE still
+  deletes the VMs at `--max-run-duration`, and `teardown.sh <id>` removes the network, firewall rules and
+  placement policy.
+- `run-matrix.sh` is the full matrix, topology (a): harper-uws, harper and pg-redis on C, B, inspect,
+  chain-1, chain-2, chain-4 and F, at warm, 2x and 8x, `--auth=token`, 3 reps, targets interleaved. One
+  VM set in sequence would take about a day, so it runs six sets in parallel (`--plan` lists them), each
+  one session on its own generator, harper and stack VMs: warm (then perf profiles of warm C and chain-4
+  for harper-uws and pg-redis), 2x, and 8x split four ways by workload. The 8x split is for time: every
+  8x sample restores a 138 GiB Harper snapshot at local-SSD write speed (330 MiB/s documented, about
+  7 minutes). Each set loads each engine's dataset once and restores it for every sample, checks its
+  generator's ceiling, and runs a smoke pass of its own phases first. `--all` starts every set and waits;
+  `--set=<set>` runs one. `--resume` picks a set up after its orchestrator died without tearing down: it
+  provisions nothing, and phases that already ended on the generator are read, not run again. Every set of
+  an `--all` matrix builds the commit HEAD was at when the matrix started (`runs/<base>.commit`), and waits up
+  to 8 hours for zone capacity (`YCSB_CAPACITY_WAIT_MIN`). Run the orchestrator under `systemd-run --user`,
+  since any exit it sees tears its run down.
+- **SSH.** Every script reaches the VMs with plain ssh, never `gcloud compute ssh`. The startup script
+  publishes each VM's ed25519 host key as a guest attribute; `provision.sh` reads it through the API and
+  pins it in `runs/<id>/known_hosts` (and the targets' keys on the generator, for the agents' ssh). Nothing
+  reads `~/.ssh`, so a resumed session in a fresh `$HOME` still verifies every host, and polls and copies
+  keep working if the operator's gcloud session expires mid-run.
+- **Zones.** `YCSB_GCP_ZONES` (space-separated, one region) is tried in order: a zone without capacity
+  for the run's shapes gets that run's VMs deleted and the next zone tried. When none has capacity, the
+  list is tried again every `YCSB_CAPACITY_RETRY_S` (600) until `YCSB_CAPACITY_WAIT_MIN` minutes have
+  passed (0 for `provision.sh` alone, 480 under `run-matrix.sh`). The zone a run got is in
+  `runs/<id>/zone` and its manifest.
+
+Choices, recorded per run in `gcp/runs/<id>/manifest.json` and in every results file (`meta.remote`):
+
+- **Target VM: `c4-standard-8-lssd`, `--threads-per-core=1`, `--performance-monitoring-unit=architectural`.**
+  That is 4 physical cores with SMT off, 30 GB and one 375 GiB Titanium local SSD. C4 is the series
+  that exposes a PMU to a VM of this size (C3 VMs have none), and instructions/op needs one. On a
+  4-core VM, the kernel's network work for the target's traffic (gVNIC interrupts, softirq) lands
+  on the target's own cores, as in a real 4-core deployment.
+- **Data disk: local SSD on every VM.** The shape fixes it, so identical VMs get identical disks with
+  nothing to provision. It is local NVMe, like the XPS where every earlier row was measured. Unlike a
+  network disk, it adds no network round trip to each page-cache miss, which would mix a disk-latency
+  term into the dependent-read chains the 2x and 8x points measure. 375 GiB holds 8x on per-engine VMs
+  (Harper 138 GiB snapshot plus its restored copy). Documented limits: 150k read IOPS, 625 MiB/s read. When that shape is out of capacity, `YCSB_DATA_DISK_KIND=hyperdisk` gives every target-shaped VM the plain `c4-standard-8` and one Hyperdisk Balanced volume with fixed provisioned IOPS and throughput (`YCSB_HYPERDISK_IOPS`, 25,000, and `YCSB_HYPERDISK_MIBPS`, 480: the VM's steady-state limit, so no burst credit varies the results). That adds a network round trip to each page-cache miss, so results record the kind (`dataDisk`).
+- **Generator: `c4-standard-32`** (16 cores, SMT on). The sharded driver spent 70–100 µs of CPU per op on
+  the XPS (above), so a 4-core target serving 60–80k ops/s needs up to about 8 of its cores. The ceiling
+  check is the gate; `YCSB_GEN_MACHINE_TYPE` changes the shape. No VM gets a
+  service account: none calls a GCP API, and the guest attributes go through the metadata server.
+- **Turbo stays on** (GCP has no control for it). Targets interleave within a session, forward and
+  reversed per rep, 3 reps per cell, and perf counts the cycles each window ran.
+- Every results file records each host's machine type, zone and CPU platform (GCP metadata
+  server), CPU model, kernel, Node version, target and agent cpus, and data-dir mount. It also
+  records the measured round trips.
 
 ## Profiling (`--profile`)
 

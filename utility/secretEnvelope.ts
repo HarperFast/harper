@@ -38,7 +38,7 @@ export function fingerprintOf(publicKeyPem: string): string {
 // but it decodes unpadded input fine, and browser/WebCrypto clients commonly emit unpadded
 // base64, so padding is accepted rather than required. Charset stays strict; a trailing group of
 // one character (never valid base64) is still rejected.
-const BASE64_REGEX = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}(?:==)?|[A-Za-z0-9+/]{3}=?)?$/;
+export const BASE64_REGEX = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}(?:==)?|[A-Za-z0-9+/]{3}=?)?$/;
 
 /**
  * Parse and shape-validate a base64url envelope body without decrypting it. Throws on a

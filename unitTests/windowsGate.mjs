@@ -57,6 +57,7 @@ const GROUPS = [
 	'unitTests/validation/**/*test.*js',
 	// Individually verified files from directories not yet covered wholesale.
 	'unitTests/dataLayer/restoreChild.test.js',
+	'unitTests/dataLayer/restoreIntent.test.js',
 	'unitTests/dataLayer/restorePublication.test.js',
 	'unitTests/dataLayer/restoreMarker.test.js',
 	'unitTests/dataLayer/restoreReceipt.test.js',

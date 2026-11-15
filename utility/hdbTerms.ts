@@ -170,6 +170,8 @@ export const MAX_SET_TIMEOUT_MS = 2147483647;
 /** Harper File Permissions Mode */
 export const HDB_FILE_PERMISSIONS = 0o700;
 
+export const SECRET_FILE_PERMISSIONS = 0o600;
+
 /** Smallest `threads.maxHeapMemory` (MB) a worker thread is accepted on — see server/threads/threadHeapMemory.ts */
 export const MIN_THREAD_HEAP_MEMORY_MB = 64;
 
@@ -382,6 +384,7 @@ export const OPERATIONS_ENUM = {
 	LIST_SECRETS: 'list_secrets',
 	DELETE_SECRET: 'delete_secret',
 	GET_SECRETS_PUBLIC_KEY: 'get_secrets_public_key',
+	ENCRYPTED_OPERATION: 'encrypted_operation',
 	ADD_OIDC_TRUST: 'add_oidc_trust',
 	LIST_OIDC_TRUST: 'list_oidc_trust',
 	DROP_OIDC_TRUST: 'drop_oidc_trust',
@@ -402,6 +405,20 @@ export const OPERATIONS_ENUM = {
 	SET_AGENT_CONFIG: 'set_agent_config',
 	GET_AGENT_CONFIG: 'get_agent_config',
 } as const;
+
+/**
+ * Operations whose handler returns a raw byte stream (`Readable`) for the operations HTTP API, so a
+ * caller that cannot relay a stream (MCP, `encrypted_operation`) must refuse them BEFORE dispatch:
+ * these producers acquire real resources (an open fd, an LMDB read transaction) before or independent
+ * of the stream being consumed, and destroying an unconsumed stream does not reliably run their
+ * cleanup. `get_backup`'s LMDB path (`lmdbGetBackup.js`) opens its fd and read transaction, then
+ * returns `Readable.from(asyncGenerator)`; `.return()` on a never-iterated async generator resolves to
+ * `done` and skips its body, including the `readTxn.done()` cleanup, so both leak on every refused call.
+ */
+export const STREAMING_RESPONSE_OPERATIONS: ReadonlySet<string> = new Set([
+	OPERATIONS_ENUM.GET_BACKUP,
+	OPERATIONS_ENUM.GET_DEPLOYMENT_PAYLOAD,
+]);
 
 /** Defines valid file types that we are able to handle in 'import_from_s3' ops */
 export const VALID_S3_FILE_TYPES = {
@@ -667,6 +684,8 @@ export const CONFIG_PARAMS = {
 	OPERATIONSAPI_NETWORK_HTTP2: 'operationsApi_network_http2',
 	OPERATIONSAPI_NETWORK_MAXREQUESTBODYSIZE: 'operationsApi_network_maxRequestBodySize',
 	OPERATIONSAPI_COMPONENTFILE_MAXSIZE: 'operationsApi_componentFile_maxSize',
+	OPERATIONSAPI_ENCRYPTEDOPERATION_MAXAGE: 'operationsApi_encryptedOperation_maxAge',
+	OPERATIONSAPI_ENCRYPTEDOPERATION_MAXSIZE: 'operationsApi_encryptedOperation_maxSize',
 	DEPLOYMENT_PAYLOADRETENTION_MAXSIZE: 'deployment_payloadRetention_maxSize',
 	DEPLOYMENT_PAYLOADRETENTION_FAILEDMAXAGE: 'deployment_payloadRetention_failedMaxAge',
 	DEPLOYMENT_PAYLOADRETENTION_FAILEDMAXCOUNT: 'deployment_payloadRetention_failedMaxCount',
@@ -760,8 +779,11 @@ export const CONFIG_PARAMS = {
 		'replication_mtls_certificateVerification_ocsp_failureMode',
 	REPLICATION_SHARD: 'replication_shard',
 	REPLICATION_SHARDS: 'replication_shards',
+	REPLICATION_SPARESHARDS: 'replication_spareShards',
 	REPLICATION_EXPERIMENTALATTRIBUTESLOTS: 'replication_experimentalAttributeSlots',
 	REPLICATION_BLOBTIMEOUT: 'replication_blobTimeout',
+	REPLICATION_CONFIRMATION: 'replication_confirmation',
+	REPLICATION_RECORDLOCKCONFIRMATION: 'replication_recordLockConfirmation',
 	REPLICATION_CONFIRMATIONTIMEOUT: 'replication_confirmationTimeout',
 	REPLICATION_SHARDINGCONFIRMATIONTIMEOUT: 'replication_shardingConfirmationTimeout',
 	REPLICATION_BLOBGAPRECONNECTMS: 'replication_blobGapReconnectMs',

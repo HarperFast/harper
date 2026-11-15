@@ -1,0 +1,4 @@
+type NegativeTtl @table(database: "ttl_config_bad", expiration: -1) @export {
+	id: ID @primaryKey
+	value: String
+}

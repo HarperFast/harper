@@ -2,7 +2,7 @@ const assert = require('node:assert');
 const { setupTestDBPath } = require('../../unitTests/testUtils');
 const { waitFor } = require('../../unitTests/waitFor');
 const { table } = require('#src/resources/databases');
-const { localIssuanceRatchet, reservedAroundCallerValue } = require('#src/resources/originClosedFloor');
+const { localIssuanceFloor, reservedAroundCallerValue } = require('#src/resources/originClosedFloor');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 require('#src/server/serverHelpers/serverUtilities');
@@ -313,10 +313,14 @@ describe('QA-5043: explicit transaction lock stamp and version floor contract', 
 			const v1 = stampedEntry(lockedId).version;
 			await waitFor(() => rootStore.getMonotonicTimestamp() > handle.holderVersionFloor(), 100);
 
-			const ratchetBefore = localIssuanceRatchet(rootStore);
+			const floorBefore = localIssuanceFloor(rootStore);
 			const floor = handle.holderVersionFloor();
 			assert.ok(floor > v1, 'holderVersionFloor steps above last committed holder version');
-			assert.strictEqual(localIssuanceRatchet(rootStore), ratchetBefore, 'holderVersionFloor does not advance ratchet');
+			assert.strictEqual(
+				localIssuanceFloor(rootStore),
+				floorBefore,
+				'holderVersionFloor does not raise the issuance floor'
+			);
 
 			await transaction(context, async (txn) => {
 				holder.set('n', 2);
@@ -329,7 +333,7 @@ describe('QA-5043: explicit transaction lock stamp and version floor contract', 
 			});
 			assert.strictEqual(stampedEntry(lockedId).value.n, 2);
 			assert.ok(stampedEntry(lockedId).version > v1);
-			assert.strictEqual(localIssuanceRatchet(rootStore), ratchetBefore);
+			assert.strictEqual(localIssuanceFloor(rootStore), floorBefore);
 		});
 
 		it('refuses with 409 when an explicit transaction fixed its clock below a surviving hold floor, without poisoning a subsequent standalone save', async function () {

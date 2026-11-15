@@ -5,7 +5,7 @@ import * as hdbUtils from '../utility/common_utils.ts';
 import { hdbSchemaTable, checkValidTable, hdbTable, hdbDatabase } from './common_validators.ts';
 import { ClientError, handleHDBError, hdbErrors } from '../utility/errors/hdbError.ts';
 import { getDatabases } from '../resources/databases.ts';
-import { FULL_TEXT_COMPARATORS } from '../resources/indexes/fullTextQueryProtocol.ts';
+import { FULL_TEXT_COMPARATORS, FULL_TEXT_POSITIVE_COMPARATORS } from '../resources/indexes/fullTextQueryProtocol.ts';
 
 const { HTTP_STATUS_CODES } = hdbErrors;
 const MAX_SELECT_DEPTH = 64;
@@ -148,6 +148,17 @@ const searchByValueSchema = Joi.object({
 	offset: Joi.number().integer().min(0),
 });
 
+const fullTextScoringClauseSchema = Joi.object({
+	comparator: Joi.string()
+		.valid(...FULL_TEXT_POSITIVE_COMPARATORS)
+		.required(),
+	value: Joi.string().min(1).required(),
+	fields: Joi.array().min(1).items(hdbSchemaTable).optional(),
+	boost: Joi.number().strict().optional(),
+	fuzzyDistance: Joi.number().integer().min(0).max(2).strict().optional(),
+	fuzzyTranspositions: Joi.bool().strict().optional(),
+});
+
 const searchByConditionsSchema = Joi.object({
 	database: hdbDatabase,
 	schema: hdbDatabase,
@@ -171,6 +182,8 @@ const searchByConditionsSchema = Joi.object({
 						.valid(...SEARCH_BY_CONDITIONS_COMPARATORS)
 						.optional(),
 					fields: Joi.array().min(1).items(hdbSchemaTable).optional(),
+					boost: Joi.number().strict().optional(),
+					should: Joi.array().min(1).items(fullTextScoringClauseSchema).optional(),
 					fuzzyDistance: Joi.number().integer().min(0).max(2).strict().optional(),
 					fuzzyTranspositions: Joi.bool().strict().optional(),
 					includeHighlights: Joi.bool().optional(),

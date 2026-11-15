@@ -1,5 +1,7 @@
 jsResource:
   files: resources.js
-rest: true
+rest:
+  # no WebSocket listener on the application port; see the suite's mqtt setting (#2355)
+  webSocket: false
 fastifyRoutes:
   files: 'routes/*.js'

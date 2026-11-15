@@ -105,6 +105,33 @@ Notes:
 
 ---
 
+## File Permissions
+
+<VersionBadge type="changed" version="v5.4.0" />
+
+The configuration file can hold credentials, so on Linux and macOS Harper writes it, and the other files below that can hold secrets, readable and writable only by the user Harper runs as (mode `600`):
+
+- the configuration file, wherever `HDB_CONFIG` or the boot properties place it
+- its backups, `{rootPath}/backup/*.bak`
+- the environment-configuration state, `{rootPath}/backup/.harper-config-state.json`
+- the JWT signing key and its passphrase, `{rootPath}/keys/.jwtPrivate.key` and `{rootPath}/keys/.jwtPass`
+- private keys Harper generates, such as `{rootPath}/keys/privateKey.pem`
+
+Each file has that mode from the moment it is created, before any content is written. When Harper replaces an existing file it owns, the new file keeps only the owner's permissions of the old one: a file at `644` becomes `600`, and a file you set to `400` stays `400`. A file owned by another user is replaced at `600`, owned by the user Harper runs as. Run as root (for example a `sudo harper` command on an install owned by another user), Harper gives the new file the old file's owner and owner permissions, or the owner of its directory when there was no old file, so the server can still read it.
+
+Harper changes a file's mode only when it writes that file. Files written by earlier versions keep their modes until Harper next rewrites them, and Harper never rewrites old backups. To restrict them now:
+
+```bash
+chmod 600 <config file> {rootPath}/backup/*.bak {rootPath}/backup/.harper-config-state*.json \
+  {rootPath}/keys/.jwtPass {rootPath}/keys/.jwtPrivate.key {rootPath}/keys/*.pem
+```
+
+If other users could read these files before, changing the mode does not undo that: rotate any credential or key they held.
+
+On Windows, Harper does not set file permissions. Access comes from the permissions of the directory Harper is installed in.
+
+---
+
 ## Custom Config File Path
 
 To specify a custom config file location at install time, use the `HDB_CONFIG` variable:
@@ -313,6 +340,12 @@ Safe mode skips:
 - Loading package-based extensions defined in component configs
 
 Built-in plugins (REST, HTTP, operations API, etc.) and the core database are unaffected.
+
+### Restore safe mode
+
+<VersionBadge version="v5.4.0" />
+
+Harper also enters safe mode by itself when a restore of a database has not published and a component could otherwise open that database, for example a [restore at the next startup](../backups/operations.md#restoring-at-the-next-startup) that has stopped after its last attempt. For that boot only, it sets `HARPER_SAFE_MODE` to `restore-unpublished` and logs the reason, with the ways to finish the restore, at error level in `hdb.log`. Once no restore keeps components off, Harper restarts by itself and loads them. When you start Harper with `HARPER_SAFE_MODE` already set, Harper keeps your value. See [restore safe mode](../backups/operations.md#restore-safe-mode).
 
 ## See Also
 

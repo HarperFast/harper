@@ -40,7 +40,9 @@ describe('lock() on a transaction() scope closed by its own commit', function ()
 	let Head;
 	let Other;
 	let SourcedOther;
+	let Nested;
 	let sourcePut;
+	let nestedPut;
 	let nextId = 1;
 	const id = () => `closure-${nextId++}`;
 	const holds = [];
@@ -73,10 +75,23 @@ describe('lock() on a transaction() scope closed by its own commit', function ()
 				return sourcePut?.(sourcedId, record, context);
 			},
 		});
+		Nested = table({
+			table: 'ScopeClosureNested',
+			database: 'scope_closure_nested',
+			replicate: false,
+			attributes: ATTRIBUTES,
+		});
+		Nested.sourcedFrom({
+			get() {},
+			put(nestedId, record, context) {
+				return nestedPut?.(nestedId, record, context);
+			},
+		});
 	});
 
 	afterEach(async function () {
 		sourcePut = undefined;
+		nestedPut = undefined;
 		while (holds.length) await holds.pop().unlock();
 	});
 
@@ -423,6 +438,243 @@ describe('lock() on a transaction() scope closed by its own commit', function ()
 			await waitFor(() => !Other.primaryStore.hasLock(lockAttemptKey(Other.tableId, otherId)), {
 				message: "the hook's scoped lock is released with the commit",
 			});
+			await lockableAfterwards(Other, otherId);
+		});
+	});
+
+	describe("from a hook nested under the commit's hook", function () {
+		// a fresh context, so the nested hook runs in a commit whose root is not the scope's
+		const nestUnderSourceHook = (nestedId) => {
+			sourcePut = () => {
+				sourcePut = undefined;
+				return Nested.put({ id: nestedId, n: 2 }, {});
+			};
+		};
+
+		for (const afterAwait of [false, true])
+			it(`admits a lock() during a mid-scope commit${afterAwait ? ' after its first await' : ''}, and that commit releases it`, async function () {
+				const sourcedId = id();
+				const otherId = id();
+				await SourcedOther.put({ id: sourcedId, n: 1 });
+				await Other.put({ id: otherId, n: 1 });
+				const context = {};
+				let outcome;
+				nestedPut = async () => {
+					nestedPut = undefined;
+					if (afterAwait) await delay(1);
+					outcome = await settle(Other.lock(otherId, { timeout: 500 }, context));
+				};
+				nestUnderSourceHook(id());
+				await transaction(context, async (txn) => {
+					const sourced = await SourcedOther.update(sourcedId, {}, txn);
+					sourced.set('n', 2);
+					await txn.commit();
+					assert.ifError(outcome?.error);
+					assert.strictEqual(outcome?.value?.id, otherId);
+					await waitFor(() => !Other.primaryStore.hasLock(lockAttemptKey(Other.tableId, otherId)), {
+						message: "the nested hook's scoped lock is released with the mid-scope commit",
+					});
+				});
+				assert.strictEqual((await SourcedOther.get(sourcedId)).n, 2);
+				await lockableAfterwards(Other, otherId);
+			});
+
+		for (const upgrade of [false, true])
+			it(`${upgrade ? "still refuses an upgrade of the scope's lock to a hold" : "admits a re-lock of the scope's lock"} during a mid-scope commit`, async function () {
+				const sourcedId = id();
+				const lockedId = id();
+				await SourcedOther.put({ id: sourcedId, n: 1 });
+				await Other.put({ id: lockedId, n: 1 });
+				const context = {};
+				let locked;
+				let relock;
+				nestedPut = async () => {
+					nestedPut = undefined;
+					relock = await settle(upgrade ? locked.lock({ hold: true, lease: 5000 }) : locked.lock());
+				};
+				nestUnderSourceHook(id());
+				await transaction(context, async (txn) => {
+					locked = await Other.lock(lockedId, {}, context);
+					locked.set('n', 2);
+					const sourced = await SourcedOther.update(sourcedId, {}, txn);
+					sourced.set('n', 2);
+					await txn.commit();
+				});
+				if (upgrade)
+					assert.ok(isRelockDuringCommit(relock?.error), relock?.error?.message ?? 'the upgrade was admitted');
+				else {
+					assert.ifError(relock?.error);
+					assert.ok(relock, 'premise: the nested hook ran');
+				}
+				assert.strictEqual((await Other.get(lockedId)).n, 2);
+				await lockableAfterwards(Other, lockedId);
+			});
+
+		for (const catches of [true, false])
+			it(`refuses a lock() of a head-database record under a chained database's hook with 409 (hook ${catches ? 'catches it' : 'rethrows'})`, async function () {
+				const headId = id();
+				const sourcedId = id();
+				const nestedId = id();
+				await Head.put({ id: headId, n: 1 });
+				await SourcedOther.put({ id: sourcedId, n: 1 });
+				await Nested.put({ id: nestedId, n: 1 });
+				const context = {};
+				let refusal;
+				nestedPut = () => {
+					nestedPut = undefined;
+					return Head.lock(headId, { timeout: 500 }, context).then(
+						(locked) => locked.unlock(),
+						(error) => {
+							refusal = error;
+							if (!catches) throw error;
+						}
+					);
+				};
+				nestUnderSourceHook(nestedId);
+				const scope = transaction(context, async () => {
+					await Head.put({ id: id(), n: 1 }, context);
+					const sourced = await SourcedOther.update(sourcedId, {}, context);
+					sourced.set('n', 2);
+				});
+				if (catches) await scope;
+				else await assert.rejects(scope, isCommittedDatabase);
+				assert.ok(isCommittedDatabase(refusal), refusal?.message ?? 'the nested hook lock was admitted');
+				assert.strictEqual((await SourcedOther.get(sourcedId)).n, catches ? 2 : 1);
+				assert.strictEqual((await Nested.get(nestedId)).n, catches ? 2 : 1);
+				await lockableAfterwards(Head, headId);
+			});
+
+		it('still waits out a later mid-scope commit for work left running by a hook that settled', async function () {
+			const firstId = id();
+			const secondId = id();
+			const otherId = id();
+			await SourcedOther.put({ id: firstId, n: 1 });
+			await SourcedOther.put({ id: secondId, n: 1 });
+			await Other.put({ id: otherId, n: 1 });
+			const context = {};
+			let startLeftover;
+			const leftoverGate = new Promise((resolve) => (startLeftover = resolve));
+			let releaseSecondHook;
+			const secondHookGate = new Promise((resolve) => (releaseSecondHook = resolve));
+			let secondHookRunning = false;
+			let leftover;
+			let leftoverSettled = false;
+			sourcePut = (sourcedId) => {
+				if (sourcedId === firstId) {
+					// registered inside the first hook, so it runs under that hook's marker after the hook settles
+					leftover = leftoverGate
+						.then(() => settle(Other.lock(otherId, { timeout: 5000 }, context)))
+						.then((outcome) => {
+							leftoverSettled = true;
+							return outcome;
+						});
+					return;
+				}
+				secondHookRunning = true;
+				return secondHookGate;
+			};
+			await transaction(context, async (txn) => {
+				const first = await SourcedOther.update(firstId, {}, txn);
+				first.set('n', 2);
+				await txn.commit();
+				const second = await SourcedOther.update(secondId, {}, txn);
+				second.set('n', 2);
+				const committing = txn.commit();
+				committing.catch(() => {}); // rethrown by the await in finally
+				try {
+					await waitFor(() => secondHookRunning, { message: 'the second mid-scope commit should be in its hook' });
+					startLeftover();
+					await delay(50);
+					assert.strictEqual(leftoverSettled, false, 'the lock() waits for the in-flight commit');
+				} finally {
+					releaseSecondHook();
+					await committing;
+				}
+				const outcome = await leftover;
+				assert.ifError(outcome.error);
+				assert.strictEqual(outcome.value.id, otherId);
+			});
+			await lockableAfterwards(Other, otherId);
+		});
+
+		it('waits out the commit for work a settled nested hook left running under a hook that has not settled', async function () {
+			const sourcedId = id();
+			const otherId = id();
+			await SourcedOther.put({ id: sourcedId, n: 1 });
+			await Other.put({ id: otherId, n: 1 });
+			const context = {};
+			let releaseOuterHook;
+			const outerHookGate = new Promise((resolve) => (releaseOuterHook = resolve));
+			let leftoverLocking = false;
+			let leftoverSettled = false;
+			let leftover;
+			nestedPut = () => {
+				nestedPut = undefined;
+				// not awaited, so the nested hook settles and nothing the commit awaits waits for this lock()
+				leftover = delay(1)
+					.then(() => {
+						leftoverLocking = true;
+						return settle(Other.lock(otherId, { timeout: 5000 }, context));
+					})
+					.then((outcome) => {
+						leftoverSettled = true;
+						return outcome;
+					});
+			};
+			sourcePut = async () => {
+				sourcePut = undefined;
+				await Nested.put({ id: id(), n: 2 }, {});
+				await outerHookGate;
+			};
+			await transaction(context, async (txn) => {
+				const sourced = await SourcedOther.update(sourcedId, {}, txn);
+				sourced.set('n', 2);
+				const committing = txn.commit();
+				committing.catch(() => {}); // rethrown by the await in finally
+				try {
+					await waitFor(() => leftoverLocking, { message: "the nested hook's leftover work should be locking" });
+					await delay(50);
+					assert.strictEqual(leftoverSettled, false, 'the lock() waits for the in-flight commit');
+				} finally {
+					releaseOuterHook();
+					await committing;
+				}
+				const outcome = await leftover;
+				assert.ifError(outcome.error);
+				assert.strictEqual(outcome.value.id, otherId);
+				assert.ok(
+					Other.primaryStore.hasLock(lockAttemptKey(Other.tableId, otherId)),
+					'the lock outlives the mid-scope commit it waited out'
+				);
+			});
+			await lockableAfterwards(Other, otherId);
+		});
+
+		it("refuses a lock() after the nested hook's first await in the final commit, which released the context", async function () {
+			const otherId = id();
+			const sourcedId = id();
+			await Other.put({ id: otherId, n: 1 });
+			await SourcedOther.put({ id: sourcedId, n: 1 });
+			let refusal;
+			const context = {};
+			nestedPut = async () => {
+				nestedPut = undefined;
+				await delay(1);
+				await Other.lock(otherId, { timeout: 500 }, context).then(
+					(locked) => locked.unlock(),
+					(error) => {
+						refusal = error;
+					}
+				);
+			};
+			nestUnderSourceHook(id());
+			await transaction(context, async () => {
+				await Head.put({ id: id(), n: 1 }, context);
+				const sourced = await SourcedOther.update(sourcedId, {}, context);
+				sourced.set('n', 2);
+			});
+			assert.ok(isReleasedContext(refusal), refusal?.message ?? 'the nested hook lock was admitted');
+			assert.strictEqual((await SourcedOther.get(sourcedId)).n, 2);
 			await lockableAfterwards(Other, otherId);
 		});
 	});

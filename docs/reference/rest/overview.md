@@ -36,7 +36,10 @@ rest:
   lastModified: true # enables Last-Modified response header support
   webSocket: false # disables automatic WebSocket support (enabled by default)
   exactCount: true # opt in to Prefer: count=exact scans (off by default; otherwise served as estimates)
+  preconditionLocks: false # check conditional writes without a record lock (on by default)
 ```
+
+`preconditionLocks` (default `true`) decides whether a [conditional write](./headers.md#conditional-writes) is checked under the record's lock, one request at a time. See [Conditional Writes](./headers.md#conditional-writes) for what that guarantees on each kind of table.
 
 <VersionBadge version="v5.3.0" /> `exactCount` (default `false`) controls whether the [pagination total-count](./querying.md#pagination-and-total-count) feature honors `Prefer: count=exact`. Because an exact count scans the full matched set, it is off by default; set this to `true` to enable exact counts for this application's REST interface. A `count=exact` request is otherwise served as a cheaper estimate.
 

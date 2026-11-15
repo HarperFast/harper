@@ -44,7 +44,9 @@ describe('source-apply conflict retry converges instead of spinning', () => {
 		try {
 			SpinTable = table({
 				table: 'ConflictRetryTable',
-				database: 'test',
+				// Not the shared `test` database: the per-file teardown drops this one, closing the opted-out
+				// handle, which would otherwise make every later VT-enabled open of this primary throw.
+				database: 'conflictRetry',
 				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'writer' }, { name: 'count' }],
 				audit: true,
 			});

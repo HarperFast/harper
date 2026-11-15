@@ -12,6 +12,7 @@ sections:
   - 'Built-in Agent'
   - 'Models'
   - 'Memory'
+  - 'Performance'
   - 'Component Deploys'
   - 'Pull Request Previews'
   - 'MCP'
@@ -27,6 +28,9 @@ sections:
   - 'Security'
   - 'Authentication'
   - 'Container Images'
+  - 'Studio'
+  - 'Vector Search'
+  - 'Known Issues'
 ---
 
 # 5.4 Release Notes

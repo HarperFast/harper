@@ -43,6 +43,7 @@ import {
 	readDeploymentProvenance,
 	retireComponentDirectory,
 	liveDeploymentIdOf,
+	releaseRoutingOf,
 } from './Application.ts';
 import { deploymentOfLiveRelease, deploymentRecord } from './deploymentOperations.ts';
 import { redactUrlCredentials } from '../utility/urlCredentials.ts';
@@ -61,6 +62,7 @@ import {
 	assertRootConfigEffectPublishable,
 	hasRootConfigEntry,
 	PAYLOAD_ROUTING_KEYS,
+	publishedRouting,
 	readRootConfigEntry,
 	withRootConfigPublicationLock,
 } from './rootConfigPublication.ts';
@@ -942,6 +944,7 @@ async function deployComponent(req?: any) {
 						: currentRouting(nowIsolated)
 				);
 				await assertIsolationAdmission(nowIsolated);
+				if (descriptor) recorder?.recordRouting(publishedRouting(descriptor.rootConfig, descriptor.routing));
 			},
 			beforePrepare: async () => {
 				if (isActivation) return;
@@ -961,6 +964,7 @@ async function deployComponent(req?: any) {
 								}
 							: currentRouting(nowIsolated)
 					);
+					recorder?.recordRouting(publishedRouting(null, declaredRouting));
 					return;
 				}
 				assertGrantConstraints({ isolated: nowIsolated, host: req.host, branchedDatabases: req.branchedDatabases });
@@ -978,6 +982,7 @@ async function deployComponent(req?: any) {
 				if (nowIsolated) applicationConfig.isolated = true;
 				if (credentialReferences.length) applicationConfig.credentials = credentialReferences;
 				declaredRootConfig = applicationConfig;
+				recorder?.recordRouting(publishedRouting(declaredRootConfig));
 			},
 			validateCandidate: async (candidateDirPath) => {
 				entryPointWarning = await missingEntryPointsWarning(req.project, candidateDirPath);
@@ -989,6 +994,11 @@ async function deployComponent(req?: any) {
 		});
 		// Nothing ran `validateCandidate`, which ends this phase.
 		if (application.alreadyActive) emit('phase', { phase: 'prepare', status: 'done' });
+		// A release already live here reaches admission without its descriptor.
+		if (recorder && application.alreadyActive) {
+			const routing = await releaseRoutingOf(application.dirPath, req.project, req.deployment_id);
+			if (routing !== undefined) recorder.recordRouting(routing);
+		}
 		// Requested but not armed: no worker here could load it, its isolation moved, its tree is a link to its
 		// source, or it was already live and decided.
 		let certificationOutcome = certification ? 'unavailable' : 'not-requested';

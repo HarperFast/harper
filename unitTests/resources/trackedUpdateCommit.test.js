@@ -653,7 +653,7 @@ describe('Tracked instance update: collapseData, addTo/subtractFrom, and the com
 			assert.deepStrictEqual({ ...saved.extraSet }, { getRecord: true });
 			assert.deepStrictEqual({ ...saved.dynamicList[0] }, { getRecord: 'x' });
 		});
-		it("folded deltas add in the stored value's numeric type", async () => {
+		it('folds integer and fractional deltas by numeric operand type', async () => {
 			await QA1955Table.put('fold-bigint', { dynamicBig: 0n });
 			await QA1955Table.put('fold-number', { dynamicNum: 10 });
 			await transaction(async (ctx) => {

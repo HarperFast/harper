@@ -106,6 +106,16 @@ export function rootConfigEffectFromDeclaration(
 	return routing ? { kind: 'unset-package', routing: JSON.parse(JSON.stringify(routing)) } : { kind: 'unset-package' };
 }
 
+/** A package release publishes its whole entry, so it owns every routing key; a payload release only once it sets one. */
+export function publishedRouting(
+	rootConfig: Record<string, unknown> | null | undefined,
+	routing?: PayloadRouting
+): PayloadRouting | null {
+	const owner = rootConfig ?? routing;
+	if (!owner) return null;
+	return structuredClone(Object.fromEntries(PAYLOAD_ROUTING_KEYS.map((key) => [key, owner[key] ?? null])));
+}
+
 /**
  * Serialize every runtime read-modify-write of the root config document. Keyed by the file actually parsed
  * and written, which is fixed for the life of the process — not by a configured path, which
@@ -169,7 +179,7 @@ export async function applyRootConfigEffect(component: string, effect: RootConfi
 	return withRootConfigPublicationLock(async () => {
 		const { configFilePath, configDoc, changed } = readRootConfigChange(component, effect);
 		assertEnvLayersKeepEffect(component, effect, configDoc.toJSON() ?? {});
-		if (changed) atomicWriteFile(configFilePath, String(configDoc), { durable: true });
+		if (changed) atomicWriteFile(configFilePath, String(configDoc), { durable: true, ownerOnly: true });
 		else syncFileToStorageSync(configFilePath);
 		// Inside the lock: on the main thread a refresh re-applies the env config layers and can rewrite the file.
 		env.initSync(true);

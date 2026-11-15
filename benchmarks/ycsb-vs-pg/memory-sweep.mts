@@ -22,30 +22,23 @@ import { join } from 'node:path';
 import { WORKLOADS, assertLinksFit, formatKey, recordReadsPerOp, usesDependentReads } from '../ycsb/workload.mts';
 import type { PhaseResult } from '../ycsb/workload.mts';
 import { startDriver, type DriverRun } from './shardedDriver.mts';
-import { SWEEP_STACK_MEMORY, removePgSnapshots, dataDir } from './pgStack.mts';
-import {
-	foreignProcessesInOwnCgroup,
-	checkOwnCgroup,
-	sampleResources,
-	waitForQuiet,
-	waitForQuietHost,
-	readCgroupMemory,
-	type HostLoad,
-} from './resources.mts';
-import { readRocksdbEvents, summarizeEvents, type RocksdbActivity, type RocksdbEvent } from './rocksdbLog.mts';
+import { SWEEP_STACK_MEMORY, dataDirBytes, removePgSnapshots, dataDir } from './pgStack.mts';
+import { foreignProcessesInOwnCgroup, checkOwnCgroup, waitForQuiet, type HostLoad } from './resources.mts';
+import { summarizeEvents, type RocksdbActivity, type RocksdbEvent } from './rocksdbLog.mts';
 import {
 	TARGETS,
 	MEMORY_BUDGET_BYTES,
 	RESULTS_DIR,
 	argValue,
 	assertDependentReads,
+	closeRemote,
 	assertNoErrors,
 	createSession,
 	measureWindow,
-	parseTargets,
 	primaryLatency,
 	sizedRecordCacheSize,
 	targetOrder,
+	waitForQuietHosts,
 	withTarget,
 	writeJsonAtomic,
 	type AuthMode,
@@ -54,6 +47,16 @@ import {
 	type Session,
 	type TargetName,
 } from './run-compare.mts';
+import {
+	AGENT_DATA_PREFIX,
+	B_TOPOLOGY_NOTE,
+	parsePlacedTargets,
+	placedName,
+	type BackendRtt,
+	type PlacedTarget,
+	type Role,
+	type Topology,
+} from './remote.mts';
 
 const exec = promisify(execFile);
 
@@ -101,17 +104,25 @@ interface Snapshot {
 	diskBytes: number;
 }
 
+/** A snapshot lives on the host that loaded it: Harper's, the stack's Postgres, or topology b's Postgres host. */
+type SnapshotKey = 'harper' | 'pg' | 'pg@b';
+
 interface PointResult {
 	ratio: number;
 	records: number;
 	logicalBytes: number;
-	snapshots: Partial<Record<'harper' | 'pg', Snapshot>>;
+	snapshots: Partial<Record<SnapshotKey, Snapshot>>;
 }
 
 interface SweepSample {
 	ratio: number;
 	records: number;
 	target: TargetName;
+	/** Remote mode: a, every component on one host; b, Fastify, Redis and Postgres on their own. */
+	topology?: Topology;
+	/** Topology b: what the row compares (B_TOPOLOGY_NOTE) and the round trips between its hosts. */
+	note?: string;
+	rtt?: BackendRtt;
 	workload: string;
 	rep: number;
 	position: number;
@@ -131,8 +142,8 @@ interface SweepSample {
 	 */
 	sharedCgroup?: true;
 	failure?: { phase: string; error: string };
-	/** The wait for the rest of the host to go quiet before this sample started. */
-	hostGate?: { waitedMs: number; quiet: boolean; load: HostLoad };
+	/** The wait for the rest of the host to go quiet before this sample started (in remote mode, per host). */
+	hostGate?: { waitedMs: number; quiet: boolean; load: HostLoad; byHost?: Record<string, HostLoad> };
 	/** Measured runs discarded because the rest of the host was busy during them; `measured` is the last run. */
 	noisyWindows?: { throughput: number; cpuMicrosPerOp: number; host: HostLoad }[];
 	/** The rest of the host stayed under the quiet threshold through the kept measured run. */
@@ -168,77 +179,105 @@ export function checkHarperMemory(argv: string[]): { argv: string[]; allowUncapp
 	return { argv: argv.filter((a) => a !== '--allow-uncapped'), allowUncapped };
 }
 
-export type Cell = { ratio: number; workload: string; target: TargetName };
+export type Cell = { ratio: number; workload: string; target: TargetName; topology?: 'b' };
 
-/** `--cells=0.5:B:harper-uws,8:B:pg-redis`: exactly these (ratio, workload, target) samples. */
-export function parseCells(list: string): Cell[] {
+/** `--cells=0.5:B:harper-uws,8:B:pg-redis,2:C:pg-redis@b`: exactly these (ratio, workload, target) samples. */
+export function parseCells(list: string, { remote = false } = {}): Cell[] {
 	return list.split(',').map((item) => {
 		const [ratio, workload, target, extra] = item.trim().split(':');
 		if (extra !== undefined || !target) throw new Error(`--cells: "${item}" is not ratio:workload:target`);
-		const [parsed] = parseTargets(target);
+		const [placed] = parsePlacedTargets(target, { remote });
 		if (!WORKLOADS[workload]) throw new Error(`--cells: unknown workload "${workload}"`);
-		return { ratio: Number(ratio), workload, target: parsed };
+		return {
+			ratio: Number(ratio),
+			workload,
+			target: placed.target,
+			...(placed.topology === 'b' ? { topology: 'b' as const } : {}),
+		};
 	});
 }
 
-const engineOf = (target: TargetName): 'harper' | 'pg' => (TARGETS[target].kind === 'stack' ? 'pg' : 'harper');
+const snapshotKeyOf = (placed: PlacedTarget): SnapshotKey =>
+	TARGETS[placed.target].kind === 'harper' ? 'harper' : placed.topology === 'b' ? 'pg@b' : 'pg';
 
-async function diskBytes(path: string): Promise<number> {
-	// PGDATA belongs to the container's postgres uid, so measure as root in a throwaway container.
-	const { stdout } = await exec(
-		'docker',
-		['run', '--rm', '-v', `${dataDir()}:/host-data:ro`, 'alpine:latest', 'du', '-sb', `/host-data/${path}`],
-		{ timeout: 10 * 60_000 }
-	);
-	return Number(stdout.split('\t')[0]);
+const SNAPSHOT_ROLE: Record<SnapshotKey, Role> = { 'harper': 'harper', 'pg': 'stack', 'pg@b': 'postgres' };
+
+async function diskBytes(session: Session, key: SnapshotKey, path: string): Promise<number> {
+	if (session.remote) {
+		return session.remote.agentFor(SNAPSHOT_ROLE[key]).call<number>('diskBytes', { path }, 15 * 60_000);
+	}
+	return dataDirBytes(path);
 }
 
 /** Loads one dataset size over REST through a capped `harper` or `pg-only`, quiesces it, and keeps it. */
-async function prepareSnapshot(session: Session, engine: 'harper' | 'pg', keyWidth: number): Promise<Snapshot> {
+async function prepareSnapshot(session: Session, key: SnapshotKey, keyWidth: number): Promise<Snapshot> {
 	const { config } = session.options;
+	const engine = key === 'harper' ? 'harper' : 'pg';
 	const name = `${engine}-${config.records}`;
-	const restore = engine === 'harper' ? join(dataDir(), 'snapshots', name) : name;
+	// Harper's snapshot is a directory on the Harper host, under that host's data dir.
+	const restore =
+		engine === 'harper'
+			? session.remote
+				? `${AGENT_DATA_PREFIX}snapshots/${name}`
+				: join(dataDir(), 'snapshots', name)
+			: name;
 	const target: TargetName = engine === 'harper' ? 'harper' : 'pg-only';
-	console.log(`\n### snapshot ${name}: loading ${config.records.toLocaleString()} records through ${target}`);
-	return withTarget(session, target, async (running) => {
-		const driver = await startDriver(driverConfig(session, running, keyWidth, true));
-		let load: PhaseResult;
-		try {
-			load = driver.load;
-		} finally {
-			await driver.close();
-		}
-		assertNoErrors('load', load);
-		if (load.ops !== config.records) throw new Error(`load inserted ${load.ops} of ${config.records} records`);
-		console.log(`  [load] ${load.throughput.toFixed(0)} records/sec, ${(load.elapsedMs / 60_000).toFixed(1)} min`);
-		await running.afterLoad?.();
-		const { waitedMs, quiet } = await waitForQuiet(running.targets, { maxMs: 60 * 60_000 });
-		console.log(`  [quiesce] ${(waitedMs / 1000).toFixed(0)} s${quiet ? '' : ' (did not get quiet)'}`);
-		for (const [component, scope] of Object.entries(running.targets.cgroups)) {
-			const kills = (await readCgroupMemory(scope)).events.oom_kill ?? 0;
-			if (kills > 0) throw new Error(`${component}: ${kills} OOM kill(s) while loading; snapshot not taken`);
-		}
-		const restoreRoot = (await running.snapshot(restore)) || undefined;
-		return { restore, restoreRoot, load, quiesceMs: waitedMs, quiet, diskBytes: await diskBytes(`snapshots/${name}`) };
-	});
+	const topology: Topology = key === 'pg@b' ? 'b' : 'a';
+	console.log(
+		`\n### snapshot ${name}: loading ${config.records.toLocaleString()} records through ${target}${topology === 'b' ? '@b' : ''}`
+	);
+	return withTarget(
+		session,
+		target,
+		async (running) => {
+			const driver = await startSweepDriver(session, running, keyWidth, true);
+			let load: PhaseResult;
+			try {
+				load = driver.load;
+			} finally {
+				await driver.close();
+			}
+			assertNoErrors('load', load);
+			if (load.ops !== config.records) throw new Error(`load inserted ${load.ops} of ${config.records} records`);
+			console.log(`  [load] ${load.throughput.toFixed(0)} records/sec, ${(load.elapsedMs / 60_000).toFixed(1)} min`);
+			await running.afterLoad?.();
+			const { waitedMs, quiet } = await waitForQuiet(() => running.probe.cpuSeconds(), { maxMs: 60 * 60_000 });
+			console.log(`  [quiesce] ${(waitedMs / 1000).toFixed(0)} s${quiet ? '' : ' (did not get quiet)'}`);
+			for (const [component, memory] of Object.entries(await running.probe.cgroupMemory())) {
+				const kills = memory.events.oom_kill ?? 0;
+				if (kills > 0) throw new Error(`${component}: ${kills} OOM kill(s) while loading; snapshot not taken`);
+			}
+			const restoreRoot = (await running.snapshot(restore)) || undefined;
+			return {
+				restore,
+				restoreRoot,
+				load,
+				quiesceMs: waitedMs,
+				quiet,
+				diskBytes: await diskBytes(session, key, `snapshots/${name}`),
+			};
+		},
+		{ topology }
+	);
 }
 
-function driverConfig(session: Session, running: Running, keyWidth: number, load: boolean) {
+function startSweepDriver(session: Session, running: Running, keyWidth: number, load: boolean): Promise<DriverRun> {
 	const { config } = session.options;
-	return {
+	return startDriver({
 		baseUrl: running.baseUrl,
 		table: config.table,
 		records: config.records,
 		opsPerWorkload: config.opsPerWorkload,
 		concurrency: config.concurrency,
-		shards: session.shards,
 		shape: { fieldCount: config.fieldCount, fieldLength: config.fieldLength },
 		keyWidth,
 		maxScanLength: config.maxScanLength,
 		load,
 		authorization: running.authorization,
 		callerAuthorizations: running.callerAuthorizations,
-	};
+		cpus: session.driverCpus,
+		shards: session.shards,
+	});
 }
 
 /** Fails unless the first and last loaded records came back with the restore, intact. */
@@ -267,12 +306,12 @@ async function warmUp(
 ): Promise<{ chunks: WarmupChunk[]; converged: boolean }> {
 	const chunks: WarmupChunk[] = [];
 	while (chunks.length < maxChunks) {
-		const before = running.targets.redisExec ? await sampleResources(running.targets) : undefined;
+		const before = running.probe.hasRedis ? await running.probe.sample() : undefined;
 		const result = await driver.runWorkload(workload, 'zipfian', chunkOps);
 		assertNoErrors(`warmup ${workload}`, result);
 		const chunk: WarmupChunk = { throughput: result.throughput };
 		if (before?.redis) {
-			const after = (await sampleResources(running.targets)).redis!;
+			const after = (await running.probe.sample()).redis!;
 			const lookups = after.hits - before.redis.hits + (after.misses - before.redis.misses);
 			if (lookups > 0) chunk.hitRate = (after.hits - before.redis.hits) / lookups;
 		}
@@ -281,7 +320,7 @@ async function warmUp(
 			`  [warmup ${chunks.length}] ${chunk.throughput.toFixed(0)} ops/sec` +
 				(chunk.hitRate !== undefined ? `, cache-hit ${(chunk.hitRate * 100).toFixed(2)}%` : '')
 		);
-		if (warmupConverged(chunks, { requireHitRate: Boolean(running.targets.redisExec) })) {
+		if (warmupConverged(chunks, { requireHitRate: running.probe.hasRedis })) {
 			return { chunks, converged: true };
 		}
 	}
@@ -293,6 +332,12 @@ async function warmUp(
  * running. A failed sample is survivable only if it left nothing behind to compete with the next.
  */
 async function nothingLeftRunning(session: Session): Promise<boolean> {
+	if (session.remote) {
+		const left = await Promise.all(
+			session.remote.agents().map((agent) => agent.call<string[]>('leftovers', {}, 5 * 60_000))
+		);
+		return left.every((l) => l.length === 0);
+	}
 	const { stdout: units } = await exec(
 		'systemctl',
 		[
@@ -315,7 +360,7 @@ async function nothingLeftRunning(session: Session): Promise<boolean> {
 
 async function measureSweepSample(
 	session: Session,
-	target: TargetName,
+	placed: PlacedTarget,
 	workload: string,
 	snapshot: Snapshot,
 	keyWidth: number,
@@ -334,11 +379,13 @@ async function measureSweepSample(
 	const measureOps = Math.ceil(measureReads / readsPerOp);
 	let phase = 'start';
 	const startedAt = Date.now();
+	const { target } = placed;
 	const spec = TARGETS[target];
 	const launch = {
 		restore: snapshot.restore,
 		restoreRoot: snapshot.restoreRoot,
 		recordCacheSize: spec.kind === 'harper' && spec.sized ? sizedRecordCacheSize(sample.records) : undefined,
+		topology: placed.topology,
 	};
 	try {
 		await withTarget(
@@ -347,14 +394,14 @@ async function measureSweepSample(
 			async (running) => {
 				sample.startupMs = running.startupMs;
 				phase = 'verify';
-				const driver = await startDriver(driverConfig(session, running, keyWidth, false));
+				const driver = await startSweepDriver(session, running, keyWidth, false);
 				try {
 					await verifyRestoredData(running, session, keyWidth);
 					if (usesDependentReads(WORKLOADS[workload])) {
 						await assertDependentReads(running, session.options.config, keyWidth);
 					}
 					phase = 'quiesce';
-					const { waitedMs, quiet } = await waitForQuiet(running.targets, { maxMs: 10 * 60_000 });
+					const { waitedMs, quiet } = await waitForQuiet(() => running.probe.cpuSeconds(), { maxMs: 10 * 60_000 });
 					sample.quiesceMs = waitedMs;
 					sample.quiet = quiet;
 					phase = 'warmup';
@@ -367,7 +414,7 @@ async function measureSweepSample(
 					// Other agents' load comes in bursts the pre-sample gate cannot foresee; the target is warm, so
 					// a run spoiled by one is measured again rather than kept.
 					for (let attempt = 0; ; attempt++) {
-						const label = `${target}-${workload}-${sample.ratio}x-rep${sample.rep + 1}${attempt ? `-retry${attempt}` : ''}`;
+						const label = `${placed.name.replace('@', '-')}-${workload}-${sample.ratio}x-rep${sample.rep + 1}${attempt ? `-retry${attempt}` : ''}`;
 						const measured = await measureWindow(session, running, driver, workload, 'zipfian', measureOps, label);
 						sample.measured = measured;
 						sample.hostQuiet = measured.host.otherCores < quietCores;
@@ -391,10 +438,10 @@ async function measureSweepSample(
 									? 'host-busy'
 									: 'ok';
 					sample.settled = converged && quiet && snapshot.quiet;
-					if (running.dataRoot) {
+					if (running.probe.rocksdbEvents) {
 						phase = 'rocksdb-log';
 						const { startMs, endMs } = sample.measured.window;
-						const events = await readRocksdbEvents(running.dataRoot, startedAt, Date.now());
+						const events = await running.probe.rocksdbEvents(startedAt, Date.now());
 						sample.rocksdb = {
 							events,
 							warmup: summarizeEvents(events, warmupStart, firstMeasureStart),
@@ -461,7 +508,7 @@ function printSweep(
 					String(point.ratio).padEnd(6),
 					point.records.toLocaleString().padStart(11),
 					` ${s.workload}`.padEnd(9),
-					s.target.padEnd(18),
+					placedName(s).padEnd(18),
 					String(s.rep + 1).padStart(4),
 					(m ? m.result.throughput.toFixed(0) : 'FAILED').padStart(8),
 					(lat ? lat.p50.toFixed(2) : '-').padStart(8),
@@ -487,7 +534,7 @@ function printSweep(
 	const cells = new Map<string, SweepSample[]>();
 	for (const s of samples) {
 		if (!s.measured) continue;
-		const key = `${s.ratio}x ${s.workload} ${s.target}`;
+		const key = `${s.ratio}x ${s.workload} ${placedName(s)}`;
 		cells.set(key, [...(cells.get(key) ?? []), s]);
 	}
 	if ([...cells.values()].some((reps) => reps.length > 1)) {
@@ -507,7 +554,11 @@ function printSweep(
 	process.stdout.write(out.join('\n') + '\n');
 }
 
-async function removeSnapshots(): Promise<void> {
+async function removeSnapshots(session: Session): Promise<void> {
+	if (session.remote) {
+		await Promise.all(session.remote.agents().map((agent) => agent.call('removeSnapshots', {}, 60 * 60_000)));
+		return;
+	}
 	await removePgSnapshots();
 	await rm(join(dataDir(), 'snapshots'), { recursive: true, force: true });
 }
@@ -516,8 +567,9 @@ async function main(): Promise<void> {
 	const foreign = foreignProcessesInOwnCgroup();
 	const { argv: memoryChecked, allowUncapped } = checkHarperMemory(process.argv.slice(2));
 	const { argv, sharedCgroup } = checkOwnCgroup(memoryChecked, foreign);
+	const remote = argValue(argv, '--hosts') !== undefined;
 	const cellsArg = argValue(argv, '--cells');
-	const cells = cellsArg ? parseCells(cellsArg) : undefined;
+	const cells = cellsArg ? parseCells(cellsArg, { remote }) : undefined;
 	if (
 		cells &&
 		['--targets', '--ratios', '--workloads', '--sized-ratios'].some((f) => argValue(argv, f) !== undefined)
@@ -527,9 +579,10 @@ async function main(): Promise<void> {
 		);
 	}
 	const unique = <T,>(items: T[]) => [...new Set(items)];
-	const targets = cells
-		? unique(cells.map((c) => c.target))
-		: parseTargets(argValue(argv, '--targets') ?? 'harper-uws,harper,pg-redis,pg-only');
+	const targets: PlacedTarget[] = cells
+		? parsePlacedTargets(unique(cells.map((c) => placedName(c))).join(','), { remote })
+		: parsePlacedTargets(argValue(argv, '--targets') ?? 'harper-uws,harper,pg-redis,pg-only', { remote });
+
 	const ratios = cells
 		? unique(cells.map((c) => c.ratio))
 		: (argValue(argv, '--ratios') ?? '0.5,2,8').split(',').map(Number);
@@ -551,6 +604,7 @@ async function main(): Promise<void> {
 		if (!(value >= 0)) throw new Error(`${flag} must be a non-negative number, got ${value}`);
 	}
 	const { session, meta } = await createSession(argv, {
+		// The snapshots load through harper and pg-only, whose hosts are these targets' hosts.
 		targets,
 		cache: 'warm',
 		stackMemory: (target) => SWEEP_STACK_MEMORY[target],
@@ -571,9 +625,9 @@ async function main(): Promise<void> {
 		: argv.some((a) => a.startsWith('--workloads='))
 			? config.workloads
 			: ['C', 'B'];
-	const selected = (ratio: number, workload: string, target: TargetName): boolean => {
-		if (cells) return cells.some((c) => c.ratio === ratio && c.workload === workload && c.target === target);
-		const spec = TARGETS[target];
+	const selected = (ratio: number, workload: string, placed: PlacedTarget): boolean => {
+		if (cells) return cells.some((c) => c.ratio === ratio && c.workload === workload && placedName(c) === placed.name);
+		const spec = TARGETS[placed.target];
 		return spec.kind === 'stack' || !spec.sized || sizedRatios.includes(ratio);
 	};
 	for (const w of workloads)
@@ -609,89 +663,111 @@ async function main(): Promise<void> {
 	const points: PointResult[] = [];
 	const samples: SweepSample[] = [];
 	const persist = async () => {
-		const payload = { meta: runMeta, targets, points, samples };
+		const payload = { meta: runMeta, targets: targets.map((t) => t.name), points, samples };
 		await writeJsonAtomic(file, payload);
 		await writeJsonAtomic(join(RESULTS_DIR, 'memory-sweep-latest.json'), payload);
 	};
 
-	await removeSnapshots();
+	let failed = true;
 	try {
-		for (let p = 0; p < ratios.length; p++) {
-			const records = pointRecords[p];
-			const pointSession: Session = { ...session, options: { ...session.options, config: { ...config, records } } };
-			const keyWidth = Math.max(10, String(records).length);
-			const point: PointResult = { ratio: ratios[p], records, logicalBytes: records * recordBytes, snapshots: {} };
-			points.push(point);
-			console.log(`\n######## point ${ratios[p]}x: ${records.toLocaleString()} records ########`);
-			const pointTargets = targets.filter((t) => workloads.some((w) => selected(ratios[p], w, t)));
-			for (const engine of new Set(pointTargets.map(engineOf))) {
-				point.snapshots[engine] = await prepareSnapshot(pointSession, engine, keyWidth);
-				await persist();
-			}
-			for (const workload of workloads) {
-				for (let rep = 0; rep < config.reps; rep++) {
-					const order = targetOrder(
-						pointTargets.filter((t) => selected(ratios[p], workload, t)),
-						p + rep
-					);
-					for (let i = 0; i < order.length; i++) {
-						const target = order[i];
-						const sample: SweepSample = {
-							ratio: ratios[p],
-							records,
-							target,
-							workload,
-							rep,
-							position: i + 1,
-							auth: session.auth,
-							status: 'failed',
-							...(allowUncapped ? { allowUncapped: true as const } : {}),
-							...(sharedCgroup ? { sharedCgroup: true as const } : {}),
-						};
-						console.log(`\n--- ${ratios[p]}x rep ${rep + 1} #${i + 1} ${target} / workload ${workload} ---`);
-						// A job can join the session's cgroup after the startup check; this only marks the row.
-						const markShared = () => {
-							if (foreignProcessesInOwnCgroup().length > 0) sample.sharedCgroup = true;
-						};
-						markShared();
-						const gate = await waitForQuietHost({ maxOtherCores: hostQuietCores, maxMs: hostQuietMaxMin * 60_000 });
-						sample.hostGate = { waitedMs: gate.waitedMs, quiet: gate.quiet, load: gate.last };
-						console.log(
-							`  [host] ${gate.last.otherCores.toFixed(2)} cores busy elsewhere, load ${gate.last.loadavg1}` +
-								(gate.quiet ? '' : ' — not quiet, running anyway') +
-								` (waited ${(gate.waitedMs / 1000).toFixed(0)} s)`
+		await sweep();
+		failed = false;
+	} finally {
+		await closeRemote(session, failed);
+	}
+
+	async function sweep(): Promise<void> {
+		await removeSnapshots(session);
+		try {
+			for (let p = 0; p < ratios.length; p++) {
+				const records = pointRecords[p];
+				const pointSession: Session = { ...session, options: { ...session.options, config: { ...config, records } } };
+				const keyWidth = Math.max(10, String(records).length);
+				const point: PointResult = { ratio: ratios[p], records, logicalBytes: records * recordBytes, snapshots: {} };
+				points.push(point);
+				console.log(`\n######## point ${ratios[p]}x: ${records.toLocaleString()} records ########`);
+				const pointTargets = targets.filter((t) => workloads.some((w) => selected(ratios[p], w, t)));
+				for (const key of new Set(pointTargets.map(snapshotKeyOf))) {
+					point.snapshots[key] = await prepareSnapshot(pointSession, key, keyWidth);
+					await persist();
+				}
+				for (const workload of workloads) {
+					for (let rep = 0; rep < config.reps; rep++) {
+						const order = targetOrder(
+							pointTargets.filter((t) => selected(ratios[p], workload, t)),
+							p + rep
 						);
-						await measureSweepSample(
-							pointSession,
-							target,
-							workload,
-							point.snapshots[engineOf(target)]!,
-							keyWidth,
-							sample,
-							{
-								chunkReads,
-								maxChunks,
-								measureReads,
-								quietCores: hostQuietCores,
-								noisyRetries,
+						for (let i = 0; i < order.length; i++) {
+							const target = order[i];
+							const sample: SweepSample = {
+								ratio: ratios[p],
+								records,
+								target: target.target,
+								...(session.remote
+									? {
+											topology: target.topology,
+											...(target.topology === 'b'
+												? { note: B_TOPOLOGY_NOTE, rtt: await session.remote.backendRtt() }
+												: {}),
+										}
+									: {}),
+								workload,
+								rep,
+								position: i + 1,
+								auth: session.auth,
+								status: 'failed',
+								...(allowUncapped ? { allowUncapped: true as const } : {}),
+								...(sharedCgroup ? { sharedCgroup: true as const } : {}),
+							};
+							console.log(`\n--- ${ratios[p]}x rep ${rep + 1} #${i + 1} ${target.name} / workload ${workload} ---`);
+							// A job can join the session's cgroup after the startup check; this only marks the row.
+							const markShared = () => {
+								if (foreignProcessesInOwnCgroup().length > 0) sample.sharedCgroup = true;
+							};
+							markShared();
+							const gate = await waitForQuietHosts(session, target, {
+								maxOtherCores: hostQuietCores,
+								maxMs: hostQuietMaxMin * 60_000,
+							});
+							sample.hostGate = { waitedMs: gate.waitedMs, quiet: gate.quiet, load: gate.last, byHost: gate.byHost };
+							if (gate.sharedCgroup) sample.sharedCgroup = true;
+							console.log(
+								`  [host] ${gate.last.otherCores.toFixed(2)} cores busy elsewhere, load ${gate.last.loadavg1}` +
+									(gate.quiet ? '' : ' — not quiet, running anyway') +
+									` (waited ${(gate.waitedMs / 1000).toFixed(0)} s)`
+							);
+							await measureSweepSample(
+								pointSession,
+								target,
+								workload,
+								point.snapshots[snapshotKeyOf(target)]!,
+								keyWidth,
+								sample,
+								{
+									chunkReads,
+									maxChunks,
+									measureReads,
+									quietCores: hostQuietCores,
+									noisyRetries,
+								}
+							);
+							markShared();
+							samples.push(sample);
+							await persist();
+							if (sample.status === 'failed' && !(await nothingLeftRunning(session))) {
+								throw new Error('a failed sample left processes or containers running; aborting the session');
 							}
-						);
-						markShared();
-						samples.push(sample);
-						await persist();
-						if (sample.status === 'failed' && !(await nothingLeftRunning(session))) {
-							throw new Error('a failed sample left processes or containers running; aborting the session');
 						}
 					}
 				}
+				await removeSnapshots(session);
 			}
-			await removeSnapshots();
+		} finally {
+			await removeSnapshots(session).catch(() => {});
 		}
-	} finally {
-		await removeSnapshots().catch(() => {});
+		printSweep(points, samples, session.harperMemoryBytes, chunkReads);
+		console.log(`\nResults written to ${file}`);
 	}
-	printSweep(points, samples, session.harperMemoryBytes, chunkReads);
-	console.log(`\nResults written to ${file}`);
 }
 
 if (import.meta.main) {

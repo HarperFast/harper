@@ -5,12 +5,16 @@
  * charged to the code that called it. A bucket's µs/op is its share of a component's samples times
  * that component's cgroup CPU per op in the same window.
  *
- *   node benchmarks/ycsb-vs-pg/profile-report.mts results/compare-latest.json [--svg-dir=<dir>] [--pipeline]
+ *   node benchmarks/ycsb-vs-pg/profile-report.mts results/compare-latest.json [--svg-dir=<dir>] [--pipeline] [--summary]
  *
- * --pipeline adds, per Harper profile, its samples by request-pipeline layer (see PIPELINE).
+ * --pipeline adds, per Harper profile, its samples by request-pipeline layer (see PIPELINE). --summary adds the
+ * buckets rolled up into SUMMARY's eight, with the cost of each additional dependent read where a target has both C
+ * and a chain-N profile at a point. Folded files are looked up where the results file says, else under the results
+ * file's directory (results copied off a remote generator keep the generator's paths).
  */
+import { existsSync } from 'node:fs';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
-import { basename, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { readFolded } from './perfProfile.mts';
 import type { Counters } from './perfProfile.mts';
 import type { ProfiledWindow } from './run-compare.mts';
@@ -90,6 +94,10 @@ const NATIVE_RULES: [RegExp, Bucket][] = [
 	],
 ];
 
+const JSON_PARSE = /Builtin_JsonParse|JsonParser</;
+/** The stack's dependent-read routes, whose JSON.parse of a cached record is record decode (msgpackr's job in Harper). */
+const STACK_RECORD_PARSE = /\/pg-app\/server\.mjs/;
+
 // JIT'd JS: "<tier marker><name> <url>:<line>:<col>"; builtins and native frames carry a "(dso)" suffix.
 const JS_FRAME = / ((?:file:\/\/)?\/[^ ]+|node:[^ ]+):\d+:\d+$/;
 const isJsFrame = (frame: string) => JS_FRAME.test(frame);
@@ -117,6 +125,9 @@ export function classify(stack: string[], component: string): Bucket {
 	if (stack.some((f) => GC.test(f))) return 'gc';
 	if (stack.some((f) => JIT.test(f))) return 'jit';
 	for (let i = stack.length - 1; i >= 0; i--) {
+		// Any other JSON.parse (a JWT's header and payload) belongs to its caller.
+		if (JSON_PARSE.test(stack[i]) && STACK_RECORD_PARSE.test(stack.slice(0, i).findLast(isJsFrame) ?? ''))
+			return 'decode';
 		const bucket = frameBucket(stack[i]);
 		if (!bucket) continue;
 		// Node's socket layer serves the database clients' connections too, so a socket write belongs to
@@ -495,6 +506,76 @@ function flameGraphSvg(stacks: { stack: string[]; count: number }[], title: stri
 
 let pipelineView = false;
 
+/**
+ * Where a profile's folded files are: at its recorded prefix, or at the longest tail of that path found under the
+ * results file's directory.
+ */
+export function locatePrefix(prefix: string, resultsFile: string, components: string[]): string {
+	const has = (candidate: string) => components.every((c) => existsSync(`${candidate}.${c}.folded`));
+	if (has(prefix)) return prefix;
+	const parts = prefix.split('/').filter(Boolean);
+	for (let i = 1; i < parts.length; i++) {
+		const candidate = join(dirname(resultsFile), ...parts.slice(i));
+		if (has(candidate)) return candidate;
+	}
+	throw new Error(`no folded files for ${prefix} at that path or under ${dirname(resultsFile)}`);
+}
+
+/** PROFILE.md's coarse view, eight rows of buckets. */
+const SUMMARY: [string, Bucket[]][] = [
+	['HTTP parse + write, socket I/O and syscalls', ['http']],
+	['routing, request/context setup, handler', ['routing']],
+	['authentication, permissions', ['auth']],
+	[
+		"data access: Harper's Table.get, transactions, record cache, RocksDB, decode; the stack's Redis and Postgres clients and servers, record JSON.parse",
+		['txn', 'record-cache', 'rocksdb', 'decode', 'cache-client', 'redis-server', 'pg-client', 'postgres-server'],
+	],
+	['response serialization (JSON)', ['serialize']],
+	['event loop, promise/microtask machinery', ['event-loop']],
+	['GC', ['gc']],
+	['JIT compilation, other', ['jit', 'other']],
+];
+
+function summaryTable(rows: ProfileRow[]): string[] {
+	const name = (r: ProfileRow) => `${r.target} ${r.workload} ${r.point}`;
+	const deltas: { label: string; c: ProfileRow; chain: ProfileRow; hops: number }[] = [];
+	for (const chain of rows) {
+		const hops = Number(/^chain-(\d+)$/.exec(chain.workload)?.[1]);
+		const c = rows.find((r) => r.workload === 'C' && r.target === chain.target && r.point === chain.point);
+		if (hops && c)
+			deltas.push({ label: `${chain.target} ${chain.point}: (${chain.workload} − C) / ${hops}`, c, chain, hops });
+	}
+	const sum = (r: ProfileRow, buckets: Bucket[]) => buckets.reduce((s, b) => s + (r.microsPerOp[b] ?? 0), 0);
+	const instructions = (r: ProfileRow) =>
+		r.profile.steady
+			? (r.profile.steady.perf.total.instructionsUser + r.profile.steady.perf.total.instructionsKernel) /
+				r.profile.steady.ops
+			: NaN;
+	const cell = (n: number, digits = 1) => (Number.isNaN(n) ? '–' : Math.abs(n) < 0.05 ? '–' : n.toFixed(digits));
+	const out = [
+		`| CPU µs/op | ${[...rows.map(name), ...deltas.map((d) => d.label)].join(' | ')} |`,
+		`|---|${[...rows, ...deltas].map(() => '--:').join('|')}|`,
+	];
+	for (const [label, buckets] of SUMMARY) {
+		const values = [
+			...rows.map((r) => sum(r, buckets)),
+			...deltas.map((d) => (sum(d.chain, buckets) - sum(d.c, buckets)) / d.hops),
+		];
+		out.push(`| ${label} | ${values.map((v) => cell(v)).join(' | ')} |`);
+	}
+	const totals = [
+		...rows.map((r) => r.profile.cpuMicrosPerOp),
+		...deltas.map((d) => (d.chain.profile.cpuMicrosPerOp - d.c.profile.cpuMicrosPerOp) / d.hops),
+	];
+	out.push(`| **total** | ${totals.map((v) => `**${v.toFixed(1)}**`).join(' | ')} |`);
+	const counted = [
+		...rows.map((r) => instructions(r) / 1000),
+		...deltas.map((d) => (instructions(d.chain) - instructions(d.c)) / d.hops / 1000),
+	];
+	out.push(`| instructions/op (k), steady window | ${counted.map((v) => cell(v)).join(' | ')} |`, '');
+	return out;
+}
+
 interface ResultSample {
 	target: string;
 	workload: string;
@@ -507,8 +588,10 @@ async function main(): Promise<void> {
 	const argv = process.argv.slice(2);
 	const svgDir = argv.find((a) => a.startsWith('--svg-dir='))?.slice('--svg-dir='.length);
 	pipelineView = argv.includes('--pipeline');
+	const summaryView = argv.includes('--summary');
 	const files = argv.filter((a) => !a.startsWith('--'));
-	if (files.length === 0) throw new Error('usage: profile-report.mts <results.json>... [--svg-dir=<dir>]');
+	if (files.length === 0)
+		throw new Error('usage: profile-report.mts <results.json>... [--svg-dir=<dir>] [--pipeline] [--summary]');
 	if (svgDir) await mkdir(svgDir, { recursive: true });
 	const rows: ProfileRow[] = [];
 	for (const file of files) {
@@ -517,6 +600,11 @@ async function main(): Promise<void> {
 			const profile = sample.measured?.profile;
 			if (!profile) continue;
 			const point = sample.ratio === undefined ? 'warm' : `${sample.ratio}x`;
+			profile.prefix = locatePrefix(
+				profile.prefix,
+				file,
+				Object.keys(profile.samples).filter((c) => profile.samples[c] > 0)
+			);
 			const label = basename(profile.prefix);
 			rows.push({
 				label,
@@ -540,7 +628,7 @@ async function main(): Promise<void> {
 			}
 		}
 	}
-	const out: string[] = [];
+	const out: string[] = summaryView ? summaryTable(rows) : [];
 	const buckets = Object.keys(BUCKETS) as Bucket[];
 	const used = buckets.filter((b) => rows.some((r) => (r.microsPerOp[b] ?? 0) >= 0.05));
 	out.push(`| bucket | ${rows.map((r) => `${r.target} ${r.workload} ${r.point}`).join(' | ')} |`);

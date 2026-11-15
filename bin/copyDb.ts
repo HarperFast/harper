@@ -1,5 +1,6 @@
 import { loadNativePackage } from '../utility/packageUtils.js';
 import {
+	forgetMovedLmdbRoot,
 	getDatabases,
 	getDefaultCompression,
 	resetDatabases,
@@ -631,6 +632,7 @@ export async function migrateOnStart() {
 			console.log('Backing up LMDB', databaseName, 'to', backupDest);
 			try {
 				await move(lmdbPath, backupDest, { overwrite: true });
+				forgetMovedLmdbRoot(lmdbPath);
 			} catch (error) {
 				console.log('Error moving database', lmdbPath, 'to', backupDest, error);
 			}

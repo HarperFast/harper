@@ -401,6 +401,8 @@ function compileTypeDef(name: string, shape: Shape, options: DefineTableOptions)
 		properties,
 		schemaDefined: true,
 		...tableOptions,
+		expiration: tableOptions.expiration ?? null,
+		eviction: tableOptions.eviction ?? null,
 	};
 }
 

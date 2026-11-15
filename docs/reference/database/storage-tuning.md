@@ -21,6 +21,10 @@ What an acknowledged write survives on a single node:
 
 For durability against machine, OS, power, or storage failure in a multi-node (Harper Pro) cluster, Harper relies on **replication confirmation** rather than local disk `fsync`. In production failures such as host failure or storage hardware loss, a local disk fails or becomes unreachable together with the rest of the machine, whereas an acknowledgement from a peer node on an independent machine means the write has been committed off-host. Because confirming RocksDB peers also commit to their own OS page cache without `fsync` and confirmation counts any `<k>` responding peers, surviving a power outage or site-wide failure requires peers in separate power or failure domains and setting `<k>` greater than the number of peers that share the writer's failure domain.
 
+Replication confirmation protects the cluster's copy of a write, not the writing node's own copy. After an OS crash or power loss, the writer can restart without its most recent commits even though peers confirmed them.
+
+<VersionBadge version="v5.5.0" /> On RocksDB, a Harper Pro node asks each peer, when it restarts, for the writes it originated that it may have lost, and applies the ones it is missing. Where Harper Pro cluster record locks are enabled (`replication.recordLocks`), a lock on that node that depends on its writes from before the restart waits until every peer has answered; if a peer does not answer before the lock's timeout (for example, because it is stopped), the lock fails with a 503 and can be retried once that peer is back. Writes made on that node without a record lock before recovery completes are not held back: an unlocked read-modify-write can still read the stale value.
+
 To require confirmation from `<k>` peer nodes before a write returns, use [replication confirmation](../replication/sharding.md):
 
 - **Operations API**: Set [`replicatedConfirmation: <k>`](../replication/sharding.md#replication-control-via-operations-api) in the operation payload. Omit `replicateTo` to use the database's configured replication (every node by default, unless [`replication.databases[].replicateTo`](../replication/sharding.md#replication-count) is set), or set `replicateTo` only when you also want to limit residency (dynamic sharding) to a fixed set of nodes.
@@ -542,12 +546,14 @@ Retains the pre-compaction backup files after `compactOnStart` runs. Recommended
 
 **Write-heavy ingest, durability via replication:**
 
-On RocksDB (the default), commits already avoid local disk `fsync`; pair a higher queue-time threshold in `harper-config.yaml` with per-write [replication confirmation](../replication/sharding.md) (`replicatedConfirmation` in the Operations or Resource API, or `X-Replicate-To: *;confirm=<k>` over REST — set on each write operation or request, not in `harper-config.yaml`) when writes must be confirmed by peer nodes before returning (on legacy LMDB databases, also add `writeAsync: true`):
+On RocksDB (the default), commits already avoid local disk `fsync`. When writes must be confirmed by peer nodes before returning, pair a higher queue-time threshold in `harper-config.yaml` with [replication confirmation](../replication/sharding.md). Set it on each write (`replicatedConfirmation` in the Operations or Resource API, or `X-Replicate-To: *;confirm=<k>` over REST), or, from v5.5, for every write with `replication.confirmation` in `harper-config.yaml` on Harper Pro (see [`replication`](../configuration/options.md#replication)). On legacy LMDB databases, also add `writeAsync: true`:
 
 ```yaml
 storage:
   prefetchWrites: true
   maxTransactionQueueTime: 60s
+replication:
+  confirmation: 1
 ```
 
 **Read-heavy cache layer with large blobs:**

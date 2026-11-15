@@ -56,7 +56,13 @@ const REVERSED_COMPARATOR: Record<string, string> = {
 	ge: 'le',
 };
 
-export type IndexedAttribute = { name: string; indexed: boolean; isPrimaryKey?: boolean; indexNulls?: boolean };
+export type IndexedAttribute = {
+	name: string;
+	type?: string;
+	indexed: boolean;
+	isPrimaryKey?: boolean;
+	indexNulls?: boolean;
+};
 
 // Single-sided range comparators, split by which bound they set, and the fused
 // comparator name that combines a lower + upper bound (matching the set
@@ -72,7 +78,7 @@ export function whereToConditions(predicate: ExprNode | undefined, attributes?: 
 	const conditions: ConditionNode[] = [];
 	const residuals: ExprNode[] = [];
 	for (const e of conjuncts) {
-		const cond = leafToCondition(e);
+		const cond = leafToCondition(e, attributes);
 		// Only push a conjunct into the Resource API condition tree when every
 		// attribute it references is indexed: Table.search runs searchByIndex on
 		// each condition and throws "…is not indexed" for an unindexed attribute.
@@ -324,7 +330,7 @@ function fuseRangeBounds(conditions: ConditionNode[], attributes?: IndexedAttrib
 	return fused;
 }
 
-function leafToCondition(expr: ExprNode): ConditionNode | undefined {
+function leafToCondition(expr: ExprNode, attributes: IndexedAttribute[] | undefined): ConditionNode | undefined {
 	switch (expr.kind) {
 		case 'binop': {
 			const baseComparator = BINARY_TO_COMPARATOR[expr.op];
@@ -398,6 +404,8 @@ function leafToCondition(expr: ExprNode): ConditionNode | undefined {
 		}
 		case 'like': {
 			if (expr.expr.kind !== 'column') return undefined;
+			const name = expr.expr.name;
+			if (attributes?.find((attribute) => attribute.name === name)?.type !== 'String') return undefined;
 			if (expr.pattern.kind !== 'literal' || typeof expr.pattern.value !== 'string') return undefined;
 			if (expr.negated) return undefined;
 			const tokens = tokenizeLike(expr.pattern.value, expr.escape);
@@ -431,7 +439,7 @@ function leafToCondition(expr: ExprNode): ConditionNode | undefined {
 			if (expr.op !== 'or' && expr.op !== 'and') return undefined;
 			const sub: ConditionNode[] = [];
 			for (const a of expr.args) {
-				const c = leafToCondition(a);
+				const c = leafToCondition(a, attributes);
 				if (!c) return undefined;
 				sub.push(c);
 			}

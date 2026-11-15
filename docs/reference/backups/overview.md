@@ -30,7 +30,7 @@ The long-running operations (`create_backup`, `verify_backup`, `restore_backup`)
 
 Backup operations work whether or not Harper is running. Invoked from the CLI while the server is running, the operation is forwarded to the server; while the server is stopped, the command operates directly on the database and backup files. `get_backup` is the exception — it streams from a running server and has no offline form. A CLI target, set with `target=`, an environment variable or `harper login`, changes this; see [running backup operations from the CLI](./operations.md#running-backup-operations-from-the-cli).
 
-The offline path matters for restore. RocksDB is single-writer, so an in-place restore requires the database to be fully closed first. A running Harper server can close its own worker threads' handles, but it cannot close a handle held by a loaded component, nor stop the `system` database it depends on to run — those databases can only be restored with the server stopped. See ["when can a database be restored"](#when-can-a-database-be-restored) below.
+The offline path matters for restore. RocksDB is single-writer, so an in-place restore requires the database to be fully closed first. A running Harper server can close its own worker threads' handles, but it cannot close a handle held by a loaded component, nor stop the `system` database it depends on to run. The `system` database can only be restored with the server stopped. A database a component holds can be restored with the server stopped, or, as of v5.4.0, at the next startup, before components load. See ["when can a database be restored"](#when-can-a-database-be-restored) below.
 
 ## Limitations
 
@@ -49,14 +49,15 @@ The offline path matters for restore. RocksDB is single-writer, so an in-place r
 
 An in-place restore purges and rewrites the database's files, which requires the database to be fully closed first. Whether a restore can run online depends on what is holding the database open:
 
-| Database                                           | Online `restore_backup` (server running) | Offline `harper restore_backup` (server stopped) |
-| -------------------------------------------------- | ---------------------------------------- | ------------------------------------------------ |
-| A user database not opened by any loaded component | Yes — restored in place                  | Yes                                              |
-| A user database that a loaded component keeps open | No — the job ends in `ERROR`             | Yes                                              |
-| The `system` database                              | No — rejected up front                   | Yes                                              |
+| Database                                           | Online `restore_backup` (server running) | `on_restart: true` (server running) | Offline `harper restore_backup` (server stopped) |
+| -------------------------------------------------- | ---------------------------------------- | ----------------------------------- | ------------------------------------------------ |
+| A user database not opened by any loaded component | Yes — restored in place                  | Yes, but restarts Harper            | Yes                                              |
+| A user database that a loaded component keeps open | No — the job ends in `ERROR`             | Yes — restored at the next startup  | Yes                                              |
+| The `system` database                              | No — rejected up front                   | No — rejected up front              | Yes                                              |
 
-- **Online** works only when no loaded component is holding the database open. Because `restore_backup` runs as a background job, the request returns a `job_id` first; if a component is holding the database open, the check fails inside the job, so the job ends in `ERROR` (surfaced by [`get_job`](../operations-api/operations.md#get_job)) with a message telling you to restore offline — Harper cannot force a component's handles closed while the server is running, and restoring under an open instance would corrupt it. (Harper does not track which component uses which database, so it cannot selectively stop one; it can only detect that the database is still open.) The `system` database is rejected up front, before a job is created.
-- **Offline** — the same [`restore_backup`](./operations.md#restore_backup) command run from the CLI with the server stopped — works for any database, because no components are loaded and nothing holds it open. This is the required path for the `system` database and for any database a component keeps open.
+- **Online** works only when no loaded component is holding the database open. Because `restore_backup` runs as a background job, the request returns a `job_id` first; if a component is holding the database open, the check fails inside the job, so the job ends in `ERROR` (surfaced by [`get_job`](../operations-api/operations.md#get_job)) with a message telling you to pass `on_restart: true` or restore offline — Harper cannot force a component's handles closed while the server is running, and restoring under an open instance would corrupt it. (Harper does not track which component uses which database, so it cannot selectively stop one; it can only detect that the database is still open.) The `system` database is rejected up front, before a job is created.
+- **At the next startup** <VersionBadge version="v5.4.0" /> — `restore_backup` with `on_restart: true` records the restore and restarts Harper, which applies it before any component loads, so it works for a database a component keeps open without stopping the server by hand. Its job stays `IN_PROGRESS` until the startup finishes it, and by default the startup first takes a backup of the database it replaces. See [restoring at the next startup](./operations.md#restoring-at-the-next-startup).
+- **Offline** — the same [`restore_backup`](./operations.md#restore_backup) command run from the CLI with the server stopped — works for any database, because no components are loaded and nothing holds it open. This is the required path for the `system` database.
 
 To restore into a new database instead of overwriting the source, pass `target_database` to `restore_backup`. As of v5.4.0 this works with the server running; before v5.4.0 it required the CLI with the server stopped.
 
@@ -86,7 +87,7 @@ Restore the latest backup, or pass `backup_id=<id>` for an earlier one:
 harper restore_backup database=data
 ```
 
-With the server running, this restores the database in place — Harper closes the database across its worker threads, checks the backup, restores it, and reloads it — as long as nothing is holding the database open (see [when can a database be restored?](#when-can-a-database-be-restored)). With the server stopped, the same command restores the files directly and works for any database.
+With the server running, this restores the database in place — Harper closes the database across its worker threads, checks the backup, restores it, and reloads it — as long as nothing is holding the database open (see [when can a database be restored?](#when-can-a-database-be-restored)). For a database a component keeps open, add `on_restart=true` to restore it at the next startup. With the server stopped, the same command restores the files directly and works for any database.
 
 ## Example: download a snapshot and restore it manually
 

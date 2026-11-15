@@ -35,6 +35,7 @@ import { chainRecords, inspectRecord, parseHops } from '../../ycsb/app/dependent
 // 9940, not 9925/9926: those are the ports the integration-test framework probes
 // when allocating a loopback address for the Harper side of the comparison.
 const PORT = Number(process.env.PORT ?? 9940);
+const HOST = process.env.LISTEN_HOST || '127.0.0.1';
 const WORKERS = Number(process.env.WORKERS ?? 4);
 const FIELDS = Number(process.env.FIELDS ?? 10);
 const POOL_SIZE = Number(process.env.PG_POOL ?? 12);
@@ -145,7 +146,7 @@ async function startWorker() {
 		return reply.code(status).send(body);
 	});
 
-	await app.listen({ port: PORT, host: '127.0.0.1', reusePort: true });
+	await app.listen({ port: PORT, host: HOST, reusePort: true });
 }
 
 if (cluster.isPrimary) {

@@ -578,6 +578,40 @@ describe('Transaction-log abort markers (storage.rocks.transactionLogAbortMarker
 	}
 
 	describe('history certification', function () {
+		it('records which logs predate this process from their file counts, reading none (harper#3968)', async function () {
+			const store = Audited.auditStore;
+			const prior = store.abortMarkedHistory;
+			restores.push(() => (store.abortMarkedHistory = prior));
+			await Audited.put({ id: id('unread'), writer: 'logged' });
+			const rootStore = store.rootStore;
+			const useLog = rootStore.useLog;
+			let queries = 0;
+			rootStore.useLog = (name) => {
+				const log = useLog.call(rootStore, name);
+				return {
+					getStats: () => log.getStats(),
+					query: (options) => {
+						queries++;
+						return log.query(options);
+					},
+				};
+			};
+			try {
+				establishAbortMarkedHistory(store);
+			} finally {
+				rootStore.useLog = useLog;
+			}
+			assert.equal(queries, 0, 'a query maps the file the boot purge then deletes');
+			for (const name of rootStore.listLogs()) {
+				const stats = rootStore.useLog(name).getStats();
+				assert.equal(
+					store.abortMarkedHistory.baseline.get(name),
+					stats.fileCount > 0 ? stats.currentSequenceNumber : undefined,
+					name
+				);
+			}
+		});
+
 		it('trusts a log only once the files that predate this process are purged', async function () {
 			const store = Audited.auditStore;
 			const prior = store.abortMarkedHistory;

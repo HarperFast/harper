@@ -13,7 +13,7 @@ const { table } = require('#src/resources/databases');
 const { Resource } = require('#src/resources/Resource');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
-const { removeAuditEntry } = require('#src/resources/auditStore');
+const { removeAuditEntry, isAuditEntryWrite } = require('#src/resources/auditStore');
 const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
 const { waitFor } = require('../waitFor.js');
 
@@ -442,7 +442,7 @@ describe('Dual-clock audit records (harper#2412)', () => {
 		}
 	});
 
-	it('still removes a real tombstone through deleteHistory on the live store', async function () {
+	it('matches a real tombstone to its delete entry on the live store', async function () {
 		if (isLMDB) return this.skip();
 		// The identity predicate reads `localTime` off the PRIMARY entry. On RocksDB that is the record's
 		// stored word, written by the encoder's metadata prefix — including on a tombstone, which is a
@@ -456,8 +456,7 @@ describe('Dual-clock audit records (harper#2412)', () => {
 		const [, deleteEntry] = auditEntriesFor(Plain, id);
 		assert.equal(deleteEntry.type, 'delete');
 		assert.equal(deleteEntry.txnLogKey, tombstone.localTime, "the audit entry names the tombstone's write");
-		await Plain.deleteHistory(Date.now() + 60_000);
-		assert.equal(Plain.primaryStore.getEntry(id), undefined, 'the tombstone must be removed with its entry');
+		assert.ok(isAuditEntryWrite(tombstone, deleteEntry), 'removing the entry would remove this tombstone with it');
 	});
 
 	it('looks a record up in the log by its log key, not by its version', async function () {

@@ -3,8 +3,9 @@ const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
-const { publishOriginFloor } = require('#src/resources/originClosedFloor');
-const { Transaction } = require('@harperfast/rocksdb-js');
+const { Transaction, raiseTimestampFloor } = require('@harperfast/rocksdb-js');
+const { waitFor } = require('../waitFor');
+const { ulpsAbove } = require('../nextLocalMints');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
@@ -37,11 +38,6 @@ describe('Every local-origin transaction has a unique log key', () => {
 	function assertDistinctKeys(entries) {
 		const keys = entries.map((entry) => entry.txnLogKey);
 		assert.equal(new Set(keys).size, keys.length, `log keys repeat: ${keys.join(', ')}`);
-	}
-	function ulpsAbove(value, count) {
-		const scratch = new Float64Array([value]);
-		new BigInt64Array(scratch.buffer)[0] += BigInt(count);
-		return scratch[0];
 	}
 
 	it('two writes with one explicit timestamp take distinct keys and keep the timestamp as their version', async () => {
@@ -185,19 +181,25 @@ describe('Every local-origin transaction has a unique log key', () => {
 			attributes,
 			audit: true,
 		});
-		// a future floor puts issuance in strict mode: minted keys come one ulp at a time above the ratchet,
-		// so an explicit value a few ulps above it is exactly where a later mint lands
-		const floor = Date.now() + 600_000;
-		publishOriginFloor(Floored.primaryStore.rootStore, floor);
-		const explicit = ulpsAbove(floor, 6);
+		// ahead of the clock by more than the writes before it take, so a raise can land a later mint on it
+		const explicit = Date.now() + 1000;
 		const ids = Array.from({ length: 12 }, newId);
 		await Floored.put(ids[0], { name: 'explicit' }, { timestamp: explicit });
-		for (let n = 1; n < ids.length; n++) await Floored.put(ids[n], { name: `minted-${n}` });
+		for (let n = 1; n < ids.length; n++) {
+			if (n === 6) {
+				assert(Date.now() < explicit, 'the writes before the raise overran the fixture lead');
+				raiseTimestampFloor(ulpsAbove(explicit, -1));
+			}
+			await Floored.put(ids[n], { name: `minted-${n}` });
+		}
 
 		const entries = ids.map((id) => entriesFor(id, Floored)[0]);
+		assert.equal(entries[6].txnLogKey, explicit, 'a later mint landed on the explicit value');
 		assertDistinctKeys(entries);
 		assert.equal(entries[0].version, explicit);
 		for (const [index, entry] of entries.entries())
 			assert.equal(lookup(entry.txnLogKey, ids[index], 0, Floored)?.recordId, ids[index], `entry ${index} by its key`);
+		// the raise is process-wide
+		await waitFor(() => Date.now() > explicit + 1, 5000, 10);
 	});
 });

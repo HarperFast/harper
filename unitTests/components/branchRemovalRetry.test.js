@@ -17,6 +17,7 @@ const {
 	resolveDatabaseStorageRoot,
 } = require('#src/resources/databases');
 const { getOrCreateBranch, hasPendingBranchRemoval } = require('#src/resources/branchDatabase');
+const { getBlobPathsForDatabaseName } = require('#src/resources/blob');
 const { setMainIsWorker, getWorkerIndex, startWorker } = require('#js/server/threads/manageThreads');
 const { preserveRootConfig, rootConfigEntry, setRootConfigEntry } = require('../rootConfigFixture.js');
 const { waitFor } = require('../waitFor.js');
@@ -109,6 +110,11 @@ describe('a branch removal a drop could not finish (harper#3463)', function () {
 		if (process.platform === 'win32' || process.getuid?.() === 0) return this.skip(); // root reads it anyway
 		operations.setBranchRemovalRetryDelayForTests?.(50);
 		const release = await heldFork('unread-app');
+		const blobRoots = getBlobPathsForDatabaseName(`${'unread-app'.length}_unread-app__${BASE}`);
+		assert.ok(
+			blobRoots.every((root) => existsSync(root)),
+			'sanity: the fork has blob roots to remove'
+		);
 		await assert.rejects(drop({ project: 'unread-app' }), /open reference\(s\) to its store remain/);
 		const branchRoot = path.dirname(forksOf('unread-app'));
 		chmodSync(branchRoot, 0o000);
@@ -124,6 +130,10 @@ describe('a branch removal a drop could not finish (harper#3463)', function () {
 			interval: 50,
 			message: 'the fork was left on disk',
 		});
+		assert.ok(
+			blobRoots.every((root) => !existsSync(root)),
+			'its blob roots go with it'
+		);
 	});
 
 	it('is cancelled by a later drop that keeps the branches', async () => {

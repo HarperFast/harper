@@ -289,5 +289,25 @@ describe(`Test callOperationFunctionAsAwait`, function () {
 			assert.ok(!logged.includes('super-secret-token'), `logged output leaked the secret: ${logged}`);
 			assert.ok(logged.includes('looks safe'), `expected the single classified/logged value, got: ${logged}`);
 		});
+
+		it('logs only the operation and status for a sealed request', async function () {
+			const { setOperationLogView } = require('#src/utility/operationLogView');
+			const input = new TestInputObject();
+			setOperationLogView(input, () => ({ operation: 'insert' }));
+			const sealed_failure = async function sealed_failure() {
+				const err = new Error('bad value SEALED-VALUE-MARKER');
+				err.statusCode = 422;
+				err.http_resp_msg = 'bad value SEALED-VALUE-MARKER';
+				throw err;
+			};
+
+			await assert.rejects(op_func_caller.callOperationFunctionAsAwait(sealed_failure, input, null), {
+				statusCode: 422,
+			});
+
+			const logged = logged_calls.map((call_args) => call_args.join(' ')).join('\n');
+			assert.ok(!logged.includes('SEALED-VALUE-MARKER'), `a sealed request's error message was logged: ${logged}`);
+			assert.ok(logged.includes('sealed_failure (sealed request, status 422)'), logged);
+		});
 	});
 });

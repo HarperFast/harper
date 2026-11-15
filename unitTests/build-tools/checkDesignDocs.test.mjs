@@ -476,7 +476,7 @@ describe('build-tools/check-design-docs.mjs', function () {
 			assert.match((await errorsOf({ base: head })).join('\n'), /over its ceiling/);
 		});
 
-		it('holds every ceilinged file when the ceilings file itself changes', async function () {
+		it('holds an unchanged file whose ceiling the change lowers', async function () {
 			write(dir, {
 				'big/DESIGN.md': sized(over),
 				[CEILINGS_FILE]: ceilings({ 'lib/DESIGN.md': over, 'big/DESIGN.md': over }),
@@ -484,6 +484,38 @@ describe('build-tools/check-design-docs.mjs', function () {
 			const head = commit('big grows with a ceiling');
 			write(dir, { [CEILINGS_FILE]: ceilings({ 'lib/DESIGN.md': over - 10, 'big/DESIGN.md': over }) });
 			assert.match((await errorsOf({ base: head })).join('\n'), /lib\/DESIGN\.md is [\d,]+ bytes, over its ceiling/);
+		});
+
+		it('retires the ceiling of a pruned file without holding another file left over its unchanged one', async function () {
+			const bigOver = sized(over + 100).replace('## Note', '## Big');
+			write(dir, {
+				'big/DESIGN.md': bigOver,
+				[CEILINGS_FILE]: ceilings({ 'lib/DESIGN.md': over, 'big/DESIGN.md': over }),
+			});
+			const raced = commit('a race left big/DESIGN.md over its ceiling');
+			const bigOverCeiling = /big\/DESIGN\.md is [\d,]+ bytes, over its ceiling/;
+
+			write(dir, { 'lib/DESIGN.md': sized(20_000) });
+			assert.deepStrictEqual(updateCeilings({ root: dir }), { 'big/DESIGN.md': over });
+			const { errors, warnings } = await checkDesignDocs({ root: dir, base: raced });
+			assert.deepStrictEqual(errors, []);
+			assert.match(warnings.join('\n'), bigOverCeiling);
+			for (const args of [[], ['--push']]) {
+				const run = spawnSync(process.execPath, [CLI, '--root', dir, '--base', raced, ...args], {
+					encoding: 'utf8',
+					timeout: DEADLINE,
+				});
+				assert.strictEqual(run.status, 0, run.stderr);
+				assert.match(run.stderr, bigOverCeiling);
+			}
+			assert.match((await errorsOf()).join('\n'), bigOverCeiling, 'without --base every file is held');
+
+			write(dir, { [CEILINGS_FILE]: JSON.stringify({ 'big/DESIGN.md': over }, null, 2) });
+			assert.deepStrictEqual(await errorsOf({ base: raced }), [], 'reformatting leaves an entry unchanged');
+			write(dir, { [CEILINGS_FILE]: ceilings({ 'big/DESIGN.md': over - 1 }) });
+			assert.match((await errorsOf({ base: raced })).join('\n'), bigOverCeiling, 'a lowered entry holds its file');
+			write(dir, { [CEILINGS_FILE]: ceilings({ 'big/DESIGN.md': over }), 'big/DESIGN.md': `${bigOver}more\n` });
+			assert.match((await errorsOf({ base: raced })).join('\n'), bigOverCeiling, 'an edited file is held');
 		});
 
 		it('rejects dropping the ceiling of a file still over budget, or deleting the ceilings file', async function () {

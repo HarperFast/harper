@@ -1,5 +1,6 @@
 /**
- * Multi-worker comparison for record-lock issuance before and after one strict ratchet claim.
+ * Multi-worker comparison for record-lock issuance before a claim ahead of the clock, during its lead,
+ * and after wall time has passed it.
  * Run `npm run bench:record-lock-admission`.
  */
 require('../testUtils');
@@ -106,7 +107,7 @@ describe('Benchmark: record-lock issuance across workers', function () {
 		return performance.now() - start;
 	}
 
-	it('reports multi-worker lock and ordinary-save throughput before and after a strict claim', async function () {
+	it('reports multi-worker lock and ordinary-save throughput around a claim ahead of the clock', async function () {
 		const warm = await lockedWrites();
 		await plainWrites('warm');
 		const beforeLock = await lockedWrites();
@@ -128,7 +129,10 @@ describe('Benchmark: record-lock issuance across workers', function () {
 		const firstPostClaimMs = performance.now() - claimStart;
 		const afterLock = await lockedWrites();
 		const afterPlain = await plainWrites('after');
-		const strictCeiling = readLocalIssuanceCeiling(LockTable.auditStore);
+		const claimCeiling = readLocalIssuanceCeiling(LockTable.auditStore);
+		await waitFor(() => Date.now() > claimCeiling + 1, { timeout: 10_000, interval: 20 });
+		const caughtUpLock = await lockedWrites();
+		const caughtUpPlain = await plainWrites('caught-up');
 		console.log('');
 		console.log(`  warm-up: ${warm.toFixed(0)} ms`);
 		console.log(`  first post-claim lock+save (with durable ceiling flush): ${firstPostClaimMs.toFixed(2)} ms`);
@@ -144,6 +148,12 @@ describe('Benchmark: record-lock issuance across workers', function () {
 		console.log(
 			`  ${WORKERS + 1} workers, ${PLAIN_WRITES} ordinary puts after claim:  ${rate(PLAIN_WRITES, afterPlain)} (${afterPlain.toFixed(0)} ms)`
 		);
-		console.log(`  strict ceiling: ${strictCeiling}`);
+		console.log(
+			`  ${WORKERS + 1} workers, ${PER_WORKER * (WORKERS + 1)} lock writes after catch-up: ${rate(PER_WORKER * (WORKERS + 1), caughtUpLock)} (${caughtUpLock.toFixed(0)} ms)`
+		);
+		console.log(
+			`  ${WORKERS + 1} workers, ${PLAIN_WRITES} ordinary puts after catch-up: ${rate(PLAIN_WRITES, caughtUpPlain)} (${caughtUpPlain.toFixed(0)} ms)`
+		);
+		console.log(`  claim ceiling: ${claimCeiling}`);
 	});
 });

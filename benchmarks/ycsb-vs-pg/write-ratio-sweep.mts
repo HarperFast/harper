@@ -102,11 +102,20 @@ async function measureRatio(ratio: number): Promise<{ throughput: number; cpu: n
 			const reps: { throughput: number; cpu: number }[] = [];
 			for (let rep = 0; rep < REPS; rep++) {
 				const clock = new ClockProbe(SERVER_CPUS);
-				const before = await sampleResources(targets);
-				clock.start();
-				const result = await driver.runWorkload('C', 'zipfian', OPS, mix);
-				const ghz = clock.stop();
-				const delta = diffResources(before, await sampleResources(targets));
+				let before!: Awaited<ReturnType<typeof sampleResources>>;
+				let after!: Awaited<ReturnType<typeof sampleResources>>;
+				let ghz = 0;
+				const result = await driver.runWorkload('C', 'zipfian', OPS, mix, {
+					async begin() {
+						before = await sampleResources(targets);
+						clock.start();
+					},
+					async end() {
+						ghz = clock.stop();
+						after = await sampleResources(targets);
+					},
+				});
+				const delta = diffResources(before, after);
 				reps.push({ throughput: result.throughput, cpu: delta.totalCpuSeconds });
 				console.log(
 					`    [${new Date().toTimeString().slice(0, 8)}] rep ${rep}: ${result.throughput.toFixed(0)} ops/sec, ` +
@@ -159,11 +168,12 @@ async function measureRatio(ratio: number): Promise<{ throughput: number; cpu: n
 		fastifyUnit: `ycsb-ratio-sweep-${process.pid}-${ratio}`.replace('.', '_'),
 	});
 	try {
+		// The whole stack runs here, so Fastify's URL and pid are set.
 		await waitForRoute(`${stack.baseUrl}/usertable/`, 30_000);
 		return await run(
-			stack.baseUrl,
+			stack.baseUrl!,
 			{ processes: {}, cgroups: stack.cgroups, redisExec: stack.redisExec },
-			{ fastify: stack.appPid }
+			{ fastify: stack.appPid! }
 		);
 	} finally {
 		await stack.stop();

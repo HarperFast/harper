@@ -15,7 +15,7 @@ Harper uses an asynchronous job system for long-running data operations. When a 
 Job status values:
 
 - `CREATED` — the job is queued and has not started
-- `IN_PROGRESS` — the job is currently running
+- `IN_PROGRESS` — the job is currently running. From v5.4.0, a job with `deferred_to` set is waiting for the next startup to do its work, as a [restore at the next startup](../backups/operations.md#restoring-at-the-next-startup) does
 - `COMPLETE` — the job finished successfully
 - `ERROR` — the job failed; its `message` holds the error
 

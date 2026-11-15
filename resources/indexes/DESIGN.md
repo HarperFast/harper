@@ -486,10 +486,9 @@ snapshot being searched.
 Coverage-only publications do not change the document set: the runtime permits them only after every
 accepted index mutation through that capture is durable. The shared live watermark may therefore wake a
 waiting query before Tantivy commits the newer restart checkpoint; the existing reader is data-current,
-and the later publication notification reloads its checkpoint. Catalog-scale qualification measures this
-metadata-only reload cadence so unrelated write traffic cannot become a hidden query-plane cost.
+and the later publication notification reloads its checkpoint.
 Missing, cursorless or malformed payloads fail closed and request one rebuild. A strict, non-waiting query on a
-cold worker can return retryable lag while it opens the reader; retrying, or using
+cold worker can return retryable lag while it opens the reader unless `quietMarkHolds`; retrying, or using
 `waitForIndexMilliseconds`, allows the aligned reader to finish opening without synchronous filesystem
 inspection. An epoch or query-configuration change requires a replacement handle. A publication reload
 uses the existing handle only while it has no active lease; otherwise Harper opens a replacement and

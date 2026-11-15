@@ -39,7 +39,8 @@ describe('Subscription superseded versions', () => {
 		}
 		const subscription = await T.subscribe({ ...options, listener: (event) => events.push(event) });
 		subscriptions.push(subscription);
-		if (replayEnd) await waitFor(() => subscription.startTime >= replayEnd);
+		// a startTime replay moves replayedThrough; a previousCount replay moves startTime
+		if (replayEnd) await waitFor(() => (subscription.replayedThrough ?? subscription.startTime) >= replayEnd);
 		return { subscription, events };
 	}
 	async function versions() {

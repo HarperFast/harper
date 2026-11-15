@@ -88,6 +88,10 @@ The walk masks the value of a data property or Map entry whose key (a symbol by 
 
 Tests: the `inspectForLog` block in `unitTests/utility/logging/harper_logger.test.js`.
 
+## A failed log append falls back to raw stdio (`utility/logging/harper_logger.ts` `logQueuedData`)
+
+On a full volume every log statement is a crash point, so a refused append never throws (#847), and its fallback writes through `writeToStdioDirectly`, never `console`: `installStdioGuard` routes console output back into this logger when `logging.file` and `logging.console` are both on. Stated where `logQueuedData` catches the append.
+
 ## Local messages name the product through `PRODUCT_NAME` (`utility/packageUtils.js`)
 
 Startup, install, restart, stop, upgrade and status messages about the local instance interpolate `PRODUCT_NAME`, the `productName` of the package.json `findPackageJson()` resolves — Harper's own, or Harper Pro's root manifest when core runs compiled under its `dist/core` (Harper Pro ships no other package.json on that path; its `unitTests/bin/productName.test.mjs` asserts both). Distributions brand these messages by declaring `productName`, never by rewriting core sources: Harper Pro's former build-time `s/Harper/Harper Pro/` stopped matching when `bin/` moved to TypeScript, and over the `.ts` sources it would also have put a space into the unquoted deploy multipart boundary. Messages about a remote target or Fabric, and identifiers such as that boundary, keep the literal "Harper".
@@ -99,6 +103,8 @@ Startup, install, restart, stop, upgrade and status messages about the local ins
 ## Local times are unique across threads (`utility/lmdb/commonUtility.ts` `getNextMonotonicTime`)
 
 Every thread of a process mints from one clock word, a `SharedArrayBuffer` holding the bit pattern of the last time issued, advanced by compare-and-swap to `max(now, last + 1 ulp)`. Same-node writes with equal versions are treated as re-deliveries (`precedesExistingVersion`), and LMDB keys its audit log by that version, so two threads issuing one time would silently drop the second write. The word reaches workers through `setEnvironmentData` and the `monotonicClock` workerData provider in `server/threads/manageThreads.ts`. Environment data is inherited transitively, so only a thread lineage in which no ancestor loaded the module (never the case under Harper, whose `manageThreads.ts` loads it on the main thread) or another process has a clock of its own. Uniqueness is per process and per run, not across restarts or clock rollback. Enforced by `unitTests/utility/lmdb/monotonicTime.test.js` and `integrationTests/database/lmdb-concurrent-crdt-add.test.ts`.
+
+The 60 s re-anchor and each issued time read `Date.now` and a bound `performance.now` captured when the module loads, never the live globals; so no test may replace either at a file's top level, before the module's first load. A test that stubs either across an await would otherwise skew every thread's write versions for up to a minute, and the ratchet keeps any time issued ahead: once that left LMDB versions 100+ ms ahead of `Date.now()`, so six out-of-order tests in a later file saw their "newer" writes as older (harper#4288). Enforced by the stubbed-timers case in `monotonicTime.test.js`.
 
 ## RocksDB arena size and flush policy stay rocksdb-js's unless configured (`utility/rocksMemoryConfig.ts`)
 

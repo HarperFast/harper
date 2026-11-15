@@ -157,6 +157,26 @@ test('KeyState.keyCount tracks the acknowledged frontier so reps can carry the k
 	strictEqual(keys.keyCount, 102, 'contiguous acks advance the frontier — next rep seeds from here');
 });
 
+test('a synchronous executor runs without promises and still advances the insert frontier past a failure', async () => {
+	const keys = new KeyState({
+		distribution: 'uniform',
+		initialKeyCount: 10,
+		keyWidth: 8,
+		shape: { fieldCount: 1, fieldLength: 4 },
+		maxScanLength: 10,
+	});
+	let inserts = 0;
+	const executor = {
+		insert() {
+			if (++inserts === 3) throw new Error('refused');
+		},
+	} as unknown as OpExecutor;
+	const result = await runOperations({ opCount: 20, concurrency: 4, mix: { insert: 1 }, executor, keys });
+	strictEqual(result.ops, 19);
+	strictEqual(result.errors, 1);
+	strictEqual(keys.keyCount, 30, 'the failed insert still acknowledged its key');
+});
+
 test('LatencyRecorder computes ordered percentiles', () => {
 	const recorder = new LatencyRecorder();
 	for (let i = 1; i <= 1000; i++) recorder.record('read', i);

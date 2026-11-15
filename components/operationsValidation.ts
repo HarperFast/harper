@@ -51,6 +51,7 @@ export {
 	setSecretValidator,
 	grantSecretValidator,
 	deleteSecretValidator,
+	encryptedOperationValidator,
 };
 
 /**
@@ -381,6 +382,24 @@ function deleteSecretValidator(req) {
 	});
 
 	return validator.validateBySchema(req, schema);
+}
+
+const ENCRYPTED_OPERATION_SCHEMA = Joi.object({
+	envelope: Joi.string()
+		.required()
+		.pattern(SECRET_ENVELOPE_REGEX)
+		.messages({ 'string.pattern.base': `'envelope' must be an '${ENV_ENCRYPTED_PREFIX}' base64url envelope` }),
+	mode: Joi.string().valid('sealed', 'fields'),
+	op: Joi.when('mode', { is: 'fields', then: Joi.string().required(), otherwise: Joi.forbidden() }),
+});
+
+/**
+ * Lengths are checked by the handler before this runs, so the pattern never scans an oversized envelope.
+ * @param req
+ * @returns {*}
+ */
+function encryptedOperationValidator(req) {
+	return validator.validateBySchema(req, ENCRYPTED_OPERATION_SCHEMA);
 }
 
 /**

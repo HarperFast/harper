@@ -29,6 +29,40 @@ const MINTER = `
 `;
 const minterSource = MINTER.replace('__MINTER__', () => JSON.stringify(MINTER));
 
+// Runs on its own clock word, so a skew from a failing run cannot leak into this process's clock.
+const STUBBED_TIMERS = `
+	const { parentPort, workerData } = require('node:worker_threads');
+	const realSetInterval = setInterval;
+	let reanchor;
+	globalThis.setInterval = (callback, ms) => realSetInterval((reanchor = callback), ms);
+	const { getNextMonotonicTime } = require(workerData.commonUtility);
+	globalThis.setInterval = realSetInterval;
+	const realDateNow = Date.now;
+	const realPerformanceNow = performance.now;
+	const offset = workerData.offset;
+	const skew = () => getNextMonotonicTime() - realDateNow();
+	const stubbed = (stub, measure) => {
+		stub();
+		try {
+			return measure();
+		} finally {
+			Date.now = realDateNow;
+			performance.now = realPerformanceNow;
+		}
+	};
+	const skews = {};
+	stubbed(() => (Date.now = () => realDateNow() + offset), reanchor);
+	skews['re-anchored with Date.now ahead'] = skew();
+	stubbed(() => (performance.now = () => realPerformanceNow.call(performance) - offset), reanchor);
+	skews['re-anchored with performance.now behind'] = skew();
+	skews['issued with performance.now ahead'] = stubbed(
+		() => (performance.now = () => realPerformanceNow.call(performance) + offset),
+		skew
+	);
+	skews['issued after performance.now was ahead'] = skew();
+	parentPort.postMessage(skews);
+`;
+
 function assertStrictlyIncreasing(times, label) {
 	for (let i = 1; i < times.length; i++) {
 		if (!(times[i] > times[i - 1])) assert.fail(`${label}: ${times[i]} at ${i} does not follow ${times[i - 1]}`);
@@ -83,6 +117,26 @@ describe('getNextMonotonicTime', function () {
 			assert.strictEqual(repeated, 0, `${repeated} of ${seen.size + repeated} times were issued on two threads`);
 		} finally {
 			await Promise.all(workers.map((worker) => worker.terminate()));
+		}
+	});
+
+	it('is not moved by a later replacement of Date.now or performance.now', async function () {
+		const offset = 10_000;
+		const worker = new Worker(STUBBED_TIMERS, {
+			eval: true,
+			workerData: { commonUtility: COMMON_UTILITY, offset, monotonicClock: new SharedArrayBuffer(8) },
+		});
+		try {
+			const skews = await new Promise((resolve, reject) => {
+				worker.once('message', resolve);
+				worker.once('error', reject);
+				worker.once('exit', (code) => reject(new Error(`worker exited with ${code} before reporting`)));
+			});
+			for (const [when, skew] of Object.entries(skews)) {
+				assert.ok(Math.abs(skew) < 1000, `${when}: issued ${skew} ms from the real wall clock`);
+			}
+		} finally {
+			await worker.terminate();
 		}
 	});
 });

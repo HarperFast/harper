@@ -772,7 +772,7 @@ async function generateCertAuthority(private_key, publicKey, writeKey = true) {
 	const keysPath = path.join(envManager.getHdbBasePath(), hdbTerms.LICENSE_KEY_DIR_NAME);
 	const privatePath = path.join(keysPath, certificatesTerms.PRIVATEKEY_PEM_NAME);
 	if (writeKey) {
-		await fs.writeFile(privatePath, loadForge().pki.privateKeyToPem(private_key));
+		configUtils.atomicWriteFile(privatePath, loadForge().pki.privateKeyToPem(private_key), { ownerOnly: true });
 	}
 
 	return caCert;

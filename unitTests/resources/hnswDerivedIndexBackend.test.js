@@ -197,6 +197,21 @@ describe('HnswDerivedIndexBackend durability barriers', () => {
 		assert.deepStrictEqual(backend.getDurableCursor().logs, { local: 1 });
 	});
 
+	it('fingerprints its stored cursor vector for idle admission, and has none once the store is cleared', async () => {
+		start(0);
+		assert.strictEqual(backend.quietToken(), undefined);
+		deliver(1);
+		backend.flush('threshold');
+		(await waitFor(() => index.barriers[0], 5000)).settle();
+		await waitFor(() => backend.getDurableCursor()?.logs.local === 1, 5000);
+		const token = backend.quietToken();
+		assert.strictEqual(typeof token, 'number');
+		backend.publishCoverage({ local: { sequence: 1, offset: 10 } }, OWNER_EPOCH);
+		assert.strictEqual(backend.quietToken(), token, 'coverage is not part of the vector');
+		await index.indexStore.clear();
+		assert.strictEqual(backend.quietToken(), undefined);
+	});
+
 	it('strips coverage a cursor carries once an unanchored chunk applies after it', async () => {
 		start(0);
 		const coverage = { local: { sequence: 1, offset: 10 } };

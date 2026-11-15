@@ -425,6 +425,13 @@ export class DeploymentRecorder {
 		await this.put();
 	}
 
+	/** Written without waiting for the next progress event, which a silent install can hold off until it ends. */
+	recordRouting(routing: Record<string, unknown> | null): void {
+		if (this.finished) return;
+		this.record.routing = routing;
+		this.scheduleFlush();
+	}
+
 	/**
 	 * Upsert a single peer outcome by node name. Called per-peer as each replication
 	 * target settles, so the row reflects in-flight progress rather than only the

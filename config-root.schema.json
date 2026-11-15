@@ -404,6 +404,18 @@
 						}
 					}
 				},
+				"confirmation": {
+					"type": "integer",
+					"minimum": 0,
+					"maximum": 9007199254740991,
+					"description": "Peer confirmations a write transaction waits for when the write sets no replicatedConfirmation. Not applied to the system database. Default: 0 (no wait). An explicit per-write value, including 0, overrides it."
+				},
+				"recordLockConfirmation": {
+					"type": "integer",
+					"minimum": 0,
+					"maximum": 9007199254740991,
+					"description": "Minimum peer confirmations a commit waits for while its transaction holds a cluster record lock; the larger of this and the write's own count applies. Default: 1 when replication.recordLocks is true, else 0. Set 0 to commit locked writes without waiting."
+				},
 				"confirmationTimeout": {
 					"type": "integer",
 					"minimum": 1,
@@ -474,6 +486,13 @@
 					"uniqueItems": true,
 					"items": { "type": "integer", "minimum": 0, "maximum": 65535 },
 					"description": "Complete shard-ID set, shared by all nodes. Required to initialize a sharding map automatically; installed maps remain authoritative. Different lists block declarative writes."
+				},
+				"spareShards": {
+					"type": "array",
+					"maxItems": 65536,
+					"uniqueItems": true,
+					"items": { "type": "integer", "minimum": 0, "maximum": 65535 },
+					"description": "Shard IDs from replication.shards that a default map gives no slots, so nodes can join them owning nothing. Shared by all nodes; different lists block declarative writes."
 				},
 				"logging": { "$ref": "#/definitions/loggerConfig" }
 			}

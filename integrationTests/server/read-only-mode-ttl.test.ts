@@ -9,6 +9,7 @@ import { suite, test, before, after } from 'node:test';
 import { deepStrictEqual, ok, strictEqual } from 'node:assert';
 import { resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { waitFor } from '../../unitTests/waitFor.js';
 
 import request from 'supertest';
 
@@ -46,8 +47,14 @@ suite('read-only mode leaves an expired record alone', { skip: skipSuite }, (ctx
 				.send({ id, name: 'ttl', expiresAt })
 				.expect((r: any) => ok(r.status < 300, `seeding failed: ${r.status} ${r.text}`));
 		}
-		// fill the caching table while writes are allowed
-		for (const id of ['expired', 'live']) await client.reqRest(`/SessionRef/${id}`).expect(200);
+		// A source GET can resolve before its background cache write commits.
+		for (const id of ['expired', 'live']) {
+			await client.reqRest(`/SessionRef/${id}`).expect(200);
+			await waitFor(async () => (await rawEntry('SessionRef', id)).hasValue, {
+				timeout: 10_000,
+				message: `the source fill for ${id} never committed`,
+			});
+		}
 		await killHarper(ctx);
 		await startHarper(ctx, { config: { storage: { readOnly: true } }, env: {} });
 		client = createApiClient(ctx.harper);
@@ -97,6 +104,8 @@ suite('read-only mode leaves an expired record alone', { skip: skipSuite }, (ctx
 			.reqRest('/SessionRef/?select(id,session{id,name})')
 			.set('Cache-Control', 'only-if-cached')
 			.expect(200);
+		for (const id of ['expired', 'live'])
+			ok((await rawEntry('SessionRef', id)).hasValue, `missing cached parent ${id}`);
 		const sessions = Object.fromEntries(response.body.map((row: any) => [row.id, row.session]));
 		deepStrictEqual(sessions, { live: { id: 'live', name: 'ttl' }, expired: { id: 'expired', name: 'ttl' } });
 	});

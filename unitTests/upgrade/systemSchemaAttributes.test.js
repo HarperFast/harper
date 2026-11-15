@@ -5,6 +5,8 @@ const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
 
 const { databases } = require('#src/resources/databases');
+const { recordAction } = require('#src/resources/analytics/write');
+const { waitFor } = require('../waitFor.js');
 const directivesController = require('#src/upgrade/directives/directivesController');
 const { UpgradeObject } = require('#src/upgrade/UpgradeObjects');
 
@@ -17,6 +19,23 @@ const registerAttributesOf540 = () =>
 describe('5.4.0 directive: system-table attributes added after the table was created (harper#2659)', () => {
 	before(async () => {
 		await testUtils.ensureSystemTables();
+	});
+
+	// First: a registration before it would put back what the writer's declaration removed, hiding a disagreement.
+	it('adds nothing to a table the analytics writer has declared since the catalog was made', async () => {
+		const metric = `schema-attributes-${process.pid}`;
+		recordAction(1, metric);
+		await waitFor(() => {
+			for (const { value } of databases.system.hdb_raw_analytics.primaryStore.getRange({
+				start: false,
+				end: Infinity,
+			})) {
+				if (value?.metrics?.some((entry) => entry.metric === metric)) return true;
+			}
+			return false;
+		}, 10_000);
+
+		assert.deepStrictEqual(await registerAttributesOf540()(), []);
 	});
 
 	it('runs on every upgrade from a release before 5.4.0', () => {

@@ -288,7 +288,9 @@ async function processGraphQLSchema(
 						// Boolean directive args arrive as actual booleans; tolerate string forms too.
 						if (typeDef.randomAccessFields !== undefined)
 							typeDef.randomAccessFields = typeDef.randomAccessFields === true || typeDef.randomAccessFields === 'true';
-						// schema is authoritative for cacheControl: null (vs undefined) clears a removed directive on reload;
+						typeDef.expiration ??= null;
+						typeDef.eviction ??= null;
+						// schema is authoritative for the TTL and cacheControl: null (vs undefined) clears a removed directive on reload;
 						// coerce to a header-safe string so a non-string arg or CRLF can't reach the HTTP response
 						typeDef.cacheControl =
 							typeDef.cacheControl == null

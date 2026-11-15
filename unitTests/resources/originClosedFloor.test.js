@@ -17,14 +17,17 @@ const {
 	WORD_INITIAL_CEILING,
 	WORD_PROPOSED,
 	WORD_PUBLISHED,
-	WORD_RATCHET,
+	WORD_ISSUANCE_FLOOR,
 	WORD_SLOT_LIMIT,
-	WORD_STRICT,
+	WORD_COVERED,
+	WORD_DURABLE_CEILING,
+	WORD_WRITE_FENCE,
 	certifyOriginFloor,
 	claimLocalKey,
 	freshLocalKey,
 	forgetOriginFloorRegistry,
-	localIssuanceRatchet,
+	localIssuanceFloor,
+	localIssuedAheadThrough,
 	getOriginClosedFloor,
 	localStartBound,
 	publishOriginFloor,
@@ -32,6 +35,12 @@ const {
 	releaseLocalKey,
 	retireOriginFloorSlots,
 	seedLocalIssuance,
+	setLocalWriteFence,
+	localWritesFenced,
+	restoreLocalWriteFence,
+	setNewRootWriteFence,
+	rekeyLocalRetry,
+	timestampAbove,
 } = require('#src/resources/originClosedFloor');
 const {
 	persistOriginClosedFloor,
@@ -129,10 +138,12 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 		const headerWords = [
 			WORD_PROPOSED,
 			WORD_PUBLISHED,
-			WORD_RATCHET,
-			WORD_STRICT,
+			WORD_ISSUANCE_FLOOR,
+			WORD_COVERED,
 			WORD_INITIAL_CEILING,
 			WORD_SLOT_LIMIT,
+			WORD_DURABLE_CEILING,
+			WORD_WRITE_FENCE,
 		];
 		assert.strictEqual(new Set(headerWords).size, headerWords.length, 'header word indices must be distinct');
 		for (const word of headerWords) {
@@ -140,6 +151,18 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 				Number.isInteger(word) && word >= 0 && word < HEADER_WORDS,
 				`header word ${word} must be in [0, ${HEADER_WORDS})`
 			);
+		}
+	});
+
+	it('keeps the write fence in the low 32 bits of its word, which every access reads through one Int32 view', () => {
+		const words = new BigInt64Array(rootStore.getUserSharedBuffer('origin-closed-floor', new ArrayBuffer(0)));
+		try {
+			for (let change = 0; change < 3; change++) {
+				setLocalWriteFence(rootStore, change % 2 === 0);
+				assert.strictEqual(Atomics.load(words, WORD_WRITE_FENCE) >> 32n, 0n);
+			}
+		} finally {
+			setLocalWriteFence(rootStore, false);
 		}
 	});
 
@@ -268,6 +291,111 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 		assert(second > first, 'the floor follows the clock while nothing is outstanding');
 		assert.equal(readOriginClosedFloor(auditStore), second, 'the advertised floor is the persisted one');
 		assert(second <= rootStore.getMonotonicTimestamp(), 'the floor never runs ahead of the clock');
+	});
+
+	it('a write fence refuses a new local write, admits a transaction that already reserved, and sets a target above it', async () => {
+		let target;
+		try {
+			await transaction({}, async () => {
+				await Tbl.put({ id: 'fence-admitted', n: 1 });
+				target = setLocalWriteFence(rootStore, true);
+				await Tbl.put({ id: 'fence-admitted-2', n: 2 });
+			});
+			assert(localWritesFenced(rootStore));
+			const [entry] = entriesFor('fence-admitted');
+			assert(entry, 'the transaction that reserved before the fence committed');
+			assert(entry.txnLogKey < target, `admitted key ${entry.txnLogKey} is below the target ${target}`);
+			assert.equal(entriesFor('fence-admitted-2')[0]?.txnLogKey, entry.txnLogKey);
+			await assert.rejects(
+				async () => Tbl.put({ id: 'fence-refused', n: 3 }),
+				(error) => {
+					assert.equal(error.statusCode, 503);
+					assert.match(error.message, /being removed from its cluster/);
+					return true;
+				}
+			);
+			assert.equal(entriesFor('fence-refused').length, 0);
+			await sleep(2);
+			assert(certify() >= target, 'the floor reaches the target once the admitted transaction has settled');
+		} finally {
+			setLocalWriteFence(rootStore, false);
+		}
+		assert(!localWritesFenced(rootStore));
+		await Tbl.put({ id: 'fence-cleared', n: 4 });
+		assert.equal(entriesFor('fence-cleared').length, 1);
+	});
+
+	it('a reservation the fence lands during is released and refused (worker thread)', async () => {
+		const gate = new Int32Array(new SharedArrayBuffer(4));
+		const { next } = startWorker({ mode: 'park-reserving', gate, tableName, record: { id: 'fence-raced', n: 1 } });
+		await next('ready');
+		await next('parked');
+		const target = setLocalWriteFence(rootStore, true);
+		try {
+			releaseGate(gate);
+			await assert.rejects(next('committed'), /being removed from its cluster/);
+			assert.equal(entriesFor('fence-raced').length, 0);
+			await sleep(2);
+			assert(certify() >= target, 'the refused reservation released its bound');
+		} finally {
+			setLocalWriteFence(rootStore, false);
+		}
+	});
+
+	it('a retry re-keyed above the target holds the floor below it until it settles, so a floor at the target covers it', async () => {
+		const handle = new Transaction(Tbl.primaryStore.store);
+		const key = reserveLocalKey(rootStore, handle);
+		let target;
+		try {
+			target = setLocalWriteFence(rootStore, true);
+			const retried = rekeyLocalRetry(handle);
+			assert(retried > target, `the retry key ${retried} is above the target ${target}`);
+			await sleep(2);
+			assert(certify() <= key, 'the original bound holds the floor');
+			rootStore.useLog('local').addEntry(Buffer.from('fence-retried'), handle.id);
+			handle.commitSync();
+			releaseLocalKey(handle);
+			await sleep(2);
+			const floor = certify();
+			assert(floor >= target && floor > retried, `floor ${floor} covers the retried key ${retried}`);
+		} finally {
+			setLocalWriteFence(rootStore, false);
+		}
+	});
+
+	it('refuses a write fence on a store without a durable origin floor, where it would refuse nothing', () => {
+		assert.throws(() => setLocalWriteFence({ getMonotonicTimestamp: () => 1 }, true), /needs a RocksDB database/);
+	});
+
+	it('a restore from a record read before a cancellation does not undo it', () => {
+		assert(!localWritesFenced(rootStore));
+		restoreLocalWriteFence(rootStore, () => {
+			setLocalWriteFence(rootStore, true);
+			setLocalWriteFence(rootStore, false);
+			return true;
+		});
+		assert(!localWritesFenced(rootStore), 'a cancel during the read stands');
+		restoreLocalWriteFence(rootStore, () => true);
+		assert(localWritesFenced(rootStore));
+		setLocalWriteFence(rootStore, false);
+		assert(!localWritesFenced(rootStore));
+	});
+
+	it('a root opened while the new-root fence says so starts fenced, and the fence is told which database it is', () => {
+		const asked = [];
+		setNewRootWriteFence((root) => (asked.push(root.databaseName), root.databaseName === 'fenced_new_root'));
+		try {
+			const open = (database) =>
+				table({ table: 'NewRoot', database, attributes: [{ name: 'id', isPrimaryKey: true }] }).primaryStore.rootStore;
+			const fenced = open('fenced_new_root');
+			const unfenced = open('unfenced_new_root');
+			assert.deepStrictEqual(asked, ['fenced_new_root', 'unfenced_new_root']);
+			assert(localWritesFenced(fenced));
+			assert(!localWritesFenced(unfenced));
+			setLocalWriteFence(fenced, false);
+		} finally {
+			setNewRootWriteFence(undefined);
+		}
 	});
 
 	it('a plain write commits at or above every floor published before it', async () => {
@@ -573,18 +701,63 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 		assert(certify() > key, 'the terminated worker holds nothing once retired');
 	});
 
-	it('does not advance the shared ratchet when claim coverage fails', () => {
+	it('raises neither the clock nor the issuance floor when claim coverage fails', () => {
 		seedLocalIssuance(rootStore, readLocalIssuanceCeiling(auditStore), () => {
 			throw new Error('simulated ceiling write failure');
 		});
-		const before = localIssuanceRatchet(rootStore);
-		const floor = Math.max(rootStore.getMonotonicTimestamp(), before, readLocalIssuanceCeiling(auditStore)) + 100;
+		const before = localIssuanceFloor(rootStore);
+		const aheadBefore = localIssuedAheadThrough(rootStore);
+		const floor = Math.max(rootStore.getMonotonicTimestamp(), aheadBefore, readLocalIssuanceCeiling(auditStore)) + 100;
 		try {
 			assert.throws(() => claimLocalKey(rootStore, floor), /simulated ceiling write failure/);
-			assert.equal(localIssuanceRatchet(rootStore), before);
+			assert.equal(localIssuanceFloor(rootStore), before);
+			assert.equal(localIssuedAheadThrough(rootStore), aheadBefore, 'a hold step does not treat the floor as issued');
+			assert(rootStore.getMonotonicTimestamp() < floor, 'an uncovered claim must not raise the clock');
 		} finally {
 			seedLocalIssuance(rootStore, readLocalIssuanceCeiling(auditStore), (key) => coverLocalIssuance(auditStore, key));
 		}
+	});
+
+	for (const ahead of [true, false]) {
+		it(`a handle minted before a claim ${ahead ? 'ahead of' : 'behind'} the clock reserves above it`, async () => {
+			const id = `pre-claim-${ahead}`;
+			let handleKey;
+			let floor;
+			await transaction({}, async (txn) => {
+				await Tbl.get(id);
+				handleKey = txn.getReadTxn().getTimestamp();
+				floor = ahead ? rootStore.getMonotonicTimestamp() + 200 : timestampAbove(handleKey);
+				assert(claimLocalKey(rootStore, floor) >= floor);
+				await Tbl.put({ id, n: 1 });
+			});
+			const [entry] = entriesFor(id);
+			assert(entry.txnLogKey >= floor, `key ${entry.txnLogKey} below the claim ${floor}`);
+			assert.notEqual(entry.txnLogKey, handleKey);
+			await waitFor(() => rootStore.getMonotonicTimestamp() > readLocalIssuanceCeiling(auditStore), 30_000);
+		});
+	}
+
+	it("covers a key another database's claim lifted, though a wall reading taken during a clock glitch was ahead", async () => {
+		const Other = table({
+			table: 'OriginFloorOther',
+			database: 'originFloorOther',
+			audit: true,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'n' }],
+		});
+		await sleep(2);
+		const realNow = Date.now;
+		Date.now = () => realNow() + 3_600_000;
+		try {
+			await Tbl.put({ id: 'glitch-warm', n: 0 });
+		} finally {
+			Date.now = realNow;
+		}
+		const claimed = claimLocalKey(Other.primaryStore.rootStore, rootStore.getMonotonicTimestamp() + 200);
+		await Tbl.put({ id: 'glitch-lifted', n: 1 });
+		const [entry] = entriesFor('glitch-lifted');
+		assert(entry.txnLogKey > claimed, "the other database's claim lifted this key");
+		assert(readLocalIssuanceCeiling(auditStore) >= entry.txnLogKey, "this database's ceiling covers it");
+		await waitFor(() => Date.now() > readLocalIssuanceCeiling(Other.auditStore) + 1, 30_000, 20);
 	});
 
 	it('claims at one floor ahead of the clock are unique, and every later local key is above them', async () => {
@@ -602,9 +775,10 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 		await waitFor(() => rootStore.getMonotonicTimestamp() > readLocalIssuanceCeiling(auditStore), 30_000);
 	});
 
-	it('fresh and fully reopened registries issue above their recovered ceilings', () => {
+	it('fresh and fully reopened registries issue above their recovered ceilings', async () => {
 		const directory = fs.mkdtempSync(path.join(PID_DIR_PATH, 'issuance-seed-'));
 		let recoveredRoot = RocksDatabase.open(directory);
+		let raisedTo = 0;
 		try {
 			const recoveredAudit = new RocksTransactionLogStore(recoveredRoot);
 			const ceiling = coverLocalIssuance(recoveredAudit, Date.now() + 200);
@@ -613,6 +787,7 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 			assert.ok(key > ceiling, 'the first key after the open-time seed is above the ceiling');
 			assert.ok(readLocalIssuanceCeiling(recoveredAudit) > key, 'a future key is covered before publication');
 			const latestCeiling = readLocalIssuanceCeiling(recoveredAudit);
+			raisedTo = latestCeiling;
 			forgetOriginFloorRegistry(recoveredRoot);
 			recoveredRoot.close();
 			recoveredRoot = RocksDatabase.open(directory);
@@ -626,14 +801,21 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 			recoveredRoot.close();
 			fs.rmSync(directory, { recursive: true, force: true });
 		}
+		// the raise is process-wide
+		await waitFor(() => Date.now() > raisedTo + 1, 10_000, 20);
 	});
 
 	it('issuance behind a persisted floor (simulated in-process) yields unique keys at or above it', async () => {
-		// Far enough ahead that the writes below run behind it, close enough that the shared test
-		// database is back on the clock before the next file (the ratchet is process-wide state).
+		// Far enough ahead that the writes below run behind it, close enough that the process is back on
+		// the wall clock before the next file (the raise is process-wide).
 		const persisted = rootStore.getMonotonicTimestamp() + 250;
 		persistOriginClosedFloor(auditStore, persisted);
-		publishOriginFloor(rootStore, readOriginClosedFloor(auditStore));
+		seedLocalIssuance(
+			rootStore,
+			readLocalIssuanceCeiling(auditStore),
+			(key) => coverLocalIssuance(auditStore, key),
+			readOriginClosedFloor(auditStore)
+		);
 		assert.equal(getOriginClosedFloor(rootStore).floor, persisted);
 		const epoch = new Int32Array(new SharedArrayBuffer(4));
 		const { next } = startWorker({ mode: 'writer', epoch, tableName, writes: 40 });
@@ -646,7 +828,7 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 		const { results } = await next('done');
 		for (const { key } of results) keys.push(key);
 		for (const key of keys) assert(key >= persisted, `key ${key} below the recovered floor ${persisted}`);
-		assert.equal(new Set(keys).size, keys.length, 'keys issued through the ratchet are unique across threads');
+		assert.equal(new Set(keys).size, keys.length, 'keys are unique across threads');
 		assert(certify() >= persisted, 'certification resumes from the recovered floor');
 		const catchUpDeadline = Date.now() + 5000;
 		while (rootStore.getMonotonicTimestamp() <= persisted) {

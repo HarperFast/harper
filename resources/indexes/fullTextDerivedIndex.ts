@@ -26,6 +26,7 @@ const UTF8_DECODER = new TextDecoder('utf-8', { fatal: true });
 const DEFAULT_MAX_QUEUED_BATCHES = 16;
 export const HARPER_FULLTEXT_DEFAULT_MAX_QUEUED_BYTES = 64 * 1024 * 1024;
 export const HARPER_FULLTEXT_MAX_CURSOR_PAYLOAD_BYTES = 64 * 1024;
+export const FULL_TEXT_QUIET_TOKEN = 1;
 const DEFAULT_OPEN_ATTEMPTS = 3;
 const DEFAULT_OPEN_RETRY_MILLISECONDS = 10;
 const DEFAULT_MAX_OPEN_RETRY_MILLISECONDS = 5_000;
@@ -293,6 +294,11 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			logWarning(`Full-text derived index '${this.id}' has an invalid committed cursor; rebuilding`);
 			return {};
 		}
+	}
+
+	/** Each storage generation registers under its own readiness id (`fullTextDerivedIndexReadinessId`). */
+	quietToken(): number {
+		return FULL_TEXT_QUIET_TOKEN;
 	}
 
 	getUnindexableRecords(): number {

@@ -3,6 +3,7 @@
 const path = require('node:path');
 const { mkdirSync, readFileSync, writeFileSync } = require('node:fs');
 const assert = require('node:assert');
+const { waitFor } = require('../waitFor');
 
 if (require.main === module) {
 	const [rootPath, databasePath, database, tableName, markerPath, mode, logKeyArg] = process.argv.slice(2);
@@ -55,12 +56,35 @@ if (require.main === module) {
 		attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'n' }],
 	});
 
+	// rocksdb-js writes txn.state from a flush listener that can still be running when flush() resolves
+	const saveSeedState = async () => {
+		await Tbl.put({ id: 'seed', n: -1 });
+		const { rootStore } = Tbl.primaryStore;
+		const log = rootStore.useLog('local');
+		const seedEnd = log.getStats().nextLogPosition;
+		await rootStore.flush();
+		await waitFor(
+			() => {
+				const flushed = log.getStats().lastFlushedPosition;
+				return (
+					flushed.sequence > seedEnd.sequence ||
+					(flushed.sequence === seedEnd.sequence && flushed.offset >= seedEnd.offset)
+				);
+			},
+			{
+				timeout: 10_000,
+				message: () =>
+					`txn.state never recorded the seed's flush through ${JSON.stringify(seedEnd)}; it holds ${JSON.stringify(log.getStats().lastFlushedPosition)}`,
+			}
+		);
+		const state = readFileSync(path.join(rootStore.path, 'transaction_logs', 'local', 'txn.state'));
+		assert.strictEqual(state.length, 8);
+		writeFileSync(markerPath + '.state', state);
+	};
+
 	const writeThenCrash = async () => {
 		if (mode.startsWith('write-advice')) {
-			await Tbl.put({ id: 'seed', n: -1 });
-			await Tbl.primaryStore.rootStore.flush();
-			const statePath = path.join(Tbl.primaryStore.rootStore.path, 'transaction_logs', 'local', 'txn.state');
-			writeFileSync(markerPath + '.state', readFileSync(statePath));
+			await saveSeedState();
 			for (let n = 0; n < 3; n++) await Tbl.put({ id: String(n), n });
 			await Tbl.primaryStore.rootStore.flush();
 			if (mode === 'write-advice-tail') await Tbl.put({ id: 'tail', n: 3 });
@@ -68,10 +92,7 @@ if (require.main === module) {
 			return;
 		}
 		if (mode === 'write-stale') {
-			await Tbl.put({ id: 'seed', n: -1 });
-			await Tbl.primaryStore.rootStore.flush();
-			const statePath = path.join(Tbl.primaryStore.rootStore.path, 'transaction_logs', 'local', 'txn.state');
-			writeFileSync(markerPath + '.state', readFileSync(statePath));
+			await saveSeedState();
 			for (let n = 0; n < staleRecordCount; n++) await Tbl.put({ id: String(n), n, payload: 'x'.repeat(8192) });
 			await Tbl.primaryStore.rootStore.flush();
 			await Tbl.put({ id: 'tail', n: staleRecordCount });

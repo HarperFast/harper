@@ -3,8 +3,9 @@
  *
  * The compiler runs once per query at physical-plan time; the resulting
  * closure is invoked per row by Filter/Project operators. SQL three-valued
- * logic for AND/OR/NOT is handled here so residual filters match Resource API
- * semantics (NULL → drop). Coercion is loose to match AlaSQL behavior.
+ * logic for AND/OR/NOT and comparisons is handled here so residual filters match
+ * Resource API semantics (NULL → drop). Coercion is loose to match AlaSQL
+ * behavior, except that a blank string is no number.
  */
 
 import type { ExprNode } from '../parser/ast.ts';
@@ -121,11 +122,15 @@ export function compileExpr(expr: ExprNode, qualified = false): CompiledExpr {
 			return {
 				eval: (row) => {
 					const v = e.eval(row);
-					const a = lo.eval(row);
-					const b = hi.eval(row);
-					if (v == null || a == null || b == null) return null;
-					const r = compare(v, a) >= 0 && compare(v, b) <= 0;
-					return negated ? !r : r;
+					if (neverEqual(v)) return null;
+					const low = lo.eval(row);
+					const fromLow = low == null ? Number.NaN : compare(v, low);
+					if (fromLow < 0) return negated;
+					const high = hi.eval(row);
+					const toHigh = high == null ? Number.NaN : compare(v, high);
+					if (toHigh > 0) return negated;
+					if (Number.isNaN(fromLow) || Number.isNaN(toHigh)) return null;
+					return !negated;
 				},
 				type: 'boolean',
 			};
@@ -217,35 +222,41 @@ export function compileExpr(expr: ExprNode, qualified = false): CompiledExpr {
 	}
 }
 
+/** The one place a WHERE, ON or HAVING value becomes a row decision; operators must not test the value themselves. */
+export function compilePredicate(expr: ExprNode, qualified = false): (row: Row) => boolean {
+	const evaluate = compileExpr(expr, qualified).eval;
+	return (row) => truthy(evaluate(row));
+}
+
+// NaN matches NaN in Table.search and in a JSON hash key, so a join skips such a key
+export function neverEqual(v: unknown): boolean {
+	return v == null || Number.isNaN(v);
+}
+
 function applyBinaryOp(op: string, a: unknown, b: unknown): unknown {
-	if (a == null || b == null) {
-		switch (op) {
-			case '=':
-			case '!=':
-			case '<>':
-			case '<':
-			case '<=':
-			case '>':
-			case '>=':
-				return null;
-			default:
-				return null;
-		}
-	}
+	if (a == null || b == null) return null;
 	switch (op) {
 		case '=':
 			return looseEquals(a, b);
 		case '!=':
 		case '<>':
 			return !looseEquals(a, b);
-		case '<':
-			return compare(a, b) < 0;
-		case '<=':
-			return compare(a, b) <= 0;
-		case '>':
-			return compare(a, b) > 0;
-		case '>=':
-			return compare(a, b) >= 0;
+		case '<': {
+			const order = compare(a, b);
+			return Number.isNaN(order) ? null : order < 0;
+		}
+		case '<=': {
+			const order = compare(a, b);
+			return Number.isNaN(order) ? null : order <= 0;
+		}
+		case '>': {
+			const order = compare(a, b);
+			return Number.isNaN(order) ? null : order > 0;
+		}
+		case '>=': {
+			const order = compare(a, b);
+			return Number.isNaN(order) ? null : order >= 0;
+		}
 		case '+':
 			return numeric(a) + numeric(b);
 		case '-':
@@ -277,34 +288,52 @@ function arithmeticType(op: string): SqlType {
 	}
 }
 
+// legacy AlaSQL's rule for a predicate
 function truthy(v: unknown): boolean {
-	if (typeof v === 'boolean') return v;
-	if (typeof v === 'number') return v !== 0;
-	if (typeof v === 'string') return v.length > 0;
-	return v != null;
+	return Boolean(v);
 }
 
 function looseEquals(a: unknown, b: unknown): boolean {
 	if (a === b) return true;
-	if (typeof a === 'number' && typeof b === 'string') return a === Number(b);
-	if (typeof a === 'string' && typeof b === 'number') return Number(a) === b;
+	if (typeof a === 'number' && typeof b === 'string') return a === stringToNumber(b);
+	if (typeof a === 'string' && typeof b === 'number') return stringToNumber(a) === b;
 	return false;
 }
 
 function compare(a: unknown, b: unknown): number {
-	if (typeof a === 'number' && typeof b === 'number') return a - b;
+	if (typeof a === 'number' && typeof b === 'number') {
+		const difference = a - b;
+		return difference === difference ? difference : compareNumbers(a, b);
+	}
 	if (typeof a === 'string' && typeof b === 'string') return a < b ? -1 : a > b ? 1 : 0;
 	const ax = numeric(a);
 	const bx = numeric(b);
-	if (!Number.isNaN(ax) && !Number.isNaN(bx)) return ax - bx;
+	if (!Number.isNaN(ax) && !Number.isNaN(bx)) return compareNumbers(ax, bx);
+	if (Number.isNaN(a) || Number.isNaN(b)) return Number.NaN;
+	// a string with no numeric reading sorts after a number or boolean, as Harper's indexes order them
+	if (typeof a === 'string' && (typeof b === 'number' || typeof b === 'boolean')) return 1;
+	if (typeof b === 'string' && (typeof a === 'number' || typeof a === 'boolean')) return -1;
 	const as = String(a);
 	const bs = String(b);
 	return as < bs ? -1 : as > bs ? 1 : 0;
 }
 
+function compareNumbers(x: number, y: number): number {
+	const difference = x - y;
+	if (difference === difference) return difference;
+	// Infinity - Infinity is NaN, but equal infinities are ordered
+	return x === y ? 0 : Number.NaN;
+}
+
+// Number('') and Number(' \n') are 0, but a blank string is no number
+function stringToNumber(s: string): number {
+	const n = Number(s);
+	return n === 0 && s.trim() === '' ? Number.NaN : n;
+}
+
 function numeric(v: unknown): number {
 	if (typeof v === 'number') return v;
-	if (typeof v === 'string') return Number(v);
+	if (typeof v === 'string') return stringToNumber(v);
 	if (typeof v === 'boolean') return v ? 1 : 0;
 	if (v instanceof Date) return v.getTime();
 	return Number.NaN;

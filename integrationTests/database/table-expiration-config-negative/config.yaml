@@ -1,0 +1,5 @@
+rest: true
+graphqlSchema:
+  files: 'schema.graphql'
+  # Shortened from the 30s default so a run that times out instead of failing fast costs seconds.
+  timeout: 5000

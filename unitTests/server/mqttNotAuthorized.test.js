@@ -613,7 +613,11 @@ describe('mqtt.ts CONNECT through a component’s server.getUser', () => {
 			},
 			async () => ({ status: 200, headers: new Headers(), body: {} })
 		);
-		assert.strictEqual(response.status, 200, 'the component still admits the HTTP login');
+		assert.strictEqual(
+			response.status,
+			401,
+			'the HTTP login is refused once the record its first login read was dropped'
+		);
 
 		assert.strictEqual(userModule.isRecordlessPrincipal(memoized), false);
 		assert.deepStrictEqual((await held.subscribe(`${protectedTable()}/#`)).granted, [NOT_AUTHORIZED]);
