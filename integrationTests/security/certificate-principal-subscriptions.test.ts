@@ -269,7 +269,6 @@ suite('Subscriptions of principals with no hdb_user (#4062)', { skip: skipSuite 
 		return subscriber;
 	}
 
-	/** A certificate client nothing revokes: while it receives, a silent subscriber was cut off, not starved. */
 	async function peerSubscriber(): Promise<TopicSubscriber> {
 		peer ??= await subscribeOwnTopic(PEER_CN);
 		return peer;
@@ -281,9 +280,8 @@ suite('Subscriptions of principals with no hdb_user (#4062)', { skip: skipSuite 
 	}
 
 	/**
-	 * Resolves true once two consecutive writes miss `subscriber`, false if it is still served at the deadline;
-	 * every iteration also requires a write to reach the peer. A revoked MQTT subscription is not disconnected
-	 * (#4327), so there is no close to wait for.
+	 * A revoked MQTT subscription is not disconnected (#4327), so a cut-off is two consecutive writes that miss
+	 * `subscriber` while the peer still receives.
 	 */
 	async function cutOffWhilePeerReceives(subscriber: TopicSubscriber, cn: string): Promise<boolean> {
 		const peerClient = await peerSubscriber();
@@ -297,7 +295,7 @@ suite('Subscriptions of principals with no hdb_user (#4062)', { skip: skipSuite 
 	}
 
 	test('withdrawing an allowRead grant ends that certificate client alone', async () => {
-		// admitted before the grant is withdrawn, so a teardown of every subscription at that moment fails the peer
+		// admitted first: a teardown of every subscription at the withdrawal must fail the peer
 		await peerSubscriber();
 		const gated = await subscribeOwnTopic(GATED_CN);
 		ok(
@@ -311,6 +309,13 @@ suite('Subscriptions of principals with no hdb_user (#4062)', { skip: skipSuite 
 			records: [{ id: GATED_CN, revoked: true }],
 		});
 		ok(await cutOffWhilePeerReceives(gated, GATED_CN), 'the subscription outlived the grant allowRead withdrew');
+		await operation({
+			operation: 'upsert',
+			schema: 'data',
+			table: 'CertSubGate',
+			records: [{ id: GATED_CN, revoked: false }],
+		});
+		ok(!(await keptAcrossRechecks(gated, GATED_CN)), 'restoring the grant revived a subscription that had ended');
 	});
 
 	test('a durable session resumed by a certificate that names no hdb_user keeps its subscription', async () => {
@@ -348,7 +353,7 @@ suite('Subscriptions of principals with no hdb_user (#4062)', { skip: skipSuite 
 			username: LATCH_CN,
 			password: 'Latch-pw-4062!',
 		});
-		// Only a recheck that finds the record sets the latch, and nothing reports one: two windows before the drop.
+		// only a recheck that finds the record sets the latch, and nothing reports one
 		for (let window = 0; window < 2; window++) {
 			ok(await keptAcrossRechecks(latched, LATCH_CN), 'a role-bearing record ended a subscription allowRead grants');
 		}
@@ -377,6 +382,7 @@ suite('Subscriptions of principals with no hdb_user (#4062)', { skip: skipSuite 
 
 		await operation({ operation: 'drop_user', username: BACKED_CN });
 		ok(await cutOffWhilePeerReceives(backed, BACKED_CN), "a dropped user's certificate kept its subscription");
+		ok(await receives(inactive, INACTIVE_CN), "dropping one user ended another user's certificate subscription");
 		await operation({ operation: 'alter_user', username: INACTIVE_CN, active: false });
 		ok(await cutOffWhilePeerReceives(inactive, INACTIVE_CN), "an inactive user's certificate kept its subscription");
 	});
