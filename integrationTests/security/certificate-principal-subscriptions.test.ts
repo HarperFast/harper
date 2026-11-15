@@ -28,6 +28,17 @@ const HTTPS_PORT = 9927;
 const MQTTS_PORT = 8883;
 const DEVICE_CN = 'certsub-device';
 const DROPPED = { username: 'certsub_dropped', password: 'Dropped-pw-4062!' };
+// CertSubTopic clients: each reads the record named for its certificate's CN
+const PEER_CN = 'certsub-peer';
+const GATED_CN = 'certsub-gated';
+const DURABLE_CN = 'certsub-durable';
+const LATCH_CN = 'certsub-latch';
+const BACKED_CN = 'certsub-backed';
+const INACTIVE_CN = 'certsub-inactive';
+const LEAF_CNS = [DEVICE_CN, PEER_CN, GATED_CN, DURABLE_CN, LATCH_CN, BACKED_CN, INACTIVE_CN];
+
+type DeviceTls = Pick<IClientOptions, 'key' | 'cert' | 'ca'>;
+type TopicSubscriber = { mqttClient: MqttClient; payloads: string[] };
 
 async function waitFor(predicate: () => boolean, timeoutMs = 6000): Promise<boolean> {
 	const deadline = Date.now() + timeoutMs;
@@ -41,7 +52,9 @@ async function waitFor(predicate: () => boolean, timeoutMs = 6000): Promise<bool
 suite('Subscriptions of principals with no hdb_user (#4062)', { skip: skipSuite }, (ctx: ContextWithHarper) => {
 	let client: ReturnType<typeof createApiClient>;
 	let certsPath = '';
-	let deviceTls: Pick<IClientOptions, 'key' | 'cert' | 'ca'>;
+	let deviceTls: DeviceTls;
+	const tlsByCn = new Map<string, DeviceTls>();
+	let peer: TopicSubscriber | undefined;
 	let seq = 0;
 	const mqttClients: MqttClient[] = [];
 
@@ -63,19 +76,22 @@ suite('Subscriptions of principals with no hdb_user (#4062)', { skip: skipSuite 
 			subjectPublicKey: caKeys.publicKey,
 			isCA: true,
 		});
-		const deviceKeys = await generateEd25519KeyPair();
-		const device = await createCertificate({
-			serialNumber: 2,
-			subject: { CN: DEVICE_CN },
-			issuer: { CN: 'certsub test CA' },
-			validDays: 2,
-			issuerKey: caKeys.privateKey,
-			subjectPublicKey: deviceKeys.publicKey,
-			extensions: [makeExtKeyUsageExt([CLIENT_AUTH_OID])],
-		});
+		for (const [index, cn] of LEAF_CNS.entries()) {
+			const leafKeys = await generateEd25519KeyPair();
+			const leaf = await createCertificate({
+				serialNumber: 2 + index,
+				subject: { CN: cn },
+				issuer: { CN: 'certsub test CA' },
+				validDays: 2,
+				issuerKey: caKeys.privateKey,
+				subjectPublicKey: leafKeys.publicKey,
+				extensions: [makeExtKeyUsageExt([CLIENT_AUTH_OID])],
+			});
+			tlsByCn.set(cn, { key: leafKeys.privateKeyPem, cert: certToPem(leaf), ca: certToPem(ca) });
+		}
 		const caPath = join(certsPath, 'ca.pem');
 		await writeFile(caPath, certToPem(ca));
-		deviceTls = { key: deviceKeys.privateKeyPem, cert: certToPem(device), ca: certToPem(ca) };
+		deviceTls = tlsByCn.get(DEVICE_CN)!;
 
 		await setupHarperWithFixture(ctx, FIXTURE_PATH, {
 			config: {
@@ -98,7 +114,7 @@ suite('Subscriptions of principals with no hdb_user (#4062)', { skip: skipSuite 
 		await rm(certsPath, { recursive: true, force: true, maxRetries: 3 });
 	});
 
-	function connectDevice(url: string): Promise<MqttClient> {
+	function connectDevice(url: string, options: IClientOptions = {}): Promise<MqttClient> {
 		return new Promise((resolveConnect, reject) => {
 			const mqttClient = mqtt.connect(url, {
 				protocolVersion: 5,
@@ -107,6 +123,7 @@ suite('Subscriptions of principals with no hdb_user (#4062)', { skip: skipSuite 
 				clean: true,
 				rejectUnauthorized: false, // Harper serves its own self-signed certificate
 				...deviceTls,
+				...options,
 			});
 			mqttClients.push(mqttClient);
 			mqttClient.once('connect', () => resolveConnect(mqttClient));
@@ -226,5 +243,141 @@ suite('Subscriptions of principals with no hdb_user (#4062)', { skip: skipSuite 
 		} finally {
 			for (const stream of Object.values(streams)) stream.destroy();
 		}
+	});
+
+	const operation = (body: Record<string, unknown>) => client.req().send(body).expect(200);
+
+	/** Writes the CertSubTopic record `id`; resolves to the value a subscriber's delivery will carry. */
+	async function writeTopic(id: string): Promise<string> {
+		const value = `certsub-topic-${seq++}`;
+		await operation({ operation: 'upsert', schema: 'data', table: 'CertSubTopic', records: [{ id, value }] });
+		return value;
+	}
+
+	async function receives(subscriber: TopicSubscriber, cn: string, timeoutMs = 3000): Promise<boolean> {
+		const value = await writeTopic(cn);
+		return waitFor(() => subscriber.payloads.some((payload) => payload.includes(`"${value}"`)), timeoutMs);
+	}
+
+	/** A client whose certificate names `cn`, subscribed over MQTT-over-TLS to the record named for it. */
+	async function subscribeOwnTopic(cn: string, options: IClientOptions = {}): Promise<TopicSubscriber> {
+		const mqttClient = await connectDevice(`mqtts://${ctx.harper.hostname}:${MQTTS_PORT}`, {
+			...tlsByCn.get(cn),
+			...options,
+		});
+		const subscriber = { mqttClient, payloads: [] as string[] };
+		mqttClient.on('message', (_topic, payload) => subscriber.payloads.push(payload.toString()));
+		await mqttClient.subscribeAsync(`CertSubTopic/${cn}`, { qos: 1 });
+		ok(await receives(subscriber, cn), `${cn} was not admitted`);
+		return subscriber;
+	}
+
+	/** A certificate client nothing revokes: while it receives, a silent subscriber was cut off, not starved. */
+	async function peerSubscriber(): Promise<TopicSubscriber> {
+		peer ??= await subscribeOwnTopic(PEER_CN);
+		return peer;
+	}
+
+	async function keptAcrossRechecks(subscriber: TopicSubscriber, cn: string): Promise<boolean> {
+		await sleep(RECHECK_MS * 6);
+		return receives(subscriber, cn);
+	}
+
+	/**
+	 * Resolves true once two consecutive writes miss `subscriber` while each reaches the peer, false if it is
+	 * still served at the deadline. A revoked MQTT subscription is not disconnected (#4327), so there is no
+	 * close to wait for.
+	 */
+	async function cutOffWhilePeerReceives(subscriber: TopicSubscriber, cn: string): Promise<boolean> {
+		const peerClient = await peerSubscriber();
+		const deadline = Date.now() + RECHECK_MS * 10;
+		do {
+			const served = (await receives(subscriber, cn, RECHECK_MS)) || (await receives(subscriber, cn, 2000));
+			ok(await receives(peerClient, PEER_CN), 'a certificate client nothing revoked stopped receiving');
+			if (!served) return true;
+		} while (Date.now() < deadline);
+		return false;
+	}
+
+	test('withdrawing an allowRead grant ends that certificate client alone', async () => {
+		const gated = await subscribeOwnTopic(GATED_CN);
+		ok(
+			await keptAcrossRechecks(gated, GATED_CN),
+			'a recheck revoked a certificate principal its allowRead still grants'
+		);
+		await operation({
+			operation: 'upsert',
+			schema: 'data',
+			table: 'CertSubGate',
+			records: [{ id: GATED_CN, revoked: true }],
+		});
+		ok(await cutOffWhilePeerReceives(gated, GATED_CN), 'the subscription outlived the grant allowRead withdrew');
+	});
+
+	test('a durable session resumed by a certificate that names no hdb_user keeps its subscription', async () => {
+		const session: IClientOptions = {
+			clean: false,
+			clientId: 'certsub-durable-session',
+			properties: { sessionExpiryInterval: 300 },
+		};
+		const first = await subscribeOwnTopic(DURABLE_CN, session);
+		await first.mqttClient.endAsync();
+		const mqttClient = await connectDevice(`mqtts://${ctx.harper.hostname}:${MQTTS_PORT}`, {
+			...tlsByCn.get(DURABLE_CN),
+			...session,
+		});
+		const resumed = { mqttClient, payloads: [] as string[] };
+		mqttClient.on('message', (_topic, payload) => resumed.payloads.push(payload.toString()));
+		// no SUBSCRIBE: only the resumed session's subscription can deliver
+		ok(await receives(resumed, DURABLE_CN), 'the session was not resumed with its subscription');
+		ok(
+			await keptAcrossRechecks(resumed, DURABLE_CN),
+			'a recheck revoked the resumed session of a certificate principal'
+		);
+	});
+
+	test('once an hdb_user record backs the name, the connection needs a role even after drop_user', async () => {
+		const latched = await subscribeOwnTopic(LATCH_CN);
+		ok(
+			await keptAcrossRechecks(latched, LATCH_CN),
+			'a recheck revoked a certificate principal its allowRead still grants'
+		);
+		await operation({ operation: 'add_role', role: 'certsub_no_read', permission: { super_user: false } });
+		await operation({
+			operation: 'add_user',
+			role: 'certsub_no_read',
+			active: true,
+			username: LATCH_CN,
+			password: 'Latch-pw-4062!',
+		});
+		// the record has a role, and allowRead still grants: kept, while a recheck finds the record
+		ok(await keptAcrossRechecks(latched, LATCH_CN), 'a role-bearing record ended a subscription allowRead grants');
+		await operation({ operation: 'drop_user', username: LATCH_CN });
+		ok(
+			await cutOffWhilePeerReceives(latched, LATCH_CN),
+			'a connection whose name a record once backed kept its subscription with no role'
+		);
+	});
+
+	test('a certificate that names an hdb_user loses its subscription with that user', async () => {
+		await operation({ operation: 'add_role', role: 'certsub_backed_role', permission: { super_user: false } });
+		for (const username of [BACKED_CN, INACTIVE_CN]) {
+			await operation({
+				operation: 'add_user',
+				role: 'certsub_backed_role',
+				active: true,
+				username,
+				password: 'Backed-pw-4062!',
+			});
+		}
+		const backed = await subscribeOwnTopic(BACKED_CN);
+		const inactive = await subscribeOwnTopic(INACTIVE_CN);
+		ok(await keptAcrossRechecks(backed, BACKED_CN), 'a recheck revoked a certificate principal with a role');
+		ok(await receives(inactive, INACTIVE_CN), 'a recheck revoked a certificate principal with a role');
+
+		await operation({ operation: 'drop_user', username: BACKED_CN });
+		ok(await cutOffWhilePeerReceives(backed, BACKED_CN), "a dropped user's certificate kept its subscription");
+		await operation({ operation: 'alter_user', username: INACTIVE_CN, active: false });
+		ok(await cutOffWhilePeerReceives(inactive, INACTIVE_CN), "an inactive user's certificate kept its subscription");
 	});
 });
