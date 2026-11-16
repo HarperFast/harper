@@ -71,7 +71,7 @@ function handleServerUncaughtException(err?: any) {
 	realExit(1);
 }
 
-// The errors handlePostRequest logged, per request; see server/DESIGN.md.
+// The errors handlePostRequest logged, per request; see server/serverHelpers/DESIGN.md.
 const errorsLoggedByRequest: any = new WeakMap();
 const LEVELS_ABOVE_ERROR: any = new Set([terms.LOG_LEVELS.FATAL, terms.LOG_LEVELS.NOTIFY]);
 

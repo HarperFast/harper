@@ -32,7 +32,7 @@ const ignoreError = () => {};
 const ignoreChunk = () => {};
 
 // Node 26.11's pipe fast path (nodejs/node#66182) skips write() overrides such as compression's while pipe's listener
-// is a byte-mode source's only 'data' listener; see server/DESIGN.md
+// is a byte-mode source's only 'data' listener; see server/serverHelpers/DESIGN.md
 const pipeSkipsWrite = 'writeKnownBuffer' in Writable;
 function guardPipeSource(source: Readable) {
 	// object mode, a decoder, and legacy or userland pipe() never take the fast path; legacy pipe() never emits 'unpipe'
