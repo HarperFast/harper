@@ -36,8 +36,7 @@ async function modelIds(ctx: ContextWithHarper): Promise<string[]> {
 	return body.data.map((model) => model.id);
 }
 
-// Workers copy the main thread's environment when they start, after it has materialized the stored
-// secrets; with `threads.count: 0` the main thread itself serves the model.
+// Workers copy the main thread's environment, so only `threads.count: 0` shows what the main thread registered.
 for (const threadCount of [0, 2]) {
 	suite(
 		`model apiKey from a stored secret (threads.count ${threadCount})`,
