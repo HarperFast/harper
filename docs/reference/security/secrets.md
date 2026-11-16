@@ -35,7 +35,7 @@ Each secret is delivered exactly one of two ways, decided by the row itself. The
 | **Global** | `processEnv: true` | `process.env.NAME`                       | Yes               | Yes                           |
 | **Scoped** | `grants: [...]`    | `secrets.NAME` (granted components only) | No                | No                            |
 
-**Global tier** secrets are materialized into the real `process.env` at startup, before components load — exactly like `.env` values, with the same semantics (a pre-existing real environment variable always wins over the store). There is no isolation between components on this tier.
+**Global tier** secrets are materialized into the real `process.env` at startup, before components load — exactly like `.env` values, with the same semantics (a pre-existing real environment variable always wins over the store). There is no isolation between components on this tier. A global secret is in place before any `.env` file loads, so a `.env` value of the same name is skipped unless its `loadEnv` entry sets `override: true`.
 
 **Scoped tier** secrets never land in `process.env`. They are exposed only through the per-component accessor, so they are not inherited by child processes and are invisible to environment dumps. The `grants` list on the row is the authority for which components can see the secret; a row with neither `processEnv` nor any grant is **inert** — visible to no one — until it is granted.
 
