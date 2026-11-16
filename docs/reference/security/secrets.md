@@ -72,7 +72,7 @@ With custody on the node, submit the plaintext `value` and Harper encrypts it on
 
 Every component now sees `process.env.DATABASE_URL`.
 
-Configuration that resolves `${VAR_NAME}` placeholders from the environment sees a global secret too. A [model entry](../models/overview.md#credentials) can take its API key from one:
+A [model entry](../models/overview.md#credentials) can take its API key from a global secret, through the same `${VAR_NAME}` placeholder it uses for an environment variable:
 
 ```yaml
 models:
