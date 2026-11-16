@@ -76,7 +76,8 @@ describe('@fullText derived-index activation', () => {
 		binding = new FullTextNativeTestBinding();
 		setFullTextNativeBindingForTests({
 			binding,
-			// No test here waits for these bounds to expire; at 50/100 ms a CI event-loop stall alone exceeded them.
+			// At 50/100 ms a CI event-loop stall alone exceeded these. No test asserts their timeout; the busy-retirement
+			// test spends the shutdown bound as its retry budget.
 			closeTimeoutMilliseconds: 1_000,
 			shutdownTimeoutMilliseconds: 2_000,
 			runnerOptions: {
@@ -1175,7 +1176,11 @@ describe('@fullText derived-index activation', () => {
 		const rootStore = Product.primaryStore.rootStore;
 		binding.closeError = new Error('writer did not quiesce');
 
-		await assert.rejects(dropDatabase(database), /shutdown failed|did not prove quiescence/);
+		// the injected close failure, not a shutdown timeout, whose writer close would still be in flight for the retry
+		await assert.rejects(
+			dropDatabase(database),
+			/runner lock held: Full-text writer shutdown did not prove quiescence$/
+		);
 
 		assert.strictEqual(rootStore.status, 'open');
 		assert.strictEqual(openDatabase({ database }), rootStore, 'a failed drop must retain the registered root store');
@@ -1823,7 +1828,7 @@ describe('@fullText derived-index activation', () => {
 	rocksOnly('drains a reader outside the retiring attachment before removing native storage', async () => {
 		setFullTextNativeBindingForTests({
 			binding,
-			closeTimeoutMilliseconds: 50,
+			closeTimeoutMilliseconds: 1_000,
 			shutdownTimeoutMilliseconds: 2_000,
 			readerCoordinationTimeoutMilliseconds: 30,
 			runnerOptions: {
