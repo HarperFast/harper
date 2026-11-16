@@ -1,13 +1,6 @@
 /**
- * encrypted_operation: a sealed operation is authorized exactly as the same operation sent directly.
- * Contract: docs/reference/operations-api/operations.md, "Encrypted Operations" -> "Authorization":
- * "The sealed operation runs as the user who sent encrypted_operation and is authorized exactly as if
- * that user had sent it directly. A role with an operations allowlist, or a scoped token, must allow both."
- *
- * Oracle: for each principal x inner operation, the DIRECT answer (status + normalized body) must equal
- * the answer opened from the SEALED reply, in both modes. Controls: authorizeLocal is off (credential-less
- * -> 401); the matrix holds both 200-with-data and 403 cells per restricted principal; a cross-principal
- * comparison must be UNEQUAL (the comparator can see a widening).
+ * encrypted_operation: a sealed operation is authorized exactly as the same operation sent directly
+ * (docs/reference/operations-api/operations.md, "Encrypted Operations" -> "Authorization").
  *
  * Its own instance: encrypted-operation.test.ts relies on the operations socket's bypass, this file
  * needs authorizeLocal off.
@@ -33,7 +26,6 @@ const TABLE_PERMS = {
 		insert: false,
 		update: false,
 		delete: false,
-		// an attribute_permissions list is exhaustive: an unlisted attribute is denied
 		attribute_permissions: [
 			{ attribute_name: 'name', read: true, insert: false, update: false },
 			{ attribute_name: 'secret', read: false, insert: false, update: false },
@@ -59,6 +51,8 @@ function tokenView(body: any) {
 		keys: Object.keys(body ?? {}).sort(),
 		username: claims?.username,
 		super_user: claims?.super_user,
+		role: claims?.role,
+		minted_by: claims?.minted_by,
 		error: body?.error,
 	};
 }
@@ -76,10 +70,8 @@ function normalize(value: any): any {
 interface Cell {
 	name: string;
 	op: Record<string, any>;
-	/** compare status and top-level key set only (volatile payload) */
 	shapeOnly?: boolean;
-	/** compare status, key set and the `username` claim of the minted operation token */
-	tokenOwner?: boolean;
+	tokenClaims?: boolean;
 }
 
 const CELLS: Cell[] = [
@@ -177,11 +169,11 @@ const CELLS: Cell[] = [
 	{ name: 'drop-table-missing', op: { operation: 'drop_table', database: 'data', table: 'ParityNoSuchTable' } },
 	{ name: 'add-role-invalid', op: { operation: 'add_role', role: READER_ROLE, permission: { super_user: false } } },
 	{ name: 'list-secrets', op: { operation: 'list_secrets' }, shapeOnly: true },
-	{ name: 'tokens-self', op: { operation: 'create_authentication_tokens' }, tokenOwner: true },
+	{ name: 'tokens-self', op: { operation: 'create_authentication_tokens' }, tokenClaims: true },
 	{
 		name: 'tokens-reader-password',
 		op: { operation: 'create_authentication_tokens', username: READER.username, password: READER.password },
-		tokenOwner: true,
+		tokenClaims: true,
 	},
 	{
 		name: 'tokens-wrong-password',
@@ -193,14 +185,49 @@ const CELLS: Cell[] = [
 			operation: 'create_authentication_tokens',
 			role: { permission: { super_user: false, data: { tables: TABLE_PERMS } } },
 		},
-		tokenOwner: true,
+		tokenClaims: true,
 	},
 ];
+
+// Every restricted principal answers these statuses; tokens-self is left out because it differs by principal.
+const RESTRICTED_STATUS: Record<string, number> = {
+	'sbv-star': 200,
+	'sbv-secret': 403,
+	'sbv-by-secret': 403,
+	'sbc-secret-cond': 403,
+	'sbid-closed': 403,
+	'sql-star': 200,
+	'sql-secret': 403,
+	'sql-where-secret': 403,
+	'sql-secret-supplied-ast': 403,
+	'sql-closed': 403,
+	'sql-update-secret': 403,
+	'upsert-open': 403,
+	'update-open-name': 403,
+	'delete-missing': 403,
+	'describe-all': 200,
+	'describe-closed': 403,
+	'describe-open': 200,
+	'list-users': 403,
+	'list-roles': 403,
+	'user-info': 200,
+	'get-configuration': 403,
+	'read-log': 403,
+	'system-information': 403,
+	'get-job-missing': 200,
+	'unknown-op': 400,
+	'drop-table-missing': 403,
+	'add-role-invalid': 403,
+	'list-secrets': 403,
+	'tokens-reader-password': 200,
+	'tokens-wrong-password': 401,
+	'tokens-inline-role': 403,
+};
+const RESTRICTED = ['reader-basic', 'scoped-token', 'su-impersonating-reader'];
 
 interface Principal {
 	name: string;
 	headers: () => Record<string, string>;
-	/** added to the DIRECT body and to the OUTER sealed body */
 	outer?: Record<string, any>;
 }
 
@@ -211,6 +238,7 @@ suite('encrypted_operation authorizes a sealed operation as the direct one', (ct
 	let scopedToken: string;
 	let wrapperOnlyToken: string;
 	let innerOnlyToken: string;
+	let bothToken: string;
 	let mintScopedToken: string;
 	const results: any[] = [];
 	const json = { 'Content-Type': 'application/json', 'Connection': 'close' };
@@ -328,13 +356,24 @@ suite('encrypted_operation authorizes a sealed operation as the direct one', (ct
 			data: { tables: TABLE_PERMS },
 		});
 		innerOnlyToken = await mint({ super_user: false, operations: ['search_by_value'], data: { tables: TABLE_PERMS } });
+		bothToken = await mint({
+			super_user: false,
+			operations: ['encrypted_operation', 'search_by_value'],
+			data: { tables: TABLE_PERMS },
+		});
 	});
 
 	after(async () => {
-		if (process.env.PARITY_MATRIX_DIR) {
-			writeFileSync(join(process.env.PARITY_MATRIX_DIR, `matrix-${Date.now()}.json`), JSON.stringify(results, null, 1));
+		try {
+			if (process.env.PARITY_MATRIX_DIR) {
+				writeFileSync(
+					join(process.env.PARITY_MATRIX_DIR, `matrix-${Date.now()}.json`),
+					JSON.stringify(results, null, 1)
+				);
+			}
+		} finally {
+			await teardownHarper(ctx);
 		}
-		await teardownHarper(ctx);
 	});
 
 	test('precondition: no credentials is 401 on the direct and the sealed path', async () => {
@@ -368,7 +407,7 @@ suite('encrypted_operation authorizes a sealed operation as the direct one', (ct
 						);
 						continue;
 					}
-					const [left, right] = cell.tokenOwner
+					const [left, right] = cell.tokenClaims
 						? [tokenView(d.body), tokenView(s.body)]
 						: cell.shapeOnly
 							? [Object.keys(d.body ?? {}).sort(), Object.keys(s.body ?? {}).sort()]
@@ -382,14 +421,13 @@ suite('encrypted_operation authorizes a sealed operation as the direct one', (ct
 					}
 				}
 			}
-			// The matrix discriminates: the restricted principals are refused where the super user is served.
 			strictEqual(statusByCell['sbv-secret'].super_user, 200);
 			strictEqual(statusByCell['sbv-star'].super_user, 200);
-			for (const name of ['reader-basic', 'scoped-token', 'su-impersonating-reader']) {
-				strictEqual(statusByCell['sbv-star'][name], 200, `${name} sbv-star`);
-				strictEqual(statusByCell['sbv-secret'][name], 403, `${name} sbv-secret`);
-				strictEqual(statusByCell['sbid-closed'][name], 403, `${name} sbid-closed`);
-				strictEqual(statusByCell['list-users'][name], 403, `${name} list-users`);
+			// parity alone passes when both paths fail open
+			for (const name of RESTRICTED) {
+				for (const [cellName, status] of Object.entries(RESTRICTED_STATUS)) {
+					strictEqual(statusByCell[cellName][name], status, `${name} ${cellName}`);
+				}
 			}
 			deepStrictEqual(mismatches, [], `\n${mismatches.join('\n')}`);
 		});
@@ -406,17 +444,13 @@ suite('encrypted_operation authorizes a sealed operation as the direct one', (ct
 		ok(!JSON.stringify(d.body).includes('open-secret-1'));
 	});
 
-	test('restricted principals never receive the denied attribute or table through the sealed path', async () => {
-		for (const p of principals.slice(1)) {
-			for (const cell of CELLS) {
-				for (const mode of ['sealed', 'fields'] as const) {
-					if (cell.name === 'upsert-open' || cell.name === 'sql-update-secret') continue; // request echoes
-					const s = await sealed(p, cell.op, { mode });
-					const text = JSON.stringify(s);
-					ok(!text.includes('open-secret-2'), `${p.name}/${cell.name}/${mode} returned a denied attribute value`);
-					ok(!text.includes('closed-secret-1'), `${p.name}/${cell.name}/${mode} returned a denied table's row`);
-				}
-			}
+	test('restricted principals never receive the denied attribute or table through the sealed path', () => {
+		const answers = results.filter((result) => result.cell && RESTRICTED.includes(result.principal));
+		strictEqual(answers.length, RESTRICTED.length * CELLS.length * 2, 'the parity matrix ran in both modes');
+		for (const { principal, cell, mode, sealed: answer } of answers) {
+			const text = JSON.stringify(answer);
+			ok(!text.includes('open-secret-'), `${principal}/${cell}/${mode} returned a denied attribute value`);
+			ok(!text.includes('closed-secret-1'), `${principal}/${cell}/${mode} returned a denied table's row`);
 		}
 	});
 
@@ -430,23 +464,40 @@ suite('encrypted_operation authorizes a sealed operation as the direct one', (ct
 			name: 'inner-only',
 			headers: () => ({ ...json, Authorization: `Bearer ${innerOnlyToken}` }),
 		};
+		const both: Principal = {
+			name: 'wrapper-and-inner',
+			headers: () => ({ ...json, Authorization: `Bearer ${bothToken}` }),
+		};
 		const dWrapper = await direct(wrapperOnly, op);
-		const sWrapper = await sealed(wrapperOnly, op);
 		const dInner = await direct(innerOnly, op);
-		const sInner = await sealed(innerOnly, op);
-		results.push({ arm: 'allowlist', dWrapper, sWrapper, dInner, sInner });
 		strictEqual(dInner.status, 200, 'positive control: the inner-only token runs the operation directly');
 		strictEqual(dWrapper.status, 403, JSON.stringify(dWrapper.body));
-		strictEqual(sWrapper.status, 403, JSON.stringify(sWrapper));
-		ok(sInner.outerStatus === 403 || sInner.status === 403, JSON.stringify(sInner));
-		ok(!JSON.stringify(sInner).includes('"name":"one"'), 'an inner-only token read rows through the wrapper');
-		ok(!JSON.stringify(sWrapper).includes('"name":"one"'), 'a wrapper-only token read rows through the wrapper');
+		for (const mode of ['sealed', 'fields'] as const) {
+			const sBoth = await sealed(both, op, { mode });
+			const sWrapper = await sealed(wrapperOnly, op, { mode });
+			const sInner = await sealed(innerOnly, op, { mode });
+			results.push({ arm: 'allowlist', mode, dWrapper, dInner, sBoth, sWrapper, sInner });
+			strictEqual(sBoth.status, 200, `${mode}: ${JSON.stringify(sBoth)}`);
+			deepStrictEqual(
+				normalize(sBoth.body),
+				normalize(dInner.body),
+				`${mode}: a token listing both names reads the rows`
+			);
+			strictEqual(sWrapper.status, 403, `${mode}: ${JSON.stringify(sWrapper)}`);
+			ok(sInner.outerStatus === 403 || sInner.status === 403, `${mode}: ${JSON.stringify(sInner)}`);
+			ok(
+				!JSON.stringify(sInner).includes('"name":"one"'),
+				`${mode}: an inner-only token read rows through the wrapper`
+			);
+			ok(
+				!JSON.stringify(sWrapper).includes('"name":"one"'),
+				`${mode}: a wrapper-only token read rows through the wrapper`
+			);
+		}
 	});
 
 	test('create_authentication_tokens with body credentials answers the same sealed as direct for operation-allowlisted tokens', async () => {
-		// Direct, the body credentials are the authentication (NO_AUTH_OPERATIONS) and no operations allowlist
-		// applies. Measured on 51a24bb3a: sealed answers the same, for a token that lists the operation and
-		// for one that lists only the wrapper.
+		// Direct, the body credentials authenticate the request (NO_AUTH_OPERATIONS), so no operations allowlist applies.
 		const op = { operation: 'create_authentication_tokens', username: READER.username, password: READER.password };
 		for (const [name, token] of [
 			['mint-scoped', mintScopedToken],
@@ -482,7 +533,8 @@ suite('encrypted_operation authorizes a sealed operation as the direct one', (ct
 			for (const mode of ['sealed', 'fields'] as const) {
 				const s = await sealed(principals[1], { ...CELLS[1].op, [field]: value }, { mode });
 				results.push({ arm: 'refused-field', field, mode, s });
-				if (s.status !== 400) refusedFailures.push(`${field}/${mode}: status ${s.status} ${JSON.stringify(s.body)}`);
+				if (s.status !== 400 || !JSON.stringify(s.body).includes(`A sealed operation may not set '${field}'`))
+					refusedFailures.push(`${field}/${mode}: status ${s.status} ${JSON.stringify(s.body)}`);
 				if (JSON.stringify(s).includes('open-secret-1')) refusedFailures.push(`${field}/${mode} widened the reader`);
 			}
 		}
@@ -507,7 +559,7 @@ suite('encrypted_operation authorizes a sealed operation as the direct one', (ct
 		results.push({ arm: 'network-access', before, s, afterSealed, d, afterDirect, sForce, cleared });
 		strictEqual(d.status, 200, JSON.stringify(d.body));
 		deepStrictEqual(afterDirect.body.allow, ['127.0.0.0/8']);
-		// measured on f39c1a183: the sealed form is refused, fail-closed, where the direct form is accepted
+		// a sealed request carries no caller address for the lockout check
 		strictEqual(s.status, 409, JSON.stringify(s));
 		ok(/source address is unknown/.test(s.body.error), JSON.stringify(s.body));
 		deepStrictEqual(afterSealed.body, before.body, 'the refused sealed request changed the list');
@@ -557,13 +609,14 @@ suite('encrypted_operation authorizes a sealed operation as the direct one', (ct
 		const statuses: any[] = [];
 		for (const p of [principals[0], principals[1]]) {
 			for (const op of sealedOps) {
-				const s = await sealed(p, op);
-				statuses.push({ principal: p.name, operation: op.operation, status: s.status });
-				strictEqual(s.outerStatus, 200);
+				for (const mode of ['sealed', 'fields'] as const) {
+					const s = await sealed(p, op, { mode });
+					statuses.push({ principal: p.name, mode, operation: op.operation, status: s.status });
+					strictEqual(s.outerStatus, 200);
+				}
 			}
 		}
-		// The sealed operation runs on the main thread and the control on a worker, so no later log line orders
-		// them: a fixed settle, as in encrypted-operation.test.ts. The control canary below fails a late flush.
+		// Sealed operations log from the main thread and the control from a worker, so no log line orders them.
 		await sleep(1500);
 		const log = readFileSync(logPath, 'utf8');
 		const leaked: string[] = [];
