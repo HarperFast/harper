@@ -51,7 +51,7 @@ Each element gets its own target (`elementTargetFactory`) without `checkPermissi
 
 ## Database generation and resumable positions
 
-**No readable copy keeps its source's generation; a collection position resumes only in the current generation, with a finite cursor >= the resume floor** (`isResumablePosition`, RocksDB); below the floor a single-record resume needs a complete history walk. Rechecked at each replay yield (pruning raises the floor before deleting); checkpoint only after `resumeVerified`. Gaps: filesystem copies, base-copy back-fill before `reload`, commits below a recorded position (#2928; `databaseGeneration.test.js`).
+**No readable copy keeps its source's generation; a collection position resumes only in the current generation, with a finite cursor >= the resume floor** (`isResumablePosition`, RocksDB); below the floor a single-record resume needs a complete history walk. Rechecked at each replay yield (pruning raises the floor before deleting); checkpoint only after `resumeVerified`. Gaps: filesystem copies, base-copy back-fill before `reload`, late refs hidden by a pruned head at or below a single-record cursor, commits below a recorded position (#2928; `databaseGeneration.test.js`).
 
 ## Origin-closed timestamp floor
 
