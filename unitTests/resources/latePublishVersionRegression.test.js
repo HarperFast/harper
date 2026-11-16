@@ -116,7 +116,7 @@ describe('A publish older than its record', function () {
 			const increment = [{ id: 'counter', record: { n: { __op__: 'add', value: 1 } }, fullUpdate: false }];
 			await apply(at(1000), origin, increment, NoAudit);
 			const context = { source: {}, sourceApply: true, timestamp: at(5000) };
-			let native, receipts;
+			let native, receipts, publishWrite;
 			await transaction(context, async () => {
 				const resource = await NoAudit.getResource('counter', context);
 				await resource._writePublish(
@@ -124,12 +124,15 @@ describe('A publish older than its record', function () {
 					{ n: 'late' },
 					{ isNotification: true, nodeId: origin, version: at(5000) }
 				);
-				await context.transaction.save(context.transaction.writes.find((write) => write.key === 'counter'));
+				publishWrite = context.transaction.writes.find((write) => write.key === 'counter');
+				await context.transaction.save(publishWrite);
 				native = context.transaction.transaction;
 				await apply(at(40_000), origin, increment, NoAudit);
 				receipts = NoAudit.primaryStore.getEntry('counter').receivedIdentityRefs;
 			});
 			assert.ok(native.retries > 0, 'precondition: the publish really retried against the concurrent add');
+			assert.notStrictEqual(publishWrite.loggedBase, undefined, 'precondition: the retry retains its logged base');
+			assert.notStrictEqual(native.relogOnRetry, true, 'precondition: the retry uses the existing log entry');
 			const entry = NoAudit.primaryStore.getEntry('counter');
 			assert.equal(entry.additionalAuditRefs, undefined);
 			assert.deepEqual(entry.receivedIdentityRefs, receipts);
@@ -158,7 +161,12 @@ describe('A publish older than its record', function () {
 				listener: (event) => events.push(event),
 			});
 			try {
-				assert.ok(messagesOf(events).includes(1), 'the existing head stays discoverable after enabling audit');
+				assert.equal(NoAudit.audit, true, 'subscribe enables auditing');
+				assert.deepEqual(
+					messagesOf(events),
+					[1],
+					'the head stays discoverable; unaudited late messages are not replayed'
+				);
 			} finally {
 				subscription.end();
 			}
