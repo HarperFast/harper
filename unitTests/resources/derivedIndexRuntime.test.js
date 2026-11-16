@@ -266,6 +266,33 @@ describe('DerivedIndexRuntime', () => {
 		await runtime.stop();
 	});
 
+	it('persists declined coverage as soon as the backend reports a change', async () => {
+		const store = new FakeLogStore(new Map());
+		store.committedPosition = { sequence: 1, offset: 64 };
+		store.rootStore.getMonotonicTimestamp = () => Date.now();
+		const backend = new FakeBackend('declined-until-changed', cursor(10));
+		let offers = 0;
+		let accepting = false;
+		const persisted = [];
+		backend.publishCoverage = (positions) => {
+			offers++;
+			if (accepting) persisted.push(positions.local);
+			return accepting;
+		};
+		const { runtime } = runtimeFor(store, new Map(), {
+			idleGraceMilliseconds: 1000,
+			maxFlushAgeMilliseconds: 60_000,
+		});
+		runtime.register(registration(backend));
+
+		await waitFor(() => offers >= 1);
+		accepting = true;
+		backend.stateChange();
+		await waitFor(() => persisted.length > 0, 5000);
+		assert.deepStrictEqual(persisted[0], store.committedPosition);
+		await runtime.stop();
+	});
+
 	it('persists only coverage captured on an idle pass', async () => {
 		// The turn that reads 20 captured the tail before 20 was appended; persisting that position with the
 		// vector anchoring 20 would let a resume skip past an entry the position never covered.
