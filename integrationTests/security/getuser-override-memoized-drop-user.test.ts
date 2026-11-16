@@ -5,18 +5,16 @@
  * record-backed user "is still revoked when dropped, deactivated or moved to another role".
  *
  * The question: does one HTTP Basic login through the same override, sent after the drop, change what the
- * MQTT side is checked against? `security/auth.ts:302-305` re-tracks the override's object on every HTTP
- * login (`trackUserRecords`, no `trackedProvenance.has` guard), and `trackUserRecords` (`security/user.ts:659-684`)
- * marks it `recordless` when no record has its name at that moment — which, after a drop, is always.
+ * MQTT side is checked against? The login is refused with 401, and the MQTT side must still revoke.
  *
  * Arms (1 s recheck interval, authorizeLocal:false, every principal sends explicit credentials):
  *   P   credential-less ops call -> 401; a token with a bad secret is refused at CONNECT; a memoized
  *       record-backed subscriber receives (the override and the witness oracle work)
  *   A   control: held connection, drop_user, no HTTP -> the Feed/# subscription ends and a SUBSCRIBE to
  *       Feed2/# on the held connection is refused or ends within the recheck window
- *   B   held connection, drop_user, ONE HTTP Basic GET through the override, then SUBSCRIBE Feed2/# on the
- *       held connection -> asserts refused-or-ended (the contract); red = granted and kept
- *   C   drop_user, one HTTP Basic GET, then a FRESH MQTT login with the same credentials -> asserts the new
+ *   B   held connection, drop_user, ONE HTTP Basic GET through the override (401), then SUBSCRIBE Feed2/# on
+ *       the held connection -> asserts refused-or-ended (the contract); red = granted and kept
+ *   C   drop_user, one HTTP Basic GET (401), then a FRESH MQTT login with the same credentials -> asserts the new
  *       subscription is refused or ends; C2 is the same without the HTTP request (control)
  *
  * Run: npm run test:integration -- "integrationTests/security/getuser-override-memoized-drop-user.test.ts"
@@ -184,7 +182,6 @@ suite(
 			return delivered(obs, value);
 		}
 
-		/** One HTTP Basic GET through the override; returns the status so an arm can assert the re-track happened. */
 		async function httpLogin(username: string): Promise<number> {
 			const res = await fetch(`${ctx.harper.httpURL}/Feed/`, {
 				headers: { authorization: `Basic ${Buffer.from(`${username}:${token(ROLE)}`).toString('base64')}` },
@@ -193,10 +190,32 @@ suite(
 			return res.status;
 		}
 
-		async function memoized(username: string): Promise<boolean> {
+		async function memoState(username: string): Promise<{ memoized: boolean; lookups: number }> {
 			const res = await client.reqRest(`/MemoState/?username=${username}`);
 			strictEqual(res.status, 200, `MemoState probe: ${res.status} ${JSON.stringify(res.body)}`);
-			return res.body.memoized === true;
+			return { memoized: res.body.memoized === true, lookups: Number(res.body.lookups) };
+		}
+
+		async function memoized(username: string): Promise<boolean> {
+			return (await memoState(username)).memoized;
+		}
+
+		// the lookup count tells the stale-view refusal apart from a 401 raised before the override ran
+		async function refusedRetrack(username: string): Promise<number> {
+			const before = await memoState(username);
+			ok(before.memoized, `precondition: the override must hold a memoized principal for ${username}`);
+			const status = await httpLogin(username);
+			const after = await memoState(username);
+			ok(
+				after.lookups > before.lookups,
+				`precondition: the HTTP login after drop_user never reached the override, so nothing was re-tracked (status ${status})`
+			);
+			strictEqual(
+				status,
+				401,
+				`the HTTP Basic login of a memoized user whose hdb_user record was dropped must be refused (#4316), got ${status}`
+			);
+			return status;
 		}
 
 		/** Subscribes `topic` on `c` after the change: refused (>=128), or granted but ended within TICKS, or kept. */
@@ -313,12 +332,7 @@ suite(
 			const before = await publish('Feed', 'b-before');
 			ok(await waitFor(() => delivered(obs, before)), 'positive control: B never received while authorized');
 			await op({ operation: 'drop_user', username: 'sqa165_b' });
-			const status = await httpLogin('sqa165_b');
-			strictEqual(
-				status,
-				200,
-				`precondition: the HTTP re-track did not happen (override login answered ${status} after drop_user)`
-			);
+			const status = await refusedRetrack('sqa165_b');
 			const heldKept = await receivesAfterTicks(obs, 'Feed', 'b-held-after');
 			const outcome = await subscribeOutcome(c, 'Feed2/#', 'b-feed2');
 			t.diagnostic(
@@ -343,12 +357,7 @@ suite(
 			ok(await waitFor(() => delivered(firstObs, before)), 'positive control: C never received while authorized');
 			firstObs.stop();
 			await op({ operation: 'drop_user', username: 'sqa165_c' });
-			const status = await httpLogin('sqa165_c');
-			strictEqual(
-				status,
-				200,
-				`precondition: the HTTP re-track did not happen (override login answered ${status} after drop_user)`
-			);
+			const status = await refusedRetrack('sqa165_c');
 			let fresh: MqttClient;
 			try {
 				fresh = await connect(mqttURL, { username: 'sqa165_c', password: token(ROLE) });
