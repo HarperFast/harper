@@ -334,8 +334,8 @@ function loadConfig(force: boolean) {
 	if (propFileExists || doesPropFileExist() || commonUtils.noBootFile() || force) {
 		configUtils.initConfig(force);
 		if (!inheritedOverridesApplied) {
-			inheritedOverridesApplied = true;
 			applyInheritedConfigOverrides();
+			inheritedOverridesApplied = true;
 		}
 		// force implies the on-disk config was just re-read from scratch, which would otherwise
 		// silently drop every override applied on this thread so far (inherited or local) —
