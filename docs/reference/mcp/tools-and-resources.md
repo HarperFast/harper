@@ -80,6 +80,8 @@ The application profile walks Harper's `Resources` registry. For each exported `
 
 A Resource that implements both `put` and `patch` emits `update_<name>` (favoring `put`).
 
+[`mcp.application.generatedTools: false`](./configuration.md#mcpapplicationgeneratedtools) turns this generation off, leaving only custom `mcpTools`. [`mcp.application.allow` and `deny`](./configuration.md#mcpapplicationallow) filter generated and custom tools by name.
+
 ### Tool-name sanitization
 
 The Resource's path is sanitized into a valid tool name: `/` and `.` become `_`. If two Resources sanitize to the same name, Harper disambiguates by prefixing the database name; if a collision still occurs, a 6-character hash suffix is appended.
