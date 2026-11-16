@@ -262,6 +262,41 @@ describe('A publish older than its record', function () {
 			assert.ok(refReads <= 6, `${refReads} log reads for the newest of 20 messages`);
 		});
 
+		onRocksDB('reads no log to subscribe without history to a record late messages left refs on', async () => {
+			await put('r1', 'B', at(200));
+			for (let n = 1; n <= 10; n++) await publish('r1', n, at(100 + n));
+			assert.ok(Topics.primaryStore.getEntry('r1').additionalAuditRefs?.length > 0, 'the late messages left refs');
+			const { getSync } = Topics.auditStore;
+			let reads = 0;
+			Topics.auditStore.getSync = function (key, tableId, id, ...rest) {
+				if (tableId === Topics.tableId && id === 'r1') reads++;
+				return getSync.call(this, key, tableId, id, ...rest);
+			};
+			// any head read precedes the first send, so each window can close on its first sends
+			async function subscribeUntil(request, done) {
+				const events = [];
+				reads = 0;
+				const subscription = await Topics.subscribe({ id: 'r1', ...request });
+				subscription.on('data', (event) => events.push(event));
+				try {
+					await waitFor(() => done(events), { timeout: 5000 });
+				} finally {
+					subscription.end();
+				}
+				return { events, reads };
+			}
+			try {
+				const current = await subscribeUntil({}, (events) => events.length > 0);
+				assert.equal(current.events[0].value.name, 'B');
+				assert.equal(current.reads, 0, `${current.reads} log reads to subscribe with no startTime`);
+				const history = await subscribeUntil({ startTime: at(0) }, (events) => messagesOf(events).length >= 10);
+				assert.deepEqual(sorted(messagesOf(history.events)), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+				assert.ok(history.reads > 0, 'a subscription with startTime reads the log');
+			} finally {
+				Topics.auditStore.getSync = getSync;
+			}
+		});
+
 		onRocksDB('reaches a late message through the refs of the writes after it', async () => {
 			await topicWithLateMessage('p1');
 			const head = Topics.primaryStore.getEntry('p1');

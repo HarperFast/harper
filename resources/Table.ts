@@ -10907,7 +10907,8 @@ export function makeTable(options): TableResourceClass {
 						localTime = entry?.localTime;
 					}
 					let nodeId = entry?.nodeId;
-					if (isRocksDB && entry) {
+					// the head locates history; with no startTime (and no count) none is read below
+					if (isRocksDB && entry && startTime !== undefined) {
 						const head = resolveAuditHead(thisId, entry.version, nodeId, entry.additionalAuditRefs);
 						localTime = head.txnLogKey;
 						nodeId = head.nodeId;
