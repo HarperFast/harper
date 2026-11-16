@@ -7,6 +7,7 @@ const PREFIX = 'sqa165:';
 const SECRET = 'open-sesame';
 const coreGetUser = server.getUser;
 const memo = new Map();
+const lookups = new Map();
 
 function findRoleByName(name) {
 	const roleTable = databases.system?.hdb_role;
@@ -22,6 +23,7 @@ server.getUser = async function (username, password, request) {
 		const claims = JSON.parse(Buffer.from(password.slice(PREFIX.length), 'base64url').toString('utf8'));
 		if (claims.secret !== SECRET) throw new Error('sqa165: bad secret');
 		if (typeof claims.role !== 'string') throw new Error('sqa165: token names no role');
+		lookups.set(username, (lookups.get(username) ?? 0) + 1);
 		let user = memo.get(username);
 		if (!user) {
 			const record = findRoleByName(claims.role);
@@ -41,6 +43,6 @@ export class MemoState extends Resource {
 	}
 	get(query) {
 		const username = query.get('username');
-		return { username, memoized: memo.has(username) };
+		return { username, memoized: memo.has(username), lookups: lookups.get(username) ?? 0 };
 	}
 }
