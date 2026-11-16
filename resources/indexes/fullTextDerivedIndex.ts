@@ -344,7 +344,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		return DERIVED_INDEX_ACCEPTED;
 	}
 
-	/** Binds the writer to `ownerEpoch` for any command that will reach the engine, not only a delivery. */
+	/** Every command that reaches the engine runs under the epoch this binds the writer to. */
 	#admitOwner(ownerEpoch: bigint): DerivedIndexDeliveryResult {
 		if (!this.#host?.isOwnerEpoch(ownerEpoch)) return DERIVED_INDEX_FAILED;
 		if (this.#terminalFailure) return DERIVED_INDEX_DEFERRED;
@@ -363,12 +363,11 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#queueBarrier(this.#activeEpoch);
 	}
 
-	publishCoverage(positions: DerivedIndexPositions, ownerEpoch: bigint): void {
+	publishCoverage(positions: DerivedIndexPositions, ownerEpoch: bigint): boolean {
 		this.#assertSharedEpoch(ownerEpoch);
 		if (!this.#durableCursor) throw new FullTextDerivedIndexError('Cannot publish coverage without a durable cursor');
-		if (sameDerivedIndexPositions(this.#durableCursor.coverage, positions)) return;
-		// The runtime captures coverage again on its next idle pass, so a declined one is not lost.
-		if (this.#failed || this.#admitOwner(ownerEpoch) !== DERIVED_INDEX_ACCEPTED) return;
+		if (sameDerivedIndexPositions(this.#durableCursor.coverage, positions)) return true;
+		if (this.#failed || this.#admitOwner(ownerEpoch) !== DERIVED_INDEX_ACCEPTED) return false;
 		let pending: BarrierCommand | undefined;
 		for (let index = this.#commands.length - 1; index >= 0; index--) {
 			if (this.#commands[index].type === 'barrier') {
@@ -391,6 +390,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 				coverageOnly: true,
 			});
 		this.#scheduleDrain();
+		return true;
 	}
 
 	shutdown(ownerEpoch: bigint): Promise<void> {

@@ -287,7 +287,7 @@ describe('FullTextDerivedIndexBackend', () => {
 		backend.onStateChange((change) => changes.push(change));
 		assert.deepStrictEqual({ ...backend.getDurableCursor().logs }, { local: 10 });
 		const coverage = { local: { sequence: 3, offset: 4 } };
-		backend.publishCoverage(coverage, 1n);
+		assert.strictEqual(backend.publishCoverage(coverage, 1n), true);
 		await waitFor(() => engine.publications.length === 1 || changes.includes('failed'));
 		assert.strictEqual(changes.includes('failed'), false);
 		const published = decodeFullTextCursorPayload(engine.publications[0]);
@@ -297,6 +297,31 @@ describe('FullTextDerivedIndexBackend', () => {
 		await backend.shutdown(1n);
 		assert.strictEqual(lifecycleValue.resetCalls, 0);
 		assert.deepStrictEqual(engine.closes, [{ mode: 'require-clean' }]);
+	});
+
+	it('declines coverage while its writer recovers and accepts it afterwards', async () => {
+		const first = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
+		const second = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
+		first.applyError = new Error('disk failure');
+		const { backend } = makeBackend(
+			lifecycle({ state: 'checkpointed', committedPayload: first.committedPayload }, [first, second]),
+			{ openRetryMilliseconds: 50, maxOpenRetryMilliseconds: 50 }
+		);
+		const changes = [];
+		backend.onStateChange((change) => changes.push(change));
+		backend.getDurableCursor();
+		const value = batch(1n, [mutation('a', { kind: 'record', version: 1, projection: { title: 'a' } })], cursor(20));
+		assert.strictEqual(backend.deliver(value), DERIVED_INDEX_ACCEPTED);
+		await waitFor(() => changes.includes('accepted-work-lost'));
+		const coverage = { local: { sequence: 3, offset: 4 } };
+		assert.strictEqual(backend.publishCoverage(coverage, 1n), false);
+		await waitFor(() => changes.includes('changed'));
+		assert.strictEqual(second.publications.length, 0);
+		assert.strictEqual(backend.publishCoverage(coverage, 1n), true);
+		await waitFor(() => second.publications.length === 1);
+		assert.deepStrictEqual({ ...decodeFullTextCursorPayload(second.publications[0]).coverage }, coverage);
+		assert.strictEqual(changes.includes('failed'), false);
+		await backend.shutdown(1n);
 	});
 
 	it('maps canonical Harper keys to unambiguous document ids', () => {

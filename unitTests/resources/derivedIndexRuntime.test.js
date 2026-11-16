@@ -245,6 +245,27 @@ describe('DerivedIndexRuntime', () => {
 		await runtime.stop();
 	});
 
+	it('offers coverage again without waiting out the flush age when the backend declines it', async () => {
+		const store = new FakeLogStore(new Map());
+		store.committedPosition = { sequence: 1, offset: 64 };
+		// A wall-clock time, so the first capture is already past the flush age as it is in production.
+		store.rootStore.getMonotonicTimestamp = () => Date.now();
+		const backend = new FakeBackend('declined-coverage', cursor(10));
+		let offers = 0;
+		backend.publishCoverage = () => ++offers > 1;
+		const { runtime } = runtimeFor(store, new Map(), {
+			idleGraceMilliseconds: 1000,
+			maxFlushAgeMilliseconds: 60_000,
+		});
+		runtime.register(registration(backend));
+
+		await waitFor(() => offers >= 2);
+		backend.stateChange();
+		await new Promise((resolve) => setTimeout(resolve, 60));
+		assert.strictEqual(offers, 2);
+		await runtime.stop();
+	});
+
 	it('persists only coverage captured on an idle pass', async () => {
 		// The turn that reads 20 captured the tail before 20 was appended; persisting that position with the
 		// vector anchoring 20 would let a resume skip past an entry the position never covered.
