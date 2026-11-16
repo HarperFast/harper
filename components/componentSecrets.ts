@@ -139,6 +139,11 @@ function rowStateFromRecord(record: any): SecretRowState {
 	return state;
 }
 
+/** An env file loaded with `override: true` replaced this name's value: later passes leave it alone. */
+export function releaseMaterializedEnvKey(name: string): void {
+	ownedEnvKeys.delete(name);
+}
+
 /**
  * Read the hdb_secret store, decrypt what this node's custody allows, materialize the global tier
  * (`processEnv: true` rows) into the real process.env, and snapshot the scoped tier for the accessor. Runs

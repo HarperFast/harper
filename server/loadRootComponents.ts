@@ -139,8 +139,7 @@ async function loadRootComponents(isWorkerThread: any = false) {
 	}
 
 	await loadCertificates();
-	// Before the root config's `${NAME}` placeholders are resolved (a model's apiKey). Workers copy this
-	// thread's environment when they start, so they see these values too.
+	// Before the root config's `${NAME}` placeholders are resolved (a model's apiKey).
 	if (isMainThread && !process.env.HARPER_SAFE_MODE && getSecretDecryptor()) await materializeGlobalSecrets();
 	// the Harper root component
 	await loadComponent(dirname(configUtils.getConfigFilePath()), resources, 'hdb', {
