@@ -3953,7 +3953,7 @@ export function makeTable(options): TableResourceClass {
 				// the client's validator came from the HTTP class's representation
 				const { Resource: HttpClass } = condition;
 				if (
-					target.id == null ||
+					target?.id == null ||
 					target.isCollection ||
 					target.property ||
 					target.select ||
