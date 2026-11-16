@@ -206,7 +206,7 @@ export function requireCredential(
 	}
 	if (isUnresolvedEnvVarPlaceholder(value)) {
 		throw new Err(
-			`${backendLabel} ${fieldName} is the literal placeholder ${value}; set the matching env var before starting Harper`
+			`${backendLabel} ${fieldName} is the literal placeholder ${value}; set the matching environment variable or processEnv secret, then restart Harper`
 		);
 	}
 	return value;

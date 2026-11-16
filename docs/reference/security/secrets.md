@@ -72,6 +72,19 @@ With custody on the node, submit the plaintext `value` and Harper encrypts it on
 
 Every component now sees `process.env.DATABASE_URL`.
 
+Configuration that resolves `${VAR_NAME}` placeholders from the environment sees a global secret too. A [model entry](../models/overview.md#credentials) can take its API key from one:
+
+```yaml
+models:
+  generative:
+    default:
+      backend: anthropic
+      apiKey: ${ANTHROPIC_API_KEY}
+      model: claude-opus-5-5
+```
+
+Set `ANTHROPIC_API_KEY` as a global secret and restart Harper; the model registers with the stored key. A changed secret reaches the model on the next restart.
+
 ### Create a scoped secret and grant it
 
 ```json
