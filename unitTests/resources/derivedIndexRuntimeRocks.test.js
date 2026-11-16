@@ -272,7 +272,7 @@ describe('DerivedIndexRuntime with an audited RocksDB table', () => {
 		runtime = undefined;
 	});
 
-	it('reports no lag when a peer commit reaches an idle index re-acquired after release or restart', async function () {
+	it('admits writes when a peer commit reaches an idle index re-acquired after release or restart', async function () {
 		this.timeout(60_000);
 		const Product = table({
 			database: 'derived-index-idle-lag-rocks',
@@ -368,7 +368,7 @@ describe('DerivedIndexRuntime with an audited RocksDB table', () => {
 			const read = await waitFor(() => transactionOf(id), { timeout: 20_000 });
 			assert.strictEqual(read.transaction.logName, 'remote');
 			assert.strictEqual(read.transaction.timestamp - previous.transaction.timestamp, 120_000);
-			assert.strictEqual(runtime.getMetrics(backend.id).cursorLagMilliseconds, 0);
+			assert.strictEqual(runtime.getMetrics(backend.id).cursorLagMilliseconds, 120_000);
 			assert.strictEqual(derivedIndexWriteRejection(auditStore, Product.tableId), undefined);
 			await Product.put(`local-${++local}`, { title: 'written while the barrier is pending' });
 			backend.barriersOpen = true;

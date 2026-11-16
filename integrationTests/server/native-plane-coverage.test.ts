@@ -11,6 +11,7 @@ import {
 	startHarper,
 } from '@harperfast/integration-testing';
 import { waitFor } from '../../unitTests/waitFor.js';
+import { requestJson } from '../utils/requestJson.ts';
 
 test(
 	'native queries expose bounded coverage and reject expired or strict catch-up lag',
@@ -51,29 +52,9 @@ test(
 				return existsSync(logPath) ? readFileSync(logPath, 'utf8').split('DerivedIndexLagError').length - 1 : 0;
 			}
 			async function request(path: string, method = 'GET', body?: unknown) {
-				const response = await fetch(`${ctx.harper.httpURL}${path}`, {
-					method,
-					headers,
-					body: body === undefined ? undefined : JSON.stringify(body),
-					signal: AbortSignal.timeout(30_000),
-				});
-				let text = '';
-				let aborted = false;
-				const decoder = new TextDecoder();
-				try {
-					for await (const chunk of response.body ?? []) text += decoder.decode(chunk, { stream: true });
-				} catch (error) {
-					// undici reports a server-aborted body as TypeError; the client's own timeout is a DOMException
-					if (!(error instanceof TypeError)) throw error;
-					aborted = true;
-				}
-				return {
-					status: response.status,
-					coverage: response.headers.get('harper-index-coverage'),
-					aborted,
-					text,
-					body: text && !aborted ? JSON.parse(text) : undefined,
-				};
+				const response = await requestJson<any>(`${ctx.harper.httpURL}${path}`, { method, headers, body });
+				const coverage = response.headers['harper-index-coverage'];
+				return { ...response, coverage: typeof coverage === 'string' ? coverage : null };
 			}
 			const query = (tolerance?: unknown, wait?: unknown, queryTarget = target, path = '/PlaneProbe/') =>
 				request(path, 'QUERY', {

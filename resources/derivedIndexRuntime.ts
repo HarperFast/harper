@@ -680,6 +680,7 @@ class DerivedIndexRunner {
 	#latestSeen = new Map<string, number>();
 	#stalledSince?: number;
 	#lastCaughtUpAt?: number;
+	#lagRecovery?: { target?: DerivedIndexCursor; since?: number };
 	/** Delivered work or acquisition; a wake that finds nothing to deliver does not extend the idle grace. */
 	#workAt = 0;
 	#admission: RunnerAdmission;
@@ -936,22 +937,13 @@ class DerivedIndexRunner {
 		};
 	}
 
-	/**
-	 * Cursor distance over what this runner has read and not made durable: the commit-time span from the
-	 * oldest such transaction to the newest one read, so an idle gap before the oldest is not lag. A log
-	 * the durable cursor does not anchor yet is left to the accepted-age term.
-	 */
 	#cursorLag(): number {
 		let cursorLag = 0;
 		const durable = this.#offeredCursors[0]?.cursor;
 		if (durable) {
 			for (const [logName, latest] of this.#latestSeen) {
 				const position = durable.logs[logName];
-				if (position === undefined) continue;
-				// reconciliation keeps the durable timestamp first in its log's pending list
-				const oldestUndurable = this.#pendingTimestamps.get(logName)![1];
-				if (oldestUndurable !== undefined && latest > oldestUndurable)
-					cursorLag = Math.max(cursorLag, latest - oldestUndurable);
+				if (position !== undefined && latest > position) cursorLag = Math.max(cursorLag, latest - position);
 			}
 		}
 		return cursorLag;
@@ -980,15 +972,10 @@ class DerivedIndexRunner {
 	}
 
 	/**
-	 * Owner-only. Lag is the longest of four terms: cursor distance over what this runner has read and
-	 * not made durable, time parked on backpressure, time since the oldest commit this runner may
-	 * not have read yet (a reader too slow to reach the end of the log cannot hide), and the age of
-	 * the oldest accepted work not yet durable (a backend that accepts but never barriers cannot hide).
-	 * All four are zero for a caught-up owner sitting idle and stay within drain latency plus flush age
-	 * for a runner keeping up under sustained ingest. The trip survives discard and handoff: a
-	 * successor clears it only after proving catch-up itself — a durable advance and the end of the
-	 * log both reached since it acquired, so an inherited backlog cannot be cleared by one barrier —
-	 * below half the budget.
+	 * Admission uses actual work ages in this ownership epoch: unread, stalled, or accepted but not
+	 * durable. Cursor timestamp distance includes idle gaps and replication clock spans, so it is
+	 * diagnostic only. Handoff and lost-work recovery wait for durability through a fixed log tail;
+	 * rewinds retain pending work age and recapture that tail from their new offered chain.
 	 */
 	#publishLag() {
 		const max = this.#lagBudget;
@@ -996,17 +983,23 @@ class DerivedIndexRunner {
 		const now = this.#options.now();
 		const oldestAccepted = this.#oldestAcceptedAt();
 		const lag = Math.max(
-			this.#cursorLag(),
 			this.#stalledSince === undefined ? 0 : now - this.#stalledSince,
 			this.#unreadAge(now),
-			oldestAccepted === undefined ? 0 : now - oldestAccepted
+			oldestAccepted === undefined ? 0 : now - oldestAccepted,
+			this.#lagRecovery?.since === undefined ? 0 : now - this.#lagRecovery.since
 		);
 		const words = this.#shared().words;
 		const tripped = Atomics.load(words, READINESS_LAG_EXCEEDED) === 1;
 		if (!tripped && lag >= max) {
 			Atomics.store(words, READINESS_LAG_EXCEEDED, 1);
 			logger.warn?.(`Derived index '${this.id}' is ${Math.round(lag)} ms behind; rejecting writes until it catches up`);
-		} else if (tripped && lag < max / 2 && this.#lastCaughtUpAt !== undefined && this.#reachedEndOfLog) {
+		} else if (
+			tripped &&
+			lag < max / 2 &&
+			this.#lastCaughtUpAt !== undefined &&
+			this.#reachedEndOfLog &&
+			!this.#lagRecovery
+		) {
 			Atomics.store(words, READINESS_LAG_EXCEEDED, 0);
 			logger.info?.(`Derived index '${this.id}' caught up; admitting writes again`);
 		}
@@ -1180,6 +1173,7 @@ class DerivedIndexRunner {
 		this.#owned = true;
 		this.#generation++;
 		this.#lastCaughtUpAt = undefined;
+		this.#lagRecovery = Atomics.load(this.#shared().words, READINESS_LAG_EXCEEDED) === 1 ? {} : undefined;
 		this.#unreadSince = this.#options.now();
 		this.#workAt = this.#unreadSince;
 		this.#reachedEndOfLog = false;
@@ -1434,6 +1428,7 @@ class DerivedIndexRunner {
 			if (!this.#live(generation)) return;
 			// A nonempty turn can also exhaust the captured log tail. Waiting for an empty turn
 			// would starve coverage under continuous writes even when each drain catches up.
+			if (this.#collectedToEnd && this.#carried.length === 0) this.#captureLagRecoveryTarget();
 			const completedCapture = this.#collectedToEnd && this.#carried.length === 0 ? capture : undefined;
 			if (completedCapture) this.#offeredCursors.at(-1)!.coverage = completedCapture;
 			if (!this.#reconcileDurableCursor()) return;
@@ -1806,11 +1801,17 @@ class DerivedIndexRunner {
 		return true;
 	}
 
+	#captureLagRecoveryTarget() {
+		if (this.#lagRecovery && !this.#lagRecovery.target && this.#offered)
+			this.#lagRecovery.target = cloneCursor(this.#offered);
+	}
+
 	#finishIdlePass(capture?: CoverageCapture) {
 		this.#stalledSince = undefined;
 		this.#unreadSince = undefined;
 		this.#reachedEndOfLog = true;
 		if (this.#rebuilding || !this.#offered) return;
+		this.#captureLagRecoveryTarget();
 		const durable = this.#registration.backend.getDurableCursor();
 		if (durable === undefined && this.#boundaryPending) {
 			this.#armFlushTimer();
@@ -1879,6 +1880,11 @@ class DerivedIndexRunner {
 		}
 		// Any reconcile can publish coverage or ready, so the logs still unanchored are proven first.
 		if (!this.#checkUnanchoredLogs()) return false;
+		const recoveryTarget = this.#lagRecovery?.target;
+		if (recoveryTarget) {
+			const targetIndex = this.#offeredCursors.findIndex((offered) => sameCursor(offered.cursor, recoveryTarget));
+			if (targetIndex >= 0 && targetIndex <= offeredIndex) this.#lagRecovery = undefined;
+		}
 		// Every timestamp of an offered vector was pushed to its log's pending list, so the durable one is
 		// present; everything before it is no longer needed for repeat detection.
 		for (const [logName, timestamp] of Object.entries(cursor.logs)) {
@@ -2037,6 +2043,15 @@ class DerivedIndexRunner {
 		}
 		if (this.status.state === 'needs-rebuild') return;
 		if (change === 'accepted-work-lost' && this.#owned) {
+			const now = this.#options.now();
+			const unreadAge = this.#unreadAge(now);
+			const origins = [
+				this.#lagRecovery?.since,
+				this.#oldestAcceptedAt(),
+				this.#stalledSince,
+				unreadAge > 0 ? now - unreadAge : undefined,
+			].filter((origin): origin is number => origin !== undefined);
+			this.#lagRecovery = { since: origins.length ? Math.min(...origins) : undefined };
 			this.#discardProgress();
 			try {
 				this.#resetFromDurableCursor();
@@ -2063,6 +2078,7 @@ class DerivedIndexRunner {
 		const storeStatus: string = this.#logStore.rootStore.status;
 		if (storeStatus === 'closing' || storeStatus === 'closed') {
 			// Local only: stops an install or drain from going on, and publishes nothing shared.
+			this.#generation++;
 			this.status = { state: 'unavailable', reason: `database closing: ${reason}`, ownerEpoch: this.#ownerEpoch };
 			return;
 		}
@@ -2108,6 +2124,7 @@ class DerivedIndexRunner {
 
 	/** An index no owner will catch up must not keep shedding writes. */
 	#admitWrites() {
+		this.#lagRecovery = undefined;
 		if (this.#lagBudget > 0) Atomics.store(this.#shared().words, READINESS_LAG_EXCEEDED, 0);
 	}
 

@@ -58,6 +58,13 @@ benchmarks/ycsb/bench-out/
 benchmarks/compression/results/
 benchmarks/fulltext-analytics/results/
 
+# Full-text benchmark reports (generated)
+benchmarks/fulltext-http/results/
+benchmarks/fulltext-sort-cost.json
+benchmarks/fulltext-final-page-cost.json
+benchmarks/fulltext-qualification-results.json
+benchmarks/fulltext-qualification-latencies.json.gz
+
 # export_local integration-test artifacts — these tests pass `path: './'`, so the export lands in
 # the repo root and a `git add -A` after a test run commits it
 test_export*.json

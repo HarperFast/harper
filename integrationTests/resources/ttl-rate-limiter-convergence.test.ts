@@ -2,14 +2,20 @@
  * QA-431 companion — same fixture as ttl-rate-limiter-concurrent.test.ts, with the two
  * ingredients that make version-reuse cache staleness reproducible: GET pressure DURING each
  * burst (cold reads re-seed the VerificationTable), and per-window convergence classification —
- * CONVERGED_LATE (a read raced still-landing merges) vs STUCK_SHORT (a durably lost increment).
+ * CONVERGED_LATE (a read raced still-landing merges) vs STUCK_SHORT (unconverged acknowledged increments).
  *
- * A short window also prints the audit evidence harper#3163 needs. Its live chain is requested from
- * inside the key's own burst worker, behind a GET that already reads short, and nothing in that
- * sequence is awaited before the round is measured: the record expires 500 ms after its last write
- * and the windows are measured one after another, so by a later window's turn its record is often
- * gone, while any wait ahead of a measurement can expire the keys still to be read. The round's
- * timestamp read runs after every window has been measured.
+ * Set HARPER_TTL_SNAPSHOT_DIAGNOSTICS=1 to capture a request-transaction snapshot and cached
+ * view alongside the audit chain for initial short reads. This opt-in run is diagnostic and is
+ * not equivalent to the default workload: the extra cached read can refresh the snapshot worker's
+ * cache. That worker may differ from the worker serving the short GET. The transaction snapshot
+ * is pinned, not a latest-commit view; different versions can be legitimate. Served ETags and the
+ * encoded raw version are evidence only: even equal versions do not alone prove a cache violation.
+ * Neither view proves durability.
+ *
+ * The chain is requested inside the key's own burst worker, behind a GET that already reads short.
+ * Nothing in that sequence is awaited before round measurements: records expire 500 ms after their
+ * last write, so a wait ahead of a measurement can expire keys still to be read. The round's
+ * timestamp read and diagnostic logging run after every window has been measured.
  *
  * EXPIRED_RECREATED: the record was evicted at its TTL and recreated by a late increment, proven from
  * the live chain alone — seed PUT succeeded, no `upsert`, first entry a `patch` stamped after the
@@ -18,8 +24,10 @@
  */
 
 import { suite, test, before, after } from 'node:test';
-import { ok } from 'node:assert';
+import { ok, strictEqual } from 'node:assert';
 import { resolve } from 'node:path';
+import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error utils/client.mjs has no type declarations
@@ -30,6 +38,30 @@ const WORKERS = 4;
 const ROUNDS = 10;
 const WINDOWS = 10;
 const HITS = 50;
+const SNAPSHOT_DIAGNOSTICS = process.env.HARPER_TTL_SNAPSHOT_DIAGNOSTICS === '1';
+// Stored metadata flag; keep diagnostics independent of runtime module initialization.
+const VERSION_REUSED = 0x10000;
+const etagBytes = new Uint8Array(8);
+const etagFloat = new Float64Array(etagBytes.buffer);
+
+// Checked against the real GET ETag by the snapshot fixture control below.
+function versionToEtag(version: number): string {
+	etagFloat[0] = version;
+	return String.fromCharCode(
+		34,
+		(etagBytes[0] & 0x3f) + 62,
+		(etagBytes[0] >> 6) + ((etagBytes[1] << 2) & 0x3f) + 62,
+		(etagBytes[1] >> 4) + ((etagBytes[2] << 4) & 0x3f) + 62,
+		(etagBytes[2] >> 2) + 62,
+		(etagBytes[3] & 0x3f) + 62,
+		(etagBytes[3] >> 6) + ((etagBytes[4] << 2) & 0x3f) + 62,
+		(etagBytes[4] >> 4) + ((etagBytes[5] << 4) & 0x3f) + 62,
+		(etagBytes[5] >> 2) + 62,
+		(etagBytes[6] & 0x3f) + 62,
+		(etagBytes[6] >> 6) + ((etagBytes[7] << 2) & 0x3f) + 62,
+		34
+	);
+}
 
 const skipSuite = process.platform === 'win32' || process.env.HARPER_RUNTIME === 'bun';
 
@@ -114,7 +146,70 @@ suite(
 		}
 		const operations = (entries: AuditEntry[]) => entries.map((entry) => entry.operation).join(',');
 
-		type Chain = { chain: AuditEntry[]; error?: string };
+		type SnapshotEntry = {
+			hits: number | null;
+			version: number | null;
+			localTime: number | null;
+			expiresAt: number | null;
+			metadataFlags: number | null;
+			nodeId: number | null;
+			additionalAuditRefs: Array<{ version: number; nodeId?: number }>;
+			receivedIdentityRefs: Array<{ version: number; nodeId?: number }>;
+		};
+		type Snapshot = {
+			id: string;
+			engine: string;
+			uncachedReadBypassesCache: boolean;
+			threadId: number;
+			nowBefore: number;
+			nowAfter: number;
+			transactionSnapshot: SnapshotEntry | null;
+			cached: SnapshotEntry | null;
+		};
+		type SnapshotCapture = { status?: number; value?: Snapshot; error?: string };
+		type Chain = {
+			chain: AuditEntry[];
+			error?: string;
+			snapshot?: SnapshotCapture;
+			earlyHits?: number | null;
+			earlyEtag?: string | null;
+		};
+
+		async function readSnapshot(id: string): Promise<SnapshotCapture> {
+			try {
+				const response = await fetch(`${httpURL}/RateSnapshot/${encodeURIComponent(id)}`, {
+					headers: { Authorization: auth },
+					signal: AbortSignal.timeout(5_000),
+				});
+				if (response.status !== 200) return { status: response.status, error: await response.text() };
+				return { status: response.status, value: (await response.json()) as Snapshot };
+			} catch (error) {
+				return { error: (error as Error).message };
+			}
+		}
+
+		function snapshotDetail(capture?: SnapshotCapture) {
+			const value = capture?.value;
+			if (!value) return capture ?? { error: 'initial short-read snapshot not captured' };
+			const validity = (entry: SnapshotEntry | null) =>
+				!entry
+					? 'missing'
+					: entry.expiresAt === null
+						? 'unknown-expiry'
+						: entry.expiresAt <= value.nowBefore
+							? 'expired-before-capture'
+							: entry.expiresAt <= value.nowAfter
+								? 'expired-during-capture'
+								: 'live-at-capture';
+			return {
+				...capture,
+				workerRelation: 'separate snapshot request; triggering GET worker unknown',
+				ttlValidity: {
+					transactionSnapshot: validity(value.transactionSnapshot),
+					cached: validity(value.cached),
+				},
+			};
+		}
 		async function readChain(id: string): Promise<Chain> {
 			try {
 				const result = (await readAuditLog({ search_type: 'hash_value', search_values: [id] })) as Record<
@@ -212,7 +307,9 @@ suite(
 			}
 		}
 
-		async function getHits(id: string): Promise<{ status: number | 'error'; hits: number | null }> {
+		async function getHits(
+			id: string
+		): Promise<{ status: number | 'error'; hits: number | null; etag?: string | null }> {
 			try {
 				const r = await fetch(`${httpURL}/RateCounter/${id}`, {
 					headers: { Authorization: auth },
@@ -220,7 +317,11 @@ suite(
 				});
 				if (r.status !== 200) return { status: r.status, hits: null };
 				const body = await r.json();
-				return { status: 200, hits: Number(body?.hits ?? -1) };
+				return {
+					status: 200,
+					hits: Number(body?.hits ?? -1),
+					...(SNAPSHOT_DIAGNOSTICS ? { etag: r.headers.get('etag') } : {}),
+				};
 			} catch {
 				return { status: 'error', hits: null };
 			}
@@ -233,6 +334,7 @@ suite(
 			let expiredRecreated = 0;
 			let over = 0;
 			let inconclusive = 0;
+			let initialShortSnapshotAttempts = 0;
 			const anomalyLogs: string[] = [];
 
 			for (let round = 0; round < ROUNDS; round++) {
@@ -258,7 +360,16 @@ suite(
 							acked,
 							errs: results.filter((s) => s === 'error').length,
 							pendingChain: getHits(id).then((early) =>
-								early.status === 200 && early.hits! < acked ? readChain(id) : { chain: [] }
+								early.status === 200 && early.hits! < acked
+									? SNAPSHOT_DIAGNOSTICS
+										? Promise.all([readChain(id), readSnapshot(id)]).then(([chain, snapshot]) => ({
+												...chain,
+												snapshot,
+												earlyHits: early.hits,
+												earlyEtag: early.etag,
+											}))
+										: readChain(id)
+									: { chain: [] }
 							),
 						};
 					})
@@ -348,19 +459,40 @@ suite(
 					}
 				}
 				// let the round's records expire so rounds stay independent, with no chain read still in flight
-				await Promise.all(perWindow.map((window) => window.pendingChain));
+				const initialChains = await Promise.all(perWindow.map((window) => window.pendingChain));
+				for (const [index, chain] of initialChains.entries()) {
+					if ('snapshot' in chain) {
+						initialShortSnapshotAttempts++;
+						const raw = chain.snapshot?.value?.transactionSnapshot;
+						const capture = chain.snapshot?.value;
+						const window = perWindow[index];
+						const evidence = {
+							servedEtag: chain.earlyEtag,
+							rawEtag: raw?.version == null ? null : versionToEtag(raw.version),
+							sameVersion: raw?.version != null && chain.earlyEtag === versionToEtag(raw.version),
+							rawAtLeastAcked: raw?.hits != null && raw.hits >= window.acked,
+							rawWithinAcknowledgedAndErrors:
+								raw?.hits != null && raw.hits >= window.acked && raw.hits <= window.acked + window.errs,
+							rawLiveThroughoutCapture: raw?.expiresAt != null && capture != null && raw.expiresAt > capture.nowAfter,
+							rawVersionReused: raw?.metadataFlags != null && Boolean(raw.metadataFlags & VERSION_REUSED),
+						};
+						anomalyLogs.push(
+							`${perWindow[index].id}: INITIAL_SHORT_SNAPSHOT acked=${perWindow[index].acked} early=${chain.earlyHits} errs=${window.errs} worker-relation=unknown evidence=${JSON.stringify(evidence)} snapshot=${JSON.stringify(snapshotDetail(chain.snapshot))}`
+						);
+					}
+				}
 				await sleep(700);
 			}
 
 			console.log(
 				`\n[QA-431-CONVERGENCE] ${ROUNDS}×${WINDOWS}×${HITS} (${WORKERS} workers)\n` +
-					`  clean=${clean} converged-late=${convergedLate} stuck-short=${stuckShort} expired-recreated=${expiredRecreated} over=${over} inconclusive=${inconclusive}\n` +
+					`  clean=${clean} converged-late=${convergedLate} stuck-short=${stuckShort} expired-recreated=${expiredRecreated} over=${over} inconclusive=${inconclusive} snapshot-diagnostics=${SNAPSHOT_DIAGNOSTICS} initial-short-snapshot-attempts=${initialShortSnapshotAttempts}\n` +
 					(anomalyLogs.length
 						? `  ${anomalyLogs.join('\n  ')}\n  server log: ${ctx.harper.logDir ?? '(not kept: HARPER_INTEGRATION_TEST_LOG_DIR unset)'}`
 						: '  (no anomalies)')
 			);
 
-			ok(stuckShort === 0, `QA-431-CONVERGENCE: ${stuckShort} window(s) with durably lost increments`);
+			ok(stuckShort === 0, `QA-431-CONVERGENCE: ${stuckShort} window(s) with unconverged acknowledged increments`);
 			ok(over === 0, `QA-431-CONVERGENCE: ${over} window(s) over-counted (double-apply)`);
 			const measurable = clean + convergedLate + stuckShort + expiredRecreated + over;
 			ok(
@@ -370,3 +502,103 @@ suite(
 		});
 	}
 );
+
+suite('QA-431 authenticated snapshot control', { skip: skipSuite }, (ctx: ContextWithHarper) => {
+	let httpURL: string;
+	let auth: string;
+	let controlFixture: string;
+	before(async () => {
+		controlFixture = await mkdtemp(resolve(tmpdir(), 'harper-ttl-snapshot-control-'));
+		await cp(FIXTURE_PATH, controlFixture, { recursive: true });
+		const schemaPath = resolve(controlFixture, 'schema.graphql');
+		const schema = await readFile(schemaPath, 'utf8');
+		ok(schema.includes('@table(expiration: 0.5)'));
+		await writeFile(schemaPath, schema.replace('@table(expiration: 0.5)', '@table(expiration: 3600)'));
+		await setupHarperWithFixture(ctx, controlFixture, {
+			config: { threads: { count: 1 } },
+			env: { AUTHENTICATION_AUTHORIZELOCAL: 'false' },
+		});
+		httpURL = ctx.harper.httpURL;
+		auth = createApiClient(ctx.harper).headers.Authorization;
+	});
+	after(async () => {
+		try {
+			await teardownHarper(ctx);
+		} finally {
+			if (controlFixture) await rm(controlFixture, { recursive: true, force: true });
+		}
+	});
+	test('requires authentication and copies stored/cache metadata within one worker', async () => {
+		const id = 'snapshot-control';
+		const anonymous = await fetch(`${httpURL}/RateSnapshot/${id}`, { signal: AbortSignal.timeout(5_000) });
+		await anonymous.text();
+		ok([401, 403].includes(anonymous.status));
+		const seeded = await fetch(`${httpURL}/RateCounter/${id}`, {
+			method: 'PUT',
+			headers: { 'Authorization': auth, 'Content-Type': 'application/json' },
+			body: JSON.stringify({ id, hits: 17 }),
+			signal: AbortSignal.timeout(5_000),
+		});
+		await seeded.text();
+		strictEqual(seeded.status, 204);
+		let worker: number | undefined;
+		let previousVersion: number | undefined;
+		let previousExpiry: number | undefined;
+		for (let attempt = 0; attempt < 2; attempt++) {
+			const response = await fetch(`${httpURL}/RateSnapshot/${id}`, {
+				headers: { Authorization: auth },
+				signal: AbortSignal.timeout(5_000),
+			});
+			strictEqual(response.status, 200);
+			const snapshot = await response.json();
+			strictEqual(snapshot.id, id);
+			strictEqual(snapshot.engine, process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? 'other' : 'rocksdb');
+			ok(Number.isInteger(snapshot.threadId) && snapshot.threadId > 0);
+			if (worker !== undefined) strictEqual(snapshot.threadId, worker);
+			worker = snapshot.threadId;
+			ok(snapshot.nowBefore <= snapshot.nowAfter);
+			for (const entry of [snapshot.transactionSnapshot, snapshot.cached]) {
+				strictEqual(entry.hits, 17);
+				ok(typeof entry.version === 'number' && entry.version > 0);
+				ok(typeof entry.localTime === 'number');
+				ok(typeof entry.metadataFlags === 'number');
+				ok(entry.expiresAt > snapshot.nowAfter);
+				ok(Array.isArray(entry.additionalAuditRefs));
+				ok(Array.isArray(entry.receivedIdentityRefs));
+			}
+			if (previousVersion !== undefined) {
+				strictEqual(snapshot.transactionSnapshot.version, previousVersion);
+				strictEqual(snapshot.transactionSnapshot.expiresAt, previousExpiry);
+			}
+			previousVersion = snapshot.transactionSnapshot.version;
+			previousExpiry = snapshot.transactionSnapshot.expiresAt;
+			strictEqual(snapshot.cached.version, snapshot.transactionSnapshot.version);
+			strictEqual(snapshot.cached.expiresAt, snapshot.transactionSnapshot.expiresAt);
+		}
+		const unchanged = await fetch(`${httpURL}/RateCounter/${id}`, {
+			headers: { Authorization: auth },
+			signal: AbortSignal.timeout(5_000),
+		});
+		strictEqual(unchanged.status, 200);
+		strictEqual(unchanged.headers.get('etag'), versionToEtag(previousVersion!));
+		strictEqual((await unchanged.json()).hits, 17);
+		const updated = await fetch(`${httpURL}/RateCounter/${id}`, {
+			method: 'PUT',
+			headers: { 'Authorization': auth, 'Content-Type': 'application/json' },
+			body: JSON.stringify({ id, hits: 18 }),
+			signal: AbortSignal.timeout(5_000),
+		});
+		await updated.text();
+		strictEqual(updated.status, 204);
+		const advanced = await fetch(`${httpURL}/RateSnapshot/${id}`, {
+			headers: { Authorization: auth },
+			signal: AbortSignal.timeout(5_000),
+		});
+		strictEqual(advanced.status, 200);
+		const snapshot = await advanced.json();
+		for (const entry of [snapshot.transactionSnapshot, snapshot.cached]) {
+			strictEqual(entry.hits, 18);
+			ok(entry.version > previousVersion!);
+		}
+	});
+});
