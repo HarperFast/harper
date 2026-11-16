@@ -29,6 +29,7 @@ const {
 	retainComponentSubscriptions,
 	releaseComponentSubscriptions,
 } = require('#src/components/componentSecrets');
+const { handleApplication: loadEnvFile } = require('#src/resources/loadEnv');
 const { databases } = require('#src/resources/databases');
 const terms = require('#src/utility/hdbTerms');
 const { registerSecretCustody, clearSecretCustody } = require('#src/resources/secretDecryptor');
@@ -178,6 +179,21 @@ describe('componentSecrets', () => {
 			table.mock.rows.set('CS_PRESET', envRow('CS_PRESET', 'from-store'));
 			await materializeGlobalSecrets();
 			assert.equal(process.env.CS_PRESET, 'from-real-env');
+		});
+
+		it('an env file loaded with override keeps its value across a later materialization', async () => {
+			table.mock.rows.set('CS_GLOBAL', envRow('CS_GLOBAL', 'from-store'));
+			await materializeGlobalSecrets();
+			let loadEntry;
+			loadEnvFile({
+				options: { getAll: () => ({ override: true }) },
+				handleEntry: (handler) => (loadEntry = handler),
+				requestRestart() {},
+			});
+			loadEntry({ eventType: 'add', absolutePath: '/fake/.env', contents: 'CS_GLOBAL=from-env-file' });
+			assert.equal(process.env.CS_GLOBAL, 'from-env-file');
+			await materializeGlobalSecrets();
+			assert.equal(process.env.CS_GLOBAL, 'from-env-file');
 		});
 
 		it('scoped rows (grants, no processEnv) NEVER land in process.env', async () => {

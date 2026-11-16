@@ -1,9 +1,8 @@
 /**
  * A model entry's `apiKey: ${NAME}` is supplied by a global-tier stored secret (harper#4424).
  *
- * The suite stores the key through `set_secret`, restarts, and asserts the model serves with that
- * key. The fixture registers custody under the `secretCustody` name, which the main thread starts
- * before the root config load, as Harper Pro's custody does.
+ * The fixture registers custody under the `secretCustody` name, which the main thread starts before
+ * the root config load, as Harper Pro's custody does.
  */
 import { suite, test, before, after } from 'node:test';
 import assert from 'node:assert';
@@ -109,8 +108,8 @@ for (const threadCount of [0, 2]) {
 
 			after(async () => {
 				await teardownHarper(ctx);
-				await new Promise((resolve) => provider.close(resolve));
-				rmSync(scratchDirectory, { recursive: true, force: true });
+				if (provider) await new Promise((resolve) => provider.close(resolve));
+				if (scratchDirectory) rmSync(scratchDirectory, { recursive: true, force: true });
 			});
 
 			test('the entry is not registered while nothing supplies the key', async () => {
