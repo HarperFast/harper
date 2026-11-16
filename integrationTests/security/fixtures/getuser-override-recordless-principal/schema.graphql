@@ -1,0 +1,11 @@
+# Default-RBAC table: its live-subscription recheck is the shared default allowRead decision.
+type Feed @table @export {
+	id: ID @primaryKey
+	value: String
+}
+
+# Per-username revocation flag read by GatedFeed.allowRead (the documented application-side teardown route).
+type Gate @table @export {
+	id: ID @primaryKey
+	revoked: Boolean
+}

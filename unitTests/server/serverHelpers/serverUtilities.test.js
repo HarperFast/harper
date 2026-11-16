@@ -17,6 +17,10 @@ const { contextStorage } = require('#src/resources/transaction');
 const { existsSync, readFileSync } = require('node:fs');
 const { pinLogConfig } = require('../../logConfigFixture.js');
 const { waitFor } = require('../../waitFor.js');
+const fastify = require('fastify');
+const { serverErrorHandler } = require('#src/server/serverHelpers/serverHandlers');
+const { HdbError } = require('#src/utility/errors/hdbError');
+const PermissionResponseObject = require('#src/security/data_objects/PermissionResponseObject').default;
 
 const test_func_data = { data: 'this is data', more_data: 'this is more data' };
 const test_error = 'This is bad!';
@@ -377,6 +381,7 @@ describe('Test serverUtilities.js module ', () => {
 	});
 
 	describe('forwarded operation dispatch', function () {
+		this.timeout(10_000);
 		const { ITC_EVENT_TYPES } = require('#src/utility/hdbTerms');
 		const REMOTE_THREAD = 9_000_091;
 		let originalThreads;
@@ -386,8 +391,9 @@ describe('Test serverUtilities.js module ', () => {
 			originalThreads = global.threads;
 			sentMessages = [];
 			global.threads = {
+				// postMessage clones, so a payload that cannot be cloned must fail here as it does there
 				sendToThread(_threadId, message) {
-					sentMessages.push(message);
+					sentMessages.push(structuredClone(message));
 					return true;
 				},
 			};
@@ -475,6 +481,156 @@ describe('Test serverUtilities.js module ', () => {
 				assert.strictEqual(error.retryable, false);
 				return true;
 			});
+		});
+
+		let forwardedCount = 0;
+		async function forwardedError(body) {
+			sentMessages.length = 0;
+			const operationName = `test_forwarded_denial_${forwardedCount++}`;
+			await registeredOperations.operationExecuteRequestHandler({
+				message: { requestId: 40 + forwardedCount, body, originator: 1 },
+			});
+			assert.strictEqual(sentMessages.length, 1, 'the receiving side answers exactly once');
+			const responseError = sentMessages[0].message.error;
+			registeredOperations.operationRegisteredHandler({
+				message: { name: operationName, originator: REMOTE_THREAD },
+			});
+			const pending = registeredOperations.getRemoteOperationFunction(operationName)({ operation: operationName });
+			await manageThreads.broadcast(
+				{
+					type: ITC_EVENT_TYPES.OPERATION_EXECUTE_RESPONSE,
+					message: { requestId: sentMessages[1].message.requestId, originator: REMOTE_THREAD, error: responseError },
+				},
+				true
+			);
+			return pending.then(
+				() => assert.fail('the forward resolved'),
+				(error) => error
+			);
+		}
+
+		async function clientResponse(error) {
+			const app = fastify();
+			app.setErrorHandler(serverErrorHandler);
+			app.post('/', async () => {
+				throw error;
+			});
+			try {
+				const response = await app.inject({ method: 'POST', url: '/' });
+				return { status: response.statusCode, body: response.json() };
+			} finally {
+				await app.close();
+			}
+		}
+
+		function localError(body) {
+			try {
+				serverUtilities.chooseOperation(body);
+			} catch (error) {
+				return error;
+			}
+			return assert.fail('the operation was not refused');
+		}
+
+		for (const [label, field, prepare] of [
+			['an operation restricted to super_user', 'unauthorized_access', (request) => (request.operation = 'add_user')],
+			['a database that does not exist', 'invalid_schema_items', () => {}],
+		]) {
+			it(`answers a forwarded denial like the same denial raised locally: ${label}`, async function () {
+				const request = () => {
+					const copy = testUtils.deepClone(TEST_JSON_NON_SU);
+					prepare(copy);
+					return copy;
+				};
+				const local = await clientResponse(localError(request()));
+				const forwarded = await clientResponse(await forwardedError(request()));
+
+				assert.strictEqual(local.status, 403);
+				assert.ok(local.body[field].length > 0, `the local denial carries ${field}: ${JSON.stringify(local.body)}`);
+				assert.deepStrictEqual(forwarded, local);
+			});
+		}
+
+		it('carries table and attribute denial detail, which are nested class instances', async function () {
+			const denial = () => {
+				const report = new PermissionResponseObject();
+				report.addUnauthorizedTable('dev', 'dog', ['read']);
+				report.addUnauthorizedAttributes(['name'], 'dev', 'dog', { name: ['read', 'update'] });
+				report.addUnauthorizedAttributes(['id'], 'dev', 'cat', { id: ['read'] });
+				return new HdbError(new Error(), report.getPermsResponse(), 403);
+			};
+			registeredOperations.setLocalOperationDispatch({
+				chooseOperation() {
+					throw denial();
+				},
+				processLocalTransaction: serverUtilities.processLocalTransaction,
+			});
+			const local = await clientResponse(denial());
+			const forwarded = await clientResponse(await forwardedError({ operation: 'test_nested_denial' }));
+
+			assert.strictEqual(local.body.unauthorized_access.length, 2);
+			assert.deepStrictEqual(forwarded, local);
+		});
+
+		it('keeps the report when the rejection is forwarded a second time', async function () {
+			const request = () => ({ ...testUtils.deepClone(TEST_JSON_NON_SU), operation: 'add_user' });
+			const local = await clientResponse(localError(request()));
+			const firstHop = await forwardedError(request());
+			registeredOperations.setLocalOperationDispatch({
+				chooseOperation() {
+					throw firstHop;
+				},
+				processLocalTransaction: serverUtilities.processLocalTransaction,
+			});
+			const secondHop = await forwardedError({ operation: 'test_second_hop' });
+
+			assert.ok(local.body.unauthorized_access.length > 0);
+			assert.deepStrictEqual(await clientResponse(secondHop), local);
+		});
+
+		it('keeps an object body that is not a permission report as a scalar message with its retry signals', async function () {
+			const failure = () =>
+				Object.assign(new Error('saved but not run'), {
+					statusCode: 409,
+					code: 'SAVED_NOT_RUN',
+					retryable: false,
+					http_resp_msg: { error: 'saved but not run', phase: 'queued' },
+				});
+			registeredOperations.setLocalOperationDispatch({
+				chooseOperation() {
+					throw failure();
+				},
+				processLocalTransaction: serverUtilities.processLocalTransaction,
+			});
+			const error = await forwardedError({ operation: 'test_object_body' });
+
+			assert.strictEqual(error.http_resp_msg, undefined);
+			assert.deepStrictEqual(await clientResponse(error), {
+				status: 409,
+				body: { error: 'saved but not run', code: 'SAVED_NOT_RUN', retryable: false },
+			});
+		});
+
+		it('keeps a string response message as it is raised locally', async function () {
+			const request = () => ({ ...testUtils.deepClone(TEST_JSON_NON_SU), operation: 'definitely_not_an_operation' });
+			const local = await clientResponse(localError(request()));
+			const forwardedRejection = await forwardedError(request());
+
+			assert.strictEqual(forwardedRejection.http_resp_msg, undefined);
+			assert.deepStrictEqual(await clientResponse(forwardedRejection), local);
+			assert.strictEqual(local.status, 400);
+		});
+
+		it('answers once, as a 500, when the operation rejects with nothing', async function () {
+			registeredOperations.setLocalOperationDispatch({
+				chooseOperation() {
+					throw undefined;
+				},
+				processLocalTransaction: serverUtilities.processLocalTransaction,
+			});
+			const error = await forwardedError({ operation: 'test_nullish_rejection' });
+
+			assert.strictEqual(error.statusCode, 500);
 		});
 	});
 

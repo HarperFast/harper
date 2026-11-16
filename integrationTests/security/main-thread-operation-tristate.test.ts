@@ -68,8 +68,7 @@ interface Reply {
 interface Reference {
 	status: number;
 	error: string | undefined;
-	// The operations API carries the specific denial in `unauthorized_access[0]`; a denial forwarded
-	// across the hop arrives flattened to `error` only (SF-108), so the hop oracle tolerates its absence.
+	// The operations API carries the specific denial in `unauthorized_access[0]`.
 	detail: string | undefined;
 	shape: string | undefined;
 	username: string | null | undefined;
@@ -86,7 +85,6 @@ suite(
 		let appURL = '';
 		const auth: Record<PrincipalKey, string> = { admin: '', plain: '', listed: '', unlisted: '' };
 		const reference = {} as Record<PrincipalKey, Record<OpKey, Reference>>;
-		const flattenedDenials = new Set<string>();
 
 		async function http(url: string, authorization: string | null, body?: unknown): Promise<Reply> {
 			const headers: Record<string, string> = { Accept: 'application/json' };
@@ -135,10 +133,6 @@ suite(
 		function assertLikeReference(reply: Reply, principal: PrincipalKey, op: OpKey, context: string): void {
 			const expected = reference[principal][op];
 			const actual = toReference(reply);
-			if (expected.detail !== undefined && actual.detail === undefined) {
-				flattenedDenials.add(`${context} ${principal}/${OPS[op]}`);
-				actual.detail = expected.detail;
-			}
 			deepStrictEqual(actual, expected, `${context} ${principal}/${OPS[op]}: ${reply.status} ${reply.text}`);
 			if (expected.status !== 200) {
 				ok(!reply.text.includes('"permission"') && !reply.text.includes('hdb_user'), `${context}: ${reply.text}`);
@@ -162,6 +156,7 @@ suite(
 				strictEqual(outcome.ok, false, `${context} ${principal}/${OPS[op]}: ${JSON.stringify(outcome)}`);
 				strictEqual(outcome.statusCode, expected.status, `${context}: ${JSON.stringify(outcome)}`);
 				strictEqual(outcome.error, expected.error, `${context}: ${JSON.stringify(outcome)}`);
+				strictEqual(outcome.body?.unauthorized_access?.[0], expected.detail, `${context}: ${JSON.stringify(outcome)}`);
 			}
 		}
 
@@ -271,9 +266,6 @@ suite(
 					);
 				}
 			}
-			console.log(
-				`SQA-181 L denials flattened to error-only across the hop (SF-108): ${[...flattenedDenials].join('; ') || 'none'}`
-			);
 		});
 
 		test('P: server.operation(op, { user }, true) on every worker answers identically to the operations API', async () => {

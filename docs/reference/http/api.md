@@ -329,7 +329,7 @@ When a client certificate names the user and `server.getUser` is overridden, Har
 ```ts
 server.registerBearerValidator(
 	validator: (token: string, request: Request, signal: AbortSignal) => BearerValidatorResult | Promise<BearerValidatorResult>,
-	options?: { timeoutMs?: number }
+	options?: { timeoutMs?: number; challenge?: { resourceMetadata: string } }
 ): () => void
 ```
 
@@ -354,6 +354,8 @@ Because results are cached, a revoked token can still be accepted on new request
 To refuse a token the validator recognizes (wrong audience, revoked, expired), throw `credentialRejectionError(message, 401)` or a `markCredentialRejection(error)`-tagged error, both exported from `harper`. That is reported like a rejected Harper token. Any other thrown error, a result that breaks the rules above, or exceeding `timeoutMs` fails the request with a generic `401` and logs the error server-side. Any throw ends the chain, so later validators do not run: catch errors from verifying a token another issuer may own, and return `null` instead.
 
 `options.timeoutMs` limits each call to the validator: a positive number of milliseconds up to `60000`, default `5000`. Registering with any other value throws a `TypeError`. The validators and the `server.getUser()` lookup of a returned username also share one deadline per request, equal to the largest `timeoutMs` among the registered validators: if one validator takes 3 seconds to decline, the next has what remains. When a limit runs out, the request fails with a generic `401`, and a validator still running has its `signal` aborted; pass `signal` to `fetch` or other I/O the validator starts. A limit cannot interrupt synchronous work.
+
+<VersionBadge version="v5.4.1" /> `options.challenge.resourceMetadata` is the URL of the [RFC 9728](https://www.rfc-editor.org/rfc/rfc9728.html) protected-resource metadata document that tells a client how to obtain the tokens this validator accepts. The MCP application profile names it in the `WWW-Authenticate: Bearer resource_metadata="…"` challenge of its `401` responses, provided every validator that declares a challenge names the same URL and [`mcp.application.authentication.resourceMetadata`](../mcp/configuration.md#mcpapplicationauthenticationresourcemetadata) does not override it. It must be an `https:` URL with no fragment (`http:` only for a loopback host), containing only visible ASCII characters other than `"` and `\`. Registering with any other value throws a `TypeError`.
 
 A request authenticated this way cannot call `create_authentication_tokens` to mint a scoped token, or ordinary tokens without a username and password; see [Create Authentication Tokens](../security/jwt-authentication.md#create-authentication-tokens).
 
