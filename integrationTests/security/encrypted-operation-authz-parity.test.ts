@@ -1,6 +1,5 @@
 /**
- * encrypted_operation: a sealed operation is authorized exactly as the same operation sent directly
- * (docs/reference/operations-api/operations.md, "Encrypted Operations" -> "Authorization").
+ * Contract: docs/reference/operations-api/operations.md, "Encrypted Operations" -> "Authorization".
  *
  * Its own instance: encrypted-operation.test.ts relies on the operations socket's bypass, this file
  * needs authorizeLocal off.
@@ -55,6 +54,16 @@ function tokenView(body: any) {
 		minted_by: claims?.minted_by,
 		error: body?.error,
 	};
+}
+
+function shape(value: any): any {
+	if (Array.isArray(value)) return value.map(shape);
+	if (value && typeof value === 'object') {
+		const out: Record<string, any> = {};
+		for (const key of Object.keys(value).sort()) out[key] = shape(value[key]);
+		return out;
+	}
+	return typeof value;
 }
 
 function normalize(value: any): any {
@@ -158,8 +167,8 @@ const CELLS: Cell[] = [
 	{ name: 'describe-all', op: { operation: 'describe_all' } },
 	{ name: 'describe-closed', op: { operation: 'describe_table', database: 'data', table: CLOSED } },
 	{ name: 'describe-open', op: { operation: 'describe_table', database: 'data', table: OPEN } },
-	{ name: 'list-users', op: { operation: 'list_users' }, shapeOnly: true },
-	{ name: 'list-roles', op: { operation: 'list_roles' }, shapeOnly: true },
+	{ name: 'list-users', op: { operation: 'list_users' } },
+	{ name: 'list-roles', op: { operation: 'list_roles' } },
 	{ name: 'user-info', op: { operation: 'user_info' } },
 	{ name: 'get-configuration', op: { operation: 'get_configuration' }, shapeOnly: true },
 	{ name: 'read-log', op: { operation: 'read_log', limit: 1 }, shapeOnly: true },
@@ -168,7 +177,7 @@ const CELLS: Cell[] = [
 	{ name: 'unknown-op', op: { operation: 'parity_no_such_operation' } },
 	{ name: 'drop-table-missing', op: { operation: 'drop_table', database: 'data', table: 'ParityNoSuchTable' } },
 	{ name: 'add-role-invalid', op: { operation: 'add_role', role: READER_ROLE, permission: { super_user: false } } },
-	{ name: 'list-secrets', op: { operation: 'list_secrets' }, shapeOnly: true },
+	{ name: 'list-secrets', op: { operation: 'list_secrets' } },
 	{ name: 'tokens-self', op: { operation: 'create_authentication_tokens' }, tokenClaims: true },
 	{
 		name: 'tokens-reader-password',
@@ -224,6 +233,11 @@ const RESTRICTED_STATUS: Record<string, number> = {
 	'tokens-inline-role': 403,
 };
 const RESTRICTED = ['reader-basic', 'scoped-token', 'su-impersonating-reader'];
+const TOKENS_SELF_STATUS: Record<string, number> = {
+	'reader-basic': 200,
+	'scoped-token': 401,
+	'su-impersonating-reader': 200,
+};
 
 interface Principal {
 	name: string;
@@ -407,10 +421,18 @@ suite('encrypted_operation authorizes a sealed operation as the direct one', (ct
 						);
 						continue;
 					}
+					if (cell.tokenClaims && RESTRICTED.includes(p.name)) {
+						for (const [path, body] of [
+							['direct', d.body],
+							['sealed', s.body],
+						] as const) {
+							if (tokenView(body).super_user === true) mismatches.push(`${label}: ${path} minted a super user token`);
+						}
+					}
 					const [left, right] = cell.tokenClaims
 						? [tokenView(d.body), tokenView(s.body)]
 						: cell.shapeOnly
-							? [Object.keys(d.body ?? {}).sort(), Object.keys(s.body ?? {}).sort()]
+							? [shape(d.body), shape(s.body)]
 							: [normalize(d.body), normalize(s.body)];
 					try {
 						deepStrictEqual(right, left);
@@ -428,6 +450,7 @@ suite('encrypted_operation authorizes a sealed operation as the direct one', (ct
 				for (const [cellName, status] of Object.entries(RESTRICTED_STATUS)) {
 					strictEqual(statusByCell[cellName][name], status, `${name} ${cellName}`);
 				}
+				strictEqual(statusByCell['tokens-self'][name], TOKENS_SELF_STATUS[name], `${name} tokens-self`);
 			}
 			deepStrictEqual(mismatches, [], `\n${mismatches.join('\n')}`);
 		});
@@ -505,19 +528,22 @@ suite('encrypted_operation authorizes a sealed operation as the direct one', (ct
 		] as const) {
 			const p: Principal = { name, headers: () => ({ ...json, Authorization: `Bearer ${token}` }) };
 			const d = await direct(p, op);
-			const s = await sealed(p, op);
-			results.push({
-				arm: 'token-mint-allowlisted',
-				principal: name,
-				direct: { status: d.status, view: tokenView(d.body) },
-				sealed: { status: s.status, view: tokenView(s.body) },
-			});
 			strictEqual(d.status, 200, `${name}: ${JSON.stringify(d.body)}`);
-			strictEqual(s.status, d.status, `${name}: ${JSON.stringify(s.body)}`);
-			deepStrictEqual(tokenView(s.body), tokenView(d.body), name);
-			strictEqual(tokenView(s.body).username, READER.username, name);
-			const wrong = await sealed(p, { ...op, password: 'not-the-password' });
-			strictEqual(wrong.status, 401, `${name}: ${JSON.stringify(wrong.body)}`);
+			for (const mode of ['sealed', 'fields'] as const) {
+				const s = await sealed(p, op, { mode });
+				results.push({
+					arm: 'token-mint-allowlisted',
+					principal: name,
+					mode,
+					direct: { status: d.status, view: tokenView(d.body) },
+					sealed: { status: s.status, view: tokenView(s.body) },
+				});
+				strictEqual(s.status, d.status, `${name}/${mode}: ${JSON.stringify(s.body)}`);
+				deepStrictEqual(tokenView(s.body), tokenView(d.body), `${name}/${mode}`);
+				strictEqual(tokenView(s.body).username, READER.username, `${name}/${mode}`);
+				const wrong = await sealed(p, { ...op, password: 'not-the-password' }, { mode });
+				strictEqual(wrong.status, 401, `${name}/${mode}: ${JSON.stringify(wrong.body)}`);
+			}
 		}
 	});
 
@@ -559,7 +585,6 @@ suite('encrypted_operation authorizes a sealed operation as the direct one', (ct
 		results.push({ arm: 'network-access', before, s, afterSealed, d, afterDirect, sForce, cleared });
 		strictEqual(d.status, 200, JSON.stringify(d.body));
 		deepStrictEqual(afterDirect.body.allow, ['127.0.0.0/8']);
-		// a sealed request carries no caller address for the lockout check
 		strictEqual(s.status, 409, JSON.stringify(s));
 		ok(/source address is unknown/.test(s.body.error), JSON.stringify(s.body));
 		deepStrictEqual(afterSealed.body, before.body, 'the refused sealed request changed the list');
@@ -616,9 +641,19 @@ suite('encrypted_operation authorizes a sealed operation as the direct one', (ct
 				}
 			}
 		}
-		// Sealed operations log from the main thread and the control from a worker, so no log line orders them.
-		await sleep(1500);
+		// Sealed operations log from the main thread and the control from a worker. A last sealed request whose
+		// table name stays visible in fields mode shows the main thread's earlier lines were written.
+		const sentinel = 'ParityLogSentinel';
+		const last = await sealed(
+			principals[0],
+			{ operation: 'search_by_id', database: 'data', table: sentinel, ids: ['x'], get_attributes: ['id'] },
+			{ mode: 'fields' }
+		);
+		strictEqual(last.outerStatus, 200);
+		const deadline = Date.now() + 15_000;
+		while (!readFileSync(logPath, 'utf8').includes(sentinel) && Date.now() < deadline) await sleep(50);
 		const log = readFileSync(logPath, 'utf8');
+		ok(log.includes(sentinel), 'the last sealed request never reached the log, so the absence check proves nothing');
 		const leaked: string[] = [];
 		for (let n = 1; n <= 10; n++) {
 			const index = log.indexOf(canary(n));
