@@ -29,7 +29,7 @@ describe('environmentManager reloadSync()', function () {
 
 	afterEach(function () {
 		// initSync(true) below exits the process on a config it cannot read
-		if (rootPath && validConfig) fs.writeFileSync(configFilePath, validConfig);
+		if (configFilePath && validConfig) fs.writeFileSync(configFilePath, validConfig);
 		if (originalRootPath === undefined) delete process.env.ROOTPATH;
 		else process.env.ROOTPATH = originalRootPath;
 		commonUtils.resetNoBootFileCache();
