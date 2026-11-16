@@ -76,8 +76,9 @@ describe('@fullText derived-index activation', () => {
 		binding = new FullTextNativeTestBinding();
 		setFullTextNativeBindingForTests({
 			binding,
-			closeTimeoutMilliseconds: 50,
-			shutdownTimeoutMilliseconds: 100,
+			// No test here waits for these bounds to expire; at 50/100 ms a CI event-loop stall alone exceeded them.
+			closeTimeoutMilliseconds: 1_000,
+			shutdownTimeoutMilliseconds: 2_000,
 			runnerOptions: {
 				rebuildBackoffMilliseconds: 10,
 				maxRebuildBackoffMilliseconds: 50,
