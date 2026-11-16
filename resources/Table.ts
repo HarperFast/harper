@@ -2018,6 +2018,9 @@ type SubscriberState = {
 	 * listener avoids duplicate delivery.
 	 */
 	dropDuringReplay: boolean;
+	/** Same-thread collection replay entries the in-progress commit dispatch will also visit. */
+	sameThreadReplayDispatchKey?: number;
+	replayedSameThreadDispatchEvents?: Set<string>;
 	/** Coalescing guards for the reload re-snapshot (harper-pro#495), driven from the listener. */
 	reloadResnapshotRunning: boolean;
 	reloadResnapshotPending: boolean;
@@ -2025,6 +2028,10 @@ type SubscriberState = {
 	reloadPending: boolean;
 	reportingProgress: boolean;
 };
+
+function auditEventIdentity(id: Id, auditRecord: any, txnLogKey: number): string {
+	return JSON.stringify([txnLogKey, auditRecord?.nodeId ?? 0, id, auditRecord?.version, auditRecord?.type]);
+}
 
 type ProgressState = {
 	requestedStartTime: number | undefined;
@@ -10412,6 +10419,20 @@ export function makeTable(options): TableResourceClass {
 				request
 			));
 			subscription.state = state;
+			const subscriptionEnvs = subscription.subscriptions?.tables?.envs;
+			state.sameThreadReplayDispatchKey =
+				state.isCollection &&
+				(request.startTime || resuming) &&
+				subscriptionEnvs?.sameThread === true &&
+				subscriptionEnvs.dispatching === true
+					? subscriptionEnvs.lastTxnTime
+					: undefined;
+			state.replayedSameThreadDispatchEvents = new Set<string>();
+			if (state.sameThreadReplayDispatchKey !== undefined) {
+				// Same-thread aftercommit delivery is synchronous. Once this stack finishes, every event from this
+				// dispatch has either reached the new subscription or was passed while its replay was still active.
+				setImmediate(() => state.replayedSameThreadDispatchEvents?.clear());
+			}
 			if (plan) subscription.ungated = true;
 			// Every delivery (live, replay, history, current record, reload re-snapshot) passes send; a path that
 			// bypassed it would deliver attributes the role cannot read. Installed before the progress hooks, which
@@ -10692,6 +10713,14 @@ export function makeTable(options): TableResourceClass {
 										replayReader
 									);
 									if (event) {
+										if (
+											state.sameThreadReplayDispatchKey !== undefined &&
+											auditRecord.txnLogKey === state.sameThreadReplayDispatchKey
+										) {
+											state.replayedSameThreadDispatchEvents?.add(
+												auditEventIdentity(id, auditRecord, auditRecord.txnLogKey)
+											);
+										}
 										if (state.reportingProgress) event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
 										if (!send(event)) return;
 										if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
@@ -12890,6 +12919,10 @@ export function makeTable(options): TableResourceClass {
 	function subscriptionListener(this: any, id: Id, auditRecord?: any, txnLogKey?: any, beginTxn?: any) {
 		const state: SubscriberState = this.state;
 		if (state.dropDuringReplay) return;
+		if (state.sameThreadReplayDispatchKey !== undefined && txnLogKey === state.sameThreadReplayDispatchKey) {
+			const identity = auditEventIdentity(id, auditRecord, txnLogKey);
+			if (state.replayedSameThreadDispatchEvents?.delete(identity)) return;
+		}
 		try {
 			if (isLockControlType(auditRecord.type)) return;
 			if (auditRecord.type === 'reload' && !state.rawEvents && databaseName !== 'system') {

@@ -69,4 +69,46 @@ describe('same-thread startTime replay handoff', () => {
 			opening.end();
 		}
 	});
+
+	it('does not redeliver the triggering commit when a replay starts inside its listener', async () => {
+		const T = table({
+			table: `SubReplaySameThreadDispatch${++tableSequence}`,
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+			audit: true,
+		});
+		const startTime = Date.now() - 10_000;
+		const events = [];
+		let collectionSubPromise;
+		const leaf = await T.subscribe({
+			id: 'trigger',
+			omitCurrent: true,
+			crossThreads: false,
+			listener(event) {
+				if (event.id !== 'trigger' || collectionSubPromise) return;
+				collectionSubPromise = T.subscribe({
+					startTime,
+					isCollection: true,
+					crossThreads: false,
+					listener: (replayedEvent) => events.push(replayedEvent),
+				});
+			},
+		});
+		let collection;
+		try {
+			await T.put('trigger', { name: 'trigger' });
+			collection = await collectionSubPromise;
+			await waitFor(() => events.some((event) => event.id === 'trigger'), { timeout: 5000 });
+			await T.put('sentinel', { name: 'sentinel' });
+			await waitFor(() => events.some((event) => event.id === 'sentinel'), { timeout: 5000 });
+			assert.equal(
+				events.filter((event) => event.id === 'trigger').length,
+				1,
+				`triggering commit was delivered more than once: ${JSON.stringify(events.map((event) => event.id))}`
+			);
+		} finally {
+			collection?.end();
+			leaf.end();
+		}
+	});
 });
