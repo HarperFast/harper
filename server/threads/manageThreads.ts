@@ -1725,6 +1725,21 @@ function poolMayHold(application: string) {
 	);
 }
 
+/**
+ * A deploy or `set_configuration` run on a worker (a replicated one always is) re-reads only that worker's copy of the
+ * root config, so main re-reads its own before a restart reloads and reconciles from it. Under the publication lock,
+ * because a refresh on main can rewrite the file. A restart that cannot re-read it goes ahead on the copy main has.
+ */
+async function refreshRootConfig() {
+	try {
+		await loadRuntimeModule('components/rootConfigPublication').withRootConfigPublicationLock(async () =>
+			envMgr.reloadSync()
+		);
+	} catch (error) {
+		harperLogger.error('Could not re-read the root config before restarting workers; using the copy main holds', error);
+	}
+}
+
 /** Read when the restart takes its turn, so no earlier restart's replacement is still booting unreported. */
 function withPoolFor(application?: string) {
 	if (application === undefined || application === '*' || !poolMayHold(application)) return false;
@@ -1814,6 +1829,8 @@ async function replaceWorkers(
 			// caller's absolute ceiling is what bounds a load that never finishes.
 			const loading = setInterval(() => onProgress?.(), RESTART_PROGRESS_HEARTBEAT_MS).unref();
 			try {
+				await refreshRootConfig();
+				if (processShuttingDown) return { declined: true };
 				await loadRootComponents();
 				if (processShuttingDown) return { declined: true };
 				// isolated applications added or removed by the reload get their dedicated worker started or

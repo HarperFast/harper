@@ -346,6 +346,33 @@ describe('Test environmentManager module', () => {
 			expect(update_config_object.calledWith('locally_set_key', 'should-survive-reload')).to.be.true;
 		});
 
+		it('reloadSync() re-reads like a forced initSync(), overrides replayed', () => {
+			const update_config_object = sandbox.stub(config_utils, 'updateConfigObject');
+			const init_config = sandbox.stub(config_utils, 'initConfig');
+			sandbox.stub(config_utils, 'getConfigValue');
+			env_rw.__set__('propFileExists', true);
+			env_rw.__set__('inheritedOverridesApplied', true);
+			env_rw.__set__('appliedOverrides', overrideMap(['locally_set_key', 'should-survive-reload', undefined]));
+
+			env_rw.reloadSync();
+
+			expect(init_config.calledOnceWith(true)).to.be.true;
+			expect(update_config_object.calledWith('locally_set_key', 'should-survive-reload')).to.be.true;
+		});
+
+		it('reloadSync() throws a config it cannot read, where initSync() would exit the process', () => {
+			sandbox.stub(config_utils, 'initConfig').throws(new Error('unreadable root config'));
+			const exits = [];
+			sandbox.stub(process, '_realExit').value((code) => exits.push(code));
+			sandbox.stub(console, 'error');
+			env_rw.__set__('propFileExists', true);
+
+			expect(() => env_rw.reloadSync()).to.throw('unreadable root config');
+			expect(exits).to.deep.equal([]);
+			env_rw.initSync(true);
+			expect(exits).to.deep.equal([1]);
+		});
+
 		it('a non-forced initSync() does not replay local overrides a second time', () => {
 			const update_config_object = sandbox.stub(config_utils, 'updateConfigObject');
 			sandbox.stub(config_utils, 'initConfig');

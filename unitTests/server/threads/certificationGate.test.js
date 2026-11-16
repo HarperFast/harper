@@ -28,6 +28,8 @@ const {
 const { assertNotCertifying } = require('#src/components/Application');
 const { certificationRecordPath } = require('#src/components/releaseCertification');
 const { DEPLOYMENT_PROVENANCE_FILE, formatDeploymentProvenance } = require('#src/components/deploymentProvenance');
+const envMgr = require('#src/utility/environment/environmentManager');
+const { withRootConfigPublicationLock } = require('#src/components/rootConfigPublication');
 
 const FIXTURE = path.join(__dirname, 'certificationGate-fixture.cjs');
 
@@ -1443,6 +1445,47 @@ describe('the release certification gate', function () {
 		assert.equal(dedicated.length, 1, 'only the canary ever started');
 		assert.ok(dedicated[0].exitedAt, 'and it was stopped');
 		await waitFor(() => completions.length > 0, { timeout: 45000, message: 'the rollout never ended' });
+	});
+
+	async function restartsWithReload(reload, restarts) {
+		const order = [];
+		const reloadSync = envMgr.reloadSync;
+		envMgr.reloadSync = () => {
+			order.push('refresh');
+			return reload();
+		};
+		// Taking the publication lock here proves the refresh let it go before the components load.
+		setRootComponentsReload(() => withRootConfigPublicationLock(async () => order.push('reload')));
+		setIsolatedWorkerReconciler(async (only) => {
+			order.push(`reconcile ${only}`);
+			return [];
+		});
+		try {
+			await Promise.all(restarts.map((application) => restartWorkers('http', 1, true, undefined, application)));
+		} finally {
+			envMgr.reloadSync = reloadSync;
+			setRootComponentsReload(() => rootLoad);
+		}
+		return order;
+	}
+
+	it("re-reads main's root config as each restart takes its turn, since a worker's deploy refreshed only its own", async () => {
+		const order = await restartsWithReload(envMgr.reloadSync, ['late-isolated', 'another']);
+		assert.deepStrictEqual(order, [
+			'refresh',
+			'reload',
+			'reconcile late-isolated',
+			'refresh',
+			'reload',
+			'reconcile another',
+		]);
+	});
+
+	it('goes ahead on the config main has when the root config cannot be re-read, without exiting', async () => {
+		const order = await restartsWithReload(() => {
+			throw new Error('unreadable root config');
+		}, ['late-isolated']);
+		assert.deepStrictEqual(order, ['refresh', 'reload', 'reconcile late-isolated']);
 	});
 
 	it('restarts the pool with an application a pool worker loaded while it was shared, and its own worker', async () => {
