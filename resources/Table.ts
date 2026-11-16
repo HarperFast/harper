@@ -14996,6 +14996,8 @@ export function makeTable(options): TableResourceClass {
 			});
 			clearTimeout(timer);
 			if (heldFill) heldFill.waiters--;
+			setLoadedFromSource(target, false);
+			if (TableResource.getResource === unavailableResource) unavailableResource();
 			const entry = primaryStore.getEntry(id);
 			if (!isServableToWaiter(entry)) {
 				const outcome = heldFill?.source === source ? heldFill.outcome : undefined;
@@ -15004,7 +15006,6 @@ export function makeTable(options): TableResourceClass {
 					(!heldFill.unstoredRecord || context?.noCacheStore) &&
 					(outcome.value == null || (heldFill.sharable ??= isSharableRecord(outcome.value)))
 				) {
-					setLoadedFromSource(target, false);
 					return outcome;
 				}
 				if (heldFill?.source === source && heldFill.failure) throw heldFill.failure;
@@ -15012,7 +15013,6 @@ export function makeTable(options): TableResourceClass {
 				return getFromSource(source, id, primaryStore.getEntry(id), context, target);
 			} else {
 				// served from cache after waiting for another request to resolve
-				setLoadedFromSource(target, false);
 				return entry;
 			}
 		}
@@ -15249,7 +15249,13 @@ export function makeTable(options): TableResourceClass {
 							} as any);
 							logger.trace?.((error as Error)?.message, '(returned stale record)');
 						} else {
-							if (!issuanceFailed && !sourceContext.noCacheStore && isNotFoundFailure(error)) fill.failure = error;
+							if (
+								!issuanceFailed &&
+								!sourceContext.noCacheStore &&
+								TableResource.getResource !== unavailableResource &&
+								isNotFoundFailure(error)
+							)
+								fill.failure = error;
 							reject(error);
 						}
 					} catch (settlingError) {
@@ -15482,6 +15488,7 @@ export function makeTable(options): TableResourceClass {
 	}
 
 	function warnWaitersOfFailedFill(fill: SourceFill, id: Id, error: any): void {
+		if (TableResource.getResource === unavailableResource) return;
 		const waiting = fill.waiters;
 		if (!(waiting >= SOURCE_FILL_WAITERS_WARNING)) return;
 		const now = performance.now();
