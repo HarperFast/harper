@@ -24,6 +24,7 @@ const { databases, table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { RequestTarget } = require('#src/resources/RequestTarget');
 const { waitFor } = require('../waitFor');
+const { CLOSES_WHEN_ENDED } = require('#src/resources/IterableEventQueue');
 
 const SLICE_SIZE = 256;
 const turn = () => new Promise((resolve) => setImmediate(resolve));
@@ -82,6 +83,38 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 			await _sweepNow();
 
 			assert.strictEqual(originalEnd.calls.length, 1);
+			assert.strictEqual(_liveSubscriptionCount(), 0);
+		});
+
+		it('unregisters a subscription whose end() closes it from its close, without wrapping end()', async () => {
+			// a subscription class that marks itself CLOSES_WHEN_ENDED, as the table subscription does
+			const closingSubscription = () => {
+				const subscription = fakeSubscription();
+				subscription[CLOSES_WHEN_ENDED] = true;
+				subscription.end = spyFn(() => subscription.emit('close'));
+				return subscription;
+			};
+			const ended = closingSubscription();
+			const end = ended.end;
+			// a close listener added before registering that throws must not keep the entry registered
+			ended.on('close', () => {
+				throw new Error('an earlier close listener fails');
+			});
+			registerLiveSubscription({ subscription: ended, username: 'closes', recheck: async () => true });
+			assert.strictEqual(ended.end, end, 'end() is not wrapped');
+			assert.strictEqual(_liveSubscriptionCount(), 1);
+			assert.throws(() => ended.end(), /an earlier close listener fails/);
+			assert.strictEqual(_liveSubscriptionCount(), 0, 'its close unregisters it');
+
+			const expired = closingSubscription();
+			registerLiveSubscription({
+				subscription: expired,
+				username: 'closes',
+				authExpiresAt: 0,
+				recheck: async () => true,
+			});
+			await _sweepNow();
+			assert.strictEqual(expired.end.calls.length, 1, 'a revocation still ends it');
 			assert.strictEqual(_liveSubscriptionCount(), 0);
 		});
 
@@ -1006,6 +1039,8 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 		let Docs;
 		let Overridden;
 		let overriddenReads = 0;
+		// the resource instance the last subscribe() ran on
+		let subscribedResource;
 
 		before(async () => {
 			testUtils.setupTestDBPath();
@@ -1028,6 +1063,7 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 			});
 			Docs = class extends Table {
 				subscribe() {
+					subscribedResource = new WeakRef(this);
 					return fakeSubscription();
 				}
 			};
@@ -1099,6 +1135,24 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 			assert.ok(second.role.permission.test.tables.ReauthDocs.read);
 			await _sweepNow();
 			assert.strictEqual(_liveSubscriptionCount(), 5);
+		});
+
+		it('keeps no resource instance alive for a subscription the stock allowRead rechecks', async () => {
+			await testUtils.seedUsers([{ username: 'instance_user', active: true, role: readRole('instance_role') }]);
+			const user = await resolve('instance_user');
+			const collected = async () => {
+				for (let attempt = 0; attempt < 5 && subscribedResource.deref(); attempt++) {
+					await turn();
+					global.gc();
+				}
+				return subscribedResource.deref() === undefined;
+			};
+			await subscribe(Docs, user);
+			assert.ok(await collected(), 'the stock allowRead reads nothing from its instance, so none is kept');
+			await subscribe(Overridden, user);
+			assert.ok(!(await collected()), 'an overridden allowRead keeps the instance it runs on');
+			await _sweepNow();
+			assert.strictEqual(_liveSubscriptionCount(), 2, 'both still authorize');
 		});
 
 		it('evaluates an overridden allowRead per subscription, on every tick', async () => {

@@ -14,7 +14,7 @@ import { onStartup } from '../../utility/lifecycle.ts';
 
 import { Worker, MessageChannel, parentPort, isMainThread, threadId, workerData } from 'node:worker_threads';
 import { spawnSync } from 'node:child_process';
-import { readdirSync, readFileSync, readlinkSync } from 'node:fs';
+import { accessSync, constants as fsConstants, readdirSync, readFileSync, readlinkSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { confirmWindowsProcessTreeGone, ROOT_SPAWN_ALLOWANCE_MS } from './windowsProcessTree.ts';
 import {
@@ -24,7 +24,7 @@ import {
 	pendingWorkerPools,
 	workerPoolDecision,
 } from './workerPools.ts';
-import { join, isAbsolute, extname } from 'node:path';
+import { join, isAbsolute, extname, dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { server } from '../Server.ts';
 import { totalmem } from 'node:os';
@@ -42,7 +42,7 @@ import { resolvePreloadModules } from './resolvePreload.ts';
 import { resolveThreadHeapMemoryMb } from './threadHeapMemory.ts';
 import { applyConfiguredV8Flags } from './v8Flags.ts';
 import { compileCacheWorkerEnv } from './compileCache.ts';
-import { getConfigPath } from '../../config/configUtils.ts';
+import { getConfigPath, getRootConfigFilePath } from '../../config/configUtils.ts';
 import { resolveWatchTarget } from '../../utility/watchPath.ts';
 import {
 	databaseDropPreparationSnapshot,
@@ -1725,6 +1725,45 @@ function poolMayHold(application: string) {
 	);
 }
 
+/**
+ * A deploy or `set_configuration` run on a worker (a replicated one always is) re-reads only that worker's copy of the
+ * root config, so main re-reads its own before a restart reloads and reconciles from it. Under the publication lock,
+ * because a refresh on main can rewrite the file. Failing the restart instead would interrupt rollouts on nodes where
+ * restarts work today, so it goes ahead on main's copy.
+ */
+async function refreshRootConfig() {
+	let locked = false;
+	try {
+		await loadRuntimeModule('components/rootConfigPublication').withRootConfigPublicationLock(async () => {
+			locked = true;
+			envMgr.reloadSync();
+		});
+		return;
+	} catch (error) {
+		if (locked || rootConfigDirectoryWritable()) return logStaleRootConfig(error);
+	}
+	// The lock needs write access to the config's directory, which a node taking payload deploys may lack. Nothing can
+	// publish into a directory it cannot write, so a read without the lock races no writer.
+	try {
+		envMgr.reloadSync();
+	} catch (error) {
+		logStaleRootConfig(error);
+	}
+}
+
+function rootConfigDirectoryWritable() {
+	try {
+		accessSync(dirname(getRootConfigFilePath()), fsConstants.W_OK);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function logStaleRootConfig(error: unknown) {
+	harperLogger.error('Could not re-read the root config before restarting workers; using the copy main holds', error);
+}
+
 /** Read when the restart takes its turn, so no earlier restart's replacement is still booting unreported. */
 function withPoolFor(application?: string) {
 	if (application === undefined || application === '*' || !poolMayHold(application)) return false;
@@ -1814,6 +1853,8 @@ async function replaceWorkers(
 			// caller's absolute ceiling is what bounds a load that never finishes.
 			const loading = setInterval(() => onProgress?.(), RESTART_PROGRESS_HEARTBEAT_MS).unref();
 			try {
+				await refreshRootConfig();
+				if (processShuttingDown) return { declined: true };
 				await loadRootComponents();
 				if (processShuttingDown) return { declined: true };
 				// isolated applications added or removed by the reload get their dedicated worker started or
@@ -2787,7 +2828,7 @@ function setMonitorListener(listener?: any) {
 
 const MONITORING_INTERVAL = 1000;
 
-// See server/DESIGN.md.
+// See server/threads/DESIGN.md.
 const PINNED_ELU_UTILIZATION_THRESHOLD = 0.99;
 const PINNED_ELU_SUSTAINED_MS = 30_000;
 const PINNED_ELU_SUSTAINED_TICKS = Math.ceil(PINNED_ELU_SUSTAINED_MS / MONITORING_INTERVAL);
@@ -3465,7 +3506,7 @@ function addPort(port?: any, keepRef?: any, isJobWorker?: any) {
 			}
 		})
 		.on('close', () => {
-			// A worker's parentPort closing is this worker leaving, not main exiting (server/DESIGN.md).
+			// A worker's parentPort closing is this worker leaving, not main exiting (server/threads/DESIGN.md).
 			removePort(port, port === parentPort ? undefined : portThreadId);
 		})
 		.on('exit', () => {

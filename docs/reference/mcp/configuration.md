@@ -66,7 +66,41 @@ Default per-profile values for `operations`: `perToolPerSecond: 10`, `perToolBur
 
 ## `mcp.application.*`
 
-Configures the application-profile MCP endpoint that walks your exported `Resource` classes. All `mcp.operations.*` keys above also apply here; the additional knob is:
+Configures the application-profile MCP endpoint that walks your exported `Resource` classes. `mountPath`, `maxTools` and `rateLimit` work as they do for `mcp.operations`. `allow` and `deny` filter tool names here too, with a different default, described below.
+
+### `mcp.application.allow`
+
+<VersionBadge type="changed" version="v5.4.1" />
+
+Type: `array<string>` (glob patterns or literal tool names)
+
+Default: unset (every tool)
+
+Tools the application profile exposes, matched by tool name with the same glob rules as `mcp.operations.allow`. Unlike the operations profile there is no curated default: when `allow` is unset or empty, every generated verb tool (`get_<resource>`, `search_<resource>`, `create_<resource>`, ...) and every custom [`mcpTools`](./tools-and-resources.md#custom-mcptools-opt-in) entry is exposed. When set, it applies to both kinds, and a tool it filters out is neither listed by `tools/list` nor callable through `tools/call`.
+
+Before v5.4.1 this key was accepted but ignored.
+
+### `mcp.application.deny`
+
+<VersionBadge type="changed" version="v5.4.1" />
+
+Type: `array<string>` (glob patterns or literal tool names)
+
+Default: `[]`
+
+Tool names to filter out after `allow` has been applied. Before v5.4.1 this key was accepted but ignored.
+
+### `mcp.application.generatedTools`
+
+<VersionBadge version="v5.4.1" />
+
+Type: `boolean`
+
+Default: `true`
+
+Set to `false` to stop generating verb tools from exported Resources, so the only tools the profile lists are the custom `mcpTools` your components declare (still subject to `allow` and `deny`). This lets a component publish a curated tool set without its other REST exports becoming tools, and without listing each tool name in `allow`. It changes tools only: custom `mcpPrompts` and `mcpResources` are unaffected, and exported tables stay listed and readable through `resources/list`, `resources/read` and `resources/subscribe`, under the caller's permissions as before.
+
+`allow`, `deny` and `generatedTools` are read whenever the application tool set is rebuilt (at startup, and when schemas or registered Resources change), not on every request as the operations profile's lists are, so an edited value may not apply until the next rebuild or restart.
 
 ### `mcp.application.searchMaxResults`
 
@@ -77,6 +111,39 @@ Default: `1000`
 Hard cap on the number of records a generated `search_<resource>` tool can return per call. Clients still pass `limit`, but the server clamps to this ceiling regardless of what the client requests — bounded to keep a runaway agent from exhausting memory.
 
 Default per-profile rate-limit values for `application`: `perToolPerSecond: 25`, `perToolBurst: 50`, `sessionConcurrency: 50`, `sessionPerSecond: 200`, `initializePerSecond: 10`, `initializeBurst: 50`.
+
+### `mcp.application.authentication.required`
+
+<VersionBadge version="v5.4.1" />
+
+Type: `boolean`
+
+Default: `false`
+
+When `true`, the application profile serves only authenticated requests. A `POST`, `GET` or `DELETE` to the mount with no principal is answered with `401` and is not processed: no session is created, and no tool, prompt or resource is listed or called. The `401` carries the challenge an OAuth MCP client follows to sign in ([RFC 9728](https://www.rfc-editor.org/rfc/rfc9728.html)):
+
+```http
+HTTP/1.1 401 Unauthorized
+WWW-Authenticate: Bearer resource_metadata="https://app.example.com/.well-known/oauth-protected-resource/mcp"
+```
+
+Some clients, such as Claude's connectors, start their OAuth flow only after this `401`. When the profile allows anonymous access, those clients take its `200` to mean the server needs no sign-in.
+
+The metadata URL is [`resourceMetadata`](#mcpapplicationauthenticationresourcemetadata) when set. Otherwise it is the URL the registered [Bearer validators](../http/api.md#serverregisterbearervalidatorvalidator-options) declare with `challenge`, provided every validator that declares one names the same URL. With neither, the challenge is `Bearer realm="Harper"`, and Harper logs a warning once.
+
+A Bearer token that Harper or a validator rejects is answered with the same metadata URL and `error="invalid_token"`, whether or not this setting is on. Any Harper principal still authenticates: Basic credentials, Harper's own tokens, a session, a validator's token, or a connection trusted by [`authorizeLocal`](../security/configuration.md#authorizelocal). The value must be the boolean `true`; a quoted `"true"` fails validation.
+
+The operations profile has no such setting, because Bearer validators do not run on the operations API.
+
+### `mcp.application.authentication.resourceMetadata`
+
+<VersionBadge version="v5.4.1" />
+
+Type: `string`
+
+Default: unset
+
+The URL of the protected-resource metadata document that the application profile's `401` challenges name. It takes precedence over a validator's `challenge`. It must be an `https:` URL with no fragment; `http:` is accepted only for a loopback host (`localhost`, `127.x.x.x` or `[::1]`), for local development. The URL is written into the header as given, so it may contain only visible ASCII characters other than `"` and `\`.
 
 ## `mcp.<profile>.rateLimit.*`
 

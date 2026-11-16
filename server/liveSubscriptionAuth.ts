@@ -3,6 +3,7 @@ import hdbLogger from '../utility/logging/harper_logger.ts';
 import { coalesceRefresh } from '../utility/coalesceRefresh.ts';
 import { AccessViolation } from '../utility/errors/hdbError.ts';
 import type { UserChange } from '../security/user.ts';
+import { CLOSES_WHEN_ENDED } from '../resources/IterableEventQueue.ts';
 
 /**
  * Continuous re-authorization for live subscriptions (#1414).
@@ -47,8 +48,10 @@ interface LiveSubscription {
 	identityOnly: boolean;
 	/** Returns true if the principal is still authorized for this subscription. */
 	recheck: (pass: RecheckPass) => Promise<boolean>;
-	/** Stop delivery and tear down. May be async (e.g. a shared-feed refcount release). */
-	terminate: () => void | Promise<void>;
+	/** The subscription a revocation ends, unless `revoke` tears it down instead. */
+	subscription?: any;
+	/** Stop delivery and tear down, for a registrant that owns unregistration. May be async (e.g. a shared-feed refcount release). */
+	revoke?: () => void | Promise<void>;
 	/** Set exactly while tracked: the only membership test. */
 	group?: PrincipalGroup;
 	/** Position in expiryHeap, or -1, so removal on unregister needs no search. */
@@ -292,14 +295,8 @@ export function registerLiveSubscription(
 		authExpiresAt,
 		identityOnly: identityOnly === true,
 		recheck,
-		terminate:
-			revoke ??
-			(() => {
-				// end() removes the subscription from the broadcast loop and closes its iterable queue.
-				if (subscription.end) subscription.end();
-				else if (subscription.close) subscription.close();
-				else subscription.emit?.('close');
-			}),
+		subscription: revoke ? undefined : subscription,
+		revoke,
 		heapIndex: -1,
 	};
 	ensureStarted();
@@ -309,7 +306,12 @@ export function registerLiveSubscription(
 		untrack(entry);
 	};
 
-	if (!revoke) {
+	if (!revoke && subscription[CLOSES_WHEN_ENDED] && subscription[REGISTERED_ENTRY] === undefined) {
+		// Its end() always emits 'close', so one listener shared by every registration unregisters it, first
+		// among its 'close' listeners so none that throws can skip it, and nothing per registration is kept.
+		subscription[REGISTERED_ENTRY] = entry;
+		subscription.prependListener('close', untrackOnClose);
+	} else if (!revoke) {
 		// Both transports ultimately call end() on normal teardown (MQTT unsubscribe/disconnect; SSE close
 		// is wired to end()); wrap it so a closed stream never leaks a registry entry. Also listen for
 		// 'close' to cover any iterable that closes without an end(). Skipped when `revoke` is supplied:
@@ -335,7 +337,18 @@ export function registerLiveSubscription(
 	return { unregister, verify };
 }
 
-/** Untrack first: a `terminate` that hangs or fails must not wedge a pass or be re-entered by a later one. */
+const REGISTERED_ENTRY = Symbol('liveSubscriptionEntry');
+function untrackOnClose(this: any) {
+	untrack(this[REGISTERED_ENTRY]);
+}
+function endSubscription(subscription: any) {
+	// end() removes the subscription from the broadcast loop and closes its iterable queue.
+	if (subscription.end) subscription.end();
+	else if (subscription.close) subscription.close();
+	else subscription.emit?.('close');
+}
+
+/** Untrack first: a teardown (`revoke`, or ending the subscription) that hangs or fails must not wedge a pass or be re-entered by a later one. */
 function terminateEntry(
 	entry: LiveSubscription,
 	reason: string,
@@ -347,11 +360,11 @@ function terminateEntry(
 	const failed = (error: unknown) =>
 		safeLog(
 			hdbLogger.error,
-			`liveSubscriptionAuth: terminate failed for ${entry.username} (${reason}): ${errorMessage(error)}`
+			`liveSubscriptionAuth: teardown failed for ${entry.username} (${reason}): ${errorMessage(error)}`
 		);
 	try {
-		// an async terminate's rejection would otherwise surface as an unhandled rejection on the timer's stack
-		Promise.resolve(entry.terminate()).catch(failed);
+		// an async teardown's rejection would otherwise surface as an unhandled rejection on the timer's stack
+		Promise.resolve(entry.revoke ? entry.revoke() : endSubscription(entry.subscription)).catch(failed);
 	} catch (error) {
 		failed(error);
 	}

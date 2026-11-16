@@ -2,3 +2,13 @@ type CertSubFeed @table @export {
 	id: ID @primaryKey
 	value: String
 }
+
+type CertSubTopic @table @export {
+	id: ID @primaryKey
+	value: String
+}
+
+type CertSubGate @table {
+	id: ID @primaryKey
+	revoked: Boolean
+}

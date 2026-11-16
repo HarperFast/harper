@@ -24,7 +24,17 @@ A handful of design points are non-obvious and easy to break:
   for a declared `Content-Length` over the limit or once the streamed bytes pass it, and keeps a discarding
   `'data'` listener on the body afterwards: a uWS body is a paused `Readable` that buffers the whole upload
   unless something reads it. Like REST, it does not close the connection or bound the discard. The
-  operations profile is capped by Fastify's `bodyLimit` instead.
+  operations profile is capped by Fastify's `bodyLimit` instead. The two early 401s (a settled credential
+  rejection, and no principal on a required mount) discard the unread body the same way (`discardBody`).
+- **A required application mount lets no request without a principal reach the transport (#4344).** With
+  `mcp.application.authentication.required`, `createHarperHttpHandler` answers any method but `OPTIONS` with
+  no `request.user.username` with 401 before reading the body, so no anonymous session, tool listing or call
+  exists; OAuth MCP clients such as Claude start sign-in only on that 401. The response is marked with
+  `ownAuthenticationChallenge` so `security/auth.ts` keeps its `Bearer resource_metadata` challenge instead
+  of replacing it or redirecting a browser; unmarked route 401s are rewritten as before. The metadata URL
+  is the configured one, else the active Bearer validators' `challenge` only when every validator that declares one names the same URL (undeclared validators are not counted)
+  (`declaredResourceMetadata`): registrations are worker-global and load in no fixed order, so a
+  disagreement could point a client at an authorization server that does not protect this mount.
 - **Per-call POST SSE streaming has a close-before-subscribe race.** A `tools/call` that opts into streaming
   (`Accept: text/event-stream`) gets an `IterableEventQueue` whose frames the adapter consumes via the event
   API (`on('data')` / `once('close')`), **not** `for await` — the async iterator does not terminate on
@@ -114,6 +124,11 @@ A handful of design points are non-obvious and easy to break:
   the audit log or ITC. Consequence: the subscribe **targeting** logic (`id`/`isCollection` derivation) is
   _bypassed_ by the seam and is therefore covered at the **integration** level (`integrationTests/mcp/sse-listchanged.test.ts` N3
   record / N4 collection), not in unit tests.
+
+- **Application `allow`/`deny`/`generatedTools` filter at registry insertion, never at list time.**
+  `buildApplicationTools` drops a rejected tool before `addTool`, and `tools/call` resolves through the same
+  registry (`getTool`), so a filtered tool is neither listed nor callable. A list-only filter would advertise
+  less than `tools/call` accepts (`integrationTests/mcp/application-tool-filter.test.ts`, harper#4345).
 
 - **Discovery filtering must mirror dispatch's ORDER _and_ its name namespace.**
   `canRoleInvokeOperation` (`operationVisibility.ts`, shared by `tools/list` and the
