@@ -660,6 +660,7 @@ export async function validateRestoreBackup(request: any) {
 		throw restoreSourceHint(error, databaseName, requestedBackupId);
 	}
 	// the job checks a database not loaded here
+	assertRestoreTargetNotLmdb(resolveDatabasePath(targetDatabase), targetDatabase);
 	const loaded = getDatabases()[targetDatabase];
 	if (targetDatabase === databaseName && loaded != null && Object.keys(loaded).length > 0) {
 		requireRocksRootStore(databaseName, OPERATIONS_ENUM.RESTORE_BACKUP);
@@ -760,6 +761,7 @@ export async function restoreBackup(request: any) {
 	} = readRestoreRequest(request);
 	const inPlace = targetDatabase === databaseName;
 	const requestedBackupId = request.backup_id === undefined ? undefined : requireBackupId(request.backup_id);
+	if (!cancel) assertRestoreTargetNotLmdb(resolveDatabasePath(targetDatabase), targetDatabase);
 	const databaseDir = restoreTargetDir(databaseName, targetDatabase);
 	if (cancel || resume || onRestart) {
 		const intent = await import('./restoreIntent.ts');
@@ -1506,6 +1508,16 @@ export async function verifyBackupFiles(
 	await backups.verify(backupDir, backupId, { verifyWithChecksum, verifyTables });
 }
 
+export function assertRestoreTargetNotLmdb(databaseDir: string, databaseName: string): void {
+	const lmdbPath = `${resolve(databaseDir)}.mdb`;
+	if (existsSync(lmdbPath)) {
+		throw new ClientError(
+			`Cannot claim database '${databaseName}': an LMDB database already exists at ${lmdbPath}; choose a new database name for the restore`,
+			409
+		);
+	}
+}
+
 /**
  * Refuse to claim an existing, non-empty restore target unless it is debris of this repository's own
  * interrupted restore: that exemption is what keeps a rerun from wedging for good, since a drop
@@ -1520,6 +1532,7 @@ export function assertTargetClaimable(
 	backupDir: string,
 	preexisting: boolean
 ): void {
+	assertRestoreTargetNotLmdb(target.databaseDir, target.databaseName);
 	if (target.inPlace) return;
 	if (preexisting) {
 		const markerSource = readRestoringMarkerSource(target.databaseDir);

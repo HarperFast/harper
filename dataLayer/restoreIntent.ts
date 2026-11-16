@@ -49,6 +49,7 @@ import {
 } from './restorePublication.ts';
 import {
 	acquireRestoreLockFor,
+	assertRestoreTargetNotLmdb,
 	isRocksDbLockError,
 	listBackupsInDir,
 	resolveCompleteBackup,
@@ -323,6 +324,7 @@ function cancelUnreadableRestore(lock: RestoreLock, databaseName: string): boole
 
 export async function requestRestartRestore(request: RestartRestoreRequest): Promise<DeferredJobCompletion> {
 	const { databaseName, databaseDir, backupDir } = request;
+	assertRestoreTargetNotLmdb(databaseDir, databaseName);
 	await finishOutstandingRestore(databaseDir);
 	const releaseMembership = await acquireMembershipFence();
 	let receipt!: RestoreReceipt;
@@ -356,6 +358,7 @@ export async function requestRestartRestore(request: RestartRestoreRequest): Pro
 			});
 			const lock = claimTarget(databaseName, databaseDir);
 			try {
+				assertRestoreTargetNotLmdb(databaseDir, databaseName);
 				const existing = readRestoreReceipt(databaseDir);
 				if (existing.kind === 'unreadable') {
 					throw new ClientError(
@@ -477,6 +480,7 @@ export async function resumeRestartRestore(
 	let previous: RestoreReceipt;
 	try {
 		previous = resumableReceipt(databaseName, readRestoreReceipt(databaseDir));
+		assertRestoreTargetNotLmdb(databaseDir, databaseName);
 		receipt = writeReceiptReconciled(lock, {
 			...previous,
 			state: previous.state === 'terminal' ? (previous.pre_terminal_state ?? 'pending') : previous.state,
@@ -745,6 +749,7 @@ export async function runRestartAttempt(found: RestoreReceipt): Promise<boolean>
 	try {
 		releaseMembership = await acquireMembershipFence();
 		try {
+			assertRestoreTargetNotLmdb(receipt.database_path, receipt.database);
 			assertNoReplicationPeers(receipt.database);
 		} catch (error: any) {
 			await failAttempt(lock, receipt, error.message, true);

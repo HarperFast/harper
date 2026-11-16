@@ -104,7 +104,8 @@ lock blocks a claim until it has.
 - **A pin lives exactly as long as its restore's lock, marker or receipt (`pinIsLive`)**, so it needs
   no owner, expiry or sweep. A marked `target_database` is proved this source's debris by the marker's
   `source` line (`assertTargetClaimable`), never by a pin, except a marker that predates the line
-  (harper#3106); an in-place restore is always admitted. The existence check and the
+  (harper#3106). `assertRestoreTargetNotLmdb` refuses a sibling `.mdb` before any in-place or
+  recovery exemption, on every restore route; an in-place RocksDB restore is admitted. The existence check and the
   pin are one step under the management lock. A rerun over an interrupted attempt retires the
   inherited pins (`superseded_pin_ids`) only once its own source has proved: until then the earlier
   backup may be the blocked database's only recovery source.
