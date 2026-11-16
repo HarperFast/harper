@@ -7,6 +7,7 @@ const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
 const { getAuditFloor } = require('#src/resources/auditStore');
+const { Transaction } = require('@harperfast/rocksdb-js');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 // LMDB keys a record's log by local time, so its newest message is the last to arrive, and startTime is a local
@@ -306,7 +307,103 @@ describe('A publish older than its record', function () {
 			);
 			assert.deepEqual(
 				late.map((entry) => entry?.version - T0),
-				[200]
+				[300, 200]
+			);
+		});
+
+		onRocksDB('finds the head in one log read after concurrent publishes to a record', async () => {
+			await Topics.put({ id: 'c1', name: 'B' });
+			for (let batch = 0; batch < 24; batch++)
+				await Promise.all(Array.from({ length: 50 }, (_, n) => Topics.publish('c1', { n: batch * 50 + n })));
+			const entry = Topics.primaryStore.getEntry('c1');
+			// after every write (earlier cases' future clocks lead the local one), so it finds the head and reads no history
+			const startTime = Math.max(entry.version, ...(entry.additionalAuditRefs ?? []).map((ref) => ref.version)) + 1;
+			const { getSync } = Topics.auditStore;
+			let reads = 0;
+			Topics.auditStore.getSync = function (key, tableId, id, ...rest) {
+				if (tableId === Topics.tableId && id === 'c1') reads++;
+				return getSync.call(this, key, tableId, id, ...rest);
+			};
+			try {
+				(await Topics.subscribe({ id: 'c1', startTime })).end();
+			} finally {
+				Topics.auditStore.getSync = getSync;
+			}
+			assert.ok(reads <= 1, `${reads} log reads to find the head after concurrent publishes`);
+		});
+
+		onRocksDB('keeps the head first when a late publish retries with the log entry of its first attempt', async () => {
+			await put('t1', 'B', at(300));
+			const db = Topics.primaryStore.store.db;
+			const { commit } = Transaction.prototype;
+			let intercepted;
+			let retried = false;
+			Transaction.prototype.commit = function (...args) {
+				if (this.store?.db !== db) return commit.apply(this, args);
+				if (intercepted === undefined) {
+					intercepted = this;
+					// lands first, so this commit conflicts and retries without appending its entry again
+					return publish('t1', 2, at(200)).then(() => commit.apply(this, args));
+				}
+				if (this === intercepted) retried = true;
+				return commit.apply(this, args);
+			};
+			try {
+				await publish('t1', 1, at(100));
+			} finally {
+				Transaction.prototype.commit = commit;
+			}
+			assert(retried, 'the late publish must have retried');
+			const logged = [
+				...Topics.auditStore.getRange({ start: at(100), exactStart: true, log: peerA, readUncommitted: true }),
+			].filter((auditEntry) => auditEntry.txnLogKey === at(100) && auditEntry.recordId === 't1');
+			assert.equal(logged.length, 1, 'the retry kept the entry its first attempt logged');
+			assert.ok(!logged[0].previousAdditionalAuditRefs?.length, 'that entry predates the publish it lost to');
+			const entry = Topics.primaryStore.getEntry('t1');
+			assert.equal(entry.version - T0, 300);
+			assert.deepEqual(
+				entry.additionalAuditRefs.map((ref) => ref.version - T0),
+				[300, 200, 100]
+			);
+			assert.deepEqual(sorted(messagesOf(await Topics.getHistoryOfRecord('t1'))), [1, 2]);
+		});
+
+		onRocksDB('keeps the head first and every late message reachable past the record’s ref budget', async () => {
+			await put('b1', 'B', at(80_000));
+			for (let n = 1; n <= 30; n++) await publish('b1', n, at(n * 1_000));
+			const refs = Topics.primaryStore.getEntry('b1').additionalAuditRefs;
+			assert.ok(refs.length < 31, `${refs.length} refs: the burst must overflow the record's ref budget`);
+			assert.equal(refs[0].version - T0, 80_000);
+			assert.equal(refs.at(-1).version - T0, 30_000);
+			const expected = Array.from({ length: 30 }, (_, n) => n + 1);
+			assert.deepEqual(sorted(messagesOf(await Topics.getHistoryOfRecord('b1'))), expected);
+			assert.deepEqual(sorted(await backfill('b1', { startTime: at(0) })), expected);
+		});
+
+		onRocksDB('keeps the head first when crash replay restages a late publish', async () => {
+			await put('x1', 'B', at(300));
+			const context = { timestamp: at(100) };
+			await transaction(context, async () => {
+				context.transaction.isReplay = true;
+				context.transaction.retries = 1;
+				context.transaction.timestamp = at(100);
+				const resource = await Topics.getResource('x1', context);
+				resource._writePublish(
+					'x1',
+					{ n: 1 },
+					{
+						isReplay: true,
+						nodeId: peerA,
+						version: at(100),
+						auditEntry: { type: 'message', version: at(100), previousVersion: at(300) },
+					}
+				);
+			});
+			const entry = Topics.primaryStore.getEntry('x1');
+			assert.equal(entry.version - T0, 300);
+			assert.deepEqual(
+				entry.additionalAuditRefs.map((ref) => ref.version - T0),
+				[300, 100]
 			);
 		});
 	});

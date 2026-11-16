@@ -11419,9 +11419,16 @@ export function makeTable(options): TableResourceClass {
 					const value = base?.value ?? null;
 					const metadataFlags = (base?.metadataFlags ?? 0) & (LOCAL_ONLY | INVALIDATED | REPLICA);
 					const late = precedes < 0;
+					// a late message is a branch: the record's head stays its first ref, so finding the head takes one read
 					const ownRefs = late
 						? isRocksDB
-							? withAuditRef(existingEntry.additionalAuditRefs, appendedLogKey, options?.nodeId)
+							? withAuditRef(
+									existingEntry.additionalAuditRefs?.length
+										? existingEntry.additionalAuditRefs
+										: [{ version: existingEntry.version, nodeId: existingEntry.nodeId }],
+									appendedLogKey,
+									options?.nodeId
+								)
 							: undefined
 						: appendedLogKey !== txnTime
 							? [{ version: appendedLogKey, nodeId: options?.nodeId }]
@@ -11452,7 +11459,7 @@ export function makeTable(options): TableResourceClass {
 							tableToTrack: tableName,
 							auditLocalOnly: options?.localOnly,
 							additionalAuditRefs:
-								transaction?.isRetry || options?.auditEntry
+								(transaction?.isRetry || options?.auditEntry) && !late
 									? withRefsMissedByLoggedEntry(ownRefs, id, existingEntry, appendedLogKey, write, transaction, options)
 									: ownRefs,
 							receivedIdentityRefs: audit ? undefined : base?.receivedIdentityRefs,
