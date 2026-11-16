@@ -243,7 +243,7 @@ export async function getJobsInDateRange(jsonBody: any) {
 			const hdbSql = loadRuntimeModule('sqlTranslator/index');
 			pSqlEvaluate = promisify(hdbSql.evaluateSQL);
 		}
-		// Harper's own statement, not the caller's. A carrier is not equivalent here — see DESIGN.md.
+		// Harper's own statement, not the caller's. A carrier is not equivalent here — see server/serverHelpers/DESIGN.md.
 		// Wraps only this statement: a later caller-dependent one must not inherit the bypass.
 		return await runWithOperationAuthorizationBypass(true, () => pSqlEvaluate(sqlSearchObj));
 	} catch (e) {

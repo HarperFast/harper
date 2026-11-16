@@ -1,7 +1,7 @@
 /**
  * On a V8 pointer-compression runtime, wraps `process.dlopen` (per thread: each worker has its own
  * `process`) so a standard-ABI addon is refused instead of crashing the process; a no-op otherwise.
- * Installs when loaded, so it must be the first module of every Harper thread; see server/DESIGN.md.
+ * Installs when loaded, so it must be the first module of every Harper thread; see server/threads/DESIGN.md.
  */
 import { join } from 'node:path';
 import { RUNTIME_SRC_ROOT, RUNTIME_FILE_EXT } from '../../utility/packageUtils.js';

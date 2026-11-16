@@ -1,6 +1,6 @@
 /**
  * Whether a native addon (`.node`) may load on a V8 pointer-compression Node.js runtime. The rules
- * and why they hold: server/DESIGN.md, "On a pointer-compression Node, no standard-V8-ABI addon is
+ * and why they hold: server/threads/DESIGN.md, "On a pointer-compression Node, no standard-V8-ABI addon is
  * dlopen'ed". Imports only Node builtins: it runs inside process.dlopen before Harper's logger loads,
  * and the logger itself loads a V8 C++ API addon.
  */

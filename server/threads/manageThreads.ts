@@ -2828,7 +2828,7 @@ function setMonitorListener(listener?: any) {
 
 const MONITORING_INTERVAL = 1000;
 
-// See server/DESIGN.md.
+// See server/threads/DESIGN.md.
 const PINNED_ELU_UTILIZATION_THRESHOLD = 0.99;
 const PINNED_ELU_SUSTAINED_MS = 30_000;
 const PINNED_ELU_SUSTAINED_TICKS = Math.ceil(PINNED_ELU_SUSTAINED_MS / MONITORING_INTERVAL);
@@ -3506,7 +3506,7 @@ function addPort(port?: any, keepRef?: any, isJobWorker?: any) {
 			}
 		})
 		.on('close', () => {
-			// A worker's parentPort closing is this worker leaving, not main exiting (server/DESIGN.md).
+			// A worker's parentPort closing is this worker leaving, not main exiting (server/threads/DESIGN.md).
 			removePort(port, port === parentPort ? undefined : portThreadId);
 		})
 		.on('exit', () => {

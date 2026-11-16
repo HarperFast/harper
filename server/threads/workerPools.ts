@@ -1,7 +1,7 @@
 /**
  * Dedicated worker pools: workers of a type other than `http` that run Harper's trusted built-ins
  * but no application code, and bind only the listeners a component declared as owned by their type
- * (`threadType` in the `server.http`/`server.ws`/`server.socket` options). See server/DESIGN.md.
+ * (`threadType` in the `server.http`/`server.ws`/`server.socket` options). See server/threads/DESIGN.md.
  */
 import { isMainThread, workerData } from 'node:worker_threads';
 import { CONFIG_PARAMS, THREAD_TYPES } from '../../utility/hdbTerms.ts';
