@@ -3,7 +3,7 @@
 const assert = require('node:assert');
 const path = require('node:path');
 const os = require('node:os');
-const { mkdirSync, mkdtempSync, rmSync, writeFileSync } = require('node:fs');
+const { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
 const { setTimeout: sleep } = require('node:timers/promises');
 const { waitFor } = require('../../waitFor.js');
 
@@ -30,6 +30,8 @@ const { certificationRecordPath } = require('#src/components/releaseCertificatio
 const { DEPLOYMENT_PROVENANCE_FILE, formatDeploymentProvenance } = require('#src/components/deploymentProvenance');
 const envMgr = require('#src/utility/environment/environmentManager');
 const { withRootConfigPublicationLock } = require('#src/components/rootConfigPublication');
+const { componentPreparationLockPaths } = require('#src/components/componentPreparationLock');
+const configUtils = require('#src/config/configUtils');
 
 const FIXTURE = path.join(__dirname, 'certificationGate-fixture.cjs');
 
@@ -1447,45 +1449,79 @@ describe('the release certification gate', function () {
 		await waitFor(() => completions.length > 0, { timeout: 45000, message: 'the rollout never ended' });
 	});
 
-	async function restartsWithReload(reload, restarts) {
+	// A worker's deploy writes the root config file behind main's back, as a replicated deploy does on a peer.
+	async function restartsAfterWorkerWrite(
+		restarts,
+		{ configText, beforeRestart, reloadTakesLock = true, onReconcile }
+	) {
+		const configFilePath = configUtils.getConfigFilePath();
+		const original = readFileSync(configFilePath, 'utf8');
+		const write = (text) => writeFileSync(configFilePath, original + text);
+		const entries = () =>
+			Object.keys(configUtils.getConfigObj())
+				.filter((key) => key.startsWith('late-'))
+				.join(',');
 		const order = [];
-		const reloadSync = envMgr.reloadSync;
-		envMgr.reloadSync = () => {
-			order.push('refresh');
-			return reload();
-		};
+		const recordReload = async () => order.push(`reload [${entries()}]`);
 		// Taking the publication lock here proves the refresh let it go before the components load.
-		setRootComponentsReload(() => withRootConfigPublicationLock(async () => order.push('reload')));
+		setRootComponentsReload(() => (reloadTakesLock ? withRootConfigPublicationLock(recordReload) : recordReload()));
 		setIsolatedWorkerReconciler(async (only) => {
 			order.push(`reconcile ${only}`);
+			onReconcile?.(only, write);
 			return [];
 		});
 		try {
+			write(configText);
+			beforeRestart?.();
 			await Promise.all(restarts.map((application) => restartWorkers('http', 1, true, undefined, application)));
 		} finally {
-			envMgr.reloadSync = reloadSync;
+			// rewriting an existing file needs no write access to its directory
+			writeFileSync(configFilePath, original);
+			envMgr.reloadSync();
 			setRootComponentsReload(() => rootLoad);
 		}
 		return order;
 	}
+	const LATE_FIRST = '\nlate-first:\n  package: late-first\n';
+	const LATE_SECOND = 'late-second:\n  package: late-second\n';
 
 	it("re-reads main's root config as each restart takes its turn, since a worker's deploy refreshed only its own", async () => {
-		const order = await restartsWithReload(envMgr.reloadSync, ['late-isolated', 'another']);
+		const order = await restartsAfterWorkerWrite(['late-first', 'late-second'], {
+			configText: LATE_FIRST,
+			// the second application lands while the first restart is still reconciling
+			onReconcile: (only, write) => only === 'late-first' && write(LATE_FIRST + LATE_SECOND),
+		});
 		assert.deepStrictEqual(order, [
-			'refresh',
-			'reload',
-			'reconcile late-isolated',
-			'refresh',
-			'reload',
-			'reconcile another',
+			'reload [late-first]',
+			'reconcile late-first',
+			'reload [late-first,late-second]',
+			'reconcile late-second',
 		]);
 	});
 
 	it('goes ahead on the config main has when the root config cannot be re-read, without exiting', async () => {
-		const order = await restartsWithReload(() => {
-			throw new Error('unreadable root config');
-		}, ['late-isolated']);
-		assert.deepStrictEqual(order, ['refresh', 'reload', 'reconcile late-isolated']);
+		const order = await restartsAfterWorkerWrite(['late-first'], { configText: `${LATE_FIRST}invalid: [\n` });
+		assert.deepStrictEqual(order, ['reload []', 'reconcile late-first']);
+	});
+
+	it('re-reads without the publication lock when the config directory cannot be written', async function () {
+		// root and Windows do not enforce the directory mode
+		if (process.platform === 'win32' || process.getuid?.() === 0) this.skip();
+		const configFilePath = configUtils.getConfigFilePath();
+		const readOnly = [path.dirname(configFilePath), componentPreparationLockPaths(configFilePath).lockRoot].filter(
+			(dir) => existsSync(dir)
+		);
+		let order;
+		try {
+			order = await restartsAfterWorkerWrite(['late-first'], {
+				configText: LATE_FIRST,
+				beforeRestart: () => readOnly.forEach((dir) => chmodSync(dir, 0o555)),
+				reloadTakesLock: false,
+			});
+		} finally {
+			for (const dir of readOnly) chmodSync(dir, 0o755);
+		}
+		assert.deepStrictEqual(order, ['reload [late-first]', 'reconcile late-first']);
 	});
 
 	it('restarts the pool with an application a pool worker loaded while it was shared, and its own worker', async () => {

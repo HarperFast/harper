@@ -323,6 +323,10 @@ export function initSync(force: boolean = false) {
  * this thread already had stays in force, since `initConfig` installs a new one only once it has validated.
  */
 export function reloadSync() {
+	const configFilePath = configUtils.getConfigFilePath();
+	// initConfig reads a missing file as an install still in progress and returns without reading anything
+	if (!fs.existsSync(configFilePath))
+		throw new Error(`Cannot re-read the root config: ${configFilePath} does not exist`);
 	loadConfig(true);
 }
 

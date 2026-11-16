@@ -1725,19 +1725,36 @@ function poolMayHold(application: string) {
 	);
 }
 
+const UNWRITABLE_DIRECTORY_CODES = new Set(['EACCES', 'EPERM', 'EROFS']);
+
 /**
  * A deploy or `set_configuration` run on a worker (a replicated one always is) re-reads only that worker's copy of the
  * root config, so main re-reads its own before a restart reloads and reconciles from it. Under the publication lock,
- * because a refresh on main can rewrite the file. A restart that cannot re-read it goes ahead on the copy main has.
+ * because a refresh on main can rewrite the file. Failing the restart instead would interrupt rollouts on nodes where
+ * restarts work today, so it goes ahead on main's copy.
  */
 async function refreshRootConfig() {
+	let locked = false;
 	try {
-		await loadRuntimeModule('components/rootConfigPublication').withRootConfigPublicationLock(async () =>
-			envMgr.reloadSync()
-		);
+		await loadRuntimeModule('components/rootConfigPublication').withRootConfigPublicationLock(async () => {
+			locked = true;
+			envMgr.reloadSync();
+		});
+		return;
 	} catch (error) {
-		harperLogger.error('Could not re-read the root config before restarting workers; using the copy main holds', error);
+		if (locked || !UNWRITABLE_DIRECTORY_CODES.has(error?.code)) return logStaleRootConfig(error);
 	}
+	// The lock needs write access to the config's directory, which a node taking payload deploys may lack. Nothing can
+	// publish into a directory it cannot write, so a read without the lock races no writer.
+	try {
+		envMgr.reloadSync();
+	} catch (error) {
+		logStaleRootConfig(error);
+	}
+}
+
+function logStaleRootConfig(error: unknown) {
+	harperLogger.error('Could not re-read the root config before restarting workers; using the copy main holds', error);
 }
 
 /** Read when the restart takes its turn, so no earlier restart's replacement is still booting unreported. */
