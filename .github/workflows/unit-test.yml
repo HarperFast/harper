@@ -360,6 +360,11 @@ jobs:
       - name: Verify the published native binding loads
         run: node --input-type=module --eval "const { validateFullTextNativeBinding } = await import('./dist/resources/indexes/fullTextNativeBinding.js'); await validateFullTextNativeBinding(await import('@harperfast/fulltext/native'));"
 
+      # The full-text telemetry suites below switch collection through the root config watcher, and the
+      # replaced-inode cases fail only where a file watch is a kqueue registration, as on darwin.
+      - name: Root config watcher replaced-inode regressions
+        run: npx mocha unitTests/config/rootConfigWatcherReplacedInode.test.js --forbid-pending --fail-zero
+
       - name: Native full-text lifecycle test
         env:
           HARPER_FULLTEXT_UPGRADE_ROOT: ${{ runner.temp }}/fulltext-upgrade
