@@ -1176,7 +1176,6 @@ describe('@fullText derived-index activation', () => {
 		const rootStore = Product.primaryStore.rootStore;
 		binding.closeError = new Error('writer did not quiesce');
 
-		// the injected close failure, not a shutdown timeout, whose writer close would still be in flight for the retry
 		await assert.rejects(
 			dropDatabase(database),
 			/runner lock held: Full-text writer shutdown did not prove quiescence$/
@@ -1582,7 +1581,7 @@ describe('@fullText derived-index activation', () => {
 		Product.derivedIndexRuntime = undefined;
 		binding.closeError = new Error('writer did not quiesce');
 
-		await assert.rejects(runtime.close(), /shutdown failed|did not prove quiescence/);
+		await assert.rejects(runtime.close(), /runner lock held: Full-text writer shutdown did not prove quiescence$/);
 		assert.strictEqual(hasDerivedIndexRegistration(Product.auditStore, Product.tableId), true);
 		await Product.put('shoe-1', { title: 'Trail shoe', tags: ['trail'] });
 		const entry = Product.primaryStore.getEntry('shoe-1');
@@ -2554,7 +2553,7 @@ describe('@fullText derived-index activation', () => {
 		const failedRuntime = Product.derivedIndexRuntime;
 		binding.closeError = new Error('writer did not quiesce');
 
-		await assert.rejects(Product.dropTable(), /shutdown failed|did not prove quiescence/);
+		await assert.rejects(Product.dropTable(), /runner lock held: Full-text writer shutdown did not prove quiescence$/);
 		assert(Product.derivedIndexRuntime, 'failed drop must restore a derived-index lifecycle handle');
 		assert.notStrictEqual(Product.derivedIndexRuntime, failedRuntime);
 		binding.closeError = undefined;
