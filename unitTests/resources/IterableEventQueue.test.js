@@ -60,6 +60,31 @@ describe('IterableEventQueue', () => {
 		assert.equal(q.listenerCount('drained'), 0, 'poll-path settle must remove the drained listener');
 	});
 
+	it('wakes every waitForDrain when an iterator reads the emptied queue, not at the next poll', async () => {
+		const q = new IterableEventQueue();
+		q.send({ n: 1 });
+		q.send({ n: 2 });
+		const settled = [];
+		const first = q.waitForDrain().then((drained) => settled.push(drained));
+		const second = q.waitForDrain().then((drained) => settled.push(drained));
+		const iterator = q[Symbol.asyncIterator]();
+		await iterator.next();
+		await iterator.next();
+		await new Promise(setImmediate);
+		assert.deepEqual(settled, [], 'a waiter is not woken while the iterator has not found the queue empty');
+		iterator.next(); // reads the empty queue and parks
+		// the fallback poll runs every 100ms, so only the read's own wakeup settles both this soon
+		const woken = await Promise.race([
+			Promise.all([first, second]).then(() => 'woken'),
+			new Promise((resolve) => setTimeout(() => resolve('waited for the poll'), 50)),
+		]);
+		assert.equal(woken, 'woken');
+		assert.deepEqual(settled, [true, true]);
+		assert.equal(q.drainWaiters, 0);
+		assert.equal(q.listenerCount('drained'), 0);
+		q.close();
+	});
+
 	it('close is terminal, discards buffered events, and completes pending iteration', async () => {
 		const q = new IterableEventQueue();
 		q.send({ stale: true });
