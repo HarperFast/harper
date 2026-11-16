@@ -21,6 +21,7 @@ const {
 	WORD_SLOT_LIMIT,
 	WORD_COVERED,
 	WORD_DURABLE_CEILING,
+	WORD_WRITE_FENCE,
 	certifyOriginFloor,
 	claimLocalKey,
 	freshLocalKey,
@@ -34,6 +35,11 @@ const {
 	releaseLocalKey,
 	retireOriginFloorSlots,
 	seedLocalIssuance,
+	setLocalWriteFence,
+	localWritesFenced,
+	restoreLocalWriteFence,
+	setNewRootWriteFence,
+	rekeyLocalRetry,
 	timestampAbove,
 } = require('#src/resources/originClosedFloor');
 const {
@@ -137,6 +143,7 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 			WORD_INITIAL_CEILING,
 			WORD_SLOT_LIMIT,
 			WORD_DURABLE_CEILING,
+			WORD_WRITE_FENCE,
 		];
 		assert.strictEqual(new Set(headerWords).size, headerWords.length, 'header word indices must be distinct');
 		for (const word of headerWords) {
@@ -144,6 +151,18 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 				Number.isInteger(word) && word >= 0 && word < HEADER_WORDS,
 				`header word ${word} must be in [0, ${HEADER_WORDS})`
 			);
+		}
+	});
+
+	it('keeps the write fence in the low 32 bits of its word, which every access reads through one Int32 view', () => {
+		const words = new BigInt64Array(rootStore.getUserSharedBuffer('origin-closed-floor', new ArrayBuffer(0)));
+		try {
+			for (let change = 0; change < 3; change++) {
+				setLocalWriteFence(rootStore, change % 2 === 0);
+				assert.strictEqual(Atomics.load(words, WORD_WRITE_FENCE) >> 32n, 0n);
+			}
+		} finally {
+			setLocalWriteFence(rootStore, false);
 		}
 	});
 
@@ -272,6 +291,111 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 		assert(second > first, 'the floor follows the clock while nothing is outstanding');
 		assert.equal(readOriginClosedFloor(auditStore), second, 'the advertised floor is the persisted one');
 		assert(second <= rootStore.getMonotonicTimestamp(), 'the floor never runs ahead of the clock');
+	});
+
+	it('a write fence refuses a new local write, admits a transaction that already reserved, and sets a target above it', async () => {
+		let target;
+		try {
+			await transaction({}, async () => {
+				await Tbl.put({ id: 'fence-admitted', n: 1 });
+				target = setLocalWriteFence(rootStore, true);
+				await Tbl.put({ id: 'fence-admitted-2', n: 2 });
+			});
+			assert(localWritesFenced(rootStore));
+			const [entry] = entriesFor('fence-admitted');
+			assert(entry, 'the transaction that reserved before the fence committed');
+			assert(entry.txnLogKey < target, `admitted key ${entry.txnLogKey} is below the target ${target}`);
+			assert.equal(entriesFor('fence-admitted-2')[0]?.txnLogKey, entry.txnLogKey);
+			await assert.rejects(
+				async () => Tbl.put({ id: 'fence-refused', n: 3 }),
+				(error) => {
+					assert.equal(error.statusCode, 503);
+					assert.match(error.message, /being removed from its cluster/);
+					return true;
+				}
+			);
+			assert.equal(entriesFor('fence-refused').length, 0);
+			await sleep(2);
+			assert(certify() >= target, 'the floor reaches the target once the admitted transaction has settled');
+		} finally {
+			setLocalWriteFence(rootStore, false);
+		}
+		assert(!localWritesFenced(rootStore));
+		await Tbl.put({ id: 'fence-cleared', n: 4 });
+		assert.equal(entriesFor('fence-cleared').length, 1);
+	});
+
+	it('a reservation the fence lands during is released and refused (worker thread)', async () => {
+		const gate = new Int32Array(new SharedArrayBuffer(4));
+		const { next } = startWorker({ mode: 'park-reserving', gate, tableName, record: { id: 'fence-raced', n: 1 } });
+		await next('ready');
+		await next('parked');
+		const target = setLocalWriteFence(rootStore, true);
+		try {
+			releaseGate(gate);
+			await assert.rejects(next('committed'), /being removed from its cluster/);
+			assert.equal(entriesFor('fence-raced').length, 0);
+			await sleep(2);
+			assert(certify() >= target, 'the refused reservation released its bound');
+		} finally {
+			setLocalWriteFence(rootStore, false);
+		}
+	});
+
+	it('a retry re-keyed above the target holds the floor below it until it settles, so a floor at the target covers it', async () => {
+		const handle = new Transaction(Tbl.primaryStore.store);
+		const key = reserveLocalKey(rootStore, handle);
+		let target;
+		try {
+			target = setLocalWriteFence(rootStore, true);
+			const retried = rekeyLocalRetry(handle);
+			assert(retried > target, `the retry key ${retried} is above the target ${target}`);
+			await sleep(2);
+			assert(certify() <= key, 'the original bound holds the floor');
+			rootStore.useLog('local').addEntry(Buffer.from('fence-retried'), handle.id);
+			handle.commitSync();
+			releaseLocalKey(handle);
+			await sleep(2);
+			const floor = certify();
+			assert(floor >= target && floor > retried, `floor ${floor} covers the retried key ${retried}`);
+		} finally {
+			setLocalWriteFence(rootStore, false);
+		}
+	});
+
+	it('refuses a write fence on a store without a durable origin floor, where it would refuse nothing', () => {
+		assert.throws(() => setLocalWriteFence({ getMonotonicTimestamp: () => 1 }, true), /needs a RocksDB database/);
+	});
+
+	it('a restore from a record read before a cancellation does not undo it', () => {
+		assert(!localWritesFenced(rootStore));
+		restoreLocalWriteFence(rootStore, () => {
+			setLocalWriteFence(rootStore, true);
+			setLocalWriteFence(rootStore, false);
+			return true;
+		});
+		assert(!localWritesFenced(rootStore), 'a cancel during the read stands');
+		restoreLocalWriteFence(rootStore, () => true);
+		assert(localWritesFenced(rootStore));
+		setLocalWriteFence(rootStore, false);
+		assert(!localWritesFenced(rootStore));
+	});
+
+	it('a root opened while the new-root fence says so starts fenced, and the fence is told which database it is', () => {
+		const asked = [];
+		setNewRootWriteFence((root) => (asked.push(root.databaseName), root.databaseName === 'fenced_new_root'));
+		try {
+			const open = (database) =>
+				table({ table: 'NewRoot', database, attributes: [{ name: 'id', isPrimaryKey: true }] }).primaryStore.rootStore;
+			const fenced = open('fenced_new_root');
+			const unfenced = open('unfenced_new_root');
+			assert.deepStrictEqual(asked, ['fenced_new_root', 'unfenced_new_root']);
+			assert(localWritesFenced(fenced));
+			assert(!localWritesFenced(unfenced));
+			setLocalWriteFence(fenced, false);
+		} finally {
+			setNewRootWriteFence(undefined);
+		}
 	});
 
 	it('a plain write commits at or above every floor published before it', async () => {

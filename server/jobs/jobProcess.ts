@@ -13,6 +13,7 @@ import * as serverUtils from '../serverHelpers/serverUtilities.ts';
 import { runWithDispatchedOperation } from '../serverHelpers/operationAuthorizationState.ts';
 import { stripSuppliedParsedSqlObject } from '../serverHelpers/requestSanitization.ts';
 import * as jobs from './jobs.ts';
+import { recordJobResult } from './deferredJobCompletion.ts';
 import cloneDeep from 'lodash/cloneDeep.js';
 
 import { pathToFileURL } from 'node:url';
@@ -36,6 +37,7 @@ const JOB_ID = JOB_NAME.substring(4);
 	// The request value could potentially be quite large so it's set to undefined to clear it out after being processed.
 	let jobObj: any = { id: JOB_ID, request: undefined };
 	let exitCode = 0;
+	let continuation: ReturnType<typeof recordJobResult>;
 	try {
 		env.initSync();
 		harperLogger.notify('Starting job:', JOB_ID);
@@ -73,14 +75,12 @@ const JOB_ID = JOB_NAME.substring(4);
 		);
 		harperLogger.trace('Result from job:', JOB_ID, results);
 
-		jobObj.status = hdbTerms.JOB_STATUS_ENUM.COMPLETE;
-		if (typeof results === 'string') jobObj.message = results;
-		else {
-			jobObj.result = results;
-			jobObj.message = 'Successfully completed job: ' + JOB_ID;
+		continuation = recordJobResult(jobObj, results);
+		if (jobObj.status === hdbTerms.JOB_STATUS_ENUM.IN_PROGRESS) {
+			harperLogger.notify('Job', JOB_ID, 'continues after this worker:', jobObj.message);
+		} else {
+			harperLogger.notify('Successfully completed job:', JOB_ID);
 		}
-		jobObj.end_datetime = Date.now();
-		harperLogger.notify('Successfully completed job:', JOB_ID);
 	} catch (err) {
 		exitCode = 1;
 		harperLogger.error(err);
@@ -89,14 +89,27 @@ const JOB_ID = JOB_NAME.substring(4);
 		const report = err?.http_resp_msg;
 		jobObj.message = report !== null && typeof report === 'object' ? report : err?.message ? err.message : err;
 		if (err?.result !== undefined) jobObj.result = err.result;
+		if (typeof err?.afterRecorded === 'function')
+			continuation = { afterRecorded: err.afterRecorded, onNotRecorded: err.afterRecorded };
 		jobObj.end_datetime = Date.now();
 	} finally {
 		// A rejected updateJob must not skip handle cleanup and exit scheduling below (that would
 		// leak this worker's process-global RocksDB handles and leave the worker hanging).
+		let recorded = false;
 		try {
 			await jobs.updateJob(jobObj);
+			recorded = true;
 		} catch (updateErr) {
 			harperLogger.error('Error updating job record on job worker exit:', updateErr);
+		}
+		// only once the row says what continues it: a restart before that would leave the row to read as abandoned
+		const next = recorded ? continuation?.afterRecorded : continuation?.onNotRecorded;
+		if (next) {
+			try {
+				await next();
+			} catch (continueError) {
+				harperLogger.error('Error continuing job after recording it:', continueError);
+			}
 		}
 		// Release this worker's RocksDB handles before it exits. A job worker opens the whole
 		// database graph via getDatabases(); rocksdb-js's registry is process-global and a thread

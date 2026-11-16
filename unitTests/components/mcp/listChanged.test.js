@@ -13,7 +13,7 @@ const { databases } = require('#src/resources/databases');
 const testUtils = require('../../testUtils.js');
 const { waitFor } = require('../../waitFor');
 
-const { localPrincipal } = userModule;
+const { certificateAdmission, certificatePrincipal, isCertificatePrincipal, localPrincipal } = userModule;
 
 const SUPER = { username: 'admin', role: { permission: { super_user: true } } };
 const ALICE = {
@@ -208,6 +208,23 @@ describe('mcp/listChanged', () => {
 		assert.equal(fresh.authExpiresAt, undefined);
 	});
 
+	it('keeps the certificate mark when it refreshes a session a certificate named', async () => {
+		initListChanged();
+		const record = registerSession('cert-sid', 'application', certificatePrincipal({ username: 'cert_cn' }));
+		const named = record.user;
+		const fresh = { username: 'cert_cn', role: { permission: {} } };
+		_setUserResolverForTest(async () => fresh);
+		fakeItc._fireUser();
+		await waitFor(() => record.user !== named);
+		assert.equal(isCertificatePrincipal(record.user), true);
+		assert.equal(certificateAdmission(record.user), named, 'the refreshed view keeps the admission');
+		assert.equal(isCertificatePrincipal(fresh), false);
+		const refreshed = record.user;
+		fakeItc._fireUser();
+		await waitFor(() => record.user !== refreshed);
+		assert.equal(certificateAdmission(record.user), named, 'and keeps it across refreshes');
+	});
+
 	it('a scoped-token session is never re-resolved by name (no privilege substitution)', async () => {
 		// A scoped token's attribution username may later collide with a real hdb_user; re-resolving
 		// it here would advertise that user's surface. The session's embedded role must stay put.
@@ -356,6 +373,22 @@ describe('mcp/listChanged', () => {
 			assert.equal(resolverCalled, false, 'no record backs it, so none is read by its name');
 			assert.equal(rec.user, componentUser);
 			assert.deepEqual(rec.lastTools, [{ name: 'get_product' }]);
+		});
+
+		it('latches the certificate admission of a session whose refresh finds an inactive record', async () => {
+			initListChanged();
+			const rec = registerSession(
+				'cert-inactive-sid',
+				'application',
+				certificatePrincipal({ username: 'cert_inactive_cn' })
+			);
+			const admission = certificateAdmission(rec.user);
+			assert.equal(userModule.isRoleRequirementLatched(admission), false);
+			await testUtils.seedUsers([{ username: 'cert_inactive_cn', active: false, role: 'missing_role' }]);
+			fakeItc._fireUser();
+			await waitFor(() => userModule.isRoleRequirementLatched(admission), {
+				message: 'the inactive record backs the name, so the admission needs a role',
+			});
 		});
 
 		it('takes the tools of a dropped record-backed user', async () => {

@@ -26,7 +26,7 @@ import {
 	RESIDENCY_MAP_TABLE,
 	ResidencyPlacementError,
 } from './residencyMaps.ts';
-import { isDeepStrictEqual } from 'node:util';
+import { isDeepStrictEqual, types as utilTypes } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -223,7 +223,7 @@ import {
 	GET_TRACKED_WRITE_GENERATION,
 } from './tracked.ts';
 import { transaction, contextStorage } from './transaction.ts';
-import { MAXIMUM_KEY, writeKey, compareKeys } from 'ordered-binary';
+import { MAXIMUM_KEY, writeKey, compareKeys, toBufferKey } from 'ordered-binary';
 import {
 	getWorkerIndex,
 	applicationWorkerIndex,
@@ -251,6 +251,7 @@ import {
 	auditHistoryAbortMarked,
 	type AuditRecord,
 } from './auditStore.ts';
+import { abortMarkersEnabled } from './transactionLogAbortMarkers.ts';
 import {
 	acquireFullTextClearFence,
 	acquireFullTextRetirementFence,
@@ -330,7 +331,7 @@ import {
 	type StorageSpaceStats,
 } from '../server/storageReclamation.ts';
 import { RequestTarget } from './RequestTarget.ts';
-import harperLogger from '../utility/logging/harper_logger.ts';
+import harperLogger, { inspectForLog } from '../utility/logging/harper_logger.ts';
 import { throttle } from '../server/throttle.ts';
 import {
 	RocksDatabase,
@@ -389,6 +390,10 @@ type MaybePromise<T> = T | Promise<T>;
 const NULL_WITH_TIMESTAMP = new Uint8Array(9);
 NULL_WITH_TIMESTAMP[8] = 0xc0; // null
 const sourceWriteTypes = new Set(['put', 'patch', 'delete', 'publish', 'message', 'invalidate', 'relocate']);
+const loggedMessagesByTransaction = new WeakMap<object, Map<string, Set<string> | null>>();
+// the storage-key encoding, so ids the store treats as one key match
+const messageIdentity = (tableId: number, id: Id, version: number) =>
+	`${tableId}:${version}:${toBufferKey(id).toString('latin1')}`;
 const isSourceWriteType = (type: string) => sourceWriteTypes.has(type);
 // declared types `validate` holds to one value on validated writes: `ID` admits an array of strings
 const SCALAR_TYPES = new Set(['String', 'Int', 'Long', 'Float', 'Boolean', 'Date', 'BigInt']);
@@ -399,7 +404,17 @@ type SourceTxnStream = {
 	failure?: { error: unknown; position: number | undefined; event: any };
 	held?: boolean;
 };
-type SourceFill = { source: unknown; outcome?: Entry; unstoredRecord?: boolean; sharable?: boolean };
+type SourceFill = {
+	source: unknown;
+	outcome?: Entry;
+	unstoredRecord?: boolean;
+	sharable?: boolean;
+	failure?: unknown;
+	waiters?: number;
+};
+// a busy record's refill can gather this many waiters; only a failed one sends them back to the source in turn
+const SOURCE_FILL_WAITERS_WARNING = 50;
+const KEY_FOR_LOG = { maxStringLength: 100, maxArrayLength: 4, depth: 1, breakLength: Infinity };
 const UNCACHEABLE_TIMESTAMP = Infinity; // we use this when dynamic content is accessed that we can't safely cache, and this prevents earlier timestamps from change the "last" modification
 const MAX_DATE_TIMESTAMP = 8.64e15;
 const RECORD_PRUNING_INTERVAL = 60000; // one minute
@@ -460,6 +475,11 @@ try {
 }
 const LMDB_PREFETCH_WRITES = envMngr.get(CONFIG_PARAMS.STORAGE_PREFETCHWRITES);
 const LOCK_TIMEOUT = 10000;
+let sourceFillLockTimeout = LOCK_TIMEOUT;
+/** Tests only: how long a source fill's record lock is held before it is released; `undefined` restores it. */
+export function setSourceFillLockTimeoutForTesting(ms: number | undefined) {
+	sourceFillLockTimeout = ms ?? LOCK_TIMEOUT;
+}
 export const UPDATE_ATTRIBUTES_LOCK_TIMEOUT = 10000;
 const UPDATE_ATTRIBUTES_LOCK = 'update-attributes';
 // Contention is otherwise only visible once it becomes a timeout (harper#2251).
@@ -656,6 +676,11 @@ function finishDroppedTableBlobSweep(rootStore: RocksDatabase, primaryStore, lab
 				finishDroppedTableBlobSweep(rootStore, store, storeLabel);
 			}
 		});
+}
+const NOT_FOUND_STATUSES = new Set([404, 410]);
+// Not a thrown Response: REST serves it as the response, reading its body once and merging into its headers.
+function isNotFoundFailure(error: unknown): boolean {
+	return utilTypes.isNativeError(error) && NOT_FOUND_STATUSES.has((error as any).statusCode ?? (error as any).status);
 }
 // A response consumes a stream or iterator once, merges into Headers in place and assigns onto a record
 // it cannot copy, so only a copyable record of plain data goes to several requests.
@@ -865,6 +890,8 @@ const MAX_OUT_OF_ORDER_AUDIT_DEPTH = 1000;
 // a full walk of the retained audit log — this bounds that walk regardless of how many
 // records the filter accepts.
 const MAX_PREVIOUS_COUNT_SCAN = 10_000;
+const MAX_LATE_SCAN_ENTRIES = 100_000;
+const QUEUED_ORIGIN = Symbol('queued-origin');
 const VERSION_CAP_REFUSAL = `More than ${MAX_PREVIOUS_COUNT_SCAN} versions follow this resume position; resubscribe to resynchronize`;
 const RELOAD_REFUSAL =
 	'A bulk reload after this resume position left rows with no history; resubscribe to resynchronize';
@@ -960,6 +987,16 @@ function selectOwnAttributes(value: any, names: readonly string[]): any {
 		else selected[name] = value[name];
 	}
 	return selected;
+}
+// The wrapper a subscription keeps holds only these two arguments; a closure in subscribe() would hold its scope.
+function projectDeliveries(subscription: any, deliveredAttributes: readonly string[]) {
+	const sendSelected = subscription.send;
+	subscription.send = function (event) {
+		// a live event is shared with the record's other subscribers, so the projection goes on a copy
+		if (event?.value !== null && typeof event?.value === 'object')
+			event = { ...event, value: selectOwnAttributes(event.value, deliveredAttributes) };
+		return sendSelected.call(this, event);
+	};
 }
 const FULL_PERMISSIONS = {
 	read: true,
@@ -1922,6 +1959,28 @@ let memoizedEntry: Entry | undefined;
 function clearEntryMemo() {
 	memoizedEntryAuditRecord = memoizedEntryStore = memoizedEntryId = memoizedEntry = undefined;
 }
+/** The live events built from an audit record for the subscriptions that share them, one per variant. */
+const SHARED_LIVE_EVENTS = Symbol('sharedLiveEvents');
+type SharedLiveEvent = {
+	store: any;
+	id: Id;
+	localTime: number;
+	variant: number;
+	event: any;
+	next: SharedLiveEvent | undefined;
+};
+// Field by field: spreading a stored entry or an audit record would deliver storage metadata and the audit user.
+function currentRecordEvent(id: Id, entry: any) {
+	return {
+		id,
+		localTime: entry.localTime,
+		value: entry.value,
+		version: entry.version,
+		type: 'put',
+		size: entry.size,
+		fromScan: true,
+	};
+}
 function currentEntryForAudit(store: any, id: Id, auditRecord: any): Entry | undefined {
 	if (auditRecord !== memoizedEntryAuditRecord || store !== memoizedEntryStore || id !== memoizedEntryId) {
 		if (memoizedEntryAuditRecord === undefined) queueMicrotask(clearEntryMemo);
@@ -1931,6 +1990,121 @@ function currentEntryForAudit(store: any, id: Id, auditRecord: any): Entry | und
 		memoizedEntryId = id;
 	}
 	return memoizedEntry;
+}
+
+/**
+ * What a `Table.subscribe()` subscription's live listener shares with its replay. The listener lives as
+ * long as the subscription, so it holds only this, never `subscribe()`'s own scope (the request handling,
+ * the replay's state and the resource instance), which is released once the replay ends.
+ */
+type SubscriberState = {
+	subscription: any;
+	thisId: Id;
+	isCollection: boolean;
+	rawEvents: boolean;
+	getFullRecord: boolean;
+	includeSuperseded: boolean;
+	allowsEvent: ((event: any) => boolean) | null;
+	/**
+	 * While the count, !omitCurrent, and non-collection branches replay older messages, real-time
+	 * messages from the listener accumulate here and are drained at the end of the replay so they
+	 * arrive after the replayed history, in order. The startTime branch sets this to null and
+	 * uses dropDuringReplay instead — its snapshot:false cursor picks up the live tail directly.
+	 */
+	pendingRealTimeQueue: any[] | null;
+	/**
+	 * Set during the startTime audit-log replay. The cursor iterates the audit log forward with
+	 * snapshot:false, which catches any commits that land during yield points; dropping in the
+	 * listener avoids duplicate delivery.
+	 */
+	dropDuringReplay: boolean;
+	/** Coalescing guards for the reload re-snapshot (harper-pro#495), driven from the listener. */
+	reloadResnapshotRunning: boolean;
+	reloadResnapshotPending: boolean;
+	/** A re-snapshot waits for the history or snapshot in progress, whose older values would overwrite it. */
+	reloadPending: boolean;
+	reportingProgress: boolean;
+};
+
+type ProgressState = {
+	requestedStartTime: number | undefined;
+	resuming: boolean;
+	collection: boolean;
+	/** A checkpoint resume's plan, and the scalar shadow just below its lowest boundary. */
+	plan: ResumePlan | undefined;
+	planFloor: number | undefined;
+	checkpointScopeId: string;
+	filtersWithoutKey: boolean;
+	live: boolean;
+	floor: number | undefined;
+	/** A resumed replay left committed entries to live delivery, so its floor stays at the requested start. */
+	replayLeftEntriesToLive: boolean;
+	/**
+	 * [ordinal, key] pairs in send order, for events sent below a key sent before them: one can wait in the
+	 * queue behind deliveries of higher keys. A sliding-window minimum: an entry a later, lower one follows is
+	 * dropped, since it leaves the window first, so the lowest is always at `lateHead`.
+	 */
+	lateSends: number[];
+	lateHead: number;
+	highestSent: number;
+	/** The queue's own send(), which the tracking send() hands each event to. */
+	queueSend: (event: any) => boolean;
+};
+
+function isSubscriptionActive(subscription: any): boolean {
+	return !subscription.closed && Boolean(subscription.subscriptions);
+}
+
+function failSubscription(subscription: any, error: any) {
+	if (subscription.closed) return;
+	harperLogger.error?.('Error in real-time subscription:', error);
+	try {
+		subscription.close(error);
+	} catch (listenerError) {
+		harperLogger.error?.('Error in real-time subscription listener:', listenerError);
+	}
+}
+
+// A write folded into a newer version by out-of-order resequencing is listed in the record's
+// additionalAuditRefs until the next in-order write replaces the record.
+function wasMergedInto(entry: any, txnLogKey: number, nodeId: number | undefined) {
+	return Boolean(
+		entry.metadataFlags & VERSION_REUSED &&
+		entry.additionalAuditRefs?.some(
+			(ref: { version: number; nodeId?: number }) => ref.version === txnLogKey && (ref.nodeId ?? 0) === (nodeId ?? 0)
+		)
+	);
+}
+
+function subscriptionEventFilter(
+	state: SubscriberState,
+	rowFilter: Function | undefined,
+	eventFilter: Function | undefined,
+	subContext: any
+): (event: any) => boolean {
+	const evaluateFilter = (filter: Function, value: any, name: string): boolean => {
+		try {
+			const decision = filter(value, subContext);
+			if (decision != null && typeof decision.then === 'function') {
+				decision.then(undefined, () => {});
+				throw new ClientError(`${name} must be synchronous`);
+			}
+			return Boolean(decision);
+		} catch (error) {
+			failSubscription(state.subscription, error);
+			return false;
+		}
+	};
+	return (event: any): boolean => {
+		if (event.type === 'end_txn' || event.type === 'reload') return true;
+		if (event.value != null) freezeRecord(event.value);
+		if (eventFilter && !evaluateFilter(eventFilter, frozenRecordView(event), 'eventFilter')) return false;
+		const hasAuthoritativeRow =
+			!state.rawEvents && (event.type === 'put' || event.type === 'invalidate') && event.value != null;
+		if (!rowFilter) return true;
+		if (!hasAuthoritativeRow) return Boolean(eventFilter);
+		return evaluateFilter(rowFilter, event.value, 'rowFilter');
+	};
 }
 
 // the log store ends a failed or corrupt log's iteration quietly and records it on the range
@@ -2034,6 +2208,7 @@ export function makeTable(options): TableResourceClass {
 	let warnedNullSourcePut = false; // latched: one warn per table per worker (see _writeUpdate)
 	let warnedFutureSourceVersion = false; // likewise (see getFromSource)
 	let lastIssuanceFailureWarn = -Infinity;
+	let lastSourceFillWaitersWarn = -Infinity;
 	let sourceLoad: any; // if a source has a load function (replicator), record it here
 	let hasSourceGet: any;
 	let sourceFills: Map<unknown, SourceFill> | undefined;
@@ -2310,6 +2485,77 @@ export function makeTable(options): TableResourceClass {
 			}
 		}
 		return refs;
+	}
+	// RocksDB stores no previous node, so a tie counts as late
+	function isLateEntry(entry: AuditRecord): boolean {
+		return entry.previousVersion >= entry.version;
+	}
+	const transactionIdentity = (nodeId: number | undefined, key: number) =>
+		`${nodeId ?? getThisNodeId(auditStore) ?? 0}:${key}`;
+	/** A write older than its record is off the version chain; only refs, and late entries' own refs, reach it. */
+	function* lateTransactions(
+		id: Id,
+		pending: Array<{ version: number; nodeId: number }>,
+		seen: Set<string>,
+		budget: { remaining: number }
+	): Generator<{
+		pause?: true;
+		key?: number;
+		entries?: AuditRecord[];
+		found?: boolean;
+		capped?: boolean;
+		range?: any;
+	}> {
+		while (pending.length > 0) {
+			const ref = pending.pop()!;
+			const identity = transactionIdentity(ref.nodeId, ref.version);
+			if (seen.has(identity)) continue;
+			seen.add(identity);
+			const sharedLog = typeof ref.nodeId === 'number' && ref.nodeId !== 0 && !auditStore.logById(ref.nodeId);
+			const range = auditStore.getRange({
+				start: ref.version,
+				exactStart: true,
+				log: ref.nodeId,
+				readUncommitted: true,
+			});
+			const entries: AuditRecord[] = [];
+			let found = false;
+			let unreadable = false;
+			let capped = false;
+			let sincePause = 0;
+			for (const entry of range) {
+				if (entry.txnLogKey !== ref.version) break;
+				if (--budget.remaining < 0) {
+					capped = true;
+					break;
+				}
+				if (++sincePause >= REPLAY_YIELD_INTERVAL) {
+					sincePause = 0;
+					yield { pause: true };
+				}
+				if (
+					!entry.type ||
+					!Number.isFinite(entry.version) ||
+					entry.tableId === undefined ||
+					entry.recordId === undefined
+				)
+					unreadable = true;
+				if (
+					entry.tableId !== tableId ||
+					compareKeys(entry.recordId, id) !== 0 ||
+					(sharedLog && entry.nodeId !== ref.nodeId)
+				)
+					continue;
+				found = true;
+				if (!isLateEntry(entry)) continue;
+				entries.push(entry);
+				const previousRefs = entry.previousAdditionalAuditRefs;
+				if (previousRefs)
+					for (let index = previousRefs.length - 1; index >= 0; index--) pending.push(previousRefs[index]);
+			}
+			yield { key: ref.version, entries, found: found && !unreadable, capped, range };
+			if (capped) return;
+		}
 	}
 	function resolveAuditHead(
 		id: Id,
@@ -4747,6 +4993,7 @@ export function makeTable(options): TableResourceClass {
 		 * @deprecated Override the resource operation for application-specific authorization.
 		 */
 		allowRead(user: User, target: RequestTarget, context: Context): boolean {
+			// reads nothing from `this`: a live subscription's recheck runs it without the instance (readEvaluator)
 			const tablePermission = getTablePermissions(user, target);
 			// Resource.search consumes checkPermission before full-text source-field authorization runs.
 			if (TableResource.fullTextIndexes.length > 0 && target?.checkPermission && tablePermission)
@@ -6826,10 +7073,16 @@ export function makeTable(options): TableResourceClass {
 					let residencyId: number | undefined;
 					let residencySlot: number | undefined;
 					if (options?.residencyId != undefined) residencyId = options.residencyId;
-					// options/context expiresAt are the most specific overrides; a record @expiresAt field
-					// (resolved below, once recordToStore is merged) overrides the table default in both
-					// directions; the table default is the final fallback. -1 means no expiration.
-					let expiresAt: number | undefined = options?.expiresAt ?? context?.expiresAt;
+					// options/context expiresAt are the most specific overrides, except that a source-applied write
+					// skips the context's: the apply loop shares one context (its first event, or the transaction
+					// event) across the whole source transaction. A record @expiresAt field (resolved below, once
+					// recordToStore is merged) overrides the table default in both directions; the table default is
+					// the final fallback. -1 means no expiration.
+					let expiresAt: number | undefined = options?.expiresAt ?? undefined;
+					if (expiresAt === undefined) {
+						const contextExpiresAt = context?.expiresAt;
+						if (contextExpiresAt != undefined && !options?.isNotification) expiresAt = contextExpiresAt;
+					}
 					let auditExpiresAt: number | undefined;
 					let additionalAuditRefs: Array<{ version: number; nodeId: number }> = []; // track additional audit refs to store
 					let receivedIdentityRefs: Array<{ version: number; nodeId: number }> | undefined;
@@ -7320,6 +7573,10 @@ export function makeTable(options): TableResourceClass {
 									) {
 										write.skipped = true;
 										return;
+									}
+									if (auditRecord.type === 'message' && auditRecord.version < txnTime && !extraFrameEntries) {
+										advanceToPreviousAudit(auditRecord);
+										continue;
 									}
 									auditedVersion = auditRecord.version;
 									let hasNewerEntryInFrame = false;
@@ -10119,24 +10376,23 @@ export function makeTable(options): TableResourceClass {
 				TableResource.assertSchemaMutable('enable auditing for a subscription');
 				table({ table: tableName, database: databaseName, schemaDefined, attributes, audit: true });
 			}
-			const getFullRecord = !request.rawEvents;
-			const includeSuperseded = request.includeSuperseded ?? request.rawEvents ?? false;
-			// While the count, !omitCurrent, and non-collection branches replay older messages, real-time
-			// messages from the listener accumulate here and are drained at the end of the IIFE so they
-			// arrive after the replayed history, in order. The startTime branch sets this to null and
-			// uses dropDuringReplay instead — its snapshot:false cursor picks up the live tail directly.
-			let pendingRealTimeQueue: any[] | null = [];
-			// Set during the startTime audit-log replay. The cursor iterates the audit log forward with
-			// snapshot:false, which catches any commits that land during yield points; dropping in the
-			// listener avoids duplicate delivery.
-			let dropDuringReplay = false;
-			// Coalescing guards for the reload re-snapshot (harper-pro#495), driven from the listener below.
-			let reloadResnapshotRunning = false;
-			let reloadResnapshotPending = false;
+			const state: SubscriberState = {
+				subscription: undefined,
+				thisId,
+				isCollection: request.isCollection ?? thisId == null,
+				rawEvents: Boolean(request.rawEvents),
+				getFullRecord: !request.rawEvents,
+				includeSuperseded: request.includeSuperseded ?? request.rawEvents ?? false,
+				allowsEvent: null,
+				pendingRealTimeQueue: [],
+				dropDuringReplay: false,
+				reloadResnapshotRunning: false,
+				reloadResnapshotPending: false,
+				reloadPending: false,
+				reportingProgress: false,
+			};
+			const { getFullRecord, includeSuperseded } = state;
 			const resnapshotsReload = !request.rawEvents && databaseName !== 'system';
-			// a re-snapshot waits for the history or snapshot in progress, whose older values would overwrite it
-			let reloadPending = false;
-			let reportingProgress = false;
 			const subContext = this.getContext() as any;
 			const rowFilter = typeof request.rowFilter === 'function' ? request.rowFilter : undefined;
 			const eventFilter = typeof request.eventFilter === 'function' ? request.eventFilter : undefined;
@@ -10146,234 +10402,34 @@ export function makeTable(options): TableResourceClass {
 			if (eventFilter?.constructor?.name === 'AsyncFunction') {
 				throw new ClientError('eventFilter must be synchronous');
 			}
-			const evaluateFilter = (filter: Function, value: any, name: string): boolean => {
-				try {
-					const decision = filter(value, subContext);
-					if (decision != null && typeof decision.then === 'function') {
-						decision.then(undefined, () => {});
-						throw new ClientError(`${name} must be synchronous`);
-					}
-					return Boolean(decision);
-				} catch (error) {
-					failSubscription(error);
-					return false;
-				}
-			};
-			const allowsEvent =
-				rowFilter || eventFilter
-					? (event: any): boolean => {
-							if (event.type === 'end_txn' || event.type === 'reload') return true;
-							if (event.value != null) freezeRecord(event.value);
-							if (eventFilter && !evaluateFilter(eventFilter, frozenRecordView(event), 'eventFilter')) return false;
-							const hasAuthoritativeRow =
-								!request.rawEvents && (event.type === 'put' || event.type === 'invalidate') && event.value != null;
-							if (!rowFilter) return true;
-							if (!hasAuthoritativeRow) return Boolean(eventFilter);
-							return evaluateFilter(rowFilter, event.value, 'rowFilter');
-						}
-					: null;
-			const subscription = addSubscription(
+			const allowsEvent = (state.allowsEvent =
+				rowFilter || eventFilter ? subscriptionEventFilter(state, rowFilter, eventFilter, subContext) : null);
+			const subscription = (state.subscription = addSubscription(
 				TableResource,
 				thisId,
-				function (id: Id, auditRecord?: any, txnLogKey?: any, beginTxn?: any) {
-					if (dropDuringReplay) return;
-					try {
-						if (isLockControlType(auditRecord.type)) return;
-						if (auditRecord.type === 'reload' && resnapshotsReload) {
-							// back-filled rows have no history, so a progress certificate cannot pass the marker
-							if (reportingProgress) return void this.close(new ResumeHistoryUnavailableError(RELOAD_REFUSAL));
-							if (pendingRealTimeQueue) return void (reloadPending = true);
-							return scheduleReloadResnapshot();
-						}
-						const event = eventFromAudit(id, auditRecord, txnLogKey, beginTxn, true);
-						if (!event) return;
-						if (reportingProgress) event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
-						// Queued events are filtered when the queue drains through send() below; events sent
-						// directly (queue already drained) are filtered here. Each event is filtered once.
-						if (pendingRealTimeQueue) pendingRealTimeQueue.push(event);
-						else {
-							if (allowsEvent && !allowsEvent(event)) return;
-							if (databaseName !== 'system') {
-								recordAction(auditRecord.size ?? 1, 'db-message', tableName, null);
-							}
-							this.send(event);
-						}
-					} catch (error) {
-						logger.error?.(error);
-						// a certificate cannot pass an event it failed to deliver
-						if (reportingProgress) this.close(error);
-					}
-				},
+				subscriptionListener,
 				request.startTime || 0,
 				request
-			);
+			));
+			subscription.state = state;
 			if (plan) subscription.ungated = true;
 			// Every delivery (live, replay, history, current record, reload re-snapshot) passes send; a path that
-			// bypassed it would deliver attributes the role cannot read.
-			if (deliveredAttributes) {
-				const sendSelected = subscription.send;
-				subscription.send = function (event) {
-					if (event?.value !== null && typeof event?.value === 'object')
-						event.value = selectOwnAttributes(event.value, deliveredAttributes);
-					return sendSelected.call(this, event);
-				};
-			}
-			const isActive = () => !subscription.closed && Boolean(subscription.subscriptions);
-			let progressLive = false;
-			let progressFloor: number | undefined;
-			let replayLeftEntriesToLive = false;
-			let goLive: (() => void) | undefined;
+			// bypassed it would deliver attributes the role cannot read. Installed before the progress hooks, which
+			// wrap whatever send is in place, so they track the event this delivers.
+			if (deliveredAttributes) projectDeliveries(subscription, deliveredAttributes);
+			const isActive = () => isSubscriptionActive(subscription);
+			const send = (event: any, alreadyFiltered = false) => sendSubscriptionEvent(state, event, alreadyFiltered);
 			if (request.reportProgress && subscription.reportsProgress) {
-				reportingProgress = true;
-				subscription.sentCount = 0;
-				// [ordinal, key] pairs in send order, for events sent below a key sent before them: one can wait in the
-				// queue behind deliveries of higher keys. A sliding-window minimum: an entry a later, lower one follows is
-				// dropped, since it leaves the window first, so the lowest is always at `lateHead`.
-				const lateSends: number[] = [];
-				let lateHead = 0;
-				let highestSent = -Infinity;
-				const pruneLate = (through: number) => {
-					while (lateHead < lateSends.length && lateSends[lateHead] <= through) lateHead += 2;
-					if (lateHead === lateSends.length) lateSends.length = lateHead = 0;
-					else if (lateHead > 64 && lateHead * 2 > lateSends.length) {
-						lateSends.splice(0, lateHead);
-						lateHead = 0;
-					}
-				};
-				const queueSend = subscription.send;
-				subscription.send = function (event) {
-					// a for-await consumer takes the next event only after finishing the last, so only that one can be in hand
-					if (lateSends.length > 0) pruneLate(this.sentCount - (this.queue?.length ?? 0) - 1);
-					const ordinal = ++this.sentCount;
-					const key = event?.localTime;
-					if (typeof key === 'number' && !event.fromScan) {
-						if (key < highestSent) {
-							while (lateSends.length > lateHead && lateSends[lateSends.length - 1] >= key) lateSends.length -= 2;
-							lateSends.push(ordinal, key);
-						} else highestSent = key;
-					}
-					return queueSend.call(this, event);
-				};
-				subscription.lowestLateUnconsumed = (consumed: number): number | undefined => {
-					pruneLate(consumed);
-					return lateHead < lateSends.length ? lateSends[lateHead + 1] : undefined;
-				};
-				const collection = request.isCollection ?? thisId == null;
-				// a checkpoint resume's scalar shadow is just below its lowest boundary, which is not yet delivered; a
-				// zero boundary stays 0, the start of the log
-				let planFloor: number | undefined;
-				if (plan) {
-					for (const { boundary } of plan.boundaries.values()) if (!(planFloor <= boundary)) planFloor = boundary;
-					if (planFloor > 0) planFloor = positionBefore(planFloor);
-				}
-				const beforeLive = (): number | undefined =>
-					plan
-						? planFloor
-						: resuming
-							? collection
-								? (subscription.replayedThrough ?? request.startTime)
-								: request.startTime
-							: request.startTime === undefined
-								? subscription.registeredThrough
-								: undefined;
-				subscription.progress = () => {
-					if (!isActive()) return;
-					if (!progressLive) return beforeLive();
-					const certified = certifiedThrough(subscription);
-					if (progressFloor === undefined) return certified;
-					return certified === undefined || certified < progressFloor ? progressFloor : certified;
-				};
-				goLive = () => {
-					progressFloor = beforeLive();
-					if (resuming && collection && !plan) {
-						const replayThrough = progressFloor;
-						const sameThread = subscription.subscriptions.tables.envs.sameThread === true;
-						// The replay walked committed keys; only the pre-replay sample also bounds still-open writes. One that
-						// left committed entries to the broadcast may have passed their keys, so a pass certifies its key.
-						const walked = replayLeftEntriesToLive ? request.startTime : replayThrough;
-						progressFloor =
-							sameThread || subscription.localResumeStart === undefined
-								? undefined
-								: Math.min(walked, subscription.localResumeStart);
-						if (!sameThread && replayThrough > request.startTime) completedReplayThrough(subscription, replayThrough);
-					}
-					progressLive = true;
-					// a certified subscription takes every live entry from here: the key gate would drop a late
-					// lower-key commit that a floor then certifies as delivered
-					subscription.ungated = true;
-				};
-				const filtersWithoutKey = Boolean(rowFilter || eventFilter) && !request.filterKey;
-				const checkpointScopeId = scope();
-				const replayBoundaries = (): Map<string, MemberBoundary> | undefined => {
-					if (!plan) return;
-					for (const { generation } of plan.boundaries.values()) if (typeof generation !== 'string') return;
-					return plan.boundaries;
-				};
-				const liveBoundaries = (holds?: Map<number, number>): Map<string, MemberBoundary> | undefined => {
-					const certified = certifiedFloors(subscription);
-					if (!certified) return;
-					// an event handed to the queue and not yet taken holds its origin's boundary
-					const queued = new Map<number, number>();
-					// an event with no origin tag holds every boundary; a snapshot row (`fromScan`) is state, not a log
-					// position, and is never replayed, so it holds nothing
-					let untagged = Infinity;
-					for (const event of subscription.queue ?? []) {
-						const key = event?.localTime;
-						if (typeof key !== 'number' || event.fromScan) continue;
-						const origin = event[ORIGIN_ID];
-						if (typeof origin !== 'number') {
-							if (key < untagged) untagged = key;
-							continue;
-						}
-						if (!(queued.get(origin) <= key)) queued.set(origin, key);
-					}
-					const boundaries = new Map<string, MemberBoundary>();
-					for (const [nodeId, state] of certified.origins) {
-						let boundary = state.floor!;
-						if (untagged < boundary) boundary = untagged;
-						const pending = queued.get(nodeId);
-						if (pending < boundary) boundary = pending;
-						const held = holds?.get(nodeId);
-						if (held < boundary) boundary = held;
-						boundaries.set(state.name, { boundary, generation: state.generation! });
-					}
-					return boundaries;
-				};
-				const currentBoundaries = (holds?: Map<number, number>) => {
-					if (!isActive() || filtersWithoutKey || !isRocksDB) return;
-					return progressLive ? liveBoundaries(holds) : replayBoundaries();
-				};
-				subscription.checkpoint = (holds?: Map<number, number>): SubscriptionCheckpoint | undefined => {
-					const boundaries = currentBoundaries(holds);
-					if (!boundaries) return;
-					return Object.freeze(encodeCheckpoint(checkpointScopeId, boundaries));
-				};
-				// the lowest boundary, for a consumer that only needs to know what can no longer be delivered anew
-				subscription.checkpointFloor = (holds?: Map<number, number>): number | undefined => {
-					const boundaries = currentBoundaries(holds);
-					if (!boundaries) return;
-					let floor = Infinity;
-					for (const { boundary } of boundaries.values()) if (boundary < floor) floor = boundary;
-					return floor;
-				};
-				if (request.checkpointInterval !== undefined) {
-					let lastEmitted: string | undefined;
-					const timer = setInterval(() => {
-						if (!isActive()) return clearInterval(timer);
-						try {
-							const checkpoint = subscription.checkpoint!();
-							if (!checkpoint) return;
-							const encoded = JSON.stringify(checkpoint);
-							if (encoded === lastEmitted) return;
-							lastEmitted = encoded;
-							subscription.send({ type: 'checkpoint', checkpoint });
-						} catch (error) {
-							failSubscription(error);
-						}
-					}, request.checkpointInterval);
-					timer.unref?.();
-					subscription.on('close', () => clearInterval(timer));
-				}
+				state.reportingProgress = true;
+				trackSubscriptionProgress(
+					subscription,
+					request,
+					resuming,
+					state.isCollection,
+					plan,
+					scope(),
+					Boolean(rowFilter || eventFilter) && !request.filterKey
+				);
 			}
 			let settleResume: ((verified: boolean) => void) | undefined;
 			if (resuming || plan) subscription.resumeVerified = new Promise<boolean>((resolve) => (settleResume = resolve));
@@ -10414,8 +10470,8 @@ export function makeTable(options): TableResourceClass {
 				let recordsSinceYield = 0;
 
 				if (plan) {
-					pendingRealTimeQueue = null;
-					dropDuringReplay = true;
+					state.pendingRealTimeQueue = null;
+					state.dropDuringReplay = true;
 					const targetKey = isCollection ? undefined : keyArrayToString(thisId);
 					const prefix = thisId == null ? '' : String(keyArrayToString(thisId)).replace(/\/$/, '') + '/';
 					const inScope = (id: Id): boolean => {
@@ -10495,7 +10551,15 @@ export function makeTable(options): TableResourceClass {
 							if (!inScope(id)) continue;
 							// a lagging origin's write can be merged into another origin's newer one already delivered below
 							// that origin's boundary, so it is the only delivery of the merged state, as live
-							const event = eventFromAudit(id, auditRecord, auditRecord.txnLogKey, undefined, true, replayReader);
+							const event = eventFromAudit(
+								state,
+								id,
+								auditRecord,
+								auditRecord.txnLogKey,
+								undefined,
+								true,
+								replayReader
+							);
 							if (!event) continue;
 							event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
 							if (!send(event)) return;
@@ -10506,7 +10570,7 @@ export function makeTable(options): TableResourceClass {
 						}
 						if (!recheck(replayRange)) return;
 					} finally {
-						dropDuringReplay = false;
+						state.dropDuringReplay = false;
 					}
 				} else if (isCollection) {
 					// a collection should retrieve all descendant ids
@@ -10515,8 +10579,8 @@ export function makeTable(options): TableResourceClass {
 							throw new ClientError('startTime and previousCount can not be combined for a table level subscription');
 						// start time specified, get the audit history for this time range. We drop real-time
 						// messages during this loop because the snapshot:false cursor will pick them up itself.
-						pendingRealTimeQueue = null;
-						dropDuringReplay = true;
+						state.pendingRealTimeQueue = null;
+						state.dropDuringReplay = true;
 						// subscription.replayedThrough is the resume cursor (exclusive) and RocksDB gives every record of a
 						// transaction the same txnLogKey, so it only moves to a key once all of that key's records are
 						// handled; an early return leaves it before a partly delivered transaction.
@@ -10595,11 +10659,15 @@ export function makeTable(options): TableResourceClass {
 									return void refuseReplay(subscription, tableName, new ResumeHistoryUnavailableError(RELOAD_REFUSAL));
 								const resnapshots = isReload && resnapshotsReload;
 								// the cursor passes a marker only once the current scope it calls for is handed off
-								if (reloadPending && !resnapshots) {
-									reloadPending = false;
-									if (!(await sendCurrentScope())) return;
+								if (state.reloadPending && !resnapshots) {
+									state.reloadPending = false;
+									if (!(await sendCurrentScope(state))) return;
 								}
-								if (!reloadPending && handledTxnLogKey !== undefined && auditRecord.txnLogKey !== handledTxnLogKey) {
+								if (
+									!state.reloadPending &&
+									handledTxnLogKey !== undefined &&
+									auditRecord.txnLogKey !== handledTxnLogKey
+								) {
 									recordCursor(handledTxnLogKey);
 								}
 								const id = auditRecord.recordId;
@@ -10608,12 +10676,20 @@ export function makeTable(options): TableResourceClass {
 									return;
 								}
 								// a marker is table-wide, as the live broadcast delivers it
-								if (resnapshots) reloadPending = true;
+								if (resnapshots) state.reloadPending = true;
 								else if (thisId == null || isReload || isDescendantId(thisId, id)) {
 									// as live delivery converts it: a live entry dropped during the replay is delivered only here
-									const event = eventFromAudit(id, auditRecord, auditRecord.txnLogKey, undefined, true, replayReader);
+									const event = eventFromAudit(
+										state,
+										id,
+										auditRecord,
+										auditRecord.txnLogKey,
+										undefined,
+										true,
+										replayReader
+									);
 									if (event) {
-										if (reportingProgress) event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
+										if (state.reportingProgress) event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
 										if (!send(event)) return;
 										if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
 											// a prune while the consumer drains may reach what was read before the wait
@@ -10628,32 +10704,34 @@ export function makeTable(options): TableResourceClass {
 								handledTxnLogKey = auditRecord.txnLogKey;
 							}
 							// the finished cursor reads no more commits, so live ones wait behind the scan
-							if (reloadPending) pendingRealTimeQueue = [];
+							if (state.reloadPending) state.pendingRealTimeQueue = [];
 							// in the turn the read reported done, so no broadcast pass runs between them
-							dropDuringReplay = false;
-							if (resuming && goLive && liveRange?.hasUnreturnedEntry()) replayLeftEntriesToLive = true;
-							if (reloadPending) {
-								reloadPending = false;
-								if (!(await sendCurrentScope())) return;
+							state.dropDuringReplay = false;
+							if (resuming && state.reportingProgress && liveRange?.hasUnreturnedEntry())
+								(subscription as any).progressState.replayLeftEntriesToLive = true;
+							if (state.reloadPending) {
+								state.reloadPending = false;
+								if (!(await sendCurrentScope(state))) return;
 								if (!liveRange) {
 									const replayedThrough = handledTxnLogKey;
-									pendingRealTimeQueue = pendingRealTimeQueue.filter(
+									state.pendingRealTimeQueue = state.pendingRealTimeQueue.filter(
 										(event) => (event.localTime ?? event.version) > replayedThrough
 									);
 								}
 								if (!includeSuperseded) {
 									let kept = 0;
-									for (const event of pendingRealTimeQueue) {
-										if (keepCurrentRecordEvent(event)) pendingRealTimeQueue[kept++] = event;
+									for (const event of state.pendingRealTimeQueue) {
+										const current = keepCurrentRecordEvent(event, getFullRecord);
+										if (current) state.pendingRealTimeQueue[kept++] = current;
 									}
-									pendingRealTimeQueue.length = kept;
+									state.pendingRealTimeQueue.length = kept;
 								}
 							}
 							if (handledTxnLogKey !== undefined) recordCursor(handledTxnLogKey);
 							if (checkResume && !checkResume(unreadableLogRefusal(replayRange))) return;
 						} finally {
 							// replay is done, we can start sending real-time messages again
-							dropDuringReplay = false;
+							state.dropDuringReplay = false;
 							// an LMDB range releases its cursor and read transaction here
 							if (!replayEnded) replayIterator.return?.();
 						}
@@ -10693,10 +10771,11 @@ export function makeTable(options): TableResourceClass {
 												tableName,
 												new ResumeHistoryUnavailableError(RELOAD_REFUSAL)
 											);
-										reloadPending = true;
+										state.reloadPending = true;
 										continue;
 									}
 									const historyEntry = eventFromAudit(
+										state,
 										id,
 										auditRecord,
 										auditRecord.txnLogKey,
@@ -10724,8 +10803,8 @@ export function makeTable(options): TableResourceClass {
 						if (cursorMaxTime) subscription!.startTime = cursorMaxTime;
 						// In-flight pre-subscribe 'committed' callbacks may have queued duplicates of
 						// records the cursor saw while subscription.startTime was still 0. Filter them.
-						if (pendingRealTimeQueue && cursorMaxTime) {
-							pendingRealTimeQueue = pendingRealTimeQueue.filter(
+						if (state.pendingRealTimeQueue && cursorMaxTime) {
+							state.pendingRealTimeQueue = state.pendingRealTimeQueue.filter(
 								(event) => (event.localTime ?? event.version) > cursorMaxTime
 							);
 						}
@@ -10763,21 +10842,22 @@ export function makeTable(options): TableResourceClass {
 								now = Date.now();
 							}
 						}
-						if (includeSuperseded && !reportingProgress) {
+						if (includeSuperseded && !state.reportingProgress) {
 							if (cursorMaxTime) {
 								subscription!.startTime = cursorMaxTime;
-								if (pendingRealTimeQueue) {
-									pendingRealTimeQueue = pendingRealTimeQueue.filter(
+								if (state.pendingRealTimeQueue) {
+									state.pendingRealTimeQueue = state.pendingRealTimeQueue.filter(
 										(event) => (event.localTime ?? event.version) > cursorMaxTime
 									);
 								}
 							}
-						} else if (!includeSuperseded && !reportingProgress && pendingRealTimeQueue) {
+						} else if (!includeSuperseded && !state.reportingProgress && state.pendingRealTimeQueue) {
 							let kept = 0;
-							for (const event of pendingRealTimeQueue) {
-								if (keepCurrentRecordEvent(event)) pendingRealTimeQueue[kept++] = event;
+							for (const event of state.pendingRealTimeQueue) {
+								const current = keepCurrentRecordEvent(event, getFullRecord);
+								if (current) state.pendingRealTimeQueue[kept++] = current;
 							}
-							pendingRealTimeQueue.length = kept;
+							state.pendingRealTimeQueue.length = kept;
 						}
 					}
 				} else {
@@ -10802,7 +10882,11 @@ export function makeTable(options): TableResourceClass {
 						nodeId = head.nodeId;
 					}
 					logger.trace?.('Subscription from', startTime, 'from', thisId, localTime);
-					if (startTime < localTime) {
+					let newestRefKey = 0;
+					if (isRocksDB)
+						for (const ref of entry?.additionalAuditRefs ?? [])
+							if (ref.version > newestRefKey) newestRefKey = ref.version;
+					if (startTime < localTime || startTime < newestRefKey) {
 						// start time specified, get the audit history for this record. Set startTime up
 						// front so the listener gate skips any in-flight 'committed' for this version
 						// during the yields below — otherwise that event would be queued and drained as a
@@ -10816,6 +10900,9 @@ export function makeTable(options): TableResourceClass {
 						// can carry the one before it
 						const walked: any[] | undefined = replayReader && !count && !allowsEvent ? [] : undefined;
 						const floorBefore = walked && getAuditFloor(auditStore);
+						const lateRefs = isRocksDB && entry?.additionalAuditRefs ? [...entry.additionalAuditRefs] : [];
+						const chainTransactions = new Set<string>();
+						const wanted = count;
 						do {
 							if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
 								recordsSinceYield = 0;
@@ -10825,10 +10912,17 @@ export function makeTable(options): TableResourceClass {
 							if (++inspected > MAX_PREVIOUS_COUNT_SCAN) break;
 							const auditRecord = auditStore.getSync(nextTime, tableId, thisId, nodeId, true);
 							if (auditRecord && !(checkResume && auditRecord.type === undefined)) {
+								if (isRocksDB) {
+									chainTransactions.add(transactionIdentity(auditRecord.nodeId, nextTime));
+									chainTransactions.add(transactionIdentity(nodeId, nextTime));
+									if (auditRecord.previousAdditionalAuditRefs)
+										lateRefs.push(...auditRecord.previousAdditionalAuditRefs);
+								}
 								if (startTime < nextTime) {
 									if (walked) walked.push(detachAuditEntry(auditRecord), nextTime, nodeId);
 									else {
 										const event = eventFromAudit(
+											state,
 											thisId,
 											auditRecord,
 											nextTime,
@@ -10836,7 +10930,7 @@ export function makeTable(options): TableResourceClass {
 											undefined,
 											newestFirstMemo()
 										);
-										if (event && reportingProgress) event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
+										if (event && state.reportingProgress) event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
 										if (event && (!allowsEvent || allowsEvent(event))) {
 											request.omitCurrent = true;
 											history.push(event);
@@ -10854,11 +10948,53 @@ export function makeTable(options): TableResourceClass {
 									: { txnLogKey: auditRecord.previousVersion, nodeId: auditRecord.previousNodeId };
 								nextTime = previousHead.txnLogKey;
 								nodeId = previousHead.nodeId;
+								if (isRocksDB) chainTransactions.add(transactionIdentity(nodeId, nextTime));
 							} else {
 								missingVersion = true;
 								break;
 							}
 						} while (nextTime > startTime && count !== 0);
+						let lateEvents: any[] | undefined;
+						const lateOrigins = new Map<any, number>();
+						if (lateRefs.length > 0 && inspected <= MAX_PREVIOUS_COUNT_SCAN) {
+							const budget = { remaining: MAX_LATE_SCAN_ENTRIES };
+							for (const { pause, key, entries, found, capped } of lateTransactions(
+								thisId,
+								lateRefs,
+								chainTransactions,
+								budget
+							)) {
+								if (pause || ++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
+									recordsSinceYield = 0;
+									await rest();
+									if (!isActive()) return;
+									if (pause) continue;
+								}
+								if (capped || ++inspected > MAX_PREVIOUS_COUNT_SCAN) {
+									inspected = MAX_PREVIOUS_COUNT_SCAN + 1;
+									break;
+								}
+								if (!(startTime < key)) continue;
+								if (!found) missingVersion = true;
+								for (const auditRecord of entries) {
+									if (auditRecord.type !== 'message') continue;
+									const event = eventFromAudit(
+										state,
+										thisId,
+										auditRecord,
+										key,
+										undefined,
+										undefined,
+										newestFirstMemo()
+									);
+									if (event && state.reportingProgress) event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
+									if (event && (!allowsEvent || allowsEvent(event))) {
+										(lateEvents ??= []).push(event);
+										lateOrigins.set(event, auditRecord.nodeId ?? 0);
+									} else if (!isActive()) return;
+								}
+							}
+						}
 						const capped = inspected > MAX_PREVIOUS_COUNT_SCAN;
 						if (checkResume) {
 							if (capped || missingVersion) {
@@ -10876,8 +11012,16 @@ export function makeTable(options): TableResourceClass {
 									if (!isActive()) return;
 								}
 								const auditRecord = walked[i];
-								const event = eventFromAudit(thisId, auditRecord, walked[i + 1], undefined, undefined, replayReader);
-								if (event && reportingProgress) event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
+								const event = eventFromAudit(
+									state,
+									thisId,
+									auditRecord,
+									walked[i + 1],
+									undefined,
+									undefined,
+									replayReader
+								);
+								if (event && state.reportingProgress) event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
 								walked[i] = event;
 							}
 							// The walk proved the walked entries present, but values were computed after it and read further
@@ -10907,12 +11051,45 @@ export function makeTable(options): TableResourceClass {
 									}
 									const auditRecord = auditStore.getSync(walked[i + 1], tableId, thisId, walked[i + 2], true);
 									if (!auditRecord) break;
-									event = eventFromAudit(thisId, auditRecord, walked[i + 1], undefined, undefined, newestFirstMemo());
-									if (event && reportingProgress) event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
+									event = eventFromAudit(
+										state,
+										thisId,
+										auditRecord,
+										walked[i + 1],
+										undefined,
+										undefined,
+										newestFirstMemo()
+									);
+									if (event && state.reportingProgress) event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
 								}
 								if (!event) continue;
 								request.omitCurrent = true;
 								history.push(event);
+							}
+						}
+						if (lateEvents) {
+							request.omitCurrent = true;
+							for (const event of lateEvents) history.push(event);
+							history.sort((a, b) => b.version - a.version);
+							if (wanted > 0 && history.length > wanted) history.length = wanted;
+							// the live gate is one key across origins, so a replayed late message that also committed during
+							// the replay is dropped from the queue rather than by raising the gate
+							if (state.pendingRealTimeQueue) {
+								const replayed = new Map<string, number>();
+								for (const event of history) {
+									const origin = lateOrigins.get(event);
+									if (origin === undefined) continue;
+									const identity = `${origin}|${event.localTime}|${event.version}`;
+									replayed.set(identity, (replayed.get(identity) ?? 0) + 1);
+								}
+								state.pendingRealTimeQueue = state.pendingRealTimeQueue.filter((event) => {
+									if (event.type !== 'message') return true;
+									const identity = `${event[QUEUED_ORIGIN]}|${event.localTime}|${event.version}`;
+									const left = replayed.get(identity);
+									if (!left) return true;
+									replayed.set(identity, left - 1);
+									return false;
+								});
 							}
 						}
 						for (let i = history.length; i > 0;) {
@@ -10926,195 +11103,24 @@ export function makeTable(options): TableResourceClass {
 					}
 				}
 				// now send any queued messages
-				if (pendingRealTimeQueue) {
-					for (const event of pendingRealTimeQueue) {
+				if (state.pendingRealTimeQueue) {
+					for (const event of state.pendingRealTimeQueue) {
 						if (!send(event)) return;
 					}
-					pendingRealTimeQueue = null;
+					state.pendingRealTimeQueue = null;
 				}
-				if (reloadPending) scheduleReloadResnapshot();
+				if (state.reloadPending) scheduleReloadResnapshot(state);
 				settleResume?.(isActive());
-				goLive?.();
+				if (state.reportingProgress) goLive(subscription);
 			})().finally(() => {
 				replayReader?.memo.close();
 				replayMemo?.close();
 				replayMemo = replayReader = undefined;
 			});
-			result.catch(failSubscription);
+			result.catch((error) => failSubscription(subscription, error));
 			if (settleResume) {
 				const settleUnverified = () => settleResume?.(false);
 				result.then(settleUnverified, settleUnverified);
-			}
-			function failSubscription(error: any) {
-				if (subscription.closed) return;
-				harperLogger.error?.('Error in real-time subscription:', error);
-				try {
-					subscription.close(error);
-				} catch (listenerError) {
-					harperLogger.error?.('Error in real-time subscription listener:', listenerError);
-				}
-			}
-			// A write folded into a newer version by out-of-order resequencing is listed in the record's
-			// additionalAuditRefs until the next in-order write replaces the record.
-			function wasMergedInto(entry: any, txnLogKey: number, nodeId: number | undefined) {
-				return Boolean(
-					entry.metadataFlags & VERSION_REUSED &&
-					entry.additionalAuditRefs?.some(
-						(ref: { version: number; nodeId?: number }) =>
-							ref.version === txnLogKey && (ref.nodeId ?? 0) === (nodeId ?? 0)
-					)
-				);
-			}
-			// Field by field: spreading a stored entry or an audit record would deliver storage metadata and the audit user.
-			function currentRecordEvent(id: Id, entry: any) {
-				return {
-					id,
-					localTime: entry.localTime,
-					value: entry.value,
-					version: entry.version,
-					type: 'put',
-					size: entry.size,
-					fromScan: true,
-				};
-			}
-			function keepCurrentRecordEvent(event: any) {
-				const type = event.type;
-				if (
-					event.id === undefined ||
-					!(type === 'put' || type === 'patch' || type === 'delete' || type === 'invalidate' || type === 'relocate')
-				)
-					return true;
-				const entry = primaryStore.getEntry(event.id);
-				if (!entry || entry.version <= event.version) return true;
-				if (!getFullRecord) return false;
-				event.value = entry.value;
-				event.version = entry.version;
-				event.type = entry.metadataFlags & INVALIDATED ? 'invalidate' : entry.value ? 'put' : 'delete';
-				return true;
-			}
-			function eventFromAudit(
-				id: Id,
-				auditRecord: any,
-				localTime: number,
-				beginTxn?: boolean,
-				live?: boolean,
-				history?: ReplayReader | HistoryMemo
-			) {
-				let type = auditRecord.type;
-				let value;
-				let version = auditRecord.version;
-				const isMutation =
-					type === 'put' || type === 'patch' || type === 'delete' || type === 'invalidate' || type === 'relocate';
-				if (isMutation && !includeSuperseded) {
-					if (id === undefined) return;
-					const entry = currentEntryForAudit(primaryStore, id, auditRecord);
-					if (!entry) return;
-					if (entry.version !== auditRecord.version) {
-						// The newer version's event may have gone out before this write was merged into it.
-						if (!(live && getFullRecord && wasMergedInto(entry, localTime, auditRecord.nodeId))) return;
-						version = entry.version;
-					}
-					if (getFullRecord) {
-						value = entry?.value;
-						type = entry?.metadataFlags & INVALIDATED ? 'invalidate' : value ? 'put' : 'delete';
-					} else value = auditRecord.getValue?.(primaryStore, false, localTime);
-				} else {
-					value =
-						history instanceof ReplayReader
-							? history.read(auditRecord, localTime)
-							: auditRecord.getValue?.(primaryStore, getFullRecord, localTime, history);
-					if (getFullRecord && type === 'patch') type = 'put';
-				}
-				return { id, localTime, value, version, type, beginTxn, size: auditRecord.size };
-			}
-			function send(event: any, alreadyFiltered = false) {
-				if (!isActive()) return false;
-				// Covers the pendingRealTimeQueue drain and the reload re-snapshot (#495) delivery.
-				if (!alreadyFiltered && allowsEvent && !allowsEvent(event)) return isActive();
-				if (!isActive()) return false;
-				if (databaseName !== 'system') {
-					recordAction(event.size ?? 1, 'db-message', tableName, null);
-				}
-				return subscription.send(event);
-			}
-			// A copyApply base copy back-fills rows as snapshots with NO per-row audit entries, so the live
-			// listener above never fires for them and an already-connected subscriber would miss them until
-			// the next direct write. After the copy, a whole-table 'reload' marker is delivered here (id=null).
-			// For a user table we react by re-delivering the subscription's current scope as ordinary 'put'
-			// events — so EVERY consumer that funnels through subscribe() (MQTT, SSE, WS) recovers the records
-			// uniformly, with no per-protocol handling. System-DB reloads are NOT re-snapshotted: their
-			// subscribers (knownNodes peer-discovery, hdb_certificate CA install) run a bespoke whole-table
-			// rescan off the raw marker, which a per-row re-emit cannot express (it can't drop stale rows).
-			// Yields the latest committed value (snapshot:false) and skips tombstones, mirroring the
-			// omitCurrent initial-snapshot scan.
-			async function* currentScopeRecords() {
-				const isCollection = request.isCollection ?? thisId == null;
-				if (isCollection) {
-					let sinceYield = 0;
-					let now = Date.now();
-					for (const { key: id, value, version, localTime, expiresAt, size } of primaryStore.getRange({
-						start: thisId ?? false,
-						end: thisId == null ? undefined : [thisId, MAXIMUM_KEY],
-						versions: true,
-						snapshot: false, // no need for a snapshot, just want the latest data
-					})) {
-						if (++sinceYield >= REPLAY_YIELD_INTERVAL) {
-							sinceYield = 0;
-							await rest();
-							if (!isActive()) return;
-							now = Date.now();
-						}
-						if (!value) continue; // skip tombstones
-						if (isHiddenExpiry(expiresAt, now)) continue;
-						yield { id, localTime, value, version, type: 'put', size, fromScan: true };
-						if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
-							if ((await subscription.waitForDrain()) === false) return;
-							now = Date.now();
-						}
-					}
-				} else {
-					const entry = primaryStore.getEntry(thisId);
-					if (entry?.value && !isHiddenExpiry(entry.expiresAt)) yield currentRecordEvent(thisId, entry);
-				}
-			}
-			// Drain the current scope into the subscription with the same back-pressure as the live path.
-			// Coalesced: a marker that arrives while a re-snapshot is running just re-arms it once more (so
-			// markers for several tables, or a marker landing mid-scan, are not lost), and we never run two
-			// scans concurrently. The first thing it does is `await rest()` (a setImmediate macrotask), so the
-			// scan never executes inside the synchronous broadcast listener — which on the same-thread
-			// aftercommit path holds an inter-thread lock that must not span event-loop turns.
-			async function runReloadResnapshot() {
-				reloadResnapshotRunning = true;
-				try {
-					await rest(); // defer off the broadcast listener's stack before scanning
-					while (reloadResnapshotPending) {
-						reloadResnapshotPending = false;
-						// Subscription.end() nulls `subscriptions`; bail the moment it closes — before, between,
-						// or mid-scan — so we never scan + send into a dead queue. pending is already cleared, so
-						// the finally re-arm won't re-loop.
-						if (!subscription.subscriptions) return;
-						if (!(await sendCurrentScope())) return;
-					}
-				} catch (error) {
-					// left open, it would stay past rows it never received
-					failSubscription(error);
-				} finally {
-					reloadResnapshotRunning = false;
-					// A marker that landed after the last pending-check but before we cleared the flag would
-					// otherwise be dropped — re-arm if so (unless the subscription has since closed).
-					if (subscription.subscriptions && reloadResnapshotPending) scheduleReloadResnapshot();
-				}
-			}
-			async function sendCurrentScope(): Promise<boolean> {
-				for await (const record of currentScopeRecords()) {
-					if (!send(record)) return false;
-				}
-				return isActive();
-			}
-			function scheduleReloadResnapshot() {
-				if (!subscription.subscriptions) return;
-				reloadResnapshotPending = true;
-				if (!reloadResnapshotRunning) runReloadResnapshot();
 			}
 			return subscription;
 		}
@@ -11200,10 +11206,30 @@ export function makeTable(options): TableResourceClass {
 					(this.constructor as any).source?.publish && !(context as any)?.source
 						? (this.constructor as any).source.publish.bind((this.constructor as any).source, id, message, context)
 						: undefined,
-				commit: (txnTime, existingEntry, _retry, transaction: any) => {
+				commit: (txnTime, existingEntry, retry, transaction: any, committedBy?: DatabaseTransaction) => {
+					write.skipped = false;
 					write.stagedEntry = undefined;
 					write.completeResidencyRecord = undefined;
 					write.superseded = false;
+					const precedes =
+						existingEntry?.version !== undefined ? precedesExistingVersion(txnTime, existingEntry, options?.nodeId) : 1;
+					// The record's version never moves back, so only a message at or below it, or one to a record the table can
+					// drop, can have been logged here, and the logged entry is the proof. A retry recommits the batch its first
+					// attempt staged; an earlier process's file can hold an unmarked aborted batch, so there only a record vouches.
+					if (
+						committedBy?.sourceApply &&
+						!committedBy.isReplay &&
+						isRocksDB &&
+						abortMarkersEnabled() &&
+						!(retry && write.appendedAuditEntry === true) &&
+						(existingEntry === undefined
+							? (evictsRecords() || !audit) && auditHistoryAbortMarked(auditStore, options?.nodeId)
+							: precedes <= 0) &&
+						isMessageLogged(committedBy, (context as any)?.timestamp, id, options?.nodeId, options?.version ?? txnTime)
+					) {
+						write.skipped = true;
+						return;
+					}
 					if (existingEntry === undefined && trackDeletes && !audit) {
 						scheduleCleanup();
 					}
@@ -11214,15 +11240,25 @@ export function makeTable(options): TableResourceClass {
 					const base = priorStagedOp?.stagedEntry ?? existingEntry;
 					const value = base?.value ?? null;
 					const metadataFlags = (base?.metadataFlags ?? 0) & (LOCAL_ONLY | INVALIDATED | REPLICA);
+					const late = precedes < 0;
+					const ownRefs = late
+						? isRocksDB
+							? withAuditRef(existingEntry.additionalAuditRefs, appendedLogKey, options?.nodeId)
+							: undefined
+						: appendedLogKey !== txnTime
+							? [{ version: appendedLogKey, nodeId: options?.nodeId }]
+							: undefined;
 					// TODO: Use direct writes in the future (copying binary data is hard because it invalidates the cache)
 					const result = updateRecord(
 						id,
 						value,
 						existingEntry,
-						txnTime,
+						late ? existingEntry.version : txnTime,
 						metadataFlags,
 						true,
 						{
+							recordVersion: late ? txnTime : undefined,
+							recordNodeId: late ? (existingEntry.nodeId ?? -1) : undefined,
 							user: (context as any)?.user,
 							// the message's residency routes it; the record keeps its own
 							residencyId: residencyPolicy ? undefined : options?.residencyId,
@@ -11239,18 +11275,8 @@ export function makeTable(options): TableResourceClass {
 							auditLocalOnly: options?.localOnly,
 							additionalAuditRefs:
 								transaction?.isRetry || options?.auditEntry
-									? withRefsMissedByLoggedEntry(
-											appendedLogKey !== txnTime ? [{ version: appendedLogKey, nodeId: options?.nodeId }] : undefined,
-											id,
-											existingEntry,
-											appendedLogKey,
-											write,
-											transaction,
-											options
-										)
-									: appendedLogKey !== txnTime
-										? [{ version: appendedLogKey, nodeId: options?.nodeId }]
-										: undefined,
+									? withRefsMissedByLoggedEntry(ownRefs, id, existingEntry, appendedLogKey, write, transaction, options)
+									: ownRefs,
 							receivedIdentityRefs: audit ? undefined : base?.receivedIdentityRefs,
 						},
 						'message',
@@ -12559,6 +12585,8 @@ export function makeTable(options): TableResourceClass {
 				const auditWindow = 100;
 				let start: number;
 				let endsAtUnlinkedWrite: boolean;
+				const lateRefs = isRocksDB && entry.additionalAuditRefs ? [...entry.additionalAuditRefs] : [];
+				const returned = new Set<string>();
 				do {
 					await rest(); // yield to other async operations
 					const windowItems = [];
@@ -12573,6 +12601,10 @@ export function makeTable(options): TableResourceClass {
 						if (matches && isHistoryEntry(auditRecord)) {
 							const oldestInWindow = windowItems.length === 0;
 							windowItems.push(historyEntry(auditRecord));
+							if (isRocksDB) {
+								returned.add(transactionIdentity(auditRecord.nodeId, auditRecord.txnLogKey));
+								if (auditRecord.previousAdditionalAuditRefs) lateRefs.push(...auditRecord.previousAdditionalAuditRefs);
+							}
 							const previousVersion = isRocksDB
 								? resolveAuditHead(
 										id,
@@ -12592,6 +12624,28 @@ export function makeTable(options): TableResourceClass {
 					nextVersion = highestPreviousVersion;
 				} while (nextVersion);
 				history.reverse();
+				if (lateRefs.length > 0) {
+					let lateItems: any[] | undefined;
+					let sinceYield = 0;
+					const budget = { remaining: Infinity };
+					for (const { pause, entries, range } of lateTransactions(id, lateRefs, returned, budget)) {
+						if (pause || ++sinceYield >= REPLAY_YIELD_INTERVAL) {
+							sinceYield = 0;
+							await rest();
+							if (pause) continue;
+						}
+						historyEntry.memo.beginRange();
+						for (const auditRecord of entries) {
+							historyEntry.memo.observe(auditRecord, true);
+							if (auditRecord.type === 'message') (lateItems ??= []).push(historyEntry(auditRecord));
+						}
+						historyEntry.memo.finishRange(range);
+					}
+					if (lateItems) {
+						for (const item of lateItems) history.push(item);
+						history.sort((a, b) => a.version - b.version);
+					}
+				}
 				// a re-insert after eviction has no predecessor link, so an evictable record may have older history
 				if (endsAtUnlinkedWrite && (evictsRecords() || entry.expiresAt != undefined))
 					return await historyEntry.settle((await unlinkedEntries(start)).concat(history));
@@ -12826,6 +12880,411 @@ export function makeTable(options): TableResourceClass {
 	}
 	registerStoreTable(primaryStore, () => isNodeLocalTable(TableResource));
 	return TableResource;
+	/**
+	 * Every subscription's live listener, one function for the table: the commit broadcast calls it with
+	 * `this` bound to the subscription, which carries its `state`.
+	 */
+	function subscriptionListener(this: any, id: Id, auditRecord?: any, txnLogKey?: any, beginTxn?: any) {
+		const state: SubscriberState = this.state;
+		if (state.dropDuringReplay) return;
+		try {
+			if (isLockControlType(auditRecord.type)) return;
+			if (auditRecord.type === 'reload' && !state.rawEvents && databaseName !== 'system') {
+				// back-filled rows have no history, so a progress certificate cannot pass the marker
+				if (state.reportingProgress) return void this.close(new ResumeHistoryUnavailableError(RELOAD_REFUSAL));
+				if (state.pendingRealTimeQueue) return void (state.reloadPending = true);
+				return scheduleReloadResnapshot(state);
+			}
+			const event = this.sharesLiveEvents
+				? sharedLiveEvent(state, id, auditRecord, txnLogKey, beginTxn)
+				: liveEventFor(state, id, auditRecord, txnLogKey, beginTxn);
+			if (!event) return;
+			// Queued events are filtered when the queue drains through send() below; events sent
+			// directly (queue already drained) are filtered here. Each event is filtered once.
+			if (state.pendingRealTimeQueue) {
+				event[QUEUED_ORIGIN] = auditRecord.nodeId ?? 0;
+				state.pendingRealTimeQueue.push(event);
+			} else {
+				if (state.allowsEvent && !state.allowsEvent(event)) return;
+				if (databaseName !== 'system') {
+					recordAction(auditRecord.size ?? 1, 'db-message', tableName, null);
+				}
+				this.send(event);
+			}
+		} catch (error) {
+			logger.error?.(error);
+			// a certificate cannot pass an event it failed to deliver
+			if (state.reportingProgress) this.close(error);
+		}
+	}
+	/**
+	 * Tracks what a progress-reporting subscription sends and installs its `progress()` and checkpoints: shared
+	 * functions over the `progressState` it carries, each installed as a closure over the subscription alone,
+	 * so it can be called detached. `goLive` marks it live once its replay is done.
+	 */
+	function trackSubscriptionProgress(
+		subscription: any,
+		request: SubscriptionRequest,
+		resuming: boolean,
+		collection: boolean,
+		plan: ResumePlan | undefined,
+		checkpointScopeId: string,
+		filtersWithoutKey: boolean
+	): void {
+		// a checkpoint resume's scalar shadow is just below its lowest boundary, which is not yet delivered; a
+		// zero boundary stays 0, the start of the log
+		let planFloor: number | undefined;
+		if (plan) {
+			for (const { boundary } of plan.boundaries.values()) if (!(planFloor <= boundary)) planFloor = boundary;
+			if (planFloor > 0) planFloor = positionBefore(planFloor);
+		}
+		const progress: ProgressState = {
+			requestedStartTime: request.startTime,
+			resuming,
+			collection,
+			plan,
+			planFloor,
+			checkpointScopeId,
+			filtersWithoutKey,
+			live: false,
+			floor: undefined,
+			replayLeftEntriesToLive: false,
+			lateSends: [],
+			lateHead: 0,
+			highestSent: -Infinity,
+			queueSend: subscription.send,
+		};
+		subscription.progressState = progress;
+		subscription.sentCount = 0;
+		subscription.send = sendTrackingLate;
+		subscription.lowestLateUnconsumed = (consumed: number) => lowestLateUnconsumed(subscription, consumed);
+		subscription.progress = () => subscriptionProgress(subscription);
+		subscription.checkpoint = (holds?: Map<number, number>) => subscriptionCheckpoint(subscription, holds);
+		// the lowest boundary, for a consumer that only needs to know what can no longer be delivered anew
+		subscription.checkpointFloor = (holds?: Map<number, number>) => subscriptionCheckpointFloor(subscription, holds);
+		if (request.checkpointInterval !== undefined) {
+			let lastEmitted: string | undefined;
+			const timer = setInterval(() => {
+				if (!isSubscriptionActive(subscription)) return clearInterval(timer);
+				try {
+					const checkpoint = subscription.checkpoint!();
+					if (!checkpoint) return;
+					const encoded = JSON.stringify(checkpoint);
+					if (encoded === lastEmitted) return;
+					lastEmitted = encoded;
+					subscription.send({ type: 'checkpoint', checkpoint });
+				} catch (error) {
+					failSubscription(subscription, error);
+				}
+			}, request.checkpointInterval);
+			timer.unref?.();
+			subscription.on('close', () => clearInterval(timer));
+		}
+	}
+	function sendTrackingLate(this: any, event: any) {
+		const progress: ProgressState = this.progressState;
+		const lateSends = progress.lateSends;
+		// a for-await consumer takes the next event only after finishing the last, so only that one can be in hand
+		if (lateSends.length > 0) pruneLate(progress, this.sentCount - (this.queue?.length ?? 0) - 1);
+		const ordinal = ++this.sentCount;
+		const key = event?.localTime;
+		if (typeof key === 'number' && !event.fromScan) {
+			if (key < progress.highestSent) {
+				while (lateSends.length > progress.lateHead && lateSends[lateSends.length - 1] >= key) lateSends.length -= 2;
+				lateSends.push(ordinal, key);
+			} else progress.highestSent = key;
+		}
+		return progress.queueSend.call(this, event);
+	}
+	function pruneLate(progress: ProgressState, through: number) {
+		const lateSends = progress.lateSends;
+		while (progress.lateHead < lateSends.length && lateSends[progress.lateHead] <= through) progress.lateHead += 2;
+		if (progress.lateHead === lateSends.length) lateSends.length = progress.lateHead = 0;
+		else if (progress.lateHead > 64 && progress.lateHead * 2 > lateSends.length) {
+			lateSends.splice(0, progress.lateHead);
+			progress.lateHead = 0;
+		}
+	}
+	function lowestLateUnconsumed(subscription: any, consumed: number): number | undefined {
+		const progress: ProgressState = subscription.progressState;
+		pruneLate(progress, consumed);
+		return progress.lateHead < progress.lateSends.length ? progress.lateSends[progress.lateHead + 1] : undefined;
+	}
+	function beforeLive(subscription: any): number | undefined {
+		const progress: ProgressState = subscription.progressState;
+		return progress.plan
+			? progress.planFloor
+			: progress.resuming
+				? progress.collection
+					? (subscription.replayedThrough ?? progress.requestedStartTime)
+					: progress.requestedStartTime
+				: progress.requestedStartTime === undefined
+					? subscription.registeredThrough
+					: undefined;
+	}
+	function subscriptionProgress(subscription: any): number | undefined {
+		if (!isSubscriptionActive(subscription)) return;
+		const progress: ProgressState = subscription.progressState;
+		if (!progress.live) return beforeLive(subscription);
+		const certified = certifiedThrough(subscription);
+		if (progress.floor === undefined) return certified;
+		return certified === undefined || certified < progress.floor ? progress.floor : certified;
+	}
+	function goLive(subscription: any) {
+		const progress: ProgressState = subscription.progressState;
+		progress.floor = beforeLive(subscription);
+		if (progress.resuming && progress.collection && !progress.plan) {
+			const replayThrough = progress.floor;
+			const sameThread = subscription.subscriptions.tables.envs.sameThread === true;
+			// The replay walked committed keys; only the pre-replay sample also bounds still-open writes. One that
+			// left committed entries to the broadcast may have passed their keys, so a pass certifies its key.
+			const walked = progress.replayLeftEntriesToLive ? progress.requestedStartTime : replayThrough;
+			progress.floor =
+				sameThread || subscription.localResumeStart === undefined
+					? undefined
+					: Math.min(walked, subscription.localResumeStart);
+			if (!sameThread && replayThrough > progress.requestedStartTime)
+				completedReplayThrough(subscription, replayThrough);
+		}
+		progress.live = true;
+		// a certified subscription takes every live entry from here: the key gate would drop a late
+		// lower-key commit that a floor then certifies as delivered
+		subscription.ungated = true;
+	}
+	function replayBoundaries(progress: ProgressState): Map<string, MemberBoundary> | undefined {
+		if (!progress.plan) return;
+		for (const { generation } of progress.plan.boundaries.values()) if (typeof generation !== 'string') return;
+		return progress.plan.boundaries;
+	}
+	function liveBoundaries(subscription: any, holds?: Map<number, number>): Map<string, MemberBoundary> | undefined {
+		const certified = certifiedFloors(subscription);
+		if (!certified) return;
+		// an event handed to the queue and not yet taken holds its origin's boundary
+		const queued = new Map<number, number>();
+		// an event with no origin tag holds every boundary; a snapshot row (`fromScan`) is state, not a log
+		// position, and is never replayed, so it holds nothing
+		let untagged = Infinity;
+		for (const event of subscription.queue ?? []) {
+			const key = event?.localTime;
+			if (typeof key !== 'number' || event.fromScan) continue;
+			const origin = event[ORIGIN_ID];
+			if (typeof origin !== 'number') {
+				if (key < untagged) untagged = key;
+				continue;
+			}
+			if (!(queued.get(origin) <= key)) queued.set(origin, key);
+		}
+		const boundaries = new Map<string, MemberBoundary>();
+		for (const [nodeId, state] of certified.origins) {
+			let boundary = state.floor!;
+			if (untagged < boundary) boundary = untagged;
+			const pending = queued.get(nodeId);
+			if (pending < boundary) boundary = pending;
+			const held = holds?.get(nodeId);
+			if (held < boundary) boundary = held;
+			boundaries.set(state.name, { boundary, generation: state.generation! });
+		}
+		return boundaries;
+	}
+	function currentBoundaries(subscription: any, holds?: Map<number, number>) {
+		const progress: ProgressState = subscription.progressState;
+		if (!isSubscriptionActive(subscription) || progress.filtersWithoutKey || !isRocksDB) return;
+		return progress.live ? liveBoundaries(subscription, holds) : replayBoundaries(progress);
+	}
+	function subscriptionCheckpoint(subscription: any, holds?: Map<number, number>): SubscriptionCheckpoint | undefined {
+		const boundaries = currentBoundaries(subscription, holds);
+		if (!boundaries) return;
+		return Object.freeze(encodeCheckpoint(subscription.progressState.checkpointScopeId, boundaries));
+	}
+	function subscriptionCheckpointFloor(subscription: any, holds?: Map<number, number>): number | undefined {
+		const boundaries = currentBoundaries(subscription, holds);
+		if (!boundaries) return;
+		let floor = Infinity;
+		for (const { boundary } of boundaries.values()) if (boundary < floor) floor = boundary;
+		return floor;
+	}
+	/** The event a buffered live event is kept as once the record has moved on: undefined drops it. */
+	function keepCurrentRecordEvent(event: any, getFullRecord: boolean) {
+		const type = event.type;
+		if (
+			event.id === undefined ||
+			!(type === 'put' || type === 'patch' || type === 'delete' || type === 'invalidate' || type === 'relocate')
+		)
+			return event;
+		const entry = primaryStore.getEntry(event.id);
+		if (!entry || entry.version <= event.version) return event;
+		if (!getFullRecord) return;
+		// a live event is shared with the record's other subscribers (sharedLiveEvent), so it is copied, not rewritten
+		return {
+			...event,
+			value: entry.value,
+			version: entry.version,
+			type: entry.metadataFlags & INVALIDATED ? 'invalidate' : entry.value ? 'put' : 'delete',
+		};
+	}
+	function liveEventFor(state: SubscriberState, id: Id, auditRecord: any, localTime: number, beginTxn: any) {
+		const event = eventFromAudit(state, id, auditRecord, localTime, beginTxn, true);
+		if (event && state.reportingProgress) event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
+		return event;
+	}
+	/**
+	 * The live event for one audit record, built once and shared by every subscription of the record on this thread
+	 * that takes shared events (`sharesLiveEvents`) and whose inputs to eventFromAudit match: the commit broadcast
+	 * hands each the same audit record, id and log key, so only the subscriber's own flags and its transaction
+	 * delimiter can differ, and a progress-reporting subscriber's origin tag is one of those flags. Each delivery path
+	 * writes to an event it does not own only through a copy (projectDeliveries, keepCurrentRecordEvent).
+	 *
+	 * The events are kept on the audit record, which a notify pass decodes afresh and drops once it has delivered it,
+	 * so they live no longer than it and need nothing of their own to clear them.
+	 */
+	function sharedLiveEvent(state: SubscriberState, id: Id, auditRecord: any, localTime: number, beginTxn: any) {
+		const variant =
+			(state.getFullRecord ? 1 : 0) |
+			(state.includeSuperseded ? 2 : 0) |
+			(state.reportingProgress ? 4 : 0) |
+			(beginTxn ? 8 : 0);
+		const first: SharedLiveEvent | undefined = auditRecord[SHARED_LIVE_EVENTS];
+		for (let shared = first; shared; shared = shared.next) {
+			if (
+				shared.variant === variant &&
+				shared.store === primaryStore &&
+				shared.id === id &&
+				shared.localTime === localTime
+			)
+				return shared.event;
+		}
+		const event = liveEventFor(state, id, auditRecord, localTime, beginTxn);
+		auditRecord[SHARED_LIVE_EVENTS] = { store: primaryStore, id, localTime, variant, event, next: first };
+		return event;
+	}
+	function eventFromAudit(
+		state: SubscriberState,
+		id: Id,
+		auditRecord: any,
+		localTime: number,
+		beginTxn?: boolean,
+		live?: boolean,
+		history?: ReplayReader | HistoryMemo
+	) {
+		const { getFullRecord } = state;
+		let type = auditRecord.type;
+		let value;
+		let version = auditRecord.version;
+		const isMutation =
+			type === 'put' || type === 'patch' || type === 'delete' || type === 'invalidate' || type === 'relocate';
+		if (isMutation && !state.includeSuperseded) {
+			if (id === undefined) return;
+			const entry = currentEntryForAudit(primaryStore, id, auditRecord);
+			if (!entry) return;
+			if (entry.version !== auditRecord.version) {
+				// The newer version's event may have gone out before this write was merged into it.
+				if (!(live && getFullRecord && wasMergedInto(entry, localTime, auditRecord.nodeId))) return;
+				version = entry.version;
+			}
+			if (getFullRecord) {
+				value = entry?.value;
+				type = entry?.metadataFlags & INVALIDATED ? 'invalidate' : value ? 'put' : 'delete';
+			} else value = auditRecord.getValue?.(primaryStore, false, localTime);
+		} else {
+			value =
+				history instanceof ReplayReader
+					? history.read(auditRecord, localTime)
+					: auditRecord.getValue?.(primaryStore, getFullRecord, localTime, history);
+			if (getFullRecord && type === 'patch') type = 'put';
+		}
+		return { id, localTime, value, version, type, beginTxn, size: auditRecord.size };
+	}
+	function sendSubscriptionEvent(state: SubscriberState, event: any, alreadyFiltered = false) {
+		const { subscription, allowsEvent } = state;
+		if (!isSubscriptionActive(subscription)) return false;
+		// Covers the pendingRealTimeQueue drain and the reload re-snapshot (#495) delivery.
+		if (!alreadyFiltered && allowsEvent && !allowsEvent(event)) return isSubscriptionActive(subscription);
+		if (!isSubscriptionActive(subscription)) return false;
+		if (databaseName !== 'system') {
+			recordAction(event.size ?? 1, 'db-message', tableName, null);
+		}
+		return subscription.send(event);
+	}
+	// A copyApply base copy back-fills rows as snapshots with NO per-row audit entries, so the live
+	// listener never fires for them and an already-connected subscriber would miss them until
+	// the next direct write. After the copy, a whole-table 'reload' marker is delivered to it (id=null).
+	// For a user table we react by re-delivering the subscription's current scope as ordinary 'put'
+	// events — so EVERY consumer that funnels through subscribe() (MQTT, SSE, WS) recovers the records
+	// uniformly, with no per-protocol handling. System-DB reloads are NOT re-snapshotted: their
+	// subscribers (knownNodes peer-discovery, hdb_certificate CA install) run a bespoke whole-table
+	// rescan off the raw marker, which a per-row re-emit cannot express (it can't drop stale rows).
+	// Yields the latest committed value (snapshot:false) and skips tombstones, mirroring the
+	// omitCurrent initial-snapshot scan.
+	async function* currentScopeRecords(state: SubscriberState) {
+		const { thisId, subscription } = state;
+		if (state.isCollection) {
+			let sinceYield = 0;
+			let now = Date.now();
+			for (const { key: id, value, version, localTime, expiresAt, size } of primaryStore.getRange({
+				start: thisId ?? false,
+				end: thisId == null ? undefined : [thisId, MAXIMUM_KEY],
+				versions: true,
+				snapshot: false, // no need for a snapshot, just want the latest data
+			})) {
+				if (++sinceYield >= REPLAY_YIELD_INTERVAL) {
+					sinceYield = 0;
+					await rest();
+					if (!isSubscriptionActive(subscription)) return;
+					now = Date.now();
+				}
+				if (!value) continue; // skip tombstones
+				if (isHiddenExpiry(expiresAt, now)) continue;
+				yield { id, localTime, value, version, type: 'put', size, fromScan: true };
+				if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
+					if ((await subscription.waitForDrain()) === false) return;
+					now = Date.now();
+				}
+			}
+		} else {
+			const entry = primaryStore.getEntry(thisId);
+			if (entry?.value && !isHiddenExpiry(entry.expiresAt)) yield currentRecordEvent(thisId, entry);
+		}
+	}
+	// Drain the current scope into the subscription with the same back-pressure as the live path.
+	// Coalesced: a marker that arrives while a re-snapshot is running just re-arms it once more (so
+	// markers for several tables, or a marker landing mid-scan, are not lost), and we never run two
+	// scans concurrently. The first thing it does is `await rest()` (a setImmediate macrotask), so the
+	// scan never executes inside the synchronous broadcast listener — which on the same-thread
+	// aftercommit path holds an inter-thread lock that must not span event-loop turns.
+	async function runReloadResnapshot(state: SubscriberState) {
+		const { subscription } = state;
+		state.reloadResnapshotRunning = true;
+		try {
+			await rest(); // defer off the broadcast listener's stack before scanning
+			while (state.reloadResnapshotPending) {
+				state.reloadResnapshotPending = false;
+				// Subscription.end() nulls `subscriptions`; bail the moment it closes — before, between,
+				// or mid-scan — so we never scan + send into a dead queue. pending is already cleared, so
+				// the finally re-arm won't re-loop.
+				if (!subscription.subscriptions) return;
+				if (!(await sendCurrentScope(state))) return;
+			}
+		} catch (error) {
+			// left open, it would stay past rows it never received
+			failSubscription(subscription, error);
+		} finally {
+			state.reloadResnapshotRunning = false;
+			// A marker that landed after the last pending-check but before we cleared the flag would
+			// otherwise be dropped — re-arm if so (unless the subscription has since closed).
+			if (subscription.subscriptions && state.reloadResnapshotPending) scheduleReloadResnapshot(state);
+		}
+	}
+	async function sendCurrentScope(state: SubscriberState): Promise<boolean> {
+		for await (const record of currentScopeRecords(state)) {
+			if (!sendSubscriptionEvent(state, record)) return false;
+		}
+		return isSubscriptionActive(state.subscription);
+	}
+	function scheduleReloadResnapshot(state: SubscriberState) {
+		if (!state.subscription.subscriptions) return;
+		state.reloadResnapshotPending = true;
+		if (!state.reloadResnapshotRunning) runReloadResnapshot(state);
+	}
 	function resolveOverStub(resolver: (record: any) => any, stub: any, name: string) {
 		try {
 			return resolver(stub);
@@ -13748,7 +14207,18 @@ export function makeTable(options): TableResourceClass {
 				recordActionBinary(!needsSourceData, 'cache-hit', tableName);
 			}
 			if (needsSourceData) {
-				const loadingFromSource = getFromSource(source, id, entry, context, target).then((entry) => {
+				const servesStale = Boolean(entry?.value && resource?.allowStaleWhileRevalidate?.(entry, id));
+				if (servesStale) {
+					let acquired: boolean;
+					try {
+						acquired = primaryStore.tryLock(id);
+					} catch (error) {
+						logger.warn?.(error);
+						return;
+					}
+					if (!acquired) return;
+				}
+				const loadingFromSource = getFromSource(source, id, entry, context, target, servesStale).then((entry) => {
 					if (entry?.value && entry?.value.getRecord?.())
 						logger.error?.('Can not assign a record that is already a resource');
 					if (context) {
@@ -13757,8 +14227,7 @@ export function makeTable(options): TableResourceClass {
 					}
 					return entry;
 				});
-				// if the resource defines a method for indicating if stale-while-revalidate is allowed for a record
-				if (entry?.value && resource?.allowStaleWhileRevalidate?.(entry, id)) {
+				if (servesStale) {
 					// since we aren't waiting for it any errors won't propagate so we should at least log them
 					loadingFromSource.catch((error) => logger.warn?.(error));
 					return; // go ahead and return and let the current stale value be used while we re-validate
@@ -14212,6 +14681,38 @@ export function makeTable(options): TableResourceClass {
 		return Boolean(entry?.metadataFlags & INVALIDATED) && isAuditEntryWrite(entry, { txnLogKey, nodeId });
 	}
 
+	/**
+	 * An origin transaction commits here all at once, so one read answers for all its messages for the applying
+	 * transaction; no write that staged its entry asks again on a retry.
+	 */
+	function isMessageLogged(
+		applying: DatabaseTransaction,
+		txnLogKey: number | undefined,
+		id: Id,
+		nodeId: number | undefined,
+		version: number
+	): boolean {
+		if (txnLogKey === undefined || !nodeId) return false;
+		// an unnamed origin's entries sit in `local` under minted keys, never at its received key
+		if (!auditStore.logById(nodeId)) return false;
+		let byOriginKey = loggedMessagesByTransaction.get(applying);
+		if (!byOriginKey) loggedMessagesByTransaction.set(applying, (byOriginKey = new Map()));
+		const originKey = `${nodeId}:${txnLogKey}`;
+		let logged = byOriginKey.get(originKey);
+		if (logged === undefined) byOriginKey.set(originKey, (logged = loggedMessagesAt(txnLogKey, nodeId)));
+		return logged !== null && logged.has(messageIdentity(tableId, id, version));
+	}
+
+	function loggedMessagesAt(txnLogKey: number, nodeId: number): Set<string> | null {
+		let logged: Set<string> | null = null;
+		for (const entry of auditStore.getRange({ start: txnLogKey, exactStart: true, log: nodeId })) {
+			if (entry.txnLogKey !== txnLogKey) break;
+			if (entry.type === 'message')
+				(logged ??= new Set()).add(messageIdentity(entry.tableId, entry.recordId, entry.version));
+		}
+		return logged;
+	}
+
 	// Not stagedEntry: a relocate restamps the record without staging it, and a publish's restamp counts too.
 	function followsAppliedWrite(write: any): boolean {
 		for (let prior = write.priorWrite; prior; prior = prior.priorWrite) {
@@ -14296,7 +14797,8 @@ export function makeTable(options): TableResourceClass {
 		id: Id,
 		existingEntry: Entry,
 		context: Context,
-		target?
+		target?,
+		lockHeld?: boolean
 	): Promise<Entry> {
 		const metadataFlags = existingEntry?.metadataFlags;
 
@@ -14304,31 +14806,40 @@ export function makeTable(options): TableResourceClass {
 		const existingRecord = existingEntry?.value;
 		// a 304 stores existingRecord, so it keeps the list that describes that body, not the commit base's
 		const existingIdentityRefs = existingEntry?.receivedIdentityRefs;
-		const inheritedTimestamp = context?.timestamp || context?.transaction?.timestamp;
-		let sourceTimestamp = inheritedTimestamp;
+		let inheritedTimestamp: number;
+		let fillKey: unknown;
+		let sourceTimestamp: number;
 		let issuanceFailed = false;
-		if (!sourceTimestamp) {
-			if (!isRocksDB) sourceTimestamp = getNextMonotonicTime();
-			else {
-				try {
-					sourceTimestamp = freshLocalKey(tableRootStore);
-				} catch (error) {
-					// Keep the read available, but never cache a version that could repeat an unstaged holder's.
-					issuanceFailed = true;
-					sourceTimestamp = (primaryStore as RocksDatabase).getMonotonicTimestamp();
-					const now = performance.now();
-					if (now - lastIssuanceFailureWarn >= 60_000) {
-						lastIssuanceFailureWarn = now;
-						logger.warn?.(
-							`Failed to allocate local issuance key for source read on ${tableName}; serving uncached`,
-							error
-						);
+		try {
+			inheritedTimestamp = context?.timestamp || context?.transaction?.timestamp;
+			fillKey = writeKeyId(id);
+			sourceTimestamp = inheritedTimestamp;
+			if (!sourceTimestamp) {
+				if (!isRocksDB) sourceTimestamp = getNextMonotonicTime();
+				else {
+					try {
+						sourceTimestamp = freshLocalKey(tableRootStore);
+					} catch (error) {
+						// Keep the read available, but never cache a version that could repeat an unstaged holder's.
+						issuanceFailed = true;
+						sourceTimestamp = (primaryStore as RocksDatabase).getMonotonicTimestamp();
+						const now = performance.now();
+						if (now - lastIssuanceFailureWarn >= 60_000) {
+							lastIssuanceFailureWarn = now;
+							logger.warn?.(
+								`Failed to allocate local issuance key for source read on ${tableName}; serving uncached`,
+								error
+							);
+						}
 					}
 				}
 			}
+		} catch (error) {
+			// a lock handed over by a stale read has no other owner to release it
+			if (lockHeld) releaseRecordLock(id);
+			throw error;
 		}
 		let wake: () => void;
-		const fillKey = writeKeyId(id);
 		const heldFill = sourceFills?.get(fillKey);
 		// We start by locking the record so that there is only one resolution happening at once;
 		// if there is already a resolution in process, we want to use the results of that resolution
@@ -14337,19 +14848,23 @@ export function makeTable(options): TableResourceClass {
 		// the other thread releases the lock.
 		// The callback only wakes this request: it can fire during a database close, where reading
 		// the store would throw inside a native callback and leave the request unsettled.
-		const lockAcquired = primaryStore.tryLock(id, () => wake());
+		const lockAcquired = lockHeld || primaryStore.tryLock(id, () => wake());
 
 		if (!lockAcquired) {
 			let timer: ReturnType<typeof setTimeout>;
+			if (heldFill) heldFill.waiters = (heldFill.waiters ?? 0) + 1;
 			await new Promise<void>((resolve) => {
 				wake = resolve;
-				// closing this thread's handle does not notify a wait on another thread's lock
-				timer = setTimeout(() => {
-					releaseRecordLock(id);
-					resolve();
-				}, LOCK_TIMEOUT);
+				// only the fill holding the lock releases it; this thread's closed handle never hears of another
+				// thread's release, and its hasLock() throws, so a wait still settles
+				const recheck = () => {
+					if (recordLockHeld(id)) timer = setTimeout(recheck, sourceFillLockTimeout);
+					else resolve();
+				};
+				timer = setTimeout(recheck, sourceFillLockTimeout);
 			});
 			clearTimeout(timer);
+			if (heldFill) heldFill.waiters--;
 			const entry = primaryStore.getEntry(id);
 			if (
 				!entry ||
@@ -14366,8 +14881,9 @@ export function makeTable(options): TableResourceClass {
 					setLoadedFromSource(target, false);
 					return outcome;
 				}
+				if (heldFill?.source === source && heldFill.failure) throw heldFill.failure;
 				// try again — entry still not valid, need to actually fetch from source
-				else return getFromSource(source, id, primaryStore.getEntry(id), context, target);
+				return getFromSource(source, id, primaryStore.getEntry(id), context, target);
 			} else {
 				// served from cache after waiting for another request to resolve
 				setLoadedFromSource(target, false);
@@ -14378,10 +14894,18 @@ export function makeTable(options): TableResourceClass {
 		setLoadedFromSource(target, true);
 		const fill: SourceFill = { source };
 		(sourceFills ??= new Map()).set(fillKey, fill);
+		let tenure: ReturnType<typeof setTimeout>;
+		let lockReleased = false;
 		const releaseFill = () => {
+			if (lockReleased) return;
+			lockReleased = true;
+			clearTimeout(tenure);
 			if (sourceFills.get(fillKey) === fill) sourceFills.delete(fillKey);
 			releaseRecordLock(id);
 		};
+		// a fill still running after its tenure lets the next request have the key; its late release is a no-op
+		tenure = setTimeout(releaseFill, sourceFillLockTimeout);
+		tenure.unref?.();
 
 		// it is important to remember that this is _NOT_ part of the current transaction; nothing is changing
 		// with the canonical data, we are simply fulfilling our local copy of the canonical data.
@@ -14598,7 +15122,10 @@ export function makeTable(options): TableResourceClass {
 								receivedIdentityRefs: audit ? undefined : existingIdentityRefs,
 							} as any);
 							logger.trace?.((error as Error)?.message, '(returned stale record)');
-						} else reject(error);
+						} else {
+							if (!issuanceFailed && !sourceContext.noCacheStore && isNotFoundFailure(error)) fill.failure = error;
+							reject(error);
+						}
 					} catch (settlingError) {
 						reject(error ?? settlingError);
 					}
@@ -14606,6 +15133,7 @@ export function makeTable(options): TableResourceClass {
 					recordAction(resolveDuration, 'cache-resolution', tableName, null, 'fail');
 					if (responseHeaders)
 						appendHeader(responseHeaders, 'Server-Timing', `cache-resolve;dur=${resolveDuration.toFixed(2)}`, true);
+					if (!fill.failure) warnWaitersOfFailedFill(fill, id, error);
 					sourceContext.transaction.abort();
 					return;
 				}
@@ -14815,15 +15343,34 @@ export function makeTable(options): TableResourceClass {
 					}
 				},
 				(error) => {
+					const dropped = disposed && error?.code === 'ERR_COLUMN_FAMILY_DROPPED';
+					if (!dropped) warnWaitersOfFailedFill(fill, id, error);
 					releaseFill();
-					if (resolved && !(disposed && error?.code === 'ERR_COLUMN_FAMILY_DROPPED'))
-						logger.error?.('Error committing cache update', error);
+					if (resolved && !dropped) logger.error?.('Error committing cache update', error);
 					// else the error was already propagated as part of the promise that we returned
 				}
 			);
 		});
 	}
 
+	function warnWaitersOfFailedFill(fill: SourceFill, id: Id, error: any): void {
+		const waiting = fill.waiters;
+		if (!(waiting >= SOURCE_FILL_WAITERS_WARNING)) return;
+		const now = performance.now();
+		if (now - lastSourceFillWaitersWarn < 60_000) return;
+		lastSourceFillWaitersWarn = now;
+		try {
+			const failure =
+				error?.statusCode ??
+				error?.status ??
+				(typeof error?.code === 'string' ? error.code : undefined) ??
+				(typeof error?.cause?.code === 'string' ? error.cause.code : undefined) ??
+				(error?.name && error.name !== 'Error' ? error.name : error?.message || error?.name || error);
+			logger.warn?.(
+				`A fetch of record ${inspectForLog(id, KEY_FOR_LOG)} of ${tableName} from its source failed with ${inspectForLog(failure, KEY_FOR_LOG)} while ${waiting} requests on this thread waited on it; they now fetch it again in turn`
+			);
+		} catch {}
+	}
 	/**
 	 * Closing the handle that owns a record lock releases it (the RocksDB handle, or the LMDB
 	 * environment), so an unlock that fails after close had nothing left to release.
@@ -14834,6 +15381,13 @@ export function makeTable(options): TableResourceClass {
 		} catch (error) {
 			if (primaryStore.status === 'open' && tableRootStore.status === 'open')
 				logger.error?.(`Error releasing the cache resolution lock for ${id} in ${tableName}`, error);
+		}
+	}
+	function recordLockHeld(id: Id): boolean {
+		try {
+			return primaryStore.hasLock(id);
+		} catch {
+			return false;
 		}
 	}
 
@@ -16251,6 +16805,16 @@ function auditRefIndex(refs: Array<{ version?: number; nodeId?: number }>, versi
 		if (refs[index].version === version && (refs[index].nodeId ?? 0) === (nodeId ?? 0)) return index;
 	}
 	return -1;
+}
+// last, because the encoder never drops a record's last ref
+function withAuditRef(
+	refs: Array<{ version: number; nodeId: number }> | undefined,
+	version: number,
+	nodeId: number | undefined
+): Array<{ version: number; nodeId: number }> {
+	const result = refs ? refs.filter((ref) => ref.version !== version || (ref.nodeId ?? 0) !== (nodeId ?? 0)) : [];
+	result.push({ version, nodeId });
+	return result;
 }
 
 const RELATED_READS_IN_FLIGHT = 16;

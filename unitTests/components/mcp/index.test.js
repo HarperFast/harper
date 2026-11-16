@@ -8,6 +8,14 @@ const {
 	_restoreGetConfigObj,
 } = indexMod;
 const { _setSessionTableForTest } = require('#src/components/mcp/session');
+const { Readable } = require('node:stream');
+const { Headers } = require('#src/server/serverHelpers/Headers');
+
+function makeHeaders(init) {
+	const headers = new Headers();
+	for (const [name, value] of Object.entries(init)) headers.set(name, value);
+	return headers;
+}
 
 function makeFakeFastify() {
 	const calls = [];
@@ -179,6 +187,50 @@ describe('components/mcp/index', () => {
 			const scope = makeFakeScope();
 			handleApplication(scope);
 			assert.equal(scope.calls.length, 0);
+		});
+
+		describe('authentication (#4344)', () => {
+			const PRM = 'https://app.example.com/.well-known/oauth-protected-resource/mcp';
+
+			async function anonymousInitialize(authentication) {
+				configReturn = { mcp: { application: { authentication } } };
+				const scope = makeFakeScope();
+				handleApplication(scope);
+				return scope.calls[0].handler(
+					{
+						method: 'POST',
+						headers: makeHeaders({ 'content-type': 'application/json', 'accept': 'application/json' }),
+						body: Readable.from([
+							Buffer.from(
+								JSON.stringify({
+									jsonrpc: '2.0',
+									id: 1,
+									method: 'initialize',
+									params: { protocolVersion: '2025-06-18' },
+								})
+							),
+						]),
+					},
+					async () => undefined
+				);
+			}
+
+			it('requires a principal when authentication.required is true, naming the configured metadata', async () => {
+				const result = await anonymousInitialize({ required: true, resourceMetadata: PRM });
+				assert.equal(result.status, 401);
+				assert.equal(result.headers.get('WWW-Authenticate'), `Bearer resource_metadata="${PRM}"`);
+			});
+
+			it('stays optional unless required is the boolean true', async () => {
+				const result = await anonymousInitialize({ required: 'true', resourceMetadata: PRM });
+				assert.equal(result.status, 200);
+			});
+
+			it('ignores a resourceMetadata that is not a header-safe absolute URL, and still requires a principal', async () => {
+				const result = await anonymousInitialize({ required: true, resourceMetadata: 'https://x.example/"' });
+				assert.equal(result.status, 401);
+				assert.equal(result.headers.get('WWW-Authenticate'), 'Bearer realm="Harper"');
+			});
 		});
 	});
 });

@@ -1,5 +1,6 @@
 import {
 	canRetryChangedUser,
+	certificatePrincipal,
 	cloneUserView,
 	getUserImpl,
 	hasReadRecordChanged,
@@ -39,6 +40,7 @@ import {
 	getDeferredCredentialRejection,
 	isCredentialRejection,
 	markAuthenticationRejectedInPlace,
+	ownsAuthenticationChallenge,
 } from './deferredAuthentication.ts';
 import { hdbErrors } from '../utility/errors/hdbError.ts';
 import { corsAccessListAllows } from '../utility/corsAccessList.ts';
@@ -246,7 +248,8 @@ export async function authentication(request, nextHandler) {
 					username = request.peerCertificate.subject.CN;
 				let mtlsUser;
 				try {
-					mtlsUser = await server.getUser(username, null, request);
+					const getUser = server.getUser;
+					mtlsUser = certificatePrincipal(await server.getUser(username, null, request), getUser);
 				} catch (error) {
 					if (LOG_AUTH_FAILED) authAuditLog(request, sessionId, username, AUTH_AUDIT_STATUS.FAILURE, 'mTLS');
 					const failureResponse = settleAuthFailure(request, error, 'mTLS');
@@ -469,7 +472,7 @@ export async function authentication(request, nextHandler) {
 		if (response.status === 401) {
 			wasUnauthorized = true;
 			// Downstream owns the challenge or redirect after Harper deferred the credential decision.
-			if (!getDeferredCredentialRejection(request)) {
+			if (!getDeferredCredentialRejection(request) && !ownsAuthenticationChallenge(response)) {
 				if (
 					headers['user-agent']?.startsWith('Mozilla') &&
 					headers.accept?.startsWith('text/html') &&

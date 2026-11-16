@@ -1,0 +1,63 @@
+import { JOB_STATUS_ENUM } from '../../utility/hdbTerms.ts';
+
+/**
+ * Returned by a job operation whose outcome is decided after its worker exits — a restore that runs at
+ * the next startup. The job stays IN_PROGRESS, naming the durable record that will settle it, instead
+ * of reading COMPLETE before anything has happened.
+ */
+export class DeferredJobCompletion {
+	owner: string;
+	message: string;
+	result?: unknown;
+	/** Runs once the job row records the deferral, e.g. the restart that carries the job on. */
+	afterRecorded?: () => void;
+	/** Runs when the row could not record it, to withdraw what would otherwise outlive a failed job. */
+	onNotRecorded?: () => void | Promise<void>;
+	constructor(
+		owner: string,
+		message: string,
+		result?: unknown,
+		afterRecorded?: () => void,
+		onNotRecorded?: () => void | Promise<void>
+	) {
+		this.owner = owner;
+		this.message = message;
+		this.result = result;
+		this.afterRecorded = afterRecorded;
+		this.onNotRecorded = onNotRecorded;
+	}
+}
+
+/** A finished job operation's work to run after its row write, recorded or not: a restart would cut the write short. */
+export class JobCompletion {
+	result: unknown;
+	afterRecorded?: () => void;
+	constructor(result: unknown, afterRecorded?: () => void) {
+		this.result = result;
+		this.afterRecorded = afterRecorded;
+	}
+}
+
+export function recordJobResult(
+	jobObj: Record<string, any>,
+	results: unknown
+): { afterRecorded?: () => void; onNotRecorded?: () => void | Promise<void> } | undefined {
+	if (results instanceof DeferredJobCompletion) {
+		jobObj.status = JOB_STATUS_ENUM.IN_PROGRESS;
+		jobObj.deferred_to = results.owner;
+		jobObj.message = results.message;
+		if (results.result !== undefined) jobObj.result = results.result;
+		return { afterRecorded: results.afterRecorded, onNotRecorded: results.onNotRecorded };
+	}
+	if (results instanceof JobCompletion) {
+		recordJobResult(jobObj, results.result);
+		return { afterRecorded: results.afterRecorded, onNotRecorded: results.afterRecorded };
+	}
+	jobObj.status = JOB_STATUS_ENUM.COMPLETE;
+	if (typeof results === 'string') jobObj.message = results;
+	else {
+		jobObj.result = results;
+		jobObj.message = 'Successfully completed job: ' + jobObj.id;
+	}
+	jobObj.end_datetime = Date.now();
+}

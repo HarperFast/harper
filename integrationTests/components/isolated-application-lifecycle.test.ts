@@ -3,7 +3,7 @@
  * isolated application's first deploy starts only its own dedicated worker, certified by its canary, and a drop stops
  * only that worker, with or without `restart`. Dropping a component that is not on this node restarts nothing.
  *
- * The worker-thread drop is the path a replicated peer runs: replication receives operations on a worker.
+ * The worker-thread deploy and drop are the paths a replicated peer runs: replication receives operations on a worker.
  *
  * Run: npm run test:integration -- "integrationTests/components/isolated-application-lifecycle.test.ts"
  */
@@ -77,6 +77,12 @@ async function writeDropper(dir: string) {
 			'\tasync post(target, data) {\n' +
 			'\t\tconst { project, ...options } = await data;\n' +
 			"\t\treturn server.operation({ operation: 'drop_component', project, ...options, replicated: false });\n" +
+			'\t}\n' +
+			'}\n' +
+			'export class WorkerDeploy extends Resource {\n' +
+			'\tstatic loadAsInstance = false;\n' +
+			'\tasync post(target, data) {\n' +
+			"\t\treturn server.operation({ ...(await data), operation: 'deploy_component', replicated: false });\n" +
 			'\t}\n' +
 			'}\n'
 	);
@@ -177,8 +183,8 @@ function lifecycleHarness(ctx: ContextWithHarper) {
 		);
 	}
 
-	async function dropOnWorker(body: Record<string, unknown>): Promise<any> {
-		const response = await fetch(new URL('/WorkerDrop', ctx.harper.httpURL), {
+	async function onWorker(resource: string, body: Record<string, unknown>): Promise<any> {
+		const response = await fetch(new URL(`/${resource}`, ctx.harper.httpURL), {
 			method: 'POST',
 			headers: { 'content-type': 'application/json', 'authorization': auth() },
 			body: JSON.stringify(body),
@@ -186,6 +192,17 @@ function lifecycleHarness(ctx: ContextWithHarper) {
 		const text = await response.text();
 		strictEqual(response.status, 200, text);
 		return JSON.parse(text);
+	}
+
+	const dropOnWorker = (body: Record<string, unknown>) => onWorker('WorkerDrop', body);
+
+	async function deployIsolatedOnWorker(project: string, release: Release) {
+		return onWorker('WorkerDeploy', {
+			project,
+			package: await packageTarball(project, release),
+			isolated: true,
+			restart: true,
+		});
 	}
 
 	async function served(application: string, version: number) {
@@ -234,6 +251,7 @@ function lifecycleHarness(ctx: ContextWithHarper) {
 		staysTrue,
 		requestMirror,
 		dropOnWorker,
+		deployIsolatedOnWorker,
 		served,
 	};
 }
@@ -258,6 +276,7 @@ suite(
 			staysTrue,
 			requestMirror,
 			dropOnWorker,
+			deployIsolatedOnWorker,
 			served,
 		} = lifecycleHarness(ctx);
 
@@ -358,6 +377,21 @@ suite(
 			strictEqual(body.workerStopped, true, JSON.stringify(body));
 			deepStrictEqual(ids(await threads()), othersThan(before, 'preview_two'));
 			deepStrictEqual(await mirrorsOf('preview_two'), []);
+		});
+
+		test('a first deploy run on a worker thread, as a peer runs it, starts its worker, certified', async () => {
+			const before = await threads();
+			const result = await deployIsolatedOnWorker('preview_peer', { version: 1 });
+			strictEqual(result.certification, 'certified', JSON.stringify(result));
+			const after = await waitFor(
+				threads,
+				(list) => dedicatedTo(list, 'preview_peer').length === 1,
+				'no dedicated worker for preview_peer'
+			);
+			deepStrictEqual(othersThan(after, 'preview_peer'), ids(before), 'every other worker kept its thread');
+			const answer = await served('preview_peer', 1);
+			strictEqual(answer.threadId, dedicatedTo(after, 'preview_peer')[0].threadId);
+			strictEqual((await dropOnWorker({ project: 'preview_peer' })).workerStopped, true);
 		});
 
 		test('a drop run on a worker thread, as a peer runs it, stops only the worker and reports it', async () => {

@@ -14,7 +14,7 @@ import { onStartup } from '../../utility/lifecycle.ts';
 
 import { Worker, MessageChannel, parentPort, isMainThread, threadId, workerData } from 'node:worker_threads';
 import { spawnSync } from 'node:child_process';
-import { readdirSync, readFileSync, readlinkSync } from 'node:fs';
+import { accessSync, constants as fsConstants, readdirSync, readFileSync, readlinkSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { confirmWindowsProcessTreeGone, ROOT_SPAWN_ALLOWANCE_MS } from './windowsProcessTree.ts';
 import {
@@ -24,7 +24,7 @@ import {
 	pendingWorkerPools,
 	workerPoolDecision,
 } from './workerPools.ts';
-import { join, isAbsolute, extname } from 'node:path';
+import { join, isAbsolute, extname, dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { server } from '../Server.ts';
 import { totalmem } from 'node:os';
@@ -42,7 +42,7 @@ import { resolvePreloadModules } from './resolvePreload.ts';
 import { resolveThreadHeapMemoryMb } from './threadHeapMemory.ts';
 import { applyConfiguredV8Flags } from './v8Flags.ts';
 import { compileCacheWorkerEnv } from './compileCache.ts';
-import { getConfigPath } from '../../config/configUtils.ts';
+import { getConfigPath, getRootConfigFilePath } from '../../config/configUtils.ts';
 import { resolveWatchTarget } from '../../utility/watchPath.ts';
 import {
 	databaseDropPreparationSnapshot,
@@ -196,6 +196,8 @@ export {
 	setHeldReplacementTimeout,
 	shutdownWorkers,
 	shutdownWorkersNow,
+	forceWorkerExit,
+	forceUwsWorkersToExit,
 	workers,
 	setMonitorListener,
 	sampleWorkerELU,
@@ -399,16 +401,64 @@ function armWorkerTerminate(worker: any, delay: number) {
 	worker.terminateTimer = setTimeout(
 		() => {
 			harperLogger.warn('Thread did not voluntarily terminate, terminating from the outside', worker.threadId);
-			if (isBun) {
-				try {
-					worker.postMessage({ type: FORCE_EXIT });
-				} catch {}
-			} else {
-				worker.terminate();
-			}
+			forceWorkerExit(worker);
 		},
 		Math.min(delay, shutdownDrainRuntimeModule.MAX_TIMER_MS)
 	).unref();
+}
+
+/**
+ * Stop `worker` from outside, resolving once it has exited (at once on Bun, which is only asked). terminate() stops
+ * its JavaScript where it stands, and a worker holding uWebSockets.js sockets cannot survive that: they are libuv
+ * handles Node never closes, so its teardown aborts the process, as does a request uWS hands the stopped isolate.
+ * Such a worker exits itself instead (its `exit` listener closes them). One still busy after
+ * threadTerminationTimeout is terminated anyway, and aborts the process.
+ */
+function forceWorkerExit(worker: any): Promise<unknown> | undefined {
+	if (isBun) {
+		try {
+			worker.postMessage({ type: FORCE_EXIT });
+		} catch {}
+		return;
+	}
+	if (!worker.usesUwsBackend) return worker.terminate();
+	return (worker.forcedExit ??= new Promise<void>((resolve) => {
+		if (worker.threadId === -1) return resolve();
+		const terminate = () => {
+			clearTimeout(fallback);
+			worker.terminate().then(() => resolve());
+		};
+		const fallback = setTimeout(
+			() => {
+				harperLogger.warn(
+					'Thread did not exit on request; terminating it, which aborts the process if it holds uWebSockets.js sockets',
+					worker.threadId
+				);
+				terminate();
+			},
+			Math.min(threadTerminationTimeout, shutdownDrainRuntimeModule.MAX_TIMER_MS)
+		);
+		worker.once('exit', () => {
+			clearTimeout(fallback);
+			resolve();
+		});
+		try {
+			worker.postMessage({ type: FORCE_EXIT });
+		} catch {
+			terminate();
+		}
+	}));
+}
+
+/** Main exits on a signal without waiting for workers, and Node's exit tears them down as terminate() does. */
+function forceUwsWorkersToExit(): Promise<unknown> {
+	beginProcessShutdown();
+	return Promise.all(workers.filter((worker) => worker.usesUwsBackend).map(forceWorkerExit));
+}
+
+// Node hands a worker `${value}` for every key it is given, so a key counts as set exactly when http.ts will read it so.
+function usesUwsBackend(env: NodeJS.Dict<unknown>): boolean {
+	return ['HARPER_UWS_UDS', 'HARPER_UWS_HTTP'].some((name) => Object.hasOwn(env, name) && `${env[name]}` !== '');
 }
 
 let workersStoppedForExit: Promise<unknown> = Promise.resolve();
@@ -1556,6 +1606,8 @@ function startWorker(path?: any, options: any = {}, startOptions: any = {}) {
 		);
 	}
 	addPort(worker, true, isJobWorker);
+	worker.usesUwsBackend =
+		!isJobWorker && usesUwsBackend(options.env && typeof options.env === 'object' ? options.env : process.env);
 	worker.unexpectedRestarts = options.unexpectedRestarts || 0;
 	worker.startCopy = (copyOptions) => {
 		// in a shutdown sequence we use overlapping restarts, starting the new thread while waiting for the old thread
@@ -1673,6 +1725,45 @@ function poolMayHold(application: string) {
 	);
 }
 
+/**
+ * A deploy or `set_configuration` run on a worker (a replicated one always is) re-reads only that worker's copy of the
+ * root config, so main re-reads its own before a restart reloads and reconciles from it. Under the publication lock,
+ * because a refresh on main can rewrite the file. Failing the restart instead would interrupt rollouts on nodes where
+ * restarts work today, so it goes ahead on main's copy.
+ */
+async function refreshRootConfig() {
+	let locked = false;
+	try {
+		await loadRuntimeModule('components/rootConfigPublication').withRootConfigPublicationLock(async () => {
+			locked = true;
+			envMgr.reloadSync();
+		});
+		return;
+	} catch (error) {
+		if (locked || rootConfigDirectoryWritable()) return logStaleRootConfig(error);
+	}
+	// The lock needs write access to the config's directory, which a node taking payload deploys may lack. Nothing can
+	// publish into a directory it cannot write, so a read without the lock races no writer.
+	try {
+		envMgr.reloadSync();
+	} catch (error) {
+		logStaleRootConfig(error);
+	}
+}
+
+function rootConfigDirectoryWritable() {
+	try {
+		accessSync(dirname(getRootConfigFilePath()), fsConstants.W_OK);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function logStaleRootConfig(error: unknown) {
+	harperLogger.error('Could not re-read the root config before restarting workers; using the copy main holds', error);
+}
+
 /** Read when the restart takes its turn, so no earlier restart's replacement is still booting unreported. */
 function withPoolFor(application?: string) {
 	if (application === undefined || application === '*' || !poolMayHold(application)) return false;
@@ -1762,6 +1853,8 @@ async function replaceWorkers(
 			// caller's absolute ceiling is what bounds a load that never finishes.
 			const loading = setInterval(() => onProgress?.(), RESTART_PROGRESS_HEARTBEAT_MS).unref();
 			try {
+				await refreshRootConfig();
+				if (processShuttingDown) return { declined: true };
 				await loadRootComponents();
 				if (processShuttingDown) return { declined: true };
 				// isolated applications added or removed by the reload get their dedicated worker started or
@@ -1930,9 +2023,12 @@ async function replaceWorkers(
 							'Replacement worker did not start in time; leaving the existing worker in place',
 							newWorker.threadId
 						);
-						newWorker.terminate();
 						cleanup();
-						resolve(false);
+						// The slot can be started again next, so give this replacement time to free any port it bound. Bounded,
+						// since terminate() waits on a thread stuck in native code.
+						const settle = () => resolve(false);
+						Promise.resolve(forceWorkerExit(newWorker)).then(settle, settle);
+						setTimeout(settle, Math.min(threadTerminationTimeout * 2, shutdownDrainRuntimeModule.MAX_TIMER_MS)).unref();
 					};
 					let timeout = setTimeout(
 						giveUp,
@@ -2273,12 +2369,7 @@ function whenWorkerStarted(newWorker?: any) {
 				cleanup();
 				// Its predecessor is already gone, so a replacement wedged in boot is a worker slot serving
 				// nothing until the process restarts. Stop it and let startWorker's exit handling replace it.
-				if (isBun) {
-					// terminate() triggers a NAPI segfault in Bun; ask the worker to self-exit instead.
-					try {
-						newWorker.postMessage({ type: FORCE_EXIT });
-					} catch {}
-				} else newWorker.terminate();
+				forceWorkerExit(newWorker);
 				resolve(false);
 			},
 			Math.max(threadTerminationTimeout * 2, 60000)
@@ -2326,16 +2417,7 @@ function runExitHandler(handler: any, handlerName: string, worker: any, threadId
 async function shutdownWorkersNow(name?: any) {
 	if (name == null) beginProcessShutdown();
 	shutdownWorkers(name); // set the state of all the workers to shut down. this should finish the important stuff synchronously
-	if (isBun) {
-		// worker.terminate() triggers a NAPI segfault in Bun; ask workers to self-exit instead
-		workers.forEach((worker) => {
-			try {
-				worker.postMessage({ type: FORCE_EXIT });
-			} catch {}
-		});
-	} else {
-		await Promise.all(workers.map((worker) => worker.terminate()));
-	}
+	await Promise.all(workers.filter((worker) => !name || typeMatches(name, worker.name)).map(forceWorkerExit));
 }
 
 /**
@@ -3522,8 +3604,8 @@ if (isMainThread) {
 		armSelfExit(threadTerminationTimeout);
 	});
 	onMessageByType(ALL_REQUESTS_DRAINED, () => allRequestsDrained.resolve());
-	// In Bun, worker.terminate() triggers a NAPI segfault; the main thread sends FORCE_EXIT
-	// instead, and the worker self-exits cleanly to avoid the crash.
+	// Sent where terminate() would crash the process: always on Bun (a NAPI segfault), and to a worker serving
+	// through uWebSockets.js, whose exit listener closes its sockets.
 	onMessageByType(FORCE_EXIT, () => {
 		realExit(0);
 	});
