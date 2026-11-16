@@ -310,16 +310,8 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			if (this.#host?.isOwnerEpoch(batch.ownerEpoch)) this.#failedDeliveryObserved = true;
 			return DERIVED_INDEX_FAILED;
 		}
-		if (!this.#host?.isOwnerEpoch(batch.ownerEpoch)) return DERIVED_INDEX_FAILED;
-		if (this.#terminalFailure) return DERIVED_INDEX_DEFERRED;
-		if (this.#settlingWriter || this.#writerRetryTimer || this.#lossPendingEpoch === batch.ownerEpoch)
-			return DERIVED_INDEX_DEFERRED;
-		if (this.#shutdown) {
-			if (this.#shutdown.epoch === batch.ownerEpoch || this.#activeEpoch !== undefined) return DERIVED_INDEX_FAILED;
-			this.#shutdown = undefined;
-		}
-		if (this.#activeEpoch === undefined) this.#activeEpoch = batch.ownerEpoch;
-		if (this.#activeEpoch !== batch.ownerEpoch) return DERIVED_INDEX_FAILED;
+		const admission = this.#admitOwner(batch.ownerEpoch);
+		if (admission !== DERIVED_INDEX_ACCEPTED) return admission;
 		let through: DerivedIndexCursor | undefined;
 		try {
 			through = batch.through && normalizedCursor(batch.through);
@@ -352,6 +344,20 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		return DERIVED_INDEX_ACCEPTED;
 	}
 
+	/** Binds the writer to `ownerEpoch` for any command that will reach the engine, not only a delivery. */
+	#admitOwner(ownerEpoch: bigint): DerivedIndexDeliveryResult {
+		if (!this.#host?.isOwnerEpoch(ownerEpoch)) return DERIVED_INDEX_FAILED;
+		if (this.#terminalFailure) return DERIVED_INDEX_DEFERRED;
+		if (this.#settlingWriter || this.#writerRetryTimer || this.#lossPendingEpoch === ownerEpoch)
+			return DERIVED_INDEX_DEFERRED;
+		if (this.#shutdown) {
+			if (this.#shutdown.epoch === ownerEpoch || this.#activeEpoch !== undefined) return DERIVED_INDEX_FAILED;
+			this.#shutdown = undefined;
+		}
+		if (this.#activeEpoch === undefined) this.#activeEpoch = ownerEpoch;
+		return this.#activeEpoch === ownerEpoch ? DERIVED_INDEX_ACCEPTED : DERIVED_INDEX_FAILED;
+	}
+
 	flush(_reason: DerivedIndexFlushReason = 'threshold'): void {
 		if (this.#activeEpoch === undefined || this.#failed || this.#shutdown) return;
 		this.#queueBarrier(this.#activeEpoch);
@@ -361,6 +367,8 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#assertSharedEpoch(ownerEpoch);
 		if (!this.#durableCursor) throw new FullTextDerivedIndexError('Cannot publish coverage without a durable cursor');
 		if (sameDerivedIndexPositions(this.#durableCursor.coverage, positions)) return;
+		// The runtime captures coverage again on its next idle pass, so a declined one is not lost.
+		if (this.#failed || this.#admitOwner(ownerEpoch) !== DERIVED_INDEX_ACCEPTED) return;
 		let pending: BarrierCommand | undefined;
 		for (let index = this.#commands.length - 1; index >= 0; index--) {
 			if (this.#commands[index].type === 'barrier') {

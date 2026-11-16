@@ -279,6 +279,26 @@ describe('FullTextDerivedIndexBackend', () => {
 		await backend.shutdown(1n);
 	});
 
+	it('publishes coverage for an owner that has delivered nothing', async () => {
+		const engine = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
+		const lifecycleValue = lifecycle({ state: 'checkpointed', committedPayload: engine.committedPayload }, [engine]);
+		const { backend } = makeBackend(lifecycleValue);
+		const changes = [];
+		backend.onStateChange((change) => changes.push(change));
+		assert.deepStrictEqual({ ...backend.getDurableCursor().logs }, { local: 10 });
+		const coverage = { local: { sequence: 3, offset: 4 } };
+		backend.publishCoverage(coverage, 1n);
+		await waitFor(() => engine.publications.length === 1 || changes.includes('failed'));
+		assert.strictEqual(changes.includes('failed'), false);
+		const published = decodeFullTextCursorPayload(engine.publications[0]);
+		assert.deepStrictEqual({ ...published.logs }, { local: 10 });
+		assert.deepStrictEqual({ ...published.coverage }, coverage);
+		assert.strictEqual(backend.deliver(batch(1n, [], cursor(20))), DERIVED_INDEX_ACCEPTED);
+		await backend.shutdown(1n);
+		assert.strictEqual(lifecycleValue.resetCalls, 0);
+		assert.deepStrictEqual(engine.closes, [{ mode: 'require-clean' }]);
+	});
+
 	it('maps canonical Harper keys to unambiguous document ids', () => {
 		const converted = toFullTextMutationBatch(
 			batch(1n, [
