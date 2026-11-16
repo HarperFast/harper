@@ -10888,11 +10888,11 @@ export function makeTable(options): TableResourceClass {
 						for (const ref of entry?.additionalAuditRefs ?? [])
 							if (ref.version > newestRefKey) newestRefKey = ref.version;
 					if (startTime < localTime || startTime < newestRefKey) {
-						// start time specified, get the audit history for this record. Set startTime up
+						// start time specified, get the audit history for this record. Raise startTime up
 						// front so the listener gate skips any in-flight 'committed' for this version
 						// during the yields below — otherwise that event would be queued and drained as a
 						// duplicate of the entry send.
-						subscription!.startTime = localTime ?? entry?.version;
+						subscription!.startTime = Math.max(subscription!.startTime, localTime ?? entry?.version ?? 0);
 						const history = [];
 						let inspected = 0;
 						let missingVersion = false;
@@ -10951,7 +10951,7 @@ export function makeTable(options): TableResourceClass {
 								nodeId = previousHead.nodeId;
 								if (isRocksDB) chainTransactions.add(transactionIdentity(nodeId, nextTime));
 							} else {
-								missingVersion = true;
+								missingVersion = auditRecord != null || nextTime > startTime;
 								break;
 							}
 						} while (nextTime > startTime && count !== 0);
@@ -11245,13 +11245,15 @@ export function makeTable(options): TableResourceClass {
 					// a late message is a branch: the record's head stays its first ref, the one the head lookup reads first
 					const ownRefs = late
 						? isRocksDB
-							? withAuditRef(
-									existingEntry.additionalAuditRefs?.length || !audit
-										? existingEntry.additionalAuditRefs
-										: [{ version: existingEntry.version, nodeId: existingEntry.nodeId }],
-									appendedLogKey,
-									options?.nodeId
-								)
+							? audit
+								? withAuditRef(
+										existingEntry.additionalAuditRefs?.length
+											? existingEntry.additionalAuditRefs
+											: [{ version: existingEntry.version, nodeId: existingEntry.nodeId }],
+										appendedLogKey,
+										options?.nodeId
+									)
+								: existingEntry.additionalAuditRefs
 							: undefined
 						: appendedLogKey !== txnTime
 							? [{ version: appendedLogKey, nodeId: options?.nodeId }]
