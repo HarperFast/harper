@@ -323,7 +323,7 @@ describe('A publish older than its record', function () {
 				Topics.auditStore.getSync(first.version, Topics.tableId, 'c1', first.nodeId, true)?.version - T0,
 				90_000
 			);
-			// after every write (earlier cases' future clocks lead the local one), so it finds the head and reads no history
+			// after every write, so it finds the head and reads no history
 			const startTime = Math.max(entry.version, ...(entry.additionalAuditRefs ?? []).map((ref) => ref.version)) + 1;
 			const { getSync } = Topics.auditStore;
 			let reads = 0;
