@@ -5,3 +5,10 @@ export class CertSubFeed extends tables.CertSubFeed {
 		return READERS.has(user?.username);
 	}
 }
+
+export class CertSubTopic extends tables.CertSubTopic {
+	async allowRead(user, target) {
+		if (!user?.username || target?.id !== user.username) return false;
+		return (await tables.CertSubGate.get(user.username))?.revoked !== true;
+	}
+}
