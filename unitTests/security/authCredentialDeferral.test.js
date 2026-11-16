@@ -9,6 +9,7 @@ const {
 	credentialRejectionError,
 	settleDeferredCredentialRejection,
 	assertNoDeferredCredentialRejection,
+	ownAuthenticationChallenge,
 } = require('#src/security/deferredAuthentication');
 const { ClientError, ServerError } = require('#src/utility/errors/hdbError');
 const serverModule = require('#src/server/Server');
@@ -492,6 +493,63 @@ describe('deferred credential rejection through the app-port middleware chain', 
 			assert.strictEqual(response.status, 401);
 			assert.strictEqual(response.headers.get('WWW-Authenticate'), 'Basic realm="Harper"');
 		});
+
+		it('keeps the challenge of a 401 marked as owning it, for an uncredentialed request (#4344)', async () => {
+			const challenge = 'Bearer resource_metadata="https://app.example.com/.well-known/oauth-protected-resource/mcp"';
+			catchAllResponse = () =>
+				ownAuthenticationChallenge({
+					status: 401,
+					headers: new Headers({ 'WWW-Authenticate': challenge }),
+					body: '{}',
+				});
+
+			const { response } = await send(APP_OWNED, undefined);
+
+			assert.strictEqual(response.status, 401);
+			assert.strictEqual(response.headers.get('WWW-Authenticate'), challenge);
+			assert.strictEqual(response.headers.get('Cache-Control'), 'private, no-cache');
+		});
+
+		it('does not redirect a browser over a 401 marked as owning its challenge (#4344)', async () => {
+			resourcesModule.resources.loginPath = () => '/login';
+			catchAllResponse = () =>
+				ownAuthenticationChallenge({
+					status: 401,
+					headers: new Headers({ 'WWW-Authenticate': 'Bearer resource_metadata="https://app.example.com/prm"' }),
+					body: '{}',
+				});
+
+			const { response } = await sendBrowser(APP_OWNED, undefined);
+
+			assert.strictEqual(response.status, 401);
+			assert.strictEqual(response.headers.get('Location') ?? null, null);
+		});
+
+		it('still redirects a browser over an unmarked route 401 that set its own challenge', async () => {
+			resourcesModule.resources.loginPath = () => '/login';
+			catchAllResponse = () => ({
+				status: 401,
+				headers: new Headers({ 'WWW-Authenticate': 'Basic realm="app"' }),
+				body: '{}',
+			});
+
+			const { response } = await sendBrowser(APP_OWNED, undefined);
+
+			assert.strictEqual(response.status, 302);
+			assert.strictEqual(response.headers.get('Location'), '/login');
+		});
+
+		it('still replaces the challenge of an unmarked uncredentialed route 401', async () => {
+			catchAllResponse = () => ({
+				status: 401,
+				headers: new Headers({ 'WWW-Authenticate': 'Basic realm="app"' }),
+				body: '{}',
+			});
+
+			const { response } = await send(APP_OWNED, undefined);
+
+			assert.strictEqual(response.headers.get('WWW-Authenticate'), 'Basic realm="Harper"');
+		});
 	});
 });
 
@@ -930,6 +988,38 @@ describe('server.registerBearerValidator (#oauth/279)', () => {
 	it('rejects non-function arguments to registerBearerValidator', () => {
 		assert.throws(() => serverModule.server.registerBearerValidator(null), TypeError);
 		assert.throws(() => serverModule.server.registerBearerValidator({}), TypeError);
+	});
+
+	it('stores a challenge only when its resourceMetadata is a header-safe https (or loopback http) URL (#4344)', () => {
+		const resourceMetadata = 'https://auth.example.com/.well-known/oauth-protected-resource/mcp';
+		registerValidator(() => null, { challenge: { resourceMetadata } });
+		const entry = serverModule.getBearerValidators().at(-1);
+		assert.deepStrictEqual(entry.challenge, { resourceMetadata });
+		assert.ok(Object.isFrozen(entry.challenge));
+
+		registerValidator(() => null);
+		assert.strictEqual(serverModule.getBearerValidators().at(-1).challenge, undefined);
+
+		registerValidator(() => null, { challenge: { resourceMetadata: 'http://localhost:9926/prm' } });
+
+		for (const challenge of [
+			null,
+			{},
+			{ resourceMetadata: '/.well-known/oauth-protected-resource' },
+			{ resourceMetadata: 'ftp://auth.example.com/prm' },
+			{ resourceMetadata: 'http://auth.example.com/prm' },
+			{ resourceMetadata: 'https://auth.example.com/prm#fragment' },
+			{ resourceMetadata: 'https://auth.example.com/prm", error="x' },
+			{ resourceMetadata: 'https://auth.example.com/prm\r\nSet-Cookie: x=1' },
+			{ resourceMetadata: 'https://auth.example.com/a b' },
+			{ resourceMetadata: 'https://auth.example.com/\\prm' },
+		]) {
+			assert.throws(
+				() => serverModule.server.registerBearerValidator(() => null, { challenge }),
+				TypeError,
+				`expected TypeError for challenge ${JSON.stringify(challenge)}`
+			);
+		}
 	});
 
 	it('accepts a non-Harper Bearer token via a registered validator as the user server.getUser resolves', async () => {

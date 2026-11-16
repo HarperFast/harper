@@ -1062,6 +1062,39 @@ describe('Test configValidator module', () => {
 			expect(result.error).to.not.be.undefined;
 			expect(result.error.message).to.include("'mcp.operations.maxTools' must be greater than or equal to 1");
 		});
+
+		it('accepts mcp.application.authentication with a boolean required and an http(s) resourceMetadata (#4344)', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.mcp = {
+				application: {
+					authentication: {
+						required: true,
+						resourceMetadata: 'https://app.example.com/.well-known/oauth-protected-resource/mcp',
+					},
+				},
+			};
+			expect(configValidator(config, true).error).to.be.undefined;
+
+			config.mcp = { application: { authentication: { required: 'true' } } };
+			expect(configValidator(config, true).error.message).to.include(
+				"'mcp.application.authentication.required' must be a boolean"
+			);
+			for (const resourceMetadata of [
+				'/relative',
+				'ftp://x.example/prm',
+				'http://x.example/prm',
+				'https://x.example/p#f',
+				'https://x.example/"q"',
+			]) {
+				config.mcp = { application: { authentication: { resourceMetadata } } };
+				expect(configValidator(config, true).error, resourceMetadata).to.not.be.undefined;
+			}
+
+			for (const authentication of [{ require: true }, { resource_metadata: 'https://x.example/prm' }]) {
+				config.mcp = { application: { authentication } };
+				expect(configValidator(config, true).error, JSON.stringify(authentication)).to.not.be.undefined;
+			}
+		});
 	});
 
 	describe('http.securityHeaders config', () => {
