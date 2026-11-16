@@ -498,7 +498,7 @@ those two cannot predict, such as `HARPER_DEFAULT_CONFIG` filling a removed key 
 during recovery is not enough on its own: `applyRootConfigEffect` re-inits THIS thread's config, and boot
 recovery runs on main before `installApplications()` reads `getConfigObj()`.
 
-Not covered, and pre-existing: a worker's memoized config stays stale until the worker is replaced, and the
+Not covered, and pre-existing: other threads' memoized config stays stale until a restart re-inits it, and the
 boot-time config writers and out-of-process editors are not serialized with the lock. Validation of a package deploy
 now runs under the entry in force rather than the one being deployed, since the latter is no longer published until
 the commit.
