@@ -3,7 +3,16 @@
 const assert = require('node:assert');
 const path = require('node:path');
 const os = require('node:os');
-const { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
+const {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} = require('node:fs');
 const { setTimeout: sleep } = require('node:timers/promises');
 const { waitFor } = require('../../waitFor.js');
 
@@ -1488,7 +1497,6 @@ describe('the release certification gate', function () {
 	it("re-reads main's root config as each restart takes its turn, since a worker's deploy refreshed only its own", async () => {
 		const order = await restartsAfterWorkerWrite(['late-first', 'late-second'], {
 			configText: LATE_FIRST,
-			// the second application lands while the first restart is still reconciling
 			onReconcile: (only, write) => only === 'late-first' && write(LATE_FIRST + LATE_SECOND),
 		});
 		assert.deepStrictEqual(order, [
@@ -1508,18 +1516,20 @@ describe('the release certification gate', function () {
 		// root and Windows do not enforce the directory mode
 		if (process.platform === 'win32' || process.getuid?.() === 0) this.skip();
 		const configFilePath = configUtils.getConfigFilePath();
-		const readOnly = [path.dirname(configFilePath), componentPreparationLockPaths(configFilePath).lockRoot].filter(
-			(dir) => existsSync(dir)
+		const modes = new Map(
+			[path.dirname(configFilePath), componentPreparationLockPaths(configFilePath).lockRoot]
+				.filter((dir) => existsSync(dir))
+				.map((dir) => [dir, statSync(dir).mode & 0o777])
 		);
 		let order;
 		try {
 			order = await restartsAfterWorkerWrite(['late-first'], {
 				configText: LATE_FIRST,
-				beforeRestart: () => readOnly.forEach((dir) => chmodSync(dir, 0o555)),
+				beforeRestart: () => modes.forEach((_mode, dir) => chmodSync(dir, 0o555)),
 				reloadTakesLock: false,
 			});
 		} finally {
-			for (const dir of readOnly) chmodSync(dir, 0o755);
+			modes.forEach((mode, dir) => chmodSync(dir, mode));
 		}
 		assert.deepStrictEqual(order, ['reload [late-first]', 'reconcile late-first']);
 	});

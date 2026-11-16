@@ -14,7 +14,7 @@ import { onStartup } from '../../utility/lifecycle.ts';
 
 import { Worker, MessageChannel, parentPort, isMainThread, threadId, workerData } from 'node:worker_threads';
 import { spawnSync } from 'node:child_process';
-import { readdirSync, readFileSync, readlinkSync } from 'node:fs';
+import { accessSync, constants as fsConstants, readdirSync, readFileSync, readlinkSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { confirmWindowsProcessTreeGone, ROOT_SPAWN_ALLOWANCE_MS } from './windowsProcessTree.ts';
 import {
@@ -24,7 +24,7 @@ import {
 	pendingWorkerPools,
 	workerPoolDecision,
 } from './workerPools.ts';
-import { join, isAbsolute, extname } from 'node:path';
+import { join, isAbsolute, extname, dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { server } from '../Server.ts';
 import { totalmem } from 'node:os';
@@ -42,7 +42,7 @@ import { resolvePreloadModules } from './resolvePreload.ts';
 import { resolveThreadHeapMemoryMb } from './threadHeapMemory.ts';
 import { applyConfiguredV8Flags } from './v8Flags.ts';
 import { compileCacheWorkerEnv } from './compileCache.ts';
-import { getConfigPath } from '../../config/configUtils.ts';
+import { getConfigPath, getRootConfigFilePath } from '../../config/configUtils.ts';
 import { resolveWatchTarget } from '../../utility/watchPath.ts';
 import {
 	databaseDropPreparationSnapshot,
@@ -1725,8 +1725,6 @@ function poolMayHold(application: string) {
 	);
 }
 
-const UNWRITABLE_DIRECTORY_CODES = new Set(['EACCES', 'EPERM', 'EROFS']);
-
 /**
  * A deploy or `set_configuration` run on a worker (a replicated one always is) re-reads only that worker's copy of the
  * root config, so main re-reads its own before a restart reloads and reconciles from it. Under the publication lock,
@@ -1742,7 +1740,7 @@ async function refreshRootConfig() {
 		});
 		return;
 	} catch (error) {
-		if (locked || !UNWRITABLE_DIRECTORY_CODES.has(error?.code)) return logStaleRootConfig(error);
+		if (locked || rootConfigDirectoryWritable()) return logStaleRootConfig(error);
 	}
 	// The lock needs write access to the config's directory, which a node taking payload deploys may lack. Nothing can
 	// publish into a directory it cannot write, so a read without the lock races no writer.
@@ -1750,6 +1748,15 @@ async function refreshRootConfig() {
 		envMgr.reloadSync();
 	} catch (error) {
 		logStaleRootConfig(error);
+	}
+}
+
+function rootConfigDirectoryWritable() {
+	try {
+		accessSync(dirname(getRootConfigFilePath()), fsConstants.W_OK);
+		return true;
+	} catch {
+		return false;
 	}
 }
 

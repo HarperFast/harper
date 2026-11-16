@@ -8,8 +8,6 @@ const commonUtils = require('#src/utility/common_utils');
 const configUtils = require('#src/config/configUtils');
 const env = require('#src/utility/environment/environmentManager');
 
-// A running main thread re-reads the root config another thread wrote with reloadSync(). Where initSync(true) exits
-// the process on a config it cannot read, reloadSync() must throw and leave the thread's config in force.
 describe('environmentManager reloadSync()', function () {
 	let originalRootPath;
 	let rootPath;
@@ -30,11 +28,13 @@ describe('environmentManager reloadSync()', function () {
 	});
 
 	afterEach(function () {
+		// initSync(true) below exits the process on a config it cannot read
+		if (rootPath && validConfig) fs.writeFileSync(configFilePath, validConfig);
 		if (originalRootPath === undefined) delete process.env.ROOTPATH;
 		else process.env.ROOTPATH = originalRootPath;
 		commonUtils.resetNoBootFileCache();
 		env.initSync(true);
-		fs.rmSync(rootPath, { recursive: true, force: true });
+		if (rootPath) fs.rmSync(rootPath, { recursive: true, force: true });
 	});
 
 	it('adopts a component entry another thread wrote to the file', function () {
