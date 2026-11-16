@@ -311,11 +311,18 @@ describe('A publish older than its record', function () {
 			);
 		});
 
-		onRocksDB('finds the head in one log read after concurrent publishes to a record', async () => {
-			await Topics.put({ id: 'c1', name: 'B' });
+		onRocksDB('finds the head in one log read after concurrent late publishes to a record', async () => {
+			// a head newer than the local clock, so every concurrent publish is late
+			await put('c1', 'B', at(90_000));
 			for (let batch = 0; batch < 24; batch++)
 				await Promise.all(Array.from({ length: 50 }, (_, n) => Topics.publish('c1', { n: batch * 50 + n })));
 			const entry = Topics.primaryStore.getEntry('c1');
+			assert.equal(entry.version - T0, 90_000);
+			const first = entry.additionalAuditRefs[0];
+			assert.equal(
+				Topics.auditStore.getSync(first.version, Topics.tableId, 'c1', first.nodeId, true)?.version - T0,
+				90_000
+			);
 			// after every write (earlier cases' future clocks lead the local one), so it finds the head and reads no history
 			const startTime = Math.max(entry.version, ...(entry.additionalAuditRefs ?? []).map((ref) => ref.version)) + 1;
 			const { getSync } = Topics.auditStore;

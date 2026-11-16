@@ -11242,11 +11242,11 @@ export function makeTable(options): TableResourceClass {
 					const value = base?.value ?? null;
 					const metadataFlags = (base?.metadataFlags ?? 0) & (LOCAL_ONLY | INVALIDATED | REPLICA);
 					const late = precedes < 0;
-					// a late message is a branch: the record's head stays its first ref, so finding the head takes one read
+					// a late message is a branch: the record's head stays its first ref, the one the head lookup reads first
 					const ownRefs = late
 						? isRocksDB
 							? withAuditRef(
-									existingEntry.additionalAuditRefs?.length
+									existingEntry.additionalAuditRefs?.length || !audit
 										? existingEntry.additionalAuditRefs
 										: [{ version: existingEntry.version, nodeId: existingEntry.nodeId }],
 									appendedLogKey,
