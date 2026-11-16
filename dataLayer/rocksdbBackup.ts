@@ -643,7 +643,7 @@ export async function validateRestoreBackup(request: any) {
 		const { assertRestartRestoreActionable } = await import('./restoreIntent.ts');
 		assertRestartRestoreActionable(
 			databaseName,
-			restoreTargetDir(databaseName, targetDatabase),
+			restoreTargetDir(databaseName, targetDatabase, { cancel }),
 			resume ? 'resume' : 'cancel'
 		);
 		return;
@@ -659,12 +659,7 @@ export async function validateRestoreBackup(request: any) {
 	} catch (error) {
 		throw restoreSourceHint(error, databaseName, requestedBackupId);
 	}
-	// the job checks a database not loaded here
-	assertRestoreTargetNotLmdb(resolveDatabasePath(targetDatabase), targetDatabase);
-	const loaded = getDatabases()[targetDatabase];
-	if (targetDatabase === databaseName && loaded != null && Object.keys(loaded).length > 0) {
-		requireRocksRootStore(databaseName, OPERATIONS_ENUM.RESTORE_BACKUP);
-	}
+	restoreTargetDir(databaseName, targetDatabase);
 }
 
 const RESTART_RESTORE_OPTIONS = ['allow_engine_only', 'accept_incompatible_backup', 'accept_unverified_blobs'];
@@ -727,11 +722,14 @@ function readRestoreRequest(request: any, { offline = false } = {}) {
  * unloaded (recovering an interrupted restore) or empty (no table to resolve a root store from —
  * Object.keys skips the DEFINED_TABLES symbol).
  */
-function restoreTargetDir(databaseName: string, targetDatabase: string): string {
+function restoreTargetDir(databaseName: string, targetDatabase: string, { cancel = false } = {}): string {
 	const loaded = targetDatabase === databaseName ? getDatabases()[databaseName] : undefined;
-	return loaded != null && Object.keys(loaded).length > 0
-		? requireRocksRootStore(databaseName, OPERATIONS_ENUM.RESTORE_BACKUP).path
-		: resolveDatabasePath(targetDatabase);
+	const rootStore = loaded != null && Object.keys(loaded).length > 0 ? resolveSingleRootStore(databaseName) : undefined;
+	const databaseDir = rootStore instanceof RocksDatabase ? rootStore.path : resolveDatabasePath(targetDatabase);
+	if (!cancel) assertRestoreTargetNotLmdb(databaseDir, targetDatabase);
+	if (rootStore && !(rootStore instanceof RocksDatabase))
+		requireRocksRootStore(databaseName, OPERATIONS_ENUM.RESTORE_BACKUP);
+	return databaseDir;
 }
 
 /** The id of the job this thread is running, or undefined outside a job worker. */
@@ -761,8 +759,7 @@ export async function restoreBackup(request: any) {
 	} = readRestoreRequest(request);
 	const inPlace = targetDatabase === databaseName;
 	const requestedBackupId = request.backup_id === undefined ? undefined : requireBackupId(request.backup_id);
-	if (!cancel) assertRestoreTargetNotLmdb(resolveDatabasePath(targetDatabase), targetDatabase);
-	const databaseDir = restoreTargetDir(databaseName, targetDatabase);
+	const databaseDir = restoreTargetDir(databaseName, targetDatabase, { cancel });
 	if (cancel || resume || onRestart) {
 		const intent = await import('./restoreIntent.ts');
 		if (cancel) return intent.cancelRestartRestore(databaseName, databaseDir);
@@ -1512,7 +1509,7 @@ export function assertRestoreTargetNotLmdb(databaseDir: string, databaseName: st
 	const lmdbPath = `${resolve(databaseDir)}.mdb`;
 	if (existsSync(lmdbPath)) {
 		throw new ClientError(
-			`Cannot claim database '${databaseName}': an LMDB database already exists at ${lmdbPath}; choose a new database name for the restore`,
+			`Cannot claim database '${databaseName}': an LMDB database already exists; use a target without an LMDB store, or withdraw a pending restore with cancel=true`,
 			409
 		);
 	}

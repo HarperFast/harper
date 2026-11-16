@@ -466,8 +466,10 @@ export function assertRestartRestoreActionable(
 	action: 'resume' | 'cancel'
 ): void {
 	const read = readRestoreReceipt(databaseDir);
-	if (action === 'resume') resumableReceipt(databaseName, read);
-	else assertCancellable(databaseName, read);
+	if (action === 'resume') {
+		resumableReceipt(databaseName, read);
+		assertRestoreTargetNotLmdb(databaseDir, databaseName);
+	} else assertCancellable(databaseName, read);
 }
 
 export async function resumeRestartRestore(

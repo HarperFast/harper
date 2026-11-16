@@ -1739,13 +1739,29 @@ describe('rocksdbBackup', function () {
 					await restoreBackup({ ...SU, database: source, backup_id: backupId, on_restart: true });
 					const pending = readRestoreReceipt(targetDir).receipt;
 					const before = await lmdbFile(targetDir, false);
-					const { runRestartAttempt } = require('#src/dataLayer/restoreIntent');
+					const {
+						assertRestartRestoreActionable,
+						resumeRestartRestore,
+						runRestartAttempt,
+					} = require('#src/dataLayer/restoreIntent');
 					assert.strictEqual(await runRestartAttempt(pending), false);
 					const refused = readRestoreReceipt(targetDir).receipt;
 					assert.strictEqual(refused.state, 'terminal');
 					assert.match(refused.last_error, /Cannot claim.*LMDB/);
 					assert.ok(!existsSync(targetDir));
 					assert.deepStrictEqual(readFileSync(`${targetDir}.mdb`), before);
+					await assert.rejects(
+						validateRestoreBackup({ ...SU, database: source, resume: true }),
+						(error) => error.statusCode === 409 && /LMDB/.test(error.message)
+					);
+					assert.throws(
+						() => assertRestartRestoreActionable(source, targetDir, 'resume'),
+						(error) => error.statusCode === 409 && /LMDB/.test(error.message)
+					);
+					await assert.rejects(
+						resumeRestartRestore(source, targetDir),
+						(error) => error.statusCode === 409 && /LMDB/.test(error.message)
+					);
 					await assert.rejects(
 						restoreBackup({ ...SU, database: source, resume: true }),
 						(error) => error.statusCode === 409 && /LMDB/.test(error.message)
@@ -1757,6 +1773,26 @@ describe('rocksdbBackup', function () {
 				},
 				{ inPlace: true }
 			);
+		});
+
+		it('checks the loaded RocksDB directory rather than a different computed path', async function () {
+			await fixture(async ({ source, backupId, backupDir }) => {
+				const actualDir = harperDatabase.recordsTable(source).primaryStore.rootStore.path;
+				const otherStorage = join(storageDir, 'other-layout');
+				mkdirSync(otherStorage);
+				process.env.STORAGE_PATH = otherStorage;
+				try {
+					await lmdbFile(resolveDatabasePath(source), false);
+					await validateRestoreBackup({ ...SU, database: source, backup_id: backupId });
+					await restoreBackup({ ...SU, database: source, backup_id: backupId, on_restart: true });
+					assert.strictEqual(readRestoreReceipt(actualDir).receipt.state, 'pending');
+				} finally {
+					process.env.STORAGE_PATH = storageDir;
+					await closeLoadedDatabases();
+					clearRestoreDebris(actualDir, backupDir);
+					rmSync(otherStorage, { recursive: true, force: true });
+				}
+			});
 		});
 
 		for (const emptyDir of [false, true]) {
