@@ -91,8 +91,15 @@ test(
 			await waitFor(async () => (await request('/PlaneStatus/')).body.readiness.state === 'ready', 30_000);
 			await waitFor(async () => (await query(0)).status === 200, 30_000);
 			for (let start = 0; start < records.length; start += 500) {
-				const result = await request('/PlaneProbe/', 'PUT', records.slice(start, start + 500));
-				assert(result.status < 300 && !result.aborted, JSON.stringify(result));
+				await waitFor(
+					async () => {
+						const result = await request('/PlaneProbe/', 'PUT', records.slice(start, start + 500));
+						if (result.status === 503 && result.body?.code === 'DERIVED_INDEX_LAGGING') return false;
+						assert(result.status < 300 && !result.aborted, JSON.stringify(result));
+						return true;
+					},
+					{ timeout: 30_000, interval: 100, message: `seed batch ${start} stayed backpressured` }
+				);
 			}
 			for (const path of ['/PlaneProbe/', '/MappedPlane/', '/ConcatenatedPlane/']) {
 				const lagLinesBefore = lagLogLines();
