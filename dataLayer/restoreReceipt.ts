@@ -10,9 +10,11 @@ export const RESTORE_RECEIPT_SUFFIX = '.intent';
 // receipt: databases under one root share the metadata directory but not a lock.
 const RESTORE_RECEIPT_TEMP_SUFFIX = '.intent-tmp';
 export const RESTORE_RECEIPT_VERSION = 1;
+export const DEFAULT_RESTORE_MAX_ATTEMPTS = 3;
 
-export type RestoreRoute = 'online' | 'offline';
-export type RestoreReceiptState = 'applying' | 'committed';
+export type RestoreRoute = 'online' | 'offline' | 'on_restart';
+/** `pending` and `terminal` belong to the restart route: scheduled for the next startup, and out of attempts. */
+export type RestoreReceiptState = 'pending' | 'applying' | 'committed' | 'terminal';
 
 export interface RestoreReceiptOptions {
 	accept_unverified_blobs?: boolean;
@@ -44,6 +46,23 @@ export interface RestoreReceipt {
 	requested_by?: string;
 	requested_at: number;
 	attempts: number;
+	/** The restart route's attempt limit; online and offline restores make one attempt. */
+	max_attempts?: number;
+	/** The restart route keeps a pre-restore backup of the generation it replaces unless told not to. */
+	retain_previous?: boolean;
+	/** Set before the pre-restore backup starts, so a retry adopts that backup instead of taking another. */
+	pre_restore_started_at?: number;
+	pre_restore_backup_id?: number;
+	pre_restore_pin_id?: string;
+	/** The restart restore this one replaced; it inherits that one's pre-restore backup. */
+	superseded_from?: string;
+	/**
+	 * Stands in for a record that could not be read and was cancelled after its target began being replaced:
+	 * `terminal`, naming no backup, so it keeps components off until a restore of the target publishes.
+	 */
+	record_lost?: boolean;
+	/** What a `terminal` receipt was before it ran out of attempts, so `resume` returns it there. */
+	pre_terminal_state?: 'pending' | 'applying';
 	last_error?: string;
 	evidence?: Record<string, unknown>;
 	updated_at: number;
@@ -52,8 +71,8 @@ export interface RestoreReceipt {
 export type RestoreReceiptRead =
 	{ kind: 'absent' } | { kind: 'valid'; receipt: RestoreReceipt } | { kind: 'unreadable'; reason: string };
 
-const STATES = new Set<RestoreReceiptState>(['applying', 'committed']);
-const ROUTES = new Set<RestoreRoute>(['online', 'offline']);
+const STATES = new Set<RestoreReceiptState>(['pending', 'applying', 'committed', 'terminal']);
+const ROUTES = new Set<RestoreRoute>(['online', 'offline', 'on_restart']);
 
 export function restoreReceiptPath(dbPath: string): string {
 	return restoreMetaFilePath(dbPath, RESTORE_RECEIPT_SUFFIX);
@@ -69,7 +88,8 @@ export function readRestoreReceiptFile(receiptPath: string): RestoreReceiptRead 
 		text = readFileSync(receiptPath, 'utf8');
 	} catch (error: any) {
 		if (error.code === 'ENOENT') return { kind: 'absent' };
-		return { kind: 'unreadable', reason: `${error.code ?? 'read error'}: ${error.message}` };
+		// its message names the file, and a reason can reach a client
+		return { kind: 'unreadable', reason: error.code ?? 'read error' };
 	}
 	let parsed: any;
 	try {

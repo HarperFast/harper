@@ -21,7 +21,9 @@ Declarations compile to `fullTextIndexes`, never `attributes` (no stored value).
 - `isAuditEntryWrite` is the only identity test; `removeAuditEntry` keeps unknown-identity tombstones.
 - `receivedIdentityRefs` holds received identities, never log keys: unaudited, the only re-delivery proof ([receipt rules](receipt-rules.md)). **Never "fix" a log key to the version** (`auditRefKinds.test.js`).
 - LMDB merges keep the older version (`noAuditOutOfOrderPatch.test.js`). Duplicates use committed identity; only minted keys mark a retry's own staging (`readsOwnStaging`, `replicatedRetryDuplicate.test.js`).
-- RocksDB's watermark stalls at uncommitted entries, so ref walks pass `followingCommittedRef`. Gap: history walks follow one chain (#3977).
+- RocksDB's watermark stalls at uncommitted entries, so ref walks pass `followingCommittedRef`. Gap: history walks follow one chain, plus late messages (#3977).
+- A replicated publish is skipped only on its logged entry (`isMessageLogged`), at or below the record's version, with abort markers on; in history older than the process only a record vouches for it (`replicatedPublishRedelivery.test.js`).
+- **A record's version never moves back**: a message older than it keeps the version and refs its entry, which history walks reach by `isLateEntry` (`latePublishVersionRegression.test.js`).
 - `FULL_WRITE_HEAD`: the head replaced the record and is unchanged since; any other write clears it (`fullWriteHead.test.js`).
 - Named-log misses never fall back to `local`; `local` reads filter by `nodeId` (`auditLog.test.js`).
 - Equal versions tie only within an origin, else node name orders (`precedesAudited`, `equalVersionOriginOrder.test.js`).
@@ -113,7 +115,7 @@ The commit encodes the shared record after the fill resolves, so **copy a resolv
 
 ## getFromSource() waiters share a fill that stored nothing
 
-Same-thread waiters reuse only a committed, kept, plain-data fill (`isSharableRecord`); a source's `noCacheStore` never shares, a request's only with `noCacheStore` waiters; failures and other threads never share (`sourceFillCoalescing.test.js`).
+Same-thread waiters reuse only a committed, kept, plain-data fill (`isSharableRecord`); a source's `noCacheStore` never shares, a request's only with `noCacheStore` waiters; a thrown 404/410 is shared as the one error (`isNotFoundFailure`); other failures and other threads never share (`sourceFillCoalescing.test.js`).
 
 ## getFromSource() keeps source versions separate from fill ordering
 
@@ -121,7 +123,7 @@ A source's `lastModified` caps at local time: the version is the last-writer-win
 
 ## getFromSource() record locks outlive neither their handle nor a close
 
-Closing the owning handle releases the fill's lock (`releaseRecordLock` ignores closed stores); waiters wake on `LOCK_TIMEOUT` (a close notifies no other thread) (`cacheFillClose.test.js`).
+Closing the owning handle releases the fill's lock (`releaseRecordLock` ignores closed stores); otherwise `releaseFill` frees it once, at commit or `LOCK_TIMEOUT`. Waiters never unlock; they recheck on timeout, as a close notifies no other thread (`cacheFillClose.test.js`, `sourceFillLockTenure.test.js`).
 
 ## Blob orphan cleanup: pre-saved files outlive cancelled commits
 

@@ -216,6 +216,160 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 			assert.strictEqual(user.isCurrentUser(unknown), false);
 		});
 
+		it('tells a user built from an hdb_user record from one with no record', async () => {
+			const unknown = await user.findAndValidateUser('lookup_user', null, false);
+			assert.strictEqual(user.isRecordBacked(unknown), false);
+			assert.strictEqual(user.isRecordBacked(user.cloneUserView(unknown)), false, 'a role-less clone');
+			await testUtils.seedUsers([lookupUser({ role: 'missing_role' })]);
+			const roleless = await user.findAndValidateUser('lookup_user', null, false);
+			assert.strictEqual(roleless.role, undefined);
+			assert.strictEqual(user.isRecordBacked(roleless), true, 'a record whose role is missing');
+			assert.strictEqual(user.isRecordBacked({ username: 'scoped', role: { permission: {} } }), undefined);
+		});
+
+		it('tells the refusal of an inactive user from other lookup failures', async () => {
+			await testUtils.seedUsers([lookupUser({ active: false })]);
+			const inactive = await user.findAndValidateUser('lookup_user', null, false).catch((error) => error);
+			assert.strictEqual(user.isInactiveUserRejection(inactive), true);
+			const wrongPassword = await user.findAndValidateUser('nobody_cn', 'x').catch((error) => error);
+			assert.strictEqual(user.isInactiveUserRejection(wrongPassword), false);
+			assert.strictEqual(
+				user.isInactiveUserRejection(new Error(inactive.message)),
+				false,
+				"only the lookup's own refusal"
+			);
+		});
+
+		it('marks a copy as a certificate principal, never the object server.getUser returned', async () => {
+			const unknown = await user.findAndValidateUser('lookup_user', null, false);
+			const named = user.certificatePrincipal(unknown);
+			assert.notStrictEqual(named, unknown);
+			assert.strictEqual(user.isCertificatePrincipal(named), true);
+			assert.strictEqual(user.isCertificatePrincipal(unknown), false, 'the shared object stays unmarked');
+			assert.strictEqual(user.isRecordBacked(named), false, 'the copy keeps its record provenance');
+			assert.strictEqual(user.isCertificatePrincipal(user.cloneUserView(named)), true, 'a clone keeps the mark');
+			assert.strictEqual(user.certificateAdmission(named), named, 'the copy is the admission');
+			assert.strictEqual(user.certificateAdmission(user.cloneUserView(named)), named, 'a clone keeps the admission');
+			const again = user.certificatePrincipal(named);
+			assert.strictEqual(user.certificateAdmission(again), again, 'a new admission of a marked object is its own');
+			assert.strictEqual(
+				user.certificateAdmission(user.cloneUserView(unknown, undefined, named)),
+				named,
+				"a recheck's view carries the admission it replaced"
+			);
+			const carried = user.withCertificateAdmission({ username: 'lookup_user' }, named);
+			assert.strictEqual(user.certificateAdmission(carried), named);
+			const plain = { username: 'lookup_user' };
+			assert.strictEqual(
+				user.withCertificateAdmission(plain, unknown),
+				plain,
+				'nothing to carry from an unmarked user'
+			);
+			assert.strictEqual(
+				user.isCertificatePrincipal(JSON.parse(JSON.stringify(named))),
+				false,
+				'data never carries it'
+			);
+			assert.strictEqual(user.isCertificatePrincipal(structuredClone(named)), false);
+
+			const frozen = Object.freeze({ username: 'frozen_cn' });
+			assert.strictEqual(user.isCertificatePrincipal(user.certificatePrincipal(frozen)), true);
+			for (const none of [null, undefined]) assert.strictEqual(user.certificatePrincipal(none), none);
+
+			const component = { username: 'component_cn', role: { permission: {} } };
+			user.trackUserRecords(component, user.userRecordVersions('component_cn'));
+			await testUtils.seedUsers([lookupUser({ username: 'component_cn' })]);
+			assert.strictEqual(
+				user.isCurrentUser(user.certificatePrincipal(component)),
+				false,
+				'tracked versions carry over'
+			);
+		});
+
+		it('keeps a certificate view of a record-backed user current only while its records are', async () => {
+			await testUtils.seedUsers([lookupUser()]);
+			const view = user.certificatePrincipal(await user.findAndValidateUser('lookup_user', null, false));
+			assert.strictEqual(user.isRecordBacked(view), true);
+			assert.strictEqual(user.isCurrentUser(view), true);
+			await databases.system.hdb_role.put({ id: 'lookup_role', role: 'lookup_role', permission: {} });
+			assert.strictEqual(user.isCurrentUser(view), false, 'a role change');
+		});
+
+		it("marks the built-in lookup's new view in place, and copies what another resolver returned", async () => {
+			const { server } = require('#src/server/Server');
+			const builtIn = await server.getUser('lookup_user', null);
+			assert.strictEqual(
+				user.certificatePrincipal(builtIn, server.getUser),
+				builtIn,
+				'no copy of a view only it holds'
+			);
+			assert.strictEqual(user.isCertificatePrincipal(builtIn), true);
+			assert.strictEqual(user.certificateAdmission(builtIn), builtIn, 'the view is its own admission');
+
+			const fromOverride = await user.findAndValidateUser('lookup_user', null, false);
+			const named = user.certificatePrincipal(fromOverride, async () => fromOverride);
+			assert.notStrictEqual(named, fromOverride);
+			assert.strictEqual(user.isCertificatePrincipal(fromOverride), false, 'another resolver may share it');
+			assert.strictEqual(user.isCertificatePrincipal(named), true);
+		});
+
+		it('copies and marks a plain object from another realm, or with a null prototype', () => {
+			const vm = require('node:vm');
+			const otherRealm = vm.runInNewContext('({ username: "realm_cn" })');
+			assert.notStrictEqual(Object.getPrototypeOf(otherRealm), Object.prototype);
+			const bare = Object.assign(Object.create(null), { username: 'bare_cn' });
+			for (const principal of [otherRealm, bare]) {
+				const named = user.certificatePrincipal(principal);
+				assert.notStrictEqual(named, principal);
+				assert.strictEqual(user.isCertificatePrincipal(named), true);
+				assert.strictEqual(named.username, principal.username);
+			}
+		});
+
+		it('leaves a plain object with a non-enumerable own property as it is, unmarked', () => {
+			const hidden = Object.defineProperty({ username: 'hidden_cn' }, 'authExpiresAt', { value: 1, enumerable: false });
+			assert.strictEqual(user.certificatePrincipal(hidden), hidden, 'a copy would drop its expiry');
+			assert.strictEqual(user.isCertificatePrincipal(hidden), false);
+		});
+
+		it('leaves an object on any other null-rooted prototype as it is, unmarked', () => {
+			class Detached extends null {
+				constructor() {
+					return Object.create(Detached.prototype);
+				}
+				get authExpiresAt() {
+					return 1;
+				}
+			}
+			const detached = new Detached();
+			detached.username = 'detached_cn';
+			const prototype = Object.create(null, { authExpiresAt: { get: () => 1 } });
+			const custom = Object.assign(Object.create(prototype), { username: 'custom_cn' });
+			for (const principal of [detached, custom]) {
+				assert.strictEqual(user.certificatePrincipal(principal), principal, 'a copy would drop its getters');
+				assert.strictEqual(user.isCertificatePrincipal(principal), false);
+			}
+		});
+
+		it('leaves a class-instance principal as it is, unmarked', () => {
+			class GetterRole {
+				username = 'getter_cn';
+				get role() {
+					return { permission: {} };
+				}
+			}
+			class PrivateName {
+				#name = 'private_cn';
+				get username() {
+					return this.#name;
+				}
+			}
+			for (const principal of [new GetterRole(), new PrivateName()]) {
+				assert.strictEqual(user.certificatePrincipal(principal), principal);
+				assert.strictEqual(user.isCertificatePrincipal(principal), false);
+			}
+		});
+
 		it('treats a user this module did not build as current', () => {
 			assert.strictEqual(user.isCurrentUser({ username: 'scoped', role: { permission: {} } }), true);
 		});

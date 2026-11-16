@@ -2,6 +2,7 @@ import { FSWatcher } from 'chokidar';
 import { getConfigFilePath } from './configUtils.ts';
 import { readConfigFileSync } from './readConfigFileSync.ts';
 import { EventEmitter, once } from 'node:events';
+import { statSync, type Stats } from 'node:fs';
 import { isDeepStrictEqual } from 'node:util';
 import { parseConfigFile } from './parseConfigFile.ts';
 import {
@@ -56,9 +57,14 @@ export class RootConfigWatcher extends EventEmitter {
 	#usingPolling: boolean;
 	#closed: boolean;
 	#openCount: number = 0;
+	#generation: number = 0;
 	#readCount: number = 0;
 	#readRetry: ConfigReadRetry = new ConfigReadRetry();
 	#trailingReadTimer?: NodeJS.Timeout;
+	// From the stat chokidar took before its last (re)watch; the arming and verify reads compare
+	// against it and never set it.
+	#watchedIno?: number;
+	#reopening?: Promise<void>;
 	#armGate: ArmGate = new ArmGate();
 	// The gate above is chokidar's scan finishing; this is the barrier's gate. A terminal outcome
 	// opens it without claiming the watch is armed, so the arming re-read still runs afterwards.
@@ -77,11 +83,11 @@ export class RootConfigWatcher extends EventEmitter {
 		this.#usingPolling = watchTarget.mustPoll || Boolean(process.versions.bun);
 		this.#closed = false;
 		this.ready = once(this, 'ready');
-		this.#openWatcher();
+		this.#openWatcher(++this.#generation);
 	}
 
-	#openWatcher() {
-		const generation = ++this.#openCount;
+	#openWatcher(generation: number) {
+		this.#openCount++;
 		this.#watcher = guardedWatch(this.#watchPath, {
 			persistent: false,
 			...(this.#usingPolling ? POLLING_FALLBACK_OPTIONS : {}),
@@ -96,7 +102,7 @@ export class RootConfigWatcher extends EventEmitter {
 	}
 
 	#handleArmed(generation: number) {
-		if (this.#closed || generation !== this.#openCount) return;
+		if (this.#closed || generation !== this.#generation) return;
 		this.#armGate.arm(() => this.#markArmed());
 	}
 
@@ -108,6 +114,44 @@ export class RootConfigWatcher extends EventEmitter {
 		this.#read(true);
 		// A read that armed the ladder settles `ready` itself, with the newer config.
 		if (!this.#readRetry.pending) this.#emitReady();
+		this.#verifyWatchedInode(true);
+	}
+
+	#verifyWatchedInode(retryInconclusive: boolean) {
+		if (this.#closed || this.#usingPolling || this.#watchedIno === undefined || process.platform === 'win32') return;
+		let ino: number | undefined;
+		try {
+			ino = statSync(this.#watchPath, { throwIfNoEntry: false })?.ino;
+		} catch {}
+		// A probe that could not tell must not certify the watch.
+		if (!ino) {
+			if (retryInconclusive) this.#scheduleTrailingRead(false);
+		} else if (ino !== this.#watchedIno) this.#reopenWatcher();
+	}
+
+	// The replaced generation stops speaking for the watch before its teardown settles, and a request
+	// that arrives while one is in flight joins it: the replacement reads `#usingPolling` when it opens.
+	#reopenWatcher() {
+		if (this.#closed || this.#reopening) return;
+		const generation = ++this.#generation;
+		this.#armGate.reset();
+		this.#watchedIno = undefined;
+		const previous = this.#watcher;
+		// Start close() from a microtask, so a synchronous throw cannot escape the caller (an 'error'
+		// listener or a timer) as an uncaught exception.
+		this.#reopening = Promise.resolve()
+			.then(() => previous.close())
+			.catch(() => {
+				// Teardown errors on a watcher being replaced are not actionable.
+			})
+			.then(() => {
+				this.#reopening = undefined;
+				if (!this.#closed) this.#openWatcher(generation);
+			})
+			.catch((error) => {
+				this.#reopening = undefined;
+				logger().warn(`Could not reopen the ${this.#configFilePath} watch`, errorForLog(error));
+			});
 	}
 
 	#emitReady() {
@@ -173,22 +217,7 @@ export class RootConfigWatcher extends EventEmitter {
 			if (!this.#usingPolling) {
 				warnWatcherFallback(this.#configFilePath);
 				this.#usingPolling = true;
-				// The generation that just failed no longer speaks for the watch; the replacement
-				// arms on its own scan, and re-reads then as the first one did.
-				this.#armGate.reset();
-				// Start close() from a microtask, not directly here, so a synchronous throw
-				// can't escape this 'error' listener as an uncaught exception.
-				Promise.resolve()
-					.then(() => this.#watcher.close())
-					.catch(() => {
-						// Teardown errors on an already-failed watcher are not actionable.
-					})
-					.then(() => {
-						if (!this.#closed) this.#openWatcher();
-					})
-					.catch((error) =>
-						logger().warn(`Could not reopen the ${this.#configFilePath} watch on polling`, errorForLog(error))
-					);
+				this.#reopenWatcher();
 			} else {
 				// Already polling — the replacement failed too, or the watch was polling from
 				// construction (`mustPoll`) and never had a fallback to take. Either way the branch
@@ -218,16 +247,18 @@ export class RootConfigWatcher extends EventEmitter {
 		}
 	}
 
-	handleChange() {
+	handleChange(_path?: string, stats?: Stats) {
+		if (stats?.ino) this.#watchedIno = stats.ino;
 		if (this.#read(true)) this.#scheduleTrailingRead();
 	}
 
-	#scheduleTrailingRead() {
+	#scheduleTrailingRead(retryInconclusive: boolean = true) {
 		this.#clearTrailingRead();
 		if (this.#closed || this.#readRetry.pending) return;
 		this.#trailingReadTimer = setTimeout(() => {
 			this.#trailingReadTimer = undefined;
 			this.#read(true);
+			this.#verifyWatchedInode(retryInconclusive);
 		}, TRAILING_VERIFY_READ_DELAY_MS);
 		this.#trailingReadTimer.unref();
 	}

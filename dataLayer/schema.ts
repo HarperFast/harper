@@ -22,6 +22,7 @@ import {
 	isBranchIdentity,
 	isNodeLocalTable,
 	recordTableDrop,
+	throwIfUnloadedDatabaseHeldByRestore,
 } from '../resources/databases.ts';
 const getDatabases = _getDatabases;
 import { transformReq } from '../utility/common_utils.ts';
@@ -198,6 +199,7 @@ export async function dropSchema(dropSchemaObject: any) {
 
 	let invalidSchemaMsg = await schemaMetadataValidator.checkSchemaExists(dropSchemaObject.schema);
 	if (invalidSchemaMsg && !databaseDropRecoveryPending(dropSchemaObject.schema)) {
+		throwIfUnloadedDatabaseHeldByRestore(dropSchemaObject.schema);
 		throw handleHDBError(
 			new Error(),
 			invalidSchemaMsg,

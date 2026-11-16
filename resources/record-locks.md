@@ -176,8 +176,6 @@ Consequences that shape the code:
   rather than the scoped lock's placeholder, so a scoped → hold upgrade keeps them and `unlock()` turns them back
   into ordinary unlocked writes rather than dropping them (a delete staged behind the placeholder was dropped
   with it, harper#3902). Covered by `recordLockStaticVerbs.test.js` and `recordLockScopedDelete.test.js`.
-  A bound publish can still stamp below a concurrent record version; see
-  [An out-of-order publish rewinds the record's version, letting a stale delete or write through](https://github.com/HarperFast/harper/issues/3637).
 - **Lock first, then write (harper#3896).** A fresh `lock()` on a key this transaction has a pending write to
   is refused with 409 (`hasPendingWriteTo`: owned, not dropped, and unsaved or saved into a transaction that
   has not committed; an `ImmediateTransaction`'s saved write was submitted on its own). Such a write was
@@ -366,8 +364,7 @@ would land the write the 409 refused; the caller catches it and writes again (th
 scoped lock, as after any `save()`).
 Both counters move synchronously when a commit settles, before the awaiting caller resumes, so awaited
 sequential writes are never refused. Each holder write therefore stamps above the committed floor: overlapping
-holder writes can neither share a version (harper#4098) nor land out of order, which let an older publish
-rewind the row (`_writePublish` stores at its own version without a last-writer comparison). An admitted holder
+holder writes can neither share a version (harper#4098) nor land out of order. An admitted holder
 write on an OPEN `ImmediateTransaction` whose commit is in flight (a blob still streaming, an async `before`
 hook) is staged on a fresh native transaction flagged `immediateCommit` (`isolatedCommit`), so it neither joins
 that commit's reserved log key nor waits for it. A holder write whose active ancestor commit hook belongs to a
