@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794733524517,
+  "lastUpdate": 1794814231781,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -9458,6 +9458,63 @@ window.BENCHMARK_DATA = {
           {
             "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 2150.54,
+            "unit": "ops/sec"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "c65aa2174489bc9a3c3ac3ed4cccd0a3f456e19b",
+          "message": "Fence before superseding the blob in the aborted-restore reclamation test (#4349)\n\n* Fence before superseding the blob in the aborted-restore reclamation test\n\nThe test superseded a blob, then fenced. The superseding write queues the old\nfile's reclamation when it is issued, before its commit settles, so the 200ms\ndeadline raced the LMDB commit and the fence; on a loaded runner the entry came\ndue first and was unlinked before the fence existed (\"fenced, so not yet\ndrained\"). The throw also skipped the fence release, so the next test saw the\ndatabase as mid-restore (\"nothing has happened yet\").\n\nSupersede with a blob-less put after fencing (it saves nothing, so the fence\ndoes not refuse it), and release the fence in finally.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nDispatch-Task: main-red-kriszyp_harper_580696c93_4d7eefda\n\n* Trim the aborted-restore test comments to the constraint\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nDispatch-Task: main-red-kriszyp_harper_580696c93_4d7eefda\n\n* Drop the finally comment in the aborted-restore test\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nDispatch-Task: main-red-kriszyp_harper_580696c93_4d7eefda\n\n---------\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-11-15T13:22:16Z",
+          "url": "https://github.com/HarperFast/harper/commit/c65aa2174489bc9a3c3ac3ed4cccd0a3f456e19b"
+        },
+        "date": 1794814228980,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "load — bulk insert",
+            "value": 5746.67,
+            "unit": "records/sec"
+          },
+          {
+            "name": "workload C — Read only (100% read)",
+            "value": 8774.21,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload B — Read mostly (95% read / 5% update)",
+            "value": 8828.44,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload A — Update heavy (50% read / 50% update)",
+            "value": 6503.29,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
+            "value": 4644.9,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
+            "value": 8811.31,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
+            "value": 916.68,
             "unit": "ops/sec"
           }
         ]
