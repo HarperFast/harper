@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794814236911,
+  "lastUpdate": 1794820929199,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -29343,6 +29343,58 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw write ops",
             "value": 304236,
+            "unit": "ops"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "c65aa2174489bc9a3c3ac3ed4cccd0a3f456e19b",
+          "message": "Fence before superseding the blob in the aborted-restore reclamation test (#4349)\n\n* Fence before superseding the blob in the aborted-restore reclamation test\n\nThe test superseded a blob, then fenced. The superseding write queues the old\nfile's reclamation when it is issued, before its commit settles, so the 200ms\ndeadline raced the LMDB commit and the fence; on a loaded runner the entry came\ndue first and was unlinked before the fence existed (\"fenced, so not yet\ndrained\"). The throw also skipped the fence release, so the next test saw the\ndatabase as mid-restore (\"nothing has happened yet\").\n\nSupersede with a blob-less put after fencing (it saves nothing, so the fence\ndoes not refuse it), and release the fence in finally.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nDispatch-Task: main-red-kriszyp_harper_580696c93_4d7eefda\n\n* Trim the aborted-restore test comments to the constraint\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nDispatch-Task: main-red-kriszyp_harper_580696c93_4d7eefda\n\n* Drop the finally comment in the aborted-restore test\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nDispatch-Task: main-red-kriszyp_harper_580696c93_4d7eefda\n\n---------\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-11-15T13:22:16Z",
+          "url": "https://github.com/HarperFast/harper/commit/c65aa2174489bc9a3c3ac3ed4cccd0a3f456e19b"
+        },
+        "date": 1794820924936,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "value": 25089,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed3",
+            "value": 9926,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed5",
+            "value": 9648,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "value": 14864896,
+            "unit": "records"
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "value": 9368,
+            "unit": "ops"
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "value": 3610,
             "unit": "ops"
           }
         ]
