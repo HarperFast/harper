@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794814231781,
+  "lastUpdate": 1794814236911,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -22296,6 +22296,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "E scan p99 — short ranges",
             "value": 95.69,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "c65aa2174489bc9a3c3ac3ed4cccd0a3f456e19b",
+          "message": "Fence before superseding the blob in the aborted-restore reclamation test (#4349)\n\n* Fence before superseding the blob in the aborted-restore reclamation test\n\nThe test superseded a blob, then fenced. The superseding write queues the old\nfile's reclamation when it is issued, before its commit settles, so the 200ms\ndeadline raced the LMDB commit and the fence; on a loaded runner the entry came\ndue first and was unlinked before the fence existed (\"fenced, so not yet\ndrained\"). The throw also skipped the fence release, so the next test saw the\ndatabase as mid-restore (\"nothing has happened yet\").\n\nSupersede with a blob-less put after fencing (it saves nothing, so the fence\ndoes not refuse it), and release the fence in finally.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nDispatch-Task: main-red-kriszyp_harper_580696c93_4d7eefda\n\n* Trim the aborted-restore test comments to the constraint\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nDispatch-Task: main-red-kriszyp_harper_580696c93_4d7eefda\n\n* Drop the finally comment in the aborted-restore test\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nDispatch-Task: main-red-kriszyp_harper_580696c93_4d7eefda\n\n---------\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-11-15T13:22:16Z",
+          "url": "https://github.com/HarperFast/harper/commit/c65aa2174489bc9a3c3ac3ed4cccd0a3f456e19b"
+        },
+        "date": 1794814236279,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "C read p99 — read only",
+            "value": 15.38,
+            "unit": "ms"
+          },
+          {
+            "name": "B read p99 — read mostly",
+            "value": 14.77,
+            "unit": "ms"
+          },
+          {
+            "name": "B update p99 — read mostly",
+            "value": 16.87,
+            "unit": "ms"
+          },
+          {
+            "name": "A read p99 — update heavy",
+            "value": 19.88,
+            "unit": "ms"
+          },
+          {
+            "name": "A update p99 — update heavy",
+            "value": 23.72,
+            "unit": "ms"
+          },
+          {
+            "name": "F read p99 — read-modify-write",
+            "value": 20.69,
+            "unit": "ms"
+          },
+          {
+            "name": "F rmw p99 — read-modify-write",
+            "value": 39.96,
+            "unit": "ms"
+          },
+          {
+            "name": "D read p99 — read latest",
+            "value": 15.52,
+            "unit": "ms"
+          },
+          {
+            "name": "D insert p99 — read latest",
+            "value": 19.06,
+            "unit": "ms"
+          },
+          {
+            "name": "E insert p99 — short ranges",
+            "value": 42.04,
+            "unit": "ms"
+          },
+          {
+            "name": "E scan p99 — short ranges",
+            "value": 254.64,
             "unit": "ms"
           }
         ]
