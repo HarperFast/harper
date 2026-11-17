@@ -19,6 +19,8 @@ import { DeployRenderer } from './deployRenderer.ts';
 import { awaitRollout, summarizeRollout, type RolloutOutcome } from './deployRollout.ts';
 import { declaredDeploySource } from './deploySource.ts';
 import { PRODUCT_NAME } from '../utility/packageUtils.js';
+import { RESTORE_BACKUP_ARCHIVE_CAPABILITY } from '../utility/serverCapabilities.ts';
+import { basename, resolve as resolvePath } from 'node:path';
 import { getHdbPid } from '../utility/processManagement/processManagement.ts';
 import { initConfig, getConfigPath } from '../config/configUtils.ts';
 // The `deploy setup` seal and this by-reference flag both name the same hdb_secret row, and the
@@ -147,6 +149,48 @@ function versionSupportsStreamingDeploy(version: unknown): boolean {
 }
 
 /**
+ * Whether a `registration_info` reply advertises archive restore. An older server ignores `payload`
+ * and restores its latest managed backup instead, so anything short of the advertised capability —
+ * no reply, no list, a list without it — reads as "no".
+ */
+export function advertisesArchiveRestore(info: unknown): boolean {
+	const capabilities = (info as { capabilities?: unknown } | null)?.capabilities;
+	return Array.isArray(capabilities) && capabilities.includes(RESTORE_BACKUP_ARCHIVE_CAPABILITY);
+}
+
+/** A connection or TLS failure propagates as itself; only a server that answered without the capability is told to upgrade. */
+async function assertTargetRestoresArchives(options: any): Promise<void> {
+	const response = await httpRequest(
+		{ ...options, headers: { ...options.headers, Accept: 'application/json' }, timeout: CLI_OPERATION_TIMEOUT_MS },
+		{ operation: 'registration_info' }
+	);
+	let info: unknown;
+	try {
+		info = JSON.parse(response.body ?? '');
+	} catch {
+		info = undefined;
+	}
+	if (response.statusCode !== 200) {
+		const reason = (info as { error?: unknown } | undefined)?.error;
+		const hint =
+			response.statusCode === 401
+				? ' Check the credentials for this target.'
+				: response.statusCode === 403
+					? ' The role must be allowed registration_info, which the CLI asks before uploading an archive.'
+					: '';
+		throw new Error(
+			`The target Harper answered registration_info with status ${response.statusCode}${typeof reason === 'string' ? ` (${reason})` : ''}, so the CLI cannot tell whether it restores an uploaded archive; nothing was sent.${hint}`
+		);
+	}
+	if (!advertisesArchiveRestore(info)) {
+		const version = (info as { version?: unknown } | undefined)?.version;
+		throw new Error(
+			`The target Harper (${typeof version === 'string' ? `version ${version}` : 'version unknown'}) does not advertise restoring an uploaded archive, so it would restore its latest managed backup instead. Upgrade it, or stop it and restore offline with this CLI.`
+		);
+	}
+}
+
+/**
  * Probes a remote target's Harper version via `registration_info` (a lightweight, long-lived
  * operation present on both < 5.1 and >= 5.1 servers that returns `{ version }`) to decide
  * whether the streaming deploy protocol is supported. Any probe failure — non-200, missing
@@ -167,6 +211,16 @@ async function targetSupportsStreamingDeploy(options: any): Promise<boolean> {
 		return versionSupportsStreamingDeploy(version);
 	} catch {
 		return true;
+	}
+}
+
+// Opened only when the body reaches the file part, so an open failure is read by the upload rather than
+// emitted with no listener; reported as the archive's, not as a connection failure (see the catch below).
+async function* readUploadFile(path: string): AsyncGenerator<Buffer> {
+	try {
+		for await (const chunk of fs.createReadStream(path)) yield chunk as Buffer;
+	} catch (err: any) {
+		throw new Error(`Cannot read the archive '${path}': ${err?.code ?? err?.message}`, { cause: err });
 	}
 }
 
@@ -580,6 +634,20 @@ export function prepareDeployByRef(req: any): void {
 }
 
 const PREPARE_OPERATION: any = {
+	restore_backup: async (req) => {
+		if (req.file === undefined) return;
+		const archivePath = resolvePath(String(req.file));
+		let stats: fs.Stats;
+		try {
+			stats = await fs.promises.stat(archivePath);
+		} catch (error: any) {
+			throw new Error(`Cannot read the archive '${archivePath}': ${error?.code ?? error?.message}`);
+		}
+		if (!stats.isFile()) throw new Error(`'${archivePath}' is not a file`);
+		delete req.file;
+		req._uploadFile = archivePath;
+		req._uploadSize = stats.size;
+	},
 	deploy_component: async (req) => {
 		// Consumed here: they say how long this command follows a rolling deploy, which is no business of the server's.
 		req._wait = req.wait;
@@ -955,6 +1023,7 @@ async function cliOperations(req: any, skipResponseLog = false) {
 	try {
 		({ options, target } = await resolveRequestOptions(req));
 		await PREPARE_OPERATION[req.operation]?.(req);
+		if (req._uploadFile) await assertTargetRestoresArchives(options);
 		// Streaming deploy (multipart upload + SSE progress) only works against >= 5.1 servers.
 		// When deploying to a remote target, probe its version first and downgrade to the
 		// legacy JSON deploy if it predates 5.1. Local (domain-socket) deploys always
@@ -991,7 +1060,18 @@ async function cliOperations(req: any, skipResponseLog = false) {
 		// below share the same instance.
 		const renderer = req._multipart ? new DeployRenderer({ uploadTotal: req._uploadSizeEstimate ?? 0 }) : null;
 		let body;
-		if (req._multipart) {
+		if (req._uploadFile) {
+			const multipart = buildMultipartBody(operationFields(req), {
+				name: 'payload',
+				filename: basename(req._uploadFile),
+				contentType: 'application/octet-stream',
+				stream: Readable.from(readUploadFile(req._uploadFile)),
+				size: req._uploadSize,
+			});
+			options.headers['Content-Type'] = multipart.contentType;
+			options.headers['Content-Length'] = multipart.contentLength;
+			body = multipart.stream;
+		} else if (req._multipart) {
 			// Create the package stream here — after the renderer exists — so we can pass
 			// renderer.countUploadBytes as the onBytes callback. Both progress and total are
 			// uncompressed bytes, so the bar tracks accurately to 100% without premature snapping.

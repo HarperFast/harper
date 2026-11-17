@@ -11,15 +11,15 @@ Operations for backing up and restoring databases. For how the backup system wor
 
 All backup operations require a `super_user` role when invoked through a running server; run offline (from the CLI with the server stopped), they are governed by filesystem permissions instead. All accept a `database` parameter that defaults to `data`. The engine badge on each operation indicates which storage engines support it: the managed-backup operations require RocksDB, while `get_backup` works with both RocksDB and LMDB.
 
-| Operation                           | Description                                                         | Role Required |
-| ----------------------------------- | ------------------------------------------------------------------- | ------------- |
-| [`create_backup`](#create_backup)   | Creates a managed, incremental directory backup of a database (job) | super_user    |
-| [`list_backups`](#list_backups)     | Lists the managed backups for a database                            | super_user    |
-| [`verify_backup`](#verify_backup)   | Verifies a managed backup's integrity (job)                         | super_user    |
-| [`delete_backup`](#delete_backup)   | Deletes a single managed backup                                     | super_user    |
-| [`purge_backups`](#purge_backups)   | Deletes all but the newest `keep_count` managed backups             | super_user    |
-| [`restore_backup`](#restore_backup) | Restores a database from a managed backup (job)                     | super_user    |
-| [`get_backup`](#get_backup)         | Streams a full snapshot of a database in the response for download  | super_user    |
+| Operation                           | Description                                                               | Role Required |
+| ----------------------------------- | ------------------------------------------------------------------------- | ------------- |
+| [`create_backup`](#create_backup)   | Creates a managed, incremental directory backup of a database (job)       | super_user    |
+| [`list_backups`](#list_backups)     | Lists the managed backups for a database                                  | super_user    |
+| [`verify_backup`](#verify_backup)   | Verifies a managed backup's integrity (job)                               | super_user    |
+| [`delete_backup`](#delete_backup)   | Deletes a single managed backup                                           | super_user    |
+| [`purge_backups`](#purge_backups)   | Deletes all but the newest `keep_count` managed backups                   | super_user    |
+| [`restore_backup`](#restore_backup) | Restores a database from a managed backup or a `get_backup` archive (job) | super_user    |
+| [`get_backup`](#get_backup)         | Streams a full snapshot of a database in the response for download        | super_user    |
 
 ## Running backup operations from the CLI
 
@@ -144,6 +144,9 @@ Through a running server this runs as a background [job](../operations-api/opera
 | `retain_previous`            | <VersionBadge version="v5.4.0" /> Only with `on_restart`. Default `true`. Before replacing the database, the startup takes a managed backup of it as it is, so the restore can be rolled back. `false` replaces it without one.                                                                                                       |
 | `resume`                     | <VersionBadge version="v5.4.0" /> Run a pending or stopped restart restore again, with the options it was requested with and its attempt count reset, and restart Harper. Takes only `database`.                                                                                                                                      |
 | `cancel`                     | <VersionBadge version="v5.4.0" /> Withdraw a pending or stopped restart restore. Takes only `database`. Works with Harper stopped too.                                                                                                                                                                                                |
+| `file`                       | <VersionBadge version="v5.4.2" /> CLI only. Restore the `get_backup` archive at this path instead of a managed backup. See [restoring a `get_backup` archive](#restoring-a-get_backup-archive).                                                                                                                                       |
+| `payload`                    | <VersionBadge version="v5.4.2" /> The archive as the last part of a `multipart/form-data` request, which is what `file` sends.                                                                                                                                                                                                        |
+| `sha256`                     | <VersionBadge version="v5.4.2" /> With an archive only. The archive's expected sha256, as 64 hexadecimal characters; a different archive is refused before anything is queued.                                                                                                                                                        |
 
 ```json
 { "operation": "restore_backup", "database": "data", "backup_id": 1 }
@@ -276,6 +279,65 @@ A restore (<database>) has not published, so this boot starts in safe mode and l
 The operations API keeps running, so finish or withdraw the restore as [above](#failed-attempts). Once no restore keeps components off, Harper restarts by itself and loads them. An ordinary restore that does so reports `restarting: true` in its result. If you start Harper with `HARPER_SAFE_MODE` already set, Harper keeps your value, across its own restarts too, and does not log this message.
 
 An incomplete restore that is not a restart restore, including one an earlier version of Harper left, blocks only its own database ([if a restore is interrupted](#if-a-restore-is-interrupted)).
+
+### Restoring a `get_backup` archive
+
+<VersionBadge version="v5.4.2" />
+
+`restore_backup` restores a [`get_backup`](#get_backup) archive, so a database can be restored from a snapshot kept off-host, or cloned from another node, without a shell on the server:
+
+```bash
+harper get_backup database=data target=https://node-1.example.com:9925 out=./data.tar.gz
+harper restore_backup database=data file=./data.tar.gz
+# at the next startup, for a database a component keeps open
+harper restore_backup database=data file=./data.tar.gz on_restart=true
+# against a remote server
+harper restore_backup database=data file=./data.tar.gz target=https://node-2.example.com:9925
+```
+
+The CLI sends the file as the request's `payload`, the last part of a `multipart/form-data` request. Harper extracts the archive as it arrives, so the request returns once the upload is extracted, with the `job_id` and the archive's `archive_sha256`. The restore then runs as a job, like any other.
+
+`database` is the database the archive replaces. It may be a database that does not exist yet; the archive's own database name is reported but not used. `backup_id`, `target_database`, `immutable_source` and `allow_engine_only` do not apply to an archive and are refused with status code 400. `on_restart`, `retain_previous`, `accept_incompatible_backup`, `accept_unverified_blobs` and `sha256` apply as they do to a managed backup. The `system` database is restored from an archive only with Harper stopped.
+
+#### Which archives are accepted
+
+- **Made by `get_backup` of a RocksDB database.** The archive's first entry, `harper-backup.json`, says what a reader needs to restore it, and an archive needing something this version lacks is refused before anything is written. An archive with no such entry, made before v5.3.2, is restored only with `accept_incompatible_backup: true`. An LMDB database's `get_backup` is a database file, not this archive, and an LMDB database cannot be restored this way.
+- **With its blobs.** An archive made with `exclude_blobs` is refused. Every blob root of the database is replaced with what the archive carries.
+- **No more blob roots than this instance has.** Blob references record which root they are in, so the archive's blob roots must each have a configured [`storage.blobPaths`](../configuration/options.md#storage) entry at the same position.
+- **Only regular files and directories**, with relative names that stay inside the database. A link, an absolute path, a `..` segment, or two names that differ only by case or Unicode normalization are refused.
+- **Whole.** A gzipped archive is checked against its own checksum as it is extracted, so one cut short or damaged is refused. A plain `tar` (`gzip: false`) has no checksum over its contents. It must end with the tar end-of-archive marker and be at least as long as its entries' headers and contents, so one cut short is refused, including one cut exactly between two entries. One whose entries carry extended (pax or long-name) headers, cut between two entries, can still pass, and damaged bytes inside a plain `tar` are found only if the proof below reads them. Restore the default gzipped archive, or pin it with `sha256`.
+
+#### What it checks, and when the database is replaced
+
+The archive is extracted beside each place it goes: the database files into a reserved directory next to the database directory, and each blob root's files into one next to that blob root. Each must be on the same filesystem as its destination, because the restore installs it by renaming, without copying it again. The request is refused with status code 400, naming both paths, when the database directory or a blob root is itself a mount point on another filesystem.
+
+Before anything is replaced, while the database keeps serving, the job proves the extracted archive the way [every restore](#what-a-restore-checks) proves what it publishes, and then reads every store of the database to its end, so a damaged table file anywhere in the archive is found. An archive that fails is removed, and the job ends in `ERROR` with the database as it was. Then the restore closes the database, renames the extracted files into place, checks that what opens there is the database it proved, and publishes it. With `on_restart: true`, the proven archive waits for the next startup instead, and a `pre_restore_backup_id` is taken as for a managed backup. The extracted files, and the database files they replaced, are removed once the restore has published.
+
+The job's `result` reports `restored_from` (`upload`, or the path of an offline restore's file) and `archive_sha256` in place of `backup_id`.
+
+#### Space, and one upload at a time
+
+An instance extracts one archive at a time. Another upload is refused with status code 409, before any of it is read, until the first is extracted. The extracted archive takes about the space of the database it holds, plus its blobs, until the restore publishes; the database it replaces is removed only then. Each filesystem the archive is extracted to may take the space left on it, less a reserve of 5% of the filesystem (at least 1 GiB). Extraction stops with status code 507 when it would go past that on any of them, or when a filesystem fills. When the request has a `Content-Length`, as the CLI's does, an upload larger than all of them together is refused with 507 before any of it is read. On Node.js the whole upload must arrive within the operations API's request timeout, [`operationsApi.network.timeout`](../configuration/options.md#operationsapi), which is 5 minutes when it is not set; raise it to send an archive that takes longer.
+
+#### Older servers
+
+A server without archive restore would ignore the archive and restore its latest managed backup, so the CLI first asks the server what it can do, with [`registration_info`](../operations-api/operations.md#registration_info), and refuses `file=` unless the reply lists the `restore_backup_archive` capability. A server that does not answer, or answers without it, is refused, whatever its version. `harper restore_backup ./data.tar.gz`, with no `file=`, is refused rather than read as a restore of the latest managed backup.
+
+#### With Harper stopped
+
+`harper restore_backup database=data file=./data.tar.gz` with Harper stopped extracts, proves and publishes the archive in the same way, and reports `restored_to` as an offline restore does. It takes the same options except `on_restart` and `retain_previous`.
+
+#### If an archive restore is interrupted
+
+A restore that fails, or whose process dies, after it began replacing the database keeps the extracted archive with its record, and the database stays blocked. Finish it from what was extracted, with no upload, using `resume: true`, with Harper running or stopped:
+
+```bash
+harper restore_backup database=data resume=true
+```
+
+A restore requested with `on_restart: true` is instead retried at the next startup, as any [restart restore](#failed-attempts) is; `resume: true` for it needs Harper running, and with Harper stopped, starting Harper retries it.
+
+Until it is finished or withdrawn, another restore of that database is refused with status code 409 naming `resume=true` and `cancel=true`. `cancel: true` withdraws an archive restore that had not begun replacing the database, and removes what it extracted. Once it has begun, `cancel` leaves the database blocked, as for any restore, until a restore of it succeeds.
 
 ## `get_backup`
 

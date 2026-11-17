@@ -419,14 +419,10 @@ describe('Test operation_authorization', function () {
 		global.hdb_schema = undefined;
 	});
 
-	const JOB_OP_FUNC_KEYS = ['executeJob'];
+	// as processLocalTransaction picks the function it hands verifyPerms: the job's, when the operation queues one
 	function getOperationFuncName(op) {
 		const { operation_function, job_operation_function } = op;
-		let finalOp = operation_function.name;
-		if (JOB_OP_FUNC_KEYS.includes(finalOp)) {
-			finalOp = job_operation_function.name;
-		}
-		return finalOp;
+		return (job_operation_function ?? operation_function).name;
 	}
 
 	it('required_permissions should include settings for all API operations', function () {

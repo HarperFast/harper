@@ -1,0 +1,472 @@
+'use strict';
+
+const assert = require('node:assert');
+const {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} = require('node:fs');
+const { tmpdir } = require('node:os');
+const { dirname, join } = require('node:path');
+const { threadId } = require('node:worker_threads');
+const {
+	applyStagedSwap,
+	assertUploadFits,
+	createStagingAreas,
+	stagingBudgets,
+	mintStagingId,
+	planStaging,
+	stagedAreasOfReceipt,
+	sweepStagingAtStartup,
+	verifyStagedSwap,
+	withIdentities,
+	writeStagedRecord,
+} = require('#src/dataLayer/archiveStaging');
+const {
+	acquireExtractionLock,
+	extractionLockPath,
+	releaseExtractionOfExitedThread,
+	releaseStaleExtractionLock,
+} = require('#src/dataLayer/archiveExtractionLock');
+const { RESTORE_META_DIR, restoreMetaKey, restoringMarkerPath } = require('#src/dataLayer/restoreMarker');
+const { inheritedStagingDirs, restoreReceiptPath } = require('#src/dataLayer/restoreReceipt');
+const durableFileModule = require('#js/utility/durableFile');
+
+const EARLIER_PROCESS = 'deadbeefdeadbeef';
+const earlierId = (thread = 1) => `${EARLIER_PROCESS}-${thread}-${require('node:crypto').randomUUID()}`;
+
+describe('archive staging', function () {
+	let root;
+
+	beforeEach(function () {
+		root = mkdtempSync(join(tmpdir(), 'harper.unit-test.archive-staging-'));
+	});
+
+	afterEach(function () {
+		if (root) rmSync(root, { recursive: true, force: true });
+		rmSync(extractionLockPath(), { force: true });
+	});
+
+	describe('the swap', function () {
+		let databaseDir;
+		let blobRoots;
+		let record;
+
+		/** A proven area whose parts each hold `staged`, over destinations each holding `live` (the second blob root never written). */
+		function stage() {
+			databaseDir = join(root, 'database', 'orders');
+			// the second root on a tree of its own, as a second storage.blobPaths entry would be
+			blobRoots = [join(root, 'blobs', 'orders'), join(root, 'second-volume', 'blob-path', 'orders')];
+			const plan = planStaging(databaseDir, blobRoots, mintStagingId());
+			createStagingAreas(plan);
+			for (const destination of [databaseDir, blobRoots[0]]) {
+				mkdirSync(destination, { recursive: true });
+				writeFileSync(join(destination, 'content'), 'live');
+			}
+			for (const part of plan.parts) writeFileSync(join(part.staged, 'content'), `staged ${part.kind}`);
+			record = {
+				version: 1,
+				staging_id: plan.stagingId,
+				database: 'orders',
+				state: 'proven',
+				parts: withIdentities(plan.parts),
+			};
+			writeStagedRecord(plan.stagingDir, record);
+			return plan;
+		}
+
+		function assertInstalled() {
+			for (const part of record.parts) {
+				assert.strictEqual(readFileSync(join(part.destination, 'content'), 'utf8'), `staged ${part.kind}`);
+				const { ino } = statSync(part.destination, { bigint: true });
+				assert.strictEqual(String(ino), part.ino, `${part.destination} is the staged directory, renamed`);
+				assert.strictEqual(existsSync(part.staged), false);
+			}
+			assert.strictEqual(readFileSync(join(record.parts[0].previous, 'content'), 'utf8'), 'live');
+			assert.strictEqual(readFileSync(join(record.parts[1].previous, 'content'), 'utf8'), 'live');
+			// nothing to move aside where nothing was written
+			assert.strictEqual(existsSync(record.parts[2].previous), false);
+		}
+
+		/** Every state a crash can leave: the renames of the swap, in its order, applied up to `step`. */
+		function crashAfter(step) {
+			const renames = [];
+			for (const part of record.parts) {
+				if (existsSync(part.destination)) renames.push([part.destination, part.previous]);
+				renames.push([part.staged, part.destination]);
+			}
+			for (const [from, to] of renames.slice(0, step)) renameSync(from, to);
+			return renames.length;
+		}
+
+		it('installs every part by rename, and a retry from any crash point finishes the same way', function () {
+			stage();
+			const steps = crashAfter(0);
+			rmSync(root, { recursive: true, force: true });
+			mkdirSync(root);
+			for (let step = 0; step <= steps; step++) {
+				stage();
+				crashAfter(step);
+				verifyStagedSwap(record, databaseDir, blobRoots);
+				applyStagedSwap(record);
+				assertInstalled();
+				// and once more, as a retry after a crash that followed the last rename
+				verifyStagedSwap(record, databaseDir, blobRoots);
+				applyStagedSwap(record);
+				assertInstalled();
+				rmSync(root, { recursive: true, force: true });
+				mkdirSync(root);
+			}
+		});
+
+		it('fails closed where the disk does not say what happened', function () {
+			stage();
+			// the old generation was moved aside, and something recreated the destination since
+			renameSync(databaseDir, record.parts[0].previous);
+			mkdirSync(databaseDir);
+			assert.throws(() => verifyStagedSwap(record, databaseDir, blobRoots), /already moved/);
+			assert.throws(() => applyStagedSwap(record), /already moved/);
+
+			rmSync(root, { recursive: true, force: true });
+			stage();
+			// staged part gone and the destination is not it
+			rmSync(record.parts[1].staged, { recursive: true });
+			assert.throws(() => verifyStagedSwap(record, databaseDir, blobRoots), /is gone and the destination is not/);
+
+			rmSync(root, { recursive: true, force: true });
+			stage();
+			// a staged directory that is not the one the proof recorded
+			rmSync(record.parts[0].staged, { recursive: true });
+			mkdirSync(record.parts[0].staged);
+			assert.throws(() => verifyStagedSwap(record, databaseDir, blobRoots), /not the one the staged proof recorded/);
+		});
+
+		it('flushes the parents of a rename a retry finds already done, which the failed attempt never flushed', function () {
+			stage();
+			const [engine] = record.parts;
+			const installed = () => statSync(engine.destination, { bigint: true }).ino === BigInt(engine.ino);
+			const flushed = [];
+			let failed = false;
+			const original = durableFileModule.fsyncDirectory;
+			durableFileModule.fsyncDirectory = (directory) => {
+				// the first flush after the engine part is renamed into place fails, as a crash there would leave it
+				if (!failed && existsSync(engine.destination) && installed()) {
+					failed = true;
+					throw Object.assign(new Error('I/O error'), { code: 'EIO' });
+				}
+				flushed.push(directory);
+				return original(directory);
+			};
+			try {
+				assert.throws(() => applyStagedSwap(record), /I\/O error/);
+				assert.ok(installed(), 'precondition: the rename landed before the flush failed');
+				flushed.length = 0;
+				verifyStagedSwap(record, databaseDir, blobRoots);
+				applyStagedSwap(record);
+			} finally {
+				durableFileModule.fsyncDirectory = original;
+			}
+			assertInstalled();
+			for (const directory of [dirname(engine.destination), dirname(engine.staged), dirname(engine.previous)])
+				assert.ok(flushed.includes(directory), `the retry flushes ${directory}; it flushed ${flushed.join(', ')}`);
+		});
+
+		it('refuses before destruction a record that is not proven, or whose destinations configuration has moved', function () {
+			stage();
+			assert.throws(
+				() => verifyStagedSwap({ ...record, state: 'extracted' }, databaseDir, blobRoots),
+				/not been proven/
+			);
+			assert.throws(
+				() => verifyStagedSwap(record, databaseDir, [blobRoots[1], blobRoots[0]]),
+				(error) => error.statusCode === 409 && /storage.blobPaths changed/.test(error.message)
+			);
+			assert.throws(() => verifyStagedSwap(record, databaseDir, [blobRoots[0]]), /storage.blobPaths changed/);
+			assert.throws(() => verifyStagedSwap(record, join(root, 'elsewhere', 'orders'), blobRoots), /changed/);
+			assert.strictEqual(readFileSync(join(databaseDir, 'content'), 'utf8'), 'live', 'nothing was touched');
+		});
+
+		it('names every area of a receipt, the one holding its record last', function () {
+			const plan = stage();
+			const areas = stagedAreasOfReceipt({
+				staging_dir: plan.stagingDir,
+				database: 'orders',
+				database_path: databaseDir,
+			});
+			assert.strictEqual(areas[areas.length - 1], plan.stagingDir);
+			assert.deepStrictEqual([...areas].sort(), [...plan.areas].sort());
+		});
+	});
+
+	it('compares a known upload length with every destination filesystem’s budget together', function () {
+		const plan = planStaging(join(root, 'database', 'orders'), [join(root, 'blobs', 'orders')], mintStagingId());
+		// blobs on a larger volume than the database
+		const budgets = new Map([
+			['engine', 100],
+			['blob volume', 1000],
+		]);
+		assertUploadFits(plan, budgets, 1100);
+		assertUploadFits(plan, budgets, undefined);
+		assert.throws(
+			() => assertUploadFits(plan, budgets, 1101),
+			(error) => error.statusCode === 507
+		);
+	});
+
+	it('applies the quota to a device a part outside its root shares with one inside it', async function () {
+		const env = require('#src/utility/environment/environmentManager');
+		const rootPath = env.get('rootPath');
+		const outside = mkdtempSync(join(dirname(rootPath), 'harper.unit-test.outside-root-'));
+		const quotaReport = join(rootPath, 'quota-status.json');
+		const plan = planStaging(
+			join(outside, 'database', 'orders'),
+			[join(rootPath, `blobs-${process.pid}`, 'orders')],
+			mintStagingId()
+		);
+		try {
+			createStagingAreas(plan);
+			assert.strictEqual(
+				statSync(plan.parts[0].staged).dev,
+				statSync(plan.parts[1].staged).dev,
+				'precondition: one device'
+			);
+			const quotaBytes = 4 * 1024 ** 3;
+			writeFileSync(
+				quotaReport,
+				JSON.stringify({ usedBytes: quotaBytes - 1.5 * 1024 ** 3, quotaBytes, updatedAt: Date.now() })
+			);
+			const budgets = await stagingBudgets(plan);
+			assert.strictEqual(budgets.size, 1);
+			// the quota leaves 1.5 GiB, less its 1 GiB reserve
+			assert.ok([...budgets.values()][0] <= 0.5 * 1024 ** 3, JSON.stringify([...budgets]));
+		} finally {
+			rmSync(quotaReport, { force: true });
+			rmSync(outside, { recursive: true, force: true });
+			rmSync(join(rootPath, `blobs-${process.pid}`), { recursive: true, force: true });
+		}
+	});
+
+	describe('the startup sweep', function () {
+		function area(location, databaseName, id) {
+			const path = join(
+				location,
+				RESTORE_META_DIR,
+				restoreMetaKey(join(root, 'database', databaseName)) + '.staged',
+				id
+			);
+			mkdirSync(join(path, 'db'), { recursive: true });
+			return path;
+		}
+		function receipt(databaseName, contents) {
+			const path = restoreReceiptPath(join(root, 'database', databaseName));
+			mkdirSync(dirname(path), { recursive: true });
+			writeFileSync(path, contents);
+		}
+
+		it('keeps what one root holds for a database name, whatever another root’s receipt for that name says', function () {
+			const first = join(root, 'first');
+			const second = join(root, 'second');
+			const managed = (databaseDir) =>
+				JSON.stringify({
+					version: 1,
+					operation_id: 'op',
+					route: 'online',
+					state: 'applying',
+					database: 'shared',
+					database_path: databaseDir,
+					source_database: 'shared',
+					backup_dir: join(root, 'backups'),
+					backup_id: 1,
+					attempts: 1,
+					options: {},
+				});
+			const held = [];
+			for (const [name, hold] of [
+				['unreadable', (dir) => writeFileSync(restoreReceiptPath(dir), '{"version":')],
+				['marked', (dir) => writeFileSync(restoringMarkerPath(dir), 'marked\n')],
+			]) {
+				const [holding, other] = [join(first, name), join(second, name)];
+				for (const dir of [holding, other]) mkdirSync(dirname(restoreReceiptPath(dir)), { recursive: true });
+				hold(holding);
+				// the later root's readable receipt for the same name
+				writeFileSync(restoreReceiptPath(other), managed(other));
+				const area = join(first, RESTORE_META_DIR, restoreMetaKey(holding) + '.staged', earlierId());
+				mkdirSync(join(area, 'db'), { recursive: true });
+				held.push(area);
+			}
+			assert.deepStrictEqual(sweepStagingAtStartup([first, second], []), []);
+			for (const area of held) assert.ok(existsSync(area), `${area} is kept`);
+		});
+
+		it('removes what an earlier process left unless a receipt names it or cannot be read', function () {
+			const databases = join(root, 'database');
+			const blobPaths = [join(root, 'blobs'), join(root, 'second-volume')];
+			const locations = [databases, ...blobPaths];
+			const orphaned = locations.map((location) => area(location, 'orphaned', earlierId()));
+			const unreadable = locations.map((location) => area(location, 'unreadable', earlierId()));
+			receipt('unreadable', '{"version":');
+			const ownedId = earlierId();
+			const owned = locations.map((location) => area(location, 'owned', ownedId));
+			const superseded = locations.map((location) => area(location, 'owned', earlierId()));
+			receipt(
+				'owned',
+				JSON.stringify({
+					version: 2,
+					operation_id: 'op',
+					route: 'online',
+					state: 'applying',
+					database: 'owned',
+					database_path: join(databases, 'owned'),
+					source_database: 'owned',
+					backup_dir: join(root, 'backups', 'owned'),
+					source_kind: 'staged_tree',
+					staging_dir: owned[0],
+					attempts: 1,
+					options: {},
+				})
+			);
+			// cancelled after its swap began: terminal, keeping its staging, then taken over by a managed restart restore
+			const cancelledId = earlierId();
+			const cancelled = locations.map((location) => area(location, 'succeeded', cancelledId));
+			const successor = {
+				version: 1,
+				operation_id: 'successor',
+				route: 'on_restart',
+				state: 'pending',
+				database: 'succeeded',
+				database_path: join(databases, 'succeeded'),
+				source_database: 'succeeded',
+				backup_dir: join(root, 'backups', 'succeeded'),
+				backup_id: 1,
+				attempts: 1,
+				options: {},
+				...inheritedStagingDirs({ staging_dir: cancelled[0], state: 'terminal', source_kind: 'staged_tree' }),
+			};
+			receipt('succeeded', JSON.stringify(successor));
+			const marked = locations.map((location) => area(location, 'marked', earlierId()));
+			writeFileSync(restoringMarkerPath(join(databases, 'marked')), 'marked\n');
+			const ours = locations.map((location) => area(location, 'ours', mintStagingId()));
+
+			const removed = sweepStagingAtStartup([databases], blobPaths);
+
+			assert.deepStrictEqual([...removed].sort(), [...orphaned, ...superseded].sort());
+			for (const path of [...unreadable, ...owned, ...cancelled, ...marked, ...ours])
+				assert.ok(existsSync(path), `${path} is kept`);
+			for (const path of [...orphaned, ...superseded]) assert.strictEqual(existsSync(path), false);
+		});
+	});
+
+	describe('the extraction lock', function () {
+		/** The areas of one extraction: the engine's, holding its finished record, and a blob root's, which never holds one. */
+		function extractionAreas(databaseName) {
+			const id = earlierId();
+			const databaseDir = join(root, 'database', databaseName);
+			const plan = planStaging(databaseDir, [join(root, 'blobs', databaseName)], id);
+			createStagingAreas(plan);
+			writeFileSync(join(plan.stagingDir, 'staged.json'), '{}');
+			return { databaseDir, plan };
+		}
+
+		function staleLock(areas, staging_id = earlierId()) {
+			writeFileSync(
+				extractionLockPath(),
+				JSON.stringify({ incarnation: EARLIER_PROCESS, thread_id: 1, pid: 2 ** 22 + 7, staging_id, areas })
+			);
+		}
+
+		it('admits one extraction at a time', async function () {
+			const release = await acquireExtractionLock(mintStagingId(), []);
+			await assert.rejects(acquireExtractionLock(mintStagingId(), []), (error) => error.statusCode === 409);
+			release();
+			(await acquireExtractionLock(mintStagingId(), []))();
+		});
+
+		it('takes over a lock an earlier, exited process left, removing every part of its extraction together', async function () {
+			const { plan } = extractionAreas('abandoned');
+			staleLock(plan.areas);
+			const release = await acquireExtractionLock(mintStagingId(), []);
+			release();
+			for (const area of plan.areas) assert.strictEqual(existsSync(area), false, `${area} is removed`);
+		});
+
+		it('keeps every part of an abandoned extraction a restore record names', async function () {
+			const { databaseDir, plan } = extractionAreas('recorded');
+			mkdirSync(dirname(restoreReceiptPath(databaseDir)), { recursive: true });
+			writeFileSync(
+				restoreReceiptPath(databaseDir),
+				JSON.stringify({
+					version: 2,
+					operation_id: 'op',
+					route: 'online',
+					state: 'applying',
+					database: 'recorded',
+					database_path: databaseDir,
+					source_database: 'recorded',
+					backup_dir: join(root, 'backups', 'recorded'),
+					source_kind: 'staged_tree',
+					staging_dir: plan.stagingDir,
+					attempts: 1,
+					options: {},
+				})
+			);
+			staleLock(plan.areas);
+			(await acquireExtractionLock(mintStagingId(), []))();
+			for (const area of plan.areas) assert.ok(existsSync(area), `${area} is kept`);
+		});
+
+		it('lets only one of two contenders take over the same stale lock', async function () {
+			const { plan } = extractionAreas('contended');
+			staleLock(plan.areas);
+			// both recognise the stale owner before either has removed it: the first awaits the removal of its areas
+			const outcomes = await Promise.allSettled([
+				acquireExtractionLock(mintStagingId(), []),
+				acquireExtractionLock(mintStagingId(), []),
+			]);
+			const acquired = outcomes.filter((outcome) => outcome.status === 'fulfilled');
+			const refused = outcomes.filter((outcome) => outcome.status === 'rejected');
+			assert.strictEqual(acquired.length, 1, JSON.stringify(outcomes.map((outcome) => outcome.status)));
+			assert.strictEqual(refused[0].reason.statusCode, 409);
+			assert.match(refused[0].reason.message, /clearing an abandoned archive extraction.*starting Harper clears it/);
+			acquired[0].value();
+			assert.strictEqual(existsSync(extractionLockPath()), false);
+			assert.deepStrictEqual(
+				require('node:fs')
+					.readdirSync(dirname(extractionLockPath()))
+					.filter((name) => name.startsWith('.restore-extraction.lock')),
+				[],
+				'no reclaim marker or temp is left'
+			);
+		});
+
+		it('is released, with every part of its extraction, when the thread holding it exits', async function () {
+			const { plan } = extractionAreas('exited');
+			await acquireExtractionLock(mintStagingId(), plan.areas);
+			await releaseExtractionOfExitedThread(threadId + 1000);
+			assert.ok(existsSync(extractionLockPath()), "another thread's exit leaves it");
+			await releaseExtractionOfExitedThread(threadId);
+			assert.strictEqual(existsSync(extractionLockPath()), false);
+			for (const area of plan.areas) assert.strictEqual(existsSync(area), false, `${area} is removed`);
+		});
+
+		it('is released at startup when an earlier process left it, even under a reused process id', async function () {
+			writeFileSync(
+				extractionLockPath(),
+				JSON.stringify({
+					incarnation: EARLIER_PROCESS,
+					thread_id: 1,
+					pid: process.pid,
+					staging_id: earlierId(),
+					areas: [],
+				})
+			);
+			await assert.rejects(acquireExtractionLock(mintStagingId(), []), (error) => error.statusCode === 409);
+			await releaseStaleExtractionLock();
+			(await acquireExtractionLock(mintStagingId(), []))();
+		});
+	});
+});

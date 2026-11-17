@@ -28,6 +28,8 @@ import {
 import {
 	DEFAULT_RESTORE_MAX_ATTEMPTS,
 	describeRestoreSource,
+	inheritedStagingDirs,
+	isStagedReceipt,
 	newRestoreReceipt,
 	readRestoreReceipt,
 	removeRestoreReceipt,
@@ -39,13 +41,17 @@ import {
 import { runRestoreChild } from './restoreChildRunner.ts';
 import {
 	applyProveAndCommit,
+	type ApplyOptions,
 	finishCommittedRestore,
 	finishOutstandingRestore,
+	interruptedArchiveRestore,
 	releaseReceiptPins,
+	removeReceiptStaging,
 	restoreHeldAtBoot,
 	restoreKeepingComponentsOff,
 	restoreSafeModeLatched,
 	settleRestoreJob,
+	type StagedRestoreSource,
 } from './restorePublication.ts';
 import {
 	acquireRestoreLockFor,
@@ -73,6 +79,8 @@ export interface RestartRestoreRequest {
 	retainPrevious: boolean;
 	jobId?: string;
 	requestedBy?: string;
+	/** A proven staged archive in place of a managed backup; it pins nothing in the repository. */
+	staged?: StagedRestoreSource;
 }
 
 function preRestorePinId(operationId: string): string {
@@ -184,7 +192,13 @@ function deferredUntilRestart(receipt: RestoreReceipt, message: string): Deferre
 	return new DeferredJobCompletion(
 		RESTORE_INTENT_OWNER,
 		message,
-		{ database: receipt.database, backup_id: receipt.backup_id, operation_id: receipt.operation_id },
+		{
+			database: receipt.database,
+			...(isStagedReceipt(receipt)
+				? { restored_from: receipt.restored_from, archive_sha256: receipt.archive_sha256 }
+				: { backup_id: receipt.backup_id }),
+			operation_id: receipt.operation_id,
+		},
 		requestDrainedRestart,
 		() => withdrawUnrecordedRestore(receipt)
 	);
@@ -233,6 +247,7 @@ async function withdrawUnrecordedRestore(receipt: RestoreReceipt): Promise<void>
 			} else {
 				removeReceiptReconciled(lock, receipt.database, () => removeRestoreReceipt(lock, receipt.operation_id));
 				releaseReceiptPins(read.receipt);
+				await removeReceiptStaging(read.receipt);
 				unblocked = true;
 			}
 			logger.error(`The restart restore of '${receipt.database}' was withdrawn: its job could not record it`);
@@ -336,24 +351,33 @@ export async function requestRestartRestore(request: RestartRestoreRequest): Pro
 			!inheritsRollbackCopy(databaseDir, backupDir)
 		)
 			await assertRoomForPreRestoreBackup(databaseName, databaseDir, backupDir);
-		await withBackupRepositoryLock(backupDir, databaseName, async () => {
-			let selected: Awaited<ReturnType<typeof resolveCompleteBackup>>;
-			try {
-				selected = await resolveCompleteBackup(
-					backupDir,
-					request.requestedBackupId,
-					databaseName,
-					request.acceptIncompatible
-				);
-			} catch (error) {
-				throw restoreSourceHint(error, databaseName, request.requestedBackupId);
+		const { staged } = request;
+		// a staged archive was proven before this request, and takes no lock on a repository it does not read
+		const underRepository = staged
+			? (_dir: string, _name: string, operation: () => Promise<void>) => operation()
+			: withBackupRepositoryLock;
+		await underRepository(backupDir, databaseName, async () => {
+			let selected: { backupId: number } | undefined;
+			if (!staged) {
+				let resolved: Awaited<ReturnType<typeof resolveCompleteBackup>>;
+				try {
+					resolved = await resolveCompleteBackup(
+						backupDir,
+						request.requestedBackupId,
+						databaseName,
+						request.acceptIncompatible
+					);
+				} catch (error) {
+					throw restoreSourceHint(error, databaseName, request.requestedBackupId);
+				}
+				const blobRoots = getBlobPathsForDatabaseName(databaseName);
+				await assertBlobSnapshotRestorable(backupDir, resolved.backupId, blobRoots);
+				assertEngineOnlyRestoreAllowed(databaseName, {
+					backupHasBlobs: resolved.manifest.blobs,
+					allowEngineOnly: request.allowEngineOnly,
+				});
+				selected = resolved;
 			}
-			const blobRoots = getBlobPathsForDatabaseName(databaseName);
-			await assertBlobSnapshotRestorable(backupDir, selected.backupId, blobRoots);
-			assertEngineOnlyRestoreAllowed(databaseName, {
-				backupHasBlobs: selected.manifest.blobs,
-				allowEngineOnly: request.allowEngineOnly,
-			});
 			const lock = claimTarget(databaseName, databaseDir);
 			try {
 				const existing = readRestoreReceipt(databaseDir);
@@ -367,6 +391,9 @@ export async function requestRestartRestore(request: RestartRestoreRequest): Pro
 					throw new ClientError(`Database '${databaseName}' is finishing an earlier restore; retry shortly`, 409);
 				}
 				displaced = existing.kind === 'valid' ? existing.receipt : undefined;
+				if (displaced && isStagedReceipt(displaced) && displaced.state !== 'terminal') {
+					throw interruptedArchiveRestore(databaseName, displaced);
+				}
 				const rollbackCopy = rollbackCopyToInherit(displaced, backupDir);
 				const nothingToRetain = restoreMarkerPresent(databaseDir) || !existsSync(join(databaseDir, 'CURRENT'));
 				const planned = newRestoreReceipt({
@@ -374,9 +401,16 @@ export async function requestRestartRestore(request: RestartRestoreRequest): Pro
 					state: 'pending',
 					database: databaseName,
 					database_path: databaseDir,
-					source_database: databaseName,
+					source_database: staged?.sourceDatabase ?? databaseName,
 					backup_dir: backupDir,
-					backup_id: selected.backupId,
+					...(staged
+						? {
+								source_kind: 'staged_tree' as const,
+								staging_dir: staged.stagingDir,
+								restored_from: staged.restoredFrom,
+								archive_sha256: staged.archiveSha256,
+							}
+						: { backup_id: selected!.backupId }),
 					job_id: request.jobId,
 					requested_by: request.requestedBy,
 					max_attempts: DEFAULT_RESTORE_MAX_ATTEMPTS,
@@ -393,21 +427,24 @@ export async function requestRestartRestore(request: RestartRestoreRequest): Pro
 						accept_incompatible_backup: request.acceptIncompatible,
 					},
 				});
-				const sourcePinId = `restore-intent-${planned.operation_id}`;
+				const sourcePinId = staged ? undefined : `restore-intent-${planned.operation_id}`;
 				// the displaced restore's source stays pinned until this one commits: until then it may be the
 				// blocked database's only usable recovery source
 				const superseded = inheritedPins(backupDir, databaseDir, displaced);
-				pinBackup(
-					backupDir,
-					sourcePinId,
-					selected.backupId,
-					`restart restore of database '${databaseName}'`,
-					databaseDir
-				);
+				if (sourcePinId) {
+					pinBackup(
+						backupDir,
+						sourcePinId,
+						selected!.backupId,
+						`restart restore of database '${databaseName}'`,
+						databaseDir
+					);
+				}
 				receipt = writeReceiptReconciled(lock, {
 					...planned,
-					source_pin_id: sourcePinId,
+					...(sourcePinId ? { source_pin_id: sourcePinId } : {}),
 					...(superseded.length > 0 ? { superseded_pin_ids: superseded } : {}),
+					...inheritedStagingDirs(displaced),
 				});
 			} finally {
 				releaseRestoreLock(lock);
@@ -429,7 +466,12 @@ export async function requestRestartRestore(request: RestartRestoreRequest): Pro
 	);
 }
 
-function resumableReceipt(databaseName: string, read: RestoreReceiptRead): RestoreReceipt {
+/**
+ * `archive` admits an interrupted online or offline archive restore too, which the request routes to its
+ * own resume; the restart resume, under the lock, never takes one, since startup does not retry that route.
+ */
+function resumableReceipt(databaseName: string, read: RestoreReceiptRead, { archive = false } = {}): RestoreReceipt {
+	if (archive && read.kind === 'valid' && interruptedArchiveRestoreReceipt(read.receipt)) return read.receipt;
 	if (
 		read.kind !== 'valid' ||
 		read.receipt.route !== 'on_restart' ||
@@ -439,6 +481,10 @@ function resumableReceipt(databaseName: string, read: RestoreReceiptRead): Resto
 		throw new ClientError(`Database '${databaseName}' has no pending restart restore to resume`, 404);
 	}
 	return read.receipt;
+}
+
+export function interruptedArchiveRestoreReceipt(receipt: RestoreReceipt): boolean {
+	return isStagedReceipt(receipt) && receipt.route !== 'on_restart' && receipt.state === 'applying';
 }
 
 /** A record that cannot be read is cancellable: removing it is what cancel is for. */
@@ -463,7 +509,7 @@ export function assertRestartRestoreActionable(
 	action: 'resume' | 'cancel'
 ): void {
 	const read = readRestoreReceipt(databaseDir);
-	if (action === 'resume') resumableReceipt(databaseName, read);
+	if (action === 'resume') resumableReceipt(databaseName, read, { archive: true });
 	else assertCancellable(databaseName, read);
 }
 
@@ -524,6 +570,7 @@ export async function cancelRestartRestore(
 					removeRestoreReceipt(lock, cancelled!.operation_id)
 				);
 				releaseReceiptPins(cancelled);
+				await removeReceiptStaging(cancelled);
 			}
 		} else {
 			removalDurable = cancelUnreadableRestore(lock, databaseName);
@@ -719,7 +766,7 @@ export async function runRestartAttempt(found: RestoreReceipt): Promise<boolean>
 		return false;
 	}
 	found = current.receipt;
-	lock.source = restoreSourceId(found.backup_dir);
+	lock.source = restoreSourceId(isStagedReceipt(found) ? found.staging_dir! : found.backup_dir);
 	// an attempt that killed the process never recorded its failure, so the limit is checked before
 	// starting another, not only after one fails
 	if (found.attempts >= (found.max_attempts ?? DEFAULT_RESTORE_MAX_ATTEMPTS)) {
@@ -770,20 +817,31 @@ export async function runRestartAttempt(found: RestoreReceipt): Promise<boolean>
 			}
 		}
 		const blobRoots = getBlobPathsForDatabaseName(receipt.database);
-		const { manifest, waived } = await resolveCompleteBackup(
-			receipt.backup_dir,
-			receipt.backup_id,
-			receipt.source_database,
-			receipt.options.accept_incompatible_backup === true
-		);
-		await assertBlobSnapshotRestorable(receipt.backup_dir, receipt.backup_id, blobRoots);
+		let source: Pick<ApplyOptions, 'manifest' | 'waived'>;
+		if (isStagedReceipt(receipt)) {
+			const { readStagedRecord } = await import('./archiveStaging.ts');
+			source = { waived: readStagedRecord(receipt.staging_dir!, receipt.database).waived ?? [] };
+			if (source.waived.length > 0) {
+				logger.warn(
+					`Restoring database '${receipt.database}' from ${describeRestoreSource(receipt)} with accept_incompatible_backup; waived: ${source.waived.join('; ')}`
+				);
+			}
+		} else {
+			source = await resolveCompleteBackup(
+				receipt.backup_dir,
+				receipt.backup_id,
+				receipt.source_database,
+				receipt.options.accept_incompatible_backup === true
+			);
+			await assertBlobSnapshotRestorable(receipt.backup_dir, receipt.backup_id!, blobRoots);
+		}
 		receipt = writeRestoreReceipt(lock, { ...receipt, state: 'applying' });
 		receipt = await applyProveAndCommit(lock, receipt, {
-			manifest,
+			manifest: source.manifest,
 			blobRoots,
 			probe: true,
 			acceptUnverifiedBlobs: receipt.options.accept_unverified_blobs === true,
-			waived,
+			waived: source.waived,
 			checkPeers: false,
 		});
 		await finishCommittedRestore(lock, receipt);
