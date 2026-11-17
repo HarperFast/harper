@@ -13,6 +13,8 @@ const { waitFor } = require('../waitFor');
 require('#src/server/serverHelpers/serverUtilities');
 
 const PUBLISH = 3;
+const PUBACK = 4;
+const PUBREC = 5;
 const user = { username: 'mqtt-delivery-analytics', role: { permission: { super_user: true } } };
 
 const entries = [];
@@ -43,11 +45,12 @@ describe('MQTT delivery analytics', function () {
 		open = (clientId) => {
 			const rawSocket = new EventEmitter();
 			rawSocket.remoteAddress = '127.0.0.1';
-			const socket = { handlers: {}, _socket: rawSocket, published: [], subacked: false };
+			const socket = { handlers: {}, _socket: rawSocket, published: [], acknowledged: [], subacked: false };
 			socket.close = socket.terminate = () => {};
 			socket.send = (packet) => {
 				const type = packet[0] >> 4;
 				if (type === PUBLISH) socket.published.push(packet);
+				else if (type === PUBACK || type === PUBREC) socket.acknowledged.push(packet);
 				else if (type === 9) socket.subacked = true;
 			};
 			socket.on = (event, handler) => (socket.handlers[event] = handler);
@@ -94,6 +97,35 @@ describe('MQTT delivery analytics', function () {
 		assert.deepStrictEqual({ count: qos0.count, mean: qos0.mean }, expected(lengths(0)));
 		assert.deepStrictEqual({ count: qos1.count, mean: qos1.mean }, expected(lengths(1)));
 		for (const socket of subscribers) socket.handlers.close?.();
+	});
+
+	it("records a publish's acknowledgement under its topic's first level, not the device's topic", async () => {
+		const name = 'MqttAckAnalytics';
+		const T = table({
+			table: name,
+			database: 'mqtt_delivery_analytics',
+			audit: true,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'value' }],
+		});
+		Resources.resources.set(name, T, { mqtt: true });
+		analytics.setAnalyticsEnabled(true);
+		const publisher = open('ack-analytics');
+		const sends = [
+			[`${name}/device-a`, 1, 11],
+			[`${name}/device-b`, 1, 12],
+			[`${name}/device-c`, 2, 13],
+		];
+		for (const [topic, qos, messageId] of sends)
+			publisher.handlers.message(generate({ cmd: 'publish', topic, qos, messageId, payload: '{"value":1}' }));
+		await waitFor(() => publisher.acknowledged.length === sends.length);
+		const ackLengths = (type) =>
+			publisher.acknowledged.filter((packet) => packet[0] >> 4 === type).map((packet) => packet.length);
+		const puback = await reported(name, 'puback', 2);
+		const pubrec = await reported(name, 'pubrec', 1);
+		assert.deepStrictEqual(puback, expected(ackLengths(PUBACK)));
+		assert.deepStrictEqual(pubrec, expected(ackLengths(PUBREC)));
+		assert.ok(!entries.some((entry) => entry.path?.startsWith?.(`${name}/`)), 'no action is keyed by a device topic');
+		publisher.handlers.close?.();
 	});
 });
 

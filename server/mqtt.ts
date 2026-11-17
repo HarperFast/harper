@@ -1017,7 +1017,9 @@ function onSocket(socket, send, request, user, mqttSettings, userProvenance?: Us
 						packet.qos === 2
 							? await session.receiveExactlyOnce(packet.messageId, () => publish(packet))
 							: await publish(packet);
-					if (acknowledgement) generateAndSendPacket(acknowledgement, packet.topic);
+					// under the topic's first level, as the publish's bytes-received and every delivery are: a per-device
+					// topic would make an analytics action for each device
+					if (acknowledgement) generateAndSendPacket(acknowledgement, generalTopic);
 					break;
 				}
 				case 'pubrec': {

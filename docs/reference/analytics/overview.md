@@ -169,15 +169,15 @@ Harper automatically tracks the following metrics for all services. Applications
 
 ### MQTT / WebSocket Metrics
 
-| `metric`           | `path` | `method`     | `type` | Unit  | Description                                      |
-| ------------------ | ------ | ------------ | ------ | ----- | ------------------------------------------------ |
-| `mqtt-connections` |        |              |        | count | Number of open direct MQTT connections           |
-| `ws-connections`   |        |              |        | count | Number of open WebSocket connections             |
-| `connection`       | `mqtt` | `connect`    |        | %     | Percentage of successful direct MQTT connections |
-| `connection`       | `mqtt` | `disconnect` |        | %     | Percentage of explicit direct MQTT disconnects   |
-| `connection`       | `ws`   | `connect`    |        | %     | Percentage of successful WebSocket connections   |
-| `connection`       | `ws`   | `disconnect` |        | %     | Percentage of explicit WebSocket disconnects     |
-| `bytes-sent`       | topic  | mqtt command | `mqtt` | bytes | Bytes sent for a given MQTT command and topic    |
+| `metric`           | `path`            | `method`     | `type` | Unit  | Description                                                             |
+| ------------------ | ----------------- | ------------ | ------ | ----- | ----------------------------------------------------------------------- |
+| `mqtt-connections` |                   |              |        | count | Number of open direct MQTT connections                                  |
+| `ws-connections`   |                   |              |        | count | Number of open WebSocket connections                                    |
+| `connection`       | `mqtt`            | `connect`    |        | %     | Percentage of successful direct MQTT connections                        |
+| `connection`       | `mqtt`            | `disconnect` |        | %     | Percentage of explicit direct MQTT disconnects                          |
+| `connection`       | `ws`              | `connect`    |        | %     | Percentage of successful WebSocket connections                          |
+| `connection`       | `ws`              | `disconnect` |        | %     | Percentage of explicit WebSocket disconnects                            |
+| `bytes-sent`       | first topic level | mqtt command | `mqtt` | bytes | Bytes sent for a given MQTT command, under the first level of its topic |
 
 ### Replication Metrics
 
