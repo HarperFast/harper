@@ -116,16 +116,16 @@ This is the inverse of the entries below — a dependency we take deliberate ste
 
 ## tar-stream
 
-- Need for usage: The low-level USTAR pack/extract streams underneath `tar-fs`. Used directly by the RocksDB backup path (`dataLayer/rocksdbBackup.ts`) to append the database's file-backed blobs (and the generated READMEs) into the `get_backup` archive: the native engine backup emits a plain tar, and its entries are streamed on while blob/README entries are packed and appended before the single end-of-archive trailer. Declared as a direct dependency (rather than relied on transitively via `tar-fs`) so the import contract is stable across package-manager layouts.
+- Need for usage: The low-level USTAR pack/extract streams underneath `tar-fs`. Used directly by the RocksDB backup path (`dataLayer/rocksdbBackup.ts`) to append the database's file-backed blobs (and the generated READMEs) into the `get_backup` archive: the native engine backup emits a plain tar, and its entries are streamed on while blob/README entries are packed and appended before the single end-of-archive trailer. Its extract stream reads that archive back for `restore_backup file=` (`dataLayer/archiveExtraction.ts`), which routes each entry to the database directory or a blob root as it is uploaded. Declared as a direct dependency (rather than relied on transitively via `tar-fs`) so the import contract is stable across package-manager layouts.
 - Size/memory cost: Approximately 30KB
 - Security: None known
 - Overlap: Pulled in transitively by `tar-fs` already; declaring it direct only pins the contract, no new tree.
-- Can be deferred: Only loaded on the `get_backup` blob path
-- Eventual removal: We could write our own minimal USTAR encoder (the engine binding already ships one)
+- Can be deferred: `dataLayer/rocksdbBackup.ts` imports the packer at the top, so it loads at startup; the archive restore loads the extractor on first use
+- Eventual removal: We could write our own minimal USTAR encoder (the engine binding already ships one), but the restore would still need an extractor
 
 ## gunzip-maybe
 
-- Need for usage: Used by deploy component
+- Need for usage: Used by deploy component, and by `restore_backup file=` to accept a gzipped or a plain `get_backup` archive (zlib checks the gzip trailer's CRC32 and length as it inflates)
 - Size/memory cost: Approximately 320B
 - Security: None
 - Overlap: None

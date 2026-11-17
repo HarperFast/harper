@@ -6,12 +6,14 @@ interface MultipartFile {
 	filename: string;
 	contentType?: string;
 	stream: Readable;
+	size?: number;
 }
 
 interface MultipartBody {
 	boundary: string;
 	contentType: string;
 	stream: Readable;
+	contentLength?: number;
 }
 
 /**
@@ -28,37 +30,42 @@ interface MultipartBody {
  */
 export function buildMultipartBody(fields: Record<string, unknown>, file?: MultipartFile): MultipartBody {
 	const boundary = '----HarperMultipart' + randomBytes(12).toString('hex');
-	const stream = Readable.from(generateParts(boundary, fields, file));
-	return {
-		boundary,
-		contentType: `multipart/form-data; boundary=${boundary}`,
-		stream,
-	};
-}
-
-async function* generateParts(
-	boundary: string,
-	fields: Record<string, unknown>,
-	file: MultipartFile | undefined
-): AsyncGenerator<Buffer> {
 	const dashBoundary = `--${boundary}`;
+	const head: Buffer[] = [];
 	for (const [name, value] of Object.entries(fields)) {
 		if (value === undefined) continue;
-		yield Buffer.from(
-			`${dashBoundary}\r\nContent-Disposition: form-data; name="${escapeFieldName(name)}"\r\n\r\n${serializeFieldValue(value)}\r\n`
+		head.push(
+			Buffer.from(
+				`${dashBoundary}\r\nContent-Disposition: form-data; name="${escapeFieldName(name)}"\r\n\r\n${serializeFieldValue(value)}\r\n`
+			)
 		);
 	}
 	if (file) {
 		const contentType = file.contentType ?? 'application/octet-stream';
-		yield Buffer.from(
-			`${dashBoundary}\r\nContent-Disposition: form-data; name="${escapeFieldName(file.name)}"; filename="${escapeFieldName(file.filename)}"\r\nContent-Type: ${contentType}\r\n\r\n`
+		head.push(
+			Buffer.from(
+				`${dashBoundary}\r\nContent-Disposition: form-data; name="${escapeFieldName(file.name)}"; filename="${escapeFieldName(file.filename)}"\r\nContent-Type: ${contentType}\r\n\r\n`
+			)
 		);
+	}
+	const tail = Buffer.from(`${file ? '\r\n' : ''}${dashBoundary}--\r\n`);
+	const framing = head.reduce((total, part) => total + part.length, tail.length);
+	return {
+		boundary,
+		contentType: `multipart/form-data; boundary=${boundary}`,
+		stream: Readable.from(generateParts(head, file, tail)),
+		...(!file || Number.isSafeInteger(file.size) ? { contentLength: framing + (file?.size ?? 0) } : {}),
+	};
+}
+
+async function* generateParts(head: Buffer[], file: MultipartFile | undefined, tail: Buffer): AsyncGenerator<Buffer> {
+	yield* head;
+	if (file) {
 		for await (const chunk of file.stream) {
 			yield typeof chunk === 'string' ? Buffer.from(chunk) : (chunk as Buffer);
 		}
-		yield Buffer.from('\r\n');
 	}
-	yield Buffer.from(`${dashBoundary}--\r\n`);
+	yield tail;
 }
 
 function serializeFieldValue(value: unknown): string {

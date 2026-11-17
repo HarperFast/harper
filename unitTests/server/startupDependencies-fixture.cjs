@@ -29,6 +29,8 @@ const packages = new Set();
 for (const path of Object.keys(require.cache)) {
 	const match = path.match(/[\\/]node_modules[\\/]((?:@[^\\/]+[\\/])?[^\\/]+)[\\/](.*)$/);
 	if (match) packages.add(match[2] === 'lodash.js' ? 'lodash (full build)' : match[1].replace('\\', '/'));
+	const own = path.match(/[\\/]dataLayer[\\/]((?:archive|restoreArchive)\w*)\.[jt]s$/);
+	if (own && !match) packages.add(`harper:dataLayer/${own[1]}`);
 }
 process.stdout.write(JSON.stringify([...packages]));
 process.exit(0);

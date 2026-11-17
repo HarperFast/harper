@@ -17,7 +17,7 @@ import {
 	resolveDatabasePath,
 	throwIfUnloadedDatabaseHeldByRestore,
 } from '../resources/databases.ts';
-import { publishRestore } from './restorePublication.ts';
+import { publishRestore, type StagedRestoreSource } from './restorePublication.ts';
 import { runRestoreChild } from './restoreChildRunner.ts';
 import { readRestoreReceipt } from './restoreReceipt.ts';
 import {
@@ -123,7 +123,7 @@ export class BackupInProgressError extends ClientError {
  * job operations (create/verify/restore) this runs in the request-context validator, before any job
  * record is created.
  */
-function requireSuperUser(request: any, operationName: string): void {
+export function requireSuperUser(request: any, operationName: string): void {
 	if (!request?.hdb_user?.role?.permission?.super_user) {
 		throw new ClientError(`Operation '${operationName}' is restricted to super_user roles`, 403);
 	}
@@ -193,7 +193,7 @@ export function resolveSingleRootStore(databaseName: string): any {
 	return rootStores.values().next().value;
 }
 
-function requireRocksRootStore(databaseName: string, operation: string): RocksDatabase {
+export function requireRocksRootStore(databaseName: string, operation: string): RocksDatabase {
 	const rootStore = resolveSingleRootStore(databaseName);
 	if (!(rootStore instanceof RocksDatabase)) {
 		throw new ClientError(
@@ -638,6 +638,12 @@ export async function verifyBackup(request: any) {
 export async function validateRestoreBackup(request: any) {
 	requireSuperUser(request, OPERATIONS_ENUM.RESTORE_BACKUP);
 	const { databaseName, targetDatabase, acceptIncompatible, resume, cancel } = readRestoreRequest(request);
+	// only restoreBackupRequest sets it, after refusing any a client sent; it names staging, not a repository
+	if (request.staging_id !== undefined) {
+		const { assertStagedArchiveQueued } = await import('./restoreArchive.ts');
+		assertStagedArchiveQueued(databaseName, restoreTargetDir(databaseName, databaseName), request.staging_id);
+		return;
+	}
 	// they act on the restore record the target already has, which needs no backup to resolve
 	if (resume || cancel) {
 		const { assertRestartRestoreActionable } = await import('./restoreIntent.ts');
@@ -668,7 +674,7 @@ export async function validateRestoreBackup(request: any) {
 
 const RESTART_RESTORE_OPTIONS = ['allow_engine_only', 'accept_incompatible_backup', 'accept_unverified_blobs'];
 
-function readRestoreRequest(request: any, { offline = false } = {}) {
+export function readRestoreRequest(request: any, { offline = false } = {}) {
 	const databaseName = getDatabaseName(request);
 	const allowEngineOnly = requireBooleanOption(request.allow_engine_only, 'allow_engine_only');
 	const acceptIncompatible = requireBooleanOption(request.accept_incompatible_backup, 'accept_incompatible_backup');
@@ -761,10 +767,62 @@ export async function restoreBackup(request: any) {
 	const inPlace = targetDatabase === databaseName;
 	const requestedBackupId = request.backup_id === undefined ? undefined : requireBackupId(request.backup_id);
 	const databaseDir = restoreTargetDir(databaseName, targetDatabase);
+	const onlineOptions = {
+		databaseName,
+		targetDatabase,
+		inPlace,
+		databaseDir,
+		backupDir: backupDirForDatabase(databaseName),
+		requestedBackupId,
+		allowEngineOnly,
+		acceptIncompatible,
+		acceptUnverifiedBlobs,
+		immutableSource,
+	};
+	if (request.staging_id !== undefined) {
+		const { restoreStagedArchive } = await import('./restoreArchive.ts');
+		return restoreStagedArchive(
+			{ databaseName, databaseDir, stagingId: request.staging_id, acceptUnverifiedBlobs },
+			async (staged) => {
+				if (!onRestart) return restoreOnline(request, { ...onlineOptions, staged });
+				const intent = await import('./restoreIntent.ts');
+				return intent.requestRestartRestore({
+					databaseName,
+					databaseDir,
+					backupDir: backupDirForDatabase(databaseName),
+					allowEngineOnly: false,
+					acceptIncompatible,
+					acceptUnverifiedBlobs,
+					retainPrevious,
+					jobId: currentJobId(),
+					requestedBy: request.hdb_user?.username,
+					staged,
+				});
+			}
+		);
+	}
 	if (cancel || resume || onRestart) {
 		const intent = await import('./restoreIntent.ts');
 		if (cancel) return intent.cancelRestartRestore(databaseName, databaseDir);
-		if (resume) return intent.resumeRestartRestore(databaseName, databaseDir, currentJobId());
+		if (resume) {
+			const read = readRestoreReceipt(databaseDir);
+			if (read.kind === 'valid' && intent.interruptedArchiveRestoreReceipt(read.receipt)) {
+				const earlier = read.receipt;
+				return restoreOnline(request, {
+					...onlineOptions,
+					backupDir: earlier.backup_dir,
+					acceptIncompatible: earlier.options.accept_incompatible_backup === true,
+					acceptUnverifiedBlobs: earlier.options.accept_unverified_blobs === true,
+					staged: {
+						stagingDir: earlier.staging_dir!,
+						restoredFrom: earlier.restored_from ?? 'archive',
+						archiveSha256: earlier.archive_sha256 ?? '',
+						resume: true,
+					},
+				});
+			}
+			return intent.resumeRestartRestore(databaseName, databaseDir, currentJobId());
+		}
 		return intent.requestRestartRestore({
 			databaseName,
 			databaseDir,
@@ -778,18 +836,7 @@ export async function restoreBackup(request: any) {
 			requestedBy: request.hdb_user?.username,
 		});
 	}
-	return restoreOnline(request, {
-		databaseName,
-		targetDatabase,
-		inPlace,
-		databaseDir,
-		backupDir: backupDirForDatabase(databaseName),
-		requestedBackupId,
-		allowEngineOnly,
-		acceptIncompatible,
-		acceptUnverifiedBlobs,
-		immutableSource,
-	});
+	return restoreOnline(request, onlineOptions);
 }
 
 function restoreOnline(
@@ -805,6 +852,7 @@ function restoreOnline(
 		acceptIncompatible: boolean;
 		acceptUnverifiedBlobs: boolean;
 		immutableSource: boolean;
+		staged?: StagedRestoreSource;
 	}
 ) {
 	const { databaseName, targetDatabase, inPlace, databaseDir, backupDir, requestedBackupId } = options;
@@ -827,6 +875,7 @@ function restoreOnline(
 		probeEngineLock: true,
 		jobId: currentJobId(),
 		requestedBy: request.hdb_user?.username,
+		staged: options.staged,
 		online: {
 			async close() {
 				// Block new blob saves, drain in-flight saves, and close the target across all worker threads.

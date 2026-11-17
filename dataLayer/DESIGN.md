@@ -2,7 +2,7 @@
 
 Backup and restore, version gating, system-table bootstrap, storage migration and the legacy SQL executor.
 
-**Read this when:** touching `rocksdbBackup.ts`, `restoreMarker.ts`, `blobBackup.ts`, `hdbInfoController.ts`, `bin/copyDb.ts`, `json/systemSchema.json` or `SQLSearch.ts`.
+**Read this when:** touching `rocksdbBackup.ts`, `restoreMarker.ts`, `blobBackup.ts`, `restoreArchive.ts`, `archiveStaging.ts`, `hdbInfoController.ts`, `bin/copyDb.ts`, `json/systemSchema.json` or `SQLSearch.ts`.
 
 Index of every design note: [DESIGN.md](../DESIGN.md).
 
@@ -202,6 +202,43 @@ restore and the next startup applies it, before anything can open the target.
   An online restore after which nothing keeps components off restarts too, published or failed (the
   error carries `afterRecorded`), since safe mode stays latched on every thread until a restart
   (`restoreSafeModeLifted`).
+
+### Archive restores (`dataLayer/restoreArchive.ts`, `dataLayer/archiveStaging.ts`)
+
+`restore_backup` with a `get_backup` archive writes the archive's bytes once: the upload is extracted as
+it arrives into a staged part beside each destination (`` `restore`/<key>.staged/<id>/ `` next to the
+database directory and next to each blob root), and installed by rename (harper#2639).
+
+- **The staged proof precedes destruction.** `prove-staged` runs the restore proof against the staged
+  parts while the target serves: blob references resolve through `databasePaths` set to the staged
+  roots, so replay and `assessBlobReferences` never touch the live ones, and every opened store is read
+  to its end, since the blob assessment reads only primary stores and a block is checksummed only when
+  read; a column family no table opens is opened by name and read too. The swap renames only a `proven`
+  record's parts, after rechecking each destination against current configuration; the check after it
+  opens the generation and compares the stamped generation, and is not a second proof.
+- **The swap table is decided from the disk.** Per part, whether the staged directory, the destination
+  and `previous/` exist, and whether the destination is the staged directory's recorded inode, decide
+  the action (`partAction`); a retry after any crash, on any route, runs the same table, and every
+  other combination fails closed. `previous/` sits in the part's own area so the move aside never
+  crosses a filesystem; a part on another filesystem than its destination is refused, never copied.
+- **Staging is owned by its receipt.** Until a receipt names an area, only its creator removes it (the
+  upload handler, or the job that fails before the claim). After, only settle, cancel and the startup
+  sweep do; a new restore over a non-terminal staged receipt is refused naming `resume`/`cancel`, so a
+  successor never removes one. The sweep keeps every area a readable receipt names, as `staging_dir` or
+  inherited in `superseded_staging_dirs`, and every area of a key whose receipt is unreadable, or that
+  has a marker and no readable receipt. A serving thread removes an area one entry at a time
+  (`rimrafSteadily`), holding the extraction lock until it is gone; a refused upload is answered without
+  waiting for it. A staged receipt is version 2,
+  which an older Harper reads as unreadable, blocking the database rather than reading the area as a
+  repository.
+- **One extraction at a time** (`archiveExtractionLock.ts`), so a statfs sample excludes every earlier
+  upload; a `quota-status.json` sample, read for up to 5 minutes, is charged with every staged archive
+  still on disk whose `staged.json` is no older than the report (`stagedSinceReport`), derived from the
+  disk, so no write can be lost and the charge ends with the area. A file linked into place whole, not
+  an flock: a deploy's worker restarts would strand an flock taken on an HTTP worker. A stale lock is
+  taken over only under a
+  reclaim marker named for its owner. Whoever finds a lock abandoned removes all its parts or none, by
+  whether a receipt names the engine area; the main thread does so when the holding thread exits.
 
 ## RocksDB managed backups: blob snapshots (`dataLayer/blobBackup.ts`)
 
