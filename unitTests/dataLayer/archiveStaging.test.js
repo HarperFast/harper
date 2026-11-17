@@ -140,9 +140,12 @@ describe('archive staging', function () {
 
 			rmSync(root, { recursive: true, force: true });
 			stage();
-			// a staged directory that is not the one the proof recorded
+			// a staged directory that is not the one the proof recorded; made before the recorded one is
+			// removed, since a filesystem may hand a new directory the inode number just freed
+			const impostor = `${record.parts[0].staged}.impostor`;
+			mkdirSync(impostor);
 			rmSync(record.parts[0].staged, { recursive: true });
-			mkdirSync(record.parts[0].staged);
+			renameSync(impostor, record.parts[0].staged);
 			assert.throws(() => verifyStagedSwap(record, databaseDir, blobRoots), /not the one the staged proof recorded/);
 		});
 
