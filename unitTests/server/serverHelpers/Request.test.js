@@ -415,6 +415,9 @@ describe('Request class', function () {
 	describe('signal on a real node:http exchange', function () {
 		let open = [];
 		const next = (emitter, event) => once(emitter, event, { signal: AbortSignal.timeout(5000) });
+		// Node 26.2 reports an end() after a close as finished and some builds do not; pin the case being tested.
+		const finishedOnceEnded = (res) =>
+			Object.defineProperty(res, 'writableFinished', { configurable: true, get: () => res.writableEnded });
 
 		async function exchange() {
 			let arrived;
@@ -499,6 +502,7 @@ describe('Request class', function () {
 
 		it('aborts a disconnect that came before end(), however late the first read is', async function () {
 			const ex = await exchange();
+			finishedOnceEnded(ex.res);
 			const request = new Request(ex.req, ex.res);
 			await ex.disconnect();
 			ex.res.end();
@@ -510,6 +514,7 @@ describe('Request class', function () {
 
 		it('records a disconnect ahead of a close listener registered before the Request that ends the response', async function () {
 			const ex = await exchange();
+			finishedOnceEnded(ex.res);
 			ex.res.on('close', () => ex.res.end());
 			const request = new Request(ex.req, ex.res);
 			await ex.disconnect();
@@ -520,6 +525,7 @@ describe('Request class', function () {
 
 		it('aborts from the recorded disconnect when a close handler ends the response first', async function () {
 			const ex = await exchange();
+			finishedOnceEnded(ex.res);
 			const request = new Request(ex.req, ex.res);
 			ex.res.on('close', () => ex.res.end());
 			const signal = request.signal;
@@ -555,6 +561,7 @@ describe('Request class', function () {
 
 		it('keeps a disconnect it has reported after a later listener ends the response', async function () {
 			const ex = await exchange();
+			finishedOnceEnded(ex.res);
 			const request = new Request(ex.req, ex.res);
 			let reported;
 			ex.res.prependListener('close', () => ex.res.end());
