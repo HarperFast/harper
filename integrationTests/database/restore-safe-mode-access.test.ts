@@ -136,7 +136,10 @@ suite('restore safe mode keeps the access boundary', { skip: skipSuite }, (ctx: 
 			await sleep(250);
 			count = announcementCount();
 		}
-		if (count < expectedAtLeast) return count;
+		if (count < expectedAtLeast)
+			throw new Error(
+				`hdb.log carries ${count} restore safe mode announcement(s), expected at least ${expectedAtLeast}`
+			);
 		await sleep(1_000);
 		return announcementCount();
 	}
@@ -613,8 +616,12 @@ suite('restore safe mode keeps the access boundary', { skip: skipSuite }, (ctx: 
 						violations.push(`getJob ${principal}: the job record carries a stored value`);
 				}
 				console.log('[restore-safe-mode] boot 2 restore-control cells', JSON.stringify(cells));
-				// a refused restart must not have happened late either
-				await sleep(3_000);
+				// a refused restart must not fire late either
+				const exitedLate = await Promise.race([
+					new Promise<boolean>((resolveExit) => ctx.harper.process.once('exit', () => resolveExit(true))),
+					sleep(3_000).then(() => false),
+				]);
+				ok(!exitedLate, 'Harper exited after a refused request');
 				deepStrictEqual(violations, [], 'non-super_user requests answered other than documented');
 				const afterState = await restoreState(restoreJobId);
 				deepStrictEqual(afterState, beforeState, 'the restore record, backups, pins, job and process are untouched');
