@@ -813,13 +813,12 @@ function parseContentType(contentType: string): ContentType {
 	return { type: contentType.trim().toLowerCase(), rawType: contentType, parameters };
 }
 
-// A request is accepted unread, so a body that never cancels does not make it create its signal.
 type SignalSource = AbortSignal | { readonly signal?: AbortSignal };
 
 function signalOf(source: SignalSource | undefined): AbortSignal | undefined {
 	if (!source) return undefined;
+	if (source instanceof AbortSignal) return source;
 	if ('signal' in source) return source.signal;
-	// not a request: a compatible non-AbortSignal still cancels
 	return typeof (source as AbortSignal).addEventListener === 'function' ? (source as AbortSignal) : undefined;
 }
 

@@ -101,7 +101,6 @@ export class Request<Body = any> {
 		if (this.#disconnected()) controller.abort();
 		else if (typeof this._nodeResponse?.on !== 'function') this.#abortOnSocketClose(controller);
 	}
-	// Sticky: once a disconnect has been seen, a later end() cannot un-see it.
 	#disconnected(): boolean {
 		if (this.#aborted) return true;
 		const response = this._nodeResponse;

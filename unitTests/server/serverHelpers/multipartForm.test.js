@@ -303,6 +303,16 @@ describe('REST multipart form decoding', function () {
 		await assert.rejects(body.next(), /Multipart request aborted/);
 	});
 
+	it('keeps a real AbortSignal as the signal even when it carries a signal property', async function () {
+		const controller = new AbortController();
+		const decorated = Object.assign(controller.signal, { signal: new AbortController().signal });
+		const input = new PassThrough();
+		const body = getDeserializer(contentType, true, true)(input, decorated);
+		controller.abort();
+		input.end();
+		await assert.rejects(body.next(), /Multipart request aborted/);
+	});
+
 	it('decodes with a source that has no signal', async function () {
 		for (const source of [undefined, {}]) {
 			const body = getDeserializer(
