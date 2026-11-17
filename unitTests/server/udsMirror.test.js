@@ -36,6 +36,15 @@ function replaceWithNewInode(filePath, contents) {
 	fs.renameSync(decoyPath, filePath);
 }
 
+let mirrorSequence = 0;
+function boundMirror(yamlPath) {
+	const socketPath = path.join(TEST_SOCKETS_DIR, `bound-${++mirrorSequence}.sock`);
+	fs.writeFileSync(socketPath, '');
+	registerUdsCleanupPaths(socketPath, yamlPath);
+	recordUdsBindSuccess(socketPath);
+	return socketPath;
+}
+
 // Build a mock secure server whose secureContexts mirrors the Map returned by createTLSSelector
 function makeSecureServer(certs = []) {
 	const contexts = new Map();
@@ -234,7 +243,7 @@ describe('UDS mirror (writeUdsMetadata, cleanup helpers)', () => {
 				rows.set('operations', { allow: ['10.0.0.0/8', '2001:db8::/32'] });
 				const server = { ...makeSecureServer(), networkAccessScope: 'operations', secureContextsListeners: [] };
 				let ready;
-				publishUdsMetadata(new Promise((resolve) => (ready = resolve)), server, () =>
+				publishUdsMetadata(boundMirror(yamlPath), new Promise((resolve) => (ready = resolve)), server, () =>
 					writeUdsMetadata(yamlPath, 9925, server)
 				);
 				server.secureContextsListeners.forEach((listener) => listener());
@@ -255,7 +264,7 @@ describe('UDS mirror (writeUdsMetadata, cleanup helpers)', () => {
 			it('still publishes after a rejected TLS readiness, on the next certificate change', async () => {
 				rows.set('operations', { allow: ['10.0.0.0/8'] });
 				const server = { ...makeSecureServer(), networkAccessScope: 'operations', secureContextsListeners: [] };
-				publishUdsMetadata(Promise.reject(new Error('boot TLS pass failed')), server, () =>
+				publishUdsMetadata(boundMirror(yamlPath), Promise.reject(new Error('boot TLS pass failed')), server, () =>
 					writeUdsMetadata(yamlPath, 9925, server)
 				);
 				await new Promise((resolve) => setImmediate(resolve));
@@ -265,10 +274,31 @@ describe('UDS mirror (writeUdsMetadata, cleanup helpers)', () => {
 				assert.ok(read().includes('  - "10.0.0.0/8"'));
 			});
 
+			it('stops rewriting a scoped yaml once another worker has rebound its socket', async () => {
+				rows.set('operations', { allow: ['10.0.0.0/8'] });
+				const ownedYaml = path.join(TEST_SOCKETS_DIR, 'scoped-owned.yaml');
+				const replacedYaml = path.join(TEST_SOCKETS_DIR, 'scoped-replaced.yaml');
+				const server = { ...makeSecureServer(), networkAccessScope: 'operations', secureContextsListeners: [] };
+				publishUdsMetadata(boundMirror(ownedYaml), Promise.resolve(), server, () =>
+					writeUdsMetadata(ownedYaml, 9925, server)
+				);
+				const replacedSock = boundMirror(replacedYaml);
+				publishUdsMetadata(replacedSock, Promise.resolve(), server, () => writeUdsMetadata(replacedYaml, 9925, server));
+				await until(() => fs.existsSync(ownedYaml) && fs.existsSync(replacedYaml), 'both first writes');
+
+				replaceWithNewInode(replacedSock, 'replacement worker');
+				fs.writeFileSync(replacedYaml, 'replacement metadata\n');
+				changeRow({ allow: ['192.168.0.0/16'] });
+				await until(() => fs.readFileSync(ownedYaml, 'utf8').includes('192.168.0.0/16'), 'the owned rewrite');
+				assert.strictEqual(fs.readFileSync(replacedYaml, 'utf8'), 'replacement metadata\n');
+			});
+
 			it('never adds allowedSources to a server outside a scope', async () => {
 				rows.set('operations', { allow: ['10.0.0.0/8'] });
 				const server = { ...makeSecureServer(), secureContextsListeners: [] };
-				publishUdsMetadata(Promise.resolve(), server, () => writeUdsMetadata(yamlPath, 9926, server));
+				publishUdsMetadata(boundMirror(yamlPath), Promise.resolve(), server, () =>
+					writeUdsMetadata(yamlPath, 9926, server)
+				);
 				await until(() => fs.existsSync(yamlPath), 'the write');
 				assert.ok(!read().includes('allowedSources'));
 			});
@@ -634,10 +664,8 @@ describe('UDS mirror (writeUdsMetadata, cleanup helpers)', () => {
 			// Deliberately asymmetric with markUdsBindFailed's "absent is safe to retract": that
 			// function's only caller runs synchronously before any bind attempt, with no window for
 			// anyone else to be mid-flight. This function's second call (process.on('exit')) can land
-			// seconds after the first, while a concurrently-booting replacement (on non-overlapping
-			// restart platforms, started right after this worker's SHUTDOWN) may have already written
-			// its own fresh yaml without having bound its socket yet — 'absent' here doesn't reliably
-			// mean "no live owner." A stale yaml with no bind failure to explain it is left for
+			// seconds after the first, so a yaml found beside an absent socket then is no proof that
+			// this worker wrote it. A stale yaml with no bind failure to explain it is left for
 			// markUdsBindFailed or the next full process start's cleanupSocketsDirectory() sweep.
 			const sockPath = path.join(TEST_SOCKETS_DIR, 'absent-yaml.sock');
 			const yamlPath = path.join(TEST_SOCKETS_DIR, 'absent-yaml.yaml');
@@ -663,6 +691,85 @@ describe('UDS mirror (writeUdsMetadata, cleanup helpers)', () => {
 		it('cleanupUdsFiles does not throw when nothing was ever registered for that path', () => {
 			registerUdsCleanupPaths(path.join(TEST_SOCKETS_DIR, 'ghost2.sock'), path.join(TEST_SOCKETS_DIR, 'ghost2.yaml'));
 			assert.doesNotThrow(() => cleanupUdsFiles());
+		});
+	});
+
+	describe('publishUdsMetadata', () => {
+		const tick = () => new Promise((resolve) => setImmediate(resolve));
+
+		it('THE REGRESSION (harper#4436): writes nothing while TLS is ready but its bind is not, then writes at the bind', async () => {
+			const sockPath = path.join(TEST_SOCKETS_DIR, 'held.sock');
+			const yamlPath = path.join(TEST_SOCKETS_DIR, 'held.yaml');
+			const server = { ...makeSecureServer(), secureContextsListeners: [] };
+			registerUdsCleanupPaths(sockPath, yamlPath);
+			publishUdsMetadata(sockPath, Promise.resolve(), server, () => writeUdsMetadata(yamlPath, 9926, server));
+			await tick();
+			server.secureContextsListeners.forEach((listener) => listener());
+			assert.ok(!fs.existsSync(yamlPath), 'a mirror this worker has not bound must not be advertised');
+
+			fs.writeFileSync(sockPath, '');
+			recordUdsBindSuccess(sockPath);
+			assert.ok(fs.existsSync(yamlPath), 'the bind publishes it');
+		});
+
+		it('publishes at the bind after a certificate change stood in for a rejected TLS readiness', async () => {
+			const sockPath = path.join(TEST_SOCKETS_DIR, 'late-bind.sock');
+			const yamlPath = path.join(TEST_SOCKETS_DIR, 'late-bind.yaml');
+			const server = { ...makeSecureServer(), secureContextsListeners: [] };
+			registerUdsCleanupPaths(sockPath, yamlPath);
+			publishUdsMetadata(sockPath, Promise.reject(new Error('boot TLS pass failed')), server, () =>
+				writeUdsMetadata(yamlPath, 9926, server)
+			);
+			await tick();
+			server.secureContextsListeners.forEach((listener) => listener());
+			assert.ok(!fs.existsSync(yamlPath), 'not bound yet');
+
+			fs.writeFileSync(sockPath, '');
+			recordUdsBindSuccess(sockPath);
+			assert.ok(fs.existsSync(yamlPath), 'TLS settled before the bind, so the bind publishes');
+		});
+
+		it('never rewrites the yaml once another worker has rebound the path', async () => {
+			const yamlPath = path.join(TEST_SOCKETS_DIR, 'draining.yaml');
+			const server = { ...makeSecureServer(), secureContextsListeners: [] };
+			const sockPath = boundMirror(yamlPath);
+			publishUdsMetadata(sockPath, Promise.resolve(), server, () => writeUdsMetadata(yamlPath, 9926, server));
+			await tick();
+			assert.ok(fs.existsSync(yamlPath), 'published while it owns the socket');
+
+			replaceWithNewInode(sockPath, 'replacement worker');
+			fs.writeFileSync(yamlPath, 'replacement metadata\n');
+			server.secureContextsListeners.forEach((listener) => listener());
+			assert.strictEqual(fs.readFileSync(yamlPath, 'utf8'), 'replacement metadata\n');
+		});
+
+		it('never republishes after cleanupUdsFiles has run', async () => {
+			const yamlPath = path.join(TEST_SOCKETS_DIR, 'retired.yaml');
+			const server = { ...makeSecureServer(), secureContextsListeners: [] };
+			const sockPath = boundMirror(yamlPath);
+			publishUdsMetadata(sockPath, Promise.resolve(), server, () => writeUdsMetadata(yamlPath, 9926, server));
+			await tick();
+			cleanupUdsFiles();
+			assert.ok(!fs.existsSync(yamlPath), 'its cleanup removed its yaml');
+
+			server.secureContextsListeners.forEach((listener) => listener());
+			assert.ok(!fs.existsSync(yamlPath), 'a certificate change after cleanup must not advertise it again');
+		});
+
+		it('publishes nothing, and retracts a stale yaml, when its bind identity cannot be read', async () => {
+			const blockingFile = path.join(TEST_SOCKETS_DIR, 'unreadable-parent');
+			const sockPath = path.join(blockingFile, 'unreadable.sock');
+			const yamlPath = path.join(TEST_SOCKETS_DIR, 'unreadable.yaml');
+			const server = { ...makeSecureServer(), secureContextsListeners: [] };
+			fs.writeFileSync(blockingFile, ''); // stat fails with ENOTDIR, not ENOENT
+			fs.writeFileSync(yamlPath, 'stale: metadata\n');
+			registerUdsCleanupPaths(sockPath, yamlPath);
+			publishUdsMetadata(sockPath, Promise.resolve(), server, () => writeUdsMetadata(yamlPath, 9926, server));
+			await tick();
+
+			assert.doesNotThrow(() => recordUdsBindSuccess(sockPath));
+			server.secureContextsListeners.forEach((listener) => listener());
+			assert.ok(!fs.existsSync(yamlPath), 'a mirror without a recorded identity is treated as a failed bind');
 		});
 	});
 

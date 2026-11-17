@@ -91,16 +91,17 @@ const fallbackServers: Record<string | number, any> = {};
 // the replacement, not to it. Captured as bigint (statSync's `{ bigint: true }` form): a plain
 // Number loses precision above 2^53, which some filesystems (e.g. XFS with inode64) can exceed,
 // letting two genuinely different inodes compare equal.
-const udsCleanupPaths: { socketPath: string; yamlPath: string; identity?: { dev: bigint; ino: bigint } }[] = [];
-// Sockets whose listen() has failed (see threadServer.js's fail-soft UDS handling). A TLS mirror's
-// YAML metadata is written on its own schedule (SNICallback readiness / cert reload), independent of
-// whether the mirror socket ever actually bound, so a failed bind must both cancel any metadata write
-// still pending and remove one already on disk — otherwise a fronting proxy keeps advertising a socket
-// nothing is listening on.
+const udsCleanupPaths: {
+	socketPath: string;
+	yamlPath: string;
+	identity?: { dev: bigint; ino: bigint };
+	onBound: (() => void)[];
+}[] = [];
+// Sockets whose listen() was skipped or failed (see threadServer.ts's fail-soft UDS handling).
 const failedUdsPaths = new Set<string>();
 
 export function registerUdsCleanupPaths(socketPath: string, yamlPath: string) {
-	udsCleanupPaths.push({ socketPath, yamlPath });
+	udsCleanupPaths.push({ socketPath, yamlPath, onBound: [] });
 }
 
 export function hasUdsMirror(): boolean {
@@ -121,10 +122,23 @@ export function recordUdsBindSuccess(socketPath: string) {
 		const stat = statSync(socketPath, { bigint: true });
 		entry.identity = { dev: stat.dev, ino: stat.ino };
 	} catch (error) {
-		// Extremely unlikely (we just bound this path), but silent failure here is expensive: the
-		// entry is permanently treated as unowned, so this worker leaks both files at shutdown with
-		// nothing in the logs to explain why.
-		harperLogger.warn(`Could not stat freshly bound UDS mirror at ${socketPath}`, error);
+		// Extremely unlikely (we just bound this path). Without an identity this worker can neither
+		// publish the mirror nor clean it up, so count it as failed (an isolated worker left with no
+		// other mirror fails startup instead of reporting ready while unreachable) and retract any
+		// yaml there: it can only describe the socket this bind replaced.
+		harperLogger.error(`Could not stat freshly bound UDS mirror at ${socketPath}`, error);
+		failedUdsPaths.add(socketPath);
+		try {
+			unlinkSync(entry.yamlPath);
+		} catch {}
+		return;
+	}
+	for (const publish of entry.onBound) {
+		try {
+			publish();
+		} catch (error) {
+			harperLogger.error(`Could not publish UDS mirror metadata for ${socketPath}`, error);
+		}
 	}
 }
 
@@ -171,10 +185,6 @@ export function markUdsBindFailed(socketPath: string) {
 	} catch {}
 }
 
-export function isUdsBindFailed(socketPath: string): boolean {
-	return failedUdsPaths.has(socketPath);
-}
-
 export function cleanupUdsFiles() {
 	for (const entry of udsCleanupPaths) {
 		// ownershipOf() and the unlinks below are separate syscalls, so a replacement that unlinks
@@ -190,15 +200,9 @@ export function cleanupUdsFiles() {
 		// coincidentally re-match a path it no longer has any claim to; clearing it here makes a
 		// repeat call a guaranteed no-op instead of a second chance to delete a stranger's files.
 		entry.identity = undefined;
-		// Unlike markUdsBindFailed (where 'absent' is genuinely safe — its callers run instead of a
-		// bind attempt, on a path nothing else binds, with no window for anyone else to be mid-flight),
-		// this function's second call (process.on('exit')) can land seconds after the first, while
-		// a concurrently-booting replacement — on the non-overlapping-restart platforms, started
-		// right after this worker's SHUTDOWN, not after it fully exits — may have already written
-		// its own fresh yaml (SNICallback.ready resolves independently of its bind) without having
-		// bound its socket yet. Treating that window's 'absent' as retractable would delete the
-		// replacement's yaml out from under it. Only 'owned' is safe here; a stale yaml this worker
-		// never bound (or no longer owns) is left for markUdsBindFailed or the startup sweep.
+		// 'absent' is not ours to retract: the second (exit-time) call can land seconds after the
+		// first, so a yaml found then is no proof of this worker's ownership. A stale one is left for
+		// markUdsBindFailed or the startup sweep.
 		if (ownership !== 'owned') continue;
 		try {
 			unlinkSync(entry.socketPath);
@@ -293,14 +297,30 @@ export function writeUdsMetadata(
 	}
 }
 
-export function publishUdsMetadata(ready: Promise<unknown>, secureServer: any, writeMetadata: () => boolean) {
-	// A certificate change arms the watch too, so a scoped mirror is still published after a boot TLS
-	// pass that rejected `ready`; re-watching republishes.
-	const publish = secureServer.networkAccessScope
-		? () => watchNetworkAccess(secureServer.networkAccessScope, writeMetadata)
-		: writeMetadata;
-	ready.then(publish, (error) => harperLogger.error('TLS initialization failed for a UDS mirror', error));
-	secureServer.secureContextsListeners?.push(publish);
+/** Writes only while the socket on disk is still this worker's own bind (server/threads/DESIGN.md). */
+export function publishUdsMetadata(
+	socketPath: string,
+	ready: Promise<unknown>,
+	secureServer: any,
+	writeMetadata: () => boolean
+) {
+	const entry = udsCleanupPaths.find((candidate) => candidate.socketPath === socketPath);
+	if (!entry) return;
+	const write = () => ownershipOf(entry) === 'owned' && writeMetadata();
+	let tlsReady = false;
+	const publish = () => {
+		if (!tlsReady || entry.identity === undefined) return;
+		if (secureServer.networkAccessScope) watchNetworkAccess(secureServer.networkAccessScope, write);
+		else write();
+	};
+	// a certificate change also settles TLS after a boot pass that rejected `ready`
+	const tlsSettled = () => {
+		tlsReady = true;
+		publish();
+	};
+	entry.onBound.push(publish);
+	ready.then(tlsSettled, (error) => harperLogger.error('TLS initialization failed for a UDS mirror', error));
+	secureServer.secureContextsListeners?.push(tlsSettled);
 }
 
 export function ensureSocketsDirectory(): string | undefined {
@@ -1194,12 +1214,8 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 			}
 			registerUdsCleanupPaths(udsPath, yamlPath);
 
-			// Skip (and don't re-arm) the write if this mirror's listen() already failed — see
-			// markUdsBindFailed(). SNICallback readiness and cert reloads are independent of the
-			// socket's bind outcome, so without this check a failed mirror could still get advertised.
-			const writeMetadata = () =>
-				failedUdsPaths.has(udsPath) || writeUdsMetadata(yamlPath, port, server, undefined, !process.env.HARPER_UWS_UDS);
-			publishUdsMetadata(options.SNICallback.ready, server, writeMetadata);
+			const writeMetadata = () => writeUdsMetadata(yamlPath, port, server, undefined, !process.env.HARPER_UWS_UDS);
+			publishUdsMetadata(udsPath, options.SNICallback.ready, server, writeMetadata);
 
 			// Optional cleartext HTTP/2 mirror (spike: HARPER_H2C_UDS=1). A separate socket
 			// (`<worker>-<port>-h2.sock`) so a fronting proxy can route by negotiated ALPN:
@@ -1231,8 +1247,8 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 				SERVERS[udsPathH2] = h2Front;
 				registerUdsCleanupPaths(udsPathH2, yamlPathH2);
 
-				const writeMetadataH2 = () => failedUdsPaths.has(udsPathH2) || writeUdsMetadata(yamlPathH2, port, server, 'h2');
-				publishUdsMetadata(options.SNICallback.ready, server, writeMetadataH2);
+				const writeMetadataH2 = () => writeUdsMetadata(yamlPathH2, port, server, 'h2');
+				publishUdsMetadata(udsPathH2, options.SNICallback.ready, server, writeMetadataH2);
 			}
 		}
 	}
