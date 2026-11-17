@@ -394,7 +394,8 @@ describeUnlessLmdb('restore_backup from a get_backup archive', function () {
 					},
 					() => assert.fail('a failed proof publishes nothing')
 				),
-				/could not read its store 'Items\/label'/
+				// the store scan finds it, unless the engine's own flush or compaction reads the block first
+				/could not read its store 'Items\/label'|block checksum mismatch/
 			);
 			assert.deepStrictEqual(stagingLeft(fixture.name), [], 'a failed proof removes its staging');
 			assert.deepStrictEqual(await snapshot(Items), fixture.live, 'the target was never closed');
