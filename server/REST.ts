@@ -500,11 +500,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 			if (headersObject['content-length'] || headersObject['transfer-encoding']) {
 				// TODO: Support cancellation for buffered request bodies.
 				try {
-					request.data = getDeserializer(
-						headersObject['content-type'] as any,
-						true,
-						true
-					)(request.body, request.signal);
+					request.data = getDeserializer(headersObject['content-type'] as any, true, true)(request.body, request);
 					// Resource loading can outlive body parsing; preserve the rejection until it is awaited.
 					if (writeCondition && typeof request.data?.then === 'function') request.data.then(undefined, () => {});
 				} catch (error) {

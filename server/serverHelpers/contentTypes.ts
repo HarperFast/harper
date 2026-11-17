@@ -813,6 +813,16 @@ function parseContentType(contentType: string): ContentType {
 	return { type: contentType.trim().toLowerCase(), rawType: contentType, parameters };
 }
 
+// A request is accepted unread, so a body that never cancels does not make it create its signal.
+type SignalSource = AbortSignal | { readonly signal?: AbortSignal };
+
+function signalOf(source: SignalSource | undefined): AbortSignal | undefined {
+	if (!source) return undefined;
+	if ('signal' in source) return source.signal;
+	// not a request: a compatible non-AbortSignal still cancels
+	return typeof (source as AbortSignal).addEventListener === 'function' ? (source as AbortSignal) : undefined;
+}
+
 /**
  * Given a content-type header string, get a deserializer function that can be used to parse the body.
  */
@@ -826,17 +836,17 @@ export function getDeserializer(
 	contentTypeString: string | undefined,
 	streaming: true,
 	streamValues: boolean
-): (stream: RequestBodyStream, signal?: AbortSignal) => Promise<unknown> | AsyncIterable<unknown>;
+): (stream: RequestBodyStream, signal?: SignalSource) => Promise<unknown> | AsyncIterable<unknown>;
 export function getDeserializer(
 	contentTypeString: string | undefined,
 	streaming?: boolean,
 	streamValues?: boolean
-): Deserialize | ((stream: RequestBodyStream, signal?: AbortSignal) => Promise<unknown> | AsyncIterable<unknown>);
+): Deserialize | ((stream: RequestBodyStream, signal?: SignalSource) => Promise<unknown> | AsyncIterable<unknown>);
 export function getDeserializer(
 	contentTypeString: string = '',
 	streaming: boolean = false,
 	streamValues: boolean = false
-): Deserialize | ((stream: RequestBodyStream, signal?: AbortSignal) => Promise<unknown> | AsyncIterable<unknown>) {
+): Deserialize | ((stream: RequestBodyStream, signal?: SignalSource) => Promise<unknown> | AsyncIterable<unknown>) {
 	const contentType = parseContentType(contentTypeString);
 	const handler = contentType.type
 		? mediaTypes.get(contentType.rawType) || mediaTypes.get(contentType.type)
@@ -844,7 +854,7 @@ export function getDeserializer(
 	const multipart = !handler?.deserialize && contentType.type === 'multipart/form-data';
 	const deserialize = handler?.deserialize || deserializerUnknownType(contentType);
 	if (streaming && streamValues && multipart)
-		return (stream, signal) => deserializeMultipartStream(stream, contentTypeString, signal);
+		return (stream, source) => deserializeMultipartStream(stream, contentTypeString, signalOf(source));
 	if (!streaming) return deserialize;
 	return (stream: RequestBodyStream) => {
 		const body = streamToBuffer(stream).then(

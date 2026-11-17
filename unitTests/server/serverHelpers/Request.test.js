@@ -1,8 +1,11 @@
 'use strict';
 
 const assert = require('node:assert');
+const http = require('node:http');
+const net = require('node:net');
 const sinon = require('sinon');
-const { EventEmitter } = require('node:events');
+const { EventEmitter, once } = require('node:events');
+const { waitFor } = require('../../waitFor.js');
 
 describe('Request class', function () {
 	let Request, UwsRequest;
@@ -350,7 +353,20 @@ describe('Request class', function () {
 		it('aborts on socket close when no nodeResponse is provided (WebSocket-upgrade path)', function () {
 			const nodeRequest = makeNodeRequest();
 			const request = new Request(nodeRequest);
+			const signal = request.signal;
+			assert.strictEqual(signal.aborted, false);
+			nodeRequest.socket.destroyed = true;
 			nodeRequest.socket.emit('close');
+			assert.strictEqual(signal.aborted, true);
+			assert.strictEqual(request.isAborted, true);
+		});
+
+		it('aborts a request with no nodeResponse whose socket closed before the first signal read', function () {
+			const nodeRequest = makeNodeRequest();
+			const request = new Request(nodeRequest);
+			assert.strictEqual(request.isAborted, false);
+			nodeRequest.socket.destroyed = true;
+			assert.strictEqual(request.isAborted, true);
 			assert.strictEqual(request.signal.aborted, true);
 		});
 
@@ -358,6 +374,243 @@ describe('Request class', function () {
 			const request = new Request(makeNodeRequest(), makeNodeResponse());
 			request._abort();
 			assert.strictEqual(request.signal.aborted, true);
+		});
+
+		it('publishes the signal before registering the socket listener', function () {
+			const nodeRequest = makeNodeRequest();
+			const request = new Request(nodeRequest);
+			let seen;
+			nodeRequest.socket.on('newListener', (event) => {
+				if (event === 'close') seen = request.signal;
+			});
+			const signal = request.signal;
+			assert.strictEqual(seen, signal);
+			request._abort();
+			assert.strictEqual(signal.aborted, true);
+		});
+
+		it('_abort() before the first signal read yields an aborted signal, and again after it', function () {
+			const request = new Request(makeNodeRequest(), makeNodeResponse());
+			assert.strictEqual(request.isAborted, false);
+			request._abort();
+			assert.strictEqual(request.isAborted, true);
+			assert.strictEqual(request.signal.aborted, true);
+			request._abort();
+			assert.strictEqual(request.signal.aborted, true);
+
+			const later = new Request(makeNodeRequest(), makeNodeResponse());
+			const signal = later.signal;
+			assert.strictEqual(signal.aborted, false);
+			later._abort();
+			assert.strictEqual(signal.aborted, true);
+			assert.strictEqual(later.signal, signal);
+		});
+
+		it('returns the same signal on every read', function () {
+			const request = new Request(makeNodeRequest(), makeNodeResponse());
+			assert.strictEqual(request.signal, request.signal);
+		});
+	});
+
+	describe('signal on a real node:http exchange', function () {
+		let open = [];
+		const next = (emitter, event) => once(emitter, event, { signal: AbortSignal.timeout(5000) });
+
+		async function exchange() {
+			let arrived;
+			const handles = {};
+			open.push(handles);
+			const server = (handles.server = http.createServer((req, res) => (arrived = { req, res })));
+			server.listen(0, '127.0.0.1');
+			await next(server, 'listening');
+			const client = (handles.client = net.connect(server.address().port, '127.0.0.1'));
+			await next(client, 'connect');
+			client.write('GET / HTTP/1.1\r\nHost: test\r\n\r\n');
+			const { req, res } = await waitFor(() => arrived, 5000);
+			return {
+				req,
+				res,
+				async disconnect() {
+					const closed = res.closed ? Promise.resolve() : next(res, 'close');
+					client.destroy();
+					await closed;
+				},
+			};
+		}
+
+		afterEach(function () {
+			for (const { client, server } of open) {
+				client?.destroy();
+				server?.close();
+				server?.closeAllConnections();
+			}
+			open = [];
+		});
+
+		it('creates no AbortController until the signal is first read', async function () {
+			const { req, res } = await exchange();
+			const Original = globalThis.AbortController;
+			let created = 0;
+			globalThis.AbortController = class extends Original {
+				constructor() {
+					super();
+					created++;
+				}
+			};
+			try {
+				const request = new Request(req, res);
+				assert.strictEqual(request.isAborted, false);
+				assert.strictEqual(created, 0);
+				request.signal;
+				request.signal;
+				assert.strictEqual(created, 1);
+			} finally {
+				globalThis.AbortController = Original;
+			}
+		});
+
+		it('registers one close listener per request, and no more when the signal is read', async function () {
+			const { req, res } = await exchange();
+			const before = res.listenerCount('close');
+			const request = new Request(req, res);
+			assert.strictEqual(res.listenerCount('close'), before + 1);
+			request.signal;
+			assert.strictEqual(res.listenerCount('close'), before + 1);
+		});
+
+		it('aborts a disconnect that happened before the first signal read', async function () {
+			const ex = await exchange();
+			const request = new Request(ex.req, ex.res);
+			await ex.disconnect();
+			assert.strictEqual(request.isAborted, true);
+			assert.strictEqual(request.signal.aborted, true);
+		});
+
+		it('aborts a disconnect that happens after the first signal read', async function () {
+			const ex = await exchange();
+			const request = new Request(ex.req, ex.res);
+			const signal = request.signal;
+			assert.strictEqual(signal.aborted, false);
+			const aborted = next(signal, 'abort');
+			await ex.disconnect();
+			await aborted;
+			assert.strictEqual(request.isAborted, true);
+		});
+
+		it('aborts a disconnect that came before end(), however late the first read is', async function () {
+			const ex = await exchange();
+			const request = new Request(ex.req, ex.res);
+			await ex.disconnect();
+			ex.res.end();
+			// end() after the close reports a finished response, which a clean completion also reports.
+			assert.strictEqual(ex.res.writableFinished, true);
+			assert.strictEqual(request.isAborted, true);
+			assert.strictEqual(request.signal.aborted, true);
+		});
+
+		it('records a disconnect ahead of a close listener registered before the Request that ends the response', async function () {
+			const ex = await exchange();
+			ex.res.on('close', () => ex.res.end());
+			const request = new Request(ex.req, ex.res);
+			await ex.disconnect();
+			assert.strictEqual(ex.res.writableFinished, true);
+			assert.strictEqual(request.isAborted, true);
+			assert.strictEqual(request.signal.aborted, true);
+		});
+
+		it('aborts from the recorded disconnect when a close handler ends the response first', async function () {
+			const ex = await exchange();
+			const request = new Request(ex.req, ex.res);
+			ex.res.on('close', () => ex.res.end());
+			const signal = request.signal;
+			await ex.disconnect();
+			assert.strictEqual(ex.res.writableFinished, true);
+			assert.strictEqual(signal.aborted, true);
+		});
+
+		it('aborts the signal of every Request built on the same response', async function () {
+			const ex = await exchange();
+			const first = new Request(ex.req, ex.res);
+			const second = new Request(ex.req, ex.res);
+			const signals = [first.signal, second.signal];
+			await ex.disconnect();
+			assert.deepStrictEqual(
+				signals.map((signal) => signal.aborted),
+				[true, true]
+			);
+		});
+
+		it('aborts a signal first read from a close listener that runs ahead of the recorded disconnect', async function () {
+			const ex = await exchange();
+			const request = new Request(ex.req, ex.res);
+			let seen;
+			ex.res.prependListener('close', () => {
+				seen = { isAborted: request.isAborted, signal: request.signal };
+			});
+			await ex.disconnect();
+			assert.strictEqual(seen.isAborted, true);
+			assert.strictEqual(seen.signal.aborted, true);
+			assert.strictEqual(request.isAborted, true);
+		});
+
+		it('keeps a disconnect it has reported after a later listener ends the response', async function () {
+			const ex = await exchange();
+			const request = new Request(ex.req, ex.res);
+			let reported;
+			ex.res.prependListener('close', () => ex.res.end());
+			ex.res.prependListener('close', () => (reported = request.isAborted));
+			await ex.disconnect();
+			assert.strictEqual(reported, true);
+			assert.strictEqual(ex.res.writableFinished, true);
+			assert.strictEqual(request.isAborted, true);
+			assert.strictEqual(request.signal.aborted, true);
+		});
+
+		it('aborts a request whose response closed before the Request was created', async function () {
+			const ex = await exchange();
+			await ex.disconnect();
+			const request = new Request(ex.req, ex.res);
+			assert.strictEqual(request.isAborted, true);
+			assert.strictEqual(request.signal.aborted, true);
+		});
+
+		it('leaves the signal live after a clean completion, whenever it is read and whatever the socket does next', async function () {
+			const read = await exchange();
+			const readRequest = new Request(read.req, read.res);
+			const before = readRequest.signal;
+			const late = await exchange();
+			const lateRequest = new Request(late.req, late.res);
+			for (const ex of [read, late]) {
+				const closed = next(ex.res, 'close');
+				ex.res.end('ok');
+				await closed;
+			}
+			const after = lateRequest.signal;
+			for (const ex of [read, late]) {
+				const socketClosed = next(ex.req.socket, 'close');
+				ex.req.socket.destroy();
+				await socketClosed;
+			}
+			assert.strictEqual(before.aborted, false);
+			assert.strictEqual(after.aborted, false);
+			assert.strictEqual(readRequest.isAborted, false);
+			assert.strictEqual(lateRequest.isAborted, false);
+		});
+
+		it('watches the socket when there is no response, before and after the first read', async function () {
+			const reader = await exchange();
+			const readerRequest = new Request(reader.req);
+			const signal = readerRequest.signal;
+			const late = await exchange();
+			const lateRequest = new Request(late.req);
+			assert.strictEqual(lateRequest.isAborted, false);
+			const aborted = next(signal, 'abort');
+			reader.req.socket.destroy();
+			late.req.socket.destroy();
+			await aborted;
+			await waitFor(() => late.req.socket.destroyed);
+			assert.strictEqual(lateRequest.isAborted, true);
+			assert.strictEqual(lateRequest.signal.aborted, true);
 		});
 	});
 
