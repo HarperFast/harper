@@ -16,7 +16,13 @@ import {
 	setSharedFrame,
 	resolveSharedPayload,
 } from './serverHelpers/sharedMessageEncoding.ts';
-import { recordAction, addAnalyticsListener, recordActionBinary } from '../resources/analytics/write.ts';
+import {
+	actionRecorder,
+	checkAnalyticsEnabled,
+	recordAction,
+	addAnalyticsListener,
+	recordActionBinary,
+} from '../resources/analytics/write.ts';
 import { get } from '../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS, AUTH_AUDIT_STATUS, AUTH_AUDIT_TYPES } from '../utility/hdbTerms.ts';
 import { loggerWithTag } from '../utility/logging/logger.ts';
@@ -468,6 +474,30 @@ function sendPacket(send: (packet: Buffer) => void, packet: Buffer, methodName: 
 	send(packet);
 	recordAction(packet.length, 'bytes-sent', path, methodName, 'mqtt');
 }
+
+const MAX_PUBLISH_RECORDERS = 1000;
+const PUBLISH_METHODS = ['publish', 'publish,qos=1', 'publish,qos=2'];
+const publishMethod = (qos: number) => PUBLISH_METHODS[qos] ?? 'publish,qos=' + qos;
+const publishRecorders = new Map<string, Array<((bytes: number) => void) | undefined>>();
+let lastRecordedTopic: string;
+let lastRecordedQos: number;
+let lastPublishRecorder: (bytes: number) => void;
+
+function sendPublish(send: (packet: Buffer) => void, packet: Buffer, generalTopic: string, qos: number) {
+	send(packet);
+	if (!checkAnalyticsEnabled()) return;
+	if (generalTopic === lastRecordedTopic && qos === lastRecordedQos) return lastPublishRecorder(packet.length);
+	let byQos = publishRecorders.get(generalTopic);
+	if (byQos === undefined) {
+		if (publishRecorders.size >= MAX_PUBLISH_RECORDERS)
+			return recordAction(packet.length, 'bytes-sent', generalTopic, publishMethod(qos), 'mqtt');
+		publishRecorders.set(generalTopic, (byQos = [undefined, undefined, undefined]));
+	}
+	lastPublishRecorder = byQos[qos] ??= actionRecorder('bytes-sent', generalTopic, publishMethod(qos), 'mqtt');
+	lastRecordedTopic = generalTopic;
+	lastRecordedQos = qos;
+	lastPublishRecorder(packet.length);
+}
 function packetMethodName(packet) {
 	return packet.qos > 0 ? packet.cmd + ',qos=' + packet.qos : packet.cmd;
 }
@@ -649,7 +679,7 @@ function onSocket(socket, send, request, user, mqttSettings, userProvenance?: Us
 					template.copy(packet);
 					packet.writeUInt16BE(messageId, packetIdOffset(template));
 				}
-				sendPacket(send, packet, qos === 1 ? 'publish,qos=1' : 'publish,qos=' + qos, generalTopic);
+				sendPublish(send, packet, generalTopic, qos);
 			} else if (qos > 0) {
 				// mqtt-packet requires a numeric message identifier once qos is non-zero
 				const packetData: any = {
@@ -660,7 +690,7 @@ function onSocket(socket, send, request, user, mqttSettings, userProvenance?: Us
 					qos,
 					dup,
 				};
-				sendPacket(send, generate(packetData, mqttOptions), packetMethodName(packetData), generalTopic);
+				sendPublish(send, generate(packetData, mqttOptions), generalTopic, qos);
 			} else {
 				// A QoS 0 PUBLISH carries no message identifier, so the whole packet depends only on
 				// the payload, the topic, and the protocol version (v5 emits a properties field that
@@ -676,7 +706,7 @@ function onSocket(socket, send, request, user, mqttSettings, userProvenance?: Us
 					// for a fan-out of one just pins a whole buffer nothing will read
 					if (encoding.hits > 0) setSharedFrame(encoding, protocolVersion, topic, packet);
 				}
-				sendPacket(send, packet, 'publish', generalTopic);
+				sendPublish(send, packet, generalTopic, 0);
 			}
 			// wait if there is back-pressure
 			const rawSocket = socket._socket ?? socket;
