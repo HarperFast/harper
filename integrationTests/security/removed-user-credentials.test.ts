@@ -166,7 +166,7 @@ suite('Stored user credential revocation', (ctx: ContextWithHarper) => {
 	});
 
 	test(
-		'fresh credentials work with a rejected session cookie and login issues a new session ID',
+		'login replaces a rejected session ID and logout clears the presented session',
 		{ skip: skipOperationsLogin },
 		async () => {
 			await addUser('retired_session_user');
@@ -190,7 +190,11 @@ suite('Stored user credential revocation', (ctx: ContextWithHarper) => {
 			);
 			strictEqual(JSON.parse(await expectStatus(admitted, 200)).username, credentials.username);
 			await expectStatus(await operation({ operation: 'user_info' }, session), 401);
-			await expectStatus(await operation({ operation: 'logout' }, session), 200);
+			const loggedOut = await operation({ operation: 'logout' }, session);
+			await expectStatus(loggedOut, 200);
+			strictEqual(loggedOut.headers.get('set-cookie'), null);
+			await addUser('retired_session_user');
+			await expectStatus(await operation({ operation: 'user_info' }, session), 401);
 		}
 	);
 

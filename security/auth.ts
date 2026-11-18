@@ -191,6 +191,7 @@ export async function authentication(request, nextHandler) {
 			}
 		}
 		let sessionId;
+		let rejectedStoredSession = false;
 		let session;
 		if (ENABLE_SESSIONS) {
 			// we prefix the cookie name with the origin so that we can partition/separate session/authentications
@@ -454,10 +455,9 @@ export async function authentication(request, nextHandler) {
 				}
 				request.user = user;
 			} catch (error) {
-				const rejectedStoredSession = missingSessionUser || isInactiveUserRejection(error);
+				rejectedStoredSession = missingSessionUser || isInactiveUserRejection(error);
 				if (rejectedStoredSession) {
 					request.session = {};
-					sessionId = undefined;
 				}
 				if (LOG_AUTH_FAILED) authAuditLog(request, session.user, AUTH_AUDIT_STATUS.FAILURE, 'Session');
 				if (
@@ -483,7 +483,15 @@ export async function authentication(request, nextHandler) {
 			request.user = localPrincipal();
 		}
 		if (ENABLE_SESSIONS) {
-			sessionState = { request, headers, sessionId, origin, responseHeaders, response: undefined };
+			sessionState = {
+				request,
+				headers,
+				sessionId,
+				rejectedStoredSession,
+				origin,
+				responseHeaders,
+				response: undefined,
+			};
 			// bound rather than closures assigned to a property: security/DESIGN.md
 			request.session.update = updateSession.bind(sessionState);
 			request.login = loginWithSession.bind(sessionState);
@@ -592,6 +600,7 @@ interface SessionState {
 	request: any;
 	headers: any;
 	sessionId: string | undefined;
+	rejectedStoredSession: boolean;
 	origin: string | undefined;
 	// the authentication middleware's pending response headers until it has applied them
 	responseHeaders: any[] | null;
@@ -666,6 +675,7 @@ async function loginWithSession(this: SessionState, username: string, password?:
 	const user: any = (request.user = token
 		? await validateLoginToken(token)
 		: await server.authenticateUser(username, password, request));
+	if (this.rejectedStoredSession) this.sessionId = undefined;
 	request.session.update({ user: user && (user.getId?.() ?? user.username) });
 }
 

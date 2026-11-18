@@ -279,6 +279,7 @@ So a rejection is recorded rather than answered:
   an unexpected error type — is never deferred, and fails closed with the in-line 401.
 - **The operations API** usually settles rejections in line. Native `POST /` defers a stored user's session
   rejection so `authorize` can refuse protected operations and login can verify fresh credentials.
+  Login replaces the rejected session ID, while logout can clear the session under its presented ID.
 
 **Rejection provenance is asserted, never inferred.** `security/credentialRejection.ts` holds a
 module-private `Symbol` tag; only the code that actually concludes "this credential is unacceptable"
