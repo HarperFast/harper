@@ -76,6 +76,8 @@ In `vm` and `vm-current-context`, all four entry points (ESM `linker`, both `imp
 
 `authentication()` resolves mTLS cert CN, `Authorization`, and `hdb_session` via overridable `server.getUser`. Every failure routes through `settleAuthFailure()` / `rejectAuthenticationInPlace()`, never throws (escaped throws unwind to `server/http.ts` as plain text, harper#2703): internal faults and operations-API routes answer 401 in place; tagged credential rejections defer to the route owner.
 
+Stored-user JWTs require `active` from the lookup in `validateToken`. Session resolution rejects the built-in username-only fallback (`isMissingUserView`), including when an override delegates to the built-in resolver. Its provenance distinguishes the fallback from an application-supplied principal. Certificate authentication uses the same lookup to resolve recordless certificate names.
+
 - `server/REST.ts` and `server/mqtt.ts` discard `await chainCompletion`, so `rejectAuthenticationInPlace` sets `markAuthenticationRejectedInPlace` for `assertNoDeferredCredentialRejection` to fail WebSocket/MQTT upgrades closed.
 - Route owners call `settleDeferredCredentialRejection` before reading `request.user`, so a rejected cert never falls through to Basic, session, or local bypass.
 - A route 401 keeps its own challenge only when marked with `ownAuthenticationChallenge`; an unmarked one still gets Harper's challenge or the login redirect, so routes that set `WWW-Authenticate` today keep working.

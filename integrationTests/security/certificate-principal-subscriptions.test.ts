@@ -179,7 +179,7 @@ suite('Subscriptions of principals with no hdb_user (#4062)', { skip: skipSuite 
 
 	function openSse(headers: Record<string, string>, { certificate = false } = {}) {
 		const url = new URL(ctx.harper.httpURL);
-		const stream = { events: 0, status: 0, ended: false, completed: false, destroy: () => request.destroy() };
+		const stream = { events: 0, status: 0, ended: false, destroy: () => request.destroy() };
 		const options = { path: '/CertSubFeed/hot', headers: { Accept: 'text/event-stream', ...headers } };
 		const onResponse = (res: IncomingMessage) => {
 			stream.status = res.statusCode ?? 0;
@@ -187,7 +187,6 @@ suite('Subscriptions of principals with no hdb_user (#4062)', { skip: skipSuite 
 			res.on('data', (chunk: string) => {
 				for (const line of chunk.split('\n')) if (line.startsWith('data:') && line.slice(5).trim()) stream.events++;
 			});
-			res.on('end', () => (stream.completed = true));
 			res.on('close', () => (stream.ended = true));
 		};
 		const request = certificate
@@ -201,7 +200,7 @@ suite('Subscriptions of principals with no hdb_user (#4062)', { skip: skipSuite 
 		return stream;
 	}
 
-	test('a principal no certificate named, with no hdb_user, does not keep a subscription', async () => {
+	test('a dropped user’s token and cookie are refused at subscription admission', async () => {
 		await client
 			.req()
 			.send({ operation: 'add_role', role: 'certsub_role', permission: { super_user: false, data: { tables: {} } } })
@@ -232,12 +231,9 @@ suite('Subscriptions of principals with no hdb_user (#4062)', { skip: skipSuite 
 
 		const streams = { token: openSse({ Authorization: `Bearer ${token}` }), cookie: openSse({ Cookie: cookie }) };
 		try {
-			await write();
 			for (const [credential, stream] of Object.entries(streams)) {
-				ok(await waitFor(() => stream.ended, RECHECK_MS * 10), `the ${credential} subscription survived rechecks`);
-				// a recheck ends an admitted stream; a dropped user may also be refused at admission (#4124)
-				const expected = stream.status === 200 ? stream.completed : [401, 403].includes(stream.status);
-				ok(expected, `the ${credential} stream ended with status ${stream.status}, completed: ${stream.completed}`);
+				ok(await waitFor(() => stream.status !== 0), `expected a response for the ${credential}`);
+				strictEqual(stream.status, 401, `expected admission to refuse the ${credential}`);
 			}
 		} finally {
 			for (const stream of Object.values(streams)) stream.destroy();

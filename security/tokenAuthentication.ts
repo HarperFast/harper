@@ -466,7 +466,7 @@ async function validateToken(token: string, tokenType: string, deferInvalidToken
 		}
 
 		const user: any = await findAndValidateUser(tokenVerified.username, undefined, false);
-		if (tokenType === TOKEN_TYPE.REFRESH && !password.validate(user.refresh_token, token)) {
+		if (!user.active || (tokenType === TOKEN_TYPE.REFRESH && !password.validate(user.refresh_token, token))) {
 			throw credentialRejectionError(AUTHENTICATION_ERROR_MSGS.INVALID_TOKEN, HTTP_STATUS_CODES.UNAUTHORIZED);
 		}
 

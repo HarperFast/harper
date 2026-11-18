@@ -6,6 +6,7 @@ import {
 	hasReadRecordChanged,
 	isCurrentUser,
 	isLocalPrincipal,
+	isMissingUserView,
 	localPrincipal,
 	trackUserRecords,
 	userRecordVersions,
@@ -444,8 +445,11 @@ export async function authentication(request, nextHandler) {
 			request.user = newUser;
 		} else if (session?.user) {
 			try {
-				// or should this be cached in the session?
-				request.user = await server.getUser(session.user, null, request);
+				const user = await server.getUser(session.user, null, request);
+				if (isMissingUserView(user)) {
+					throw credentialRejectionError(AUTHENTICATION_ERROR_MSGS.GENERIC_AUTH_FAIL, HTTP_STATUS_CODES.UNAUTHORIZED);
+				}
+				request.user = user;
 			} catch (error) {
 				if (LOG_AUTH_FAILED) authAuditLog(request, sessionId, session.user, AUTH_AUDIT_STATUS.FAILURE, 'Session');
 				const failureResponse = settleAuthFailure(request, error, 'Session');

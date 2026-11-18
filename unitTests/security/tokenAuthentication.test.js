@@ -605,23 +605,14 @@ describe('test validateOperationToken function', () => {
 		assert.deepStrictEqual(validate_error.message, 'Cannot complete request: User is inactive');
 	});
 
-	it('test non-existent user', async () => {
-		let user;
-		try {
-			user = await token_auth.validateOperationToken(non_user_tokens.operation_token);
-		} catch {}
-
-		assert.deepStrictEqual(recordFields(user), { username: 'non_user' });
+	it('rejects a signed operation token for a non-existent user', async () => {
+		await assert.rejects(token_auth.validateOperationToken(non_user_tokens.operation_token), {
+			message: 'invalid token',
+			statusCode: 401,
+		});
 		assert(jwt_spy.callCount === 1);
 		assert(jwt_spy.threw() === false);
 		assert(validate_user_stub.callCount === 1);
-		let validate_error;
-		try {
-			await validate_user_stub.firstCall.returnValue;
-		} catch (e) {
-			validate_error = e;
-		}
-		assert(validate_error === undefined);
 	});
 
 	it('test bad token', async () => {
@@ -1030,9 +1021,11 @@ describe('test validateLoginToken function', () => {
 		assert.deepStrictEqual(error.message, 'invalid token');
 	});
 
-	it('test non-existent user login token', async () => {
-		const result_user = await token_auth.validateLoginToken(non_user_login_token);
-		assert.deepStrictEqual(recordFields(result_user), { username: 'non_user' });
+	it('rejects a signed login token for a non-existent user', async () => {
+		await assert.rejects(token_auth.validateLoginToken(non_user_login_token), {
+			message: 'invalid token',
+			statusCode: 401,
+		});
 	});
 
 	it('test bad login token', async () => {
