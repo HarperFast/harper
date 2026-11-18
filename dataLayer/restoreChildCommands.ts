@@ -202,12 +202,10 @@ function provenDatabase(databaseName: string, staged = false): string {
 	return `The ${staged ? 'extracted' : 'restored'} ${databaseName} database`;
 }
 
-function assertTablesLoaded(generation: RestoredGeneration, databaseName: string, staged = false): void {
+function assertTablesLoaded(generation: RestoredGeneration, database: string, source: 'archive' | 'backup'): void {
 	const missingTables = [...generation.requiredStores.keys()].filter((table) => !generation.tables[table]);
 	if (missingTables.length > 0) {
-		throw new Error(
-			`${provenDatabase(databaseName, staged)} did not load table(s) the ${staged ? 'archive' : 'backup'} contains: ${missingTables.join(', ')}`
-		);
+		throw new Error(`${database} did not load table(s) the ${source} contains: ${missingTables.join(', ')}`);
 	}
 }
 
@@ -224,7 +222,7 @@ async function prove(args: ApplyAndProveArgs, options: ProveOptions = {}): Promi
 	const staged = options.blobRoots !== undefined;
 	let evidence: RestoreEvidence;
 	try {
-		assertTablesLoaded(generation, args.databaseName, staged);
+		assertTablesLoaded(generation, provenDatabase(args.databaseName, staged), staged ? 'archive' : 'backup');
 		const replay = (await replayLogs(generation.rootStore, generation.tables, { policy: 'restore' })) as ReplaySummary;
 		// the scan is also the strict read of every record, so the waiver relaxes only the blob verdict
 		const { blobIntegrity, ...assessment } = await assessBlobReferences(generation.tables);
@@ -422,7 +420,7 @@ async function applyStagedAndProve(args: ApplyAndProveArgs): Promise<RestoreEvid
 	return inPhase('prove', async () => {
 		const generation = openRestoredGeneration(args.databasePath, args.databaseName);
 		try {
-			assertTablesLoaded(generation, args.databaseName);
+			assertTablesLoaded(generation, provenDatabase(args.databaseName), 'archive');
 			const opened = getDatabaseGeneration((generation.rootStore as any).auditStore);
 			if (!opened || opened.id !== record.generation?.id) {
 				throw new Error(

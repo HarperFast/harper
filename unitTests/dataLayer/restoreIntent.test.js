@@ -1252,6 +1252,7 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			const settled = await job(jobId);
 			assert.strictEqual(settled.status, JOB_STATUS_ENUM.ERROR);
 			assert.match(settled.message, /outcome is unknown/, 'the record it was waiting on may be that one');
+			assert.strictEqual(settled.deferred_to ?? null, null);
 			await restoreBackup({ ...SU, database: fixture.name, cancel: true });
 		});
 
