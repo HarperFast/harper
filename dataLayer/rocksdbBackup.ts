@@ -889,7 +889,11 @@ function restoreOnline(
 				}
 				// A live component can hold its own handle on the database that Harper does not track and
 				// cannot close, so verify actual process-wide closure before anything destructive.
-				await verifyDatabaseClosed(databaseDir, targetDatabase, options.staged !== undefined);
+				await verifyDatabaseClosed(
+					databaseDir,
+					targetDatabase,
+					options.staged?.resume ? 'resume' : options.staged ? 'archive' : 'backup'
+				);
 			},
 			release: (generationReplaced) =>
 				signalling.signalSchemaChange(
@@ -954,7 +958,11 @@ const DATABASE_CLOSE_POLL_INTERVAL_MS = 250;
  * component is holding the database open (Harper can neither detect which component nor force its
  * handle closed), so an online in-place restore is not possible and the offline CLI is the path.
  */
-async function verifyDatabaseClosed(databaseDir: string, databaseName: string, archive: boolean): Promise<void> {
+async function verifyDatabaseClosed(
+	databaseDir: string,
+	databaseName: string,
+	source: 'backup' | 'archive' | 'resume'
+): Promise<void> {
 	const targetPath = resolve(databaseDir);
 	const deadline = Date.now() + DATABASE_CLOSE_WAIT_MS;
 	for (;;) {
@@ -963,11 +971,15 @@ async function verifyDatabaseClosed(databaseDir: string, databaseName: string, a
 		);
 		if (!stillOpen) return;
 		if (Date.now() >= deadline) {
+			const offline = `stop the server and run: harper restore_backup database=${databaseName}`;
+			const from = source === 'archive' ? 'file=<archive>' : 'backup_id=<id>';
 			throw new BackupInProgressError(
 				`Cannot restore database '${databaseName}' while Harper is running: it is held open by a loaded component (or is the system database). ` +
-					(databaseName === 'system'
-						? `Restore it offline instead — stop the server and run: harper restore_backup database=system${archive ? ' file=<archive>' : ''}`
-						: `Pass on_restart=true to restore it at the next startup, before components load, or stop the server and run: harper restore_backup database=${databaseName} ${archive ? 'file=<archive>' : 'backup_id=<id>'}`)
+					(source === 'resume'
+						? `Finish it offline instead — ${offline} resume=true`
+						: databaseName === 'system'
+							? `Restore it offline instead — ${offline}${source === 'archive' ? ` ${from}` : ''}`
+							: `Pass on_restart=true to restore it at the next startup, before components load, or ${offline} ${from}`)
 			);
 		}
 		await delay(DATABASE_CLOSE_POLL_INTERVAL_MS);

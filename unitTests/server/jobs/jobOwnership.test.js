@@ -135,7 +135,10 @@ describe('jobOwnership', function () {
 
 			const job = await jobTable().get(id);
 			assert.strictEqual(job.status, JOB_STATUS_ENUM.ERROR);
-			assert.match(job.message, /cancelled or replaced before Harper started, so the job restored nothing/);
+			assert.match(
+				job.message,
+				/cancelled, or replaced by another restore of the database, so this job did not complete it/
+			);
 			assert.doesNotMatch(job.message, /outcome is unknown|999999/, 'its process exited by design');
 			assert.strictEqual(job.deferred_to ?? null, null);
 		});

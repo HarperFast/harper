@@ -170,7 +170,7 @@ restore and the next startup applies it, before anything can open the target.
   `recoverRestoresAtStartup` returns, as its last scan finds them owned, and every `deferred_to` row, while a receipt still owns them, and `settleAbandonedJob` skips a `deferred_to` row only while
   `restoreReceiptOwnsJob` finds a receipt that settles it (`receiptSettlesJob`, committed ones
   included), so a crash between receipt and row cannot strand a job. A `cancel` with Harper stopped (`cancelRestartRestoreOffline`) can reach neither
-  the row nor a restart; it changes the files only, and the next boot's sweep settles the row as withdrawn, which it says only of a deferred row no receipt names.
+  the row nor a restart; it changes the files only, and the next boot's sweep settles the row as withdrawn, which it says only of a deferred row no receipt names, every receipt being readable.
 - **A throwing receipt write or removal may have landed.** `writeFileDurably` renames and
   `removeFileDurably` unlinks before the directory flush, so after a throw the record re-read under the
   held lock decides (`writeReceiptReconciled`, `removeReceiptReconciled`, `runRestartAttempt`'s catch);
