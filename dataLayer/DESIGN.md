@@ -227,7 +227,8 @@ database directory and next to each blob root), and installed by rename (harper#
   upload handler, or the job that fails before the claim). After, only settle, cancel and the startup
   sweep do; a new restore over a non-terminal staged receipt is refused naming `resume`/`cancel`, so a
   successor never removes one. Nor does a resume: failing with nothing replaced, it keeps the receipt it
-  resumed (`abandonOrRelease`), where a first attempt releases its own claim. The sweep keeps every area a readable receipt names, as `staging_dir` or
+  resumed (`abandonOrRelease`), where a first attempt releases its own claim; with no marker that lasts
+  until startup, which drops every such claim so an untouched database loads (`dropAbandonedClaim`). The sweep keeps every area a readable receipt names, as `staging_dir` or
   inherited in `superseded_staging_dirs`, and every area of a key whose receipt is unreadable, or that
   has a marker and no readable receipt. A serving thread removes an area one entry at a time
   (`rimrafSteadily`), holding the extraction lock until it is gone; a refused upload is answered without

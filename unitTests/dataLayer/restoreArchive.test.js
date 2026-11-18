@@ -41,6 +41,7 @@ const {
 const {
 	restoreArchiveOffline,
 	restoreBackupFromUpload,
+	resumeArchiveRestoreOffline,
 	restoreStagedArchive,
 	stageArchive,
 } = require('#src/dataLayer/restoreArchive');
@@ -752,7 +753,7 @@ describeUnlessLmdb('restore_backup from a get_backup archive', function () {
 			const job = await jobTable().get(jobId);
 			assert.ok(
 				job.message.endsWith(
-					`its worker thread exited before it finished. Its restore of database '${fixture.name}' from an archive is unfinished: finish it with restore_backup database=${fixture.name} resume=true, or withdraw it with cancel=true.`
+					`its worker thread exited before it finished. Its restore of database '${fixture.name}' from an archive stopped before replacing anything: finish it with restore_backup database=${fixture.name} resume=true, or withdraw it with cancel=true, as the next Harper startup also does.`
 				),
 				job.message
 			);
@@ -769,7 +770,10 @@ describeUnlessLmdb('restore_backup from a get_backup archive', function () {
 				await assert.rejects(
 					requestRestore(fixture.name, { resume: true }),
 					(error) =>
-						error.statusCode === 500 && error.message.endsWith('resume=true to recover): refused before the purge')
+						error.statusCode === 500 &&
+						error.message.endsWith(
+							'resume=true tries again, and the next Harper startup withdraws it): refused before the purge'
+						)
 				);
 			} finally {
 				restoreRunner();
@@ -794,6 +798,42 @@ describeUnlessLmdb('restore_backup from a get_backup archive', function () {
 			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.archived);
 			assert.strictEqual(readRestoreReceipt(fixture.dir).kind, 'absent');
 			assert.deepStrictEqual(stagingLeft(fixture.name), []);
+		});
+
+		it('still tells that job after a resume with Harper stopped, which has no job of its own, fails too', async function () {
+			const fixture = await seededDatabase();
+			const jobId = await claimThenDie(fixture);
+			await closeDatabase(fixture.name);
+			const restoreRunner = replaceExport(
+				restoreChildRunnerModule,
+				'runRestoreChild',
+				async (command, args, options) => {
+					if (command !== 'apply-and-prove') return runRestoreChild(command, args, options);
+					throw new Error('refused before the purge');
+				}
+			);
+			try {
+				await assert.rejects(
+					resumeArchiveRestoreOffline(fixture.name),
+					/nothing was replaced; restore_backup resume=true tries again/
+				);
+			} finally {
+				restoreRunner();
+			}
+			const kept = receiptOf(fixture.dir);
+			assert.deepStrictEqual({ route: kept.route, job: kept.job_id }, { route: 'offline', job: undefined });
+
+			await reconcileInterruptedJobs();
+
+			const job = await jobTable().get(jobId);
+			assert.ok(
+				job.message.endsWith(`resume=true, or withdraw it with cancel=true, as the next Harper startup also does.`),
+				job.message
+			);
+
+			await resumeArchiveRestoreOffline(fixture.name);
+			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.archived);
+			assert.strictEqual(readRestoreReceipt(fixture.dir).kind, 'absent');
 		});
 
 		it('after a cancel, is taken over by the next restore, which removes its staging when it publishes', async function () {

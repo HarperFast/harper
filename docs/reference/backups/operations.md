@@ -337,6 +337,8 @@ harper restore_backup database=data resume=true
 
 A `resume` that fails leaves the restore as it was, to be resumed again or withdrawn. If Harper's process died after the restore began replacing the database, its job ends in `ERROR` at the next startup with a message that names `resume=true` and `cancel=true`.
 
+A restore that stopped before it began replacing the database is withdrawn when Harper next starts: the database loads as it was, what was extracted is removed, and the archive has to be sent again.
+
 A restore requested with `on_restart: true` is instead retried at the next startup, as any [restart restore](#failed-attempts) is; `resume: true` for it needs Harper running, and with Harper stopped, starting Harper retries it.
 
 Until it is finished or withdrawn, another restore of that database is refused with status code 409 naming `resume=true` and `cancel=true`. `cancel: true` withdraws an archive restore that had not begun replacing the database, and removes what it extracted. Once it has begun, `cancel` leaves the database blocked, as for any restore, until a restore of it succeeds.

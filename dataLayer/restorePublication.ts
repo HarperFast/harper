@@ -363,6 +363,7 @@ async function claimStagedSource(request: PublishRestoreRequest): Promise<Claime
 				...earlier,
 				route: request.route,
 				job_id: request.jobId,
+				...(request.jobId === undefined && earlier.job_id ? { interrupted_job_id: earlier.job_id } : {}),
 				attempts: earlier.attempts + 1,
 				last_error: undefined,
 			});
@@ -520,10 +521,15 @@ async function applyAndPublish(
 		const kept = destructionStarted || lock.preexisting || request.staged?.resume === true;
 		await abandonOrRelease(lock, receipt, request, claimed.mintedPinId, { destructionStarted, kept }, error);
 		if (kept) {
-			const rerun = isStagedReceipt(receipt) ? 'restore_backup resume=true' : 'rerun restore_backup';
+			// with no marker the kept claim lasts only until startup drops it (`dropAbandonedClaim`)
+			const recover = !isStagedReceipt(receipt)
+				? 'rerun restore_backup to recover'
+				: destructionStarted || lock.preexisting
+					? 'restore_backup resume=true to recover'
+					: 'nothing was replaced; restore_backup resume=true tries again, and the next Harper startup withdraws it';
 			throw withRecoveryGuidance(
 				error,
-				`Restore of database '${targetDatabase}' from ${describeRestoreSource(receipt)} failed (${rerun} to recover): ${error.message}`
+				`Restore of database '${targetDatabase}' from ${describeRestoreSource(receipt)} failed (${recover}): ${error.message}`
 			);
 		}
 		throw error;
@@ -739,12 +745,14 @@ export function restoreReceiptOwnsJob(jobId: string): boolean {
 export function interruptedArchiveRestoreJobs(scanned: ScannedReceipt[] = scanRestoreReceipts()): Map<string, string> {
 	const guidance = new Map<string, string>();
 	for (const { read } of scanned) {
-		if (read.kind !== 'valid' || !read.receipt.job_id || !interruptedArchiveRestoreReceipt(read.receipt)) continue;
-		const { database } = read.receipt;
-		guidance.set(
-			read.receipt.job_id,
-			`Its restore of database '${database}' from an archive is unfinished: finish it with restore_backup database=${database} resume=true, or withdraw it with cancel=true.`
-		);
+		if (read.kind !== 'valid' || !interruptedArchiveRestoreReceipt(read.receipt)) continue;
+		const { database, database_path, job_id, interrupted_job_id } = read.receipt;
+		const actions = `finish it with restore_backup database=${database} resume=true, or withdraw it with cancel=true`;
+		// with no marker the claim lasts only until startup drops it (`dropAbandonedClaim`)
+		const message = restoreMarkerPresent(database_path)
+			? `Its restore of database '${database}' from an archive is unfinished: ${actions}.`
+			: `Its restore of database '${database}' from an archive stopped before replacing anything: ${actions}, as the next Harper startup also does.`;
+		for (const jobId of [job_id, interrupted_job_id]) if (jobId) guidance.set(jobId, message);
 	}
 	return guidance;
 }
