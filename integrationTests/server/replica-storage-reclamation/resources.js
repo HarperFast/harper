@@ -48,12 +48,16 @@ if (ownerURL) {
 
 export class ReplicaFixture extends Resource {
 	static loadAsInstance = false;
-	async post(_target, { ids, table: name, reader }) {
+	async post(_target, { ids, table: name, reader, flush }) {
 		if (reader && !ownerURL) {
 			server.shards.set(1, [reader]);
 			return { reader };
 		}
 		const table = name === 'Sliding' ? Sliding : Reclaimable;
+		if (flush) {
+			await table.primaryStore.flush();
+			return { flushed: true };
+		}
 		for (const id of ids) {
 			const answer = await ownerEntry(table, id);
 			const context = { source: {}, sourceApply: true, timestamp: answer.version };

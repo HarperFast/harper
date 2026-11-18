@@ -190,12 +190,23 @@ suite('replicas under storage pressure', { skip: skipSuite }, (ctx: ContextWithH
 	test('cleanup demotes an overdue replica after restart without a write', async () => {
 		const id = replicaIds[3];
 		await admit([id], 'Sliding');
+		// The replica write bypasses the audit log and the primary has no WAL. Persist it before
+		// stopping the process so a forced stop (including Windows taskkill) tests cold cleanup.
+		await request(ctx.harper.httpURL)
+			.post('/ReplicaFixture/')
+			.set(client.headers)
+			.send({ table: 'Sliding', flush: true })
+			.expect(200);
 		const deadline = (await header(id)).deadline;
 		ok(deadline > Date.now());
 		await killHarper(ctx);
 		await delay(Math.max(0, deadline - Date.now() + 10));
 		await startHarper(ctx, options(1));
 		client = createApiClient(ctx.harper);
-		await until(async () => (await header(id)).stub);
+		await until(async () => {
+			const row = await header(id);
+			ok(row.replica || row.stub, 'the flushed row must survive the restart');
+			return row.stub;
+		});
 	});
 });
