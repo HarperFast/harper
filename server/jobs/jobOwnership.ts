@@ -30,11 +30,13 @@ function jobTable(): any {
 
 // Deliberately not "rerun it": the job may have applied some of its effects before it died, and nothing
 // here can tell how far it got.
-function settle(id: any, interruption: string) {
+function settle(id: any, interruption: string, deferred = false) {
 	return updateJob({
 		id,
 		status: hdbTerms.JOB_STATUS_ENUM.ERROR,
 		message: `Job was interrupted: ${interruption}. Its outcome is unknown — check for partial effects before running the operation again.`,
+		// a settled row waits on nothing
+		...(deferred ? { deferred_to: null } : {}),
 	});
 }
 
@@ -114,7 +116,9 @@ export async function reconcileInterruptedJobs(ownedElsewhere?: ReadonlySet<stri
 		const owner = owner_pid == null ? 'an earlier Harper process' : `Harper process ${owner_pid}`;
 		try {
 			// a receipt that cannot be read names no job, and may be the one this row was waiting on
-			await (deferred && everyReceiptRead ? settleWithdrawn(id) : settle(id, `${owner} exited before it finished`));
+			await (deferred && everyReceiptRead
+				? settleWithdrawn(id)
+				: settle(id, `${owner} exited before it finished`, deferred));
 			settled++;
 		} catch (error) {
 			// Keep going: one unwritable row must not strand the rest.
@@ -134,7 +138,7 @@ export async function settleAbandonedJob(jobId: any): Promise<boolean> {
 	if (!UNFINISHED_JOB_STATUSES.includes(job?.status)) return false;
 	// a deferred job's worker exits by design, and the restore receipt that names it settles the row
 	if (job.deferred_to && (await deferredJobStillOwned(jobId))) return false;
-	await settle(jobId, 'its worker thread exited before it finished');
+	await settle(jobId, 'its worker thread exited before it finished', job.deferred_to != null);
 	log.warn(`Settled job ${jobId}, whose worker thread exited before it finished`);
 	return true;
 }
