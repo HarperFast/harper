@@ -796,6 +796,8 @@ describe('A record bit for a full-write head (harper#3532)', () => {
 					assert.equal(head.version, headVersion);
 					assert.deepEqual(head.copiedDeleteBoundary, { version, nodeId: headOrigin });
 				}
+				await copiedDelete(T, tombstone, { version: version - 2000 });
+				assert.deepEqual(T.primaryStore.getEntry(tombstone).copiedDeleteBoundary, { version, nodeId: headOrigin });
 				await apply(T, tombstone, { extra: 'old' }, { version: version - 1000, nodeId: lateOrigin });
 				assert.equal(T.primaryStore.getEntry(tombstone).value, null);
 				assert.deepEqual({ ...T.primaryStore.getEntry(live).value }, { id: live, name: 'newer' });
@@ -812,7 +814,7 @@ describe('A record bit for a full-write head (harper#3532)', () => {
 				assert.equal(head.version, headVersion);
 			});
 
-			describe('an invalidation or relocation under a head the delete is above', () => {
+			describe('invalidation and relocation around the copied-delete boundary', () => {
 				const ELSEWHERE = 8;
 				const writes = {
 					'an invalidation': (id, { version, nodeId }) =>
