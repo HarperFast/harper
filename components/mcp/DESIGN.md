@@ -39,6 +39,15 @@ A handful of design points are non-obvious and easy to break:
   validators' `challenge` only when every validator that declares one names the same URL
   (`declaredResourceMetadata`): registrations are worker-global and load in no fixed order, so a
   disagreement could point a client at an authorization server that does not protect this mount.
+- **The server card's route runs no authentication (#4347).** `<mountPath>/server-card` is a route of its own,
+  registered without `after: 'authentication'`. Sub-routes dispatch longest path first, and a sub-route's chain
+  includes `authentication` only when one of its entries names it in `after` (`resolveDeps`), so a card request
+  never reaches it: no 401 for a missing principal on a required mount, a refused token, or a validator fault,
+  which `authentication` answers in place before any route handler runs. Handling the path inside the MCP adapter
+  instead would miss those in-place answers and would put an exception into the adapter's rule that it settles
+  every deferred rejection. Without a configured `url`, the card's remote comes from the request's host,
+  so `createServerCardHandler` keeps one serialized body and sends `Vary: Host, X-Forwarded-Proto`.
+
 - **Per-call POST SSE streaming has a close-before-subscribe race.** A `tools/call` that opts into streaming
   (`Accept: text/event-stream`) gets an `IterableEventQueue` whose frames the adapter consumes via the event
   API (`on('data')` / `once('close')`), **not** `for await` — the async iterator does not terminate on

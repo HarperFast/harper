@@ -146,14 +146,20 @@ describe('components/mcp/index', () => {
 			assert.equal(scope.calls.length, 0);
 		});
 
-		it('registers via scope.server.http when mcp.application is present', () => {
+		it('registers via scope.server.http when mcp.application is present, with a public server-card route (#4347)', () => {
 			configReturn = { mcp: { application: {} } };
 			const scope = makeFakeScope();
 			handleApplication(scope);
-			assert.equal(scope.calls.length, 1);
+			assert.equal(scope.calls.length, 2);
 			assert.equal(scope.calls[0].options.urlPath, '/mcp');
 			assert.equal(scope.calls[0].options.after, 'authentication');
 			assert.equal(typeof scope.calls[0].handler, 'function');
+			assert.deepEqual(
+				scope.calls[1].options,
+				{ urlPath: '/mcp/server-card' },
+				'no authentication runs before the card'
+			);
+			assert.equal(typeof scope.calls[1].handler, 'function');
 		});
 
 		it('registers on enabled: true and skips on enabled: false', () => {
@@ -164,7 +170,7 @@ describe('components/mcp/index', () => {
 			configReturn = { mcp: { application: { enabled: true } } };
 			const on = makeFakeScope();
 			handleApplication(on);
-			assert.equal(on.calls.length, 1);
+			assert.equal(on.calls.length, 2);
 		});
 
 		it('honors a custom mountPath', () => {
@@ -172,6 +178,7 @@ describe('components/mcp/index', () => {
 			const scope = makeFakeScope();
 			handleApplication(scope);
 			assert.equal(scope.calls[0].options.urlPath, '/agent');
+			assert.equal(scope.calls[1].options.urlPath, '/agent/server-card');
 		});
 
 		it('is idempotent on repeated invocations', () => {
@@ -180,7 +187,7 @@ describe('components/mcp/index', () => {
 			const scopeB = makeFakeScope();
 			handleApplication(scopeA);
 			handleApplication(scopeB);
-			assert.equal(scopeA.calls.length, 1);
+			assert.equal(scopeA.calls.length, 2);
 			assert.equal(scopeB.calls.length, 0);
 		});
 

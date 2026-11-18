@@ -5,7 +5,7 @@ import Joi from 'joi';
 import { resolveFullTextSearchLimits, resolveFullTextQueryLimits } from '../resources/indexes/fullTextSearchLimits.ts';
 import { validateHeaderValue } from 'node:http';
 import { isValidChallengeUrl } from '../security/challengeUrl.ts';
-import { MAX_INSTRUCTIONS_LENGTH } from '../components/mcp/applicationInfo.ts';
+import { MAX_INSTRUCTIONS_LENGTH, serverCardProblem } from '../components/mcp/applicationInfo.ts';
 import * as os from 'node:os';
 const { boolean, string, number, array } = Joi.types();
 const v8Flag = string.trim().allow('').pattern(/^--/, 'V8 flag starting with --');
@@ -415,6 +415,12 @@ export function configValidator(configJson, skipFsValidation = false) {
 		generatedTools: boolean.optional().prefs({ convert: false }),
 		stateless: boolean.optional().prefs({ convert: false }),
 		instructions: string.max(MAX_INSTRUCTIONS_LENGTH).optional(),
+		serverCard: Joi.object()
+			.custom((value, helpers: any) => {
+				const problem = serverCardProblem(value);
+				return problem ? helpers.message(`{{#label}} ${problem}`) : value;
+			})
+			.optional(),
 		authentication: Joi.object({
 			required: boolean.optional().prefs({ convert: false }),
 			resourceMetadata: string

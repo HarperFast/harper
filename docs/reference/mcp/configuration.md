@@ -151,6 +151,72 @@ server.setMcpInstructions(
 
 `mcp.application.instructions` in config takes precedence over it. The latest call wins; `server.setMcpInstructions(undefined)` (or `''`) clears it. A value that is not a string throws a `TypeError`, and one longer than 16,384 characters throws a `RangeError`, leaving the previous value in place. Each thread keeps its own value, like the components that set it, so call it at module load as in the example.
 
+### `mcp.application.serverCard`
+
+<VersionBadge version="v5.4.2" />
+
+Type: `object`
+
+Default: unset
+
+The [MCP server card](https://modelcontextprotocol.io/seps/2127-mcp-server-cards) (SEP-2127) the application profile serves at `<mountPath>/server-card` (`/mcp/server-card` by default), so that a client can discover the server before it connects. The fields are:
+
+- `name` - a namespaced name such as `com.example/weather`: 3 to 200 characters, letters, digits, `.` and `-`, then `/`, then letters, digits, `.`, `_` and `-`.
+- `description` - 1 to 100 characters.
+- `title` - optional, 1 to 100 characters.
+- `version` - optional, the server's version (not a range such as `^1.2.3` or `1.x`); Harper's version when unset.
+- `websiteUrl` - optional, an absolute `http` or `https` URL.
+- `icons` - optional, at most 32 objects with `src` (an `http`, `https` or `data:` URI) and optional `mimeType`, `sizes` (such as `["64x64"]` or `["any"]`) and `theme` (`light` or `dark`).
+- `url` - optional, the public `https` URL of the MCP endpoint, which the card lists in `remotes`. When unset, the URL is built from the protocol and host of the request for the card, and the response varies by `Host`. Set it when Harper sits behind a proxy that changes either.
+
+An unknown or invalid field fails validation. The fields may also come from a component through [`server.setMcpServerCard`](#serversetmcpservercardcard); a field set here takes precedence over the same field set there. Until `name` and `description` are both supplied, `<mountPath>/server-card` answers `404`. It is read when the profile starts, so a change applies after a restart.
+
+The card is public. It answers without credentials, even when [`authentication.required`](#mcpapplicationauthenticationrequired) is set, and ignores any credential a request carries. Do not put anything in it you would not publish. The response is:
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/mcp-server-card+json
+Access-Control-Allow-Origin: *
+Cache-Control: public, max-age=3600
+ETag: "..."
+```
+
+```json
+{
+	"$schema": "https://static.modelcontextprotocol.io/schemas/v1/server-card.schema.json",
+	"name": "com.example/weather",
+	"description": "Forecasts and alerts for any city.",
+	"version": "1.2.0",
+	"remotes": [
+		{
+			"type": "streamable-http",
+			"url": "https://weather.example.com/mcp",
+			"supportedProtocolVersions": ["2025-06-18", "2025-03-26"]
+		}
+	]
+}
+```
+
+`HEAD` returns the same headers, a request whose `If-None-Match` matches the `ETag` gets `304`, and `OPTIONS` answers a browser's preflight with `204`. Other methods get `405`. Harper does not serve `/.well-known/ai-catalog.json`, which SEP-2127 makes optional.
+
+### `server.setMcpServerCard(card)`
+
+<VersionBadge version="v5.4.2" />
+
+Supplies the server card fields from a component, with the same fields and rules as [`mcp.application.serverCard`](#mcpapplicationservercard):
+
+```javascript
+// resources.js
+server.setMcpServerCard({
+	name: 'com.example/weather',
+	title: 'Weather',
+	description: 'Forecasts and alerts for any city.',
+	websiteUrl: 'https://weather.example.com',
+});
+```
+
+The card is checked and copied when you call it, so an invalid field throws a `TypeError` at load and leaves the previous card in place, and changing the object afterwards changes nothing. `name` and `description` may come from config instead. The latest call wins, and `server.setMcpServerCard(undefined)` clears it. Each thread keeps its own card, like the components that set it, so call it at module load.
+
 ### `mcp.application.searchMaxResults`
 
 Type: `integer` (minimum 1)
