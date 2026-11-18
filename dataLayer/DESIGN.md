@@ -177,6 +177,8 @@ restore and the next startup applies it, before anything can open the target.
   `restoreReceiptOwnsJob` finds a receipt that settles it (`receiptSettlesJob`, committed ones
   included), so a crash between receipt and row cannot strand a job. A `cancel` with Harper stopped (`cancelRestartRestoreOffline`) can reach neither
   the row nor a restart; it changes the files only, and the next boot's sweep settles the row as withdrawn, which it says only of a deferred row no receipt names, every receipt being readable.
+  An interrupted archive restore's receipt settles no job, but the row's message comes from it
+  (`interruptedArchiveRestoreJobs`): it refuses the operation run again, and only `resume` or `cancel` moves it.
 - **A throwing receipt write or removal may have landed.** `writeFileDurably` renames and
   `removeFileDurably` unlinks before the directory flush, so after a throw the record re-read under the
   held lock decides (`writeReceiptReconciled`, `removeReceiptReconciled`, `runRestartAttempt`'s catch);
@@ -230,7 +232,8 @@ database directory and next to each blob root), and installed by rename (harper#
 - **Staging is owned by its receipt.** Until a receipt names an area, only its creator removes it (the
   upload handler, or the job that fails before the claim). After, only settle, cancel and the startup
   sweep do; a new restore over a non-terminal staged receipt is refused naming `resume`/`cancel`, so a
-  successor never removes one. The sweep keeps every area a readable receipt names, as `staging_dir` or
+  successor never removes one. Nor does a resume: failing with nothing replaced, it keeps the receipt it
+  resumed (`abandonOrRelease`), where a first attempt releases its own claim. The sweep keeps every area a readable receipt names, as `staging_dir` or
   inherited in `superseded_staging_dirs`, and every area of a key whose receipt is unreadable, or that
   has a marker and no readable receipt. A serving thread removes an area one entry at a time
   (`rimrafSteadily`), holding the extraction lock until it is gone; a refused upload is answered without

@@ -155,6 +155,11 @@ export function isStagedReceipt(receipt: Pick<RestoreReceipt, 'source_kind'> | u
 	return receipt?.source_kind === 'staged_tree';
 }
 
+/** An online or offline archive restore that stopped after its claim: only `resume` or `cancel` moves it. */
+export function interruptedArchiveRestoreReceipt(receipt: RestoreReceipt): boolean {
+	return isStagedReceipt(receipt) && receipt.route !== 'on_restart' && receipt.state === 'applying';
+}
+
 /** A receipt that is not `committed` — or that cannot be read — keeps the target undiscoverable. */
 export function receiptBlocksDiscovery(read: RestoreReceiptRead): boolean {
 	if (read.kind === 'absent') return false;

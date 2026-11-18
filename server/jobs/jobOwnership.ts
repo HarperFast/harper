@@ -29,12 +29,12 @@ function jobTable(): any {
 }
 
 // Deliberately not "rerun it": the job may have applied some of its effects before it died, and nothing
-// here can tell how far it got.
-function settle(id: any, interruption: string, deferred = false) {
+// here can tell how far it got. `guidance` replaces that for a job whose restore record says what moves it.
+function settle(id: any, interruption: string, deferred = false, guidance?: string) {
 	return updateJob({
 		id,
 		status: hdbTerms.JOB_STATUS_ENUM.ERROR,
-		message: `Job was interrupted: ${interruption}. Its outcome is unknown — check for partial effects before running the operation again.`,
+		message: `Job was interrupted: ${interruption}. ${guidance ?? 'Its outcome is unknown — check for partial effects before running the operation again.'}`,
 		// a settled row waits on nothing
 		...(deferred ? { deferred_to: null } : {}),
 	});
@@ -101,14 +101,9 @@ export async function reconcileInterruptedJobs(ownedElsewhere?: ReadonlySet<stri
 		}
 	}
 	// necessary, not sufficient: a receipt withdrawn since `ownedElsewhere` was taken no longer owns its job
-	let everyReceiptRead = false;
-	if (receiptsDecide.length > 0) {
-		const receipts = await jobsStillOwnedByReceipts();
-		if (receipts) {
-			interrupted.push(...receiptsDecide.filter(({ id }) => !receipts.owned.has(String(id))));
-			everyReceiptRead = receipts.everyReceiptRead;
-		}
-	}
+	const receipts = interrupted.length + receiptsDecide.length > 0 ? await restoreReceiptsForJobs() : undefined;
+	if (receipts) interrupted.push(...receiptsDecide.filter(({ id }) => !receipts.owned.has(String(id))));
+	const everyReceiptRead = receipts?.everyReceiptRead === true;
 
 	let settled = 0;
 	let unsettled = 0;
@@ -118,7 +113,7 @@ export async function reconcileInterruptedJobs(ownedElsewhere?: ReadonlySet<stri
 			// a receipt that cannot be read names no job, and may be the one this row was waiting on
 			await (deferred && everyReceiptRead
 				? settleWithdrawn(id)
-				: settle(id, `${owner} exited before it finished`, deferred));
+				: settle(id, `${owner} exited before it finished`, deferred, receipts?.interrupted.get(String(id))));
 			settled++;
 		} catch (error) {
 			// Keep going: one unwritable row must not strand the rest.
@@ -138,18 +133,29 @@ export async function settleAbandonedJob(jobId: any): Promise<boolean> {
 	if (!UNFINISHED_JOB_STATUSES.includes(job?.status)) return false;
 	// a deferred job's worker exits by design, and the restore receipt that names it settles the row
 	if (job.deferred_to && (await deferredJobStillOwned(jobId))) return false;
-	await settle(jobId, 'its worker thread exited before it finished', job.deferred_to != null);
+	const guidance = (await restoreReceiptsForJobs())?.interrupted.get(String(jobId));
+	await settle(jobId, 'its worker thread exited before it finished', job.deferred_to != null, guidance);
 	log.warn(`Settled job ${jobId}, whose worker thread exited before it finished`);
 	return true;
 }
 
+interface RestoreReceiptsForJobs {
+	/** Jobs a receipt settles itself. */
+	owned: Set<string>;
+	/** Jobs of archive restores a receipt records as unfinished, with what to tell each. */
+	interrupted: Map<string, string>;
+	everyReceiptRead: boolean;
+}
+
 /** Undefined when the receipts cannot be scanned, so the caller keeps every job the snapshot named. */
-async function jobsStillOwnedByReceipts(): Promise<{ owned: Set<string>; everyReceiptRead: boolean } | undefined> {
+async function restoreReceiptsForJobs(): Promise<RestoreReceiptsForJobs | undefined> {
 	try {
-		const { jobsOwnedByRestoreReceipts, scanRestoreReceipts } = await import('../../dataLayer/restorePublication.ts');
+		const { interruptedArchiveRestoreJobs, jobsOwnedByRestoreReceipts, scanRestoreReceipts } =
+			await import('../../dataLayer/restorePublication.ts');
 		const scanned = scanRestoreReceipts();
 		return {
 			owned: jobsOwnedByRestoreReceipts(scanned),
+			interrupted: interruptedArchiveRestoreJobs(scanned),
 			everyReceiptRead: scanned.every(({ read }) => read.kind !== 'unreadable'),
 		};
 	} catch (error) {

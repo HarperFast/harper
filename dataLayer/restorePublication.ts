@@ -33,6 +33,7 @@ import {
 	RESTORE_RECEIPT_SUFFIX,
 	describeRestoreSource,
 	inheritedStagingDirs,
+	interruptedArchiveRestoreReceipt,
 	isStagedReceipt,
 	newRestoreReceipt,
 	readRestoreReceipt,
@@ -355,13 +356,7 @@ async function claimStagedSource(request: PublishRestoreRequest): Promise<Claime
 		if (staged.resume) {
 			const read = readRestoreReceipt(databaseDir);
 			const earlier = read.kind === 'valid' ? read.receipt : undefined;
-			if (
-				!earlier ||
-				!isStagedReceipt(earlier) ||
-				earlier.state !== 'applying' ||
-				earlier.route === 'on_restart' ||
-				earlier.staging_dir !== staged.stagingDir
-			) {
+			if (!earlier || !interruptedArchiveRestoreReceipt(earlier) || earlier.staging_dir !== staged.stagingDir) {
 				throw new ClientError(`Database '${targetDatabase}' has no interrupted archive restore to resume`, 404);
 			}
 			receipt = writeRestoreReceipt(claimLock, {
@@ -521,8 +516,10 @@ async function applyAndPublish(
 			},
 		});
 	} catch (error: any) {
-		await abandonOrRelease(lock, receipt, request, claimed.mintedPinId, destructionStarted, error);
-		if (destructionStarted || lock.preexisting) {
+		// a resumed receipt was there before this attempt, so the attempt's failure leaves it to be resumed again
+		const kept = destructionStarted || lock.preexisting || request.staged?.resume === true;
+		await abandonOrRelease(lock, receipt, request, claimed.mintedPinId, { destructionStarted, kept }, error);
+		if (kept) {
 			const rerun = isStagedReceipt(receipt) ? 'restore_backup resume=true' : 'rerun restore_backup';
 			throw withRecoveryGuidance(
 				error,
@@ -649,17 +646,18 @@ export async function applyProveAndCommit(
 /**
  * A failure before the publication boundary. After destruction began, or over a target an earlier
  * attempt had already marked, the marker, pin and receipt all stay: the target is blocked and the
- * rerun has its source. Otherwise nothing was touched, so the claim is released whole.
+ * rerun has its source. A resumed receipt stays too, still reserving a target nothing has touched, as
+ * it did before the resume. Otherwise the claim is this attempt's own, and it is released whole.
  */
 async function abandonOrRelease(
 	lock: RestoreLock,
 	receipt: RestoreReceipt,
 	request: PublishRestoreRequest,
 	pinId: string | undefined,
-	destructionStarted: boolean,
+	{ destructionStarted, kept }: { destructionStarted: boolean; kept: boolean },
 	error: any
 ): Promise<void> {
-	if (destructionStarted || lock.preexisting) {
+	if (kept) {
 		try {
 			// a pin minted for a backup that never touched the target protects nothing the rerun needs
 			if (!destructionStarted && pinId && receipt.source_pin_id === pinId) {
@@ -671,7 +669,7 @@ async function abandonOrRelease(
 			logger.error(`Could not record the failed restore of '${request.targetDatabase}'`, recordError);
 		}
 		releaseRestoreLock(lock);
-		await releaseFence(request, true);
+		await releaseFence(request, destructionStarted || lock.preexisting);
 		return;
 	}
 	try {
@@ -731,6 +729,24 @@ export function jobsOwnedByRestoreReceipts(scanned: ScannedReceipt[] = scanResto
 
 export function restoreReceiptOwnsJob(jobId: string): boolean {
 	return jobsOwnedByRestoreReceipts().has(jobId);
+}
+
+/**
+ * What to tell the job of an archive restore that stopped after its claim, by job id. Its receipt does
+ * not settle the job, but it outlives it and refuses the operation run again, so the job says what does
+ * move it.
+ */
+export function interruptedArchiveRestoreJobs(scanned: ScannedReceipt[] = scanRestoreReceipts()): Map<string, string> {
+	const guidance = new Map<string, string>();
+	for (const { read } of scanned) {
+		if (read.kind !== 'valid' || !read.receipt.job_id || !interruptedArchiveRestoreReceipt(read.receipt)) continue;
+		const { database } = read.receipt;
+		guidance.set(
+			read.receipt.job_id,
+			`Its restore of database '${database}' from an archive is unfinished: finish it with restore_backup database=${database} resume=true, or withdraw it with cancel=true.`
+		);
+	}
+	return guidance;
 }
 
 /**

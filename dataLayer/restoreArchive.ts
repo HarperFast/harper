@@ -30,7 +30,7 @@ import {
 	type StagedRecord,
 } from './archiveStaging.ts';
 import type { BackupArchiveManifest } from './backupArchiveManifest.ts';
-import { readRestoreReceipt, isStagedReceipt } from './restoreReceipt.ts';
+import { interruptedArchiveRestoreReceipt, readRestoreReceipt, isStagedReceipt } from './restoreReceipt.ts';
 import { runRestoreChild } from './restoreChildRunner.ts';
 import { interruptedArchiveRestore, publishRestore, type StagedRestoreSource } from './restorePublication.ts';
 import {
@@ -381,7 +381,7 @@ export async function resumeArchiveRestoreOffline(databaseName: string) {
 	const databaseDir = resolveDatabasePath(databaseName);
 	const read = readRestoreReceipt(databaseDir);
 	const receipt = read.kind === 'valid' ? read.receipt : undefined;
-	if (!receipt || !isStagedReceipt(receipt) || receipt.route === 'on_restart' || receipt.state !== 'applying') {
+	if (!receipt || !interruptedArchiveRestoreReceipt(receipt)) {
 		throw new ClientError(`Database '${databaseName}' has no interrupted archive restore to resume`, 404);
 	}
 	return publishRestore({

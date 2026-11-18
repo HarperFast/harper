@@ -19,7 +19,7 @@ import {
 } from '../resources/databases.ts';
 import { publishRestore, type StagedRestoreSource } from './restorePublication.ts';
 import { runRestoreChild } from './restoreChildRunner.ts';
-import { readRestoreReceipt } from './restoreReceipt.ts';
+import { interruptedArchiveRestoreReceipt, readRestoreReceipt } from './restoreReceipt.ts';
 import {
 	type BlobCaptureDisposition,
 	classifyBlobFileForCapture,
@@ -40,7 +40,6 @@ import {
 	restoreLockHeldExclusively,
 	checkRestoreState,
 	readRestoringMarkerSource,
-	restoreMarkerPresent,
 	restoreSourceId,
 	type RestoreLock,
 } from './restoreMarker.ts';
@@ -807,7 +806,7 @@ export async function restoreBackup(request: any) {
 		if (cancel) return intent.cancelRestartRestore(databaseName, databaseDir);
 		if (resume) {
 			const read = readRestoreReceipt(databaseDir);
-			if (read.kind === 'valid' && intent.interruptedArchiveRestoreReceipt(read.receipt)) {
+			if (read.kind === 'valid' && interruptedArchiveRestoreReceipt(read.receipt)) {
 				const earlier = read.receipt;
 				return restoreOnline(request, {
 					...onlineOptions,
@@ -890,12 +889,10 @@ function restoreOnline(
 				}
 				// A live component can hold its own handle on the database that Harper does not track and
 				// cannot close, so verify actual process-wide closure before anything destructive.
-				// a resume refused here keeps its receipt only over a marker; without one its claim is released
-				const resumable = options.staged?.resume && restoreMarkerPresent(databaseDir);
 				await verifyDatabaseClosed(
 					databaseDir,
 					targetDatabase,
-					resumable ? 'resume' : options.staged ? 'archive' : 'backup'
+					options.staged?.resume ? 'resume' : options.staged ? 'archive' : 'backup'
 				);
 			},
 			release: (generationReplaced) =>

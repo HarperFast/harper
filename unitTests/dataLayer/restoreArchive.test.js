@@ -50,13 +50,21 @@ const { resumeRestartRestore } = require('#src/dataLayer/restoreIntent');
 const env = require('#src/utility/environment/environmentManager');
 const {
 	RESTORE_META_DIR,
+	acquireRestoreLock,
+	releaseRestoreLock,
 	restoreMarkerPresent,
 	restoringMarkerPath,
 	restoreMetaKey,
 } = require('#src/dataLayer/restoreMarker');
-const { readRestoreReceipt, restoreReceiptPath } = require('#src/dataLayer/restoreReceipt');
+const {
+	newRestoreReceipt,
+	readRestoreReceipt,
+	restoreReceiptPath,
+	writeRestoreReceipt,
+} = require('#src/dataLayer/restoreReceipt');
 const { recoverRestoresAtStartup, resetStartupRecoveryForTesting } = require('#src/dataLayer/restorePublication');
 const { DeferredJobCompletion } = require('#src/server/jobs/deferredJobCompletion');
+const { reconcileInterruptedJobs, settleAbandonedJob } = require('#src/server/jobs/jobOwnership');
 const restoreChildRunnerModule = require('#js/dataLayer/restoreChildRunner');
 const archiveStagingModule = require('#js/dataLayer/archiveStaging');
 const { waitFor } = require('../waitFor.js');
@@ -662,6 +670,129 @@ describeUnlessLmdb('restore_backup from a get_backup archive', function () {
 			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.archived);
 			assert.strictEqual(readRestoreReceipt(fixture.dir).kind, 'absent');
 			assert.strictEqual(restoreMarkerPresent(fixture.dir), false);
+			assert.deepStrictEqual(stagingLeft(fixture.name), []);
+		});
+
+		it('tells the job its process left unfinished to resume or cancel, not that its outcome is unknown', async function () {
+			const fixture = await seededDatabase();
+			await interruptAfterEnginePart(fixture);
+			const jobId = receiptOf(fixture.dir).job_id;
+
+			// the next boot's sweep, the process having died mid-swap
+			await reconcileInterruptedJobs();
+
+			const job = await jobTable().get(jobId);
+			assert.strictEqual(job.status, JOB_STATUS_ENUM.ERROR);
+			assert.ok(
+				job.message.endsWith(
+					`exited before it finished. Its restore of database '${fixture.name}' from an archive is unfinished: finish it with restore_backup database=${fixture.name} resume=true, or withdraw it with cancel=true.`
+				),
+				job.message
+			);
+			assert.doesNotMatch(job.message, /outcome is unknown/);
+
+			await requestRestore(fixture.name, { resume: true });
+			assert.strictEqual(readRestoreReceipt(fixture.dir).kind, 'absent');
+		});
+
+		/**
+		 * An upload whose job worker died after claiming the target and before its child announced the purge:
+		 * the receipt names the proven staging, nothing is replaced and no marker is published.
+		 */
+		async function claimThenDie(fixture) {
+			const jobId = await seedJob();
+			const { stagingDir } = await stageArchive(Readable.from([fixture.archive]), {
+				databaseName: fixture.name,
+				databaseDir: fixture.dir,
+				blobRoots: getBlobPathsForDatabaseName(fixture.name),
+				acceptIncompatible: false,
+				restoredFrom: 'upload',
+			});
+			await restoreStagedArchive(
+				{
+					databaseName: fixture.name,
+					databaseDir: fixture.dir,
+					stagingId: basename(stagingDir),
+					acceptUnverifiedBlobs: false,
+				},
+				async (staged) => {
+					const lock = acquireRestoreLock(fixture.dir);
+					try {
+						writeRestoreReceipt(lock, {
+							...newRestoreReceipt({
+								route: 'online',
+								state: 'applying',
+								database: fixture.name,
+								database_path: fixture.dir,
+								source_database: fixture.name,
+								backup_dir: backupDirForDatabase(fixture.name),
+								source_kind: 'staged_tree',
+								staging_dir: staged.stagingDir,
+								restored_from: staged.restoredFrom,
+								archive_sha256: staged.archiveSha256,
+								job_id: jobId,
+								options: { accept_unverified_blobs: false, accept_incompatible_backup: false },
+							}),
+							attempts: 1,
+						});
+					} finally {
+						releaseRestoreLock(lock);
+					}
+				}
+			);
+			return jobId;
+		}
+
+		it('keeps its record and staging when a resume stops before replacing anything, so it can be resumed again', async function () {
+			const fixture = await seededDatabase();
+			const jobId = await claimThenDie(fixture);
+			assert.strictEqual(restoreMarkerPresent(fixture.dir), false);
+
+			assert.strictEqual(await settleAbandonedJob(jobId), true);
+			const job = await jobTable().get(jobId);
+			assert.ok(
+				job.message.endsWith(
+					`its worker thread exited before it finished. Its restore of database '${fixture.name}' from an archive is unfinished: finish it with restore_backup database=${fixture.name} resume=true, or withdraw it with cancel=true.`
+				),
+				job.message
+			);
+
+			const restoreRunner = replaceExport(
+				restoreChildRunnerModule,
+				'runRestoreChild',
+				async (command, args, options) => {
+					if (command !== 'apply-and-prove') return runRestoreChild(command, args, options);
+					throw new Error('refused before the purge');
+				}
+			);
+			try {
+				await assert.rejects(
+					requestRestore(fixture.name, { resume: true }),
+					(error) =>
+						error.statusCode === 500 && error.message.endsWith('resume=true to recover): refused before the purge')
+				);
+			} finally {
+				restoreRunner();
+			}
+
+			const kept = receiptOf(fixture.dir);
+			assert.deepStrictEqual(
+				{ state: kept.state, attempts: kept.attempts, last_error: kept.last_error },
+				{ state: 'applying', attempts: 2, last_error: 'refused before the purge' }
+			);
+			assert.strictEqual(restoreMarkerPresent(fixture.dir), false);
+			assert.notDeepStrictEqual(stagingLeft(fixture.name), [], 'the record keeps its staging');
+			assert.strictEqual(
+				loadedItems(fixture.name),
+				undefined,
+				'which still reserves the database, as before the resume'
+			);
+
+			const { result } = await requestRestore(fixture.name, { resume: true });
+
+			assert.strictEqual(result.restored_from, 'upload');
+			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.archived);
+			assert.strictEqual(readRestoreReceipt(fixture.dir).kind, 'absent');
 			assert.deepStrictEqual(stagingLeft(fixture.name), []);
 		});
 
