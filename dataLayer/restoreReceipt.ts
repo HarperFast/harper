@@ -50,6 +50,11 @@ export interface RestoreReceipt {
 	/** Staged archives of the receipts this one took over, which nothing can resume any longer; removed when it settles. */
 	superseded_staging_dirs?: string[];
 	job_id?: string;
+	/**
+	 * The job a resume with Harper stopped took this from. That job is unsettled until the next startup;
+	 * it is not `job_id`, which a commit settles.
+	 */
+	interrupted_job_id?: string;
 	/** The pin protecting `backup_id`; absent when the restore pinned nothing (`immutable_source`). */
 	source_pin_id?: string;
 	/** Pins of the interrupted attempts this one took over; retired only once this attempt's source has proved. */
