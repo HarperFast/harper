@@ -222,7 +222,9 @@ database directory and next to each blob root), and installed by rename (harper#
   and `previous/` exist, and whether the destination is the staged directory's recorded inode, decide
   the action (`partAction`); a retry after any crash, on any route, runs the same table, and every
   other combination fails closed. `previous/` sits in the part's own area so the move aside never
-  crosses a filesystem; a part on another filesystem than its destination is refused, never copied.
+  crosses a filesystem; a part on another filesystem than its destination is refused, never copied. Destinations
+  at or inside one another are refused too (`assertDestinationsApart`): moving one aside would carry
+  another's installed part away after destruction began.
 - **Staging is owned by its receipt.** Until a receipt names an area, only its creator removes it (the
   upload handler, or the job that fails before the claim). After, only settle, cancel and the startup
   sweep do; a new restore over a non-terminal staged receipt is refused naming `resume`/`cancel`, so a
