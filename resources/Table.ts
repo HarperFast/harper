@@ -15620,9 +15620,11 @@ export function makeTable(options): TableResourceClass {
 				startOfYear.setSeconds(0);
 				const nextInterval = interval / (1 + (Number.isFinite(cleanupPriority) ? cleanupPriority : 0));
 				// find the next scheduled run based on regular cycles from the beginning of the year (if we restart, this enables a good continuation of scheduling)
+				const phase = replicaEvictionArmed ? ((Math.imul(tableId, 0x9e3779b1) >>> 0) / 0x100000000) * nextInterval : 0;
+				const gridStart = startOfYear.getTime() + phase;
 				const nextScheduled = runImmediately
 					? Date.now()
-					: Math.ceil((Date.now() - startOfYear.getTime()) / nextInterval) * nextInterval + startOfYear.getTime();
+					: Math.ceil((Date.now() - gridStart) / nextInterval) * nextInterval + gridStart;
 				const startNextTimer = (nextScheduled) => {
 					if (disposed || maintenanceClosed) return;
 					logger.trace?.(`Scheduled next cleanup scan at ${new Date(nextScheduled)}`);
@@ -15740,8 +15742,7 @@ export function makeTable(options): TableResourceClass {
 					if (next.done) break;
 					const entry = next.value;
 					const sweepReplicas = sweepState && replicaEvictionArmed;
-					// The queued pressure pass starts as soon as this ordinary pass releases the iterator.
-					if (sweepReplicas && !(priority > 1) && cleanupPriority > 1 && walked % checkEvery === 0) {
+					if (!(priority > 1) && cleanupPriority > 1 && walked % checkEvery === 0) {
 						interrupted = true;
 						break;
 					}
@@ -15856,13 +15857,21 @@ export function makeTable(options): TableResourceClass {
 			await Promise.all(outstandingCleanupOperations.filter(Boolean));
 			if (batcher) await batcher.drain();
 			if (tally && !interrupted && canContinue()) {
-				// The sole maintenance owner fills the inactive slot before publishing the new generation.
-				const shared = sharedReplicaStats();
-				const generation = Atomics.load(shared, 0) + 1n;
-				const slot = 1 + 2 * Number(generation & 1n);
-				Atomics.store(shared, slot, BigInt(tally.count));
-				Atomics.store(shared, slot + 1, BigInt(estimatedReplicaBytes(tally)));
-				Atomics.store(shared, 0, generation);
+				// Owners can overlap during handoff. If another publisher holds this short lock,
+				// its complete sample suffices until the next pass.
+				const key = `replica-stats-publisher:${tableId}`;
+				if (tableRootStore.tryLock(key)) {
+					try {
+						const shared = sharedReplicaStats();
+						const generation = Atomics.load(shared, 0) + 1n;
+						const slot = 1 + 2 * Number(generation & 1n);
+						Atomics.store(shared, slot, BigInt(tally.count));
+						Atomics.store(shared, slot + 1, BigInt(estimatedReplicaBytes(tally)));
+						Atomics.store(shared, 0, generation);
+					} finally {
+						tableRootStore.unlock(key);
+					}
+				}
 			}
 			if (
 				sweepState &&

@@ -653,6 +653,15 @@ async function reclaimAt(priority) {
 			assert.ok(flags(Table, lowKey) & REPLICA);
 			assert.equal((await describeRows()).replica_count, replicas.length);
 			assert.equal((await describeRows({ exact_count: true })).replica_count, replicas.length + 1);
+			const publisher = `replica-stats-publisher:${Table.tableId}`;
+			const root = Table.primaryStore.rootStore;
+			assert.ok(root.tryLock(publisher));
+			try {
+				await reclaimAt(1.01);
+				assert.equal((await describeRows()).replica_count, replicas.length, 'a competing publisher owns this sample');
+			} finally {
+				root.unlock(publisher);
+			}
 			limits({ batch: 1, checkEvery: 1, budgetMs: 0 });
 			await reclaimAt(1.01);
 			assert.equal((await describeRows()).replica_count, replicas.length, 'a partial scan cannot publish a tally');
