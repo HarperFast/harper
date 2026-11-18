@@ -1055,6 +1055,42 @@ describe('Test configValidator module', () => {
 			expect(configValidator(config, true).error.message).to.include("'mcp.operations.enabled' must be a boolean");
 		});
 
+		it('accepts every rate-limit key rateLimit.ts reads, quoted numbers included (#4352)', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			const rateLimit = {
+				perToolPerSecond: 10,
+				perToolBurst: '20',
+				sessionConcurrency: 25,
+				sessionPerSecond: 100,
+				perClientPerSecond: '0.5',
+				perClientBurst: 3,
+				identityHeader: 'x-forwarded-for',
+				initializePerSecond: 10,
+				initializeBurst: 50,
+			};
+			config.mcp = { operations: { rateLimit }, application: { rateLimit } };
+			assert.equal(configValidator(config, true).error, undefined);
+		});
+
+		it('refuses an unknown key in mcp.operations, mcp.application, their rateLimit and mcp.session (#4352)', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			for (const [mcp, path] of [
+				[{ application: { authenticaton: { required: true } } }, 'mcp.application.authenticaton'],
+				[{ operations: { alow: ['describe_all'] } }, 'mcp.operations.alow'],
+				[{ application: { rateLimit: { perClientPersecond: 1 } } }, 'mcp.application.rateLimit.perClientPersecond'],
+				[{ operations: { rateLimit: { burst: 1 } } }, 'mcp.operations.rateLimit.burst'],
+				[{ session: { idleTimeout: 60 } }, 'mcp.session.idleTimeout'],
+				[{ operations: { searchMaxResults: 5 } }, 'mcp.operations.searchMaxResults'],
+				[{ aplication: {} }, 'mcp.aplication'],
+			]) {
+				config.mcp = mcp;
+				const message = configValidator(config, true).error?.message ?? '';
+				assert.ok(message.includes(`'${path}' is not allowed`), `${path}: ${message}`);
+			}
+			config.mcp = { application: { stateless: true, instructions: 'x', generatedTools: false, searchMaxResults: 5 } };
+			assert.equal(configValidator(config, true).error, undefined, 'application-only keys stay valid');
+		});
+
 		it('accepts mcp.application.instructions up to 16,384 characters, and nothing else (#4362)', () => {
 			const config = testUtils.deepClone(FAKE_CONFIG);
 			config.mcp = { application: { instructions: 'x'.repeat(16_384) } };

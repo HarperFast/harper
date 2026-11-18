@@ -1,5 +1,5 @@
 import { ClientError } from '../utility/errors/hdbError.ts';
-import { credentialRejectionError, isCredentialRejection } from './credentialRejection.ts';
+import { credentialRejectionError, isCredentialRejection, rejectingValidatorMetadata } from './credentialRejection.ts';
 import { serializeMessage, findBestSerializer } from '../server/serverHelpers/contentTypes.ts';
 import { Headers } from '../server/serverHelpers/Headers.ts';
 
@@ -11,6 +11,7 @@ export type DeferredCredentialRejection = {
 	readonly status: number;
 	readonly message: string;
 	readonly strategy: string;
+	readonly validatorResourceMetadata?: string | null;
 };
 
 const CREDENTIAL_REJECTION_STATUS = 401;
@@ -24,10 +25,12 @@ const CREDENTIAL_REJECTION_STATUS = 401;
  */
 export function deferCredentialRejection(request: any, error: { message?: string }, strategy: string): void {
 	if (getDeferredCredentialRejection(request)) return;
+	const validatorResourceMetadata = rejectingValidatorMetadata(request, error);
 	const deferred: DeferredCredentialRejection = Object.freeze({
 		status: CREDENTIAL_REJECTION_STATUS,
 		message: error?.message ?? 'Unauthorized',
 		strategy,
+		...(validatorResourceMetadata === undefined ? {} : { validatorResourceMetadata }),
 	});
 	Object.defineProperty(request, DEFERRED_CREDENTIAL_REJECTION, {
 		value: deferred,
