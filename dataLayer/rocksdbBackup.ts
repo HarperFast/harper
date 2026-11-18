@@ -40,6 +40,7 @@ import {
 	restoreLockHeldExclusively,
 	checkRestoreState,
 	readRestoringMarkerSource,
+	restoreMarkerPresent,
 	restoreSourceId,
 	type RestoreLock,
 } from './restoreMarker.ts';
@@ -889,10 +890,12 @@ function restoreOnline(
 				}
 				// A live component can hold its own handle on the database that Harper does not track and
 				// cannot close, so verify actual process-wide closure before anything destructive.
+				// a resume refused here keeps its receipt only over a marker; without one its claim is released
+				const resumable = options.staged?.resume && restoreMarkerPresent(databaseDir);
 				await verifyDatabaseClosed(
 					databaseDir,
 					targetDatabase,
-					options.staged?.resume ? 'resume' : options.staged ? 'archive' : 'backup'
+					resumable ? 'resume' : options.staged ? 'archive' : 'backup'
 				);
 			},
 			release: (generationReplaced) =>
