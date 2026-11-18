@@ -356,7 +356,10 @@ async function dispatchInitialize(
 		return limited;
 	}
 	const params = 'params' in message ? (message.params as { protocolVersion?: unknown } | undefined) : undefined;
-	const outcome = await handleInitialize(params, request.user, { stateless: request.stateless });
+	const outcome = await handleInitialize(params, request.user, {
+		profile: request.profile,
+		stateless: request.stateless,
+	});
 	if (outcome.ok !== true) {
 		const fail = outcome as { ok: false; reason: string; supportedVersions: readonly string[] };
 		return jsonRpcErrorResponse(400, messageId, ERROR_CODES.INVALID_PARAMS, fail.reason, {

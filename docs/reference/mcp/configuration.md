@@ -124,6 +124,31 @@ With `stateless: true`:
 
 Turn it on for every node of a deployment at the same restart: first upgrade every node to a version that has it, then set it on every node and restart them together. While some nodes are stateless and others are not, a request that moves from a stateless node to a stateful one gets `400` (no `Mcp-Session-Id`), and one that moves the other way loses its session. Once every node is stateless, a client connected before the switch keeps working: its `Mcp-Session-Id` is ignored. The value must be the boolean `true`; a quoted `"true"` fails validation. It is read when the profile starts, so a change applies after a restart.
 
+### `mcp.application.instructions`
+
+<VersionBadge version="v5.4.2" />
+
+Type: `string` (at most 16,384 characters)
+
+Default: unset
+
+Text the application profile returns as `instructions` in its `initialize` result. A client can give it to its model as guidance about the whole server: what it is for, how its tools fit together, and what it cannot do. Use it for orientation that would otherwise have to be repeated in tool descriptions. A longer or empty string, or a value that is not a string, fails validation. When it is unset, `initialize` has no `instructions` field unless a component supplies one with [`server.setMcpInstructions`](#serversetmcpinstructionsinstructions). The operations profile never sends `instructions`. It is read when the profile starts, so a change applies after a restart.
+
+### `server.setMcpInstructions(instructions)`
+
+<VersionBadge version="v5.4.2" />
+
+Sets the `instructions` from a component, so an application can supply them without editing the node's configuration:
+
+```javascript
+// resources.js
+server.setMcpInstructions(
+	'Read-only access to your organizations and clusters. To change anything, open the Studio link a result gives you.'
+);
+```
+
+`mcp.application.instructions` in config takes precedence over it. The latest call wins; `server.setMcpInstructions(undefined)` (or `''`) clears it. A value that is not a string throws a `TypeError`, and one longer than 16,384 characters throws a `RangeError`, leaving the previous value in place. Each thread keeps its own value, like the components that set it, so call it at module load as in the example.
+
 ### `mcp.application.searchMaxResults`
 
 Type: `integer` (minimum 1)

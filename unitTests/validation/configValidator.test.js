@@ -1055,6 +1055,20 @@ describe('Test configValidator module', () => {
 			expect(configValidator(config, true).error.message).to.include("'mcp.operations.enabled' must be a boolean");
 		});
 
+		it('accepts mcp.application.instructions up to 16,384 characters, and nothing else (#4362)', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.mcp = { application: { instructions: 'x'.repeat(16_384) } };
+			assert.equal(configValidator(config, true).error, undefined);
+			for (const instructions of ['x'.repeat(16_385), '', 42, ['a']]) {
+				config.mcp = { application: { instructions } };
+				assert.match(
+					configValidator(config, true).error?.message ?? '',
+					/'mcp\.application\.instructions'/,
+					String(instructions).slice(0, 10)
+				);
+			}
+		});
+
 		it('accepts a boolean mcp.application.stateless and rejects a quoted one (#4346)', () => {
 			const config = testUtils.deepClone(FAKE_CONFIG);
 			config.mcp = { application: { stateless: true } };

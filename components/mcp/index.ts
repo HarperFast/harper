@@ -22,6 +22,7 @@ import { createFastifyHandler } from './adapters/fastify.ts';
 import { createHarperHttpHandler, type McpAuthentication } from './adapters/harperHttp.ts';
 import { isValidChallengeUrl } from '../../security/challengeUrl.ts';
 import { ensureSessionTable } from './session.ts';
+import { configureApplicationInstructions } from './applicationInfo.ts';
 import { initListChanged } from './listChanged.ts';
 import { registerApplicationTools } from './tools/application.ts';
 import { registerOperationsTools } from './tools/operations.ts';
@@ -40,6 +41,7 @@ interface McpProfileConfig {
 	enabled?: boolean;
 	mountPath?: string;
 	stateless?: unknown;
+	instructions?: unknown;
 	authentication?: { required?: unknown; resourceMetadata?: unknown };
 }
 
@@ -135,6 +137,7 @@ export function handleApplication(scope: ScopeLike): void {
 	ensureSessionTable();
 	initListChanged();
 	registerApplicationTools();
+	configureApplicationInstructions(config.mcp.application.instructions);
 	const mountPath = config.mcp.application.mountPath ?? DEFAULT_MOUNT_PATH;
 	const authentication = applicationAuthentication(config.mcp.application.authentication);
 	const stateless = config.mcp.application.stateless === true;

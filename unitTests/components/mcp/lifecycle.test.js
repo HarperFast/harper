@@ -9,6 +9,12 @@ const {
 	handleInitialized,
 } = require('#src/components/mcp/lifecycle');
 const { _setSessionTableForTest, loadSession } = require('#src/components/mcp/session');
+const {
+	configureApplicationInstructions,
+	setMcpInstructions,
+	MAX_INSTRUCTIONS_LENGTH,
+	_resetApplicationInfoForTest,
+} = require('#src/components/mcp/applicationInfo');
 
 function makeFakeTable() {
 	const store = new Map();
@@ -96,6 +102,63 @@ describe('mcp/lifecycle', () => {
 		it('rejects a non-string protocolVersion', async () => {
 			const outcome = await handleInitialize({ protocolVersion: 1 }, 'alice');
 			assert.equal(outcome.ok, false);
+		});
+	});
+
+	describe('instructions (#4362)', () => {
+		afterEach(() => _resetApplicationInfoForTest());
+		const initialize = async (profile) =>
+			(await handleInitialize({ protocolVersion: '2025-06-18' }, 'alice', { profile })).result;
+
+		it('omits instructions when neither config nor a registration supplies them', async () => {
+			assert.equal('instructions' in (await initialize('application')), false);
+		});
+
+		it('returns the configured instructions', async () => {
+			configureApplicationInstructions('Read-only. Hand every change to the person.');
+			assert.equal((await initialize('application')).instructions, 'Read-only. Hand every change to the person.');
+		});
+
+		it('returns registered instructions until the registration is cleared', async () => {
+			setMcpInstructions('Registered by the component.');
+			assert.equal((await initialize('application')).instructions, 'Registered by the component.');
+			setMcpInstructions(undefined);
+			assert.equal('instructions' in (await initialize('application')), false);
+		});
+
+		it('prefers the configured instructions over a registration, whichever came first', async () => {
+			setMcpInstructions('registered');
+			configureApplicationInstructions('configured');
+			setMcpInstructions('registered again');
+			assert.equal((await initialize('application')).instructions, 'configured');
+		});
+
+		it('sends them on a stateless initialize too, and never on the operations profile', async () => {
+			configureApplicationInstructions('configured');
+			const stateless = await handleInitialize({ protocolVersion: '2025-06-18' }, 'alice', {
+				profile: 'application',
+				stateless: true,
+			});
+			assert.equal(stateless.result.instructions, 'configured');
+			assert.equal('instructions' in (await initialize('operations')), false);
+			assert.equal('instructions' in (await initialize(undefined)), false);
+		});
+
+		it('refuses a registration that is not a string or is over the cap, keeping the previous one', async () => {
+			setMcpInstructions('kept');
+			assert.throws(() => setMcpInstructions(42), TypeError);
+			assert.throws(() => setMcpInstructions('x'.repeat(MAX_INSTRUCTIONS_LENGTH + 1)), RangeError);
+			assert.equal((await initialize('application')).instructions, 'kept');
+			setMcpInstructions('x'.repeat(MAX_INSTRUCTIONS_LENGTH));
+			assert.equal((await initialize('application')).instructions.length, MAX_INSTRUCTIONS_LENGTH);
+		});
+
+		it('ignores configured instructions that are not a non-empty string within the cap', async () => {
+			setMcpInstructions('registered');
+			for (const value of ['', 42, 'x'.repeat(MAX_INSTRUCTIONS_LENGTH + 1), undefined]) {
+				configureApplicationInstructions(value);
+				assert.equal((await initialize('application')).instructions, 'registered', String(value).slice(0, 10));
+			}
 		});
 	});
 
