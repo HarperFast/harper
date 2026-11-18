@@ -224,6 +224,13 @@ async function reclaimAt(priority) {
 		for (const id of fresh) assertKept(id);
 	});
 
+	it('reclaims a replica whose composite key starts with null', async () => {
+		const key = [null, 'low'];
+		await replica(key, 1000);
+		await reclaimAt(10);
+		assertDemoted(key);
+	});
+
 	it('does not accelerate a lifetime no longer than the minimum age', async () => {
 		limits({ minAgeMs: 1500 });
 		await replica('near', LIFETIME_MS);
@@ -293,6 +300,18 @@ async function reclaimAt(priority) {
 		for (const id of ['a', 'b', 'c']) assertDemoted(id);
 	});
 
+	it('resumes a sparse pressure scan beyond its budget without skipping the next key', async () => {
+		limits({ batch: 2, checkEvery: 1, budgetMs: 0 });
+		for (const key of ['a', 'b', 'c', 'd']) await stub(key);
+		await replica('z', 1000);
+		await reclaimAt(10);
+		assertKept('z');
+		await reclaimAt(10);
+		assertKept('z');
+		await reclaimAt(10);
+		assertDemoted('z');
+	});
+
 	it('finishes a batch past its budget, however long the scan took, and leaves the rest for the next run', async () => {
 		limits({ batch: 2, budgetMs: 0 });
 		await replica('earliest', 1000);
@@ -319,6 +338,22 @@ async function reclaimAt(priority) {
 		await reclaimAt(1.25);
 		assert.deepEqual(order, ['longer', 'within']);
 		assertKept('kept');
+	});
+
+	it('keeps a replica renewed after a pressure pass starts but before it reaches the key', async () => {
+		for (const id of ['a', 'b']) await replica(id, 1000);
+		const evict = Rows.evict;
+		Rows.evict = async function (id, ...rest) {
+			if (id === 'a') {
+				const observed = Date.now();
+				await waitFor(() => Date.now() > observed);
+				setReplicaDeadline(Rows, 'b', Date.now() + LIFETIME_MS);
+			}
+			return evict.call(this, id, ...rest);
+		};
+		await reclaimAt(2);
+		assertDemoted('a');
+		assertKept('b');
 	});
 
 	it('keeps a replica renewed after the pass selected it', async () => {
@@ -395,6 +430,20 @@ async function reclaimAt(priority) {
 		const kept = ['a', 'b', 'c'].filter((id) => isReplica(id));
 		assert.ok(kept.length >= 2, `the pass stopped at closing, leaving ${kept}`);
 		Rows.resumeMaintenance();
+	});
+
+	it('stands down after a full pressure scan finds only stubs and wakes on admission', async () => {
+		await replica('first', 1000);
+		await reclaimAt(10);
+		assertDemoted('first');
+		const state = new Int32Array(
+			Rows.primaryStore.getUserSharedBuffer(`replica-sweep:${Rows.tableId}`, new ArrayBuffer(8))
+		);
+		await reclaimAt(10);
+		assert.equal(Atomics.load(state, 1), 0);
+		await replica('next', 1000);
+		await reclaimAt(10);
+		assertDemoted('next');
 	});
 
 	it('leaves the normal sweep armed after a pass', async () => {
@@ -557,7 +606,7 @@ async function reclaimAt(priority) {
 
 		it('counts flagged primary rows on eligible tables, including an empty table', async () => {
 			await loadGQLSchema(`type Described @table(database: "shardedReclamation", replicaExpiration: 3600)
-				@sharded(slots: 2) { id: ID @primaryKey tag: String @indexed body: String }`);
+				@sharded(slots: 2) { id: Any @primaryKey tag: String @indexed body: String }`);
 			const Table = databases.shardedReclamation.Described;
 			const describeRows = (options) =>
 				describeTable({ database: Table.databaseName, table: Table.tableName, ...options });
@@ -568,6 +617,13 @@ async function reclaimAt(priority) {
 			assert.equal(stats.replica_count, replicas.length);
 			assert.ok(stats.replica_size_estimate > 0);
 			assert.equal(stats.estimated_replica_range, undefined);
+			const lowKey = Array.from({ length: 32 }, (_, i) => [null, i]).find(
+				(key) => !Table.getRecordResidency({ key }).includes(server.hostname)
+			);
+			assert.ok(lowKey);
+			await Table.put({ id: lowKey, tag: 'indexed', body: 'complete' });
+			assert.ok(flags(Table, lowKey) & REPLICA);
+			assert.equal((await describeRows()).replica_count, replicas.length + 1);
 			assert.equal((await describeRows({ skip_record_count: true })).replica_count, undefined);
 			await Table.clear();
 			assert.equal((await describeRows({ exact_count: true })).replica_count, 0);

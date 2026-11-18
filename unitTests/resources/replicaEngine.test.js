@@ -121,7 +121,7 @@ describe('Replica storage engine support', function () {
 		await waitFor(() => Atomics.load(state, 1) === (isLMDB ? 0 : 1));
 	});
 
-	it('arms a table loaded with a secondary index only on RocksDB', async () => {
+	it('leaves a plain indexed table unarmed on catalog load without any residency', async () => {
 		const databaseName = 'replicaEngineReload';
 		table({
 			database: databaseName,
@@ -138,7 +138,7 @@ describe('Replica storage engine support', function () {
 		const state = new Int32Array(
 			Reloaded.primaryStore.getUserSharedBuffer(`replica-sweep:${Reloaded.tableId}`, new ArrayBuffer(8))
 		);
-		await waitFor(() => Atomics.load(state, 1) === (isLMDB ? 0 : 1));
+		assert.equal(Atomics.load(state, 1), 0);
 		await Reloaded.closeMaintenance();
 	});
 

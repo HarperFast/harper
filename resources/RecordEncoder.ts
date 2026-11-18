@@ -419,7 +419,7 @@ export class RecordEncoder extends StructonEncoder {
 				}
 				let metadata = metadataInNextEncoding;
 				const expiresAt = expiresAtNextEncoding;
-				const replicaDeadline = replicaDeadlineNextEncoding;
+				let replicaDeadline: number | undefined;
 				const residencyId = residencyIdAtNextEncoding;
 				const residencySlot = residencySlotAtNextEncoding;
 				const nodeId = nodeIdAtNextEncoding;
@@ -443,6 +443,7 @@ export class RecordEncoder extends StructonEncoder {
 						}
 					}
 					if (metadata & HAS_REPLICA_DEADLINE) {
+						replicaDeadline = replicaDeadlineNextEncoding;
 						if (!Number.isFinite(replicaDeadline)) throw new Error('Replica deadline missing from flagged record');
 						valueStart += 8;
 						replicaDeadlineNextEncoding = undefined;
@@ -488,8 +489,9 @@ export class RecordEncoder extends StructonEncoder {
 					}
 				}
 				const encoded = superEncode.call(this, record, options | 2048 | valueStart); // encode with 8 bytes reserved space for txnId
-				lastValueEncoding = encoded.subarray((encoded.start || 0) + valueStart, encoded.end);
 				let position = encoded.start || 0;
+				const bodyStart = position + valueStart;
+				lastValueEncoding = encoded.subarray(bodyStart, encoded.end);
 				const dataView =
 					encoded.dataView || (encoded.dataView = new DataView(encoded.buffer, encoded.byteOffset, encoded.byteLength));
 				if (timestamp) {
@@ -509,6 +511,7 @@ export class RecordEncoder extends StructonEncoder {
 				if (metadata >= 0) {
 					dataView.setUint32(position, metadata | (ACTION_32_BIT << 24)); // use the extended action byte
 					position += 4;
+					if (position === bodyStart) return encoded;
 					if (expiresAt >= 0) {
 						dataView.setFloat64(position, expiresAt);
 						position += 8;
@@ -722,15 +725,17 @@ export class RecordEncoder extends StructonEncoder {
 						metadataFlags = nextByte | (buffer[position + 1] << 5);
 						position += 2;
 					}
-					if (metadataFlags & HAS_EXPIRATION) {
+					if (metadataFlags & (HAS_EXPIRATION | HAS_REPLICA_DEADLINE)) {
 						const dataView =
 							buffer.dataView || (buffer.dataView = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength));
-						expiresAt = dataView.getFloat64(position);
-						position += 8;
-					}
-					if (metadataFlags & HAS_REPLICA_DEADLINE) {
-						replicaDeadline = buffer.dataView.getFloat64(position);
-						position += 8;
+						if (metadataFlags & HAS_EXPIRATION) {
+							expiresAt = dataView.getFloat64(position);
+							position += 8;
+						}
+						if (metadataFlags & HAS_REPLICA_DEADLINE) {
+							replicaDeadline = dataView.getFloat64(position);
+							position += 8;
+						}
 					}
 					if (metadataFlags & HAS_RESIDENCY_ID) {
 						// we need to read the residency id

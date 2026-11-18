@@ -156,6 +156,8 @@ On a table whose records live on specific nodes (see [sharding](../replication/s
 
 [Schema-defined sharding](../replication/residency.md#ownership-reads-and-writes) tables with secondary indexes can retain replicas for key-derived slots. With positive `replicaExpiration`, a non-owner writer also keeps its complete write as a temporary replica under the same expiry and replacement rules. This local copy never counts as owner confirmation. Setting the lifetime to `0` does not drain existing replicas; see the [rollback procedure](../replication/residency.md#rollback).
 
+Before rolling back to a build that predates replica header deadlines, drain the replicas on each node while it still runs the newer build. Pause reads and writes that admit or renew replicas, leave a positive replica lifetime configured, and wait for cleanup. For each eligible table, verify that `describe_table` reports `replica_count: 0` before starting the older executable. The older decoder cannot read a row carrying the deadline field.
+
 ```graphql
 # Keep fetched records for a day; a read after six hours renews them
 type Order @table(replicaExpiration: 86400, replicaRefreshFraction: 0.25) {

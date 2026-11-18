@@ -1495,10 +1495,9 @@ interface TableResourceClass {
 		  }
 	>;
 	/**
-	 * The replicas this node keeps of this table's records, counted like `getRecordCount`, with their size
-	 * estimated from a sample of their rows. Undefined where no replica was ever stored.
+	 * Count primary rows flagged REPLICA on eligible indexed tables and estimate their size from up to 100 rows.
 	 */
-	getReplicaStats(): Promise<ReplicaStats | undefined>;
+	getReplicaStats(options?: { exactCount?: boolean }): Promise<ReplicaStats | undefined>;
 	/**
 	 * When attributes have been changed, we update the accessors that are assigned to this table
 	 */
@@ -2168,6 +2167,7 @@ export function makeTable(options): TableResourceClass {
 	const replicaRefreshCheckedAtComposite = new Map<string, number>();
 	let replicaEvictionArmed = false;
 	let replicaTableKnown = false;
+	let nextReplicaReclaimKey: Id | undefined;
 	// shared across this node's threads: [0] replica admissions, [1] whether the owner's sweep is armed;
 	// a store on any thread wakes the sweep when [1] is 0
 	let replicaSweepState: Int32Array | undefined;
@@ -5848,7 +5848,7 @@ export function makeTable(options): TableResourceClass {
 			let options = { transaction };
 			let committed = false;
 			try {
-				if ((hasSourceGet || audit) && !existingRecord) return;
+				if (observedDeadline === undefined && (hasSourceGet || audit) && !existingRecord) return;
 				entry = primaryStore.getEntry(id, lmdbTransaction ? options : { transaction, uncachedRead: true });
 				if (!entry || entry.version !== existingVersion) return;
 				if (hasSourceGet) {
@@ -11988,12 +11988,12 @@ export function makeTable(options): TableResourceClass {
 				recordCount,
 			};
 		}
-		static async getReplicaStats(): Promise<ReplicaStats | undefined> {
+		static async getReplicaStats(_options?: { exactCount?: boolean }): Promise<ReplicaStats | undefined> {
 			if (!replicaExpirationMs || !residencyPolicy || !hasSecondaryIndices()) return;
 			let count = 0;
 			let walked = 0;
 			let sampledSize = 0;
-			for (const entry of primaryStore.getRange({ start: false, versions: true, lazy: true })) {
+			for (const entry of primaryStore.getRange({ versions: true, lazy: true, snapshot: false })) {
 				if (entry.metadataFlags & REPLICA && ++count <= REPLICA_SIZE_SAMPLE) {
 					sampledSize += entry.size ?? 0;
 					if (entry.metadataFlags & HAS_BLOBS)
@@ -12001,7 +12001,10 @@ export function makeTable(options): TableResourceClass {
 							sampledSize += blob.size || 0;
 						});
 				}
-				if (++walked % COUNT_YIELD_INTERVAL === 0) await rest();
+				if (++walked % COUNT_YIELD_INTERVAL === 0) {
+					await rest();
+					if (disposed) return;
+				}
 			}
 			return {
 				count,
@@ -12901,6 +12904,10 @@ export function makeTable(options): TableResourceClass {
 	defaultAllowReads.add(TableResource.prototype.allowRead);
 	try {
 		TableResource.updatedAttributes(); // on creation, update accessors as well
+		// Explicit residency can leave replicas on an indexed table without a declarative policy.
+		// Select the joint interval before a catalog TTL arms the first timer.
+		replicaTableKnown = Boolean(options.catalogMayHaveReplicas && (!residencyPolicy || hasSecondaryIndices()));
+		replicaEvictionArmed = Boolean(replicaTableKnown && replicaExpirationMs);
 		// anything but absent or zero is validated here: a peer's definition reaches a create unvalidated
 		if ((expirationMs !== undefined && expirationMs !== 0) || evictionMs !== 0) {
 			ttlFromLoad = true;
@@ -12920,9 +12927,7 @@ export function makeTable(options): TableResourceClass {
 		let armers = replicaEvictionArmers.get(armerKey);
 		if (!armers) replicaEvictionArmers.set(armerKey, (armers = new Set()));
 		armers.add(armReplicaEviction);
-		// Explicit residency can admit over a persisted stub without a declarative policy.
-		// Probe loaded indexed tables once; an empty pass stands down until an admission.
-		if (options.loadedFromCatalog && hasSecondaryIndices()) armReplicaEviction();
+		if (replicaEvictionArmed) armReplicaEviction();
 	}
 	registerStoreTable(primaryStore, () => isNodeLocalTable(TableResource));
 	return TableResource;
@@ -15493,6 +15498,7 @@ export function makeTable(options): TableResourceClass {
 
 		async function commitItems(items: EvictItem[]) {
 			for (let attempt = 0; attempt < 2; attempt++) {
+				if (maintenanceClosed || disposed || isReadOnlyMode()) return;
 				// Create the transaction inside the try: if the store is closing mid-scan, the constructor
 				// can throw, and this promise is not always awaited (in-flight under the cap), so an
 				// uncaught throw here would surface as an unhandled rejection.
@@ -15578,7 +15584,7 @@ export function makeTable(options): TableResourceClass {
 				)
 			: cleanupInterval;
 		let runImmediately = replicaEvictionArmed && priority > 1;
-		if (priority) {
+		if (priority !== undefined) {
 			// run immediately if there is a big increase in priority
 			if (priority - cleanupPriority > 1) runImmediately = true;
 			cleanupPriority = priority;
@@ -15613,11 +15619,11 @@ export function makeTable(options): TableResourceClass {
 					if (disposed || maintenanceClosed) return;
 					logger.trace?.(`Scheduled next cleanup scan at ${new Date(nextScheduled)}`);
 					// noinspection JSVoidFunctionReturnValueUsed
-					const timer = (cleanupTimer = setTimeout(
+					const timer = setTimeout(
 						() =>
 							(lastEvictionCompletion = lastEvictionCompletion.then(async () => {
 								if (timer !== cleanupTimer) return;
-								if (disposed || maintenanceClosed || !ownsCleanup()) {
+								if (disposed || maintenanceClosed || (!cleanupForExpiry && !ownsCleanup())) {
 									settlePendingCleanup();
 									return;
 								}
@@ -15640,8 +15646,9 @@ export function makeTable(options): TableResourceClass {
 									for (const settle of settling) settle();
 								}
 							})),
-						Math.min(nextScheduled - Date.now(), MAX_SET_TIMEOUT_MS) // make sure it can fit in 32-bit signed number
-					).unref()); // don't let this prevent closing the thread
+						Math.max(0, Math.min(nextScheduled - Date.now(), MAX_SET_TIMEOUT_MS)) // make sure it can fit in 32-bit signed number
+					);
+					cleanupTimer = timer.unref();
 				};
 				startNextTimer(nextScheduled);
 			});
@@ -15678,16 +15685,20 @@ export function makeTable(options): TableResourceClass {
 
 		try {
 			let count = 0;
-			const sweepState = replicaEvictionArmed && replicaSweep();
+			const sweepState = replicaEvictionArmed && ownsCleanup() && replicaSweep();
 			const admissionsAtStart = sweepState && Atomics.load(sweepState, 0);
 			let seenReplicas = false;
+			let interrupted = false;
 			let walked = 0;
 			let pressure = sweepState && priority > 1 ? await getStorageReclamationPriority(primaryStore.path) : 0;
 			const started = Date.now();
 			const { checkEvery, minAgeMs, batch, budgetMs } = replicaReclaimLimits;
+			const budgetEnd = performance.now() + budgetMs;
 			let attempted = 0;
 			let madeProgress = false;
-			let pressureDone = false;
+			const reclaiming = pressure > 1;
+			const resumeKey = reclaiming ? nextReplicaReclaimKey : undefined;
+			let budgetReached = false;
 			let cutoff = replicaPressureCutoff(started, pressure);
 			const removeDeletedRecords = !audit || isRocksDB;
 			// RocksDB coalesces eviction/tombstone removals into shared transactions to amortize
@@ -15696,35 +15707,64 @@ export function makeTable(options): TableResourceClass {
 			const batcher = isRocksDB ? createEvictionBatcher() : undefined;
 			// iterate through all entries to find expired records and deleted records
 			for (const entry of primaryStore.getRange({
-				start: false,
+				start: resumeKey ?? (sweepState ? undefined : false),
 				snapshot: false, // we don't want to keep read transaction snapshots open
 				versions: true,
 				lazy: true, // only want to access metadata most of the time
 			})) {
-				if (maintenanceClosed || disposed || !ownsCleanup() || isReadOnlyMode()) break;
+				const sweepReplicas = sweepState && replicaEvictionArmed && ownsCleanup();
+				if (maintenanceClosed || disposed || isReadOnlyMode() || (!sweepReplicas && !cleanupForExpiry)) {
+					interrupted = true;
+					break;
+				}
+				if (
+					pressure > 1 &&
+					(budgetReached || (walked >= batch && walked % checkEvery === 0 && performance.now() >= budgetEnd))
+				) {
+					nextReplicaReclaimKey = entry.key;
+					interrupted = true;
+					break;
+				}
 				if (pressure > 1 && walked && walked % checkEvery === 0) {
 					pressure = await getStorageReclamationPriority(primaryStore.path);
 					cutoff = replicaPressureCutoff(started, pressure);
-					if (!(pressure > 1) && !cleanupForExpiry) break;
+					if (
+						maintenanceClosed ||
+						disposed ||
+						isReadOnlyMode() ||
+						!ownsCleanup() ||
+						(!(pressure > 1) && !cleanupForExpiry)
+					) {
+						interrupted = true;
+						break;
+					}
 				}
 				walked++;
 				const { key, version, expiresAt, metadataFlags, replicaDeadline } = entry;
-				if (replicaEvictionArmed && metadataFlags & REPLICA) {
+				if (sweepReplicas && metadataFlags & REPLICA) {
 					seenReplicas = true;
 					const expired = !(replicaDeadline > Date.now());
 					const reclaim =
-						!pressureDone &&
 						pressure > 1 &&
 						Date.now() - version >= minAgeMs &&
-						(replicaDeadline <= cutoff || replicaDeadline > started + replicaExpirationMs);
+						(replicaDeadline <= cutoff || replicaDeadline > Date.now() + replicaExpirationMs);
 					if (expired || reclaim) {
-						const demoted = await TableResource.evict(key, entry.value, version, replicaDeadline ?? null);
+						let demoted;
+						try {
+							demoted = await TableResource.evict(key, undefined, version, replicaDeadline ?? null);
+						} catch (error) {
+							logger.warn?.('Error demoting replica', key, error);
+						}
 						if (reclaim) {
 							madeProgress ||= demoted === true;
 							if (++attempted % batch === 0) {
-								pressureDone = !madeProgress || Date.now() - started >= budgetMs;
+								if (!madeProgress) {
+									logger.warn?.(`Could not demote any of ${batch} replicas of ${tableName} under storage pressure`);
+									interrupted = true;
+									break;
+								}
 								madeProgress = false;
-								if (pressureDone && !cleanupForExpiry) break;
+								budgetReached = performance.now() >= budgetEnd;
 							}
 						}
 						continue;
@@ -15770,9 +15810,11 @@ export function makeTable(options): TableResourceClass {
 				}
 				await rest();
 			}
+			if (reclaiming && !interrupted) nextReplicaReclaimKey = undefined;
 			if (
 				sweepState &&
-				!priority &&
+				resumeKey === undefined &&
+				!interrupted &&
 				!seenReplicas &&
 				!maintenanceClosed &&
 				!disposed &&
@@ -16007,15 +16049,17 @@ export function makeTable(options): TableResourceClass {
 		const deadline = Date.now() + replicaExpirationMs;
 		return rowExpiresAt >= 0 && rowExpiresAt < deadline ? rowExpiresAt : deadline;
 	}
+	function replicaNeedsRefresh(entry: Entry, now: number): boolean {
+		return (
+			Boolean(entry.metadataFlags & FULL_WRITE_HEAD) &&
+			entry.replicaDeadline !== undefined &&
+			entry.replicaDeadline - now <= replicaExpirationMs * (1 - replicaRefreshFraction)
+		);
+	}
 	function refreshReplicaOnRead(entry: Entry) {
 		if (replicaRefreshFraction >= 1 || !replicaExpirationMs || !sourceLoad) return;
 		const now = Date.now();
-		if (
-			!(entry.metadataFlags & FULL_WRITE_HEAD) ||
-			entry.replicaDeadline === undefined ||
-			entry.replicaDeadline - now > replicaExpirationMs * (1 - replicaRefreshFraction)
-		)
-			return;
+		if (!replicaNeedsRefresh(entry, now)) return;
 		const throttle = Math.min(replicaRefreshFraction, 1 - replicaRefreshFraction) * replicaExpirationMs;
 		const key = entry.key;
 		const composite = typeof key === 'object';
@@ -16057,12 +16101,12 @@ export function makeTable(options): TableResourceClass {
 				!entry ||
 				entry.version !== observed.version ||
 				!(entry.metadataFlags & REPLICA) ||
-				!(entry.metadataFlags & FULL_WRITE_HEAD) ||
-				entry.replicaDeadline !== observed.replicaDeadline
+				!replicaNeedsRefresh(entry, Date.now())
 			)
 				return Promise.resolve(false);
 			const deadline = replicaDeadlineFor(entry.expiresAt);
 			if (deadline <= entry.replicaDeadline) return Promise.resolve(false);
+			// This header-only put stages no index update or local log entry.
 			rewriteRecordMetadata(entry.key, entry, entry.copiedDeleteBoundary, transaction, deadline);
 			const completion = commitRawTransaction(transaction);
 			submitted = true;
@@ -16453,7 +16497,7 @@ export function makeTable(options): TableResourceClass {
 		if (!ownsCleanup()) return;
 		reclamationRegistered ||= onStorageReclamation(primaryStore.path, reclamationHandler, true);
 		Atomics.store(replicaSweep(), 1, 1);
-		scheduleCleanup(undefined, true);
+		scheduleCleanup(undefined, !(expirationScanScheduled || evictionMs || retainExpiryScan));
 	}
 	function replicaPressureCutoff(now: number, priority: number): number {
 		return (
@@ -16465,6 +16509,7 @@ export function makeTable(options): TableResourceClass {
 	function standDownReplicaSweep() {
 		if (!replicaEvictionArmed) return;
 		replicaEvictionArmed = false;
+		nextReplicaReclaimKey = undefined;
 		if (ownsCleanup()) Atomics.store(replicaSweep(), 1, 0);
 		clearTimeout(cleanupTimer);
 		cleanupTimer = undefined;

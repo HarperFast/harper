@@ -26,11 +26,14 @@ async function ownerEntry(table, id) {
 	return response.json();
 }
 
+const sourceLoads = new Map();
 if (ownerURL) {
 	for (const table of [Reclaimable, Sliding]) {
 		table.sourcedFrom(
 			class extends Resource {
 				static async load(stub) {
+					const key = table.tableName + '/' + stub.key;
+					sourceLoads.set(key, (sourceLoads.get(key) ?? 0) + 1);
 					const entry = await ownerEntry(table, stub.key);
 					if (entry.value && !(entry.expiresAt <= Date.now())) {
 						await table._storeReplica(stub, entry);
@@ -99,6 +102,7 @@ export class ReplicaFixture extends Resource {
 				: {};
 		if (field('header'))
 			return {
+				sourceLoads: sourceLoads.get(table.tableName + '/' + id) ?? 0,
 				deadline: entry?.replicaDeadline,
 				expiresAt: entry?.expiresAt,
 				replica: Boolean(entry?.metadataFlags & REPLICA),

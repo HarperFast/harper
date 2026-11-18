@@ -161,14 +161,16 @@ suite('replicas under storage pressure', { skip: skipSuite }, (ctx: ContextWithH
 	test('read hits renew one row while cleanup demotes its idle neighbor', async () => {
 		const [hot, cold] = replicaIds;
 		await admit([hot, cold], 'Sliding');
-		const original = (await header(hot)).deadline;
-		ok(original > Date.now());
+		const original = await header(hot);
+		ok(original.deadline > Date.now());
+		strictEqual(original.sourceLoads, 1);
 		await until(async () => {
 			strictEqual((await client.reqRest(`/Sliding/${hot}`).expect(200)).body.body, 'from the owner');
 			return (await header(cold)).stub;
 		});
 		const renewed = await header(hot);
-		ok(renewed.deadline > original);
+		ok(renewed.deadline > original.deadline);
+		strictEqual(renewed.sourceLoads, original.sourceLoads);
 		strictEqual(renewed.replica, true);
 		strictEqual(renewed.body, 'from the owner');
 	});

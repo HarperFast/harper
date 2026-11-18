@@ -164,7 +164,7 @@ describeReplicas('Local replicas of residency stubs', function () {
 		assert.equal(entry.value.body, 'complete');
 		assert.equal(entry.residencyId, RESIDENCY_ID);
 		assert.equal(entry.version, stubVersion);
-		assert.equal(entry.expiresAt, undefined, 'the row carries no replica deadline');
+		assert.equal(entry.expiresAt, undefined, 'the row has no record expiry');
 		const deadline = deadlineOf(ID);
 		assert.ok(deadline > Date.now() + DEFAULT_REPLICA_EXPIRATION_MS - 5000);
 		assert.ok(deadline <= Date.now() + DEFAULT_REPLICA_EXPIRATION_MS);
@@ -401,7 +401,7 @@ describeReplicas('Local replicas of residency stubs', function () {
 			() => (Records.primaryStore.getEntry(ID).metadataFlags & INVALIDATED ? true : undefined),
 			'the sweep to demote the replica'
 		);
-		assert.equal(deadlineOf(ID), undefined, 'demotion takes the deadline entry with it');
+		assert.equal(deadlineOf(ID), undefined, 'demotion removes the header deadline');
 	});
 
 	it('slides on a table with its own record expiry, never past that expiry, which a demoted stub keeps', async () => {
@@ -669,7 +669,7 @@ describeReplicas('Local replicas of residency stubs', function () {
 				apply(resource, { version: before.version + 1, nodeId: before.nodeId ?? 0, residencyId: RESIDENCY_ID });
 			});
 			const after = Records.primaryStore.getEntry(ID);
-			assert.equal(deadlineOf(ID), undefined, 'an overwrite takes the deadline entry with it');
+			assert.equal(deadlineOf(ID), undefined, 'an overwrite removes the header deadline');
 			if (expectStub === null) {
 				assert.equal(after?.value, null);
 				return;

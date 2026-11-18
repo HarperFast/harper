@@ -2056,6 +2056,17 @@ function initStores(
 	rootStore.databaseName ??= storeName ?? databaseName;
 	const envInit = new OpenEnvironmentObject(path, isReadOnlyMode());
 	const attributesDbi = openCatalogStore(rootStore, openedStores);
+	const residencyIds = Symbol.for('residency_by_id');
+	// Explicit-residency stubs can be fetched only in a database with a resident-node mapping.
+	const hasExplicitResidency =
+		rootStore instanceof RocksDatabase &&
+		Array.from(
+			attributesDbi.getKeys({
+				start: [residencyIds, 0],
+				end: [residencyIds, Infinity],
+				limit: 1,
+			})
+		).length > 0;
 
 	let auditStore = rootStore.auditStore;
 	if (!auditStore) {
@@ -2408,7 +2419,7 @@ function initStores(
 					evictionMS: eviction && eviction * 1000,
 					replicaExpirationMS: replicaExpirationMsOf(replicaExpiration),
 					replicaRefreshFraction: replicaRefreshFractionOf(replicaRefreshFraction),
-					loadedFromCatalog: true,
+					catalogMayHaveReplicas: Boolean(primaryAttribute.residency || hasExplicitResidency),
 					expiryScan: primaryAttribute.expiryScan === true,
 					cacheControl,
 					trackDeletes,

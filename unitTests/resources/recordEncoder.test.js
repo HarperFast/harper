@@ -643,6 +643,7 @@ describe('Replica deadline header', () => {
 		HAS_RESIDENCY_ID,
 	} = require('#src/resources/RecordEncoder');
 	const { REPLICA } = require('#src/resources/Table');
+	const { encodeBlobsWithFilePath } = require('#src/resources/blob');
 	const version = 1750000000000;
 	const deadline = version + 2000;
 	for (const [expiry, golden] of [
@@ -652,9 +653,10 @@ describe('Replica deadline header', () => {
 		it(`places the deadline at offset ${expiry < 0 ? 12 : 20} and preserves ordinary row bytes`, () => {
 			const encoder = new RecordEncoder({ useRecords: false, randomAccessStructure: false });
 			encoder.isRocksDB = true;
+			const encodeRow = () => Buffer.from(encodeBlobsWithFilePath(() => encoder.encode('row'), 1, undefined));
 			const flags = HAS_RESIDENCY_ID | (expiry < 0 ? 0 : HAS_EXPIRATION);
 			setNextEncoding(version, flags | REPLICA | HAS_REPLICA_DEADLINE, expiry, -1, 123, undefined, deadline);
-			const bytes = Buffer.from(encoder.encode('row'));
+			const bytes = encodeRow();
 			assert.equal(bytes.readDoubleBE(expiry < 0 ? 12 : 20), deadline);
 			const entry = encoder.decode(bytes);
 			assert.equal(entry.replicaDeadline, deadline);
@@ -662,7 +664,7 @@ describe('Replica deadline header', () => {
 			assert.equal(entry.residencyId, 123);
 			assert.equal(entry.value, 'row');
 			setNextEncoding(version, flags, expiry, -1, 123);
-			const ordinary = Buffer.from(encoder.encode('row'));
+			const ordinary = encodeRow();
 			assert.equal(ordinary.toString('hex'), golden);
 			assert.equal(encoder.decode(ordinary).replicaDeadline, undefined);
 		});
