@@ -665,6 +665,8 @@ async function abandonOrRelease(
 ): Promise<void> {
 	if (kept) {
 		try {
+			// a marker this attempt published and then failed to flush marks nothing, as in the release below
+			if (!destructionStarted && !lock.preexisting) clearRestoringMarker(lock);
 			// a pin minted for a backup that never touched the target protects nothing the rerun needs
 			if (!destructionStarted && pinId && receipt.source_pin_id === pinId) {
 				unpinBackup(request.backupDir, pinId);

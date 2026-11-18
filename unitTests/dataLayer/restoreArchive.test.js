@@ -52,6 +52,7 @@ const env = require('#src/utility/environment/environmentManager');
 const {
 	RESTORE_META_DIR,
 	acquireRestoreLock,
+	markRestoreDestructive,
 	releaseRestoreLock,
 	restoreMarkerPresent,
 	restoringMarkerPath,
@@ -764,6 +765,8 @@ describeUnlessLmdb('restore_backup from a get_backup archive', function () {
 				'runRestoreChild',
 				async (command, args, options) => {
 					if (command !== 'apply-and-prove') return runRestoreChild(command, args, options);
+					// the marker reaches the disk and its flush fails, so destruction is never announced
+					markRestoreDestructive({ dbPath: fixture.dir });
 					throw new Error('refused before the purge');
 				}
 			);
