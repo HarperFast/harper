@@ -14418,8 +14418,8 @@ export function makeTable(options): TableResourceClass {
 			!primaryStore.encoder.resolvedAttributeNames?.has(name)
 		);
 	}
-	/** A refusal the search can make without the vectors is made before any model call, so it costs none. */
-	function embedSortTexts(sort: any, context: any, conditions: unknown): SortEmbedding | undefined {
+	/** The descriptor and full-text refusals come before any model call, so they cost none. */
+	function embedSortTexts(sort: any, context: any, conditions: any): SortEmbedding | undefined {
 		let textsByAttribute: Map<string, { attribute: any; orders: any[] }> | undefined;
 		for (let order = sort; order; order = order.next) {
 			if (order.text === undefined) continue;
@@ -14445,10 +14445,15 @@ export function makeTable(options): TableResourceClass {
 		}
 		if (!textsByAttribute) return;
 		// a one-shot conditions iterator is left for the search to read
+		const conditionList = Array.isArray(conditions)
+			? conditions
+			: conditions && typeof conditions === 'object' && !conditions[Symbol.iterator]
+				? [conditions]
+				: undefined;
 		if (
-			Array.isArray(conditions) &&
+			conditionList &&
 			TableResource.fullTextIndexes.length > 0 &&
-			conditionsContainFullText(conditions, TableResource.fullTextIndexes)
+			conditionsContainFullText(conditionList, TableResource.fullTextIndexes)
 		)
 			throw new ClientError('Full-text results can only use descending $score order', 400);
 		const controller = new AbortController();

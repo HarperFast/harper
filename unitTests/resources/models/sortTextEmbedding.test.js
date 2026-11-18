@@ -266,14 +266,12 @@ describe('Vector search by sort text on an @embed attribute', () => {
 				],
 				fullTextIndexes: [{ name: 'search', fields: [{ name: 'title', weight: 1 }], analyzer: 'english@2' }],
 			});
-			assert.throws(
-				() =>
-					Article.search({
-						conditions: [{ attribute: 'search', comparator: 'matches', value: 'fruit' }],
-						sort: { attribute: 'embedding', text: 'red fruit' },
-					}),
-				(error) => error.statusCode === 400 && /descending \$score order/.test(error.message)
-			);
+			const fullText = { attribute: 'search', comparator: 'matches', value: 'fruit' };
+			for (const conditions of [[fullText], fullText])
+				assert.throws(
+					() => Article.search({ conditions, sort: { attribute: 'embedding', text: 'red fruit' } }),
+					(error) => error.statusCode === 400 && /descending \$score order/.test(error.message)
+				);
 			assert.equal(embed.calls.length, 0);
 		});
 
