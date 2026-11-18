@@ -5,10 +5,15 @@ const { table, database, databases } = require('#src/resources/databases');
 const { replayLogs } = require('#src/resources/replayLogs');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
-const { FULL_WRITE_HEAD, fullWriteHeadKey } = require('#src/resources/Table');
+const { FULL_WRITE_HEAD, fullWriteHeadKey, INVALIDATED } = require('#src/resources/Table');
+const { VERSION_REUSED, recordUpdater } = require('#src/resources/RecordEncoder');
 const { raiseAuditFloor, getAuditFloor, COPIED_RECORD } = require('#src/resources/auditStore');
 const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
 const { server } = require('#src/server/Server');
+const { createBlob, getFilePathForBlob, setDeletionDelay } = require('#src/resources/blob');
+const { existsSync } = require('node:fs');
+const { randomBytes } = require('node:crypto');
+const { waitFor } = require('../waitFor');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 const DAY = 86400 * 1000;
@@ -419,6 +424,683 @@ describe('A record bit for a full-write head (harper#3532)', () => {
 			false,
 			'the fold changed the body at the head’s version'
 		);
+	});
+
+	describe('a base-copied delete (harper-pro#1331)', () => {
+		const copiedDelete = (Table, id, { version, nodeId = headOrigin, logKey = version }) =>
+			fromOrigin(
+				Table,
+				id,
+				(resource) => resource._writeDelete(id, { isNotification: true, isCopyApply: true, nodeId, version }),
+				{ version, logKey }
+			);
+		const copiedPut = (Table, id, record, { version, nodeId = headOrigin }) =>
+			fromOrigin(
+				Table,
+				id,
+				(resource) => resource._writeUpdate(id, record, true, { isCopyApply: true, nodeId, version }),
+				{ version }
+			);
+
+		it('stores a flagged tombstone at the delete’s version and origin, with no audit entry', async function () {
+			if (isLMDB) return this.skip();
+			const id = newId();
+			const version = Date.now() + DAY;
+			await copiedDelete(T, id, { version, logKey: version - 10 });
+			const entry = T.primaryStore.getEntry(id);
+			assert.equal(entry.value, null);
+			assert.equal(entry.version, version);
+			assert.equal(entry.nodeId, headOrigin);
+			assert.ok(entry.metadataFlags & FULL_WRITE_HEAD, 'a delete is a full write');
+			assert.equal(entry.additionalAuditRefs, undefined, 'no ref to a log entry this node does not hold');
+			assert.equal(T.auditStore.getSync(version - 10, T.tableId, id, headOrigin), undefined);
+			assert.equal(T.auditStore.getSync(version, T.tableId, id, headOrigin), undefined);
+		});
+
+		it('yields to a newer or equal head, and replaces an older row and its index entries', async function () {
+			if (isLMDB) return this.skip();
+			const Indexed = table({
+				table: 'CopiedDeleteIndexed',
+				database: 'fullWriteHeadCopiedDeleteIndexed',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'name', indexed: true },
+				],
+				audit: true,
+			});
+			const origin = getIdOfRemoteNode('full-write-head-a', Indexed.auditStore);
+			const version = Date.now() + DAY;
+			const byName = async (name) => {
+				const ids = [];
+				for await (const record of Indexed.search({ conditions: [{ attribute: 'name', value: name }] }))
+					ids.push(record.id);
+				return ids;
+			};
+			await apply(
+				Indexed,
+				'newer',
+				{ id: 'newer', name: 'newer' },
+				{ version: version + 1000, nodeId: origin, fullUpdate: true }
+			);
+			await apply(Indexed, 'equal', { id: 'equal', name: 'equal' }, { version, nodeId: origin, fullUpdate: true });
+			await apply(
+				Indexed,
+				'older',
+				{ id: 'older', name: 'older' },
+				{ version: version - 1000, nodeId: origin, fullUpdate: true }
+			);
+			for (const id of ['newer', 'equal', 'older']) await copiedDelete(Indexed, id, { version, nodeId: origin });
+			assert.equal(Indexed.primaryStore.getEntry('newer').value.name, 'newer');
+			assert.equal(Indexed.primaryStore.getEntry('equal').value.name, 'equal');
+			const older = Indexed.primaryStore.getEntry('older');
+			assert.equal(older.value, null);
+			assert.equal(older.version, version);
+			assert.deepEqual(await byName('older'), [], 'the replaced row leaves the index');
+			assert.deepEqual(await byName('newer'), ['newer']);
+		});
+
+		for (const late of ['put', 'patch', 'add'])
+			it(`beats an older ${late} with no audit lookup, though no entry records the delete`, async function () {
+				if (isLMDB) return this.skip();
+				const id = newId();
+				const version = Date.now() + DAY;
+				await copiedDelete(T, id, { version });
+				const record = {
+					put: { id, name: 'late', count: 1 },
+					patch: { name: 'late' },
+					add: { count: { __op__: 'add', value: 1 } },
+				}[late];
+				const counts = await lookupsDuring(T, () =>
+					apply(T, id, record, { version: version - 1000, nodeId: lateOrigin, fullUpdate: late === 'put' })
+				);
+				assert.equal(counts.lookups, 0);
+				const entry = T.primaryStore.getEntry(id);
+				assert.equal(entry.value, null, `the older ${late} must not recreate the row`);
+				assert.equal(entry.version, version);
+			});
+
+		it('beats an older write whatever the floor', async function () {
+			if (isLMDB) return this.skip();
+			const Floor = auditedTable();
+			const origin = getIdOfRemoteNode('full-write-head-a', Floor.auditStore);
+			const late = getIdOfRemoteNode('full-write-head-b', Floor.auditStore);
+			const now = Date.now();
+			await copiedDelete(Floor, 'copied', { version: now + 10 * DAY, nodeId: origin });
+			// its log key sits below the floor, so the floor shortcut cannot vouch for it
+			await apply(
+				Floor,
+				'audited',
+				{ id: 'audited', name: 'head' },
+				{ version: now, nodeId: origin, fullUpdate: true }
+			);
+			await fromOrigin(
+				Floor,
+				'audited',
+				(resource) => resource._writeDelete('audited', { version: now + 10 * DAY, nodeId: origin }),
+				{ version: now + 10 * DAY, logKey: now + DAY }
+			);
+			raiseAuditFloor(Floor.auditStore, now + 2 * DAY);
+			for (const id of ['copied', 'audited']) {
+				await apply(Floor, id, { name: 'late' }, { version: now + 5 * DAY, nodeId: late });
+				assert.equal(Floor.primaryStore.getEntry(id).value, null, `${id}: above the floor`);
+				await apply(Floor, id, { count: { __op__: 'add', value: 1 } }, { version: now - 30 * DAY, nodeId: late });
+				assert.equal(Floor.primaryStore.getEntry(id).value, null, `${id}: below the floor`);
+			}
+			Floor.auditStore.rootStore.removeSync(AUDIT_FLOOR_KEY);
+			await Floor.auditStore.remove(AUDIT_FLOOR_KEY);
+			assert.equal(getAuditFloor(Floor.auditStore), Infinity, 'premise: the floor reads as unknown');
+			for (const id of ['copied', 'audited']) {
+				await apply(Floor, id, { name: 'late' }, { version: now + 5 * DAY, nodeId: late });
+				assert.equal(Floor.primaryStore.getEntry(id).value, null, `${id}: unknown floor`);
+			}
+		});
+
+		it('leaves a publish-only head to the walk, so an older patch newer than the delete still applies', async function () {
+			if (isLMDB) return this.skip();
+			const id = newId();
+			const version = Date.now() + DAY;
+			await apply(T, id, { id, name: 'head' }, { version, fullUpdate: true });
+			await remove(T, id, { version: version + 1 });
+			await fromOrigin(
+				T,
+				id,
+				(resource) =>
+					resource._writePublish(
+						id,
+						{ message: 'hello' },
+						{ isNotification: true, nodeId: headOrigin, version: version + 3 }
+					),
+				{ version: version + 3 }
+			);
+			const head = T.primaryStore.getEntry(id);
+			assert.equal(head.value, null);
+			assert.equal(Boolean(head.metadataFlags & FULL_WRITE_HEAD), false, 'premise: a publish clears the bit');
+			await apply(T, id, { name: 'between' }, { version: version + 2, nodeId: lateOrigin });
+			assert.equal(T.primaryStore.getEntry(id).value?.name, 'between');
+		});
+
+		it('reclaims the replaced row’s blob files, as a copied put does', async function () {
+			if (isLMDB) return this.skip();
+			const Blobs = table({
+				table: 'CopiedDeleteBlobs',
+				database: 'fullWriteHeadCopiedDeleteBlobs',
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'payload' }],
+				audit: true,
+			});
+			const origin = getIdOfRemoteNode('full-write-head-a', Blobs.auditStore);
+			const version = Date.now() + DAY;
+			const blobPath = (id) => getFilePathForBlob(Blobs.primaryStore.getSync(id).payload);
+			for (const id of ['copied', 'deleted'])
+				await copiedPut(Blobs, id, { id, payload: createBlob(randomBytes(25000)) }, { version, nodeId: origin });
+			const paths = { copied: blobPath('copied'), deleted: blobPath('deleted') };
+			await waitFor(() => existsSync(paths.copied) && existsSync(paths.deleted), {
+				timeout: 5000,
+				message: 'premise: file-backed blobs',
+			});
+			setDeletionDelay(0);
+			try {
+				await copiedDelete(Blobs, 'copied', { version: version + 1, nodeId: origin });
+				await remove(Blobs, 'deleted', { version: version + 1, nodeId: origin });
+				await waitFor(() => !existsSync(paths.deleted) && !existsSync(paths.copied), {
+					timeout: 5000,
+					message: () =>
+						`reclaimed: audited delete ${!existsSync(paths.deleted)}, copied delete ${!existsSync(paths.copied)}`,
+				});
+			} finally {
+				setDeletionDelay(undefined);
+			}
+		});
+
+		describe('after a later write onto the tombstone (F-1243, harper#4245)', () => {
+			const publish = (Table, id, { version, nodeId = headOrigin }) =>
+				fromOrigin(
+					Table,
+					id,
+					(resource) => resource._writePublish(id, { message: 'hello' }, { isNotification: true, nodeId, version }),
+					{ version }
+				);
+			const older = {
+				put: (id) => ({ record: { id, extra: 'old' }, fullUpdate: true }),
+				patch: () => ({ record: { extra: 'old' }, fullUpdate: false }),
+				add: () => ({ record: { count: { __op__: 'add', value: 1 } }, fullUpdate: false }),
+			};
+
+			for (const late of Object.keys(older))
+				it(`an older ${late} loses after a newer patch recreated the row`, async function () {
+					if (isLMDB) return this.skip();
+					const id = newId();
+					const version = Date.now() + DAY;
+					await copiedDelete(T, id, { version });
+					await apply(T, id, { name: 'newer' }, { version: version + 2000 });
+					assert.deepEqual(
+						{ ...T.primaryStore.getEntry(id).value },
+						{ id, name: 'newer' },
+						'premise: patch onto nothing'
+					);
+					const { record, fullUpdate } = older[late](id);
+					await apply(T, id, record, { version: version - 1000, nodeId: lateOrigin, fullUpdate });
+					assert.deepEqual({ ...T.primaryStore.getEntry(id).value }, { id, name: 'newer' });
+				});
+
+			for (const late of Object.keys(older))
+				it(`an older ${late} loses after a publish onto the tombstone`, async function () {
+					if (isLMDB) return this.skip();
+					const id = newId();
+					const version = Date.now() + DAY;
+					await copiedDelete(T, id, { version });
+					await publish(T, id, { version: version + 3 });
+					const { record, fullUpdate } = older[late](id);
+					await apply(T, id, record, { version: version - 1000, nodeId: lateOrigin, fullUpdate });
+					assert.equal(T.primaryStore.getEntry(id).value, null, `the older ${late} must not recreate the row`);
+				});
+
+			it('an older patch loses after a publish and then a newer patch', async function () {
+				if (isLMDB) return this.skip();
+				const id = newId();
+				const version = Date.now() + DAY;
+				await copiedDelete(T, id, { version });
+				await publish(T, id, { version: version + 3 });
+				await apply(T, id, { name: 'newer' }, { version: version + 2000 });
+				await apply(T, id, { extra: 'old' }, { version: version - 1000, nodeId: lateOrigin });
+				assert.deepEqual({ ...T.primaryStore.getEntry(id).value }, { id, name: 'newer' });
+			});
+
+			it('a write newer than the delete but older than the head still merges', async function () {
+				if (isLMDB) return this.skip();
+				const patched = newId();
+				const put = newId();
+				const version = Date.now() + DAY;
+				for (const id of [patched, put]) {
+					await copiedDelete(T, id, { version });
+					await apply(T, id, { name: 'newer' }, { version: version + 2000 });
+				}
+				await apply(T, patched, { extra: 'between' }, { version: version + 1000, nodeId: lateOrigin });
+				assert.deepEqual(
+					{ ...T.primaryStore.getEntry(patched).value },
+					{ id: patched, name: 'newer', extra: 'between' }
+				);
+				await apply(
+					T,
+					put,
+					{ id: put, extra: 'between' },
+					{ version: version + 1000, nodeId: lateOrigin, fullUpdate: true }
+				);
+				assert.deepEqual({ ...T.primaryStore.getEntry(put).value }, { id: put, name: 'newer', extra: 'between' });
+			});
+
+			it('keeps the boundary through patches and publishes, and drops it at an audited put', async function () {
+				if (isLMDB) return this.skip();
+				const id = newId();
+				const version = Date.now() + DAY;
+				const boundary = () => T.primaryStore.getEntry(id).copiedDeleteBoundary;
+				await copiedDelete(T, id, { version });
+				assert.deepEqual(boundary(), { version, nodeId: headOrigin });
+				await publish(T, id, { version: version + 3 });
+				assert.deepEqual(boundary(), { version, nodeId: headOrigin }, 'after a publish');
+				await apply(T, id, { name: 'newer' }, { version: version + 2000 });
+				assert.deepEqual(boundary(), { version, nodeId: headOrigin }, 'after a patch');
+				await apply(T, id, { extra: 'between' }, { version: version + 1000, nodeId: lateOrigin });
+				assert.deepEqual(boundary(), { version, nodeId: headOrigin }, 'after an out-of-order merge');
+				await apply(T, id, { id, name: 'put' }, { version: version + 3000, fullUpdate: true });
+				assert.equal(boundary(), undefined, 'an audited put records its own entry');
+			});
+
+			it('loses below the audit floor too', async function () {
+				if (isLMDB) return this.skip();
+				const Floor = auditedTable();
+				const origin = getIdOfRemoteNode('full-write-head-a', Floor.auditStore);
+				const late = getIdOfRemoteNode('full-write-head-b', Floor.auditStore);
+				const now = Date.now();
+				await copiedDelete(Floor, 'copied', { version: now + 10 * DAY, nodeId: origin });
+				await apply(Floor, 'copied', { name: 'newer' }, { version: now + 11 * DAY, nodeId: origin });
+				raiseAuditFloor(Floor.auditStore, now + 2 * DAY);
+				await apply(Floor, 'copied', { count: { __op__: 'add', value: 1 } }, { version: now, nodeId: late });
+				assert.deepEqual({ ...Floor.primaryStore.getEntry('copied').value }, { id: 'copied', name: 'newer' });
+			});
+
+			it('orders an equal-version write from another origin by node name, as the source does', async function () {
+				if (isLMDB) return this.skip();
+				const id = newId();
+				const version = Date.now() + DAY;
+				const lowerName = getIdOfRemoteNode('full-write-head-0', T.auditStore);
+				await copiedDelete(T, id, { version });
+				await apply(T, id, { name: 'newer' }, { version: version + 2000 });
+				await apply(T, id, { extra: 'tie' }, { version, nodeId: lowerName });
+				assert.deepEqual({ ...T.primaryStore.getEntry(id).value }, { id, name: 'newer' });
+			});
+
+			it('keeps the boundary when out-of-order merges overflow the ref budget', async function () {
+				if (isLMDB) return this.skip();
+				const id = newId();
+				const version = Date.now() + DAY;
+				await copiedDelete(T, id, { version });
+				await apply(T, id, { name: 'newer' }, { version: version + 2000 });
+				for (let i = 1; i <= 30; i++)
+					await apply(T, id, { count: { __op__: 'add', value: 1 } }, { version: version + i, nodeId: lateOrigin });
+				const entry = T.primaryStore.getEntry(id);
+				assert.ok(entry.additionalAuditRefs.length < 30, 'premise: the encoder trimmed refs');
+				assert.deepEqual(entry.copiedDeleteBoundary, { version, nodeId: headOrigin });
+				await apply(T, id, { extra: 'old' }, { version: version - 1000, nodeId: lateOrigin });
+				assert.deepEqual({ ...T.primaryStore.getEntry(id).value }, { id, name: 'newer', count: 30 });
+			});
+
+			it('records a copied delete that arrives after a newer write, so older writes still lose', async function () {
+				if (isLMDB) return this.skip();
+				const id = newId();
+				const version = Date.now() + DAY;
+				await apply(T, id, { name: 'newer' }, { version: version + 2000 });
+				await copiedDelete(T, id, { version });
+				const head = T.primaryStore.getEntry(id);
+				assert.equal(head.version, version + 2000, 'the newer write keeps the row');
+				assert.equal(head.metadataFlags & VERSION_REUSED, 0, 'the unchanged value keeps its version');
+				assert.deepEqual(head.copiedDeleteBoundary, { version, nodeId: headOrigin });
+				await apply(T, id, { extra: 'old' }, { version: version - 1000, nodeId: lateOrigin });
+				await apply(T, id, { extra: 'between' }, { version: version + 1000, nodeId: lateOrigin });
+				assert.deepEqual({ ...T.primaryStore.getEntry(id).value }, { id, name: 'newer', extra: 'between' });
+			});
+
+			it('holds when an older publish moves the head below the delete', async function () {
+				if (isLMDB) return this.skip();
+				const id = newId();
+				const version = Date.now() + DAY;
+				await copiedDelete(T, id, { version });
+				await publish(T, id, { version: version - 2000 });
+				await apply(T, id, { extra: 'old' }, { version: version - 1000, nodeId: lateOrigin });
+				assert.equal(T.primaryStore.getEntry(id).value, null);
+			});
+
+			describe('an invalidation or relocation under a head the delete is above', () => {
+				const ELSEWHERE = 8;
+				const writes = {
+					'an invalidation': (id, { version, nodeId }) =>
+						fromOrigin(
+							T,
+							id,
+							(resource) =>
+								resource._writeInvalidate(id, { name: 'projected' }, { isNotification: true, nodeId, version }),
+							{ version }
+						),
+					'a relocation': (id, { version, nodeId }) =>
+						fromOrigin(
+							T,
+							id,
+							(resource) =>
+								resource._writeRelocate(id, { isNotification: true, nodeId, version, residencyId: ELSEWHERE }),
+							{ version }
+						),
+				};
+				before(() => T.dbisDB.putSync([Symbol.for('residency_by_id'), ELSEWHERE], ['full-write-head-elsewhere']));
+				async function tombstoneUnderPublish(version) {
+					const id = newId();
+					await copiedDelete(T, id, { version });
+					await publish(T, id, { version: version - 2000 });
+					return id;
+				}
+
+				for (const kind of Object.keys(writes)) {
+					it(`${kind} older than the delete loses, from an origin on either side of the delete's`, async function () {
+						if (isLMDB) return this.skip();
+						const version = Date.now() + DAY;
+						const lower = getIdOfRemoteNode('full-write-head-0', T.auditStore);
+						for (const late of [
+							{ version: version - 1000, nodeId: lateOrigin },
+							{ version: version - 1000, nodeId: lower },
+							{ version, nodeId: lower },
+						]) {
+							const id = await tombstoneUnderPublish(version);
+							await writes[kind](id, late);
+							const entry = T.primaryStore.getEntry(id);
+							const label = `${kind} at ${late.version - version} from ${late.nodeId}`;
+							assert.equal(entry.value, null, label);
+							assert.equal(entry.version, version - 2000, `${label} must leave the head`);
+							assert.equal(entry.metadataFlags & INVALIDATED, 0, label);
+							assert.deepEqual(entry.copiedDeleteBoundary, { version, nodeId: headOrigin }, label);
+						}
+					});
+
+					it(`${kind} the delete precedes lands and keeps the boundary`, async function () {
+						if (isLMDB) return this.skip();
+						const version = Date.now() + DAY;
+						const id = await tombstoneUnderPublish(version);
+						await writes[kind](id, { version, nodeId: lateOrigin });
+						const entry = T.primaryStore.getEntry(id);
+						assert.equal(entry.version, version);
+						assert.ok(entry.metadataFlags & INVALIDATED);
+						assert.deepEqual(entry.copiedDeleteBoundary, { version, nodeId: headOrigin });
+						await apply(T, id, { extra: 'old' }, { version: version - 1000, nodeId: lateOrigin });
+						assert.equal(T.primaryStore.getEntry(id).version, version, 'an older write still loses');
+					});
+				}
+			});
+
+			for (const kind of ['patch', 'add'])
+				it(`an older ${kind} loses on an invalidated head too`, async function () {
+					if (isLMDB) return this.skip();
+					const id = newId();
+					const version = Date.now() + DAY;
+					await copiedDelete(T, id, { version });
+					await apply(T, id, { name: 'newer' }, { version: version + 2000 });
+					await fromOrigin(
+						T,
+						id,
+						(resource) =>
+							resource._writeInvalidate(id, undefined, {
+								isNotification: true,
+								nodeId: headOrigin,
+								version: version + 3000,
+							}),
+						{ version: version + 3000 }
+					);
+					const stub = T.primaryStore.getEntry(id);
+					assert.ok(stub.metadataFlags & INVALIDATED, 'premise: an invalidated head');
+					assert.deepEqual(
+						stub.copiedDeleteBoundary,
+						{ version, nodeId: headOrigin },
+						'premise: it keeps the boundary'
+					);
+					const before = { ...stub.value };
+					await apply(T, id, kind === 'patch' ? { extra: 'old' } : { count: { __op__: 'add', value: 1 } }, {
+						version: version - 1000,
+						nodeId: lateOrigin,
+					});
+					assert.deepEqual(
+						{ ...T.primaryStore.getEntry(id).value },
+						before,
+						`the older ${kind} must not fold into the stub`
+					);
+				});
+
+			it('holds for an older write batched after a newer one in one transaction', async function () {
+				if (isLMDB) return this.skip();
+				const id = newId();
+				const version = Date.now() + DAY;
+				await copiedDelete(T, id, { version });
+				await fromOrigin(
+					T,
+					id,
+					async (resource) => {
+						resource._writeUpdate(id, { name: 'newer' }, false, {
+							isNotification: true,
+							nodeId: headOrigin,
+							version: version + 2000,
+						});
+						resource._writeUpdate(id, { extra: 'old' }, false, {
+							isNotification: true,
+							nodeId: lateOrigin,
+							version: version - 1000,
+						});
+					},
+					{ version: version + 2000 }
+				);
+				assert.deepEqual({ ...T.primaryStore.getEntry(id).value }, { id, name: 'newer' });
+				assert.deepEqual(T.primaryStore.getEntry(id).copiedDeleteBoundary, { version, nodeId: headOrigin });
+			});
+
+			it('keeps the boundary under an older publish when a lower delete arrives', async function () {
+				if (isLMDB) return this.skip();
+				const audited = newId();
+				const copied = newId();
+				const version = Date.now() + DAY;
+				for (const id of [audited, copied]) {
+					await copiedDelete(T, id, { version });
+					await publish(T, id, { version: version - 3000 });
+				}
+				await remove(T, audited, { version: version - 2000 });
+				await copiedDelete(T, copied, { version: version - 2000 });
+				for (const id of [audited, copied]) {
+					assert.deepEqual(T.primaryStore.getEntry(id).copiedDeleteBoundary, { version, nodeId: headOrigin }, id);
+					await apply(T, id, { extra: 'old' }, { version: version - 1000, nodeId: lateOrigin });
+					assert.equal(T.primaryStore.getEntry(id).value, null, `${id}: the stronger delete still holds`);
+				}
+			});
+
+			it('a lower delete loses after a newer write recreated the row and an older publish lowered its head', async function () {
+				if (isLMDB) return this.skip();
+				const audited = newId();
+				const copied = newId();
+				const version = Date.now() + DAY;
+				for (const id of [audited, copied]) {
+					await copiedDelete(T, id, { version });
+					await apply(T, id, { name: 'newer' }, { version: version + 2000 });
+					await publish(T, id, { version: version - 3000 });
+					const head = T.primaryStore.getEntry(id);
+					assert.equal(head.version, version - 3000, 'premise: the publish lowered the head');
+					assert.deepEqual({ ...head.value }, { id, name: 'newer' }, 'premise: and kept the body');
+				}
+				await remove(T, audited, { version: version - 2000, nodeId: lateOrigin });
+				await copiedDelete(T, copied, { version: version - 2000, nodeId: lateOrigin });
+				for (const id of [audited, copied]) {
+					assert.deepEqual({ ...T.primaryStore.getEntry(id).value }, { id, name: 'newer' }, id);
+					assert.deepEqual(T.primaryStore.getEntry(id).copiedDeleteBoundary, { version, nodeId: headOrigin }, id);
+				}
+			});
+
+			it('stamps an equal-version delete from an origin that orders after the stored one', async function () {
+				if (isLMDB) return this.skip();
+				const id = newId();
+				const version = Date.now() + DAY;
+				const lower = getIdOfRemoteNode('full-write-head-0', T.auditStore);
+				await apply(T, id, { name: 'newer' }, { version: version + 2000 });
+				await copiedDelete(T, id, { version, nodeId: lower });
+				await copiedDelete(T, id, { version, nodeId: lateOrigin });
+				assert.deepEqual(T.primaryStore.getEntry(id).copiedDeleteBoundary, { version, nodeId: lateOrigin });
+				await copiedDelete(T, id, { version, nodeId: lower });
+				assert.deepEqual(T.primaryStore.getEntry(id).copiedDeleteBoundary, { version, nodeId: lateOrigin });
+			});
+
+			it('a record-less write over a delete this node made keeps that delete as the boundary', async function () {
+				if (isLMDB) return this.skip();
+				const id = newId();
+				await T.put(id, { id, name: 'gone' });
+				await T.delete(id);
+				const version = T.primaryStore.getEntry(id).version;
+				await T.publish(id, { message: 'no record' });
+				const head = T.primaryStore.getEntry(id);
+				assert.equal(head.value, null);
+				assert.equal(head.metadataFlags & FULL_WRITE_HEAD, 0);
+				assert.deepEqual(head.copiedDeleteBoundary, { version, nodeId: 0 });
+				await T.publish(id, { message: 'again' });
+				assert.deepEqual(T.primaryStore.getEntry(id).copiedDeleteBoundary, { version, nodeId: 0 });
+				await apply(T, id, { name: 'older' }, { version: version - 1000, fullUpdate: true });
+				assert.equal(T.primaryStore.getEntry(id).value, null, 'a write the delete precedes loses');
+			});
+
+			it('an invalidation over a delete this node made keeps that delete as the boundary', async function () {
+				if (isLMDB) return this.skip();
+				const id = newId();
+				await T.put(id, { id, name: 'gone' });
+				await T.delete(id);
+				const version = T.primaryStore.getEntry(id).version;
+				await T.invalidate(id);
+				assert.deepEqual(T.primaryStore.getEntry(id).copiedDeleteBoundary, { version, nodeId: 0 });
+			});
+
+			it('a record-less write over a delete keeps that delete, not an older copied one stamped on it', async function () {
+				if (isLMDB) return this.skip();
+				const id = newId();
+				const version = Date.now() + DAY;
+				await apply(T, id, { name: 'alive' }, { version: version - 5000 });
+				await remove(T, id, { version: version + 2000 });
+				await copiedDelete(T, id, { version });
+				assert.deepEqual(T.primaryStore.getEntry(id).copiedDeleteBoundary, { version, nodeId: headOrigin }, 'premise');
+				await publish(T, id, { version: version - 500 });
+				assert.deepEqual(T.primaryStore.getEntry(id).copiedDeleteBoundary, {
+					version: version + 2000,
+					nodeId: headOrigin,
+				});
+				await apply(T, id, { name: 'between' }, { version: version + 1000, nodeId: lateOrigin });
+				assert.equal(T.primaryStore.getEntry(id).value, null, 'a write the newer delete precedes still loses');
+			});
+
+			it('a copied put over a delete keeps that delete, not an older copied one stamped on it', async function () {
+				if (isLMDB) return this.skip();
+				const stamped = newId();
+				const plain = newId();
+				const version = Date.now() + DAY;
+				for (const id of [stamped, plain]) {
+					await apply(T, id, { name: 'alive' }, { version: version - 5000 });
+					await remove(T, id, { version: version + 2000 });
+				}
+				await copiedDelete(T, stamped, { version });
+				for (const id of [stamped, plain]) {
+					await copiedPut(T, id, { id, name: 'copied' }, { version: version + 3000 });
+					assert.deepEqual(T.primaryStore.getEntry(id).copiedDeleteBoundary, {
+						version: version + 2000,
+						nodeId: headOrigin,
+					});
+					await apply(T, id, { extra: 'between' }, { version: version + 1000, nodeId: lateOrigin });
+					assert.deepEqual({ ...T.primaryStore.getEntry(id).value }, { id, name: 'copied' }, 'the delete precedes it');
+				}
+			});
+
+			it('carries the boundary through a direct update that passes no metadata flags', async function () {
+				if (isLMDB) return this.skip();
+				const id = newId();
+				const version = Date.now() + DAY;
+				await copiedDelete(T, id, { version });
+				await apply(T, id, { name: 'newer' }, { version: version + 2000 });
+				const head = T.primaryStore.getEntry(id);
+				recordUpdater(T.primaryStore, T.tableId, T.auditStore)(
+					id,
+					{ id, name: 'direct' },
+					head,
+					version + 3000,
+					undefined,
+					false,
+					{
+						nodeId: headOrigin,
+					}
+				);
+				await T.primaryStore.committed;
+				const entry = T.primaryStore.getEntry(id);
+				assert.equal(entry.value.name, 'direct');
+				assert.equal(entry.nodeId, headOrigin);
+				assert.deepEqual(entry.copiedDeleteBoundary, { version, nodeId: headOrigin });
+			});
+
+			it('a relocation over a delete this node made keeps that delete as the boundary', async function () {
+				if (isLMDB) return this.skip();
+				const id = newId();
+				await T.put(id, { id, name: 'gone' });
+				await T.delete(id);
+				const version = T.primaryStore.getEntry(id).version;
+				T.dbisDB.putSync([Symbol.for('residency_by_id'), 8], ['full-write-head-elsewhere']);
+				const context = {};
+				await transaction(context, async () =>
+					(await T.getResource(id, context, { ensureLoaded: false }))._writeRelocate(id, { residencyId: 8 })
+				);
+				const head = T.primaryStore.getEntry(id);
+				assert.ok(head.metadataFlags & INVALIDATED, 'premise: relocated away');
+				assert.deepEqual(head.copiedDeleteBoundary, { version, nodeId: 0 });
+			});
+
+			it('a publish over a head that is not a delete adds no boundary', async function () {
+				if (isLMDB) return this.skip();
+				const id = newId();
+				await T.put(id, { id, name: 'alive' });
+				await T.publish(id, { message: 'no record' });
+				assert.equal(T.primaryStore.getEntry(id).copiedDeleteBoundary, undefined);
+			});
+
+			it('holds across writes in one transaction', async function () {
+				if (isLMDB) return this.skip();
+				const id = newId();
+				const version = Date.now() + DAY;
+				await copiedDelete(T, id, { version });
+				await fromOrigin(
+					T,
+					id,
+					async (resource) => {
+						resource._writeUpdate(id, { name: 'newer' }, false, {
+							isNotification: true,
+							nodeId: headOrigin,
+							version: version + 2000,
+						});
+						resource._writeUpdate(id, { count: 2 }, false, {
+							isNotification: true,
+							nodeId: headOrigin,
+							version: version + 2000,
+						});
+					},
+					{ version: version + 2000 }
+				);
+				assert.deepEqual(T.primaryStore.getEntry(id).copiedDeleteBoundary, { version, nodeId: headOrigin });
+				await apply(T, id, { extra: 'old' }, { version: version - 1000, nodeId: lateOrigin });
+				assert.deepEqual({ ...T.primaryStore.getEntry(id).value }, { id, name: 'newer', count: 2 });
+			});
+
+			it('a put onto the row ends the boundary: older writes lose to it through the walk', async function () {
+				if (isLMDB) return this.skip();
+				const id = newId();
+				const version = Date.now() + DAY;
+				await copiedDelete(T, id, { version });
+				await apply(T, id, { name: 'newer' }, { version: version + 2000 });
+				await apply(T, id, { id, name: 'put' }, { version: version + 3000, fullUpdate: true });
+				await apply(T, id, { extra: 'old' }, { version: version - 1000, nodeId: lateOrigin });
+				await apply(T, id, { extra: 'between' }, { version: version + 2500, nodeId: lateOrigin });
+				assert.deepEqual({ ...T.primaryStore.getEntry(id).value }, { id, name: 'put' });
+			});
+		});
 	});
 
 	it('keeps the walk when the head’s own log entry is older than the floor, or the floor is unknown', async function () {

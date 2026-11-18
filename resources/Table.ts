@@ -2709,7 +2709,12 @@ export function makeTable(options): TableResourceClass {
 			transaction.getReadTxn();
 			return undefined;
 		}
-		return primaryStore.getEntry(id, { transaction: transaction.getReadTxn() });
+		const readTxn = transaction.getReadTxn();
+		// on RocksDB only a copy-apply row reaches here
+		return primaryStore.getEntry(
+			id,
+			isRocksDB ? { transaction: readTxn, uncachedRead: true } : { transaction: readTxn }
+		);
 	}
 	// Table-scoped, not nested in getNewId(): a nested declaration is instantiated on every call.
 	function replaceIdAllocation(expectedAllocation, nextAllocation) {
@@ -5537,6 +5542,10 @@ export function makeTable(options): TableResourceClass {
 					write.skipped = false; // reset on each retry; cleanup happens after commit if still true
 					write.stagedEntry = undefined;
 					write.superseded = false;
+					if (precedesDeleteBoundary(txnTime, existingEntry, options?.nodeId)) {
+						write.skipped = true;
+						return;
+					}
 					const priorStagedOp = priorStagedWrite(write);
 					const existingRecord = priorStagedOp ? priorStagedOp.stagedEntry.value : existingEntry?.value;
 					const receivedIdentityRefs =
@@ -5709,6 +5718,7 @@ export function makeTable(options): TableResourceClass {
 					const precedesExisting = precedesExistingVersion(txnTime, existingEntry, options?.nodeId);
 					if (
 						precedesExisting < 0 ||
+						precedesDeleteBoundary(txnTime, existingEntry, options?.nodeId) ||
 						// a re-delivered relocate would restamp the committed head, which can be another write of its transaction
 						(precedesExisting === 0 &&
 							committedBy?.sourceApply &&
@@ -5842,7 +5852,7 @@ export function makeTable(options): TableResourceClass {
 			let committed = false;
 			try {
 				if ((hasSourceGet || audit) && !existingRecord) return;
-				entry = primaryStore.getEntry(id, options);
+				entry = primaryStore.getEntry(id, lmdbTransaction ? options : { transaction, uncachedRead: true });
 				if (!entry || entry.version !== existingVersion) return;
 				if (hasSourceGet) {
 					// if there is a resolution in-progress, abandon the eviction
@@ -6838,7 +6848,7 @@ export function makeTable(options): TableResourceClass {
 				updateOptions: options,
 				pendingChanges: recordUpdate,
 				chainsStagedState: true,
-				// copy-apply rows keep their pre-read base: one read per row, healed by the post-copy replay
+				// copy-apply rows keep their (uncached) pre-read base: one read per row, healed by the post-copy replay
 				reloadCommitBase: reloadsCommitBase,
 				deferSave: true,
 				// the origin's record version on an applied write; absent for a locally-originated one
@@ -7111,6 +7121,12 @@ export function makeTable(options): TableResourceClass {
 						}
 					}
 
+					// Whatever the head's residency: unlike a null stub, the boundary is a delete, and a write it precedes
+					// would otherwise fold into a stub.
+					if (precedesDeleteBoundary(txnTime, existingEntry, options?.nodeId)) {
+						write.skipped = true;
+						return;
+					}
 					if (
 						precedesExisting <= 0 &&
 						!(isCopyApply && precedesExisting === 0 && fullUpdate && needsOwnerBody(id, existingEntry))
@@ -7132,6 +7148,11 @@ export function makeTable(options): TableResourceClass {
 							// entry is retained and this write is above the floor; otherwise that reconciliation decides.
 							const headKey = fullWriteHeadKey(existingEntry.metadataFlags, existingEntry);
 							if (headKey !== undefined) {
+								// A delete supersedes every older write; a base-copied one has no audit entry for the walk to reach.
+								if (existingEntry.value == null && !(existingEntry.metadataFlags & (INVALIDATED | REPLICA))) {
+									write.skipped = true;
+									return;
+								}
 								auditFloor = getAuditFloor(auditStore);
 								if (Number.isFinite(auditFloor) && txnTime >= auditFloor && headKey >= auditFloor) {
 									write.skipped = true;
@@ -8244,6 +8265,7 @@ export function makeTable(options): TableResourceClass {
 								// local-only marks the record so the replication send path skips it (see LOCAL_ONLY)
 								localOnly: options?.localOnly,
 								copyFrame: options?.copyFrame,
+								copyApply: isCopyApply,
 							},
 							type,
 							false,
@@ -8490,6 +8512,7 @@ export function makeTable(options): TableResourceClass {
 			checkValidId(id);
 			const entry = entryBeforeWrite(this.#entry, id, transaction, true);
 			const baseReadTxn = this.#commitBaseTxn(id);
+			const isCopyApply = isRocksDB && options?.isCopyApply === true;
 
 			const write: any = {
 				key: id,
@@ -8530,7 +8553,25 @@ export function makeTable(options): TableResourceClass {
 					// compares as a tie (0), not < 0 — so a negative result always means a genuinely newer
 					// write (a concurrent transaction observed on a retry round, or an out-of-order delivery)
 					// that a chained delete must not destroy.
-					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) < 0) {
+					const precedesExisting = precedesExistingVersion(txnTime, existingEntry, options?.nodeId);
+					if (
+						precedesExisting < 0 ||
+						(isCopyApply && precedesExisting === 0) ||
+						precedesDeleteBoundary(txnTime, existingEntry, options?.nodeId)
+					) {
+						if (
+							isCopyApply &&
+							audit &&
+							precedesExisting < 0 &&
+							!priorStaged &&
+							outranksBoundary(txnTime, options?.nodeId, existingEntry.copiedDeleteBoundary)
+						)
+							stampCopiedDeleteBoundary(
+								id,
+								existingEntry,
+								{ version: txnTime, nodeId: options?.nodeId ?? 0 },
+								transaction
+							);
 						write.skipped = true;
 						return;
 					}
@@ -8554,7 +8595,7 @@ export function makeTable(options): TableResourceClass {
 					}
 					const stagedRemoval = {
 						value: undefined,
-						localTime: txnLogKey,
+						localTime: isCopyApply ? txnTime : txnLogKey,
 						nodeId: options?.nodeId,
 						metadataFlags: options?.localOnly ? LOCAL_ONLY : 0,
 						residencySlot,
@@ -8583,7 +8624,7 @@ export function makeTable(options): TableResourceClass {
 							existingEntry,
 							txnTime,
 							isRocksDB && audit ? FULL_WRITE_HEAD : 0,
-							audit,
+							isCopyApply ? false : audit,
 							{
 								user: (context as any)?.user,
 								residencySlot,
@@ -8591,13 +8632,19 @@ export function makeTable(options): TableResourceClass {
 								viaNodeId: options?.viaNodeId,
 								transaction,
 								write,
-								tableToTrack: tableName,
+								tableToTrack: isCopyApply ? null : tableName,
 								recordVersion: txnTime,
 								additionalAuditRefs:
-									isRocksDB && audit && txnLogKey !== txnTime
+									isRocksDB && audit && !isCopyApply && txnLogKey !== txnTime
 										? [{ version: txnLogKey, nodeId: options?.nodeId }]
 										: undefined,
 								localOnly: options?.localOnly,
+								copiedDeleteBoundary:
+									isCopyApply && audit
+										? outranksBoundary(txnTime, options?.nodeId, existingEntry?.copiedDeleteBoundary)
+											? { version: txnTime, nodeId: options?.nodeId ?? 0 }
+											: existingEntry.copiedDeleteBoundary
+										: undefined,
 							},
 							'delete'
 						);
@@ -13456,13 +13503,15 @@ export function makeTable(options): TableResourceClass {
 			!resourceOptions?.ensureLoaded &&
 			readTxn &&
 			!(readTxn as any).snapshotDisabled;
+		// a copy row writes from this load without reloading it, so not from another worker's cached copy
+		const readsCopyBase = isRocksDB && resourceOptions?.isCopyApply === true;
 		return loadLocalRecord(
 			id,
 			request,
 			{
 				transaction: readTxn,
 				ensureLoaded: resourceOptions?.ensureLoaded,
-				uncachedRead: readsCommitBase || undefined,
+				uncachedRead: readsCommitBase || readsCopyBase || undefined,
 			},
 			sync,
 			(entry) => {
@@ -15159,6 +15208,7 @@ export function makeTable(options): TableResourceClass {
 					store: primaryStore,
 					requiresExclusiveCommit: Boolean(residencyPolicy) || isResidencyMapTable,
 					entry: undefined,
+					reloadCommitBase: true,
 					nodeName: 'source',
 					commit: (_txnTime, existingEntry, _retry, transaction: any) => {
 						sourceWrite.skipped = false; // reset on each retry; cleanup happens after commit if still true
@@ -16035,7 +16085,7 @@ export function makeTable(options): TableResourceClass {
 		const options = { transaction };
 		let committed = false;
 		try {
-			const current: Entry = primaryStore.getEntry(id, options);
+			const current: Entry = primaryStore.getEntry(id, { transaction, uncachedRead: true });
 			if (
 				!(residencyPolicy ? current : current?.residencyId) ||
 				!(current.metadataFlags & INVALIDATED) ||
@@ -16212,6 +16262,44 @@ export function makeTable(options): TableResourceClass {
 			},
 			'put',
 			true // on LMDB, keeps the local time while its audit entry exists
+		);
+	}
+	function outranksBoundary(
+		version: number,
+		nodeId: number | undefined,
+		boundary?: { version: number; nodeId: number }
+	) {
+		return !boundary || precedesExistingVersion(version, boundary, nodeId) > 0;
+	}
+	// A write this precedes must store no record, whatever the head's order: an older publish can leave the head below it.
+	function precedesDeleteBoundary(version: number, entry: Entry | undefined, nodeId: number | undefined) {
+		const boundary = entry?.copiedDeleteBoundary;
+		return boundary !== undefined && precedesExistingVersion(version, boundary, nodeId) < 0;
+	}
+	function stampCopiedDeleteBoundary(
+		key: Id,
+		entry: Entry,
+		copiedDeleteBoundary: { version: number; nodeId: number },
+		transaction: any
+	) {
+		updateRecord(
+			key,
+			entry.value,
+			withoutBlobRelease(entry),
+			entry.version,
+			entry.metadataFlags & (INVALIDATED | REPLICA | EVICTED | LOCAL_ONLY | FULL_WRITE_HEAD),
+			false,
+			{
+				expiresAt: entry.expiresAt,
+				residencyId: entry.residencyId,
+				recordNodeId: entry.nodeId,
+				additionalAuditRefs: entry.additionalAuditRefs,
+				receivedIdentityRefs: entry.receivedIdentityRefs,
+				copiedDeleteBoundary,
+				unchangedValue: true,
+				transaction,
+			},
+			'put'
 		);
 	}
 	function withoutBlobRelease(entry: Entry): Entry {
