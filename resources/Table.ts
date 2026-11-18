@@ -821,6 +821,17 @@ export function setMinReplicaScanIntervalForTesting(ms: number | undefined) {
 	minReplicaScanIntervalMs = ms ?? MIN_REPLICA_SCAN_INTERVAL_MS;
 }
 type ReplicaStats = { count: number; sizeEstimate: number };
+function tallyReplica(tally: { count: number; sampleBytes: number }, entry: Entry) {
+	if (++tally.count > REPLICA_SIZE_SAMPLE) return;
+	tally.sampleBytes += entry.size ?? 0;
+	if (entry.metadataFlags & HAS_BLOBS)
+		findBlobsInObject(entry.value, (blob) => {
+			tally.sampleBytes += blob.size || 0;
+		});
+}
+function estimatedReplicaBytes({ count, sampleBytes }: { count: number; sampleBytes: number }): number {
+	return count ? Math.round((sampleBytes * count) / Math.min(count, REPLICA_SIZE_SAMPLE)) : 0;
+}
 export function setReplicaReclaimLimitsForTesting(limits?: Partial<typeof REPLICA_RECLAIM_LIMITS>) {
 	replicaReclaimLimits = { ...REPLICA_RECLAIM_LIMITS, ...limits };
 }
@@ -1495,7 +1506,7 @@ interface TableResourceClass {
 		  }
 	>;
 	/**
-	 * Count primary rows flagged REPLICA on eligible indexed tables and estimate their size from up to 100 rows.
+	 * Read the last complete cleanup tally on eligible indexed tables, or scan primary flags for an exact count.
 	 */
 	getReplicaStats(options?: { exactCount?: boolean }): Promise<ReplicaStats | undefined>;
 	/**
@@ -2171,6 +2182,7 @@ export function makeTable(options): TableResourceClass {
 	// shared across this node's threads: [0] replica admissions, [1] whether the owner's sweep is armed;
 	// a store on any thread wakes the sweep when [1] is 0
 	let replicaSweepState: Int32Array | undefined;
+	let replicaStatsState: BigInt64Array | undefined;
 	let recordScanInterval = 0;
 	const replicaRefreshInFlight = new Set<Id>();
 	const replicaRefreshInFlightComposite = new Set<string>();
@@ -11988,28 +12000,24 @@ export function makeTable(options): TableResourceClass {
 				recordCount,
 			};
 		}
-		static async getReplicaStats(_options?: { exactCount?: boolean }): Promise<ReplicaStats | undefined> {
+		static async getReplicaStats({ exactCount = false } = {}): Promise<ReplicaStats | undefined> {
 			if (!replicaExpirationMs || !residencyPolicy || !hasSecondaryIndices()) return;
-			let count = 0;
+			if (!exactCount) {
+				const shared = sharedReplicaStats();
+				const count = Number(Atomics.load(shared, 0)) - 1;
+				if (count < 0) return; // no complete scan since startup
+				return { count, sizeEstimate: count ? Number(Atomics.load(shared, 1)) : 0 };
+			}
+			const tally = { count: 0, sampleBytes: 0 };
 			let walked = 0;
-			let sampledSize = 0;
 			for (const entry of primaryStore.getRange({ versions: true, lazy: true, snapshot: false })) {
-				if (entry.metadataFlags & REPLICA && ++count <= REPLICA_SIZE_SAMPLE) {
-					sampledSize += entry.size ?? 0;
-					if (entry.metadataFlags & HAS_BLOBS)
-						findBlobsInObject(entry.value, (blob) => {
-							sampledSize += blob.size || 0;
-						});
-				}
+				if (entry.metadataFlags & REPLICA) tallyReplica(tally, entry);
 				if (++walked % COUNT_YIELD_INTERVAL === 0) {
 					await rest();
 					if (disposed) return;
 				}
 			}
-			return {
-				count,
-				sizeEstimate: count ? Math.round((sampledSize * count) / Math.min(count, REPLICA_SIZE_SAMPLE)) : 0,
-			};
+			return { count: tally.count, sizeEstimate: estimatedReplicaBytes(tally) };
 		}
 		/**
 		 * When attributes have been changed, we update the accessors that are assigned to this table
@@ -15698,6 +15706,10 @@ export function makeTable(options): TableResourceClass {
 			let madeProgress = false;
 			const reclaiming = pressure > 1;
 			const resumeKey = reclaiming ? nextReplicaReclaimKey : undefined;
+			const tally =
+				sweepState && resumeKey === undefined && residencyPolicy && hasSecondaryIndices()
+					? { count: 0, sampleBytes: 0 }
+					: undefined;
 			let budgetReached = false;
 			let cutoff = replicaPressureCutoff(started, pressure);
 			const removeDeletedRecords = !audit || isRocksDB;
@@ -15748,8 +15760,16 @@ export function makeTable(options): TableResourceClass {
 						pressure > 1 &&
 						Date.now() - version >= minAgeMs &&
 						(replicaDeadline <= cutoff || replicaDeadline > Date.now() + replicaExpirationMs);
-					if (expired || reclaim) {
-						let demoted;
+					const evictForExpiry =
+						!expired &&
+						!reclaim &&
+						cleanupForExpiry &&
+						expiresAt != undefined &&
+						(hasSourceGet || !priority
+							? shouldEvict(expiresAt, version, metadataFlags, entry.value)
+							: expiresAt + evictionMs < Date.now());
+					let demoted;
+					if (expired || reclaim || evictForExpiry) {
 						try {
 							demoted = await TableResource.evict(key, undefined, version, replicaDeadline ?? null);
 						} catch (error) {
@@ -15767,8 +15787,10 @@ export function makeTable(options): TableResourceClass {
 								budgetReached = performance.now() >= budgetEnd;
 							}
 						}
-						continue;
 					}
+					if (tally && demoted !== true) tallyReplica(tally, entry);
+					if (walked % REPLICA_SWEEP_YIELD_EVERY === 0) await rest();
+					continue;
 				}
 				if (!cleanupForExpiry) {
 					if (walked % REPLICA_SWEEP_YIELD_EVERY === 0) await rest();
@@ -15811,6 +15833,21 @@ export function makeTable(options): TableResourceClass {
 				await rest();
 			}
 			if (reclaiming && !interrupted) nextReplicaReclaimKey = undefined;
+			await Promise.all(outstandingCleanupOperations.filter(Boolean));
+			if (batcher) await batcher.drain();
+			if (
+				tally &&
+				!interrupted &&
+				replicaEvictionArmed &&
+				!maintenanceClosed &&
+				!disposed &&
+				!isReadOnlyMode() &&
+				ownsCleanup()
+			) {
+				const shared = sharedReplicaStats();
+				Atomics.store(shared, 1, BigInt(estimatedReplicaBytes(tally)));
+				Atomics.store(shared, 0, BigInt(tally.count + 1)); // zero in a fresh buffer means unknown
+			}
 			if (
 				sweepState &&
 				resumeKey === undefined &&
@@ -15825,8 +15862,6 @@ export function makeTable(options): TableResourceClass {
 				standDownReplicaSweep();
 				if (Atomics.load(sweepState, 0) !== admissionsAtStart) armReplicaEviction();
 			}
-			await Promise.all(outstandingCleanupOperations.filter(Boolean));
-			if (batcher) await batcher.drain();
 			logger.debug?.(`Finished cleanup scan for ${tableName}, evicted ${count} entries`);
 		} catch (error) {
 			logger.warn?.(`Error in cleanup scan for ${tableName}:`, error);
@@ -16479,6 +16514,11 @@ export function makeTable(options): TableResourceClass {
 				retained.add(file);
 			releaseBlobs(retained);
 		};
+	}
+	function sharedReplicaStats(): BigInt64Array {
+		return (replicaStatsState ??= new BigInt64Array(
+			primaryStore.getUserSharedBuffer(`replica-stats:${tableId}`, new ArrayBuffer(16))
+		));
 	}
 	function replicaSweep(): Int32Array {
 		return (replicaSweepState ??= new Int32Array(

@@ -108,11 +108,11 @@ The response also includes the table's ordinary schema and storage metadata. The
 
 <VersionBadge version="v5.4.0" />
 
-An indexed RocksDB table whose sharding policy admits [local replicas](../database/schema.md#replicaexpiration-and-replicarefreshfraction) reports these fields, including a count of zero when it holds none. Counting walks every primary row on the node. Set `skip_record_count` to omit the record and replica counts and their scans.
+An indexed RocksDB table whose sharding policy admits [local replicas](../database/schema.md#replicaexpiration-and-replicarefreshfraction) reports the last completed cleanup pass’s tally. Until its first full pass after startup the node omits both fields. Later admissions and demotions can make the tally stale. Set `exact_count: true` to walk every primary row on this node and obtain the current count, including zero for an empty table. Set `skip_record_count` to omit the record and replica counts and their scans.
 
 | Field                   | Description                                                                                                                        |
 | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `replica_count`         | Exact number of primary rows carrying the replica flag on this node.                                                               |
+| `replica_count`         | Number of primary rows carrying the replica flag on this node, from the last complete cleanup pass or the requested exact scan.    |
 | `replica_size_estimate` | Average stored size of the first 100 replicas by key (or all replicas if fewer), including blobs, multiplied by the replica count. |
 
 See [Local replicas under storage pressure](../database/storage-tuning.md#local-replicas-under-storage-pressure).

@@ -604,14 +604,16 @@ async function reclaimAt(priority) {
 			return { replicas, owned };
 		}
 
-		it('counts flagged primary rows on eligible tables, including an empty table', async () => {
+		it('reports the last complete cleanup tally by default and scans primary flags for an exact count', async () => {
 			await loadGQLSchema(`type Described @table(database: "shardedReclamation", replicaExpiration: 3600)
 				@sharded(slots: 2) { id: Any @primaryKey tag: String @indexed body: String }`);
 			const Table = databases.shardedReclamation.Described;
 			const describeRows = (options) =>
 				describeTable({ database: Table.databaseName, table: Table.tableName, ...options });
-			assert.equal((await describeRows()).replica_count, 0);
+			assert.equal((await describeRows()).replica_count, undefined);
+			assert.equal((await describeRows({ exact_count: true })).replica_count, 0);
 			const { replicas, owned } = await writeRows(Table, 'stats');
+			await reclaimAt(1.01);
 			const stats = await describeRows();
 			assert.equal(stats.record_count, owned.length + replicas.length);
 			assert.equal(stats.replica_count, replicas.length);
@@ -623,7 +625,19 @@ async function reclaimAt(priority) {
 			assert.ok(lowKey);
 			await Table.put({ id: lowKey, tag: 'indexed', body: 'complete' });
 			assert.ok(flags(Table, lowKey) & REPLICA);
+			assert.equal((await describeRows()).replica_count, replicas.length);
+			assert.equal((await describeRows({ exact_count: true })).replica_count, replicas.length + 1);
+			limits({ batch: 1, checkEvery: 1, budgetMs: 0 });
+			await reclaimAt(1.01);
+			assert.equal((await describeRows()).replica_count, replicas.length, 'a partial scan cannot publish a tally');
+			limits();
+			await reclaimAt(1.01); // complete the suffix
+			await reclaimAt(1.01); // complete a full pass
 			assert.equal((await describeRows()).replica_count, replicas.length + 1);
+			setReplicaDeadline(Table, lowKey, Date.now() - 1);
+			await reclaimAt(1.01);
+			assert.equal((await describeRows()).replica_count, replicas.length, 'exclude a committed demotion');
+			assert.equal((await describeRows({ exact_count: true })).replica_count, replicas.length);
 			assert.equal((await describeRows({ skip_record_count: true })).replica_count, undefined);
 			await Table.clear();
 			assert.equal((await describeRows({ exact_count: true })).replica_count, 0);

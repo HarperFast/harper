@@ -93,12 +93,12 @@ suite('replicas under storage pressure', { skip: skipSuite }, (ctx: ContextWithH
 	async function stored(id: string) {
 		return (await client.reqRest(`/ReplicaFixture/?id=${id}`).expect(200)).body;
 	}
-	async function replicaCount() {
+	async function replicaCount(exact = true) {
 		const description = await client.req().send({
 			operation: 'describe_table',
 			database: 'replicareclamation',
 			table: 'Reclaimable',
-			exact_count: true,
+			exact_count: exact,
 		});
 		strictEqual(description.status, 200, description.text);
 		return description.body;
@@ -136,6 +136,7 @@ suite('replicas under storage pressure', { skip: skipSuite }, (ctx: ContextWithH
 		for (const id of replicaIds) deepStrictEqual(await stored(id), { name: 'indexed', body: null });
 		deepStrictEqual(await stored(ownedId), { name: 'indexed', body: 'mine' });
 		strictEqual((await replicaCount()).replica_size_estimate, 0);
+		await until(async () => (await replicaCount(false)).replica_count === 0);
 	});
 
 	test('a later read fetches a demoted record again, and it stays once the pressure is gone', async () => {

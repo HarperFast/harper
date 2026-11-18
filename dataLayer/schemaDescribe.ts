@@ -281,7 +281,7 @@ async function descTable(describeTableObject: any, attrPerms?: any) {
 			const recordCount = await tableObj.getRecordCount({ exactCount: !!describeTableObject.exact_count });
 			tableResult.record_count = recordCount.recordCount;
 			tableResult.estimated_record_range = recordCount.estimatedRange;
-			const replicas = await tableObj.getReplicaStats?.();
+			const replicas = await tableObj.getReplicaStats?.({ exactCount: !!describeTableObject.exact_count });
 			if (replicas) {
 				tableResult.replica_count = replicas.count;
 				tableResult.replica_size_estimate = replicas.sizeEstimate;

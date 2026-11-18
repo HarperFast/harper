@@ -143,18 +143,23 @@ async function handle({ command, table: name, key, options, deadline, expectRene
 				});
 			return snapshot(key);
 		case 'sweep-through-rescans': {
-			let rescans = 0;
+			const read = await handle({ command: 'read', key });
+			setReplicaDeadline(Records, key, Date.now() + 60_000);
+			// Exercise repeated rescans before making this row due, even if the parent worker is stalled.
+			await handle({ command: 'rescan' });
+			await handle({ command: 'rescan' });
+			assert.ok(snapshot(key).flags & REPLICA);
+			setReplicaDeadline(Records, key, Date.now() - 1);
 			await waitFor(
 				async () => {
 					await handle({ command: 'rescan' });
-					rescans++;
 					return !(Records.primaryStore.getEntry(key)?.metadataFlags & REPLICA);
 				},
 				{ timeout: 3500, interval: 50, message: 'unchanged rescans must not postpone the replica sweep' }
 			);
 			await waitFor(() => snapshot().armed === 0, { timeout: 2500, message: 'the empty sweep stands down' });
 			await handle({ command: 'rescan' });
-			return { ...snapshot(key), rescans };
+			return { ...snapshot(key), read };
 		}
 		case 'close':
 			await Records.closeMaintenance();
