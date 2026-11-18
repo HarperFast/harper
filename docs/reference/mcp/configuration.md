@@ -18,6 +18,8 @@ mcp:
 
 That boots both profiles with default settings: the operations profile mounts at `/mcp` on the operations server, the application profile mounts at `/mcp` on the application HTTP server, and the default allow lists / rate limits apply.
 
+A key Harper does not know under `mcp`, `mcp.operations`, `mcp.application`, their `rateLimit` or `mcp.session` fails validation, so a misspelled setting such as `authenticaton:` stops Harper from starting instead of being ignored. <VersionBadge type="changed" version="v5.4.2" /> Before v5.4.2 only `mcp.application.authentication` refused unknown keys.
+
 ## `mcp.operations.*`
 
 Configures the operations-profile MCP endpoint that wraps Harper's operation catalog.
@@ -178,7 +180,7 @@ Some clients, such as Claude's connectors, start their OAuth flow only after thi
 
 The metadata URL is [`resourceMetadata`](#mcpapplicationauthenticationresourcemetadata) when set. Otherwise it is the URL the registered [Bearer validators](../http/api.md#serverregisterbearervalidatorvalidator-options) declare with `challenge`, provided every validator that declares one names the same URL. With neither, the challenge is `Bearer realm="Harper"`, and Harper logs a warning once.
 
-A Bearer token that Harper or a validator rejects is answered with the same metadata URL and `error="invalid_token"`, whether or not this setting is on. Any Harper principal still authenticates: Basic credentials, Harper's own tokens, a session, a validator's token, or a connection trusted by [`authorizeLocal`](../security/configuration.md#authorizelocal). The value must be the boolean `true`; a quoted `"true"` fails validation.
+A Bearer token that Harper or a validator rejects is answered with `error="invalid_token"` and, when one is known, a metadata URL, whether or not this setting is on. <VersionBadge type="changed" version="v5.4.2" /> When a validator refused the token (it threw a credential rejection, the token it accepted has expired, or the user it named does not exist or is inactive), the URL is the one that validator declared, or none when it declared none, since another validator's authorization server did not issue the token. Otherwise it is the URL chosen as above. `resourceMetadata` still takes precedence. Any Harper principal still authenticates: Basic credentials, Harper's own tokens, a session, a validator's token, or a connection trusted by [`authorizeLocal`](../security/configuration.md#authorizelocal). The value must be the boolean `true`; a quoted `"true"` fails validation.
 
 The operations profile has no such setting, because Bearer validators do not run on the operations API.
 

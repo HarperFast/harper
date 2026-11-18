@@ -187,6 +187,22 @@ suite('MCP application profile: stateless across two nodes (#4346)', (ctx) => {
 		});
 		await response.text();
 		strictEqual(response.status, 401);
-		ok(response.headers.get('www-authenticate')?.includes('resource_metadata='));
+		strictEqual(
+			response.headers.get('www-authenticate'),
+			'Bearer resource_metadata="https://auth.example.test/.well-known/oauth-protected-resource/mcp"'
+		);
+	});
+
+	test('a token refused by a validator that declared no challenge names no metadata (#4352)', async () => {
+		const response = await post(
+			0,
+			{ jsonrpc: '2.0', id: 1, method: 'ping' },
+			{
+				Authorization: 'Bearer stateless-refused-by-undeclared',
+			}
+		);
+		await response.text();
+		strictEqual(response.status, 401);
+		strictEqual(response.headers.get('www-authenticate'), 'Bearer realm="Harper", error="invalid_token"');
 	});
 });
