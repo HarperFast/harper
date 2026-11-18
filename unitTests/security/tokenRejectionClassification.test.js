@@ -14,10 +14,12 @@ const env = require('#src/utility/environment/environmentManager');
 const { isCredentialRejection } = require('#src/security/deferredAuthentication');
 const {
 	clearJWTRSAKeysCache,
+	createTokens,
 	validateOperationToken,
 	validateRefreshToken,
 } = require('#src/security/tokenAuthentication');
 const { databases } = require('#src/resources/databases');
+const { runWithOperationAuthorizationBypass } = require('#src/server/serverHelpers/operationAuthorizationState');
 
 const KNOWN_USER = new Map([['known_user', { username: 'known_user', active: true, role: { permission: {} } }]]);
 
@@ -156,6 +158,15 @@ describe('token rejection versus internal authentication fault', () => {
 			const user = await validateOperationToken(valid);
 
 			assert.strictEqual(user.username, 'known_user');
+		});
+
+		it('rejects login-token issuance for a missing user in trusted dispatch', async () => {
+			await assert.rejects(
+				runWithOperationAuthorizationBypass(true, () =>
+					createTokens({ username: 'missing_login_user', purpose: 'login' })
+				),
+				{ statusCode: 401 }
+			);
 		});
 	});
 

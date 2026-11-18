@@ -1,8 +1,10 @@
 /**
- * The Operations API and MCP reject stored users' credentials after drop_user or deactivation.
+ * Exercises stored-user credential admission and auditing through real HTTP requests.
  * https://github.com/HarperFast/harper/issues/4124 and https://github.com/HarperFast/harper/issues/4040
  */
 import { ok, strictEqual } from 'node:assert';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { after, before, suite, test } from 'node:test';
 import { startHarper, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 import { waitFor } from '../../unitTests/waitFor.js';
@@ -27,6 +29,7 @@ suite('Stored user credential revocation', (ctx: ContextWithHarper) => {
 		await startHarper(ctx, {
 			config: {
 				authentication: { authorizeLocal: false },
+				logging: { auditAuthEvents: { logFailed: true } },
 				mcp: { application: { mountPath: '/mcp', authentication: { required: true } } },
 				threads: { count: 1 },
 			},
@@ -67,6 +70,13 @@ suite('Stored user credential revocation', (ctx: ContextWithHarper) => {
 		return body;
 	}
 
+	async function addUser(username: string) {
+		await expectStatus(
+			await operation({ operation: 'add_user', username, password, role: 'credential_test', active: true }, admin),
+			200
+		);
+	}
+
 	async function issueToken(fields: Record<string, unknown>) {
 		const body = await expectStatus(
 			await operation({ operation: 'create_authentication_tokens', expires_in: '10m', ...fields }, admin),
@@ -97,13 +107,7 @@ suite('Stored user credential revocation', (ctx: ContextWithHarper) => {
 				test(`${surface} rejects the ${credential} after ${change} its user`, async () => {
 					const isOperations = surface === 'Operations API';
 					const username = `${change}_${credential}_${isOperations ? 'ops' : 'mcp'}`;
-					await expectStatus(
-						await operation(
-							{ operation: 'add_user', username, password, role: 'credential_test', active: true },
-							admin
-						),
-						200
-					);
+					await addUser(username);
 					const headers =
 						credential === 'token'
 							? { Authorization: `Bearer ${await issueToken({ username, password })}` }
@@ -143,14 +147,37 @@ suite('Stored user credential revocation', (ctx: ContextWithHarper) => {
 
 	test('a login-purpose token for a dropped user cannot create a session', async () => {
 		const username = 'dropped_login_token';
-		await expectStatus(
-			await operation({ operation: 'add_user', username, password, role: 'credential_test', active: true }, admin),
-			200
-		);
+		await addUser(username);
 		const token = await issueToken({ username, password, purpose: 'login' });
 		await expectStatus(await operation({ operation: 'drop_user', username }, admin), 200);
 		const response = await operation({ operation: 'login', token }, { Origin: origin });
 		await expectStatus(response, 401);
 		strictEqual(response.headers.get('set-cookie'), null);
+	});
+
+	test('a rejected token request leaves the accompanying cookie out of the audit event', async () => {
+		await addUser('audit_cookie_user');
+		await addUser('audit_dropped_bearer');
+		const session = await issueCookie('audit_cookie_user');
+		const token = await issueToken({ username: 'audit_dropped_bearer', password });
+		await expectStatus(await operation({ operation: 'drop_user', username: 'audit_dropped_bearer' }, admin), 200);
+
+		const referer = `${origin}/credential-revocation-audit`;
+		await expectStatus(
+			await operation({ operation: 'user_info' }, { ...session, Authorization: `Bearer ${token}`, Referer: referer }),
+			401
+		);
+		const logPath = join(ctx.harper.logDir ?? join(ctx.harper.dataRootDir, 'log'), 'hdb.log');
+		const auditEvent = await waitFor(
+			async () => {
+				const log = await readFile(logPath, 'utf8');
+				return log
+					.split(/(?=^\d{4}-\d{2}-\d{2}T)/m)
+					.find((entry) => entry.includes('[auth-event]') && entry.includes(referer));
+			},
+			{ timeout: 5000, message: 'expected a failed authentication audit event' }
+		);
+		const sessionId = session.Cookie.slice(session.Cookie.indexOf('=') + 1);
+		ok(!auditEvent.includes(sessionId), 'authentication audit events must not contain a raw session ID');
 	});
 });

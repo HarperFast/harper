@@ -252,14 +252,14 @@ export async function authentication(request, nextHandler) {
 					const getUser = server.getUser;
 					mtlsUser = certificatePrincipal(await server.getUser(username, null, request), getUser);
 				} catch (error) {
-					if (LOG_AUTH_FAILED) authAuditLog(request, sessionId, username, AUTH_AUDIT_STATUS.FAILURE, 'mTLS');
+					if (LOG_AUTH_FAILED) authAuditLog(request, username, AUTH_AUDIT_STATUS.FAILURE, 'mTLS');
 					const failureResponse = settleAuthFailure(request, error, 'mTLS');
 					if (failureResponse) return applyResponseHeaders(request, failureResponse, responseHeaders, wasUnauthorized);
 					mtlsCredentialDeferred = true;
 				}
 				if (!mtlsCredentialDeferred) {
 					request.user = mtlsUser;
-					authAuditLog(request, sessionId, username, AUTH_AUDIT_STATUS.SUCCESS, 'mTLS');
+					authAuditLog(request, username, AUTH_AUDIT_STATUS.SUCCESS, 'mTLS');
 				}
 			} else {
 				debug('HTTPS/WSS mTLS authorized connection (mTLS did not authorize a user)', 'from', request.ip);
@@ -420,7 +420,7 @@ export async function authentication(request, nextHandler) {
 					if (LOG_AUTH_FAILED) {
 						if (!failedCredentials.has(authorization)) {
 							failedCredentials.add(authorization);
-							authAuditLog(request, sessionId, username, AUTH_AUDIT_STATUS.FAILURE, strategy);
+							authAuditLog(request, username, AUTH_AUDIT_STATUS.FAILURE, strategy);
 						}
 					}
 
@@ -435,7 +435,7 @@ export async function authentication(request, nextHandler) {
 						if (validatorEntry) validatorClaims.set(newUser, validatorEntry);
 					}
 					if (LOG_AUTH_SUCCESSFUL && newUser != null)
-						authAuditLog(request, sessionId, newUser.username, AUTH_AUDIT_STATUS.SUCCESS, strategy);
+						authAuditLog(request, newUser.username, AUTH_AUDIT_STATUS.SUCCESS, strategy);
 					// Clone so verifyPerms's `role.permission = fullRolePerms` reassignment
 					// doesn't mutate the just-stored cache entry (defense-in-depth).
 					if (newUser?.role) newUser = cloneUserView(newUser);
@@ -451,7 +451,7 @@ export async function authentication(request, nextHandler) {
 				}
 				request.user = user;
 			} catch (error) {
-				if (LOG_AUTH_FAILED) authAuditLog(request, sessionId, session.user, AUTH_AUDIT_STATUS.FAILURE, 'Session');
+				if (LOG_AUTH_FAILED) authAuditLog(request, session.user, AUTH_AUDIT_STATUS.FAILURE, 'Session');
 				const failureResponse = settleAuthFailure(request, error, 'Session');
 				if (failureResponse) return applyResponseHeaders(request, failureResponse, responseHeaders, wasUnauthorized);
 			}
@@ -552,7 +552,7 @@ function sessionCookiePrefix(origin: string | undefined): string {
 	return (origin ? origin.replace(/^https?:\/\//, '').replace(/\W/, '_') + '-' : '') + 'hdb-session=';
 }
 
-function authAuditLog(request, sessionId: string | undefined, username, status, strategy) {
+function authAuditLog(request, username, status, strategy) {
 	const headers = request.headers.asObject;
 	const log = new AuthAuditLog(
 		username,
@@ -563,7 +563,6 @@ function authAuditLog(request, sessionId: string | undefined, username, status, 
 		request.pathname
 	);
 	(log as any).auth_strategy = strategy;
-	if (sessionId) (log as any).session_id = sessionId;
 	if (headers['referer']) (log as any).referer = headers['referer'];
 	if (headers['origin']) (log as any).origin = headers['origin'];
 

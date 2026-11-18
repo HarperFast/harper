@@ -349,7 +349,7 @@ describe('test createTokens', () => {
 	let update_stub;
 	beforeEach(() => {
 		validate_user_stub = sandbox.stub(user, 'findAndValidateUser').callsFake(async (u, _pw) => {
-			return { username: u, role: { permission: { super_user: true } } };
+			return { username: u, active: true, role: { permission: { super_user: true } } };
 		});
 		update_stub = sandbox.stub(insert, 'update').callsFake(async (_update_object) => {
 			return { message: 'updated 1 of 1', update_hashes: ['1'], skipped_hashes: [] };
@@ -962,7 +962,9 @@ describe('test validateLoginToken function', () => {
 		let update_stub = sandbox.stub(insert, 'update').callsFake(async (_update_object) => {
 			return { message: 'updated 1 of 1', update_hashes: ['1'], skipped_hashes: [] };
 		});
-		validate_user_stub = sandbox.stub(user, 'findAndValidateUser').callsFake(async (u, _pw) => ({ username: u }));
+		validate_user_stub = sandbox
+			.stub(user, 'findAndValidateUser')
+			.callsFake(async (u, _pw) => ({ username: u, active: true }));
 
 		await testUtils.seedUsers(
 			new Map([
