@@ -8,7 +8,7 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync } from 'node:fs';
 import { readdir, readFile } from 'node:fs/promises';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve, sep } from 'node:path';
 import { threadId } from 'node:worker_threads';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import { HTTP_STATUS_CODES } from '../utility/errors/commonErrors.ts';
@@ -131,8 +131,29 @@ function deviceOf(path: string): number {
 	return statSync(existsSync(path) ? path : nearestExistingAncestor(path)).dev;
 }
 
-/** Creates every part empty; refuses, naming both paths, a part not on its destination's filesystem. */
+/**
+ * The swap moves each destination aside and renames its staged part into place, so a destination at or
+ * inside another would carry the other's newly installed part away after destruction had begun.
+ */
+function assertDestinationsApart(destinations: string[]): void {
+	const paths = destinations.map((path) => resolve(path));
+	for (const [index, path] of paths.entries()) {
+		const other = paths.find(
+			(candidate, at) => at !== index && (candidate === path ? at > index : candidate.startsWith(path + sep))
+		);
+		if (other === undefined) continue;
+		throw new ClientError(
+			`Cannot restore an archive while ${other} is ${other === path ? 'also' : 'inside'} ${path}: the restore installs the database directory and each blob path by renaming it, so each must be a directory of its own (storage.path, storage.blobPaths)`
+		);
+	}
+}
+
+/**
+ * Creates every part empty; refuses, naming both paths, a part not on its destination's filesystem, and
+ * destinations that overlap.
+ */
 export function createStagingAreas(plan: StagingPlan): void {
+	assertDestinationsApart(plan.parts.map((part) => part.destination));
 	for (const part of plan.parts) {
 		mkdirSync(part.staged, { recursive: true, mode: 0o700 });
 		mkdirSync(dirname(part.previous), { recursive: true, mode: 0o700 });
@@ -420,6 +441,7 @@ export function verifyStagedSwap(record: StagedRecord, databaseDir: string, blob
 			409
 		);
 	}
+	assertDestinationsApart(expected);
 	for (const part of record.parts) partAction(part);
 }
 

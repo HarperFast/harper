@@ -194,6 +194,41 @@ describe('archive staging', function () {
 			assert.strictEqual(readFileSync(join(databaseDir, 'content'), 'utf8'), 'live', 'nothing was touched');
 		});
 
+		it('refuses, before creating anything, a blob path at or inside the database directory, or holding it', function () {
+			const dir = join(root, 'database', 'orders');
+			for (const [roots, relation] of [
+				[[dir], 'also'],
+				[[join(dir, 'blobs', 'orders')], 'inside'],
+				[[join(root, 'blobs', 'orders'), join(root, 'blobs', 'orders')], 'also'],
+			]) {
+				const plan = planStaging(dir, roots, mintStagingId());
+				assert.throws(
+					() => createStagingAreas(plan),
+					(error) =>
+						error.statusCode === 400 &&
+						error.message.includes(` is ${relation} `) &&
+						/storage\.blobPaths/.test(error.message)
+				);
+				assert.strictEqual(existsSync(plan.stagingDir), false);
+			}
+			// the database directory inside a blob path
+			const nested = planStaging(join(root, 'blobs', 'orders', 'db'), [join(root, 'blobs', 'orders')], mintStagingId());
+			assert.throws(() => createStagingAreas(nested), / is inside /);
+			// a sibling whose name only starts with the other's is apart
+			createStagingAreas(planStaging(dir, [`${dir}-blobs`], mintStagingId()));
+
+			stage();
+			assert.throws(
+				() =>
+					verifyStagedSwap(
+						{ ...record, parts: record.parts.map((part) => ({ ...part, destination: databaseDir })) },
+						databaseDir,
+						[databaseDir, databaseDir]
+					),
+				/ is also /
+			);
+		});
+
 		it('names every area of a receipt, the one holding its record last', function () {
 			const plan = stage();
 			const areas = stagedAreasOfReceipt({
