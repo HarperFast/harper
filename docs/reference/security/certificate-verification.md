@@ -13,7 +13,7 @@ sidebar_label: 'Certificate Verification'
 
 <VersionBadge type="changed" version="v4.7.0" /> (OCSP support added)
 
-Certificate verification (also called certificate revocation checking) ensures that revoked certificates cannot be used for mTLS authentication, even if they are otherwise valid and trusted. This is a critical security control for environments where certificates may need to be revoked before their expiration date — due to compromise, employee departure, or other security concerns.
+Certificate verification (also called certificate revocation checking) ensures that revoked certificates cannot be used to authenticate new mTLS connections or HTTP requests, even if they are otherwise valid and trusted. This is a critical security control for environments where certificates may need to be revoked before their expiration date — due to compromise, employee departure, or other security concerns.
 
 ## Overview
 
@@ -30,6 +30,17 @@ When a client presents a certificate for mTLS authentication, Harper performs tw
    - Uses CRL and/or OCSP
 
 Revocation checking is **disabled by default**.
+
+## When Revocation Is Checked
+
+Harper verifies a client certificate's revocation status (via CRL or OCSP) when a connection or request is admitted:
+
+- **HTTP, Server-Sent Events (SSE), and WebSockets:** Checked once per HTTP request during authentication — on each incoming HTTP request, including the request that opens an SSE stream and the HTTP `Upgrade` request that establishes a WebSocket connection (for REST WebSockets or MQTT over WebSockets).
+- **MQTT over TLS:** Checked once per TLS socket when the client connects.
+
+Harper does not re-check certificate revocation on an established connection. Long-lived connections admitted before a certificate is revoked — such as MQTT sessions, SSE streams, and WebSocket connections — keep running, including their live subscriptions, until the connection closes. Live-subscription re-authorization re-checks the subscriber's Harper user, role permissions, and resource `allowRead` rules, not certificate state.
+
+For new connections and HTTP requests, verification verdicts are also cached for the configured `cacheTtl` (`crl.cacheTtl` and `ocsp.cacheTtl`). To terminate active sessions or subscriptions after revoking a certificate, see [Ending Existing Sessions After a Revocation](#ending-existing-sessions-after-a-revocation).
 
 ## Revocation Checking Methods
 
@@ -323,6 +334,13 @@ http:
         cacheTtl: 7200000 # 2 hours
         errorCacheTtl: 600000
 ```
+
+### Ending Existing Sessions After a Revocation
+
+Because revocation is checked only when a connection or HTTP request is admitted, revoking a certificate at your CA does not terminate connections that are already open. To end existing sessions and subscriptions after revoking a client certificate:
+
+- **Close the client's open connections:** Drop the client's connections at your fronting proxy or load balancer, or restart Harper ([`restart`](../operations-api/operations.md#restart), or [`restart_service`](../operations-api/operations.md#restart_service) with `service: "http_workers"` when running worker threads). Note that `good` verification verdicts are cached in `system.hdb_certificate_cache` across restarts until `crl.cacheTtl` or `ocsp.cacheTtl` expires, so a reconnecting client whose verdict is still cached passes certificate verification until that TTL elapses.
+- **Revoke user or role access to stop live subscriptions:** When the certificate maps to a Harper user (by default via the certificate's `CN`, or via `mtls.user`), deactivating that user ([`alter_user`](../users-and-roles/operations.md#alter-user) with `active: false`), removing the user ([`drop_user`](../users-and-roles/operations.md#drop-user)), or removing read permission on the user's role ([`alter_role`](../users-and-roles/operations.md#alter-role)) triggers live-subscription re-authorization and stops delivery on the client's active subscriptions (and rejects new requests for that user, independent of the certificate cache). If the certificate names no Harper user and is authorized by a custom `Resource.allowRead` method, withdrawing access in `allowRead` stops its live subscriptions on the next re-check pass. Ending an MQTT subscription stops message delivery without closing the underlying MQTT connection, so you should still close the connection to terminate the session completely.
 
 ## Troubleshooting
 
