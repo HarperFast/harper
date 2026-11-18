@@ -9,6 +9,7 @@ import * as user from '../../security/user.ts';
 import * as role from '../../security/role.ts';
 import * as customFunctionOperations from '../../components/operations.ts';
 import { setMcpQuotaHandler } from '../../components/mcp/quota.ts';
+import { setMcpInstructions } from '../../components/mcp/applicationInfo.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
 import readLog from '../../utility/logging/readLog.ts';
 import * as export_ from '../../dataLayer/export.ts';
@@ -249,6 +250,7 @@ function registerOperation(operationDefinition: OperationDefinition) {
 server.setMcpQuotaHandler = (handler) => {
 	setMcpQuotaHandler(handler);
 };
+server.setMcpInstructions = setMcpInstructions;
 
 // The nested `search_operation` operations dataLayer/export.ts's getRecords can actually run (its
 // VALID_SEARCH_OPERATIONS). Validated at dispatch so an unsupported or missing nested operation is a

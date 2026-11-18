@@ -96,6 +96,11 @@ export interface Server {
 	registerOperation(operationDefinition: OperationDefinition): void;
 	/** Register the durable MCP quota policy (opt-in). The latest registration wins; pass `undefined` to clear. */
 	setMcpQuotaHandler(handler: McpQuotaHandler | undefined): void;
+	/**
+	 * Set the `instructions` the MCP application profile returns on `initialize` (at most 16,384 characters).
+	 * `mcp.application.instructions` in config takes precedence. The latest registration wins; `undefined` clears it.
+	 */
+	setMcpInstructions(instructions: string | undefined): void;
 	recordAnalytics(value: Value, metric: string, path?: string, method?: string, type?: string): void;
 	nodes: Node[];
 	shards: Map<number, string[]>;

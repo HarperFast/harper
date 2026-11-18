@@ -22,6 +22,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 const FIXTURE_PATH = resolve(import.meta.dirname, '../fixtures/mcp-stateless');
 const PROTOCOL_VERSION = '2025-06-18';
 const BEARER = 'Bearer stateless-valid';
+const INSTRUCTIONS = 'Each call names the node that served it.';
 
 suite('MCP application profile: stateless across two nodes (#4346)', (ctx) => {
 	const nodes: HarperTestContext[] = [createHarperContext(`${ctx.name}-a`), createHarperContext(`${ctx.name}-b`)];
@@ -34,7 +35,14 @@ suite('MCP application profile: stateless across two nodes (#4346)', (ctx) => {
 					config: {
 						threads: { count: 1 },
 						authentication: { authorizeLocal: false },
-						mcp: { application: { mountPath: '/mcp', stateless: true, authentication: { required: true } } },
+						mcp: {
+							application: {
+								mountPath: '/mcp',
+								stateless: true,
+								authentication: { required: true },
+								instructions: INSTRUCTIONS,
+							},
+						},
 					},
 					env: {
 						AUTHENTICATION_AUTHORIZELOCAL: 'false',
@@ -92,6 +100,7 @@ suite('MCP application profile: stateless across two nodes (#4346)', (ctx) => {
 		const client = new Client({ name: 'stateless-it', version: '0' }, { capabilities: {} });
 		await client.connect(transport);
 		strictEqual(transport.sessionId, undefined, 'a stateless server mints no session id');
+		strictEqual(client.getInstructions(), INSTRUCTIONS, 'the client reads the configured instructions (#4362)');
 
 		const pids = new Set<number>();
 		for (let call = 0; call < 6; call++) {
@@ -128,6 +137,7 @@ suite('MCP application profile: stateless across two nodes (#4346)', (ctx) => {
 		const initText = await init.text();
 		strictEqual(init.status, 200, initText);
 		strictEqual(init.headers.get('mcp-session-id'), null);
+		strictEqual(JSON.parse(initText).result.instructions, INSTRUCTIONS, 'configured instructions (#4362)');
 		const capabilities = JSON.parse(initText).result.capabilities;
 		strictEqual(capabilities.tools.listChanged, undefined, 'no list_changed push without a GET stream');
 		strictEqual(capabilities.resources.subscribe, undefined);

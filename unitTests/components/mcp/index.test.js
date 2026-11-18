@@ -8,6 +8,7 @@ const {
 	_restoreGetConfigObj,
 } = indexMod;
 const { _setSessionTableForTest } = require('#src/components/mcp/session');
+const { _resetApplicationInfoForTest } = require('#src/components/mcp/applicationInfo');
 const { Readable } = require('node:stream');
 const { Headers } = require('#src/server/serverHelpers/Headers');
 
@@ -63,6 +64,7 @@ describe('components/mcp/index', () => {
 	afterEach(() => {
 		_setSessionTableForTest(undefined);
 		_resetApplicationStartedForTest();
+		_resetApplicationInfoForTest();
 	});
 
 	describe('registerMcpProfile (operations side, Fastify)', () => {
@@ -233,9 +235,9 @@ describe('components/mcp/index', () => {
 			});
 		});
 
-		describe('stateless (#4346)', () => {
-			async function initialize(stateless) {
-				configReturn = { mcp: { application: { stateless } } };
+		describe('stateless (#4346) and instructions (#4362) from config', () => {
+			async function initialize(stateless, instructions) {
+				configReturn = { mcp: { application: { stateless, instructions } } };
 				const scope = makeFakeScope();
 				handleApplication(scope);
 				const result = await scope.calls[0].handler(
@@ -270,6 +272,13 @@ describe('components/mcp/index', () => {
 					const result = await initialize(stateless);
 					assert.match(result.headers['Mcp-Session-Id'], /^[0-9a-f-]{36}$/, String(stateless));
 				}
+			});
+
+			it('returns mcp.application.instructions on initialize, and omits them once unset (#4362)', async () => {
+				const configured = await initialize(true, 'Use list_organizations first.');
+				assert.equal(JSON.parse(configured.body).result.instructions, 'Use list_organizations first.');
+				const unset = await initialize(true, undefined);
+				assert.equal('instructions' in JSON.parse(unset.body).result, false);
 			});
 		});
 	});

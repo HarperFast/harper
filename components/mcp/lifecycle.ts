@@ -10,6 +10,8 @@
 import { createSession, patchSession, type McpSessionRecord } from './session.ts';
 import { GATED_CLIENT_CAPABILITIES } from './serverRequests.ts';
 import { packageJson } from '../../utility/packageUtils.js';
+import { applicationInstructions } from './applicationInfo.ts';
+import type { McpProfile } from './transport.ts';
 
 export const PROTOCOL_VERSION_PREFERRED = '2025-06-18';
 export const PROTOCOL_VERSION_BACKCOMPAT = '2025-03-26';
@@ -60,6 +62,7 @@ export interface InitializeOutcome {
 }
 
 export interface InitializeOptions {
+	profile?: McpProfile;
 	stateless?: boolean;
 }
 
@@ -80,8 +83,8 @@ export interface InitializeFailure {
  * `ok: false` cases are a missing or non-string `protocolVersion` field,
  * which is a protocol-level violation rather than version negotiation.
  *
- * `instructions` is optional per spec; we omit it in v1 (it can be wired
- * later when tools land in #617 and we know which profile is active).
+ * `instructions` are the application profile's configured or registered text (`applicationInstructions`);
+ * the operations profile omits them.
  */
 export async function handleInitialize(
 	params: InitializeParams | undefined,
@@ -99,26 +102,20 @@ export async function handleInitialize(
 	const negotiated = SUPPORTED_PROTOCOL_VERSIONS.includes(requested as (typeof SUPPORTED_PROTOCOL_VERSIONS)[number])
 		? requested
 		: PROTOCOL_VERSION_PREFERRED;
-	if (options.stateless) {
-		return {
-			ok: true,
-			result: { protocolVersion: negotiated, serverInfo: SERVER_INFO, capabilities: STATELESS_SERVER_CAPABILITIES },
-		};
-	}
+	const result: InitializeResult = {
+		protocolVersion: negotiated,
+		serverInfo: SERVER_INFO,
+		capabilities: options.stateless ? STATELESS_SERVER_CAPABILITIES : SERVER_CAPABILITIES,
+	};
+	const instructions = options.profile === 'application' ? applicationInstructions() : undefined;
+	if (instructions) result.instructions = instructions;
+	if (options.stateless) return { ok: true, result };
 	const session = await createSession({
 		user,
 		protocolVersion: negotiated,
 		clientCapabilities: pickClientCapabilities(params?.capabilities),
 	});
-	return {
-		ok: true,
-		session,
-		result: {
-			protocolVersion: negotiated,
-			serverInfo: SERVER_INFO,
-			capabilities: SERVER_CAPABILITIES,
-		},
-	};
+	return { ok: true, session, result };
 }
 
 /**
