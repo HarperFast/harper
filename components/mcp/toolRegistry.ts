@@ -106,7 +106,7 @@ export interface ToolProgressUpdate {
 export interface ToolCallContext {
 	user: AuthedUser;
 	profile: McpProfile;
-	sessionId: string;
+	sessionId?: string;
 	/**
 	 * Aborted when the client sends `notifications/cancelled` for this call
 	 * (#1349 §3.3). Long-running handlers should check `signal.aborted` (or pass
@@ -290,7 +290,7 @@ export function _resetRegistryForTest(): void {
 export interface ListToolsArgs {
 	user: AuthedUser;
 	profile: McpProfile;
-	sessionId: string;
+	sessionId?: string;
 	/**
 	 * Decoded pagination offset, or `undefined` for a fresh (first-page) call.
 	 * The transport decodes the opaque cursor and rejects invalid cursors with
@@ -317,6 +317,7 @@ export function listTools(args: ListToolsArgs): ListToolsResult {
 	const { user, profile, sessionId, offset: cursorOffset, limit } = args;
 	if (limit < 1) throw new Error('listTools: limit must be >= 1');
 
+	if (sessionId === undefined) return pageTools(computeFilteredList(user, profile), cursorOffset ?? 0, limit);
 	let cached = sessionListCache.get(sessionId);
 	let offset = 0;
 	if (cursorOffset !== undefined) {
@@ -334,11 +335,15 @@ export function listTools(args: ListToolsArgs): ListToolsResult {
 		sessionListCache.set(sessionId, cached);
 	}
 
-	const slice = cached.tools.slice(offset, offset + limit);
+	return pageTools(cached.tools, offset, limit);
+}
+
+function pageTools(tools: ToolDescriptor[], offset: number, limit: number): ListToolsResult {
+	const slice = tools.slice(offset, offset + limit);
 	const next = offset + slice.length;
 	return {
 		tools: slice,
-		nextCursor: next < cached.tools.length ? encodeCursor(next) : undefined,
+		nextCursor: next < tools.length ? encodeCursor(next) : undefined,
 	};
 }
 

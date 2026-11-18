@@ -68,13 +68,19 @@ export interface McpAuthentication {
 	resourceMetadata?: string;
 }
 
+export interface McpHandlerOptions {
+	stateless?: boolean;
+}
+
 const AUTHENTICATION_OPTIONAL: McpAuthentication = Object.freeze({ required: false });
 
 export function createHarperHttpHandler(
 	profile: McpProfile,
-	authentication: McpAuthentication = AUTHENTICATION_OPTIONAL
+	authentication: McpAuthentication = AUTHENTICATION_OPTIONAL,
+	options: McpHandlerOptions = {}
 ) {
 	const requirePrincipal = authentication.required === true;
+	const stateless = options.stateless === true;
 	return async function mcpHarperHttpHandler(
 		request: HarperHttpRequest,
 		nextHandler: (req: HarperHttpRequest) => unknown
@@ -125,6 +131,7 @@ export function createHarperHttpHandler(
 			profile,
 			clientIp: request.ip,
 			baseUrl: protocol && request.host ? `${protocol}://${request.host}` : undefined,
+			stateless,
 		};
 
 		const res = await handleMcpRequest(norm);

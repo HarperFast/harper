@@ -47,7 +47,7 @@ export interface QuotaCheckInfo {
 	tool: string;
 	user: AuthedUser;
 	profile: McpProfile;
-	sessionId: string;
+	sessionId?: string;
 }
 
 export interface QuotaDenial {

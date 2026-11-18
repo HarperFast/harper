@@ -54,7 +54,7 @@ export interface PromptGetResult {
 export interface PromptRenderContext {
 	user: AuthedUser;
 	profile: McpProfile;
-	sessionId: string;
+	sessionId?: string;
 }
 
 /**

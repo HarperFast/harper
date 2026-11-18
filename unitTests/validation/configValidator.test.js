@@ -1055,6 +1055,14 @@ describe('Test configValidator module', () => {
 			expect(configValidator(config, true).error.message).to.include("'mcp.operations.enabled' must be a boolean");
 		});
 
+		it('accepts a boolean mcp.application.stateless and rejects a quoted one (#4346)', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.mcp = { application: { stateless: true } };
+			assert.equal(configValidator(config, true).error, undefined);
+			config.mcp = { application: { stateless: 'true' } };
+			assert.match(configValidator(config, true).error.message, /'mcp\.application\.stateless' must be a boolean/);
+		});
+
 		it('rejects mcp.operations.maxTools below 1', () => {
 			const config = testUtils.deepClone(FAKE_CONFIG);
 			config.mcp = { operations: { maxTools: 0 } };
