@@ -68,7 +68,7 @@ function fakeEmbed() {
 	return embed;
 }
 
-// What the embedding of a query text is once Harper has it: the model's Float32Array as numbers.
+// the model answers with a Float32Array
 const queryVector = (text) => Array.from(new Float32Array(QUERY_VECTORS[text]));
 
 async function fromAsync(iterable) {
@@ -77,7 +77,6 @@ async function fromAsync(iterable) {
 	return out;
 }
 
-/** A context that records every transaction a search installs on it, and the links that hold a store. */
 function recordingContext() {
 	const installed = [];
 	let current;
@@ -222,6 +221,7 @@ describe('Vector search by sort text on an @embed attribute', () => {
 			['an empty text', { text: '  ' }, /must be a non-empty string/],
 			['a non-string text', { text: 42 }, /must be a non-empty string/],
 			['a model override', { text: 'red fruit', model: 'other-model' }, /can not set a model/],
+			['an unknown distance', { text: 'red fruit', distance: 'manhattan' }, /Unknown distance function/],
 		];
 		for (const [label, descriptor, message] of refused) {
 			it(`refuses ${label} with a 400 and never calls the model`, () => {
@@ -246,6 +246,35 @@ describe('Vector search by sort text on an @embed attribute', () => {
 				Doc.search({ sort: { attribute: ['embedding'], text: 'red fruit' }, select: ['content'], limit: 1 })
 			);
 			assert.deepEqual(rows, [{ content: 'cherry' }]);
+		});
+
+		it('refuses text beside a full-text condition before it calls the model', function () {
+			if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip(); // full-text indexes need RocksDB
+			const Article = table({
+				table: 'SortTextFullTextDoc',
+				database: 'test',
+				audit: true,
+				attributes: [
+					{ name: 'id', type: 'ID', isPrimaryKey: true },
+					{ name: 'title', type: 'String' },
+					{
+						name: 'embedding',
+						type: 'Array',
+						embed: { source: 'title', model: 'doc-model' },
+						indexed: { type: 'HNSW' },
+					},
+				],
+				fullTextIndexes: [{ name: 'search', fields: [{ name: 'title', weight: 1 }], analyzer: 'english@2' }],
+			});
+			assert.throws(
+				() =>
+					Article.search({
+						conditions: [{ attribute: 'search', comparator: 'matches', value: 'fruit' }],
+						sort: { attribute: 'embedding', text: 'red fruit' },
+					}),
+				(error) => error.statusCode === 400 && /descending \$score order/.test(error.message)
+			);
+			assert.equal(embed.calls.length, 0);
 		});
 
 		it('refuses an unknown attribute with a 404', () => {

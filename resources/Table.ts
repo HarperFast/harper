@@ -8854,13 +8854,13 @@ export function makeTable(options): TableResourceClass {
 			if (context) context.lastModified = UNCACHEABLE_TIMESTAMP;
 			const sort = typeof target.sort === 'object' && target.sort;
 			if (sort && (sort.text !== undefined || sort.next)) {
-				const embedding = embedSortTexts(sort, context);
+				const embedding = embedSortTexts(sort, context, target.conditions);
 				if (embedding) return this.#searchAfterEmbedding(target, embedding, context, rowFilter);
 			}
 			return this.#searchSorted(target, sort, context, txn, rowFilter);
 		}
 
-		/** The search runs in its own transaction scope: a model call has no deadline, so no read snapshot is held across it. */
+		/** The search starts only after the model call, through `transaction()`: a model call has no deadline, so no read snapshot is reserved across it. */
 		#searchAfterEmbedding(target: RequestTarget, embedding: SortEmbedding, context: any, rowFilter: any): any {
 			const scope = context ?? {};
 			const search = (sort: any) =>
@@ -14418,8 +14418,8 @@ export function makeTable(options): TableResourceClass {
 			!primaryStore.encoder.resolvedAttributeNames?.has(name)
 		);
 	}
-	/** Every sort descriptor of the chain is checked before any model call starts, so a refused descriptor costs no call. */
-	function embedSortTexts(sort: any, context: any): SortEmbedding | undefined {
+	/** A refusal the search can make without the vectors is made before any model call, so it costs none. */
+	function embedSortTexts(sort: any, context: any, conditions: unknown): SortEmbedding | undefined {
 		let textsByAttribute: Map<string, { attribute: any; orders: any[] }> | undefined;
 		for (let order = sort; order; order = order.next) {
 			if (order.text === undefined) continue;
@@ -14437,12 +14437,20 @@ export function makeTable(options): TableResourceClass {
 					throw new ClientError(`${name} is not a defined attribute`, 404);
 				throw new ClientError(`A sort with text requires an @embed attribute of this table, and "${name}" is not one`);
 			}
+			indices[attribute.name]?.customIndex?.exactDistance?.({ target: [], distance: order.distance }, null);
 			textsByAttribute ??= new Map();
 			let group = textsByAttribute.get(attribute.name);
 			if (!group) textsByAttribute.set(attribute.name, (group = { attribute, orders: [] }));
 			group.orders.push(order);
 		}
 		if (!textsByAttribute) return;
+		// a one-shot conditions iterator is left for the search to read
+		if (
+			Array.isArray(conditions) &&
+			TableResource.fullTextIndexes.length > 0 &&
+			conditionsContainFullText(conditions, TableResource.fullTextIndexes)
+		)
+			throw new ClientError('Full-text results can only use descending $score order', 400);
 		const controller = new AbortController();
 		const signal = context?.signal ? AbortSignal.any([controller.signal, context.signal]) : controller.signal;
 		const vectors = new Map<any, number[]>();
