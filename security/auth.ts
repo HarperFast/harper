@@ -460,13 +460,8 @@ export async function authentication(request, nextHandler) {
 					request.session = {};
 				}
 				if (LOG_AUTH_FAILED) authAuditLog(request, session.user, AUTH_AUDIT_STATUS.FAILURE, 'Session');
-				if (
-					rejectedStoredSession &&
-					request.isOperationsServer &&
-					request._nodeRequest &&
-					request.method === 'POST' &&
-					request.pathname === '/'
-				) {
+				if (rejectedStoredSession && request.isOperationsServer && request._nodeRequest) {
+					// Fastify settles the rejection at authorize(), leaving public Studio assets reachable.
 					deferCredentialRejection(request, error, 'Session');
 				} else {
 					const failureResponse = settleAuthFailure(request, error, 'Session');
@@ -609,6 +604,11 @@ interface SessionState {
 
 function updateSession(this: SessionState, updatedSession) {
 	const { request, headers, origin, responseHeaders, response } = this;
+	if (this.rejectedStoredSession && updatedSession.user !== null) {
+		// Sign-out clears the presented ID. Other updates start a new session.
+		this.sessionId = undefined;
+		this.rejectedStoredSession = false;
+	}
 	const expires = env.get(CONFIG_PARAMS.AUTHENTICATION_COOKIE_EXPIRES);
 	const useSecure =
 		request.protocol === 'https' ||
@@ -675,7 +675,6 @@ async function loginWithSession(this: SessionState, username: string, password?:
 	const user: any = (request.user = token
 		? await validateLoginToken(token)
 		: await server.authenticateUser(username, password, request));
-	if (this.rejectedStoredSession) this.sessionId = undefined;
 	request.session.update({ user: user && (user.getId?.() ?? user.username) });
 }
 

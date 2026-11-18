@@ -1,5 +1,4 @@
 /**
- * Exercises stored-user credential admission and auditing through real HTTP requests.
  * https://github.com/HarperFast/harper/issues/4124 and https://github.com/HarperFast/harper/issues/4040
  */
 import { ok, strictEqual } from 'node:assert';
@@ -166,7 +165,7 @@ suite('Stored user credential revocation', (ctx: ContextWithHarper) => {
 	});
 
 	test(
-		'login replaces a rejected session ID and logout clears the presented session',
+		'a rejected session can load public Operations API routes, log in again, and log out',
 		{ skip: skipOperationsLogin },
 		async () => {
 			await addUser('retired_session_user');
@@ -174,6 +173,10 @@ suite('Stored user credential revocation', (ctx: ContextWithHarper) => {
 			const session = await issueCookie('retired_session_user');
 			await expectStatus(await waitForSession(() => operation({ operation: 'user_info' }, session)), 200);
 			await expectStatus(await operation({ operation: 'drop_user', username: 'retired_session_user' }, admin), 200);
+			const getOperationRoute = (pathname: string) =>
+				fetch(new URL(pathname, ctx.harper.operationsAPIURL), { headers: session });
+			await expectStatus(await getOperationRoute('/health'), 200);
+			await expectStatus(await getOperationRoute('/api/openapi/rest'), 401);
 
 			const credentials = { username: 'replacement_session_user', password };
 			await expectStatus(await operation({ operation: 'create_authentication_tokens', ...credentials }, session), 200);
