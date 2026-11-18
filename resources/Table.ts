@@ -27,7 +27,7 @@ import {
 	ResidencyPlacementError,
 } from './residencyMaps.ts';
 import { isDeepStrictEqual, types as utilTypes } from 'node:util';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { getIndexedValues, getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
@@ -2178,6 +2178,7 @@ export function makeTable(options): TableResourceClass {
 	const replicaRefreshCheckedAtComposite = new Map<string, number>();
 	let replicaEvictionArmed = false;
 	let replicaSweepGeneration = 0;
+	let replicaTimerPhase: number | undefined;
 	let replicaTableKnown = false;
 	let nextReplicaReclaimKey: Id | undefined;
 	// shared across this node's threads: [0] replica admissions, [1] whether the owner's sweep is armed;
@@ -2333,6 +2334,7 @@ export function makeTable(options): TableResourceClass {
 	const MAX_PREFETCH_BUNDLE = 6;
 	if (audit) addDeleteRemoval();
 	const reclamationHandler = (priority: number) => {
+		if (!(priority > 1)) nextReplicaReclaimKey = undefined;
 		if (hasSourceGet || (priority > 1 && replicaEvictionArmed)) return scheduleCleanup(priority, !hasSourceGet);
 	};
 	let reclamationRegistered = onStorageReclamation(primaryStore.path, reclamationHandler);
@@ -15620,7 +15622,11 @@ export function makeTable(options): TableResourceClass {
 				startOfYear.setSeconds(0);
 				const nextInterval = interval / (1 + (Number.isFinite(cleanupPriority) ? cleanupPriority : 0));
 				// find the next scheduled run based on regular cycles from the beginning of the year (if we restart, this enables a good continuation of scheduling)
-				const phase = replicaEvictionArmed ? ((Math.imul(tableId, 0x9e3779b1) >>> 0) / 0x100000000) * nextInterval : 0;
+				if (replicaEvictionArmed && replicaTimerPhase === undefined) {
+					const identity = JSON.stringify([databaseName, tableId]);
+					replicaTimerPhase = createHash('sha256').update(identity).digest().readUInt32BE() / 0x100000000;
+				}
+				const phase = replicaEvictionArmed ? replicaTimerPhase * nextInterval : 0;
 				const gridStart = startOfYear.getTime() + phase;
 				const nextScheduled = runImmediately
 					? Date.now()
@@ -15698,17 +15704,18 @@ export function makeTable(options): TableResourceClass {
 			const sweepState = replicaEvictionArmed && ownsCleanup() && replicaSweep();
 			const admissionsAtStart = sweepState && Atomics.load(sweepState, 0);
 			const sweepGeneration = replicaSweepGeneration;
+			const replicaPassActive = () => sweepState && replicaEvictionArmed && sweepGeneration === replicaSweepGeneration;
 			const canContinue = () =>
 				!maintenanceClosed &&
 				!disposed &&
 				!isReadOnlyMode() &&
 				ownsCleanup() &&
-				(!sweepState || sweepGeneration === replicaSweepGeneration) &&
-				(replicaEvictionArmed || cleanupForExpiry);
+				(cleanupForExpiry || replicaPassActive());
 			let seenReplicas = false;
 			let interrupted = false;
 			let walked = 0;
 			let pressure = sweepState && priority > 1 ? await getStorageReclamationPriority(primaryStore.path) : 0;
+			if (sweepState && priority > 1 && !(pressure > 1)) nextReplicaReclaimKey = undefined;
 			const started = Date.now();
 			const { checkEvery, minAgeMs, batch, budgetMs } = replicaReclaimLimits;
 			const budgetEnd = performance.now() + budgetMs;
@@ -15741,7 +15748,8 @@ export function makeTable(options): TableResourceClass {
 					const next = entries.next();
 					if (next.done) break;
 					const entry = next.value;
-					const sweepReplicas = sweepState && replicaEvictionArmed;
+					let sweepReplicas = replicaPassActive();
+					if (!sweepReplicas) pressure = 0;
 					if (!(priority > 1) && cleanupPriority > 1 && walked % checkEvery === 0) {
 						interrupted = true;
 						break;
@@ -15756,6 +15764,9 @@ export function makeTable(options): TableResourceClass {
 					}
 					if (pressure > 1 && walked && walked % checkEvery === 0) {
 						pressure = await getStorageReclamationPriority(primaryStore.path);
+						if (!(pressure > 1)) nextReplicaReclaimKey = undefined;
+						sweepReplicas = replicaPassActive();
+						if (!sweepReplicas) pressure = 0;
 						cutoff = replicaPressureCutoff(started, pressure);
 						if (!canContinue() || (!(pressure > 1) && !cleanupForExpiry)) {
 							interrupted = true;
@@ -15856,7 +15867,7 @@ export function makeTable(options): TableResourceClass {
 			if (reclaiming && !interrupted) nextReplicaReclaimKey = undefined;
 			await Promise.all(outstandingCleanupOperations.filter(Boolean));
 			if (batcher) await batcher.drain();
-			if (tally && !interrupted && canContinue()) {
+			if (tally && !interrupted && replicaPassActive() && canContinue()) {
 				// Owners can overlap during handoff. If another publisher holds this short lock,
 				// its complete sample suffices until the next pass.
 				const key = `replica-stats-publisher:${tableId}`;
@@ -15874,7 +15885,7 @@ export function makeTable(options): TableResourceClass {
 				}
 			}
 			if (
-				sweepState &&
+				replicaPassActive() &&
 				resumeKey === undefined &&
 				!interrupted &&
 				!seenReplicas &&

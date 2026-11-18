@@ -312,6 +312,23 @@ async function reclaimAt(priority) {
 		assertDemoted('z');
 	});
 
+	it('starts a new pressure scan at the first key after free space recovers', async () => {
+		limits({ batch: 1, checkEvery: 1, budgetMs: 0 });
+		await replica('a', LIFETIME_MS * 0.9);
+		await replica('b', 10_000);
+		await replica('c', 10_000);
+		await reclaimAt(2);
+		await reclaimAt(2);
+		assertDemoted('b');
+		assertKept('c');
+
+		await reclaimAt(0.5);
+		setReplicaDeadline(Rows, 'a', Date.now() + 10_000);
+		await reclaimAt(2);
+		assertDemoted('a');
+		assertKept('c');
+	});
+
 	it('finishes a batch past its budget, however long the scan took, and leaves the rest for the next run', async () => {
 		limits({ batch: 2, budgetMs: 0 });
 		await replica('earliest', 1000);
@@ -688,12 +705,14 @@ async function reclaimAt(priority) {
 			const store = Table.primaryStore;
 			const range = store.getRange;
 			let toggled = false;
+			let walkedAfterToggle = false;
 			store.getRange = function (options) {
 				const entries = range.call(this, options);
 				if (!options?.versions || !options.lazy) return entries;
 				return (function* () {
 					for (const entry of entries) {
 						if (entry.key !== replicas[0] || toggled) {
+							if (toggled) walkedAfterToggle = true;
 							yield entry;
 							continue;
 						}
@@ -713,6 +732,7 @@ async function reclaimAt(priority) {
 				store.getRange = range;
 			}
 			assert.ok(toggled);
+			assert.ok(walkedAfterToggle, 'the independent TTL walk continues through the remaining keys');
 			assert.equal((await Table.getReplicaStats()).count, replicas.length);
 		});
 
