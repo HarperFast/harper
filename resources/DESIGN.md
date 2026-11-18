@@ -310,7 +310,7 @@ Each reused wrapper is recorded in `ownedRocksStores` and closed before the root
 
 ## A read keeps a fetched record as a local replica and never relocates it
 
-Replicas are RocksDB-only audit-free `REPLICA` rows with the stub's identity (`_storeReplica`, harper-pro#436). **Admission keeps only the stub's own head write, and only when no later fold can change it** (`answersStub`, #3640). Demote all replicas before a downgrade (`residencyReplicas.test.js`); window and budget bound reclamation (`replicaStorageReclamation.test.js`).
+Replicas are RocksDB-only audit-free `REPLICA` rows with the stub's identity (`_storeReplica`, harper-pro#436). **Admission keeps only the stub's own head write, and only when no later fold can change it** (`answersStub`, #3640). Demote all replicas before a downgrade (`residencyReplicas.test.js`); the primary cleanup scan demotes expired or undated replicas. Under pressure it visits eligible headers in key order, with a 30 s age floor (`replicaStorageReclamation.test.js`).
 
 ## `replicatedConfirmation` counts only the residents of each written record
 

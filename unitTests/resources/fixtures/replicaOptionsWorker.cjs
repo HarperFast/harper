@@ -2,7 +2,7 @@ require('../../testUtils');
 const assert = require('node:assert');
 const { parentPort, workerData } = require('node:worker_threads');
 const { setupTestDBPath } = require('../../testUtils');
-const { table, resetDatabases, databases, openReplicaDeadlineStore } = require('#src/resources/databases');
+const { table, resetDatabases, databases } = require('#src/resources/databases');
 const { transaction } = require('#src/resources/transaction');
 const { Resource } = require('#src/resources/Resource');
 const { REPLICA, setMinReplicaScanIntervalForTesting } = require('#src/resources/Table');
@@ -13,7 +13,7 @@ const { SchemaEventMsg } = require('#src/server/threads/itc');
 const { waitFor } = require('../../waitFor');
 
 const { database, role, sourcePort } = workerData;
-const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
+const { setReplicaDeadline } = require('./replicaDeadline.cjs');
 const CONTROL = 'replica-options-control';
 const REPLY = 'replica-options-reply';
 let tableName;
@@ -60,11 +60,6 @@ function fetchFromWriter(entry) {
 	});
 }
 
-function deadlineStore() {
-	if (isLMDB || !Records.dbisDB.getSync(`${tableName}/@replicas`)) return;
-	return openReplicaDeadlineStore(Records.primaryStore.rootStore, tableName, Records.storageGeneration);
-}
-
 function snapshot(key) {
 	const entry = key === undefined ? undefined : Records.primaryStore.getEntry(key);
 	const state = new Int32Array(
@@ -73,7 +68,7 @@ function snapshot(key) {
 	return {
 		flags: entry?.metadataFlags,
 		value: entry?.value,
-		deadline: key === undefined ? undefined : deadlineStore()?.getSync(key),
+		deadline: entry?.replicaDeadline,
 		armed: Atomics.load(state, 1),
 		expirationMS: Records.expirationMS,
 		evictionMS: Records.evictionMS,
@@ -137,12 +132,12 @@ async function handle({ command, table: name, key, options, deadline, expectRene
 			return { ...snapshot(key), calls: sourceCalls - callsBefore, admissions, start, end: Date.now() };
 		}
 		case 'deadline':
-			await deadlineStore()?.put(key, deadline);
+			if (Records.primaryStore.getEntry(key)?.metadataFlags & REPLICA) setReplicaDeadline(Records, key, deadline);
 			return snapshot(key);
 		case 'renew':
 			assert.equal((await Records.get(key)).body, 'complete');
 			if (expectRenewal)
-				await waitFor(() => deadlineStore().getSync(key) > deadline, {
+				await waitFor(() => Records.primaryStore.getEntry(key, { uncachedRead: true })?.replicaDeadline > deadline, {
 					timeout: 3000,
 					message: 'the rescanned refresh fraction renews the replica',
 				});

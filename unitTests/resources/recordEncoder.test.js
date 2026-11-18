@@ -634,3 +634,37 @@ describe('PrimaryRocksDatabase non-initStore transactional saveStructures (__dbi
 		assert.strictEqual(errors.length, 0, `expected zero decode errors, got: ${JSON.stringify(errors)}`);
 	});
 });
+
+describe('Replica deadline header', () => {
+	const {
+		setNextEncoding,
+		HAS_REPLICA_DEADLINE,
+		HAS_EXPIRATION,
+		HAS_RESIDENCY_ID,
+	} = require('#src/resources/RecordEncoder');
+	const { REPLICA } = require('#src/resources/Table');
+	const version = 1750000000000;
+	const deadline = version + 2000;
+	for (const [expiry, golden] of [
+		[-1, '427977420dc000000e0000200000007ba3726f77'],
+		[version + 1000, '427977420dc000000e000030427977420dfe80000000007ba3726f77'],
+	]) {
+		it(`places the deadline at offset ${expiry < 0 ? 12 : 20} and preserves ordinary row bytes`, () => {
+			const encoder = new RecordEncoder({ useRecords: false, randomAccessStructure: false });
+			encoder.isRocksDB = true;
+			const flags = HAS_RESIDENCY_ID | (expiry < 0 ? 0 : HAS_EXPIRATION);
+			setNextEncoding(version, flags | REPLICA | HAS_REPLICA_DEADLINE, expiry, -1, 123, undefined, deadline);
+			const bytes = Buffer.from(encoder.encode('row'));
+			assert.equal(bytes.readDoubleBE(expiry < 0 ? 12 : 20), deadline);
+			const entry = encoder.decode(bytes);
+			assert.equal(entry.replicaDeadline, deadline);
+			assert.equal(entry.expiresAt, expiry < 0 ? undefined : expiry);
+			assert.equal(entry.residencyId, 123);
+			assert.equal(entry.value, 'row');
+			setNextEncoding(version, flags, expiry, -1, 123);
+			const ordinary = Buffer.from(encoder.encode('row'));
+			assert.equal(ordinary.toString('hex'), golden);
+			assert.equal(encoder.decode(ordinary).replicaDeadline, undefined);
+		});
+	}
+});

@@ -1,3 +1,4 @@
+const { setReplicaDeadline } = require('./fixtures/replicaDeadline.cjs');
 require('../testUtils');
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
@@ -7,7 +8,6 @@ const {
 	databases,
 	closeDatabase,
 	resetDatabases,
-	openReplicaDeadlineStore,
 	__setReadOnlyModeForTest,
 } = require('#src/resources/databases');
 const { Resource } = require('#src/resources/Resource');
@@ -45,7 +45,7 @@ async function reclaimAt(priority) {
 
 (isLMDB ? describe.skip : describe)('Replicas under storage pressure', function () {
 	this.timeout(30_000);
-	let Rows, responses, loads, deadlines;
+	let Rows, responses, loads;
 	let tables = 0;
 
 	before(async () => {
@@ -92,7 +92,6 @@ async function reclaimAt(priority) {
 		responses = new Map();
 		loads = [];
 		Rows = declare(`Rows${++tables}`);
-		deadlines = undefined;
 	});
 	afterEach(async () => {
 		setReplicaReclaimLimitsForTesting();
@@ -107,10 +106,6 @@ async function reclaimAt(priority) {
 		});
 		return Table.primaryStore.getEntry(id);
 	}
-	function deadlineStore(Table = Rows) {
-		if (Table !== Rows) return openReplicaDeadlineStore(Table.primaryStore.rootStore, Table.tableName);
-		return (deadlines ??= openReplicaDeadlineStore(Rows.primaryStore.rootStore, Rows.tableName));
-	}
 	async function replica(id, remainingMs, Table = Rows) {
 		const entry = await stub(id, Table);
 		responses.set(String(id), {
@@ -123,7 +118,7 @@ async function reclaimAt(priority) {
 		assert.equal((await Table.get(id)).body, `body of ${id}`);
 		assert.ok(Table.primaryStore.getEntry(id).metadataFlags & REPLICA, `${id} must be stored as a replica`);
 		loads.length = 0;
-		deadlineStore(Table).putSync(id, Date.now() + remainingMs);
+		setReplicaDeadline(Table, id, Date.now() + remainingMs);
 	}
 	const isReplica = (id, Table = Rows) => Boolean(Table.primaryStore.getEntry(id).metadataFlags & REPLICA);
 	function assertDemoted(id, Table = Rows) {
@@ -132,7 +127,7 @@ async function reclaimAt(priority) {
 		assert.ok(!(entry.metadataFlags & REPLICA), `${id} must not be a replica`);
 		assert.equal(entry.value.body, undefined);
 		assert.equal(entry.value.name, 'indexed', `${id} keeps its indexed field`);
-		assert.equal(deadlineStore(Table).getSync(id), undefined, `${id} keeps no deadline`);
+		assert.equal(Table.primaryStore.getEntry(id).replicaDeadline, undefined, `${id} keeps no deadline`);
 	}
 	function assertKept(id, Table = Rows) {
 		const entry = Table.primaryStore.getEntry(id);
@@ -229,29 +224,19 @@ async function reclaimAt(priority) {
 		for (const id of fresh) assertKept(id);
 	});
 
-	it('drops a deadline left on a freshly written row that is not a replica', async () => {
-		setReplicaReclaimLimitsForTesting();
-		await Rows.put('owned', { id: 'owned', name: 'indexed', body: 'mine' });
-		deadlineStore().putSync('owned', Date.now() + 1000);
-		await replica('kept', LIFETIME_MS);
-		await reclaimAt(10);
-		assert.equal(deadlineStore().getSync('owned'), undefined);
-		assert.equal(Rows.primaryStore.getEntry('owned').value.body, 'mine');
-	});
-
 	it('does not accelerate a lifetime no longer than the minimum age', async () => {
 		limits({ minAgeMs: 1500 });
 		await replica('near', LIFETIME_MS);
 		// past the minimum age by write time, so only the window decides
 		await new Promise((resolve) => setTimeout(resolve, 1600));
 		Rows.setTTLExpiration({ replicaExpiration: 1, replicaRefreshFraction: 1 });
-		deadlineStore().putSync('near', Date.now() + 700);
+		setReplicaDeadline(Rows, 'near', Date.now() + 700);
 		await reclaimAt(Infinity);
 		assertKept('near');
 		await Rows.closeMaintenance();
 	});
 
-	it('demotes earliest deadline first across batches, and stops once the priority falls below 1', async () => {
+	it('demotes eligible keys in primary order, and stops once the priority falls below 1', async () => {
 		limits({ batch: 2, checkEvery: 1 });
 		const remaining = { e: 100, c: 300, a: 500, d: 200, b: 400 };
 		for (const [id, seconds] of Object.entries(remaining)) await replica(id, seconds * 1000);
@@ -266,18 +251,18 @@ async function reclaimAt(priority) {
 			return threshold / (kept > 2 ? 10 : 0.5);
 		});
 		await runReclamationHandlers();
-		assert.deepEqual(order, ['e', 'd', 'c']);
-		for (const id of ['e', 'd', 'c']) assertDemoted(id);
-		for (const id of ['b', 'a']) assertKept(id);
+		assert.deepEqual(order, ['a', 'b', 'c']);
+		for (const id of ['a', 'b', 'c']) assertDemoted(id);
+		for (const id of ['d', 'e']) assertKept(id);
 	});
 
-	it('finishes a group of equal deadlines larger than a batch before any later deadline', async () => {
+	it('visits every eligible key when more than a batch share a deadline', async () => {
 		limits({ batch: 2 });
 		const tied = Date.now() + 1000;
 		const ids = ['t1', 't2', 't3', 't4', 't5'];
 		for (const id of ids) {
 			await replica(id, 0);
-			deadlineStore().putSync(id, tied);
+			setReplicaDeadline(Rows, id, tied);
 		}
 		await replica('later', 2000);
 		const order = [];
@@ -287,8 +272,7 @@ async function reclaimAt(priority) {
 			return evict.call(this, id, ...rest);
 		};
 		await reclaimAt(10);
-		assert.deepEqual(order.slice(0, 5).sort(), ids);
-		assert.equal(order[5], 'later');
+		assert.deepEqual(order, ['later', ...ids]);
 		for (const id of [...ids, 'later']) assertDemoted(id);
 	});
 
@@ -316,13 +300,13 @@ async function reclaimAt(priority) {
 		await replica('last', 3000);
 		await reclaimAt(10);
 		assertDemoted('earliest');
-		assertDemoted('next');
-		assertKept('last');
-		await reclaimAt(10);
 		assertDemoted('last');
+		assertKept('next');
+		await reclaimAt(10);
+		assertDemoted('next');
 	});
 
-	it('demotes a deadline from a longer earlier lifetime last, at any pressure', async () => {
+	it('includes a deadline from a longer earlier lifetime under pressure', async () => {
 		await replica('longer', LIFETIME_MS * 3);
 		await replica('within', LIFETIME_MS * 0.1);
 		await replica('kept', LIFETIME_MS * 0.5);
@@ -333,7 +317,7 @@ async function reclaimAt(priority) {
 			return evict.call(this, id, ...rest);
 		};
 		await reclaimAt(1.25);
-		assert.deepEqual(order, ['within', 'longer']);
+		assert.deepEqual(order, ['longer', 'within']);
 		assertKept('kept');
 	});
 
@@ -341,21 +325,12 @@ async function reclaimAt(priority) {
 		await replica('renewed', 1000);
 		const evict = Rows.evict;
 		Rows.evict = function (id, ...rest) {
-			deadlineStore().putSync(id, Date.now() + LIFETIME_MS);
+			setReplicaDeadline(Rows, id, Date.now() + LIFETIME_MS);
 			return evict.call(this, id, ...rest);
 		};
 		await reclaimAt(10);
 		assertKept('renewed');
-		assert.ok(deadlineStore().getSync('renewed') > Date.now() + LIFETIME_MS / 2);
-	});
-
-	it('removes a deadline entry whose key holds no replica', async () => {
-		await Rows.put('owned', { id: 'owned', name: 'indexed', body: 'mine' });
-		await replica('kept', LIFETIME_MS);
-		deadlineStore().putSync('owned', Date.now() + 1000);
-		await reclaimAt(10);
-		assert.equal(deadlineStore().getSync('owned'), undefined);
-		assert.equal(Rows.primaryStore.getEntry('owned').value.body, 'mine');
+		assert.ok(Rows.primaryStore.getEntry('renewed').replicaDeadline > Date.now() + LIFETIME_MS / 2);
 	});
 
 	it('demotes only passed deadlines once the priority returns to 0', async () => {
@@ -371,8 +346,8 @@ async function reclaimAt(priority) {
 
 		setMinReplicaScanIntervalForTesting(20);
 		Rows.setTTLExpiration({ replicaExpiration: 0.04 });
-		deadlineStore().putSync('near', Date.now() + LIFETIME_MS);
-		deadlineStore().putSync('passed', Date.now() - 1);
+		setReplicaDeadline(Rows, 'near', Date.now() + LIFETIME_MS);
+		setReplicaDeadline(Rows, 'passed', Date.now() - 1);
 		await waitFor(() => !isReplica('passed'), { timeout: 5000, message: 'the sweep to demote the passed deadline' });
 		assertDemoted('passed');
 		assertKept('near');
@@ -429,7 +404,7 @@ async function reclaimAt(priority) {
 		assertDemoted('demoted');
 		await replica('expiring', 1000);
 		Rows.setTTLExpiration({ replicaExpiration: 0.04 });
-		deadlineStore().putSync('expiring', Date.now() - 1);
+		setReplicaDeadline(Rows, 'expiring', Date.now() - 1);
 		await waitFor(() => !isReplica('expiring'), { timeout: 5000, message: 'the sweep after the pass' });
 		await Rows.closeMaintenance();
 	});
@@ -476,7 +451,7 @@ async function reclaimAt(priority) {
 			};
 			await reclaimAt(10);
 			assert.equal(attempts, 0, 'a fresh deadline is outside the window at this priority');
-			openReplicaDeadlineStore(Reloaded.primaryStore.rootStore, 'Takeover').putSync('loaded', Date.now() + 1000);
+			setReplicaDeadline(Reloaded, 'loaded', Date.now() + 1000);
 			await reclaimAt(11);
 			assert.equal(attempts, 1, 'a single handler ran on the new owner');
 			Reloaded.evict = evict;
@@ -550,63 +525,6 @@ async function reclaimAt(priority) {
 		});
 	});
 
-	describe('describe_table', () => {
-		const describeRows = (options) => describeTable({ database: DATABASE, table: Rows.tableName, ...options });
-
-		it('reports the count and an estimated size of the replicas, not of the other rows', async () => {
-			await Rows.put('owned', { id: 'owned', name: 'indexed', body: 'mine' });
-			await stub('stub');
-			await replica('a', LIFETIME_MS * 0.9);
-			await replica('b', LIFETIME_MS * 0.9);
-			await replica('c', LIFETIME_MS * 0.9);
-			const description = await describeRows();
-			assert.equal(description.replica_count, 3);
-			assert.equal(description.estimated_replica_range, undefined);
-			const rowSize = Rows.primaryStore.getEntry('a').size;
-			assert.ok(rowSize > 0);
-			assert.ok(
-				Math.abs(description.replica_size_estimate - rowSize * 3) <= 3,
-				`${description.replica_size_estimate} should be three rows of ${rowSize} bytes`
-			);
-			assert.equal(description.record_count, 5);
-
-			await reclaimAt(Infinity);
-			const after = await describeRows();
-			assert.equal(after.replica_count, 0);
-			assert.equal(after.replica_size_estimate, 0);
-		});
-
-		it('counts none after the table is cleared', async () => {
-			await replica('a', LIFETIME_MS);
-			await Rows.clear();
-			const description = await describeRows({ exact_count: true });
-			assert.equal(description.replica_count, 0);
-			assert.equal(description.replica_size_estimate, 0);
-		});
-
-		it('counts exactly on request, and reads nothing with skip_record_count', async () => {
-			await replica('a', LIFETIME_MS);
-			assert.equal((await describeRows({ exact_count: true })).replica_count, 1);
-			const skipped = await describeRows({ skip_record_count: true });
-			assert.equal(skipped.replica_count, undefined);
-			assert.equal(skipped.replica_size_estimate, undefined);
-		});
-
-		it('estimates the count of a store too large to walk within the time limit', async () => {
-			const store = deadlineStore();
-			await replica('real', LIFETIME_MS);
-			const count = 12_000;
-			for (let i = 0; i < count; i += 1000) {
-				await store.transaction(async (txn) => {
-					for (let j = i; j < i + 1000; j++) txn.putSync(`entry-${j}`, Date.now() + LIFETIME_MS);
-				});
-			}
-			const stats = await Rows.getReplicaStats();
-			assert.ok(stats.count >= count && stats.count <= count * 3, `estimated ${stats.count} of ${count + 1}`);
-			assert.equal((await Rows.getReplicaStats({ exactCount: true })).count, count + 1);
-		});
-	});
-
 	describe('on a table declared @sharded', () => {
 		let priorShards, priorList, priorShard;
 
@@ -636,6 +554,24 @@ async function reclaimAt(priority) {
 			assert.ok(replicas.length > 0 && owned.length > 0, 'the hash places rows on both sides');
 			return { replicas, owned };
 		}
+
+		it('counts flagged primary rows on eligible tables, including an empty table', async () => {
+			await loadGQLSchema(`type Described @table(database: "shardedReclamation", replicaExpiration: 3600)
+				@sharded(slots: 2) { id: ID @primaryKey tag: String @indexed body: String }`);
+			const Table = databases.shardedReclamation.Described;
+			const describeRows = (options) =>
+				describeTable({ database: Table.databaseName, table: Table.tableName, ...options });
+			assert.equal((await describeRows()).replica_count, 0);
+			const { replicas, owned } = await writeRows(Table, 'stats');
+			const stats = await describeRows();
+			assert.equal(stats.record_count, owned.length + replicas.length);
+			assert.equal(stats.replica_count, replicas.length);
+			assert.ok(stats.replica_size_estimate > 0);
+			assert.equal(stats.estimated_replica_range, undefined);
+			assert.equal((await describeRows({ skip_record_count: true })).replica_count, undefined);
+			await Table.clear();
+			assert.equal((await describeRows({ exact_count: true })).replica_count, 0);
+		});
 
 		it('demotes an older write replica on a full disk, keeps a fresh one and every owned row', async () => {
 			limits({ minAgeMs: 3000 });
@@ -679,8 +615,8 @@ async function reclaimAt(priority) {
 			}`);
 			const Capped = databases.shardedReclamation.ShardedCapped;
 			const { replicas } = await writeRows(Capped, 'capped');
-			const store = openReplicaDeadlineStore(Capped.primaryStore.rootStore, Capped.tableName);
-			assert.ok(store.getSync(replicas[0]) < Date.now() + 700_000, 'the record expiry capped the deadline');
+			const deadline = Capped.primaryStore.getEntry(replicas[0]).replicaDeadline;
+			assert.ok(deadline < Date.now() + 700_000, 'the record expiry capped the deadline');
 
 			await reclaimAt(Infinity);
 			for (const id of replicas) assert.ok(flags(Capped, id) & REPLICA, `the fresh write ${id} stays`);
