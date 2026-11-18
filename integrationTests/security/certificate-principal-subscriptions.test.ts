@@ -250,6 +250,9 @@ suite('Subscriptions of principals with no hdb_user (#4062)', { skip: skipSuite 
 				},
 				{ timeout: 6000, interval: 100, message: 'expected both streams to receive events before drop_user' }
 			);
+			for (const { credential, stream } of streams) {
+				ok(!stream.completed && !stream.ended, `expected the ${credential} stream to stay open until drop_user`);
+			}
 			await client.req().send({ operation: 'drop_user', username: DROPPED.username }).expect(200);
 			for (const { credential, headers, stream } of streams) {
 				ok(await waitFor(() => stream.completed), `expected the open ${credential} stream to end cleanly`);
