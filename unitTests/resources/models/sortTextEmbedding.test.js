@@ -288,6 +288,7 @@ describe('Vector search by sort text on an @embed attribute', () => {
 			await rejectsWith(fromAsync(Doc.search({ sort: { attribute: 'embedding', text: 'red fruit' } })), (error) => {
 				assert.equal(error.statusCode, 502);
 				assert.equal(error.cause, failure);
+				assert.doesNotMatch(JSON.stringify(error), /sk-live/, 'serializing the error leaves the backend error out');
 				assert.match(error.message, /sort text embedding for attribute "embedding" \[OpenAIBackendError\]/);
 				assert.match(error.message, /backend HTTP 401/);
 				assert.doesNotMatch(error.message, /sk-live|target vector/);

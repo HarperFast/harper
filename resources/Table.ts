@@ -8860,10 +8860,7 @@ export function makeTable(options): TableResourceClass {
 			return this.#searchSorted(target, sort, context, txn, rowFilter);
 		}
 
-		/**
-		 * The results of a search whose sort texts are being embedded. The search runs once they are, in its own
-		 * transaction scope: a model call has no deadline, so no read snapshot is held open across it.
-		 */
+		/** The search runs in its own transaction scope: a model call has no deadline, so no read snapshot is held across it. */
 		#searchAfterEmbedding(target: RequestTarget, embedding: SortEmbedding, context: any, rowFilter: any): any {
 			const scope = context ?? {};
 			const search = (sort: any) =>
@@ -14421,7 +14418,7 @@ export function makeTable(options): TableResourceClass {
 			!primaryStore.encoder.resolvedAttributeNames?.has(name)
 		);
 	}
-	/** Every sort of the chain is validated before any model call starts, so a refused sort costs no call. */
+	/** Every sort descriptor of the chain is checked before any model call starts, so a refused descriptor costs no call. */
 	function embedSortTexts(sort: any, context: any): SortEmbedding | undefined {
 		let textsByAttribute: Map<string, { attribute: any; orders: any[] }> | undefined;
 		for (let order = sort; order; order = order.next) {

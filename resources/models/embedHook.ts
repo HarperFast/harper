@@ -315,9 +315,8 @@ export function createDefaultEmbedder(embedConfig: EmbedConfig): Embedder {
 }
 
 /**
- * Embed a search's sort texts for one `@embed` attribute with its model, as queries, in one call.
- * A model failure is reported without the backend's message, which can carry URLs or key tails;
- * the original error is the `cause`.
+ * A model failure is reported without the backend's message, which can carry URLs or key tails; the original
+ * error is a non-enumerable `cause`, so serializing the error never emits it.
  */
 export async function embedQueryTexts(
 	texts: string[],
@@ -331,11 +330,12 @@ export async function embedQueryTexts(
 		vectors = await resolveEmbedFn()(texts, { model, inputType: 'query', signal });
 	} catch (err) {
 		signal?.throwIfAborted();
-		const failure = sanitizedHookError('Query embedder', 'the sort text embedding', attributeName, err);
-		const error = isContextWindowExceeded(err)
+		const tooLong = isContextWindowExceeded(err);
+		const failure = sanitizedHookError('Query embedder', 'the sort text embedding', attributeName, err, !tooLong);
+		const error = tooLong
 			? new ClientError(`The sort text for attribute "${attributeName}" is too long for model "${model}"`, 400)
 			: new ServerError(failure.message, 502);
-		error.cause = err;
+		Object.defineProperty(error, 'cause', { value: err, configurable: true, writable: true });
 		throw error;
 	}
 	signal?.throwIfAborted();
