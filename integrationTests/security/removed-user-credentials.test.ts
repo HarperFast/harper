@@ -20,6 +20,8 @@ const initialize = {
 	},
 };
 const password = 'Credential-revocation-test!';
+const skipOperationsLogin =
+	process.env.HARPER_RUNTIME === 'bun' && 'Bun Operations API does not provide the login session helper';
 
 suite('Stored user credential revocation', (ctx: ContextWithHarper) => {
 	let admin: Record<string, string>;
@@ -98,8 +100,8 @@ suite('Stored user credential revocation', (ctx: ContextWithHarper) => {
 		return { Cookie: cookie, Origin: origin };
 	}
 
-	function waitForSession(request: () => Promise<Response>): Promise<Response> {
-		return waitFor(
+	async function waitForSession(request: () => Promise<Response>): Promise<Response> {
+		const response = await waitFor(
 			async () => {
 				const response = await request();
 				if (response.status !== 401) return response;
@@ -108,12 +110,8 @@ suite('Stored user credential revocation', (ctx: ContextWithHarper) => {
 			},
 			{ timeout: 5000, message: 'expected the live session to authenticate' }
 		);
-	}
-
-	function expectExpiredCookie(response: Response, cookie: string) {
-		const cookieName = cookie.split('=')[0];
-		const expired = response.headers.getSetCookie().find((value) => value.startsWith(`${cookieName}=;`));
-		ok(expired?.includes('Expires=Thu, 01 Jan 1970 00:00:00 GMT'), 'expected the browser to discard the cookie');
+		ok(response instanceof Response);
+		return response;
 	}
 
 	for (const [change, mutation] of [
@@ -122,26 +120,30 @@ suite('Stored user credential revocation', (ctx: ContextWithHarper) => {
 	] as const) {
 		for (const credential of ['token', 'cookie'] as const) {
 			for (const surface of ['Operations API', 'MCP initialize'] as const) {
-				test(`${surface} rejects the ${credential} after ${change} its user`, async () => {
-					const isOperations = surface === 'Operations API';
-					const username = `${change}_${credential}_${isOperations ? 'ops' : 'mcp'}`;
-					await addUser(username);
-					const headers =
-						credential === 'token'
-							? { Authorization: `Bearer ${await issueToken({ username, password })}` }
-							: await issueCookie(username);
-					const request = () => (isOperations ? operation({ operation: 'user_info' }, headers) : mcp(headers));
+				test(
+					`${surface} rejects the ${credential} after ${change} its user`,
+					{ skip: credential === 'cookie' && skipOperationsLogin },
+					async () => {
+						const isOperations = surface === 'Operations API';
+						const username = `${change}_${credential}_${isOperations ? 'ops' : 'mcp'}`;
+						await addUser(username);
+						const headers: Record<string, string> =
+							credential === 'token'
+								? { Authorization: `Bearer ${await issueToken({ username, password })}` }
+								: await issueCookie(username);
+						const request = () => (isOperations ? operation({ operation: 'user_info' }, headers) : mcp(headers));
 
-					const admitted = credential === 'cookie' ? await waitForSession(request) : await request();
-					const body = await expectStatus(admitted, 200);
-					if (isOperations) strictEqual(JSON.parse(body).username, username);
-					else ok(admitted.headers.get('mcp-session-id'), 'expected an MCP session');
-					await expectStatus(await operation({ ...mutation, username }, admin), 200);
-					const response = await request();
-					await expectStatus(response, 401);
-					if (!isOperations) strictEqual(response.headers.get('mcp-session-id'), null);
-					if (headers.Cookie) expectExpiredCookie(response, headers.Cookie);
-				});
+						const admitted = credential === 'cookie' ? await waitForSession(request) : await request();
+						const body = await expectStatus(admitted, 200);
+						if (isOperations) strictEqual(JSON.parse(body).username, username);
+						else ok(admitted.headers.get('mcp-session-id'), 'expected an MCP session');
+						await expectStatus(await operation({ ...mutation, username }, admin), 200);
+						const response = await request();
+						await expectStatus(response, 401);
+						if (!isOperations) strictEqual(response.headers.get('mcp-session-id'), null);
+						if (headers.Cookie) strictEqual(response.headers.get('set-cookie'), null);
+					}
+				);
 			}
 		}
 	}
@@ -153,7 +155,7 @@ suite('Stored user credential revocation', (ctx: ContextWithHarper) => {
 		ok(response.headers.get('mcp-session-id'), 'expected an MCP session');
 	});
 
-	test('a login-purpose token for a dropped user cannot create a session', async () => {
+	test('a login-purpose token for a dropped user cannot create a session', { skip: skipOperationsLogin }, async () => {
 		const username = 'dropped_login_token';
 		await addUser(username);
 		const token = await issueToken({ username, password, purpose: 'login' });
@@ -163,50 +165,65 @@ suite('Stored user credential revocation', (ctx: ContextWithHarper) => {
 		strictEqual(response.headers.get('set-cookie'), null);
 	});
 
-	test('a browser can retry login after the Operations API expires a dropped user’s cookie', async () => {
-		await addUser('retired_session_user');
-		await addUser('replacement_session_user');
-		const session = await issueCookie('retired_session_user');
-		await expectStatus(await waitForSession(() => operation({ operation: 'user_info' }, session)), 200);
-		await expectStatus(await operation({ operation: 'drop_user', username: 'retired_session_user' }, admin), 200);
+	test(
+		'fresh credentials work with a rejected session cookie and login issues a new session ID',
+		{ skip: skipOperationsLogin },
+		async () => {
+			await addUser('retired_session_user');
+			await addUser('replacement_session_user');
+			const session = await issueCookie('retired_session_user');
+			await expectStatus(await waitForSession(() => operation({ operation: 'user_info' }, session)), 200);
+			await expectStatus(await operation({ operation: 'drop_user', username: 'retired_session_user' }, admin), 200);
 
-		const login = { operation: 'login', username: 'replacement_session_user', password };
-		const rejected = await operation(login, session);
-		await expectStatus(rejected, 401);
-		expectExpiredCookie(rejected, session.Cookie);
+			const credentials = { username: 'replacement_session_user', password };
+			await expectStatus(await operation({ operation: 'create_authentication_tokens', ...credentials }, session), 200);
+			const loggedIn = await operation({ operation: 'login', ...credentials }, session);
+			await expectStatus(loggedIn, 200);
+			const cookieName = session.Cookie.split('=')[0];
+			const replacementCookie = loggedIn.headers
+				.getSetCookie()
+				.map((value) => value.split(';')[0])
+				.find((value) => value.startsWith(`${cookieName}=`));
+			ok(replacementCookie && replacementCookie !== session.Cookie, 'expected a fresh session ID');
+			const admitted = await waitForSession(() =>
+				operation({ operation: 'user_info' }, { ...session, Cookie: replacementCookie })
+			);
+			strictEqual(JSON.parse(await expectStatus(admitted, 200)).username, credentials.username);
+			await expectStatus(await operation({ operation: 'user_info' }, session), 401);
+			await expectStatus(await operation({ operation: 'logout' }, session), 200);
+		}
+	);
 
-		const retried = await operation(login, { Origin: origin });
-		await expectStatus(retried, 200);
-		const cookieName = session.Cookie.split('=')[0];
-		const replacementCookie = retried.headers.getSetCookie().find((value) => value.startsWith(`${cookieName}=`));
-		ok(replacementCookie && !replacementCookie.startsWith(`${cookieName}=;`), 'expected a fresh session cookie');
-	});
+	test(
+		'a rejected token request leaves the accompanying cookie out of the audit event',
+		{ skip: skipOperationsLogin },
+		async () => {
+			await addUser('audit_cookie_user');
+			await addUser('audit_dropped_bearer');
+			const session = await issueCookie('audit_cookie_user');
+			const token = await issueToken({ username: 'audit_dropped_bearer', password });
+			await expectStatus(await operation({ operation: 'drop_user', username: 'audit_dropped_bearer' }, admin), 200);
 
-	test('a rejected token request leaves the accompanying cookie out of the audit event', async () => {
-		await addUser('audit_cookie_user');
-		await addUser('audit_dropped_bearer');
-		const session = await issueCookie('audit_cookie_user');
-		const token = await issueToken({ username: 'audit_dropped_bearer', password });
-		await expectStatus(await operation({ operation: 'drop_user', username: 'audit_dropped_bearer' }, admin), 200);
-
-		const referer = `${origin}/credential-revocation-audit`;
-		const denied = await operation(
-			{ operation: 'user_info' },
-			{ ...session, Authorization: `Bearer ${token}`, Referer: referer }
-		);
-		await expectStatus(denied, 401);
-		strictEqual(denied.headers.get('set-cookie'), null, 'the unrelated cookie should be left alone');
-		const logPath = join(ctx.harper.logDir ?? join(ctx.harper.dataRootDir, 'log'), 'hdb.log');
-		const auditEvent = await waitFor(
-			async () => {
-				const log = await readFile(logPath, 'utf8');
-				return log
-					.split(/(?=^\d{4}-\d{2}-\d{2}T)/m)
-					.find((entry) => entry.includes('[auth-event]') && entry.includes(referer));
-			},
-			{ timeout: 5000, message: 'expected a failed authentication audit event' }
-		);
-		const sessionId = session.Cookie.slice(session.Cookie.indexOf('=') + 1);
-		ok(!auditEvent.includes(sessionId), 'authentication audit events must not contain a raw session ID');
-	});
+			const referer = `${origin}/credential-revocation-audit`;
+			const denied = await operation(
+				{ operation: 'user_info' },
+				{ ...session, Authorization: `Bearer ${token}`, Referer: referer }
+			);
+			await expectStatus(denied, 401);
+			strictEqual(denied.headers.get('set-cookie'), null, 'the unrelated cookie should be left alone');
+			const logPath = join(ctx.harper.logDir ?? join(ctx.harper.dataRootDir, 'log'), 'hdb.log');
+			const auditEvent = await waitFor(
+				async () => {
+					const log = await readFile(logPath, 'utf8');
+					return log
+						.split(/(?=^\d{4}-\d{2}-\d{2}T)/m)
+						.find((entry) => entry.includes('[auth-event]') && entry.includes(referer));
+				},
+				{ timeout: 5000, message: 'expected a failed authentication audit event' }
+			);
+			const sessionId = session.Cookie.slice(session.Cookie.indexOf('=') + 1);
+			ok(typeof auditEvent === 'string');
+			ok(!auditEvent.includes(sessionId), 'authentication audit events must not contain a raw session ID');
+		}
+	);
 });

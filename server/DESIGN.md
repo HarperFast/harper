@@ -277,8 +277,8 @@ So a rejection is recorded rather than answered:
   and it does not leak through request copies or serialization.
 - **An internal authentication fault** — unreadable or malformed JWT key material, a storage failure,
   an unexpected error type — is never deferred, and fails closed with the in-line 401.
-- **The operations API** never defers: `request.isOperationsServer` short-circuits to the in-line
-  401, because every operations route is Harper-owned and there is nothing to defer to.
+- **The operations API** usually settles rejections in line. Native `POST /` defers a stored user's session
+  rejection so `authorize` can refuse protected operations and login can verify fresh credentials.
 
 **Rejection provenance is asserted, never inferred.** `security/credentialRejection.ts` holds a
 module-private `Symbol` tag; only the code that actually concludes "this credential is unacceptable"

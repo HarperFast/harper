@@ -12,6 +12,7 @@ import mqtt, { type IClientOptions, type MqttClient } from 'mqtt';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error utils/client.mjs has no type declarations; runtime resolves fine
 import { createApiClient } from '../apiTests/utils/client.mjs';
+import { waitFor as waitForCondition } from '../../unitTests/waitFor.js';
 import {
 	CLIENT_AUTH_OID,
 	certToPem,
@@ -228,7 +229,11 @@ suite('Subscriptions of principals with no hdb_user (#4062)', { skip: skipSuite 
 			.map((c) => c.split(';')[0])
 			.find((c) => c.includes('-hdb-session='));
 		ok(cookie, `expected an hdb-session cookie, got ${JSON.stringify([...login.headers])}`);
-		await client.reqAs({ Cookie: cookie, Origin: origin }).send({ operation: 'user_info' }).expect(200);
+		await waitForCondition(
+			async () =>
+				(await client.reqAs({ Cookie: cookie, Origin: origin }).send({ operation: 'user_info' })).status === 200,
+			{ timeout: 5000, message: 'expected the session cookie to authenticate before drop_user' }
+		);
 		await client.req().send({ operation: 'drop_user', username: DROPPED.username }).expect(200);
 
 		const streams = { token: openSse({ Authorization: `Bearer ${token}` }), cookie: openSse({ Cookie: cookie }) };

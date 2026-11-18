@@ -861,7 +861,7 @@ export class SignOut extends Resource {
 
 `context.login(username, password)` verifies credentials and establishes the session cookie on success. To end a session, clear its user with `context.session.update({ user: null })` — [`update`](../http/api.md#properties) is the session's only mutator. `context.session` is an empty object rather than `undefined` when sessions are enabled and the request carries no session cookie, so test `context?.session?.user` to detect an established session.
 
-Use `context.user` for access checks. The stored `context.session.user` can still contain a username after Harper has refused to authenticate that user.
+Use `context.user` for access checks. `context.session.user` stores the username associated with the session cookie.
 
 Cookie-based sessions are intended for browser clients. For non-browser clients (CLI tools, mobile apps, service-to-service), use JWT issuance — see [JWT Authentication](../security/jwt-authentication.md).
 
