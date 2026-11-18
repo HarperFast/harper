@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794906425719,
+  "lastUpdate": 1794986252434,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -9572,6 +9572,63 @@ window.BENCHMARK_DATA = {
           {
             "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 1441.69,
+            "unit": "ops/sec"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "0ce681594cc5b01a9e8b34515ef236908ed43dab",
+          "message": "Wait for restricted subscriber control frame in C2 opaque MQTT test (#4429)\n\n* Wait for the restricted subscriber's control frame in C2 opaque MQTT test\n\nIn subscription-attribute-surfaces.test.ts test C2, wait for the\nrestricted subscriber as well as the open subscribers to receive the\nJSON opq-control message before snapshotting r.msgs.length for the\nopaque-payload loop. When the restricted subscriber sits on a worker\nthread shared by no open subscriber, its control frame can arrive a few\nmilliseconds after the snapshot under CPU contention and be counted in\nthe text/plain assertion. Also include received frames in the\nframe-count assertion message.\n\nDispatch-Task: harper-c2-opaque-mqtt-control-race\nCo-Authored-By: Gemini <noreply@google.com>\n\n* Assert open-subscriber control delivery before the C2 opaque loop\n\nAssert ok(controlAll, ...) immediately after awaiting open-subscriber\nopq-control delivery instead of after the opaque-payload loop, dumping\nper-subscriber OBS frames on failure and naming the missed labels. This\navoids running three 4s opaque waits when JSON control fan-out fails\nwhile keeping the OBS diagnostic output.\n\nDispatch-Task: harper-c2-opaque-mqtt-control-race\nCo-Authored-By: Gemini <noreply@google.com>\n\n---------\n\nCo-authored-by: Gemini <noreply@google.com>",
+          "timestamp": "2026-11-18T04:50:55Z",
+          "url": "https://github.com/HarperFast/harper/commit/0ce681594cc5b01a9e8b34515ef236908ed43dab"
+        },
+        "date": 1794986248966,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "load — bulk insert",
+            "value": 8564.04,
+            "unit": "records/sec"
+          },
+          {
+            "name": "workload C — Read only (100% read)",
+            "value": 13563.61,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload B — Read mostly (95% read / 5% update)",
+            "value": 13038.43,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload A — Update heavy (50% read / 50% update)",
+            "value": 9160.89,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
+            "value": 6775.4,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
+            "value": 13051.53,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
+            "value": 1485.23,
             "unit": "ops/sec"
           }
         ]
