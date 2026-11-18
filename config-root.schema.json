@@ -112,7 +112,10 @@
 					"minimum": 0,
 					"description": "Responses larger than this threshold (bytes) will be compressed for clients that accept brotli. Default: 0 (compression disabled)"
 				},
-				"cors": { "type": "boolean", "description": "Enable Cross Origin Resource Sharing. Default: true" },
+				"cors": {
+					"type": "boolean",
+					"description": "Enable Cross Origin Resource Sharing. Default: false; harper install writes true in dev mode and false in prod mode."
+				},
 				"corsAccessList": {
 					"type": ["array", "null"],
 					"description": "List of allowed origins for CORS.",
@@ -533,7 +536,10 @@
 			"type": "object",
 			"additionalProperties": false,
 			"properties": {
-				"enabled": { "type": "boolean", "description": "Enable local Harper Studio GUI. Default: false" }
+				"enabled": {
+					"type": "boolean",
+					"description": "Enable local Harper Studio GUI. Default: true; off when the key is absent."
+				}
 			}
 		},
 		"studio": {
@@ -567,7 +573,7 @@
 			"description": "Logging configuration for Harper.",
 			"additionalProperties": true,
 			"properties": {
-				"auditLog": { "type": "boolean", "description": "Enable structured table transaction logging. Default: false" },
+				"auditLog": { "type": "boolean", "description": "Enable structured table transaction logging. Default: true" },
 				"file": { "type": "boolean", "description": "Log to file. Default: true" },
 				"auditRetention": {
 					"type": ["string", "number"],
@@ -625,7 +631,7 @@
 			"properties": {
 				"authorizeLocal": {
 					"type": "boolean",
-					"description": "Automatically authorize requests from loopback IP as superuser. Default: true"
+					"description": "Automatically authorize requests from loopback IP as superuser. Default: false; harper install writes true in dev mode and false in prod mode, and harper dev turns it on when the key is absent."
 				},
 				"cacheTTL": { "type": "number", "description": "Milliseconds an authentication can be cached. Default: 30000" },
 				"enableSessions": { "type": "boolean", "description": "Enable cookie-based sessions. Default: true" },
@@ -654,7 +660,7 @@
 						"corsAccessList": { "type": ["array", "null"], "items": { "type": "string" } },
 						"domainSocket": {
 							"type": "string",
-							"description": "Unix domain socket path for CLI access. Default: <ROOTPATH>/hdb/operations-server"
+							"description": "Unix domain socket path for CLI access, relative to rootPath. Unset, or the installed placeholder hdb/operations-server, means <rootPath>/operations-server."
 						},
 						"headersTimeout": { "type": "integer" },
 						"keepAliveTimeout": { "type": "integer" },
@@ -887,7 +893,21 @@
 				"reclamation": {
 					"type": "object",
 					"description": "Reclamation process configuration.",
-					"additionalProperties": true
+					"additionalProperties": true,
+					"properties": {
+						"threshold": {
+							"type": ["number", "null"],
+							"description": "Free-space ratio below which reclamation evicts from caching tables and demotes local replicas. Default: 0.4"
+						},
+						"interval": {
+							"type": ["string", "number", "null"],
+							"description": "Free-space check interval, as a duration such as '1h' or a number of seconds. Default: 1h"
+						},
+						"evictionFactor": {
+							"type": ["number", "null"],
+							"description": "Heuristic factor for early eviction under disk pressure. Default: 100000"
+						}
+					}
 				},
 				"transactionLog": {
 					"type": "object",
@@ -921,7 +941,7 @@
 			"properties": {
 				"network": {
 					"type": "object",
-					"description": "MQTT listener configuration. Required whenever mqtt is present.",
+					"description": "MQTT listener configuration. Required whenever mqtt is present in a complete config; an install template (HDB_CONFIG) may omit it, since install adds it.",
 					"additionalProperties": true,
 					"properties": {
 						"port": {

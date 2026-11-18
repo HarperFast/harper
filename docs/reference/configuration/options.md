@@ -39,7 +39,7 @@ http:
 
 - `sessionAffinity` — Route requests from same client to same worker thread (`ip` or header name)
 - `compressionThreshold` — Response size threshold (bytes) for Brotli compression; `0` disables compression; _Default_: `0`
-- `cors` — Enable CORS; _Default_: `true`
+- `cors` — Enable CORS; _Default_: `false` (`harper install` writes `true` in dev mode and `false` in prod mode)
 - `corsAccessList` — Allowed origins for CORS requests. From v5.4.0, an entry such as `https://*.app.example.com` allows any one label in place of `*`; see [`http.corsAccessList`](../http/configuration.md#httpcorsaccesslist)
 - `corsAccessControlAllowHeaders` — `Access-Control-Allow-Headers` value for OPTIONS preflight
 - `headersTimeout` — Max wait for complete HTTP headers (ms); _Default_: `60000`
@@ -175,7 +175,7 @@ authentication:
   refreshTokenTimeout: 30d
 ```
 
-- `authorizeLocal` — Auto-authorize loopback requests as superuser; _Default_: `true`. From v5.4.0, these requests run as the built-in [`local` user](../security/configuration.md#local-request-identity).
+- `authorizeLocal` — Auto-authorize loopback requests as superuser; _Default_: `false` (`harper install` writes `true` in dev mode and `false` in prod mode; `harper dev` turns it on when the setting is absent). From v5.4.0, these requests run as the built-in [`local` user](../security/configuration.md#local-request-identity).
 - `cacheTTL` — Session cache duration (ms); _Default_: `30000`
 - `enableSessions` — Cookie-based sessions; _Default_: `true`
 - `operationTokenTimeout` — Access token lifetime; _Default_: `1d`

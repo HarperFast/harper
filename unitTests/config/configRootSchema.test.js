@@ -11,13 +11,8 @@ const schema = require('../../config-root.schema.json');
 
 const defaults = YAML.parse(readFileSync(join(__dirname, '../../static/defaultConfig.yaml'), 'utf8'));
 
-// Harper reads these straight from the YAML, but no config parameter names them.
-const UNREGISTERED_SETTINGS = new Set([
-	'logging.path',
-	'logging.external.root',
-	'logging.external.stdStreams',
-	'storage.reclamation',
-]);
+// Harper reads these straight from the YAML, but no config parameter names them (harper#4502).
+const UNREGISTERED_SETTINGS = new Set(['logging.path', 'logging.external.root', 'logging.external.stdStreams']);
 
 const WRITABLE_PARAMS = new Set([...Object.keys(CONFIG_PARAM_MAP), ...Object.values(STUDIO_CONFIG_PARAMS)]);
 
@@ -27,7 +22,8 @@ function resolveRef(node) {
 
 function shapesOf(node) {
 	const resolved = resolveRef(node);
-	return (resolved.oneOf ?? resolved.anyOf)?.map(resolveRef) ?? [resolved];
+	const shapes = (resolved.oneOf ?? resolved.anyOf)?.map(resolveRef) ?? [resolved];
+	return [...shapes, ...(resolved.allOf ?? []).flatMap(shapesOf)];
 }
 
 function objectShape(node) {
@@ -156,11 +152,18 @@ describe('config-root.schema.json matches the configuration Harper reads', () =>
 		assert.strictEqual(configValidator({ ...config, mqtt: defaults.mqtt }, true).error, undefined);
 	});
 
-	it('documents the token lifetimes defaultConfig.yaml installs', () => {
-		const authentication = schema.properties.authentication.properties;
-		for (const name of ['operationTokenTimeout', 'refreshTokenTimeout']) {
-			const documented = /Default: (\S+)$/.exec(authentication[name].description)?.[1];
-			assert.strictEqual(documented, defaults.authentication[name], name);
+	it('states the default for every setting defaultConfig.yaml sets, wherever a description names one', () => {
+		const mismatched = [];
+		let compared = 0;
+		for (const { node, path } of schemaNodes(schema)) {
+			const description = node.description ?? resolveRef(node).description ?? '';
+			const documented = /Default: '?([^\s;,']+)'?[.;,]?(?:\s|$)/.exec(description)?.[1];
+			const installed = path.reduce((value, key) => value?.[key], defaults);
+			if (documented === undefined || installed == null || typeof installed === 'object') continue;
+			compared++;
+			if (documented !== String(installed)) mismatched.push(`${path.join('.')}: ${documented} vs ${installed}`);
 		}
+		assert.deepStrictEqual(mismatched, []);
+		assert.ok(compared >= 20, `compared only ${compared} defaults`);
 	});
 });
