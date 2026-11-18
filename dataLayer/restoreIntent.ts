@@ -29,6 +29,7 @@ import {
 	DEFAULT_RESTORE_MAX_ATTEMPTS,
 	describeRestoreSource,
 	inheritedStagingDirs,
+	interruptedArchiveRestoreReceipt,
 	isStagedReceipt,
 	newRestoreReceipt,
 	readRestoreReceipt,
@@ -484,10 +485,6 @@ function resumableReceipt(databaseName: string, read: RestoreReceiptRead, { arch
 		);
 	}
 	return read.receipt;
-}
-
-export function interruptedArchiveRestoreReceipt(receipt: RestoreReceipt): boolean {
-	return isStagedReceipt(receipt) && receipt.route !== 'on_restart' && receipt.state === 'applying';
 }
 
 /** A record that cannot be read is cancellable: removing it is what cancel is for. */

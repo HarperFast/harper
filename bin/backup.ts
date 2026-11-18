@@ -151,8 +151,8 @@ const OFFLINE_RESTORE_UNSUPPORTED = ['on_restart', 'retain_previous', 'resume'];
 
 async function archiveRestoreToResume(databaseName: string): Promise<RestoreReceipt | undefined> {
 	const { resolveDatabasePath } = await import('../resources/databases.ts');
-	const { isStagedReceipt, readRestoreReceipt } = await import('../dataLayer/restoreReceipt.ts');
-	const { interruptedArchiveRestoreReceipt } = await import('../dataLayer/restoreIntent.ts');
+	const { interruptedArchiveRestoreReceipt, isStagedReceipt, readRestoreReceipt } =
+		await import('../dataLayer/restoreReceipt.ts');
 	const read = readRestoreReceipt(resolveDatabasePath(databaseName));
 	if (read.kind !== 'valid' || !isStagedReceipt(read.receipt) || read.receipt.state === 'committed') return undefined;
 	const { receipt } = read;
