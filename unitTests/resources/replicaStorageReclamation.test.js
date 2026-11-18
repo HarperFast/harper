@@ -368,6 +368,29 @@ async function reclaimAt(priority) {
 		assert.ok(Rows.primaryStore.getEntry('renewed').replicaDeadline > Date.now() + LIFETIME_MS / 2);
 	});
 
+	it('rechecks record expiry when a selected replica reuses its version and lease', async () => {
+		const { setNextEncoding, VERSION_REUSED, HAS_EXPIRATION } = require('#src/resources/RecordEncoder');
+		await replica('reused', 1000);
+		const evict = Rows.evict;
+		Rows.evict = function (id, ...observed) {
+			const store = Rows.primaryStore;
+			const row = store.getEntry(id, { uncachedRead: true });
+			setNextEncoding(
+				row.version,
+				row.metadataFlags | VERSION_REUSED | HAS_EXPIRATION,
+				Date.now() + LIFETIME_MS,
+				row.nodeId,
+				row.residencyId,
+				row.residencySlot,
+				row.replicaDeadline
+			);
+			store.putSync(id, row.value, { version: row.version });
+			return evict.call(this, id, ...observed);
+		};
+		await reclaimAt(10);
+		assertKept('reused');
+	});
+
 	it('demotes only passed deadlines once the priority returns to 0', async () => {
 		for (const id of ['a', 'b', 'c']) await replica(id, 1000);
 		await reclaimAt(10);
@@ -617,7 +640,10 @@ async function reclaimAt(priority) {
 			const stats = await describeRows();
 			assert.equal(stats.record_count, owned.length + replicas.length);
 			assert.equal(stats.replica_count, replicas.length);
-			assert.ok(stats.replica_size_estimate > 0);
+			const replicaBytes = replicas.reduce((sum, id) => sum + Table.primaryStore.getEntry(id).size, 0);
+			assert.ok(replicaBytes > 0);
+			assert.equal(stats.replica_size_estimate, replicaBytes);
+			assert.equal((await describeRows({ exact_count: true })).replica_size_estimate, replicaBytes);
 			assert.equal(stats.estimated_replica_range, undefined);
 			const lowKey = Array.from({ length: 32 }, (_, i) => [null, i]).find(
 				(key) => !Table.getRecordResidency({ key }).includes(server.hostname)
@@ -641,6 +667,44 @@ async function reclaimAt(priority) {
 			assert.equal((await describeRows({ skip_record_count: true })).replica_count, undefined);
 			await Table.clear();
 			assert.equal((await describeRows({ exact_count: true })).replica_count, 0);
+		});
+
+		it('keeps the completed tally if a TTL walk skips replicas while their lifetime is toggled', async () => {
+			await loadGQLSchema(`type Toggled @table(database: "shardedReclamation", expiration: 600, eviction: 600,
+				replicaExpiration: 3600) @sharded(slots: 2) { id: ID @primaryKey tag: String @indexed body: String }`);
+			const Table = databases.shardedReclamation.Toggled;
+			const { replicas } = await writeRows(Table, 'toggle');
+			await reclaimAt(1.01);
+			assert.equal((await Table.getReplicaStats()).count, replicas.length);
+			const store = Table.primaryStore;
+			const range = store.getRange;
+			let toggled = false;
+			store.getRange = function (options) {
+				const entries = range.call(this, options);
+				if (!options?.versions || !options.lazy) return entries;
+				return (function* () {
+					for (const entry of entries) {
+						if (entry.key !== replicas[0] || toggled) {
+							yield entry;
+							continue;
+						}
+						toggled = true;
+						Table.setTTLExpiration({ replicaExpiration: 0 });
+						try {
+							yield entry;
+						} finally {
+							Table.setTTLExpiration({ replicaExpiration: 3600 });
+						}
+					}
+				})();
+			};
+			try {
+				await reclaimAt(1.01);
+			} finally {
+				store.getRange = range;
+			}
+			assert.ok(toggled);
+			assert.equal((await Table.getReplicaStats()).count, replicas.length);
 		});
 
 		it('demotes an older write replica on a full disk, keeps a fresh one and every owned row', async () => {

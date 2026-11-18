@@ -2177,6 +2177,7 @@ export function makeTable(options): TableResourceClass {
 	const replicaRefreshCheckedAt = new Map<Id, number>();
 	const replicaRefreshCheckedAtComposite = new Map<string, number>();
 	let replicaEvictionArmed = false;
+	let replicaSweepGeneration = 0;
 	let replicaTableKnown = false;
 	let nextReplicaReclaimKey: Id | undefined;
 	// shared across this node's threads: [0] replica admissions, [1] whether the owner's sweep is armed;
@@ -5867,13 +5868,7 @@ export function makeTable(options): TableResourceClass {
 					// if there is a resolution in-progress, abandon the eviction
 					if (primaryStore.hasLock(id, entry.version)) return;
 				}
-				// Compare the observed lifetime in the transaction that replaces the row.
-				if (
-					observedDeadline === undefined &&
-					observedExpiresAt !== undefined &&
-					reusedVersionChangedExpiry(entry, observedExpiresAt)
-				)
-					return;
+				if (observedExpiresAt !== undefined && reusedVersionChangedExpiry(entry, observedExpiresAt)) return;
 				if (
 					observedDeadline !== undefined &&
 					(!(entry.metadataFlags & REPLICA) || (entry.replicaDeadline ?? null) !== observedDeadline)
@@ -12004,9 +11999,14 @@ export function makeTable(options): TableResourceClass {
 			if (!replicaExpirationMs || !residencyPolicy || !hasSecondaryIndices()) return;
 			if (!exactCount) {
 				const shared = sharedReplicaStats();
-				const count = Number(Atomics.load(shared, 0)) - 1;
-				if (count < 0) return; // no complete scan since startup
-				return { count, sizeEstimate: count ? Number(Atomics.load(shared, 1)) : 0 };
+				for (;;) {
+					const generation = Atomics.load(shared, 0);
+					if (!generation) return;
+					const slot = 1 + 2 * Number(generation & 1n);
+					const count = Number(Atomics.load(shared, slot));
+					const sizeEstimate = Number(Atomics.load(shared, slot + 1));
+					if (generation === Atomics.load(shared, 0)) return { count, sizeEstimate };
+				}
 			}
 			const tally = { count: 0, sampleBytes: 0 };
 			let walked = 0;
@@ -12912,9 +12912,9 @@ export function makeTable(options): TableResourceClass {
 	defaultAllowReads.add(TableResource.prototype.allowRead);
 	try {
 		TableResource.updatedAttributes(); // on creation, update accessors as well
-		// Explicit residency can leave replicas on an indexed table without a declarative policy.
+		// Cold cleanup also covers replicas admitted before an index was dropped.
 		// Select the joint interval before a catalog TTL arms the first timer.
-		replicaTableKnown = Boolean(options.catalogMayHaveReplicas && (!residencyPolicy || hasSecondaryIndices()));
+		replicaTableKnown = Boolean(options.catalogMayHaveReplicas);
 		replicaEvictionArmed = Boolean(replicaTableKnown && replicaExpirationMs);
 		// anything but absent or zero is validated here: a peer's definition reaches a create unvalidated
 		if ((expirationMs !== undefined && expirationMs !== 0) || evictionMs !== 0) {
@@ -15695,6 +15695,14 @@ export function makeTable(options): TableResourceClass {
 			let count = 0;
 			const sweepState = replicaEvictionArmed && ownsCleanup() && replicaSweep();
 			const admissionsAtStart = sweepState && Atomics.load(sweepState, 0);
+			const sweepGeneration = replicaSweepGeneration;
+			const canContinue = () =>
+				!maintenanceClosed &&
+				!disposed &&
+				!isReadOnlyMode() &&
+				ownsCleanup() &&
+				(!sweepState || sweepGeneration === replicaSweepGeneration) &&
+				(replicaEvictionArmed || cleanupForExpiry);
 			let seenReplicas = false;
 			let interrupted = false;
 			let walked = 0;
@@ -15717,146 +15725,151 @@ export function makeTable(options): TableResourceClass {
 			// the per-record commit cost; LMDB keeps the per-record path (eventTurnBatching already
 			// coalesces async writes per event turn).
 			const batcher = isRocksDB ? createEvictionBatcher() : undefined;
-			// iterate through all entries to find expired records and deleted records
-			for (const entry of primaryStore.getRange({
-				start: resumeKey ?? (sweepState ? undefined : false),
-				snapshot: false, // we don't want to keep read transaction snapshots open
-				versions: true,
-				lazy: true, // only want to access metadata most of the time
-			})) {
-				const sweepReplicas = sweepState && replicaEvictionArmed && ownsCleanup();
-				if (maintenanceClosed || disposed || isReadOnlyMode() || (!sweepReplicas && !cleanupForExpiry)) {
-					interrupted = true;
-					break;
-				}
-				if (
-					pressure > 1 &&
-					(budgetReached || (walked >= batch && walked % checkEvery === 0 && performance.now() >= budgetEnd))
-				) {
-					nextReplicaReclaimKey = entry.key;
-					interrupted = true;
-					break;
-				}
-				if (pressure > 1 && walked && walked % checkEvery === 0) {
-					pressure = await getStorageReclamationPriority(primaryStore.path);
-					cutoff = replicaPressureCutoff(started, pressure);
-					if (
-						maintenanceClosed ||
-						disposed ||
-						isReadOnlyMode() ||
-						!ownsCleanup() ||
-						(!(pressure > 1) && !cleanupForExpiry)
-					) {
+			if (!canContinue()) return;
+			const entries = primaryStore
+				.getRange({
+					start: resumeKey ?? (sweepState ? undefined : false),
+					snapshot: false,
+					versions: true,
+					lazy: true,
+				})
+				[Symbol.iterator]();
+			try {
+				while (canContinue()) {
+					const next = entries.next();
+					if (next.done) break;
+					const entry = next.value;
+					const sweepReplicas = sweepState && replicaEvictionArmed;
+					// The queued pressure pass starts as soon as this ordinary pass releases the iterator.
+					if (sweepReplicas && !(priority > 1) && cleanupPriority > 1 && walked % checkEvery === 0) {
 						interrupted = true;
 						break;
 					}
-				}
-				walked++;
-				const { key, version, expiresAt, metadataFlags, replicaDeadline } = entry;
-				if (sweepReplicas && metadataFlags & REPLICA) {
-					seenReplicas = true;
-					const expired = !(replicaDeadline > Date.now());
-					const reclaim =
+					if (
 						pressure > 1 &&
-						Date.now() - version >= minAgeMs &&
-						(replicaDeadline <= cutoff || replicaDeadline > Date.now() + replicaExpirationMs);
-					const evictForExpiry =
-						!expired &&
-						!reclaim &&
-						cleanupForExpiry &&
+						(budgetReached || (walked >= batch && walked % checkEvery === 0 && performance.now() >= budgetEnd))
+					) {
+						nextReplicaReclaimKey = entry.key;
+						interrupted = true;
+						break;
+					}
+					if (pressure > 1 && walked && walked % checkEvery === 0) {
+						pressure = await getStorageReclamationPriority(primaryStore.path);
+						cutoff = replicaPressureCutoff(started, pressure);
+						if (!canContinue() || (!(pressure > 1) && !cleanupForExpiry)) {
+							interrupted = true;
+							break;
+						}
+					}
+					walked++;
+					const { key, version, expiresAt, metadataFlags, replicaDeadline } = entry;
+					if (sweepReplicas && metadataFlags & REPLICA) {
+						seenReplicas = true;
+						const expired = !(replicaDeadline > Date.now());
+						const reclaim =
+							pressure > 1 &&
+							Date.now() - version >= minAgeMs &&
+							(replicaDeadline <= cutoff || replicaDeadline > Date.now() + replicaExpirationMs);
+						const evictForExpiry =
+							!expired &&
+							!reclaim &&
+							cleanupForExpiry &&
+							expiresAt != undefined &&
+							(hasSourceGet || !priority
+								? shouldEvict(expiresAt, version, metadataFlags, entry.value)
+								: expiresAt + evictionMs < Date.now());
+						let demoted;
+						if (expired || reclaim || evictForExpiry) {
+							try {
+								demoted = await TableResource.evict(
+									key,
+									undefined,
+									version,
+									replicaDeadline ?? null,
+									expiresAt ?? null
+								);
+							} catch (error) {
+								logger.warn?.('Error demoting replica', key, error);
+							}
+							if (reclaim) {
+								madeProgress ||= demoted === true;
+								if (++attempted % batch === 0) {
+									if (!madeProgress) {
+										logger.warn?.(`Could not demote any of ${batch} replicas of ${tableName} under storage pressure`);
+										interrupted = true;
+										break;
+									}
+									madeProgress = false;
+									budgetReached = performance.now() >= budgetEnd;
+								}
+							}
+						}
+						if (tally && demoted !== true) tallyReplica(tally, entry);
+						if (walked % REPLICA_SWEEP_YIELD_EVERY === 0) await rest();
+						continue;
+					}
+					if (!cleanupForExpiry) {
+						if (walked % REPLICA_SWEEP_YIELD_EVERY === 0) await rest();
+						continue;
+					}
+					const record = entry.value;
+					// if there is no auditing cleanup and we are tracking deletion, need to do cleanup of
+					// these deletion entries (LMDB audit cleanup has its own scheduled job for this)
+					let action: 'tombstone' | 'evict' | undefined;
+					if (record === null && removeDeletedRecords && version + auditRetention < Date.now()) {
+						action = 'tombstone';
+					} else if (
 						expiresAt != undefined &&
 						(hasSourceGet || !priority
-							? shouldEvict(expiresAt, version, metadataFlags, entry.value)
-							: expiresAt + evictionMs < Date.now());
-					let demoted;
-					if (expired || reclaim || evictForExpiry) {
-						try {
-							demoted = await TableResource.evict(key, undefined, version, replicaDeadline ?? null);
-						} catch (error) {
-							logger.warn?.('Error demoting replica', key, error);
-						}
-						if (reclaim) {
-							madeProgress ||= demoted === true;
-							if (++attempted % batch === 0) {
-								if (!madeProgress) {
-									logger.warn?.(`Could not demote any of ${batch} replicas of ${tableName} under storage pressure`);
-									interrupted = true;
-									break;
-								}
-								madeProgress = false;
-								budgetReached = performance.now() >= budgetEnd;
+							? shouldEvict(expiresAt, version, metadataFlags, record)
+							: expiresAt + evictionMs < Date.now())
+					) {
+						action = 'evict';
+						count++;
+					}
+					if (action) {
+						// Blob-bearing records stay on the per-record evict() path, which reclaims their blob
+						// files only after its own commit; the batcher's removeEntry would queue them at staging.
+						if (batcher && !(action === 'evict' && metadataFlags & (HAS_BLOBS | REPLICA))) {
+							await batcher.add(action, key, version, expiresAt);
+						} else {
+							const resolution =
+								action === 'tombstone'
+									? removeEntry(primaryStore, entry, version)
+									: TableResource.evict(key, record, version, undefined, expiresAt);
+							if (resolution) {
+								await outstandingCleanupOperations[cleanupIndex];
+								outstandingCleanupOperations[cleanupIndex] = resolution.catch((error) => {
+									logger.error?.('Cleanup error', error);
+								});
+								if (++cleanupIndex >= MAX_CLEANUP_CONCURRENCY) cleanupIndex = 0;
 							}
 						}
 					}
-					if (tally && demoted !== true) tallyReplica(tally, entry);
-					if (walked % REPLICA_SWEEP_YIELD_EVERY === 0) await rest();
-					continue;
+					await rest();
 				}
-				if (!cleanupForExpiry) {
-					if (walked % REPLICA_SWEEP_YIELD_EVERY === 0) await rest();
-					continue;
-				}
-				const record = entry.value;
-				// if there is no auditing cleanup and we are tracking deletion, need to do cleanup of
-				// these deletion entries (LMDB audit cleanup has its own scheduled job for this)
-				let action: 'tombstone' | 'evict' | undefined;
-				if (record === null && removeDeletedRecords && version + auditRetention < Date.now()) {
-					action = 'tombstone';
-				} else if (
-					expiresAt != undefined &&
-					(hasSourceGet || !priority
-						? shouldEvict(expiresAt, version, metadataFlags, record)
-						: expiresAt + evictionMs < Date.now())
-				) {
-					action = 'evict';
-					count++;
-				}
-				if (action) {
-					// Blob-bearing records stay on the per-record evict() path, which reclaims their blob
-					// files only after its own commit; the batcher's removeEntry would queue them at staging.
-					if (batcher && !(action === 'evict' && metadataFlags & (HAS_BLOBS | REPLICA))) {
-						await batcher.add(action, key, version, expiresAt);
-					} else {
-						const resolution =
-							action === 'tombstone'
-								? removeEntry(primaryStore, entry, version)
-								: TableResource.evict(key, record, version, undefined, expiresAt);
-						if (resolution) {
-							await outstandingCleanupOperations[cleanupIndex];
-							outstandingCleanupOperations[cleanupIndex] = resolution.catch((error) => {
-								logger.error?.('Cleanup error', error);
-							});
-							if (++cleanupIndex >= MAX_CLEANUP_CONCURRENCY) cleanupIndex = 0;
-						}
-					}
-				}
-				await rest();
+			} finally {
+				entries.return?.();
 			}
+			if (!canContinue()) interrupted = true;
 			if (reclaiming && !interrupted) nextReplicaReclaimKey = undefined;
 			await Promise.all(outstandingCleanupOperations.filter(Boolean));
 			if (batcher) await batcher.drain();
-			if (
-				tally &&
-				!interrupted &&
-				replicaEvictionArmed &&
-				!maintenanceClosed &&
-				!disposed &&
-				!isReadOnlyMode() &&
-				ownsCleanup()
-			) {
+			if (tally && !interrupted && canContinue()) {
+				// The sole maintenance owner fills the inactive slot before publishing the new generation.
 				const shared = sharedReplicaStats();
-				Atomics.store(shared, 1, BigInt(estimatedReplicaBytes(tally)));
-				Atomics.store(shared, 0, BigInt(tally.count + 1)); // zero in a fresh buffer means unknown
+				const generation = Atomics.load(shared, 0) + 1n;
+				const slot = 1 + 2 * Number(generation & 1n);
+				Atomics.store(shared, slot, BigInt(tally.count));
+				Atomics.store(shared, slot + 1, BigInt(estimatedReplicaBytes(tally)));
+				Atomics.store(shared, 0, generation);
 			}
 			if (
 				sweepState &&
 				resumeKey === undefined &&
 				!interrupted &&
 				!seenReplicas &&
-				!maintenanceClosed &&
-				!disposed &&
-				!isReadOnlyMode() &&
-				ownsCleanup() &&
+				canContinue() &&
 				Atomics.load(sweepState, 0) === admissionsAtStart
 			) {
 				standDownReplicaSweep();
@@ -16141,7 +16154,7 @@ export function makeTable(options): TableResourceClass {
 				return Promise.resolve(false);
 			const deadline = replicaDeadlineFor(entry.expiresAt);
 			if (deadline <= entry.replicaDeadline) return Promise.resolve(false);
-			// This header-only put stages no index update or local log entry.
+			// Renew at the canonical version without appending an audit entry or changing indexes.
 			rewriteRecordMetadata(entry.key, entry, entry.copiedDeleteBoundary, transaction, deadline);
 			const completion = commitRawTransaction(transaction);
 			submitted = true;
@@ -16517,7 +16530,7 @@ export function makeTable(options): TableResourceClass {
 	}
 	function sharedReplicaStats(): BigInt64Array {
 		return (replicaStatsState ??= new BigInt64Array(
-			primaryStore.getUserSharedBuffer(`replica-stats:${tableId}`, new ArrayBuffer(16))
+			primaryStore.getUserSharedBuffer(`replica-stats:${tableId}`, new ArrayBuffer(5 * BigInt64Array.BYTES_PER_ELEMENT))
 		));
 	}
 	function replicaSweep(): Int32Array {
@@ -16548,6 +16561,7 @@ export function makeTable(options): TableResourceClass {
 	}
 	function standDownReplicaSweep() {
 		if (!replicaEvictionArmed) return;
+		replicaSweepGeneration++;
 		replicaEvictionArmed = false;
 		nextReplicaReclaimKey = undefined;
 		if (ownsCleanup()) Atomics.store(replicaSweep(), 1, 0);

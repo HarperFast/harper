@@ -178,7 +178,7 @@ if (
 // changed the body since, so no older write can (set in Table.ts). RocksDB, audited tables; clear proves
 // nothing. Record-only: harper-pro's copy walk masks it from the audit flags it mirrors.
 export const FULL_WRITE_HEAD = 0x40000;
-// Local primary metadata only. The deadline follows the optional record expiry.
+// Primary rows only. createAuditEntry strips this bit when a copy sender forwards row flags.
 export const HAS_REPLICA_DEADLINE = 0x200000;
 if (VERSION_REUSED === HAS_REPLICA_DEADLINE) throw new Error('VERSION_REUSED collides with HAS_REPLICA_DEADLINE');
 if (VERSION_REUSED === FULL_WRITE_HEAD)

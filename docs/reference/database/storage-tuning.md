@@ -522,6 +522,8 @@ Replicas are only demoted when `storage.reclamation.interval` runs a check, and 
 
 Demoting a replica does not free disk at once. It replaces the row with a smaller stub, and RocksDB returns the space when compaction rewrites the old version, which ongoing writes trigger over time. Free space may not rise during a check, and on a volume with no room left the demotions themselves can fail to write. Reclamation slows the growth of a node's cache and shrinks it over time; it does not replace keeping enough free space for the data the node owns.
 
+While an indexed table holds replicas, periodic cleanup walks its local primary rows, including owned rows and stubs. The default one-hour replica lifetime schedules a pass every 15 minutes. An empty pass lets replica cleanup stand down. Renewing a replica rewrites the full primary value at its existing version. For example, keeping a hot 1 MiB inline value at the default half-lifetime refresh threshold writes about 1 MiB per renewal per node, before compression and compaction. File-backed blobs retain their existing files.
+
 To see how much of a table is cache, use the `replica_count` and `replica_size_estimate` fields of [`describe_table`](../operations-api/operations.md#replicas).
 
 ## Compaction on Start
