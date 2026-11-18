@@ -29,9 +29,21 @@ const QUERY_VECTORS = {
 function fakeEmbed() {
 	const calls = [];
 	let pending;
+	let honorsAbort = true;
 	const embed = async (input, opts) => {
 		calls.push({ input, opts });
-		if (pending && opts.inputType === 'query') await pending;
+		if (pending && opts.inputType === 'query') {
+			const { signal } = opts;
+			await (honorsAbort && signal
+				? Promise.race([
+						pending,
+						new Promise((_resolve, reject) => {
+							if (signal.aborted) reject(signal.reason);
+							signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+						}),
+					])
+				: pending);
+		}
 		const texts = Array.isArray(input) ? input : [input];
 		return texts.map(
 			(text) =>
@@ -43,11 +55,13 @@ function fakeEmbed() {
 		);
 	};
 	embed.calls = calls;
-	embed.hold = () => {
+	embed.hold = ({ ignoreAbort = false } = {}) => {
 		let release;
+		honorsAbort = !ignoreAbort;
 		pending = new Promise((resolve) => (release = resolve));
 		return () => {
 			pending = undefined;
+			honorsAbort = true;
 			release();
 		};
 	};
@@ -222,9 +236,16 @@ describe('Vector search by sort text on an @embed attribute', () => {
 		it('refuses an HNSW attribute without @embed, naming it', () => {
 			assert.throws(
 				() => Doc.search({ sort: { attribute: 'rawVector', text: 'red fruit' } }),
-				(error) => error.statusCode === 400 && /"rawVector" has no @embed model/.test(error.message)
+				(error) => error.statusCode === 400 && /"rawVector" is not one/.test(error.message)
 			);
 			assert.equal(embed.calls.length, 0);
+		});
+
+		it('accepts the attribute as a one-element path', async () => {
+			const rows = await fromAsync(
+				Doc.search({ sort: { attribute: ['embedding'], text: 'red fruit' }, select: ['content'], limit: 1 })
+			);
+			assert.deepEqual(rows, [{ content: 'cherry' }]);
 		});
 
 		it('refuses an unknown attribute with a 404', () => {
@@ -240,7 +261,7 @@ describe('Vector search by sort text on an @embed attribute', () => {
 					Doc.search({
 						sort: { attribute: 'embedding', text: 'red fruit', next: { attribute: 'rawVector', text: 'x' } },
 					}),
-				/"rawVector" has no @embed model/
+				/"rawVector" is not one/
 			);
 			assert.equal(embed.calls.length, 0);
 		});
@@ -369,10 +390,66 @@ describe('Vector search by sort text on an @embed attribute', () => {
 	});
 
 	describe('results that are not ready yet', () => {
-		it('refuses synchronous iteration', () => {
+		it('refuses synchronous iteration, and that ends the search', async () => {
+			const release = embed.hold();
 			const results = Doc.search({ sort: { attribute: 'embedding', text: 'red fruit' } });
-			assert.throws(() => Array.from(results), /synchronously iterate a search whose sort embeds text/);
-			results.onDone();
+			try {
+				await waitFor(() => queryCalls().length === 1);
+				assert.throws(() => Array.from(results), /synchronously iterate a search whose sort embeds text/);
+				assert.equal(queryCalls()[0].opts.signal.aborted, true);
+			} finally {
+				release();
+			}
+		});
+
+		it('a next() still waiting when return() is called settles as done', async () => {
+			const release = embed.hold();
+			const iterator = Doc.search({ sort: { attribute: 'embedding', text: 'red fruit' } })[Symbol.asyncIterator]();
+			try {
+				await waitFor(() => queryCalls().length === 1);
+				const pending = iterator.next();
+				await iterator.return();
+				assert.deepEqual(await pending, { value: undefined, done: true });
+			} finally {
+				release();
+			}
+		});
+
+		it('a request aborted while its text is embedded fails as an abort, not a model failure', async () => {
+			const release = embed.hold();
+			const request = new AbortController();
+			const results = Doc.search({ sort: { attribute: 'embedding', text: 'red fruit' } }, { signal: request.signal });
+			try {
+				await waitFor(() => queryCalls().length === 1);
+				request.abort();
+			} finally {
+				release();
+			}
+			await rejectsWith(fromAsync(results), (error) => {
+				assert.equal(error.name, 'AbortError');
+				assert.notEqual(error.statusCode, 502);
+			});
+		});
+
+		it('a model that answers after the request was aborted opens no search', async () => {
+			const release = embed.hold({ ignoreAbort: true });
+			const request = new AbortController();
+			const context = recordingContext();
+			context.signal = request.signal;
+			const results = Doc.search({ sort: { attribute: 'embedding', text: 'red fruit' } }, context);
+			let installedBeforeAbort;
+			try {
+				await waitFor(() => queryCalls().length === 1);
+				installedBeforeAbort = context.installed.length;
+				request.abort();
+			} finally {
+				release();
+			}
+			await rejectsWith(fromAsync(results), (error) => assert.equal(error.name, 'AbortError'));
+			assert.deepEqual(
+				context.installed.slice(installedBeforeAbort).filter((txn) => !isReleasedTransaction(txn)),
+				[]
+			);
 		});
 
 		it('reads from a snapshot taken after the text is embedded', async () => {

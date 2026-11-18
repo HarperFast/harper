@@ -463,10 +463,10 @@ const MAX_COUNT_PAGE = 10_000;
  * that offset was scanned.
  */
 function countPageApplies(target: RequestTarget): boolean {
+	if (!target.count) return false;
 	const pageLimit = target.limit as number;
 	const offset = target.offset || 0;
 	return (
-		Boolean(target.count) &&
 		Number.isInteger(pageLimit) &&
 		pageLimit >= 0 &&
 		pageLimit <= MAX_COUNT_PAGE &&
@@ -969,7 +969,6 @@ function propagateSearchAuthorization(iterable: any, authorization: Promise<any>
 	}
 	return iterable;
 }
-/** An iterator over search results that are not ready yet: it waits for them, then delegates. */
 function deferredIterator(
 	options: any,
 	openResults: () => Promise<any>,
@@ -996,7 +995,10 @@ function deferredIterator(
 		));
 	return {
 		next(value?: any) {
-			if (!asynchronous) throw new Error(synchronousIterationMessage);
+			if (!asynchronous) {
+				finish();
+				throw new Error(synchronousIterationMessage);
+			}
 			if (returned) return Promise.resolve({ value: undefined, done: true });
 			return getIterator().then(
 				(iterator) =>
@@ -1039,7 +1041,6 @@ function deferredIterator(
 		},
 	};
 }
-/** The sort chain of a search with its texts replaced by their embeddings, and a way to cancel that. */
 type SortEmbedding = { sort: Promise<any>; abort: () => void };
 function withEmbeddedTargets(sort: any, vectors: Map<any, number[]>): any {
 	const copy = { ...sort };
@@ -8782,7 +8783,6 @@ export function makeTable(options): TableResourceClass {
 			if (target.parseError) throw target.parseError; // if there was a parse error, we can throw it now
 			assertNestedQueryOptions(target.select, this.constructor);
 			if (fullTextFieldNames || hasRelationships) assertFullTextSelection(target.select);
-			const getColumns = (): ColumnsList => buildSelectColumns(target.select, attributes) ?? [];
 			if (target.checkPermission) {
 				// Direct instance callers may request the same one-shot operation gate used by the
 				// transactional Resource API. Application row filtering is explicit via target.rowFilter.
@@ -8793,6 +8793,7 @@ export function makeTable(options): TableResourceClass {
 					throw new AccessViolation((context as any).user);
 				}
 				if (allowed != null && typeof (allowed as any).then === 'function') {
+					const getColumns = (): ColumnsList => buildSelectColumns(target.select, attributes) ?? [];
 					const self = this;
 					const gatedResults: any = new ExtendedIterable();
 					let resolvedResults: any;
@@ -8852,7 +8853,7 @@ export function makeTable(options): TableResourceClass {
 			const sort = typeof target.sort === 'object' && target.sort;
 			if (sort && (sort.text !== undefined || sort.next)) {
 				const embedding = embedSortTexts(sort, context);
-				if (embedding) return this.#searchAfterEmbedding(target, embedding, context, rowFilter, getColumns);
+				if (embedding) return this.#searchAfterEmbedding(target, embedding, context, rowFilter);
 			}
 			return this.#searchSorted(target, sort, context, txn, rowFilter);
 		}
@@ -8861,13 +8862,7 @@ export function makeTable(options): TableResourceClass {
 		 * The results of a search whose sort texts are being embedded. The search runs once they are, in its own
 		 * transaction scope: a model call has no deadline, so no read snapshot is held open across it.
 		 */
-		#searchAfterEmbedding(
-			target: RequestTarget,
-			embedding: SortEmbedding,
-			context: any,
-			rowFilter: any,
-			getColumns: () => ColumnsList
-		): any {
+		#searchAfterEmbedding(target: RequestTarget, embedding: SortEmbedding, context: any, rowFilter: any): any {
 			const scope = context ?? {};
 			const search = (sort: any) =>
 				transaction(scope, () => this.#searchSorted(target, sort, context, txnForContext(scope), rowFilter));
@@ -8876,7 +8871,13 @@ export function makeTable(options): TableResourceClass {
 			let results: any;
 			let discarded = false;
 			const opening = embedding.sort
-				.then((sort) => (discarded ? [] : search(sort)))
+				.then(
+					(sort) => (discarded ? [] : search(sort)),
+					(error) => {
+						if (discarded) return [];
+						throw error;
+					}
+				)
 				.then((searched) => {
 					results = searched;
 					if (discarded) searched.onDone?.();
@@ -8897,7 +8898,8 @@ export function makeTable(options): TableResourceClass {
 				results?.onDone?.();
 			};
 			deferred.selectApplied = true;
-			deferred.getColumns = () => (results?.getColumns ? results.getColumns() : getColumns());
+			deferred.getColumns = () =>
+				results?.getColumns ? results.getColumns() : (buildSelectColumns(target.select, attributes) ?? []);
 			return deferred;
 		}
 
@@ -14417,10 +14419,7 @@ export function makeTable(options): TableResourceClass {
 			!primaryStore.encoder.resolvedAttributeNames?.has(name)
 		);
 	}
-	/**
-	 * Start embedding the `text` of each sort in the chain with its attribute's `@embed` model, one model
-	 * call per attribute. Every sort is validated before any call starts. Undefined when no sort has text.
-	 */
+	/** Every sort of the chain is validated before any model call starts, so a refused sort costs no call. */
 	function embedSortTexts(sort: any, context: any): SortEmbedding | undefined {
 		let textsByAttribute: Map<string, { attribute: any; orders: any[] }> | undefined;
 		for (let order = sort; order; order = order.next) {
@@ -14431,11 +14430,13 @@ export function makeTable(options): TableResourceClass {
 			if (order.target !== undefined) throw new ClientError(`A sort on "${name}" can have text or a target, not both`);
 			if (order.model !== undefined)
 				throw new ClientError(`A sort can not set a model; its text is embedded with the @embed model of "${name}"`);
-			const attribute = typeof order.attribute === 'string' ? findAttribute(attributes, order.attribute) : undefined;
+			const attributeName =
+				Array.isArray(order.attribute) && order.attribute.length === 1 ? order.attribute[0] : order.attribute;
+			const attribute = typeof attributeName === 'string' ? findAttribute(attributes, attributeName) : undefined;
 			if (!attribute?.embed) {
-				if (typeof order.attribute === 'string' && !attribute)
+				if (typeof attributeName === 'string' && !attribute)
 					throw new ClientError(`${name} is not a defined attribute`, 404);
-				throw new ClientError(`A sort with text requires an @embed attribute, and "${name}" has no @embed model`);
+				throw new ClientError(`A sort with text requires an @embed attribute of this table, and "${name}" is not one`);
 			}
 			textsByAttribute ??= new Map();
 			let group = textsByAttribute.get(attribute.name);

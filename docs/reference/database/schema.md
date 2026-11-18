@@ -898,10 +898,10 @@ The operations API takes the same `sort` on `search_by_value` and `search_by_con
 }
 ```
 
-- `text` must be a non-empty string. A sort with both `text` and `target`, a `model` key, or `text` on an attribute without `@embed` is rejected with a 400. The model is always the attribute's own, because vectors from another model do not compare with the stored ones.
+- `text` must be a non-empty string. A sort with both `text` and `target`, a `model` key, or `text` on an attribute without `@embed` (including one reached through a relationship) is rejected with a 400. The model is always the attribute's own, because vectors from another model do not compare with the stored ones.
 - A failure to compute the embedding fails the search with a 502, or with a 400 when the text is too long for the model. The error's `cause` holds the model's error for code that calls `search()` directly.
 - Every search with `text` calls the model. Read permission on the table is enough to run one. Code that repeats one query can embed it once with [`models.embed(text, { inputType: 'query' })`](../models/api.md#embed) and pass the vector as `target`.
-- The search reads from a snapshot taken after the text is embedded, so a slow model call does not hold one open. Its results can only be iterated asynchronously (`for await`).
+- Outside a transaction you opened, the search reads from a snapshot taken after the text is embedded, so a slow model call holds none open. Inside one, it reads in that transaction, like any search. Iterate its results with `for await`, and `await` the plan of an `explain: true` search.
 - A threshold condition (`comparator: 'lt'`) still needs a `target`.
 - A custom embedder set with `setEmbedAttribute` must produce vectors in the same space as the attribute's model, since search embeds the text with that model.
 

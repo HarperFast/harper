@@ -330,19 +330,15 @@ export async function embedQueryTexts(
 	try {
 		vectors = await resolveEmbedFn()(texts, { model, inputType: 'query', signal });
 	} catch (err) {
-		const failure = sanitizedHookError(
-			'Query embedder',
-			'the sort text embedding',
-			attributeName,
-			err,
-			!signal?.aborted
-		);
+		signal?.throwIfAborted();
+		const failure = sanitizedHookError('Query embedder', 'the sort text embedding', attributeName, err);
 		const error = isContextWindowExceeded(err)
 			? new ClientError(`The sort text for attribute "${attributeName}" is too long for model "${model}"`, 400)
 			: new ServerError(failure.message, 502);
 		error.cause = err;
 		throw error;
 	}
+	signal?.throwIfAborted();
 	return texts.map((_text, index) => {
 		const vector = vectors?.[index];
 		if (!vector?.length)
