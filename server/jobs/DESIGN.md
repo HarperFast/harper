@@ -6,7 +6,7 @@ what survived the death, not by what killed it:
 
 - The **process** is gone — crash, `restart`, `HARPER_EXIT_ON_RESTART` under an orchestrator. The next
   boot's `reconcileInterruptedJobs()` claims every unfinished row whose `owner_instance` is not this
-  process's, which is all of them (harper#2635).
+  process's, which is all of them (harper#2635), bar a `deferred_to` row a restore receipt still names.
 - The **thread** is gone but the process is not. The boot sweep cannot see these: the row still carries
   the running process's own `owner_instance`, and the sweep only runs at boot. `startJobWorker`'s exit
   hook settles them instead, via `settleAbandonedJob()`.

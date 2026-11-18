@@ -478,7 +478,10 @@ function resumableReceipt(databaseName: string, read: RestoreReceiptRead, { arch
 		read.receipt.state === 'committed' ||
 		read.receipt.record_lost
 	) {
-		throw new ClientError(`Database '${databaseName}' has no pending restart restore to resume`, 404);
+		throw new ClientError(
+			`Database '${databaseName}' has no restore to resume: no restart restore is pending and no archive restore was interrupted`,
+			404
+		);
 	}
 	return read.receipt;
 }

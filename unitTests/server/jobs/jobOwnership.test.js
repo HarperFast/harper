@@ -127,6 +127,19 @@ describe('jobOwnership', function () {
 			assert.match(job.message, /an earlier Harper process/);
 		});
 
+		it('settles a deferred job no restore record names as withdrawn, not as interrupted', async function () {
+			const id = await seedJob({ owner_instance: randomUUID(), owner_pid: 999999, deferred_to: 'restore-intent' });
+			seeded.push(id);
+
+			assert.strictEqual(await reconcileInterruptedJobs(), 1);
+
+			const job = await jobTable().get(id);
+			assert.strictEqual(job.status, JOB_STATUS_ENUM.ERROR);
+			assert.match(job.message, /cancelled or replaced before Harper started, so the job restored nothing/);
+			assert.doesNotMatch(job.message, /outcome is unknown|999999/, 'its process exited by design');
+			assert.strictEqual(job.deferred_to ?? null, null);
+		});
+
 		it('leaves a job this process still owns alone', async function () {
 			const id = await seedJob({ owner_instance: JOB_OWNER_INSTANCE_ID, owner_pid: process.pid });
 			seeded.push(id);

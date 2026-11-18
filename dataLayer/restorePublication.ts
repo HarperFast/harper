@@ -11,7 +11,7 @@ import { existsSync, readdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { getEnvironmentData, isMainThread, setEnvironmentData } from 'node:worker_threads';
 import { loadRuntimeModule } from '../utility/packageUtils.js';
-import { ClientError } from '../utility/errors/hdbError.ts';
+import { ClientError, ServerError } from '../utility/errors/hdbError.ts';
 import * as hdbTerms from '../utility/hdbTerms.ts';
 import logger from '../utility/logging/harper_logger.ts';
 import { databaseRoots, resetDatabases } from '../resources/databases.ts';
@@ -576,12 +576,15 @@ async function applyAndPublish(
 	};
 }
 
-/** Adds recovery guidance without losing what a caller branches on: the client status and the phase. */
+/**
+ * Adds recovery guidance without losing what a caller branches on: the client status and the phase. It
+ * has a status either way, since the CLI prints an error without one as a stack trace of this wrapper.
+ */
 function withRecoveryGuidance(error: any, message: string): Error {
 	const wrapped: any =
 		error?.statusCode >= 400 && error.statusCode < 500
 			? new ClientError(message, error.statusCode)
-			: new Error(message);
+			: new ServerError(message, error?.statusCode);
 	wrapped.cause = error;
 	if (error?.phase !== undefined) wrapped.phase = error.phase;
 	return wrapped;

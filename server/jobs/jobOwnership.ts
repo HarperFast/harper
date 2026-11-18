@@ -38,6 +38,19 @@ function settle(id: any, interruption: string) {
 	});
 }
 
+// A deferred row's process exits by design, and only the restore receipt that names it settles it. With
+// no such receipt the restore was withdrawn where the row could not be reached: `restore_backup
+// cancel=true` with Harper stopped, or another restore of the database replacing it.
+function settleWithdrawn(id: any) {
+	return updateJob({
+		id,
+		status: hdbTerms.JOB_STATUS_ENUM.ERROR,
+		message:
+			'The restore this job scheduled for the next startup was cancelled or replaced before Harper started, so the job restored nothing.',
+		deferred_to: null,
+	});
+}
+
 let reconciliation: Promise<number> | undefined;
 
 /**
@@ -70,29 +83,32 @@ export async function reconcileInterruptedJobs(ownedElsewhere?: ReadonlySet<stri
 	if (!table) return 0;
 
 	// Collect before writing: the search walks the `status` attribute these updates change.
-	const interrupted: Array<{ id: any; owner_pid: any }> = [];
-	const ownedAtRecovery: typeof interrupted = [];
+	const interrupted: Array<{ id: any; owner_pid: any; deferred: boolean }> = [];
+	const receiptsDecide: typeof interrupted = [];
 	for (const status of UNFINISHED_JOB_STATUSES) {
 		for await (const job of table.search([{ attribute: 'status', value: status }])) {
 			if (job.owner_instance === JOB_OWNER_INSTANCE_ID) continue;
-			(ownedElsewhere?.has(String(job.id)) ? ownedAtRecovery : interrupted).push({
+			const deferred = job.deferred_to != null;
+			// a deferred row is called withdrawn only once no receipt names it, whatever the snapshot held
+			(deferred || ownedElsewhere?.has(String(job.id)) ? receiptsDecide : interrupted).push({
 				id: job.id,
 				owner_pid: job.owner_pid,
+				deferred,
 			});
 		}
 	}
 	// necessary, not sufficient: a receipt withdrawn since `ownedElsewhere` was taken no longer owns its job
-	if (ownedAtRecovery.length > 0) {
+	if (receiptsDecide.length > 0) {
 		const stillOwned = await jobsStillOwnedByReceipts();
-		if (stillOwned) interrupted.push(...ownedAtRecovery.filter(({ id }) => !stillOwned.has(String(id))));
+		if (stillOwned) interrupted.push(...receiptsDecide.filter(({ id }) => !stillOwned.has(String(id))));
 	}
 
 	let settled = 0;
 	let unsettled = 0;
-	for (const { id, owner_pid } of interrupted) {
+	for (const { id, owner_pid, deferred } of interrupted) {
 		const owner = owner_pid == null ? 'an earlier Harper process' : `Harper process ${owner_pid}`;
 		try {
-			await settle(id, `${owner} exited before it finished`);
+			await (deferred ? settleWithdrawn(id) : settle(id, `${owner} exited before it finished`));
 			settled++;
 		} catch (error) {
 			// Keep going: one unwritable row must not strand the rest.

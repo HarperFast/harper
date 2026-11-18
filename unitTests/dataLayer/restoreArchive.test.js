@@ -479,6 +479,29 @@ describeUnlessLmdb('restore_backup from a get_backup archive', function () {
 			for (const area of stagingLeft(fixture.name)) rmSync(area, { recursive: true, force: true });
 		});
 
+		it('reports a failed staged proof as the archive, which has replaced nothing yet', async function () {
+			const fixture = await seededDatabase();
+			const { stagingDir } = await stageArchive(Readable.from([fixture.archive]), {
+				databaseName: fixture.name,
+				databaseDir: fixture.dir,
+				blobRoots: getBlobPathsForDatabaseName(fixture.name),
+				acceptIncompatible: false,
+				restoredFrom: 'upload',
+			});
+			const { blobs } = partsOf(stagingDir);
+			rmSync(filesUnder(blobs[0].staged, () => true)[0]);
+
+			await assert.rejects(runRestoreChild('prove-staged', { stagingDir, databaseName: fixture.name }), (error) => {
+				assert.strictEqual(error.statusCode, 409);
+				assert.match(
+					error.message,
+					/^The extracted \S+ database references blob files the archive does not contain .*to restore it anyway$/
+				);
+				return true;
+			});
+			for (const area of stagingLeft(fixture.name)) rmSync(area, { recursive: true, force: true });
+		});
+
 		it('refuses up front, with 507, an upload larger than the space beside the database', async function () {
 			const fixture = await seededDatabase();
 			const payload = Readable.from([fixture.archive]);
@@ -601,7 +624,11 @@ describeUnlessLmdb('restore_backup from a get_backup archive', function () {
 				}
 			);
 			try {
-				await assert.rejects(uploadAndRun(fixture.name, fixture.archive), /resume=true/);
+				await assert.rejects(
+					uploadAndRun(fixture.name, fixture.archive),
+					// a status, so the CLI prints the guidance alone and not a stack trace of its wrapper
+					(error) => error.statusCode === 500 && /resume=true/.test(error.message)
+				);
 			} finally {
 				restoreRunner();
 			}
@@ -646,6 +673,10 @@ describeUnlessLmdb('restore_backup from a get_backup archive', function () {
 			assert.strictEqual(cancelled.result.still_blocked, true);
 			const abandoned = receiptOf(fixture.dir);
 			assert.strictEqual(abandoned.state, 'terminal');
+			await assert.rejects(
+				requestRestore(fixture.name, { resume: true }),
+				(error) => error.statusCode === 404 && /no archive restore was interrupted/.test(error.message)
+			);
 			const left = stagingLeft(fixture.name);
 			assert.notDeepStrictEqual(left, [], 'the terminal receipt keeps its staging');
 
@@ -801,7 +832,7 @@ describeUnlessLmdb('restore_backup from a get_backup archive', function () {
 			[{ cancel: true }, /without an archive/],
 			[{ sha256: 'abc' }, /64 hexadecimal/],
 			[{ retain_previous: false }, /applies only with 'on_restart'/],
-			[{ database: 'system' }, /cannot be restored while Harper is running/],
+			[{ database: 'system' }, /stop the server and run: harper restore_backup database=system file=<archive>$/],
 		];
 		for (const [fields, refusal] of refusals) {
 			it(`refuses ${JSON.stringify(fields)} before reading the upload`, async function () {
