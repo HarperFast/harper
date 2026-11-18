@@ -498,8 +498,14 @@ function sendPublish(send: (packet: Buffer) => void, packet: Buffer, generalTopi
 	lastRecordedQos = qos;
 	lastPublishRecorder(packet.length);
 }
+/** MQTT analytics record a topic's first level: a per-device topic would make an analytics action per device */
+function firstTopicLevel(topic: string | undefined) {
+	const slashIndex = topic?.indexOf('/', 1);
+	return slashIndex > 0 ? topic.slice(0, slashIndex) : topic;
+}
 function packetMethodName(packet) {
-	return packet.qos > 0 ? packet.cmd + ',qos=' + packet.qos : packet.cmd;
+	if (!(packet.qos > 0)) return packet.cmd;
+	return packet.cmd === 'publish' ? publishMethod(packet.qos) : packet.cmd + ',qos=' + packet.qos;
 }
 function emitMqttEvent(mqttSettings, type: string, ...args: any[]) {
 	try {
@@ -772,10 +778,11 @@ function onSocket(socket, send, request, user, mqttSettings, userProvenance?: Us
 			else socket?.terminate();
 			return;
 		}
-		const topic = (packet as any).topic;
-		const slashIndex = topic?.indexOf('/', 1);
-		const generalTopic = slashIndex > 0 ? topic.slice(0, slashIndex) : topic;
-		recordAction(packet.length, 'bytes-received', generalTopic, packetMethodName(packet), 'mqtt');
+		let generalTopic: string | undefined;
+		if (checkAnalyticsEnabled()) {
+			generalTopic = firstTopicLevel((packet as any).topic);
+			recordAction(packet.length, 'bytes-received', generalTopic, packetMethodName(packet), 'mqtt');
+		}
 
 		try {
 			session?.receivedPacket?.();
@@ -1017,9 +1024,11 @@ function onSocket(socket, send, request, user, mqttSettings, userProvenance?: Us
 						packet.qos === 2
 							? await session.receiveExactlyOnce(packet.messageId, () => publish(packet))
 							: await publish(packet);
-					// under the topic's first level, as the publish's bytes-received and every delivery are: a per-device
-					// topic would make an analytics action for each device
-					if (acknowledgement) generateAndSendPacket(acknowledgement, generalTopic);
+					if (acknowledgement)
+						generateAndSendPacket(
+							acknowledgement,
+							checkAnalyticsEnabled() ? (generalTopic ?? firstTopicLevel(packet.topic)) : undefined
+						);
 					break;
 				}
 				case 'pubrec': {

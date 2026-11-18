@@ -127,6 +127,33 @@ describe('MQTT delivery analytics', function () {
 		assert.ok(!entries.some((entry) => entry.path?.startsWith?.(`${name}/`)), 'no action is keyed by a device topic');
 		publisher.handlers.close?.();
 	});
+
+	it('records an acknowledgement under the first level when analytics turns on while its publish is pending', async () => {
+		const name = 'MqttAckTurnedOn';
+		const T = table({
+			table: name,
+			database: 'mqtt_delivery_analytics',
+			audit: true,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'value' }],
+		});
+		Resources.resources.set(name, T, { mqtt: true });
+		const publisher = open('ack-turned-on');
+		// once the session is up, a packet is received in the call that hands it over
+		publisher.handlers.message(
+			generate({ cmd: 'subscribe', messageId: 1, subscriptions: [{ topic: `${name}/none`, qos: 0 }] })
+		);
+		await waitFor(() => publisher.subacked);
+		analytics.setAnalyticsEnabled(false);
+		publisher.handlers.message(
+			generate({ cmd: 'publish', topic: `${name}/device-a`, qos: 1, messageId: 21, payload: '{"value":1}' })
+		);
+		analytics.setAnalyticsEnabled(true);
+		await waitFor(() => publisher.acknowledged.length === 1);
+		const puback = await reported(name, 'puback', 1);
+		assert.strictEqual(puback.count, 1);
+		assert.ok(!entries.some((entry) => entry.method === 'puback' && entry.path === undefined));
+		publisher.handlers.close?.();
+	});
 });
 
 const expected = (lengths) => ({ count: lengths.length, mean: lengths.reduce((a, b) => a + b) / lengths.length });
