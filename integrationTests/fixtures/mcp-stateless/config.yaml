@@ -1,0 +1,8 @@
+# `mcpStatelessValidator` is wired in through HARPER_BUILTIN_COMPONENTS (see
+# integrationTests/mcp/application-stateless.test.ts); it must also appear as a top-level component key
+# here for componentLoader to load it. Both nodes load it, as both nodes of a deployment verify the same
+# tokens.
+jsResource:
+  files: resources.js
+rest: true
+mcpStatelessValidator: true

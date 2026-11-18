@@ -251,6 +251,17 @@ interface SessionState {
 
 const sessions = new Map<string, SessionState>();
 
+// A stateless profile has no session, so its session buckets are keyed by profile, principal and client
+// identity; capped like the initialize identities, since the client chooses its address.
+const statelessClients = new Map<string, SessionState>();
+const MAX_STATELESS_CLIENTS = 100_000;
+let statelessPrunedAt = 0;
+let statelessSweep: Iterator<[string, SessionState]> | undefined;
+// bounds the work one call does (about 0.5 ms for 1,000 entries); a full map is covered every 100 s
+const STATELESS_SWEEP_BATCH = 1_000;
+const STATELESS_SWEEP_INTERVAL_MS = 1_000;
+const STATELESS_OVERFLOW_SLOTS = 64;
+
 // Per-client-identity buckets, keyed `${profile}\n${identity}`. Deliberately
 // SEPARATE from session state: the whole point is surviving session cycling,
 // so their lifetime must not be tied to any session's (#1610).
@@ -259,6 +270,7 @@ interface ClientState {
 	lastSeen: number;
 }
 const clients = new Map<string, ClientState>();
+const MAX_CLIENT_IDENTITIES = 100_000;
 interface InitializeBucket {
 	rate: TokenBucket;
 	config: RateLimitConfig;
@@ -322,9 +334,13 @@ function reconfigureInitializeClient(c: InitializeBucket, config: RateLimitConfi
 	c.config = config;
 }
 
-function getOrCreate(sessionId: string, profile: 'operations' | 'application'): SessionState {
+function getOrCreate(
+	sessionId: string,
+	profile: 'operations' | 'application',
+	states: Map<string, SessionState> = sessions
+): SessionState {
 	pruneIdleSessions();
-	let s = sessions.get(sessionId);
+	let s = states.get(sessionId);
 	if (!s) {
 		const config = configFor(profile);
 		s = {
@@ -335,7 +351,7 @@ function getOrCreate(sessionId: string, profile: 'operations' | 'application'): 
 			profile,
 			lastSeen: now(),
 		};
-		sessions.set(sessionId, s);
+		states.set(sessionId, s);
 	} else {
 		s.lastSeen = now();
 	}
@@ -347,7 +363,8 @@ function getOrCreateClient(
 	profile: 'operations' | 'application',
 	config: RateLimitConfig
 ): ClientState {
-	const key = `${profile}\n${identity}`;
+	let key = `${profile}\n${identity}`;
+	if (!clients.has(key) && clients.size >= MAX_CLIENT_IDENTITIES) key = `${profile}\n`;
 	let c = clients.get(key);
 	if (!c) {
 		c = { rate: new TokenBucket(config.perClientPerSecond, config.perClientBurst), lastSeen: now() };
@@ -363,9 +380,16 @@ export function clearSessionRateState(sessionId: string): void {
 	sessions.delete(sessionId);
 }
 
+export function _statelessClientCountForTest(): number {
+	return statelessClients.size;
+}
+
 /** Test seam: drop all sessions, client buckets, and the config cache. */
 export function _resetForTest(): void {
 	sessions.clear();
+	statelessClients.clear();
+	statelessPrunedAt = 0;
+	statelessSweep = undefined;
 	clients.clear();
 	for (const state of Object.values(initializeState)) {
 		state.clients.clear();
@@ -394,7 +418,64 @@ export function tryAdmit(
 	profile: 'operations' | 'application',
 	clientIdentity?: string
 ): RateLimitDecision {
-	const state = getOrCreate(sessionId, profile);
+	return admit(getOrCreate(sessionId, profile), toolName, profile, clientIdentity);
+}
+
+export function tryAdmitStateless(
+	username: string,
+	toolName: string,
+	profile: 'operations' | 'application',
+	clientIdentity?: string
+): RateLimitDecision {
+	sweepStatelessClients();
+	let key = `${profile}\n${username}\n${clientIdentity ? initializeIdentity(clientIdentity) : SHARED_IDENTITY}`;
+	// past the cap, a fixed set of shared buckets keeps the map bounded and spreads a flood over few of them
+	if (!statelessClients.has(key) && statelessClients.size >= MAX_STATELESS_CLIENTS) {
+		key = `\n${profile}\n${overflowSlot(key)}`;
+	}
+	return admit(getOrCreate(key, profile, statelessClients), toolName, profile, clientIdentity);
+}
+
+// A bucket that has refilled completely and has no call in flight is indistinguishable from a new one, so it can go;
+// that is also what evicts idle clients. This runs inside a `tools/call`, so each sweep, at most once per prune
+// interval, examines a bounded batch and the next sweep resumes where it stopped: no request scans the whole map.
+function sweepStatelessClients(): void {
+	const t = now();
+	if (t - statelessPrunedAt < STATELESS_SWEEP_INTERVAL_MS) return;
+	statelessPrunedAt = t;
+	statelessSweep ??= statelessClients.entries();
+	let restarted = false;
+	for (let examined = 0; examined < STATELESS_SWEEP_BATCH; examined++) {
+		let next = statelessSweep.next();
+		if (next.done) {
+			if (restarted) return;
+			restarted = true;
+			statelessSweep = statelessClients.entries();
+			next = statelessSweep.next();
+			if (next.done) return;
+		}
+		const [key, s] = next.value;
+		if (s.inFlight === 0 && s.sessionRate.isFull() && allFull(s.perTool)) statelessClients.delete(key);
+	}
+}
+
+function overflowSlot(key: string): number {
+	let hash = 0x811c9dc5;
+	for (let i = 0; i < key.length; i++) hash = Math.imul(hash ^ key.charCodeAt(i), 0x01000193);
+	return (hash >>> 0) % STATELESS_OVERFLOW_SLOTS;
+}
+
+function allFull(buckets: Map<string, TokenBucket>): boolean {
+	for (const bucket of buckets.values()) if (!bucket.isFull()) return false;
+	return true;
+}
+
+function admit(
+	state: SessionState,
+	toolName: string,
+	profile: 'operations' | 'application',
+	clientIdentity: string | undefined
+): RateLimitDecision {
 	if (state.inFlight >= state.config.sessionConcurrency) {
 		return { allowed: false, reason: 'concurrency' };
 	}

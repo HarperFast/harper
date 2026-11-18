@@ -102,6 +102,28 @@ Set to `false` to stop generating verb tools from exported Resources, so the onl
 
 `allow`, `deny` and `generatedTools` are read whenever the application tool set is rebuilt (at startup, and when schemas or registered Resources change), not on every request as the operations profile's lists are, so an edited value may not apply until the next rebuild or restart.
 
+### `mcp.application.stateless`
+
+<VersionBadge version="v5.4.2" />
+
+Type: `boolean`
+
+Default: `false`
+
+Set to `true` to serve the application profile without sessions, so that any node of a deployment can answer any request. Use it when the nodes sit behind DNS load balancing or another router that can send a client's consecutive requests to different nodes. Sessions are stored in `system.mcp_session`, which is not replicated, so without this setting a request that reaches another node gets `404` for its `Mcp-Session-Id` and the client has to initialize again.
+
+With `stateless: true`:
+
+- `initialize` returns no `Mcp-Session-Id` and stores nothing. Clients then send none, as the MCP Streamable HTTP transport (2025-06-18 and 2025-03-26) allows.
+- Every `POST` is authenticated and answered on its own. An `Mcp-Session-Id` header, if a client sends one, is ignored, and any supported `MCP-Protocol-Version` is accepted.
+- `GET` and `DELETE` answer `405` with `Allow: POST`: there is no notification stream to open and no session to end.
+- `initialize` advertises `tools`, `resources`, `prompts` and `completions` without `listChanged`, `resources.subscribe` or `logging`. `resources/subscribe`, `resources/unsubscribe` and `logging/setLevel` answer the JSON-RPC error `-32601`.
+- Tool calls still stream progress when the client asks for it, but a tool cannot send server-to-client requests (sampling, elicitation, roots), and `notifications/cancelled` has no effect. A streaming call is still stopped when its connection closes.
+- `sessionId` is absent from a tool's context, a prompt's render context, the [durable quota handler](#durable-quota-handler)'s argument and audit entries.
+- The per-session [rate limits](#mcpprofileratelimit) apply per user and client address instead, in memory on each thread of each node. Past 100,000 tracked pairs on a thread, new pairs share 64 buckets.
+
+Turn it on for every node of a deployment at the same restart: first upgrade every node to a version that has it, then set it on every node and restart them together. While some nodes are stateless and others are not, a request that moves from a stateless node to a stateful one gets `400` (no `Mcp-Session-Id`), and one that moves the other way loses its session. Once every node is stateless, a client connected before the switch keeps working: its `Mcp-Session-Id` is ignored. The value must be the boolean `true`; a quoted `"true"` fails validation. It is read when the profile starts, so a change applies after a restart.
+
 ### `mcp.application.searchMaxResults`
 
 Type: `integer` (minimum 1)
@@ -287,7 +309,7 @@ server.setMcpQuotaHandler(async ({ identity, tool, user, profile, sessionId }) =
 
 ### `server.setMcpQuotaHandler(handler)`
 
-Registers the durable quota policy (opt-in — no handler registered means calls are allowed). The handler is called before each admitted `tools/call` with `{ identity, tool, user, profile, sessionId }` (`identity` may be `undefined` when no socket IP or header value is available). Return `true` (or any truthy non-object) to allow, or `{ allowed: false, message?, retryAfterSeconds? }` to deny — denials surface as an `isError` tool result with `kind: 'quota_exceeded'` plus the author-supplied `message`/`retryAfterSeconds`. Pass `undefined` to clear the handler.
+Registers the durable quota policy (opt-in — no handler registered means calls are allowed). The handler is called before each admitted `tools/call` with `{ identity, tool, user, profile, sessionId }` (`identity` may be `undefined` when no socket IP or header value is available, and `sessionId` is `undefined` on a [stateless](#mcpapplicationstateless) application profile). Return `true` (or any truthy non-object) to allow, or `{ allowed: false, message?, retryAfterSeconds? }` to deny — denials surface as an `isError` tool result with `kind: 'quota_exceeded'` plus the author-supplied `message`/`retryAfterSeconds`. Pass `undefined` to clear the handler.
 
 Because the policy is a plain function and not a Resource, it exposes no `update_/delete_` MCP tools or REST/etc. surface — unlike an exported class, whose inherited CRUD would let a permitted client reset its own counter. Keep any table the handler uses for storage unexported (no `@export`), as above, so it stays off every transport. The latest registration wins, so a reloaded component replaces the previous handler; the single handler receives `profile`, so gate the operations and application profiles in code.
 
@@ -300,7 +322,7 @@ Semantics to know:
 
 ## `mcp.session.*`
 
-Settings that apply to MCP session lifecycle on both profiles.
+Settings that apply to MCP session lifecycle on both profiles. A [stateless](#mcpapplicationstateless) application profile has no sessions, so they do not apply to it.
 
 ### `mcp.session.idleTimeoutSeconds`
 

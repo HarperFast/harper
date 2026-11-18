@@ -73,6 +73,20 @@ A handful of design points are non-obvious and easy to break:
   binds (`noReusePort`, `server/http.ts`) and Bun do not give, and it turns `initializeBurst: 50` into one token per worker at 32 threads, so a client reusing
   one connection would get a 429 on its second session.
 
+- **A stateless application profile reads no state an earlier request wrote, so any node can answer (#4346).**
+  `system.mcp_session` does not replicate, so behind DNS load balancing a request that moves to another node
+  gets 404 for its session. With `mcp.application.stateless: true`, `initialize` writes no row and returns no
+  `Mcp-Session-Id`, `handlePost` skips `loadSession` (a leftover session id is ignored, and any supported
+  `MCP-Protocol-Version` is accepted), and GET and DELETE answer 405 `Allow: POST`. Everything that needs a
+  session is off rather than node-local: no `listChanged`, `resources.subscribe` or `logging` in
+  `STATELESS_SERVER_CAPABILITIES`; `SESSION_METHODS` answer -32601; a tool gets no `serverRequest`, since the
+  client's reply is a fresh POST to any node; and `notifications/cancelled` is ignored, since without a session a
+  request id does not identify one client's call. The session buckets bound one principal from one client
+  identity instead (`tryAdmitStateless`; past 100,000 keys, 64 hashed overflow buckets keep the map bounded). Replicating the row instead was
+  rejected: replication is asynchronous, so the request after `initialize` can reach a node the row has not; every
+  request would write a replicated row (`touchSession`); and the subscription fences in `subscriptionState.ts`
+  assume one owning node.
+
 - **Application tools must be rebuilt after JS resources register, not just on schema changes.** The
   application-profile tool scan (`registerApplicationTools`) runs at MCP component boot and on schema-change
   ITC events — both of which fire while the `@table` classes register, **before** the `jsResource` plugin

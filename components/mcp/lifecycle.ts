@@ -29,6 +29,17 @@ export const SERVER_CAPABILITIES = {
 	logging: {},
 } as const;
 
+/**
+ * A stateless profile has no GET stream to push list changes, resource updates or log messages on, and no
+ * session to hold a subscription or a log level, so it advertises none of them.
+ */
+export const STATELESS_SERVER_CAPABILITIES = {
+	tools: {},
+	resources: {},
+	prompts: {},
+	completions: {},
+} as const;
+
 export interface InitializeParams {
 	protocolVersion?: unknown;
 	capabilities?: unknown;
@@ -38,14 +49,18 @@ export interface InitializeParams {
 export interface InitializeResult {
 	protocolVersion: string;
 	serverInfo: typeof SERVER_INFO;
-	capabilities: typeof SERVER_CAPABILITIES;
+	capabilities: typeof SERVER_CAPABILITIES | typeof STATELESS_SERVER_CAPABILITIES;
 	instructions?: string;
 }
 
 export interface InitializeOutcome {
 	ok: true;
-	session: McpSessionRecord;
+	session?: McpSessionRecord;
 	result: InitializeResult;
+}
+
+export interface InitializeOptions {
+	stateless?: boolean;
 }
 
 export interface InitializeFailure {
@@ -70,7 +85,8 @@ export interface InitializeFailure {
  */
 export async function handleInitialize(
 	params: InitializeParams | undefined,
-	user: string
+	user: string,
+	options: InitializeOptions = {}
 ): Promise<InitializeOutcome | InitializeFailure> {
 	const requested = params?.protocolVersion;
 	if (typeof requested !== 'string') {
@@ -83,6 +99,12 @@ export async function handleInitialize(
 	const negotiated = SUPPORTED_PROTOCOL_VERSIONS.includes(requested as (typeof SUPPORTED_PROTOCOL_VERSIONS)[number])
 		? requested
 		: PROTOCOL_VERSION_PREFERRED;
+	if (options.stateless) {
+		return {
+			ok: true,
+			result: { protocolVersion: negotiated, serverInfo: SERVER_INFO, capabilities: STATELESS_SERVER_CAPABILITIES },
+		};
+	}
 	const session = await createSession({
 		user,
 		protocolVersion: negotiated,

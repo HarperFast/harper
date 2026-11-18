@@ -2,6 +2,8 @@ const assert = require('node:assert');
 const {
 	tryAdmit,
 	tryAdmitInitialize,
+	tryAdmitStateless,
+	_statelessClientCountForTest,
 	clearSessionRateState,
 	configFor,
 	resolveClientIdentity,
@@ -413,6 +415,54 @@ describe('mcp/rateLimit', () => {
 			assert.equal(tryAdmit('s2', 't', 'application', 'ip-frac').reason, 'per_client');
 			clock += 10_000;
 			assert.equal(tryAdmit('s3', 't', 'application', 'ip-frac').allowed, true, 'refilled after 10s at 0.1/s');
+		});
+	});
+
+	describe('tryAdmitStateless (#4346)', () => {
+		it('shares one bucket per principal and client address, an IPv6 /64 counting as one address', () => {
+			envOverrides.mcp_application_rateLimit_perToolBurst = 1;
+			const admitted = (user, identity) => tryAdmitStateless(user, 't', 'application', identity).allowed;
+
+			assert.equal(admitted('alice', '2001:db8:0:1::1'), true);
+			assert.equal(admitted('alice', '2001:db8:0:1::2'), false);
+			assert.equal(admitted('bob', '2001:db8:0:1::1'), true);
+			assert.equal(admitted('alice', '2001:db8:0:2::1'), true);
+		});
+
+		it('past 100,000 tracked clients, puts new ones in 64 shared buckets, so the map stays bounded', () => {
+			envOverrides.mcp_application_rateLimit_perToolBurst = 2;
+			const admitted = (user, identity) => tryAdmitStateless(user, 't', 'application', identity).allowed;
+			for (let i = 0; i < 100_000; i++) tryAdmitStateless(`user${i}`, 't', 'application', '10.0.0.1').release();
+
+			let newlyAdmitted = 0;
+			for (let i = 0; i < 1_000; i++) if (admitted(`late${i}`, `10.1.${i >> 8}.${i & 255}`)) newlyAdmitted++;
+			assert.ok(newlyAdmitted > 0 && newlyAdmitted <= 64 * 2, `${newlyAdmitted} admitted from 64 buckets of 2`);
+			assert.ok(_statelessClientCountForTest() <= 100_000 + 64, String(_statelessClientCountForTest()));
+			assert.equal(admitted('user0', '10.0.0.1'), true, 'a tracked client keeps its own bucket');
+		});
+
+		it('caps the per-client identities a stateless profile can create at 100,000, sharing a bucket past it', () => {
+			envOverrides.mcp_application_rateLimit_perClientPerSecond = 1;
+			envOverrides.mcp_application_rateLimit_perClientBurst = 1;
+			const admitted = (identity) => tryAdmitStateless('alice', 't', 'application', identity).allowed;
+			for (let i = 0; i < 100_000; i++) {
+				const decision = tryAdmitStateless('alice', 't', 'application', `id-${i}`);
+				if (decision.allowed) decision.release();
+			}
+			assert.equal(admitted('id-new-1'), true);
+			assert.equal(admitted('id-new-2'), false, 'new identities past the cap share one per-client bucket');
+		});
+
+		it('at the cap, drops clients whose buckets have refilled, so new clients get their own again', () => {
+			envOverrides.mcp_application_rateLimit_perToolBurst = 2;
+			const admitted = (user, identity) => tryAdmitStateless(user, 't', 'application', identity).allowed;
+			for (let i = 0; i < 100_000; i++) tryAdmitStateless(`user${i}`, 't', 'application', '10.0.0.1').release();
+
+			clock += 11_000;
+			for (const user of ['late-1', 'late-2']) {
+				assert.equal(admitted(user, '10.0.0.9'), true, user);
+				assert.equal(admitted(user, '10.0.0.9'), true, `${user} has a bucket of its own`);
+			}
 		});
 	});
 

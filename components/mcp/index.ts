@@ -39,6 +39,7 @@ export function _restoreGetConfigObj(): void {
 interface McpProfileConfig {
 	enabled?: boolean;
 	mountPath?: string;
+	stateless?: unknown;
 	authentication?: { required?: unknown; resourceMetadata?: unknown };
 }
 
@@ -136,10 +137,11 @@ export function handleApplication(scope: ScopeLike): void {
 	registerApplicationTools();
 	const mountPath = config.mcp.application.mountPath ?? DEFAULT_MOUNT_PATH;
 	const authentication = applicationAuthentication(config.mcp.application.authentication);
-	const handler = createHarperHttpHandler('application', authentication);
+	const stateless = config.mcp.application.stateless === true;
+	const handler = createHarperHttpHandler('application', authentication, { stateless });
 	scope.server.http(handler, { urlPath: mountPath, after: 'authentication' });
 	harperLogger.info(
-		`MCP application profile registered at ${mountPath}${authentication.required ? ' (authentication required)' : ''}`
+		`MCP application profile registered at ${mountPath}${authentication.required ? ' (authentication required)' : ''}${stateless ? ' (stateless)' : ''}`
 	);
 }
 

@@ -232,5 +232,45 @@ describe('components/mcp/index', () => {
 				assert.equal(result.headers.get('WWW-Authenticate'), 'Bearer realm="Harper"');
 			});
 		});
+
+		describe('stateless (#4346)', () => {
+			async function initialize(stateless) {
+				configReturn = { mcp: { application: { stateless } } };
+				const scope = makeFakeScope();
+				handleApplication(scope);
+				const result = await scope.calls[0].handler(
+					{
+						method: 'POST',
+						headers: makeHeaders({ 'content-type': 'application/json', 'accept': 'application/json' }),
+						body: Readable.from([
+							Buffer.from(
+								JSON.stringify({
+									jsonrpc: '2.0',
+									id: 1,
+									method: 'initialize',
+									params: { protocolVersion: '2025-06-18' },
+								})
+							),
+						]),
+					},
+					async () => undefined
+				);
+				_resetApplicationStartedForTest();
+				return result;
+			}
+
+			it('mints no session id when stateless is the boolean true', async () => {
+				const result = await initialize(true);
+				assert.equal(result.status, 200);
+				assert.equal(result.headers['Mcp-Session-Id'], undefined);
+			});
+
+			it('keeps sessions otherwise', async () => {
+				for (const stateless of [undefined, false, 'true']) {
+					const result = await initialize(stateless);
+					assert.match(result.headers['Mcp-Session-Id'], /^[0-9a-f-]{36}$/, String(stateless));
+				}
+			});
+		});
 	});
 });

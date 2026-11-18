@@ -408,6 +408,7 @@ export function configValidator(configJson, skipFsValidation = false) {
 	const mcpApplicationSchema = mcpOperationsSchema.keys({
 		searchMaxResults: number.min(1).optional(),
 		generatedTools: boolean.optional().prefs({ convert: false }),
+		stateless: boolean.optional().prefs({ convert: false }),
 		authentication: Joi.object({
 			required: boolean.optional().prefs({ convert: false }),
 			resourceMetadata: string
