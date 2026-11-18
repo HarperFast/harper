@@ -2018,9 +2018,9 @@ type SubscriberState = {
 	 * listener avoids duplicate delivery.
 	 */
 	dropDuringReplay: boolean;
-	/** Same-thread collection replay entries the in-progress commit dispatch will also visit. */
+	/** Same-thread RocksDB collection replay entries that commit dispatch will also visit. */
 	sameThreadReplayDispatchKey?: number;
-	replayedSameThreadDispatchEvents?: Set<string>;
+	replayedSameThreadDispatchEvents?: Map<string, number>;
 	/** Coalescing guards for the reload re-snapshot (harper-pro#495), driven from the listener. */
 	reloadResnapshotRunning: boolean;
 	reloadResnapshotPending: boolean;
@@ -10422,12 +10422,13 @@ export function makeTable(options): TableResourceClass {
 			const subscriptionEnvs = subscription.subscriptions?.tables?.envs;
 			state.sameThreadReplayDispatchKey =
 				state.isCollection &&
+				isRocksDB &&
 				(request.startTime || resuming) &&
 				subscriptionEnvs?.sameThread === true &&
 				subscriptionEnvs.dispatching === true
 					? subscriptionEnvs.lastTxnTime
 					: undefined;
-			state.replayedSameThreadDispatchEvents = new Set<string>();
+			state.replayedSameThreadDispatchEvents = new Map<string, number>();
 			if (state.sameThreadReplayDispatchKey !== undefined) {
 				// Same-thread aftercommit delivery is synchronous. Once this stack finishes, every event from this
 				// dispatch has either reached the new subscription or was passed while its replay was still active.
@@ -10626,7 +10627,7 @@ export function makeTable(options): TableResourceClass {
 							// LMDB has no shared log cursor, so it hands off by key. A same-thread RocksDB
 							// replay also has no shared cursor, but must retain the requested startTime:
 							// its aftercommit delivery may arrive later for a lower reserved key.
-							if (!liveRange && !sameThread) subscription.startTime = key;
+							if (!liveRange && !(sameThread && isRocksDB)) subscription.startTime = key;
 						};
 						let replayIterator = replayRange[Symbol.iterator]();
 						let replayEnded = false;
@@ -10717,9 +10718,9 @@ export function makeTable(options): TableResourceClass {
 											state.sameThreadReplayDispatchKey !== undefined &&
 											auditRecord.txnLogKey === state.sameThreadReplayDispatchKey
 										) {
-											state.replayedSameThreadDispatchEvents?.add(
-												auditEventIdentity(id, auditRecord, auditRecord.txnLogKey)
-											);
+											const identity = auditEventIdentity(id, auditRecord, auditRecord.txnLogKey);
+											const replayed = state.replayedSameThreadDispatchEvents;
+											if (replayed) replayed.set(identity, (replayed.get(identity) ?? 0) + 1);
 										}
 										if (state.reportingProgress) event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
 										if (!send(event)) return;
@@ -12921,7 +12922,12 @@ export function makeTable(options): TableResourceClass {
 		if (state.dropDuringReplay) return;
 		if (state.sameThreadReplayDispatchKey !== undefined && txnLogKey === state.sameThreadReplayDispatchKey) {
 			const identity = auditEventIdentity(id, auditRecord, txnLogKey);
-			if (state.replayedSameThreadDispatchEvents?.delete(identity)) return;
+			const count = state.replayedSameThreadDispatchEvents?.get(identity) ?? 0;
+			if (count > 0) {
+				if (count === 1) state.replayedSameThreadDispatchEvents?.delete(identity);
+				else state.replayedSameThreadDispatchEvents?.set(identity, count - 1);
+				return;
+			}
 		}
 		try {
 			if (isLockControlType(auditRecord.type)) return;

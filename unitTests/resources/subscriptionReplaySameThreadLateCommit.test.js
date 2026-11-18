@@ -8,6 +8,7 @@ const { waitFor } = require('../waitFor.js');
 const { table } = require('#src/resources/databases');
 const { transaction } = require('#src/resources/transaction');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
+const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
 function stageHeldTransaction(write) {
 	let release;
@@ -105,6 +106,99 @@ describe('same-thread startTime replay handoff', () => {
 				events.filter((event) => event.id === 'trigger').length,
 				1,
 				`triggering commit was delivered more than once: ${JSON.stringify(events.map((event) => event.id))}`
+			);
+		} finally {
+			collection?.end();
+			leaf.end();
+		}
+	});
+
+	it('suppresses each repeated same-id audit entry from the triggering RocksDB transaction', async function () {
+		if (isLMDB) this.skip(); // LMDB gives each entry its own transaction-log key.
+		const T = table({
+			table: `SubReplaySameThreadRepeatedEntry${++tableSequence}`,
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+			audit: true,
+		});
+		const startTime = Date.now() - 10_000;
+		const events = [];
+		let collectionSubPromise;
+		const leaf = await T.subscribe({
+			id: 'trigger',
+			omitCurrent: true,
+			crossThreads: false,
+			listener(event) {
+				if (event.id !== 'trigger' || collectionSubPromise) return;
+				collectionSubPromise = T.subscribe({
+					startTime,
+					isCollection: true,
+					crossThreads: false,
+					listener: (replayedEvent) => events.push(replayedEvent),
+				});
+			},
+		});
+		let collection;
+		try {
+			await transaction({}, async (context) => {
+				await T.put('trigger', { name: 'trigger' }, context);
+				await T.put('repeat', { name: 'first' }, context);
+				await T.put('repeat', { name: 'second' }, context);
+			});
+			collection = await collectionSubPromise;
+			await waitFor(() => events.filter((event) => event.id === 'repeat').length >= 2, { timeout: 5000 });
+			await T.put('sentinel', { name: 'sentinel' });
+			await waitFor(() => events.some((event) => event.id === 'sentinel'), { timeout: 5000 });
+			assert.equal(
+				events.filter((event) => event.id === 'repeat').length,
+				2,
+				`repeated audit entries were not delivered exactly twice: ${JSON.stringify(events.map((event) => event.id))}`
+			);
+		} finally {
+			collection?.end();
+			leaf.end();
+		}
+	});
+
+	it('keeps the LMDB same-thread key handoff after replay starts during a transaction', async function () {
+		if (!isLMDB) this.skip();
+		const T = table({
+			table: `SubReplaySameThreadLMDBHandoff${++tableSequence}`,
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+			audit: true,
+		});
+		const startTime = Date.now() - 10_000;
+		const events = [];
+		let collectionSubPromise;
+		const leaf = await T.subscribe({
+			id: 'trigger',
+			omitCurrent: true,
+			crossThreads: false,
+			listener(event) {
+				if (event.id !== 'trigger' || collectionSubPromise) return;
+				collectionSubPromise = T.subscribe({
+					startTime,
+					isCollection: true,
+					crossThreads: false,
+					listener: (replayedEvent) => events.push(replayedEvent),
+				});
+			},
+		});
+		let collection;
+		try {
+			await transaction({}, async (context) => {
+				await T.put('trigger', { name: 'trigger' }, context);
+				await T.put('target', { name: 'target' }, context);
+			});
+			collection = await collectionSubPromise;
+			await waitFor(() => events.some((event) => event.id === 'target'), { timeout: 5000 });
+			await T.put('sentinel', { name: 'sentinel' });
+			await waitFor(() => events.some((event) => event.id === 'sentinel'), { timeout: 5000 });
+			assert.equal(
+				events.filter((event) => event.id === 'target').length,
+				1,
+				`LMDB key handoff redelivered the in-flight target: ${JSON.stringify(events.map((event) => event.id))}`
 			);
 		} finally {
 			collection?.end();
