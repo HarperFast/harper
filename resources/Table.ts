@@ -16271,7 +16271,7 @@ export function makeTable(options): TableResourceClass {
 	) {
 		return !boundary || precedesExistingVersion(version, boundary, nodeId) > 0;
 	}
-	// A mutation that loses to the copied-delete boundary leaves the record alone even when it is newer than the head.
+	// Callers reject a record write that loses to the copied-delete boundary even if it outranks the head.
 	function precedesDeleteBoundary(version: number, entry: Entry | undefined, nodeId: number | undefined) {
 		const boundary = entry?.copiedDeleteBoundary;
 		return boundary !== undefined && precedesExistingVersion(version, boundary, nodeId) < 0;

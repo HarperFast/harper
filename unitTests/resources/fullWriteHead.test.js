@@ -620,7 +620,7 @@ describe('A record bit for a full-write head (harper#3532)', () => {
 					{ version }
 				);
 
-			// Seed this state directly because a late publish keeps the head version.
+			// A boundary stamp keeps the winning head; seed the opposite order so only the boundary can reject a write.
 			async function seedHeadBelowBoundary(id, deleteVersion, record = null) {
 				const headVersion = deleteVersion - 3000;
 				const boundary = { version: deleteVersion, nodeId: headOrigin };
@@ -860,7 +860,9 @@ describe('A record bit for a full-write head (harper#3532)', () => {
 						if (isLMDB) return this.skip();
 						const version = Date.now() + DAY;
 						const id = newId();
-						await seedHeadBelowBoundary(id, version);
+						await copiedDelete(T, id, { version });
+						await publish(T, id, { version: version - 2000 });
+						assert.equal(T.primaryStore.getEntry(id).version, version, 'premise: the incoming write ties the head');
 						await writes[kind](id, { version, nodeId: lateOrigin });
 						const entry = T.primaryStore.getEntry(id);
 						assert.equal(entry.version, version);
