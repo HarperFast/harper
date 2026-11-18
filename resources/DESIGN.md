@@ -31,7 +31,7 @@ Declarations compile to `fullTextIndexes`, never `attributes` (no stored value).
 
 ## Request admission authorizes exactly what the dispatch runs
 
-`transactional()` drops client `checkPermission` and gives a QUERY `select` to `allowRead`; only that projection is searched (`permissions.test.js`). In false mode `search`/`query`/`get` await `Table.search`'s `SEARCH_AUTHORIZATION` verdict, so a denial is never a truncated success (`asyncAllowReadSearchResults.test.js`); array PUT, query DELETE and publish take one each (`staticResourceDispatch.ts`). `rowFilter` is rechecked on the materialized record, before `limit`.
+`transactional()` drops client `checkPermission` and gives a QUERY `select` to `allowRead`; only that projection is searched (`permissions.test.js`). In false mode `search`/`query`/`get` await `Table.search`'s `SEARCH_AUTHORIZATION` verdict, so a denial is never a truncated success (`asyncAllowReadSearchResults.test.js`); array PUT, query DELETE and publish take one each (`staticResourceDispatch.ts`). `rowFilter` is rechecked on the materialized record, before `limit`. A sort's `text` reaches the model only after admission (`embedSortTexts`), so a denied read never calls a paid backend. A streaming `Table.search` result stays synchronous (`dataLayer/search.ts` `for await`s it), so `#searchAfterEmbedding` returns a deferred iterable and runs `#searchSorted` in its own `transaction()`: a model call has no deadline, and the monitor tears down a snapshot reserved across one (`sortTextEmbedding.test.js`).
 
 ## Array PUT is a collection dispatch that settles every element before it fails
 

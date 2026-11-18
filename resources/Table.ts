@@ -275,6 +275,7 @@ import {
 	combineWriteHooks,
 	type WriteHook,
 	createDefaultEmbedder,
+	embedQueryTexts,
 	type EmbedAttribute,
 	type Embedder,
 } from './models/embedHook.ts';
@@ -451,6 +452,29 @@ const MAX_EXACT_COUNT_MS = 1_000;
 // not a finite, non-negative integer, e.g. `{ limit: Infinity }` / `{ limit: NaN }`) falls through to the normal
 // streaming path with no count, so a count request can't be coerced into buffering an unbounded page.
 const MAX_COUNT_PAGE = 10_000;
+/**
+ * Whether a search answers with a counted page (a Promise) rather than a stream. Counting is a pagination
+ * feature, so it requires a bounded page AND window: both the limit and the offset must be finite,
+ * non-negative integers, the limit no larger than MAX_COUNT_PAGE, and the window (offset + limit) no larger
+ * than MAX_EXACT_COUNT_SCAN. Anything else — a missing/oversized/non-finite/negative limit or offset (a bare
+ * collection GET, `{ limit: Infinity }`, `{ limit: NaN }`, `{ offset: -5, limit: 10 }`) or a deep-page window
+ * past the scan budget — falls through to the normal streaming path with no count. This bounds the offset
+ * too: without it a huge offset would postpone the exact guardrail (which only engages past the page) until
+ * that offset was scanned.
+ */
+function countPageApplies(target: RequestTarget): boolean {
+	const pageLimit = target.limit as number;
+	const offset = target.offset || 0;
+	return (
+		Boolean(target.count) &&
+		Number.isInteger(pageLimit) &&
+		pageLimit >= 0 &&
+		pageLimit <= MAX_COUNT_PAGE &&
+		Number.isInteger(offset) &&
+		offset >= 0 &&
+		offset + pageLimit <= MAX_EXACT_COUNT_SCAN
+	);
+}
 // How often the exact-count drain yields to the macrotask queue (must be a power of two for the bit-mask
 // check). Keeps a large scan from monopolizing the event loop without adding a yield per row.
 const COUNT_YIELD_INTERVAL = 2_048;
@@ -944,6 +968,88 @@ function propagateSearchAuthorization(iterable: any, authorization: Promise<any>
 		});
 	}
 	return iterable;
+}
+/** An iterator over search results that are not ready yet: it waits for them, then delegates. */
+function deferredIterator(
+	options: any,
+	openResults: () => Promise<any>,
+	onFinish: () => void,
+	synchronousIterationMessage: string
+) {
+	const asynchronous = options === true || options?.async;
+	const iterationOptions = options === true ? { async: true } : { ...options, async: true };
+	let returned = false;
+	let completed = false;
+	let iteratorPromise: Promise<AsyncIterator<any>>;
+	const finish = () => {
+		if (completed) return;
+		completed = true;
+		onFinish();
+	};
+	const getIterator = () =>
+		(iteratorPromise ||= openResults().then((results: any) =>
+			results.iterate
+				? results.iterate(iterationOptions)
+				: results[Symbol.asyncIterator]
+					? results[Symbol.asyncIterator](iterationOptions)
+					: results[Symbol.iterator]()
+		));
+	return {
+		next(value?: any) {
+			if (!asynchronous) throw new Error(synchronousIterationMessage);
+			if (returned) return Promise.resolve({ value: undefined, done: true });
+			return getIterator().then(
+				(iterator) =>
+					returned
+						? { value: undefined, done: true }
+						: Promise.resolve(iterator.next(value)).then(
+								(result) => {
+									if (result.done) finish();
+									return result;
+								},
+								(error) => {
+									finish();
+									throw error;
+								}
+							),
+				(error) => {
+					finish();
+					throw error;
+				}
+			);
+		},
+		return(value?: any) {
+			returned = true;
+			finish();
+			return getIterator().then(
+				(iterator) => iterator.return?.(value) ?? { value, done: true },
+				() => ({ value, done: true })
+			);
+		},
+		throw(error: any) {
+			returned = true;
+			finish();
+			return getIterator().then(
+				(iterator) => {
+					if (iterator.throw) return iterator.throw(error);
+					throw error;
+				},
+				() => Promise.reject(error)
+			);
+		},
+	};
+}
+/** The sort chain of a search with its texts replaced by their embeddings, and a way to cancel that. */
+type SortEmbedding = { sort: Promise<any>; abort: () => void };
+function withEmbeddedTargets(sort: any, vectors: Map<any, number[]>): any {
+	const copy = { ...sort };
+	const vector = vectors.get(sort);
+	if (vector) {
+		copy.target = vector;
+		delete copy.text;
+	}
+	if (sort.next) copy.next = withEmbeddedTargets(sort.next, vectors);
+	return copy;
 }
 type UpdatePermission = boolean | { [attribute: string]: boolean };
 const RESTRICTED_REPLACEMENT = Object.freeze({});
@@ -8676,8 +8782,7 @@ export function makeTable(options): TableResourceClass {
 			if (target.parseError) throw target.parseError; // if there was a parse error, we can throw it now
 			assertNestedQueryOptions(target.select, this.constructor);
 			if (fullTextFieldNames || hasRelationships) assertFullTextSelection(target.select);
-			let effectiveSelect: any;
-			const getColumns = (): ColumnsList => buildSelectColumns(effectiveSelect ?? target.select, attributes) ?? [];
+			const getColumns = (): ColumnsList => buildSelectColumns(target.select, attributes) ?? [];
 			if (target.checkPermission) {
 				// Direct instance callers may request the same one-shot operation gate used by the
 				// transactional Resource API. Application row filtering is explicit via target.rowFilter.
@@ -8720,75 +8825,18 @@ export function makeTable(options): TableResourceClass {
 					gatedResults.selectApplied = true;
 					gatedResults.getColumns = () =>
 						resolvedResults?.getColumns ? resolvedResults.getColumns() : (earlyColumns ??= getColumns());
-					gatedResults.iterate = (options: any = {}) => {
-						const asynchronous = options === true || options?.async;
-						const iterationOptions = options === true ? { async: true } : { ...options, async: true };
-						let returned = false;
-						let completed = false;
-						let iteratorPromise: Promise<AsyncIterator<any>>;
-						const finish = () => {
-							if (completed) return;
-							completed = true;
-							gatedResults.onDone?.();
-						};
-						const getIterator = () =>
-							(iteratorPromise ||= authorization.then((state: any) => {
-								if (state.error) throw state.error;
-								if (!state.allowed) throw new AccessViolation((context as any).user);
-								const results = state.results;
-								return results.iterate
-									? results.iterate(iterationOptions)
-									: results[Symbol.asyncIterator]
-										? results[Symbol.asyncIterator](iterationOptions)
-										: results[Symbol.iterator]();
-							}));
-						return {
-							next(value?: any) {
-								if (!asynchronous) {
-									throw new Error('Can not synchronously iterate while allowRead is asynchronous');
-								}
-								if (returned) return Promise.resolve({ value: undefined, done: true });
-								return getIterator().then(
-									(iterator) =>
-										returned
-											? { value: undefined, done: true }
-											: Promise.resolve(iterator.next(value)).then(
-													(result) => {
-														if (result.done) finish();
-														return result;
-													},
-													(error) => {
-														finish();
-														throw error;
-													}
-												),
-									(error) => {
-										finish();
-										throw error;
-									}
-								);
-							},
-							return(value?: any) {
-								returned = true;
-								finish();
-								return getIterator().then(
-									(iterator) => iterator.return?.(value) ?? { value, done: true },
-									() => ({ value, done: true })
-								);
-							},
-							throw(error: any) {
-								returned = true;
-								finish();
-								return getIterator().then(
-									(iterator) => {
-										if (iterator.throw) return iterator.throw(error);
-										throw error;
-									},
-									() => Promise.reject(error)
-								);
-							},
-						};
-					};
+					gatedResults.iterate = (options: any = {}) =>
+						deferredIterator(
+							options,
+							() =>
+								authorization.then((state: any) => {
+									if (state.error) throw state.error;
+									if (!state.allowed) throw new AccessViolation((context as any).user);
+									return state.results;
+								}),
+							() => gatedResults.onDone?.(),
+							'Can not synchronously iterate while allowRead is asynchronous'
+						);
 					return propagateSearchAuthorization(gatedResults, authorization);
 				}
 				if (!allowed) {
@@ -8801,7 +8849,61 @@ export function makeTable(options): TableResourceClass {
 				throw new ClientError('rowFilter must be synchronous');
 			}
 			if (context) context.lastModified = UNCACHEABLE_TIMESTAMP;
+			const sort = typeof target.sort === 'object' && target.sort;
+			if (sort && (sort.text !== undefined || sort.next)) {
+				const embedding = embedSortTexts(sort, context);
+				if (embedding) return this.#searchAfterEmbedding(target, embedding, context, rowFilter, getColumns);
+			}
+			return this.#searchSorted(target, sort, context, txn, rowFilter);
+		}
 
+		/**
+		 * The results of a search whose sort texts are being embedded. The search runs once they are, in its own
+		 * transaction scope: a model call has no deadline, so no read snapshot is held open across it.
+		 */
+		#searchAfterEmbedding(
+			target: RequestTarget,
+			embedding: SortEmbedding,
+			context: any,
+			rowFilter: any,
+			getColumns: () => ColumnsList
+		): any {
+			const scope = context ?? {};
+			const search = (sort: any) =>
+				transaction(scope, () => this.#searchSorted(target, sort, context, txnForContext(scope), rowFilter));
+			if (target.explain || countPageApplies(target)) return embedding.sort.then(search);
+			const deferred: any = new ExtendedIterable();
+			let results: any;
+			let discarded = false;
+			const opening = embedding.sort
+				.then((sort) => (discarded ? [] : search(sort)))
+				.then((searched) => {
+					results = searched;
+					if (discarded) searched.onDone?.();
+					return searched;
+				});
+			opening.catch(() => {});
+			deferred.iterate = (options: any = {}) =>
+				deferredIterator(
+					options,
+					() => opening,
+					() => deferred.onDone?.(),
+					'Can not synchronously iterate a search whose sort embeds text'
+				);
+			deferred.onDone = () => {
+				deferred.onDone = null;
+				discarded = true;
+				embedding.abort();
+				results?.onDone?.();
+			};
+			deferred.selectApplied = true;
+			deferred.getColumns = () => (results?.getColumns ? results.getColumns() : getColumns());
+			return deferred;
+		}
+
+		#searchSorted(target: RequestTarget, sort: any, context: any, txn: any, rowFilter: any): any {
+			let effectiveSelect: any;
+			const getColumns = (): ColumnsList => buildSelectColumns(effectiveSelect ?? target.select, attributes) ?? [];
 			let conditions: any = searchConditions(target);
 			const id = target.id ?? this.getId();
 			if (id) {
@@ -8862,7 +8964,6 @@ export function makeTable(options): TableResourceClass {
 			const prepared = TableResource._prepareQueryConditions(conditions, operator, target, context);
 			conditions = prepared.conditions;
 			const includeFullTextHighlights = prepared.includeFullTextHighlights;
-			let sort = typeof target.sort === 'object' && target.sort;
 			if (
 				TableResource.fullTextIndexes.length > 0 &&
 				conditionsContainFullText(conditions, TableResource.fullTextIndexes)
@@ -9065,24 +9166,8 @@ export function makeTable(options): TableResourceClass {
 				// count so the HTTP layer can emit a Content-Range. `exact` drains the full matched set once,
 				// windowing the page in the same pass; `estimated` returns just the page plus a cheap planner/
 				// table estimate. Opt-in only — the default streaming path below is untouched.
-				//
-				// Requires a bounded page AND window. Counting is a pagination feature; both the limit and the
-				// offset must be finite, non-negative integers, the limit no larger than MAX_COUNT_PAGE, and the
-				// window (offset + limit) no larger than MAX_EXACT_COUNT_SCAN. Anything else — a missing/
-				// oversized/non-finite/negative limit or offset (a bare collection GET, `{ limit: Infinity }`,
-				// `{ limit: NaN }`, `{ offset: -5, limit: 10 }`) or a deep-page window past the scan budget — falls through to the
-				// normal streaming path with no count. This bounds the offset too: without it a huge offset would
-				// postpone the exact guardrail (which only engages past the page) until that offset was scanned.
 				const pageLimit = target.limit as number;
-				if (
-					target.count &&
-					Number.isInteger(pageLimit) &&
-					pageLimit >= 0 &&
-					pageLimit <= MAX_COUNT_PAGE &&
-					Number.isInteger(offset) &&
-					offset >= 0 &&
-					offset + pageLimit <= MAX_EXACT_COUNT_SCAN
-				) {
+				if (countPageApplies(target)) {
 					const wantExact = target.count === 'exact';
 					const pageEnd = offset + pageLimit;
 					const countStart = performance.now();
@@ -14332,6 +14417,58 @@ export function makeTable(options): TableResourceClass {
 			!primaryStore.encoder.resolvedAttributeNames?.has(name)
 		);
 	}
+	/**
+	 * Start embedding the `text` of each sort in the chain with its attribute's `@embed` model, one model
+	 * call per attribute. Every sort is validated before any call starts. Undefined when no sort has text.
+	 */
+	function embedSortTexts(sort: any, context: any): SortEmbedding | undefined {
+		let textsByAttribute: Map<string, { attribute: any; orders: any[] }> | undefined;
+		for (let order = sort; order; order = order.next) {
+			if (order.text === undefined) continue;
+			const name = Array.isArray(order.attribute) ? order.attribute.join('.') : order.attribute;
+			if (typeof order.text !== 'string' || order.text.trim() === '')
+				throw new ClientError(`The sort text for "${name}" must be a non-empty string`);
+			if (order.target !== undefined) throw new ClientError(`A sort on "${name}" can have text or a target, not both`);
+			if (order.model !== undefined)
+				throw new ClientError(`A sort can not set a model; its text is embedded with the @embed model of "${name}"`);
+			const attribute = typeof order.attribute === 'string' ? findAttribute(attributes, order.attribute) : undefined;
+			if (!attribute?.embed) {
+				if (typeof order.attribute === 'string' && !attribute)
+					throw new ClientError(`${name} is not a defined attribute`, 404);
+				throw new ClientError(`A sort with text requires an @embed attribute, and "${name}" has no @embed model`);
+			}
+			textsByAttribute ??= new Map();
+			let group = textsByAttribute.get(attribute.name);
+			if (!group) textsByAttribute.set(attribute.name, (group = { attribute, orders: [] }));
+			group.orders.push(order);
+		}
+		if (!textsByAttribute) return;
+		const controller = new AbortController();
+		const signal = context?.signal ? AbortSignal.any([controller.signal, context.signal]) : controller.signal;
+		const vectors = new Map<any, number[]>();
+		const embedded = [];
+		for (const [name, { attribute, orders }] of textsByAttribute) {
+			embedded.push(
+				embedQueryTexts(
+					orders.map((order) => order.text),
+					attribute.embed,
+					name,
+					signal
+				).then((embeddings) => orders.forEach((order, index) => vectors.set(order, embeddings[index])))
+			);
+		}
+		return {
+			sort: Promise.all(embedded).then(
+				() => withEmbeddedTargets(sort, vectors),
+				(error) => {
+					controller.abort();
+					throw error;
+				}
+			),
+			abort: () => controller.abort(),
+		};
+	}
+
 	function txnForContext(context: Context) {
 		let transaction = context?.transaction;
 		if (isReleasedTransaction(transaction)) transaction = undefined;

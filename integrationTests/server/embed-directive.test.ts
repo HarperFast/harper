@@ -27,7 +27,7 @@
  * input text so assertions can compare exact values.
  */
 import { suite, test, before, after } from 'node:test';
-import { strictEqual, ok } from 'node:assert';
+import { strictEqual, deepStrictEqual, ok } from 'node:assert';
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { startHarper, teardownHarper } from '@harperfast/integration-testing';
@@ -251,6 +251,64 @@ suite('@embed directive end-to-end with fake Ollama', (ctx: any) => {
 		ok(stored);
 		const expected = deterministicVector(`search_document: ${content}`);
 		for (let i = 0; i < expected.length; i++) ok(Math.abs(stored[i] - expected[i]) < 1e-5);
+	});
+
+	test('search_by_value with sort text embeds it with the query prefix and ranks as its vector would', async () => {
+		for (const [index, content] of ['alpha orchard', 'beta harbor', 'gamma meadow'].entries()) {
+			await request(ctx.harper.httpURL)
+				.post('/PrefixedEmbedDoc/')
+				.set(client.headers)
+				.send({ id: `ranked-${index}`, content })
+				.expect((r: any) => ok([200, 201, 204].includes(r.status), r.text));
+		}
+		const search = (sort: object) =>
+			client
+				.req()
+				.send({
+					operation: 'search_by_value',
+					database: 'embedtest',
+					table: 'PrefixedEmbedDoc',
+					search_attribute: 'id',
+					search_value: '*',
+					sort,
+					get_attributes: ['id', '$distance'],
+					limit: 3,
+				})
+				.expect(200);
+		const text = 'beta harbor';
+		fake.reset();
+		const byText = (await search({ attribute: 'embedding', text })).body;
+		strictEqual(fake.embedCallCount(), 1);
+		deepStrictEqual(fake.lastEmbedInputs()[0], [`search_query: ${text}`]);
+		const byTarget = (await search({ attribute: 'embedding', target: deterministicVector(`search_query: ${text}`) }))
+			.body;
+		strictEqual(byText.length, 3, JSON.stringify(byText));
+		deepStrictEqual(
+			byText.map((row: any) => row.id),
+			byTarget.map((row: any) => row.id)
+		);
+		for (const [index, row] of byText.entries()) {
+			strictEqual(typeof row.$distance, 'number', JSON.stringify(row));
+			ok(Math.abs(row.$distance - byTarget[index].$distance) < 1e-5, JSON.stringify({ byText, byTarget }));
+		}
+	});
+
+	test('search_by_value refuses sort text on a sort that also has a target', async () => {
+		fake.reset();
+		const response = await client
+			.req()
+			.send({
+				operation: 'search_by_value',
+				database: 'embedtest',
+				table: 'PrefixedEmbedDoc',
+				search_attribute: 'id',
+				search_value: '*',
+				sort: { attribute: 'embedding', text: 'beta harbor', target: [1, 0, 0] },
+				get_attributes: ['id'],
+			})
+			.expect(400);
+		ok(/text or a target, not both/.test(JSON.stringify(response.body)), response.text);
+		strictEqual(fake.embedCallCount(), 0);
 	});
 
 	test('happy path: POST → embedder runs → vector stored on record', async () => {

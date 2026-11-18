@@ -405,6 +405,8 @@ Write semantics:
 
 Multiple `@embed` attributes on one type are computed concurrently.
 
+<VersionBadge version="v5.5.0" /> To search by similarity to a text, pass the text in the vector `sort` and Harper embeds it with the same model, as a query: see [Searching by Text](#searching-by-text).
+
 ### `@fullText`
 
 <VersionBadge version="v5.3.0" /> <EngineBadge engines="RocksDB" />
@@ -866,6 +868,42 @@ let results = Document.search({
 ```
 
 `$distance` is available in both `sort`-based ranking and `conditions`-based threshold queries. It is not set by a threshold condition that another condition drives, or by one on a relationship path; add a `sort` on the vector with the same `target` to select it for the queried table's own vector.
+
+### Searching by Text
+
+<VersionBadge version="v5.5.0" />
+
+On an attribute with [`@embed`](#embed), a `sort` can carry `text` instead of `target`. Harper embeds the text with that attribute's model as a search query (`inputType: 'query'`; the write side embeds documents with `'document'`), then runs the same nearest-neighbor search with the resulting vector:
+
+```javascript
+let results = Document.search({
+	select: ['title', '$distance'],
+	sort: { attribute: 'embedding', text: 'what is harper?' },
+	limit: 5,
+});
+```
+
+The operations API takes the same `sort` on `search_by_value` and `search_by_conditions`:
+
+```json
+{
+	"operation": "search_by_value",
+	"database": "data",
+	"table": "Document",
+	"attribute": "id",
+	"value": "*",
+	"sort": { "attribute": "embedding", "text": "what is harper?" },
+	"get_attributes": ["title", "$distance"],
+	"limit": 5
+}
+```
+
+- `text` must be a non-empty string. A sort with both `text` and `target`, a `model` key, or `text` on an attribute without `@embed` is rejected with a 400. The model is always the attribute's own, because vectors from another model do not compare with the stored ones.
+- A failure to compute the embedding fails the search with a 502, or with a 400 when the text is too long for the model. The error's `cause` holds the model's error for code that calls `search()` directly.
+- Every search with `text` calls the model. Read permission on the table is enough to run one. Code that repeats one query can embed it once with [`models.embed(text, { inputType: 'query' })`](../models/api.md#embed) and pass the vector as `target`.
+- The search reads from a snapshot taken after the text is embedded, so a slow model call does not hold one open. Its results can only be iterated asynchronously (`for await`).
+- A threshold condition (`comparator: 'lt'`) still needs a `target`.
+- A custom embedder set with `setEmbedAttribute` must produce vectors in the same space as the attribute's model, since search embeds the text with that model.
 
 ### Per-Query Search Options
 
