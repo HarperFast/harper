@@ -276,7 +276,7 @@ function admitOverEarlierReceipt(
 }
 
 export function interruptedArchiveRestore(databaseName: string, earlier: RestoreReceipt): ClientError {
-	const job = `job ${earlier.job_id ?? earlier.operation_id}`;
+	const job = `job ${earlier.job_id ?? earlier.interrupted_job_id ?? earlier.operation_id}`;
 	const what =
 		earlier.state === 'pending'
 			? `a restore from an archive scheduled for the next startup (${job})`
@@ -524,7 +524,7 @@ async function applyAndPublish(
 			// with no marker the kept claim lasts only until startup drops it (`dropAbandonedClaim`)
 			const recover = !isStagedReceipt(receipt)
 				? 'rerun restore_backup to recover'
-				: destructionStarted || lock.preexisting
+				: restoreMarkerPresent(databaseDir)
 					? 'restore_backup resume=true to recover'
 					: 'nothing was replaced; restore_backup resume=true tries again, and the next Harper startup withdraws it';
 			throw withRecoveryGuidance(

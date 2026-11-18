@@ -679,7 +679,8 @@ describeUnlessLmdb('restore_backup from a get_backup archive', function () {
 			await interruptAfterEnginePart(fixture);
 			const jobId = receiptOf(fixture.dir).job_id;
 
-			// the next boot's sweep, the process having died mid-swap
+			// the process having died mid-swap, the next boot: recovery keeps the record, then the sweep runs
+			await boot(fixture.name);
 			await reconcileInterruptedJobs();
 
 			const job = await jobTable().get(jobId);
@@ -802,32 +803,37 @@ describeUnlessLmdb('restore_backup from a get_backup archive', function () {
 
 		it('still tells that job after a resume with Harper stopped, which has no job of its own, fails too', async function () {
 			const fixture = await seededDatabase();
-			const jobId = await claimThenDie(fixture);
+			await interruptAfterEnginePart(fixture);
+			const jobId = receiptOf(fixture.dir).job_id;
 			await closeDatabase(fixture.name);
 			const restoreRunner = replaceExport(
 				restoreChildRunnerModule,
 				'runRestoreChild',
 				async (command, args, options) => {
 					if (command !== 'apply-and-prove') return runRestoreChild(command, args, options);
-					throw new Error('refused before the purge');
+					throw new Error('the blob root is still read-only');
 				}
 			);
 			try {
-				await assert.rejects(
-					resumeArchiveRestoreOffline(fixture.name),
-					/nothing was replaced; restore_backup resume=true tries again/
-				);
+				await assert.rejects(resumeArchiveRestoreOffline(fixture.name), /\(restore_backup resume=true to recover\)/);
 			} finally {
 				restoreRunner();
 			}
 			const kept = receiptOf(fixture.dir);
 			assert.deepStrictEqual({ route: kept.route, job: kept.job_id }, { route: 'offline', job: undefined });
+			await assert.rejects(
+				uploadAndRun(fixture.name, fixture.archive),
+				(error) => error.statusCode === 409 && error.message.includes(`job ${jobId}`)
+			);
 
+			await boot(fixture.name);
 			await reconcileInterruptedJobs();
 
 			const job = await jobTable().get(jobId);
 			assert.ok(
-				job.message.endsWith(`resume=true, or withdraw it with cancel=true, as the next Harper startup also does.`),
+				job.message.endsWith(
+					`is unfinished: finish it with restore_backup database=${fixture.name} resume=true, or withdraw it with cancel=true.`
+				),
 				job.message
 			);
 
