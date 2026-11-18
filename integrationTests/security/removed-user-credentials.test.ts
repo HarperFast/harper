@@ -98,6 +98,24 @@ suite('Stored user credential revocation', (ctx: ContextWithHarper) => {
 		return { Cookie: cookie, Origin: origin };
 	}
 
+	function waitForSession(request: () => Promise<Response>): Promise<Response> {
+		return waitFor(
+			async () => {
+				const response = await request();
+				if (response.status !== 401) return response;
+				await response.text();
+				return false;
+			},
+			{ timeout: 5000, message: 'expected the live session to authenticate' }
+		);
+	}
+
+	function expectExpiredCookie(response: Response, cookie: string) {
+		const cookieName = cookie.split('=')[0];
+		const expired = response.headers.getSetCookie().find((value) => value.startsWith(`${cookieName}=;`));
+		ok(expired?.includes('Expires=Thu, 01 Jan 1970 00:00:00 GMT'), 'expected the browser to discard the cookie');
+	}
+
 	for (const [change, mutation] of [
 		['dropping', { operation: 'drop_user' }],
 		['deactivating', { operation: 'alter_user', active: false }],
@@ -114,18 +132,7 @@ suite('Stored user credential revocation', (ctx: ContextWithHarper) => {
 							: await issueCookie(username);
 					const request = () => (isOperations ? operation({ operation: 'user_info' }, headers) : mcp(headers));
 
-					const admitted =
-						credential === 'cookie'
-							? await waitFor(
-									async () => {
-										const response = await request();
-										if (response.status !== 401) return response;
-										await response.text();
-										return false;
-									},
-									{ timeout: 5000, message: 'expected the live session to authenticate' }
-								)
-							: await request();
+					const admitted = credential === 'cookie' ? await waitForSession(request) : await request();
 					const body = await expectStatus(admitted, 200);
 					if (isOperations) strictEqual(JSON.parse(body).username, username);
 					else ok(admitted.headers.get('mcp-session-id'), 'expected an MCP session');
@@ -133,6 +140,7 @@ suite('Stored user credential revocation', (ctx: ContextWithHarper) => {
 					const response = await request();
 					await expectStatus(response, 401);
 					if (!isOperations) strictEqual(response.headers.get('mcp-session-id'), null);
+					if (headers.Cookie) expectExpiredCookie(response, headers.Cookie);
 				});
 			}
 		}
@@ -155,6 +163,25 @@ suite('Stored user credential revocation', (ctx: ContextWithHarper) => {
 		strictEqual(response.headers.get('set-cookie'), null);
 	});
 
+	test('a browser can retry login after the Operations API expires a dropped user’s cookie', async () => {
+		await addUser('retired_session_user');
+		await addUser('replacement_session_user');
+		const session = await issueCookie('retired_session_user');
+		await expectStatus(await waitForSession(() => operation({ operation: 'user_info' }, session)), 200);
+		await expectStatus(await operation({ operation: 'drop_user', username: 'retired_session_user' }, admin), 200);
+
+		const login = { operation: 'login', username: 'replacement_session_user', password };
+		const rejected = await operation(login, session);
+		await expectStatus(rejected, 401);
+		expectExpiredCookie(rejected, session.Cookie);
+
+		const retried = await operation(login, { Origin: origin });
+		await expectStatus(retried, 200);
+		const cookieName = session.Cookie.split('=')[0];
+		const replacementCookie = retried.headers.getSetCookie().find((value) => value.startsWith(`${cookieName}=`));
+		ok(replacementCookie && !replacementCookie.startsWith(`${cookieName}=;`), 'expected a fresh session cookie');
+	});
+
 	test('a rejected token request leaves the accompanying cookie out of the audit event', async () => {
 		await addUser('audit_cookie_user');
 		await addUser('audit_dropped_bearer');
@@ -163,10 +190,12 @@ suite('Stored user credential revocation', (ctx: ContextWithHarper) => {
 		await expectStatus(await operation({ operation: 'drop_user', username: 'audit_dropped_bearer' }, admin), 200);
 
 		const referer = `${origin}/credential-revocation-audit`;
-		await expectStatus(
-			await operation({ operation: 'user_info' }, { ...session, Authorization: `Bearer ${token}`, Referer: referer }),
-			401
+		const denied = await operation(
+			{ operation: 'user_info' },
+			{ ...session, Authorization: `Bearer ${token}`, Referer: referer }
 		);
+		await expectStatus(denied, 401);
+		strictEqual(denied.headers.get('set-cookie'), null, 'the unrelated cookie should be left alone');
 		const logPath = join(ctx.harper.logDir ?? join(ctx.harper.dataRootDir, 'log'), 'hdb.log');
 		const auditEvent = await waitFor(
 			async () => {

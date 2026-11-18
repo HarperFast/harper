@@ -5,6 +5,7 @@ import {
 	getUserImpl,
 	hasReadRecordChanged,
 	isCurrentUser,
+	isInactiveUserRejection,
 	isLocalPrincipal,
 	isMissingUserView,
 	localPrincipal,
@@ -78,6 +79,7 @@ function envFlag(value: string | undefined): boolean | undefined {
 }
 
 const DEFAULT_COOKIE_EXPIRES = 'Tue, 01 Oct 8307 19:33:20 GMT';
+const EXPIRED_COOKIE_DATE = 'Thu, 01 Jan 1970 00:00:00 GMT';
 
 const MAX_WARNED_STALE_CREDENTIALS = 1024;
 let authorizationCache = new Map<string, User | null>();
@@ -444,13 +446,28 @@ export async function authentication(request, nextHandler) {
 
 			request.user = newUser;
 		} else if (session?.user) {
+			let missingSessionUser = false;
 			try {
 				const user = await server.getUser(session.user, null, request);
-				if (isMissingUserView(user)) {
+				missingSessionUser = isMissingUserView(user);
+				if (missingSessionUser) {
 					throw credentialRejectionError(AUTHENTICATION_ERROR_MSGS.GENERIC_AUTH_FAIL, HTTP_STATUS_CODES.UNAUTHORIZED);
 				}
 				request.user = user;
 			} catch (error) {
+				if (missingSessionUser || isInactiveUserRejection(error)) {
+					responseHeaders.push(
+						'Set-Cookie',
+						buildSessionCookie(
+							origin,
+							headers.host,
+							'',
+							EXPIRED_COOKIE_DATE,
+							usesSecureSessionCookie(request, headers.host)
+						)
+					);
+					sessionId = undefined;
+				}
 				if (LOG_AUTH_FAILED) authAuditLog(request, session.user, AUTH_AUDIT_STATUS.FAILURE, 'Session');
 				const failureResponse = settleAuthFailure(request, error, 'Session');
 				if (failureResponse) return applyResponseHeaders(request, failureResponse, responseHeaders, wasUnauthorized);
@@ -552,6 +569,38 @@ function sessionCookiePrefix(origin: string | undefined): string {
 	return (origin ? origin.replace(/^https?:\/\//, '').replace(/\W/, '_') + '-' : '') + 'hdb-session=';
 }
 
+function usesSecureSessionCookie(request, host: string | undefined): boolean {
+	// Secure cookies are allowed on localhost and loopback in some browsers.
+	return (
+		request.protocol === 'https' ||
+		host?.startsWith('localhost:') ||
+		host?.startsWith('127.0.0.1:') ||
+		host?.startsWith('::1') ||
+		false
+	);
+}
+
+function buildSessionCookie(
+	origin: string | undefined,
+	host: string | undefined,
+	sessionId: string,
+	expires: string,
+	useSecure: boolean
+): string {
+	const domains = env.get(CONFIG_PARAMS.AUTHENTICATION_COOKIE_DOMAINS);
+	const domain =
+		host &&
+		domains?.find((domain) => {
+			if (domain.startsWith('.')) domain = domain.slice(1);
+			const portStart = host.indexOf(':');
+			return host.slice(0, portStart !== -1 ? portStart : host.length).endsWith(domain);
+		});
+	let cookie = `${sessionCookiePrefix(origin)}${sessionId}; Path=/; Expires=${expires}; HttpOnly`;
+	if (domain) cookie += `; Domain=${domain}`;
+	if (useSecure) cookie += '; SameSite=None; Secure';
+	return cookie;
+}
+
 function authAuditLog(request, username, status, strategy) {
 	const headers = request.headers.asObject;
 	const log = new AuthAuditLog(
@@ -583,36 +632,11 @@ interface SessionState {
 function updateSession(this: SessionState, updatedSession) {
 	const { request, headers, origin, responseHeaders, response } = this;
 	const expires = env.get(CONFIG_PARAMS.AUTHENTICATION_COOKIE_EXPIRES);
-	const useSecure =
-		request.protocol === 'https' ||
-		headers.host?.startsWith('localhost:') ||
-		headers.host?.startsWith('127.0.0.1:') ||
-		headers.host?.startsWith('::1');
+	const useSecure = usesSecureSessionCookie(request, headers.host);
 	if (!this.sessionId) {
 		this.sessionId = uuid();
-		const domains = env.get(CONFIG_PARAMS.AUTHENTICATION_COOKIE_DOMAINS);
 		const expiresString = expires ? new Date(Date.now() + convertToMS(expires)).toUTCString() : DEFAULT_COOKIE_EXPIRES;
-		const domain =
-			headers.host &&
-			domains?.find((domain) => {
-				// find a domain that matches the host header
-				// the configured cookie domain starts with a dot, that indicates a wildcard, so we need to remove it
-				if (domain.startsWith('.')) domain = domain.slice(1);
-				// host can have a port, so we need to remove it because we are comparing domain names
-				const portStart = headers.host.indexOf(':');
-				const host = portStart !== -1 ? headers.host.slice(0, portStart) : headers.host;
-				return host.endsWith(domain);
-			});
-		// "Secure" can work with localhost/127.0.0.1 in certain browsers.
-		// https://github.com/httpwg/http-extensions/issues/2605
-		let cookie = `${sessionCookiePrefix(origin)}${this.sessionId}; Path=/; Expires=${expiresString}; HttpOnly`;
-		if (domain) {
-			cookie += `; Domain=${domain}`;
-		}
-
-		if (useSecure) {
-			cookie += `; SameSite=None; Secure`;
-		}
+		const cookie = buildSessionCookie(origin, headers.host, this.sessionId, expiresString, useSecure);
 		if (responseHeaders) {
 			responseHeaders.push('Set-Cookie', cookie);
 		} else if (response?.headers?.set) {

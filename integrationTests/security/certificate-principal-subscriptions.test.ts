@@ -215,10 +215,11 @@ suite('Subscriptions of principals with no hdb_user (#4062)', { skip: skipSuite 
 			.expect(200);
 		const token = tokens.body?.operation_token;
 		ok(token, 'expected an operation_token');
+		const origin = new URL(ctx.harper.httpURL).origin;
 		const login = await fetch(ctx.harper.operationsAPIURL, {
 			method: 'POST',
 			// the session cookie is named for the origin it serves; the stream below goes to the REST port
-			headers: { 'Content-Type': 'application/json', 'Origin': new URL(ctx.harper.httpURL).origin },
+			headers: { 'Content-Type': 'application/json', 'Origin': origin },
 			body: JSON.stringify({ operation: 'login', ...DROPPED }),
 		});
 		strictEqual(login.status, 200, await login.text());
@@ -227,6 +228,7 @@ suite('Subscriptions of principals with no hdb_user (#4062)', { skip: skipSuite 
 			.map((c) => c.split(';')[0])
 			.find((c) => c.includes('-hdb-session='));
 		ok(cookie, `expected an hdb-session cookie, got ${JSON.stringify([...login.headers])}`);
+		await client.reqAs({ Cookie: cookie, Origin: origin }).send({ operation: 'user_info' }).expect(200);
 		await client.req().send({ operation: 'drop_user', username: DROPPED.username }).expect(200);
 
 		const streams = { token: openSse({ Authorization: `Bearer ${token}` }), cookie: openSse({ Cookie: cookie }) };

@@ -218,7 +218,7 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 		logger.error(err);
 		throw new ClientError(AUTHENTICATION_ERROR_MSGS.INVALID_CREDENTIALS, HTTP_STATUS_CODES.UNAUTHORIZED);
 	}
-	if (!user || (authObj.purpose === 'login' && !user.active)) {
+	if (!user?.active) {
 		throw new ClientError(AUTHENTICATION_ERROR_MSGS.INVALID_CREDENTIALS, HTTP_STATUS_CODES.UNAUTHORIZED);
 	}
 

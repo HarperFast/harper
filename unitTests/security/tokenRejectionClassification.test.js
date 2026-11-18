@@ -160,14 +160,14 @@ describe('token rejection versus internal authentication fault', () => {
 			assert.strictEqual(user.username, 'known_user');
 		});
 
-		it('rejects login-token issuance for a missing user in trusted dispatch', async () => {
-			await assert.rejects(
-				runWithOperationAuthorizationBypass(true, () =>
-					createTokens({ username: 'missing_login_user', purpose: 'login' })
-				),
-				{ statusCode: 401 }
-			);
-		});
+		for (const purpose of [undefined, 'login']) {
+			it(`rejects ${purpose ?? 'operation'} token issuance for a missing user in trusted dispatch`, async () => {
+				await assert.rejects(
+					runWithOperationAuthorizationBypass(true, () => createTokens({ username: 'missing_token_user', purpose })),
+					{ statusCode: 401 }
+				);
+			});
+		}
 	});
 
 	describe('internal faults', () => {

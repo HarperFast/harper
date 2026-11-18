@@ -80,7 +80,7 @@ In `vm` and `vm-current-context`, all four entry points (ESM `linker`, both `imp
 - Route owners call `settleDeferredCredentialRejection` before reading `request.user`, so a rejected cert never falls through to Basic, session, or local bypass.
 - A route 401 keeps its own challenge only when marked with `ownAuthenticationChallenge`; an unmarked one still gets Harper's challenge or the login redirect, so routes that set `WWW-Authenticate` today keep working.
 
-`validateToken` requires an active stored user for user-bound JWTs (#4124). In the session branch, `isMissingUserView` recognizes the built-in username-only fallback by its provenance, including through overrides that return or spread the view. A resolver that builds its own principal owns that identity's revocation (`unitTests/security/authSessions.test.js`). Authentication audit events omit session IDs because the ID is the cookie credential.
+`validateToken` requires an active stored user for user-bound JWTs (#4124). In the session branch, `isMissingUserView` recognizes the built-in username-only fallback by its provenance, including through overrides that return or spread the view. A resolver that builds its own principal owns that identity's revocation (`unitTests/security/authSessions.test.js`). The rejection expires cookies for missing or inactive users using the same cookie scope as issuance (`buildSessionCookie`), so a browser can retry login. Authentication audit events omit session IDs because the ID is the cookie credential.
 
 ## A request's session helpers are bound module functions, never function literals assigned to a property (`security/auth.ts`)
 

@@ -348,7 +348,7 @@ describe('test authorize function for JWT', () => {
 			return { publicKey: PUBLIC_KEY_VALUE, privateKey: PRIVATE_KEY_VALUE, passphrase: PASSPHRASE_VALUE };
 		});
 
-		sandbox.stub(user, 'findAndValidateUser').callsFake(async (u, _pw) => ({ username: u }));
+		sandbox.stub(user, 'findAndValidateUser').callsFake(async (u, _pw) => ({ username: u, active: true }));
 		sandbox.stub(insert, 'update').callsFake(async (_update_object) => {
 			return { message: 'updated 1 of 1', update_hashes: ['1'], skipped_hashes: [] };
 		});
