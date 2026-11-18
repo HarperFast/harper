@@ -131,7 +131,7 @@ http:
 
 Type: `boolean`
 
-Default: `true`
+Default: `false`; `harper install` writes `true` in dev mode and `false` in prod mode
 
 Enables Cross-Origin Resource Sharing, allowing requests from different origins.
 

@@ -23,7 +23,7 @@ authentication:
 
 ### `authorizeLocal`
 
-_Type: boolean — Default: `true`_
+_Type: boolean — Default: `false`; `harper install` writes `true` in dev mode and `false` in prod mode, and `harper dev` turns it on when the setting is absent_
 
 Automatically authorizes requests from a loopback IP address (such as `127.0.0.1` or `::1`) as a super user, without requiring credentials. This also applies to raw-TCP MQTT connections from loopback when no credentials are supplied. Disable this for any Harper server that may be accessed by untrusted users from the same instance — for example, when using a local proxy or for general server hardening.
 
