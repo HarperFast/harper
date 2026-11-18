@@ -431,6 +431,35 @@ describe('Vector search by sort text on an @embed attribute', () => {
 			});
 		});
 
+		it('drops a row that arrives after return(), which a destroyed stream calls mid-step (iterator shared with the async-allowRead gate)', async () => {
+			let releaseRow;
+			let stepStarted = false;
+			const heldResults = {
+				[Symbol.asyncIterator]: () => ({
+					next: () => {
+						stepStarted = true;
+						return new Promise((resolve) => (releaseRow = () => resolve({ value: { id: 'late' }, done: false })));
+					},
+					return: (value) => Promise.resolve({ value, done: true }),
+				}),
+			};
+			class Held extends Doc {
+				async allowRead() {
+					return true;
+				}
+				search(target) {
+					return target.checkPermission ? super.search(target) : heldResults;
+				}
+			}
+			const results = new Held(null, { user: { username: 'reader' } }).search({ checkPermission: true });
+			const iterator = results[Symbol.asyncIterator]();
+			const step = iterator.next();
+			await waitFor(() => stepStarted);
+			await iterator.return();
+			releaseRow();
+			assert.deepEqual(await step, { value: undefined, done: true });
+		});
+
 		it('a model that answers after the request was aborted opens no search', async () => {
 			const release = embed.hold({ ignoreAbort: true });
 			const request = new AbortController();

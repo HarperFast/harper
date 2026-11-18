@@ -1006,6 +1006,8 @@ function deferredIterator(
 						? { value: undefined, done: true }
 						: Promise.resolve(iterator.next(value)).then(
 								(result) => {
+									// a stream destroyed mid-step returns without waiting for that step
+									if (returned) return { value: undefined, done: true };
 									if (result.done) finish();
 									return result;
 								},
