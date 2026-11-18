@@ -1091,6 +1091,32 @@ describe('Test configValidator module', () => {
 			assert.equal(configValidator(config, true).error, undefined, 'application-only keys stay valid');
 		});
 
+		it('accepts a partial mcp.application.serverCard and names the field of an invalid one (#4347)', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.mcp = {
+				application: {
+					serverCard: {
+						name: 'fast.harper/fabric',
+						description: 'Read your Harper Fabric organizations and clusters.',
+						url: 'https://fabric.harper.fast/mcp',
+						icons: [{ src: 'https://fabric.harper.fast/icon.png', sizes: ['64x64'] }],
+					},
+				},
+			};
+			assert.equal(configValidator(config, true).error, undefined);
+			config.mcp = { application: { serverCard: { websiteUrl: 'https://fabric.harper.fast' } } };
+			assert.equal(configValidator(config, true).error, undefined, 'a registration can supply the rest');
+			for (const [serverCard, field] of [
+				[{ name: 'fabric' }, 'name'],
+				[{ descripton: 'typo' }, 'descripton'],
+				[{ url: 'http://fabric.harper.fast/mcp' }, 'url'],
+			]) {
+				config.mcp = { application: { serverCard } };
+				const message = configValidator(config, true).error?.message ?? '';
+				assert.ok(message.includes("'mcp.application.serverCard'") && message.includes(field), message);
+			}
+		});
+
 		it('accepts mcp.application.instructions up to 16,384 characters, and nothing else (#4362)', () => {
 			const config = testUtils.deepClone(FAKE_CONFIG);
 			config.mcp = { application: { instructions: 'x'.repeat(16_384) } };

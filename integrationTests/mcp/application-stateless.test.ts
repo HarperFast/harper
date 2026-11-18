@@ -23,6 +23,7 @@ const FIXTURE_PATH = resolve(import.meta.dirname, '../fixtures/mcp-stateless');
 const PROTOCOL_VERSION = '2025-06-18';
 const BEARER = 'Bearer stateless-valid';
 const INSTRUCTIONS = 'Each call names the node that served it.';
+const SERVER_CARD = { name: 'test.harper/stateless-probe', description: 'Two stateless nodes behind one client.' };
 
 suite('MCP application profile: stateless across two nodes (#4346)', (ctx) => {
 	const nodes: HarperTestContext[] = [createHarperContext(`${ctx.name}-a`), createHarperContext(`${ctx.name}-b`)];
@@ -41,6 +42,7 @@ suite('MCP application profile: stateless across two nodes (#4346)', (ctx) => {
 								stateless: true,
 								authentication: { required: true },
 								instructions: INSTRUCTIONS,
+								serverCard: SERVER_CARD,
 							},
 						},
 					},
@@ -204,5 +206,47 @@ suite('MCP application profile: stateless across two nodes (#4346)', (ctx) => {
 		await response.text();
 		strictEqual(response.status, 401);
 		strictEqual(response.headers.get('www-authenticate'), 'Bearer realm="Harper", error="invalid_token"');
+	});
+
+	test('serves the server card without credentials, even with a refused token (#4347)', async () => {
+		for (const headers of [{}, { Authorization: 'Bearer stateless-refused-by-undeclared' }]) {
+			const response = await fetch(`${urls[0]}/server-card`, {
+				headers: { Accept: 'application/mcp-server-card+json', ...headers },
+			});
+			const text = await response.text();
+			strictEqual(response.status, 200, text);
+			strictEqual(response.headers.get('content-type'), 'application/mcp-server-card+json');
+			strictEqual(response.headers.get('access-control-allow-origin'), '*');
+			const card = JSON.parse(text);
+			strictEqual(card.$schema, 'https://static.modelcontextprotocol.io/schemas/v1/server-card.schema.json');
+			strictEqual(card.name, SERVER_CARD.name);
+			strictEqual(card.description, SERVER_CARD.description);
+			ok(card.version, 'a version');
+			deepStrictEqual(card.remotes, [
+				{ type: 'streamable-http', url: urls[0], supportedProtocolVersions: [PROTOCOL_VERSION, '2025-03-26'] },
+			]);
+
+			const revalidated = await fetch(`${urls[0]}/server-card`, {
+				headers: { 'If-None-Match': response.headers.get('etag')!, ...headers },
+			});
+			await revalidated.text();
+			strictEqual(revalidated.status, 304);
+		}
+	});
+
+	test('answers a browser preflight for the server card (#4347)', async () => {
+		const response = await fetch(`${urls[1]}/server-card`, {
+			method: 'OPTIONS',
+			headers: {
+				'Origin': 'https://inspector.example',
+				'Access-Control-Request-Method': 'GET',
+				'Access-Control-Request-Headers': 'authorization, if-none-match',
+			},
+		});
+		await response.text();
+		strictEqual(response.status, 204);
+		strictEqual(response.headers.get('access-control-allow-origin'), '*');
+		ok(response.headers.get('access-control-allow-headers')?.includes('If-None-Match'));
+		ok(response.headers.get('access-control-allow-headers')?.includes('Authorization'));
 	});
 });

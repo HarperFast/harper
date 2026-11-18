@@ -22,7 +22,8 @@ import { createFastifyHandler } from './adapters/fastify.ts';
 import { createHarperHttpHandler, type McpAuthentication } from './adapters/harperHttp.ts';
 import { isValidChallengeUrl } from '../../security/challengeUrl.ts';
 import { ensureSessionTable } from './session.ts';
-import { configureApplicationInstructions } from './applicationInfo.ts';
+import { configureApplicationInstructions, configureApplicationServerCard } from './applicationInfo.ts';
+import { createServerCardHandler, serverCardUrlPath } from './serverCard.ts';
 import { initListChanged } from './listChanged.ts';
 import { registerApplicationTools } from './tools/application.ts';
 import { registerOperationsTools } from './tools/operations.ts';
@@ -42,6 +43,7 @@ interface McpProfileConfig {
 	mountPath?: string;
 	stateless?: unknown;
 	instructions?: unknown;
+	serverCard?: unknown;
 	authentication?: { required?: unknown; resourceMetadata?: unknown };
 }
 
@@ -138,11 +140,14 @@ export function handleApplication(scope: ScopeLike): void {
 	initListChanged();
 	registerApplicationTools();
 	configureApplicationInstructions(config.mcp.application.instructions);
+	configureApplicationServerCard(config.mcp.application.serverCard);
 	const mountPath = config.mcp.application.mountPath ?? DEFAULT_MOUNT_PATH;
 	const authentication = applicationAuthentication(config.mcp.application.authentication);
 	const stateless = config.mcp.application.stateless === true;
 	const handler = createHarperHttpHandler('application', authentication, { stateless });
 	scope.server.http(handler, { urlPath: mountPath, after: 'authentication' });
+	// no `after: 'authentication'`: components/mcp/DESIGN.md
+	scope.server.http(createServerCardHandler(mountPath), { urlPath: serverCardUrlPath(mountPath) });
 	harperLogger.info(
 		`MCP application profile registered at ${mountPath}${authentication.required ? ' (authentication required)' : ''}${stateless ? ' (stateless)' : ''}`
 	);

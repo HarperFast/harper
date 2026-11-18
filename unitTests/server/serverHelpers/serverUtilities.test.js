@@ -1749,3 +1749,15 @@ describe('server.setMcpInstructions (#4362)', () => {
 		assert.equal(result.instructions, 'Set through the server API.');
 	});
 });
+
+describe('server.setMcpServerCard (#4347)', () => {
+	const { server } = require('#src/server/Server');
+	const { applicationServerCard, _resetApplicationInfoForTest } = require('#src/components/mcp/applicationInfo');
+	afterEach(() => _resetApplicationInfoForTest());
+
+	it('registers the card the MCP application profile serves, and validates it', () => {
+		server.setMcpServerCard({ name: 'com.example/app', description: 'Set through the server API.' });
+		assert.equal(applicationServerCard().card.description, 'Set through the server API.');
+		assert.throws(() => server.setMcpServerCard({ name: 'app' }), TypeError);
+	});
+});
