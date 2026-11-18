@@ -674,7 +674,7 @@ export async function validateRestoreBackup(request: any) {
 
 const RESTART_RESTORE_OPTIONS = ['allow_engine_only', 'accept_incompatible_backup', 'accept_unverified_blobs'];
 
-export function readRestoreRequest(request: any, { offline = false } = {}) {
+export function readRestoreRequest(request: any, { offline = false, archive = false } = {}) {
 	const databaseName = getDatabaseName(request);
 	const allowEngineOnly = requireBooleanOption(request.allow_engine_only, 'allow_engine_only');
 	const acceptIncompatible = requireBooleanOption(request.accept_incompatible_backup, 'accept_incompatible_backup');
@@ -709,7 +709,7 @@ export function readRestoreRequest(request: any, { offline = false } = {}) {
 		refuse(`'target_database' is never held by a component, so it restores online; omit 'on_restart'`);
 	if (!offline && (databaseName === 'system' || targetDatabase === 'system')) {
 		throw new ClientError(
-			`The 'system' database cannot be restored while Harper is running; stop the server and run: harper restore_backup database=system`
+			`The 'system' database cannot be restored while Harper is running; stop the server and run: harper restore_backup database=system${archive ? ' file=<archive>' : ''}`
 		);
 	}
 	return {
@@ -889,7 +889,7 @@ function restoreOnline(
 				}
 				// A live component can hold its own handle on the database that Harper does not track and
 				// cannot close, so verify actual process-wide closure before anything destructive.
-				await verifyDatabaseClosed(databaseDir, targetDatabase);
+				await verifyDatabaseClosed(databaseDir, targetDatabase, options.staged !== undefined);
 			},
 			release: (generationReplaced) =>
 				signalling.signalSchemaChange(
@@ -954,7 +954,7 @@ const DATABASE_CLOSE_POLL_INTERVAL_MS = 250;
  * component is holding the database open (Harper can neither detect which component nor force its
  * handle closed), so an online in-place restore is not possible and the offline CLI is the path.
  */
-async function verifyDatabaseClosed(databaseDir: string, databaseName: string): Promise<void> {
+async function verifyDatabaseClosed(databaseDir: string, databaseName: string, archive: boolean): Promise<void> {
 	const targetPath = resolve(databaseDir);
 	const deadline = Date.now() + DATABASE_CLOSE_WAIT_MS;
 	for (;;) {
@@ -966,8 +966,8 @@ async function verifyDatabaseClosed(databaseDir: string, databaseName: string): 
 			throw new BackupInProgressError(
 				`Cannot restore database '${databaseName}' while Harper is running: it is held open by a loaded component (or is the system database). ` +
 					(databaseName === 'system'
-						? `Restore it offline instead — stop the server and run: harper restore_backup database=system`
-						: `Pass on_restart=true to restore it at the next startup, before components load, or stop the server and run: harper restore_backup database=${databaseName} backup_id=<id>`)
+						? `Restore it offline instead — stop the server and run: harper restore_backup database=system${archive ? ' file=<archive>' : ''}`
+						: `Pass on_restart=true to restore it at the next startup, before components load, or stop the server and run: harper restore_backup database=${databaseName} ${archive ? 'file=<archive>' : 'backup_id=<id>'}`)
 			);
 		}
 		await delay(DATABASE_CLOSE_POLL_INTERVAL_MS);

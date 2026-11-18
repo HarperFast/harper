@@ -197,11 +197,16 @@ function directoryFsyncSupported(directory: string): boolean {
 	}
 }
 
-function assertTablesLoaded(generation: RestoredGeneration, databaseName: string): void {
+/** What a failed proof calls the database: a staged archive is proven before it replaces anything. */
+function provenDatabase(databaseName: string, staged = false): string {
+	return `The ${staged ? 'extracted' : 'restored'} ${databaseName} database`;
+}
+
+function assertTablesLoaded(generation: RestoredGeneration, databaseName: string, staged = false): void {
 	const missingTables = [...generation.requiredStores.keys()].filter((table) => !generation.tables[table]);
 	if (missingTables.length > 0) {
 		throw new Error(
-			`The restored ${databaseName} database did not load table(s) the backup contains: ${missingTables.join(', ')}`
+			`${provenDatabase(databaseName, staged)} did not load table(s) the ${staged ? 'archive' : 'backup'} contains: ${missingTables.join(', ')}`
 		);
 	}
 }
@@ -216,17 +221,18 @@ interface ProveOptions {
 async function prove(args: ApplyAndProveArgs, options: ProveOptions = {}): Promise<RestoreEvidence> {
 	const generation = openRestoredGeneration(args.databasePath, args.databaseName);
 	if (options.blobRoots) databasePaths.set(generation.rootStore as any, options.blobRoots);
+	const staged = options.blobRoots !== undefined;
 	let evidence: RestoreEvidence;
 	try {
-		assertTablesLoaded(generation, args.databaseName);
+		assertTablesLoaded(generation, args.databaseName, staged);
 		const replay = (await replayLogs(generation.rootStore, generation.tables, { policy: 'restore' })) as ReplaySummary;
 		// the scan is also the strict read of every record, so the waiver relaxes only the blob verdict
 		const { blobIntegrity, ...assessment } = await assessBlobReferences(generation.tables);
 		if (blobIntegrity === 'failed' && !args.acceptUnverifiedBlobs) {
 			throw new ClientError(
-				`The restored ${args.databaseName} database references blob files the backup does not contain (${assessment.failures
+				`${provenDatabase(args.databaseName, staged)} references blob files the ${staged ? 'archive' : 'backup'} does not contain (${assessment.failures
 					.map((failure) => `${failure.table} ${JSON.stringify(failure.id)}: ${failure.state}`)
-					.join('; ')}); rerun with accept_unverified_blobs=true to publish it anyway`,
+					.join('; ')}); rerun with accept_unverified_blobs=true to ${staged ? 'restore' : 'publish'} it anyway`,
 				409
 			);
 		}
@@ -234,7 +240,7 @@ async function prove(args: ApplyAndProveArgs, options: ProveOptions = {}): Promi
 			blobIntegrity === 'failed'
 				? { blob_integrity: 'unverified', waived: true, ...assessment }
 				: { blob_integrity: blobIntegrity, ...assessment };
-		const storesRead = options.scanEveryStore ? scanRemainingStores(args, generation) : undefined;
+		const storesRead = options.scanEveryStore ? scanRemainingStores(args, generation, staged) : undefined;
 		await (generation.rootStore as any).flush?.();
 		evidence = {
 			tables: Object.keys(generation.tables),
@@ -250,7 +256,7 @@ async function prove(args: ApplyAndProveArgs, options: ProveOptions = {}): Promi
 	}
 	const closeFailures = closeRestoredGeneration(args.databasePath, generation);
 	if (closeFailures.length > 0) {
-		throw new AggregateError(closeFailures, `The restored ${args.databaseName} database did not close cleanly`);
+		throw new AggregateError(closeFailures, `${provenDatabase(args.databaseName, staged)} did not close cleanly`);
 	}
 	return evidence;
 }
@@ -260,7 +266,7 @@ async function prove(args: ApplyAndProveArgs, options: ProveOptions = {}): Promi
  * stores are read here, to their end: RocksDB checks each block's checksum as it reads it. A column
  * family no opened store covers — a table's leftover, say — is opened by name and read the same way.
  */
-function scanRemainingStores(args: ApplyAndProveArgs, generation: RestoredGeneration): string[] {
+function scanRemainingStores(args: ApplyAndProveArgs, generation: RestoredGeneration, staged: boolean): string[] {
 	const scanned = new Set<unknown>(Object.values(generation.tables).map((table: any) => table.primaryStore));
 	const covered = new Set<string>();
 	const read: string[] = [];
@@ -268,7 +274,7 @@ function scanRemainingStores(args: ApplyAndProveArgs, generation: RestoredGenera
 		try {
 			for (const _key of store.getRange({ values: false, snapshot: false }));
 		} catch (error) {
-			throw new Error(`The restored ${args.databaseName} database could not read its store '${name}'`, {
+			throw new Error(`${provenDatabase(args.databaseName, staged)} could not read its store '${name}'`, {
 				cause: error,
 			});
 		}
@@ -293,7 +299,7 @@ function scanRemainingStores(args: ApplyAndProveArgs, generation: RestoredGenera
 			// keys as raw bytes: what the family holds is not known to any table here
 			store = openRocksDatabase(args.databasePath, { name: family, keyEncoding: 'binary', disableWAL: false } as any);
 		} catch (error) {
-			throw new Error(`The restored ${args.databaseName} database could not open its store '${family}'`, {
+			throw new Error(`${provenDatabase(args.databaseName, staged)} could not open its store '${family}'`, {
 				cause: error,
 			});
 		}
@@ -308,7 +314,7 @@ function scanRemainingStores(args: ApplyAndProveArgs, generation: RestoredGenera
 			store.close();
 		} catch (error) {
 			// a damaged family can fail its close as well; the read is what names the damage
-			readError ??= new Error(`The restored ${args.databaseName} database could not close its store '${family}'`, {
+			readError ??= new Error(`${provenDatabase(args.databaseName, staged)} could not close its store '${family}'`, {
 				cause: error,
 			});
 		}

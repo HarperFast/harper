@@ -68,7 +68,7 @@ function readArchiveRestoreOptions(request: any, { offline = false } = {}): Arch
 	}
 	const { databaseName, onRestart, retainPrevious, acceptIncompatible, acceptUnverifiedBlobs } = readRestoreRequest(
 		request,
-		{ offline }
+		{ offline, archive: true }
 	);
 	if (request.sha256 !== undefined && (typeof request.sha256 !== 'string' || !SHA256_PATTERN.test(request.sha256))) {
 		throw new ClientError(`'sha256' must be 64 hexadecimal characters`);

@@ -1226,6 +1226,21 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			await restoreBackup({ ...SU, database: fixture.name, cancel: true });
 		});
 
+		it('leaves a deferred job to a receipt that still names it, whatever the sweep was told', async function () {
+			const fixture = await seededDatabase();
+			const { jobId } = await requestRestore(fixture.name, { on_restart: true, retain_previous: false });
+			await closeDatabase(fixture.name);
+			rewriteReceipt(fixture.dir, { state: 'terminal', last_error: 'out of attempts' });
+
+			// the boot whose terminal settle did not land: recovery names no owner, yet the receipt is there
+			await reconcileInterruptedJobs(new Set());
+			assert.strictEqual((await job(jobId)).status, JOB_STATUS_ENUM.IN_PROGRESS, 'not reported as withdrawn');
+
+			await boot(fixture.name);
+			assert.match((await job(jobId)).message, /out of attempts/);
+			await restoreBackup({ ...SU, database: fixture.name, cancel: true });
+		});
+
 		it('only finishes a committed receipt, never applying it again', async function () {
 			const fixture = await seededDatabase();
 			const { jobId } = await requestRestore(fixture.name, { on_restart: true, retain_previous: false });
@@ -1788,7 +1803,8 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 			await reconcileInterruptedJobs(await boot(fixture.name));
 			const settled = await job(jobId);
 			assert.strictEqual(settled.status, JOB_STATUS_ENUM.ERROR);
-			assert.match(settled.message, /interrupted/);
+			assert.match(settled.message, /cancelled or replaced before Harper started/);
+			assert.strictEqual(settled.deferred_to ?? null, null);
 			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.live, 'nothing was replaced');
 		});
 
@@ -1891,7 +1907,8 @@ describeUnlessLmdb('restore_backup on_restart', function () {
 
 			const settled = await job(jobId);
 			assert.strictEqual(settled.status, JOB_STATUS_ENUM.ERROR);
-			assert.match(settled.message, /interrupted/);
+			assert.match(settled.message, /cancelled or replaced before Harper started/);
+			assert.strictEqual(settled.deferred_to ?? null, null);
 			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.live, 'nothing was replaced');
 		});
 
