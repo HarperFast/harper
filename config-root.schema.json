@@ -164,6 +164,7 @@
 									"description": "Enable certificate revocation checking (CRL/OCSP).",
 									"oneOf": [
 										{ "type": "boolean" },
+										{ "type": "null" },
 										{
 											"type": "object",
 											"additionalProperties": false,
@@ -174,49 +175,68 @@
 													"description": "Global behavior when verification fails. Default: 'fail-closed'"
 												},
 												"crl": {
-													"type": "object",
-													"additionalProperties": false,
-													"properties": {
-														"enabled": { "type": "boolean", "description": "Enable CRL checking. Default: true" },
-														"timeout": {
-															"type": "number",
-															"description": "Max ms to wait for CRL download. Default: 10000"
-														},
-														"cacheTtl": { "type": "number", "description": "CRL cache TTL (ms). Default: 86400000" },
-														"gracePeriod": {
-															"type": "number",
-															"description": "Grace period after CRL nextUpdate (ms). Default: 86400000"
-														},
-														"failureMode": {
-															"type": "string",
-															"enum": ["fail-open", "fail-closed"],
-															"description": "CRL-specific failure mode. Default: 'fail-closed'"
+													"oneOf": [
+														{ "type": "boolean" },
+														{
+															"type": "object",
+															"additionalProperties": false,
+															"properties": {
+																"enabled": { "type": "boolean", "description": "Enable CRL checking. Default: true" },
+																"timeout": {
+																	"type": "number",
+																	"minimum": 1000,
+																	"description": "Max ms to wait for CRL download. Default: 10000"
+																},
+																"cacheTtl": {
+																	"type": "number",
+																	"minimum": 1000,
+																	"description": "CRL cache TTL (ms). Default: 86400000"
+																},
+																"gracePeriod": {
+																	"type": "number",
+																	"minimum": 0,
+																	"description": "Grace period after CRL nextUpdate (ms). Default: 86400000"
+																},
+																"failureMode": {
+																	"type": "string",
+																	"enum": ["fail-open", "fail-closed"],
+																	"description": "CRL-specific failure mode. Default: 'fail-closed'"
+																}
+															}
 														}
-													}
+													]
 												},
 												"ocsp": {
-													"type": "object",
-													"additionalProperties": false,
-													"properties": {
-														"enabled": { "type": "boolean", "description": "Enable OCSP checking. Default: true" },
-														"timeout": {
-															"type": "number",
-															"description": "Max ms to wait for OCSP response. Default: 5000"
-														},
-														"cacheTtl": {
-															"type": "number",
-															"description": "Cache TTL for successful OCSP (ms). Default: 3600000"
-														},
-														"errorCacheTtl": {
-															"type": "number",
-															"description": "Cache TTL for OCSP errors (ms). Default: 300000"
-														},
-														"failureMode": {
-															"type": "string",
-															"enum": ["fail-open", "fail-closed"],
-															"description": "OCSP-specific failure mode. Default: 'fail-closed'"
+													"oneOf": [
+														{ "type": "boolean" },
+														{
+															"type": "object",
+															"additionalProperties": false,
+															"properties": {
+																"enabled": { "type": "boolean", "description": "Enable OCSP checking. Default: true" },
+																"timeout": {
+																	"type": "number",
+																	"minimum": 1000,
+																	"description": "Max ms to wait for OCSP response. Default: 5000"
+																},
+																"cacheTtl": {
+																	"type": "number",
+																	"minimum": 1000,
+																	"description": "Cache TTL for successful OCSP (ms). Default: 3600000"
+																},
+																"errorCacheTtl": {
+																	"type": "number",
+																	"minimum": 1000,
+																	"description": "Cache TTL for OCSP errors (ms). Default: 300000"
+																},
+																"failureMode": {
+																	"type": "string",
+																	"enum": ["fail-open", "fail-closed"],
+																	"description": "OCSP-specific failure mode. Default: 'fail-closed'"
+																}
+															}
 														}
-													}
+													]
 												}
 											}
 										}
@@ -371,32 +391,43 @@
 							"description": "Enable certificate revocation checking (CRL/OCSP) for peer certificates.",
 							"oneOf": [
 								{ "type": "boolean" },
+								{ "type": "null" },
 								{
 									"type": "object",
 									"additionalProperties": false,
 									"properties": {
 										"failureMode": { "type": "string", "enum": ["fail-open", "fail-closed"] },
 										"crl": {
-											"type": "object",
-											"additionalProperties": false,
-											"properties": {
-												"enabled": { "type": "boolean" },
-												"timeout": { "type": "number" },
-												"cacheTtl": { "type": "number" },
-												"gracePeriod": { "type": "number" },
-												"failureMode": { "type": "string", "enum": ["fail-open", "fail-closed"] }
-											}
+											"oneOf": [
+												{ "type": "boolean" },
+												{
+													"type": "object",
+													"additionalProperties": false,
+													"properties": {
+														"enabled": { "type": "boolean" },
+														"timeout": { "type": "number", "minimum": 1000 },
+														"cacheTtl": { "type": "number", "minimum": 1000 },
+														"gracePeriod": { "type": "number", "minimum": 0 },
+														"failureMode": { "type": "string", "enum": ["fail-open", "fail-closed"] }
+													}
+												}
+											]
 										},
 										"ocsp": {
-											"type": "object",
-											"additionalProperties": false,
-											"properties": {
-												"enabled": { "type": "boolean" },
-												"timeout": { "type": "number" },
-												"cacheTtl": { "type": "number" },
-												"errorCacheTtl": { "type": "number" },
-												"failureMode": { "type": "string", "enum": ["fail-open", "fail-closed"] }
-											}
+											"oneOf": [
+												{ "type": "boolean" },
+												{
+													"type": "object",
+													"additionalProperties": false,
+													"properties": {
+														"enabled": { "type": "boolean" },
+														"timeout": { "type": "number", "minimum": 1000 },
+														"cacheTtl": { "type": "number", "minimum": 1000 },
+														"errorCacheTtl": { "type": "number", "minimum": 1000 },
+														"failureMode": { "type": "string", "enum": ["fail-open", "fail-closed"] }
+													}
+												}
+											]
 										}
 									}
 								}
@@ -604,7 +635,7 @@
 				},
 				"refreshTokenTimeout": {
 					"type": "string",
-					"description": "Refresh token expiry duration (e.g. '1d'). Default: 1d"
+					"description": "Refresh token expiry duration (e.g. '30d'). Default: 30d"
 				},
 				"logging": { "$ref": "#/definitions/loggerConfig" }
 			}
@@ -883,62 +914,141 @@
 
 		"mqtt": {
 			"type": "object",
-			"description": "MQTT server configuration.",
+			"description": "MQTT server configuration. port, securePort and mtls belong under network: Harper does not read them directly under mqtt.",
 			"additionalProperties": true,
+			"required": ["network"],
+			"not": { "anyOf": [{ "required": ["port"] }, { "required": ["securePort"] }, { "required": ["mtls"] }] },
 			"properties": {
-				"port": { "type": "number", "description": "Insecure MQTT port. Default: 1883" },
-				"securePort": { "type": "number", "description": "Secure MQTT port. Default: 8883" },
+				"network": {
+					"type": "object",
+					"description": "MQTT listener configuration. Required whenever mqtt is present.",
+					"additionalProperties": true,
+					"properties": {
+						"port": {
+							"type": "number",
+							"description": "Insecure MQTT port; without it Harper opens no plain MQTT listener. The installed config sets 1883."
+						},
+						"securePort": {
+							"type": "number",
+							"description": "Secure MQTT port; without it Harper opens no MQTTS listener. The installed config sets 8883."
+						},
+						"mtls": {
+							"oneOf": [
+								{ "type": "boolean" },
+								{
+									"type": "object",
+									"additionalProperties": false,
+									"properties": {
+										"user": {
+											"type": ["string", "null"],
+											"description": "Authenticate all authorized mTLS connections as this user (or null for none). Default: Common Name"
+										},
+										"required": {
+											"type": "boolean",
+											"description": "Require client certificates for all connections to the MQTT ports. MQTT over WebSockets follows http.mtls instead. Default: false"
+										},
+										"certificateAuthority": {
+											"type": ["string", "null"],
+											"description": "Override CA path for MQTT. Default: tls.certificateAuthority"
+										},
+										"certificateVerification": {
+											"description": "Enable certificate revocation checking (CRL/OCSP). Default: false",
+											"oneOf": [
+												{ "type": "boolean" },
+												{ "type": "null" },
+												{
+													"type": "object",
+													"additionalProperties": false,
+													"properties": {
+														"failureMode": {
+															"type": "string",
+															"enum": ["fail-open", "fail-closed"],
+															"description": "Global behavior when verification fails. Default: 'fail-closed'"
+														},
+														"crl": {
+															"oneOf": [
+																{ "type": "boolean" },
+																{
+																	"type": "object",
+																	"additionalProperties": false,
+																	"properties": {
+																		"enabled": {
+																			"type": "boolean",
+																			"description": "Enable CRL checking. Default: true"
+																		},
+																		"timeout": {
+																			"type": "number",
+																			"minimum": 1000,
+																			"description": "Max ms to wait for CRL download. Default: 10000"
+																		},
+																		"cacheTtl": {
+																			"type": "number",
+																			"minimum": 1000,
+																			"description": "CRL cache TTL (ms). Default: 86400000"
+																		},
+																		"gracePeriod": {
+																			"type": "number",
+																			"minimum": 0,
+																			"description": "Grace period after CRL nextUpdate (ms). Default: 86400000"
+																		},
+																		"failureMode": {
+																			"type": "string",
+																			"enum": ["fail-open", "fail-closed"],
+																			"description": "CRL-specific failure mode. Default: 'fail-closed'"
+																		}
+																	}
+																}
+															]
+														},
+														"ocsp": {
+															"oneOf": [
+																{ "type": "boolean" },
+																{
+																	"type": "object",
+																	"additionalProperties": false,
+																	"properties": {
+																		"enabled": {
+																			"type": "boolean",
+																			"description": "Enable OCSP checking. Default: true"
+																		},
+																		"timeout": {
+																			"type": "number",
+																			"minimum": 1000,
+																			"description": "Max ms to wait for OCSP response. Default: 5000"
+																		},
+																		"cacheTtl": {
+																			"type": "number",
+																			"minimum": 1000,
+																			"description": "Cache TTL for successful OCSP (ms). Default: 3600000"
+																		},
+																		"errorCacheTtl": {
+																			"type": "number",
+																			"minimum": 1000,
+																			"description": "Cache TTL for OCSP errors (ms). Default: 300000"
+																		},
+																		"failureMode": {
+																			"type": "string",
+																			"enum": ["fail-open", "fail-closed"],
+																			"description": "OCSP-specific failure mode. Default: 'fail-closed'"
+																		}
+																	}
+																}
+															]
+														}
+													}
+												}
+											]
+										}
+									}
+								}
+							]
+						}
+					}
+				},
 				"webSocket": { "type": "boolean", "description": "Enable MQTT over WebSockets (on http port). Default: true" },
 				"requireAuthentication": {
 					"type": "boolean",
 					"description": "Require authentication for MQTT connections. Default: true"
-				},
-				"mtls": {
-					"oneOf": [
-						{ "type": "boolean" },
-						{
-							"type": "object",
-							"additionalProperties": false,
-							"properties": {
-								"user": {
-									"type": ["string", "null"],
-									"description": "Authenticate all authorized mTLS connections as this user (or null for none). Default: Common Name"
-								},
-								"required": {
-									"type": "boolean",
-									"description": "Require client certificates for all MQTT connections. Default: false"
-								},
-								"certificateAuthority": {
-									"type": "string",
-									"description": "Override CA path for MQTT. Default: tls.certificateAuthority"
-								},
-								"certificateVerification": {
-									"oneOf": [
-										{ "type": "boolean" },
-										{
-											"type": "object",
-											"additionalProperties": false,
-											"properties": {
-												"timeout": {
-													"type": "number",
-													"description": "Max ms to wait for OCSP response. Default: 5000"
-												},
-												"cacheTtl": {
-													"type": "number",
-													"description": "Cache TTL (ms) for verification results. Default: 3600000"
-												},
-												"failureMode": {
-													"type": "string",
-													"enum": ["fail-open", "fail-closed"],
-													"description": "Behavior on verification failure. Default: 'fail-open'"
-												}
-											}
-										}
-									]
-								}
-							}
-						}
-					]
 				},
 				"logging": { "$ref": "#/definitions/loggerConfig" }
 			}
@@ -1212,7 +1322,7 @@
 				"privateKey": "~/hdb/keys/privateKey.pem",
 				"certificateAuthority": "~/hdb/keys/ca.pem"
 			},
-			"mqtt": { "port": 1883, "securePort": 8883, "webSocket": true },
+			"mqtt": { "network": { "port": 1883, "securePort": 8883 }, "webSocket": true },
 			"analytics": { "aggregatePeriod": 60, "replicate": false },
 			"my-app": { "package": "git+https://github.com/example/my-app.git", "port": 4000 }
 		}
