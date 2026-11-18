@@ -9,6 +9,7 @@ const {
 	renameSync,
 	rmSync,
 	statSync,
+	symlinkSync,
 	writeFileSync,
 } = require('node:fs');
 const { tmpdir } = require('node:os');
@@ -214,6 +215,13 @@ describe('archive staging', function () {
 			// the database directory inside a blob path
 			const nested = planStaging(join(root, 'blobs', 'orders', 'db'), [join(root, 'blobs', 'orders')], mintStagingId());
 			assert.throws(() => createStagingAreas(nested), / is inside /);
+			// the same directory under another spelling
+			mkdirSync(join(root, 'database'), { recursive: true });
+			symlinkSync(join(root, 'database'), join(root, 'alias'), 'junction');
+			assert.throws(
+				() => createStagingAreas(planStaging(dir, [join(root, 'alias', 'orders')], mintStagingId())),
+				/ is also /
+			);
 			// a sibling whose name only starts with the other's is apart
 			createStagingAreas(planStaging(dir, [`${dir}-blobs`], mintStagingId()));
 

@@ -6,9 +6,19 @@
  * being written. The rules are in dataLayer/DESIGN.md.
  */
 import { randomUUID } from 'node:crypto';
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync } from 'node:fs';
+import {
+	existsSync,
+	lstatSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	realpathSync,
+	renameSync,
+	rmSync,
+	statSync,
+} from 'node:fs';
 import { readdir, readFile } from 'node:fs/promises';
-import { basename, dirname, join, resolve, sep } from 'node:path';
+import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { threadId } from 'node:worker_threads';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import { HTTP_STATUS_CODES } from '../utility/errors/commonErrors.ts';
@@ -136,7 +146,12 @@ function deviceOf(path: string): number {
  * inside another would carry the other's newly installed part away after destruction had begun.
  */
 function assertDestinationsApart(destinations: string[]): void {
-	const paths = destinations.map((path) => resolve(path));
+	// through symlinks, as far as the path exists: two spellings of one directory are one destination
+	const paths = destinations.map((destination) => {
+		const path = resolve(destination);
+		const existing = existsSync(path) ? path : nearestExistingAncestor(path);
+		return join(realpathSync(existing), relative(existing, path));
+	});
 	for (const [index, path] of paths.entries()) {
 		const other = paths.find(
 			(candidate, at) => at !== index && (candidate === path ? at > index : candidate.startsWith(path + sep))
