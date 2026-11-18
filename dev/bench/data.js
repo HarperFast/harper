@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794986255341,
+  "lastUpdate": 1794992901646,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -29715,6 +29715,58 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw write ops",
             "value": 1810,
+            "unit": "ops"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "0ce681594cc5b01a9e8b34515ef236908ed43dab",
+          "message": "Wait for restricted subscriber control frame in C2 opaque MQTT test (#4429)\n\n* Wait for the restricted subscriber's control frame in C2 opaque MQTT test\n\nIn subscription-attribute-surfaces.test.ts test C2, wait for the\nrestricted subscriber as well as the open subscribers to receive the\nJSON opq-control message before snapshotting r.msgs.length for the\nopaque-payload loop. When the restricted subscriber sits on a worker\nthread shared by no open subscriber, its control frame can arrive a few\nmilliseconds after the snapshot under CPU contention and be counted in\nthe text/plain assertion. Also include received frames in the\nframe-count assertion message.\n\nDispatch-Task: harper-c2-opaque-mqtt-control-race\nCo-Authored-By: Gemini <noreply@google.com>\n\n* Assert open-subscriber control delivery before the C2 opaque loop\n\nAssert ok(controlAll, ...) immediately after awaiting open-subscriber\nopq-control delivery instead of after the opaque-payload loop, dumping\nper-subscriber OBS frames on failure and naming the missed labels. This\navoids running three 4s opaque waits when JSON control fan-out fails\nwhile keeping the OBS diagnostic output.\n\nDispatch-Task: harper-c2-opaque-mqtt-control-race\nCo-Authored-By: Gemini <noreply@google.com>\n\n---------\n\nCo-authored-by: Gemini <noreply@google.com>",
+          "timestamp": "2026-11-18T04:50:55Z",
+          "url": "https://github.com/HarperFast/harper/commit/0ce681594cc5b01a9e8b34515ef236908ed43dab"
+        },
+        "date": 1794992896958,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "value": 17816,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed3",
+            "value": 9979,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed5",
+            "value": 9372,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "value": 15180160,
+            "unit": "records"
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "value": 7280,
+            "unit": "ops"
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "value": 1499,
             "unit": "ops"
           }
         ]
