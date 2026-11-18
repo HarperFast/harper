@@ -510,7 +510,7 @@ For a deeper discussion of how `sourcedFrom` interacts with reclamation, see [Re
 
 ### Local replicas under storage pressure
 
-<VersionBadge version="v5.4.0" />
+<VersionBadge version="v5.4.0" /> <VersionBadge type="changed" version="v5.5.0" />
 
 <EngineBadge engines="RocksDB" />
 

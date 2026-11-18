@@ -141,7 +141,7 @@ Eviction removes non-indexed record data, but it does _not_ remove a record from
 
 #### `replicaExpiration` and `replicaRefreshFraction`
 
-<VersionBadge version="v5.4.0" />
+<VersionBadge version="v5.4.0" /> <VersionBadge type="changed" version="v5.5.0" />
 
 <EngineBadge engines="RocksDB" />
 
