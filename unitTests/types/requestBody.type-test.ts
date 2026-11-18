@@ -27,6 +27,15 @@ export function decoderDefaults(streaming: boolean, optionalStreaming?: boolean)
 	getDeserializer(undefined, optionalStreaming);
 }
 
+export function decoderSignalSource(request: Request, signal: AbortSignal, body: Request['body']) {
+	const decode = getDeserializer('multipart/form-data', true, true);
+	decode(body);
+	decode(body, signal);
+	decode(body, request);
+	// @ts-expect-error A signal source is an AbortSignal or something with a signal.
+	decode(body, 5);
+}
+
 export class FormResource extends Resource<{ title: string }> {
 	allowCreate(_user: any, formData: { title: string }) {
 		return formData.title === 'allowed';
