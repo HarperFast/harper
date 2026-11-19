@@ -19,13 +19,20 @@ Harper can expose an OpenAI-compatible REST gateway on the application HTTP serv
 
 ## Enabling it
 
-The gateway is off by default. Enable it with `modelsGateway.enabled: true` in `harper-config.yaml`, alongside at least one configured model. The endpoints are REST resources, so REST must also be active: add `rest: true`, or deploy an application that enables REST. Without REST, every `/v1/*` path returns `404`, and Harper logs a warning at startup when the root configuration has no `rest` section.
+The gateway is off by default. Enable it with `modelsGateway.enabled: true` in `harper-config.yaml`, alongside at least one configured model. The endpoints are REST resources, so REST must also be active: add `rest: true`, or deploy an application that enables REST. An application with a [`urlPath` or `host` mount](../http/overview#middleware-routing) serves REST only under that mount, so `/v1/*` is reachable only there. Without REST, every `/v1/*` path returns `404`, and Harper logs a warning at startup when the root configuration has no `rest` section.
+
+Each endpoint looks up the `model` name in its own kind, so `/v1/embeddings` needs a model under `embedding` and `/v1/chat/completions` needs one under `generative`:
 
 ```yaml
 rest: true
 modelsGateway:
   enabled: true
 models:
+  embedding:
+    default:
+      backend: openai
+      apiKey: ${OPENAI_API_KEY}
+      model: text-embedding-3-large
   generative:
     default:
       backend: openai
@@ -35,11 +42,11 @@ models:
 
 ## Authentication
 
-All three endpoints require a user with `super_user` permission. Credentials go through Harper's normal [authentication](../security/overview), so any method Harper accepts works. A request with no credentials receives a `401` OpenAI error envelope, and an authenticated user without `super_user` receives a `403`. Harper rejects invalid credentials before the request reaches the gateway, so that response uses Harper's standard error format, not the OpenAI envelope.
+All three endpoints require a user with `super_user` permission. Credentials go through Harper's normal [authentication](../security/overview), so any method Harper accepts works. A request with no credentials receives a `401` OpenAI error envelope, and an authenticated user without `super_user` receives a `403`. The exception is a request that [`authorizeLocal`](../security/configuration#authorizelocal) trusts: with that option enabled, a request from a loopback address runs as a super user without credentials, and the gateway serves it. Harper rejects invalid credentials before the request reaches the gateway, so that response uses Harper's standard error format, not the OpenAI envelope.
 
 ## Using it with an OpenAI client
 
-Point the client's `baseURL` at `http://<harper-host>:9926/v1` and pass a Harper [JWT operation token](../security/jwt-authentication) as `apiKey`. OpenAI SDKs send it as `Authorization: Bearer <apiKey>`, which Harper validates the same way it validates that header on any other request:
+Point the client's `baseURL` at the gateway's `/v1` path, such as `http://localhost:9926/v1` in local development, and pass a Harper [JWT operation token](../security/jwt-authentication) as `apiKey`. OpenAI SDKs send it as `Authorization: Bearer <apiKey>`, which Harper validates the same way it validates that header on any other request:
 
 ```javascript
 import OpenAI from 'openai';
@@ -56,7 +63,7 @@ const completion = await client.chat.completions.create({
 console.log(completion.choices[0].message.content);
 ```
 
-Obtain the token with [`create_authentication_tokens`](../security/jwt-authentication#create-authentication-tokens). For clients that let you set the `Authorization` header yourself, [Basic Authentication](../security/basic-authentication) with a Harper username and password also works.
+Obtain the token with [`create_authentication_tokens`](../security/jwt-authentication#create-authentication-tokens). The token grants `super_user` access, so a client on another host should connect over HTTPS, on the port set by [`http.securePort`](../http/configuration#httpsecureport). For clients that let you set the `Authorization` header yourself, [Basic Authentication](../security/basic-authentication) with a Harper username and password also works.
 
 ## Model selection
 
@@ -80,12 +87,12 @@ The list includes generative and embedding names. A name configured under both a
 { "model": "default", "input": "What is Harper?" }
 ```
 
-`input` is a string or an array of up to 2048 strings, embedded in one call. Other request fields are ignored. The response follows the OpenAI list shape, with vectors in input order and token counts as reported by the backend:
+`input` is a string or an array of up to 2048 strings, embedded in one call. Other request fields, including `encoding_format`, are ignored, so each `embedding` is always an array of numbers. The response follows the OpenAI list shape, with vectors in input order and token counts as reported by the backend:
 
 ```json
 {
 	"object": "list",
-	"data": [{ "object": "embedding", "index": 0, "embedding": [0.0123, -0.0456, ...] }],
+	"data": [{ "object": "embedding", "index": 0, "embedding": [0.0123, -0.0456, 0.0789] }],
 	"model": "default",
 	"usage": { "prompt_tokens": 4, "total_tokens": 4 }
 }
@@ -123,7 +130,7 @@ A non-streaming call returns an OpenAI `chat.completion` object:
 
 ### Streaming
 
-Set `stream: true` to receive Server-Sent Events instead. A request that sends `Accept: text/event-stream` is served the same way. Each event is an OpenAI `chat.completion.chunk` delta, and the stream ends with the `data: [DONE]` sentinel:
+Set `stream: true` to receive Server-Sent Events instead. `Accept: text/event-stream` alone does not select streaming: without `stream: true`, the handler returns a single `chat.completion` rather than chunk events and `[DONE]`. Each event is an OpenAI `chat.completion.chunk` delta, and the stream ends with the `data: [DONE]` sentinel:
 
 ```
 data: {"id":"chatcmpl-...","object":"chat.completion.chunk","created":1730000000,"model":"default","choices":[{"index":0,"delta":{"role":"assistant","content":"An"},"finish_reason":null}]}
@@ -141,7 +148,7 @@ If the backend fails after the stream has started, the stream ends with a `data:
 
 ### Tool calls
 
-`tools` are supported in return mode only, the equivalent of [`toolMode: 'return'`](./tool-calling#toolmode-return). The model's requested calls appear on `choices[0].message.tool_calls`, or as a `tool_calls` delta while streaming. The caller runs them and sends the results back in a follow-up request as `role: 'tool'` messages, each with the `tool_call_id` of the call it answers. Harper's in-process agent loop (`toolMode: 'auto'`) is not available through this gateway.
+`tools` are supported in return mode only, the equivalent of [`toolMode: 'return'`](./tool-calling#toolmode-return). The model's requested calls appear on `choices[0].message.tool_calls`, or as a `tool_calls` delta while streaming. The caller runs them, then sends a follow-up request that appends the assistant message with its `tool_calls`, followed by one `role: 'tool'` message per call carrying that call's `tool_call_id`. Harper's in-process agent loop (`toolMode: 'auto'`) is not available through this gateway.
 
 `tool_choice` accepts `auto` (the default) and `none`. With `none`, Harper does not pass the tools to the backend. `required` and named function selection are rejected with a `400`.
 
@@ -173,4 +180,4 @@ Errors from the gateway use the OpenAI error envelope instead of Harper's standa
 
 ## Analytics
 
-Gateway requests call the `models` API directly, so they are recorded like any other model call. See [Analytics](./analytics).
+Embeddings and chat completion requests that pass authentication and validation call the `models` API directly, so they are recorded like any other model call. `GET /v1/models` makes no model call. See [Analytics](./analytics).
