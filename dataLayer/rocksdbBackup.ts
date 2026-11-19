@@ -492,8 +492,7 @@ export async function purgeBackups(request: any) {
 	return purgeBackupsOffline(databaseName, request.keep_count);
 }
 
-// Table stores have no WAL, so the binding's default, taken from the root handle, would skip the flush
-// (dataLayer/DESIGN.md).
+// dataLayer/DESIGN.md: every engine backup flushes first
 const ENGINE_BACKUP_OPTIONS = { transactionLogs: true, flushBeforeBackup: true };
 
 // --- job operations: create_backup / verify_backup / restore_backup ---

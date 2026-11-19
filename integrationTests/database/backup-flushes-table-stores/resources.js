@@ -7,8 +7,7 @@ export class BackupFlushOps extends Resource {
 	static loadAsInstance = false;
 
 	async post(query, body) {
-		// Looked up per request: a table reference kept across requests would hold the database open
-		// through an online restore_backup.
+		// looked up per request: an online restore_backup loads the database again, with new table classes
 		const table = databases[DATABASE][body.table];
 		switch (body?.action) {
 			case 'putBlob':

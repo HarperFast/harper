@@ -22,7 +22,9 @@ Managed backups use the RocksDB backup engine. Each backup is a directory under 
 
 Every managed backup includes the database's transaction log — so a restored database keeps its `read_audit_log` history as of the backup point — and, for a database with file-backed blobs, a snapshot of those blobs (skip it with `exclude_blobs`).
 
-<VersionBadge type="changed" version="v5.4.2" /> A backup first writes each table's buffered changes to its data files, so the copied data files hold the changes committed before the copy begins. That includes record evictions, which a restore cannot rebuild from the transaction log. `get_backup` does the same before it streams a RocksDB archive. Blobs are copied after the data files, so a record evicted while a backup runs can still be in the backup without its blob, which [`restore_backup`](./operations.md#restore_backup) detects before it publishes the restored database.
+<VersionBadge type="changed" version="v5.4.2" /> A backup first writes each table's buffered changes to its data files, so the copied data files hold the changes committed before the engine captures them. That includes record evictions, which a restore cannot rebuild from the transaction log. `get_backup` does the same before it streams a RocksDB archive. A managed backup counts the buffered data in the free space it requires before it starts.
+
+Blobs are copied after the data files, so a record evicted after that capture can still be in the backup without its blob. [`restore_backup`](./operations.md#restore_backup) detects this after it has replaced the database and before it publishes the restored one. In rare timing the same can happen to a record evicted shortly before the backup ([harper#4507](https://github.com/HarperFast/harper/issues/4507)).
 
 Each backup copies the transaction-log snapshot. Blob snapshots use hard links when supported on the same filesystem, and copy the files otherwise. Measure physical repository growth over successive backups, including the log copies and blob snapshots. Exports that do not preserve file sharing require space for the full materialized copies.
 
