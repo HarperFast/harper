@@ -88,6 +88,8 @@ suite(
 					}
 				);
 				request.on('error', reject);
+				// a stream that never writes never sends its headers
+				request.setTimeout(30_000, () => request.destroy(new Error(`No response from ${path} within 30s`)));
 				request.end();
 			});
 		}

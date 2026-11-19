@@ -48,7 +48,7 @@ Treat the id as opaque: store it and send it back unchanged. There are two kinds
 
 Once a stream has issued a token, its events carry no id of their own, so the client keeps the token.
 
-A resume replays the log from the position, so it does not send the current records again, and it can repeat events the client already has. Apply an event only if its `version` is newer than the one held for that record `id`. For a record that changed more than once while the client was away, the replay delivers its current state rather than each change.
+A resume replays the log from the position, so it does not send the current records again, and it can repeat events the client already has. Ignore an event whose `version` is older than the one held for that record `id`, and apply the rest: two events can carry the same `version` and differ, when a change that committed late was merged into the record. For a record that changed more than once while the client was away, the replay delivers its current state rather than each change.
 
 ### When a Position Cannot Be Resumed
 
@@ -92,6 +92,10 @@ export class ConversationFeed extends Resource {
 ```
 
 `request.lastEventId` is `undefined` when the client sent no `Last-Event-ID`.
+
+### Upgrading a Cluster
+
+A node running a version before v5.5.0 ignores `Last-Event-ID` and starts a new subscription. While a cluster runs both versions, a reconnect that reaches such a node is not resumed and is not refused.
 
 ## `connect()` Handler
 

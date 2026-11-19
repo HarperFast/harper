@@ -1,11 +1,17 @@
 // Loaded by contentTypes.ts, which the storage layer loads early: keep this free of resource imports.
-import { ClientError } from '../../utility/errors/hdbError.ts';
+import {
+	ClientError,
+	DatabaseGenerationChangedError,
+	ResumeHistoryUnavailableError,
+} from '../../utility/errors/hdbError.ts';
 import type { SubscriptionCheckpoint } from '../../resources/subscriptionCheckpoint.ts';
 
 /** What the event-stream serializer keeps about the ids of one built-in Table stream. */
 export interface EventStreamCursor {
 	/** Once the client holds a checkpoint token, a scalar id would replace it with a weaker position. */
 	holdsToken: boolean;
+	/** LMDB has no database generation to bind a log key to; elsewhere a key without one is never issued. */
+	bareLogKeys: boolean;
 }
 
 export const EVENT_STREAM_CURSOR = Symbol('event-stream-cursor');
@@ -16,7 +22,7 @@ const SCALAR_ID = /^(\d+(?:\.\d+)?)(?:@([0-9a-f]{32}))?$/;
 const TOKEN_ID = /^[A-Za-z0-9_-]+$/;
 
 /** A log key, with the database generation it was issued in when the engine has one, or a checkpoint to validate. */
-export type EventId = { key: number; generation?: string } | { checkpoint: unknown };
+type EventId = { key: number; generation?: string } | { checkpoint: unknown };
 
 function unrecognizedEventId(): ClientError {
 	return new ClientError(
@@ -63,23 +69,20 @@ export function tableEventSerializer(
 	return (message) => {
 		if (message?.type === 'checkpoint' && message.checkpoint) {
 			const id = encodeCheckpointId(message.checkpoint);
-			// too long for a request header to carry back: the client keeps the id it has
+			// an SSE comment: the client keeps the id it has
 			if (!id) return ':\n\n';
 			cursor.holdsToken = true;
 			return `id: ${id}\n\n`;
 		}
-		// a subscription that closes with an error delivers it as its last event; this one ends the stream as an
-		// error frame, where the serializer voids the id
-		if (message instanceof Error && voidsEventId(message)) throw message;
 		const key = message?.localTime;
 		if (typeof key !== 'number' || message.fromScan || cursor.holdsToken || !verified) return serialize(message);
+		if (!generation && !cursor.bareLogKeys) return serialize(message);
 		// the event may be shared with other subscribers, so the id goes on an envelope
 		return serialize({ data: message, id: generation ? `${key}@${generation}` : String(key) });
 	};
 }
 
 /** Whether a stream ended because its position can no longer be served, so the id the client holds is void. */
-export function voidsEventId(error: any): boolean {
-	const status = error?.statusCode;
-	return status === 409 || status === 410;
+export function voidsEventId(error: unknown): boolean {
+	return error instanceof ResumeHistoryUnavailableError || error instanceof DatabaseGenerationChangedError;
 }
