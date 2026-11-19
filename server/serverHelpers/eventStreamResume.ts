@@ -14,16 +14,17 @@ export function setEventStreamCheckpointIntervalForTests(milliseconds: number = 
 }
 
 /**
- * What a log key of this table is only a position in: this database generation and this incarnation of the
- * table. A restored database, another node or a table dropped and created again has another.
+ * What a log key of this table is only a position in: this database generation, and this incarnation of this
+ * table. A restored database, another node, another table or one dropped and created again has another.
  */
 function logKeyScope(tableClass: any): string | undefined {
 	if (tableClass.storageEngine !== 'rocksdb') return '';
 	const generation = getDatabaseGeneration(tableClass.auditStore)?.id;
 	if (!generation) return;
-	const incarnation = tableClass.storageGeneration;
-	if (incarnation == null) return `@${generation}`;
-	return `@${generation}.${createHash('sha256').update(String(incarnation)).digest('hex').slice(0, 16)}`;
+	const table = createHash('sha256')
+		.update(`${tableClass.tableName}\0${tableClass.storageGeneration ?? ''}`)
+		.digest('hex');
+	return `@${generation}.${table.slice(0, 16)}`;
 }
 
 /**

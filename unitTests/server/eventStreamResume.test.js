@@ -21,7 +21,7 @@ require('#src/server/serverHelpers/serverUtilities');
 
 const isRocksDB = process.env.HARPER_STORAGE_ENGINE !== 'lmdb';
 const admin = { role: { permission: { super_user: true } } };
-const SCALAR_ID = isRocksDB ? /^\d+(\.\d+)?@[0-9a-f]{32}$/ : /^\d+(\.\d+)?$/;
+const SCALAR_ID = isRocksDB ? /^\d+(\.\d+)?@[0-9a-f]{32}\.[0-9a-f]{16}$/ : /^\d+(\.\d+)?$/;
 const TOKEN_ID = /^[A-Za-z0-9_-]{40,}$/;
 let sequence = 0;
 
@@ -502,8 +502,9 @@ describe('Table event stream resume (harper#515)', function () {
 			await T.put('a', { value: 'a' });
 			await waitFor(() => stream.frameOf('a'));
 			const [key, scope] = stream.lastEventId.split('@');
-			// another database generation, no generation, another incarnation of the table
-			for (const id of [`${key}@${'f'.repeat(32)}`, key, `${key}@${scope}.0123456789abcdef`]) {
+			const [generation, table] = scope.split('.');
+			// another database generation, no generation, another table or incarnation of it
+			for (const id of [`${key}@${'f'.repeat(32)}.${table}`, key, `${key}@${generation}.0123456789abcdef`]) {
 				const refused = await connect(request, url, id);
 				assert.strictEqual(refused.status, 409, id);
 				assert.strictEqual(refused.frames[0].data.code, 'DATABASE_GENERATION_CHANGED');
@@ -567,7 +568,7 @@ describe('Table event stream resume (harper#515)', function () {
 			});
 			assert.strictEqual((await connect(request, url, token)).status, 409);
 			// a RocksDB log key names a database generation, which this engine has none of
-			assert.strictEqual((await connect(request, url, `1@${'a'.repeat(32)}`)).status, 409);
+			assert.strictEqual((await connect(request, url, `1@${'a'.repeat(32)}.${'b'.repeat(16)}`)).status, 409);
 		});
 	});
 });
