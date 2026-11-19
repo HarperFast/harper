@@ -350,8 +350,10 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 			status: undefined,
 			headers,
 		};
-		const lastEventId = headersObject['last-event-id'] as string | undefined;
-		if (lastEventId !== undefined) request.lastEventId = lastEventId;
+		const lastEventId = headersObject['last-event-id'];
+		// a repeated header reads as Node joins one, on every server
+		if (lastEventId !== undefined)
+			request.lastEventId = Array.isArray(lastEventId) ? lastEventId.join(', ') : lastEventId;
 		const url = request.url.slice(1);
 
 		if (url !== OPENAPI_DOMAIN) {
@@ -562,7 +564,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 					return completeMultipartBody(request.data, undefined);
 				case 'CONNECT':
 					// websockets? and event-stream
-					if (isSse) resumeTableEventStream(resource, target, request);
+					if (isSse) resumeTableEventStream(resource, request);
 					return completeMultipartBody(
 						request.data,
 						resource.connect ? resource.connect(target, null, request) : missingMethod(resource, 'connect')

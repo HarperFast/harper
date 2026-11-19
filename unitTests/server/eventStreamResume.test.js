@@ -13,10 +13,8 @@ const { membersDigest } = require('#src/resources/subscriptionCheckpoint');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { handleApplication } = require('#src/server/REST');
 const { Headers } = require('#src/server/serverHelpers/Headers');
-const {
-	setEventStreamCheckpointIntervalForTests,
-	usesTableSubscription,
-} = require('#src/server/serverHelpers/eventStreamResume');
+const { setEventStreamCheckpointIntervalForTests } = require('#src/server/serverHelpers/eventStreamResume');
+const { IterableEventQueue } = require('#src/resources/IterableEventQueue');
 const { EVENT_STREAM_CURSOR, tableEventSerializer } = require('#src/server/serverHelpers/eventStreamIds');
 require('#src/server/serverHelpers/serverUtilities');
 
@@ -64,7 +62,7 @@ function parseFrame(text) {
 }
 
 const open = [];
-/** An event-stream client: the frames it has read, and the id an EventSource would send on reconnect. */
+/** `lastEventId` is what an EventSource would send on its next reconnect. */
 async function connect(request, url, lastEventId) {
 	const headers = { accept: 'text/event-stream' };
 	if (lastEventId !== undefined) headers['last-event-id'] = lastEventId;
@@ -207,6 +205,9 @@ describe('Table event stream resume (harper#515)', function () {
 			const stream = await connect(request, url, id);
 			assert.strictEqual(stream.status, 400, id.slice(0, 20));
 		}
+		// a repeated header, as uWS hands it over
+		const repeated = await request(url, { 'accept': 'text/event-stream', 'last-event-id': ['12', '13'] });
+		assert.strictEqual(repeated.status, 400);
 	});
 
 	it('passes the header to a custom resource as request.lastEventId, and reads none of it', async () => {
@@ -234,41 +235,66 @@ describe('Table event stream resume (harper#515)', function () {
 		assert.strictEqual(response.headers.get('Content-Type'), 'text/event-stream');
 		for await (const _chunk of response.body);
 		await request(url, { accept: 'text/event-stream' });
+		await request(url, { 'accept': 'text/event-stream', 'last-event-id': ['a', 'b'] });
 		assert.deepStrictEqual(seen, [
 			['connect', 'turn-0'],
 			['get', '7'],
 			['connect', undefined],
+			['connect', 'a, b'],
 		]);
 	});
 
-	it('leaves a table subclass that overrides subscribe or connect alone', async () => {
+	it('leaves a table subclass that overrides subscribe or connect alone, however it declares the override', async () => {
 		const T = tableInOwnDatabase();
 		const requests = [];
-		class Overriding extends T {
-			subscribe(subscriptionRequest) {
-				requests.push(subscriptionRequest);
-				return super.subscribe(subscriptionRequest);
-			}
+		const seen = (subscriptionRequest) => requests.push({ ...subscriptionRequest });
+		const overriding = {
+			'a subscribe method': class extends T {
+				subscribe(subscriptionRequest) {
+					seen(subscriptionRequest);
+					return super.subscribe(subscriptionRequest);
+				}
+			},
+			'a subscribe field': class extends T {
+				subscribe = (subscriptionRequest) => {
+					seen(subscriptionRequest);
+					return T.prototype.subscribe.call(this, subscriptionRequest);
+				};
+			},
+			'a connect method': class extends T {
+				connect(target, incomingMessages) {
+					seen(incomingMessages ?? target);
+					return super.connect(target, incomingMessages);
+				}
+			},
+			'a connect field': class extends T {
+				connect = (target, incomingMessages) => {
+					seen(incomingMessages ?? target);
+					return Resource.prototype.connect.call(this, target, incomingMessages);
+				};
+			},
+			'a static connect': class extends T {
+				static connect(target, incomingMessages, context) {
+					seen(target);
+					return super.connect(target, incomingMessages, context);
+				}
+			},
+		};
+		for (const [override, Class] of Object.entries(overriding)) {
+			// its own id format is not ours to refuse
+			const stream = await connect(request, served(Class), 'application-cursor-17');
+			assert.strictEqual(stream.status, 200, override);
+			await T.put(override, { value: override });
+			await waitFor(() => stream.frameOf(override));
+			assert.strictEqual(stream.frameOf(override).id, undefined, override);
+			const subscriptionRequest = requests.pop();
+			assert.strictEqual(subscriptionRequest.reportProgress, undefined, override);
+			assert.strictEqual(subscriptionRequest.startTime, undefined, override);
+			stream.close();
 		}
-		class Connecting extends T {
-			static connect(target, incomingMessages, context) {
-				return super.connect(target, incomingMessages, context);
-			}
-		}
-		assert.strictEqual(usesTableSubscription(T), true);
-		assert.strictEqual(usesTableSubscription(class extends T {}), true);
-		assert.strictEqual(usesTableSubscription(Overriding), false);
-		assert.strictEqual(usesTableSubscription(Connecting), false);
-		assert.strictEqual(usesTableSubscription(class extends Resource {}), false);
-		const url = served(Overriding);
-		// its own id format is not ours to refuse
-		const stream = await connect(request, url, 'application-cursor-17');
-		assert.strictEqual(stream.status, 200);
-		await T.put('a', { value: 'a' });
-		await waitFor(() => stream.frameOf('a'));
-		assert.strictEqual(stream.frameOf('a').id, undefined);
-		assert.strictEqual(requests[0].reportProgress, undefined);
-		assert.strictEqual(requests[0].startTime, undefined);
+		// a subclass that overrides neither keeps the table's own stream
+		const inherited = await connect(request, served(class extends T {}), 'application-cursor-17');
+		assert.strictEqual(inherited.status, 400);
 	});
 
 	describe('the per-event serializer', () => {
@@ -276,7 +302,7 @@ describe('Table event stream resume (harper#515)', function () {
 		it('withholds scalar ids until a checked resume is verified, and never writes to the event', async () => {
 			let verify;
 			const subscription = { resumeVerified: new Promise((resolve) => (verify = resolve)), databaseGeneration: 'g' };
-			const serializeEvent = tableEventSerializer(subscription, { holdsToken: false }, serialize);
+			const serializeEvent = tableEventSerializer(subscription, { holdsToken: false, bareLogKeys: false }, serialize);
 			const event = Object.freeze({ id: 'a', localTime: 5.5, value: {} });
 			assert.strictEqual(serializeEvent(event), serialize(event));
 			verify(true);
@@ -284,7 +310,7 @@ describe('Table event stream resume (harper#515)', function () {
 			assert.strictEqual(serializeEvent(event), serialize({ data: event, id: '5.5@g' }));
 		});
 		it('withholds a token too long for a request header, and issues no scalar id after a token', () => {
-			const cursor = { holdsToken: false };
+			const cursor = { holdsToken: false, bareLogKeys: true };
 			const serializeEvent = tableEventSerializer({}, cursor, serialize);
 			const exceptions = {};
 			for (let i = 0; i < 200; i++) exceptions[`origin-${i}-${'x'.repeat(20)}`] = i;
@@ -295,6 +321,50 @@ describe('Table event stream resume (harper#515)', function () {
 			assert.match(serializeEvent({ type: 'checkpoint', checkpoint: { v: 1 } }), /^id: [A-Za-z0-9_-]+\n\n$/);
 			assert.strictEqual(cursor.holdsToken, true);
 			assert.strictEqual(serializeEvent(event), serialize(event));
+		});
+		it('issues no log key without its generation where the engine has generations', () => {
+			const serializeEvent = tableEventSerializer({}, { holdsToken: false, bareLogKeys: false }, serialize);
+			const event = { id: 'a', localTime: 7, value: {} };
+			assert.strictEqual(serializeEvent(event), serialize(event));
+		});
+	});
+
+	describe('a stream that fails', () => {
+		const { serialize } = require('#src/server/serverHelpers/contentTypes');
+		async function framesOf(source) {
+			const context = { method: 'POST', headers: new Headers({}) };
+			context.headers.asObject = { accept: 'text/event-stream' };
+			context[EVENT_STREAM_CURSOR] = { holdsToken: false, bareLogKeys: true };
+			let text = '';
+			for await (const chunk of serialize(source, context, { headers: new Headers() })) text += chunk;
+			return text.trim().split('\n\n').map(parseFrame);
+		}
+		it('keeps the id when the source throws', async () => {
+			const frames = await framesOf(
+				(async function* () {
+					yield { id: 'a', localTime: 7, value: { value: 'a' } };
+					throw new Error('transient');
+				})()
+			);
+			assert.strictEqual(frames[0].id, '7');
+			assert.strictEqual(frames[1].event, 'harper-error');
+			assert.strictEqual(frames[1].id, undefined);
+		});
+		it('ends with harper-error, id kept, when the subscription closes with an error that voids no position', async () => {
+			const queue = new IterableEventQueue();
+			queue.send({ id: 'a', localTime: 7, value: { value: 'a' } });
+			const frames = framesOf(queue);
+			await sleep(10);
+			const unavailable = new Error('The transaction log could not be read');
+			unavailable.statusCode = 503;
+			queue.close(unavailable);
+			assert.deepStrictEqual(
+				(await frames).map((frame) => [frame.event, frame.id, frame.data.status]),
+				[
+					[undefined, '7', undefined],
+					['harper-error', undefined, 503],
+				]
+			);
 		});
 	});
 
@@ -371,16 +441,34 @@ describe('Table event stream resume (harper#515)', function () {
 			assert.strictEqual(refused.frames[0].data.code, 'RESUME_HISTORY_UNAVAILABLE');
 		});
 
-		it('refuses a scalar id of another database generation with 409', async () => {
+		it('refuses a log key of another database generation, or with none, with 409', async () => {
 			const T = tableInOwnDatabase();
 			const url = served(T);
 			const stream = await connect(request, url);
 			await T.put('a', { value: 'a' });
 			await waitFor(() => stream.frameOf('a'));
 			const [key] = stream.lastEventId.split('@');
-			const refused = await connect(request, url, `${key}@${'f'.repeat(32)}`);
-			assert.strictEqual(refused.status, 409);
-			assert.strictEqual(refused.frames[0].data.code, 'DATABASE_GENERATION_CHANGED');
+			for (const id of [`${key}@${'f'.repeat(32)}`, key]) {
+				const refused = await connect(request, url, id);
+				assert.strictEqual(refused.status, 409, id);
+				assert.strictEqual(refused.frames[0].data.code, 'DATABASE_GENERATION_CHANGED');
+			}
+		});
+
+		it('answers a refusal the replay finds before its first event with the status, not a stream', async () => {
+			const T = tableInOwnDatabase();
+			const url = served(T);
+			const stream = await connect(request, url);
+			await T.put('a', { value: 'a' });
+			await waitFor(() => stream.frameOf('a'));
+			const id = stream.lastEventId;
+			stream.close();
+			await T.writeReloadMarker();
+			// the write the id came from is superseded, so the marker is the first entry the replay acts on
+			await T.put('a', { value: 'again' });
+			const refused = await connect(request, url, id);
+			assert.strictEqual(refused.status, 410);
+			assert.strictEqual(refused.frames[0].data.code, 'RESUME_HISTORY_UNAVAILABLE');
 		});
 
 		it('ends a stream whose position is voided with harper-error and an empty id', async () => {
@@ -397,24 +485,6 @@ describe('Table event stream resume (harper#515)', function () {
 			assert.strictEqual(last.data.status, 410);
 			assert.strictEqual(last.id, '', 'an EventSource reconnects without Last-Event-ID');
 			assert.strictEqual(stream.lastEventId, '');
-		});
-
-		it('keeps the id of a stream that fails for another reason', async () => {
-			const cursor = { holdsToken: false };
-			const failing = (async function* () {
-				yield { id: 'a', localTime: 7, value: { value: 'a' } };
-				throw new Error('transient');
-			})();
-			const { serialize } = require('#src/server/serverHelpers/contentTypes');
-			const context = { method: 'GET', headers: new Headers({}), [EVENT_STREAM_CURSOR]: cursor };
-			context.headers.asObject = { accept: 'text/event-stream' };
-			const body = serialize(failing, context, { headers: new Headers() });
-			let text = '';
-			for await (const chunk of body) text += chunk;
-			const frames = text.trim().split('\n\n').map(parseFrame);
-			assert.strictEqual(frames[0].id, '7');
-			assert.strictEqual(frames[1].event, 'harper-error');
-			assert.strictEqual(frames[1].id, undefined);
 		});
 	});
 
