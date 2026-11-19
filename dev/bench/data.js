@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794992906495,
+  "lastUpdate": 1795073012697,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -9629,6 +9629,63 @@ window.BENCHMARK_DATA = {
           {
             "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 1485.23,
+            "unit": "ops/sec"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "694cca02a0accbf39b86f574646bcb77e67f1d69",
+          "message": "Fix copied-delete tests after late publishes preserve the record version (#4473)\n\n* Keep copied-delete tests independent of late publish ordering\n\nSeed a stored head below its copied-delete boundary to exercise the\nboundary checks. Assert that a real late publish preserves the version of\nboth a copied tombstone and a recreated row.\n\nDispatch-Task: main-red-kriszyp_harper_8d245cf95_4d7eefda\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n* Keep winning origin tie coverage after late publishes\n\nDispatch-Task: main-red-kriszyp_harper_8d245cf95_4d7eefda\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n* Keep older copied-delete stamp coverage after a late publish\n\nDispatch-Task: main-red-kriszyp_harper_8d245cf95_4d7eefda\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n---------\n\nCo-authored-by: GPT-5 Codex <noreply@openai.com>",
+          "timestamp": "2026-11-19T05:31:17Z",
+          "url": "https://github.com/HarperFast/harper/commit/694cca02a0accbf39b86f574646bcb77e67f1d69"
+        },
+        "date": 1795073009648,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "load — bulk insert",
+            "value": 6089.5,
+            "unit": "records/sec"
+          },
+          {
+            "name": "workload C — Read only (100% read)",
+            "value": 8887.44,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload B — Read mostly (95% read / 5% update)",
+            "value": 8726.32,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload A — Update heavy (50% read / 50% update)",
+            "value": 6599.79,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
+            "value": 4753.88,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
+            "value": 9045.37,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
+            "value": 932.39,
             "unit": "ops/sec"
           }
         ]
