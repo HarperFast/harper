@@ -29,6 +29,70 @@ eventSource.onmessage = (event) => {
 
 The URL path maps to the resource in the same way as REST and WebSocket connections. Connecting to `/my-resource/341` subscribes to updates for the record with id `341` in the `my-resource` table (or custom resource).
 
+## Resuming a Dropped Stream
+
+<VersionBadge version="v5.5.0" />
+
+An `EventSource` reconnects by itself when its connection drops, and sends the last `id` it read in the `Last-Event-ID` header. A table's own event stream issues ids and resumes from them, so the events committed while the client was away are delivered after the reconnect. Nothing is needed in the client beyond the `EventSource` itself; a client that reads the stream another way sends the last `id` it read in that header.
+
+```
+GET /my-resource/ HTTP/1.1
+Accept: text/event-stream
+Last-Event-ID: eyJ2IjoxLCJzY29wZSI6...
+```
+
+Treat the id as opaque: store it and send it back unchanged. There are two kinds.
+
+- **A checkpoint token** arrives as an event with an `id` and no `data`. An `EventSource` records it and fires no `message` event for it. The token marks a position in each node's transaction log, so it also resumes on another node of the cluster, and it accounts for transactions that were still open when it was issued. Tokens are issued on RocksDB, by a database whose log positions are certified; the first arrives within about five seconds of connecting, and later ones as those positions advance.
+- **A log position** arrives on each event until the stream has issued a token, and for the whole stream when it cannot issue one: on LMDB, and while a cluster node's history is not certified. It names a position in this node's log only. A transaction that commits after the event the id came from, but took its place in the log before it, is not delivered on resume. On RocksDB the id also names the database, so another node or a restored database refuses it; on LMDB nothing checks it.
+
+Once a stream has issued a token, its events carry no id of their own, so the client keeps the token.
+
+A resume replays the log from the position, so it does not send the current records again, and it can repeat events the client already has. Apply an event only if its `version` is newer than the one held for that record `id`. For a record that changed more than once while the client was away, the replay delivers its current state rather than each change.
+
+### When a Position Cannot Be Resumed
+
+Harper never answers a reconnect it cannot resume by silently starting from now. What happens depends on when it finds out:
+
+| When                     | Response                                                                                                                                                   | What an `EventSource` does                                      |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| Before the stream starts | `400` (not an id this resource issued), `409` (issued for another table, database or engine), `410` (the history after the position is no longer retained) | Stops reconnecting and fires `error` with `readyState` `CLOSED` |
+| After the stream started | An `event: harper-error` event whose `data.status` is `409` or `410` and whose `id` is empty, then the stream ends                                         | Forgets its id and reconnects, which starts a new subscription  |
+
+In both cases the events in between are lost to this client, so it must load the current state again rather than keep what it has: a new subscription to a collection sends each current record, but not the records deleted in the meantime.
+
+```javascript
+function subscribe() {
+	const eventSource = new EventSource('https://server/my-resource/');
+	eventSource.onmessage = (event) => apply(JSON.parse(event.data));
+	// the stream is about to restart from the current state
+	eventSource.addEventListener('harper-error', () => clearLocalState());
+	eventSource.onerror = () => {
+		if (eventSource.readyState !== EventSource.CLOSED) return; // reconnecting by itself
+		clearLocalState();
+		subscribe();
+	};
+}
+```
+
+On RocksDB a stream also ends with `harper-error` and an empty `id` when another node's data is copied into the database underneath it, since the copied records have no events to resume from.
+
+### In a Custom Resource
+
+These ids belong to a table's own stream. A resource that defines its own `connect()` or `subscribe()`, including a class that extends a table, issues its own ids (the `id` of each event it yields) and reads the header itself, as `lastEventId` on the request:
+
+```javascript
+export class ConversationFeed extends Resource {
+	static async *connect(target, incomingMessages, request) {
+		for await (const turn of turnsAfter(target.id, request.lastEventId)) {
+			yield { event: 'turn', data: turn, id: turn.id };
+		}
+	}
+}
+```
+
+`request.lastEventId` is `undefined` when the client sent no `Last-Event-ID`.
+
 ## `connect()` Handler
 
 SSE connections use the same `connect()` method as WebSockets on resource classes, with one key difference: since SSE is one-directional, `connect()` is called without an `incomingMessages` argument.

@@ -2049,6 +2049,8 @@ type ProgressState = {
 	highestSent: number;
 	/** The queue's own send(), which the tracking send() hands each event to. */
 	queueSend: (event: any) => boolean;
+	/** With `checkpointInterval`: sends a `checkpoint` event through the queue if a boundary advanced. */
+	emitCheckpoint?: () => void;
 };
 
 function isSubscriptionActive(subscription: any): boolean {
@@ -13019,8 +13021,7 @@ export function makeTable(options): TableResourceClass {
 		subscription.checkpointFloor = (holds?: Map<number, number>) => subscriptionCheckpointFloor(subscription, holds);
 		if (request.checkpointInterval !== undefined) {
 			let lastEmitted: string | undefined;
-			const timer = setInterval(() => {
-				if (!isSubscriptionActive(subscription)) return clearInterval(timer);
+			progress.emitCheckpoint = () => {
 				try {
 					const checkpoint = subscription.checkpoint!();
 					if (!checkpoint) return;
@@ -13031,6 +13032,10 @@ export function makeTable(options): TableResourceClass {
 				} catch (error) {
 					failSubscription(subscription, error);
 				}
+			};
+			const timer = setInterval(() => {
+				if (!isSubscriptionActive(subscription)) return clearInterval(timer);
+				progress.emitCheckpoint!();
 			}, request.checkpointInterval);
 			timer.unref?.();
 			subscription.on('close', () => clearInterval(timer));
@@ -13105,6 +13110,8 @@ export function makeTable(options): TableResourceClass {
 		// a certified subscription takes every live entry from here: the key gate would drop a late
 		// lower-key commit that a floor then certifies as delivered
 		subscription.ungated = true;
+		// a consumer that drops before the first interval would otherwise hold no checkpoint
+		progress.emitCheckpoint?.();
 	}
 	function replayBoundaries(progress: ProgressState): Map<string, MemberBoundary> | undefined {
 		if (!progress.plan) return;
