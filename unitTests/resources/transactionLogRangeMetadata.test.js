@@ -187,26 +187,15 @@ describe('RocksTransactionLogStore range metadata', () => {
 		});
 	}
 
-	it('starts a log that startByLog does not name at the start the range was given', () => {
-		const queried = {};
-		const logs = ['local', 'lowered-peer', 'other-peer'].map((name) =>
-			makeLog(name, [], (options) => (queried[name] = options))
-		);
-		const iterable = makeStore(logs).getRange({
-			start: 50,
-			startByLog: new Map([['lowered-peer', 20]]),
-			exclusiveStart: true,
-		});
-		assert.deepStrictEqual([...iterable], []);
-		assert.strictEqual(iterable.exactStartFailures.size, 0, 'a start that is not exact has no anchor to miss');
-		assert.deepStrictEqual(
-			Object.entries(queried).map(([name, { start, exclusiveStart }]) => [name, start, exclusiveStart]),
-			[
-				['local', 50, true],
-				['lowered-peer', 20, true],
-				['other-peer', 50, true],
-			]
-		);
+	it('bounds a single-log range by the read of that log in the range it reads until', () => {
+		let queried;
+		const local = makeLog('local', []);
+		const peer = makeLog('peer-a', [], (options) => (queried = options));
+		const source = {};
+		const until = { sourceOf: (log) => (log === peer ? source : undefined) };
+		assert.deepStrictEqual([...makeStore([local, peer]).getRange({ log: 'peer-a', start: 20, end: 50, until })], []);
+		assert.strictEqual(queried.until, source);
+		assert.deepStrictEqual([queried.start, queried.end], [20, 50]);
 	});
 
 	it('starts a newly discovered log from its beginning without an exact anchor', () => {

@@ -549,15 +549,52 @@ describe('Per-origin subscription checkpoints (harper-pro#922 items 3–4)', fun
 			}
 
 			it('also replays another origin from its boundary, and nothing of this node below the position', async () => {
-				const { checkpoint, position, resume } = await positionAboveAPeerFloor();
-				assert.deepStrictEqual((await replayed(resume)).values, ['missed'], 'a position alone skips it');
+				const { T, peer, checkpoint, position, resume } = await positionAboveAPeerFloor();
+				await applyFromOrigin(T, peer, position, 'at-the-position');
+				assert.deepStrictEqual((await replayed(resume)).values, ['missed'], 'a position alone skips them');
 				const listener = collector();
 				const subscription = await resume({ listener, [ORIGIN_BOUNDARIES]: checkpoint });
 				assert.ok(subscription.progress() >= position, 'progress is not lowered while it replays');
 				assert.strictEqual(await subscription.resumeVerified, true);
-				await waitFor(() => listener.values().includes('missed'));
-				assert.deepStrictEqual(listener.values(), ['late', 'missed']);
+				assert.deepStrictEqual(
+					listener.values(),
+					['missed', 'late', 'at-the-position'],
+					'after what follows the position'
+				);
 				assert.ok(subscription.progress() >= position, 'nor once it is live');
+				await T.put('live', { value: 'live' });
+				await waitFor(() => listener.values().includes('live'));
+				assert.deepStrictEqual(listener.values().slice(3), ['live'], 'and nothing twice at the handoff');
+				subscription.end();
+			});
+
+			it('delivers each write once when both origins keep writing while it replays and goes live', async () => {
+				const { T, peer, lateKey, checkpoint, resume } = await positionAboveAPeerFloor();
+				const written = [];
+				let key = lateKey;
+				const write = async (count) => {
+					for (let index = written.length / 2, end = index + count; index < end; index++) {
+						await applyFromOrigin(T, peer, (key += 0.001), `below-${index}`);
+						await T.put(`local-${index}`, { value: `local-${index}` });
+						written.push(`below-${index}`, `local-${index}`);
+					}
+				};
+				// enough in the log that the replay yields, so the rest lands while it reads and after it is live
+				await write(150);
+				const listener = collector();
+				const subscribing = resume({ listener, [ORIGIN_BOUNDARIES]: checkpoint });
+				const writing = write(150);
+				const subscription = await subscribing;
+				assert.strictEqual(await subscription.resumeVerified, true);
+				await writing;
+				await write(20);
+				await waitFor(() => listener.values().includes(written.at(-1)));
+				const counts = new Map();
+				for (const value of listener.values()) counts.set(value, (counts.get(value) ?? 0) + 1);
+				assert.deepStrictEqual(
+					written.filter((value) => counts.get(value) !== 1).map((value) => [value, counts.get(value) ?? 0]),
+					[]
+				);
 				subscription.end();
 			});
 
@@ -599,8 +636,8 @@ describe('Per-origin subscription checkpoints (harper-pro#922 items 3–4)', fun
 				const joined = writeSeqRow(T, joinedName, certifiedRoute(joinedName, lateKey));
 				await applyFromOrigin(T, joined, lateKey + 1, 'before-it-was-known');
 				assert.deepStrictEqual((await replayed(resume, { [ORIGIN_BOUNDARIES]: checkpoint })).values, [
-					'late',
 					'missed',
+					'late',
 				]);
 			});
 
@@ -615,17 +652,17 @@ describe('Per-origin subscription checkpoints (harper-pro#922 items 3–4)', fun
 					(error) => error.statusCode === 410
 				);
 				assert.deepStrictEqual((await replayed(resume, { [ORIGIN_BOUNDARIES]: checkpoint })).values, [
-					'late',
 					'missed',
+					'late',
 				]);
 			});
 
-			it('reads a lowered log that cannot be read from the position instead, and keeps the others lowered', async () => {
+			it('stops reading one origin below the position when that history cannot be read, and nothing else', async () => {
 				const failing = `failing-${sequence + 1}`;
-				const { T, position, checkpoint, resume } = await positionAboveAPeerFloor([failing]);
+				const { T, checkpoint, resume } = await positionAboveAPeerFloor([failing]);
 				await applyFromOrigin(T, getIdOfRemoteNode(failing, T.auditStore), Date.now() + 60_000, 'above-the-position');
-				// the log store's own entry for the log, replaced by one whose read from the lowered start fails as it
-				// does when retention removes the segment at its boundary
+				// the log store's own entry for the log, replaced by one whose read below the position fails as it does
+				// when retention removes the segment at its boundary
 				const store = T.auditStore;
 				const log = store.logByName.get(failing);
 				const index = store.nodeLogs.indexOf(log);
@@ -634,7 +671,7 @@ describe('Per-origin subscription checkpoints (harper-pro#922 items 3–4)', fun
 					name: log.name,
 					getStats: () => log.getStats(),
 					query(options) {
-						if (!(options.start < position)) return log.query(options);
+						if (options.end === undefined) return log.query(options);
 						const fail = () => {
 							failed++;
 							throw new Error('The log segment is no longer available');
@@ -651,7 +688,7 @@ describe('Per-origin subscription checkpoints (harper-pro#922 items 3–4)', fun
 					store.logByName.set(failing, log);
 					store.nodeLogs[index] = log;
 				}
-				assert.ok(failed > 0, 'the lowered read failed');
+				assert.ok(failed > 0, 'the read below the position failed');
 				assert.deepStrictEqual(values.sort(), ['above-the-position', 'late', 'missed']);
 			});
 		});

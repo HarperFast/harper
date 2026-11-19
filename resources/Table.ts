@@ -131,6 +131,7 @@ import {
 	checkpointScope,
 	encodeCheckpoint,
 	originReplayStarts,
+	positionAfter,
 	positionBefore,
 	readOriginStateEpoch,
 	validateCheckpoint,
@@ -10523,21 +10524,11 @@ export function makeTable(options): TableResourceClass {
 				if (count > 1000) count = 1000; // don't allow too many, we have to hold these in memory
 				let startTime = request.startTime;
 				let recordsSinceYield = 0;
-				const targetKey = isCollection ? undefined : keyArrayToString(thisId);
-				const prefix = thisId == null ? '' : String(keyArrayToString(thisId)).replace(/\/$/, '') + '/';
-				const inScope = (id: Id): boolean => {
-					if (!isCollection) return keyArrayToString(id) === targetKey;
-					if (thisId != null && !isDescendantId(thisId, id)) return false;
-					if (!request.onlyChildren) return true;
-					// a direct child, as live routing's ancestor depth decides it
-					const path = String(keyArrayToString(id));
-					const rest = (path.startsWith(prefix) ? path.slice(prefix.length) : path).replace(/\/$/, '');
-					return !rest.includes('/');
-				};
 
 				if (plan) {
 					state.pendingRealTimeQueue = null;
 					state.dropDuringReplay = true;
+					const inScope = replayScope(thisId, isCollection, request.onlyChildren);
 					const refuse = (refusal: Error): false => {
 						logger.debug?.(`Refused resuming a subscription to ${tableName} from a checkpoint: ${refusal.message}`);
 						try {
@@ -10646,56 +10637,103 @@ export function makeTable(options): TableResourceClass {
 							await rest();
 							if (!isActive()) return;
 						}
-						// The position is this node's own watermark, which another origin can still commit below, so that
-						// origin's log is read from its boundary in the checkpoint issued beside the position. A log stays in
-						// this map until it yields an entry above the position; what it yields before is optional history,
-						// which moves no cursor and refuses no resume.
-						const originBoundaries = (request as any)[ORIGIN_BOUNDARIES];
-						const loweredStarts =
-							resuming && isRocksDB && originBoundaries !== undefined
-								? originReplayStarts(auditStore, TableResource.dbisDB, originBoundaries, scope(), startTime)
-								: undefined;
-						const replayRange = auditStore.getRange(
-							loweredStarts
-								? {
-										start: startTime,
-										startByLog: loweredStarts,
-										excludeLogs: [],
-										includeLogName: true,
-										exclusiveStart: true,
-										snapshot: false,
-										until: liveRange,
-									}
-								: {
-										start: startTime,
-										exclusiveStart: true,
-										snapshot: false, // no need for a snapshot, audits don't change
-										until: liveRange,
-									}
-						);
-						// A prune can pass a lowered log's boundary while it is read. The log is then read from the position
-						// instead; once it has passed the position, the failure is one the position's own replay shares.
-						const readFailedLogsFromPosition = (): boolean => {
-							for (const name of replayRange.failedLogs) if (!loweredStarts!.has(name)) return false;
-							for (const name of [...replayRange.failedLogs]) {
-								loweredStarts!.delete(name);
-								replayRange.removeLog(name);
-								replayRange.failedLogs.delete(name);
-								replayRange.addLog(name);
-							}
-							return true;
-						};
+						const replayRange = auditStore.getRange({
+							start: startTime,
+							exclusiveStart: true,
+							snapshot: false, // no need for a snapshot, audits don't change
+							until: liveRange,
+						});
 						const recordCursor = (key: number) => {
-							if (key < startTime) key = startTime;
 							// live delivery finishes a transaction the bound split, so a resume must start below it
 							const open = replayRange.openTransactionFloor?.();
-							subscription.replayedThrough = open <= key ? (open <= startTime ? startTime : positionBefore(open)) : key;
+							subscription.replayedThrough = open <= key ? positionBefore(open) : key;
 							// LMDB and same-thread replays hand off by key
 							if (!liveRange) subscription.startTime = key;
 						};
 						let replayIterator = replayRange[Symbol.iterator]();
 						let replayEnded = false;
 						let unreachedSince: number | undefined;
+						// The position is this node's own watermark, which another origin can still commit below. Each such
+						// origin's log is read from its boundary up to the position by a reader of its own, apart from the
+						// replay above: what it reads moves no cursor and passes no check, and a failure ends it alone.
+						const originBoundaries = (request as any)[ORIGIN_BOUNDARIES];
+						const originWindows: { range: any; iterator?: Iterator<any>; unreachedSince?: number }[] = [];
+						if (resuming && isRocksDB && originBoundaries !== undefined) {
+							const starts = originReplayStarts(auditStore, TableResource.dbisDB, originBoundaries, scope(), startTime);
+							for (const [log, start] of starts ?? []) {
+								originWindows.push({
+									// `end` is exclusive, and the key at the position is another origin's to commit too
+									range: auditStore.getRange({
+										log,
+										start,
+										exclusiveStart: true,
+										end: positionAfter(startTime),
+										until: liveRange,
+									}),
+								});
+							}
+						}
+						const inScope =
+							request.onlyChildren || originWindows.length > 0
+								? replayScope(thisId, true, request.onlyChildren)
+								: undefined;
+						// True once every window has caught up with live delivery without the turn being yielded; otherwise
+						// whether the replay goes on after the wait.
+						const drainOriginWindows = (): true | Promise<boolean> => {
+							for (let index = 0; index < originWindows.length;) {
+								const window = originWindows[index];
+								let next: IteratorResult<any>;
+								try {
+									next = (window.iterator ??= window.range[Symbol.iterator]()).next();
+								} catch (error) {
+									window.iterator = undefined;
+									if (
+										error instanceof TransactionLogUntilUnreachedError &&
+										performance.now() - (window.unreachedSince ??= performance.now()) <= UNREACHED_LOG_LIMIT_MS
+									) {
+										return sleep(UNREACHED_LOG_POLL_MS).then(isActive);
+									}
+									logger.debug?.(
+										`Subscription replay on ${tableName} stopped reading an origin below its position`,
+										error
+									);
+									originWindows.splice(index, 1);
+									continue;
+								}
+								window.unreachedSince = undefined;
+								if (next.done) {
+									window.iterator = undefined;
+									if (window.range.corruptFrameStop?.breaks) originWindows.splice(index, 1);
+									else index++;
+									continue;
+								}
+								const auditRecord = next.value;
+								const id = auditRecord.recordId;
+								const type = auditRecord.type;
+								const event =
+									auditRecord.tableId === tableId &&
+									id !== undefined &&
+									type !== undefined &&
+									type !== 'evict' &&
+									type !== 'reload' &&
+									!isLockControlType(type) &&
+									inScope!(id)
+										? eventFromAudit(state, id, auditRecord, auditRecord.txnLogKey, undefined, true, replayReader)
+										: undefined;
+								if (event) {
+									if (state.reportingProgress) event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
+									if (!send(event) || !isActive()) return Promise.resolve(false);
+									if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
+										return subscription.waitForDrain().then((drained: boolean) => drained !== false && isActive());
+									}
+								}
+								if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
+									recordsSinceYield = 0;
+									return rest().then(isActive);
+								}
+							}
+							return true;
+						};
 						try {
 							for (;;) {
 								let next: IteratorResult<any>;
@@ -10720,18 +10758,18 @@ export function makeTable(options): TableResourceClass {
 									replayIterator = replayRange[Symbol.iterator]();
 									continue;
 								}
-								if (loweredStarts?.size && replayRange.failedLogs.size > 0 && readFailedLogsFromPosition() && next.done)
-									continue;
 								if (next.done) {
+									// the windows hand off with the replay: both are caught up in the turn that ends it
+									const drained = originWindows.length === 0 || drainOriginWindows();
+									if (drained !== true) {
+										if (!(await drained)) return;
+										replayIterator = replayRange[Symbol.iterator]();
+										continue;
+									}
 									replayEnded = true;
 									break;
 								}
 								const auditRecord = next.value;
-								let aboveStart = true;
-								if (loweredStarts) {
-									aboveStart = auditRecord.txnLogKey > startTime;
-									if (aboveStart) loweredStarts.delete(auditRecord.logName);
-								}
 								if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
 									recordsSinceYield = 0;
 									await rest();
@@ -10739,18 +10777,17 @@ export function makeTable(options): TableResourceClass {
 									if (checkResume) {
 										if (!checkResume(unreadableLogRefusal(replayRange))) return;
 										// every key below the record in hand has been read
-										if (aboveStart) resumeCheckedThrough = auditRecord.txnLogKey;
+										resumeCheckedThrough = auditRecord.txnLogKey;
 									}
 								}
 								// an entry that failed to decode names no table, so a checked replay cannot rule it out
-								if (checkResume && aboveStart && auditRecord.type === undefined) {
+								if (checkResume && auditRecord.type === undefined) {
 									checkResume(new ResumeHistoryUnavailableError(UNREADABLE_LOG_REFUSAL));
 									return;
 								}
 								if (auditRecord.tableId !== tableId || auditRecord.type === 'evict') continue;
 								if (isLockControlType(auditRecord.type)) continue;
 								const isReload = auditRecord.type === 'reload';
-								if (!aboveStart && (isReload || auditRecord.recordId === undefined)) continue;
 								// the rows a reload back-filled have no history, so no replay can deliver them
 								if (isReload && replayRefusesReload)
 									return void refuseReplay(subscription, tableName, new ResumeHistoryUnavailableError(RELOAD_REFUSAL));
@@ -10774,7 +10811,10 @@ export function makeTable(options): TableResourceClass {
 								}
 								// a marker is table-wide, as the live broadcast delivers it
 								if (resnapshots) state.reloadPending = true;
-								else if (isReload || inScope(id)) {
+								else if (
+									isReload ||
+									(request.onlyChildren ? inScope!(id) : thisId == null || isDescendantId(thisId, id))
+								) {
 									// as live delivery converts it: a live entry dropped during the replay is delivered only here
 									const event = eventFromAudit(
 										state,
@@ -10792,9 +10832,9 @@ export function makeTable(options): TableResourceClass {
 											// a prune while the consumer drains may reach what was read before the wait
 											if (checkResume) {
 												if (!checkResume(unreadableLogRefusal(replayRange))) return;
-												if (aboveStart) resumeCheckedThrough = auditRecord.txnLogKey;
+												resumeCheckedThrough = auditRecord.txnLogKey;
 											}
-											if ((await subscription.waitForDrain()) === false || !isActive()) return;
+											if ((await subscription.waitForDrain()) === false) return;
 										}
 									}
 								}
@@ -13261,6 +13301,20 @@ export function makeTable(options): TableResourceClass {
 		const event = liveEventFor(state, id, auditRecord, localTime, beginTxn);
 		auditRecord[SHARED_LIVE_EVENTS] = { store: primaryStore, id, localTime, variant, event, next: first };
 		return event;
+	}
+	/** Whether a replayed entry's id is in the subscription's scope, as live routing decides it. */
+	function replayScope(thisId: Id, isCollection: boolean, onlyChildren: boolean | undefined): (id: Id) => boolean {
+		const targetKey = isCollection ? undefined : keyArrayToString(thisId);
+		const prefix = thisId == null ? '' : String(keyArrayToString(thisId)).replace(/\/$/, '') + '/';
+		return (id: Id): boolean => {
+			if (!isCollection) return keyArrayToString(id) === targetKey;
+			if (thisId != null && !isDescendantId(thisId, id)) return false;
+			if (!onlyChildren) return true;
+			// a direct child, as live routing's ancestor depth decides it
+			const path = String(keyArrayToString(id));
+			const rest = (path.startsWith(prefix) ? path.slice(prefix.length) : path).replace(/\/$/, '');
+			return !rest.includes('/');
+		};
 	}
 	function eventFromAudit(
 		state: SubscriberState,
