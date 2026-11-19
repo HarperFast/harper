@@ -20,6 +20,12 @@ import fp from 'fastify-plugin';
 import { parseMultipartRequest, releaseUnreadUpload } from './multipartParser.ts';
 import { deserializeMultipartForm, deserializeMultipartStream } from './multipartForm.ts';
 import { onStartup } from '../../utility/lifecycle.ts';
+import {
+	EVENT_STREAM_CURSOR,
+	tableEventSerializer,
+	voidsEventId,
+	type EventStreamCursor,
+} from './eventStreamIds.ts';
 let JSONStringify: typeof JSON.stringify = stringify;
 let JSONParse: typeof JSON.parse = parse;
 let COMPRESSION_THRESHOLD: number | undefined;
@@ -279,11 +285,19 @@ function serializeSSEFieldValue(value: any) {
 mediaTypes.set('text/event-stream', {
 	// Server-Sent Events (SSE)
 	serializeStream: function (iterable, _response?: Response, request?: any) {
+		const cursor: EventStreamCursor | undefined = request?.[EVENT_STREAM_CURSOR];
 		// create a readable stream that we use to stream out events from our subscription
 		return errorFrameStream(
 			iterable,
-			this.serialize,
-			(error) => this.serialize({ event: 'harper-error', data: streamErrorRecord(error) }),
+			cursor ? tableEventSerializer(iterable, cursor, this.serialize) : this.serialize,
+			(error) =>
+				this.serialize({
+					event: 'harper-error',
+					data: streamErrorRecord(error),
+					// An empty id clears the client's Last-Event-ID: reconnecting with a position that was just
+					// refused would replay to the same refusal on every retry.
+					id: cursor && voidsEventId(error) ? '' : undefined,
+				}),
 			request?.method === 'GET'
 		);
 	},

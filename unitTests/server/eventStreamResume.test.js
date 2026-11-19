@@ -1,0 +1,446 @@
+const assert = require('node:assert');
+const { setTimeout: sleep } = require('node:timers/promises');
+const { setupTestDBPath } = require('../testUtils.js');
+const { waitFor } = require('../waitFor.js');
+const { table } = require('#src/resources/databases');
+const { Resource } = require('#src/resources/Resource');
+const { Resources } = require('#src/resources/Resources');
+const { transaction } = require('#src/resources/transaction');
+const { persistOriginClosedFloor } = require('#src/resources/auditStore');
+const { certifyOriginFloor, publishOriginFloor, getOriginClosedFloor } = require('#src/resources/originClosedFloor');
+const { setOriginCaptureIntervalForTests } = require('#src/resources/transactionBroadcast');
+const { membersDigest } = require('#src/resources/subscriptionCheckpoint');
+const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { handleApplication } = require('#src/server/REST');
+const { Headers } = require('#src/server/serverHelpers/Headers');
+const {
+	setEventStreamCheckpointIntervalForTests,
+	usesTableSubscription,
+} = require('#src/server/serverHelpers/eventStreamResume');
+const { EVENT_STREAM_CURSOR, tableEventSerializer } = require('#src/server/serverHelpers/eventStreamIds');
+require('#src/server/serverHelpers/serverUtilities');
+
+const isRocksDB = process.env.HARPER_STORAGE_ENGINE !== 'lmdb';
+const admin = { role: { permission: { super_user: true } } };
+const SCALAR_ID = isRocksDB ? /^\d+(\.\d+)?@[0-9a-f]{32}$/ : /^\d+(\.\d+)?$/;
+const TOKEN_ID = /^[A-Za-z0-9_-]{40,}$/;
+let sequence = 0;
+
+function tableInOwnDatabase() {
+	const name = `EventStream${++sequence}`;
+	return table({
+		table: name,
+		database: `event_stream_${name}`,
+		audit: true,
+		attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'value' }],
+	});
+}
+
+function rest(resources) {
+	let handler;
+	handleApplication({
+		resources,
+		options: { getAll: () => ({ webSocket: false }) },
+		routeFor: () => ({ urlPath: `/event-stream-resume-${sequence++}` }),
+		server: { http: (listener) => (handler = listener) },
+	});
+	return (url, headers = {}) => {
+		const request = { method: 'GET', url, user: admin, headers: new Headers(headers) };
+		request.headers.asObject = headers;
+		return handler(request, () => ({ status: 404 }));
+	};
+}
+
+function parseFrame(text) {
+	const frame = {};
+	for (const line of text.split('\n')) {
+		const colon = line.indexOf(':');
+		const field = line.slice(0, colon);
+		const value = line.slice(colon + 1).replace(/^ /, '');
+		if (field === 'data') frame.data = JSON.parse(value);
+		else if (field) frame[field] = value;
+	}
+	return frame;
+}
+
+const open = [];
+/** An event-stream client: the frames it has read, and the id an EventSource would send on reconnect. */
+async function connect(request, url, lastEventId) {
+	const headers = { accept: 'text/event-stream' };
+	if (lastEventId !== undefined) headers['last-event-id'] = lastEventId;
+	const response = await request(url, headers);
+	const stream = { status: response.status, frames: [], lastEventId, close() {} };
+	if (typeof response.body?.on !== 'function') {
+		stream.frames.push(parseFrame(String(response.body ?? '').trim()));
+		return stream;
+	}
+	let buffer = '';
+	response.body.on('data', (chunk) => {
+		buffer += chunk;
+		for (let end; (end = buffer.indexOf('\n\n')) >= 0; buffer = buffer.slice(end + 2)) {
+			const frame = parseFrame(buffer.slice(0, end));
+			if (frame.id !== undefined) stream.lastEventId = frame.id;
+			stream.frames.push(frame);
+		}
+	});
+	response.body.on('error', () => {});
+	stream.ended = new Promise((resolve) => response.body.on('close', resolve));
+	stream.close = () => response.body.destroy();
+	stream.values = () => stream.frames.map((frame) => frame.data?.value?.value).filter((value) => value !== undefined);
+	stream.frameOf = (value) => stream.frames.find((frame) => frame.data?.value?.value === value);
+	stream.tokens = () => stream.frames.filter((frame) => frame.data === undefined && TOKEN_ID.test(frame.id ?? ''));
+	open.push(stream);
+	return stream;
+}
+
+function decodeToken(id) {
+	return JSON.parse(Buffer.from(id, 'base64url').toString());
+}
+
+function encodeToken(checkpoint) {
+	return Buffer.from(JSON.stringify(checkpoint)).toString('base64url');
+}
+
+/** One certification round, as the maintenance tick runs it. */
+function certify(T) {
+	const rootStore = T.primaryStore.rootStore;
+	// a floor certifies only once synced; the pinned engine may predate syncWal, so the tick's sync is stood in for
+	if (typeof rootStore.syncWal !== 'function') rootStore.syncWal = () => Promise.resolve();
+	let floor = certifyOriginFloor(rootStore);
+	for (let retry = 0; floor === null && retry < 100; retry++) floor = certifyOriginFloor(rootStore);
+	if (floor) {
+		persistOriginClosedFloor(T.auditStore, floor);
+		publishOriginFloor(rootStore, floor);
+	}
+	return getOriginClosedFloor(rootStore)?.floor ?? 0;
+}
+
+/** Waits for the stream to issue a token that reflects the floor certified now. */
+async function certifiedToken(T, stream) {
+	await sleep(2);
+	const floor = certify(T);
+	let id;
+	await waitFor(() => {
+		id = stream.tokens().findLast((frame) => decodeToken(frame.id).time >= floor)?.id;
+		return id;
+	}, 15_000);
+	return id;
+}
+
+// its writes take its log key now, so it commits below whatever commits before the returned function is called
+async function heldTransaction(T, ...ids) {
+	let commit;
+	const committed = transaction({}, async (context) => {
+		for (const id of ids) await T.put(id, { value: id }, context);
+		await new Promise((resolve) => (commit = resolve));
+	});
+	await waitFor(() => commit);
+	return () => {
+		commit();
+		return committed;
+	};
+}
+
+describe('Table event stream resume (harper#515)', function () {
+	let resources, request;
+	function served(Class) {
+		const path = `Served${++sequence}`;
+		resources.set(path, Class, { rest: true, sse: true });
+		return `/${path}/`;
+	}
+	before(() => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		setOriginCaptureIntervalForTests(100);
+		setEventStreamCheckpointIntervalForTests(1000);
+		resources = new Resources();
+		request = rest(resources);
+	});
+	after(() => {
+		setOriginCaptureIntervalForTests();
+		setEventStreamCheckpointIntervalForTests();
+	});
+	afterEach(() => {
+		for (const stream of open.splice(0)) stream.close();
+	});
+
+	it('gives each logged event its log key as the id, and a snapshot row none', async () => {
+		const T = tableInOwnDatabase();
+		const url = served(T);
+		await T.put('seed', { value: 'seed' });
+		const stream = await connect(request, url);
+		assert.strictEqual(stream.status, 200);
+		await waitFor(() => stream.frameOf('seed'));
+		await T.put('a', { value: 'a' });
+		await waitFor(() => stream.frameOf('a'));
+		assert.strictEqual(stream.frameOf('seed').data.fromScan, true);
+		assert.strictEqual(stream.frameOf('seed').id, undefined);
+		const frame = stream.frameOf('a');
+		assert.match(frame.id, SCALAR_ID);
+		assert.strictEqual(Number(frame.id.split('@')[0]), frame.data.localTime, 'the id round-trips the fractional key');
+		assert.deepStrictEqual(Object.keys(frame).sort(), ['data', 'id'], 'the data line is the event, as before');
+	});
+
+	it('resumes from a scalar id, redelivering its own event and every one after it', async () => {
+		const T = tableInOwnDatabase();
+		const url = served(T);
+		const first = await connect(request, url);
+		await T.put('a', { value: 'a' });
+		await waitFor(() => first.frameOf('a'));
+		const id = first.lastEventId;
+		first.close();
+		await T.put('b', { value: 'b' });
+		await T.put('c', { value: 'c' });
+		const resumed = await connect(request, url, id);
+		assert.strictEqual(resumed.status, 200);
+		await waitFor(() => resumed.frameOf('c'));
+		assert.deepStrictEqual(resumed.values(), ['a', 'b', 'c']);
+		assert.ok(
+			resumed.frames.every((frame) => !frame.data?.fromScan),
+			'a resume replays the log and takes no snapshot'
+		);
+	});
+
+	it('refuses an id it did not issue with 400, before any event', async () => {
+		const url = served(tableInOwnDatabase());
+		for (const id of ['not an id', 'abc', encodeToken({ v: 2 }), '0', '12@short', 'A'.repeat(5000)]) {
+			const stream = await connect(request, url, id);
+			assert.strictEqual(stream.status, 400, id.slice(0, 20));
+		}
+	});
+
+	it('passes the header to a custom resource as request.lastEventId, and reads none of it', async () => {
+		const seen = [];
+		class Feed extends Resource {
+			static loadAsInstance = false;
+			static async *connect(_target, _incomingMessages, context) {
+				seen.push(['connect', context.lastEventId]);
+				yield { event: 'turn', data: { n: 1 }, id: 'turn-1' };
+			}
+			static async *get(_target, context) {
+				seen.push(['get', context.lastEventId]);
+				yield { event: 'turn', data: { n: 1 }, id: 'turn-1' };
+			}
+		}
+		const url = served(Feed);
+		const stream = await connect(request, url, 'turn-0');
+		await stream.ended;
+		assert.deepStrictEqual(stream.frames, [{ event: 'turn', data: { n: 1 }, id: 'turn-1' }]);
+		// an Accept list negotiates the event stream for an ordinary GET
+		const response = await request(url, {
+			'accept': 'text/event-stream, application/json;q=0.5',
+			'last-event-id': '7',
+		});
+		assert.strictEqual(response.headers.get('Content-Type'), 'text/event-stream');
+		for await (const _chunk of response.body);
+		await request(url, { accept: 'text/event-stream' });
+		assert.deepStrictEqual(seen, [
+			['connect', 'turn-0'],
+			['get', '7'],
+			['connect', undefined],
+		]);
+	});
+
+	it('leaves a table subclass that overrides subscribe or connect alone', async () => {
+		const T = tableInOwnDatabase();
+		const requests = [];
+		class Overriding extends T {
+			subscribe(subscriptionRequest) {
+				requests.push(subscriptionRequest);
+				return super.subscribe(subscriptionRequest);
+			}
+		}
+		class Connecting extends T {
+			static connect(target, incomingMessages, context) {
+				return super.connect(target, incomingMessages, context);
+			}
+		}
+		assert.strictEqual(usesTableSubscription(T), true);
+		assert.strictEqual(usesTableSubscription(class extends T {}), true);
+		assert.strictEqual(usesTableSubscription(Overriding), false);
+		assert.strictEqual(usesTableSubscription(Connecting), false);
+		assert.strictEqual(usesTableSubscription(class extends Resource {}), false);
+		const url = served(Overriding);
+		// its own id format is not ours to refuse
+		const stream = await connect(request, url, 'application-cursor-17');
+		assert.strictEqual(stream.status, 200);
+		await T.put('a', { value: 'a' });
+		await waitFor(() => stream.frameOf('a'));
+		assert.strictEqual(stream.frameOf('a').id, undefined);
+		assert.strictEqual(requests[0].reportProgress, undefined);
+		assert.strictEqual(requests[0].startTime, undefined);
+	});
+
+	describe('the per-event serializer', () => {
+		const serialize = (message) => JSON.stringify(message);
+		it('withholds scalar ids until a checked resume is verified, and never writes to the event', async () => {
+			let verify;
+			const subscription = { resumeVerified: new Promise((resolve) => (verify = resolve)), databaseGeneration: 'g' };
+			const serializeEvent = tableEventSerializer(subscription, { holdsToken: false }, serialize);
+			const event = Object.freeze({ id: 'a', localTime: 5.5, value: {} });
+			assert.strictEqual(serializeEvent(event), serialize(event));
+			verify(true);
+			await subscription.resumeVerified;
+			assert.strictEqual(serializeEvent(event), serialize({ data: event, id: '5.5@g' }));
+		});
+		it('withholds a token too long for a request header, and issues no scalar id after a token', () => {
+			const cursor = { holdsToken: false };
+			const serializeEvent = tableEventSerializer({}, cursor, serialize);
+			const exceptions = {};
+			for (let i = 0; i < 200; i++) exceptions[`origin-${i}-${'x'.repeat(20)}`] = i;
+			assert.strictEqual(serializeEvent({ type: 'checkpoint', checkpoint: { v: 1, exceptions } }), ':\n\n');
+			assert.strictEqual(cursor.holdsToken, false);
+			const event = { id: 'a', localTime: 7, value: {} };
+			assert.strictEqual(serializeEvent(event), serialize({ data: event, id: '7' }));
+			assert.match(serializeEvent({ type: 'checkpoint', checkpoint: { v: 1 } }), /^id: [A-Za-z0-9_-]+\n\n$/);
+			assert.strictEqual(cursor.holdsToken, true);
+			assert.strictEqual(serializeEvent(event), serialize(event));
+		});
+	});
+
+	describe('on RocksDB', function () {
+		if (!isRocksDB) return;
+
+		it('issues the checkpoint token as a frame with only an id, then no scalar id', async () => {
+			const T = tableInOwnDatabase();
+			const stream = await connect(request, served(T));
+			await T.put('a', { value: 'a' });
+			await waitFor(() => stream.frameOf('a'));
+			const id = await certifiedToken(T, stream);
+			assert.strictEqual(decodeToken(id).v, 1);
+			assert.strictEqual(stream.lastEventId, id);
+			await T.put('b', { value: 'b' });
+			await waitFor(() => stream.frameOf('b'));
+			assert.strictEqual(stream.frameOf('b').id, undefined, 'a scalar id would replace the token the client holds');
+		});
+
+		it('resumes from the token with a transaction that committed below it, which a scalar id skips', async () => {
+			const T = tableInOwnDatabase();
+			const url = served(T);
+			const first = await connect(request, url);
+			const commitLate = await heldTransaction(T, 'late');
+			await T.put('early', { value: 'early' });
+			await waitFor(() => first.frameOf('early'));
+			const scalarId = first.lastEventId;
+			const token = await certifiedToken(T, first);
+			first.close();
+			await commitLate();
+			await T.put('after', { value: 'after' });
+
+			const resumed = await connect(request, url, token);
+			assert.strictEqual(resumed.status, 200);
+			await waitFor(() => resumed.frameOf('after'));
+			assert.ok(resumed.frameOf('late'), 'the token waited for the open transaction');
+			assert.ok(resumed.frameOf('late').data.localTime < resumed.frameOf('early').data.localTime);
+			assert.ok(
+				resumed.frames.every((frame) => frame.data === undefined || frame.id === undefined),
+				'a stream resumed from a token issues no scalar id'
+			);
+
+			const scalar = await connect(request, url, scalarId);
+			await waitFor(() => scalar.frameOf('after'));
+			assert.strictEqual(scalar.frameOf('late'), undefined, 'the scalar position is already past its key');
+		});
+
+		it('resumes a transaction cut after its first record with every record of it', async () => {
+			const T = tableInOwnDatabase();
+			const url = served(T);
+			const first = await connect(request, url);
+			await transaction({}, async (context) => {
+				await T.put('x', { value: 'x' }, context);
+				await T.put('y', { value: 'y' }, context);
+			});
+			await waitFor(() => first.frameOf('y'));
+			assert.strictEqual(first.frameOf('x').id, first.frameOf('y').id, 'both records carry the transaction key');
+			const resumed = await connect(request, url, first.frameOf('x').id);
+			await waitFor(() => resumed.frameOf('y'));
+			assert.deepStrictEqual(resumed.values(), ['x', 'y']);
+		});
+
+		it('refuses a token of another table with 409 and of another origin set with 410', async () => {
+			const T = tableInOwnDatabase();
+			const stream = await connect(request, served(T));
+			await T.put('a', { value: 'a' });
+			await waitFor(() => stream.frameOf('a'));
+			const token = await certifiedToken(T, stream);
+			const otherTable = await connect(request, served(tableInOwnDatabase()), token);
+			assert.strictEqual(otherTable.status, 409);
+			const foreign = encodeToken({ ...decodeToken(token), members: membersDigest([['someone-else', 'g']]) });
+			const refused = await connect(request, served(T), foreign);
+			assert.strictEqual(refused.status, 410);
+			assert.strictEqual(refused.frames[0].data.code, 'RESUME_HISTORY_UNAVAILABLE');
+		});
+
+		it('refuses a scalar id of another database generation with 409', async () => {
+			const T = tableInOwnDatabase();
+			const url = served(T);
+			const stream = await connect(request, url);
+			await T.put('a', { value: 'a' });
+			await waitFor(() => stream.frameOf('a'));
+			const [key] = stream.lastEventId.split('@');
+			const refused = await connect(request, url, `${key}@${'f'.repeat(32)}`);
+			assert.strictEqual(refused.status, 409);
+			assert.strictEqual(refused.frames[0].data.code, 'DATABASE_GENERATION_CHANGED');
+		});
+
+		it('ends a stream whose position is voided with harper-error and an empty id', async () => {
+			const T = tableInOwnDatabase();
+			const stream = await connect(request, served(T));
+			await T.put('a', { value: 'a' });
+			await waitFor(() => stream.frameOf('a'));
+			assert.match(stream.lastEventId, SCALAR_ID);
+			// a base copy back-fills rows with no history, so no position can pass its marker
+			await T.writeReloadMarker();
+			await stream.ended;
+			const last = stream.frames.at(-1);
+			assert.strictEqual(last.event, 'harper-error');
+			assert.strictEqual(last.data.status, 410);
+			assert.strictEqual(last.id, '', 'an EventSource reconnects without Last-Event-ID');
+			assert.strictEqual(stream.lastEventId, '');
+		});
+
+		it('keeps the id of a stream that fails for another reason', async () => {
+			const cursor = { holdsToken: false };
+			const failing = (async function* () {
+				yield { id: 'a', localTime: 7, value: { value: 'a' } };
+				throw new Error('transient');
+			})();
+			const { serialize } = require('#src/server/serverHelpers/contentTypes');
+			const context = { method: 'GET', headers: new Headers({}), [EVENT_STREAM_CURSOR]: cursor };
+			context.headers.asObject = { accept: 'text/event-stream' };
+			const body = serialize(failing, context, { headers: new Headers() });
+			let text = '';
+			for await (const chunk of body) text += chunk;
+			const frames = text.trim().split('\n\n').map(parseFrame);
+			assert.strictEqual(frames[0].id, '7');
+			assert.strictEqual(frames[1].event, 'harper-error');
+			assert.strictEqual(frames[1].id, undefined);
+		});
+	});
+
+	describe('on LMDB', function () {
+		if (isRocksDB) return;
+
+		it('issues bare scalar ids and no token, and refuses a token with 409', async () => {
+			const T = tableInOwnDatabase();
+			const url = served(T);
+			const stream = await connect(request, url);
+			await T.put('a', { value: 'a' });
+			await waitFor(() => stream.frameOf('a'));
+			await T.put('b', { value: 'b' });
+			await waitFor(() => stream.frameOf('b'));
+			assert.match(stream.frameOf('a').id, /^\d+(\.\d+)?$/);
+			assert.match(stream.frameOf('b').id, /^\d+(\.\d+)?$/);
+			assert.deepStrictEqual(stream.tokens(), []);
+			const token = encodeToken({
+				v: 1,
+				scope: 'x',
+				time: 1,
+				overlap: 0,
+				exceptions: {},
+				members: 'a'.repeat(64),
+			});
+			assert.strictEqual((await connect(request, url, token)).status, 409);
+		});
+	});
+});
