@@ -295,9 +295,6 @@ export class CrossThreadStatusCollector {
 	}
 }
 
-/**
- * Components whose last load failed on some thread.
- */
 export function failedLoads(threadStatuses: Map<string, ComponentStatusSummary>): string[] {
 	const failed = new Set<string>();
 	for (const [statusKey, status] of threadStatuses) {

@@ -276,11 +276,7 @@ export function resetLoadFailuresCache(): void {
 	loadFailuresRefresh = undefined;
 }
 
-/**
- * Availability with `status.drainOnLoadFailure` on: an operator's Unavailable wins, otherwise
- * Unavailable while any thread's last load of some component failed. Reads every thread because
- * get_status runs on the main thread, which never runs `handleApplication`.
- */
+// Reads every thread because get_status runs on the main thread, which never runs `handleApplication`.
 async function getAvailabilityStatus(): Promise<StatusRecord<'availability'> | undefined> {
 	const stored = (await getStatusTable().get('availability')) as StatusRecord<'availability'> | undefined;
 	if (stored?.status === 'Unavailable') return stored;
