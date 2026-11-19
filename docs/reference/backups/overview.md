@@ -7,7 +7,7 @@ sidebar_label: 'Overview'
 
 <!-- Source: HarperFast/harper#1831 (RocksDB managed backup and restore operations) -->
 
-Harper can back up and restore its databases natively. A RocksDB managed backup or snapshot download is a whole-database copy of authoritative state — all tables, the audit/transaction log, and file-backed blobs unless `exclude_blobs` is requested — so a restored database is a consistent point-in-time image. Local derived state, including full-text index files, is excluded and rebuilt after restore. LMDB `get_backup` is the exception: it streams only the `.mdb` file, can stream a subset of tables (including the audit store only when requested), and leaves external blob files to a separate, coordinated backup.
+Harper can back up and restore its databases natively. A RocksDB managed backup or snapshot download is a whole-database copy of authoritative state — all tables, the audit/transaction log, and file-backed blobs unless `exclude_blobs` is requested — so a restored database is a consistent point-in-time image, apart from changes that commit while the backup itself runs ([below](#how-managed-backups-work)). Local derived state, including full-text index files, is excluded and rebuilt after restore. LMDB `get_backup` is the exception: it streams only the `.mdb` file, can stream a subset of tables (including the audit store only when requested), and leaves external blob files to a separate, coordinated backup.
 
 Two complementary mechanisms are available:
 
@@ -22,7 +22,7 @@ Managed backups use the RocksDB backup engine. Each backup is a directory under 
 
 Every managed backup includes the database's transaction log — so a restored database keeps its `read_audit_log` history as of the backup point — and, for a database with file-backed blobs, a snapshot of those blobs (skip it with `exclude_blobs`).
 
-A backup first writes each table's buffered changes to its data files, so the copied data files hold the changes committed before the copy begins. That includes record evictions, which a restore cannot rebuild from the transaction log. `get_backup` does the same before it streams a RocksDB archive. Blobs are copied after the data files, so a record evicted while a backup runs can still be in the backup without its blob, which [`restore_backup`](./operations.md#restore_backup) detects before it publishes the restored database.
+<VersionBadge type="changed" version="v5.4.2" /> A backup first writes each table's buffered changes to its data files, so the copied data files hold the changes committed before the copy begins. That includes record evictions, which a restore cannot rebuild from the transaction log. `get_backup` does the same before it streams a RocksDB archive. Blobs are copied after the data files, so a record evicted while a backup runs can still be in the backup without its blob, which [`restore_backup`](./operations.md#restore_backup) detects before it publishes the restored database.
 
 Each backup copies the transaction-log snapshot. Blob snapshots use hard links when supported on the same filesystem, and copy the files otherwise. Measure physical repository growth over successive backups, including the log copies and blob snapshots. Exports that do not preserve file sharing require space for the full materialized copies.
 

@@ -31,6 +31,14 @@ const JOB_TIMEOUT_MS = 120_000;
 const RECLAIM_TIMEOUT_MS = 30_000;
 const skipSuite = process.env.HARPER_RUNTIME === 'bun' || process.platform === 'win32';
 
+function parseBody(text: string): any {
+	try {
+		return JSON.parse(text);
+	} catch {
+		return text;
+	}
+}
+
 suite(
 	'a backup holds evictions and writes that RocksDB had not flushed',
 	{ skip: skipSuite },
@@ -53,13 +61,7 @@ suite(
 		async function post(url: string, body: Record<string, any>): Promise<{ status: number; body: any; text: string }> {
 			const res = await request(url, body);
 			const text = await res.text();
-			let parsed: any = text;
-			try {
-				parsed = JSON.parse(text);
-			} catch {
-				/* keep text */
-			}
-			return { status: res.status, body: parsed, text };
+			return { status: res.status, body: parseBody(text), text };
 		}
 
 		const op = (operation: Record<string, any>) => post(ctx.harper.operationsAPIURL, operation);
