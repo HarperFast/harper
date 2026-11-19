@@ -33,6 +33,10 @@ const SEALED_SCHEMA =
 	'\tcount: Int\n' +
 	'}\n';
 
+// Deployed open first, then redeployed @sealed: the restart that loads the redeploy must enforce it.
+const SEALED_LATER_SCHEMA = (directives) =>
+	`type SealedLater @table ${directives}@export {\n\tid: ID @primaryKey\n\tname: String\n}\n`;
+
 // tags is a [String] @indexed array — element-level REST queries must work.
 const TAGGED_SCHEMA =
 	'type TaggedItem @table @export {\n' +
@@ -110,6 +114,32 @@ suite('Schema enforcement features', { skip: skipSuite }, (ctx) => {
 				table: 'SealedRecord',
 				records: [{ id: '3', name: 'test', count: 1, hiddenField: 'forbidden' }],
 			})
+			.expect((r) => {
+				assert.ok(r.text.includes('is not allowed'), `expected "is not allowed" in error body, got: ${r.text}`);
+			})
+			.expect(400);
+	});
+
+	test('@sealed added by a redeploy is enforced after its first restart', async () => {
+		const deploy = (directives) =>
+			installAppComponent(client, {
+				project: 'sealedLaterTest',
+				files: { 'schema.graphql': SEALED_LATER_SCHEMA(directives), 'config.yaml': CONFIG_YAML },
+				probePath: '/SealedLater/',
+				restartTimeoutMs: 120000,
+			});
+		await deploy('');
+		await request(client.restURL)
+			.put('/SealedLater/1')
+			.set(client.headers)
+			.send({ id: '1', name: 'open', extraField: 'accepted' })
+			.expect(204);
+
+		await deploy('@sealed ');
+		await request(client.restURL)
+			.put('/SealedLater/2')
+			.set(client.headers)
+			.send({ id: '2', name: 'sealed', extraField: 'not allowed' })
 			.expect((r) => {
 				assert.ok(r.text.includes('is not allowed'), `expected "is not allowed" in error body, got: ${r.text}`);
 			})
