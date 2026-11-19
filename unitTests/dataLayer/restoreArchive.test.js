@@ -598,6 +598,81 @@ describeUnlessLmdb('restore_backup from a get_backup archive', function () {
 			}
 		});
 
+		it('keeps charging an installed archive once its staging is removed, until a quota report counts it', async function () {
+			const fixture = await seededDatabase();
+			const stage = () =>
+				stageArchive(Readable.from([fixture.archive]), {
+					databaseName: fixture.name,
+					databaseDir: fixture.dir,
+					blobRoots: getBlobPathsForDatabaseName(fixture.name),
+					acceptIncompatible: false,
+					restoredFrom: 'upload',
+				});
+			const clearStaging = () => {
+				for (const area of stagingLeft(fixture.name)) rmSync(area, { recursive: true, force: true });
+			};
+			const metaDir = join(fixture.dir, '..', RESTORE_META_DIR);
+			const chargesLeft = () => readdirSync(metaDir).filter((name) => name.endsWith('.charge'));
+			const { record } = await stage();
+			// every archive this suite installed before now had no quota report to predate it
+			assert.deepStrictEqual(chargesLeft(), []);
+			const payload = record.archive.payload_bytes;
+			clearStaging();
+			const quotaReport = join(env.get('rootPath'), 'quota-status.json');
+			const quotaBytes = 64 * 1024 ** 3;
+			const reserve = Math.floor(quotaBytes * 0.05);
+			// room for one extraction and a half
+			const usedBytes = quotaBytes - reserve - Math.floor(payload * 1.5);
+			const report = (updatedAt) => writeFileSync(quotaReport, JSON.stringify({ usedBytes, quotaBytes, updatedAt }));
+			const before = Date.now() - 1000;
+			report(before);
+			const name = `${fixture.name}_new`;
+			databases.push(name);
+			try {
+				// staged and withdrawn, never installed: nothing of it is left to charge
+				const withdrawn = await stage();
+				await archiveStagingModule.keepInstalledCharge(withdrawn.stagingDir);
+				assert.deepStrictEqual(chargesLeft(), []);
+				clearStaging();
+
+				await uploadAndRun(name, fixture.archive);
+				assert.deepStrictEqual(stagingLeft(name), []);
+				assert.strictEqual(chargesLeft().length, 1);
+				// the new database's bytes are on disk, and the report predates them
+				await assert.rejects(stage(), (error) => error.statusCode === 507);
+				// a report taken since counts them itself
+				report(Date.now());
+				await stage();
+				clearStaging();
+				// a report taken between an upload and its install counts the archive in staging, so no charge follows it
+				const jobId = await seedJob();
+				let queued;
+				await restoreBackupFromUpload(
+					{ ...SU, operation: 'restore_backup', database: name, payload: Readable.from([fixture.archive]) },
+					async (json) => {
+						queued = json;
+						return { message: `Starting job with id ${jobId}`, job_id: jobId };
+					}
+				);
+				// elapsed time: the report must be later than the archive, not in the same millisecond
+				await new Promise((resolve) => setTimeout(resolve, 5));
+				report(Date.now());
+				await asJob(jobId, () => restoreBackup(queued));
+				const [first] = chargesLeft();
+				assert.deepStrictEqual(chargesLeft(), [first]);
+				// a charge older than any report still read is removed when the next archive is installed
+				writeFileSync(join(metaDir, first), JSON.stringify({ archive: { payload_bytes: payload }, created_at: 1 }));
+				report(before);
+				await uploadAndRun(name, fixture.archive);
+				assert.strictEqual(chargesLeft().length, 1);
+				assert.notStrictEqual(chargesLeft()[0], first);
+			} finally {
+				rmSync(quotaReport, { force: true });
+				for (const left of chargesLeft()) rmSync(join(metaDir, left), { force: true });
+				clearStaging();
+			}
+		});
+
 		it('refuses a second upload while one is being extracted, before reading it', async function () {
 			const fixture = await seededDatabase();
 			const release = await acquireExtractionLock(mintStagingId(), []);
