@@ -460,8 +460,22 @@ export class RocksTransactionLogStore extends EventEmitter {
 			const queryIterator = trackCorruptFrames(log, queryOptions);
 			singleLogIterator = queryIterator;
 			let exactStartObserved = !resumeAfterExactStart;
-			iterable.iterate =
-				options.includeLogName || resumeAfterExactStart
+			iterable.iterate = bounded
+				? () => ({
+						// As the aggregate reads a bounded log: a failed read ends it quietly (`failedLogs`), and a read
+						// short of the bound throws with the log keeping its place. So there is no `return` here, with
+						// which a caller's cleanup after that throw would end the log.
+						next: () => {
+							const result = safeNext(queryIterator, log);
+							if (result.unreached) throw result.unreached;
+							if (!result.done && options.includeLogName) (result.value as NamedTransactionEntry).logName = log.name;
+							return result;
+						},
+						[Symbol.iterator]() {
+							return this;
+						},
+					})
+				: options.includeLogName || resumeAfterExactStart
 					? () => ({
 							next: () => {
 								let result = safeNext(queryIterator, log);

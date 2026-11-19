@@ -2,7 +2,7 @@ const assert = require('node:assert');
 const { setTimeout: sleep } = require('node:timers/promises');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
-const { getDatabaseGeneration, persistOriginClosedFloor } = require('#src/resources/auditStore');
+const { getDatabaseGeneration, persistOriginClosedFloor, raiseAuditFloor } = require('#src/resources/auditStore');
 const { certifyOriginFloor, publishOriginFloor, getOriginClosedFloor } = require('#src/resources/originClosedFloor');
 const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
 const { getThisNodeName } = require('#src/server/nodeName');
@@ -12,6 +12,7 @@ const {
 	COPY_BOUND_KEY,
 	MAX_OVERLAP_MS,
 	ORIGIN_BOUNDARIES,
+	bumpOriginStateEpoch,
 	encodeCheckpoint,
 	membersDigest,
 	originReplayStarts,
@@ -854,40 +855,81 @@ describe('Per-origin subscription checkpoints (harper-pro#922 items 3–4)', fun
 				]);
 			});
 
-			it('stops reading one origin below the position when that history cannot be read, and nothing else', async () => {
-				const failing = `failing-${sequence + 1}`;
-				const { T, checkpoint, resume } = await positionAboveAPeerFloor([failing]);
-				await applyFromOrigin(T, getIdOfRemoteNode(failing, T.auditStore), Date.now() + 60_000, 'above-the-position');
-				// the log store's own entry for the log, replaced by one whose read below the position fails as it does
-				// when retention removes the segment at its boundary
-				const store = T.auditStore;
-				const log = store.logByName.get(failing);
-				const index = store.nodeLogs.indexOf(log);
-				let failed = 0;
-				const unreadableBelowPosition = {
-					name: log.name,
-					getStats: () => log.getStats(),
-					query(options) {
-						if (options.end === undefined) return log.query(options);
-						const fail = () => {
-							failed++;
-							throw new Error('The log segment is no longer available');
-						};
-						return { next: fail, peek: fail, close() {} };
-					},
-				};
-				store.logByName.set(failing, unreadableBelowPosition);
-				store.nodeLogs[index] = unreadableBelowPosition;
-				let values;
-				try {
-					({ values } = await replayed(resume, { [ORIGIN_BOUNDARIES]: checkpoint }));
-				} finally {
-					store.logByName.set(failing, log);
-					store.nodeLogs[index] = log;
-				}
-				assert.ok(failed > 0, 'the read below the position failed');
-				assert.deepStrictEqual(values.sort(), ['above-the-position', 'late', 'missed']);
+			it('delivers once each a key above the position and a lower one the same origin commits after it', async () => {
+				const { T, peer, lateKey, checkpoint, resume } = await positionAboveAPeerFloor();
+				await applyFromOrigin(T, peer, Date.now() + 60_000, 'above-the-position');
+				await applyFromOrigin(T, peer, lateKey + 1, 'below-it-afterwards');
+				const { values } = await replayed(resume, { [ORIGIN_BOUNDARIES]: checkpoint });
+				assert.deepStrictEqual(values, ['missed', 'above-the-position', 'late', 'below-it-afterwards']);
 			});
+
+			it('keeps a resume whose position retention passes only after the replay from it reached live delivery', async () => {
+				const { T, position, checkpoint, resume } = await positionAboveAPeerFloor();
+				const listener = collector();
+				const pruning = (event) => {
+					// while the origin below the position is still being read
+					if (event.value?.value === 'late') raiseAuditFloor(T.auditStore, position + 0.001);
+					listener(event);
+				};
+				const subscription = await resume({ listener: pruning, [ORIGIN_BOUNDARIES]: checkpoint });
+				assert.strictEqual(await subscription.resumeVerified, true);
+				assert.deepStrictEqual(listener.values(), ['missed', 'late']);
+				subscription.end();
+			});
+
+			it('stops reading an origin whose floor is revoked while the replay runs', async () => {
+				const { T, peerName, peerFloor, checkpoint, resume } = await positionAboveAPeerFloor();
+				const listener = collector();
+				const revoking = (event) => {
+					if (event.value?.value === 'missed') {
+						writeSeqRow(T, peerName, { ...certifiedRoute(peerName, peerFloor), floorRevoked: true });
+						bumpOriginStateEpoch(T.auditStore.rootStore);
+					}
+					listener(event);
+				};
+				const subscription = await resume({ listener: revoking, [ORIGIN_BOUNDARIES]: checkpoint });
+				assert.strictEqual(await subscription.resumeVerified, true);
+				assert.deepStrictEqual(listener.values(), ['missed']);
+				subscription.end();
+			});
+
+			for (const failOnOpen of [false, true]) {
+				it(`stops reading one origin below the position when that history cannot be ${failOnOpen ? 'opened' : 'read'}, and nothing else`, async () => {
+					const failing = `failing-${sequence + 1}`;
+					const { T, checkpoint, resume } = await positionAboveAPeerFloor([failing]);
+					await applyFromOrigin(T, getIdOfRemoteNode(failing, T.auditStore), Date.now() + 60_000, 'above-the-position');
+					// the log store's own entry for the log, replaced by one whose read below the position fails as it does
+					// when retention removes the segment at its boundary
+					const store = T.auditStore;
+					const log = store.logByName.get(failing);
+					const index = store.nodeLogs.indexOf(log);
+					let failed = 0;
+					const unreadableBelowPosition = {
+						name: log.name,
+						getStats: () => log.getStats(),
+						query(options) {
+							if (options.end === undefined) return log.query(options);
+							const fail = () => {
+								failed++;
+								throw new Error('The log segment is no longer available');
+							};
+							// opening the read fails for one origin, reading on fails for the other
+							return failOnOpen ? fail() : { next: fail, peek: fail, close() {} };
+						},
+					};
+					store.logByName.set(failing, unreadableBelowPosition);
+					store.nodeLogs[index] = unreadableBelowPosition;
+					let values;
+					try {
+						({ values } = await replayed(resume, { [ORIGIN_BOUNDARIES]: checkpoint }));
+					} finally {
+						store.logByName.set(failing, log);
+						store.nodeLogs[index] = log;
+					}
+					assert.ok(failed > 0, 'the read below the position failed');
+					assert.deepStrictEqual(values.sort(), ['above-the-position', 'late', 'missed']);
+				});
+			}
 		});
 
 		it('replays only direct children to a subscription for direct children, as it delivers them live', async () => {
