@@ -588,6 +588,7 @@ export const CONFIG_PARAMS = {
 	APPLICATIONS_ALLOWEDBUILTINMODULES: 'applications_allowedBuiltInModules',
 	APPLICATIONS_ALLOWEDSPAWNCOMMANDS: 'applications_allowedSpawnCommands',
 	APPLICATIONS_ALLOWEDDIRECTORY: 'applications_allowedDirectory',
+	STATUS_DRAINONLOADFAILURE: 'status_drainOnLoadFailure',
 	STATUS_HEALTHCHECKS_ENABLED: 'status_healthChecks_enabled',
 	STATUS_HEALTHCHECKS_INTERVALSECONDS: 'status_healthChecks_intervalSeconds',
 	STATUS_HEALTHCHECKS_THRESHOLDS_DISK_WARNING: 'status_healthChecks_thresholds_disk_warning',

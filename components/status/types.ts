@@ -18,7 +18,7 @@ export const COMPONENT_STATUS_LEVELS = {
 
 export type ComponentStatusLevel = (typeof COMPONENT_STATUS_LEVELS)[keyof typeof COMPONENT_STATUS_LEVELS];
 
-export type ComponentStatusSource = 'log' | 'explicit' | 'health-check';
+export type ComponentStatusSource = 'log' | 'explicit' | 'health-check' | 'loader';
 
 /** Worst-first order; the first level present is the aggregate status. */
 export const STATUS_PRIORITY: readonly ComponentStatusLevel[] = [

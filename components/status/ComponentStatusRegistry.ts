@@ -128,14 +128,26 @@ export class ComponentStatusRegistry {
 	 * Initialize component as loading - call this when component loading begins
 	 */
 	public initializeLoading(componentName: string, message?: string): void {
-		this.setStatus(componentName, COMPONENT_STATUS_LEVELS.LOADING, message || 'Component is loading');
+		this.setStatus(
+			componentName,
+			COMPONENT_STATUS_LEVELS.LOADING,
+			message || 'Component is loading',
+			undefined,
+			'loader'
+		);
 	}
 
 	/**
 	 * Mark component as successfully loaded
 	 */
 	public markLoaded(componentName: string, message?: string): void {
-		this.setStatus(componentName, COMPONENT_STATUS_LEVELS.HEALTHY, message || 'Component loaded successfully');
+		this.setStatus(
+			componentName,
+			COMPONENT_STATUS_LEVELS.HEALTHY,
+			message || 'Component loaded successfully',
+			undefined,
+			'loader'
+		);
 		this.markLoadEnded(componentName);
 	}
 
@@ -143,7 +155,7 @@ export class ComponentStatusRegistry {
 	 * Mark component as failed to load
 	 */
 	public markFailed(componentName: string, error: Error | string, message?: string): void {
-		this.setStatus(componentName, COMPONENT_STATUS_LEVELS.ERROR, message, error);
+		this.setStatus(componentName, COMPONENT_STATUS_LEVELS.ERROR, message, error, 'loader');
 		this.markLoadEnded(componentName);
 	}
 
