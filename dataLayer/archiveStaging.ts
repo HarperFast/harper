@@ -252,11 +252,7 @@ async function stagedSinceReport(reportedAt: number | undefined, plan: StagingPl
 				// its age is unknown too
 			}
 			if (old) return;
-			// unread, it may be space the report has not counted, and admitting against a guess could pass the quota
-			throw new ServerError(
-				`Cannot read ${file}, which records space an archive restore has taken since the last quota report (${error?.code ?? error?.message}); retry the upload shortly`,
-				HTTP_STATUS_CODES.SERVICE_UNAVAILABLE
-			);
+			throw unreadForQuota(file, error);
 		}
 		let record: any;
 		try {
@@ -637,11 +633,21 @@ function configuredBlobPaths(): string[] {
 	return blobPaths?.length ? blobPaths : [join(getHdbBasePath(), 'blobs')];
 }
 
+/** Unread, it may hold space the report has not counted, and admitting against a guess could pass the quota. */
+function unreadForQuota(path: string, error: any): ServerError {
+	return new ServerError(
+		`Cannot read ${path}, which records space archive restores have taken since the last quota report (${error?.code ?? error?.message}); retry the upload shortly`,
+		HTTP_STATUS_CODES.SERVICE_UNAVAILABLE
+	);
+}
+
+/** For the quota's count: a directory that is not there holds nothing, and one that cannot be listed refuses the admission. */
 async function listDirAsync(directory: string): Promise<string[]> {
 	try {
 		return await readdir(directory);
-	} catch {
-		return [];
+	} catch (error: any) {
+		if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return [];
+		throw unreadForQuota(directory, error);
 	}
 }
 
