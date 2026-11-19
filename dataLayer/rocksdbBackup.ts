@@ -492,9 +492,8 @@ export async function purgeBackups(request: any) {
 	return purgeBackupsOffline(databaseName, request.keep_count);
 }
 
-// The binding's default flush follows the handle backup() is called on. The root store has a WAL and
-// the table stores do not, so the default skips the flush and a write that is in no transaction log
-// (an eviction) is missing from the backup.
+// Table stores have no WAL, so the binding's default, taken from the root handle, would skip the flush
+// (dataLayer/DESIGN.md).
 const ENGINE_BACKUP_OPTIONS = { transactionLogs: true, flushBeforeBackup: true };
 
 // --- job operations: create_backup / verify_backup / restore_backup ---

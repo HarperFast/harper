@@ -230,10 +230,13 @@ engine's backup misses them; every backup operation handles them alongside (`exc
 **Every engine backup flushes first (`ENGINE_BACKUP_OPTIONS`).** The binding takes its default for
 `flushBeforeBackup` from the handle `backup()` is called on. The root store has a WAL and the table
 stores do not (`openRocksDatabase`), so the default skips the flush and the backup's table files lack
-any write that is in no transaction log. An eviction is one: the backup keeps the record, the blob
-snapshot no longer has its blob, and restore refuses the backup. The flush covers writes committed
-before the engine capture; a write that commits while the backup runs is still subject to the skew
-below. Enforced by `integrationTests/database/backup-flushes-table-stores.test.ts`.
+every unflushed write. Replay restores the logged ones. It cannot rebuild an eviction, so the backup
+keeps the evicted record, the blob snapshot no longer has its blob, and restore refuses the backup.
+Two gaps remain. A write that commits while the backup runs is subject to the skew below. And the
+binding copies the replay position (`txn.state`) after the table files, from a flush listener that
+can still be running when the flush returns: a backup that copies it too early replays the evicted
+record's put on restore ([harper#4507](https://github.com/HarperFast/harper/issues/4507)). Enforced
+by `integrationTests/database/backup-flushes-table-stores.test.ts`.
 
 **Completion manifest (`dataLayer/backupManifest.ts`).** The engine backup is visible before the blob
 snapshot is copied, so `<backupDir>/manifests/<backupId>.json`, recording the blob policy, is written

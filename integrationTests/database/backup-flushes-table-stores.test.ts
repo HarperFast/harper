@@ -1,9 +1,10 @@
 /**
  * A backup must hold what the table stores held when it was taken, not only what RocksDB had already
- * flushed. Table stores are opened without a write-ahead log, so a write that is in no transaction
- * log either — an eviction — exists only in the memtable until a flush. A backup that skips it keeps
- * the evicted record while the blob snapshot, taken from the live files, no longer has its blob, and
- * restore_backup then refuses the backup for the missing blob.
+ * flushed. Table stores are opened without a write-ahead log, and an eviction is a removal the
+ * transaction-log replay cannot reconstruct, so until a flush it exists only in the memtable. A backup
+ * that skips the flush keeps the evicted record from an older table file, while the blob snapshot, taken
+ * from the live files, no longer has its blob: restore_backup then refuses the backup for the missing
+ * blob.
  *
  * The table-file assertions read the backup with a plain `@harperfast/rocksdb-js` handle, which
  * replays no transaction log: a record is there only if the backup's own table files hold it.
@@ -105,14 +106,11 @@ suite(
 			return readdirSync(root, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile()).length;
 		}
 
-		/**
-		 * Two blob records and the eviction of one, then a plain record, all written with no flush after
-		 * them. Returns once the evicted record's blob file is gone, which is the state a backup taken
-		 * "right after an eviction" sees.
-		 */
 		async function evictThenWrite(prefix: string): Promise<void> {
 			await fixture({ action: 'putBlob', table: BLOB_TABLE, id: `${prefix}-kept` });
 			await fixture({ action: 'putBlob', table: BLOB_TABLE, id: `${prefix}-evicted` });
+			// the evicted record is in a table file before its eviction, which is then the only unflushed change to it
+			await fixture({ action: 'flush', table: BLOB_TABLE });
 			const filesBefore = blobFileCount();
 			ok(filesBefore >= 2, `both blobs must be file-backed; found ${filesBefore} blob files`);
 			deepStrictEqual(await fixture({ action: 'evict', table: BLOB_TABLE, id: `${prefix}-evicted` }), {
@@ -132,7 +130,6 @@ suite(
 			strictEqual(inserted.status, 200, `insert failed: ${inserted.text}`);
 		}
 
-		/** The primary keys in a table's own files in `databaseDir`, read with no Harper code and no log replay. */
 		function tableFileKeys(databaseDir: string, table: string): string[] {
 			const root = RocksDatabase.open(databaseDir, { readOnly: true });
 			let name: string | undefined;

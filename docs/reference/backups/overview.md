@@ -22,7 +22,7 @@ Managed backups use the RocksDB backup engine. Each backup is a directory under 
 
 Every managed backup includes the database's transaction log — so a restored database keeps its `read_audit_log` history as of the backup point — and, for a database with file-backed blobs, a snapshot of those blobs (skip it with `exclude_blobs`).
 
-A backup first writes each table's buffered changes to its data files, so the copy holds every change committed before the backup started. That includes record evictions, which the transaction log does not record. `get_backup` does the same before it streams a RocksDB archive.
+A backup first writes each table's buffered changes to its data files, so the copied data files hold the changes committed before the copy begins. That includes record evictions, which a restore cannot rebuild from the transaction log. `get_backup` does the same before it streams a RocksDB archive. Blobs are copied after the data files, so a record evicted while a backup runs can still be in the backup without its blob, which [`restore_backup`](./operations.md#restore_backup) detects before it publishes the restored database.
 
 Each backup copies the transaction-log snapshot. Blob snapshots use hard links when supported on the same filesystem, and copy the files otherwise. Measure physical repository growth over successive backups, including the log copies and blob snapshots. Exports that do not preserve file sharing require space for the full materialized copies.
 

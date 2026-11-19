@@ -14,6 +14,9 @@ export class BackupFlushOps extends Resource {
 			case 'putBlob':
 				await table.put({ id: body.id, data: createBlob(randomBytes(BLOB_BYTES)) });
 				return { ok: true };
+			case 'flush':
+				await table.primaryStore.rootStore.flush();
+				return { ok: true };
 			case 'evict': {
 				const entry = table.primaryStore.getEntry(body.id);
 				await table.evict(body.id, entry.value, entry.version);
