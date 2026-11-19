@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795073012697,
+  "lastUpdate": 1795073016664,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -22698,6 +22698,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "E scan p99 — short ranges",
             "value": 127.11,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "694cca02a0accbf39b86f574646bcb77e67f1d69",
+          "message": "Fix copied-delete tests after late publishes preserve the record version (#4473)\n\n* Keep copied-delete tests independent of late publish ordering\n\nSeed a stored head below its copied-delete boundary to exercise the\nboundary checks. Assert that a real late publish preserves the version of\nboth a copied tombstone and a recreated row.\n\nDispatch-Task: main-red-kriszyp_harper_8d245cf95_4d7eefda\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n* Keep winning origin tie coverage after late publishes\n\nDispatch-Task: main-red-kriszyp_harper_8d245cf95_4d7eefda\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n* Keep older copied-delete stamp coverage after a late publish\n\nDispatch-Task: main-red-kriszyp_harper_8d245cf95_4d7eefda\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n---------\n\nCo-authored-by: GPT-5 Codex <noreply@openai.com>",
+          "timestamp": "2026-11-19T05:31:17Z",
+          "url": "https://github.com/HarperFast/harper/commit/694cca02a0accbf39b86f574646bcb77e67f1d69"
+        },
+        "date": 1795073016014,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "C read p99 — read only",
+            "value": 14.84,
+            "unit": "ms"
+          },
+          {
+            "name": "B read p99 — read mostly",
+            "value": 14.87,
+            "unit": "ms"
+          },
+          {
+            "name": "B update p99 — read mostly",
+            "value": 17.07,
+            "unit": "ms"
+          },
+          {
+            "name": "A update p99 — update heavy",
+            "value": 22.74,
+            "unit": "ms"
+          },
+          {
+            "name": "A read p99 — update heavy",
+            "value": 19.76,
+            "unit": "ms"
+          },
+          {
+            "name": "F read p99 — read-modify-write",
+            "value": 20.28,
+            "unit": "ms"
+          },
+          {
+            "name": "F rmw p99 — read-modify-write",
+            "value": 37.84,
+            "unit": "ms"
+          },
+          {
+            "name": "D read p99 — read latest",
+            "value": 14.96,
+            "unit": "ms"
+          },
+          {
+            "name": "D insert p99 — read latest",
+            "value": 17.02,
+            "unit": "ms"
+          },
+          {
+            "name": "E scan p99 — short ranges",
+            "value": 204.17,
+            "unit": "ms"
+          },
+          {
+            "name": "E insert p99 — short ranges",
+            "value": 43.17,
             "unit": "ms"
           }
         ]
