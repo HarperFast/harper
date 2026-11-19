@@ -243,7 +243,7 @@ database directory and next to each blob root), and installed by rename (harper#
   charge ends with the area, and one installed by the same record, which `keepInstalledCharge` moves
   to `<staging id>.charge` in the `` `restore` `` directory before the area goes, since its bytes are
   then live data. The move is a rename, so it needs no space; if it fails the area stays, still
-  charging. A charge is the full payload, with nothing taken off for the generation it replaced. A file linked into place whole, not
+  charging, and the startup sweep tries the move again before it removes the area (`sweepMayRemove`). A charge is the full payload, with nothing taken off for the generation it replaced. A file linked into place whole, not
   an flock: a deploy's worker restarts would strand an flock taken on an HTTP worker. A stale lock is
   taken over only under a
   reclaim marker named for its owner. Whoever finds a lock abandoned removes all its parts or none, by
