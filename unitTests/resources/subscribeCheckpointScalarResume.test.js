@@ -180,11 +180,11 @@ describe('Checkpoints of a subscription that started from a scalar position (har
 			await T.put('seed', { value: 'seed' });
 			const startTime = logKeyOf(T, 'seed');
 			const other = await T.subscribe({ omitCurrent: true, listener: () => {} });
-			// one transaction far longer than a broadcast batch, so the broadcast is still behind when the walk reads r
+			// a transaction far longer than a broadcast batch keeps the broadcast behind while the next one commits
 			await transaction({}, async (context) => {
-				for (let i = 0; i < 6000; i++) await T.put(`other${i}`, { value: i }, context);
-				await T.put('r', { value: 'r1' }, context);
+				for (let i = 0; i < 20_000; i++) await T.put(`other${i}`, { value: i }, context);
 			});
+			await T.put('r', { value: 'r1' });
 			const events = [];
 			const subscription = await T.subscribe({
 				id: 'r',
@@ -202,6 +202,41 @@ describe('Checkpoints of a subscription that started from a scalar position (har
 			await waitFor(() => valuesOf(events).includes('r2'));
 			assert.deepStrictEqual(valuesOf(events), ['r1', 'r2']);
 			assert.strictEqual(subscription.state.replayed, undefined, 'what the walk delivered is no longer kept');
+			subscription.end();
+			other.end();
+		});
+
+		it('delivers the rest of a transaction the broadcast was partway through when the walk began', async () => {
+			const T = tableInOwnDatabase();
+			await T.put('seed', { value: 'seed' });
+			const startTime = logKeyOf(T, 'seed');
+			const events = [];
+			let subscribing;
+			// The broadcast yields after 256 entries, here between the two messages, and the walk reads only the first
+			// of a transaction's entries for a record. Its claim on that one must not take the second.
+			const other = await T.subscribe({
+				omitCurrent: true,
+				listener: (event) => {
+					if (event.value?.value !== 'first') return;
+					subscribing = T.subscribe({
+						id: 'r',
+						startTime,
+						reportProgress: true,
+						omitCurrent: true,
+						listener: (event) => events.push(event),
+					});
+				},
+			});
+			await transaction({}, async (context) => {
+				for (let i = 0; i < 255; i++) await T.put(`other${i}`, { value: i }, context);
+				await T.publish('r', { value: 'first' }, context);
+				await T.publish('r', { value: 'second' }, context);
+			});
+			await waitFor(() => subscribing !== undefined);
+			const subscription = await subscribing;
+			await T.publish('r', { value: 'after' });
+			await waitFor(() => valuesOf(events).includes('after'));
+			assert.ok(valuesOf(events).includes('second'), `the second message is delivered: ${valuesOf(events)}`);
 			subscription.end();
 			other.end();
 		});
@@ -389,9 +424,8 @@ describe('Checkpoints of a subscription that started from a scalar position (har
 	});
 
 	describe('two origins', () => {
-		it('names the origin that lags the common boundary and resumes each from its own', async () => {
-			const T = tableInOwnDatabase();
-			const peerId = getIdOfRemoteNode('peer-ahead', T.auditStore);
+		// a peer whose floor is further ahead than one common boundary covers, so this node's own origin is the one named
+		async function checkpointWithPeerAhead(T, peerId) {
 			const events = [];
 			const subscription = await T.subscribe({
 				omitCurrent: true,
@@ -402,8 +436,6 @@ describe('Checkpoints of a subscription that started from a scalar position (har
 			await waitFor(() => valuesOf(events).includes('a'));
 			await sleep(2);
 			const ownFloor = certify(T);
-			// The peer's floor is further ahead than one common boundary covers, so this node's own origin is the one
-			// named. (A database made a moment ago retains nothing a boundary a minute behind its own floor needs.)
 			const peerFloor = ownFloor + MAX_OVERLAP_MS + 60_000;
 			await applyFromOrigin(T, 'p1', { id: 'p1', value: 'p1' }, peerId, ownFloor + 1000);
 			await waitFor(() => valuesOf(events).includes('p1'));
@@ -425,6 +457,14 @@ describe('Checkpoints of a subscription that started from a scalar position (har
 			]);
 			let checkpoint;
 			await waitFor(() => (checkpoint = subscription.checkpoint())?.members === members, 10_000);
+			subscription.end();
+			return { checkpoint, ownFloor, peerFloor };
+		}
+
+		it('names the origin that lags the common boundary and resumes each from its own', async () => {
+			const T = tableInOwnDatabase();
+			const peerId = getIdOfRemoteNode('peer-ahead', T.auditStore);
+			const { checkpoint, ownFloor, peerFloor } = await checkpointWithPeerAhead(T, peerId);
 			assert.deepStrictEqual(
 				Object.keys(checkpoint.exceptions),
 				[getThisNodeName()],
@@ -434,7 +474,6 @@ describe('Checkpoints of a subscription that started from a scalar position (har
 			const commonBoundary = checkpoint.time - checkpoint.overlap;
 			assert.strictEqual(checkpoint.time, peerFloor);
 			assert.ok(ownBoundary <= ownFloor && ownFloor + 1000 < commonBoundary, 'precondition: p1 lies between the two');
-			subscription.end();
 			await T.put('b', { value: 'b' });
 			await applyFromOrigin(T, 'p2', { id: 'p2', value: 'p2' }, peerId, peerFloor + 1000);
 			const replayed = [];
@@ -449,6 +488,26 @@ describe('Checkpoints of a subscription that started from a scalar position (har
 			assert.ok(!valuesOf(replayed).includes('p1'), 'the peer resumes from the common boundary');
 			assert.ok(valuesOf(replayed).includes('b'), 'this node resumes from its own, far below it');
 			resumed.end();
+		});
+
+		it('refuses when retention passes what one log has read, though the replay is further on in another', async () => {
+			const T = tableInOwnDatabase();
+			const peerId = getIdOfRemoteNode('peer-ahead', T.auditStore);
+			const { checkpoint, peerFloor } = await checkpointWithPeerAhead(T, peerId);
+			for (let i = 0; i < 50; i++) await T.put(`local${i}`, { value: `local${i}` });
+			for (let i = 0; i < 150; i++) {
+				await applyFromOrigin(T, `peer${i}`, { id: `peer${i}`, value: `peer${i}` }, peerId, peerFloor + 1000 + i);
+			}
+			const resumed = await T.subscribe({ resume: checkpoint, omitCurrent: true });
+			await waitFor(() => resumed.queue?.length > 100);
+			assert.match(resumed.queue.at(-1).value.value, /^peer/, 'precondition: the replay stopped in the peer log');
+			// above every key of this node's log, which may hold more than the replay read, and below the peer's
+			raiseAuditFloor(T.auditStore, Date.now() + 10_000);
+			assert.ok(getAuditResumeFloor(T.auditStore) < peerFloor, 'precondition');
+			const events = [];
+			resumed.on('data', (event) => events.push(event));
+			assert.strictEqual(await resumed.resumeVerified, false);
+			assert.strictEqual(events.at(-1)?.code, 'RESUME_HISTORY_UNAVAILABLE');
 		});
 	});
 });

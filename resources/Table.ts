@@ -10555,23 +10555,27 @@ export function makeTable(options): TableResourceClass {
 						}
 						return false;
 					};
-					let lowestStart = Infinity;
-					for (const start of plan.startByLog.values()) if (start > 0 && start < lowestStart) lowestStart = start;
 					// As in a scalar replay, each check compares the floor with the key the replay had reached at the
-					// previous one: a purge takes a prefix of a log's segments, each last written before its cutoff, and
-					// what is still to be read was appended after the record in hand. The reader reports no purge that
-					// reaches the end of its log, so the floor is the only signal. A log read from 0 is whole from its
-					// beginning (retainsZeroStarts) and its keys can lie below the floor, so its records do not move it.
-					let checkedThrough = lowestStart;
+					// previous one, here per log: a purge takes a prefix of a log's segments, each last written before
+					// its cutoff, and what a log still holds to read was appended after the last record read from it. Its
+					// reader reports no purge that reaches the end of the log, so the floor is the only signal. A log read
+					// from 0 is whole from its beginning (retainsZeroStarts), and its keys can lie below the floor.
+					const reachedByLog = new Map<string, number>();
+					for (const [name, start] of plan.startByLog) if (start > 0) reachedByLog.set(name, start);
 					let inHand: any;
 					const reached = (auditRecord: any) => {
-						if (plan!.startByLog.get(auditRecord.logName) > 0) checkedThrough = auditRecord.txnLogKey;
+						if (reachedByLog.has(auditRecord.logName)) reachedByLog.set(auditRecord.logName, auditRecord.txnLogKey);
+					};
+					const retained = (): boolean => {
+						const floor = getAuditResumeFloor(auditStore);
+						for (const key of reachedByLog.values()) if (floor > key) return false;
+						return plan!.retainsZeroStarts();
 					};
 					// admission facts are mutable: a revocation, hole or generation change bumps the epoch
 					const recheck = (range: any): boolean => {
 						const unreadable = unreadableLogRefusal(range);
 						if (unreadable) return refuse(unreadable);
-						if (getAuditResumeFloor(auditStore) > checkedThrough || !plan!.retainsZeroStarts()) {
+						if (!retained()) {
 							return refuse(
 								new ResumeHistoryUnavailableError(
 									'The history after a checkpoint boundary is no longer retained; resubscribe to resynchronize'
@@ -10642,7 +10646,6 @@ export function makeTable(options): TableResourceClass {
 								if ((await subscription.waitForDrain()) === false || !isActive()) return;
 							}
 						}
-						// every log was read to its end, so nothing appended before the last record is still to be read
 						if (inHand) reached(inHand);
 						if (!recheck(replayRange)) return;
 					} finally {
@@ -10972,6 +10975,7 @@ export function makeTable(options): TableResourceClass {
 					// a checkpoint certifies every entry appended from here on, and the key gate below would drop a commit
 					// under the head, so a certifying walk drops what it handled itself by identity instead
 					const certifiedWalk = state.reportingProgress ? broadcastRange(subscription) : undefined;
+					const broadcastKey = certifiedWalk && subscription.subscriptions.tables.envs.lastTxnTime;
 					if (startTime < localTime || startTime < newestRefKey) {
 						// start time specified, get the audit history for this record. Set startTime up
 						// front so the listener gate skips any in-flight 'committed' for this version
@@ -11179,7 +11183,7 @@ export function makeTable(options): TableResourceClass {
 								});
 							}
 						}
-						if (certifiedWalk && isActive()) handOffWalk(state, certifiedWalk, history);
+						if (certifiedWalk && isActive()) handOffWalk(state, certifiedWalk, history, broadcastKey);
 						for (let i = history.length; i > 0;) {
 							if (!send(history[--i], true)) return;
 						}
@@ -13041,8 +13045,10 @@ export function makeTable(options): TableResourceClass {
 	 * Ends a certifying walk, which read its entries by reference rather than up to the broadcast's position: the
 	 * broadcast's copies of what it delivered are dropped from the live queue, and from the listener for as long as
 	 * the broadcast may still dispatch one. Everything else the broadcast dispatches is new to the consumer.
+	 * `broadcastKey` is the key the broadcast had last returned when the walk began: it may have been partway
+	 * through that transaction, whose remaining entries the walk's reads cannot be told from, so none is dropped.
 	 */
-	function handOffWalk(state: SubscriberState, liveRange: any, delivered: any[]): void {
+	function handOffWalk(state: SubscriberState, liveRange: any, delivered: any[], broadcastKey: number): void {
 		const queue = state.pendingRealTimeQueue;
 		if (!queue || delivered.length === 0) return;
 		// A write still committing keeps the entries appended after it from the broadcast, while a walk reads them
@@ -13050,9 +13056,17 @@ export function makeTable(options): TableResourceClass {
 		const committing = localStartBound(primaryStore.rootStore as any);
 		const behind = liveRange.hasUnreturnedEntry() || (committing !== undefined && 'atOrAbove' in committing);
 		if (!behind && queue.length === 0) return;
+		// no local key at or below the certified watermark is still to be dispatched
+		const dispatched = behind ? certifiedThrough(state.subscription) : Infinity;
 		const replayed = new Map<string, number>();
+		let through = -Infinity;
 		for (const event of delivered) {
-			const identity = entryIdentity(event[ORIGIN_ID], event.localTime, event.version, event.id);
+			const key = event.localTime;
+			if (key === broadcastKey) continue;
+			const pending = !(key <= dispatched);
+			if (!pending && queue.length === 0) continue;
+			if (pending && key > through) through = key;
+			const identity = entryIdentity(event[ORIGIN_ID], key, event.version, event.id);
 			replayed.set(identity, (replayed.get(identity) ?? 0) + 1);
 		}
 		if (queue.length > 0) {
@@ -13060,16 +13074,14 @@ export function makeTable(options): TableResourceClass {
 				(event) =>
 					!takeReplayed(replayed, entryIdentity(event[QUEUED_ORIGIN], event.localTime, event.version, event.id))
 			);
+			if (behind) {
+				for (const event of delivered) {
+					if (event.localTime <= dispatched)
+						replayed.delete(entryIdentity(event[ORIGIN_ID], event.localTime, event.version, event.id));
+				}
+			}
 		}
-		if (!behind) return;
-		const dispatched = certifiedThrough(state.subscription);
-		let through = -Infinity;
-		for (const event of delivered) {
-			const identity = entryIdentity(event[ORIGIN_ID], event.localTime, event.version, event.id);
-			if (event.localTime <= dispatched) replayed.delete(identity);
-			else if (event.localTime > through && replayed.has(identity)) through = event.localTime;
-		}
-		if (replayed.size === 0) return;
+		if (!behind || replayed.size === 0) return;
 		state.replayed = replayed;
 		state.replayedThrough = through;
 		state.dropDuringReplay = true;
@@ -13246,9 +13258,9 @@ export function makeTable(options): TableResourceClass {
 	}
 	function currentBoundaries(subscription: any, holds?: Map<number, number>) {
 		const progress: ProgressState = subscription.progressState;
-		if (!isSubscriptionActive(subscription) || progress.filtersWithoutKey || !isRocksDB) return;
 		// a quiet record's listener may never run again, so its consumer's polls release what its walk kept
 		if (subscription.state.replayed) releaseReplayed(subscription, subscription.state);
+		if (!isSubscriptionActive(subscription) || progress.filtersWithoutKey || !isRocksDB) return;
 		return progress.live ? liveBoundaries(subscription, holds) : replayBoundaries(progress);
 	}
 	function subscriptionCheckpoint(subscription: any, holds?: Map<number, number>): SubscriptionCheckpoint | undefined {
