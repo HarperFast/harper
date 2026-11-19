@@ -1027,6 +1027,15 @@ describeUnlessLmdb('restore_backup from a get_backup archive', function () {
 			});
 		}
 
+		it('refuses a sha256 on a request that uploads no archive, which would check nothing', async function () {
+			const sha256 = 'a'.repeat(64);
+			for (const fields of [{}, { backup_id: 1 }, { on_restart: true }, { resume: true }, { cancel: true }]) {
+				const request = { ...SU, operation: 'restore_backup', database: 'refused', sha256, ...fields };
+				await assert.rejects(validateRestoreBackup(request), /this request uploads none/, JSON.stringify(fields));
+				await assert.rejects(restoreBackup(request), /this request uploads none/, JSON.stringify(fields));
+			}
+		});
+
 		it('refuses a database in the legacy LMDB layout, a directory of per-table files, online and offline', async function () {
 			const name = `restore_archive_legacy_${process.pid}`;
 			const dir = resolveDatabasePath(name);
