@@ -47,7 +47,7 @@ jobs:
             grep -E '^\s+[0-9]+ (passing|failing)' logs/run-$i.log
             grep -E '^\s+[0-9]+\) ' logs/run-$i.log | head -20
             grep -B2 -A16 '^DIAG' logs/run-$i.log
-            cp -r unitTests/envDir logs/envDir-$i 2>/dev/null
+            mkdir -p logs/harper-$i && find unitTests/envDir -name '*.log' -size -50M -exec cp --parents {} logs/harper-$i/ \; 2>/dev/null
             rm -rf unitTests/envDir/*
           done
           exit 0
