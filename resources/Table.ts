@@ -1248,8 +1248,7 @@ interface TableResourceClass {
 		  }
 		| undefined;
 	replicate: any;
-	get sealed(): boolean | undefined;
-	set sealed(value: boolean | undefined);
+	sealed: any;
 	splitSegments: any;
 	createdTimeProperty: Attribute;
 	updatedTimeProperty: Attribute;
@@ -1272,6 +1271,7 @@ interface TableResourceClass {
 	getResidencyById: (id: Id) => number | void;
 	readonly residency: Readonly<ResidencyPolicy> | undefined;
 	_setResidencyPolicy(policy: ResidencyPolicy): void;
+	_setSealed(value: boolean | undefined): void;
 	_adoptCatalogExpiration(expiration?: number, eviction?: number, expiryScan?: boolean): void;
 	_armCleanupScan(): void;
 	getResidencySlot(id: Id, record?: object): number;
@@ -3032,18 +3032,7 @@ export function makeTable(options): TableResourceClass {
 		static outputSchemas: { [verb: string]: JsonSchemaFragment } | undefined;
 		static mcp: { annotations?: { [verb: string]: any } } | undefined;
 		static replicate = replicate;
-		static get sealed(): boolean | undefined {
-			return sealed;
-		}
-		static set sealed(value: boolean | undefined) {
-			if (this !== TableResource) {
-				Object.defineProperty(this, 'sealed', { value, writable: true, enumerable: true, configurable: true });
-				return;
-			}
-			if (value === sealed) return;
-			sealed = value;
-			primaryKeyGranted = new WeakMap();
-		}
+		static sealed = sealed;
 		static splitSegments = splitSegments ?? true;
 		static createdTimeProperty = createdTimeProperty;
 		static updatedTimeProperty = updatedTimeProperty;
@@ -3064,6 +3053,11 @@ export function makeTable(options): TableResourceClass {
 		static getResidencyById: (id: Id) => number | void;
 		static get residency() {
 			return residencyPolicy;
+		}
+		static _setSealed(value: boolean | undefined) {
+			if (value === sealed) return;
+			sealed = TableResource.sealed = value;
+			primaryKeyGranted = new WeakMap();
 		}
 		static _setResidencyPolicy(policy: ResidencyPolicy) {
 			const normalized = normalizeResidencyPolicy(policy);
