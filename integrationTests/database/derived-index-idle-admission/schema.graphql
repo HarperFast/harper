@@ -1,0 +1,9 @@
+type IdleVector @table(audit: true) @export {
+	id: Int @primaryKey
+	vector: [Float] @indexed(type: "HNSW", nativePlane: true, distance: "cosine", maxLagMilliseconds: 2000)
+}
+
+type IdleOther @table(audit: true) @export {
+	id: Int @primaryKey
+	name: String
+}

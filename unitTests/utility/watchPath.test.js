@@ -154,7 +154,7 @@ describe('watchPath', () => {
 			'config/RootConfigWatcher.ts',
 			'resources/blob.ts',
 			'security/keys.ts',
-			'server/threads/manageThreads.js',
+			'server/threads/manageThreads.ts',
 			'utility/watcherFallback.ts',
 		];
 

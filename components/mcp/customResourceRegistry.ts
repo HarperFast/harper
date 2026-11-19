@@ -46,6 +46,10 @@
  * user-carrying ambient transaction — do NOT forward the resource's own context
  * (`Order.get(target, this.getContext())`), which starts an independent
  * transaction and drops that shared, isolated snapshot.
+ *
+ * An entry may also declare `subscribe` (#3250): a method with the read calling
+ * convention, run in a fresh user-carrying transaction, that returns an async
+ * iterable of change triggers (see `components/mcp/DESIGN.md`).
  */
 import type { McpProfile } from './transport.ts';
 import type { AuthedUser } from './toolRegistry.ts';
@@ -66,6 +70,11 @@ export interface CustomResourceContent {
 }
 export type CustomResourceReadResult = string | CustomResourceContent | object;
 
+/** An author's subscribe that can never yield a releasable stream; retrying cannot change that. */
+export class UnsubscribableError extends Error {}
+
+export type CustomResourceSubscription = (AsyncIterable<unknown> & { end?: () => unknown }) | null | undefined;
+
 export interface CustomResourceDef {
 	/** Fixed URI — exactly one of `uri` / `uriTemplate` is set. */
 	uri?: string;
@@ -82,6 +91,10 @@ export interface CustomResourceDef {
 		params: Record<string, string>,
 		context: ResourceReadContext
 	) => CustomResourceReadResult | Promise<CustomResourceReadResult>;
+	subscribe?: (
+		params: Record<string, string>,
+		context: ResourceReadContext
+	) => CustomResourceSubscription | Promise<CustomResourceSubscription>;
 }
 
 interface CompiledDef {

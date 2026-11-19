@@ -11,7 +11,8 @@
  * These are rare enough for it not to be worth creating wrapper functions for those as well.
  */
 
-const validate = require('validate.js');
+import _validate from 'validate.js';
+const validate = _validate;
 
 //This validator is added here b/c we are still on version 0.11.1 that does not include this build in functionality.  When
 // we do update, we can remove.  The reason we have not is related to a breaking change on the "presence" validator rule
@@ -74,7 +75,7 @@ export async function validateObjectAsync(object, fileConstraints) {
 	}
 
 	try {
-		await validate.async(object, fileConstraints, { format: 'flat' });
+		await validate.async(object, fileConstraints, { format: 'flat' } as any);
 	} catch (err) {
 		// unroll the array and make a full error message.
 		let msg = err.join(`,`);

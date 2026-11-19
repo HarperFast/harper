@@ -1,3 +1,4 @@
+import { RUNTIME_SRC_ROOT, RUNTIME_FILE_EXT } from '../../utility/packageUtils.js';
 import {
 	startWorker,
 	setMonitorListener,
@@ -7,18 +8,28 @@ import {
 	setRunningIsolatedApplicationsGetter,
 	workersForApplication,
 	stopWorker,
-} from './manageThreads.js';
-import {
-	presentIsolatedApplicationNames,
-	isolatedApplicationRefusal,
-	isolatedApplicationCapacityRefusal,
-} from './isolatedApplications.ts';
+	isProcessShuttingDown,
+	canaryVerdictTimeoutMs,
+} from './manageThreads.ts';
+import { admittedIsolatedApplications, failedClosedApplications } from './isolatedApplications.ts';
 import { lifecycle as componentLifecycle } from '../../components/status/index.ts';
 import * as hdbTerms from '../../utility/hdbTerms.ts';
 import * as harperLogger from '../../utility/logging/harper_logger.ts';
 import { recordHostname } from '../../resources/analytics/write.ts';
+import { startHealthChecks } from '../../components/status/healthChecks.ts';
 import { startTransactionLogCooling } from '../transactionLogCooling.ts';
+import { applyConfiguredV8Flags } from './v8Flags.ts';
 import { startLongLivedTransactionReporting } from '../../resources/longLivedTransactions.ts';
+import { initializeFullTextQueryPolicy } from '../../resources/indexes/fullTextNativeBinding.ts';
+import { armTableCleanupScans } from '../../resources/databases.ts';
+import {
+	effectiveHttpThreadCount,
+	isWorkerPoolActive,
+	replicationPortRefusal,
+	replicationThreadCount,
+	setActiveWorkerPools,
+	workerPoolDecision,
+} from './workerPools.ts';
 import { isMainThread } from 'node:worker_threads';
 import { join } from 'node:path';
 
@@ -48,7 +59,11 @@ if (isMainThread) {
 }
 
 export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean) {
+	if (isMainThread) await initializeFullTextQueryPolicy();
+	applyConfiguredV8Flags();
 	const workerSlots = [];
+	if (isProcessShuttingDown()) return [];
+	let dedicatedPools: { type: string; count: number }[] = [];
 	// Crash-path defense: a hard crash can skip a worker's exit-time UDS cleanup and leave stale
 	// mirror files behind. This runs before any worker below can start (and thus before any mirror
 	// can bind), so it can only ever clear files nothing is using yet — never a live mirror. The
@@ -61,7 +76,9 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 	// determine database storage path" before main() ever runs.
 	if (isMainThread && !sweptSocketsDirectory) {
 		sweptSocketsDirectory = true;
-		(await import('../http.ts')).cleanupSocketsDirectory();
+		const { cleanupSocketsDirectory } = await import('../http.ts');
+		if (isProcessShuttingDown()) return [];
+		cleanupSocketsDirectory();
 	}
 	recordHostname().catch((err) => harperLogger.error?.('Error recording hostname for analytics:', err));
 	// Drive transaction-log cooling from the main thread (the registry is a
@@ -75,45 +92,97 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 			// does not bind ports in this mode, so on platforms without SO_REUSEPORT (macOS/Windows)
 			// worker 0's exclusive HTTP bind would silently swallow an external EADDRINUSE — the
 			// external-conflict detection in listenOnPorts() assumes the main thread binds first.
-			const slot = startHTTPWorker(0, 1);
+			const slot = startWorkerSlot(0, 1);
 			workerSlots.push(slot);
 			poolSlots.push(slot);
 		} else {
-			const { loadRootComponents } = require('../loadRootComponents.js');
+			const { loadRootComponents } = await import('../loadRootComponents.ts');
+			if (isProcessShuttingDown()) return [];
 			if (threadCount === 0) {
+				const { count, explicit } = replicationThreadCount(0);
+				if (explicit && count > 0)
+					harperLogger.warn(
+						'replication.threads is ignored because threads.count is 0: replication runs on the main thread'
+					);
 				setMainIsWorker(true);
-				const threadServer = require('./threadServer.js');
+				const threadServer = await import('./threadServer.ts');
+				if (isProcessShuttingDown()) return [];
 				await threadServer.startServers();
+				if (isProcessShuttingDown()) return [];
+				// After the components' declarations, so a stale saved TTL never arms a scan that a schema replaces.
+				// Workers need no such pass: they have a worker index before loading components, so each table
+				// arms its own scan as it loads.
+				armTableCleanupScans();
 				// startServers() schedules listener startup after loading components; await its cached
 				// batch so a bind failure reaches bin/run.ts and exits non-zero in single-thread mode too.
 				await threadServer.listenOnPorts();
+				startHealthChecks();
 				return Promise.resolve([]);
 			}
-			await loadRootComponents();
-			const { listenOnPorts } = require('./threadServer.js');
-			await listenOnPorts();
 			// Windows does not support SO_REUSEPORT, so only a single HTTP worker is supported.
-			if (process.platform === 'win32') threadCount = 1;
+			// Normalize before admittedWorkerPools() so the default pool size uses the effective count.
+			threadCount = effectiveHttpThreadCount(threadCount);
+			if (!dedicatedPoolsStarted) {
+				dedicatedPools = admittedWorkerPools(threadCount);
+				const types = dedicatedPools.map((pool) => pool.type);
+				setActiveWorkerPools(types, replicationThreadCount(threadCount).explicit ? [] : types);
+			}
+			await loadRootComponents();
+			if (isProcessShuttingDown()) return [];
+			const { listenOnPorts } = await import('./threadServer.ts');
+			if (isProcessShuttingDown()) return [];
+			await listenOnPorts();
 		}
+		if (isProcessShuttingDown()) return [];
 		poolSize = threadCount;
 		nextIsolatedIndex = Math.max(nextIsolatedIndex, threadCount);
-		const isolated = admittedIsolatedApplications([...isolatedSlots.keys()]);
-		const heapShareCount = threadCount + isolated.length;
+		const failedClosed = await readFailedClosedApplications();
+		if (isProcessShuttingDown()) return [];
+		const isolated = admitIsolatedWorkers([...isolatedSlots.keys()], failedClosed);
+		if (dedicatedPools.length > 0) dedicatedWorkerCount = 0;
+		for (const pool of dedicatedPools) dedicatedWorkerCount += pool.count;
+		let heapShareCount = threadCount + dedicatedWorkerCount + isolated.length;
+		const httpSlots = [];
 		for (let i = 0; i < threadCount; i++) {
-			const slot = startHTTPWorker(i, threadCount, undefined, heapShareCount);
+			const slot = startWorkerSlot(i, threadCount, undefined, heapShareCount);
+			httpSlots.push(slot);
 			workerSlots.push(slot);
 			poolSlots.push(slot);
 		}
+		const poolDecision = workerPoolDecision();
+		if (poolDecision) {
+			// A worker becomes ready only once admitted, which waits on the decision; so this ends either way.
+			await Promise.race([poolDecision, Promise.all(httpSlots.map((slot) => slot.ready))]);
+			if (isProcessShuttingDown()) return [];
+			const declined = dedicatedPools.filter((pool) => !isWorkerPoolActive(pool.type));
+			if (declined.length > 0) {
+				dedicatedPools = dedicatedPools.filter((pool) => isWorkerPoolActive(pool.type));
+				for (const pool of declined) dedicatedWorkerCount -= pool.count;
+				heapShareCount = threadCount + dedicatedWorkerCount + isolated.length;
+				for (const slot of httpSlots) slot.setHeapShareCount(heapShareCount);
+			}
+			dedicatedPoolsStarted = true; // decided once per process, admitted or not
+		}
+		// Dedicated pools are numbered past the HTTP pool for the same reason isolated workers are.
+		for (const pool of dedicatedPools) {
+			for (let poolIndex = 0; poolIndex < pool.count; poolIndex++) {
+				const slot = startWorkerSlot(nextIsolatedIndex++, threadCount, undefined, heapShareCount, pool.type, poolIndex);
+				workerSlots.push(slot);
+				poolSlots.push(slot);
+			}
+		}
+		if (dedicatedPools.length > 0) dedicatedPoolsStarted = true;
 		// One dedicated worker per isolated application, numbered past the pool so no pool-only duty
 		// (worker 0's startup log, the last worker's cleanup) ever lands on it.
 		for (const application of isolated) {
 			if (isolatedSlots.has(application)) continue;
-			const slot = startHTTPWorker(nextIsolatedIndex++, threadCount, application, heapShareCount);
+			const slot = startWorkerSlot(nextIsolatedIndex++, threadCount, application, heapShareCount);
 			isolatedSlots.set(application, slot);
 			workerSlots.push(slot);
 			void watchDedicatedStart(application, slot);
 		}
 		await Promise.all(workerSlots.filter((slot) => !slot.application).map((slot) => slot.ready));
+		startHealthChecks();
 	} finally {
 		for (const slot of workerSlots) if (!slot.application) slot.finishStartup();
 		threadsHaveStarted(undefined as any);
@@ -121,8 +190,11 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 }
 
 let poolSize = 0;
+let dedicatedPoolsStarted = false;
+let dedicatedWorkerCount = 0;
 const refusedIsolated = new Set<string>(); // reported once, not on every reconcile
-const ISOLATED_WORKER_READY_TIMEOUT_MS = 60_000; // the pool replacement path's backstop
+// A first release's start is held as its canary, so it may take the canary's whole report window before it binds.
+const isolatedWorkerReadyTimeoutMs = () => canaryVerdictTimeoutMs() + 60_000;
 let nextIsolatedIndex = 0;
 type IsolatedSlot = {
 	ready: Promise<void>;
@@ -135,33 +207,30 @@ const isolatedSlots = new Map<string, IsolatedSlot>();
 const poolSlots: IsolatedSlot[] = [];
 
 /**
- * The isolated applications that get a dedicated worker. Ones already running keep their place; new
- * ones are admitted up to `threads.maxIsolated`, and only while a dedicated worker would be reachable
- * at all. Everything refused is refused loudly and loaded nowhere -- never downgraded to the pool.
+ * Everything refused is refused loudly and loaded nowhere -- never downgraded to the pool. A reconcile of one
+ * application reports nothing about the others, whose workers it leaves as they are.
  */
-function admittedIsolatedApplications(running: string[]): string[] {
-	const names = presentIsolatedApplicationNames();
-	const admitted = [];
-	for (const name of running) {
-		if (!names.includes(name)) continue;
-		const refusal = isolatedApplicationRefusal(name);
-		if (refusal) {
-			reportIsolatedRefusal(name, refusal);
-			continue;
-		}
-		admitted.push(name);
+function admitIsolatedWorkers(
+	running: string[],
+	failedClosed: Map<string, Error> | undefined,
+	only?: string
+): string[] {
+	const { admitted, refused } = admittedIsolatedApplications(running, failedClosed);
+	for (const [name, refusal] of refused) {
+		if (only === undefined || only === name) reportIsolatedRefusal(name, refusal);
 	}
-	for (const name of names) {
-		if (admitted.includes(name)) continue;
-		const refusal = isolatedApplicationRefusal(name) ?? isolatedApplicationCapacityRefusal(name, admitted);
-		if (refusal) {
-			reportIsolatedRefusal(name, refusal);
-			continue;
-		}
-		refusedIsolated.delete(name);
-		admitted.push(name);
-	}
+	for (const name of admitted) refusedIsolated.delete(name);
 	return admitted;
+}
+
+/** Undefined when the refusals cannot be read, which keeps running workers running and starts no new one. */
+async function readFailedClosedApplications(): Promise<Map<string, Error> | undefined> {
+	try {
+		return await failedClosedApplications();
+	} catch (error) {
+		harperLogger.error('Could not read which releases are refused; starting no new dedicated worker', error);
+		return undefined;
+	}
 }
 
 function reportIsolatedRefusal(name: string, refusal: string) {
@@ -186,12 +255,13 @@ function watchDedicatedStart(application: string, slot: IsolatedSlot): Promise<b
 		new Promise<never>((_, reject) =>
 			setTimeout(
 				() => reject(new Error(`Dedicated worker for '${application}' did not become ready in time`)),
-				ISOLATED_WORKER_READY_TIMEOUT_MS
+				isolatedWorkerReadyTimeoutMs()
 			).unref()
 		),
 	])
 		.then(() => true)
 		.catch(async (error) => {
+			if (isolatedSlots.get(application) !== slot) return false;
 			harperLogger.error(`Dedicated worker for isolated application '${application}' failed to start`, error);
 			componentLifecycle.failed(application, error, `Component '${application}' failed to load`);
 			// The slot IS the lease: holding it until the failed worker has actually exited is what stops a
@@ -205,27 +275,35 @@ function watchDedicatedStart(application: string, slot: IsolatedSlot): Promise<b
 			if (!isolatedSlots.has(application)) cleanupApplicationSockets(application);
 			return false;
 		})
+		.catch((error) => {
+			harperLogger.error(`Could not clean up the failed dedicated worker of '${application}'`, error);
+			return false;
+		})
 		.finally(() => slot.finishStartup());
 }
 
 /**
  * Bring the dedicated workers in line with the root config: start one for each isolated application
- * that has none, stop the one of an application that is no longer isolated or no longer configured.
- * Runs on the main thread after every root-component reload (deploy, drop, restart).
+ * that has none, stop the one of an application that is no longer isolated, no longer configured, or
+ * whose live release is refused. Runs on the main thread after every root-component reload (deploy,
+ * restart) and for a drop. With `only`, it starts or stops that application's worker and no other.
  */
 let reconciling: Promise<string[]> = Promise.resolve([]);
-export function reconcileIsolatedWorkers(): Promise<string[]> {
+export function reconcileIsolatedWorkers(only?: string, refused = false): Promise<string[]> {
+	const reconcile = () => reconcileIsolatedWorkersNow(only, refused);
 	// serialized: two reloads in flight must not compute `wanted` against each other's half-done work
-	reconciling = reconciling.then(reconcileIsolatedWorkersNow, reconcileIsolatedWorkersNow);
+	reconciling = reconciling.then(reconcile, reconcile);
 	return reconciling;
 }
 
-async function reconcileIsolatedWorkersNow(): Promise<string[]> {
+async function reconcileIsolatedWorkersNow(only?: string, refused = false): Promise<string[]> {
 	if (!isMainThread || poolSize === 0) return [];
-	const wanted = new Set(admittedIsolatedApplications([...isolatedSlots.keys()]));
+	const wanted = new Set(admitIsolatedWorkers([...isolatedSlots.keys()], await readFailedClosedApplications(), only));
+	// main already knows its release is refused, whatever this reading of the records says
+	if (refused && only !== undefined) wanted.delete(only);
 	const stopping = [];
 	for (const [application, slot] of isolatedSlots) {
-		if (wanted.has(application)) continue;
+		if (wanted.has(application) || (only !== undefined && application !== only)) continue;
 		isolatedSlots.delete(application);
 		// awaited: a caller that goes on to remove the application's storage must see its worker gone
 		stopping.push(slot.shutdown().then(() => application));
@@ -235,25 +313,60 @@ async function reconcileIsolatedWorkersNow(): Promise<string[]> {
 		const { cleanupApplicationSockets } = await import('../http.ts');
 		for (const application of stoppedApplications) cleanupApplicationSockets(application);
 	}
-	const started: string[] = [];
-	const heapShareCount = poolSize + wanted.size;
+	if (isProcessShuttingDown()) return [];
+	const starting = [...wanted].filter(
+		(application) => !isolatedSlots.has(application) && (only === undefined || application === only)
+	);
+	const heapShareCount = poolSize + dedicatedWorkerCount + isolatedSlots.size + starting.length;
 	for (const slot of poolSlots) slot.setHeapShareCount(heapShareCount);
 	for (const slot of isolatedSlots.values()) slot.setHeapShareCount(heapShareCount);
-	for (const application of wanted) {
-		if (isolatedSlots.has(application)) continue;
-		const slot = startHTTPWorker(nextIsolatedIndex++, poolSize, application, heapShareCount);
+	for (const application of starting) {
+		const slot = startWorkerSlot(nextIsolatedIndex++, poolSize, application, heapShareCount);
 		isolatedSlots.set(application, slot);
-		started.push(application);
 		void watchDedicatedStart(application, slot);
 	}
-	return started;
+	return starting;
 }
 if (isMainThread) {
 	setIsolatedWorkerReconciler(reconcileIsolatedWorkers);
 	setRunningIsolatedApplicationsGetter(() => [...isolatedSlots.keys()]);
 }
 
-function startHTTPWorker(index, threadCount = 1, application?: string, heapShareCount?: number) {
+export { effectiveHttpThreadCount, replicationThreadCount };
+
+/**
+ * The dedicated pools to start, refusing an explicit configuration the pool cannot serve and
+ * falling back to 0 with a warning when `replication.threads` was defaulted. A replication pool
+ * needs a replication port of its own: without one, replication falls back to the operations API
+ * ports, which only the main thread binds, and a port shared with HTTP or the operations API cannot
+ * be owned by one worker type.
+ */
+export function admittedWorkerPools(httpThreadCount: number): { type: string; count: number }[] {
+	const { count, explicit } = replicationThreadCount(httpThreadCount);
+	if (!Number.isInteger(count) || count < 0)
+		throw new Error(`replication.threads must be a non-negative integer, got ${count}`);
+	if (count === 0) return [];
+	const refusal = replicationPortRefusal();
+	if (refusal) {
+		if (explicit) throw new Error(refusal);
+		harperLogger.warn(`${refusal}; falling back to replication.threads: 0`);
+		return [];
+	}
+	if (count > 1 && (process.platform === 'darwin' || process.platform === 'win32'))
+		harperLogger.warn(
+			`replication.threads is ${count}, but without SO_REUSEPORT only one replication worker listens on the replication port; the others carry outbound subscriptions only`
+		);
+	return [{ type: hdbTerms.THREAD_TYPES.REPLICATION, count }];
+}
+
+function startWorkerSlot(
+	index,
+	threadCount = 1,
+	application?: string,
+	heapShareCount?: number,
+	type: string = hdbTerms.THREAD_TYPES.HTTP,
+	poolIndex?: number
+) {
 	const { promise: ready, resolve: resolveReady, reject: rejectReady } = Promise.withResolvers<void>();
 	let waitingForInitialReady = true;
 	let finishCurrentStartup = () => {};
@@ -272,9 +385,11 @@ function startHTTPWorker(index, threadCount = 1, application?: string, heapShare
 		finishCurrentStartup();
 		rejectReady(error);
 	};
+	const slotLabel = type === hdbTerms.THREAD_TYPES.HTTP ? 'HTTP' : type;
 	const workerOptions = {
-		name: hdbTerms.THREAD_TYPES.HTTP,
+		name: type,
 		workerIndex: index,
+		poolIndex,
 		threadCount,
 		application,
 		heapShareCount,
@@ -296,7 +411,7 @@ function startHTTPWorker(index, threadCount = 1, application?: string, heapShare
 				worker.off('message', onMessage);
 			};
 			const describeStartup = (event) =>
-				`HTTP worker slot ${index}${application ? ` (isolated application '${application}')` : ''} ${event} before ready (thread ${threadId}, attempt ${attempt}, phase ${startupPhase})`;
+				`${slotLabel} worker slot ${index}${application ? ` (isolated application '${application}')` : ''} ${event} before ready (thread ${threadId}, attempt ${attempt}, phase ${startupPhase})`;
 			const onMessage = (message) => {
 				if (message.type === hdbTerms.ITC_EVENT_TYPES.CHILD_STARTUP_PHASE) {
 					startupPhase = message.phase;
@@ -331,7 +446,7 @@ function startHTTPWorker(index, threadCount = 1, application?: string, heapShare
 			}
 		},
 		onRestartExhausted() {
-			const error = new Error(`HTTP worker slot ${index} exhausted restarts (thread ${lastThreadId})`);
+			const error = new Error(`${slotLabel} worker slot ${index} exhausted restarts (thread ${lastThreadId})`);
 			if (waitingForInitialReady) failStartup(error);
 			else if (application && isolatedSlot && isolatedSlots.get(application) === isolatedSlot) {
 				isolatedSlots.delete(application);
@@ -353,7 +468,7 @@ function startHTTPWorker(index, threadCount = 1, application?: string, heapShare
 			}
 		},
 	};
-	startWorker(join(__dirname, './threadServer.js'), workerOptions);
+	startWorker(join(RUNTIME_SRC_ROOT, `server/threads/threadServer${RUNTIME_FILE_EXT}`), workerOptions);
 	// Stop of a dedicated worker whose application is gone: every worker carrying the application,
 	// a crashed one's replacement still booting included, so none is left running the removed app.
 	let shutdownPromise: Promise<void> | undefined;

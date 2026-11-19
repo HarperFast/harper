@@ -1,3 +1,4 @@
+import alasql from 'alasql';
 /**
  * Thin wrapper around alasql.parse.
  *
@@ -5,8 +6,6 @@
  * normalizer.ts converts it into the internal IR (ast.ts) and the rest of the
  * pipeline only sees the IR.
  */
-
-const alasql = require('alasql');
 
 export interface AlaSqlParseResult {
 	ast: unknown;

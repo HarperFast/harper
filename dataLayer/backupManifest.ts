@@ -1,8 +1,10 @@
 'use strict';
 
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
+import type { BackupArchiveManifest } from './backupArchiveManifest.ts';
+import { fsyncDirectory, writeFileDurably } from '../utility/durableFile.ts';
 
 /**
  * Per-backup completion manifest for RocksDB managed backups.
@@ -30,6 +32,14 @@ export type BackupManifest = {
 	blobs: boolean;
 	/** Epoch-ms timestamp when both phases completed. */
 	completedAt: number;
+	/**
+	 * What produced this backup, in the same shape a `get_backup` archive carries. Absent on backups
+	 * created before the manifest existed — those were written by this instance's own lineage, so they
+	 * are reported as unidentified rather than refused.
+	 */
+	producer?: BackupArchiveManifest;
+	/** The restart restore whose rollback copy this is, so a retry adopts it instead of taking another. */
+	pre_restore_for?: string;
 };
 
 function manifestDir(backupDir: string): string {
@@ -44,13 +54,27 @@ function manifestPath(backupDir: string, backupId: number): string {
  * Write a backup's completion manifest atomically. Call only after the engine backup and (when
  * included) the blob snapshot are both durable — its presence is what marks the backup usable.
  */
-export async function writeBackupManifest(backupDir: string, backupId: number, blobs: boolean): Promise<void> {
+export async function writeBackupManifest(
+	backupDir: string,
+	backupId: number,
+	blobs: boolean,
+	producer?: BackupArchiveManifest,
+	preRestoreFor?: string
+): Promise<void> {
 	const dir = manifestDir(backupDir);
-	await mkdir(dir, { recursive: true });
-	const manifest: BackupManifest = { backupId, blobs, completedAt: Date.now() };
-	const tempPath = join(dir, `.tmp-${backupId}.json`);
-	await writeFile(tempPath, JSON.stringify(manifest));
-	await rename(tempPath, manifestPath(backupDir, backupId)); // atomic publish
+	if (!existsSync(dir)) {
+		await mkdir(dir, { recursive: true });
+		fsyncDirectory(backupDir);
+	}
+	const manifest: BackupManifest = {
+		backupId,
+		blobs,
+		completedAt: Date.now(),
+		...(producer ? { producer } : {}),
+		...(preRestoreFor ? { pre_restore_for: preRestoreFor } : {}),
+	};
+	// durable, not just atomic: a restore treats a manifest as proof the backup is whole
+	writeFileDurably(manifestPath(backupDir, backupId), JSON.stringify(manifest), `.tmp-${backupId}.json`);
 }
 
 /** Read a backup's completion manifest, or null when it has none (incomplete / not yet written). */

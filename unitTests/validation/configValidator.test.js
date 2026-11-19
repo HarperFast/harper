@@ -5,8 +5,8 @@ const chai = require('chai');
 const { expect } = chai;
 const sinon = require('sinon');
 const rewire = require('rewire');
-const config_val = rewire('#src/validation/configValidator');
-const { configValidator, routesValidator } = config_val;
+const config_val = rewire('#js/validation/configValidator');
+const { configValidator, routesValidator, REQUIRED_ROOT_CONFIG_KEYS } = config_val;
 const path = require('path');
 const testUtils = require('../testUtils.js');
 const fs = require('fs-extra');
@@ -144,6 +144,15 @@ describe('Test configValidator module', () => {
 	const sandbox = sinon.createSandbox();
 
 	describe('Test config schema in configValidator function', () => {
+		it('REQUIRED_ROOT_CONFIG_KEYS lists exactly the root keys the schema requires', () => {
+			// rootPath is given because the schema's path defaults throw without it
+			const { error } = configValidator({ rootPath: HDB_ROOT }, true);
+			const required = error.details
+				.filter((detail) => detail.type === 'any.required' && detail.path.length === 1)
+				.map((detail) => detail.path[0]);
+			assert.deepStrictEqual([...required, 'rootPath'].sort(), [...REQUIRED_ROOT_CONFIG_KEYS].sort());
+		});
+
 		it('Test itc and localStudio in config_schema with bad values', () => {
 			let bad_config_obj = testUtils.deepClone(FAKE_CONFIG);
 			bad_config_obj.itc.network.port = 'bad_port';
@@ -194,6 +203,36 @@ describe('Test configValidator module', () => {
 			expect(configValidator(bad_blobs_key_obj).error).to.not.eql(undefined);
 		});
 
+		it('storage.maxLockClockSkew accepts finite duration strings and rejects malformed values', () => {
+			for (const value of [5, '5', '500ms', '5s', '5m', '2h', '1d']) {
+				const config = testUtils.deepClone(FAKE_CONFIG);
+				config.storage.maxLockClockSkew = value;
+				assert.strictEqual(configValidator(config).error, undefined, `${value} is accepted`);
+			}
+			for (const value of ['5 ms', '-1s', '1e400', 'Infinity', '1M', '1y', `${'9'.repeat(400)}s`, Number.MAX_VALUE]) {
+				const config = testUtils.deepClone(FAKE_CONFIG);
+				config.storage.maxLockClockSkew = value;
+				assert.ok(configValidator(config).error, `${value} is rejected`);
+			}
+		});
+
+		it('storage.recordCacheSize accepts an integer from 4 to 16777215 and rejects anything else', () => {
+			for (const value of [4, 32768, 65536, 16777215]) {
+				const config = testUtils.deepClone(FAKE_CONFIG);
+				config.storage.recordCacheSize = value;
+				const { error, value: validated } = configValidator(config);
+				assert.strictEqual(error, undefined, `${value} is accepted`);
+				assert.strictEqual(validated.storage.recordCacheSize, value);
+			}
+			for (const value of [1.5, 65536.5, -1, -32768, 0, 3, 16777216, '65536', 'big', true, null]) {
+				const config = testUtils.deepClone(FAKE_CONFIG);
+				config.storage.recordCacheSize = value;
+				const { error } = configValidator(config);
+				assert.ok(error, `${value} is rejected`);
+				assert.match(error.message, /storage\.recordCacheSize/);
+			}
+		});
+
 		it('Test logging in config_schema with bad values', () => {
 			let bad_config_obj = testUtils.deepClone(FAKE_CONFIG);
 			bad_config_obj.logging.file = 'sassafrass';
@@ -237,6 +276,28 @@ describe('Test configValidator module', () => {
 			expect(schema.error.message).to.eql(expected_schema_message);
 		});
 
+		it('bounds operationsApi.encryptedOperation maxAge and maxSize to integers in range', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.operationsApi.encryptedOperation = { maxAge: 1000, maxSize: 1024 };
+			assert.strictEqual(configValidator(config).error, undefined);
+			config.operationsApi.encryptedOperation = { maxAge: 600000, maxSize: 64 * 1024 * 1024 };
+			assert.strictEqual(configValidator(config).error, undefined);
+			for (const [encryptedOperation, field] of [
+				[{ maxAge: 999 }, 'maxAge'],
+				[{ maxAge: 600001 }, 'maxAge'],
+				[{ maxAge: 1500.5 }, 'maxAge'],
+				[{ maxSize: 1023 }, 'maxSize'],
+				[{ maxSize: 64 * 1024 * 1024 + 1 }, 'maxSize'],
+			]) {
+				config.operationsApi.encryptedOperation = encryptedOperation;
+				assert.match(
+					configValidator(config).error?.message,
+					new RegExp(`operationsApi\\.encryptedOperation\\.${field}`),
+					JSON.stringify(encryptedOperation)
+				);
+			}
+		});
+
 		it('enforces the blob-gap reconnect floor', () => {
 			const config = testUtils.deepClone(FAKE_CONFIG);
 			config.replication = { blobGapReconnectMs: 999 };
@@ -247,6 +308,18 @@ describe('Test configValidator module', () => {
 
 			config.replication.blobGapReconnectMs = 1000;
 			expect(configValidator(config).error).to.be.undefined;
+		});
+
+		it('accepts threads.v8Flags as V8 flags in a string or list, or null, and refuses anything else', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			for (const v8Flags of ['--optimize-for-size', ['--optimize-for-size', ' --max-semi-space-size=1'], '', null]) {
+				config.threads = { count: 1, v8Flags };
+				assert.strictEqual(configValidator(config).error, undefined, JSON.stringify(v8Flags));
+			}
+			for (const v8Flags of [[1], 'optimize-for-size', ['--optimize-for-size', 'max-semi-space-size=1']]) {
+				config.threads = { count: 1, v8Flags };
+				assert.match(configValidator(config).error?.message, /threads\.v8Flags/, JSON.stringify(v8Flags));
+			}
 		});
 
 		it('accepts the blob-gap escalation bounds as non-negative integers, 0 meaning disabled', () => {
@@ -270,6 +343,24 @@ describe('Test configValidator module', () => {
 			);
 			config.replication = { blobGapEscalationMs: 2.5 };
 			expect(configValidator(config).error.message).to.include("'replication.blobGapEscalationMs' must be an integer");
+		});
+
+		it('accepts the replication confirmation defaults only as non-negative integers', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			for (const name of ['confirmation', 'recordLockConfirmation']) {
+				for (const value of [0, 1, 3, null]) {
+					config.replication = { [name]: value };
+					assert.strictEqual(configValidator(config).error, undefined, `${name}: ${value}`);
+				}
+				for (const [value, message] of [
+					[-1, 'must be greater than or equal to 0'],
+					[1.5, 'must be an integer'],
+					['all', 'must be a number'],
+				]) {
+					config.replication = { [name]: value };
+					assert.match(configValidator(config).error?.message, new RegExp(`replication\\.${name}' ${message}`));
+				}
+			}
 		});
 
 		it('accepts a well-formed sql config section', () => {
@@ -392,6 +483,34 @@ describe('Test configValidator module', () => {
 			config.replication = undefined;
 			config.node = { hostname: 'prod-node', url: 'mailto:admin@corp.com' };
 			expect(configValidator(config).error).to.be.undefined;
+		});
+
+		it('accepts replication.network and wss:// replication.privateUrls, and rejects other private URLs', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.replication = {
+				network: 'vpc-1/us-east1',
+				privateUrls: [
+					{ url: 'wss://10.0.0.5:9933', network: 'vpc-1/us-east1' },
+					{ url: 'wss://[fd00::5]:9933', network: 'vlan-7' },
+					{ url: ' WSS://10.0.0.6:9933 ', network: 'vlan-7' },
+				],
+			};
+			assert.strictEqual(configValidator(config).error, undefined);
+
+			const rejected = [
+				[{ url: 'ws://10.0.0.5:9933', network: 'a' }, 'must be a wss:// URL with a host'],
+				[{ url: 'wss:10.0.0.5:9933', network: 'a' }, 'must be a wss:// URL with a host'],
+				[{ url: 'wss://user:secret@10.0.0.5:9933', network: 'a' }, 'must not include credentials or a query'],
+				[{ url: 'wss://10.0.0.5:9933/?token=secret', network: 'a' }, 'must not include credentials or a query'],
+				[{ url: 'wss://10.0.0.5:9933/#x', network: 'a' }, 'must not include a fragment'],
+				[{ url: 'not a url', network: 'a' }, 'must be a URL'],
+				[{ url: 'wss://10.0.0.5:9933' }, "'replication.privateUrls[0].network' is required"],
+				[{ url: 'wss://10.0.0.5:9933', network: '' }, 'is not allowed to be empty'],
+			];
+			for (const [entry, reason] of rejected) {
+				config.replication = { privateUrls: [entry] };
+				assert.ok(configValidator(config).error?.message.includes(reason), JSON.stringify(entry));
+			}
 		});
 
 		it('rejects a URL-valued replication.hostname (the previously accepted string|number path) (#2218)', () => {
@@ -924,12 +1043,57 @@ describe('Test configValidator module', () => {
 			expect(result.error.message).to.include("'mcp.operations.mountPath' must be a string");
 		});
 
+		it('accepts a boolean mcp.<profile>.enabled and rejects a non-boolean', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.mcp = { operations: { enabled: true }, application: { enabled: false } };
+			expect(configValidator(config, true).error).to.be.undefined;
+			config.mcp = { operations: { enabled: 'nope' } };
+			const result = configValidator(config, true);
+			expect(result.error).to.not.be.undefined;
+			expect(result.error.message).to.include("'mcp.operations.enabled' must be a boolean");
+			config.mcp = { operations: { enabled: 'false' } };
+			expect(configValidator(config, true).error.message).to.include("'mcp.operations.enabled' must be a boolean");
+		});
+
 		it('rejects mcp.operations.maxTools below 1', () => {
 			const config = testUtils.deepClone(FAKE_CONFIG);
 			config.mcp = { operations: { maxTools: 0 } };
 			const result = configValidator(config, true);
 			expect(result.error).to.not.be.undefined;
 			expect(result.error.message).to.include("'mcp.operations.maxTools' must be greater than or equal to 1");
+		});
+
+		it('accepts mcp.application.authentication with a boolean required and an http(s) resourceMetadata (#4344)', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.mcp = {
+				application: {
+					authentication: {
+						required: true,
+						resourceMetadata: 'https://app.example.com/.well-known/oauth-protected-resource/mcp',
+					},
+				},
+			};
+			expect(configValidator(config, true).error).to.be.undefined;
+
+			config.mcp = { application: { authentication: { required: 'true' } } };
+			expect(configValidator(config, true).error.message).to.include(
+				"'mcp.application.authentication.required' must be a boolean"
+			);
+			for (const resourceMetadata of [
+				'/relative',
+				'ftp://x.example/prm',
+				'http://x.example/prm',
+				'https://x.example/p#f',
+				'https://x.example/"q"',
+			]) {
+				config.mcp = { application: { authentication: { resourceMetadata } } };
+				expect(configValidator(config, true).error, resourceMetadata).to.not.be.undefined;
+			}
+
+			for (const authentication of [{ require: true }, { resource_metadata: 'https://x.example/prm' }]) {
+				config.mcp = { application: { authentication } };
+				expect(configValidator(config, true).error, JSON.stringify(authentication)).to.not.be.undefined;
+			}
 		});
 	});
 
@@ -997,6 +1161,52 @@ describe('Test configValidator module', () => {
 			};
 			const result = configValidator(config, true);
 			expect(result.error).to.be.undefined;
+		});
+
+		describe('pricing', () => {
+			const PRICING = { inputPerMtok: 3, outputPerMtok: 15 };
+			const validate = (models) => {
+				const config = baseConfig();
+				config.models = models;
+				return configValidator(config, true).error;
+			};
+
+			it('accepts pricing on generative entries, built-in or module-backed, including zero rates', () => {
+				for (const backend of ['ollama', 'openai', 'anthropic', 'bedrock', '@acme/harper-llm']) {
+					const entry = { backend, model: 'm', pricing: PRICING };
+					if (backend === 'openai' || backend === 'anthropic') entry.apiKey = 'k';
+					expect(validate({ generative: { default: entry } }), backend).to.be.undefined;
+				}
+				expect(
+					validate({
+						generative: { default: { backend: 'ollama', pricing: { inputPerMtok: 0, outputPerMtok: 0 } } },
+					})
+				).to.be.undefined;
+			});
+
+			it('rejects a partial, negative, non-numeric or extended price', () => {
+				for (const pricing of [
+					{ inputPerMtok: 3 },
+					{ outputPerMtok: 15 },
+					{ inputPerMtok: -1, outputPerMtok: 15 },
+					{ inputPerMtok: 'three', outputPerMtok: 15 },
+					{ ...PRICING, cachedInputPerMtok: 0.3 },
+				]) {
+					expect(validate({ generative: { default: { backend: 'ollama', pricing } } }), JSON.stringify(pricing)).to.not
+						.be.undefined;
+				}
+			});
+
+			it('refuses pricing on embedding and decision entries, which nothing prices', () => {
+				for (const models of [
+					{ embedding: { default: { backend: 'ollama', pricing: PRICING } } },
+					{ embedding: { default: { backend: '@acme/harper-embed', pricing: PRICING } } },
+					{ decision: { default: { backend: 'generative', pricing: PRICING } } },
+					{ decision: { default: { backend: '@acme/harper-decision', pricing: PRICING } } },
+				]) {
+					expect(validate(models), JSON.stringify(models)).to.not.be.undefined;
+				}
+			});
 		});
 
 		it('accepts a generative entry with requestTimeoutMs', () => {
@@ -1097,6 +1307,52 @@ describe('Test configValidator module', () => {
 					const config = baseConfig();
 					config.models = { decision: { default: entry } };
 					expect(configValidator(config, true).error, JSON.stringify(entry)).to.not.be.undefined;
+				}
+			});
+
+			it('accepts a non-secret revision on every entry kind (#2841)', () => {
+				const config = baseConfig();
+				config.models = {
+					generative: { default: { backend: 'openai', apiKey: 'k', model: 'm', revision: 'sha-1' } },
+					embedding: { default: { backend: 'ollama', model: 'e', revision: '2' } },
+					decision: { default: { backend: 'generative', revision: 'r' } },
+				};
+				assert.strictEqual(configValidator(config, true).error, undefined);
+				config.models.generative.default.revision = 3;
+				assert.notStrictEqual(configValidator(config, true).error, undefined, 'revision is a string');
+			});
+
+			it('accepts the calibration block and rejects an interval under an hour or an unknown setting (#2841)', () => {
+				const config = baseConfig();
+				config.models = {
+					calibration: {
+						interval: 3_600_000,
+						maxDecisions: 2000,
+						maxPopulations: 10,
+						maxExamplesPerKey: 500,
+						maxBytes: 8_000_000,
+						maxLoads: 4,
+						maxRunMs: 5000,
+						minReport: 10,
+						minTrain: 50,
+						minHeldOut: 50,
+						heldOutShare: 0.25,
+						eceMargin: 0.02,
+						maxAgeMs: 86_400_000,
+					},
+				};
+				assert.strictEqual(configValidator(config, true).error, undefined);
+				for (const bad of [
+					{ interval: 60_000 },
+					{ maxReads: 10 },
+					{ heldOutShare: 1 },
+					{ minReport: 0 },
+					{ maxDecisions: 1000 },
+					{ maxDecisions: 1000, maxExamplesPerKey: 500 },
+				]) {
+					const broken = baseConfig();
+					broken.models = { calibration: bad };
+					assert.notStrictEqual(configValidator(broken, true).error, undefined, JSON.stringify(bad));
 				}
 			});
 

@@ -1,5 +1,6 @@
 'use strict';
 
+const assert = require('node:assert');
 const chai = require('chai');
 const sinon = require('sinon');
 const rewire = require('rewire');
@@ -22,7 +23,7 @@ describe('Test signalling module', () => {
 		sandbox.stub(hdb_logger, 'trace');
 		itc_utils = require('#js/server/threads/itc');
 		send_itc_event_stub = sandbox.stub(itc_utils, 'sendItcEvent');
-		signalling = rewire('#src/utility/signalling');
+		signalling = rewire('#js/utility/signalling');
 	});
 
 	afterEach(() => {
@@ -32,7 +33,7 @@ describe('Test signalling module', () => {
 
 	after(() => {
 		sandbox.restore();
-		rewire('#src/utility/signalling');
+		rewire('#js/utility/signalling');
 	});
 
 	it('Test signalSchemaChange happy path', () => {
@@ -51,10 +52,18 @@ describe('Test signalling module', () => {
 		expect(send_itc_event_stub).to.have.been.calledWith(sinon.match(expected_event));
 	});
 
-	it('Test signalSchemaChange sad path', () => {
+	it('Test signalSchemaChange sad path', async () => {
 		send_itc_event_stub.throws(TEST_ERROR);
-		signalling.signalSchemaChange('message');
+		await signalling.signalSchemaChange('message');
 		expect(log_error_stub.lastCall.args[0].name).to.equal(TEST_ERROR);
+	});
+
+	it('propagates a restore close barrier failure', async () => {
+		send_itc_event_stub.rejects(new Error('restore barrier timed out'));
+		await assert.rejects(
+			signalling.signalSchemaChange({ operation: 'restore_backup', restorePhase: 'close' }),
+			/restore barrier timed out/
+		);
 	});
 
 	it('broadcasts a peer-first schema completion twice when requested', async () => {

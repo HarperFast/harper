@@ -1,6 +1,6 @@
 /**
  * Promoted from qa-explorer (QA-577 / P-373): pins the in-place-upgrade built-in-component
- * config backfill (regression anchor for merged PR #1814) — booting over a config lacking a
+ * config backfill (regression anchor for merged PR #1814 and harper#2028) — booting over a config lacking a
  * now-built-in component backfills exactly one top-level key with an activation log; a second
  * boot is idempotent; a fresh install with the key already present is a no-op; OSS-core never
  * grows the Pro-only key.
@@ -10,12 +10,11 @@
  *
  * The fix (config/configUtils.ts: ensureConfigKeysPresent / ensureBuiltInComponentConfigKeys,
  * called every boot from bin/run.ts initialize()) backfills a top-level config key for a
- * newly-introduced built-in component (currently only `secretCustody`, see
- * UPGRADE_BACKFILL_BUILTIN_KEYS) when it's absent, so the component activates on an
- * in-place-upgraded config that predates it. It is scoped to built-ins registered in THIS
- * runtime via the HARPER_BUILTIN_COMPONENTS env var (a comma-separated `name=packageIdentifier`
- * list an embedding distribution — e.g. harper-pro — sets before boot); on OSS core, where
- * nothing is registered, it is a no-op.
+ * newly-introduced built-in component (see UPGRADE_BACKFILL_BUILTIN_KEYS) when it's absent,
+ * so the component activates on an in-place-upgraded config that predates it. It applies only to
+ * built-ins registered in THIS runtime via HARPER_BUILTIN_COMPONENTS (a comma-separated list of
+ * `name=packageIdentifier` values from an embedding distribution — e.g. harper-pro — set before
+ * boot); on OSS core, where nothing is registered, it is a no-op.
  *
  * ## Honest scope note
  * This is OSS core (github.com/HarperFast/harper). `secretCustody` is Pro-only — its real
@@ -36,6 +35,8 @@
  *      defaultConfig.yaml would provide) is untouched — no log, no duplicate.
  *   3. OSS-core control: no HARPER_BUILTIN_COMPONENTS registered (the real OSS core boot
  *      path) never writes the Pro-only key.
+ *   4. Incomplete registration: a bare `waf` entry is warned and skipped by both runtime
+ *      loading and config backfill.
  *
  * Reproduction:
  *   npm run test:integration -- "integrationTests/server/qa577-upgrade-builtins.test.ts"
@@ -58,30 +59,17 @@ import { createApiClient } from '../apiTests/utils/client.mjs';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'qa577-upgrade-builtins');
 
-// Matches UPGRADE_BACKFILL_BUILTIN_KEYS in config/configUtils.ts — one of two backfilled keys today
-// (the other, 'waf', is exercised the same way this suite exercises 'secretCustody').
+// One of UPGRADE_BACKFILL_BUILTIN_KEYS in config/configUtils.ts.
 const BACKFILL_KEY = 'secretCustody';
 const ACTIVATION_LOG_SNIPPET = 'Activated built-in component(s) absent from an upgraded config';
+const MALFORMED_BACKFILL_REGISTRATION = 'waf';
+const MALFORMED_REGISTRATION_WARNING = 'Skipping HARPER_BUILTIN_COMPONENTS entry 2';
+const ROOT_APPLICATIONS_LOADED_SNIPPET = 'All root applications loaded';
 
-// HARPER_BUILTIN_COMPONENTS registration for our stand-in built-in. Uses the `@/`-prefixed
-// internal-module-path convention that the PR's own unit tests use for secretCustody (e.g.
-// `secretCustody=@/dist/security/keyCustody.js`, which doesn't exist on OSS core — Pro-only).
-// `@/dist/utility/common_utils.js` is a real, already-built, side-effect-free OSS-core module,
-// so the identifier resolves cleanly everywhere it's dereferenced:
-//   - Application.ts#installApplications(): `@/`-prefixed identifiers are explicitly skipped
-//     (no npm install attempted) — confirmed by trying a real npm-installable name (`lodash`)
-//     first, which triggered a live `npm install` of an "application" named secretCustody
-//     (real network I/O, async completion racing test teardown) — clearly not what a Pro
-//     built-in's packageIdentifier is for.
-//   - componentLoader.ts's root-level plugin resolution imports it as a no-op inert module.
-//   - A bare name (no `=value`, which Application.ts's parser otherwise permits as valid syntax)
-//     leaves `packageIdentifier` undefined, which TWO separate unguarded call sites then
-//     dereference: Application.ts:1129 in installApplications() (runs at boot, so this crashes
-//     the whole process) and server/jobs/jobProcess.ts:39's `packageIdentifier.startsWith('@/')`.
-//     Real, reproducible, and orthogonal to PR #1814's own diff (neither file it touches) --
-//     filed as harper#2028 (fix belongs in getEnvBuiltInComponents() itself: reject/skip a
-//     malformed definition at the source, not by guarding each consumer), not exercised here.
+// The valid registration uses a real, side-effect-free internal module. `Application.ts` skips
+// `@/` identifiers for package installation, while component loading can resolve the module.
 const BACKFILL_KEY_REGISTRATION = `${BACKFILL_KEY}=@/dist/utility/common_utils.js`;
+const UPGRADE_REGISTRATIONS = `${BACKFILL_KEY_REGISTRATION},${MALFORMED_BACKFILL_REGISTRATION}`;
 
 const skip = process.platform === 'win32';
 
@@ -175,7 +163,7 @@ suite(
 		before(async () => {
 			await setupHarperWithFixture(ctx, FIXTURE_PATH, {
 				config: {},
-				env: { HARPER_BUILTIN_COMPONENTS: BACKFILL_KEY_REGISTRATION },
+				env: { HARPER_BUILTIN_COMPONENTS: UPGRADE_REGISTRATIONS },
 			});
 		});
 
@@ -193,10 +181,22 @@ suite(
 				`expected ${BACKFILL_KEY} key to be backfilled into config; config keys were: ${Object.keys(doc)}`
 			);
 			strictEqual(countTopLevelKey(raw, BACKFILL_KEY), 1, `expected exactly one top-level ${BACKFILL_KEY} key`);
+			ok(
+				!Object.prototype.hasOwnProperty.call(doc, MALFORMED_BACKFILL_REGISTRATION),
+				`incomplete ${MALFORMED_BACKFILL_REGISTRATION} registration must not backfill a config key`
+			);
 			const bootLog = readBootLog(ctx.harper);
 			ok(
 				bootLog.includes(ACTIVATION_LOG_SNIPPET),
 				`expected activation log on first boot (key was absent); hdb.log:\n${bootLog}`
+			);
+			ok(
+				bootLog.includes(MALFORMED_REGISTRATION_WARNING),
+				`expected a warning for the incomplete registration; hdb.log:\n${bootLog}`
+			);
+			ok(
+				bootLog.includes(ROOT_APPLICATIONS_LOADED_SNIPPET),
+				`expected root application installation to complete; hdb.log:\n${bootLog}`
 			);
 		});
 
@@ -211,8 +211,8 @@ suite(
 
 			await killHarper(ctx);
 			await startHarper(ctx, {
-				config: {},
-				env: { HARPER_BUILTIN_COMPONENTS: BACKFILL_KEY_REGISTRATION },
+				config: { logging: { level: 'debug' } },
+				env: { HARPER_BUILTIN_COMPONENTS: UPGRADE_REGISTRATIONS },
 			});
 
 			const client = createApiClient(ctx.harper);
@@ -223,6 +223,10 @@ suite(
 				Object.prototype.hasOwnProperty.call(doc, BACKFILL_KEY),
 				`${BACKFILL_KEY} key must still be present after 2nd boot`
 			);
+			ok(
+				!Object.prototype.hasOwnProperty.call(doc, MALFORMED_BACKFILL_REGISTRATION),
+				`incomplete ${MALFORMED_BACKFILL_REGISTRATION} registration must not backfill a config key`
+			);
 			strictEqual(
 				countTopLevelKey(raw, BACKFILL_KEY),
 				1,
@@ -232,6 +236,11 @@ suite(
 			// If HARPER_INTEGRATION_TEST_LOG_DIR is set, this boot got a fresh logDir (a distinct
 			// file), so there's nothing to diff against — take the whole thing.
 			const bootLog = bootLogPath(ctx.harper) === priorLogPath ? fullLog.slice(priorLogLen) : fullLog;
+			ok(
+				bootLog.includes(`Harper server process ${ctx.harper.process.pid} starting up.`),
+				`positive control: no startup line from pid ${ctx.harper.process.pid} in the 2nd boot's hdb.log slice ` +
+					`at ${bootLogPath(ctx.harper)}; the absence check below cannot observe this boot. Slice:\n${bootLog}`
+			);
 			ok(
 				!bootLog.includes(ACTIVATION_LOG_SNIPPET),
 				`expected NO activation log appended by the 2nd boot (key already present, must be idempotent); appended log:\n${bootLog}`

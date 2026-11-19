@@ -8,6 +8,12 @@ const {
 } = require('#src/components/mcp/listChanged');
 const { registerSession, _resetSessionRegistryForTest } = require('#src/components/mcp/sessionRegistry');
 const { addTool, _resetRegistryForTest } = require('#src/components/mcp/toolRegistry');
+const userModule = require('#src/security/user');
+const { databases } = require('#src/resources/databases');
+const testUtils = require('../../testUtils.js');
+const { waitFor } = require('../../waitFor');
+
+const { certificateAdmission, certificatePrincipal, isCertificatePrincipal, localPrincipal } = userModule;
 
 const SUPER = { username: 'admin', role: { permission: { super_user: true } } };
 const ALICE = {
@@ -190,6 +196,35 @@ describe('mcp/listChanged', () => {
 		assert.equal(rec.user, aliceWithFoo, 'record.user updated to the freshly-resolved user');
 	});
 
+	it('preserves the GET credential expiry when refreshing its permissions', async () => {
+		initListChanged();
+		const authExpiresAt = Date.now() / 1000 + 60;
+		const record = registerSession('sid', 'application', { ...ALICE, authExpiresAt });
+		const fresh = { username: ALICE.username, role: { permission: {} } };
+		_setUserResolverForTest(async () => fresh);
+		fakeItc._fireUser();
+		await waitFor(() => record.user.role === fresh.role);
+		assert.equal(record.user.authExpiresAt, authExpiresAt);
+		assert.equal(fresh.authExpiresAt, undefined);
+	});
+
+	it('keeps the certificate mark when it refreshes a session a certificate named', async () => {
+		initListChanged();
+		const record = registerSession('cert-sid', 'application', certificatePrincipal({ username: 'cert_cn' }));
+		const named = record.user;
+		const fresh = { username: 'cert_cn', role: { permission: {} } };
+		_setUserResolverForTest(async () => fresh);
+		fakeItc._fireUser();
+		await waitFor(() => record.user !== named);
+		assert.equal(isCertificatePrincipal(record.user), true);
+		assert.equal(certificateAdmission(record.user), named, 'the refreshed view keeps the admission');
+		assert.equal(isCertificatePrincipal(fresh), false);
+		const refreshed = record.user;
+		fakeItc._fireUser();
+		await waitFor(() => record.user !== refreshed);
+		assert.equal(certificateAdmission(record.user), named, 'and keeps it across refreshes');
+	});
+
 	it('a scoped-token session is never re-resolved by name (no privilege substitution)', async () => {
 		// A scoped token's attribution username may later collide with a real hdb_user; re-resolving
 		// it here would advertise that user's surface. The session's embedded role must stay put.
@@ -216,6 +251,24 @@ describe('mcp/listChanged', () => {
 		await new Promise((r) => setTimeout(r, 20));
 		assert.equal(resolverCalled, false, 'scoped session must not trigger a by-name user resolve');
 		assert.equal(rec.user, scopedUser, 'record.user must remain the embedded scoped principal');
+	});
+
+	it('a local-principal session is never re-resolved by name', async () => {
+		const localUser = localPrincipal();
+		let resolverCalled = false;
+		_setUserResolverForTest(async () => {
+			resolverCalled = true;
+			return { username: 'local', role: { permission: {} } };
+		});
+
+		initListChanged();
+		const rec = registerSession('local-sid', 'operations', localUser);
+		seedSessionSnapshot('local-sid');
+
+		fakeItc._fireUser();
+		await new Promise((r) => setTimeout(r, 20));
+		assert.equal(resolverCalled, false, 'no record backs the local principal');
+		assert.equal(rec.user, localUser);
 	});
 
 	it('schema events also fan out (application profile)', async () => {
@@ -277,5 +330,88 @@ describe('mcp/listChanged', () => {
 		fakeItc._fireResources();
 		const evt = await readNextEvent(rec.queue);
 		assert.equal(evt.data.method, 'notifications/tools/list_changed');
+	});
+
+	describe('sessions of principals a component resolved', () => {
+		const PRODUCT_ROLE = { permission: { super_user: false, data: { tables: { product: { read: true } } } } };
+
+		before(async () => {
+			testUtils.setupTestDBPath();
+			await testUtils.ensureSystemTables();
+		});
+
+		afterEach(() => testUtils.seedUsers());
+
+		function addProductTool() {
+			addTool({
+				name: 'get_product',
+				description: 'x',
+				inputSchema: { type: 'object' },
+				profile: 'application',
+				visibleTo: (u) => u?.role?.permission?.data?.tables?.product?.read === true,
+				handler: async () => ({ content: [{ type: 'text', text: '' }] }),
+			});
+		}
+
+		it('keeps a principal built with no hdb_user record, from before its stream is seeded', async () => {
+			const componentUser = { username: 'mcp-component-only', role: PRODUCT_ROLE };
+			userModule.trackUserRecords(componentUser, userModule.userRecordVersions(componentUser.username));
+			let resolverCalled = false;
+			_setUserResolverForTest(async (username) => {
+				resolverCalled = true;
+				return { username };
+			});
+			addProductTool();
+			initListChanged();
+			const rec = registerSession('component-sid', 'application', componentUser);
+			fakeItc._fireUser();
+			await waitFor(() => rec.lastTools !== undefined);
+			seedSessionSnapshot('component-sid');
+			fakeItc._fireUser();
+			await new Promise((resolve) => setTimeout(resolve, 20));
+
+			assert.equal(resolverCalled, false, 'no record backs it, so none is read by its name');
+			assert.equal(rec.user, componentUser);
+			assert.deepEqual(rec.lastTools, [{ name: 'get_product' }]);
+		});
+
+		it('latches the certificate admission of a session whose refresh finds an inactive record', async () => {
+			initListChanged();
+			const rec = registerSession(
+				'cert-inactive-sid',
+				'application',
+				certificatePrincipal({ username: 'cert_inactive_cn' })
+			);
+			const admission = certificateAdmission(rec.user);
+			assert.equal(userModule.isRoleRequirementLatched(admission), false);
+			await testUtils.seedUsers([{ username: 'cert_inactive_cn', active: false, role: 'missing_role' }]);
+			fakeItc._fireUser();
+			await waitFor(() => userModule.isRoleRequirementLatched(admission), {
+				message: 'the inactive record backs the name, so the admission needs a role',
+			});
+		});
+
+		it('takes the tools of a dropped record-backed user', async () => {
+			await testUtils.seedUsers([
+				{
+					username: 'mcp_record_user',
+					active: true,
+					role: { id: 'mcp_record_role', role: 'mcp_record_role', ...PRODUCT_ROLE },
+				},
+			]);
+			const recordUser = await userModule.findAndValidateUser('mcp_record_user', null, false);
+			addProductTool();
+			initListChanged();
+			const rec = registerSession('record-sid', 'application', recordUser);
+			seedSessionSnapshot('record-sid');
+			assert.deepEqual(rec.lastTools, [{ name: 'get_product' }]);
+
+			await databases.system.hdb_user.delete('mcp_record_user');
+			fakeItc._fireUser();
+			const evt = await readNextEvent(rec.queue, 2000);
+			assert.equal(evt.data.method, 'notifications/tools/list_changed');
+			assert.equal(rec.user.role, undefined);
+			assert.deepEqual(rec.lastTools, []);
+		});
 	});
 });

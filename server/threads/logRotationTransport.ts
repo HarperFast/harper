@@ -5,7 +5,7 @@
 
 import { threadId } from 'node:worker_threads';
 import { setRotationTransport } from '../../utility/logging/logGenerationCoordinator.ts';
-import { broadcast, onMessageByType, onThreadExit } from './manageThreads.js';
+import { broadcast, onMessageByType, onThreadExit } from './manageThreads.ts';
 
 // Assigned to the `threads` global by manageThreads.
 declare const threads: {

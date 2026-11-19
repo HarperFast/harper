@@ -23,6 +23,7 @@ export const OPERATION_PERMISSION_GROUPS = {
 		OPERATIONS_ENUM.DESCRIBE_DATABASE,
 		OPERATIONS_ENUM.DESCRIBE_TABLE,
 		OPERATIONS_ENUM.USER_INFO,
+		OPERATIONS_ENUM.GET_STUDIO_CONFIGURATION,
 		OPERATIONS_ENUM.GET_JOB,
 		OPERATIONS_ENUM.GET_ANALYTICS,
 		OPERATIONS_ENUM.LIST_METRICS,
@@ -30,7 +31,7 @@ export const OPERATION_PERMISSION_GROUPS = {
 	],
 	/**
 	 * Elevated read-only access to server configuration, logs, and component views.
-	 * All ops here are SU-only and granted via the operations SU bypass.
+	 * All ops here but get_studio_configuration are SU-only and granted via the operations SU bypass.
 	 * Combine with `read_only` for a full studio/dashboard read role:
 	 * `operations: ['read_only', 'admin_read']`
 	 */
@@ -42,6 +43,7 @@ export const OPERATION_PERMISSION_GROUPS = {
 		OPERATIONS_ENUM.GET_CUSTOM_FUNCTION,
 		OPERATIONS_ENUM.GET_COMPONENTS,
 		OPERATIONS_ENUM.GET_COMPONENT_FILE,
+		OPERATIONS_ENUM.GET_STUDIO_CONFIGURATION,
 	],
 	/**
 	 * Everything in `read_only` plus full data manipulation (insert, update, upsert, delete)
@@ -61,6 +63,7 @@ export const OPERATION_PERMISSION_GROUPS = {
 		OPERATIONS_ENUM.DESCRIBE_DATABASE,
 		OPERATIONS_ENUM.DESCRIBE_TABLE,
 		OPERATIONS_ENUM.USER_INFO,
+		OPERATIONS_ENUM.GET_STUDIO_CONFIGURATION,
 		OPERATIONS_ENUM.GET_JOB,
 		OPERATIONS_ENUM.GET_ANALYTICS,
 		OPERATIONS_ENUM.LIST_METRICS,

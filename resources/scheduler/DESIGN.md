@@ -25,11 +25,12 @@ non-obvious part is what Harper's substrate does and does not offer for that:
   is taken by the legacy jobs subsystem). On constrained/directional replication topologies the
   lease may not reach every node; that limitation is inherent.
 - The alphabetical node-name tie-break deliberately mirrors replication's deterministic failover
-  convention (sorted node names in `subscriptionManager.ts`); the escalation ladder
+  convention (sorted node names in harper-pro `replication/subscriptionManager.ts`); the escalation ladder
   (`promotionWaitMs`) exists because a dead alphabetically-first node must not deadlock a
   leaderless cluster (each successive node waits one more `2 × watcher interval` rung).
-- Thread-once vs cluster-once are separate layers: `getWorkerIndex() === 0` gates to one worker per
-  node (correct in every threading mode incl. `threads: 0`); the lease gates across nodes.
+- Thread-once vs cluster-once are separate layers: `isApplicationPrimaryWorker()` (worker 0, or an
+  isolated application's dedicated worker, #2524) gates to one worker per node (correct in every
+  threading mode incl. `threads: 0`); the lease gates across nodes.
   `handleApplication` holds a cross-thread load lock with a 30s timeout, so the plugin only
   registers there — election, scheduling, and catch-up run async after.
 - Catch-up fires at most ONE missed occurrence per cron job, and a new job's `firstSeenAt` baseline

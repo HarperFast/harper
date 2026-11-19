@@ -11,8 +11,8 @@ const {
 } = require('#src/resources/Table');
 const { logger } = require('#src/utility/logging/logger');
 const { PrimaryRocksDatabase } = require('#src/resources/PrimaryRocksDatabase');
-const { RocksDatabase } = require('@harperfast/rocksdb-js');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { RocksDatabase } = require('../rocksdbBindings.mts').rocksdbBindings();
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 const TEST_DB = 'test';
 const LOCK_KEY = 'update-attributes';
@@ -92,7 +92,8 @@ describe('update-attributes exclusive lock', () => {
 	});
 
 	it('throws ServerError after the deadline when the lock is never released', async () => {
-		const [result] = await runWorkerAction({ type: 'helper-deadline', timeout: 250 }, ['deadline-result'], 5000);
+		// The watchdog includes worker startup; the elapsed assertion below bounds the lock wait itself.
+		const [result] = await runWorkerAction({ type: 'helper-deadline', timeout: 250 }, ['deadline-result'], 20000);
 		assert.ok(result.acquired, 'test worker should be able to take the lock to wedge it');
 		assert.ok(result.error.isServerError, 'deadline should throw ServerError');
 		assert.strictEqual(result.error.statusCode, 503);

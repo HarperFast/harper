@@ -49,9 +49,15 @@ function lower(plan: LogicalPlan, qualified: boolean): PhysicalOp {
 			// A scan with no index-driving predicate but a pushed sort on an indexed
 			// attribute is driven by the index's natural order — Table.search flags it
 			// needFullScan, so it must run with allowFullScan (D-219). validateScannable
-			// has already blessed exactly this shape.
+			// has already blessed exactly this shape. With `sql.allowFullScan` on and no
+			// pushed sort, validateScannable passes any scan, so a pushed non-driving
+			// condition (LIKE→contains) must be allowed to full-scan too. A pushed
+			// non-PK sort keeps its D-219 handling.
 			const indexDriven = conditions.some((c) => conditionUsesIndex(c, plan.boundTable?.attributes));
-			const allowFullScan = !indexDriven && sortDrivesIndex(plan.pushedSort, plan.boundTable?.attributes);
+			const allowFullScan =
+				!indexDriven &&
+				(sortDrivesIndex(plan.pushedSort, plan.boundTable?.attributes) ||
+					(!plan.pushedSort && getSqlEngineConfig().allowFullScan));
 			let op = physicalIndexScan(plan, { conditions, operator, allowFullScan });
 			const combinedResidual = mergeResidual(residual, plan.residualFilter);
 			// Residual is single-table; compile it in bare space before qualifying.

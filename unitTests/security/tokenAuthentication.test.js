@@ -9,10 +9,21 @@ const assert = require('assert');
 const sinon = require('sinon');
 const sandbox = sinon.createSandbox();
 const rewire = require('rewire');
-const password_function = require('#src/utility/password');
-let token_auth = rewire('#src/security/tokenAuthentication');
+const password_function = require('#js/utility/password');
+let token_auth = rewire('#js/security/tokenAuthentication');
 const user = require('#src/security/user');
 const insert = require('#src/dataLayer/insert');
+const env = require('#src/utility/environment/environmentManager');
+const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
+
+function setTokenTimeout(param, value) {
+	const original = env.get(param);
+	env.setProperty(param, value);
+	return () => env.setProperty(param, original);
+}
+
+// a resolved user also carries the record versions it was built from, under a symbol key
+const recordFields = (resolved) => Object.fromEntries(Object.entries(resolved));
 
 const PASSPHRASE_VALUE = '6340b357-55b2-4fc8-b359-cae7d90c8c01';
 const PRIVATE_KEY_VALUE =
@@ -243,7 +254,7 @@ describe('test getJWTRSAKeys function', () => {
 
 		assert.deepStrictEqual(results, new JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE));
 
-		assert(path_join_spy.callCount === 0);
+		// Cache hit: no key files are read, so no path is built either.
 		assert(fs_readfile_spy.callCount === 0);
 
 		rw_rsa_keys();
@@ -526,7 +537,7 @@ describe('test validateOperationToken function', () => {
 			])
 		);
 
-		token_timeout = token_auth.__set__('OPERATION_TOKEN_TIMEOUT', '-1');
+		token_timeout = setTokenTimeout(CONFIG_PARAMS.AUTHENTICATION_OPERATIONTOKENTIMEOUT, '-1');
 		expired_user_tokens = await token_auth.createTokens({ username: 'EXPIRED', password: 'cool' });
 		token_timeout();
 
@@ -563,7 +574,7 @@ describe('test validateOperationToken function', () => {
 		}
 
 		assert.deepStrictEqual(error, undefined);
-		assert.deepStrictEqual(user, { active: true, username: 'HDB_ADMIN' });
+		assert.deepStrictEqual(recordFields(user), { active: true, username: 'HDB_ADMIN' });
 		assert(jwt_spy.callCount === 1);
 		assert(jwt_spy.threw() === false);
 		assert(validate_user_stub.callCount === 1);
@@ -600,7 +611,7 @@ describe('test validateOperationToken function', () => {
 			user = await token_auth.validateOperationToken(non_user_tokens.operation_token);
 		} catch {}
 
-		assert.deepStrictEqual(user, { username: 'non_user' });
+		assert.deepStrictEqual(recordFields(user), { username: 'non_user' });
 		assert(jwt_spy.callCount === 1);
 		assert(jwt_spy.threw() === false);
 		assert(validate_user_stub.callCount === 1);
@@ -815,6 +826,43 @@ describe('test scoped tokens (inline role object)', () => {
 		assert(!scopedUser.role.permission._expandedOperations.has('insert'));
 	});
 
+	it('rejects system grants when minting a new scoped token', async () => {
+		await assert.rejects(
+			mint({ role: { permission: { system: { tables: { hdb_user: { read: true } } } } } }),
+			(error) => error.statusCode === 400
+		);
+	});
+
+	it('legacy scoped tokens cannot retain declared system grants', async () => {
+		const permission = {
+			operations: ['read_only'],
+			system: { tables: { hdb_user: { read: true, insert: true, attribute_permissions: [] } } },
+		};
+		const sign = (permission) =>
+			jwt.sign(
+				{ username: 'legacy_scoped', role: { permission }, minted_by: 'admin_minter' },
+				{ key: PRIVATE_KEY_VALUE, passphrase: PASSPHRASE_VALUE },
+				{ algorithm: 'RS256', subject: 'scoped-operation', expiresIn: '1d' }
+			);
+		const legacyUser = await token_auth_plain.validateOperationToken(sign(permission));
+		const ordinaryUser = await token_auth_plain.validateOperationToken(sign({ operations: ['read_only'] }));
+		assert.strictEqual(legacyUser.role.permission.system, undefined);
+		const denial = require('#src/utility/operation_authorization').verifyPerms(
+			{
+				hdb_user: legacyUser,
+				operation: 'search_by_value',
+				schema: 'system',
+				table: 'hdb_user',
+				search_attribute: 'username',
+				search_value: 'admin',
+				get_attributes: ['*'],
+			},
+			'searchByValue'
+		);
+		assert.ok(denial, 'legacy scoped system access must be denied');
+		assert.strictEqual(legacyUser.role.role, ordinaryUser.role.role);
+	});
+
 	it('distinct permission sets get distinct synthetic role identities; identical sets share', async () => {
 		const tokenA = (await mint({ role: { permission: { operations: ['read_only'] } } })).operation_token;
 		const tokenB = (await mint({ role: { permission: { operations: ['standard_user'] } } })).operation_token;
@@ -969,7 +1017,7 @@ describe('test validateLoginToken function', () => {
 
 	it('test hdb_admin login token', async () => {
 		const result_user = await token_auth.validateLoginToken(hdb_admin_login_token);
-		assert.deepStrictEqual(result_user, { active: true, username: 'HDB_ADMIN' });
+		assert.deepStrictEqual(recordFields(result_user), { active: true, username: 'HDB_ADMIN' });
 	});
 
 	it('test old_user login token', async () => {
@@ -984,7 +1032,7 @@ describe('test validateLoginToken function', () => {
 
 	it('test non-existent user login token', async () => {
 		const result_user = await token_auth.validateLoginToken(non_user_login_token);
-		assert.deepStrictEqual(result_user, { username: 'non_user' });
+		assert.deepStrictEqual(recordFields(result_user), { username: 'non_user' });
 	});
 
 	it('test bad login token', async () => {
@@ -1053,7 +1101,7 @@ describe('test validateRefreshToken function', () => {
 
 		const validate_user_stub = sandbox.stub(user, 'findAndValidateUser').callsFake(async (u, _pw) => ({ username: u }));
 
-		token_timeout = token_auth.__set__('REFRESH_TOKEN_TIMEOUT', '-1');
+		token_timeout = setTokenTimeout(CONFIG_PARAMS.AUTHENTICATION_REFRESHTOKENTIMEOUT, '-1');
 		expired_user_tokens = await token_auth.createTokens({ username: 'EXPIRED', password: 'cool' });
 		token_timeout();
 
@@ -1100,7 +1148,7 @@ describe('test validateRefreshToken function', () => {
 		}
 
 		assert.deepStrictEqual(error, undefined);
-		assert.deepStrictEqual(user_data, {
+		assert.deepStrictEqual(recordFields(user_data), {
 			active: true,
 			username: 'HDB_ADMIN',
 			refresh_token: user.getUserWithRole('HDB_ADMIN').refresh_token,

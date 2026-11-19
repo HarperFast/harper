@@ -7,7 +7,7 @@ const assert = require('node:assert');
 const sinon = require('sinon');
 const rewire = require('rewire');
 
-const role_rw = rewire('#src/security/role');
+const role_rw = rewire('#js/security/role');
 
 const sandbox = sinon.createSandbox();
 

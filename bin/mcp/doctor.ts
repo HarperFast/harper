@@ -85,13 +85,18 @@ export async function runDoctor(opts: McpCliOptions): Promise<DoctorResult> {
 		return finalize(steps);
 	}
 
-	// Step 3: DELETE the session. Tolerated to fail (some configs disable it
-	// with allowClientDelete=false → 405). Either way the doctor overall is
-	// still OK if initialize + tools/list passed.
+	// Step 3: DELETE the session. 405 is the default (allowClientDelete=false),
+	// not a failure: the session expires on the idle timeout instead.
 	try {
 		const del = await sendDelete(connection, opts.mountPath, sessionId!, protocolVersion);
 		if (del.statusCode >= 200 && del.statusCode < 300) {
 			steps.push({ name: 'session cleanup', ok: true });
+		} else if (del.statusCode === 405) {
+			steps.push({
+				name: 'session cleanup',
+				ok: true,
+				detail: 'skipped, client DELETE disabled (allowClientDelete); session expires on idle timeout',
+			});
 		} else {
 			steps.push({ name: 'session cleanup', ok: false, detail: `HTTP ${del.statusCode}` });
 		}
@@ -103,7 +108,7 @@ export async function runDoctor(opts: McpCliOptions): Promise<DoctorResult> {
 }
 
 function finalize(steps: ReadonlyArray<{ name: string; ok: boolean; detail?: string }>): DoctorResult {
-	const ok = steps.every((s) => s.ok || s.name === 'session cleanup');
+	const ok = steps.every((s) => s.ok);
 	return { ok, steps };
 }
 

@@ -1,5 +1,7 @@
 'use strict';
 
+import { withoutSystemGrants } from './systemRolePermissions.ts';
+
 const USERNAME_REQUIRED = 'username is required';
 const ALTERUSER_NOTHING_TO_UPDATE = 'nothing to update, must supply active, role or password to update';
 const EMPTY_PASSWORD = 'password cannot be an empty string';
@@ -12,15 +14,34 @@ export {
 	assertActiveSuperUserRemains,
 	dropUser,
 	getSuperUser,
+	localPrincipal,
+	isLocalPrincipal,
+	LOCAL_USERNAME,
 	userInfo,
 	listUsers,
 	listUsersExternal,
 	findAndValidateUser,
+	getUserImpl,
 	getUserWithRole,
 	isCurrentUser,
+	hasReadRecordChanged,
+	canRetryChangedUser,
+	hasRecordProvenance,
+	isRecordlessPrincipal,
+	isRecordBacked,
+	isInactiveUserRejection,
+	certificatePrincipal,
+	isCertificatePrincipal,
+	certificateAdmission,
+	withCertificateAdmission,
+	latchRoleRequirement,
+	isRoleRequirementLatched,
 	userRecordVersions,
 	trackUserRecords,
+	cloneUserView,
+	getTrackedUser,
 	onUserChange,
+	userChangeNotificationEpoch,
 	USERNAME_REQUIRED,
 	ALTERUSER_NOTHING_TO_UPDATE,
 	EMPTY_PASSWORD,
@@ -32,6 +53,7 @@ export interface User {
 	active?: boolean;
 	username: string;
 	role?: UserRole;
+	authExpiresAt?: number;
 	__updatedtime__?: number;
 	__createdtime__?: number;
 	[other: string]: unknown;
@@ -52,6 +74,8 @@ export interface UserRoleNamedPermissions extends Partial<CRUDPermissions> {
 	operations?: string[];
 	/** Pre-expanded Set built from operations at cache-load time. Not persisted. */
 	_expandedOperations?: Set<string>;
+	/** The components this role may deploy and drop (security/componentGrant.ts). */
+	component_deploy?: import('./componentGrant.ts').ComponentGrant;
 }
 
 export interface UserRoleDatabasePermissions {
@@ -91,14 +115,16 @@ import * as delete_ from '../dataLayer/delete.ts';
 import * as validation from '../validation/user_validation.ts';
 import * as search from '../dataLayer/search.ts';
 import * as hdbUtility from '../utility/common_utils.ts';
-import * as validate from 'validate.js';
+import _validate from 'validate.js';
+// validate.js is a CJS module; in ESM (typestrip) the default export IS the library object.
+const validate: any = (_validate as any).default ?? _validate;
 import * as logger from '../utility/logging/harper_logger.ts';
-import { promisify } from 'util';
-import * as env from '../utility/environment/environmentManager.ts';
-import systemSchema from '../json/systemSchema.json';
+import { promisify } from 'node:util';
+import { systemSchema } from '../utility/systemSchema.js';
 import { hdbErrors, ClientError } from '../utility/errors/hdbError.ts';
 const { HTTP_STATUS_CODES, AUTHENTICATION_ERROR_MSGS, HDB_ERROR_MSGS } = hdbErrors;
-import * as _ from 'lodash';
+import cloneDeep from 'lodash/cloneDeep.js';
+import isEqual from 'lodash/isEqual.js';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 
 // Need to use `.js` even for other TS files since TS compiler won't replace requires.
@@ -108,19 +134,20 @@ import { server } from '../server/Server.ts';
 import * as terms from '../utility/hdbTerms.ts';
 import { expandOperationsPerms } from '../utility/operationPermissions.ts';
 import { activeSuperUserRemains } from './superUserGuard.ts';
-import { credentialRejectionError } from './credentialRejection.ts';
-import { databases, getDatabases, onUpdatedTable } from '../resources/databases.ts';
+import { credentialRejectionError, isCredentialRejection } from './credentialRejection.ts';
+import { databases, getDatabases, onUpdatedTable, onRemovedTable } from '../resources/databases.ts';
 import { VERSION_REUSED } from '../resources/RecordEncoder.ts';
 import { contextStorage } from '../resources/transaction.ts';
+import { deliveryCertified } from '../resources/transactionBroadcast.ts';
 import { writeKey } from 'ordered-binary';
 
-server.getUser = (username: string, password?: string | null): Promise<User> => {
+function getUserImpl(username: string, password?: string | null): Promise<User> {
 	return findAndValidateUser(username, password, password != null);
-};
+}
 
-server.authenticateUser = (username: string, password?: string | null): Promise<User> => {
+function authenticateUserImpl(username: string, password?: string | null): Promise<User> {
 	return findAndValidateUser(username, password);
-};
+}
 
 const USER_ATTRIBUTE_ALLOWLIST = {
 	username: true,
@@ -130,14 +157,13 @@ const USER_ATTRIBUTE_ALLOWLIST = {
 };
 const passwordHashCache = new Map();
 const promiseDelete = promisify(delete_.delete_);
-const configuredHashFunction =
-	env.get(terms.CONFIG_PARAMS.AUTHENTICATION_HASHFUNCTION) ?? password.HASH_FUNCTION.SHA256;
 const { USER_TABLE_NAME, ROLE_TABLE_NAME } = terms.SYSTEM_TABLE_NAMES;
 
 async function addUser(user: User | any): Promise<string> {
 	let cleanUser = validate.cleanAttributes(user, USER_ATTRIBUTE_ALLOWLIST);
 	let validationResp = validation.addUserValidation(cleanUser);
 	if (validationResp) throw new ClientError(validationResp.message);
+	if (cleanUser.username === LOCAL_USERNAME) throw new ClientError(HDB_ERROR_MSGS.RESERVED_USERNAME(LOCAL_USERNAME));
 
 	let searchRole = await search.searchByValue({
 		schema: 'system',
@@ -155,8 +181,9 @@ async function addUser(user: User | any): Promise<string> {
 		throw new ClientError(HDB_ERROR_MSGS.DUP_ROLES_FOUND(cleanUser.role), HTTP_STATUS_CODES.CONFLICT);
 	}
 
-	cleanUser.password = await password.hash(cleanUser.password, configuredHashFunction);
-	cleanUser.hash_function = configuredHashFunction;
+	const hashFunction = password.configuredHashFunction();
+	cleanUser.password = await password.hash(cleanUser.password, hashFunction);
+	cleanUser.hash_function = hashFunction;
 	cleanUser.role = searchRole[0].id;
 
 	const insertResponse = await insert.insert({
@@ -198,8 +225,9 @@ async function alterUser(jsonMessage) {
 	}
 
 	if (!hdbUtility.isEmpty(cleanUser.password) && !hdbUtility.isEmptyOrZeroLength(cleanUser.password.trim())) {
-		cleanUser.password = await password.hash(cleanUser.password, configuredHashFunction);
-		cleanUser.hash_function = configuredHashFunction;
+		const hashFunction = password.configuredHashFunction();
+		cleanUser.password = await password.hash(cleanUser.password, hashFunction);
+		cleanUser.hash_function = hashFunction;
 	}
 
 	// the not operator will consider an empty string as undefined, so we need to check for an empty string explicitly
@@ -269,7 +297,8 @@ async function userInfo(body): Promise<string | User> {
 		return 'There was no user info in the body';
 	}
 
-	let user = _.cloneDeep(body.hdb_user);
+	if (isLocalPrincipal(body.hdb_user)) return { username: LOCAL_USERNAME, active: true, role: LOCAL_ROLE_RECORD };
+	let user = cloneDeep(body.hdb_user);
 	let roleData =
 		user.role &&
 		(await search.searchByHash({
@@ -279,7 +308,7 @@ async function userInfo(body): Promise<string | User> {
 			get_attributes: ['*'],
 		}));
 
-	user.role = roleData?.[0];
+	user.role = withoutSystemGrants(roleData?.[0]);
 	delete user.password;
 	delete user.refresh_token;
 	delete user.hash;
@@ -294,11 +323,20 @@ async function userInfo(body): Promise<string | User> {
  */
 async function listUsersExternal(): Promise<User[]> {
 	const userData = await listUsers();
+	const externalRoles = new Map<UserRole, UserRole>();
 	userData.forEach((user) => {
 		delete user.password;
 		delete user.hash;
 		delete user.refresh_token;
 		delete user.hash_function;
+		if (user.role) {
+			let externalRole = externalRoles.get(user.role);
+			if (!externalRole) {
+				externalRole = withoutSystemGrants(user.role, false);
+				externalRoles.set(user.role, externalRole);
+			}
+			user.role = externalRole;
+		}
 	});
 
 	return [...userData.values()];
@@ -333,7 +371,7 @@ async function listUsers(): Promise<Map<string, User>> {
 
 	const userMap: Map<string, User> = new Map();
 	for (let user of users) {
-		user = _.cloneDeep(user);
+		user = cloneDeep(user);
 		user.role = roleMapObj[user.role];
 		if (!user.role) logger.error(`invalid user role found.`);
 		userMap.set(user.username, user);
@@ -342,39 +380,87 @@ async function listUsers(): Promise<Map<string, User>> {
 	return userMap;
 }
 
+// Frozen because one instance is shared by every role with the same read permission: an entry
+// mutated by any consumer would change what every other user is allowed to do.
+function systemTablePermissions(readPerm: boolean): UserRolePermissionTable {
+	return Object.freeze({
+		read: readPerm,
+		insert: false,
+		update: false,
+		delete: false,
+		attribute_permissions: Object.freeze([]) as UserRoleAttributePermissionTable[],
+	}) as UserRolePermissionTable;
+}
+
+const systemTablesByReadPerm = new Map<boolean, Record<string, UserRolePermissionTable>>();
+let watchingSystemTables = false;
+
+// Warmed identities retain this map; forwarding requires it to remain a plain, cloneable object.
+function syncSystemTables(tables: Record<string, UserRolePermissionTable>, readPerm: boolean) {
+	const live = databases[terms.SYSTEM_SCHEMA_NAME];
+	const names = new Set([...Object.keys(systemSchema), ...(live ? Object.keys(live) : [])]);
+	for (const name of names) {
+		if (!Object.hasOwn(tables, name)) {
+			Object.defineProperty(tables, name, {
+				value: systemTablePermissions(readPerm),
+				writable: true,
+				enumerable: true,
+				configurable: true,
+			});
+		}
+	}
+	for (const name of Object.keys(tables)) {
+		if (!names.has(name)) delete tables[name];
+	}
+}
+
+function systemTablesPermissions(readPerm: boolean): Record<string, UserRolePermissionTable> {
+	watchSystemTables();
+	let tables = systemTablesByReadPerm.get(readPerm);
+	if (!tables) {
+		tables = {};
+		syncSystemTables(tables, readPerm);
+		systemTablesByReadPerm.set(readPerm, tables);
+	}
+	return tables;
+}
+
+// Registry listeners run during schema loading, so refresh failures must not abort startup.
+function refreshSystemTables() {
+	try {
+		for (const [readPerm, tables] of systemTablesByReadPerm) syncSystemTables(tables, readPerm);
+	} catch (error) {
+		harperLogger.error('Failed to refresh system table permissions; they may be stale', error);
+	}
+}
+// databases imports Resource, which imports this module before the registry is initialized.
+function watchSystemTables() {
+	if (watchingSystemTables) return;
+	onUpdatedTable((table) => {
+		if (table?.databaseName === terms.SYSTEM_SCHEMA_NAME) refreshSystemTables();
+	});
+	onRemovedTable((_tableName, databaseName) => {
+		if (databaseName === terms.SYSTEM_SCHEMA_NAME) refreshSystemTables();
+	});
+	watchingSystemTables = true;
+}
+
 /**
  * adds system table permissions to a role.  This is used to protect system tables by leveraging operationAuthorization.
  * @param userRole - Role of the user found during auth.
  */
-function appendSystemTablesToRole(userRole: UserRole) {
+export function appendSystemTablesToRole(userRole: UserRole) {
 	if (!userRole) {
 		logger.error(`invalid user role found.`);
 		return;
 	}
 	if (!userRole.permission) {
-		// reachable only via a direct table write or a replicated write; the operations API requires permission
 		logger.error(`role ${userRole.role ?? userRole.id} has no permission; skipping system table permissions.`);
 		return;
 	}
-	if (!userRole.permission.system) {
-		userRole.permission.system = {
-			tables: {},
-		};
-	}
-	if (!userRole.permission.system.tables) {
-		userRole.permission.system.tables = {};
-	}
-	for (let table of Object.keys(systemSchema)) {
-		let newProp = {
-			read: !!userRole.permission.super_user,
-			insert: false,
-			update: false,
-			delete: false,
-			attribute_permissions: [],
-		};
-
-		userRole.permission.system.tables[table] = newProp;
-	}
+	userRole.permission.system = {
+		tables: systemTablesPermissions(!!userRole.permission.super_user),
+	};
 }
 
 /**
@@ -388,7 +474,7 @@ function cacheExpandedOperationsPerms(userRole: UserRole) {
 }
 
 function withSystemTablePermissions(roleRecord: UserRole): UserRole {
-	const role = _.cloneDeep(roleRecord);
+	const role = cloneDeep(withoutSystemGrants(roleRecord));
 	appendSystemTablesToRole(role);
 	cacheExpandedOperationsPerms(role);
 	return role;
@@ -405,10 +491,14 @@ interface UserEntries {
 	role?: RecordEntry;
 }
 
-function systemStore(tableName: string) {
+function systemTable(tableName: string) {
 	const table = getDatabases().system?.[tableName];
 	if (!table) throw new Error(`Table system.${tableName} not found`);
-	return table.primaryStore;
+	return table;
+}
+
+function systemStore(tableName: string) {
+	return systemTable(tableName).primaryStore;
 }
 
 // hdb_user and hdb_role ids are only ever strings or numbers; anything else is malformed data.
@@ -434,6 +524,11 @@ function readEntry(store, id): RecordEntry | undefined {
 	return entry?.value == null ? undefined : entry;
 }
 
+// On an audited hdb_user a delete leaves a tombstone (a null value), kept for logging.auditRetention
+function hasLiveOrDeletedEntry(store, id): boolean {
+	return !keyTooLargeForStore(id) && store.getEntry(id) !== undefined;
+}
+
 /**
  * What a later read must match to be the same committed record: null for no record, else its version,
  * or its value when a resequenced write reused the version (RecordEncoder.ts VERSION_REUSED) so the
@@ -442,6 +537,9 @@ function readEntry(store, id): RecordEntry | undefined {
  */
 type RecordStamp = number | object | null;
 
+// held by no entry: a lookup under another name that found only a tombstone for it, after it resolved
+const UNREAD_RECORD: RecordStamp = Object.freeze({});
+
 function stampOf(entry: RecordEntry | undefined): RecordStamp {
 	if (entry === undefined) return null;
 	if (entry.metadataFlags & VERSION_REUSED) return entry.value;
@@ -449,8 +547,9 @@ function stampOf(entry: RecordEntry | undefined): RecordStamp {
 }
 
 function holdsStamp(entry: RecordEntry | undefined, stamp: RecordStamp): boolean {
+	if (stamp === UNREAD_RECORD) return false;
 	if (entry === undefined || stamp === null) return entry === undefined && stamp === null;
-	if (typeof stamp === 'object') return _.isEqual(entry.value, stamp);
+	if (typeof stamp === 'object') return isEqual(entry.value, stamp);
 	return !(entry.metadataFlags & VERSION_REUSED) && (entry.version ?? 0) === stamp;
 }
 
@@ -496,15 +595,22 @@ function derivedRole(roleId: unknown, entry: RecordEntry | undefined): UserRole 
 	return role;
 }
 
-interface UserProvenance {
+export interface UserProvenance {
 	username: string;
 	userStamp: RecordStamp;
 	roleId?: unknown;
 	roleStamp: RecordStamp;
+	/** No hdb_user record had the user's name before or after a component's server.getUser resolved it. */
+	recordless?: boolean;
 }
 
-const userProvenance = new WeakMap<User, UserProvenance>();
-const trackedProvenance = new WeakMap<User, UserProvenance>();
+// An own property of a user this module built, so a spread copy carries it without a WeakMap write
+const PROVENANCE = Symbol('record provenance');
+// A user resolved outside this module (a component's server.getUser), which may not take a property: the
+// first lookup that checked it against each name, its own or a login name whose record admitted it
+const trackedProvenance = new WeakMap<User, Map<unknown, UserProvenance>>();
+// bounds the login names one memoized user keeps a first lookup for; its own name's is never dropped
+const MAX_TRACKED_NAMES = 64;
 
 function provenanceOf(username: string, entries: UserEntries): UserProvenance {
 	return {
@@ -522,8 +628,45 @@ function userView(username: string, entries: UserEntries): User {
 	const role = record && derivedRole(record.role, entries.role);
 	// verifyPerms replaces role.permission on the request's user; the derived role is shared
 	if (role) user.role = { ...role, permission: { ...role.permission } };
-	userProvenance.set(user, provenanceOf(username, entries));
+	(user as any)[PROVENANCE] = provenanceOf(username, entries);
 	return user;
+}
+
+const LOCAL_USERNAME = 'local';
+// a default install's super_user role, which applications authorize on by `role.id`
+const LOCAL_ROLE_RECORD = deepFreeze({
+	role: 'super_user',
+	id: 'super_user',
+	permission: { super_user: true },
+	__createdtime__: 0,
+	__updatedtime__: 0,
+} as UserRole);
+let localRole: UserRole | undefined;
+
+/** The principal of a request trusted by its transport; security/DESIGN.md has its rules. */
+function localPrincipal(): User {
+	if (!localRole) {
+		localRole = withSystemTablePermissions(LOCAL_ROLE_RECORD);
+		Object.freeze(localRole.permission.system);
+	}
+	return {
+		username: LOCAL_USERNAME,
+		active: true,
+		_localPrincipal: true,
+		role: { ...localRole, permission: { ...localRole.permission } },
+	};
+}
+
+// a string marker, not a symbol: the Bun/uWS fallback and the MQTT will row carry the principal as data
+function isLocalPrincipal(user: any): boolean {
+	return user?._localPrincipal === true && user.username === LOCAL_USERNAME;
+}
+
+function deepFreeze<T>(value: T): T {
+	if (value === null || typeof value !== 'object' || Object.isFrozen(value)) return value;
+	Object.freeze(value);
+	for (const key of Object.keys(value)) deepFreeze(value[key]);
+	return value;
 }
 
 function getUserWithRole(username: string): User | undefined {
@@ -537,23 +680,281 @@ function userRecordVersions(username: string): UserProvenance {
 
 /**
  * Makes `isCurrentUser` check a user resolved outside this module against the record versions read
- * before it was resolved; a write in between then shows as a change.
+ * before it was resolved, so a write in between shows as a change. A user under another name, when no
+ * record has the login name, can only have its own name's records read after it resolved, so only a drop
+ * in between shows, by its tombstone; an unaudited hdb_user keeps none, so there such a user with no record
+ * is re-read by name, as one whose name lost its record is. Returns this lookup's provenance, or undefined
+ * for a user this module built. A user is recordless only if no hdb_user entry, live or deleted, has its
+ * name: a tombstone outlives any lookup shorter than logging.auditRetention, at the cost of re-reading by
+ * name a user whose name lost its record within it. A memoizing server.getUser hands one user to logins
+ * backed differently, so the first lookup that checked the user against each name is kept (`firstLookup`): a
+ * name first found recordless stays so, and a record that first lookup read and that is since dropped stays
+ * a change. An HTTP view carries its own lookup; an MQTT connection holds the user, so `getTrackedUser` gives
+ * it the first lookup.
  */
-function trackUserRecords(user: User, versions: UserProvenance): void {
-	if (user && typeof user === 'object' && !userProvenance.has(user)) trackedProvenance.set(user, versions);
+function trackUserRecords(user: User, versions: UserProvenance): UserProvenance | undefined {
+	if (!user || typeof user !== 'object' || (user as any)[PROVENANCE]) return undefined;
+	const table = systemTable(USER_TABLE_NAME);
+	const store = table.primaryStore;
+	const sameName = user.username === versions.username;
+	let firsts = trackedProvenance.get(user);
+	let provenance: UserProvenance;
+	if (
+		!sameName &&
+		(versions.userStamp !== null || hasLiveOrDeletedEntry(store, versions.username) || firsts?.has(versions.username))
+	) {
+		// a record for the login name may be what admitted a user under another name
+		provenance = { ...versions, recordless: false };
+	} else if (sameName) {
+		provenance = { ...versions };
+		provenance.recordless = provenance.userStamp === null && !hasLiveOrDeletedEntry(store, user.username);
+	} else {
+		provenance = userRecordVersions(user.username);
+		provenance.recordless = false;
+		// its own name is read only after it resolved, so a record there this did not read may have been dropped
+		// meanwhile; a login name's read, and the same name's, came before
+		if (provenance.userStamp === null && table.audit) {
+			if (hasLiveOrDeletedEntry(store, user.username)) provenance.userStamp = UNREAD_RECORD;
+			else provenance.recordless = true;
+		}
+	}
+	if (!firsts) trackedProvenance.set(user, (firsts = new Map()));
+	const first = firsts.get(provenance.username);
+	if (!first) {
+		if (firsts.size >= MAX_TRACKED_NAMES) {
+			for (const name of firsts.keys()) {
+				if (name === user.username) continue;
+				firsts.delete(name);
+				break;
+			}
+		}
+		firsts.set(provenance.username, provenance);
+	}
+	// a record created under its name since is another principal's
+	else if (first.recordless) provenance.recordless = true;
+	else if (first.userStamp === null && provenance.userStamp !== null && provenance.userStamp !== UNREAD_RECORD) {
+		provenance.recordless = false;
+		firsts.set(provenance.username, provenance);
+	} else if (first.userStamp !== null && (provenance.userStamp === null || provenance.userStamp === UNREAD_RECORD))
+		provenance = first;
+	else provenance.recordless = false;
+	return provenance;
+}
+
+/**
+ * The first lookup that checked `user` against `name`, or with no name, against its own name, else its
+ * first: what a holder of the user itself (an MQTT connection) is checked against, since a later lookup's
+ * read would certify a memoized user's stale role as current.
+ */
+function firstLookup(user: User, name: unknown = user?.username): UserProvenance | undefined {
+	const firsts = trackedProvenance.get(user);
+	return firsts && (firsts.get(name) ?? firsts.values().next().value);
+}
+
+/**
+ * A copy whose `role` and `permission` the caller may replace (verifyPerms does) without touching `user`;
+ * `isCurrentUser` checks it against `provenance`, what `trackUserRecords` returned for this lookup, or else
+ * against the records `user` was built from.
+ */
+function cloneUserView(user: User, provenance?: UserProvenance, admission?: object): User {
+	const clone: User = { ...user };
+	if (user.role) clone.role = { ...user.role, permission: { ...user.role.permission } };
+	provenance ??= (clone as any)[PROVENANCE] ?? firstLookup(user);
+	if (provenance) (clone as any)[PROVENANCE] = provenance;
+	if (admission) (clone as any)[CERTIFICATE_PRINCIPAL] = admission;
+	return clone;
+}
+
+/**
+ * `server.getUser` for a connection that holds its user (MQTT CONNECT), with a component's principal tracked
+ * against the records read for its name before it resolved (`trackUserRecords`). It returns the component's
+ * user itself, since a copy would lose its class's private fields, and puts on `admission` what the
+ * connection is checked against. `resolver` is the server whose getUser resolves the login.
+ */
+function getTrackedUser(
+	username: string,
+	password: string | null,
+	request?: unknown,
+	admission?: { provenance?: UserProvenance },
+	resolver: { getUser: typeof server.getUser } = server
+): Promise<User> {
+	// not async, so a CONNECT the core lookup serves gets its promise with nothing added
+	if (resolver.getUser === getUserImpl) return getUserImpl(username, password);
+	return getComponentUser(username, password, request, admission, resolver);
+}
+
+async function getComponentUser(
+	username: string,
+	password: string | null,
+	request: unknown,
+	admission: { provenance?: UserProvenance } | undefined,
+	resolver: { getUser: typeof server.getUser }
+): Promise<User> {
+	const versions = userRecordVersions(username);
+	const user = await resolver.getUser(username, password, request as any);
+	const provenance = trackUserRecords(user, versions);
+	if (admission && provenance) {
+		const first = firstLookup(user, provenance.username);
+		// lookups complete in any order, so one that read other records than the first may hold a role changed since
+		admission.provenance =
+			first.recordless || sameRecords(first, provenance) ? first : { ...first, userStamp: UNREAD_RECORD };
+	}
+	return user;
+}
+
+function sameRecords(a: UserProvenance, b: UserProvenance): boolean {
+	return a.roleId === b.roleId && isEqual(a.userStamp, b.userStamp) && isEqual(a.roleStamp, b.roleStamp);
+}
+
+function recordedProvenance(user: User, admitted?: UserProvenance): UserProvenance | undefined {
+	return admitted ?? (user as any)?.[PROVENANCE] ?? firstLookup(user);
+}
+
+/**
+ * Whether `isCurrentUser` answers for `user`'s own name, so a change to its records notifies its holders:
+ * false for one resolved outside this module and not tracked, one checked against the login name that
+ * admitted it under another, or one whose name has no record now but had one, which is re-read by name.
+ * `admitted` is what its holder's own lookup recorded (`getTrackedUser`).
+ */
+function hasRecordProvenance(user: User, admitted?: UserProvenance): boolean {
+	const provenance = recordedProvenance(user, admitted);
+	return provenance?.username === user.username && (provenance.userStamp !== null || provenance.recordless === true);
+}
+
+/**
+ * Whether a component's server.getUser built `user` with no hdb_user record for its name when it was
+ * resolved (`trackUserRecords`). No record change can revoke it, and a record created later is another
+ * principal's, so a holder never re-reads it by name.
+ */
+function isRecordlessPrincipal(user: User, admitted?: UserProvenance): boolean {
+	return recordedProvenance(user, admitted)?.recordless === true;
+}
+
+/**
+ * Whether an hdb_user record backed `user` when it was resolved, its own or the login name's that admitted it
+ * (`admitted`, as for `hasRecordProvenance`); undefined when it has no record provenance (a scoped token, or a user
+ * resolved outside this module and not tracked).
+ */
+function isRecordBacked(user: User, admitted?: UserProvenance): boolean | undefined {
+	const provenance = recordedProvenance(user, admitted);
+	return provenance && provenance.userStamp !== null;
+}
+
+/** Whether `error` is `findAndValidateUser` refusing an inactive user, which proves a record had the name. */
+function isInactiveUserRejection(error: unknown): boolean {
+	return isCredentialRejection(error) && (error as Error).message === AUTHENTICATION_ERROR_MSGS.USER_INACTIVE;
+}
+
+// holds the admission: the principal a certificate named, shared by every view of it
+const CERTIFICATE_PRINCIPAL = Symbol('certificate principal');
+
+/**
+ * `user` marked as named by a verified client certificate, which live-subscription rechecks exempt from the role
+ * requirement (#4062). The mark holds the admission, the principal it was set on, so every view of it shares one
+ * identity; a by-name re-resolve that replaces such a principal must carry the admission to the fresh view
+ * (`cloneUserView`, `withCertificateAdmission`), or it fails closed. Only the built-in resolver's view, new per call,
+ * is marked in place: an override may hand the same object to a session or password lookup, so its result is copied,
+ * and only when a copy loses nothing (`isPlainObject`).
+ */
+function certificatePrincipal<T>(user: T, getUser?: unknown): T {
+	if (!user || typeof user !== 'object') return user;
+	if (getUser === getUserImpl && (user as any)[PROVENANCE]) {
+		(user as any)[CERTIFICATE_PRINCIPAL] = user;
+		return user;
+	}
+	if (!isPlainObject(user) || hasHiddenProperty(user)) return user;
+	const view: any = { ...user };
+	view[CERTIFICATE_PRINCIPAL] = view;
+	if (!view[PROVENANCE]) {
+		const tracked = firstLookup(user as unknown as User, view.username);
+		if (tracked) view[PROVENANCE] = tracked;
+	}
+	return view;
+}
+
+const nativeObjectSource = Function.prototype.toString.call(Object);
+
+/**
+ * An object literal, or an object with a null prototype. A literal's prototype is its realm's Object.prototype, and a
+ * vm module loader's context has its own, recognized by its native Object constructor; a class's prototype, even one
+ * that extends null, has its own constructor.
+ */
+function isPlainObject(value: object): boolean {
+	const prototype = Object.getPrototypeOf(value);
+	if (prototype === null || prototype === Object.prototype) return true;
+	if (Object.getPrototypeOf(prototype) !== null || !Object.hasOwn(prototype, 'constructor')) return false;
+	const constructor = prototype.constructor;
+	return (
+		typeof constructor === 'function' &&
+		constructor.prototype === prototype &&
+		Function.prototype.toString.call(constructor) === nativeObjectSource
+	);
+}
+
+// a spread copies only own enumerable properties, so it would drop a non-enumerable authExpiresAt or role
+function hasHiddenProperty(value: object): boolean {
+	for (const key of Reflect.ownKeys(value)) if (!Object.prototype.propertyIsEnumerable.call(value, key)) return true;
+	return false;
+}
+
+function isCertificatePrincipal(user: unknown): boolean {
+	return certificateAdmission(user) !== undefined;
+}
+
+function certificateAdmission(user: unknown): object | undefined {
+	const admission = (user as any)?.[CERTIFICATE_PRINCIPAL];
+	return typeof admission === 'object' && admission !== null ? admission : undefined;
+}
+
+function withCertificateAdmission<T>(view: T, from: unknown): T {
+	const admission = certificateAdmission(from);
+	if (!admission || !view || typeof view !== 'object') return view;
+	if (isRecordBacked(view as unknown as User) === true) roleRequirements.add(admission);
+	return { ...view, [CERTIFICATE_PRINCIPAL]: admission };
+}
+
+// Certificate admissions a record was seen behind, and the subscription contexts that used them: every later
+// subscription of such an admission, by any view of it (an MQTT session reuses its principal for every SUBSCRIBE; a
+// recheck or an MCP refresh installs a new view), or on such a context needs a role, even once the record is dropped.
+const roleRequirements = new WeakSet<object>();
+
+function latchRoleRequirement(key: object): void {
+	roleRequirements.add(key);
+}
+
+function isRoleRequirementLatched(key: unknown): boolean {
+	return typeof key === 'object' && key !== null && roleRequirements.has(key);
 }
 
 /**
  * Whether the user and role records a user was built from are still the committed ones. A user with
  * no recorded versions (a scoped token, whose role it carries itself) is current.
  */
-function isCurrentUser(user: User): boolean {
-	const provenance = userProvenance.get(user) ?? trackedProvenance.get(user);
+function isCurrentUser(user: User, admitted?: UserProvenance): boolean {
+	const provenance = recordedProvenance(user, admitted);
 	if (!provenance) return true;
 	if (!isUnchanged(systemStore(USER_TABLE_NAME), provenance.username, provenance.userStamp)) return false;
 	return (
 		provenance.roleId == null || isUnchanged(systemStore(ROLE_TABLE_NAME), provenance.roleId, provenance.roleStamp)
 	);
+}
+
+/**
+ * Whether a record that `user`'s lookup (or first lookup) actually read has changed or been dropped since.
+ * A tombstone found only after resolving under another name (`UNREAD_RECORD`) keeps `isCurrentUser` false so
+ * the cache re-resolves and subscriptions recheck by name, without refusing logins during `logging.auditRetention`.
+ */
+function hasReadRecordChanged(user: User, admitted?: UserProvenance): boolean {
+	const provenance = recordedProvenance(user, admitted);
+	if (!provenance || provenance.userStamp === UNREAD_RECORD) return false;
+	return !isCurrentUser(user, provenance);
+}
+
+// A dropped hdb_user record cannot become current on retry, so skip re-running server.getUser for it.
+function canRetryChangedUser(user: User, admitted?: UserProvenance): boolean {
+	const provenance = recordedProvenance(user, admitted);
+	if (!provenance) return false;
+	return provenance.userStamp === null || readEntry(systemStore(USER_TABLE_NAME), provenance.username) !== undefined;
 }
 
 /**
@@ -605,25 +1006,29 @@ async function findAndValidateUser(username: string, pw?: string | null, validat
 	return user;
 }
 
-let superUsername: string | undefined;
-
 async function getSuperUser(): Promise<User | undefined> {
-	if (superUsername !== undefined) {
-		const user = getUserWithRole(superUsername);
-		if (user?.role?.role === 'super_user') return user;
-	}
-	superUsername = undefined;
 	for (const [username, user] of (await listUsers()) ?? []) {
-		if (user.role?.role === 'super_user') {
-			superUsername = username;
-			return getUserWithRole(username);
-		}
+		if (user.active === true && user.role?.permission?.super_user === true) return getUserWithRole(username);
 	}
 }
 
-const userChangeListeners: Array<() => void | Promise<void>> = [];
-const userChangeSubscriptions = new Map<string, { table: any; subscription: Promise<any> }>();
-let userChangeNotificationScheduled = false;
+/** Primary keys of the hdb_user and hdb_role records changed since the previous notification. */
+export interface UserChange {
+	usernames: ReadonlySet<unknown>;
+	roleIds: ReadonlySet<unknown>;
+}
+
+type UserChangeListener = (change?: UserChange) => void | Promise<void>;
+
+const userChangeListeners: UserChangeListener[] = [];
+const userChangeSubscriptions = new Map<string, { table: any; subscription: Promise<any>; opened?: any }>();
+// tables whose subscription has been open before, so a new one follows a gap in notifications
+const subscribedBefore = new Set<string>();
+// null while nothing is pending; undefined once the pending batch lost its identities
+let pendingUserChange: { usernames: Set<unknown>; roleIds: Set<unknown> } | null | undefined = null;
+const MAX_CHANGE_IDS = 1000;
+let notificationEpoch = 0;
+let epochsIssued = 0;
 let unauditedUserTableLogged = false;
 const SUBSCRIBE_RETRY_MIN_MS = 1000;
 const SUBSCRIBE_RETRY_MAX_MS = 60_000;
@@ -631,10 +1036,12 @@ let subscribeRetryDelay = SUBSCRIBE_RETRY_MIN_MS;
 
 /**
  * Calls `listener` on this thread after `system.hdb_user` or `system.hdb_role` changes, from any thread
- * or a replicated write, at most once per event-loop turn. For consumers already holding a user (live
- * subscriptions, MCP sessions); lookups need no notification because they read the records.
+ * or a replicated write, at most once per event-loop turn, with the changed records' primary keys. With
+ * no `change`, which records changed is unknown: a whole-table event, an oversized batch, or a gap in
+ * the table subscriptions. For consumers already holding a user (live subscriptions, MCP sessions);
+ * lookups need no notification because they read the records.
  */
-function onUserChange(listener: () => void | Promise<void>): void {
+function onUserChange(listener: UserChangeListener): void {
 	userChangeListeners.push(listener);
 	if (userChangeListeners.length > 1) return;
 	onUpdatedTable((table) => {
@@ -646,12 +1053,34 @@ function onUserChange(listener: () => void | Promise<void>): void {
 	}
 }
 
+/**
+ * 0 unless the hdb_user and hdb_role subscriptions are both open and have been delivered every record
+ * committed since they opened; otherwise an id that changes each time they become so. A consumer that
+ * saw the same non-zero epoch before and after a period was notified of every change in it. Always 0
+ * where the storage engine cannot certify delivery (LMDB).
+ */
+function userChangeNotificationEpoch(): number {
+	for (const tableName of [USER_TABLE_NAME, ROLE_TABLE_NAME]) {
+		const opened = userChangeSubscriptions.get(tableName)?.opened;
+		if (!opened || !deliveryCertified(opened)) return 0;
+	}
+	return notificationEpoch;
+}
+
+function updateNotificationEpoch(): void {
+	const open =
+		userChangeSubscriptions.get(USER_TABLE_NAME)?.opened && userChangeSubscriptions.get(ROLE_TABLE_NAME)?.opened;
+	if (!open) notificationEpoch = 0;
+	else if (notificationEpoch === 0) notificationEpoch = ++epochsIssued;
+}
+
 function subscribeToUserChanges(table): void {
 	const { tableName } = table;
 	if (tableName !== USER_TABLE_NAME && tableName !== ROLE_TABLE_NAME) return;
 	const previous = userChangeSubscriptions.get(tableName);
 	if (previous?.table === table) return;
 	userChangeSubscriptions.delete(tableName);
+	updateNotificationEpoch();
 	previous?.subscription.then(
 		(subscription) => subscription?.end?.(),
 		() => {}
@@ -666,36 +1095,76 @@ function subscribeToUserChanges(table): void {
 		}
 		return;
 	}
+	const noteChange = tableName === USER_TABLE_NAME ? 'usernames' : 'roleIds';
 	// outside any request context, which the subscription would otherwise adopt for its lifetime
 	const subscription = contextStorage.exit(() =>
-		table.subscribe({ listener: scheduleUserChangeNotification, omitCurrent: true })
+		table.subscribe({
+			listener: (event) => scheduleUserChangeNotification(noteChange, event?.id),
+			omitCurrent: true,
+			// certifies to userChangeNotificationEpoch that no committed change was skipped
+			reportProgress: true,
+		})
 	);
-	userChangeSubscriptions.set(tableName, { table, subscription });
+	const state: { table: any; subscription: Promise<any>; opened?: any } = { table, subscription };
+	userChangeSubscriptions.set(tableName, state);
+	const isCurrent = () => userChangeSubscriptions.get(tableName) === state;
+	const resubscribeLater = () => {
+		setTimeout(() => {
+			if (databases.system?.[tableName] === table) subscribeToUserChanges(table);
+		}, subscribeRetryDelay).unref();
+		subscribeRetryDelay = Math.min(subscribeRetryDelay * 2, SUBSCRIBE_RETRY_MAX_MS);
+	};
 	subscription.then(
-		() => (subscribeRetryDelay = SUBSCRIBE_RETRY_MIN_MS),
+		(opened) => {
+			if (!isCurrent()) return;
+			const openedAt = Date.now();
+			const onClosed = () => {
+				if (!isCurrent()) return;
+				userChangeSubscriptions.delete(tableName);
+				updateNotificationEpoch();
+				// one that closes on every event keeps backing off, since each reopen rechecks everything
+				if (Date.now() - openedAt >= SUBSCRIBE_RETRY_MAX_MS) subscribeRetryDelay = SUBSCRIBE_RETRY_MIN_MS;
+				resubscribeLater();
+			};
+			if (opened.closed) return onClosed();
+			// the broadcaster closes subscribers when their database closes or changes generation, and a
+			// progress-reporting one when an event fails to deliver
+			opened.on('close', onClosed);
+			state.opened = opened;
+			updateNotificationEpoch();
+			if (subscribedBefore.has(tableName)) scheduleUserChangeNotification();
+			else subscribedBefore.add(tableName);
+		},
 		(error) => {
-			if (userChangeSubscriptions.get(tableName)?.subscription !== subscription) return;
+			if (!isCurrent()) return;
 			userChangeSubscriptions.delete(tableName);
 			logger.error(`Failed to subscribe to system.${tableName} for user changes; retrying`, error);
-			setTimeout(() => {
-				if (databases.system?.[tableName] === table) subscribeToUserChanges(table);
-			}, subscribeRetryDelay).unref();
-			subscribeRetryDelay = Math.min(subscribeRetryDelay * 2, SUBSCRIBE_RETRY_MAX_MS);
+			resubscribeLater();
 		}
 	);
 }
 
-function scheduleUserChangeNotification(): void {
-	if (userChangeNotificationScheduled) return;
-	userChangeNotificationScheduled = true;
-	setImmediate(notifyUserChangeListeners);
+/** With no `kind`, or an event with no record id, which records changed is unknown. */
+function scheduleUserChangeNotification(kind?: 'usernames' | 'roleIds', id?: unknown): void {
+	if (pendingUserChange === null) {
+		pendingUserChange = { usernames: new Set(), roleIds: new Set() };
+		setImmediate(notifyUserChangeListeners);
+	}
+	if (pendingUserChange === undefined) return;
+	if (kind === undefined || id == null) pendingUserChange = undefined;
+	else {
+		pendingUserChange[kind].add(id);
+		if (pendingUserChange.usernames.size + pendingUserChange.roleIds.size > MAX_CHANGE_IDS)
+			pendingUserChange = undefined;
+	}
 }
 
 function notifyUserChangeListeners(): void {
-	userChangeNotificationScheduled = false;
+	const change = pendingUserChange ?? undefined;
+	pendingUserChange = null;
 	for (const listener of userChangeListeners) {
 		try {
-			const result: any = listener();
+			const result: any = listener(change);
 			if (typeof result?.catch === 'function')
 				result.catch((error) => logger.error('User change listener failed', error));
 		} catch (error) {
@@ -704,8 +1173,13 @@ function notifyUserChangeListeners(): void {
 	}
 }
 
+/** Test-only: the open hdb_user or hdb_role subscription behind `onUserChange`. */
+export function _userChangeSubscription(tableName: string): any {
+	return userChangeSubscriptions.get(tableName)?.opened;
+}
+
 let invalidateCallbacks = [];
-(server as any).invalidateUser = function (user: User | any) {
+function invalidateUserImpl(user: User | any) {
 	for (let callback of invalidateCallbacks) {
 		try {
 			callback(user);
@@ -713,8 +1187,13 @@ let invalidateCallbacks = [];
 			harperLogger.error('Error invalidating user', error);
 		}
 	}
-};
+}
 
-server.onInvalidatedUser = function (callback) {
+function onInvalidatedUserImpl(callback) {
 	invalidateCallbacks.push(callback);
-};
+}
+
+server.getUser = getUserImpl;
+server.authenticateUser = authenticateUserImpl;
+server.onInvalidatedUser = onInvalidatedUserImpl;
+(server as any).invalidateUser = invalidateUserImpl;

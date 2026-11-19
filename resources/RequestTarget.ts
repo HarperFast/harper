@@ -127,7 +127,7 @@ export class RequestTarget extends URLSearchParams {
 			if (path.endsWith('/')) {
 				this.isCollection = true;
 			}
-			this.id = decodeURIComponent(path);
+			this.id = path.includes('%') ? decodeURIComponent(path) : path;
 		} else if (this.pathname === '/') {
 			// a bare trailing slash is the documented way to address a resource's collection
 			this.isCollection = true;

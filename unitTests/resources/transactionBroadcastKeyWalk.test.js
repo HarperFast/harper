@@ -3,7 +3,7 @@ const assert = require('node:assert');
 const { EventEmitter } = require('node:events');
 const { addSubscription } = require('#src/resources/transactionBroadcast');
 const { table } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { setupTestDBPath } = require('../testUtils');
 const { waitFor } = require('../waitFor.js');
 require('#src/server/serverHelpers/serverUtilities');

@@ -2,6 +2,8 @@ import { FSWatcher } from 'chokidar';
 import { getConfigFilePath } from './configUtils.ts';
 import { readConfigFileSync } from './readConfigFileSync.ts';
 import { EventEmitter, once } from 'node:events';
+import { statSync, type Stats } from 'node:fs';
+import { isDeepStrictEqual } from 'node:util';
 import { parseConfigFile } from './parseConfigFile.ts';
 import {
 	POLLING_FALLBACK_OPTIONS,
@@ -14,6 +16,9 @@ import { resolveWatchTarget } from '../utility/watchPath.ts';
 import { errorForLog, loggerWithTag } from '../utility/logging/harper_logger.ts';
 import { ConfigReadRetry } from './configReadRetry.ts';
 import { ArmGate } from './watcherArming.ts';
+
+// config/DESIGN.md: `RootConfigWatcher` schedules a trailing verify-read
+const TRAILING_VERIFY_READ_DELAY_MS = 100;
 
 function isMissingFile(error: unknown): boolean {
 	return !!error && typeof error === 'object' && (error as NodeJS.ErrnoException).code === 'ENOENT';
@@ -37,16 +42,29 @@ export function getSharedRootConfigWatcher(): RootConfigWatcher {
 	return (sharedWatcher ??= new RootConfigWatcher());
 }
 
+/** The isolate-wide watcher if something already started it, without starting one. */
+export function existingSharedRootConfigWatcher(): RootConfigWatcher | undefined {
+	return sharedWatcher;
+}
+
 export class RootConfigWatcher extends EventEmitter {
 	#configFilePath: string;
 	#watchPath: string;
 	#watcher!: FSWatcher;
 	#config: any;
+	#lastData?: string;
+	#lastParsedConfig: any;
 	#usingPolling: boolean;
 	#closed: boolean;
 	#openCount: number = 0;
+	#generation: number = 0;
 	#readCount: number = 0;
 	#readRetry: ConfigReadRetry = new ConfigReadRetry();
+	#trailingReadTimer?: NodeJS.Timeout;
+	// From the stat chokidar took before its last (re)watch; the arming and verify reads compare
+	// against it and never set it.
+	#watchedIno?: number;
+	#reopening?: Promise<void>;
 	#armGate: ArmGate = new ArmGate();
 	// The gate above is chokidar's scan finishing; this is the barrier's gate. A terminal outcome
 	// opens it without claiming the watch is armed, so the arming re-read still runs afterwards.
@@ -61,14 +79,15 @@ export class RootConfigWatcher extends EventEmitter {
 		this.#configFilePath = configFilePath;
 		const watchTarget = resolveWatchTarget(this.#configFilePath);
 		this.#watchPath = watchTarget.path;
-		this.#usingPolling = watchTarget.mustPoll;
+		// config/DESIGN.md: `RootConfigWatcher` polls under Bun
+		this.#usingPolling = watchTarget.mustPoll || Boolean(process.versions.bun);
 		this.#closed = false;
 		this.ready = once(this, 'ready');
-		this.#openWatcher();
+		this.#openWatcher(++this.#generation);
 	}
 
-	#openWatcher() {
-		const generation = ++this.#openCount;
+	#openWatcher(generation: number) {
+		this.#openCount++;
 		this.#watcher = guardedWatch(this.#watchPath, {
 			persistent: false,
 			...(this.#usingPolling ? POLLING_FALLBACK_OPTIONS : {}),
@@ -83,7 +102,7 @@ export class RootConfigWatcher extends EventEmitter {
 	}
 
 	#handleArmed(generation: number) {
-		if (this.#closed || generation !== this.#openCount) return;
+		if (this.#closed || generation !== this.#generation) return;
 		this.#armGate.arm(() => this.#markArmed());
 	}
 
@@ -95,6 +114,44 @@ export class RootConfigWatcher extends EventEmitter {
 		this.#read(true);
 		// A read that armed the ladder settles `ready` itself, with the newer config.
 		if (!this.#readRetry.pending) this.#emitReady();
+		this.#verifyWatchedInode(true);
+	}
+
+	#verifyWatchedInode(retryInconclusive: boolean) {
+		if (this.#closed || this.#usingPolling || this.#watchedIno === undefined || process.platform === 'win32') return;
+		let ino: number | undefined;
+		try {
+			ino = statSync(this.#watchPath, { throwIfNoEntry: false })?.ino;
+		} catch {}
+		// A probe that could not tell must not certify the watch.
+		if (!ino) {
+			if (retryInconclusive) this.#scheduleTrailingRead(false);
+		} else if (ino !== this.#watchedIno) this.#reopenWatcher();
+	}
+
+	// The replaced generation stops speaking for the watch before its teardown settles, and a request
+	// that arrives while one is in flight joins it: the replacement reads `#usingPolling` when it opens.
+	#reopenWatcher() {
+		if (this.#closed || this.#reopening) return;
+		const generation = ++this.#generation;
+		this.#armGate.reset();
+		this.#watchedIno = undefined;
+		const previous = this.#watcher;
+		// Start close() from a microtask, so a synchronous throw cannot escape the caller (an 'error'
+		// listener or a timer) as an uncaught exception.
+		this.#reopening = Promise.resolve()
+			.then(() => previous.close())
+			.catch(() => {
+				// Teardown errors on a watcher being replaced are not actionable.
+			})
+			.then(() => {
+				this.#reopening = undefined;
+				if (!this.#closed) this.#openWatcher(generation);
+			})
+			.catch((error) => {
+				this.#reopening = undefined;
+				logger().warn(`Could not reopen the ${this.#configFilePath} watch`, errorForLog(error));
+			});
 	}
 
 	#emitReady() {
@@ -115,6 +172,8 @@ export class RootConfigWatcher extends EventEmitter {
 		if (this.#readyEmitted) return;
 		if (discardStaged) {
 			this.#config = undefined;
+			this.#lastData = undefined;
+			this.#lastParsedConfig = undefined;
 			this.#configLoaded = false;
 		}
 		this.#readyStaged = true;
@@ -158,22 +217,7 @@ export class RootConfigWatcher extends EventEmitter {
 			if (!this.#usingPolling) {
 				warnWatcherFallback(this.#configFilePath);
 				this.#usingPolling = true;
-				// The generation that just failed no longer speaks for the watch; the replacement
-				// arms on its own scan, and re-reads then as the first one did.
-				this.#armGate.reset();
-				// Start close() from a microtask, not directly here, so a synchronous throw
-				// can't escape this 'error' listener as an uncaught exception.
-				Promise.resolve()
-					.then(() => this.#watcher.close())
-					.catch(() => {
-						// Teardown errors on an already-failed watcher are not actionable.
-					})
-					.then(() => {
-						if (!this.#closed) this.#openWatcher();
-					})
-					.catch((error) =>
-						logger().warn(`Could not reopen the ${this.#configFilePath} watch on polling`, errorForLog(error))
-					);
+				this.#reopenWatcher();
 			} else {
 				// Already polling — the replacement failed too, or the watch was polling from
 				// construction (`mustPoll`) and never had a fallback to take. Either way the branch
@@ -203,21 +247,43 @@ export class RootConfigWatcher extends EventEmitter {
 		}
 	}
 
-	handleChange() {
-		this.#read(true);
+	handleChange(_path?: string, stats?: Stats) {
+		if (stats?.ino) this.#watchedIno = stats.ino;
+		if (this.#read(true)) this.#scheduleTrailingRead();
+	}
+
+	#scheduleTrailingRead(retryInconclusive: boolean = true) {
+		this.#clearTrailingRead();
+		if (this.#closed || this.#readRetry.pending) return;
+		this.#trailingReadTimer = setTimeout(() => {
+			this.#trailingReadTimer = undefined;
+			this.#read(true);
+			this.#verifyWatchedInode(retryInconclusive);
+		}, TRAILING_VERIFY_READ_DELAY_MS);
+		this.#trailingReadTimer.unref();
+	}
+
+	#clearTrailingRead() {
+		if (this.#trailingReadTimer) {
+			clearTimeout(this.#trailingReadTimer);
+			this.#trailingReadTimer = undefined;
+		}
 	}
 
 	// `harper_logger.start()` awaits `ready` with no timeout and the ladder may be the only thing
 	// left to settle it, so until then its timer keeps the thread alive rather than letting it
 	// drain and exit mid-boot.
 	#schedule(): boolean {
-		return this.#readRetry.schedule(() => this.#read(false), !this.#readyEmitted);
+		this.#clearTrailingRead();
+		return this.#readRetry.schedule(() => {
+			if (this.#read(false)) this.#scheduleTrailingRead();
+		}, !this.#readyEmitted);
 	}
 
-	#read(waitForLock: boolean) {
+	#read(waitForLock: boolean): boolean {
 		// A queued chokidar callback can still land after close(), which has already discarded the
 		// config and dropped every listener.
-		if (this.#closed) return;
+		if (this.#closed) return false;
 		this.#readCount++;
 		let data: string;
 		try {
@@ -227,9 +293,10 @@ export class RootConfigWatcher extends EventEmitter {
 			// `OptionsWatcher` settles it immediately as the install window. Taking the ladder here
 			// would disagree with that and cost `harper_logger.start()` the whole budget on every
 			// boot that has no config file (an env-var-only deployment, an empty mounted rootPath).
-			if (!isMissingFile(error) && this.#schedule()) return;
+			if (!isMissingFile(error) && this.#schedule()) return false;
 			// A ladder armed by an earlier empty read is spent by the time a rung lands on ENOENT,
 			// and every other terminal path clears its deadline.
+			this.#clearTrailingRead();
 			this.#readRetry.reset();
 			logger().warn(
 				`Unable to read the Harper configuration file at ${this.#configFilePath}` +
@@ -237,14 +304,18 @@ export class RootConfigWatcher extends EventEmitter {
 				errorForLog(error)
 			);
 			this.#stageBootFallback();
-			return;
+			return false;
 		}
 		// See DESIGN.md, "An empty read is a writer mid-write, not an empty config".
 		if (!data) {
-			if (this.#schedule()) return;
+			if (this.#schedule()) return false;
 			logger().warn(`The Harper configuration file at ${this.#configFilePath} is empty`);
 			this.#stageBootFallback();
-			return;
+			return false;
+		}
+		if (this.#readyEmitted && data === this.#lastData) {
+			this.#readRetry.reset();
+			return true;
 		}
 		let config;
 		try {
@@ -254,37 +325,45 @@ export class RootConfigWatcher extends EventEmitter {
 			// `write(2)` can land a prefix of the document, and the event carrying the rest is the one
 			// chokidar throttles away. So an unparseable read rides out the same ladder as an empty
 			// one, and only a read that parses releases it.
-			if (this.#schedule()) return;
+			if (this.#schedule()) return false;
 			logger().warn((error as Error).message);
 			this.#stageBootFallback();
-			return;
+			return false;
 		}
 		// The third shape a mid-write read takes, and the only one that parses: a truncated
 		// document, a lone `\n`, a file that is nothing but comments all yield `null` rather than
 		// throwing, and adopting one hands every consumer a config with nothing in it. Same ladder
 		// as the two above, and past it the file is empty rather than mid-write.
 		if (!config || typeof config !== 'object') {
-			if (this.#schedule()) return;
+			if (this.#schedule()) return false;
 			logger().warn(`The Harper configuration file at ${this.#configFilePath} is empty`);
 			this.#stageBootFallback();
-			return;
+			return false;
 		}
 		this.#readRetry.reset();
 
 		// Before `ready` goes out there is no prior state to have changed *since*.
 		this.#configLoaded = true;
 		this.#readyStaged = true;
+		this.#lastData = data;
+		// Consumers such as `harper_logger` mutate the emitted `#config` object in place, so keep
+		// an unmutated clone for semantic comparison.
 		if (!this.#readyEmitted) {
+			this.#lastParsedConfig = structuredClone(config);
 			this.#config = config;
 			this.#emitReady();
-			return;
+			return true;
 		}
+
+		if (isDeepStrictEqual(config, this.#lastParsedConfig)) return true;
+		this.#lastParsedConfig = structuredClone(config);
 
 		try {
 			this.emit('change', (this.#config = config));
 		} catch (error) {
 			logger().warn('A Harper configuration change listener failed', errorForLog(error));
 		}
+		return true;
 	}
 
 	close() {
@@ -295,6 +374,7 @@ export class RootConfigWatcher extends EventEmitter {
 		this.#readyStaged = true;
 		this.#emitReady();
 		this.#closed = true;
+		this.#clearTrailingRead();
 		this.#readRetry.cancel();
 		this.#armGate.cancel();
 		// chokidar's close() is a promise; an unhandled teardown rejection would reach Node as one,
@@ -302,6 +382,8 @@ export class RootConfigWatcher extends EventEmitter {
 		// exhaustion-recovery close above, and as `OptionsWatcher.close`.
 		Promise.resolve(this.#watcher.close()).catch(() => {});
 		this.#config = undefined;
+		this.#lastData = undefined;
+		this.#lastParsedConfig = undefined;
 		this.emit('close');
 		this.removeAllListeners();
 		return this;

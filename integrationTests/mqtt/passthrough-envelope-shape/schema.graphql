@@ -1,0 +1,10 @@
+type Item @table(audit: true) @export {
+	id: ID @primaryKey
+	contentType: String
+	data: Any
+}
+type Asset @table @export {
+	id: ID @primaryKey
+	contentType: String
+	data: Blob
+}

@@ -1,14 +1,14 @@
 import { createHash } from 'node:crypto';
 import type { User, UserRole } from './user.ts';
 import type { ImpersonatePayload } from '../server/operationsServer.ts';
-import { getUserWithRole } from './user.ts';
+import { getUserWithRole, appendSystemTablesToRole } from './user.ts';
 import { validateOperations } from '../utility/operationPermissions.ts';
 import { addRoleValidation } from '../validation/role_validation.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
 import { getRoleByName } from './role.ts';
 import { attachScopeToUser } from './operationScope.ts';
-import { attachWorkloadIdentityToUser } from './credentialProvenance.ts';
+import { attachDeploySourceToUser, attachWorkloadIdentityToUser } from './credentialProvenance.ts';
 
 /**
  * Content-derived identity for synthetic (inline) roles. getRolePermissions memoizes translated
@@ -73,6 +73,7 @@ export async function applyImpersonation(authenticatedUser: User, payload: Imper
 
 	// Enforce downgrade: never allow escalation
 	enforceDowngrade(impersonatedUser);
+	if (impersonatedUser.role?.permission) appendSystemTablesToRole(impersonatedUser.role);
 
 	// A token's operation scope (#2174) constrains the credential regardless of which principal it
 	// acts as, so it survives impersonation. enforceDowngrade only bounds the impersonated role's
@@ -82,6 +83,8 @@ export async function applyImpersonation(authenticatedUser: User, payload: Imper
 	// NEW principal, so dropping the marker here would let a workload token impersonate — even down to
 	// a lesser role — and then mint a 30-day credential that createTokens would no longer refuse.
 	attachWorkloadIdentityToUser(impersonatedUser, (authenticatedUser as any).fromWorkloadIdentity);
+	attachDeploySourceToUser(impersonatedUser, (authenticatedUser as any).deploySource);
+	if ((authenticatedUser as any)._bearerValidator) (impersonatedUser as any)._bearerValidator = true;
 
 	// Re-key the synthetic role by its effective (post-downgrade) content so it can never alias
 	// another impersonation's permissions or poison a persisted role's memoized translation —

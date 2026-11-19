@@ -1,7 +1,7 @@
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const serverUtilities = require('#src/server/serverHelpers/serverUtilities');
 const { contextStorage } = require('#src/resources/transaction');
 const { TRANSACTION_STATE, DatabaseTransaction, RELEASED_TRANSACTION } = require('#src/resources/DatabaseTransaction');

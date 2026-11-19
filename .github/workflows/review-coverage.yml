@@ -31,13 +31,13 @@ jobs:
         id: app-token
         # The webhook's author_association is wrong for a PRIVATE org membership: only a
         # credential carrying members:read can see it, and GITHUB_TOKEN cannot be granted that
-        # permission at all. harperfastaibot already holds members:read org-wide and already has
-        # its secrets wired into this repo for the Claude/Gemini review bots.
+        # permission at all. harperfastaibot already holds members:read org-wide, and its
+        # secrets are already wired into this repo.
         if: >-
           github.event.pull_request.user.type != 'Bot' &&
           !endsWith(github.event.pull_request.user.login, '[bot]')
         continue-on-error: true
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ secrets.HARPERFAST_AI_CLIENT_ID }}
           private-key: ${{ secrets.HARPERFAST_AI_APP_PRIVATE_KEY }}
@@ -119,8 +119,12 @@ jobs:
             resources/PrimaryRocksDatabase.ts
             replication/**
             bin/copyDb.ts
+            dataLayer/backupRepository.ts
             dataLayer/harperBridge/ResourceBridge.ts
             dataLayer/harperBridge/lmdbBridge/lmdbMethods/lmdbGetBackup.js
+            dataLayer/harperBridge/lmdbBridge/lmdbMethods/lmdbGetBackup.ts
+            dataLayer/restoreChild.ts
+            dataLayer/restoreChildCommands.ts
             dataLayer/restoreMarker.ts
             dataLayer/rocksdbBackup.ts
             dataLayer/schemaDescribe.ts
@@ -138,9 +142,15 @@ jobs:
             resources/indexes/HierarchicalNavigableSmallWorld.ts
             resources/longLivedTransactions.ts
             resources/nodeIdMapping.ts
+            resources/originClosedFloor.ts
             resources/replayLogs.ts
+            resources/residencyMaps.ts
+            resources/residencyPolicy.ts
             resources/search.ts
+            resources/subscriptionCheckpoint.ts
+            resources/transactionLogAbortMarkers.ts
             server/http.ts
+            server/replicationMembership.ts
             server/transactionLogCooling.ts
             utility/environment/systemInformation.ts
             utility/lmdb/commonUtility.ts

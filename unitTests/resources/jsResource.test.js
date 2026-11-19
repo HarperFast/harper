@@ -1,4 +1,4 @@
-const { handleApplication } = require('#src/resources/jsResource');
+const { handleApplication } = require('#js/resources/jsResource');
 const assert = require('node:assert');
 const { spy } = require('sinon');
 const { writeFileSync } = require('node:fs');
@@ -6,7 +6,7 @@ const { join } = require('node:path');
 const { tmpdir } = require('node:os');
 const { mkdtempSync, rmSync } = require('node:fs');
 const { setupTestDBPath } = require('../testUtils');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { defineTable, types } = require('#src/resources/defineTable');
 
 describe('jsResource', () => {

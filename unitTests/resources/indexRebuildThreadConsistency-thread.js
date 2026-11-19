@@ -1,7 +1,7 @@
 const { parentPort, workerData } = require('node:worker_threads');
 const { setupTestDBPath } = require('../testUtils');
 const { resetDatabases } = require('#src/resources/databases');
-const manageThreads = require('#js/server/threads/manageThreads');
+const manageThreads = require('#src/server/threads/manageThreads');
 const { setMainIsWorker } = manageThreads;
 
 // A thread that never declares the schema: it reaches Table.indices only through the catalog reload

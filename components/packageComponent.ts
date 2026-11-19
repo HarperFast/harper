@@ -1,8 +1,12 @@
 import { basename, join, relative, sep } from 'node:path';
+import { realpath } from 'node:fs';
 import { stat, readdir } from 'node:fs/promises';
 import { Readable, pipeline } from 'node:stream';
+import { promisify } from 'node:util';
 import tar from 'tar-fs';
 import { createGzip } from 'node:zlib';
+import { DEPLOYMENT_PROVENANCE_FILE } from './deploymentProvenance.ts';
+import { PACKAGE_ROOT } from '../utility/packageUtils.js';
 
 interface PackageOptions {
 	skip_node_modules?: boolean;
@@ -21,18 +25,35 @@ const WEBPACK_CACHE_SEGMENT = join('cache', 'webpack');
  * It does that whether or not the path already existed, so component content there survives no load and
  * packaging it cannot be preserving component source — while packaging it walks the whole install, since
  * the packer dereferences symlinks and recurses into linked directories.
- *
- * `harperdb` is deliberately NOT here, and the asymmetry is the reason: the loader only *repairs*
- * `node_modules/harperdb` when that path already exists. A legacy component shipping a real
- * npm-installed `harperdb` that has never been loaded on this host therefore owns it — and excluding it
- * would strip it from the tarball, after which `installApplication` skips installing (it returns early
- * when `node_modules` exists), the loader's present-gate never fires, and `import from 'harperdb'`
- * fails on the target — and that holds whether the path is skipped by name or by resolved identity,
- * because an archive that simply OMITS it cannot restore it. So a `harperdb` link to the install is
- * still followed. Closing that means packing a placeholder at the path so the loader's present-gate can
- * fire on the target, not skipping it; tracked in harper#2577.
  */
 const INSTALL_OWNED_PATH = join('node_modules', 'harper');
+
+/**
+ * The legacy name for the same link. Unlike `harper`, the loader only re-links `node_modules/harperdb` when
+ * the path already exists, and `installApplication` skips installing when `node_modules` exists. A tarball
+ * that omits the path therefore loses it on the target, and a real npm-installed `harperdb` there is the
+ * component's own. So only a link to the install is install-owned, and it ships as an empty directory the
+ * loader then replaces with the link (harper#2577).
+ */
+const LEGACY_INSTALL_LINK = 'harperdb';
+
+// Callback `realpath`, not `fs/promises`: the loader's `realpathSync` algorithm, which unlike the native one does no
+// case conversion on a case-insensitive filesystem.
+const resolveLink = promisify(realpath);
+
+/**
+ * The loader also links the install into `node_modules/harper` (and an existing `harperdb`) of each component it
+ * loads from `node_modules` (a config.yaml `package:` entry). Deeper down only such a link is install-owned, not the
+ * name: a real `harper` under a package nothing loads as a component is that package's own dependency (see the
+ * notes above).
+ */
+async function linksToInstall(link: string): Promise<boolean> {
+	try {
+		return (await resolveLink(link)) === PACKAGE_ROOT;
+	} catch {
+		return false;
+	}
+}
 
 /**
  * Whether `fullPath` (an absolute path under `directory`) should be excluded from the package when
@@ -42,9 +63,12 @@ const INSTALL_OWNED_PATH = join('node_modules', 'harper');
  * excluded the whole tree. Shared by the stream packer and the directory walk so they cannot diverge.
  */
 function isExcluded(directory: string, fullPath: string, options: PackageOptions): boolean {
+	const name = basename(fullPath);
 	// Unconditional, including under `skip_symlinks`: packed literally, the link ships an absolute path to
 	// the packaging host's install root, which arrives dangling.
-	if (basename(fullPath) === 'harper' && relative(directory, fullPath) === INSTALL_OWNED_PATH) return true;
+	if (name === 'harper' && relative(directory, fullPath) === INSTALL_OWNED_PATH) return true;
+	// A package made from a live tree would otherwise carry that release's deployment id into the next one.
+	if (name === DEPLOYMENT_PROVENANCE_FILE && relative(directory, fullPath) === DEPLOYMENT_PROVENANCE_FILE) return true;
 	if (!options.skip_node_modules) return false;
 	const rel = relative(directory, fullPath);
 	return rel.split(sep).includes('node_modules') || rel.includes(WEBPACK_CACHE_SEGMENT);
@@ -60,12 +84,18 @@ export interface PackageDirectoryScan {
 	 * the link. `streamPackagedDirectory` skips these paths so the walk continues past them.
 	 */
 	danglingSymlinks: string[];
+	/**
+	 * Relative paths of `node_modules/harper` and `node_modules/harperdb` links to the install that are
+	 * not the application's own `harper` (skipped by name), left out under every option. The `harperdb`
+	 * ones are replaced by an empty directory entry in the archive.
+	 */
+	installLinks: string[];
 }
 
 /**
- * Walk `directory` once, computing both the packable size total and the dangling-symlink list —
- * the two pieces of metadata the CLI's pre-deploy checks and the packer's ignore-set both need.
- * A single shared walker keeps size accounting and dangling-link detection from silently
+ * Walk `directory` once, computing the packable size total and the links the packer skips —
+ * the metadata the CLI's pre-deploy checks and the packer's ignore-set both need.
+ * A single shared walker keeps size accounting and link detection from silently
  * diverging (e.g. one recursing into symlinked directories and the other not).
  *
  * Recurses into a *valid* symlinked directory the same way tar-fs's own dereferenced walk does
@@ -81,6 +111,7 @@ export async function scanPackageDirectory(
 ): Promise<PackageDirectoryScan> {
 	let totalSize = 0;
 	const danglingSymlinks: string[] = [];
+	const installLinks: string[] = [];
 	const dereference = !options.skip_symlinks;
 
 	const walk = async (dir: string): Promise<void> => {
@@ -94,6 +125,14 @@ export async function scanPackageDirectory(
 			const fullPath = join(dir, entry.name);
 			if (isExcluded(directory, fullPath, options)) continue;
 			if (entry.isSymbolicLink()) {
+				if (
+					(entry.name === 'harper' || entry.name === LEGACY_INSTALL_LINK) &&
+					basename(dir) === 'node_modules' &&
+					(await linksToInstall(fullPath))
+				) {
+					installLinks.push(relative(directory, fullPath));
+					continue;
+				}
 				// Without dereference, tar-fs packs the link literally and never stats the
 				// target, so an unresolved link is neither a size contributor nor a hazard.
 				if (!dereference) continue;
@@ -121,7 +160,7 @@ export async function scanPackageDirectory(
 		}
 	};
 	await walk(directory);
-	return { totalSize, danglingSymlinks };
+	return { totalSize, danglingSymlinks, installLinks };
 }
 
 /**
@@ -132,35 +171,42 @@ export async function scanPackageDirectory(
  * @param onBytes - Optional callback invoked with the byte length of each raw
  *   tar chunk *before* gzip compression. Useful for tracking upload progress
  *   against an uncompressed-size total (e.g. from `getPackagedDirectorySize`).
- * @param knownDanglingSymlinks - Skip this function's own directory scan and reuse a
- *   dangling-symlink list the caller already computed (e.g. via `scanPackageDirectory`
- *   during a prior CLI step), avoiding a second full-tree walk before packing starts.
+ * @param knownScan - Skip this function's own directory scan and reuse the links a
+ *   `scanPackageDirectory` call with the same options already found (e.g. during a prior
+ *   CLI step), avoiding a second full-tree walk before packing starts.
  */
 export function streamPackagedDirectory(
 	directory: string,
 	options: PackageOptions = DEFAULT_OPTIONS,
 	onBytes?: (n: number) => void,
-	knownDanglingSymlinks?: string[]
+	knownScan?: Pick<PackageDirectoryScan, 'danglingSymlinks' | 'installLinks'>
 ): Readable {
 	const dereference = !options.skip_symlinks;
 	const gzip = createGzip();
-	// Resolving the dangling-symlink set up front — rather than stat-ing candidates
+	// Resolving the skipped links up front — rather than stat-ing candidates
 	// synchronously from tar-fs's `ignore` callback — keeps the pack walk free of blocking
 	// I/O. That matters here because this also runs server-side, inline on the shared event
 	// loop, via the package_component operation.
-	const dangling = knownDanglingSymlinks
-		? Promise.resolve(knownDanglingSymlinks)
-		: scanPackageDirectory(directory, options).then((scan) => scan.danglingSymlinks);
-	dangling
-		.then((danglingSymlinks) => {
+	const scan = knownScan ? Promise.resolve(knownScan) : scanPackageDirectory(directory, options);
+	scan
+		.then(({ danglingSymlinks, installLinks }) => {
 			// The consumer may have already aborted (destroying gzip) while the prescan was
 			// still resolving — skip starting a directory walk nothing will read.
 			if (gzip.destroyed) return;
-			const danglingSet = new Set(danglingSymlinks);
+			const skipped = new Set(installLinks);
+			if (dereference) for (const link of danglingSymlinks) skipped.add(link);
+			const placeholders = installLinks.filter((link) => basename(link) === LEGACY_INSTALL_LINK);
 			const packStream = tar.pack(directory, {
 				dereference,
-				ignore: (name: string) =>
-					isExcluded(directory, name, options) || (dereference && danglingSet.has(relative(directory, name))),
+				ignore: (name: string) => isExcluded(directory, name, options) || skipped.has(relative(directory, name)),
+				// tar-fs can only drop or rewrite walked entries, so the placeholders are added after the walk.
+				finalize: false,
+				finish: (pack) => {
+					for (const link of placeholders) {
+						pack.entry({ name: link.split(sep).join('/'), type: 'directory', mode: 0o755 });
+					}
+					pack.finalize();
+				},
 				map: (header) => {
 					if (header.type === 'directory') {
 						header.mode = 0o755;

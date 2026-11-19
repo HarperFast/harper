@@ -1,7 +1,8 @@
 /** Native HNSW coverage waits and response metadata through REST with six HTTP workers. */
 import { test } from 'node:test';
 import assert from 'node:assert';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
 import {
 	createHarperContext,
 	setupHarperWithFixture,
@@ -45,6 +46,10 @@ test(
 				'Content-Type': 'application/json',
 				'Connection': 'close',
 			};
+			function lagLogLines(): number {
+				const logPath = join(ctx.harper.logDir ?? join(ctx.harper.dataRootDir, 'log'), 'hdb.log');
+				return existsSync(logPath) ? readFileSync(logPath, 'utf8').split('DerivedIndexLagError').length - 1 : 0;
+			}
 			async function request(path: string, method = 'GET', body?: unknown) {
 				const response = await fetch(`${ctx.harper.httpURL}${path}`, {
 					method,
@@ -52,11 +57,22 @@ test(
 					body: body === undefined ? undefined : JSON.stringify(body),
 					signal: AbortSignal.timeout(30_000),
 				});
-				const text = await response.text();
+				let text = '';
+				let aborted = false;
+				const decoder = new TextDecoder();
+				try {
+					for await (const chunk of response.body ?? []) text += decoder.decode(chunk, { stream: true });
+				} catch (error) {
+					// undici reports a server-aborted body as TypeError; the client's own timeout is a DOMException
+					if (!(error instanceof TypeError)) throw error;
+					aborted = true;
+				}
 				return {
 					status: response.status,
 					coverage: response.headers.get('harper-index-coverage'),
-					body: text ? JSON.parse(text) : undefined,
+					aborted,
+					text,
+					body: text && !aborted ? JSON.parse(text) : undefined,
 				};
 			}
 			const query = (tolerance?: unknown, wait?: unknown, queryTarget = target, path = '/PlaneProbe/') =>
@@ -76,17 +92,32 @@ test(
 			await waitFor(async () => (await query(0)).status === 200, 30_000);
 			for (let start = 0; start < records.length; start += 500) {
 				const result = await request('/PlaneProbe/', 'PUT', records.slice(start, start + 500));
-				assert(result.status < 300, JSON.stringify(result));
+				assert(result.status < 300 && !result.aborted, JSON.stringify(result));
 			}
 			for (const path of ['/PlaneProbe/', '/MappedPlane/', '/ConcatenatedPlane/']) {
+				const lagLinesBefore = lagLogLines();
 				const shortWait = await query(1_000_000, 1, target, path);
 				assert.equal(shortWait.status, 200, JSON.stringify(shortWait));
 				assert.equal(shortWait.coverage, null);
-				const errors = shortWait.body.filter((record: any) => record.error);
-				if (errors.length) {
-					assert.equal(errors.length, 1, JSON.stringify(shortWait));
-					assert.match(errors[0].error, /^DerivedIndexLagError/);
-				} else assert(shortWait.body.some(({ id }: { id: number }) => id === records.length - 1));
+				// the diagnostic is best-effort, so a bare cut-off body must have logged the lag error itself; waiting
+				// for its line also keeps a late line out of the next query's count
+				if (shortWait.aborted) {
+					assert(
+						/\{"error":"DerivedIndexLagError/.test(shortWait.text) || !shortWait.text.includes('{"error":'),
+						JSON.stringify(shortWait)
+					);
+					await waitFor(() => lagLogLines() > lagLinesBefore, {
+						timeout: 5000,
+						message: `no DerivedIndexLagError logged for ${JSON.stringify(shortWait)}`,
+					});
+				} else {
+					const errors = shortWait.body.filter((record: any) => record.error);
+					if (errors.length) {
+						assert.equal(errors.length, 1, JSON.stringify(shortWait));
+						assert.match(errors[0].error, /^DerivedIndexLagError/);
+						await waitFor(() => lagLogLines() > lagLinesBefore, 5000);
+					} else assert(shortWait.body.some(({ id }: { id: number }) => id === records.length - 1));
+				}
 			}
 			let progress: unknown;
 			try {
@@ -183,6 +214,16 @@ test(
 					if (result.status === 503) return false;
 					assert.equal(result.status, 200, JSON.stringify(result));
 					assert.equal(result.coverage, null);
+					// a waiting query that fails while the index recovers is cut off; any diagnostic it carried names why
+					if (result.aborted) {
+						const diagnostic = /\{"error":"([^"]*)/.exec(result.text)?.[1];
+						if (diagnostic)
+							assert.match(
+								diagnostic,
+								/^(DerivedIndexLagError|ServerError: The native HNSW index is (unavailable|rebuilding))/
+							);
+						return false;
+					}
 					if (result.body.some((record: any) => record.error)) {
 						for (const record of result.body.filter((record: any) => record.error))
 							assert.match(

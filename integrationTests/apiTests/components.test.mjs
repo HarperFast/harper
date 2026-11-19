@@ -165,6 +165,14 @@ suite('Component lifecycle', { skip: skipSuite }, (ctx) => {
 			.expect(200);
 	});
 
+	test('get_component_file rejects a project containing path traversal segments', async () => {
+		await client
+			.req()
+			.send({ operation: 'get_component_file', project: '../../../../etc', file: 'passwd' })
+			.expect(400)
+			.expect((r) => assert.match(r.body.error, /project/i, r.text));
+	});
+
 	// ──────────────────────────────────────────────────────────────────────────
 	// add / package / get / drop component
 	// ──────────────────────────────────────────────────────────────────────────

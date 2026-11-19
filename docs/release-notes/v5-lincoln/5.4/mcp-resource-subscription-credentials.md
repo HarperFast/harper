@@ -1,0 +1,9 @@
+---
+section: MCP
+---
+
+### Resource Subscriptions Preserve Credential Expiry Across Workers
+
+MCP resource subscriptions now work when the subscribe POST and GET-SSE stream reach different HTTP workers. Reconnecting GETs continue to wait for restoration before HTTP `200`; a transient restoration failure now returns HTTP `503` with `Retry-After: 1`. The original subscribing POST expiry is preserved across workers and reconnects. Delivery is also bounded by the current GET credential's expiry. Re-reading a user's permissions after a role change also retains the GET credential's expiry. A network reconnect with matching credentials restores unexpired subscriptions without new subscribe calls. Stored scoped subscriptions require a scoped GET with the same username and role permissions; an ordinary credential with that username cannot inherit them. To renew after rotating credentials, close the old GET, open a replacement GET with the new credential, and send each `resources/subscribe` POST with that credential too. Subscriptions can end at expiry without closing the GET stream. See [Subscription lifetime and credential rotation](/reference/v5/mcp/subscriptions#subscription-lifetime-and-credential-rotation) ([Make MCP resource subscriptions reliable across HTTP workers](https://github.com/HarperFast/harper/pull/2436); [Fix scoped MCP reconnects and concurrent subscribe failures](https://github.com/HarperFast/harper/pull/4029)).
+
+Clients matching the formerly documented `-32603 failed to subscribe: <uri>` or `-32602 resources/subscribe for <uri> was cancelled: <reason>` responses should handle the current `-32603 resource subscription failed; retry the request` response and, when the GET closes during setup without a successful reconnect, `-32603 resource subscription timed out; retry the request`. Let overlapping requests settle before retrying a transient failure; do not retry solely because the message says to.

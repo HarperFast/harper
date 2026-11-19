@@ -9,10 +9,11 @@ code_review:
   # Cap total comments per review; measured pattern was the same finding repeated per-hunk (4x in one PR).
   # A finite cap forces prioritization; styleguide.md additionally requires one comment per distinct finding.
   max_review_comments: 15
+  # Automatic review on open is off; comment `/gemini review` on a PR to request one.
   pull_request_opened:
     help: false
     summary: false
-    code_review: true
+    code_review: false
     include_drafts: true
 ignore_patterns:
   - 'package-lock.json'

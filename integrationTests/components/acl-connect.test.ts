@@ -209,57 +209,55 @@ function assertReasonIn(err: any, allowed: readonly number[], label: string): vo
 // hit MQTT/WS surfaces.
 const skipSuite = process.env.HARPER_RUNTIME === 'bun';
 
+async function startWithAclConnect(ctx: ContextWithHarper, env: Record<string, string> = {}): Promise<string> {
+	await startHarper(ctx, { config: {}, env });
+
+	const httpURL = ctx.harper.httpURL;
+	const wsScheme = httpURL.startsWith('https') ? 'wss' : 'ws';
+	const mqttURL = process.env.ACL_MQTT_URL ?? `${httpURL.replace(/^https?/, wsScheme)}/mqtt`;
+
+	const deployBody = await sendOperation(ctx.harper, {
+		operation: 'deploy_component',
+		project: PROJECT,
+		package: FIXTURE_PATH,
+		restart: true,
+	});
+	strictEqual(deployBody.message, `Successfully deployed: ${PROJECT}, restarting Harper`);
+
+	// poll until SUBSCRIBE to dog/# returns a non-143 SUBACK — covers the
+	// race where JWT connect succeeds before @harperdb/acl-connect has
+	// registered dog as a resource on a freshly restarted worker.
+	const probe = freshIdentities().sub;
+	const probeToken = mintJwt(probe);
+	const deadline = Date.now() + 30_000;
+	let lastError: unknown = null;
+	let lastSubackCode: number | undefined;
+	let attempts = 0;
+	while (Date.now() < deadline) {
+		attempts++;
+		let client: MqttClient | undefined;
+		try {
+			client = await connect(mqttURL, jwtOpts(probeToken, probe.clientID, probe.username));
+			const granted = await subscribe(client, 'dog/#');
+			lastSubackCode = grantedCodes(granted)[0];
+			if (!isNoResource(lastSubackCode)) return mqttURL;
+		} catch (err) {
+			lastError = err;
+		} finally {
+			await endQuiet(client);
+		}
+		await sleep(500);
+	}
+	const err = lastError as any;
+	throw new Error(
+		`Timed out waiting for acl-connect after ${attempts} attempts on ${mqttURL}. ` +
+			`Last SUBACK code for dog/#: ${lastSubackCode ?? 'n/a'}. Last error: ${err?.message ?? err}`
+	);
+}
+
 suite('Component: acl-connect', { skip: skipSuite }, (ctx: ContextWithHarper) => {
 	before(async () => {
-		await startHarper(ctx);
-
-		const httpURL = ctx.harper.httpURL;
-		const wsScheme = httpURL.startsWith('https') ? 'wss' : 'ws';
-		MQTT_URL = process.env.ACL_MQTT_URL ?? `${httpURL.replace(/^https?/, wsScheme)}/mqtt`;
-
-		const deployBody = await sendOperation(ctx.harper, {
-			operation: 'deploy_component',
-			project: PROJECT,
-			package: FIXTURE_PATH,
-			restart: true,
-		});
-		strictEqual(deployBody.message, `Successfully deployed: ${PROJECT}, restarting Harper`);
-
-		// poll until SUBSCRIBE to dog/# returns a non-143 SUBACK — covers the
-		// race where JWT connect succeeds before @harperdb/acl-connect has
-		// registered dog as a resource on a freshly restarted worker.
-		const probe = freshIdentities().sub;
-		const probeToken = mintJwt(probe);
-		const deadline = Date.now() + 30_000;
-		let ready = false;
-		let lastError: unknown = null;
-		let lastSubackCode: number | undefined;
-		let attempts = 0;
-		while (Date.now() < deadline) {
-			attempts++;
-			let client: MqttClient | undefined;
-			try {
-				client = await connect(MQTT_URL, jwtOpts(probeToken, probe.clientID, probe.username));
-				const granted = await subscribe(client, 'dog/#');
-				lastSubackCode = grantedCodes(granted)[0];
-				if (!isNoResource(lastSubackCode)) {
-					ready = true;
-					break;
-				}
-			} catch (err) {
-				lastError = err;
-			} finally {
-				await endQuiet(client);
-			}
-			await sleep(500);
-		}
-		if (!ready) {
-			const err = lastError as any;
-			throw new Error(
-				`Timed out waiting for acl-connect after ${attempts} attempts on ${MQTT_URL}. ` +
-					`Last SUBACK code for dog/#: ${lastSubackCode ?? 'n/a'}. Last error: ${err?.message ?? err}`
-			);
-		}
+		MQTT_URL = await startWithAclConnect(ctx);
 	});
 
 	after(async () => {
@@ -517,4 +515,119 @@ suite('Component: acl-connect', { skip: skipSuite }, (ctx: ContextWithHarper) =>
 			await endQuiet(observer);
 		}
 	});
+});
+
+const RECHECK_MS = 1000;
+// acl-connect grants a principal without authGroups by its role's name
+const DOG_SUBSCRIBER_ROLE = 'dogSubscriber';
+const NO_ACL_ROLE = 'aclRecheckNoAcl';
+
+suite('Component: acl-connect live-subscription rechecks', { skip: skipSuite }, (ctx: ContextWithHarper) => {
+	let mqttURL = '';
+	let publisher: MqttClient | undefined;
+
+	before(async () => {
+		mqttURL = await startWithAclConnect(ctx, { HARPER_SUBSCRIPTION_REAUTH_INTERVAL_MS: String(RECHECK_MS) });
+		for (const role of [DOG_SUBSCRIBER_ROLE, NO_ACL_ROLE]) {
+			await sendOperation(ctx.harper, { operation: 'add_role', role, permission: { super_user: false } });
+		}
+		const { pub } = freshIdentities();
+		publisher = await connect(mqttURL, jwtOpts(mintJwt(pub), pub.clientID, pub.username));
+	});
+
+	after(async () => {
+		await endQuiet(publisher);
+		await teardownHarper(ctx);
+	});
+
+	async function subscribeDogs(client: MqttClient) {
+		const granted = await subscribe(client, 'dog/#');
+		ok(!isDenied(grantedCodes(granted)[0]), `precondition: dog/# must be granted, got ${JSON.stringify(granted)}`);
+		return collectMessages(client, 'dog/#');
+	}
+
+	async function publishUnique(label: string): Promise<string> {
+		const payload = `${label}-${randomUUID()}`;
+		await publish(publisher!, `dog/recheck/${label}`, payload);
+		return payload;
+	}
+
+	test('a JWT subscriber keeps receiving across recheck intervals', async () => {
+		const { sub } = freshIdentities();
+		const subscriber = await connect(mqttURL, jwtOpts(mintJwt(sub), sub.clientID, sub.username));
+		try {
+			const obs = await subscribeDogs(subscriber);
+			for (let interval = 0; interval <= 4; interval++) {
+				if (interval > 0) await sleep(RECHECK_MS + 100);
+				const payload = await publishUnique(`jwt-${interval}`);
+				ok(
+					await waitFor(() => obs.messages.some((m) => m.payload === payload), { timeoutMs: 3000 }),
+					`no delivery after ${interval} recheck interval(s) (connected=${subscriber.connected})`
+				);
+			}
+			obs.stop();
+		} finally {
+			await endQuiet(subscriber);
+		}
+	});
+
+	async function connectPasswordUser(): Promise<{ username: string; client: MqttClient }> {
+		const username = `acl-recheck-${randomUUID().slice(0, 8)}`;
+		const password = `Pw-${randomUUID()}`;
+		await sendOperation(ctx.harper, {
+			operation: 'add_user',
+			role: DOG_SUBSCRIBER_ROLE,
+			username,
+			password,
+			active: true,
+		});
+		// the fixture's authorizeClient requires a password user's clientId to be its username
+		return { username, client: await connect(mqttURL, baseOpts({ username, password, clientId: username })) };
+	}
+
+	async function assertPasswordSubscriberRevokedBy(change: (username: string) => Promise<unknown>) {
+		const { username, client: subscriber } = await connectPasswordUser();
+		const { client: witness } = await connectPasswordUser();
+		try {
+			const obs = await subscribeDogs(subscriber);
+			const witnessObs = await subscribeDogs(witness);
+			const before = await publishUnique('password-before');
+			ok(
+				await waitFor(() => obs.messages.some((m) => m.payload === before)),
+				'positive control: the password subscriber never received while authorized'
+			);
+
+			await change(username);
+			await sleep(3 * RECHECK_MS);
+			const after = await publishUnique('password-after');
+			ok(
+				await waitFor(() => witnessObs.messages.some((m) => m.payload === after)),
+				'the unchanged password subscriber stopped receiving, so delivery stalled for everyone'
+			);
+			await sleep(500);
+			strictEqual(
+				obs.messages.some((m) => m.payload === after),
+				false,
+				`the password subscriber kept receiving after the change (connected=${subscriber.connected})`
+			);
+			obs.stop();
+			witnessObs.stop();
+		} finally {
+			await endQuiet(witness);
+			await endQuiet(subscriber);
+		}
+	}
+
+	test('drop_user revokes a password subscriber resolved through the override', () =>
+		assertPasswordSubscriberRevokedBy((username) => sendOperation(ctx.harper, { operation: 'drop_user', username })));
+
+	test('moving a password subscriber to a role without the ACL revokes it', () =>
+		assertPasswordSubscriberRevokedBy((username) =>
+			sendOperation(ctx.harper, { operation: 'alter_user', username, role: NO_ACL_ROLE })
+		));
+
+	test('deactivating a password subscriber revokes it', () =>
+		assertPasswordSubscriberRevokedBy((username) =>
+			sendOperation(ctx.harper, { operation: 'alter_user', username, active: false })
+		));
 });

@@ -1,7 +1,7 @@
 'use strict';
 
 const { parentPort } = require('node:worker_threads');
-require('#js/server/threads/manageThreads');
+require('#src/server/threads/manageThreads');
 
 setInterval(() => {}, 10000);
 

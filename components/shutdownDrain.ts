@@ -39,6 +39,31 @@ export function getShutdownDrainCeilingMs(): number {
 	return Number.isFinite(ms) && ms >= 0 ? Math.min(ms, MAX_TIMER_MS) : DEFAULT_DRAIN_CEILING_MS;
 }
 
+export function trackThreadDrains<Thread>(threads: Iterable<Thread>, onDrained: () => void) {
+	const remaining = new Set(threads);
+	return (thread: Thread) => {
+		if (remaining.delete(thread) && remaining.size === 0) onDrained();
+	};
+}
+
+const DEFAULT_PROCESS_SHUTDOWN_TIMEOUT_MS = 8000;
+// `harper dev` disposes native runtimes (a Vite/rolldown dev server) on close; see threadTerminationTimeout
+const DEV_MODE_PROCESS_SHUTDOWN_TIMEOUT_MS = 30000;
+
+/**
+ * `threads.shutdownTimeout`: how long a terminating signal waits for the graceful shutdown before the process
+ * exits anyway. Coerced and clamped like {@link getShutdownDrainCeilingMs}: config strings survive validation
+ * here, a blank value is unset, and `0` exits at once.
+ */
+export function getProcessShutdownTimeoutMs(): number {
+	const devMode = process.env.DEV_MODE === 'true' || process.env.DEV_MODE === '1';
+	const fallback = devMode ? DEV_MODE_PROCESS_SHUTDOWN_TIMEOUT_MS : DEFAULT_PROCESS_SHUTDOWN_TIMEOUT_MS;
+	const raw = env.get(CONFIG_PARAMS.THREADS_SHUTDOWNTIMEOUT);
+	if (raw === null || raw === undefined || String(raw).trim() === '') return fallback;
+	const ms = Number(raw);
+	return Number.isFinite(ms) && ms >= 0 ? Math.min(ms, MAX_TIMER_MS) : fallback;
+}
+
 /**
  * Compute a force-terminate timer delay for a worker-requested drain deadline. Clamps the requested
  * absolute `deadlineMs` to `now + ceilingMs` (so a buggy/rogue worker message can't defer the kill
@@ -89,6 +114,29 @@ export function shutdownDrainsHaveWork(): boolean {
 }
 
 /**
+ * Time a process exit leaves after the drains for `closeServers` (its 5 s fallback and up to 0.5 s of
+ * WebSocket close wait) and scope/branch close.
+ */
+export const CLOSE_RESERVE_MS = 6000;
+
+/**
+ * The drain deadline for a worker shutdown: the configured ceiling, cut so that a process exit at
+ * `exitDeadline` still leaves {@link CLOSE_RESERVE_MS} for the steps after the drains. Never before `now`.
+ */
+export function shutdownDrainDeadline(now: number, ceilingMs: number, exitDeadline?: number): number {
+	const ceilingDeadline = now + ceilingMs;
+	if (!Number.isFinite(exitDeadline)) return ceilingDeadline;
+	return Math.max(now, Math.min(ceilingDeadline, exitDeadline - CLOSE_RESERVE_MS));
+}
+
+let tightenRunningDrains: ((deadlineMs: number) => void) | undefined;
+
+/** Pull a running {@link runShutdownDrains}'s deadline earlier (never later): a restart's drain yields to a process exit's. */
+export function tightenShutdownDrains(deadlineMs: number): void {
+	tightenRunningDrains?.(deadlineMs);
+}
+
+/**
  * Run every registered drain, resolving when all have settled or the absolute deadline is reached —
  * whichever comes first. Never rejects: a drain that throws or rejects is logged and treated as
  * settled, and a drain that ignores the deadline is abandoned (the process is exiting immediately
@@ -101,17 +149,27 @@ export async function runShutdownDrains(deadlineMs: number): Promise<void> {
 			.then(() => drain.drain(deadlineMs))
 			.catch((error) => harperLogger.error('Error draining before shutdown', error))
 	);
-	const remaining = Math.max(0, deadlineMs - Date.now());
 	let timer: NodeJS.Timeout | undefined;
+	let currentDeadline = deadlineMs;
 	await Promise.race([
 		Promise.all(settled),
 		new Promise<void>((resolve) => {
-			timer = setTimeout(resolve, remaining);
-			timer.unref();
+			const arm = () => {
+				if (timer) clearTimeout(timer);
+				timer = setTimeout(resolve, Math.max(0, currentDeadline - Date.now()));
+				timer.unref();
+			};
+			tightenRunningDrains = (tighterDeadline) => {
+				if (!(tighterDeadline < currentDeadline)) return;
+				currentDeadline = tighterDeadline;
+				arm();
+			};
+			arm();
 		}),
 	])
 		.catch((error) => harperLogger.error('Error running shutdown drains', error))
 		.finally(() => {
+			tightenRunningDrains = undefined;
 			if (timer) clearTimeout(timer);
 		});
 }

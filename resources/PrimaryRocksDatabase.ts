@@ -2,9 +2,18 @@ import { commitTrackedRocksTransaction, trackReadRange } from './DatabaseTransac
 import { RocksDatabase, type RocksDatabaseOptions, constants, type Store, Transaction } from '@harperfast/rocksdb-js';
 
 const FRESH_VERSION_FLAG = constants.FRESH_VERSION_FLAG;
-import { WeakLRUCache } from 'weak-lru-cache';
+import { LRFUExpirer, WeakLRUCache } from 'weak-lru-cache';
 import { when } from '../utility/when.ts';
 import { assignStoredFields, entryMap, METADATA, VERSION_REUSED, type Entry } from './RecordEncoder.ts';
+import { get as envGet } from '../utility/environment/environmentManager.ts';
+import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
+import { resolveRecordCacheSize } from '../utility/rocksMemoryConfig.ts';
+
+// The expirer is what holds a cache's entries strongly, so one per thread makes storage.recordCacheSize
+// a budget shared by every table in the thread. Harper owns it because weak-lru-cache's default
+// expirer takes its size from whichever cache the thread constructs first, which on an LMDB database is
+// one of lmdb's.
+let recordCacheExpirer: LRFUExpirer | undefined;
 
 /**
  * RocksDatabase subclass that owns all primary-store behaviour for Harper tables:
@@ -30,6 +39,10 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 	declare rootStore: any;
 	declare decoder: any;
 
+	get cache(): WeakLRUCache | undefined {
+		return this.#cache;
+	}
+
 	get #enc(): any {
 		return (this as any).encoder;
 	}
@@ -38,7 +51,10 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 		const enableCache = (options as any)?.cache === true;
 		super(pathOrStore, enableCache ? { ...options, verificationTable: true } : options);
 		if (enableCache) {
-			this.#cache = new WeakLRUCache();
+			recordCacheExpirer ??= new LRFUExpirer({
+				lruSize: resolveRecordCacheSize(envGet(CONFIG_PARAMS.STORAGE_RECORDCACHESIZE)) >> 2,
+			});
+			this.#cache = new WeakLRUCache({ expirer: recordCacheExpirer });
 		}
 	}
 
@@ -143,22 +159,24 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 				: undefined;
 		const expectedVersion = cached?.version;
 
-		// Build get options, always merging with caller options to preserve
-		// transaction snapshot. Pass expectedVersion when cached:
+		// Build get options, carrying the caller's transaction to preserve its snapshot. Pass
+		// expectedVersion when cached:
 		//   VT hit  → native returns FRESH_VERSION_FLAG, no DB read
 		//   VT miss → native reads DB and auto-populates VT slot
 		// For cold reads (no cached version), use populateVersion flag so the
 		// native layer seeds the VT slot in the same call.
+		// Copy only the keys rocksdb-js reads, not the caller's options: HNSW passes a whole
+		// DatabaseTransaction here.
 		let getOptions: any;
 		if (expectedVersion != null) {
-			getOptions = options ? { ...options, expectedVersion } : { expectedVersion };
+			getOptions = { transaction: options?.transaction, expectedVersion };
 		} else if (cache) {
-			getOptions = options ? { ...options, populateVersion: true } : { populateVersion: true };
+			getOptions = { transaction: options?.transaction, populateVersion: true };
 		} else {
 			getOptions = options;
 		}
 		const raw = options?.async ? super.get(id, getOptions) : super.getSync(id, getOptions);
-
+		if (raw === FRESH_VERSION_FLAG) return cached;
 		return when(raw, (result) => {
 			if (result === FRESH_VERSION_FLAG) return cached;
 			const entry = this.#processEntry(result, id);
@@ -234,7 +252,11 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 	}
 
 	open(): PrimaryRocksDatabase {
-		return super.open() as PrimaryRocksDatabase;
+		super.open();
+		if (this.#enc && this.store.sharedStructuresKey !== undefined) {
+			this.#enc.rocksStore = this;
+		}
+		return this;
 	}
 
 	static open(pathOrStore: string | Store, options?: RocksDatabaseOptions): PrimaryRocksDatabase {

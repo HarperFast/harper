@@ -1,4 +1,5 @@
-'use strict';
+import dotenv from 'dotenv';
+('use strict');
 
 import { createWriteStream } from 'node:fs';
 import { rename, unlink } from 'node:fs/promises';
@@ -9,20 +10,28 @@ import * as envMgr from '../utility/environment/environmentManager.ts';
 envMgr.initSync();
 import * as terms from '../utility/hdbTerms.ts';
 import { buildRequest, cliOperations, resolveRequestOptions } from './cliOperations.ts';
-import { loadCredentials } from './cliCredentials.ts';
+import { loadCredentials, normalizeTarget } from './cliCredentials.ts';
+import { ClientError } from '../utility/errors/hdbError.ts';
 import { httpRequest } from '../utility/common_utils.ts';
 import { initConfig } from '../config/configUtils.ts';
-import { getHdbPid } from '../utility/processManagement/processManagement.js';
+import { getHdbPid } from '../utility/processManagement/processManagement.ts';
 import {
+	cancelRestartRestoreOffline,
 	createBackupOffline,
 	deleteBackupOffline,
 	listBackupsOffline,
 	purgeBackupsOffline,
+	requireBooleanOption,
 	restoreBackupOffline,
 	verifyBackupOffline,
 } from '../dataLayer/rocksdbBackup.ts';
 
 const { OPERATIONS_ENUM } = terms;
+const NON_DESTRUCTIVE_COMMANDS = new Set<string>([
+	OPERATIONS_ENUM.CREATE_BACKUP,
+	OPERATIONS_ENUM.LIST_BACKUPS,
+	OPERATIONS_ENUM.VERIFY_BACKUP,
+]);
 
 /**
  * Runs a backup operation from the CLI. `command` is the operation name (e.g. `create_backup`);
@@ -37,7 +46,7 @@ export async function runBackupCommand(command: string): Promise<void> {
 	// the local-vs-remote routing off HARPER_CLI_TARGET/CLI_TARGET, and without this a `.env`-
 	// configured remote target would be invisible, silently running a destructive op locally
 	// (cliOperations does the same on its first line).
-	require('dotenv').config();
+	dotenv.config();
 	const request = buildRequest();
 	const databaseName = request.database || 'data';
 
@@ -53,7 +62,7 @@ export async function runBackupCommand(command: string): Promise<void> {
 	// local instance is stopped). We never fall back on a *reachable* server's error response —
 	// e.g. restore_backup rejecting the system/component-held database (whose offline path is to
 	// stop the server and rerun this same command, which then takes the branch below).
-	if (useOperationApi(request)) {
+	if (useOperationApi(request, command)) {
 		request.operation = command;
 		await cliOperations(request); // prints its own result, exactly like any forwarded operation
 		return;
@@ -76,14 +85,37 @@ export async function runBackupCommand(command: string): Promise<void> {
 		case OPERATIONS_ENUM.PURGE_BACKUPS:
 			result = await purgeBackupsOffline(databaseName, request.keep_count);
 			break;
-		case OPERATIONS_ENUM.RESTORE_BACKUP:
-			result = await restoreBackupOffline(databaseName, request.backup_id, request.target_database);
+		case OPERATIONS_ENUM.RESTORE_BACKUP: {
+			if (requireBooleanOption(request.cancel, 'cancel')) {
+				result = await cancelRestartRestoreOffline(request);
+				break;
+			}
+			// ignoring one would restore now what was asked for at the next start, or without its rollback copy
+			const needsServer = OFFLINE_RESTORE_UNSUPPORTED.filter((field) => requireBooleanOption(request[field], field));
+			if (needsServer.length > 0) {
+				const fields = needsServer.join(', ');
+				throw new ClientError(
+					`restore_backup ${fields} needs the server running; start Harper and rerun. With Harper stopped, restore now by omitting ${fields} (backup_id=<id> picks the backup, the latest by default), or withdraw a pending restart restore with cancel=true`
+				);
+			}
+			result = await restoreBackupOffline(
+				databaseName,
+				request.backup_id,
+				request.target_database,
+				request.allow_engine_only,
+				request.accept_incompatible_backup,
+				request.immutable_source,
+				request.accept_unverified_blobs
+			);
 			break;
+		}
 		default:
 			throw new Error(`Unknown backup command '${command}'`);
 	}
 	console.log(YAML.stringify(result).trim());
 }
+
+const OFFLINE_RESTORE_UNSUPPORTED = ['on_restart', 'retain_previous', 'resume'];
 
 /**
  * Whether the target of a saved `last_target` is the local instance (localhost / loopback). A
@@ -107,10 +139,13 @@ function isLocalTarget(target: string): boolean {
  * implies talking to a server. A saved *local* `last_target` does not: the offline backup commands
  * exist to work on local files while the local server is stopped, so a local/absent target falls
  * through to the liveness check — the API only when the local instance is actually running
- * (`getHdbPid` verifies process liveness, so a stale pid file reads as stopped).
+ * (`getHdbPid` verifies process liveness, so a stale pid file reads as stopped). A loopback URL can
+ * still be a tunnel, container or another install, so for a destructive command this throws rather
+ * than guess which one was meant.
  */
-function useOperationApi(request: any): boolean {
-	const lastTarget = loadCredentials()?.last_target;
+function useOperationApi(request: any, command: string): boolean {
+	// normalized once so routing and the message read the same URL
+	const lastTarget = normalizeTarget(loadCredentials()?.last_target);
 	if (
 		request.target ||
 		process.env.HARPER_CLI_TARGET ||
@@ -120,7 +155,15 @@ function useOperationApi(request: any): boolean {
 		return true;
 	}
 	initConfig();
-	return Boolean(getHdbPid());
+	if (getHdbPid()) return true;
+	if (lastTarget && !NON_DESTRUCTIVE_COMMANDS.has(command)) {
+		throw new ClientError(
+			`Harper is not running here, and the saved CLI target ${lastTarget} may be a different Harper instance. ` +
+				`To run ${command} on that server, pass target="${lastTarget}". ` +
+				`To run it on this installation's files, first run: harper logout "${lastTarget}" (this removes its saved login).`
+		);
+	}
+	return false;
 }
 
 /**

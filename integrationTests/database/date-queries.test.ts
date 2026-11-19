@@ -3,7 +3,7 @@
  */
 
 import { suite, test, before, after } from 'node:test';
-import { ok } from 'node:assert';
+import { ok, strictEqual } from 'node:assert';
 import { resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import {
@@ -207,11 +207,8 @@ suite(`date storage, range, sort, edge cases [${ENGINE}]`, (ctx: ContextWithHarp
 	test('(a3) ISO-string vs epoch-ms — same instant stored consistently?', async () => {
 		// Both rt-iso and rt-epoch point to the same instant; compare their stored representations
 		const [isoR, epochR] = await Promise.all([restGet(ctx, 'Event', 'rt-iso'), restGet(ctx, 'Event', 'rt-epoch')]);
-		if (isoR.status !== 200 || epochR.status !== 200) {
-			record('(a3) ISO vs epoch representation', 'INFO', 'skip — prior reads failed');
-			ok(true);
-			return;
-		}
+		strictEqual(isoR.status, 200, '(a3) GET rt-iso');
+		strictEqual(epochR.status, 200, '(a3) GET rt-epoch');
 
 		const v1 = isoR.body.createdAt;
 		const v2 = epochR.body.createdAt;
@@ -345,65 +342,17 @@ suite(`date storage, range, sort, edge cases [${ENGINE}]`, (ctx: ContextWithHarp
 	// (c) Sort by date
 	// ==========================================================================
 
-	test('(c1) REST sort: ?sort(createdAt) ASC (unindexed)', async () => {
-		// Harper REST sort requires @indexed on the sort column — 404 without index is expected behavior
-		const { status, body } = await restSearch(ctx, 'Event', '?sort(+createdAt)&limit(50)');
-		if (status === 404) {
-			record(
-				'(c1) REST sort createdAt ASC unindexed',
-				'EDGE',
-				`HTTP 404: sort on unindexed Date col requires @indexed (by design)`
-			);
-			ok(true); // by-design: REST sort requires @indexed
-			return;
-		}
-		if (status !== 200 || !Array.isArray(body)) {
-			record('(c1) REST sort createdAt ASC unindexed', 'DEFECT', `unexpected HTTP ${status}`);
-			ok(false);
-			return;
-		}
-
-		const ids = body.map((r: any) => r.id).filter((id: string) => SEED_ROWS.some((s) => s.id === id));
-		const positions = CHRONO_ORDER.map((id) => ids.indexOf(id)).filter((p) => p >= 0);
-		const inOrder = positions.every((p, i) => i === 0 || p > positions[i - 1]);
-
-		record(
-			'(c1) REST sort createdAt ASC unindexed',
-			inOrder ? 'CORRECT' : 'DEFECT',
-			`ids=${JSON.stringify(ids)} positions=${JSON.stringify(positions)} inOrder=${inOrder}`
-		);
-		ok(inOrder, `(c1) Sort ASC not chronological: ${JSON.stringify(ids)}`);
+	// A query whose only clause is a sort on an unindexed attribute is rejected with 404, not full-scanned.
+	test('(c1) REST sort: ?sort(createdAt) ASC (unindexed) is rejected', async () => {
+		const { status } = await restSearch(ctx, 'Event', '?sort(+createdAt)&limit(50)');
+		record('(c1) REST sort createdAt ASC unindexed', 'EDGE', `HTTP ${status}`);
+		strictEqual(status, 404, '(c1) REST sort on an unindexed attribute');
 	});
 
-	test('(c2) REST sort: ?sort(-createdAt) DESC (unindexed)', async () => {
-		// REST sort on unindexed col → 404 by design; note behavior
-		const { status, body } = await restSearch(ctx, 'Event', '?sort(-createdAt)&limit(50)');
-		if (status === 404) {
-			record(
-				'(c2) REST sort createdAt DESC unindexed',
-				'EDGE',
-				`HTTP 404: sort on unindexed Date col requires @indexed (by design)`
-			);
-			ok(true);
-			return;
-		}
-		if (status !== 200 || !Array.isArray(body)) {
-			record('(c2) REST sort createdAt DESC unindexed', 'DEFECT', `unexpected HTTP ${status}`);
-			ok(false);
-			return;
-		}
-
-		const ids = body.map((r: any) => r.id).filter((id: string) => SEED_ROWS.some((s) => s.id === id));
-		const REVERSE = [...CHRONO_ORDER].reverse();
-		const positions = REVERSE.map((id) => ids.indexOf(id)).filter((p) => p >= 0);
-		const inOrder = positions.every((p, i) => i === 0 || p > positions[i - 1]);
-
-		record(
-			'(c2) REST sort createdAt DESC unindexed',
-			inOrder ? 'CORRECT' : 'DEFECT',
-			`ids=${JSON.stringify(ids)} expected-reverse=${JSON.stringify(REVERSE)} inOrder=${inOrder}`
-		);
-		ok(inOrder, `(c2) Sort DESC not reverse-chronological: ${JSON.stringify(ids)}`);
+	test('(c2) REST sort: ?sort(-createdAt) DESC (unindexed) is rejected', async () => {
+		const { status } = await restSearch(ctx, 'Event', '?sort(-createdAt)&limit(50)');
+		record('(c2) REST sort createdAt DESC unindexed', 'EDGE', `HTTP ${status}`);
+		strictEqual(status, 404, '(c2) REST sort on an unindexed attribute');
 	});
 
 	test('(c3) REST sort: ?sort(createdAt) ASC (indexed)', async () => {
@@ -428,11 +377,8 @@ suite(`date storage, range, sort, edge cases [${ENGINE}]`, (ctx: ContextWithHarp
 
 	test('(c4) SQL ORDER BY createdAt ASC (unindexed)', async () => {
 		const { status, body } = await rawSql(ctx, `SELECT id FROM ${SCHEMA}.Event ORDER BY createdAt ASC`);
-		if (status !== 200 || !Array.isArray(body)) {
-			record('(c4) SQL ORDER BY createdAt ASC', 'INFO', `HTTP ${status} — may be SQL limitation`);
-			ok(true);
-			return;
-		}
+		strictEqual(status, 200, `(c4) SQL ORDER BY: ${JSON.stringify(body)?.slice(0, 200)}`);
+		ok(Array.isArray(body), '(c4) SQL ORDER BY should return an array');
 
 		const ids = body.map((r: any) => r.id).filter((id: string) => SEED_ROWS.some((s) => s.id === id));
 		const positions = CHRONO_ORDER.map((id) => ids.indexOf(id)).filter((p) => p >= 0);
@@ -443,7 +389,8 @@ suite(`date storage, range, sort, edge cases [${ENGINE}]`, (ctx: ContextWithHarp
 			inOrder ? 'CORRECT' : 'DEFECT',
 			`positions=${JSON.stringify(positions)} inOrder=${inOrder}`
 		);
-		ok(true); // non-fatal — we note the state
+		strictEqual(positions.length, CHRONO_ORDER.length, `(c4) every seed row returned: ${JSON.stringify(ids)}`);
+		ok(inOrder, `(c4) SQL ORDER BY not chronological: ${JSON.stringify(ids)}`);
 	});
 
 	// ==========================================================================
@@ -457,15 +404,8 @@ suite(`date storage, range, sort, edge cases [${ENGINE}]`, (ctx: ContextWithHarp
 			restSearch(ctx, 'EventIdx', query),
 		]);
 
-		if (rUnindexed.status !== 200 || rIndexed.status !== 200) {
-			record(
-				'(d1) indexed range == unindexed range',
-				'INFO',
-				`one request failed: unindexed=${rUnindexed.status} indexed=${rIndexed.status}`
-			);
-			ok(true);
-			return;
-		}
+		strictEqual(rUnindexed.status, 200, '(d1) unindexed range query');
+		strictEqual(rIndexed.status, 200, '(d1) indexed range query');
 
 		const unIdx = (rUnindexed.body as any[])
 			.map((r: any) => r.id)
@@ -553,11 +493,7 @@ suite(`date storage, range, sort, edge cases [${ENGINE}]`, (ctx: ContextWithHarp
 			createdAt: PRE_EPOCH,
 			seqNum: 203,
 		});
-		if (status === 0 || status >= 400) {
-			record('(e2) Pre-epoch insert', 'EDGE', `insert rejected: status=${status}`);
-			ok(true);
-			return;
-		}
+		strictEqual(status, 204, '(e2) PUT of a pre-epoch date');
 		await sleep(100);
 
 		const { body } = await restGet(ctx, 'Event', 'preepoch');
@@ -570,7 +506,7 @@ suite(`date storage, range, sort, edge cases [${ENGINE}]`, (ctx: ContextWithHarp
 			ok2 ? 'CORRECT' : 'DEFECT',
 			`stored=${JSON.stringify(stored)} expectedMs=${PRE_EPOCH_MS} instantOk=${ok2}`
 		);
-		ok(true); // non-fatal — documenting behavior
+		ok(ok2, `(e2) pre-epoch instant not preserved: ${JSON.stringify(stored)}`);
 	});
 
 	test('(e3) Far-future date (9999-12-31T23:59:59Z)', async () => {
@@ -583,11 +519,7 @@ suite(`date storage, range, sort, edge cases [${ENGINE}]`, (ctx: ContextWithHarp
 			createdAt: FAR_FUTURE,
 			seqNum: 204,
 		});
-		if (status === 0 || status >= 400) {
-			record('(e3) Far-future date (9999-12-31)', 'EDGE', `insert rejected: status=${status}`);
-			ok(true);
-			return;
-		}
+		strictEqual(status, 204, '(e3) PUT of a far-future date');
 		await sleep(100);
 
 		const { body } = await restGet(ctx, 'Event', 'farfuture');
@@ -600,41 +532,26 @@ suite(`date storage, range, sort, edge cases [${ENGINE}]`, (ctx: ContextWithHarp
 			instantOk ? 'CORRECT' : 'DEFECT',
 			`stored=${JSON.stringify(stored)} instantOk=${instantOk}`
 		);
-		ok(true);
+		ok(instantOk, `(e3) far-future instant not preserved: ${JSON.stringify(stored)}`);
 	});
 
-	test('(e4) Invalid date string — clean 400 or stored garbage?', async () => {
+	// Pins current behavior that is likely a defect (no tracking issue yet): table validation accepts an
+	// Invalid Date and stores null. A fix that rejects it with a 4xx should flip this test to assert that.
+	test('(e4) Invalid date string is accepted and stored as null (pinned)', async () => {
 		const { status } = await restPut(ctx, 'Event', {
 			id: 'invalid-date',
 			label: 'invalid',
 			createdAt: 'not-a-date',
 			seqNum: 205,
 		});
+		strictEqual(status, 204, '(e4) PUT with an unparseable Date string is accepted, not rejected with a 4xx');
 
-		if (status >= 400 && status < 500) {
-			record('(e4) Invalid date string', 'CORRECT', `correctly rejected: HTTP ${status}`);
-			ok(true);
-			return;
-		}
-
-		if (status === 200 || status === 204) {
-			// Check what was stored
-			await sleep(100);
-			const { body } = await restGet(ctx, 'Event', 'invalid-date');
-			const stored = body?.createdAt;
-			const isNaNDate = stored !== null && stored !== undefined && isNaN(Date.parse(String(stored)));
-			record(
-				'(e4) Invalid date string',
-				isNaNDate ? 'DEFECT' : 'INFO',
-				`accepted and stored: ${JSON.stringify(stored)} isNaN=${isNaNDate} (status=${status})`
-			);
-			// Not a hard fail (storage engine behavior may vary), but note it
-			ok(true);
-			return;
-		}
-
-		record('(e4) Invalid date string', 'INFO', `unexpected status=${status}`);
-		ok(true);
+		await sleep(100);
+		const { status: getStatus, body } = await restGet(ctx, 'Event', 'invalid-date');
+		const stored = body?.createdAt;
+		record('(e4) Invalid date string', 'INFO', `accepted and stored: ${JSON.stringify(stored)} (status=${status})`);
+		strictEqual(getStatus, 200, '(e4) GET invalid-date');
+		strictEqual(stored, null, '(e4) an unparseable Date string reads back as null');
 	});
 
 	test('(e5) Null date — stored and read back as null?', async () => {
@@ -644,11 +561,7 @@ suite(`date storage, range, sort, edge cases [${ENGINE}]`, (ctx: ContextWithHarp
 			createdAt: null,
 			seqNum: 206,
 		});
-		if (status >= 400) {
-			record('(e5) Null date', 'EDGE', `null rejected: status=${status}`);
-			ok(true);
-			return;
-		}
+		strictEqual(status, 204, '(e5) PUT with a null Date');
 		await sleep(100);
 
 		const { body, status: getStatus } = await restGet(ctx, 'Event', 'null-date');
@@ -659,7 +572,8 @@ suite(`date storage, range, sort, edge cases [${ENGINE}]`, (ctx: ContextWithHarp
 			stored === null || stored === undefined ? 'CORRECT' : 'DEFECT',
 			`stored=${JSON.stringify(stored)} (getStatus=${getStatus})`
 		);
-		ok(true);
+		strictEqual(getStatus, 200, '(e5) GET null-date');
+		strictEqual(stored, null, '(e5) a null Date reads back as null');
 	});
 
 	test('(e6) Sub-millisecond precision (.001ms) — truncation or preservation?', async () => {
@@ -707,39 +621,27 @@ suite(`date storage, range, sort, edge cases [${ENGINE}]`, (ctx: ContextWithHarp
 			found ? 'CORRECT' : 'DEFECT',
 			`status=${status} found=${found} body-label=${body?.label}`
 		);
-		ok(true);
+		strictEqual(status, 200, '(e7) GET by ISO-date primary key');
+		strictEqual(body?.label, 'pk-date-1', '(e7) GET by ISO-date primary key returns that record');
 	});
 
 	// ==========================================================================
 	// (f) SQL date-literal filter — behavior probe (see #1397, SQL engine rewrite)
 	// ==========================================================================
 
-	// A SQL `WHERE date > 'ISO-literal'` filter is currently silent-wrong (returns []); tracked under
-	// the SQL umbrella #1397. This probe records the behavior WITHOUT asserting the buggy empty result,
-	// so it does not enshrine the defect — epoch-ms numeric bounds work correctly (covered above).
-	test('(f1) SQL date-literal filter behavior (#1397)', async () => {
+	// A SQL `WHERE date > 'ISO-literal'` filter is silent-wrong (returns []), tracked under the SQL
+	// umbrella #1397; the fix for it must replace this pin with the oracle. Epoch-ms bounds work (f2/f3).
+	test('(f1) SQL date-literal filter returns no rows (known defect #1397)', async () => {
 		const AFTER = '2021-01-01T00:00:00.000Z';
 		const { status, body } = await rawSql(ctx, `SELECT id FROM ${SCHEMA}.Event WHERE createdAt > '${AFTER}'`);
-
-		if (status >= 500) {
-			record('(f1) SQL createdAt > ISO-literal (#1397)', 'KNOWN-DEFECT', `HTTP 500 (known #1397 SQL class)`);
-			ok(true);
-			return;
-		}
-
-		const rows: any[] = Array.isArray(body) ? body : [];
-		const gotIds = rows.map((r: any) => r.id).filter((id: string) => SEED_ROWS.some((s) => s.id === id));
-
-		if (rows.length === 0) {
-			record('(f1) SQL createdAt > ISO-literal (#1397)', 'KNOWN-DEFECT', `silent-empty (#1397 still present)`);
-		} else {
-			record(
-				'(f1) SQL createdAt > ISO-literal (#1397)',
-				'CORRECT',
-				`date-literal filter now returns rows: ${JSON.stringify(gotIds)}`
-			);
-		}
-		ok(true); // note state only
+		record('(f1) SQL createdAt > ISO-literal (#1397)', 'KNOWN-DEFECT', `HTTP ${status} body=${JSON.stringify(body)}`);
+		strictEqual(status, 200, `(f1) SQL date-literal filter: ${JSON.stringify(body)?.slice(0, 200)}`);
+		ok(Array.isArray(body), '(f1) SQL date-literal filter should return an array');
+		strictEqual(
+			body.length,
+			0,
+			'(f1) #1397: an ISO-literal date filter now returns rows — if that is the fix, assert the oracle here instead'
+		);
 	});
 
 	test('(f2) SQL epoch-number filter (should work — baseline)', async () => {

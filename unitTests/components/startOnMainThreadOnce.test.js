@@ -25,7 +25,7 @@ describe('startOnMainThread once-per-component (#460)', function () {
 		sandbox = sinon.createSandbox();
 		tempDir = mkdtempSync(path.join(tmpdir(), 'harper-somt-once-'));
 
-		const env = require('#src/utility/environment/environmentManager');
+		const env = require('#js/utility/environment/environmentManager');
 		sandbox.stub(env, 'get').callsFake((key) => {
 			if (key === 'COMPONENTSROOT') return tempDir;
 			if (key === 'CLUSTERING_ENABLED') return false;

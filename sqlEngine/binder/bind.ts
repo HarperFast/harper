@@ -28,9 +28,11 @@ import type {
 } from '../parser/ast.ts';
 import { EngineUnsupportedError } from '../errors.ts';
 import { _setDatabasesLoader, loadDatabases, findDatabasesWithTable } from './defaultDatabase.ts';
+import { declaringTables } from './columnScope.ts';
 
 interface AttributeInfo {
 	name: string;
+	type?: string;
 	indexed: boolean;
 	isPrimaryKey: boolean;
 	/** Whether the attribute's index can serve `value === null` conditions —
@@ -169,7 +171,7 @@ function bindTableRef(ref: TableRefNode, databases: Record<string, Record<string
 	}
 	const r = resource as {
 		primaryKey?: string;
-		attributes?: { name: string; indexed?: boolean; indexNulls?: boolean }[];
+		attributes?: { name: string; type?: string; indexed?: boolean; indexNulls?: boolean }[];
 		indices?: Record<string, { indexNulls?: boolean } | unknown>;
 	};
 	const primaryKey = r.primaryKey;
@@ -178,6 +180,7 @@ function bindTableRef(ref: TableRefNode, databases: Record<string, Record<string
 	// (databases.ts sets each) — honor either.
 	const attributes: AttributeInfo[] = (r.attributes ?? []).map((a) => ({
 		name: a.name,
+		type: a.type,
 		indexed: !!a.indexed || !!indices[a.name] || a.name === primaryKey,
 		isPrimaryKey: a.name === primaryKey,
 		indexNulls:
@@ -263,7 +266,7 @@ function resolveColumns(expr: ExprNode, scope: BoundTable[]): void {
 				return;
 			}
 			// Unqualified: bind to the unique table that declares this attribute.
-			const owners = scope.filter((t) => t.attributes.some((a) => a.name === expr.name));
+			const owners = declaringTables(expr.name, scope);
 			if (owners.length === 1) {
 				expr.table = owners[0].effectiveAlias;
 			} else if (owners.length > 1) {

@@ -50,15 +50,19 @@ describe('Test itcUtils module', () => {
 	describe('Test sendItcEvent function', () => {
 		let itc_rewired;
 		let broadcast_stub;
+		let strict_broadcast_stub;
 
 		before(() => {
 			itc_rewired = rewire('#js/server/threads/itc');
 			broadcast_stub = sinon.stub().resolves();
+			strict_broadcast_stub = sinon.stub().resolves();
 			itc_rewired.__set__('broadcastWithAcknowledgement', broadcast_stub);
+			itc_rewired.__set__('broadcastWithStrictAcknowledgement', strict_broadcast_stub);
 		});
 
 		afterEach(() => {
 			broadcast_stub.resetHistory();
+			strict_broadcast_stub.resetHistory();
 		});
 
 		it('sets originator on message when called from main thread', () => {
@@ -80,6 +84,30 @@ describe('Test itcUtils module', () => {
 			itc_rewired.sendItcEvent(event);
 			expect(event.originator).to.equal(undefined);
 			expect(broadcast_stub).to.have.been.calledOnce;
+		});
+
+		it('sends the restore release to job workers too, so the close fence is actually lifted', () => {
+			const event = {
+				type: 'schema',
+				message: { operation: 'restore_backup', restorePhase: 'reload' },
+			};
+			itc_rewired.sendItcEvent(event);
+			// Best-effort rather than strict -- the work is already done -- but it must reach the job
+			// workers the close phase fenced, or they stay fenced for the life of the process.
+			expect(strict_broadcast_stub).to.not.have.been.called;
+			expect(broadcast_stub).to.have.been.calledOnceWithExactly(event, undefined, false, true);
+		});
+
+		it('gives a restore close barrier a bounded, strict broadcast that includes job workers', () => {
+			const event = {
+				type: 'schema',
+				message: { operation: 'restore_backup', restorePhase: 'close' },
+			};
+			itc_rewired.sendItcEvent(event);
+			// Strict so an unacknowledged worker fails the restore, bounded so a wedged one cannot hang
+			// it, and job workers included because they write blobs too.
+			expect(strict_broadcast_stub).to.have.been.calledOnceWithExactly(event, 30000, true);
+			expect(broadcast_stub).to.not.have.been.called;
 		});
 	});
 

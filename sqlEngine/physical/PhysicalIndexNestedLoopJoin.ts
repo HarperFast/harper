@@ -17,11 +17,8 @@ import type { ExprNode } from '../parser/ast.ts';
 import type { PhysicalOp } from './op.ts';
 import type { Row, SqlEngineContext } from '../types.ts';
 import type { ConditionNode } from '../optimizer/whereToConditions.ts';
-import { compileExpr } from '../expressions/compile.ts';
-
-interface SearchableTable {
-	search(target: unknown, context?: unknown): AsyncIterable<Row>;
-}
+import { compileExpr, compilePredicate, neverEqual } from '../expressions/compile.ts';
+import type { SearchableTable } from './PhysicalIndexScan.ts';
 
 export interface IndexNLJoinOptions {
 	innerResource: unknown;
@@ -45,29 +42,24 @@ export interface IndexNLJoinOptions {
 export function physicalIndexNestedLoopJoin(left: PhysicalOp, opts: IndexNLJoinOptions): PhysicalOp {
 	const resource = opts.innerResource as SearchableTable;
 	const outerKeyEval = compileExpr(opts.outerKey, true).eval;
-	const innerResidual = opts.innerResidual ? compileExpr(opts.innerResidual, false) : undefined;
-	const residualOn = opts.residualOn ? compileExpr(opts.residualOn, true) : undefined;
+	const innerResidual = opts.innerResidual ? compilePredicate(opts.innerResidual, false) : undefined;
+	const residualOn = opts.residualOn ? compilePredicate(opts.residualOn, true) : undefined;
 	const prefix = `${opts.innerAlias}.`;
 
 	return {
 		schema: [],
 		async *execute(ctx: SqlEngineContext): AsyncIterable<Row> {
+			const innerSelect = opts.innerSelect && resource._authorizeSelectedRelationships(opts.innerSelect, ctx.user);
 			for await (const outerRow of left.execute(ctx)) {
 				const value = outerKeyEval(outerRow);
 				let matched = false;
-				if (value != null) {
-					const target = buildProbeTarget(opts, value);
+				if (!neverEqual(value)) {
+					const target = buildProbeTarget(opts, value, innerSelect);
 					for await (const innerRow of resource.search(target)) {
-						if (innerResidual) {
-							const v = innerResidual.eval(innerRow);
-							if (v == null || v === false) continue;
-						}
+						if (innerResidual && !innerResidual(innerRow)) continue;
 						const merged: Row = { ...outerRow };
 						for (const k of Object.keys(innerRow)) merged[prefix + k] = innerRow[k];
-						if (residualOn) {
-							const v = residualOn.eval(merged);
-							if (v == null || v === false) continue;
-						}
+						if (residualOn && !residualOn(merged)) continue;
 						matched = true;
 						yield merged;
 					}
@@ -82,7 +74,7 @@ export function physicalIndexNestedLoopJoin(left: PhysicalOp, opts: IndexNLJoinO
 	};
 }
 
-function buildProbeTarget(opts: IndexNLJoinOptions, value: unknown): Record<string, unknown> {
+function buildProbeTarget(opts: IndexNLJoinOptions, value: unknown, innerSelect: unknown[]): Record<string, unknown> {
 	const probe: ConditionNode = { attribute: opts.innerAttribute, value, comparator: 'equals' };
 	let conditions: ConditionNode[];
 	if (opts.innerBaseConditions.length === 0) {
@@ -93,6 +85,6 @@ function buildProbeTarget(opts: IndexNLJoinOptions, value: unknown): Record<stri
 		conditions = [{ conditions: opts.innerBaseConditions, operator: 'or' }, probe];
 	}
 	const target: Record<string, unknown> = { conditions, operator: 'and', allowFullScan: false };
-	if (opts.innerSelect) target.select = opts.innerSelect;
+	if (innerSelect) target.select = innerSelect;
 	return target;
 }

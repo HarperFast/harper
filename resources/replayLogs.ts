@@ -1,7 +1,7 @@
 import { RocksDatabase } from '@harperfast/rocksdb-js';
 import { Resource } from './Resource.ts';
 import type { Context } from './ResourceInterface.ts';
-import * as logger from '../utility/logging/harper_logger.js';
+import * as logger from '../utility/logging/harper_logger.ts';
 import { DatabaseTransaction } from './DatabaseTransaction.ts';
 import { RocksTransactionLogStore } from './RocksTransactionLogStore.ts';
 import { isMainThread } from 'node:worker_threads';
@@ -13,11 +13,16 @@ import {
 	shouldAbortSlowReplay,
 	REPLAY_WALL_CLOCK_LIMIT_MS,
 } from './replayLogsGuards.ts';
-import { purgeAgedLogs } from './auditStore.ts';
+import { LOCAL_ONLY, COPIED_RECORD, purgeAgedLogs } from './auditStore.ts';
+import { asBinary } from './asBinary.ts';
 import { get as envGet } from '../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 
 let warnedReplayHappening = false;
+const REPLAY_RECOVERY_GUIDANCE =
+	'Unreplayed entries may already be durable in RocksDB if txn.state is stale; a replay limit does not establish data loss. Preserve a copy of this database and its transaction logs before restarting or accepting further writes. Later writes and flushes can advance txn.state past unreplayed entries; do not assume a subsequent restart will recover the remainder.';
+const REPLAY_RECLONE_WARNING =
+	'Re-cloning discards local-only writes and can lose data if this node is ahead of its peers; verify that the recovery source contains all needed data before replacing this database.';
 
 // True when `updated` would DROP shared structures relative to `existing` — for either the classic
 // array form or the {named, typed} Map form, and for a form change between the two. Shared
@@ -46,6 +51,24 @@ export function replayTimeBudgetMs(): number {
 	return configuredReplayTimeout > 0 ? configuredReplayTimeout : REPLAY_WALL_CLOCK_LIMIT_MS;
 }
 
+export interface ReplayLogsOptions {
+	elected?: boolean;
+	/**
+	 * `restore` proves a restored generation before it is published: it implies `elected`, keeps every
+	 * restored log file (a restored log is legitimately older than the retention window), and rejects
+	 * on anything boot replay tolerates — a skipped undecodable entry, a discarded torn transaction, a
+	 * log read failure, or any corrupt frame. A backup snapshot is taken on committed entry
+	 * boundaries, so none of those can be the benign tail of a crash.
+	 */
+	policy?: 'boot' | 'restore';
+}
+
+export interface ReplaySummary {
+	writes: number;
+	skipped: number;
+	discardedWrites: number;
+}
+
 /**
  * `electedReplayer` marks a caller that has already won a cross-thread election for this store —
  * the branch claim (branchDatabase.ts) — and so may replay off the main thread. It also makes the
@@ -57,7 +80,15 @@ export function replayTimeBudgetMs(): number {
  * an elected replay rejects on one rather than publish a branch as a trustworthy point-in-time copy
  * over known lost writes; boot replay still logs it and continues (harper#2016, harper#2063).
  */
-export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplayer?: boolean): Promise<void> {
+export function replayLogs(
+	rootStore: RocksDatabase,
+	tables: any,
+	electedOrOptions?: boolean | ReplayLogsOptions
+): Promise<ReplaySummary | void> {
+	const options: ReplayLogsOptions =
+		typeof electedOrOptions === 'object' ? electedOrOptions : { elected: electedOrOptions };
+	const restorePolicy = options.policy === 'restore';
+	const electedReplayer = restorePolicy || !!options.elected;
 	if (!isMainThread && !electedReplayer) return Promise.resolve(); // ideally we don't do it like this, but for now this is predictable
 	return new Promise((resolve, reject) => {
 		const acquired = rootStore.tryLock('replayLogs', async () => {
@@ -80,7 +111,7 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 		// the recovery this fix is meant to harden.
 		let purgedLogs: string[] = [];
 		try {
-			purgedLogs = purgeAgedLogs(rootStore);
+			if (!restorePolicy) purgedLogs = purgeAgedLogs(rootStore);
 		} catch (error) {
 			logger.warn(
 				`Failed to purge aged transaction logs before replay in ${(rootStore as any).databaseName} database`,
@@ -165,14 +196,12 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 		for (const auditRecord of entries as any) {
 			if (noProgressRun > 0 && shouldAbortStalledReplay(noProgressRun, performance.now() - lastProgressTime)) {
 				if (transaction && !electedReplayer) endTransaction(true);
-				const stallDiagnostic = `Aborting transaction-log replay in ${(rootStore as any).databaseName} database: ${noProgressRun} consecutive audit entries with no successful write (${skipped} skipped as unrecoverable, ${writes} replayed so far). This backlog is making no forward progress and was blocking startup (harper#1266) — typically a peer transaction log whose values reference unresolvable shared structures (harper#1163), or a backlog for a dropped table.`;
+				const stallDiagnostic = `Aborting transaction-log replay in ${(rootStore as any).databaseName} database: ${noProgressRun} consecutive audit entries with no successful write (${skipped} skipped as unrecoverable, ${writes} replayed so far). This backlog is making no forward progress and was blocking startup (harper#1266) — typically a peer transaction log whose values reference unresolvable shared structures (harper#1163), or a backlog for a dropped table. ${REPLAY_RECOVERY_GUIDANCE}`;
 				if (electedReplayer) {
 					strictAbort(new Error(stallDiagnostic), transaction);
 					break;
 				}
-				logger.fatal(
-					`${stallDiagnostic} Continuing boot without replaying the remainder; shed or relocate the oversized/undecodable peer transaction log(s), or re-clone this node, to recover the unreplayed data.`
-				);
+				logger.fatal(`${stallDiagnostic} Continuing boot without replaying the remainder. ${REPLAY_RECLONE_WARNING}`);
 				break;
 			}
 			const {
@@ -183,6 +212,7 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 				version,
 				txnLogKey,
 				residencyId,
+				residencySlot,
 				expiresAt,
 				originatingOperation,
 				username,
@@ -204,9 +234,8 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 					// (harper#1316, facet a). shouldAbortStalledReplay resets its counters on every write,
 					// so a slow-but-progressing replay (deep out-of-order audit chain walk per entry) can
 					// peg the boot thread indefinitely without tripping it. Checked only between native commits.
-					// Re-clone to recover the unreplayed remainder.
 					if (shouldAbortSlowReplay(performance.now() - replayStartTime, replayTimeoutMs)) {
-						const slowMessage = `Aborting transaction-log replay in ${(rootStore as any).databaseName} database: replay has exceeded the wall-clock time limit (${writes} written, ${skipped} skipped). The transaction log contains a pathologically deep out-of-order write history that is too expensive to reconcile during boot (harper#1316). Re-clone this node from a healthy leader to recover the unreplayed data.`;
+						const slowMessage = `Aborting transaction-log replay in ${(rootStore as any).databaseName} database: replay has exceeded the wall-clock time limit (${writes} written, ${skipped} skipped). ${REPLAY_RECOVERY_GUIDANCE} Investigate replay cost and consider increasing replication.replayTimeout for a recovery attempt against the preserved copy only after verifying its replay position still covers the needed entries.${electedReplayer ? '' : ` ${REPLAY_RECLONE_WARNING}`}`;
 						if (electedReplayer) {
 							strictFailure = new Error(slowMessage);
 							break;
@@ -257,16 +286,18 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 				}
 				// Entry is replayable: build the context and instantiate the resource only now, so
 				// the skip paths above never pay those per-entry allocations (harper#1266).
+				// `timestamp` is the key the entry was appended under, which the replay handle carries; the write
+				// handlers take it from here, as for an apply, since replay holds no reservation of a minted key.
 				const context: Context = {
 					nodeId,
 					alreadyLogged: true,
 					version,
 					expiresAt,
+					timestamp: txnLogKey,
 					user: { username },
 				} as any;
 				const target = new RequestTarget();
 				target.id = null;
-				const tableInstance: any = Table.getResource(target, context, {});
 				// TODO: If this throws an error due to being unable to access structures, we need to iterate through
 				// other transaction logs to get the latest structure. Ultimately we may have to skip records
 				if (!warnedReplayHappening) {
@@ -291,7 +322,19 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 					transaction.isReplay = true;
 				}
 				context.transaction = transaction;
-				const options = { context, residencyId, nodeId, originatingOperation, version };
+				const tableInstance: any = Table.getResource(target, context, {});
+				const options = {
+					context,
+					isReplay: true,
+					auditEntry: auditRecord,
+					residencyId,
+					residencySlot,
+					nodeId,
+					originatingOperation,
+					version,
+					localOnly: (extendedType & LOCAL_ONLY) !== 0,
+					copyFrame: (extendedType & COPIED_RECORD) !== 0,
+				};
 				writes++;
 				stagedWrites++;
 				switch (type) {
@@ -398,9 +441,22 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 			// electedReplayer must not resolve past known loss — see the doc comment above. Only set
 			// strictFailure if nothing has already failed the replay for an unrelated reason, so this
 			// diagnostic never shadows a more specific commit/write error.
-			if (electedReplayer && !strictFailure) {
+			if (electedReplayer && !restorePolicy && !strictFailure) {
 				strictFailure = new Error(
 					`Elected replay in ${(rootStore as any).databaseName} database stopped at a mid-log corrupt transaction-log frame; entries behind the break were acknowledged and are now quarantined. Refusing to publish a branch over known lost writes — repair the transaction log or re-clone this node.`
+				);
+			}
+		}
+		if (restorePolicy && !strictFailure) {
+			const failedLogs: Set<string> | undefined = (entries as any).failedLogs;
+			const reasons: string[] = [];
+			if (skipped > 0) reasons.push(`${skipped} undecodable entr${skipped === 1 ? 'y' : 'ies'}`);
+			if (discardedWrites > 0) reasons.push(`${discardedWrites} write(s) of a torn transaction`);
+			if (failedLogs?.size > 0) reasons.push(`unreadable transaction log ${[...failedLogs].join(', ')}`);
+			if (entries.corruptFrameStop.breaks > 0) reasons.push('a corrupt transaction-log frame');
+			if (reasons.length > 0) {
+				strictFailure = new Error(
+					`The restored transaction log of the ${(rootStore as any).databaseName} database cannot be replayed completely: ${reasons.join(', ')}. The restore was not published.`
 				);
 			}
 		}
@@ -424,10 +480,7 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 		} else {
 			// we never actually release the lock because we only want to ever run one time
 			// rootStore.unlock('replayLogs');
-			resolve();
+			resolve({ writes, skipped, discardedWrites });
 		}
 	});
-}
-function asBinary(buffer) {
-	return { ['\x10binary-data\x02']: buffer };
 }

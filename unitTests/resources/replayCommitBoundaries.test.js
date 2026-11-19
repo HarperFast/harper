@@ -2,7 +2,7 @@ require('../testUtils');
 const assert = require('node:assert');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
-const { readFileSync, rmSync } = require('node:fs');
+const { copyFileSync, cpSync, readFileSync, rmSync } = require('node:fs');
 const { setupTestDBPath } = require('../testUtils');
 const { table, databases, database } = require('#src/resources/databases');
 const { transaction } = require('#src/resources/transaction');
@@ -13,7 +13,7 @@ const { RequestTarget } = require('#src/resources/RequestTarget');
 const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
 const env = require('#src/utility/environment/environmentManager');
 const terms = require('#src/utility/hdbTerms');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 const describeUnlessLmdb = process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? describe.skip : describe;
 
@@ -103,10 +103,14 @@ async function replayStream(entries, { truncatedVersions = new Set(), elected = 
 	return { groups: groups.map(({ ids, outcome }) => ({ ids, outcome })), failure, unlocked };
 }
 
-async function runCrashChild(args) {
-	const child = spawn(process.execPath, [path.join(__dirname, 'replayCommitBoundaries-crash.js'), ...args], {
-		stdio: ['ignore', 'ignore', 'pipe'],
-	});
+async function runCrashChild(args, nodeArgs = []) {
+	const child = spawn(
+		process.execPath,
+		[...nodeArgs, path.join(__dirname, 'replayCommitBoundaries-crash.js'), ...args],
+		{
+			stdio: ['ignore', 'ignore', 'pipe'],
+		}
+	);
 	let stderr = '';
 	child.stderr.on('data', (chunk) => (stderr += chunk));
 	const timer = setTimeout(() => child.kill('SIGTERM'), 60000);
@@ -127,21 +131,124 @@ describeUnlessLmdb('replay commits once per native transaction (harper#2161)', (
 		setMainIsWorker(true);
 	});
 
+	for (const unflushedTail of [false, true]) {
+		it(`preserves safe replay-abort advice with ${unflushedTail ? 'an unflushed tail' : 'an already durable backlog'}`, async function () {
+			const crashDir = path.join(dbPath, `replay-advice-${unflushedTail}`);
+			rmSync(crashDir, { recursive: true, force: true });
+			const sharedPath = path.join(crashDir, 'shared');
+			const markerPath = path.join(crashDir, 'marker');
+			const childArgs = [path.join(crashDir, 'writer-root'), sharedPath, 'replayadvice', 'Rows', markerPath];
+			const written = await runCrashChild([...childArgs, unflushedTail ? 'write-advice-tail' : 'write-advice']);
+			assert.strictEqual(written.signal, 'SIGKILL', written.stderr);
+			copyFileSync(
+				markerPath + '.state',
+				path.join(sharedPath, 'replayadvice', 'transaction_logs', 'local', 'txn.state')
+			);
+			const preservedPath = path.join(crashDir, 'preserved');
+			childArgs[0] = path.join(crashDir, 'replayer-root');
+			const replayed = await runCrashChild([...childArgs, 'replay-advice']);
+			assert.strictEqual(replayed.code, 0, replayed.stderr);
+			assert.deepStrictEqual(JSON.parse(readFileSync(markerPath, 'utf8')), { rows: [0, 1, 2], tail: null });
+			assert.match(replayed.stderr, /wall-clock time limit/);
+			assert.match(replayed.stderr, /may already be durable in RocksDB/);
+			assert.match(
+				replayed.stderr,
+				/Preserve a copy of this database and its transaction logs before restarting or accepting further writes/
+			);
+			assert.match(replayed.stderr, /Re-cloning discards local-only writes/);
+			assert.match(replayed.stderr, /verify that the recovery source contains all needed data/);
+			assert.match(replayed.stderr, /replication\.replayTimeout/);
+			assert.match(replayed.stderr, /Later writes and flushes can advance txn\.state past unreplayed entries/);
+			assert.match(replayed.stderr, /only after verifying its replay position still covers the needed entries/);
+			assert.doesNotMatch(replayed.stderr, /Re-clone this node|pathologically deep|no recovery needed/);
+			if (unflushedTail) {
+				cpSync(sharedPath, preservedPath, { recursive: true });
+				childArgs[0] = path.join(crashDir, 'recovery-root');
+				childArgs[1] = preservedPath;
+				const recovered = await runCrashChild([...childArgs, 'replay-advice-recover']);
+				assert.strictEqual(recovered.code, 0, recovered.stderr);
+				assert.deepStrictEqual(JSON.parse(readFileSync(markerPath, 'utf8')), { rows: [0, 1, 2], tail: 3 });
+				assert.doesNotMatch(recovered.stderr, /wall-clock time limit/);
+			}
+		});
+	}
+
+	it('reads replay commit bases from storage without consulting or populating the record cache', async function () {
+		const Rows = table({
+			table: 'ReplayCacheReads',
+			database: 'replaycachereads',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'n' }],
+		});
+		await Rows.put({ id: 'cached', n: 1 });
+		const store = Rows.primaryStore;
+		const cached = store.getEntry('cached');
+		assert.strictEqual(store.getEntry('cached').value, cached.value);
+		const replay = new DatabaseTransaction();
+		replay.db = store;
+		replay.isReplay = true;
+		let read;
+		try {
+			replay.addWrite({ key: 'cached', store, commit: (_time, entry) => (read = entry) });
+			assert.notStrictEqual(read.value, cached.value, 'replay must decode its snapshot rather than use the cache');
+			assert.deepStrictEqual(read.value, cached.value);
+			assert.strictEqual(store.getEntry('cached').value, cached.value, 'replay must not replace the cached record');
+		} finally {
+			replay.abort();
+		}
+	});
+
+	it('keeps heap growth bounded when boot replays an already durable backlog behind a stale watermark', async function () {
+		const crashDir = path.join(dbPath, 'replay-stale-watermark');
+		rmSync(crashDir, { recursive: true, force: true });
+		const sharedPath = path.join(crashDir, 'shared');
+		const markerPath = path.join(crashDir, 'marker');
+		const childArgs = [path.join(crashDir, 'writer-root'), sharedPath, 'stalereplay', 'Rows', markerPath];
+		const written = await runCrashChild([...childArgs, 'write-stale']);
+		assert.strictEqual(written.signal, 'SIGKILL', written.stderr);
+		copyFileSync(markerPath + '.state', path.join(sharedPath, 'stalereplay', 'transaction_logs', 'local', 'txn.state'));
+		childArgs[0] = path.join(crashDir, 'replayer-root');
+		const replayed = await runCrashChild([...childArgs, 'replay-stale'], ['--expose-gc']);
+		assert.strictEqual(replayed.code, 0, replayed.stderr);
+		const { commits, heapSamples, rowCount } = JSON.parse(readFileSync(markerPath, 'utf8'));
+		assert(commits >= 10001 && commits <= 10002, 'replay must scan the durable backlog, tail, and possibly the seed');
+		assert.strictEqual(rowCount, 10002, 'all durable records and the recovered tail must remain readable');
+		assert.strictEqual(heapSamples.length, 2);
+		assert(
+			heapSamples[1] - heapSamples[0] < 16 * 1024 * 1024,
+			`replay retained records across commits: heap grew from ${heapSamples[0]} to ${heapSamples[1]} bytes`
+		);
+	});
+
 	it('replays native commits that share a log key as separate transactions, never splitting one', async function () {
 		const SameKey = table({
 			table: 'SameKeyCommits',
 			database: 'replaysamekey',
 			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'n' }],
 		});
-		// A replication receiver stamps every apply with the origin's log key, so each re-delivery of a
-		// source transaction is a new native commit at the same key.
+		// A replication receiver files every apply in the origin's log under the origin's key, so each
+		// re-delivery of a source transaction is a new native commit at the same key there (the node's
+		// own `local` log never repeats a key).
+		SameKey.auditStore.ensureLogExists('peer-same');
+		const peerId = getIdOfRemoteNode('peer-same', SameKey.auditStore);
 		const logKey = Date.now();
-		await transaction({ timestamp: logKey }, () => SameKey.put({ id: 'a', n: 1 }));
-		await transaction({ timestamp: logKey }, async () => {
-			await SameKey.put({ id: 'b', n: 2 });
-			await SameKey.put({ id: 'c', n: 3 });
-		});
-		await transaction({ timestamp: logKey }, () => SameKey.put({ id: 'd', n: 4 }));
+		const commit = (records) => {
+			const context = { timestamp: logKey };
+			return transaction(context, () => {
+				for (const record of records) {
+					const target = new RequestTarget();
+					target.id = null;
+					const resource = SameKey.getResource(target, context, {});
+					resource._writeUpdate(record.id, record, true, { context, nodeId: peerId, version: logKey });
+					resource.save();
+				}
+			});
+		};
+		await commit([{ id: 'a', n: 1 }]);
+		await commit([
+			{ id: 'b', n: 2 },
+			{ id: 'c', n: 3 },
+		]);
+		await commit([{ id: 'd', n: 4 }]);
 
 		const logged = [...SameKey.auditStore.getRange({ start: 0, end: Infinity })].filter(
 			(entry) => entry.txnLogKey === logKey
@@ -190,7 +297,9 @@ describeUnlessLmdb('replay commits once per native transaction (harper#2161)', (
 			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'n' }],
 		});
 		TwoLogs.auditStore.ensureLogExists('peer-a');
+		TwoLogs.auditStore.ensureLogExists('peer-b');
 		const peerId = getIdOfRemoteNode('peer-a', TwoLogs.auditStore);
+		const otherPeerId = getIdOfRemoteNode('peer-b', TwoLogs.auditStore);
 		const logKey = Date.now();
 		// Applies records the way the replay and replication paths do, so `nodeId` routes the audit
 		// entry to that origin's log.
@@ -212,7 +321,7 @@ describeUnlessLmdb('replay commits once per native transaction (harper#2161)', (
 				{ id: 'l1', n: 1 },
 				{ id: 'l2', n: 2 },
 			],
-			0
+			otherPeerId
 		);
 		await commit(
 			[
@@ -221,7 +330,7 @@ describeUnlessLmdb('replay commits once per native transaction (harper#2161)', (
 			],
 			peerId
 		);
-		await commit([{ id: 'l3', n: 5 }], 0);
+		await commit([{ id: 'l3', n: 5 }], otherPeerId);
 		await commit([{ id: 'p3', n: 6 }], peerId);
 
 		const merged = [...TwoLogs.auditStore.getRange({ start: 0, end: Infinity, includeLogName: true })]
@@ -229,7 +338,7 @@ describeUnlessLmdb('replay commits once per native transaction (harper#2161)', (
 			.map(({ logName, recordId }) => `${logName}:${recordId}`);
 		assert.deepStrictEqual(
 			[...merged].sort(),
-			['local:l1', 'local:l2', 'local:l3', 'peer-a:p1', 'peer-a:p2', 'peer-a:p3'],
+			['peer-a:p1', 'peer-a:p2', 'peer-a:p3', 'peer-b:l1', 'peer-b:l2', 'peer-b:l3'],
 			'every entry at the key comes back from the aggregate range'
 		);
 		const logSwitches = merged.filter(
@@ -285,6 +394,34 @@ describeUnlessLmdb('replay commits once per native transaction (harper#2161)', (
 		const { commits, rows } = JSON.parse(readFileSync(markerPath, 'utf8'));
 		assert.deepStrictEqual(commits, [1, 2, 1], 'boot replay commits each native commit as its own transaction');
 		assert.deepStrictEqual(rows, { a: 1, b: 2, c: 3, d: 4 });
+	});
+
+	it('recovers an explicit-timestamp write with the pointer to its minted log key', async function () {
+		const crashDir = path.join(dbPath, 'replay-explicit-crash');
+		rmSync(crashDir, { recursive: true, force: true });
+		const childArgs = (root) => [
+			path.join(crashDir, root),
+			path.join(crashDir, 'shared'),
+			'explicitreplay',
+			'Rows',
+			path.join(crashDir, 'marker'),
+		];
+		const written = await runCrashChild([...childArgs('writer-root'), 'write-explicit']);
+		assert.strictEqual(
+			written.signal,
+			'SIGKILL',
+			`the writer should kill itself (exit ${written.code}): ${written.stderr}`
+		);
+		const version = readFileSync(path.join(crashDir, 'marker'), 'utf8');
+
+		const replayed = await runCrashChild([...childArgs('replayer-root'), 'replay-explicit', version]);
+		assert.strictEqual(replayed.code, 0, replayed.stderr);
+		assert.deepStrictEqual(JSON.parse(readFileSync(path.join(crashDir, 'marker'), 'utf8')), {
+			replayed: true,
+			version: true,
+			headRef: true,
+			n: 1,
+		});
 	});
 
 	it('discards only the torn commit, keeping a complete commit at the same key', async function () {
@@ -422,6 +559,9 @@ describeUnlessLmdb('replay commits once per native transaction (harper#2161)', (
 				}
 			);
 			assert.match(failure?.message ?? '', /wall-clock time limit/);
+			assert.match(failure.message, /may already be durable in RocksDB/);
+			assert.match(failure.message, /Preserve a copy/);
+			assert.doesNotMatch(failure.message, /[Rr]e-clon|peer|leader/);
 			assert.deepStrictEqual(groups, [{ ids: ['a', 'b'], outcome: 'committed' }]);
 		} finally {
 			env.setProperty(terms.CONFIG_PARAMS.REPLICATION_REPLAYTIMEOUT, configured);

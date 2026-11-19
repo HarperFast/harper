@@ -189,6 +189,23 @@ describe('private git-reference deploy (real clone over authenticated git-over-h
 		);
 	});
 
+	it('leaves a credential written into the package URL out of the clone failure', async () => {
+		const urlSecret = 'url_embedded_secret_3985';
+		const application = new Application({
+			name: 'git-clone-url-credential',
+			packageIdentifier: packageIdentifier.replace('http://', `http://${USERNAME}:${urlSecret}@`),
+		});
+		await assert.rejects(
+			() => extractApplication(application),
+			(error) => {
+				assert.match(error.message, /Failed to clone package git\+http:\/\/\[REDACTED\]@127\.0\.0\.1/);
+				assert.ok(!error.message.includes(urlSecret), error.message);
+				assert.ok(!error.stack.includes(urlSecret), error.stack);
+				return true;
+			}
+		);
+	});
+
 	it('clones the private repo with a token served from memory, and the token never lands on disk', async () => {
 		const application = new Application({
 			name: 'git-clone-authenticated',

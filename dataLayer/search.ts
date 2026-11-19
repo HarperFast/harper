@@ -1,6 +1,6 @@
-'use strict';
+import { loadRuntimeModule } from '../utility/packageUtils.js';
 
-const harperBridge = require('./harperBridge/harperBridge').default;
+import harperBridge from './harperBridge/harperBridge.ts';
 import { transformReq } from '../utility/common_utils.ts';
 
 export async function searchByConditions(searchObject: any) {
@@ -30,15 +30,24 @@ export async function searchByValue(searchObject: any) {
 	return array;
 }
 
+let SelectValidator;
+let SQLSearch;
 export function search(statement: any, callback: any) {
+	runSelect(statement, undefined, callback);
+}
+
+export function sqlSelect({ statement, hdb_user }: any, callback: any) {
+	runSelect(statement, hdb_user, callback);
+}
+
+function runSelect(statement: any, hdbUser: any, callback: any) {
 	try {
-		const SelectValidator =
-			require('../sqlTranslator/SelectValidator').default || require('../sqlTranslator/SelectValidator');
-		const SQLSearch = require('./SQLSearch').default || require('./SQLSearch');
+		SelectValidator ??= loadRuntimeModule('sqlTranslator/SelectValidator').default;
+		SQLSearch ??= loadRuntimeModule('dataLayer/SQLSearch').default;
 		let validator = new SelectValidator(statement);
 		validator.validate();
 
-		let sqlSearch = new SQLSearch(validator.statement, validator.attributes);
+		let sqlSearch = new SQLSearch(validator.statement, validator.attributes, hdbUser);
 
 		sqlSearch
 			.search()

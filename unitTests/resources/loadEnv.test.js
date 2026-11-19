@@ -83,7 +83,7 @@ describe('loadEnv conflict handling', () => {
 	});
 
 	it('warns that config-shaping vars cannot shape instance config (#1513)', () => {
-		const logger = require('#src/utility/logging/harper_logger');
+		const logger = require('#js/utility/logging/harper_logger');
 		const warnings = [];
 		const originalWarn = logger.warn;
 		logger.warn = (msg) => warnings.push(String(msg));

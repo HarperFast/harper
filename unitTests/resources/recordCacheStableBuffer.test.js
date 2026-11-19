@@ -1,7 +1,7 @@
 const { setupTestDBPath } = require('../testUtils');
 const assert = require('node:assert');
 const { table } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 // Reproduction for the Blob-column decode corruption ("Data read, but end of buffer not reached", or
 // a record coming back with foreign bytes) reported against Harper 5.2.0.

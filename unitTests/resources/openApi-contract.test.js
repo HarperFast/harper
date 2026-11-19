@@ -127,3 +127,25 @@ describe('openApi — request-contract emission at a static path (resources Map,
 		expect(Object.keys(response.properties)).to.deep.equal(['id']);
 	});
 });
+
+describe('openApi — request-body presence compiled from a real contract', () => {
+	const { defineResource, t } = require('#src/resources/defineResource');
+	const handler = async () => {};
+
+	function apiFor(contract, impl) {
+		const resource = defineResource(contract, impl);
+		const resources = new Map();
+		resources.allTypes = new Map();
+		resources.set('presence', { path: 'presence', Resource: resource });
+		return generateJsonApi(resources, serverURL).paths['/presence'];
+	}
+
+	it('marks a non-optional body required and leaves an optional body unrequired', () => {
+		const paths = apiFor(
+			{ path: '/presence', post: { body: t.array(t.string) }, patch: { body: t.object({ note: t.string }).optional } },
+			{ post: handler, patch: handler }
+		);
+		expect(paths.post.requestBody.required).to.equal(true);
+		expect(paths.patch.requestBody).to.not.have.property('required');
+	});
+});

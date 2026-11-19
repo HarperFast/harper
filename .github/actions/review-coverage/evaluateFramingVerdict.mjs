@@ -5,6 +5,8 @@ const VERDICT_VALUES = new Set(['chosen-approach-sound', 'better-alternative-exi
 const VERDICT_FIELD =
 	/^[ \t]*(?:<sub>[ \t]*)?Framing-Verdict[ \t]*:[ \t]*(chosen-approach-sound|better-alternative-exists|option-set-too-narrow)(?:[ \t]+\((?:[0-9a-f]{12}|round roll-up)\))?[ \t]*(?:<\/sub>)?[ \t]*$/gim;
 const REVIEWER_SECTION = /^##[ \t]+For the human reviewer[ \t]*$/i;
+const ALTERNATIVES_SECTION = /^##[ \t]+⚖\uFE0F?[ \t]+Alternatives[ \t]*$/i;
+const YOUR_CALL = /^>[ \t]*❓[ \t]*\*\*Your call:\*\*[ \t]*\S/m;
 const SECTION_BOUNDARY = /^#{1,2}[ \t]+.*$/gm;
 
 export function parseFramingPaths(value) {
@@ -57,7 +59,7 @@ function framingExemption(pr) {
 	return '';
 }
 
-function reviewerSections(prose) {
+function sections(prose, headingPattern) {
 	const headings = [...prose.matchAll(SECTION_BOUNDARY)];
 	return headings
 		.map((heading, index) => ({
@@ -65,21 +67,23 @@ function reviewerSections(prose) {
 			start: heading.index + heading[0].length,
 			end: headings[index + 1]?.index ?? prose.length,
 		}))
-		.filter(({ heading }) => REVIEWER_SECTION.test(heading))
-		.map((section) => ({ ...section, content: prose.slice(section.start, section.end) }));
+		.filter(({ heading }) => headingPattern.test(heading))
+		.map((section) => prose.slice(section.start, section.end));
 }
 
 function disagreementProblem(prose, verdictMatches) {
 	if (!verdictMatches.some((match) => match[1].toLowerCase() !== 'chosen-approach-sound')) return '';
-	const sections = reviewerSections(prose);
-	if (sections.length === 0) return 'a non-clearing verdict without ## For the human reviewer';
-	const explained = sections.some(
-		({ content }) =>
-			stripCodePlaceholders(content.replace(VERDICT_FIELD, ''))
-				.replace(/<[^>]+>/g, '')
-				.trim() !== ''
-	);
-	return explained ? '' : 'a non-clearing verdict without an explanation in ## For the human reviewer';
+	const explained =
+		YOUR_CALL.test(prose) ||
+		[...sections(prose, REVIEWER_SECTION), ...sections(prose, ALTERNATIVES_SECTION)].some(
+			(content) =>
+				stripCodePlaceholders(content.replace(VERDICT_FIELD, ''))
+					.replace(/<[^>]+>/g, '')
+					.trim() !== ''
+		);
+	return explained
+		? ''
+		: 'a non-clearing verdict without an explanation in ## For the human reviewer, ## ⚖️ Alternatives, or a > ❓ **Your call:** line';
 }
 
 export function evaluateFramingVerdict(

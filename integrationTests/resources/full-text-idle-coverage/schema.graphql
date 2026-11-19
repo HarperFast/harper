@@ -1,0 +1,7 @@
+type IdleArticle @table(audit: true) @export {
+	id: ID @primaryKey
+	title: String
+	body: String
+	titleSearch: FullText @fullText(fields: [{ name: "title" }])
+	bodySearch: FullText @fullText(fields: [{ name: "body" }])
+}

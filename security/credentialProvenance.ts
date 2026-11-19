@@ -45,3 +45,15 @@ export function attachWorkloadIdentityToUser<T extends object>(user: T, claim: u
 export function isWorkloadIdentityPrincipal(user: unknown): boolean {
 	return (user as any)?.fromWorkloadIdentity === true;
 }
+
+/**
+ * Where a credential minted by an OIDC exchange came from: its policy and the run's verified claims
+ * (components/deploymentSource.ts). A signed claim like the provenance marker above, lifted onto the principal as
+ * `deploySource` and carried through impersonation the same way, so a deploy can record it as attested.
+ */
+export const DEPLOY_SOURCE_CLAIM = 'deploy_source';
+
+export function attachDeploySourceToUser<T extends object>(user: T, claim: unknown): T {
+	if (claim && typeof claim === 'object') (user as any).deploySource = claim;
+	return user;
+}

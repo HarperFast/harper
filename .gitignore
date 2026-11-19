@@ -52,10 +52,11 @@ harper-*.tgz
 .claude/
 cache/
 
-# YCSB benchmark results (generated)
+# Benchmark results (generated)
 benchmarks/ycsb/results/
 benchmarks/ycsb/bench-out/
 benchmarks/compression/results/
+benchmarks/fulltext-analytics/results/
 
 # export_local integration-test artifacts — these tests pass `path: './'`, so the export lands in
 # the repo root and a `git add -A` after a test run commits it

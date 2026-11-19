@@ -84,7 +84,7 @@ export type ExprNode =
 	| { kind: 'logical'; op: 'and' | 'or' | 'not'; args: ExprNode[] }
 	| { kind: 'in'; expr: ExprNode; list: ExprNode[] | SelectNode; negated: boolean }
 	| { kind: 'between'; expr: ExprNode; low: ExprNode; high: ExprNode; negated: boolean }
-	| { kind: 'like'; expr: ExprNode; pattern: ExprNode; escape?: ExprNode; negated: boolean }
+	| { kind: 'like'; expr: ExprNode; pattern: ExprNode; escape?: string; negated: boolean }
 	| { kind: 'isNull'; expr: ExprNode; negated: boolean }
 	| { kind: 'case'; cases: { when: ExprNode; then: ExprNode }[]; else?: ExprNode }
 	| { kind: 'funcCall'; name: string; args: ExprNode[]; distinct?: boolean }

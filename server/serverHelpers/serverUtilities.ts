@@ -1,3 +1,4 @@
+import { loadRuntimeModule } from '../../utility/packageUtils.js';
 import * as search from '../../dataLayer/search.ts';
 import * as bulkLoad from '../../dataLayer/bulkLoad.ts';
 import * as schema from '../../dataLayer/schema.ts';
@@ -6,9 +7,8 @@ import * as delete_ from '../../dataLayer/delete.ts';
 import readAuditLog from '../../dataLayer/readAuditLog.ts';
 import * as user from '../../security/user.ts';
 import * as role from '../../security/role.ts';
-import customFunctionOperations from '../../components/operations.js';
+import * as customFunctionOperations from '../../components/operations.ts';
 import { setMcpQuotaHandler } from '../../components/mcp/quota.ts';
-import { isDeployValidating } from './deployValidationState.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
 import readLog from '../../utility/logging/readLog.ts';
 import * as export_ from '../../dataLayer/export.ts';
@@ -19,7 +19,7 @@ import * as terms from '../../utility/hdbTerms.ts';
 import { hdbErrors, handleHDBError } from '../../utility/errors/hdbError.ts';
 const { HTTP_STATUS_CODES } = hdbErrors;
 import * as restart from '../../bin/restart.ts';
-import * as util from 'util';
+import * as util from 'node:util';
 import * as insert from '../../dataLayer/insert.ts';
 import * as globalSchema from '../../utility/globalSchema.ts';
 import { systemInformation } from '../../utility/environment/systemInformation.ts';
@@ -27,6 +27,7 @@ import * as jobRunner from '../jobs/jobRunner.ts';
 import * as tokenAuthentication from '../../security/tokenAuthentication.ts';
 import * as auth from '../../security/auth.ts';
 import * as configUtils from '../../config/configUtils.ts';
+import { getStudioConfiguration } from '../../config/studioConfiguration.ts';
 import * as transactionLog from '../../utility/logging/transactionLog.ts';
 import * as npmUtilities from '../../utility/npmUtilities.ts';
 import { _assignPackageExport } from '../../globals.js';
@@ -40,11 +41,13 @@ import type { Context } from '../../resources/ResourceInterface.ts';
 import * as status from '../status/index.ts';
 import * as regDeprecated from '../../resources/registrationDeprecated.ts';
 import * as deploymentOperations from '../../components/deploymentOperations.ts';
+import * as releaseOperations from '../../components/releaseOperations.ts';
 import * as secretOperations from '../../components/secretOperations.ts';
 import * as trustPolicyOperations from '../../security/authn/oidc/trustPolicyOperations.ts';
+import * as networkAccess from '../../security/networkAccess.ts';
 import * as tokenExchange from '../../security/authn/oidc/tokenExchange.ts';
+import * as previewOperations from '../../components/previewOperations.ts';
 import { contextStorage } from '../../resources/transaction.ts';
-import { isMainThread } from 'node:worker_threads';
 import {
 	announceRegisteredOperation,
 	getRemoteOperationFunction,
@@ -52,12 +55,18 @@ import {
 } from './registeredOperations.ts';
 import { runWithOperationAuthorizationBypass } from './operationAuthorizationState.ts';
 import { stripSuppliedParsedSqlObject } from './requestSanitization.ts';
+import { isOperationLogEnabled, operationLogViewOf } from '../../utility/operationLogView.ts';
+import * as encryptedOperation from '../../components/encryptedOperation.ts';
 
 const pSearchSearch = util.promisify(search.search);
+let sqlModule;
+function getSqlModule() {
+	return (sqlModule ??= loadRuntimeModule('sqlTranslator/index'));
+}
 let pEvaluateSql: (sql: string) => Promise<any>;
 function evaluateSQL(command) {
 	if (!pEvaluateSql) {
-		const sql = require('../../sqlTranslator/index');
+		const sql = getSqlModule();
 		pEvaluateSql = util.promisify(sql.evaluateSQL);
 	}
 	return pEvaluateSql(command);
@@ -73,6 +82,7 @@ const GLOBAL_SCHEMA_UPDATE_OPERATIONS_ENUM = {
 };
 
 import { OperationFunctionObject } from './OperationFunctionObject.ts';
+import { fenceMembershipChange } from '../replicationMembership.ts';
 
 type ValueOf<T> = T[keyof T];
 export type OperationFunctionName = ValueOf<typeof terms.OPERATIONS_ENUM>;
@@ -112,8 +122,11 @@ export const UNLOGGABLE_OPERATION_FIELDS = [
 ];
 
 const UNLOGGABLE_FIELDS_BY_OPERATION = new Map<string, ReadonlySet<string>>([
+	['set_configuration', new Set(['models', terms.STUDIO_CONFIG_PARAMS.NAVIGATION, terms.STUDIO_CONFIG_PARAMS.LANDING])],
 	['add_ssh_key', new Set(['key'])],
 	['update_ssh_key', new Set(['key'])],
+	// fields mode: the visible operation text, whose sealed leaves would print as ciphertext
+	[terms.OPERATIONS_ENUM.ENCRYPTED_OPERATION, new Set(['op'])],
 ]);
 
 /** Callers gate this on log level: it allocates, and the operations log is often off. */
@@ -131,13 +144,9 @@ export function redactForOperationLog(body: Record<string, any>): Record<string,
 
 export async function processLocalTransaction(req: OperationRequest, operationFunction: Function) {
 	try {
-		if (
-			req.body.operation !== 'read_log' &&
-			(harperLogger.logLevel === terms.LOG_LEVELS.INFO ||
-				harperLogger.logLevel === terms.LOG_LEVELS.DEBUG ||
-				harperLogger.logLevel === terms.LOG_LEVELS.TRACE)
-		) {
-			operationLog.info(redactForOperationLog(req.body));
+		if (req.body.operation !== 'read_log' && isOperationLogEnabled()) {
+			const logView = operationLogViewOf(req.body);
+			operationLog.info(redactForOperationLog(logView ? logView() : req.body));
 		}
 	} catch (e) {
 		operationLog.error(e);
@@ -180,7 +189,6 @@ export async function processLocalTransaction(req: OperationRequest, operationFu
 
 export const OPERATION_FUNCTION_MAP = initializeOperationFunctionMap();
 
-server.operation = operation;
 export type OperationDefinition = {
 	name: string;
 	execute: (operation: any) => any | Promise<any>;
@@ -206,9 +214,7 @@ const declaredPermissionNames = new Set<string>();
  * Register an operation function with the server.
  * @param operationDefinition
  */
-server.registerOperation = (operationDefinition: OperationDefinition) => {
-	// A throwaway deploy-validation load must not register (or announce) operations onto the live worker.
-	if (isDeployValidating()) return;
+function registerOperation(operationDefinition: OperationDefinition) {
 	const { name, execute, requiresSuperUser } = operationDefinition;
 	let handler = execute;
 	if (requiresSuperUser === undefined) {
@@ -231,18 +237,16 @@ server.registerOperation = (operationDefinition: OperationDefinition) => {
 		declaredPermissionNames.add(name);
 	}
 	OPERATION_FUNCTION_MAP.set(name as any, new OperationFunctionObject(handler));
-	// Components load per-worker, so a registration made there is invisible to the main-thread
-	// ops-API dispatcher (each thread has its own OPERATION_FUNCTION_MAP instance). Announce it
-	// so the main thread can forward calls here (#1736), and can mirror the role-allowlist mark that
-	// registerOperationPermission above made only in this thread's scope.
-	if (!isMainThread) announceRegisteredOperation(name, requiresSuperUser !== undefined);
-};
+	// Each thread has its own OPERATION_FUNCTION_MAP, so a registration made here is invisible to
+	// the other side: a worker's to the main-thread ops-API dispatcher (#1736), the main thread's to
+	// components on workers (#4134). Announce it so that side can forward calls here, and can mirror
+	// the role-allowlist mark that registerOperationPermission above made only in this thread's scope.
+	announceRegisteredOperation(name, requiresSuperUser !== undefined);
+}
 
 // Register the durable MCP quota policy as a function (see components/mcp/quota.ts). Worker-local,
-// like the tool dispatch that consults it, so no cross-thread announcement is needed. Skipped during
-// deploy validation so a throwaway candidate load can't replace the live worker's policy.
+// like the tool dispatch that consults it, so no cross-thread announcement is needed.
 server.setMcpQuotaHandler = (handler) => {
-	if (isDeployValidating()) return;
 	setMcpQuotaHandler(handler);
 };
 
@@ -257,17 +261,21 @@ const EXPORT_SEARCH_OPERATIONS = new Set<string>([
 	terms.OPERATIONS_ENUM.SQL,
 ]);
 
-export function chooseOperation(json: OperationRequestBody, bypassAuth = false) {
+export function isJobOperation(operation: string): boolean {
+	return OPERATION_FUNCTION_MAP.get(operation as any)?.job_operation_function !== undefined;
+}
+
+export function chooseOperation(json: OperationRequestBody, bypassAuth = false, forwarded = false) {
 	let getOpResult: OperationFunctionObject;
 	try {
 		getOpResult = getOperationFunction(json);
 	} catch (err) {
-		// Not in this thread's map — a component may have registered it on a worker thread
-		// (components load per-worker). Forward there for execution; the worker runs the
-		// full permission check (with the forwarded hdb_user) where the operation function
-		// and its metadata actually exist, so no perm check is skipped by returning early
-		// here (#1736). Workers never re-forward, so an unknown op can't loop.
-		if (isMainThread) {
+		// Not in this thread's map — the other side of the bridge may have registered it: a component
+		// on a worker (#1736), or the main thread alone (#4134). Forward there for execution; that
+		// thread runs the full permission check (with the forwarded hdb_user) where the operation
+		// function and its metadata actually exist, so no perm check is skipped by returning early
+		// here. A request that was itself forwarded stays local, so an unknown op can't loop.
+		if (!forwarded) {
 			const remoteOperationFunction = getRemoteOperationFunction(json.operation, bypassAuth);
 			if (remoteOperationFunction) return remoteOperationFunction;
 		}
@@ -324,7 +332,7 @@ export function chooseOperation(json: OperationRequestBody, bypassAuth = false) 
 
 	try {
 		if (isSqlOperation || hasNestedSqlSearch) {
-			const sql = require('../../sqlTranslator/index');
+			const sql = getSqlModule();
 			const sqlStatement = isSqlOperation ? json.sql : nestedSearch.sql;
 			// Before this dispatch's own parse is assigned, so a body-supplied object cannot survive it.
 			stripSuppliedParsedSqlObject(json);
@@ -465,11 +473,38 @@ export function chooseOperation(json: OperationRequestBody, bypassAuth = false) 
 					);
 				}
 			}
+			// A rolling deploy's per-peer activation rides restart_service, but what it does is deploy: a caller
+			// asking for one must be allowed to deploy, not only to restart.
+			if (json.operation === terms.OPERATIONS_ENUM.RESTART_SERVICE && json.activate_deployment !== undefined) {
+				const deployRequest = {
+					...json,
+					operation: terms.OPERATIONS_ENUM.DEPLOY_COMPONENT,
+					project: (json.activate_deployment as { project?: unknown } | undefined)?.project,
+				};
+				const deployPermsResult = opAuth.verifyPerms(
+					deployRequest,
+					getOperationFunction(deployRequest).operation_function,
+					{ apiOperation: terms.OPERATIONS_ENUM.DEPLOY_COMPONENT }
+				);
+				if (deployPermsResult) {
+					operationLog.warn(
+						`User '${json.hdb_user?.username}' is not permitted to activate a deployment through ${json.operation}`
+					);
+					throw handleHDBError(
+						new Error(),
+						deployPermsResult,
+						hdbErrors.HTTP_STATUS_CODES.FORBIDDEN,
+						undefined,
+						false,
+						true
+					);
+				}
+			}
 		}
 	} catch (err) {
 		throw handleHDBError(err, `There was an error when trying to choose an operation path`, 500);
 	}
-	return operation_function;
+	return fenceMembershipChange(json, operation_function);
 }
 
 export function getOperationFunction(json: OperationRequestBody): OperationFunctionObject {
@@ -491,15 +526,22 @@ export function getOperationFunction(json: OperationRequestBody): OperationFunct
 
 // Give the cross-thread bridge (#1736) the worker-side dispatch path for forwarded operations.
 // Injected (rather than imported there) because registeredOperations is imported above — a
-// static import back into this module would be a cycle.
+// static import back into this module would be a cycle. encrypted_operation dispatches its inner
+// operation the same way, for the same reason.
 setLocalOperationDispatch({ chooseOperation, processLocalTransaction });
+encryptedOperation.setEncryptedOperationDispatch({ chooseOperation, processLocalTransaction, isJobOperation });
 
 _assignPackageExport('operation', operation);
 /**
  * Standalone function to execute an operation
  */
-export function operation(operation: OperationRequestBody, context: Context, authorize: boolean) {
+export function operation(
+	operation: OperationRequestBody,
+	context: Context & { replicatedFrom?: string },
+	authorize: boolean
+) {
 	operation.hdb_user = context?.user;
+	if (context?.replicatedFrom) (operation as any)[terms.REPLICATED_FROM] = context.replicatedFrom;
 	const bypassAuth = !authorize;
 	return runWithOperationAuthorizationBypass(bypassAuth, () => {
 		const operation_function = chooseOperation(operation, bypassAuth);
@@ -568,21 +610,18 @@ interface JobResult {
 export async function executeJob(json: OperationRequestBody): Promise<JobResult> {
 	transformReq(json);
 
-	let newJobObject;
-	let result;
 	try {
-		result = await jobs.addJob(json);
-		if (result) {
-			newJobObject = result.createdJob;
-			operationLog.info('addJob result', result);
-			const jobRunnerMessage = new jobRunner.RunnerMessage(newJobObject, json);
-			const returnMessage = await jobRunner.parseMessage(jobRunnerMessage);
+		const result = await jobs.addJob(json);
+		const newJobObject = result.createdJob;
+		if (!newJobObject) throw new Error(result.error || result.message || `Unable to create a ${json.operation} job`);
+		operationLog.info('addJob result', result);
+		const jobRunnerMessage = new jobRunner.RunnerMessage(newJobObject, json);
+		const returnMessage = await jobRunner.parseMessage(jobRunnerMessage);
 
-			return {
-				message: returnMessage ?? `Starting job with id ${newJobObject.id}`,
-				job_id: newJobObject.id,
-			};
-		}
+		return {
+			message: returnMessage ?? `Starting job with id ${newJobObject.id}`,
+			job_id: newJobObject.id,
+		};
 	} catch (err) {
 		// errors that already carry a statusCode (e.g. ClientError from job validation) are
 		// client-facing as-is; wrapping them here would turn a 400/404/409 into a 500
@@ -676,6 +715,7 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 	opFuncMap.set(terms.OPERATIONS_ENUM.LOGOUT, new OperationFunctionObject(auth.logout));
 
 	opFuncMap.set(terms.OPERATIONS_ENUM.GET_CONFIGURATION, new OperationFunctionObject(configUtils.getConfiguration));
+	opFuncMap.set(terms.OPERATIONS_ENUM.GET_STUDIO_CONFIGURATION, new OperationFunctionObject(getStudioConfiguration));
 	opFuncMap.set(
 		terms.OPERATIONS_ENUM.CUSTOM_FUNCTIONS_STATUS,
 		new OperationFunctionObject(customFunctionOperations.customFunctionsStatus)
@@ -754,6 +794,7 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 		terms.OPERATIONS_ENUM.GET_DEPLOYMENT,
 		new OperationFunctionObject(deploymentOperations.handleGetDeployment)
 	);
+	opFuncMap.set(terms.OPERATIONS_ENUM.LIST_RELEASES, new OperationFunctionObject(releaseOperations.handleListReleases));
 	opFuncMap.set(
 		terms.OPERATIONS_ENUM.GET_DEPLOYMENT_PAYLOAD,
 		new OperationFunctionObject(deploymentOperations.handleGetDeploymentPayload)
@@ -771,6 +812,10 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 		terms.OPERATIONS_ENUM.GET_SECRETS_PUBLIC_KEY,
 		new OperationFunctionObject(secretOperations.getSecretsPublicKey)
 	);
+	opFuncMap.set(
+		terms.OPERATIONS_ENUM.ENCRYPTED_OPERATION,
+		new OperationFunctionObject(encryptedOperation.encryptedOperation)
+	);
 	opFuncMap.set(terms.OPERATIONS_ENUM.ADD_OIDC_TRUST, new OperationFunctionObject(trustPolicyOperations.addOidcTrust));
 	opFuncMap.set(
 		terms.OPERATIONS_ENUM.LIST_OIDC_TRUST,
@@ -784,6 +829,18 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 		terms.OPERATIONS_ENUM.EXCHANGE_OIDC_TOKEN,
 		new OperationFunctionObject(tokenExchange.exchangeOidcToken)
 	);
+	opFuncMap.set(terms.OPERATIONS_ENUM.ENABLE_PREVIEWS, new OperationFunctionObject(previewOperations.enablePreviews));
+	opFuncMap.set(terms.OPERATIONS_ENUM.DISABLE_PREVIEWS, new OperationFunctionObject(previewOperations.disablePreviews));
+	opFuncMap.set(
+		terms.OPERATIONS_ENUM.FENCE_PREVIEW_RELEASES,
+		new OperationFunctionObject(previewOperations.fencePreviewReleases)
+	);
+	opFuncMap.set(
+		terms.OPERATIONS_ENUM.GET_PREVIEW_POLICY,
+		new OperationFunctionObject(previewOperations.getPreviewPolicy)
+	);
+	opFuncMap.set(terms.OPERATIONS_ENUM.SET_NETWORK_ACCESS, new OperationFunctionObject(networkAccess.setNetworkAccess));
+	opFuncMap.set(terms.OPERATIONS_ENUM.GET_NETWORK_ACCESS, new OperationFunctionObject(networkAccess.getNetworkAccess));
 	opFuncMap.set(
 		terms.OPERATIONS_ENUM.READ_TRANSACTION_LOG,
 		new OperationFunctionObject(transactionLog.readTransactionLog)
@@ -822,3 +879,6 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 
 	return opFuncMap;
 }
+
+server.operation = operation;
+server.registerOperation = registerOperation;

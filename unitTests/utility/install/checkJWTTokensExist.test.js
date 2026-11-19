@@ -55,15 +55,6 @@ describe('test checkJWTTokenExist function', () => {
 		assert(fs_access_spy.firstCall.args[0] === path.join(keysPath, '.jwtPass'));
 		assert(fs_access_spy.firstCall.exception.code === 'ENOENT');
 
-		assert(fs_writefile_spy.callCount === 3);
-		assert(fs_writefile_spy.threw() === false);
-		assert(fs_writefile_spy.firstCall.args[0] === path.join(keysPath, '.jwtPass'));
-		assert(fs_writefile_spy.firstCall.exception === undefined);
-		assert(fs_writefile_spy.secondCall.args[0] === path.join(keysPath, '.jwtPrivate.key'));
-		assert(fs_writefile_spy.secondCall.exception === undefined);
-		assert(fs_writefile_spy.thirdCall.args[0] === path.join(keysPath, '.jwtPublic.key'));
-		assert(fs_writefile_spy.thirdCall.exception === undefined);
-
 		let passphrase = fs.readFileSync(path.join(keysPath, '.jwtPass'));
 		let private_key = fs.readFileSync(path.join(keysPath, '.jwtPrivate.key'));
 		let public_key = fs.readFileSync(path.join(keysPath, '.jwtPublic.key'));

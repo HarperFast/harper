@@ -1,3 +1,4 @@
+import * as serverUtilitiesRuntimeModule from '../../../server/serverHelpers/serverUtilities.ts';
 /**
  * Operations-profile tool generation. Exposes one MCP tool per Harper
  * operation that survives the `mcp.operations.allow` / `deny` filter, computed
@@ -35,8 +36,9 @@
  */
 import { Readable } from 'node:stream';
 import * as env from '../../../utility/environment/environmentManager.ts';
-import { CONFIG_PARAMS } from '../../../utility/hdbTerms.ts';
+import { CONFIG_PARAMS, STREAMING_RESPONSE_OPERATIONS } from '../../../utility/hdbTerms.ts';
 import harperLogger from '../../../utility/logging/harper_logger.ts';
+import { matchesAny } from './nameFilter.ts';
 import {
 	canRoleInvokeOperation,
 	setProfileToolProvider,
@@ -64,8 +66,7 @@ interface OperationsConfig {
 	deny?: readonly string[];
 }
 
-// Test seams. Avoids importing Harper's heavy server-helpers graph from unit
-// tests that only want to exercise the registration logic.
+// Test seams replace production dispatch when exercising registry behavior.
 let _opMapOverride: OperationFunctionMap | undefined;
 let _chooseOperationOverride: ChooseOperation | undefined;
 let _processLocalTransactionOverride: ProcessLocalTransaction | undefined;
@@ -88,11 +89,7 @@ function loadServerUtilities():
 	  }
 	| undefined {
 	try {
-		// Lazy require: Harper's server-helpers graph initializes eagerly
-		// (RocksDB lock acquisition, schema preload). Loading it from a unit
-		// test that hasn't booted Harper throws; treat that as "we're not in
-		// a Harper process" and let callers gracefully no-op.
-		return require('../../../server/serverHelpers/serverUtilities');
+		return serverUtilitiesRuntimeModule as any;
 	} catch (err) {
 		harperLogger.trace(`MCP operations tools: serverUtilities unavailable (${(err as Error).message})`);
 		return undefined;
@@ -149,7 +146,8 @@ export const DEFAULT_ALLOW: readonly string[] = [
  * OIDC trust policies (#2171) are excluded on the same grounds and then some: a
  * policy grants an external CI workflow the right to authenticate as a Harper
  * user, so reading the set tells an attacker exactly which repository and
- * workflow to compromise, and writing one is a way to grant itself access.
+ * workflow to compromise, and writing one is a way to grant itself access. The
+ * preview operations read and write such policies, with the role and user they name.
  */
 export const DEFAULT_EXCLUDED: ReadonlySet<string> = new Set([
 	'set_secret',
@@ -162,6 +160,10 @@ export const DEFAULT_EXCLUDED: ReadonlySet<string> = new Set([
 	'list_oidc_trust',
 	'drop_oidc_trust',
 	'exchange_oidc_token',
+	'enable_previews',
+	'disable_previews',
+	'fence_preview_releases',
+	'get_preview_policy',
 ]);
 
 /**
@@ -182,6 +184,8 @@ const DESTRUCTIVE_OPERATIONS: ReadonlySet<string> = new Set([
 	'delete_transaction_logs_before',
 	'drop_user',
 	'drop_role',
+	'disable_previews',
+	'fence_preview_releases',
 	'restart',
 	'restart_service',
 	'set_configuration',
@@ -191,21 +195,6 @@ const DESTRUCTIVE_OPERATIONS: ReadonlySet<string> = new Set([
 	'purge_backups',
 	'delete_deployment_payload',
 ]);
-
-/**
- * Operations whose handler returns a raw byte stream (`Readable`) for the operations HTTP API,
- * not a value MCP can serialize. Checked and rejected BEFORE the handler runs — not after the
- * handler has already returned a stream — because these producers acquire real resources (an
- * open fd, an LMDB read transaction) before or independent of the stream being consumed, and
- * destroying an unconsumed stream does not reliably run their cleanup. Concretely,
- * `get_backup`'s LMDB path (`lmdbGetBackup.js`) opens its fd and read transaction, then returns
- * `Readable.from(asyncGenerator)`; per the async-generator spec, calling `.return()` (which
- * `.destroy()` triggers) on a generator that has never been iterated resolves it to `done` and
- * skips its body — including the `readTxn.done()` cleanup at the tail of that body — so the fd
- * and transaction leak on every rejected call. Rejecting before dispatch means the fd/txn are
- * never opened at all.
- */
-const STREAMING_OPERATIONS: ReadonlySet<string> = new Set(['get_backup', 'get_deployment_payload']);
 
 /**
  * Read-only operations carry `readOnlyHint: true`. The category is wider
@@ -249,26 +238,6 @@ function isIdempotent(operationName: string): boolean {
 	return IDEMPOTENT_OPERATIONS.has(operationName);
 }
 
-/**
- * Translates a single glob pattern (only `*` is supported) into a regex.
- * `describe_*` matches `describe_schema`, `describe_table`, etc.; literals
- * like `system_information` match exactly. No escape hatch yet — operators
- * should use literals when they need them; the glob language is delibarately
- * minimal to keep behavior predictable in audit/security reviews.
- */
-function globToRegex(pattern: string): RegExp {
-	const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
-	return new RegExp(`^${escaped}$`);
-}
-
-function matchesAny(operation: string, patterns: readonly string[] | undefined): boolean {
-	if (!patterns || patterns.length === 0) return false;
-	for (const p of patterns) {
-		if (globToRegex(p).test(operation)) return true;
-	}
-	return false;
-}
-
 function isOperationAllowed(operation: string, config: OperationsConfig): boolean {
 	const usingDefaultAllow = !(config.allow && config.allow.length > 0);
 	if (usingDefaultAllow && DEFAULT_EXCLUDED.has(operation)) return false;
@@ -298,6 +267,66 @@ function buildDescription(operationName: string, hasCuratedSchema: boolean): str
 }
 
 /**
+ * Maximum number of items or serialized bytes collected from a non-array iterable
+ * or async iterable operation result (`read_audit_log`, `get_analytics`, full-text
+ * `search_by_conditions`, etc.). Exceeding either cap fails with an explicit error
+ * rather than silently clipping results or buffering an unbounded cursor in memory.
+ */
+export const MAX_OPERATION_ITERABLE_ITEMS = 10_000;
+export const MAX_OPERATION_ITERABLE_BYTES = 10 * 1024 * 1024;
+
+function isCollectibleIterable(data: unknown): data is AsyncIterable<unknown> | Iterable<unknown> {
+	if (data === null || typeof data !== 'object') return false;
+	if (Array.isArray(data) || data instanceof Readable || ArrayBuffer.isView(data)) return false;
+	const candidate = data as { [Symbol.asyncIterator]?: unknown; [Symbol.iterator]?: unknown };
+	return typeof candidate[Symbol.asyncIterator] === 'function' || typeof candidate[Symbol.iterator] === 'function';
+}
+
+async function collectIterableResult(
+	operationName: string,
+	iterable: AsyncIterable<unknown> | Iterable<unknown>,
+	signal?: AbortSignal
+): Promise<unknown[]> {
+	const maybeMapError = (
+		iterable as { mapError?: (fn: (error: any) => unknown) => AsyncIterable<unknown> | Iterable<unknown> }
+	).mapError;
+	if (typeof maybeMapError === 'function') {
+		iterable = maybeMapError.call(iterable, (error: any) => ({
+			error: error?.name ?? 'Error',
+			message: error?.message ?? String(error),
+			...error?.partialObject,
+		}));
+	}
+	const items: unknown[] = [];
+	let totalBytes = 0;
+	for await (const item of iterable) {
+		if (signal?.aborted) {
+			throw new Error(`operation '${operationName}' aborted while collecting iterable result`);
+		}
+		const resolved = await item;
+		if (signal?.aborted) {
+			throw new Error(`operation '${operationName}' aborted while collecting iterable result`);
+		}
+		if (items.length >= MAX_OPERATION_ITERABLE_ITEMS) {
+			throw new Error(
+				`operation '${operationName}' exceeded the maximum MCP iterable result limit of ${MAX_OPERATION_ITERABLE_ITEMS} items; narrow the query (e.g. start_time/end_time, search_values, or conditions), specify a smaller limit where supported, or use the operations HTTP API`
+			);
+		}
+		totalBytes += Buffer.byteLength(typeof resolved === 'string' ? resolved : (JSON.stringify(resolved) ?? ''));
+		if (totalBytes > MAX_OPERATION_ITERABLE_BYTES) {
+			throw new Error(
+				`operation '${operationName}' exceeded the maximum MCP iterable result byte limit of ${MAX_OPERATION_ITERABLE_BYTES} bytes; narrow the query (e.g. start_time/end_time, search_values, or conditions), specify a smaller limit where supported, or use the operations HTTP API`
+			);
+		}
+		items.push(resolved);
+	}
+	if (signal?.aborted) {
+		throw new Error(`operation '${operationName}' aborted while collecting iterable result`);
+	}
+	return items;
+}
+
+/**
  * Build the dispatch handler for one operation. Returns a function suitable
  * for `ToolDef.handler` that delegates to Harper's normal operation pipeline.
  *
@@ -307,7 +336,10 @@ function buildDescription(operationName: string, hasCuratedSchema: boolean): str
  * adapt to the failure.
  */
 export function makeOperationToolHandler(operationName: string) {
-	return async function operationToolHandler(args: unknown, context: { user: AuthedUser }): Promise<ToolResult> {
+	return async function operationToolHandler(
+		args: unknown,
+		context: { user: AuthedUser; signal?: AbortSignal }
+	): Promise<ToolResult> {
 		const body: Record<string, unknown> = {
 			...(args && typeof args === 'object' ? (args as Record<string, unknown>) : {}),
 			operation: operationName,
@@ -319,9 +351,9 @@ export function makeOperationToolHandler(operationName: string) {
 		// (e.g. createTokens) that trust it directly from the body.
 		delete body.bypass_auth;
 		delete body.bypassAuth;
-		if (STREAMING_OPERATIONS.has(operationName)) {
-			// Reject before the handler runs at all — see STREAMING_OPERATIONS' comment for why
-			// destroying an already-returned stream isn't sufficient cleanup for these producers.
+		if (STREAMING_RESPONSE_OPERATIONS.has(operationName)) {
+			// Reject before the handler runs at all — see STREAMING_RESPONSE_OPERATIONS' comment for
+			// why destroying an already-returned stream isn't sufficient cleanup for these producers.
 			return {
 				isError: true,
 				content: [
@@ -339,12 +371,15 @@ export function makeOperationToolHandler(operationName: string) {
 				throw new Error('Harper operations runtime unavailable');
 			}
 			const operationFn = chooseOperation(body);
-			const data = await processLocalTransaction({ body }, operationFn);
+			let data = await processLocalTransaction({ body }, operationFn);
+			if (isCollectibleIterable(data)) {
+				data = await collectIterableResult(operationName, data, context?.signal);
+			}
 			if (data instanceof Readable) {
-				// Backstop for an operation outside STREAMING_OPERATIONS unexpectedly returning a
-				// stream (e.g. a future op added without updating that set). JSON.stringify would
-				// otherwise emit stream internals, not the payload. Best-effort cleanup only — see
-				// STREAMING_OPERATIONS' comment; the real fix for a known op is adding it there.
+				// Backstop for an operation outside STREAMING_RESPONSE_OPERATIONS unexpectedly
+				// returning a stream (e.g. a future op added without updating that set). JSON.stringify
+				// would otherwise emit stream internals, not the payload. Best-effort cleanup only — see
+				// STREAMING_RESPONSE_OPERATIONS' comment; the real fix for a known op is adding it there.
 				data.destroy();
 				return {
 					isError: true,

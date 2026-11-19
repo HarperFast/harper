@@ -1,11 +1,13 @@
 import type { IncomingMessage as NodeIncomingMessage, ServerResponse as NodeServerResponse } from 'node:http';
 import type { Socket } from 'node:net';
 import { TLSSocket } from 'node:tls';
+import { setMaxListeners } from 'node:events';
 import { Readable } from 'node:stream';
 import { Headers as ResponseHeaders } from './Headers.ts';
 import { NodeAdapterResponse, type AdaptedResponse } from './NodeAdapterResponse.ts';
 import type { ConnectionInfo } from './proxyProtocol.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
+import type { ResourceBody } from '../../resources/ResourceInterface.ts';
 
 export const isBun = typeof globalThis.Bun !== 'undefined';
 
@@ -27,10 +29,11 @@ interface IncomingMessage extends NodeIncomingMessage {
  * We define our own request class, to ensure that it has integrity against leaks in a secure environment
  * and for better conformance to WHATWG standards.
  */
-export class Request {
+export class Request<Body = any> {
 	#body: RequestBody | undefined;
 	#peerCertificate: any;
-	#abortController = new AbortController();
+	#abortController: AbortController | undefined;
+	#aborted = false;
 	public _nodeRequest: IncomingMessage;
 	public _nodeResponse?: NodeServerResponse;
 	public method: string;
@@ -59,7 +62,7 @@ export class Request {
 	public replicatedConfirmation?: number;
 	public replicateTo?: any;
 	public replicateFrom?: any;
-	public data?: any;
+	public data?: ResourceBody<Body>;
 	public authorize?: boolean;
 	public lastModified?: number;
 	public lastRefreshed?: number;
@@ -72,31 +75,59 @@ export class Request {
 		this.url = url;
 		this.headers = new RequestHeaders(nodeRequest.headers);
 		this.__harperRequestUpgraded = false;
-		// Abort the request's signal on premature client disconnect. nodeResponse 'close'
-		// also fires on clean completion; the writableFinished guard restricts to disconnect.
 		if (typeof nodeResponse?.on === 'function') {
-			nodeResponse.on('close', () => {
-				if (!nodeResponse.writableFinished) this.#abortController.abort();
-			});
-		} else if (typeof nodeRequest.socket?.once === 'function') {
-			// No response on this Request — typically the WebSocket-upgrade path
-			// (http.ts creates the Request before the ws library takes over). The TCP
-			// socket close is the fallback abort trigger; REST.ts's ws.on('close') hook
-			// also calls _abort() and is the primary signal in the WS case. The two
-			// are redundant by design (idempotent abort) so any future single-arg
-			// caller still gets disconnect semantics without relying on the WS layer.
-			nodeRequest.socket.once('close', () => this.#abortController.abort());
+			if (nodeResponse.closed) {
+				// It closed while this request waited in the throttle queue, so no 'close' is coming.
+				this.#aborted = !nodeResponse.writableFinished;
+			} else {
+				// 'close' also fires on clean completion, and an end() after a disconnect reports the response as
+				// finished, so a disconnect is recorded when it happens. Prepended so no earlier listener can end
+				// the response first.
+				nodeResponse.prependListener('close', () => {
+					if (nodeResponse.writableFinished) return;
+					this.#aborted = true;
+					this.#abortController?.abort();
+				});
+			}
 		}
 	}
 	get signal(): AbortSignal {
+		if (!this.#abortController) this.#createAbortController();
 		return this.#abortController.signal;
+	}
+	#createAbortController() {
+		const controller = (this.#abortController = new AbortController());
+		setMaxListeners(0, controller.signal);
+		if (this.#disconnected()) controller.abort();
+		else if (typeof this._nodeResponse?.on !== 'function') this.#abortOnSocketClose(controller);
+	}
+	#disconnected(): boolean {
+		if (this.#aborted) return true;
+		const response = this._nodeResponse;
+		// Node sets `closed` before it emits 'close', so a read from a listener that runs ahead of the one
+		// registered in the constructor sees it first.
+		if (typeof response?.on === 'function') {
+			if (response.closed === true && !response.writableFinished) this.#aborted = true;
+		} else if (this._nodeRequest.socket?.destroyed === true) this.#aborted = true;
+		return this.#aborted;
+	}
+	#abortOnSocketClose(controller: AbortController) {
+		// No response on this Request — typically the WebSocket-upgrade path
+		// (http.ts creates the Request before the ws library takes over). The TCP
+		// socket close is the fallback abort trigger; REST.ts's ws.on('close') hook
+		// also calls _abort() and is the primary signal in the WS case. The two
+		// are redundant by design (idempotent abort) so any future single-arg
+		// caller still gets disconnect semantics without relying on the WS layer.
+		const socket = this._nodeRequest.socket;
+		if (typeof socket?.once === 'function') socket.once('close', () => controller.abort());
 	}
 	/**
 	 * Abort this request's signal. Used by transports (e.g. WebSocket) that need to
 	 * signal client-side cancellation independently of the Node response lifecycle.
 	 */
 	_abort(): void {
-		this.#abortController.abort();
+		this.#aborted = true;
+		this.#abortController?.abort();
 	}
 	get absoluteURL() {
 		return this.protocol + '://' + this.host + this.url;
@@ -150,7 +181,7 @@ export class Request {
 		return this._nodeRequest.socket.connectionInfo;
 	}
 	get body() {
-		return this.#body || (this.#body = new RequestBody(this._nodeRequest));
+		return this.#body || (this.#body = new RequestBody(this._nodeRequest, this._nodeResponse));
 	}
 	get host() {
 		return this._nodeRequest.authority || this._nodeRequest.headers.host;
@@ -162,7 +193,7 @@ export class Request {
 		return this._nodeRequest.httpVersion;
 	}
 	get isAborted() {
-		return this.#abortController.signal.aborted;
+		return this.#abortController ? this.#abortController.signal.aborted : this.#disconnected();
 	}
 	// Expose node request for cases that need direct access (e.g., replication)
 	get nodeRequest() {
@@ -370,6 +401,8 @@ export class UwsRequest {
 	#isSecure: boolean;
 	#ip: string | undefined;
 	#signal: AbortSignal | undefined;
+	#abortController: AbortController | undefined;
+	#transportAborted = false;
 	public _nodeRequest: any = null;
 	public _nodeResponse: any = null;
 	public method: string;
@@ -399,6 +432,7 @@ export class UwsRequest {
 		this.#ip = source.ip;
 		this.#body = source.body;
 		this.#signal = source.signal;
+		if (this.#signal) setMaxListeners(0, this.#signal);
 		this.__harperRequestUpgraded = false;
 	}
 	get absoluteURL() {
@@ -463,13 +497,25 @@ export class UwsRequest {
 		return '1.1';
 	}
 	get isAborted() {
-		return this.#signal?.aborted ?? false;
+		return this.#transportAborted || (this.#signal?.aborted ?? false);
 	}
 	get signal(): AbortSignal {
-		return this.#signal ?? new AbortController().signal;
+		if (!this.#signal) {
+			this.#abortController = new AbortController();
+			if (this.#transportAborted) this.#abortController.abort();
+			this.#signal = this.#abortController.signal;
+			setMaxListeners(0, this.#signal);
+		}
+		return this.#signal;
 	}
+	/**
+	 * The transport is gone (uWS res.onAborted) or refused the request (an oversized body): cancel it.
+	 * A signal supplied to the constructor (WebSocket upgrades, see server/http.ts's wsHandler) is
+	 * aborted by its own owner.
+	 */
 	_abort(): void {
-		// Abort is driven by the uWS res.onAborted handler wired into the provided signal.
+		this.#transportAborted = true;
+		this.#abortController?.abort();
 	}
 	get nodeRequest() {
 		return null;
@@ -491,8 +537,10 @@ export class UwsRequestBody extends Readable {
 
 class RequestBody {
 	#nodeRequest: IncomingMessage;
-	constructor(nodeRequest: IncomingMessage) {
+	#nodeResponse?: NodeServerResponse;
+	constructor(nodeRequest: IncomingMessage, nodeResponse?: NodeServerResponse) {
 		this.#nodeRequest = nodeRequest;
+		this.#nodeResponse = nodeResponse;
 	}
 	on(event: string, listener: (...args: any[]) => void) {
 		this.#nodeRequest.on(event, listener);
@@ -500,6 +548,27 @@ class RequestBody {
 	}
 	pipe(destination: any, options?: any) {
 		return this.#nodeRequest.pipe(destination, options);
+	}
+	destroy(error?: Error) {
+		this.#nodeRequest.destroy(error);
+	}
+	afterResponse(callback: () => void): () => void {
+		const response = this.#nodeResponse;
+		if (!response || response.writableFinished || response.destroyed) {
+			callback();
+			return () => {};
+		}
+		const detach = () => {
+			response.off('finish', done);
+			response.off('close', done);
+		};
+		const done = () => {
+			detach();
+			callback();
+		};
+		response.once('finish', done);
+		response.once('close', done);
+		return detach;
 	}
 	// Delegate async iteration to the underlying request, which is natively
 	// async-iterable. Without this, `for await (const chunk of request.body)`
@@ -537,6 +606,9 @@ class BunRequestBody {
 	}
 	pipe(destination: any, options?: any) {
 		return this.#getReadable().pipe(destination, options);
+	}
+	destroy(error?: Error) {
+		this.#getReadable().destroy(error);
 	}
 	// Mirror RequestBody: delegate async iteration to the underlying Readable
 	// (natively async-iterable) so `for await` consumers work on Bun too (#1317).

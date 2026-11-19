@@ -4,14 +4,9 @@ const assert = require('node:assert');
 // Prime module graph in the order other unit tests load it (avoids the ESM/CJS cycle
 // when transaction.ts is loaded ESM-first).
 require('#src/resources/databases');
-const { setGenerative, clearRegistry } = require('#src/resources/models/backendRegistry');
+const { setGenerative, setBackendPricing, clearRegistry } = require('#src/resources/models/backendRegistry');
 const { Models } = require('#src/resources/models/Models');
-const {
-	BudgetExceededError,
-	ToolHandlerError,
-	_setComputeCallCostUsdForTests,
-	_resetComputeCallCostUsdForTests,
-} = require('#src/resources/models/agentLoop');
+const { BudgetExceededError, ToolHandlerError, serializeToolResult } = require('#src/resources/models/agentLoop');
 const { logger } = require('#src/utility/logging/logger');
 
 function makeMockWriter() {
@@ -1213,10 +1208,6 @@ describe("agentLoop (toolMode: 'auto')", () => {
 	});
 
 	describe('token + cost budgets', () => {
-		afterEach(() => {
-			_resetComputeCallCostUsdForTests();
-		});
-
 		// The default ScriptedBackend usage helpers set tokens to 1+1 per round; for these
 		// tests we override per-call so the budget arithmetic is predictable.
 		function tokenRound(content, tokens = { promptTokens: 50, completionTokens: 50 }) {
@@ -1273,9 +1264,24 @@ describe("agentLoop (toolMode: 'auto')", () => {
 			assert.strictEqual(result.content, 'over');
 		});
 
-		it("maxCostUsd trips BudgetExceededError({kind: 'cost'}) when an injected cost function exceeds the cap", async () => {
-			// Inject a $0.01-per-call cost so two rounds = $0.02, capped at $0.015.
-			_setComputeCallCostUsdForTests(() => 0.01);
+		for (const [kind, cap] of [
+			['cost', { maxCostUsd: 0 }],
+			['tokens', { maxToolTokens: 0 }],
+		]) {
+			it(`a ${kind} cap of 0 makes no backend call`, async () => {
+				setBackendPricing(backend, { inputPerMtok: 100, outputPerMtok: 100 });
+				backend.queue(tokenRound('unreached'));
+				await assert.rejects(
+					() => models.generate('q', { toolMode: 'auto', ...cap }),
+					(err) => err instanceof BudgetExceededError && err.kind === kind
+				);
+				assert.strictEqual(backend.calls.length, 0);
+			});
+		}
+
+		it("maxCostUsd trips BudgetExceededError({kind: 'cost'}) from the serving entry's pricing", async () => {
+			// 100 tokens per round at $100/Mtok both ways = $0.01 per round; two rounds cross $0.015.
+			setBackendPricing(backend, { inputPerMtok: 100, outputPerMtok: 100 });
 			backend.queue(tokenToolRound('p', [tc('c1', 'echo', { i: 1 })]), tokenRound('done'));
 			let caught;
 			try {
@@ -1292,30 +1298,16 @@ describe("agentLoop (toolMode: 'auto')", () => {
 			assert.match(caught.message, /maxCostUsd=0.015/);
 		});
 
-		it('maxCostUsd does NOT trip with the v1 stub (computeCallCostUsd returns 0)', async () => {
-			// Default stub: cost = 0 per call, so any cap is unreachable today. Proves
-			// the v1 contract: cap is wired but doesn't fire in production until a
-			// real rate card lands.
-			backend.queue(tokenRound('done'));
-			const result = await models.generate('q', { toolMode: 'auto', maxCostUsd: 0.0001 });
-			assert.strictEqual(result.content, 'done');
-		});
-
-		it('cost function receives the usage object and model name', async () => {
-			const observations = [];
-			_setComputeCallCostUsdForTests((usage, model) => {
-				observations.push({ usage, model });
-				return 0;
+		it('maxCostUsd under the priced total does not trip', async () => {
+			setBackendPricing(backend, { inputPerMtok: 100, outputPerMtok: 100 });
+			backend.queue(tokenToolRound('p', [tc('c1', 'echo', { i: 1 })]), tokenRound('done'));
+			const result = await models.generate('q', {
+				toolMode: 'auto',
+				maxCostUsd: 0.05,
+				toolHandlers: { echo: (args) => args },
 			});
-			backend.queue(tokenRound('done', { promptTokens: 5, completionTokens: 3 }));
-			// Use the default-registered backend; the model name passed in opts is what
-			// flows to computeCallCostUsd, independent of how the backend resolves.
-			await models.generate('q', { toolMode: 'auto' });
-			assert.strictEqual(observations.length, 1);
-			assert.strictEqual(observations[0].usage.promptTokens, 5);
-			assert.strictEqual(observations[0].usage.completionTokens, 3);
-			// `opts.model` was undefined here; the cost function sees that.
-			assert.strictEqual(observations[0].model, undefined);
+			assert.strictEqual(result.content, 'done');
+			assert.strictEqual(result.costUsd, 0.01, 'the terminal round carries its own cost');
 		});
 
 		it('caller abort during the in-flight backend round preempts the budget tally', async () => {
@@ -1472,7 +1464,7 @@ describe("agentLoop (toolMode: 'auto')", () => {
 			};
 		}
 
-		// Spy on logger.warn for the warn-once assertions, restoring the original after.
+		// Spy on logger.warn for the warn assertions, restoring the original after.
 		let warnings;
 		let origWarn;
 		beforeEach(() => {
@@ -1484,31 +1476,62 @@ describe("agentLoop (toolMode: 'auto')", () => {
 			logger.warn = origWarn;
 		});
 
-		describe('budget warn-once when backend reports no usage', () => {
-			it('maxToolTokens set but no usage → warns once, does NOT trip, loop completes', async () => {
-				// Two tool rounds + terminal, all with usage: undefined.
+		describe('a budget the loop cannot measure stops it', () => {
+			const unenforceable = (kind) => (err) =>
+				err instanceof BudgetExceededError && err.kind === kind && /cannot be enforced/.test(err.message);
+
+			it('maxToolTokens with no usage reported stops after the first round, before its tools run', async () => {
 				backend.queue(
 					{ output: { content: 'r1', finishReason: 'tool_calls', toolCalls: [tc('c1', 'echo', { i: 1 })] } },
-					{ output: { content: 'r2', finishReason: 'tool_calls', toolCalls: [tc('c2', 'echo', { i: 2 })] } },
 					{ output: { content: 'final', finishReason: 'stop' } }
 				);
-				const result = await models.generate('q', {
-					toolMode: 'auto',
-					maxToolTokens: 1, // would trip instantly IF usage were measurable
-					toolHandlers: { echo: (a) => a },
+				let ran = 0;
+				await assert.rejects(
+					() =>
+						models.generate('q', {
+							toolMode: 'auto',
+							maxToolTokens: 1000,
+							toolHandlers: { echo: (a) => (ran++, a) },
+						}),
+					unenforceable('tokens')
+				);
+				assert.strictEqual(ran, 0);
+			});
+
+			for (const [label, usage] of [
+				['an empty', {}],
+				['a half', { completionTokens: 5 }],
+				['a negative', { promptTokens: -1, completionTokens: 5 }],
+			]) {
+				it(`${label} token report counts as no usage for maxToolTokens`, async () => {
+					backend.queue(
+						{
+							output: { content: 'r1', finishReason: 'tool_calls', toolCalls: [tc('c1', 'echo', { i: 1 })] },
+							usage,
+						},
+						{ output: { content: 'final', finishReason: 'stop' }, usage }
+					);
+					await assert.rejects(
+						() => models.generate('q', { toolMode: 'auto', maxToolTokens: 1000, toolHandlers: { echo: (a) => a } }),
+						unenforceable('tokens')
+					);
 				});
-				assert.strictEqual(result.content, 'final', 'unmeasurable budget must not falsely trip');
-				const budgetWarns = warnings.filter((w) => /budget is unenforceable/.test(w));
-				assert.strictEqual(budgetWarns.length, 1, 'warns exactly once across the run, not per-round');
+			}
+
+			it('maxCostUsd against an unpriced entry stops after the first round', async () => {
+				backend.queue(toolCallRound('r1', [tc('c1', 'echo', { i: 1 })]), final('final'));
+				await assert.rejects(
+					() => models.generate('q', { toolMode: 'auto', maxCostUsd: 5, toolHandlers: { echo: (a) => a } }),
+					unenforceable('cost')
+				);
 			});
 
 			it('maxToolTokens still trips normally when the backend DOES report usage', async () => {
 				backend.queue(toolCallRound('r1', [tc('c1', 'echo', { i: 1 })]), final('unreached'));
 				await assert.rejects(
 					() => models.generate('q', { toolMode: 'auto', maxToolTokens: 1, toolHandlers: { echo: (a) => a } }),
-					(err) => err instanceof BudgetExceededError && err.kind === 'tokens'
+					(err) => err instanceof BudgetExceededError && err.kind === 'tokens' && /exceeded/.test(err.message)
 				);
-				assert.strictEqual(warnings.filter((w) => /budget is unenforceable/.test(w)).length, 0);
 			});
 		});
 
@@ -1708,5 +1731,31 @@ describe('agentLoop abort gate at runSingleToolCall entry', () => {
 		);
 		assert.strictEqual(firstRan, true, 'first handler ran');
 		assert.strictEqual(secondRan, false, 'second handler must not run after abort');
+	});
+});
+
+describe('serializeToolResult', () => {
+	it('never exceeds maxBytes or splits a character, whatever the cut point', () => {
+		for (const text of ['漢'.repeat(500), '😀'.repeat(500), 'aé漢😀'.repeat(200)]) {
+			for (let maxBytes = 120; maxBytes < 140; maxBytes++) {
+				const { content, truncated } = serializeToolResult({ text }, maxBytes);
+				assert.strictEqual(truncated, true);
+				assert.ok(
+					Buffer.byteLength(content, 'utf8') <= maxBytes,
+					`${Buffer.byteLength(content, 'utf8')} > ${maxBytes}`
+				);
+				assert.ok(!content.includes('\uFFFD'), `U+FFFD at maxBytes=${maxBytes}`);
+			}
+		}
+	});
+
+	it('puts the hint inside the marker and leaves a fitting result untouched', () => {
+		const { content } = serializeToolResult({ text: 'x'.repeat(1000) }, 200, 'Ask for less');
+		assert.match(content, /…\[truncated; full result is 1011 bytes\. Ask for less\]$/);
+		assert.deepStrictEqual(serializeToolResult({ a: 1 }, 200, 'Ask for less'), {
+			content: '{"a":1}',
+			totalBytes: 7,
+			truncated: false,
+		});
 	});
 });

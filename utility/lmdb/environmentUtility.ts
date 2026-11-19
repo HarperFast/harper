@@ -1,8 +1,9 @@
-'use strict';
+import { loadNativePackage } from '../packageUtils.js';
+('use strict');
 
-import * as lmdb from 'lmdb';
-import * as fs from 'fs-extra';
-import * as path from 'path';
+import type * as lmdb from 'lmdb';
+import fs from 'fs-extra';
+import * as path from 'node:path';
 import * as common from './commonUtility.ts';
 import log from '../logging/harper_logger.ts';
 import { LMDB_ERRORS_ENUM as LMDB_ERRORS } from '../errors/commonErrors.ts';
@@ -111,7 +112,10 @@ export async function createEnvironment(
 	envName = envName.toString();
 	let schemasConfig = envMngr.get(hdbTerms.CONFIG_PARAMS.DATABASES);
 	if (!schemasConfig) updateConfigObject(hdbTerms.CONFIG_PARAMS.DATABASES, (schemasConfig = {}));
-	if (!schemasConfig[dbName]) schemasConfig[dbName] = {};
+	// defineProperty makes an own entry for any name: `schemasConfig.__proto__ = {}` would reparent the map instead
+	if (!Object.hasOwn(schemasConfig, dbName)) {
+		Object.defineProperty(schemasConfig, dbName, { value: {}, enumerable: true, writable: true, configurable: true });
+	}
 	schemasConfig[dbName].path = basePath;
 	try {
 		await validateEnvironmentPath(basePath, envName, isV3);
@@ -122,7 +126,7 @@ export async function createEnvironment(
 			let environmentPath = path.join(basePath, envName);
 			await fs.mkdirp(isV3 ? environmentPath : basePath);
 			let envInit = new OpenEnvironmentObject(isV3 ? environmentPath : environmentPath + MDB_FILE_EXTENSION, false);
-			let env = lmdb.open(envInit);
+			let env = (loadNativePackage('lmdb') as typeof lmdb).open(envInit);
 
 			(env as any).dbis = Object.create(null);
 			//next we create an internal dbi to track the named databases
@@ -166,7 +170,7 @@ export async function openEnvironment(basePath: string, envName: string, isTxn: 
 	let standardPath = path.join(basePath, envName + MDB_FILE_EXTENSION);
 	let readOnly = envPath != standardPath; // legacy database, only open in read only mode
 	let envInit = new OpenEnvironmentObject(envPath, readOnly);
-	let env = lmdb.open(envInit);
+	let env = (loadNativePackage('lmdb') as typeof lmdb).open(envInit);
 
 	(env as any).dbis = Object.create(null);
 

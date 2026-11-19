@@ -4,6 +4,7 @@ import { promptYesNo } from '../utility/interactivePrompts.ts';
 import chalk from 'chalk';
 import * as os from 'os';
 import assignCMDENVVariables from '../utility/assignCmdEnvVariables.ts';
+import { PRODUCT_NAME } from '../utility/packageUtils.js';
 
 const UPGRADE_PROCEED = ['yes', 'y'];
 
@@ -27,10 +28,10 @@ export async function forceDowngradePrompt(upgradeObj: any) {
 	if (!process.stdin.isTTY) {
 		if (override.CONFIRM_DOWNGRADE === undefined) {
 			throw new Error(
-				`This instance's data was last run on Harper ${upgradeObj.data_version}, which is newer than this installed version ${upgradeObj.upgrade_version}.` +
+				`This instance's data was last run on ${PRODUCT_NAME} ${upgradeObj.data_version}, which is newer than this installed version ${upgradeObj.upgrade_version}.` +
 					' Running the older version requires confirmation, and there is no interactive terminal to ask on.' +
 					' Set CONFIRM_DOWNGRADE=yes (environment variable or --CONFIRM_DOWNGRADE yes) to proceed with the downgrade,' +
-					` or run Harper ${upgradeObj.data_version} or newer.`
+					` or run ${PRODUCT_NAME} ${upgradeObj.data_version} or newer.`
 			);
 		}
 		const answer = answerFromOverride(override.CONFIRM_DOWNGRADE);
@@ -45,7 +46,7 @@ export async function forceDowngradePrompt(upgradeObj: any) {
 	const downgradeMessage =
 		`${os.EOL}` +
 		chalk.bold.green(
-			'Your installed Harper version is older than the version used to create your data.' +
+			`Your installed ${PRODUCT_NAME} version is older than the version used to create your data.` +
 				' Downgrading is not recommended as it is not tested and guaranteed to work. However, if you need to' +
 				' downgrade, and a backup of your data has not been created, we recommend you cancel this process and' +
 				' backup before proceeding.' +
@@ -68,8 +69,8 @@ export async function upgradeCertsPrompt() {
 	if (!process.stdin.isTTY) {
 		if (override.GENERATE_CERTS === undefined) {
 			throw new Error(
-				'Harper now requires a Certificate Authority certificate, and there is no interactive terminal to ask on.' +
-					' Set GENERATE_CERTS=yes (environment variable or --GENERATE_CERTS yes) to have Harper generate new' +
+				`${PRODUCT_NAME} now requires a Certificate Authority certificate, and there is no interactive terminal to ask on.` +
+					` Set GENERATE_CERTS=yes (environment variable or --GENERATE_CERTS yes) to have ${PRODUCT_NAME} generate new` +
 					' certificates, or GENERATE_CERTS=no to keep your existing certificates and add your own CA certificate' +
 					' (set the <certificateAuthority> parameter in harperdb-config.yaml).'
 			);
@@ -86,14 +87,14 @@ export async function upgradeCertsPrompt() {
 	const upgradeCertMessage =
 		`${os.EOL}` +
 		chalk.bold.green(
-			'We now require a Certifacte Authority certificate. Harper can generate all new certificates for you (your existing certificates will be backed up) ' +
+			`We now require a Certificate Authority certificate. ${PRODUCT_NAME} can generate all new certificates for you (your existing certificates will be backed up) ` +
 				'or you can keep any existing certificates and add your own CA certificate. To add your own CA certificate set the <certificateAuthority> ' +
 				'parameter in harperdb-config.yaml'
 		);
 	console.error(upgradeCertMessage);
 
 	return promptYesNo({
-		message: chalk.magenta('[GENERATE_CERTS] Do you want Harper to generate all new certificates? (yes/no)'),
+		message: chalk.magenta(`[GENERATE_CERTS] Do you want ${PRODUCT_NAME} to generate all new certificates? (yes/no)`),
 		default: true,
 	});
 }

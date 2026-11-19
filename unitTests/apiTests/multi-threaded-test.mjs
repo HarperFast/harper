@@ -3,7 +3,7 @@
 import { assert } from 'chai';
 import axios from 'axios';
 import { addThreads, setupTestApp, random, baseUrl } from './setupTestApp.mjs';
-import { shutdownWorkers, setTerminateTimeout } from '#js/server/threads/manageThreads';
+import { shutdownWorkers, setTerminateTimeout } from '#src/server/threads/manageThreads';
 
 describe('Multi-threaded cache updates', () => {
 	before(async function () {

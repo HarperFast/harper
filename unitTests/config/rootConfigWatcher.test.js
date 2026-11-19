@@ -1,5 +1,5 @@
 const assert = require('node:assert');
-const { RootConfigWatcher } = require('#src/config/RootConfigWatcher');
+const { RootConfigWatcher } = require('#js/config/RootConfigWatcher');
 const { tmpdir } = require('node:os');
 const { once } = require('node:events');
 const { join } = require('node:path');
@@ -10,6 +10,7 @@ const { replace, fake, restore, spy } = require('sinon');
 const chokidar = require('chokidar');
 const configUtils = require('#src/config/configUtils');
 const { useShortReadRetryBudget, restoreReadRetryBudget } = require('../shortReadRetryBudget');
+const { waitFor } = require('../waitFor');
 const { stringify } = require('yaml');
 
 // `function` so the suite can set a timeout: these tests await watcher events that may never
@@ -132,6 +133,162 @@ describe('RootConfigWatcher', function () {
 		assert.deepEqual(changeValue, updated, 'watcher should fire change after atomic rename');
 
 		configWatcher.close();
+	});
+
+	it('reads the final state when two atomic writes land 20ms apart', async function () {
+		const initial = { foo: 'bar' };
+		writeFileSync(suite.configFilePath, stringify(initial));
+		const configWatcher = new RootConfigWatcher();
+		await configWatcher.ready;
+
+		const changes = [];
+		configWatcher.on('change', (cfg) => changes.push(cfg));
+
+		const first = { foo: 'first' };
+		const second = { foo: 'second' };
+		const firstChange = once(configWatcher, 'change');
+		configUtils.atomicWriteFile(suite.configFilePath, stringify(first));
+		await firstChange;
+		const firstAt = performance.now();
+		await delay(20);
+		if (performance.now() - firstAt >= 45) {
+			configWatcher.close();
+			return this.skip();
+		}
+		configUtils.atomicWriteFile(suite.configFilePath, stringify(second));
+
+		await waitFor(() => changes.length === 2, {
+			timeout: 2000,
+			interval: 20,
+			message: () => `expected [first, second] changes, got: ${JSON.stringify(changes)}`,
+		});
+
+		assert.deepEqual(changes, [first, second]);
+		assert.deepEqual(configWatcher.config, second);
+		configWatcher.close();
+	});
+
+	it('delivers both change events when two atomic writes land 200ms apart', async () => {
+		const initial = { foo: 'bar' };
+		writeFileSync(this.configFilePath, stringify(initial));
+		const configWatcher = new RootConfigWatcher();
+		await configWatcher.ready;
+
+		const changes = [];
+		configWatcher.on('change', (cfg) => changes.push(cfg));
+
+		const first = { foo: 'first' };
+		const second = { foo: 'second' };
+		configUtils.atomicWriteFile(this.configFilePath, stringify(first));
+		await delay(200);
+		configUtils.atomicWriteFile(this.configFilePath, stringify(second));
+
+		await waitFor(() => changes.length === 2, {
+			timeout: 2000,
+			interval: 20,
+			message: () => `expected [first, second] changes, got: ${JSON.stringify(changes)}`,
+		});
+
+		assert.deepEqual(changes, [first, second]);
+		assert.deepEqual(configWatcher.config, second);
+		configWatcher.close();
+	});
+
+	it('does not emit a duplicate change event for identical content', async () => {
+		const initial = { foo: 'bar' };
+		writeFileSync(this.configFilePath, stringify(initial));
+		const configWatcher = new RootConfigWatcher();
+		await configWatcher.ready;
+		configWatcher.config.mutatedByConsumer = true;
+
+		const changes = [];
+		configWatcher.on('change', (cfg) => {
+			changes.push(structuredClone(cfg));
+			cfg.mutatedByConsumer = true;
+		});
+
+		const updated = { foo: 'baz' };
+		configUtils.atomicWriteFile(this.configFilePath, stringify(updated));
+		await waitFor(() => changes.length === 1, {
+			timeout: 2000,
+			interval: 20,
+		});
+
+		await delay(200);
+		const readsBeforeDuplicateWrite = configWatcher._readCountForTests;
+		configUtils.atomicWriteFile(this.configFilePath, stringify({ foo: 'baz' }));
+		await waitFor(() => configWatcher._readCountForTests > readsBeforeDuplicateWrite, {
+			timeout: 2000,
+			interval: 20,
+		});
+		await delay(150);
+
+		const readsBeforeCommentWrite = configWatcher._readCountForTests;
+		configUtils.atomicWriteFile(this.configFilePath, `# comment\n${stringify({ foo: 'baz' })}`);
+		await waitFor(() => configWatcher._readCountForTests > readsBeforeCommentWrite, {
+			timeout: 2000,
+			interval: 20,
+		});
+		await delay(150);
+
+		assert.deepEqual(changes, [updated], 'identical config content must not emit a duplicate change event');
+		configWatcher.close();
+	});
+
+	describe('backend selection by runtime', () => {
+		const bunDescriptor = Object.getOwnPropertyDescriptor(process.versions, 'bun');
+		afterEach(() => {
+			if (bunDescriptor) Object.defineProperty(process.versions, 'bun', bunDescriptor);
+			else delete process.versions.bun;
+		});
+
+		it('polls under Bun, so watchers sharing the file see every atomic replacement', async () => {
+			Object.defineProperty(process.versions, 'bun', { value: '1.4.3', configurable: true, enumerable: true });
+			let size = 0;
+			const replaceGrowingSize = (config) => {
+				const content = { ...config, padding: 'x'.repeat(++size) };
+				writeFileSync(`${this.configFilePath}.tmp`, stringify(content));
+				renameSync(`${this.configFilePath}.tmp`, this.configFilePath);
+				return content;
+			};
+			writeFileSync(this.configFilePath, stringify({ write: 0 }));
+			const watchers = [new RootConfigWatcher(), new RootConfigWatcher()];
+			try {
+				await Promise.all(watchers.map((watcher) => watcher.ready));
+				for (const watcher of watchers) assert.equal(watcher._usingPollingForTests, true);
+				// A replacement landing before fs.watchFile's async baseline stat is never reported.
+				await waitFor(
+					() => {
+						if (watchers.every((watcher) => watcher.config?.warmup)) return true;
+						replaceGrowingSize({ warmup: true });
+					},
+					{ timeout: 10000, interval: 1500 }
+				);
+				for (const write of [1, 2]) {
+					const expected = replaceGrowingSize({ write });
+					await waitFor(() => watchers.every((watcher) => watcher.config?.write === write), {
+						timeout: 5000,
+						interval: 50,
+						message: () => `write ${write} not seen: ${JSON.stringify(watchers.map((w) => w.config))}`,
+					});
+					assert.deepEqual(
+						watchers.map((watcher) => watcher.config),
+						[expected, expected]
+					);
+				}
+			} finally {
+				for (const watcher of watchers) watcher.close();
+			}
+		}).timeout(25000);
+
+		it('watches natively outside Bun', async () => {
+			delete process.versions.bun;
+			writeFileSync(this.configFilePath, stringify({ foo: 'bar' }));
+			const configWatcher = new RootConfigWatcher();
+			await configWatcher.ready;
+			assert.equal(configWatcher._usingPollingForTests, false);
+			configWatcher.close();
+		});
 	});
 
 	it('finishes reading the config before its change callback returns', async () => {
@@ -278,6 +435,7 @@ describe('RootConfigWatcher', function () {
 		writeFileSync(suite.configFilePath, stringify({ foo: 'baz' }));
 		await firstChange;
 
+		writeFileSync(suite.configFilePath, stringify({ foo: 'qux' }));
 		if (!denyReads(suite.configFilePath)) {
 			configWatcher.close();
 			return this.skip();
@@ -292,7 +450,7 @@ describe('RootConfigWatcher', function () {
 
 		// chokidar reports the unlocking chmod as a change of its own, so this asserts that the
 		// config comes back, not which path delivered it; configReadRetry.test.js covers the ladder.
-		assert.deepEqual(updated, { foo: 'baz' }, 'a read denied once must not leave the config stale');
+		assert.deepEqual(updated, { foo: 'qux' }, 'a read denied once must not leave the config stale');
 		configWatcher.close();
 	});
 

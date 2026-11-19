@@ -7,7 +7,7 @@ const sinon = require('sinon');
 const rewire = require('rewire');
 const assert = require('assert');
 // need to rewire in order to override p_search_search_by_value
-const schema_describe = rewire('#src/dataLayer/schemaDescribe');
+const schema_describe = rewire('#js/dataLayer/schemaDescribe');
 const operationAuthorizationState = require('#src/server/serverHelpers/operationAuthorizationState');
 const { databases, getDatabases } = require('#src/resources/databases');
 const start_time = Date.now();
@@ -77,7 +77,9 @@ describe('describeAll authorization bypass state', function () {
 			const internalResult = await operationAuthorizationState.runWithOperationAuthorizationBypass(true, () =>
 				schema_describe.describeAll(request)
 			);
-			assert.deepStrictEqual(internalResult.private_database, {});
+			// null-prototype, so compare contents: deepStrictEqual against `{}` also compares prototypes
+			assert.ok(Object.hasOwn(internalResult, 'private_database'));
+			assert.deepStrictEqual({ ...internalResult.private_database }, {});
 		} finally {
 			delete databases.private_database;
 		}

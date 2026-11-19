@@ -1,7 +1,7 @@
 const { parentPort, workerData } = require('worker_threads');
 const { setupTestDBPath } = require('../testUtils');
 const { database, resetDatabases, databaseEventsEmitter } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 // phase (main -> here): 0 idle, 1 first generation exists, 2 recreate paused after its first attribute
 // row, 3 recreate returned. ack (here -> main): scans completed. Absent when mocha loads this file itself.

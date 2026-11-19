@@ -10,6 +10,7 @@ const {
 	setStatus,
 	addPendingApproval,
 	resolveApproval,
+	shrinkNewestToolResults,
 	_setTableForTests,
 } = require('#src/agent/session');
 
@@ -228,5 +229,54 @@ describe('agent/session', () => {
 		const reloaded = await getSession(session.session_id);
 		assert.equal(reloaded.status, 'error');
 		assert.equal(reloaded.lastError, 'boom');
+	});
+
+	describe('shrinkNewestToolResults', () => {
+		const cut = (content) => `${content.slice(0, 4)}…`;
+
+		async function sessionWith(messages) {
+			const session = await createSession({ user: 'admin' });
+			for (const message of messages) await appendMessage(session.session_id, { createdAt: 1, ...message });
+			return session.session_id;
+		}
+
+		it('shrinks the oversized messages in the newest group that has one, and nothing else', async () => {
+			const sessionId = await sessionWith([
+				{ role: 'tool', toolCallId: 'a', content: 'A'.repeat(100) },
+				{ role: 'assistant', content: 'B'.repeat(100) },
+				{ role: 'tool', toolCallId: 'c', content: 'C'.repeat(100) },
+				{ role: 'tool', toolCallId: 'd', content: 'tiny' },
+				{ role: 'tool', toolCallId: 'e', content: 'E'.repeat(100) },
+				{ role: 'user', content: 'U'.repeat(100) },
+			]);
+
+			assert.equal(await shrinkNewestToolResults(sessionId, 10, cut), 2);
+
+			const contents = (await getSession(sessionId)).messages.map((m) => m.content);
+			assert.deepEqual(contents, ['A'.repeat(100), 'B'.repeat(100), 'CCCC…', 'tiny', 'EEEE…', 'U'.repeat(100)]);
+		});
+
+		it('moves to the next older group once the newest is small, and returns 0 when none is left', async () => {
+			const sessionId = await sessionWith([
+				{ role: 'tool', toolCallId: 'a', content: 'A'.repeat(100) },
+				{ role: 'assistant', content: '' },
+				{ role: 'tool', toolCallId: 'b', content: 'B'.repeat(100) },
+			]);
+
+			assert.equal(await shrinkNewestToolResults(sessionId, 10, cut), 1);
+			assert.equal(await shrinkNewestToolResults(sessionId, 10, cut), 1);
+			assert.equal(await shrinkNewestToolResults(sessionId, 10, cut), 0);
+			assert.deepEqual(
+				(await getSession(sessionId)).messages.map((m) => m.content),
+				['AAAA…', '', 'BBBB…']
+			);
+		});
+
+		it('measures messages in UTF-8 bytes', async () => {
+			const fits = await sessionWith([{ role: 'tool', toolCallId: 'a', content: '漢'.repeat(4) }]);
+			assert.equal(await shrinkNewestToolResults(fits, 12, cut), 0);
+			const over = await sessionWith([{ role: 'tool', toolCallId: 'a', content: '漢'.repeat(4) }]);
+			assert.equal(await shrinkNewestToolResults(over, 11, cut), 1);
+		});
 	});
 });

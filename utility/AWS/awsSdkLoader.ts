@@ -2,6 +2,7 @@
 
 import { createRequire } from 'node:module';
 import * as path from 'node:path';
+import { loadNativePackage } from '../packageUtils.js';
 import { ServerError } from '../errors/hdbError.ts';
 import { getHdbBasePath } from '../environment/environmentManager.ts';
 
@@ -33,7 +34,7 @@ function defaultResolveRootRequire(rootPath: string): RequireLike {
 
 export function requireAwsSdk(
 	packageName: string,
-	requireFn: RequireLike = require,
+	requireFn: RequireLike = loadNativePackage,
 	rootPath: string | null | undefined = getHdbBasePath(),
 	resolveRootRequire: (rootPath: string) => RequireLike = defaultResolveRootRequire
 ): any {

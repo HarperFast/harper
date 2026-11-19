@@ -7,7 +7,7 @@ const path = require('node:path');
 
 const environment = require('#src/utility/environment/environmentManager');
 const hdbTerms = require('#src/utility/hdbTerms');
-const { getHdbPid, isProcessRunning } = require('#js/utility/processManagement/processManagement');
+const { getHdbPid, isProcessRunning } = require('#src/utility/processManagement/processManagement');
 
 describe('process management PID file', () => {
 	let originalHdbPath;

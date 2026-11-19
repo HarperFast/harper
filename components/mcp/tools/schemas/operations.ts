@@ -101,6 +101,14 @@ export const OPERATION_INPUT_SCHEMAS: Record<string, object> = {
 		properties: {},
 		description: 'Lists deployed component versions in this Harper instance.',
 	},
+	list_releases: {
+		type: 'object',
+		properties: {
+			project: { type: 'string', description: 'Only this component. Defaults to every component.' },
+			replicated: { type: 'boolean', description: "Also return every other node's answer." },
+		},
+		description: 'Lists the live release and the releases each node keeps for deploy_component deployment_id.',
+	},
 	list_backups: {
 		type: 'object',
 		properties: {
@@ -276,6 +284,10 @@ export const OPERATION_INPUT_SCHEMAS: Record<string, object> = {
 			id: {
 				type: 'string',
 				description: 'Status entry id. When omitted, returns aggregated status across threads.',
+			},
+			components: {
+				type: 'boolean',
+				description: 'When true (and no id), include the component status tree with parent status rollups.',
 			},
 			middleware: {
 				type: 'boolean',

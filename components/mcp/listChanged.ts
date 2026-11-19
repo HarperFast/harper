@@ -1,3 +1,5 @@
+import * as serverHandlersRuntimeModule from '../../server/itc/serverHandlers.ts';
+import * as userRuntimeModule from '../../security/user.ts';
 /**
  * MCP server-push notification dispatcher (#619). Subscribes to Harper's
  * existing role-cache-invalidation + schema-reload event channels and
@@ -57,8 +59,8 @@ export function _resetListChangedForTest(): void {
 function loadItcHandlers(): ItcHandlers | undefined {
 	if (_itcHandlersOverride) return _itcHandlersOverride;
 	try {
-		const { schemaHandler, resourceHandler } = require('../../server/itc/serverHandlers');
-		const { onUserChange } = require('../../security/user');
+		const { schemaHandler, resourceHandler } = serverHandlersRuntimeModule;
+		const { onUserChange } = userRuntimeModule;
 		return { schemaHandler, resourceHandler, userHandler: { addListener: onUserChange } };
 	} catch (err) {
 		harperLogger.trace(`MCP listChanged: ITC handlers unavailable (${(err as Error).message})`);
@@ -74,14 +76,19 @@ export function _setUserResolverForTest(fn: ((username: string) => Promise<Authe
 	_userResolverOverride = fn;
 }
 
-async function resolveUser(username: string | undefined): Promise<AuthedUser | undefined> {
+async function resolveUser(username: string | undefined, from?: unknown): Promise<AuthedUser | undefined> {
 	if (!username) return undefined;
 	if (_userResolverOverride) return _userResolverOverride(username);
 	try {
-		const { findAndValidateUser } = require('../../security/user');
+		const { findAndValidateUser } = userRuntimeModule;
 		const fresh = await findAndValidateUser(username, null, false);
 		return fresh as AuthedUser;
 	} catch (err) {
+		// an inactive refusal proves a record, as it does in a live-subscription recheck
+		if (userRuntimeModule.isInactiveUserRejection(err)) {
+			const admission = userRuntimeModule.certificateAdmission(from);
+			if (admission) userRuntimeModule.latchRoleRequirement(admission);
+		}
 		harperLogger.trace(`MCP listChanged: user re-resolve failed for ${username}: ${(err as Error).message}`);
 		return undefined;
 	}
@@ -219,10 +226,18 @@ function snapshotSessions(profile: McpProfile): RegisteredSession[] {
 async function refreshSessionUser(record: RegisteredSession): Promise<void> {
 	// A scoped token's username is attribution only — re-resolving it against hdb_user could
 	// substitute a real principal (created later with that name) and advertise a surface the token
-	// never granted. Its embedded role is fixed for the token's life, so there is nothing to refresh.
-	if (record.user?._scopedToken) return;
-	const fresh = await resolveUser(record.user?.username);
-	if (fresh) record.user = fresh;
+	// never granted. Its embedded role is fixed for the token's life, so there is nothing to refresh;
+	// nor for a recordless principal, whose role came from the credential a component resolved.
+	if (
+		record.user?._scopedToken ||
+		userRuntimeModule.isLocalPrincipal(record.user) ||
+		userRuntimeModule.isRecordlessPrincipal(record.user as userRuntimeModule.User)
+	)
+		return;
+	const fresh = await resolveUser(record.user?.username, record.user);
+	if (!fresh) return;
+	const view = record.user.authExpiresAt === undefined ? fresh : { ...fresh, authExpiresAt: record.user.authExpiresAt };
+	record.user = userRuntimeModule.withCertificateAdmission(view, record.user);
 }
 
 /**

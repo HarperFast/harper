@@ -1,7 +1,16 @@
 'use strict';
 
 const assert = require('node:assert');
-const { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync } = require('node:fs');
+const {
+	mkdtempSync,
+	writeFileSync,
+	mkdirSync,
+	readFileSync,
+	existsSync,
+	realpathSync,
+	rmSync,
+	symlinkSync,
+} = require('node:fs');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const { readFileTool, writeFileTool, listDirTool, grepFilesTool, tailFileTool } = require('#src/agent/tools/fsTools');
@@ -14,7 +23,7 @@ function mkScopes() {
 	mkdirSync(componentsRoot);
 	mkdirSync(logDir);
 	mkdirSync(configDir);
-	return { componentsRoot, logDir, configDir, root };
+	return { componentsRoot, logDir, configDir, keyDirs: [join(root, 'keys')], root };
 }
 
 function ctx(scopes) {
@@ -132,5 +141,815 @@ describe('agent/fsTools', () => {
 		const big = 'x'.repeat(6 * 1024 * 1024);
 		await assert.rejects(writeFileTool.handler({ path: 'big.txt', content: big }, ctx(scopes)), /exceeds/);
 		assert.equal(existsSync(join(scopes.componentsRoot, 'big.txt')), false);
+	});
+});
+
+describe('agent/fsTools pages', () => {
+	let scopes;
+	beforeEach(() => {
+		scopes = mkScopes();
+	});
+
+	function pagedCtx(maxResultBytes) {
+		return { sessionId: 'sess', scopes, maxResultBytes };
+	}
+
+	function numberedLines(count, width = 20) {
+		let text = '';
+		for (let i = 1; i <= count; i++) text += `line ${String(i).padStart(width - 6, '0')}\n`;
+		return text;
+	}
+
+	it('read_file returns a small file byte for byte, with its line count', async () => {
+		writeFileSync(join(scopes.componentsRoot, 'a.txt'), 'one\r\ntwo\nthree');
+		const result = await readFileTool.handler({ path: 'a.txt' }, pagedCtx(65536));
+		assert.equal(result.content, 'one\r\ntwo\nthree');
+		assert.deepEqual(
+			{
+				startLine: result.startLine,
+				endLine: result.endLine,
+				totalLines: result.totalLines,
+				nextLine: result.nextLine,
+			},
+			{ startLine: 1, endLine: 3, totalLines: 3, nextLine: undefined }
+		);
+	});
+
+	it('read_file pages a file through nextLine/nextOffset until totalLines, reassembling it exactly', async () => {
+		const text = numberedLines(500);
+		writeFileSync(join(scopes.logDir, 'big.log'), text);
+		const pages = [];
+		let cursor = {};
+		for (;;) {
+			const page = await readFileTool.handler({ root: 'logs', path: 'big.log', ...cursor }, pagedCtx(2048));
+			assert.ok(Buffer.byteLength(page.content) <= 1024, `page of ${Buffer.byteLength(page.content)} bytes`);
+			assert.ok(page.content.endsWith('\n'));
+			pages.push(page);
+			if (!page.nextLine) break;
+			assert.equal(page.nextLine, page.endLine + 1);
+			assert.equal(page.nextOffset, page.offset + Buffer.byteLength(page.content));
+			const rescanned = await readFileTool.handler(
+				{ root: 'logs', path: 'big.log', startLine: page.nextLine },
+				pagedCtx(2048)
+			);
+			cursor = { startLine: page.nextLine, offset: page.nextOffset };
+			const resumed = await readFileTool.handler({ root: 'logs', path: 'big.log', ...cursor }, pagedCtx(2048));
+			assert.deepEqual(resumed, rescanned);
+		}
+		assert.ok(pages.length > 5);
+		assert.equal(pages.map((page) => page.content).join(''), text);
+		assert.equal(pages.at(-1).totalLines, 500);
+		assert.equal(pages.at(-1).endLine, 500);
+	});
+
+	it('read_file from an offset alone returns content without line numbers', async () => {
+		writeFileSync(join(scopes.componentsRoot, 'a.txt'), 'one\ntwo\nthree\n');
+		const result = await readFileTool.handler({ path: 'a.txt', offset: 4 }, pagedCtx(65536));
+		assert.equal(result.content, 'two\nthree\n');
+		assert.equal(result.offset, 4);
+		assert.equal(result.startLine, undefined);
+		assert.equal(result.totalLines, undefined);
+		assert.equal(result.nextOffset, undefined);
+		await assert.rejects(
+			readFileTool.handler({ path: 'a.txt', offset: 15 }, pagedCtx(65536)),
+			/past the end of the file \(14 bytes\)/
+		);
+	});
+
+	it('read_file sizes a page by its JSON-escaped length, so the loop never cuts it', async () => {
+		const { serializeToolResult } = require('#src/resources/models/agentLoop');
+		const line = `${'\u0001"'.repeat(20)}\n`;
+		writeFileSync(join(scopes.logDir, 'ctl.log'), line.repeat(200));
+		const page = await readFileTool.handler({ root: 'logs', path: 'ctl.log' }, pagedCtx(2048));
+		assert.ok(page.nextLine > 2);
+		assert.ok(Buffer.byteLength(JSON.stringify(page.content)) <= 1024 + 2);
+		assert.equal(serializeToolResult({ ok: true, result: page }, 2048).truncated, false);
+	});
+
+	it('read_file honors lineCount and reads files over the old 5 MiB limit', async () => {
+		writeFileSync(join(scopes.logDir, 'huge.log'), numberedLines(300_000));
+		const result = await readFileTool.handler(
+			{ root: 'logs', path: 'huge.log', startLine: 299_998, lineCount: 2 },
+			pagedCtx(65536)
+		);
+		assert.ok(result.size > 5 * 1024 * 1024);
+		assert.equal(result.content, 'line 00000000299998\nline 00000000299999\n');
+		assert.equal(result.nextLine, 300_000);
+		assert.equal(result.totalLines, undefined);
+	});
+
+	it('read_file past the end returns no content and the line count', async () => {
+		writeFileSync(join(scopes.componentsRoot, 'a.txt'), 'a\nb\n');
+		const atEnd = await readFileTool.handler({ path: 'a.txt', startLine: 3 }, pagedCtx(65536));
+		assert.deepEqual({ content: atEnd.content, totalLines: atEnd.totalLines }, { content: '', totalLines: 2 });
+		const beyond = await readFileTool.handler({ path: 'a.txt', startLine: 50 }, pagedCtx(65536));
+		assert.deepEqual({ content: beyond.content, totalLines: beyond.totalLines }, { content: '', totalLines: 2 });
+		writeFileSync(join(scopes.componentsRoot, 'empty.txt'), '');
+		const empty = await readFileTool.handler({ path: 'empty.txt' }, pagedCtx(65536));
+		assert.deepEqual({ content: empty.content, totalLines: empty.totalLines }, { content: '', totalLines: 0 });
+	});
+
+	it('keeps a whole result, cursor included, under the minimum cap even with a long path', async () => {
+		const { serializeToolResult } = require('#src/resources/models/agentLoop');
+		// About 400 characters in all, whatever the platform's tmpdir length.
+		const segment = Math.floor((390 - scopes.logDir.length) / 3);
+		const deep = join('d'.repeat(segment), 'e'.repeat(segment), 'f'.repeat(segment));
+		mkdirSync(join(scopes.logDir, deep), { recursive: true });
+		writeFileSync(join(scopes.logDir, deep, 'srv.log'), numberedLines(200));
+		const read = await readFileTool.handler({ root: 'logs', path: join(deep, 'srv.log') }, pagedCtx(1024));
+		const tail = await tailFileTool.handler({ root: 'logs', path: join(deep, 'srv.log') }, pagedCtx(1024));
+		assert.ok(read.path.length > 380);
+		assert.ok(read.nextLine > 1);
+		for (const result of [read, tail]) {
+			assert.equal(serializeToolResult({ ok: true, result }, 1024).truncated, false);
+		}
+	});
+
+	it('read_file returns a line longer than a page in parts, on character boundaries, losing nothing', async () => {
+		const longLine = `${'漢'.repeat(1000)}${'\u0002'.repeat(300)}end\n`;
+		writeFileSync(join(scopes.componentsRoot, 'bundle.js'), `${longLine}next\n`);
+		const parts = [];
+		let cursor = {};
+		for (;;) {
+			const page = await readFileTool.handler({ path: 'bundle.js', ...cursor }, pagedCtx(2048));
+			assert.ok(Buffer.byteLength(JSON.stringify(page.content)) <= 1024 + 2);
+			assert.ok(!page.content.includes('\uFFFD'));
+			parts.push(page);
+			if (!page.lineTruncated) break;
+			assert.equal(page.startLine, 1);
+			assert.equal(page.nextLine, 1);
+			cursor = { startLine: page.nextLine, offset: page.nextOffset };
+		}
+		assert.ok(parts.length > 3);
+		assert.equal(parts.map((page) => page.content).join(''), `${longLine}next\n`);
+		assert.equal(parts.at(-1).endLine, 2);
+		assert.equal(parts.at(-1).totalLines, 2);
+	});
+
+	it('read_file rejects a startLine, lineCount or offset out of range', async () => {
+		writeFileSync(join(scopes.componentsRoot, 'a.txt'), 'a\n');
+		for (const args of [{ startLine: 0 }, { startLine: 1.5 }, { startLine: '2' }, { lineCount: -1 }, { offset: -1 }]) {
+			await assert.rejects(
+				readFileTool.handler({ path: 'a.txt', ...args }, pagedCtx(65536)),
+				/must be an integer of at least/
+			);
+		}
+	});
+
+	it('read_file without a cap on the context uses 32 KiB pages', async () => {
+		writeFileSync(join(scopes.componentsRoot, 'a.txt'), numberedLines(5000));
+		const result = await readFileTool.handler({ path: 'a.txt' }, ctx(scopes));
+		assert.ok(Buffer.byteLength(result.content) <= 32 * 1024);
+		assert.ok(Buffer.byteLength(JSON.stringify(result.content)) > 31 * 1024);
+		assert.equal(result.nextLine, result.endLine + 1);
+	});
+
+	it('tail_file returns only the lines that fit in a page and says so', async () => {
+		writeFileSync(join(scopes.logDir, 'srv.log'), numberedLines(1000));
+		const result = await tailFileTool.handler({ root: 'logs', path: 'srv.log', lines: 5000 }, pagedCtx(2048));
+		assert.equal(result.truncated, true);
+		assert.ok(result.lines.length > 10 && result.lines.length < 60);
+		assert.equal(result.lines.at(-1), 'line 00000000001000');
+		assert.ok(Buffer.byteLength(result.lines.join('\n')) <= 1024);
+	});
+
+	it('tail_file is not truncated when every requested line fits', async () => {
+		writeFileSync(join(scopes.logDir, 'srv.log'), numberedLines(1000));
+		const result = await tailFileTool.handler({ root: 'logs', path: 'srv.log', lines: 3 }, pagedCtx(65536));
+		assert.deepEqual(result.lines, ['line 00000000000998', 'line 00000000000999', 'line 00000000001000']);
+		assert.equal(result.truncated, false);
+	});
+
+	it('tail_file returns the cut end of a last line longer than a page', async () => {
+		writeFileSync(join(scopes.logDir, 'one.log'), `start${'é'.repeat(5000)}end\n`);
+		const result = await tailFileTool.handler({ root: 'logs', path: 'one.log', lines: 1 }, pagedCtx(2048));
+		assert.equal(result.truncated, true);
+		assert.equal(result.lines.length, 1);
+		assert.match(result.lines[0], /^é+end$/);
+		assert.ok(Buffer.byteLength(result.lines[0]) <= 1024);
+	});
+
+	it('tail_file rejects a lines value that is not a positive integer', async () => {
+		writeFileSync(join(scopes.logDir, 'srv.log'), 'a\n');
+		await assert.rejects(
+			tailFileTool.handler({ root: 'logs', path: 'srv.log', lines: 0 }, pagedCtx(65536)),
+			/must be an integer of at least 1/
+		);
+	});
+
+	it('grep_files stops at a page of results, cuts long lines, and says it stopped', async () => {
+		const { serializeToolResult } = require('#src/resources/models/agentLoop');
+		writeFileSync(join(scopes.logDir, 'srv.log'), `${'error '.repeat(200)}\n${'error here\n'.repeat(500)}`);
+		const result = await grepFilesTool.handler({ root: 'logs', pattern: 'error' }, pagedCtx(4096));
+		assert.equal(result.truncated, true);
+		assert.ok(result.count < 500);
+		assert.equal(result.results[0].text.length, 501);
+		assert.ok(result.results[0].text.endsWith('…'));
+		assert.equal(serializeToolResult({ ok: true, result }, 4096).truncated, false);
+	});
+
+	it('tail_file keeps its JSON-escaped lines within a page', async () => {
+		writeFileSync(join(scopes.logDir, 'ctl.log'), `${'\u0001'.repeat(40)}\n`.repeat(200));
+		const result = await tailFileTool.handler({ root: 'logs', path: 'ctl.log', lines: 5000 }, pagedCtx(2048));
+		assert.equal(result.truncated, true);
+		assert.ok(result.lines.length > 1);
+		assert.ok(Buffer.byteLength(JSON.stringify(result.lines)) <= 1024 + 2 * result.lines.length + 2);
+		const oneLine = await tailFileTool.handler({ root: 'logs', path: 'ctl.log', lines: 1 }, pagedCtx(2048));
+		assert.deepEqual(oneLine, { path: oneLine.path, lines: ['\u0001'.repeat(40)], truncated: false });
+	});
+
+	it('tail_file of a small file is not truncated', async () => {
+		writeFileSync(join(scopes.logDir, 'small.log'), 'a\nb\n');
+		const result = await tailFileTool.handler({ root: 'logs', path: 'small.log', lines: 10 }, pagedCtx(65536));
+		assert.deepEqual(result.lines, ['a', 'b']);
+		assert.equal(result.truncated, false);
+	});
+
+	it('grep_files says it stopped when maxResults left matches unreturned, and only then', async () => {
+		writeFileSync(join(scopes.componentsRoot, 'a.txt'), 'hit\nhit\nhit\n');
+		const capped = await grepFilesTool.handler({ pattern: 'hit', maxResults: 2 }, pagedCtx(65536));
+		assert.equal(capped.count, 2);
+		assert.equal(capped.truncated, true);
+		const exact = await grepFilesTool.handler({ pattern: 'hit', maxResults: 3 }, pagedCtx(65536));
+		assert.equal(exact.count, 3);
+		assert.equal(exact.truncated, false);
+	});
+
+	it('grep_files does not split a surrogate pair when it cuts a line', async () => {
+		writeFileSync(join(scopes.componentsRoot, 'emoji.txt'), `${'a'.repeat(499)}${'😀'.repeat(10)}\n`);
+		const result = await grepFilesTool.handler({ pattern: 'a' }, pagedCtx(65536));
+		assert.equal(result.results[0].text, `${'a'.repeat(499)}…`);
+	});
+
+	it('grep_files returns a first match too long for the page cut to fit, not an empty result', async () => {
+		const { serializeToolResult } = require('#src/resources/models/agentLoop');
+		writeFileSync(join(scopes.componentsRoot, 'cjk.txt'), `${'漢'.repeat(600)}\n漢\n`);
+		const result = await grepFilesTool.handler({ pattern: '漢' }, pagedCtx(1024));
+		assert.equal(result.count, 1);
+		assert.equal(result.truncated, true);
+		assert.match(result.results[0].text, /^漢+$/);
+		assert.equal(serializeToolResult({ ok: true, result }, 1024).truncated, false);
+	});
+
+	it('grep_files counts the files it skips for being over 5 MiB', async () => {
+		writeFileSync(join(scopes.logDir, 'huge.log'), 'error\n'.repeat(1_000_000));
+		writeFileSync(join(scopes.logDir, 'small.log'), 'fine\n');
+		const result = await grepFilesTool.handler({ root: 'logs', pattern: 'error' }, pagedCtx(65536));
+		assert.deepEqual(
+			{ count: result.count, truncated: result.truncated, skippedFiles: result.skippedFiles },
+			{
+				count: 0,
+				truncated: false,
+				skippedFiles: 1,
+			}
+		);
+	});
+
+	it('list_dir pages a flat directory by name through nextOffset, each page under the cap', async () => {
+		const { serializeToolResult } = require('#src/resources/models/agentLoop');
+		const names = Array.from({ length: 120 }, (_, i) => `entry-${String(i).padStart(3, '0')}.log`);
+		for (const name of names) writeFileSync(join(scopes.logDir, name), '');
+		const seen = [];
+		let offset;
+		do {
+			const page = await listDirTool.handler({ root: 'logs', offset }, pagedCtx(1024));
+			assert.equal(serializeToolResult({ ok: true, result: page }, 1024).truncated, false);
+			assert.equal(page.total, 120);
+			seen.push(...page.entries.map((e) => e.name));
+			offset = page.nextOffset;
+		} while (offset !== undefined);
+		assert.deepEqual(seen, names);
+	});
+
+	it('list_dir cuts a name too long for a page on its own, and still pages past it', async () => {
+		const { serializeToolResult } = require('#src/resources/models/agentLoop');
+		// Windows refuses control characters in names but counts UTF-16 units, so multi-byte ones outgrow a page there.
+		const longName = (process.platform === 'win32' ? '€' : '\u0001').repeat(200);
+		writeFileSync(join(scopes.logDir, longName), '');
+		writeFileSync(join(scopes.logDir, 'z.log'), '');
+		const pages = [];
+		let offset;
+		do {
+			const page = await listDirTool.handler({ root: 'logs', offset }, pagedCtx(1024));
+			assert.equal(serializeToolResult({ ok: true, result: page }, 1024).truncated, false);
+			pages.push(page.entries);
+			offset = page.nextOffset;
+		} while (offset !== undefined);
+		assert.equal(pages.length, 2);
+		const entries = pages.flat();
+		const cut = entries.filter((e) => e.nameTruncated);
+		assert.equal(cut.length, 1);
+		assert.ok(longName.startsWith(cut[0].name) && cut[0].name.length < longName.length);
+		assert.deepEqual(
+			entries.filter((e) => !e.nameTruncated).map((e) => e.name),
+			['z.log']
+		);
+	});
+
+	it('refuses with an explicit error when a path leaves no room for a page under the cap', async () => {
+		const segment = 'p'.repeat(200);
+		const deep = join(segment, segment, segment, segment);
+		mkdirSync(join(scopes.logDir, deep), { recursive: true });
+		writeFileSync(join(scopes.logDir, deep, 'a.log'), 'one\n');
+		for (const [tool, args] of [
+			[readFileTool, { root: 'logs', path: join(deep, 'a.log') }],
+			[tailFileTool, { root: 'logs', path: join(deep, 'a.log') }],
+			[listDirTool, { root: 'logs', path: deep }],
+			[grepFilesTool, { root: 'logs', path: deep, pattern: 'one' }],
+		]) {
+			await assert.rejects(tool.handler(args, pagedCtx(1024)), /leaves no room for a page/, tool.def.name);
+		}
+	});
+
+	it('grep_files refuses with an explicit error when one match cannot fit beside its path', async () => {
+		const deep = join('q'.repeat(150), 'r'.repeat(150), 's'.repeat(150));
+		mkdirSync(join(scopes.logDir, deep), { recursive: true });
+		writeFileSync(join(scopes.logDir, deep, 'a.log'), 'needle\n');
+		await assert.rejects(
+			grepFilesTool.handler({ root: 'logs', pattern: 'needle' }, pagedCtx(1024)),
+			/leaves no room for a match/
+		);
+	});
+
+	it('grep_files is not truncated when every match fits', async () => {
+		writeFileSync(join(scopes.componentsRoot, 'a.txt'), 'apple\nbanana\nApple');
+		const result = await grepFilesTool.handler({ pattern: 'apple' }, pagedCtx(65536));
+		assert.equal(result.truncated, false);
+		assert.equal(result.count, 2);
+	});
+});
+
+describe('agent/fsTools key material and the single-file config scope (harper#3041)', () => {
+	const PEM = '-----BEGIN PRIVATE KEY-----\nMIIfakekeybody\n-----END PRIVATE KEY-----\n';
+	let root;
+
+	// The default-install layout: the config file sits in rootPath beside keys/, ssh/ and database/.
+	beforeEach(() => {
+		root = realpathSync.native(mkdtempSync(join(tmpdir(), 'agent-root-')));
+		writeFileSync(join(root, 'harper-config.yaml'), 'http:\n  port: 9926\n');
+		mkdirSync(join(root, 'keys'));
+		writeFileSync(join(root, 'keys', 'privateKey.pem'), PEM);
+		writeFileSync(join(root, 'keys', '.jwtPass'), 'secret-pass');
+		writeFileSync(join(root, 'keys', 'notes.txt'), 'secret in keys dir');
+		mkdirSync(join(root, 'ssh'));
+		writeFileSync(join(root, 'ssh', 'deploy_id'), 'secret ssh key');
+		mkdirSync(join(root, 'database'));
+		writeFileSync(join(root, 'database', 'data.txt'), 'port secret row');
+		mkdirSync(join(root, 'components', 'app'), { recursive: true });
+		writeFileSync(join(root, 'components', 'app', 'server.key'), 'secret key bytes');
+		writeFileSync(join(root, 'components', 'app', 'config.yaml'), `tls:\n  privateKey: |\n${PEM}`);
+		writeFileSync(join(root, 'components', 'app', 'resource.js'), '// secret plain source');
+		mkdirSync(join(root, 'log'));
+	});
+
+	const keyDirs = () => [join(root, 'keys'), join(root, 'ssh')];
+	const defaultScopes = () => ({
+		componentsRoot: join(root, 'components'),
+		logDir: join(root, 'log'),
+		configDir: root,
+		configFile: 'harper-config.yaml',
+		keyDirs: keyDirs(),
+	});
+	// Every scope widened to rootPath, as an operator could with componentsScope/configScope.
+	const widenedScopes = () => ({ componentsRoot: root, logDir: root, configDir: root, keyDirs: keyDirs() });
+
+	describe('default config scope: the config file only', () => {
+		it('list_dir lists only the config file', async () => {
+			const { entries } = await listDirTool.handler({ root: 'config' }, ctx(defaultScopes()));
+			assert.deepEqual(entries, [{ name: 'harper-config.yaml', kind: 'file' }]);
+		});
+
+		it('read_file reads the config file by name, or with no path', async () => {
+			const byName = await readFileTool.handler({ root: 'config', path: 'harper-config.yaml' }, ctx(defaultScopes()));
+			assert.match(byName.content, /port: 9926/);
+			const byRoot = await readFileTool.handler({ root: 'config' }, ctx(defaultScopes()));
+			assert.equal(byRoot.content, byName.content);
+		});
+
+		it('refuses everything else in the config directory with a policy error, not ENOENT', async () => {
+			for (const path of ['keys/privateKey.pem', 'keys/missing.pem', 'database/data.txt', 'log']) {
+				await assert.rejects(
+					readFileTool.handler({ root: 'config', path }, ctx(defaultScopes())),
+					/outside the agent's 'config' scope/
+				);
+			}
+			await assert.rejects(
+				listDirTool.handler({ root: 'config', path: 'keys' }, ctx(defaultScopes())),
+				/outside the agent's 'config' scope/
+			);
+		});
+
+		it('grep_files searches the config file alone, never the directory around it', async () => {
+			const { results } = await grepFilesTool.handler({ root: 'config', pattern: 'port' }, ctx(defaultScopes()));
+			assert.deepEqual(
+				results.map((r) => r.path),
+				[join(root, 'harper-config.yaml')]
+			);
+		});
+
+		it('never enumerates the config file once it has been swapped for a directory', async () => {
+			rmSync(join(root, 'harper-config.yaml'));
+			mkdirSync(join(root, 'harper-config.yaml'));
+			writeFileSync(join(root, 'harper-config.yaml', 'inner.txt'), 'port secret');
+			const listed = await listDirTool.handler({ root: 'config' }, ctx(defaultScopes()));
+			assert.deepEqual(listed.entries, []);
+			const grepped = await grepFilesTool.handler({ root: 'config', pattern: 'port' }, ctx(defaultScopes()));
+			assert.equal(grepped.count, 0);
+		});
+
+		it('reports an unavailable config scope instead of reading anything', async () => {
+			const scopes = { ...defaultScopes(), configDir: undefined, configFile: undefined };
+			await assert.rejects(
+				readFileTool.handler({ root: 'config', path: 'harper-config.yaml' }, ctx(scopes)),
+				/'config' scope is unavailable/
+			);
+		});
+	});
+
+	describe('key material is refused in every scope', () => {
+		for (const scope of ['components', 'logs', 'config']) {
+			it(`refuses key directories and key file names in the '${scope}' scope`, async () => {
+				const c = ctx(widenedScopes());
+				for (const path of ['keys/privateKey.pem', 'keys/notes.txt', 'keys/missing.txt', 'ssh/deploy_id']) {
+					await assert.rejects(readFileTool.handler({ root: scope, path }, c), /Refusing to read key material/);
+				}
+				await assert.rejects(
+					tailFileTool.handler({ root: scope, path: 'keys/.jwtPass' }, c),
+					/Refusing to read key material/
+				);
+				await assert.rejects(listDirTool.handler({ root: scope, path: 'keys' }, c), /Refusing to read key material/);
+				await assert.rejects(listDirTool.handler({ root: scope, path: 'ssh' }, c), /Refusing to read key material/);
+				await assert.rejects(
+					readFileTool.handler({ root: scope, path: 'components/app/server.key' }, c),
+					/Refusing to read key material/
+				);
+				await assert.rejects(
+					grepFilesTool.handler({ root: scope, path: 'keys', pattern: 'secret' }, c),
+					/Refusing to read key material/
+				);
+			});
+		}
+
+		it('grep_files skips key directories, key file names and files holding a PEM private key', async () => {
+			const { results } = await grepFilesTool.handler(
+				{ root: 'config', pattern: 'secret|PRIVATE' },
+				ctx(widenedScopes())
+			);
+			assert.deepEqual(results.map((r) => r.path).sort(), [
+				join(root, 'components', 'app', 'resource.js'),
+				join(root, 'database', 'data.txt'),
+			]);
+		});
+
+		it('grep_files searches a file path directly', async () => {
+			const { results } = await grepFilesTool.handler(
+				{ path: 'app/resource.js', pattern: 'secret' },
+				ctx(defaultScopes())
+			);
+			assert.equal(results.length, 1);
+		});
+
+		it('read_file refuses a file whose text holds a PEM private key', async () => {
+			await assert.rejects(
+				readFileTool.handler({ path: 'app/config.yaml' }, ctx(defaultScopes())),
+				/app\/config\.yaml holds a PEM private key/
+			);
+		});
+
+		it('tail_file refuses lines that hold a PEM private key, and returns lines after one', async () => {
+			writeFileSync(join(root, 'log', 'hdb.log'), `start\n${PEM}line a\nline b\n`);
+			await assert.rejects(
+				tailFileTool.handler({ root: 'logs', path: 'hdb.log', lines: 3 }, ctx(defaultScopes())),
+				/holds a PEM private key/
+			);
+			const { lines } = await tailFileTool.handler({ root: 'logs', path: 'hdb.log', lines: 2 }, ctx(defaultScopes()));
+			assert.deepEqual(lines, ['line a', 'line b']);
+		});
+
+		it('write_file refuses a key directory, but not a key file name elsewhere', async () => {
+			const c = ctx(widenedScopes());
+			await assert.rejects(
+				writeFileTool.handler({ path: 'keys/privateKey.pem', content: 'replaced' }, c),
+				/Refusing to write key material/
+			);
+			assert.equal(readFileSync(join(root, 'keys', 'privateKey.pem'), 'utf8'), PEM);
+			await writeFileTool.handler({ path: 'components/app/ca.pem', content: 'cert' }, c);
+			assert.equal(readFileSync(join(root, 'components', 'app', 'ca.pem'), 'utf8'), 'cert');
+		});
+
+		it('compares canonical paths, so a scope reached through a symlinked root still refuses keys', async () => {
+			const linkedRoot = join(mkdtempSync(join(tmpdir(), 'agent-link-')), 'harper');
+			try {
+				symlinkSync(root, linkedRoot, 'dir');
+			} catch (err) {
+				if (err.code === 'EPERM' || err.code === 'ENOTSUP') return;
+				throw err;
+			}
+			// Key directories named through the link, as a symlinked rootPath would name them.
+			const scopes = {
+				componentsRoot: root,
+				logDir: root,
+				configDir: root,
+				keyDirs: [join(linkedRoot, 'keys'), join(linkedRoot, 'ssh')],
+			};
+			await assert.rejects(
+				readFileTool.handler({ path: 'keys/notes.txt' }, ctx(scopes)),
+				/Refusing to read key material/
+			);
+		});
+
+		it('follows a key directory that becomes a link after the scopes were fixed', async () => {
+			const scopes = widenedScopes();
+			rmSync(join(root, 'ssh'), { recursive: true });
+			mkdirSync(join(root, 'components', 'ssh-store'));
+			writeFileSync(join(root, 'components', 'ssh-store', 'deploy_id'), 'secret ssh key');
+			try {
+				symlinkSync(join(root, 'components', 'ssh-store'), join(root, 'ssh'), 'dir');
+			} catch (err) {
+				if (err.code === 'EPERM' || err.code === 'ENOTSUP') return;
+				throw err;
+			}
+			await assert.rejects(
+				readFileTool.handler({ path: 'components/ssh-store/deploy_id' }, ctx(scopes)),
+				/Refusing to read key material/
+			);
+			await assert.rejects(
+				writeFileTool.handler({ path: 'components/ssh-store/new_id', content: 'x' }, ctx(scopes)),
+				/Refusing to write key material/
+			);
+		});
+
+		it('tail_file refuses a file that ends inside a private key, even when no armor line is returned', async () => {
+			writeFileSync(join(root, 'log', 'hdb.log'), 'start\n-----BEGIN PRIVATE KEY-----\nMIIbodyone\nMIIbodytwo\n');
+			await assert.rejects(
+				tailFileTool.handler({ root: 'logs', path: 'hdb.log', lines: 1 }, ctx(defaultScopes())),
+				/ends inside a PEM private key/
+			);
+		});
+
+		it('fails closed for a key block longer than the 128 KiB look-back, at both read_file and tail_file', async () => {
+			const body = `${'A'.repeat(63)}\n`.repeat(3000); // ~187 KiB of key body
+			const keyLog = `start\n-----BEGIN PRIVATE KEY-----\n${body}-----END PRIVATE KEY-----\nafter\n`;
+			writeFileSync(join(root, 'log', 'hdb.log'), keyLog);
+			const deep = 6 + 28 + 64 * 2500;
+			await assert.rejects(
+				readFileTool.handler({ root: 'logs', path: 'hdb.log', offset: deep, lineCount: 1 }, ctx(defaultScopes())),
+				/may be inside a PEM private key/
+			);
+			writeFileSync(join(root, 'log', 'ends.log'), `start\n-----BEGIN PRIVATE KEY-----\n${body}`);
+			await assert.rejects(
+				tailFileTool.handler(
+					{ root: 'logs', path: 'ends.log', lines: 5 },
+					{ ...ctx(defaultScopes()), maxResultBytes: 1024 }
+				),
+				/may be inside a PEM private key/
+			);
+		});
+
+		it('fails closed for an indented key block, as embedded in YAML, longer than the look-back', async () => {
+			const body = `    ${'A'.repeat(63)}\n`.repeat(3000);
+			writeFileSync(join(root, 'log', 'yaml.log'), `tls:\n  privateKey: |\n    -----BEGIN PRIVATE KEY-----\n${body}`);
+			await assert.rejects(
+				readFileTool.handler(
+					{ root: 'logs', path: 'yaml.log', offset: 40 + 68 * 2500, lineCount: 1 },
+					ctx(defaultScopes())
+				),
+				/may be inside a PEM private key/
+			);
+		});
+
+		it('refuses a page that starts partway through a BEGIN line', async () => {
+			writeFileSync(
+				join(root, 'log', 'cut.log'),
+				`start\n-----BEGIN PRIVATE KEY-----\n${'A'.repeat(64)}\n${'B'.repeat(64)}\n-----END PRIVATE KEY-----\n`
+			);
+			await assert.rejects(
+				readFileTool.handler({ root: 'logs', path: 'cut.log', offset: 16, lineCount: 3 }, ctx(defaultScopes())),
+				/holds a PEM private key at that position/
+			);
+		});
+
+		it('fails closed when the look-back starts partway through the BEGIN line of a longer block', async () => {
+			const body = `${'A'.repeat(63)}\n`.repeat(3000);
+			const head = 'start\n-----BEGIN PRIVATE KEY-----\n';
+			writeFileSync(join(root, 'log', 'long.log'), `${head}${body}`);
+			// The look-back begins 10 bytes into the BEGIN line, so its first line is that line's tail.
+			const offset = 6 + 10 + 128 * 1024;
+			await assert.rejects(
+				readFileTool.handler({ root: 'logs', path: 'long.log', offset, lineCount: 1 }, ctx(defaultScopes())),
+				/may be inside a PEM private key/
+			);
+		});
+
+		it('still serves a deep page when ordinary text lies in the look-back', async () => {
+			const lines = Array.from({ length: 4000 }, (_, i) => `line ${i} of an ordinary log, with spaces\n`).join('');
+			writeFileSync(join(root, 'log', 'plain.log'), lines);
+			const page = await readFileTool.handler(
+				{ root: 'logs', path: 'plain.log', startLine: 3500, lineCount: 1 },
+				ctx(defaultScopes())
+			);
+			assert.equal(page.content, 'line 3499 of an ordinary log, with spaces\n');
+		});
+
+		it('tail_file still sees a BEGIN line that lies before its read window', async () => {
+			// 64 KiB of body, the size of a FrodoKEM-1344 key: past the 32 KiB page, inside the 128 KiB look-back.
+			const body = `${'A'.repeat(63)}\n`.repeat(1024);
+			writeFileSync(join(root, 'log', 'hdb.log'), `start\n-----BEGIN PRIVATE KEY-----\n${body}`);
+			await assert.rejects(
+				tailFileTool.handler({ root: 'logs', path: 'hdb.log', lines: 5 }, ctx(defaultScopes())),
+				/ends inside a PEM private key/
+			);
+		});
+
+		it('read_file refuses a page that lies inside a key body, though the page holds no armor line', async () => {
+			const body = `${'A'.repeat(63)}\n`.repeat(40);
+			writeFileSync(
+				join(root, 'log', 'hdb.log'),
+				`start\n-----BEGIN PRIVATE KEY-----\n${body}-----END PRIVATE KEY-----\nafter the key\n`
+			);
+			const small = { ...ctx(defaultScopes()), maxResultBytes: 1024 };
+			for (const cursor of [{ startLine: 20 }, { offset: 6 + 28 + 64 * 10 }]) {
+				await assert.rejects(
+					readFileTool.handler({ root: 'logs', path: 'hdb.log', lineCount: 3, ...cursor }, small),
+					/holds a PEM private key at that position/,
+					JSON.stringify(cursor)
+				);
+			}
+			const after = await readFileTool.handler({ root: 'logs', path: 'hdb.log', startLine: 44 }, small);
+			assert.equal(after.content, 'after the key\n');
+		});
+
+		it("read_file refuses a page that starts on a key's last body line, just before its END line", async () => {
+			const head = `start\n-----BEGIN PRIVATE KEY-----\n${'A'.repeat(64)}\n`;
+			const lastBody = `${'B'.repeat(20)}\n`;
+			writeFileSync(join(root, 'log', 'hdb.log'), `${head}${lastBody}-----END PRIVATE KEY-----\nafter\n`);
+			const endStart = head.length + lastBody.length;
+			for (const cursor of [{ startLine: 4 }, { offset: endStart - 21 }, { offset: endStart - 39 }]) {
+				await assert.rejects(
+					readFileTool.handler({ root: 'logs', path: 'hdb.log', lineCount: 1, ...cursor }, ctx(defaultScopes())),
+					/holds a PEM private key at that position/,
+					JSON.stringify(cursor)
+				);
+			}
+			const after = await readFileTool.handler(
+				{ root: 'logs', path: 'hdb.log', offset: endStart + 26 },
+				ctx(defaultScopes())
+			);
+			assert.equal(after.content, 'after\n');
+		});
+	});
+});
+
+describe('agent/fsTools credential values in the read-only scopes (harper#3097)', () => {
+	const CONFIG =
+		'http:\n  port: 9926\nauthentication:\n  operationTokenTimeout: 1d\nmodels:\n  generative:\n    default:\n' +
+		'      backend: openai\n      apiKey: sk-live-config\n      model: gpt-5\n    other:\n' +
+		'      apiKey: ${OPENAI_API_KEY}\n';
+	let root;
+	let scopes;
+
+	beforeEach(() => {
+		root = realpathSync.native(mkdtempSync(join(tmpdir(), 'agent-mask-')));
+		mkdirSync(join(root, 'components', 'app'), { recursive: true });
+		mkdirSync(join(root, 'log'));
+		writeFileSync(join(root, 'harper-config.yaml'), CONFIG);
+		scopes = {
+			componentsRoot: join(root, 'components'),
+			logDir: join(root, 'log'),
+			configDir: root,
+			configFile: 'harper-config.yaml',
+			keyDirs: [join(root, 'keys')],
+		};
+	});
+
+	const small = () => ({ sessionId: 'sess', scopes, maxResultBytes: 1024 });
+
+	it('masks a plaintext credential in the config file and keeps ${VAR} references and other settings', async () => {
+		const expected = CONFIG.replace('sk-live-config', '**************');
+		const read = await readFileTool.handler({ root: 'config' }, ctx(scopes));
+		assert.equal(read.content, expected);
+		const tail = await tailFileTool.handler({ root: 'config', path: 'harper-config.yaml', lines: 5 }, ctx(scopes));
+		assert.deepEqual(tail.lines, expected.trimEnd().split('\n').slice(-5));
+		const grep = await grepFilesTool.handler({ root: 'config', pattern: 'apiKey|TokenTimeout' }, ctx(scopes));
+		assert.deepEqual(
+			grep.results.map((match) => match.text),
+			['  operationTokenTimeout: 1d', '      apiKey: **************', '      apiKey: ${OPENAI_API_KEY}']
+		);
+	});
+
+	it('masks a block value whose key follows the log prefix, read whole or from the continuation', async () => {
+		const header = '2026-10-20T00:00:00.000Z [main/0] [warn]: apiKey: |-\n';
+		writeFileSync(
+			join(root, 'log', 'hdb.log'),
+			`${header}  sk-SENTINEL\n2026-10-20T00:00:01.000Z [main/0] [info]: next\n`
+		);
+		const whole = await readFileTool.handler({ root: 'logs', path: 'hdb.log' }, ctx(scopes));
+		assert.doesNotMatch(whole.content, /sk-SENTINEL/);
+		const page = await readFileTool.handler(
+			{ root: 'logs', path: 'hdb.log', offset: Buffer.byteLength(header), lineCount: 1 },
+			ctx(scopes)
+		);
+		assert.equal(page.content, '  ***********\n');
+		const tail = await tailFileTool.handler({ root: 'logs', path: 'hdb.log', lines: 2 }, ctx(scopes));
+		assert.doesNotMatch(tail.lines.join('\n'), /sk-SENTINEL/);
+		assert.equal((await grepFilesTool.handler({ root: 'logs', pattern: 'SENTINEL' }, ctx(scopes))).count, 0);
+	});
+
+	it('masks credentials in the logs scope', async () => {
+		writeFileSync(join(root, 'log', 'hdb.log'), 'T [main/0] [error]: failed {"apiKey":"sk-logged","model":"m"}\n');
+		const read = await readFileTool.handler({ root: 'logs', path: 'hdb.log' }, ctx(scopes));
+		assert.equal(read.content, 'T [main/0] [error]: failed {"apiKey":"*********","model":"m"}\n');
+		const tail = await tailFileTool.handler({ root: 'logs', path: 'hdb.log' }, ctx(scopes));
+		assert.deepEqual(tail.lines, ['T [main/0] [error]: failed {"apiKey":"*********","model":"m"}']);
+	});
+
+	it('returns the writable components scope exactly, so a read and write round trip is lossless', async () => {
+		const source = 'apiKey: sk-component\n';
+		writeFileSync(join(root, 'components', 'app', 'config.yaml'), source);
+		const read = await readFileTool.handler({ path: 'app/config.yaml' }, ctx(scopes));
+		assert.equal(read.content, source);
+		const tail = await tailFileTool.handler({ path: 'app/config.yaml' }, ctx(scopes));
+		assert.deepEqual(tail.lines, ['apiKey: sk-component']);
+		const grep = await grepFilesTool.handler({ pattern: 'sk-component' }, ctx(scopes));
+		assert.equal(grep.count, 1);
+	});
+
+	it('grep_files matches the masked text, so a guessed value finds nothing', async () => {
+		const grep = await grepFilesTool.handler({ root: 'config', pattern: 'sk-live' }, ctx(scopes));
+		assert.equal(grep.count, 0);
+	});
+
+	it('read_file masks a page whose offset points into a credential value', async () => {
+		const at = CONFIG.indexOf('live-config');
+		const read = await readFileTool.handler({ root: 'config', offset: at, lineCount: 1 }, ctx(scopes));
+		assert.equal(read.content, '***********\n');
+	});
+
+	it('read_file masks every part of a credential line longer than a page', async () => {
+		writeFileSync(join(root, 'log', 'hdb.log'), `apiKey: ${'x'.repeat(3000)}\nafter\n`);
+		let cursor = { startLine: 1 };
+		let parts = 0;
+		for (;;) {
+			const page = await readFileTool.handler({ root: 'logs', path: 'hdb.log', lineCount: 1, ...cursor }, small());
+			if (!page.lineTruncated) {
+				assert.equal(page.content.replace(/\*/g, ''), parts === 0 ? 'apiKey: \n' : '\n');
+				break;
+			}
+			assert.doesNotMatch(page.content, /x/);
+			parts++;
+			cursor = { startLine: page.nextLine, offset: page.nextOffset };
+		}
+		assert.ok(parts > 1);
+	});
+
+	it('tail_file masks the cut end of a credential line longer than a page', async () => {
+		writeFileSync(join(root, 'log', 'hdb.log'), `token=${'x'.repeat(3000)}\n`);
+		const tail = await tailFileTool.handler({ root: 'logs', path: 'hdb.log' }, small());
+		assert.equal(tail.truncated, true);
+		assert.match(tail.lines[0], /^\*+$/);
+	});
+
+	it('masks the continuation lines of a folded value on a page that starts after its key', async () => {
+		writeFileSync(
+			join(root, 'harper-config.yaml'),
+			'models:\n  default:\n    password: correct horse battery\n      staple and more\n    model: m\n'
+		);
+		const page = await readFileTool.handler({ root: 'config', startLine: 4, lineCount: 2 }, ctx(scopes));
+		assert.equal(page.content, '      ***************\n    model: m\n');
+	});
+
+	it('masks credentials a YAML parse resolves but text cannot show: an escaped key and an aliased anchor', async () => {
+		writeFileSync(
+			join(root, 'harper-config.yaml'),
+			'common: &k sk-ANCHOR\nmodels:\n  d:\n    "api\\u004Bey": sk-ESCAPED\n  e:\n    apiKey: *k\n    model: m\n'
+		);
+		const read = await readFileTool.handler({ root: 'config' }, ctx(scopes));
+		assert.doesNotMatch(read.content, /sk-/);
+		assert.match(read.content, /model: m\n/, 'a file that parses keeps its ordinary values');
+		const atAnchor = await readFileTool.handler({ root: 'config', offset: 11, lineCount: 1 }, ctx(scopes));
+		assert.equal(atAnchor.content, '*********\n');
+		const tail = await tailFileTool.handler({ root: 'config', path: 'harper-config.yaml' }, ctx(scopes));
+		assert.doesNotMatch(tail.lines.join('\n'), /sk-/);
+		const grep = await grepFilesTool.handler({ root: 'config', pattern: 'sk-' }, ctx(scopes));
+		assert.equal(grep.count, 0);
+	});
+
+	it('keeps only the keys of a config file that does not parse, so an escaped key in it cannot leak', async () => {
+		writeFileSync(join(root, 'harper-config.yaml'), 'a: [1\nmodels:\n  "api\\u004Bey": sk-BROKEN\n  model: m\n');
+		const read = await readFileTool.handler({ root: 'config' }, ctx(scopes));
+		assert.equal(read.content, 'a: **\nmodels:\n  "api\\u004Bey": *********\n  model: *\n');
+	});
+
+	it('refuses a config-scope file too large to parse, or not UTF-8, and grep_files counts it as skipped', async () => {
+		writeFileSync(join(root, 'harper-config.yaml'), `pad: ${'x'.repeat(300 * 1024)}\n`);
+		await assert.rejects(readFileTool.handler({ root: 'config' }, ctx(scopes)), /over 256 KiB cannot be checked/);
+		await assert.rejects(
+			tailFileTool.handler({ root: 'config', path: 'harper-config.yaml' }, ctx(scopes)),
+			/over 256 KiB cannot be checked/
+		);
+		assert.equal((await grepFilesTool.handler({ root: 'config', pattern: 'x' }, ctx(scopes))).skippedFiles, 1);
+		writeFileSync(join(root, 'harper-config.yaml'), Buffer.from([0x61, 0x3a, 0x20, 0xff, 0x0a]));
+		await assert.rejects(readFileTool.handler({ root: 'config' }, ctx(scopes)), /not UTF-8 text/);
+		assert.equal((await grepFilesTool.handler({ root: 'config', pattern: 'a' }, ctx(scopes))).skippedFiles, 1);
 	});
 });

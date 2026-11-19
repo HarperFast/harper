@@ -1,16 +1,23 @@
+import { RUNTIME_SRC_ROOT } from '../utility/packageUtils.js';
 import { type Logger } from '../utility/logging/logger.ts';
 import {
 	getConfigObj,
 	getConfigValue,
 	getConfigPath,
+	getEnvBuiltInComponents,
 	isUnsupportedSyncError as isUnsupportedSync,
 } from '../config/configUtils.ts';
-import { CONFIG_PARAMS, MAX_SET_TIMEOUT_MS } from '../utility/hdbTerms.ts';
+export { getEnvBuiltInComponents };
+import { CONFIG_PARAMS, MAX_SET_TIMEOUT_MS, SSH_KEY_DIR_NAME } from '../utility/hdbTerms.ts';
 import {
 	applyRootConfigEffect,
 	assertRootConfigEffectPublishable,
+	isPayloadRoutingShape,
 	isRootConfigEffect,
+	PAYLOAD_ROUTING_KEYS,
+	publishedRouting,
 	rootConfigEffectFromDeclaration,
+	type PayloadRouting,
 	type RootConfigEffect,
 } from './rootConfigPublication.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
@@ -18,11 +25,20 @@ import logger, { errorForLog } from '../utility/logging/harper_logger.ts';
 import { broadcastDeployStart, broadcastDeployEnd, deployLifecycle } from './deployLifecycle.ts';
 import { ComponentPreparationLockTimeoutError, withComponentPreparationLock } from './componentPreparationLock.ts';
 import {
+	certificationRequest,
 	isThreadRunning,
 	isProcessGroupAlive,
+	processIncarnation,
 	registerProcessGroup,
 	unregisterProcessGroup,
-} from '../server/threads/manageThreads.js';
+} from '../server/threads/manageThreads.ts';
+import {
+	certificationPinsOf,
+	liveCertification,
+	rejectionReason,
+	removeCertificationRecord,
+	writeCertificationRecord,
+} from './releaseCertification.ts';
 import type { CredentialReference, ResolvedCredential, ResolvedRegistryCredential } from './secretOperations.ts';
 import {
 	GIT_CREDENTIAL_SOCKET_ENV,
@@ -30,8 +46,25 @@ import {
 	type GitCredentialSession,
 	type ResolvedGitCredential,
 } from './gitCredentialServer.ts';
+import { canonicalizePackageJSON } from './canonicalizePackageJSON.ts';
+import { redactUrlCredentials } from '../utility/urlCredentials.ts';
 import { getSecretDecryptor } from '../resources/secretDecryptor.ts';
 import { ENV_ENCRYPTED_PREFIX } from '../utility/envFile.ts';
+import {
+	DEPLOYMENT_PROVENANCE_FILE,
+	formatDeploymentProvenance,
+	parseDeploymentPreview,
+	parseDeploymentProvenance,
+	type PreviewMetadata,
+} from './deploymentProvenance.ts';
+import {
+	fingerprintInstall,
+	gitSourceIdentity,
+	packedSourceIdentity,
+	PACKAGE_LOCK_FILES,
+	UNIDENTIFIED_SOURCE,
+	type InstallFingerprint,
+} from './installFingerprint.ts';
 
 import { basename, dirname, extname, isAbsolute, join, relative, sep, win32 } from 'node:path';
 import {
@@ -52,6 +85,7 @@ import {
 	rm,
 	stat,
 	symlink,
+	utimes,
 	writeFile,
 } from 'node:fs/promises';
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -60,12 +94,13 @@ import {
 	type WindowsProcessTreeIdentity,
 } from '../server/threads/windowsProcessTree.ts';
 import { tmpdir } from 'node:os';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { chmodSync, createReadStream, existsSync, lstatSync, renameSync } from 'node:fs';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { StringDecoder } from 'node:string_decoder';
 import { setTimeout as delay } from 'node:timers/promises';
+import { isDeepStrictEqual } from 'node:util';
 
 import { extract } from 'tar-fs';
 import gunzip from 'gunzip-maybe';
@@ -96,10 +131,11 @@ interface ApplicationConfig {
 	 * The fork is durable: it lives at a path derived from the application and database names, is
 	 * adopted again on restart, and is invisible to other applications.
 	 *
-	 * The application must reach its data through `import { databases } from 'harper'`. The bare
-	 * `databases`/`tables` globals are shared process-wide by the default `vm-current-context` loader
-	 * and cannot be scoped, so an application that uses them reads and writes the BASE — silently.
-	 * Per-application globals are a property of thread-level isolation, not of branching.
+	 * `import { databases } from 'harper'` reaches the fork under every loader. The bare
+	 * `databases`/`tables` globals do under `vm` and `compartment`, which give each application a global
+	 * object of its own, and in an isolated application's dedicated worker. In a shared
+	 * worker under the default `vm-current-context` loader they are the thread's, so an application that
+	 * uses them there reads and writes the BASE — silently.
 	 */
 	branchedDatabases?: string[] | true;
 	/** Run in a worker thread of its own that loads no other application. */
@@ -247,6 +283,23 @@ export function assertIsolationConfig(applicationName: string, isolated: unknown
 			`Invalid 'isolated' for application ${applicationName}: expected a boolean, got ${typeof isolated}`
 		);
 	}
+}
+
+/** The routing keys a payload build owns, as its descriptor or journal records them: `null` where the entry has none. */
+export function assertPayloadRouting(applicationName: string, routing: unknown): asserts routing is PayloadRouting {
+	if (!isPayloadRoutingShape(routing)) {
+		throw new TypeError(
+			`Invalid routing for application ${applicationName}: expected an object of ${PAYLOAD_ROUTING_KEYS.join(', ')}`
+		);
+	}
+	const valueOf = (key: (typeof PAYLOAD_ROUTING_KEYS)[number]) => (routing[key] === null ? undefined : routing[key]);
+	for (const key of ['host', 'urlPath'] as const) {
+		if (valueOf(key) !== undefined && typeof routing[key] !== 'string') {
+			throw new TypeError(`Invalid '${key}' for application ${applicationName}: expected a string`);
+		}
+	}
+	assertIsolationConfig(applicationName, valueOf('isolated'));
+	assertBranchedDatabases(applicationName, valueOf('branchedDatabases'));
 }
 
 /**
@@ -438,7 +491,11 @@ async function resolveCommittish(application: Application, committish: string, c
 	// shell, and a `%(...)` format string is unsafe to pass through one.
 	const { code, stdout, stderr } = await nonInteractiveSpawn(application.name, 'git', ['tag', '--list'], cloneDir);
 	if (code !== 0) {
-		throw new Error(`Failed to list tags to resolve '${committish}' for ${application.packageIdentifier}: ${stderr}`);
+		throw new Error(
+			redactUrlCredentials(
+				`Failed to list tags to resolve '${committish}' for ${application.packageIdentifier}: ${stderr}`
+			)
+		);
 	}
 	const tags = stdout
 		.split('\n')
@@ -459,8 +516,10 @@ async function resolveCommittish(application: Application, committish: string, c
 	const resolvedVersion = semver.maxSatisfying([...versionToTag.keys()], range, { loose: true });
 	if (!resolvedVersion) {
 		throw new Error(
-			`Failed to resolve '${committish}' for ${application.packageIdentifier}: no tag satisfies range '${range}'. ` +
-				(tags.length ? `Tags found: ${tags.join(', ')}` : 'No tags were found in the repository.')
+			redactUrlCredentials(
+				`Failed to resolve '${committish}' for ${application.packageIdentifier}: no tag satisfies range '${range}'. ` +
+					(tags.length ? `Tags found: ${tags.join(', ')}` : 'No tags were found in the repository.')
+			)
 		);
 	}
 	// refs/tags/<name> rather than the bare name: an unqualified `git checkout <name>` resolves to a
@@ -484,8 +543,9 @@ async function resolveCommittish(application: Application, committish: string, c
 async function packGitReferenceWithoutScripts(
 	application: Application,
 	gitRef: GitReference,
-	parentDirPath: string
-): Promise<string> {
+	parentDirPath: string,
+	identifySource: boolean
+): Promise<{ path: string; commit?: string }> {
 	const cloneDir = await mkdtemp(join(tmpdir(), 'harper-git-clone-'));
 	try {
 		const { code: cloneCode, stderr: cloneStderr } = await nonInteractiveSpawn(
@@ -501,11 +561,13 @@ async function packGitReferenceWithoutScripts(
 		if (cloneCode !== 0) {
 			if (isSSHAuthFailure(cloneStderr)) {
 				throw new Error(
-					`Failed to deploy private repository ${application.packageIdentifier}: SSH access failed. Verify the repository URL, configure an SSH key on this Harper instance, ensure the key has access to the target repository, and confirm the host is present in the ssh/known_hosts file.`,
-					{ cause: new Error(cloneStderr) }
+					redactUrlCredentials(
+						`Failed to deploy private repository ${application.packageIdentifier}: SSH access failed. Verify the repository URL, configure an SSH key on this Harper instance, ensure the key has access to the target repository, and confirm the host is present in the ssh/known_hosts file.`
+					),
+					{ cause: new Error(redactUrlCredentials(cloneStderr)) }
 				);
 			}
-			throw new Error(`Failed to clone package ${application.packageIdentifier}: ${cloneStderr}`);
+			throw new Error(redactUrlCredentials(`Failed to clone package ${application.packageIdentifier}: ${cloneStderr}`));
 		}
 
 		if (gitRef.committish) {
@@ -517,7 +579,11 @@ async function packGitReferenceWithoutScripts(
 				cloneDir
 			);
 			if (checkoutCode !== 0) {
-				throw new Error(`Failed to check out '${committish}' for ${application.packageIdentifier}: ${checkoutStderr}`);
+				throw new Error(
+					redactUrlCredentials(
+						`Failed to check out '${committish}' for ${application.packageIdentifier}: ${checkoutStderr}`
+					)
+				);
 			}
 		}
 
@@ -531,22 +597,37 @@ async function packGitReferenceWithoutScripts(
 			await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
 		}
 
-		return await runNpmPack(application, ['pack', '--json', '--ignore-scripts', cloneDir], parentDirPath);
+		const commit = identifySource ? await checkedOutCommit(application, cloneDir) : undefined;
+		const packed = await runNpmPack(application, ['pack', '--json', '--ignore-scripts', cloneDir], parentDirPath);
+		return { path: packed.path, commit };
 	} finally {
 		await rm(cloneDir, { recursive: true, force: true });
 	}
 }
 
+/** Naming the source is only a report, so git failing to answer never fails the deploy. */
+async function checkedOutCommit(application: Application, cloneDir: string): Promise<string | undefined> {
+	try {
+		const { code, stdout } = await nonInteractiveSpawn(application.name, 'git', ['rev-parse', 'HEAD'], cloneDir);
+		return code === 0 ? stdout : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+type PackedTarball = { path: string; name?: string; version?: string; integrity?: string };
+
 /**
- * Runs `npm pack` with the given args and returns the resulting tarball's path under `cwd`. Shared
- * between the git-reference reclone path above and the plain identifier path in extractApplication.
+ * Runs `npm pack` with the given args and returns the resulting tarball's path under `cwd`, with the name, version
+ * and integrity npm reported for it. Shared between the git-reference reclone path above and the plain identifier
+ * path in extractApplication.
  */
 async function runNpmPack(
 	application: Application,
 	packArgs: string[],
 	cwd: string,
 	gitCredentialEnv?: Record<string, string>
-): Promise<string> {
+): Promise<PackedTarball> {
 	const { stdout, code, stderr } = await nonInteractiveSpawn(
 		application.name,
 		'npm',
@@ -560,26 +641,37 @@ async function runNpmPack(
 	if (code !== 0) {
 		if (isSSHAuthFailure(stderr)) {
 			throw new Error(
-				`Failed to deploy private repository ${application.packageIdentifier}: SSH access failed. Verify the repository URL, configure an SSH key on this Harper instance, ensure the key has access to the target repository, and confirm the host is present in the ssh/known_hosts file.`,
-				{ cause: new Error(stderr) }
+				redactUrlCredentials(
+					`Failed to deploy private repository ${application.packageIdentifier}: SSH access failed. Verify the repository URL, configure an SSH key on this Harper instance, ensure the key has access to the target repository, and confirm the host is present in the ssh/known_hosts file.`
+				),
+				{ cause: new Error(redactUrlCredentials(stderr)) }
 			);
 		}
-		throw new Error(`Failed to download package ${application.packageIdentifier}: ${stderr}`);
+		throw new Error(redactUrlCredentials(`Failed to download package ${application.packageIdentifier}: ${stderr}`));
 	}
 
-	let packResult: Array<{ filename: string }>;
+	let packResult: Array<{ filename: string; name?: unknown; version?: unknown; integrity?: unknown }>;
 	try {
 		packResult = JSON.parse(stdout.slice(stdout.indexOf('[')));
-	} catch (err) {
+	} catch {
 		throw new Error(
-			`Failed to parse npm pack output for ${application.packageIdentifier}: ${err.message}\nstdout: ${stdout}`
+			redactUrlCredentials(`Failed to parse npm pack output for ${application.packageIdentifier}:\nstdout: ${stdout}`)
 		);
 	}
 	if (!Array.isArray(packResult) || typeof packResult[0]?.filename !== 'string') {
-		throw new Error(`Unexpected npm pack output for ${application.packageIdentifier}:\n${stdout}`);
+		throw new Error(
+			redactUrlCredentials(`Unexpected npm pack output for ${application.packageIdentifier}:\n${stdout}`)
+		);
 	}
 
-	return join(cwd, packResult[0].filename);
+	const [packed] = packResult;
+	const text = (value: unknown) => (typeof value === 'string' ? value : undefined);
+	return {
+		path: join(cwd, packed.filename),
+		name: text(packed.name),
+		version: text(packed.version),
+		integrity: text(packed.integrity),
+	};
 }
 
 // Hidden directory under the components root holding component versions renamed aside
@@ -648,16 +740,7 @@ type ExtractionContext = Pick<Application, 'name' | 'dirPath' | 'logger'>;
 
 // The credential helper git executes for a private git-reference deploy. It ships alongside this
 // module (both in source and in dist), holds no secret, and is inert without a live session.
-export const GIT_CREDENTIAL_HELPER_PATH = join(__dirname, 'gitCredentialHelper.js');
-
-const PACKAGE_LOCK_FILES = [
-	'package-lock.json',
-	'npm-shrinkwrap.json',
-	'pnpm-lock.yaml',
-	'yarn.lock',
-	'bun.lock',
-	'bun.lockb',
-];
+export const GIT_CREDENTIAL_HELPER_PATH = join(RUNTIME_SRC_ROOT, 'components/gitCredentialHelper.js');
 
 type InstalledPackageMetadata = {
 	files: Map<string, Buffer>;
@@ -712,7 +795,7 @@ export async function readInstalledPackageMetadata(directory: string): Promise<I
 				const contents = await readFile(join(directory, 'package.json'));
 				try {
 					packageJSON = JSON.parse(contents.toString());
-					files.set('package.json', Buffer.from(JSON.stringify(canonicalizeJSON(packageJSON))));
+					files.set('package.json', Buffer.from(JSON.stringify(canonicalizePackageJSON(packageJSON))));
 				} catch {
 					files.set('package.json', contents);
 				}
@@ -759,14 +842,6 @@ export function installedRuntimeChanged(
 	);
 }
 
-function canonicalizeJSON(value: any): any {
-	if (Array.isArray(value)) return value.map(canonicalizeJSON);
-	if (!value || typeof value !== 'object') return value;
-	const canonical: Record<string, any> = Object.create(null);
-	for (const key of Object.keys(value).sort()) canonical[key] = canonicalizeJSON(value[key]);
-	return canonical;
-}
-
 /**
  * Either a tarball to extract, or — for `file:<directory>` — an instruction to link that directory. The link
  * case is a RESULT rather than an action so the caller decides where it lands: a candidate build must link
@@ -777,7 +852,10 @@ type ResolvedTarball =
 	| { kind: 'link'; sourceDirPath: string };
 
 /** Resolve `payload` or `package` into a tarball stream. Touches neither the live tree nor staging. */
-async function resolveApplicationTarball(application: Application): Promise<ResolvedTarball> {
+async function resolveApplicationTarball(
+	application: Application,
+	{ identifySource = false }: { identifySource?: boolean } = {}
+): Promise<ResolvedTarball> {
 	let tarballPath: string | undefined;
 	let tarball: Readable;
 	let shouldDeleteTarball = false;
@@ -803,6 +881,8 @@ async function resolveApplicationTarball(application: Application): Promise<Reso
 		// If the package identifier is a file path we need to check if its a tarball or a directory
 		if (application.packageIdentifier.startsWith('file:')) {
 			const packagePath = application.packageIdentifier.slice(5);
+			// Each node reads its own copy of a local path, so nothing here names what it holds.
+			if (identifySource) application.sourceIdentity = UNIDENTIFIED_SOURCE;
 			try {
 				// Have to remove the 'file:' prefix in order to use fs methods
 				const stats = await stat(packagePath);
@@ -869,12 +949,16 @@ async function resolveApplicationTarball(application: Application): Promise<Reso
 				// fail loudly rather than silently falling through to the unreliable `npm pack
 				// --ignore-scripts` below.
 				throw new Error(
-					`Cannot deploy git-reference package '${packageIdentifierForPack}' with install scripts disallowed: this identifier's form (e.g. a '#path:' committish, or a hosted shorthand other than a plain 'owner/repo') isn't one this repo's script-suppression handling supports. Set install.allowInstallScripts to true, or use a plain git URL with a branch/tag/commit committish instead.`
+					redactUrlCredentials(
+						`Cannot deploy git-reference package '${packageIdentifierForPack}' with install scripts disallowed: this identifier's form (e.g. a '#path:' committish, or a hosted shorthand other than a plain 'owner/repo') isn't one this repo's script-suppression handling supports. Set install.allowInstallScripts to true, or use a plain git URL with a branch/tag/commit committish instead.`
+					)
 				);
 			}
 
 			if (gitRef) {
-				tarballPath = await packGitReferenceWithoutScripts(application, gitRef, parentDirPath);
+				const packed = await packGitReferenceWithoutScripts(application, gitRef, parentDirPath, identifySource);
+				tarballPath = packed.path;
+				if (identifySource) application.sourceIdentity = gitSourceIdentity(packed.commit);
 			} else {
 				const packArgs = ['pack', '--json', packageIdentifierForPack];
 				if (!allowScripts) {
@@ -886,7 +970,15 @@ async function resolveApplicationTarball(application: Application): Promise<Reso
 							`can read the git credential. Unset install_allow_scripts to keep the credential out of their reach.`
 					);
 				}
-				tarballPath = await runNpmPack(application, packArgs, parentDirPath, application.gitCredentialEnv);
+				const packed = await runNpmPack(application, packArgs, parentDirPath, application.gitCredentialEnv);
+				tarballPath = packed.path;
+				if (identifySource) {
+					const fromRegistry =
+						packageIdentifierForPack === application.packageIdentifier &&
+						!looksLikeGitReference(packageIdentifierForPack) &&
+						!/^https?:\/\//i.test(packageIdentifierForPack);
+					application.sourceIdentity = packedSourceIdentity(fromRegistry, packed);
+				}
 			}
 			shouldDeleteTarball = true;
 			tarball = createReadStream(tarballPath);
@@ -1064,6 +1156,8 @@ export async function extractApplication(
 // non-recursive `rm` of a directory. `assertApplicationConfig` rejects any name `isJoinableComponentName`
 // rejects, so the collision is unreachable from a root-config key as well as from a deploy.
 const CANDIDATE_COMPLETE_MARKER = '.complete';
+// The content of a kept release's `.complete`; a build that was never live has an empty one.
+const KEPT_RELEASE_MARKER = 'kept';
 // Records activation intent beside the candidate, so recovery finishes or undoes the whole transaction —
 // tree and configuration together — instead of inferring intent from filesystem shape alone.
 const ACTIVATION_JOURNAL = '.activation.json';
@@ -1087,6 +1181,11 @@ const ACTIVATION_JOURNAL_VERSION = 2;
 const LEGACY_ACTIVATION_JOURNAL_VERSION = 1;
 const ARTIFACT_DESCRIPTOR_VERSION = 1;
 const DEFAULT_STAGING_RETENTION_MAX_COUNT = 5;
+// A digest of the component, not its name, follows the uuid in a claim's name: a long name would pass the filename
+// limit.
+const CLAIMING_PREFIX = '.claiming-';
+const CLAIMING_UUID_LENGTH = 36;
+const CLAIM_OWNER_DIGEST_LENGTH = 16;
 
 /** `deployment_stagingRetention_maxCount`; 0 keeps none. Only a number or numeric string counts, so `true`/`[]`/blank cannot become "keep nothing". */
 export function getStagingRetentionMaxCount(): number {
@@ -1097,11 +1196,45 @@ export function getStagingRetentionMaxCount(): number {
 	return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : DEFAULT_STAGING_RETENTION_MAX_COUNT;
 }
 
+const DEFAULT_PREVIEW_STAGING_RETENTION_MAX_COUNT = 1;
+
+function retentionCount(configured: unknown): number | undefined {
+	if (typeof configured !== 'number' && typeof configured !== 'string') return undefined;
+	if (typeof configured === 'string' && configured.trim() === '') return undefined;
+	const parsed = Number(configured);
+	return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : undefined;
+}
+
+/**
+ * How many dormant builds one component keeps: `deployment.previews.stagingRetention.maxCount` (default 1, so a
+ * rejected release can still be restored) for a preview's release, else `deployment_stagingRetention_maxCount`. Each
+ * kept build is a whole installed tree, and a preview is redeployed on every push of every open PR. Whether it is a
+ * preview is read from `treePath`, the live tree unless given: the two reads deciding whether a displaced release is
+ * kept must both read that release. Nothing it reads changes with the activation's own root-config effect.
+ */
+export async function stagingRetentionMaxCountOf(
+	componentsRootDirPath: string,
+	componentName: string,
+	treePath: string = join(componentsRootDirPath, componentName)
+): Promise<number> {
+	if (await readDeploymentPreview(treePath, componentName)) {
+		return (
+			retentionCount(getConfigValue(CONFIG_PARAMS.DEPLOYMENT_PREVIEWS_STAGINGRETENTION_MAXCOUNT)) ??
+			DEFAULT_PREVIEW_STAGING_RETENTION_MAX_COUNT
+		);
+	}
+	return getStagingRetentionMaxCount();
+}
+
 type DormantBuild = {
 	deploymentDirPath: string;
 	deploymentId: string;
 	completedAt: number;
 };
+
+function isDeploymentDirectoryEntry(entry: import('node:fs').Dirent): boolean {
+	return entry.isDirectory() && !entry.name.startsWith('.');
+}
 
 async function presentOrAbsent(path: string): Promise<import('node:fs').Stats | undefined> {
 	return lstat(path).catch((error: NodeJS.ErrnoException) => {
@@ -1131,20 +1264,24 @@ async function dormantBuildAt(deploymentDirPath: string, owner: string): Promise
  * cannot hold or miss a slot. Never throws: a failure must neither fail a component closed nor replace a
  * deploy's own error.
  *
- * `pinnedDeploymentId` is never evicted. A delayed activation runs this preamble under the same lock it is
- * about to activate under, so without the pin retention would delete the artifact the request named —
- * immediately, when the knob is `0`. The pin is applied after the kept set is chosen, so a pinned build in
- * the eviction tail leaves `maxCount + 1` on disk for the life of the request; the next preamble that does
- * not pin it brings the count back down.
+ * A `pinned` id is never evicted. A delayed activation runs this preamble under the same lock it is about to
+ * activate under, so without the pin retention would delete the artifact the request named — immediately, when the
+ * knob is `0` — and a settlement's pins keep the releases it just put back. Pins are applied after the kept set is
+ * chosen, so each pinned build in the eviction tail leaves one more than `maxCount` on disk until a pass that does
+ * not pin it.
  */
 export async function pruneDormantBuilds(
 	componentName: string,
 	builds: DormantBuild[],
 	maxCount: number,
-	pinnedDeploymentId?: string
+	pinned?: string | readonly string[]
 ): Promise<void> {
+	const pins = new Set(typeof pinned === 'string' ? [pinned] : (pinned ?? []));
 	const current: DormantBuild[] = [];
+	const seen = new Set<string>();
 	for (const build of builds) {
+		if (seen.has(build.deploymentDirPath)) continue;
+		seen.add(build.deploymentDirPath);
 		try {
 			const fresh = await dormantBuildAt(build.deploymentDirPath, componentName);
 			if (fresh && !(await presentOrAbsent(join(build.deploymentDirPath, ACTIVATION_JOURNAL)))) current.push(fresh);
@@ -1162,7 +1299,7 @@ export async function pruneDormantBuilds(
 				(left.deploymentId < right.deploymentId ? -1 : left.deploymentId > right.deploymentId ? 1 : 0)
 		)
 		.slice(Math.max(0, maxCount))
-		.filter((build) => build.deploymentId !== pinnedDeploymentId);
+		.filter((build) => !pins.has(build.deploymentId));
 	for (const build of evictions) {
 		try {
 			await rm(build.deploymentDirPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
@@ -1191,7 +1328,7 @@ async function dormantBuildsOf(componentsRootDirPath: string, componentName: str
 	}
 	const builds: DormantBuild[] = [];
 	for (const deployment of deployments) {
-		if (!deployment.isDirectory()) continue;
+		if (!isDeploymentDirectoryEntry(deployment)) continue;
 		const deploymentDirPath = join(stagingRoot, deployment.name);
 		try {
 			if ((await candidateComponentName(deploymentDirPath)) !== componentName) continue;
@@ -1356,6 +1493,8 @@ export type ArtifactDescriptor = {
 	component: string;
 	/** The root-config entry to publish with the activation; `null` for a payload build, which owns none. */
 	rootConfig: Record<string, unknown> | null;
+	/** A payload build that set any routing key owns all of them; absent for one that set none. */
+	routing?: PayloadRouting;
 	installationIsOpaque: boolean;
 	isolated: boolean;
 };
@@ -1402,13 +1541,47 @@ async function readArtifactDescriptor(
 	}
 	// Admission reads one field and publication writes the other, so two authorities that disagree would
 	// admit one isolation and then publish the opposite.
-	if (parsed.rootConfig && Boolean(parsed.rootConfig.isolated) !== parsed.isolated) {
+	if (parsed.routing !== undefined) {
+		if (parsed.rootConfig !== null) {
+			throw unusable(`Artifact descriptor ${descriptorPath} records both a root-config entry and payload routing`);
+		}
+		try {
+			assertPayloadRouting(componentName, parsed.routing);
+		} catch (error) {
+			throw unusable(
+				`Artifact descriptor ${descriptorPath} records routing that cannot be published: ${errorMessage(error)}`
+			);
+		}
+	}
+	const publishedIsolation = parsed.rootConfig
+		? Boolean(parsed.rootConfig.isolated)
+		: parsed.routing
+			? parsed.routing.isolated === true
+			: undefined;
+	if (publishedIsolation !== undefined && publishedIsolation !== parsed.isolated) {
 		throw unusable(
 			`Artifact descriptor ${descriptorPath} admits isolated=${parsed.isolated} but publishes ` +
-				`isolated=${Boolean(parsed.rootConfig.isolated)}`
+				`isolated=${publishedIsolation}`
 		);
 	}
 	return parsed as ArtifactDescriptor;
+}
+
+export async function releaseRoutingOf(
+	componentDirPath: string,
+	componentName: string,
+	deploymentId: string
+): Promise<PayloadRouting | null | undefined> {
+	try {
+		const descriptor = await readArtifactDescriptor(
+			candidateDeploymentDirPath(componentDirPath, deploymentId),
+			componentName
+		);
+		return descriptor && publishedRouting(descriptor.rootConfig, descriptor.routing);
+	} catch (error) {
+		logger.warn?.(`Could not read the routing of ${componentName}'s release ${deploymentId}:`, error);
+		return undefined;
+	}
 }
 
 const SEPARATORS_IN_LINK_TARGETS = process.platform === 'win32' ? /[\\/]/ : /\//;
@@ -1522,6 +1695,242 @@ async function writeArtifactDescriptor(
 	}
 }
 
+async function writeDeploymentProvenance(
+	candidateDirPath: string,
+	componentName: string,
+	deploymentId: string,
+	preview?: PreviewMetadata
+): Promise<void> {
+	const markerPath = join(candidateDirPath, DEPLOYMENT_PROVENANCE_FILE);
+	await rm(markerPath, { recursive: true, force: true });
+	await writeControlFileDurably(markerPath, formatDeploymentProvenance(componentName, deploymentId, preview));
+}
+
+/** The preview metadata of the release live at `treePath`; undefined when it is not a preview or cannot be read. */
+export async function readDeploymentPreview(
+	treePath: string,
+	componentName: string
+): Promise<PreviewMetadata | undefined> {
+	const raw = await readFile(join(treePath, DEPLOYMENT_PROVENANCE_FILE), 'utf8').catch(() => undefined);
+	return raw === undefined ? undefined : parseDeploymentPreview(raw, componentName);
+}
+
+/**
+ * A link carries no provenance, whatever its target holds. A read that fails propagates rather than reading as
+ * absent.
+ */
+export async function readDeploymentProvenance(treePath: string, componentName: string): Promise<string | undefined> {
+	const tree = await presentOrAbsent(treePath);
+	if (!tree?.isDirectory()) return undefined;
+	const raw = await readFile(join(treePath, DEPLOYMENT_PROVENANCE_FILE), 'utf8').catch(
+		(error: NodeJS.ErrnoException) => {
+			if (error?.code === 'ENOENT' || error?.code === 'EISDIR') return undefined;
+			throw error;
+		}
+	);
+	return raw === undefined ? undefined : parseDeploymentProvenance(raw, componentName);
+}
+
+export function liveDeploymentIdOf(componentsRootDirPath: string, componentName: string): Promise<string | undefined> {
+	return readDeploymentProvenance(join(componentsRootDirPath, componentName), componentName);
+}
+
+export interface KeptRelease {
+	deployment_id: string;
+	/** `staged`: built and never live on this node; `kept`: the release an activation replaced here. */
+	state: 'staged' | 'kept';
+	/** When it was built, or for a kept release, replaced. */
+	at: number;
+	size: number;
+}
+
+/**
+ * The releases a component's `deployment_id` can activate on this node: its dormant builds, as retention counts
+ * them, so residue and other components' builds are left out. Read without the preparation lock, so it describes
+ * the moment it was read; a build mid-activation can appear or vanish.
+ */
+export async function keptReleasesOf(componentsRootDirPath: string, componentName: string): Promise<KeptRelease[]> {
+	const releases: KeptRelease[] = [];
+	for (const build of await dormantBuildsOf(componentsRootDirPath, componentName)) {
+		const complete = await readFile(join(build.deploymentDirPath, CANDIDATE_COMPLETE_MARKER), 'utf8').catch(() => '');
+		releases.push({
+			deployment_id: build.deploymentId,
+			state: complete === KEPT_RELEASE_MARKER ? 'kept' : 'staged',
+			at: Math.round(build.completedAt),
+			size: await treeSize(join(build.deploymentDirPath, componentName)),
+		});
+	}
+	return releases.sort((left, right) => right.at - left.at);
+}
+
+/** Every component with a live tree or a deployment directory on this node, so a stage nobody activated counts. */
+export async function componentsWithReleases(componentsRootDirPath: string, strict = false): Promise<string[]> {
+	const entriesOf = (path: string) =>
+		readdir(path, { withFileTypes: true }).catch((error) => {
+			if (strict && error?.code !== 'ENOENT') throw error;
+			return [];
+		});
+	const names = new Set<string>();
+	for (const entry of await entriesOf(componentsRootDirPath)) {
+		if ((entry.isDirectory() || entry.isSymbolicLink()) && isJoinableComponentName(entry.name)) names.add(entry.name);
+	}
+	const stagingRoot = join(componentsRootDirPath, DEPLOY_STAGING_DIR);
+	for (const entry of await entriesOf(stagingRoot)) {
+		if (!isDeploymentDirectoryEntry(entry)) continue;
+		const owner = await candidateComponentName(join(stagingRoot, entry.name)).catch(() => undefined);
+		if (isJoinableComponentName(owner)) names.add(owner);
+	}
+	return [...names].sort();
+}
+
+/** Bytes of every regular file under a tree, without following links. */
+async function treeSize(dirPath: string): Promise<number> {
+	let total = 0;
+	const entries = await readdir(dirPath, { withFileTypes: true }).catch(() => []);
+	for (const entry of entries) {
+		const entryPath = join(dirPath, entry.name);
+		if (entry.isDirectory()) total += await treeSize(entryPath);
+		else if (entry.isFile()) total += (await lstat(entryPath).catch(() => undefined))?.size ?? 0;
+	}
+	return total;
+}
+
+async function isDeploymentRecord(deploymentDirPath: string, componentName: string): Promise<boolean> {
+	if ((await candidateComponentName(deploymentDirPath)) !== componentName) return false;
+	if (!(await presentOrAbsent(join(deploymentDirPath, CANDIDATE_COMPLETE_MARKER)))) return false;
+	for (const unexpected of [ACTIVATION_JOURNAL, UNSETTLED_MARKER, componentName]) {
+		if (await presentOrAbsent(join(deploymentDirPath, unexpected))) return false;
+	}
+	try {
+		return (await readArtifactDescriptor(deploymentDirPath, componentName)) !== undefined;
+	} catch (error) {
+		if (error instanceof ClientError) return false;
+		throw error;
+	}
+}
+
+/**
+ * "Not live" does not make a record stale: a crash between the commit and the re-home leaves the displaced tree in
+ * `.deploy-aside`, retired or not, and a scan can reach the record before the journal that re-homes into it.
+ */
+async function deploymentRecordIsReferenced(
+	componentsRootDirPath: string,
+	componentName: string,
+	deploymentId: string
+): Promise<boolean> {
+	const liveDirPath = join(componentsRootDirPath, componentName);
+	if ((await readDeploymentProvenance(liveDirPath, componentName)) === deploymentId) return true;
+	const asideStagingDir = extractionStagingDirectory(liveDirPath);
+	const entries = await readdir(asideStagingDir, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
+		if (error?.code === 'ENOENT') return [];
+		throw error;
+	});
+	for (const entry of entries) {
+		if (!entry.isDirectory() || !entry.name.startsWith(IN_PROGRESS_ASIDE_PREFIX)) continue;
+		if ((await readDeploymentProvenance(join(asideStagingDir, entry.name), componentName)) === deploymentId) {
+			return true;
+		}
+	}
+	return false;
+}
+
+async function isReferencedDeploymentRecord(
+	componentsRootDirPath: string,
+	deploymentDirPath: string,
+	owner: string
+): Promise<boolean> {
+	for (const expected of [CANDIDATE_COMPLETE_MARKER, CANDIDATE_ARTIFACT_FILE]) {
+		if (!(await presentOrAbsent(join(deploymentDirPath, expected)))) return false;
+	}
+	if (await presentOrAbsent(join(deploymentDirPath, owner))) return false;
+	return deploymentRecordIsReferenced(componentsRootDirPath, owner, basename(deploymentDirPath));
+}
+
+/** A failed read keeps the directory: a leftover record costs a few bytes, a lost one costs the release. */
+async function keepsDeploymentRecord(deploymentDirPath: string): Promise<boolean> {
+	return presentOrAbsent(join(deploymentDirPath, CANDIDATE_ARTIFACT_FILE)).then(Boolean, () => true);
+}
+
+/**
+ * Retention orders by `.complete`'s mtime, and a kept release has to outrank stages nobody activated. Its content,
+ * which nothing that settles or retains a build reads, says the build was live here once (`list_releases`).
+ */
+async function refreshCompletedAt(deploymentDirPath: string, componentName: string, deploymentId: string) {
+	await writeFile(join(deploymentDirPath, CANDIDATE_COMPLETE_MARKER), KEPT_RELEASE_MARKER).catch((error) =>
+		logger.debug?.(`Could not mark deployment ${deploymentId} of ${componentName} as kept: ${errorMessage(error)}`)
+	);
+	for (let attempt = 1; ; attempt++) {
+		const now = new Date();
+		try {
+			await utimes(join(deploymentDirPath, CANDIDATE_COMPLETE_MARKER), now, now);
+			return;
+		} catch (error) {
+			if (attempt >= 3) {
+				logger.warn(
+					`Kept deployment ${deploymentId} of ${componentName}, but retention may evict it ahead of older ` +
+						`builds: ${errorMessage(error)}`
+				);
+				return;
+			}
+			await delay(100 * attempt);
+		}
+	}
+}
+
+type DisplacedReleaseRetention = { verdict: 'kept'; deploymentId: string } | { verdict: 'ineligible' | 'failed' };
+
+/**
+ * Only an explicit retention decision deletes a displaced tree: `failed` leaves it for the next preparation to retry.
+ * A failure after the rename propagates, as the aside syncs around it do.
+ */
+async function retainDisplacedRelease(
+	componentsRootDirPath: string,
+	componentName: string,
+	displacedTreePath: string
+): Promise<DisplacedReleaseRetention> {
+	const keepNone = (await stagingRetentionMaxCountOf(componentsRootDirPath, componentName, displacedTreePath)) === 0;
+	let record: { deploymentId: string; recordDirPath: string } | undefined;
+	try {
+		const deploymentId = await readDeploymentProvenance(displacedTreePath, componentName);
+		if (deploymentId !== undefined) {
+			const recordDirPath = join(componentsRootDirPath, DEPLOY_STAGING_DIR, deploymentId);
+			if (await isDeploymentRecord(recordDirPath, componentName)) record = { deploymentId, recordDirPath };
+		}
+	} catch (error) {
+		if (keepNone) return { verdict: 'ineligible' };
+		logger.warn(
+			`Could not tell whether the previous release of ${componentName} at ${displacedTreePath} can be kept; ` +
+				`leaving it for its next deploy:`,
+			errorForLog(error)
+		);
+		return { verdict: 'failed' };
+	}
+	if (!record) return { verdict: 'ineligible' };
+	const { deploymentId, recordDirPath } = record;
+	if (keepNone) {
+		// Nothing will ever put the tree back into its record, so the record goes with it.
+		await rm(recordDirPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch((error) =>
+			logger.warn(`Could not remove the record of deployment ${deploymentId} of ${componentName}:`, errorForLog(error))
+		);
+		return { verdict: 'ineligible' };
+	}
+	const keptTreePath = join(recordDirPath, componentName);
+	try {
+		await renameThroughTransientHolder(displacedTreePath, keptTreePath);
+	} catch (error) {
+		logger.warn(
+			`Could not keep the previous release of ${componentName} as deployment ${deploymentId}; leaving it for ` +
+				`its next deploy:`,
+			errorForLog(error)
+		);
+		return { verdict: 'failed' };
+	}
+	await syncRenameParents(displacedTreePath, keptTreePath);
+	await refreshCompletedAt(recordDirPath, componentName, deploymentId);
+	logger.trace?.(`Kept the previous release of ${componentName} as dormant deployment ${deploymentId}`);
+	return { verdict: 'kept', deploymentId };
+}
+
 /**
  * A component name safe to join onto the components root: no separator, no traversal, not dot-prefixed.
  * Applied to EVERY source of the name — the journal and the sidecar — because validating one and trusting
@@ -1580,16 +1989,19 @@ async function readActivationJournal(journalPath: string): Promise<ActivationJou
 		// effect the descriptor still records; an immediate deploy published before it built, so there is
 		// nothing left to do for it.
 		const descriptor = await readArtifactDescriptor(dirname(journalPath), parsed.component);
-		rootConfig = descriptor ? rootConfigEffectFromDeclaration(descriptor.rootConfig) : { kind: 'keep' };
+		rootConfig = descriptor
+			? rootConfigEffectFromDeclaration(descriptor.rootConfig, descriptor.routing)
+			: { kind: 'keep' };
 	} else {
 		if (!isRootConfigEffect(parsed.rootConfig) || parsed.rootConfig.kind === 'remove') {
 			throw new Error(`Activation journal ${journalPath} does not record its root-config effect`);
 		}
 		rootConfig = parsed.rootConfig;
 	}
-	if (rootConfig.kind === 'set') {
+	if (rootConfig.kind === 'set' || (rootConfig.kind === 'unset-package' && rootConfig.routing)) {
 		try {
-			assertApplicationConfig(parsed.component, rootConfig.entry as any);
+			if (rootConfig.kind === 'set') assertApplicationConfig(parsed.component, rootConfig.entry as any);
+			else assertPayloadRouting(parsed.component, rootConfig.routing);
 		} catch (error) {
 			throw new Error(
 				`Activation journal ${journalPath} records a root-config entry that cannot be published: ${errorMessage(error)}`,
@@ -1707,103 +2119,127 @@ async function ensureSecureStagingDirectory(stagingDir: string): Promise<void> {
 }
 
 /**
- * Claim a deployment directory for this build, EXCLUSIVELY. The id is the public deployment id, which an
- * operator can repeat and a redelivered replication can repeat for them, so tolerating an existing
- * directory would let a replayed stage rewrite the bytes under an existing `.complete` and descriptor —
- * and a crash mid-rebuild would leave a partial tree that still reads as certified.
- *
- * The caller holds the component's preparation lock, which is what makes the EEXIST verdicts sound: no
- * other preparation of THIS component is running, and a directory belonging to another component is not
- * this lock's to touch.
+ * Exclusive, because an operator can repeat a public id; built aside and renamed onto it, so it never appears
+ * unattributed. The caller's preparation lock is what makes the verdicts on an existing directory sound.
  */
 async function claimDeploymentDirectory(deploymentDirPath: string, componentName: string): Promise<void> {
-	// Every refusal below is a conflict over an id that already exists, which is the caller's to resolve by
-	// naming a different one — not a server fault, and not the 500 a bare Error reaches the caller as.
-	const taken = (message: string) => new ClientError(message, 409);
+	const claimDirPath = join(
+		dirname(deploymentDirPath),
+		`${CLAIMING_PREFIX}${randomUUID()}-${claimOwnerDigest(componentName)}`
+	);
+	await mkdir(claimDirPath, { mode: 0o700 });
 	try {
-		await mkdir(deploymentDirPath, { mode: 0o700 });
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-		const owner = await candidateComponentName(deploymentDirPath);
-		if (owner !== undefined && owner !== componentName) {
-			throw taken(
-				`Deployment id ${basename(deploymentDirPath)} already holds a build of '${owner}'; a deployment id ` +
-					`names one artifact for its lifetime`
+		const claimed = await lstat(claimDirPath);
+		if (!claimed.isDirectory() || claimed.isSymbolicLink()) {
+			throw new Error(`Component deploy staging path is not a directory: ${claimDirPath}`);
+		}
+		if (process.platform !== 'win32' && (claimed.mode & 0o777) !== 0o700) {
+			await chmod(claimDirPath, 0o700).catch((error) =>
+				logger.warn(`Could not restrict component deploy staging permissions for ${claimDirPath}:`, errorForLog(error))
 			);
 		}
-		// Ownership has to be POSITIVE to reclaim, and EMPTINESS IS NOT A VERDICT. The sidecar below is
-		// written as part of the claim, so a directory naming nobody is another component between its own
-		// mkdir and that write, and a deploy can hold a nearly empty one for minutes while it resolves and
-		// packs. Nothing on disk separates that from a claim that got no further, and the lock that
-		// serializes it is not this one, so only the exclusive create may conclude the id is free: the
-		// directory can also have been discarded by a failed build between the first mkdir and this read,
-		// and another component can claim it in that same gap.
-		if (owner === undefined) {
-			await mkdir(deploymentDirPath, { mode: 0o700 }).catch((retry: NodeJS.ErrnoException) => {
-				if (retry?.code !== 'EEXIST') throw retry;
-				throw taken(
-					`Deployment id ${basename(deploymentDirPath)} is already claimed by a build that has not named its ` +
-						`component yet. If no deploy of any component is in flight, that directory is abandoned and has ` +
-						`to be removed by hand; deploying again without a deployment_id mints a fresh id`
-				);
-			});
-		} else {
-			if (await presentOrAbsent(join(deploymentDirPath, CANDIDATE_COMPLETE_MARKER))) {
-				throw taken(
-					`Deployment id ${basename(deploymentDirPath)} already holds a completed build of '${componentName}'; ` +
-						`deploy it with deployment_id, or deploy again to build a new one`
+		await publishClaimOwnership(claimDirPath, componentName);
+		for (let attempt = 1; ; attempt++) {
+			// Checked first: Windows refuses a rename onto an existing directory with a transient holder's EPERM.
+			if (!(await presentOrAbsent(deploymentDirPath))) {
+				try {
+					await renameThroughTransientHolder(claimDirPath, deploymentDirPath);
+					return;
+				} catch (error) {
+					// Only this component's lock can remove the claim, so a vanished source means the rename landed.
+					if (!(await presentOrAbsent(claimDirPath))) return;
+					if (!(await presentOrAbsent(deploymentDirPath))) throw error;
+				}
+			}
+			if (attempt >= MAX_CLAIM_ATTEMPTS) {
+				throw new ClientError(
+					`Deployment id ${basename(deploymentDirPath)} was claimed again each time it was freed; deploying ` +
+						`again without a deployment_id mints a fresh id`,
+					409
 				);
 			}
-			// This component's own preparation lock serializes the claim and nothing certified it, so nothing
-			// is lost by rebuilding over it.
-			await rm(deploymentDirPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
-			await mkdir(deploymentDirPath, { mode: 0o700 });
+			await makeRoomForClaim(deploymentDirPath, componentName);
 		}
+	} finally {
+		// A claim that did not land names no id, so it is nobody else's.
+		await rm(claimDirPath, { recursive: true, force: true }).catch(() => {});
 	}
-	const claimed = await lstat(deploymentDirPath);
-	if (!claimed.isDirectory() || claimed.isSymbolicLink()) {
-		throw new Error(`Component deploy staging path is not a directory: ${deploymentDirPath}`);
-	}
-	if (process.platform !== 'win32' && (claimed.mode & 0o777) !== 0o700) {
-		await chmod(deploymentDirPath, 0o700).catch((error) =>
-			logger.warn(
-				`Could not restrict component deploy staging permissions for ${deploymentDirPath}:`,
-				errorForLog(error)
-			)
+}
+
+const MAX_CLAIM_ATTEMPTS = 3;
+
+/** Every refusal is a conflict the caller resolves by naming another id: a 409, not a server fault. */
+async function makeRoomForClaim(deploymentDirPath: string, componentName: string): Promise<void> {
+	const taken = (message: string) => new ClientError(message, 409);
+	const deploymentId = basename(deploymentDirPath);
+	const owner = await candidateComponentName(deploymentDirPath);
+	if (owner !== undefined && owner !== componentName) {
+		throw taken(
+			`Deployment id ${deploymentId} already holds a build of '${owner}'; a deployment id names one artifact for ` +
+				`its lifetime`
 		);
 	}
-	await publishClaimOwnership(deploymentDirPath, componentName);
+	if (owner === undefined) {
+		// Claims appear already attributed, so an EMPTY directory is only ever one a build created before naming it,
+		// abandoned; `rmdir` removes nothing else.
+		try {
+			await rmdir(deploymentDirPath);
+			return;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code === 'ENOENT') return;
+			if (code !== 'ENOTEMPTY' && code !== 'EEXIST') throw error;
+		}
+		throw taken(
+			`Deployment id ${deploymentId} is held by a directory that names no component. Remove it once you have ` +
+				`determined it holds nothing you need; deploying again without a deployment_id mints a fresh id`
+		);
+	}
+	if (await presentOrAbsent(join(deploymentDirPath, CANDIDATE_COMPLETE_MARKER))) {
+		throw taken(
+			`Deployment id ${deploymentId} already holds a completed build of '${componentName}'; deploy it with ` +
+				`deployment_id, or deploy again to build a new one`
+		);
+	}
+	// Nothing certified it, and this component's lock serializes its claims.
+	await rm(deploymentDirPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+}
+
+function claimOwnerDigest(componentName: string): string {
+	return createHash('sha256').update(componentName).digest('hex').slice(0, CLAIM_OWNER_DIGEST_LENGTH);
+}
+
+function isClaimOf(entryName: string, componentName: string): boolean {
+	return (
+		entryName.startsWith(CLAIMING_PREFIX) &&
+		entryName.slice(CLAIMING_PREFIX.length + CLAIMING_UUID_LENGTH + 1) === claimOwnerDigest(componentName)
+	);
+}
+
+/** The caller holds the component's preparation lock, so none of its claims is in flight. */
+async function sweepAbandonedClaims(stagingRoot: string, entries: import('node:fs').Dirent[], componentName: string) {
+	for (const entry of entries) {
+		if (!entry.isDirectory() || !isClaimOf(entry.name, componentName)) continue;
+		await rm(join(stagingRoot, entry.name), { recursive: true, force: true }).catch((error) =>
+			logger.warn(`Could not remove the abandoned deploy claim ${entry.name}:`, errorForLog(error))
+		);
+	}
 }
 
 /**
- * Name the component that owns a deployment directory THIS CALL created, and take the directory back if that
- * cannot be recorded.
- *
- * Ownership is published as part of the claim rather than at certification, because resolving and packing can
- * take minutes and until a tree exists to infer an owner from, a directory answering to nobody is one another
- * component will take for abandoned. Unattributed is a permanent refusal, though, so a failure here — a full
- * disk, an EIO on the temp write or its sync — would burn this deployment id for good, every retry refused by
- * its own wreckage. The removal is scoped to the directory this invocation made, and deliberately not
- * broadened to one found by EEXIST: that directory may be another claimant's, and removing it is the race the
- * refusal exists to prevent. Best-effort, because the claim failure is what the caller needs to see.
- *
- * `write` is a parameter so the failure is testable without a filesystem that can be made to fail on exactly
- * this write and nothing else.
+ * The claim names no id yet, so a failure burns nothing. `write` is a parameter so the failure is testable without a
+ * filesystem that can be made to fail on exactly this write.
  */
 export async function publishClaimOwnership(
-	deploymentDirPath: string,
+	claimDirPath: string,
 	componentName: string,
 	write: (filePath: string, contents: string) => Promise<void> = writeControlFileDurably
 ): Promise<void> {
 	try {
-		await write(join(deploymentDirPath, CANDIDATE_COMPONENT_FILE), componentName);
+		await write(join(claimDirPath, CANDIDATE_COMPONENT_FILE), componentName);
 	} catch (error) {
-		await rm(deploymentDirPath, { recursive: true, force: true }).catch((cleanupError) =>
-			logger.warn(
-				`Could not remove the deployment directory ${deploymentDirPath} after failing to publish its ` +
-					`ownership; the id stays unusable until it is removed:`,
-				errorForLog(cleanupError)
-			)
+		await rm(claimDirPath, { recursive: true, force: true }).catch((cleanupError) =>
+			logger.warn(`Could not remove the unfinished deploy claim ${claimDirPath}:`, errorForLog(cleanupError))
 		);
 		throw error;
 	}
@@ -1869,7 +2305,7 @@ async function journaledDeploymentForComponent(
 		throw error;
 	}
 	for (const deployment of deployments) {
-		if (!deployment.isDirectory()) continue;
+		if (!isDeploymentDirectoryEntry(deployment)) continue;
 		const deploymentDirPath = join(stagingRoot, deployment.name);
 		const journalPath = join(deploymentDirPath, ACTIVATION_JOURNAL);
 		// NOTHING is swallowed here. This is the gate that authorizes restoring an old tree over what may be
@@ -1987,9 +2423,11 @@ async function settleStagingForComponent(
 		if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
 		throw error;
 	}
+	await sweepAbandonedClaims(stagingRoot, deployments, componentName);
 	const dormant: DormantBuild[] = [];
+	const kept: string[] = [];
 	for (const deployment of deployments) {
-		if (!deployment.isDirectory()) continue;
+		if (!isDeploymentDirectoryEntry(deployment)) continue;
 		const deploymentDirPath = join(stagingRoot, deployment.name);
 		// Ownership BEFORE parsing. Reading every journal first meant a truncated journal belonging to another
 		// component threw here — blocking the deploy of a healthy component because an unrelated one is
@@ -2034,10 +2472,65 @@ async function settleStagingForComponent(
 		// component's own unsettled activation in place while a new deploy proceeded over it, and an
 		// activation interrupted before B1 has no rollback record for the restore gate to catch.
 		if (journal.component !== componentName) continue;
-		await settleInterruptedActivation(componentsRootDirPath, deploymentDirPath, journal);
+		kept.push(...(await settleInterruptedActivation(componentsRootDirPath, deploymentDirPath, journal)));
 	}
-	const maxCount = getStagingRetentionMaxCount();
-	if (dormant.length > maxCount) await pruneDormantBuilds(componentName, dormant, maxCount, pinnedDeploymentId);
+	await catalogueKeptReleases(stagingRoot, componentName, kept, dormant);
+	const maxCount = await stagingRetentionMaxCountOf(componentsRootDirPath, componentName);
+	if (dormant.length > maxCount) {
+		await pruneOutsideCertification(componentsRootDirPath, componentName, dormant, maxCount, [
+			...kept,
+			...(pinnedDeploymentId ? [pinnedDeploymentId] : []),
+		]);
+	}
+}
+
+/** Under the component's preparation lock, once any interrupted activation of it is settled. */
+export function withSettledComponent<T>(componentName: string, inspect: () => Promise<T>): Promise<T> {
+	const componentsRootDirPath = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
+	return withComponentPreparationLock(
+		join(componentsRootDirPath, componentName),
+		async () => {
+			await settleStagingForComponent(componentsRootDirPath, componentName);
+			return inspect();
+		},
+		{
+			purpose: 'certification-resolution',
+			isOwnerAlive: (owner) => owner.pid !== process.pid || isThreadRunning(owner.threadId),
+		}
+	);
+}
+
+/** A predecessor a certification record names is kept through retention; an unreadable record prunes nothing. */
+async function pruneOutsideCertification(
+	componentsRootDirPath: string,
+	componentName: string,
+	builds: DormantBuild[],
+	maxCount: number,
+	pinned: string[]
+): Promise<void> {
+	const certificationPins = await certificationPinsOf(componentsRootDirPath, componentName).catch(() => undefined);
+	if (!certificationPins) {
+		logger.warn(`Not bounding the staged builds of ${componentName}: one of its certification records cannot be read`);
+		return;
+	}
+	await pruneDormantBuilds(componentName, builds, maxCount, [...pinned, ...certificationPins]);
+}
+
+/** Counted and pinned, or the pass a settlement ran inside can miss what it kept, or evict it after a failed refresh. */
+async function catalogueKeptReleases(
+	stagingRoot: string,
+	componentName: string,
+	kept: string[],
+	into: DormantBuild[]
+): Promise<void> {
+	const present = new Set(into.map((build) => build.deploymentDirPath));
+	for (const deploymentId of kept) {
+		const build = await dormantBuildAt(join(stagingRoot, deploymentId), componentName).catch(() => undefined);
+		if (build && !present.has(build.deploymentDirPath)) {
+			present.add(build.deploymentDirPath);
+			into.push(build);
+		}
+	}
 }
 
 /**
@@ -2064,7 +2557,7 @@ export async function unsettleableComponentsFromDisk(componentsRootDirPath: stri
 		throw error;
 	}
 	for (const deployment of deployments) {
-		if (!deployment.isDirectory()) continue;
+		if (!isDeploymentDirectoryEntry(deployment)) continue;
 		const deploymentDirPath = join(stagingRoot, deployment.name);
 		// Per deployment. `candidateComponentName` propagates every non-ENOENT error now, and this pass runs
 		// where the CALLER only warns — so one unreadable deployment escaping here would drop the verdict for
@@ -2152,12 +2645,20 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 	const dormant = new Map<string, DormantBuild[]>();
 	const catalogue = (owner: string, build: DormantBuild) => {
 		const builds = dormant.get(owner);
-		if (builds) builds.push(build);
-		else dormant.set(owner, [build]);
+		if (!builds) dormant.set(owner, [build]);
+		else if (!builds.some((existing) => existing.deploymentDirPath === build.deploymentDirPath)) builds.push(build);
+	};
+	const keptBy = new Map<string, string[]>();
+	const keptDuring = async (owner: string, kept: string[]) => {
+		if (kept.length === 0) return;
+		keptBy.set(owner, [...(keptBy.get(owner) ?? []), ...kept]);
+		const builds: DormantBuild[] = [];
+		await catalogueKeptReleases(stagingRoot, owner, kept, builds);
+		for (const build of builds) catalogue(owner, build);
 	};
 
 	for (const deployment of deployments) {
-		if (!deployment.isDirectory()) continue;
+		if (!isDeploymentDirectoryEntry(deployment)) continue;
 		const deploymentDirPath = join(stagingRoot, deployment.name);
 		const journalPath = join(deploymentDirPath, ACTIVATION_JOURNAL);
 		const fail = (component: string, error: unknown) => recordUnsettled(failures, component, error, deploymentDirPath);
@@ -2214,7 +2715,10 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 						throw splitAttributionError(deploymentDirPath, appeared.component, splitNames[0]);
 					}
 					activationToFail = appeared.component;
-					await settleInterruptedActivation(componentsRootDirPath, deploymentDirPath, appeared);
+					await keptDuring(
+						appeared.component,
+						await settleInterruptedActivation(componentsRootDirPath, deploymentDirPath, appeared)
+					);
 					// Settled. Anything that fails after this — releasing the lock, say — is not this
 					// activation's, and attributing it here would fail a correctly settled component closed.
 					activationToFail = undefined;
@@ -2258,6 +2762,8 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 					// Cleared, and still not a retainable build — an incomplete or treeless staged directory. That
 					// is residue like any other, so it falls through to the removal below.
 				}
+				// Re-derived under the lock too: the release may have been re-homed, or displaced, since the scan.
+				if (await isReferencedDeploymentRecord(componentsRootDirPath, deploymentDirPath, owner!)) return;
 				// Cleanup, not settlement. There was no activation here — this is most often the residue a
 				// SUCCESSFUL settlement leaves when its own sweep failed — so a sweep that fails again cannot
 				// make anything unsettled, and recording it would refuse a live component on every worker
@@ -2297,6 +2803,22 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 				}
 				if (build) {
 					catalogue(owner, build);
+					continue;
+				}
+				// The record of a release that is live, or displaced and not yet put back, is left alone without the
+				// lock for the same reason. A read that fails leaves it in place: deleting it is the irreversible side.
+				try {
+					if (
+						!(await presentOrAbsent(join(deploymentDirPath, UNSETTLED_MARKER))) &&
+						(await isReferencedDeploymentRecord(componentsRootDirPath, deploymentDirPath, owner))
+					) {
+						continue;
+					}
+				} catch (error) {
+					logger.warn(
+						`Leaving deploy staging ${deploymentDirPath} in place; it could not be read:`,
+						errorForLog(error)
+					);
 					continue;
 				}
 			}
@@ -2352,7 +2874,7 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 				continue;
 			}
 			const settling = journal;
-			await withComponentPreparationLock(
+			const kept = await withComponentPreparationLock(
 				join(componentsRootDirPath, settling.component),
 				() => settleInterruptedActivation(componentsRootDirPath, deploymentDirPath, settling),
 				{
@@ -2361,15 +2883,22 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 					isOwnerAlive: (lockOwner) => lockOwner.pid !== process.pid || isThreadRunning(lockOwner.threadId),
 				}
 			);
+			await keptDuring(settling.component, kept);
 		} catch (error) {
 			// The journal named its component, so attribution is exact however the settle failed.
 			await fail(journal.component, error);
 		}
 	}
 
-	const maxCount = getStagingRetentionMaxCount();
 	for (const [owner, builds] of dormant) {
-		for (const [component, error] of await reconcileDormantBuilds(componentsRootDirPath, owner, builds, maxCount)) {
+		const pinned = keptBy.get(owner) ?? [];
+		for (const [component, error] of await reconcileDormantBuilds(
+			componentsRootDirPath,
+			owner,
+			builds,
+			await stagingRetentionMaxCountOf(componentsRootDirPath, owner),
+			pinned
+		)) {
 			if (!failures.has(component)) failures.set(component, error);
 		}
 	}
@@ -2409,7 +2938,8 @@ export async function reconcileDormantBuilds(
 	componentsRootDirPath: string,
 	owner: string,
 	builds: DormantBuild[],
-	maxCount: number
+	maxCount: number,
+	pinned: readonly string[] = []
 ): Promise<Map<string, Error>> {
 	const failures = new Map<string, Error>();
 	let journaled: DormantBuild | undefined;
@@ -2430,6 +2960,7 @@ export async function reconcileDormantBuilds(
 			join(componentsRootDirPath, owner),
 			async () => {
 				const stillDormant: DormantBuild[] = [];
+				const keptHere: string[] = [];
 				for (const build of builds) {
 					let journal: ActivationJournal | undefined;
 					try {
@@ -2451,12 +2982,19 @@ export async function reconcileDormantBuilds(
 						continue;
 					}
 					try {
-						await settleInterruptedActivation(componentsRootDirPath, build.deploymentDirPath, journal);
+						const kept = await settleInterruptedActivation(componentsRootDirPath, build.deploymentDirPath, journal);
+						keptHere.push(...kept);
+						await catalogueKeptReleases(join(componentsRootDirPath, DEPLOY_STAGING_DIR), owner, kept, stillDormant);
 					} catch (error) {
 						await recordUnsettled(failures, journal.component, error, build.deploymentDirPath);
 					}
 				}
-				if (stillDormant.length > maxCount) await pruneDormantBuilds(owner, stillDormant, maxCount);
+				if (stillDormant.length > maxCount) {
+					await pruneOutsideCertification(componentsRootDirPath, owner, stillDormant, maxCount, [
+						...pinned,
+						...keptHere,
+					]);
+				}
 			},
 			{
 				purpose: 'activation-recovery',
@@ -2493,7 +3031,8 @@ async function sweepAsideRecords(
 	componentName: string,
 	liveDirPath: string,
 	asideStagingDir: string
-): Promise<void> {
+): Promise<string[]> {
+	const kept: string[] = [];
 	for (const record of records) {
 		// RETIRING IS CORRECTNESS, not hygiene: the retired marker is what stops the legacy pass treating this
 		// record as authoritative and restoring the displaced tree over the candidate that was just rolled
@@ -2501,6 +3040,11 @@ async function sweepAsideRecords(
 		// the inversion this protocol exists to prevent, so a failure here PROPAGATES — the caller keeps the
 		// journal and the next start retries.
 		const retiredMarkerPath = await retireExtractionAside(record);
+		// No prune here: settlement can run inside another request's preamble, whose pin it cannot see. A tree that
+		// could not be kept stays retired in the aside for the legacy pass to retry.
+		const retention = await retainDisplacedRelease(dirname(liveDirPath), componentName, record);
+		if (retention.verdict === 'kept') kept.push(retention.deploymentId);
+		if (retention.verdict === 'failed') continue;
 		// Sweeping the displaced tree is hygiene: it bounds disk, and a failure costs space rather than
 		// correctness, so it is logged. The retired marker above already makes the record non-authoritative.
 		await cleanupExtractionPaths(
@@ -2509,6 +3053,7 @@ async function sweepAsideRecords(
 			new Set([record, retiredMarkerPath])
 		).catch((error) => logger.warn(`Settled ${componentName} but could not sweep ${record}:`, errorForLog(error)));
 	}
+	return kept;
 }
 
 /**
@@ -2543,7 +3088,7 @@ async function settleInterruptedActivation(
 	componentsRootDirPath: string,
 	deploymentDirPath: string,
 	journal: ActivationJournal
-): Promise<void> {
+): Promise<string[]> {
 	const liveDirPath = join(componentsRootDirPath, journal.component);
 	const candidateDirPath = join(deploymentDirPath, journal.component);
 	const asideStagingDir = extractionStagingDirectory(liveDirPath);
@@ -2562,7 +3107,10 @@ async function settleInterruptedActivation(
 	const candidateComplete = await exists(join(deploymentDirPath, CANDIDATE_COMPLETE_MARKER));
 	const asideRecords = await inProgressAsideRecords(asideStagingDir);
 
+	let rolledForward = false;
+	let kept: string[] = [];
 	const rollForward = async () => {
+		rolledForward = true;
 		if (!liveExists) await renameThroughTransientHolder(candidateDirPath, liveDirPath);
 		// Unconditional, not only when THIS pass performed the rename: a crash after normal activation
 		// renamed the candidate but before it repaired the links leaves live present with stale targets, and
@@ -2577,7 +3125,7 @@ async function settleInterruptedActivation(
 		// this roll-forward just displaced. Failing the component closed and retrying at the next start is
 		// the cheaper mistake — the journal survives, so the verdict is re-derivable. Only the disk sweep
 		// inside is best-effort.
-		await sweepAsideRecords(asideRecords, journal.component, liveDirPath, asideStagingDir);
+		kept = await sweepAsideRecords(asideRecords, journal.component, liveDirPath, asideStagingDir);
 	};
 	const rollBack = async (restoreFrom?: string) => {
 		if (restoreFrom) {
@@ -2666,7 +3214,7 @@ async function settleInterruptedActivation(
 				`Returned the staged build ${basename(deploymentDirPath)} of ${journal.component} to dormant after an ` +
 					`activation that never moved its live tree aside`
 			);
-			return;
+			return kept;
 		}
 		await rollBack();
 	} else {
@@ -2688,7 +3236,7 @@ async function settleInterruptedActivation(
 			`Settled the interrupted activation of ${journal.component} but could not flush its rollback record; ` +
 				`leaving the journal for the next start: ${errorMessage(error)}`
 		);
-		return;
+		return kept;
 	}
 	// Best-effort, matching the activation path: the activation is settled by this point, so a transient
 	// EBUSY removing staging must not throw out of the recovery pass and take the other components with it.
@@ -2699,10 +3247,12 @@ async function settleInterruptedActivation(
 	await rm(journalPath, { force: true }).catch((error) =>
 		logger.warn(`Settled ${journal.component} but could not remove its activation journal:`, errorForLog(error))
 	);
+	if (rolledForward && (await keepsDeploymentRecord(deploymentDirPath))) return kept;
 	await rm(deploymentDirPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch((error) =>
 		logger.warn(`Settled ${journal.component} but could not clean up its staging directory:`, errorForLog(error))
 	);
 	await rmdir(dirname(deploymentDirPath)).catch(() => {});
+	return kept;
 }
 
 /** Mark a candidate build+validation complete. Idempotent, so a retried activation is not a failure. */
@@ -2852,7 +3402,9 @@ export async function activateCandidateApplication(
 	const rootConfig = options.rootConfig ?? { kind: 'keep' };
 	// Before anything is on disk: a journal recovery would refuse to read is one it could never settle.
 	if (rootConfig.kind === 'set') assertApplicationConfig(application.name, rootConfig.entry as any);
-	else if (rootConfig.kind === 'remove') {
+	else if (rootConfig.kind === 'unset-package' && rootConfig.routing) {
+		assertPayloadRouting(application.name, rootConfig.routing);
+	} else if (rootConfig.kind === 'remove') {
 		throw new Error(`Cannot activate ${application.name}: an activation never removes its root-config entry`);
 	}
 	await assertRootConfigEffectPublishable(application.name, rootConfig);
@@ -3042,14 +3594,20 @@ export async function activateCandidateApplication(
 	}
 	const settledRecord = asidePath ?? priorAbsentRecordPath!;
 	let retired = false;
+	let keptDeploymentId: string | undefined;
 	// Skipped entirely when the swap is not known to be on storage, so the journal below survives.
 	if (swapDurable) {
 		try {
 			const retiredMarkerPath = await retireExtractionAside(settledRecord);
-			// Retiring only MARKS the displaced tree disposable. Without this sweep the tree every deploy
-			// displaces stays under `.deploy-aside/<component>` forever, so the components root grows by a
-			// whole component version per deploy.
-			await cleanupExtractionPaths(application, asideStagingDir, new Set([settledRecord, retiredMarkerPath]));
+			// A tree nothing can keep is swept, or the components root grows by a component version per deploy; one
+			// whose keep FAILED stays retired here for a retry.
+			const retention = asidePath
+				? await retainDisplacedRelease(dirname(liveDirPath), application.name, asidePath)
+				: ({ verdict: 'ineligible' } as const);
+			if (retention.verdict === 'kept') keptDeploymentId = retention.deploymentId;
+			if (retention.verdict !== 'failed') {
+				await cleanupExtractionPaths(application, asideStagingDir, new Set([settledRecord, retiredMarkerPath]));
+			}
 			// Before the journal goes: if the journal's removal persists but the record's does not, startup sees
 			// an in-progress aside with no journal and the legacy pass restores the old tree over the new one.
 			await syncDirectory(asideStagingDir);
@@ -3065,10 +3623,25 @@ export async function activateCandidateApplication(
 		await rm(journalPath, { force: true }).catch((error) =>
 			application.logger.warn(`Deployed ${application.name} but could not remove its activation journal:`, error)
 		);
-		await rm(deploymentDirPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch((error) =>
-			application.logger.warn(`Deployed ${application.name} but could not clean up its staging directory:`, error)
-		);
-		await rmdir(dirname(deploymentDirPath)).catch(() => {});
+		if (!(await keepsDeploymentRecord(deploymentDirPath))) {
+			await rm(deploymentDirPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch((error) =>
+				application.logger.warn(`Deployed ${application.name} but could not clean up its staging directory:`, error)
+			);
+			await rmdir(dirname(deploymentDirPath)).catch(() => {});
+		}
+	}
+	// Only here, where the request's own artifact is already live: a prune inside settlement could evict the
+	// artifact a request's preamble pinned. Best-effort, like every prune.
+	if (keptDeploymentId !== undefined) {
+		const maxCount = await stagingRetentionMaxCountOf(dirname(liveDirPath), application.name);
+		try {
+			const builds = await dormantBuildsOf(dirname(liveDirPath), application.name);
+			if (builds.length > maxCount) {
+				await pruneOutsideCertification(dirname(liveDirPath), application.name, builds, maxCount, [keptDeploymentId]);
+			}
+		} catch (error) {
+			application.logger.warn(`Deployed ${application.name} but could not bound its kept releases:`, error);
+		}
 	}
 }
 
@@ -3236,7 +3809,7 @@ async function discardCandidate(application: Application, deploymentId: string):
 export async function buildCandidateApplication(
 	application: Application,
 	deploymentId: string,
-	options: { rejectLinkSource?: boolean } = {}
+	options: { rejectLinkSource?: boolean; fingerprint?: boolean } = {}
 ): Promise<string> {
 	const deploymentDirPath = candidateDeploymentDirPath(application.dirPath, deploymentId);
 	const candidateDirPath = candidateApplicationPath(application.dirPath, deploymentId);
@@ -3245,7 +3818,7 @@ export async function buildCandidateApplication(
 	try {
 		// Replaced, not extracted into: a prior attempt on this id may have left a partial tree.
 		await rm(candidateDirPath, { recursive: true, force: true });
-		const resolved = await resolveApplicationTarball(application);
+		const resolved = await resolveApplicationTarball(application, { identifySource: options.fingerprint });
 		if (resolved.kind === 'link' && options.rejectLinkSource) {
 			// What the operator asked for, not a server fault: the same component deploys immediately.
 			throw new ClientError(
@@ -3276,6 +3849,13 @@ export async function buildCandidateApplication(
 		// deployer's git token. `prepareApplication`'s finally still calls this; it is idempotent.
 		await application.cleanupGitCredentialSession();
 		await installApplication(application, candidateDirPath);
+		// After the install, which can rewrite the tree; never through a link, whose target is not the deploy's to write.
+		if (resolved.kind !== 'link') {
+			await writeDeploymentProvenance(candidateDirPath, application.name, deploymentId, application.preview);
+		}
+		if (options.fingerprint) {
+			application.installFingerprint = await fingerprintInstall(candidateDirPath, application.sourceIdentity);
+		}
 		return candidateDirPath;
 	} catch (error) {
 		await discardCandidate(application, deploymentId);
@@ -3343,6 +3923,22 @@ async function recoverOrCleanupStaleExtractionPaths(
 				(recoveryRecords.length > 1 ? `; discarded ${recoveryRecords.length - 1} older recovery candidates` : '')
 		);
 		return;
+	}
+	// Each retired tree left here is a displaced release: kept if it can be — the retry of a keep that failed — and
+	// swept only when it cannot.
+	for (const entry of entries) {
+		if (!entry.isDirectory() || !entry.name.startsWith(IN_PROGRESS_ASIDE_PREFIX)) continue;
+		const treePath = join(asideStagingDir, entry.name);
+		const retention = await retainDisplacedRelease(dirname(application.dirPath), application.name, treePath).catch(
+			(error) => {
+				application.logger.warn(`Could not keep the previous release at ${treePath}; leaving it in place:`, error);
+				return { verdict: 'failed' } as const;
+			}
+		);
+		if (retention.verdict === 'failed') {
+			paths.delete(treePath);
+			paths.delete(retiredMarkerForAside(treePath));
+		}
 	}
 	await cleanupExtractionPaths(application, asideStagingDir, paths);
 }
@@ -3558,9 +4154,11 @@ export async function retireComponentDirectory(
 				asideStagingDir,
 				new Set([droppedPath])
 			);
-			// A dropped component has no next deploy to bound its dormant builds.
+			// A dropped component has no next deploy to bound its dormant builds, and nothing left for its records to
+			// describe.
 			try {
 				await pruneDormantBuilds(componentName, await dormantBuildsOf(dirname(componentDirPath), componentName), 0);
+				await reclaimDeploymentRecordsOf(dirname(componentDirPath), componentName);
 			} catch (error) {
 				componentLogger.warn(
 					`Dropped ${componentName} but could not reclaim its dormant staged builds:`,
@@ -3569,6 +4167,31 @@ export async function retireComponentDirectory(
 			}
 		},
 	};
+}
+
+/** Journaled directories stay: an activation nobody settled is evidence, not litter. */
+async function reclaimDeploymentRecordsOf(componentsRootDirPath: string, componentName: string): Promise<void> {
+	const stagingRoot = join(componentsRootDirPath, DEPLOY_STAGING_DIR);
+	const entries = await readdir(stagingRoot, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
+		if (error?.code === 'ENOENT') return [];
+		throw error;
+	});
+	await sweepAbandonedClaims(stagingRoot, entries, componentName);
+	for (const entry of entries) {
+		if (!isDeploymentDirectoryEntry(entry)) continue;
+		const deploymentDirPath = join(stagingRoot, entry.name);
+		try {
+			if ((await candidateComponentName(deploymentDirPath)) !== componentName) continue;
+			if (await presentOrAbsent(join(deploymentDirPath, ACTIVATION_JOURNAL))) continue;
+			if (await presentOrAbsent(join(deploymentDirPath, componentName))) continue;
+			await rm(deploymentDirPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+		} catch (error) {
+			logger.warn(
+				`Could not reclaim the deployment record ${deploymentDirPath} of ${componentName}:`,
+				errorForLog(error)
+			);
+		}
+	}
 }
 
 async function cleanupExtractionPaths(
@@ -4160,6 +4783,7 @@ interface ApplicationOptions {
 	// Deploy credentials already resolved to literal tokens, of any kind; partitioned by the
 	// constructor into the npm and git halves, which are injected by entirely different mechanisms.
 	credentials?: ResolvedCredential[];
+	preview?: PreviewMetadata;
 }
 
 export class Application {
@@ -4188,10 +4812,19 @@ export class Application {
 	isNewComponent: boolean = true;
 	packageMetadataChanged: boolean = false;
 	installationIsOpaque: boolean = false;
+	alreadyActive: boolean = false;
+	/** This preparation registered its release for certification, or joined one already in flight. */
+	certificationArmed: boolean = false;
+	/** What identifies the tree this preparation made live, read under its lock (see `LiveTree.deploymentId`). */
+	installedTree: string | null | undefined;
+	sourceIdentity?: string;
+	installFingerprint?: InstallFingerprint;
+	preview?: PreviewMetadata;
 
-	constructor({ name, payload, packageIdentifier, install, onInstallLine, credentials }: ApplicationOptions) {
+	constructor({ name, payload, packageIdentifier, install, onInstallLine, credentials, preview }: ApplicationOptions) {
 		this.name = name;
 		this.payload = payload;
+		this.preview = preview;
 		this.packLocalDirectory = shouldPackLocalDirectory(packageIdentifier);
 		this.packageIdentifier = packageIdentifier && derivePackageIdentifier(packageIdentifier);
 		this.install = install;
@@ -4372,10 +5005,129 @@ export type PrepareApplicationOptions = {
 	 * caller installing FROM root config needs. A callback rather than a value because `beforePrepare` is
 	 * what determines it, and that runs after these options have been constructed.
 	 */
-	describeArtifact?: () => { rootConfig: Record<string, unknown> | null; isolated: boolean };
-	/** `activate` only: admit the artifact's isolation intent under the preparation lock, before the swap. */
-	admitIsolation?: (descriptor: ArtifactDescriptor) => Promise<void>;
+	describeArtifact?: () => { rootConfig: Record<string, unknown> | null; routing?: PayloadRouting; isolated: boolean };
+	/**
+	 * `activate` only: admit the artifact's isolation intent under the preparation lock, before the swap; without a
+	 * descriptor, the live release's, before it is certified again.
+	 */
+	admitIsolation?: (descriptor?: ArtifactDescriptor) => Promise<void>;
+	/** Wraps the swap, so a caller can hold its own admission across a check and the release going live. */
+	aroundActivation?: (candidateDirPath: string, activate: () => Promise<void>) => Promise<void>;
+	fingerprintInstall?: boolean;
+	/** Certify the release this activation makes live (components/canaryRollout.ts). */
+	certification?: ActivationCertification;
+	/** `activate` only: refuse unless this deployment is the one live now — the restore of a rejected release. */
+	onlyIfLive?: string;
 };
+
+/**
+ * The start gate is armed before a certified release can go live, and told once it has. `arm` answers whether a
+ * worker here can certify it at all; nothing is recorded when none can.
+ */
+export type ActivationCertification = {
+	arm(previous: string | null, wasAbsent: boolean): Promise<boolean>;
+	commit(): Promise<void>;
+	withdraw(): Promise<void>;
+	/** Has main keep the decision another deploy armed for this activation too; false once that decision closed. */
+	join?(): Promise<boolean>;
+};
+
+/** The id the tree this activation displaces will be kept under, decided from what `retainDisplacedRelease` reads. */
+async function keptPredecessorOf(application: Application): Promise<{ previous: string | null; wasAbsent: boolean }> {
+	if (!(await presentOrAbsent(application.dirPath))) return { previous: null, wasAbsent: true };
+	if ((await stagingRetentionMaxCountOf(dirname(application.dirPath), application.name)) === 0) {
+		return { previous: null, wasAbsent: false };
+	}
+	const deploymentId = await readDeploymentProvenance(application.dirPath, application.name).catch(() => undefined);
+	if (deploymentId === undefined) return { previous: null, wasAbsent: false };
+	const recordDirPath = join(dirname(application.dirPath), DEPLOY_STAGING_DIR, deploymentId);
+	const keepable = await isDeploymentRecord(recordDirPath, application.name).catch(() => false);
+	return { previous: keepable ? deploymentId : null, wasAbsent: false };
+}
+
+/** Before the first rename: the gate first, then the durable record, so neither can lag a live release. */
+async function beginCertification(
+	application: Application,
+	deploymentId: string,
+	certification: ActivationCertification | undefined,
+	predecessor?: { previous: string | null; wasAbsent: boolean }
+): Promise<boolean> {
+	if (!certification) return false;
+	const { previous, wasAbsent } = predecessor ?? (await keptPredecessorOf(application));
+	if (!(await certification.arm(previous, wasAbsent))) return false;
+	try {
+		await writeCertificationRecord(dirname(application.dirPath), {
+			component: application.name,
+			deploymentId,
+			previous,
+			wasAbsent,
+			state: 'pending',
+			incarnation: processIncarnation,
+		});
+	} catch (error) {
+		await certification.withdraw().catch(() => {});
+		throw error;
+	}
+	application.certificationArmed = true;
+	return true;
+}
+
+/** A failure past the commit, or a compensation that did not finish, leaves the release possibly live: certify it. */
+async function activateCertifying(
+	application: Application,
+	deploymentId: string,
+	rootConfig: RootConfigEffect,
+	certification: ActivationCertification | undefined
+): Promise<void> {
+	const armed = await beginCertification(application, deploymentId, certification);
+	try {
+		await activateCandidateApplication(application, deploymentId, { rootConfig });
+	} catch (error) {
+		if (armed) {
+			// Either way, the caller is owed the activation's failure, not a failure to tell main about it.
+			if (activationCommitted(error) || compensationIncomplete(error)) {
+				await certification!
+					.commit()
+					.catch((commitError) =>
+						application.logger.error(`Could not commit the certification of ${deploymentId}:`, commitError)
+					);
+			} else {
+				application.certificationArmed = false;
+				await removeCertificationRecord(dirname(application.dirPath), deploymentId).catch((removeError) =>
+					application.logger.warn(`Could not remove the certification record of ${deploymentId}:`, removeError)
+				);
+				await certification!
+					.withdraw()
+					.catch((withdrawError) =>
+						application.logger.error(`Could not withdraw the certification of ${deploymentId}:`, withdrawError)
+					);
+			}
+		}
+		throw error;
+	}
+	if (armed) await certification!.commit();
+}
+
+/** No other preparation or drop may replace a release while this process is deciding whether it may run. */
+export async function assertNotCertifying(
+	componentDirPath: string,
+	componentName: string,
+	sameDeploymentId?: string
+): Promise<void> {
+	const live = await liveCertification(dirname(componentDirPath), componentName);
+	if (!live || sameDeploymentId === live.deploymentId) return;
+	if ('record' in live) {
+		if (live.record.state === 'rejected' || live.record.incarnation !== processIncarnation) return;
+	} else if (!(await certificationRequest('open', { component: componentName, deploymentId: live.deploymentId }))) {
+		// With nothing open for it here, a deploy or a drop is how a component with an unreadable record recovers.
+		return;
+	}
+	throw new ClientError(
+		`Cannot change ${componentName} while its release ${live.deploymentId} is being certified on this node; ` +
+			`retry once its canary has decided`,
+		409
+	);
+}
 
 export async function prepareApplication(application: Application, options: PrepareApplicationOptions = {}) {
 	const lifecycleToken = await broadcastDeployStart(application.name);
@@ -4404,6 +5156,7 @@ export async function prepareApplication(application: Application, options: Prep
 				// have the artifact evicted out from under the exclusive claim below, which would then rebuild
 				// different bytes under an id that already named some.
 				await settleStagingForComponent(dirname(application.dirPath), application.name, artifactId);
+				await assertNotCertifying(application.dirPath, application.name, mode === 'activate' ? artifactId : undefined);
 				if (recoveryPending) {
 					await ensureExtractionStagingDirectory(asideStagingDir);
 					await recoverOrCleanupStaleExtractionPaths(application, asideStagingDir);
@@ -4419,6 +5172,24 @@ export async function prepareApplication(application: Application, options: Prep
 					}
 				));
 				if (mode === 'activate') {
+					const liveDeploymentId = await readDeploymentProvenance(application.dirPath, application.name);
+					if (options.onlyIfLive !== undefined && liveDeploymentId !== options.onlyIfLive) {
+						throw new ClientError(
+							`Not restoring ${application.name} from deployment ${artifactId}: the release live here is no ` +
+								`longer ${options.onlyIfLive}`,
+							409
+						);
+					}
+					// A retry of an activation that swapped here and failed later or elsewhere: answered without a swap so
+					// it can go on to the nodes still holding the artifact. Nothing can tell whether the running workers
+					// loaded it, hence the restart request.
+					if (liveDeploymentId === artifactId) {
+						application.alreadyActive = true;
+						application.packageMetadataChanged = true;
+						application.logger.debug?.(`Deployment ${artifactId} is already live; nothing to swap`);
+						await recertifyLiveRelease(application, artifactId, options.certification, options.admitIsolation);
+						return;
+					}
 					await activateStagedArtifact(application, artifactId, previousPackageMetadata, options);
 					return;
 				}
@@ -4434,6 +5205,7 @@ export async function prepareApplication(application: Application, options: Prep
 						await application.startGitCredentialSession();
 						candidateDirPath = await buildCandidateApplication(application, artifactId, {
 							rejectLinkSource: mode === 'stage',
+							fingerprint: options.fingerprintInstall,
 						});
 					} finally {
 						await application.cleanupGitCredentialSession();
@@ -4459,6 +5231,7 @@ export async function prepareApplication(application: Application, options: Prep
 								v: ARTIFACT_DESCRIPTOR_VERSION,
 								component: application.name,
 								rootConfig: declared.rootConfig,
+								routing: declared.routing,
 								installationIsOpaque: application.installationIsOpaque,
 								isolated: declared.isolated,
 							});
@@ -4466,11 +5239,34 @@ export async function prepareApplication(application: Application, options: Prep
 							await syncArtifactAncestors(candidateDeploymentDirPath(application.dirPath, artifactId));
 							return;
 						}
-						await markCandidateComplete(application.dirPath, artifactId, application.name);
 						const declared = options.describeArtifact?.();
-						await activateCandidateApplication(application, artifactId, {
-							rootConfig: declared ? rootConfigEffectFromDeclaration(declared.rootConfig) : { kind: 'keep' },
-						});
+						// The directory outlives the swap as the record a later displacement puts this release back into;
+						// a link has no bytes of its own to put back.
+						const linked = (await lstat(candidateDirPath)).isSymbolicLink();
+						const linkedTo = linked ? await readlink(candidateDirPath) : undefined;
+						const described = declared && !linked ? declared : undefined;
+						if (described) {
+							await writeArtifactDescriptor(application.dirPath, artifactId, {
+								v: ARTIFACT_DESCRIPTOR_VERSION,
+								component: application.name,
+								rootConfig: described.rootConfig,
+								routing: described.routing,
+								installationIsOpaque: application.installationIsOpaque,
+								isolated: described.isolated,
+							});
+						}
+						await markCandidateComplete(application.dirPath, artifactId, application.name);
+						// The record is meant to outlive the swap, so its own entry has to be on storage, as a stage's is.
+						if (described) await syncArtifactAncestors(candidateDeploymentDirPath(application.dirPath, artifactId));
+						await activateAround(options, candidateDirPath, () =>
+							activateCertifying(
+								application,
+								artifactId,
+								declared ? rootConfigEffectFromDeclaration(declared.rootConfig, declared.routing) : { kind: 'keep' },
+								described ? options.certification : undefined
+							)
+						);
+						application.installedTree = linked ? `link:${linkedTo}` : artifactId;
 					} catch (error) {
 						// The builder's own cleanup only covers a failed BUILD. A rejected validation, or an
 						// activation that was cleanly compensated, would otherwise leave a whole installed
@@ -4551,11 +5347,13 @@ async function activateStagedArtifact(
 		throw unusable('an activation of it is unsettled');
 	}
 	const candidateStat = await presentOrAbsent(candidateDirPath);
-	if (!candidateStat || !candidateStat.isDirectory()) {
+	// The record of a release that is neither live nor kept here: nothing on this node answers to the id.
+	if (!candidateStat) throw missing('that release is no longer on this node');
+	if (!candidateStat.isDirectory()) {
 		// Unlike an immediate deploy, a symlink is refused: a `file:` directory is linked rather than
 		// copied, so what it points at now is not what was certified. Staging rejects the source for the
 		// same reason; this is the other end of the same rule, for an artifact staged by an older build.
-		throw unusable('its build tree is missing or is a link rather than a copy');
+		throw unusable('its build tree is a link rather than a copy');
 	}
 	const descriptor = await readArtifactDescriptor(deploymentDirPath, application.name);
 	if (!descriptor) throw unusable('it does not record what its build decided');
@@ -4578,9 +5376,65 @@ async function activateStagedArtifact(
 			descriptor.installationIsOpaque
 		);
 	}
-	await activateCandidateApplication(application, artifactId, {
-		rootConfig: rootConfigEffectFromDeclaration(descriptor.rootConfig),
-	});
+	await activateAround(options, candidateDirPath, () =>
+		activateCertifying(
+			application,
+			artifactId,
+			rootConfigEffectFromDeclaration(descriptor.rootConfig, descriptor.routing),
+			options.certification
+		)
+	);
+}
+
+function activateAround(
+	options: PrepareApplicationOptions,
+	candidateDirPath: string,
+	activate: () => Promise<void>
+): Promise<void> {
+	return options.aroundActivation ? options.aroundActivation(candidateDirPath, activate) : activate();
+}
+
+/**
+ * An `activate` of the release already live: joins a decision this process has in flight, or certifies again a
+ * release its canary rejected — the retry a rejected first deploy, which has no predecessor to go back to, needs.
+ */
+async function recertifyLiveRelease(
+	application: Application,
+	deploymentId: string,
+	certification: ActivationCertification | undefined,
+	admitIsolation?: PrepareApplicationOptions['admitIsolation']
+): Promise<void> {
+	if (!certification) return;
+	let live = await liveCertification(dirname(application.dirPath), application.name);
+	if (!live) return;
+	if ('record' in live && live.record.state !== 'rejected' && live.record.incarnation === processIncarnation) {
+		if (!certification.join || (await certification.join())) {
+			application.certificationArmed = true;
+			return;
+		}
+		// Its decision closed before this join: read it from the record it left, as a later activation would.
+		live = await liveCertification(dirname(application.dirPath), application.name);
+		if (!live || ('record' in live && live.record.state === 'certified')) return;
+		if ('record' in live && live.record.state === 'pending') {
+			throw new ClientError(
+				`Cannot activate ${application.name}'s live release ${deploymentId}: its certification closed before this ` +
+					`activation joined it, and its record does not say how it was decided; retry once Harper has restarted`,
+				409
+			);
+		}
+	}
+	if (!rejectionReason(live, processIncarnation)) return;
+	// Certifying it again writes a new record over the one that names the release to put back.
+	if ('unreadable' in live) {
+		throw new ClientError(
+			`Cannot certify ${application.name}'s live release ${deploymentId} again while its certification record cannot ` +
+				`be read (${live.unreadable.message}); deploy another release, or retry once the record can be read`,
+			409
+		);
+	}
+	await admitIsolation?.();
+	const predecessor = { previous: live.record.previous, wasAbsent: live.record.wasAbsent };
+	if (await beginCertification(application, deploymentId, certification, predecessor)) await certification.commit();
 }
 
 export function getStartupInstallTimeoutMs(): number {
@@ -4799,16 +5653,19 @@ async function installConfiguredApplication(
 	onDeployStart: (deploymentId: string) => void
 ): Promise<void> {
 	try {
-		// Lock check: only install if not already installed with matching configuration
-		const installedConfig = (await readApplicationLock(harperApplicationLockPath)).applications[name];
-		if (
-			existsSync(dirPath) &&
-			installedConfig &&
-			JSON.stringify(installedConfig) === JSON.stringify(applicationConfig)
-		) {
-			logger.info?.(`Application ${name} is already installed with matching configuration; skipping installation`);
+		// Never replaced from its source while its release is undecided, or after it was refused: only a deploy,
+		// an activation or a drop moves on from either, and a reinstall would erase the evidence the refusal rests on.
+		const live = await liveCertification(dirname(dirPath), name);
+		const refusal = live && rejectionReason(live, processIncarnation);
+		if (refusal) {
+			logger.error?.(`Not installing application ${name} over its live release ${live.deploymentId}: ${refusal}`);
 			return;
 		}
+		if (live && 'record' in live && live.record.incarnation === processIncarnation) {
+			logger.info?.(`Not reinstalling application ${name} while its release ${live.deploymentId} is being certified`);
+			return;
+		}
+		if (await keepsInstalledTree(name, applicationConfig, dirPath, harperApplicationLockPath)) return;
 
 		// Resolve any credential references from the store so a cold install (fresh node, wiped
 		// components dir, new peer that never installed) can authenticate without the token being
@@ -4840,7 +5697,8 @@ async function installConfiguredApplication(
 			name,
 			applicationConfig,
 			(clearEntry) => prepareApplication(application, { beforePrepare: clearEntry, onDeployStart }),
-			(mutate) => updateApplicationLock(harperApplicationLockPath, mutate)
+			(mutate) => updateApplicationLock(harperApplicationLockPath, mutate),
+			async () => application.installedTree
 		);
 	} catch (error) {
 		logger.error?.(`Failed to prepare application ${name}:`, errorForLog(error));
@@ -4848,8 +5706,81 @@ async function installConfiguredApplication(
 	}
 }
 
-type ApplicationLockFile = { applications: Record<string, ApplicationConfig> };
-type ApplicationLockMutation = (applications: ApplicationLockFile['applications']) => void;
+/**
+ * Whether startup keeps the tree at `dirPath` rather than installing `applicationConfig` over it. When the live
+ * tree's deployment declared an entry, that entry decides, ahead of the application lock: no deploy writes the lock,
+ * so after one it still names the entry the deploy replaced, and a root config set back to that entry would keep
+ * the deployed tree. Otherwise the lock decides, and only for the tree it records installing: one a deploy made live
+ * since, whose record is gone, is installed over. A lock written before it recorded trees decides for any.
+ */
+export async function keepsInstalledTree(
+	name: string,
+	applicationConfig: ApplicationConfig,
+	dirPath: string,
+	harperApplicationLockPath: string
+): Promise<boolean> {
+	const live = await liveTree(name, dirPath);
+	if (live.declared !== undefined) {
+		if (!isDeepStrictEqual(live.declared, applicationConfig)) return false;
+		logger.info?.(`Application ${name} is live from a deployment of this configuration; skipping installation`);
+		return true;
+	}
+	const lock = await readApplicationLock(harperApplicationLockPath);
+	const installedConfig = lock.applications[name];
+	if (
+		!existsSync(dirPath) ||
+		!installedConfig ||
+		JSON.stringify(installedConfig) !== JSON.stringify(applicationConfig)
+	) {
+		return false;
+	}
+	const installedTree = lock.trees?.[name];
+	if (installedTree !== undefined && installedTree !== live.deploymentId) return false;
+	logger.info?.(`Application ${name} is already installed with matching configuration; skipping installation`);
+	return true;
+}
+
+type LiveTree = {
+	/**
+	 * What identifies the live tree: the deployment its marker names, `link:` and the target for a link, which carries no
+	 * marker, `null` for a tree with neither, and `undefined` when it cannot be read.
+	 */
+	deploymentId: string | null | undefined;
+	/**
+	 * The root-config entry its deployment declared: `null` for a payload build, and for a record that exists but
+	 * cannot be read, since only a deploy writes one and no deploy writes the lock. `undefined` with no record to ask:
+	 * a tree startup installed, a link, or a tree made live before deployments kept records.
+	 */
+	declared: Record<string, unknown> | null | undefined;
+};
+
+async function liveTree(name: string, dirPath: string): Promise<LiveTree> {
+	let deploymentId: string | undefined;
+	try {
+		if ((await presentOrAbsent(dirPath))?.isSymbolicLink()) {
+			return { deploymentId: `link:${await readlink(dirPath)}`, declared: undefined };
+		}
+		deploymentId = await readDeploymentProvenance(dirPath, name);
+	} catch (error) {
+		logger.warn?.(
+			`Could not read which deployment ${name} was activated from; its application lock decides instead:`,
+			error
+		);
+		return { deploymentId: undefined, declared: undefined };
+	}
+	if (deploymentId === undefined) return { deploymentId: null, declared: undefined };
+	try {
+		const descriptor = await readArtifactDescriptor(join(dirname(dirPath), DEPLOY_STAGING_DIR, deploymentId), name);
+		return { deploymentId, declared: descriptor?.rootConfig };
+	} catch (error) {
+		logger.warn?.(`Could not read the deployment ${name} was activated from; installing it from root config:`, error);
+		return { deploymentId, declared: null };
+	}
+}
+
+/** The tree identifier the lock records for an entry is what that tree's marker named when startup installed it. */
+type ApplicationLockFile = { applications: Record<string, ApplicationConfig>; trees?: Record<string, string | null> };
+type ApplicationLockMutation = (applications: ApplicationLockFile['applications'], lock: ApplicationLockFile) => void;
 
 // Every read and read-modify-write of one lock file runs in this per-path order. A preparation can finish
 // after a later installApplications() call has read the file, so each transition is applied to what is on
@@ -4884,7 +5815,7 @@ export function updateApplicationLock(
 ): Promise<void> {
 	return enqueueApplicationLockTask(harperApplicationLockPath, async () => {
 		const lock = await readApplicationLockFile(harperApplicationLockPath);
-		mutate(lock.applications);
+		mutate(lock.applications, lock);
 		const tempPath = `${harperApplicationLockPath}.${process.pid}.${randomUUID()}.tmp`;
 		await writeFile(tempPath, JSON.stringify(lock, null, 2), 'utf8');
 		await rename(tempPath, harperApplicationLockPath);
@@ -4901,20 +5832,26 @@ export function updateApplicationLock(
  * left partially written (which would make `installApplications`'s already-installed check skip
  * the required reinstall forever). `prepare` runs `clearEntry` under the component's preparation lock,
  * so the removal cannot land before the success write of an earlier preparation still holding it.
+ * `identifyTree` names the tree the preparation made live, recorded with the success so that a later start trusts
+ * the entry only for that tree; `undefined` records none.
  */
 export async function recordApplicationPreparation(
 	name: string,
 	applicationConfig: ApplicationConfig,
 	prepare: (clearEntry: () => Promise<void>) => Promise<void>,
-	updateLock: (mutate: ApplicationLockMutation) => Promise<void>
+	updateLock: (mutate: ApplicationLockMutation) => Promise<void>,
+	identifyTree?: () => Promise<string | null | undefined>
 ): Promise<void> {
 	await prepare(() =>
-		updateLock((applications) => {
+		updateLock((applications, lock) => {
 			delete applications[name];
+			if (lock?.trees) delete lock.trees[name];
 		})
 	);
-	await updateLock((applications) => {
+	const tree = await identifyTree?.();
+	await updateLock((applications, lock) => {
 		applications[name] = applicationConfig;
+		if (tree !== undefined && lock) (lock.trees ??= {})[name] = tree;
 	});
 }
 
@@ -4972,7 +5909,7 @@ export function rewriteSshConfigPaths(
 export async function materializeGitSSH(): Promise<{ command: string; cleanup: () => Promise<void> } | undefined> {
 	const rootDir = getConfigValue(CONFIG_PARAMS.ROOTPATH);
 	if (!rootDir) return; // config not initialized (e.g. an install-time spawn) — no ssh dir to read
-	const sshDir = join(rootDir, 'ssh');
+	const sshDir = join(rootDir, SSH_KEY_DIR_NAME);
 	// `withFileTypes` so a stray subdirectory in the ssh dir (e.g. one named `foo.key`) is filtered
 	// out here rather than reaching `readFile` below and throwing EISDIR, which would abort the
 	// whole spawn instead of just skipping that one entry.
@@ -5177,8 +6114,8 @@ function spawnWithEnv(
 ): Promise<{ stdout: string; stderr: string; code: number }> {
 	return new Promise((resolve, reject) => {
 		logger
-			.loggerWithTag(`${applicationName}:spawn:${command}`)
-			.debug?.(`Executing \`${command} ${args.join(' ')}\` in ${cwd}`);
+			.loggerWithTag(`${applicationName}:spawn:${command}`, true)
+			.debug?.(redactUrlCredentials(`Executing \`${command} ${args.join(' ')}\` in ${cwd}`));
 
 		const env = { ...process.env };
 
@@ -5296,8 +6233,6 @@ function spawnWithEnv(
 		childProcess.stdout.on('data', (chunk) => {
 			// buffer stdout for later resolve
 			stdout += chunk.toString();
-			// log stdout lines immediately
-			logger.loggerWithTag(`${applicationName}:spawn:${command}:stdout`).debug?.(chunk.toString());
 			stdoutSplitter?.push(chunk);
 		});
 
@@ -5314,6 +6249,8 @@ function spawnWithEnv(
 			didFlushOutput = true;
 			stdoutSplitter?.flush();
 			stderrSplitter?.flush();
+			// Whole, not per chunk: a URL split across two chunks has no scheme in the second for redaction to find.
+			if (stdout) printStd(applicationName, command, stdout, 'stdout');
 		};
 
 		childProcess.on('error', (error) => {
@@ -5400,7 +6337,7 @@ const PROCESS_CLOSE_WAIT_MS = 5000;
 class CommandTimeoutError extends Error {
 	statusCode = 500;
 	constructor(command: string, args: string[], timeoutMs: number, cause?: unknown) {
-		super(`Command \`${command} ${args.join(' ')}\` timed out after ${timeoutMs}ms`, { cause });
+		super(redactUrlCredentials(`Command \`${command} ${args.join(' ')}\` timed out after ${timeoutMs}ms`), { cause });
 		this.name = 'CommandTimeoutError';
 	}
 }
@@ -5487,18 +6424,6 @@ export async function terminateProcessTree(
 	await waitForProcessClose(childProcess, closePromise);
 }
 
-export function getEnvBuiltInComponents() {
-	const builtInComponents: { name: string; packageIdentifier: string }[] = [];
-	if (process.env.HARPER_BUILTIN_COMPONENTS) {
-		for (const componentDefinition of process.env.HARPER_BUILTIN_COMPONENTS.split(',')) {
-			const [name, packageIdentifier] = componentDefinition.trim().split('=');
-			if (!componentDefinition) continue;
-			builtInComponents.push({ name, packageIdentifier });
-		}
-	}
-	return builtInComponents;
-}
-
 function printStd(
 	applicationName: string,
 	command: string,
@@ -5506,8 +6431,9 @@ function printStd(
 	stdStreamLabel: 'stdout' | 'stderr',
 	level: 'debug' | 'warn' | 'error' = 'debug'
 ) {
-	const stdLogger = logger.loggerWithTag(`${applicationName}:spawn:${command}:${stdStreamLabel}`);
-	for (const line of stdString.split('\n')) {
-		stdLogger[level]?.(line);
+	const stdLogger = logger.loggerWithTag(`${applicationName}:spawn:${command}:${stdStreamLabel}`, true);
+	if (!stdLogger[level]) return;
+	for (const line of redactUrlCredentials(stdString).split('\n')) {
+		stdLogger[level](line);
 	}
 }

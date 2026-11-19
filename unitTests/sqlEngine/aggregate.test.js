@@ -22,6 +22,7 @@ function makeMockTable({ primaryKey = 'id', attributes = [], rows = [] } = {}) {
 		attributes: attributes.map((a) => ({ name: a.name, indexed: !!a.indexed })),
 		indices: Object.fromEntries(attributes.filter((a) => a.indexed).map((a) => [a.name, true])),
 		_lastTarget: null,
+		_authorizeSelectedRelationships: (select) => select,
 		async *search(target) {
 			table._lastTarget = target;
 			let result = [...rows];

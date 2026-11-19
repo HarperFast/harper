@@ -117,6 +117,113 @@ describe('OpenAIBackend', () => {
 	});
 
 	describe('embed', () => {
+		const inputPrefixes = { document: 'search_document: ', query: 'search_query: ' };
+		for (const [label, prefixes, inputType, expected] of [
+			['document', inputPrefixes, 'document', 'search_document: '],
+			['query', inputPrefixes, 'query', 'search_query: '],
+			['no inputType', inputPrefixes, undefined, ''],
+			['unconfigured', undefined, 'document', ''],
+			['missing key', { document: 'doc: ' }, 'query', ''],
+			['empty prefix', { document: '' }, 'document', ''],
+			['verbatim whitespace', { query: ' λ: \n' }, 'query', ' λ: \n'],
+		]) {
+			for (const input of ['hello', Object.freeze(['hello', '', 'search_document: existing'])]) {
+				it(`applies inputPrefixes: ${label}, ${Array.isArray(input) ? 'batch' : 'scalar'}`, async () => {
+					const original = Array.isArray(input) ? [...input] : [input];
+					const fetch = mockFetch(() =>
+						jsonResponse({ data: original.map((_, index) => ({ index, embedding: [index] })) })
+					);
+					const backend = new OpenAIBackend({ apiKey: API_KEY, model: 'served-alias', inputPrefixes: prefixes }, fetch);
+					await backend.embed(input, { accounting: ACCOUNTING, inputType });
+					assert.deepStrictEqual(
+						JSON.parse(fetch.calls[0].init.body).input,
+						original.map((text) => expected + text)
+					);
+					assert.deepStrictEqual(Array.isArray(input) ? input : [input], original);
+				});
+			}
+		}
+
+		it('captures per-entry prefixes at construction, including when the provider model is overridden', async () => {
+			const fetch = mockFetch(() => jsonResponse({ data: [{ embedding: [0] }] }));
+			const prefixes = { document: 'original: ' };
+			const backend = new OpenAIBackend({ apiKey: API_KEY, model: 'm', inputPrefixes: prefixes }, fetch);
+			prefixes.document = 'changed: ';
+			await backend.embed('x', { accounting: ACCOUNTING, inputType: 'document', model: 'override' });
+			assert.deepStrictEqual(JSON.parse(fetch.calls[0].init.body), { model: 'override', input: ['original: x'] });
+			const other = new OpenAIBackend({ apiKey: API_KEY, model: 'm' }, fetch);
+			await other.embed('x', { accounting: ACCOUNTING, inputType: 'document' });
+			assert.deepStrictEqual(JSON.parse(fetch.calls[1].init.body).input, ['x']);
+		});
+
+		for (const inputPrefixes of [
+			null,
+			[],
+			'prefix',
+			{ document: 42 },
+			{ query: false },
+			{ typo: 'x' },
+			{ document: '${UNSET_PREFIX}' },
+		]) {
+			it(`rejects invalid inputPrefixes at construction: ${JSON.stringify(inputPrefixes)}`, () => {
+				assert.throws(() => new OpenAIBackend({ apiKey: API_KEY, inputPrefixes }), OpenAIBackendError);
+			});
+		}
+
+		describe('truncation', () => {
+			const VLLM = { apiKey: API_KEY, model: 'nomic', baseUrl: 'http://vllm.local/v1', truncation: 'vllm' };
+
+			it("advertises truncate only for truncation: 'vllm', also once scoring is switched off", async () => {
+				assert.strictEqual(new OpenAIBackend({ apiKey: API_KEY, model: 'm' }).capabilities().truncate, undefined);
+				const fetch = mockFetch(() => jsonResponse({ choices: [{ message: { content: 'A' }, logprobs: null }] }));
+				const b = new OpenAIBackend(VLLM, fetch);
+				assert.strictEqual(b.capabilities().truncate, true);
+				assert.ok(Object.isFrozen(b.capabilities()));
+				await assert.rejects(
+					b.scoreChoices('q', ['x', 'y'], { accounting: ACCOUNTING }),
+					ChoiceScoringUnsupportedError
+				);
+				assert.strictEqual(b.capabilities().scoreChoices, false);
+				assert.strictEqual(b.capabilities().truncate, true);
+			});
+
+			it("sends vLLM's start-keeping truncation fields after the prefix, only with truncate: true", async () => {
+				for (const [truncate, expected] of [
+					[true, { truncate_prompt_tokens: -1, truncation_side: 'right' }],
+					[false, {}],
+					[undefined, {}],
+				]) {
+					const fetch = mockFetch(() => jsonResponse({ data: [{ embedding: [0] }, { embedding: [1] }] }));
+					const b = new OpenAIBackend({ ...VLLM, inputPrefixes: { document: 'search_document: ' } }, fetch);
+					const input = Object.freeze(['a', 'b']);
+					await b.embed(input, { accounting: ACCOUNTING, inputType: 'document', truncate });
+					assert.deepStrictEqual(
+						JSON.parse(fetch.calls[0].init.body),
+						{ model: 'nomic', input: ['search_document: a', 'search_document: b'], ...expected },
+						`truncate: ${truncate}`
+					);
+				}
+			});
+
+			it('never sends the vLLM fields without truncation configured, refusing truncate: true before any request', async () => {
+				const fetch = mockFetch(() => jsonResponse({ data: [{ embedding: [0] }] }));
+				const b = new OpenAIBackend({ apiKey: API_KEY, model: 'text-embedding-3-small' }, fetch);
+				await assert.rejects(
+					b.embed('x', { accounting: ACCOUNTING, truncate: true }),
+					(err) => err instanceof OpenAIBackendError && /truncation: 'vllm'/.test(err.message)
+				);
+				assert.strictEqual(fetch.calls.length, 0);
+				await b.embed('x', { accounting: ACCOUNTING, truncate: false });
+				assert.deepStrictEqual(JSON.parse(fetch.calls[0].init.body), { model: 'text-embedding-3-small', input: ['x'] });
+			});
+
+			for (const truncation of ['tei', true, '', 'VLLM']) {
+				it(`rejects truncation ${JSON.stringify(truncation)} at construction`, () => {
+					assert.throws(() => new OpenAIBackend({ apiKey: API_KEY, truncation }), OpenAIBackendError);
+				});
+			}
+		});
+
 		it('POSTs /embeddings and returns Float32Array vectors', async () => {
 			const fetch = mockFetch(() =>
 				jsonResponse({
@@ -464,6 +571,37 @@ describe('OpenAIBackend', () => {
 			const fetch = mockFetch(() => jsonResponse({ choices: [{ message: { role: 'assistant', content: 42 } }] }));
 			const b = new OpenAIBackend({ apiKey: API_KEY, model: 'm' }, fetch);
 			await assert.rejects(() => b.generate('q', { accounting: ACCOUNTING }), /content is not a string/);
+		});
+
+		it("flags a context_length_exceeded rejection, by code or by a compatible server's wording", async () => {
+			for (const error of [
+				{ message: 'Your input exceeds the context window of this model.', code: 'context_length_exceeded' },
+				{ message: "This model's maximum context length is 8192 tokens. However, you requested 9000 tokens." },
+			]) {
+				const fetch = mockFetch(() => jsonResponse({ error }, { status: 400 }));
+				const b = new OpenAIBackend({ apiKey: API_KEY, model: 'm' }, fetch);
+				await assert.rejects(
+					() => b.generate('q', { accounting: ACCOUNTING }),
+					(err) =>
+						err instanceof OpenAIBackendError && err.upstreamStatus === 400 && err.contextWindowExceeded === true,
+					error.message
+				);
+			}
+		});
+
+		it('does not flag other rejections', async () => {
+			for (const [status, error] of [
+				[400, { message: 'Invalid model: gpt-9000' }],
+				[429, { message: "This model's maximum context length is 8192 tokens" }],
+			]) {
+				const fetch = mockFetch(() => jsonResponse({ error }, { status }));
+				const b = new OpenAIBackend({ apiKey: API_KEY, model: 'm' }, fetch);
+				await assert.rejects(
+					() => b.generate('q', { accounting: ACCOUNTING }),
+					(err) => err instanceof OpenAIBackendError && err.contextWindowExceeded === undefined,
+					`HTTP ${status}`
+				);
+			}
 		});
 	});
 

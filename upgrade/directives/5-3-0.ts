@@ -1,8 +1,10 @@
-'use strict';
+import * as CreateTableObjectCjsModule from '../../dataLayer/CreateTableObject.ts';
+('use strict');
 
 // 5.3.0 — introduces system.hdb_oidc_trust and system.hdb_oidc_token_use for OIDC trusted
-// publishing (#2171), and system.hdb_model_decisions and system.hdb_model_outcomes for durable
-// decisions and their recorded outcomes (#2840).
+// publishing (#2171), system.hdb_model_decisions and system.hdb_model_outcomes for durable
+// decisions and their recorded outcomes (#2840), and system.hdb_model_calibrations for fitted
+// calibrations of those decisions (#2841).
 //
 // Fresh installs get these tables from json/systemSchema.json; this covers existing installs, and the
 // replay table's full shape is also declared on every boot (security/authn/oidc/tokenUseTable.ts). The
@@ -10,9 +12,9 @@
 // happens when it does not, and DESIGN.md "System table bootstrap" for the three touchpoints.
 
 import { databases } from '../../resources/databases.ts';
-import systemSchema from '../../json/systemSchema.json';
+import { systemSchema } from '../../utility/systemSchema.js';
 import * as terms from '../../utility/hdbTerms.ts';
-import * as initPaths from '../../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths.js';
+import * as initPaths from '../../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths.ts';
 import bridge from '../../dataLayer/harperBridge/harperBridge.ts';
 import hdbLogger from '../../utility/logging/harper_logger.ts';
 import { declareTokenUseTable } from '../../security/authn/oidc/tokenUseTable.ts';
@@ -20,6 +22,7 @@ import { declareTokenUseTable } from '../../security/authn/oidc/tokenUseTable.ts
 const OIDC_TRUST_TABLE = terms.SYSTEM_TABLE_NAMES.OIDC_TRUST_TABLE_NAME;
 const OIDC_TOKEN_USE_TABLE = terms.SYSTEM_TABLE_NAMES.OIDC_TOKEN_USE_TABLE_NAME;
 const MODEL_DECISIONS_TABLE = terms.SYSTEM_TABLE_NAMES.MODEL_DECISIONS_TABLE_NAME;
+const MODEL_CALIBRATIONS_TABLE = terms.SYSTEM_TABLE_NAMES.MODEL_CALIBRATIONS_TABLE_NAME;
 const MODEL_OUTCOMES_TABLE = terms.SYSTEM_TABLE_NAMES.MODEL_OUTCOMES_TABLE_NAME;
 
 /**
@@ -45,8 +48,7 @@ async function createHdbOidcTrustIfMissing() {
 
 	hdbLogger.info(`Creating system.${OIDC_TRUST_TABLE} table for OIDC trusted publishing.`);
 
-	const CreateTableObject =
-		require('../../dataLayer/CreateTableObject').default || require('../../dataLayer/CreateTableObject');
+	const CreateTableObject = CreateTableObjectCjsModule.default || CreateTableObjectCjsModule;
 	const schema = (systemSchema as any)[OIDC_TRUST_TABLE];
 	if (!schema) {
 		throw new Error(`systemSchema.${OIDC_TRUST_TABLE} is missing; cannot run 5.3.0 directive.`);
@@ -54,7 +56,7 @@ async function createHdbOidcTrustIfMissing() {
 
 	initPaths.initSystemSchemaPaths(terms.SYSTEM_SCHEMA_NAME, OIDC_TRUST_TABLE);
 	const createTable = new (CreateTableObject as any)(terms.SYSTEM_SCHEMA_NAME, OIDC_TRUST_TABLE, schema.hash_attribute);
-	createTable.attributes = schema.attributes;
+	createTable.attributes = structuredClone(schema.attributes);
 	const primaryKeyAttribute = createTable.attributes.find(({ attribute }) => attribute === schema.hash_attribute);
 	if (primaryKeyAttribute) primaryKeyAttribute.isPrimaryKey = true;
 	// Must match `"audit": true` in systemSchema.json, or the fresh-install and upgrade paths diverge.
@@ -87,8 +89,8 @@ async function patchIsHashAttribute(tableName: string) {
 	);
 }
 
-/** `audit: true` must match systemSchema.json: both decision tables replicate. */
-async function createSystemTableIfMissing(tableName: string, purpose: string) {
+/** `audit: true` must match systemSchema.json: every table created here replicates. */
+export async function createSystemTableIfMissing(tableName: string, purpose: string) {
 	if (databases.system?.[tableName]) {
 		hdbLogger.info(`system.${tableName} already exists; skipping create.`);
 		await patchIsHashAttribute(tableName);
@@ -97,16 +99,15 @@ async function createSystemTableIfMissing(tableName: string, purpose: string) {
 
 	hdbLogger.info(`Creating system.${tableName} table for ${purpose}.`);
 
-	const CreateTableObject =
-		require('../../dataLayer/CreateTableObject').default || require('../../dataLayer/CreateTableObject');
+	const CreateTableObject = CreateTableObjectCjsModule.default || CreateTableObjectCjsModule;
 	const schema = (systemSchema as any)[tableName];
 	if (!schema) {
-		throw new Error(`systemSchema.${tableName} is missing; cannot run 5.3.0 directive.`);
+		throw new Error(`systemSchema.${tableName} is missing; cannot create it in an upgrade directive.`);
 	}
 
 	initPaths.initSystemSchemaPaths(terms.SYSTEM_SCHEMA_NAME, tableName);
 	const createTable = new (CreateTableObject as any)(terms.SYSTEM_SCHEMA_NAME, tableName, schema.hash_attribute);
-	createTable.attributes = schema.attributes;
+	createTable.attributes = structuredClone(schema.attributes);
 	const primaryKeyAttribute = createTable.attributes.find(({ attribute }) => attribute === schema.hash_attribute);
 	if (primaryKeyAttribute) primaryKeyAttribute.isPrimaryKey = true;
 	createTable.audit = true;
@@ -123,16 +124,21 @@ async function createHdbModelOutcomesIfMissing() {
 	await createSystemTableIfMissing(MODEL_OUTCOMES_TABLE, 'recorded decision outcomes');
 }
 
+async function createHdbModelCalibrationsIfMissing() {
+	await createSystemTableIfMissing(MODEL_CALIBRATIONS_TABLE, 'fitted decision calibrations');
+}
+
 const directive530 = {
 	version: '5.3.0',
 	description:
-		'create system.hdb_oidc_trust and system.hdb_oidc_token_use tables for OIDC trusted publishing, and system.hdb_model_decisions and system.hdb_model_outcomes for durable decisions',
+		'create system.hdb_oidc_trust and system.hdb_oidc_token_use tables for OIDC trusted publishing, and system.hdb_model_decisions, system.hdb_model_outcomes and system.hdb_model_calibrations for durable, calibrated decisions',
 	sync_functions: [] as Array<() => unknown>,
 	async_functions: [
 		createHdbOidcTrustIfMissing,
 		declareHdbOidcTokenUse,
 		createHdbModelDecisionsIfMissing,
 		createHdbModelOutcomesIfMissing,
+		createHdbModelCalibrationsIfMissing,
 	] as Array<() => Promise<unknown>>,
 };
 

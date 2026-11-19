@@ -356,7 +356,7 @@ export async function describeMetric(metric: string): Promise<DescribeMetricResp
 	const attributes = [{ name: 'node', type: 'string' }];
 	for await (const result of results) {
 		for (const attr in result) {
-			attributes.push({ name: attr, type: typeof result[attr] });
+			if (result[attr] != null) attributes.push({ name: attr, type: typeof result[attr] });
 		}
 		const desc = {
 			attributes,

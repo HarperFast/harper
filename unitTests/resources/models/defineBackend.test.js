@@ -37,6 +37,7 @@ describe('defineBackend', () => {
 			structuredOutput: false,
 			noMatch: false,
 			calibratedNoMatch: false,
+			truncate: false,
 		});
 		assert.strictEqual(typeof b.embed, 'function');
 		assert.strictEqual(b.generate, undefined);
@@ -61,6 +62,7 @@ describe('defineBackend', () => {
 			structuredOutput: false,
 			noMatch: false,
 			calibratedNoMatch: false,
+			truncate: false,
 		});
 	});
 
@@ -73,6 +75,19 @@ describe('defineBackend', () => {
 		});
 		assert.strictEqual(b.capabilities().tools, true);
 		assert.strictEqual(b.capabilities().adapters, true);
+	});
+
+	it('declares truncate only for a backend that embeds', () => {
+		assert.strictEqual(
+			defineBackend({ name: 'local:e', embed: embedFn, truncate: true }).capabilities().truncate,
+			true
+		);
+		assert.strictEqual(defineBackend({ name: 'local:e', embed: embedFn }).capabilities().truncate, false);
+		const generateOnly = async () => ({ status: 'completed', output: { content: '', finishReason: 'stop' } });
+		assert.strictEqual(
+			defineBackend({ name: 'local:g', generate: generateOnly, truncate: true }).capabilities().truncate,
+			false
+		);
 	});
 
 	it('returns a frozen, stable capabilities object', () => {

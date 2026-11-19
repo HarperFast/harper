@@ -19,7 +19,7 @@ const { waitFor } = require('../waitFor');
 const { table } = require('#src/resources/databases');
 const { getPlaneBinding } = require('#src/resources/indexes/hnswPlaneBinding');
 const { DERIVED_INDEX_CURSOR_KEY } = require('#src/resources/indexes/hnswDerivedIndex');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 const DIMS = Number(process.env.BENCH_DIMS ?? 384);
 const SEED = Number(process.env.BENCH_SEED ?? 1000);

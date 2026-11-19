@@ -61,6 +61,56 @@ describe('Test hdbChildIpcHandler module', () => {
 			await schema_handler(test_event);
 			expect(log_error_stub).to.have.been.called;
 		});
+
+		it('waits for the blob-save barrier before closing a database for restore', async () => {
+			const calls = [];
+			let releaseDrain;
+			const draining = new Promise((resolve) => {
+				releaseDrain = resolve;
+			});
+			const restore = server_itc_handlers.__set__({
+				blockBlobSavesForRestore: async (databaseName) => {
+					calls.push(`block:${databaseName}`);
+					await draining;
+				},
+				resumeBlobSavesForRestore: (restoreToken) => calls.push(`resume:${restoreToken}`),
+				restoreCloseTargets: (databaseName) => ({
+					databaseNames: [databaseName],
+					blobDatabaseNames: [databaseName],
+				}),
+				closeDatabase: (databaseName) => calls.push(`close:${databaseName}`),
+				cleanLmdbMap: async () => {},
+				syncSchemaMetadata: async (message) => {
+					if (message.restorePhase === 'reload') calls.push('rescan');
+				},
+			});
+			try {
+				const closing = schema_handler({
+					type: 'schema',
+					message: { originator: 12345, operation: 'restore_backup', schema: 'orders', restorePhase: 'close' },
+				});
+				await Promise.resolve();
+				expect(calls).to.deep.equal(['block:orders']);
+				releaseDrain();
+				await closing;
+				expect(calls).to.deep.equal(['block:orders', 'close:orders']);
+
+				await schema_handler({
+					type: 'schema',
+					message: {
+						originator: 12345,
+						operation: 'restore_backup',
+						schema: 'orders',
+						restorePhase: 'reload',
+						restoreToken: 'orders-restore',
+					},
+				});
+				// the rescan opens the restored generation and replays its log, which saves blobs
+				expect(calls).to.deep.equal(['block:orders', 'close:orders', 'resume:orders-restore', 'rescan']);
+			} finally {
+				restore();
+			}
+		});
 	});
 
 	describe('Test componentStatusRequestHandler function', () => {
@@ -150,6 +200,58 @@ describe('Test hdbChildIpcHandler module', () => {
 			expect(traceCalls.some((msg) => msg.includes('Dropping component status response'))).to.be.true;
 			sendToThreadStub.restore();
 		});
+
+		it('Test componentStatusRequestHandler pre-serializes custom Error classes on the reporting thread', async () => {
+			sandbox.resetHistory();
+			const { internal } = require('#src/components/status/index');
+			const { ServerError } = require('#src/utility/errors/hdbError');
+			internal.componentStatusRegistry.markFailed(
+				'itc-plugin',
+				new ServerError('worker failure: https://admin:pw@internal.host/api'),
+				"Could not load component 'itc-plugin'"
+			);
+			const sendToThreadStub = sandbox.stub(global.threads, 'sendToThread').returns(true);
+
+			try {
+				await component_status_handler({
+					type: 'component_status_request',
+					message: { originator: 7, requestId: 'req-err' },
+				});
+
+				expect(sendToThreadStub).to.have.been.calledOnce;
+				const statuses = new Map(sendToThreadStub.firstCall.args[1].message.statuses);
+				expect(statuses.get('itc-plugin').error).to.equal(
+					'ServerError: worker failure: https://[REDACTED]@internal.host/api'
+				);
+			} finally {
+				sendToThreadStub.restore();
+				internal.componentStatusRegistry.reset();
+			}
+		});
+
+		it('Test componentStatusRequestHandler reports isMainThread: true when threads.count is 0 (setMainIsWorker)', async () => {
+			sandbox.resetHistory();
+			const { setMainIsWorker, getWorkerIndex } = require('#js/server/threads/manageThreads');
+			const wasMainWorker = getWorkerIndex() === 0;
+			setMainIsWorker(true);
+			const sendToThreadStub = sandbox.stub(global.threads, 'sendToThread').returns(true);
+
+			try {
+				expect(getWorkerIndex()).to.equal(0);
+				await component_status_handler({
+					type: 'component_status_request',
+					message: { originator: 7, requestId: 'req-zero-workers' },
+				});
+
+				expect(sendToThreadStub).to.have.been.calledOnce;
+				const responseMessage = sendToThreadStub.firstCall.args[1];
+				expect(responseMessage.message.isMainThread).to.equal(true);
+				expect(responseMessage.message.workerIndex).to.equal(undefined);
+			} finally {
+				setMainIsWorker(wasMainWorker);
+				sendToThreadStub.restore();
+			}
+		});
 	});
 
 	describe('Test resourceOpenApiRequestHandler function', () => {
@@ -162,7 +264,7 @@ describe('Test hdbChildIpcHandler module', () => {
 		});
 
 		afterEach(() => {
-			resources_instance.clear();
+			resources_instance?.clear();
 		});
 
 		// Tests validation: invalid events should be rejected and logged

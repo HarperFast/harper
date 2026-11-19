@@ -67,8 +67,8 @@ export function isUndecodableValidatedWrite(type: string | undefined, record: un
 // divergence), corrupt headers, or entries for a dropped table — every iteration makes no forward
 // progress. A large enough backlog then grinds the main thread for minutes with zero progress,
 // blocking startup entirely (harper#1266). These bounds let replay give up on a run that is making
-// no progress so boot can proceed; the operator then sheds/relocates the offending peer log (or
-// re-clones). They are deliberately conservative: a healthy replay produces writes, which reset
+// no progress so boot can proceed; they establish neither data loss nor peer completeness.
+// They are deliberately conservative: a healthy replay produces writes, which reset
 // the progress tracking, so neither bound can trip on it.
 
 // Max consecutive no-progress entries (since the last successful write) before the replay is
@@ -114,8 +114,7 @@ export function shouldAbortStalledReplay(
 // for an unbounded time without tripping shouldAbortStalledReplay, which resets its counters on
 // every successful write. This bound fires regardless of progress once the total elapsed time is
 // hit. Ten minutes is deliberately generous — a healthy replay of a large backlog completes in
-// seconds to low minutes; anything exceeding this is a pathological replay that the operator must
-// resolve by re-cloning the node.
+// seconds to low minutes. Exceeding this bound establishes slow replay, not its cause or data loss.
 export const REPLAY_WALL_CLOCK_LIMIT_MS = 10 * 60 * 1000;
 
 /**
@@ -190,10 +189,19 @@ export function isMidLogBreak(error: CorruptFrameError): boolean {
  * rather than as a truncated tail.
  */
 export function endIteratorOnCorruptFrame<T>(
-	iterator: Iterator<T>,
+	iterator: Iterator<T> & { peek?(): IteratorResult<T>; close?(): void },
 	onCorruptFrame: (error: CorruptFrameError) => void
-): IterableIterator<T> {
+): IterableIterator<T> & { peek(): IteratorResult<T>; close(): void } {
 	let stopped = false;
+	const stopOnBreak = (error: unknown): IteratorResult<T> => {
+		// Key on the class, not the message: the framing RangeError's wording is
+		// version-dependent (1.4.2 added hex offsets). Anything else re-throws.
+		if (!(error instanceof RangeError)) throw error;
+		stopped = true;
+		iterator.close?.();
+		onCorruptFrame(error as CorruptFrameError);
+		return { done: true, value: undefined };
+	};
 	return {
 		[Symbol.iterator]() {
 			return this;
@@ -203,13 +211,20 @@ export function endIteratorOnCorruptFrame<T>(
 			try {
 				return iterator.next();
 			} catch (error) {
-				// Key on the class, not the message: the framing RangeError's wording is
-				// version-dependent (1.4.2 added hex offsets). Anything else re-throws.
-				if (!(error instanceof RangeError)) throw error;
-				stopped = true;
-				onCorruptFrame(error as CorruptFrameError);
-				return { done: true, value: undefined };
+				return stopOnBreak(error);
 			}
+		},
+		peek(): IteratorResult<T> {
+			if (stopped) return { done: true, value: undefined };
+			try {
+				return iterator.peek!();
+			} catch (error) {
+				return stopOnBreak(error);
+			}
+		},
+		close() {
+			stopped = true;
+			iterator.close?.();
 		},
 		// Forward early termination (for-of break/return/throw) so the source's cleanup runs;
 		// mark stopped first. Current rocksdb-js implements neither — hence the protocol defaults.

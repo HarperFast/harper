@@ -6,7 +6,7 @@ testUtils.preTestPrep();
 const assert = require('assert');
 const sinon = require('sinon');
 
-const harperLogger = require('#src/utility/logging/harper_logger');
+const harperLogger = require('#js/utility/logging/harper_logger');
 const { _resetSecurityHeadersOwnedForTest, handleApplication, universalHeaders } = require('#src/server/http');
 
 /** Mock a component Scope with a live-reloadable `options.getAll()`/`options.on('change', cb)`. */

@@ -28,66 +28,72 @@ const CHUNKS = 20;
 const CHUNK_SIZE = 65536;
 const CHUNK_DELAY_MS = 100;
 
-suite('Blob save that outruns the open-transaction limit (#2062)', (ctx: ContextWithHarper) => {
-	let httpURL: string;
-	let auth: string;
+for (const mode of ['compiled', 'typestrip']) {
+	suite(`Blob save that outruns the open-transaction limit (#2062, ${mode})`, (ctx: ContextWithHarper) => {
+		let httpURL: string;
+		let auth: string;
 
-	before(async () => {
-		await setupHarperWithFixture(ctx, FIXTURE_PATH, {
-			config: { storage: { maxTransactionOpenTime: MAX_TXN_OPEN_MS }, logging: { level: 'warn' } },
-			env: {},
+		before(async () => {
+			await setupHarperWithFixture(ctx, FIXTURE_PATH, {
+				config: { storage: { maxTransactionOpenTime: MAX_TXN_OPEN_MS }, logging: { level: 'warn' } },
+				env: mode === 'typestrip' ? { NODE_OPTIONS: '--conditions=typestrip' } : {},
+				harperBinPath: resolve(
+					import.meta.dirname,
+					`../../${mode === 'typestrip' ? 'bin/harper.ts' : 'dist/bin/harper.js'}`
+				),
+			});
+			httpURL = ctx.harper.httpURL;
+			auth = 'Basic ' + Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64');
+			// Wait for the component's routes to register on the workers.
+			const deadline = Date.now() + 30_000;
+			while (Date.now() < deadline) {
+				const probe = await fetch(`${httpURL}/Doc/__seed__`, { headers: { Authorization: auth } });
+				if (probe.status < 500) break;
+				await sleep(250);
+			}
 		});
-		httpURL = ctx.harper.httpURL;
-		auth = 'Basic ' + Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64');
-		// Wait for the component's routes to register on the workers.
-		const deadline = Date.now() + 30_000;
-		while (Date.now() < deadline) {
-			const probe = await fetch(`${httpURL}/Doc/__seed__`, { headers: { Authorization: auth } });
-			if (probe.status < 500) break;
-			await sleep(250);
+
+		after(async () => {
+			await teardownHarper(ctx);
+		});
+
+		function harperLog(): string {
+			const logDir = (ctx.harper as any).logDir as string | undefined;
+			const path = logDir && join(logDir, 'hdb.log');
+			return path && existsSync(path) ? readFileSync(path, 'utf8') : '';
 		}
-	});
 
-	after(async () => {
-		await teardownHarper(ctx);
-	});
+		test('the write commits and its blob survives', async () => {
+			const response = await fetch(`${httpURL}/SlowBlobWrite/`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', 'Authorization': auth },
+				body: JSON.stringify({ id: 'slow-blob', chunks: CHUNKS, chunkSize: CHUNK_SIZE, chunkDelay: CHUNK_DELAY_MS }),
+			});
+			strictEqual(
+				response.status,
+				200,
+				`slow blob write should commit, got ${response.status}: ${await response.text()}`
+			);
 
-	function harperLog(): string {
-		const logDir = (ctx.harper as any).logDir as string | undefined;
-		const path = logDir && join(logDir, 'hdb.log');
-		return path && existsSync(path) ? readFileSync(path, 'utf8') : '';
-	}
+			const stored = await fetch(`${httpURL}/Doc/slow-blob`, { headers: { Authorization: auth } });
+			strictEqual(stored.status, 200, 'the record must have been committed');
+			strictEqual((await stored.json()).size, CHUNKS * CHUNK_SIZE);
 
-	test('the write commits and its blob survives', async () => {
-		const response = await fetch(`${httpURL}/SlowBlobWrite/`, {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json', 'Authorization': auth },
-			body: JSON.stringify({ id: 'slow-blob', chunks: CHUNKS, chunkSize: CHUNK_SIZE, chunkDelay: CHUNK_DELAY_MS }),
+			// The blob file itself — what the abort used to unlink out from under the committed record.
+			const blob = await fetch(`${httpURL}/ReadBlob/slow-blob`, { headers: { Authorization: auth } });
+			strictEqual(blob.status, 200, 'the committed record must not reference a destroyed blob');
+			strictEqual((await blob.json()).blobBytes, CHUNKS * CHUNK_SIZE);
+
+			const log = harperLog();
+			ok(
+				!/has been aborted after exceeding the open-transaction limit/.test(log),
+				'a transaction in its commit phase must not be poisoned by the monitor'
+			);
+			// Confirms the window was actually crossed rather than the test passing vacuously.
+			ok(
+				/in its commit phase past the open-transaction limit/.test(log),
+				'expected the monitor to observe (and spare) the over-limit commit'
+			);
 		});
-		strictEqual(
-			response.status,
-			200,
-			`slow blob write should commit, got ${response.status}: ${await response.text()}`
-		);
-
-		const stored = await fetch(`${httpURL}/Doc/slow-blob`, { headers: { Authorization: auth } });
-		strictEqual(stored.status, 200, 'the record must have been committed');
-		strictEqual((await stored.json()).size, CHUNKS * CHUNK_SIZE);
-
-		// The blob file itself — what the abort used to unlink out from under the committed record.
-		const blob = await fetch(`${httpURL}/ReadBlob/slow-blob`, { headers: { Authorization: auth } });
-		strictEqual(blob.status, 200, 'the committed record must not reference a destroyed blob');
-		strictEqual((await blob.json()).blobBytes, CHUNKS * CHUNK_SIZE);
-
-		const log = harperLog();
-		ok(
-			!/has been aborted after exceeding the open-transaction limit/.test(log),
-			'a transaction in its commit phase must not be poisoned by the monitor'
-		);
-		// Confirms the window was actually crossed rather than the test passing vacuously.
-		ok(
-			/in its commit phase past the open-transaction limit/.test(log),
-			'expected the monitor to observe (and spare) the over-limit commit'
-		);
 	});
-});
+}

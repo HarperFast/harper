@@ -11,7 +11,7 @@ const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
 const zlib = require('node:zlib');
-const { Readable } = require('node:stream');
+const { PassThrough, Readable, Stream } = require('node:stream');
 const { setTimeout: sleep } = require('node:timers/promises');
 const onFinished = require('on-finished');
 const onHeaders = require('on-headers');
@@ -338,6 +338,74 @@ describe('withNodeAdapter with real Node middleware', function () {
 		assert.ok(backpressure.backpressured, 'write() never returned false');
 		await waitUntil(() => events.length === 2, 'the response stream to close');
 		assert.deepStrictEqual(events, ['finish', 'close']);
+	});
+
+	for (const objectMode of [false, true]) {
+		it(`runs a write() that middleware patched for every chunk ${objectMode ? 'an object' : 'a byte'}-mode Readable pipes in`, async function () {
+			const request = makeRequest();
+			const chunks = [];
+			for (let offset = 0; offset < BODY.length; offset += CHUNK_SIZE)
+				chunks.push(BODY.subarray(offset, offset + CHUNK_SIZE));
+			let next = 0;
+			const source = new Readable({
+				objectMode,
+				read() {
+					this.push(next < chunks.length ? chunks[next++] : null);
+				},
+			});
+			let patchedWrites = 0;
+			const responsePromise = request.withNodeAdapter((req, res) => {
+				const write = res.write;
+				res.write = function (...args) {
+					patchedWrites++;
+					return write.apply(this, args);
+				};
+				source.pipe(res);
+			});
+
+			const { body } = await withTimeout(responsePromise, 'response headers');
+			const received = await withTimeout(collectSlowly(body), 'the response body');
+			assert.deepStrictEqual(received, BODY);
+			assert.strictEqual(patchedWrites, chunks.length);
+			await waitUntil(() => source.listenerCount('data') === 0, "the source's 'data' listeners to be removed");
+		});
+	}
+
+	it('leaves a source paused with its data when its stalled pipe is unpiped or the response is destroyed, and no listener on any source', async function () {
+		const request = makeRequest();
+		const unpiped = new PassThrough();
+		const destroyed = new PassThrough();
+		let response;
+		const responsePromise = request.withNodeAdapter((req, res) => {
+			response = res;
+			res.writeHead(200);
+			unpiped.pipe(res);
+			destroyed.pipe(res);
+		});
+		await withTimeout(responsePromise, 'response headers');
+		for (let offset = 0; offset < BODY.length; offset += CHUNK_SIZE)
+			unpiped.write(BODY.subarray(offset, offset + CHUNK_SIZE));
+		await waitUntil(() => response.writableNeedDrain && unpiped.readableLength > 0, 'the pipe to stall awaiting drain');
+		const buffered = unpiped.readableLength;
+
+		unpiped.unpipe(response);
+		await sleep(1);
+		assert.strictEqual(unpiped.listenerCount('data'), 0);
+		assert.strictEqual(unpiped.readableFlowing, false);
+		assert.strictEqual(unpiped.readableLength, buffered);
+
+		destroyed.write(BODY.subarray(0, CHUNK_SIZE));
+		destroyed.write(BODY.subarray(CHUNK_SIZE, 2 * CHUNK_SIZE));
+		await waitUntil(() => destroyed.readableFlowing === false, 'the second pipe to stall awaiting drain');
+		const legacy = new Stream();
+		legacy.pipe(response);
+		legacy.emit('end');
+		assert.strictEqual(legacy.listenerCount('data'), 0);
+		response.destroy();
+		await waitUntil(() => destroyed.listenerCount('data') === 0, "the destroyed pipe's 'data' listeners to be removed");
+		await sleep(1);
+		assert.strictEqual(destroyed.readableFlowing, false);
+		assert.ok(destroyed.readableLength > 0, 'the source lost the data it had not delivered');
 	});
 
 	it('runs on-headers listeners inside _implicitHeader() before the headers resolve', async function () {

@@ -2,9 +2,41 @@ import { classifyPullRequest } from './prExemption.mjs';
 import { checkBodyLinks, inspectBodyText, stripCodePlaceholders } from './prFormatLinks.mjs';
 
 const MAX_BODY_LENGTH = 65_536;
+const YOUR_CALL = /^>[ \t]*❓[ \t]*\*\*Your call:\*\*[ \t]*\S/m;
 
 function matches(prose, pattern) {
 	return [...prose.matchAll(pattern)];
+}
+
+const PROBLEM_HEADING = /^## ⊙ Problem\s*$/gim;
+
+function legacyReviewerProblems(prose, verification) {
+	const reviewer = matches(prose, /^## For the human reviewer\s*$/gim);
+	if (reviewer.length !== 1)
+		return [`AI-shaped description needs exactly one ## For the human reviewer section (found ${reviewer.length})`];
+	if (verification.length === 1 && reviewer[0].index > verification[0].index)
+		return ['## For the human reviewer must precede ## Verification'];
+	const content = stripCodePlaceholders(
+		prose.slice(reviewer[0].index + reviewer[0][0].length).split(/^##\s+/m)[0]
+	).trim();
+	return content ? [] : ['## For the human reviewer needs a decision ledger or the no-open-judgment-calls statement'];
+}
+
+function problemSectionProblems(prose, verification) {
+	const missing = (detail) =>
+		`AI-shaped description needs a ## ⊙ Problem section with a > ❓ **Your call:** line (or the legacy ## For the human reviewer section) (${detail})`;
+	const problem = matches(prose, PROBLEM_HEADING);
+	if (problem.length !== 1) return [missing(`found ${problem.length} ## ⊙ Problem`)];
+	if (verification.length === 1 && problem[0].index > verification[0].index)
+		return ['## ⊙ Problem must precede Verification'];
+	const solution = matches(prose, /^##[ \t]+💡[ \t]+Solution\b.*$/gim);
+	if (solution.length !== 1)
+		return [`AI-shaped description needs exactly one ## 💡 Solution section (found ${solution.length})`];
+	if (solution[0].index < problem[0].index || (verification.length === 1 && solution[0].index > verification[0].index))
+		return ['## 💡 Solution must follow ## ⊙ Problem and precede Verification'];
+	if (!YOUR_CALL.test(prose)) return [missing('no > ❓ **Your call:** line')];
+	const section = prose.slice(problem[0].index + problem[0][0].length).split(/^##\s+/m)[0];
+	return YOUR_CALL.test(section) ? [] : [missing('no > ❓ **Your call:** line under ## ⊙ Problem')];
 }
 
 export function evaluatePrFormat(
@@ -34,13 +66,15 @@ export function evaluatePrFormat(
 		.trim();
 	if (!summary) problems.push('description needs summary prose before its sections');
 
-	const verification = matches(prose, /^## Verification\s*$/gim);
+	const verification = matches(prose, /^## (?:✅ )?Verification\s*$/gim);
 	if (verification.length !== 1)
-		problems.push(`description needs exactly one ## Verification section (found ${verification.length})`);
+		problems.push(
+			`description needs exactly one ## Verification or ## ✅ Verification section (found ${verification.length})`
+		);
 	else {
 		const content = prose
 			.slice(verification[0].index + verification[0][0].length)
-			.split(/^(?:##\s+|[ \t]*Complexity:|[ \t]*<sub>(?:Review-Coverage:|Human-Review-Need:))/im)[0]
+			.split(/^(?:##\s+|[ \t]*Complexity:|[ \t]*<sub>(?:Review-Coverage:|Review-Attention:|Human-Review-Need:))/im)[0]
 			.replace(/<[^>]+>/g, '')
 			.trim();
 		if (!content) problems.push('## Verification needs executed evidence or a not-observable rationale');
@@ -48,22 +82,15 @@ export function evaluatePrFormat(
 
 	const links = checkBodyLinks({ body, prFiles, repo, number });
 	problems.push(...links.problems.map(({ message }) => message));
-	const aiMarkers = /^(?:[ \t]*Complexity:|[ \t]*(?:<sub>)?(?:Review-Coverage:|Human-Review-Need:))/im.test(prose);
+	const aiMarkers =
+		/^(?:[ \t]*Complexity:|[ \t]*(?:<sub>)?(?:Review-Coverage:|Review-Attention:|Human-Review-Need:))/im.test(prose);
 	if (aiMarkers) {
-		const reviewer = matches(prose, /^## For the human reviewer\s*$/gim);
-		if (reviewer.length !== 1)
-			problems.push(
-				`AI-shaped description needs exactly one ## For the human reviewer section (found ${reviewer.length})`
-			);
-		else if (verification.length === 1 && reviewer[0].index > verification[0].index)
-			problems.push('## For the human reviewer must precede ## Verification');
-		else {
-			const content = stripCodePlaceholders(
-				prose.slice(reviewer[0].index + reviewer[0][0].length).split(/^##\s+/m)[0]
-			).trim();
-			if (!content)
-				problems.push('## For the human reviewer needs a decision ledger or the no-open-judgment-calls statement');
-		}
+		const reviewerProblems = legacyReviewerProblems(prose, verification);
+		const problemProblems = problemSectionProblems(prose, verification);
+		const reviewerHeadings = matches(prose, /^## For the human reviewer\s*$/gim).length;
+		const problemHeadings = matches(prose, PROBLEM_HEADING).length;
+		if (reviewerProblems.length && problemProblems.length)
+			problems.push(...(reviewerHeadings && !problemHeadings ? reviewerProblems : problemProblems));
 		const complexityFields = matches(prose, /^[ \t]*Complexity:/gim);
 		const complexity = matches(prose, /^[ \t]*Complexity:\s*(easy|medium|complicated)\s*$/gim);
 		if (complexityFields.length !== 1 || complexity.length !== 1)
@@ -76,18 +103,17 @@ export function evaluatePrFormat(
 			problems.push(
 				`AI-shaped description needs exactly one valid pinned Review-Coverage footer (found ${coverageFields.length} field(s), ${coverage.length} valid)`
 			);
-		const needFields = matches(prose, /^\s*(?:<sub>)?Human-Review-Need:/gim);
+		const needFields = matches(prose, /^\s*(?:<sub>)?(?:Review-Attention|Human-Review-Need):/gim);
 		const need = matches(
 			prose,
-			/^\s*<sub>Human-Review-Need:\s*[0-4](?:\s+\(decisions?:[^)@\n]*\))?\s*@\s*[0-9a-f]{6,40}<\/sub>\s*$/gim
+			/^\s*<sub>(?:Review-Attention:\s*(?:skim|read|study|deep)\s+~\d+m(?:\s+\([^)\n]*\))?(?:\s*@\s*[0-9a-f]{6,40})?|Human-Review-Need:\s*[0-4](?:\s+\(decisions?:[^)@\n]*\))?\s*@\s*[0-9a-f]{6,40})<\/sub>\s*$/gim
 		);
 		if (needFields.length !== 1 || need.length !== 1)
 			problems.push(
-				`AI-shaped description needs exactly one valid Human-Review-Need footer (found ${needFields.length} field(s), ${need.length} valid)`
+				`AI-shaped description needs exactly one valid Review-Attention footer, or the legacy Human-Review-Need footer (found ${needFields.length} field(s), ${need.length} valid)`
 			);
-		// Only the coverage footer is pinned to the head it was materialized at. The review-need pin
-		// names the commit the grade describes, which lags the head after an amend the helper did not
-		// re-grade.
+		// Only the coverage pin is checked against the head: the legacy Human-Review-Need pin named
+		// the graded commit, which lags the head after an amend, and open PRs still carry it.
 		const head = String(pr?.head?.sha ?? '').toLowerCase();
 		const coveragePin = coverage[0]?.[0].match(/@\s*([0-9a-f]{6,40})<\/sub>/i)?.[1].toLowerCase();
 		if (coveragePin && !head.startsWith(coveragePin))
@@ -103,7 +129,9 @@ export function evaluatePrFormat(
 				coverage[0].index < need[0].index
 			)
 		)
-			problems.push('AI fields must follow Verification in Complexity, Review-Coverage, Human-Review-Need order');
+			problems.push(
+				'AI fields must follow Verification in Complexity, Review-Coverage, Review-Attention (or legacy Human-Review-Need) order'
+			);
 	}
 
 	if (links.unverifiable) problems.push('current PR-diff links could not be fully verified');

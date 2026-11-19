@@ -157,7 +157,7 @@ suite('Inactive component 404', (ctx: ContextWithHarper) => {
 		// exists, so the only thing withholding the actionable message here is the super_user gate.
 		// Note: an *unauthenticated* loopback request can't exercise this path in this harness --
 		// Harper's AUTHORIZE_LOCAL bypass treats 127.0.0.x/::1 requests as an implicit super_user
-		// (security/auth.ts's `bypassUser ?? getSuperUser()` branch), so "no auth header" and
+		// (security/auth.ts's local-trust branch, `localPrincipal()`), so "no auth header" and
 		// "super_user" are indistinguishable from a loopback integration test. Authenticating as a
 		// real non-super_user role is what exercises the gate.
 		strictEqual(await restartRequired(), true);

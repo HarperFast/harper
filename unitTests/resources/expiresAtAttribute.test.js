@@ -3,7 +3,7 @@ const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { makeTable: makeTableResource } = require('#src/resources/Table');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 // A schema @expiresAt attribute must be authoritative over the table-level expiration default, in both
 // directions. Previously the field only armed a separate index-pruning sweep (which can only remove
@@ -139,11 +139,9 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 		assert.strictEqual(await Redeclared.get(1), null);
 	});
 
-	// A worker that only hydrated a table from the catalog has no cleanup scan armed: setTTLExpiration
-	// runs at construction only when an expiration is set, and an eviction-only table persists
-	// expiration 0. When an isolated application then redeclares that table with just an @expiresAt
-	// attribute, the declaration preserves the loaded configuration -- so the loaded eviction is the
-	// only thing left that can arm the scan, and without it those records are never physically evicted.
+	// When an isolated application redeclares a table it only hydrated from the catalog, with just an
+	// @expiresAt attribute, the declaration preserves the loaded configuration -- so the loaded eviction
+	// has to keep the scan armed, and without it those records are never physically evicted.
 	it('arms a preserved eviction cleanup on an ownership-only redeclaration', () => {
 		const Declared = table({
 			table: 'EvictionOnlyDeclared',

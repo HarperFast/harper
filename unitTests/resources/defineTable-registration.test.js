@@ -7,12 +7,14 @@
 // front-end parity guardrail (code-first and GraphQL project identical `properties`).
 
 require('../testUtils');
-const assert = require('assert');
+const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
-const { databases } = require('#src/resources/databases');
+const { databases, table } = require('#src/resources/databases');
 const { loadGQLSchema } = require('#src/resources/graphql');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
+const { RequestTarget } = require('#src/resources/RequestTarget');
 const { defineTable, types } = require('#src/resources/defineTable');
+const { transaction } = require('#src/resources/transaction');
 
 const { id, string, int, date } = types;
 const DB = 'codefirst_test';
@@ -279,5 +281,478 @@ describe('code-first ⇔ GraphQL front-end parity', () => {
 				`field "${field}" projects identically from code-first and GraphQL`
 			);
 		}
+	});
+});
+
+describe('types.date — every modifier keeps the Date builder surface', () => {
+	const DATE_FLAGS = ['nullable', 'indexed', 'primaryKey', 'createdTime', 'updatedTime'];
+
+	before(function () {
+		setupTestDBPath();
+		setMainIsWorker(true);
+	});
+
+	it('accumulates flags in any chain order, timestamps included', () => {
+		const cases = [
+			[date.indexed.createdTime, { indexed: true, assignCreatedTime: true }],
+			[date.createdTime.indexed, { indexed: true, assignCreatedTime: true }],
+			[date.nullable.updatedTime, { nullable: true, assignUpdatedTime: true }],
+			[date.updatedTime.nullable, { nullable: true, assignUpdatedTime: true }],
+			[date.primaryKey.createdTime, { primaryKey: true, assignCreatedTime: true }],
+			[date.createdTime.updatedTime, { assignCreatedTime: true, assignUpdatedTime: true }],
+			[date.updatedTime.createdTime, { assignCreatedTime: true, assignUpdatedTime: true }],
+			[date.indexed.indexed.updatedTime, { indexed: true, assignUpdatedTime: true }],
+			[
+				date.createdTime.indexed.nullable.updatedTime,
+				{ indexed: true, nullable: true, assignCreatedTime: true, assignUpdatedTime: true },
+			],
+		];
+		for (const [field, meta] of cases) {
+			assert.strictEqual(field.kind, 'Date');
+			assert.deepStrictEqual(field.meta, meta);
+			for (const flag of DATE_FLAGS) assert.ok(field[flag], `${JSON.stringify(meta)} still offers .${flag}`);
+		}
+	});
+
+	it('derives fresh fields, leaving the source of a chain unchanged', () => {
+		const indexed = date.indexed;
+		const created = indexed.createdTime;
+		const updated = indexed.updatedTime;
+		assert.deepStrictEqual(date.meta, {});
+		assert.deepStrictEqual(indexed.meta, { indexed: true });
+		assert.deepStrictEqual(created.meta, { indexed: true, assignCreatedTime: true });
+		assert.deepStrictEqual(updated.meta, { indexed: true, assignUpdatedTime: true });
+	});
+
+	it('offers the timestamp flags only on Date fields', () => {
+		for (const field of [string, id.indexed, int.nullable, types.enum(['a', 'b']).indexed, types.any]) {
+			assert.strictEqual(field.createdTime, undefined);
+			assert.strictEqual(field.updatedTime, undefined);
+		}
+	});
+
+	it('assigns and indexes timestamps declared after other modifiers', async () => {
+		const Stamped = defineTable(
+			'StampedChain',
+			{
+				id: id.primaryKey,
+				label: string,
+				createdAt: date.nullable.indexed.createdTime,
+				updatedAt: date.indexed.updatedTime,
+			},
+			{ database: DB }
+		);
+		const byName = Object.fromEntries(Stamped.attributes.map((a) => [a.name, a]));
+		assert.strictEqual(byName.createdAt.assignCreatedTime, true);
+		assert.strictEqual(byName.createdAt.indexed, true);
+		assert.strictEqual(byName.updatedAt.assignUpdatedTime, true);
+		assert.strictEqual(byName.updatedAt.indexed, true);
+		await Stamped.put({ id: 's1', label: 'first' });
+		const stored = await Stamped.get('s1');
+		assert.ok(stored.createdAt instanceof Date);
+		assert.ok(stored.updatedAt instanceof Date);
+		const found = [];
+		for await (const record of Stamped.search({
+			conditions: [{ attribute: 'updatedAt', comparator: 'greater_than_equal', value: stored.updatedAt }],
+		}))
+			found.push(record.id);
+		assert.deepStrictEqual(found, ['s1']);
+	});
+});
+
+describe('schema re-declaration retires the previous declaration’s accessors', () => {
+	const EVOLVE_DB = 'codefirst_evolution';
+
+	before(function () {
+		setupTestDBPath();
+		setMainIsWorker(true);
+	});
+
+	it('rejects new own fields on sealed tracked updates without rejecting untouched legacy data', async () => {
+		const options = { database: EVOLVE_DB, sealed: true };
+		const shape = { id: id.primaryKey, label: string, when: date.nullable };
+		const Item = defineTable('SealedRetirement', { ...shape, legacyCode: int.nullable }, options);
+		await Item.put({ id: 'i1', label: 'original', legacyCode: 42 });
+		defineTable('SealedRetirement', shape, options);
+
+		await transaction(async () => {
+			const record = await Item.update('i1');
+			record.label = 'permitted';
+		});
+		assert.strictEqual((await Item.get('i1')).legacyCode, 42);
+
+		for (const name of ['legacyCode', 'neverDeclared']) {
+			for (const mode of ['empty', 'assigned', 'patch']) {
+				await assert.rejects(
+					async () =>
+						transaction(async () => {
+							const record = await Item.update('i1', mode === 'patch' ? { label: 'rejected' } : undefined);
+							if (mode === 'assigned') record.label = 'rejected';
+							record[name] = 'new own value';
+						}),
+					(error) => error.name === 'ValidationError' && error.message.includes(`Property ${name} is not allowed`),
+					`${name} through ${mode}`
+				);
+				const stored = await Item.get('i1');
+				assert.strictEqual(stored.label, 'permitted');
+				assert.strictEqual(stored.legacyCode, 42);
+				assert.strictEqual(stored.neverDeclared, undefined);
+			}
+		}
+		await Item.patch('i1', { label: 'plain patch' });
+		assert.strictEqual((await Item.get('i1')).legacyCode, 42);
+		await assert.rejects(
+			async () => Item.patch('i1', { neverDeclared: 'no' }),
+			/Property neverDeclared is not allowed/
+		);
+		await transaction(async () => {
+			const record = await Item.update('i1');
+			record.label = 'coerced own field';
+			Object.defineProperty(record, 'when', {
+				value: '2026-01-01T00:00:00.000Z',
+				enumerable: true,
+				writable: true,
+			});
+		});
+		assert.strictEqual((await Item.get('i1')).when.toISOString(), '2026-01-01T00:00:00.000Z');
+		await transaction(async () => {
+			const record = await Item.update('i1');
+			Object.defineProperty(record, 'when', {
+				value: '2026-02-01T00:00:00.000Z',
+				enumerable: true,
+				writable: true,
+			});
+		});
+		assert.strictEqual((await Item.get('i1')).when.toISOString(), '2026-02-01T00:00:00.000Z');
+		const loadAsInstance = Item.loadAsInstance;
+		Item.loadAsInstance = false;
+		try {
+			await transaction(async () => {
+				const record = await Item.update('i1', { label: 'plain merge' });
+				record.notStored = 'instance metadata';
+			});
+			const stored = await Item.get('i1');
+			assert.strictEqual(stored.label, 'plain merge');
+			assert.strictEqual(stored.notStored, undefined);
+		} finally {
+			Item.loadAsInstance = loadAsInstance;
+		}
+	});
+
+	it('keeps retired own fields writable on unsealed tracked updates', async () => {
+		const options = { database: EVOLVE_DB, sealed: false };
+		const shape = { id: id.primaryKey, label: string };
+		const Item = defineTable('UnsealedRetirement', { ...shape, legacyCode: int.nullable }, options);
+		await Item.put({ id: 'i1', label: 'original', legacyCode: 42 });
+		defineTable('UnsealedRetirement', shape, options);
+		await transaction(async () => {
+			const record = await Item.update('i1');
+			record.label = 'changed';
+			record.legacyCode = 'now untyped';
+		});
+		assert.strictEqual((await Item.get('i1')).legacyCode, 'now untyped');
+		await transaction(async () => {
+			const record = await Item.update('i1');
+			record.legacyCode = 43;
+		});
+		assert.strictEqual((await Item.get('i1')).legacyCode, 43);
+	});
+
+	it('stamps the change set itself when own fields join a tracked update', async () => {
+		const Item = defineTable(
+			'OwnFieldChangeSet',
+			{ id: id.primaryKey, label: string.nullable, when: date.nullable, stamped: date.updatedTime },
+			{ database: EVOLVE_DB, sealed: false }
+		);
+		let sourcePut;
+		Item.sourcedFrom({
+			get: (key) => ({ id: key }),
+			put: (key, data) => {
+				sourcePut = data;
+			},
+		});
+		await Item.put({ id: 'i1' });
+		const firstStamp = (await Item.get('i1')).stamped.getTime();
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		await transaction(async () => {
+			const record = await Item.update('i1');
+			record.label = 'changed';
+			record.extra = 1;
+		});
+		assert.ok(sourcePut.stamped.getTime() > firstStamp, 'a put-only source receives this write’s updated time');
+		assert.strictEqual(sourcePut.label, 'changed');
+		assert.strictEqual(sourcePut.extra, 1);
+
+		await transaction(async () => {
+			const record = await Item.update('i1');
+			Object.defineProperty(record, 'extra', { value: '2', enumerable: true });
+		});
+		assert.strictEqual((await Item.get('i1')).extra, '2', 'a non-writable own field is stored, not a 500');
+		await assert.rejects(
+			async () =>
+				transaction(async () => {
+					const record = await Item.update('i1');
+					Object.defineProperty(record, 'when', { value: '2026-01-01T00:00:00.000Z', enumerable: true });
+				}),
+			(error) => error.statusCode === 400 && /when is read-only/.test(error.message)
+		);
+		assert.strictEqual((await Item.get('i1')).when, undefined);
+	});
+
+	it('rejects invalid update roots before combining own instance fields', async () => {
+		for (const sealed of [false, true]) {
+			const Item = defineTable(
+				'InvalidOwnRoot' + sealed,
+				{ id: id.primaryKey, label: string },
+				{ database: EVOLVE_DB, sealed }
+			);
+			await Item.put({ id: 'i1', label: 'original' });
+			for (const root of [Buffer.from('hello'), null, 5, 'text', [], new Uint8Array([1, 2]), new ArrayBuffer(2)]) {
+				await assert.rejects(
+					() =>
+						transaction(async () => {
+							const record = root === null ? await Item.update('i1') : await Item.update('i1', root);
+							if (root === null) record.update('i1', null);
+							Object.defineProperty(record, 'label', { value: 'own edit', enumerable: true, writable: true });
+						}),
+					/A record must be an object/,
+					`sealed=${sealed}, root=${root?.constructor?.name ?? root}`
+				);
+				const stored = await Item.get('i1');
+				assert.strictEqual(stored.label, 'original');
+				assert.strictEqual(stored[0], undefined);
+			}
+		}
+	});
+
+	it('keeps live timestamps and resolvers after a raw expression reload fails', async () => {
+		const Writer = defineTable('FailureWriter', { id: id.primaryKey, name: string }, { database: EVOLVE_DB });
+		const Item = defineTable(
+			'FailedReload',
+			{
+				id: id.primaryKey,
+				label: string,
+				writerId: id.indexed,
+				writer: types.relation(() => Writer, { from: 'writerId' }),
+				createdAt: date.createdTime,
+				touchedAt: date.updatedTime,
+			},
+			{ database: EVOLVE_DB }
+		);
+		await Writer.put({ id: 'w1', name: 'Ursula' });
+		await Item.put({ id: 'before', label: 'before', writerId: 'w1' });
+		const resolverMap = Item.propertyResolvers;
+		const recordPrototype = Item.primaryStore.encoder.structPrototype;
+		const writerGetter = Object.getOwnPropertyDescriptor(recordPrototype, 'writer').get;
+		const originalAttributes = Item.attributes.map((attribute) => ({ ...attribute }));
+		assert.throws(
+			() =>
+				table({
+					database: EVOLVE_DB,
+					table: 'FailedReload',
+					attributes: [
+						originalAttributes[0],
+						{ name: 'newComputed', computed: {}, computedFromExpression: 'label.toUpperCase()' },
+						{ name: 'broken', computed: {}, computedFromExpression: 'label +' },
+						...originalAttributes.slice(1),
+					],
+				}),
+			SyntaxError
+		);
+		await Item.put({ id: 'after', label: 'after', writerId: 'w1' });
+		const stored = await Item.get('after');
+		assert.ok(stored.createdAt instanceof Date, 'failed reload preserves created-time stamping');
+		assert.ok(stored.touchedAt instanceof Date, 'failed reload preserves updated-time stamping');
+		assert.strictEqual((await stored.writer).name, 'Ursula');
+		assert.strictEqual(Item.propertyResolvers, resolverMap);
+		assert.strictEqual(Object.getOwnPropertyDescriptor(recordPrototype, 'writer').get, writerGetter);
+		assert.strictEqual(Object.getOwnPropertyDescriptor(recordPrototype, 'newComputed'), undefined);
+		assert.strictEqual(Object.getOwnPropertyDescriptor(Item.prototype, 'newComputed'), undefined);
+		assert.strictEqual(Item.userResolvers.newComputed, undefined);
+		const selected = [];
+		for await (const record of Item.search(new RequestTarget('?id=after&select(label,writer)'))) selected.push(record);
+		assert.strictEqual(selected[0].writer.name, 'Ursula');
+		table({ database: EVOLVE_DB, table: 'FailedReload', attributes: originalAttributes });
+		await Item.put({ id: 'recovered', label: 'recovered', writerId: 'w1' });
+		assert.ok((await Item.get('recovered')).createdAt instanceof Date);
+	});
+
+	it('a GraphQL reload turning a relationship into a stored field keeps the stored value (typed structs)', async () => {
+		await loadGQLSchema(`
+			type RetireBook @table {
+				id: ID @primaryKey
+				title: String
+				authorId: ID @indexed
+			}
+			type RetireAuthor @table(randomAccessFields: true) {
+				id: ID @primaryKey
+				name: String
+				books: [RetireBook] @relationship(to: authorId)
+			}
+		`);
+		const { RetireBook, RetireAuthor } = databases.data;
+		assert.ok(RetireAuthor.primaryStore.encoder.randomAccessStructure);
+		await RetireBook.put({ id: 'b1', title: 'Earthsea', authorId: 'a1' });
+		await RetireAuthor.put({ id: 'a1', name: 'Ursula' });
+		await RetireAuthor.put({ id: 'a2', name: 'Tove' });
+		assert.deepStrictEqual(
+			Array.from(await (await RetireAuthor.get('a1')).books, (book) => book.title),
+			['Earthsea']
+		);
+
+		await loadGQLSchema(`
+			type RetireAuthor @table(randomAccessFields: true) {
+				id: ID @primaryKey
+				name: String
+				books: [String]
+			}
+		`);
+		assert.strictEqual((await RetireAuthor.get('a2')).books, undefined);
+		await RetireAuthor.put({ id: 'a1', name: 'Ursula', books: ['Earthsea', 'Tehanu'] });
+		assert.deepStrictEqual((await RetireAuthor.get('a1')).books, ['Earthsea', 'Tehanu']);
+		assert.deepStrictEqual(RetireAuthor.primaryStore.getSync('a1').books, ['Earthsea', 'Tehanu']);
+		assert.strictEqual(RetireAuthor.primaryStore.encoder.resolvedAttributeNames, undefined);
+		assert.strictEqual(
+			Object.getOwnPropertyDescriptor(RetireAuthor.primaryStore.encoder.structPrototype, 'books'),
+			undefined
+		);
+	});
+
+	it('a GraphQL reload turning a @computed into a stored field reads the stored value', async () => {
+		await loadGQLSchema(`
+			type RetireComputed @table {
+				id: ID @primaryKey
+				first: String
+				last: String
+				fullName: String @computed(from: "first + ' ' + last")
+			}
+		`);
+		const { RetireComputed } = databases.data;
+		await RetireComputed.put({ id: 'p1', first: 'Ursula', last: 'Le Guin' });
+		assert.strictEqual((await RetireComputed.get('p1')).fullName, 'Ursula Le Guin');
+
+		await loadGQLSchema(`
+			type RetireComputed @table {
+				id: ID @primaryKey
+				first: String
+				last: String
+				fullName: String
+			}
+		`);
+		await RetireComputed.put({ id: 'p1', first: 'Ursula', last: 'Le Guin', fullName: 'U. K. Le Guin' });
+		assert.strictEqual((await RetireComputed.get('p1')).fullName, 'U. K. Le Guin');
+		assert.strictEqual(
+			Object.getOwnPropertyDescriptor(RetireComputed.primaryStore.encoder.structPrototype, 'fullName'),
+			undefined
+		);
+	});
+
+	it('keeps a retained relationship resolving when a sibling is removed, and restores a re-added one', async () => {
+		const Writer = defineTable('Writer', { id: id.primaryKey, name: string }, { database: EVOLVE_DB });
+		const Press = defineTable('Press', { id: id.primaryKey, name: string }, { database: EVOLVE_DB });
+		const novelShape = {
+			id: id.primaryKey,
+			title: string,
+			writerId: id.indexed.nullable,
+			alternateWriterId: id.indexed.nullable,
+			pressId: id.indexed.nullable,
+			writer: types.relation(() => Writer, { from: 'writerId' }),
+		};
+		const withPress = { ...novelShape, press: types.relation(() => Press, { from: 'pressId' }) };
+		const Novel = defineTable('Novel', withPress, { database: EVOLVE_DB });
+		await Writer.put({ id: 'w1', name: 'Ursula' });
+		await Writer.put({ id: 'w2', name: 'Tove' });
+		await Press.put({ id: 'p1', name: 'Parnassus' });
+		await Novel.put({ id: 'n1', title: 'Earthsea', writerId: 'w1', alternateWriterId: 'w2', pressId: 'p1' });
+		assert.strictEqual((await (await Novel.get('n1')).press).name, 'Parnassus');
+
+		defineTable('Novel', novelShape, { database: EVOLVE_DB });
+		const withoutPress = await Novel.get('n1');
+		assert.strictEqual((await withoutPress.writer).name, 'Ursula');
+		assert.strictEqual(withoutPress.press, undefined);
+		assert.strictEqual(Object.getOwnPropertyDescriptor(Novel.prototype, 'press'), undefined);
+		assert.ok(Object.getOwnPropertyDescriptor(Novel.prototype, 'writer')?.get?.isAttribute);
+		defineTable(
+			'Novel',
+			{ ...novelShape, writer: types.relation(() => Writer, { from: 'alternateWriterId' }) },
+			{ database: EVOLVE_DB }
+		);
+		assert.strictEqual((await (await Novel.get('n1')).writer).name, 'Tove');
+
+		defineTable('Novel', withPress, { database: EVOLVE_DB });
+		const readded = await Novel.get('n1');
+		assert.strictEqual((await readded.writer).name, 'Ursula');
+		assert.strictEqual((await readded.press).name, 'Parnassus');
+	});
+
+	it('stamps a timestamp field added on re-declaration and stops stamping a removed one', async () => {
+		const Log = defineTable(
+			'StampEvolve',
+			{ id: id.primaryKey, label: string, touchedAt: date.updatedTime },
+			{ database: EVOLVE_DB }
+		);
+		await Log.put({ id: 'l1', label: 'first' });
+		assert.ok((await Log.get('l1')).touchedAt instanceof Date);
+
+		defineTable(
+			'StampEvolve',
+			{ id: id.primaryKey, label: string, createdAt: date.indexed.createdTime },
+			{ database: EVOLVE_DB }
+		);
+		await Log.put({ id: 'l2', label: 'second' });
+		const second = await Log.get('l2');
+		assert.ok(second.createdAt instanceof Date, 'the added createdTime field is stamped');
+		assert.strictEqual(second.touchedAt, undefined, 'the removed updatedTime field is no longer written');
+		assert.strictEqual(Log.createdTimeProperty?.name, 'createdAt');
+		assert.strictEqual(Log.updatedTimeProperty, undefined);
+	});
+
+	it('still checks the target table’s read permission for a retained relationship', async () => {
+		const Secret = defineTable('SecretNote', { id: id.primaryKey, text: string }, { database: EVOLVE_DB });
+		const Open = defineTable('OpenNote', { id: id.primaryKey, text: string }, { database: EVOLVE_DB });
+		const docShape = {
+			id: id.primaryKey,
+			name: string,
+			secretId: id.indexed.nullable,
+			openId: id.indexed.nullable,
+			secret: types.relation(() => Secret, { from: 'secretId' }),
+		};
+		const Doc = defineTable(
+			'GatedDoc',
+			{ ...docShape, open: types.relation(() => Open, { from: 'openId' }) },
+			{ database: EVOLVE_DB }
+		);
+		await Secret.put({ id: 's1', text: 'classified' });
+		await Open.put({ id: 'o1', text: 'public' });
+		await Doc.put({ id: 'd1', name: 'doc', secretId: 's1', openId: 'o1' });
+		const user = {
+			role: {
+				permission: {
+					[EVOLVE_DB]: {
+						tables: {
+							GatedDoc: { read: true, insert: false, update: false, delete: false, attribute_permissions: [] },
+							SecretNote: { read: false, insert: false, update: false, delete: false, attribute_permissions: [] },
+							OpenNote: { read: true, insert: false, update: false, delete: false, attribute_permissions: [] },
+						},
+					},
+				},
+			},
+		};
+		const searchAs = async (query) => {
+			const target = new RequestTarget(query);
+			target.checkPermission = true;
+			const results = [];
+			for await (const result of Doc.search(target, { user })) results.push(result);
+			return results;
+		};
+		const [before] = await searchAs('?id=d1&select(name,secret,open)');
+		assert.strictEqual(before.name, 'doc');
+		assert.strictEqual(before.secret, undefined, 'no read permission on SecretNote');
+		assert.strictEqual(before.open.text, 'public');
+
+		defineTable('GatedDoc', docShape, { database: EVOLVE_DB });
+		const [after] = await searchAs('?id=d1&select(name,secret)');
+		assert.strictEqual(after.name, 'doc');
+		assert.strictEqual(after.secret, undefined, 'still no read permission on SecretNote');
 	});
 });

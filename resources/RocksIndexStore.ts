@@ -4,13 +4,13 @@ import {
 	type CountEstimateOptions,
 	DBI,
 	type StoreIteratorOptions,
+	type StoreGetOptions,
 	type StorePutOptions,
 	type StoreRemoveOptions,
 	RocksDatabase,
 } from '@harperfast/rocksdb-js';
-import { Id } from './ResourceInterface.ts';
+import { type Id } from './ResourceInterface.ts';
 import { MAXIMUM_KEY } from 'ordered-binary';
-
 declare module '@harperfast/rocksdb-js' {
 	interface DBI<T> {
 		getValuesCount(indexedValue: any): number;
@@ -44,13 +44,26 @@ function translateIndexBounds<
  * RocksDatabase rather than a store because it actually alters the interface
  */
 export class RocksIndexStore extends RocksDatabase {
+	hasIndexEntry(indexedValue: any, primaryKey: Id, options?: StoreGetOptions): boolean {
+		return super.getBinaryFastSync([indexedValue, primaryKey], options) !== undefined;
+	}
+
 	/**
-	 * Get all entries matching the range
+	 * Get all entries matching the range, as `{ key: indexedValue, value: primaryKey }`. Both come from
+	 * the composite key, so the stored (null) values are never read, whatever `options.values` says.
 	 * @param options
 	 */
 	getRange(options: StoreIteratorOptions): Iterable<any> {
-		return trackReadRange(options.transaction, () => super.getRange(translateIndexBounds(options))).map(({ key }) => {
-			return { key: key[0], value: key.length > 2 ? key.slice(1) : key[1] };
+		return trackReadRange(options.transaction, () => {
+			const rangeOptions = translateIndexBounds(options);
+			rangeOptions.values = false;
+			return super.getRange(rangeOptions);
+		}).map((entry) => {
+			// each iteration yields a fresh entry object, so it can be rewritten in place
+			const key = entry.key;
+			entry.key = key[0];
+			entry.value = key.length > 2 ? key.slice(1) : key[1];
+			return entry;
 		});
 	}
 

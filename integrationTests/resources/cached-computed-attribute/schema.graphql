@@ -43,3 +43,17 @@ type CachedItem @table(expiration: 3600) @export {
 	catId: ID @indexed
 	cat: Cat @relationship(from: "catId") @enumerable
 }
+
+# `name` is not indexed, so an invalidation stub keeps no input for the computed resolver.
+type StampedProduct @table(expiration: 3600) @export {
+	id: ID @primaryKey
+	name: String
+	createdAt: Float @createdTime @indexed
+	updatedAt: Float @updatedTime @indexed
+	upper: String @computed(from: "name.toUpperCase()") @indexed
+}
+
+type StampedSourceData @table @export {
+	id: ID @primaryKey
+	name: String
+}

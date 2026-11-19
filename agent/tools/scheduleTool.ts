@@ -12,6 +12,8 @@ import type { AgentTool, AgentToolContext } from '../types.ts';
 const MAX_DELAY_MS = 24 * 60 * 60 * 1000; // 24h
 const MIN_DELAY_MS = 1_000;
 
+export const SCHEDULE_TOOL_NAME = 'schedule_followup';
+
 export interface ScheduledFollowup {
 	id: string;
 	sessionId: string;
@@ -24,14 +26,17 @@ export interface ScheduleToolDeps {
 	onFollowup: (sessionId: string, prompt: string) => Promise<void> | void;
 }
 
-export function buildScheduleTool(deps: ScheduleToolDeps): {
+/** The tool and the followups it has armed. `pending` lives as long as the tool: a timer deletes its own entry when it fires. */
+export interface ScheduleTool {
 	tool: AgentTool;
 	pending: Map<string, ScheduledFollowup>;
-} {
+}
+
+export function buildScheduleTool(deps: ScheduleToolDeps): ScheduleTool {
 	const pending = new Map<string, ScheduledFollowup>();
 	const tool: AgentTool = {
 		def: {
-			name: 'schedule_followup',
+			name: SCHEDULE_TOOL_NAME,
 			description: 'Re-invoke the agent on the current session after the given delay with a new prompt.',
 			parameters: {
 				type: 'object',

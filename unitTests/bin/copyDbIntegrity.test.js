@@ -4,7 +4,7 @@ const path = require('node:path');
 const { open } = require('lmdb');
 const env_mgr = require('#src/utility/environment/environmentManager');
 const { table, resetDatabases } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const copyDB = require('#src/bin/copyDb');
 const audit_store = require('#src/resources/auditStore');
 const OpenEnvironmentObject = require('#src/utility/lmdb/OpenEnvironmentObject').default;
@@ -301,13 +301,21 @@ describe('copy-db integrity (harper#2048)', () => {
 	});
 
 	it('refuses a copy target that already exists', async () => {
-		const copy_path = path.join(storage_path, 'existing-target.mdb');
-		await fs.writeFile(copy_path, 'not a database');
-		await assert.rejects(
-			() => copyDB.copyDb(DATABASE, copy_path, { blobs: 'copy' }),
-			/already exists/,
-			'an existing target would be merged into rather than replaced'
-		);
+		// Not under the storage path: a rescan, which any schema change can trigger, segfaults on a `.mdb`
+		// there that is not an LMDB environment (resources/DESIGN.md).
+		const occupied_path = path.resolve(storage_path, '../copyIntegrityOccupied');
+		const copy_path = path.join(occupied_path, 'existing-target.mdb');
+		await fs.outputFile(copy_path, 'not a database');
+		try {
+			resetDatabases();
+			await assert.rejects(
+				() => copyDB.copyDb(DATABASE, copy_path, { blobs: 'copy' }),
+				/already exists/,
+				'an existing target would be merged into rather than replaced'
+			);
+		} finally {
+			await fs.remove(occupied_path);
+		}
 	});
 
 	it('requires the caller to declare what happens to the blobs', async () => {

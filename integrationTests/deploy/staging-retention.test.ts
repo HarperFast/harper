@@ -57,7 +57,7 @@ suite(
 			await plantDormantBuild(componentsRoot, 'd-newer', 2_000);
 			deepStrictEqual((await readdir(join(componentsRoot, '.deploy-staging'))).sort(), ['d-newer', 'd-older']);
 
-			await operation(ctx, {
+			const deployed = await operation(ctx, {
 				operation: 'deploy_component',
 				project: PROJECT,
 				payload: await buildPayload(1),
@@ -66,9 +66,14 @@ suite(
 
 			strictEqual(await readFile(join(componentsRoot, PROJECT, 'version.txt'), 'utf8'), '1', 'the deploy landed');
 			deepStrictEqual(
-				await readdir(join(componentsRoot, '.deploy-staging')),
-				['d-newer'],
-				'the older dormant build was pruned, the newest kept, and the deploy left no candidate of its own'
+				(await readdir(join(componentsRoot, '.deploy-staging'))).sort(),
+				['d-newer', deployed.deployment_id].sort(),
+				'the older dormant build was pruned, the newest kept, and the deploy left only the record of its own id'
+			);
+			deepStrictEqual(
+				(await readdir(join(componentsRoot, '.deploy-staging', deployed.deployment_id))).sort(),
+				['.artifact.json', '.complete', '.component'],
+				'a record, not a build: it holds no tree, so retention does not count it'
 			);
 		});
 	}

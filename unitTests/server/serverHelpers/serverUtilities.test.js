@@ -7,18 +7,20 @@ const assert = require('assert');
 const sinon = require('sinon');
 const sandbox = sinon.createSandbox();
 const { TEST_JSON_SUPER_USER, TEST_JSON_NON_SU } = require('../../test_data');
-const serverUtilities = require('#src/server/serverHelpers/serverUtilities');
+const serverUtilities = require('#js/server/serverHelpers/serverUtilities');
 const registeredOperations = require('#src/server/serverHelpers/registeredOperations');
 const manageThreads = require('#src/server/threads/manageThreads');
 const operationAuthorizationState = require('#src/server/serverHelpers/operationAuthorizationState');
-const { runWithDeployValidationGuard } = require('#src/server/serverHelpers/deployValidationState');
-const quota = require('#src/components/mcp/quota');
 const operation_function_caller = require('#src/utility/OperationFunctionCaller');
 const logger = require('#src/utility/logging/harper_logger');
 const { contextStorage } = require('#src/resources/transaction');
 const { existsSync, readFileSync } = require('node:fs');
 const { pinLogConfig } = require('../../logConfigFixture.js');
 const { waitFor } = require('../../waitFor.js');
+const fastify = require('fastify');
+const { serverErrorHandler } = require('#src/server/serverHelpers/serverHandlers');
+const { HdbError } = require('#src/utility/errors/hdbError');
+const PermissionResponseObject = require('#src/security/data_objects/PermissionResponseObject').default;
 
 const test_func_data = { data: 'this is data', more_data: 'this is more data' };
 const test_error = 'This is bad!';
@@ -72,6 +74,18 @@ describe('Test serverUtilities.js module ', () => {
 			}
 		});
 
+		it('refuses replication directives from a non-super-user writer with 403 (harper#2898)', function () {
+			for (const directives of [{ replicateTo: 0 }, { replicatedConfirmation: 2 }]) {
+				const request = { ...testUtils.deepClone(TEST_JSON_NON_SU), ...directives };
+				assert.throws(
+					() => serverUtilities.chooseOperation(request),
+					(error) => error.statusCode === 403 && /replicateTo or replicatedConfirmation/.test(error.message)
+				);
+			}
+			const superUserRequest = { ...testUtils.deepClone(TEST_JSON_SUPER_USER), replicateTo: 0 };
+			assert.doesNotThrow(() => serverUtilities.chooseOperation(superUserRequest));
+		});
+
 		it('accepts authorization bypass only through separate trusted dispatch state', function () {
 			const request = testUtils.deepClone(TEST_JSON_NON_SU);
 			request.operation = 'add_user';
@@ -89,6 +103,53 @@ describe('Test serverUtilities.js module ', () => {
 			request.hdb_user.tokenOperations = tokenOperations;
 			return request;
 		}
+
+		describe('a restart_service that activates a deployment on peers', function () {
+			const activation = {
+				project: 'web',
+				deployment_id: '11111111-1111-1111-1111-111111111111',
+				deployment_row: '22222222-2222-2222-2222-222222222222',
+			};
+			const restartRequest = (permission, extra = {}) => ({
+				operation: 'restart_service',
+				service: 'http_workers',
+				...extra,
+				hdb_user: { active: true, role: { permission, role: 'scoped' }, username: 'scoped_user', ...extra.user },
+			});
+
+			it('is refused to a caller allowed to restart but not to deploy', function () {
+				const allowed = { super_user: false, operations: ['restart_service'] };
+				assert.doesNotThrow(
+					() => serverUtilities.chooseOperation(restartRequest(allowed)),
+					'a plain restart is allowed'
+				);
+				assert.throws(
+					() => serverUtilities.chooseOperation(restartRequest(allowed, { activate_deployment: activation })),
+					(error) => (error.statusCode ?? error.http_code) === 403
+				);
+			});
+
+			it('is refused to a token scoped to restarting', function () {
+				const request = restartRequest(
+					{ super_user: true },
+					{ activate_deployment: activation, user: { tokenOperations: ['restart_service'] } }
+				);
+				assert.throws(
+					() => serverUtilities.chooseOperation(request),
+					(error) => (error.statusCode ?? error.http_code) === 403
+				);
+			});
+
+			it('is allowed to a caller allowed to deploy', function () {
+				const allowed = { super_user: false, operations: ['restart_service', 'deploy_component'] };
+				assert.doesNotThrow(() =>
+					serverUtilities.chooseOperation(restartRequest(allowed, { activate_deployment: activation }))
+				);
+				assert.doesNotThrow(() =>
+					serverUtilities.chooseOperation(restartRequest({ super_user: true }, { activate_deployment: activation }))
+				);
+			});
+		});
 
 		it('rejects write SQL nested in an export job', function () {
 			assert.throws(
@@ -148,7 +209,7 @@ describe('Test serverUtilities.js module ', () => {
 			};
 			try {
 				registeredOperations.operationRegisteredHandler({
-					message: { name: operationName, originator: 17 },
+					message: { name: operationName, originator: 9_000_017 },
 				});
 				const forward = registeredOperations.getRemoteOperationFunction(operationName, true);
 				assert.strictEqual(typeof forward, 'function');
@@ -241,10 +302,390 @@ describe('Test serverUtilities.js module ', () => {
 				global.threads = originalThreads;
 			}
 		});
+
+		it('carries a sealed body’s log view beside the body, never in it', async function () {
+			const { setOperationLogView } = require('#src/utility/operationLogView');
+			const operationName = 'test_remote_log_view';
+			const sentMessages = [];
+			const originalThreads = global.threads;
+			global.threads = {
+				sendToThread(_threadId, message) {
+					sentMessages.push(message);
+					return false;
+				},
+			};
+			const originalLevel = logger.logLevel;
+			// The fake worker never accepts the send, so each attempt drops the registration; re-announce it.
+			const announce = () =>
+				registeredOperations.operationRegisteredHandler({ message: { name: operationName, originator: 9_000_018 } });
+			try {
+				const body = { operation: operationName, records: [{ secret: 'forwarded-secret' }] };
+				let built = 0;
+				setOperationLogView(body, () => {
+					built++;
+					return { operation: operationName, encrypted_operation: { mode: 'sealed' } };
+				});
+
+				logger.logLevel = 'warn';
+				announce();
+				await assert.rejects(registeredOperations.getRemoteOperationFunction(operationName)(body));
+				assert.deepStrictEqual(sentMessages[0].message.logView, { operation: operationName });
+				assert.strictEqual(built, 0, 'the full view was built although the operation log is off');
+
+				logger.logLevel = 'info';
+				announce();
+				await assert.rejects(registeredOperations.getRemoteOperationFunction(operationName)(body));
+				assert.deepStrictEqual(sentMessages[1].message.logView, {
+					operation: operationName,
+					encrypted_operation: { mode: 'sealed' },
+				});
+				assert.ok(!Object.hasOwn(sentMessages[1].message.body, 'logView'));
+			} finally {
+				logger.logLevel = originalLevel;
+				global.threads = originalThreads;
+			}
+		});
+
+		it('registers the forwarded log view on the worker’s copy of the body', async function () {
+			const { operationLogViewOf } = require('#src/utility/operationLogView');
+			const sentMessages = [];
+			const originalThreads = global.threads;
+			global.threads = {
+				sendToThread(_threadId, message) {
+					sentMessages.push(message);
+					return true;
+				},
+			};
+			registeredOperations.setLocalOperationDispatch({
+				chooseOperation() {
+					return () => {};
+				},
+				async processLocalTransaction({ body }) {
+					return { view: operationLogViewOf(body)?.() ?? null };
+				},
+			});
+			try {
+				const logView = { operation: 'test_worker_log_view', encrypted_operation: { mode: 'fields' } };
+				await registeredOperations.operationExecuteRequestHandler({
+					message: { requestId: 25, body: { operation: 'test_worker_log_view' }, originator: 1, logView },
+				});
+				assert.deepStrictEqual(sentMessages[0].message.result, { view: logView });
+			} finally {
+				registeredOperations.setLocalOperationDispatch({
+					chooseOperation: serverUtilities.chooseOperation,
+					processLocalTransaction: serverUtilities.processLocalTransaction,
+				});
+				global.threads = originalThreads;
+			}
+		});
 	});
 
-	// Only the receiving half is reachable here — announceRegisteredOperation returns early on the
-	// main thread, so integrationTests/components/registered-operation.test.ts owns the real hop.
+	describe('forwarded operation dispatch', function () {
+		this.timeout(10_000);
+		const { ITC_EVENT_TYPES } = require('#src/utility/hdbTerms');
+		const REMOTE_THREAD = 9_000_091;
+		let originalThreads;
+		let sentMessages;
+
+		beforeEach(function () {
+			originalThreads = global.threads;
+			sentMessages = [];
+			global.threads = {
+				// postMessage clones, so a payload that cannot be cloned must fail here as it does there
+				sendToThread(_threadId, message) {
+					sentMessages.push(structuredClone(message));
+					return true;
+				},
+			};
+		});
+
+		afterEach(function () {
+			global.threads = originalThreads;
+			registeredOperations.setLocalOperationDispatch({
+				chooseOperation: serverUtilities.chooseOperation,
+				processLocalTransaction: serverUtilities.processLocalTransaction,
+			});
+		});
+
+		it('never forwards a request that already crossed threads', function () {
+			const operationName = 'test_forwarded_stays_local';
+			registeredOperations.operationRegisteredHandler({
+				message: { name: operationName, originator: REMOTE_THREAD },
+			});
+
+			assert.strictEqual(typeof serverUtilities.chooseOperation({ operation: operationName }), 'function');
+			assert.throws(() => serverUtilities.chooseOperation({ operation: operationName }, false, true), /not found/);
+		});
+
+		it('marks the request it dispatches as forwarded', async function () {
+			const forwardedFlags = [];
+			registeredOperations.setLocalOperationDispatch({
+				chooseOperation(_body, _bypassAuth, forwarded) {
+					forwardedFlags.push(forwarded);
+					return () => {};
+				},
+				async processLocalTransaction() {
+					return {};
+				},
+			});
+
+			await registeredOperations.operationExecuteRequestHandler({
+				message: { requestId: 31, body: { operation: 'test_forwarded_flag' }, originator: 1 },
+			});
+
+			assert.deepStrictEqual(forwardedFlags, [true]);
+		});
+
+		it('carries an error code and retryable across the hop', async function () {
+			const operationName = 'test_forwarded_error_fields';
+			registeredOperations.setLocalOperationDispatch({
+				chooseOperation() {
+					return () => {};
+				},
+				async processLocalTransaction() {
+					throw Object.assign(new Error('recorded but not run'), {
+						statusCode: 409,
+						code: 'AGENT_PROMPT_NOT_RUN',
+						retryable: false,
+					});
+				},
+			});
+			await registeredOperations.operationExecuteRequestHandler({
+				message: { requestId: 32, body: { operation: operationName }, originator: 1 },
+			});
+			const responseError = sentMessages[0].message.error;
+			assert.deepStrictEqual(responseError, {
+				message: 'recorded but not run',
+				statusCode: 409,
+				code: 'AGENT_PROMPT_NOT_RUN',
+				retryable: false,
+			});
+
+			registeredOperations.operationRegisteredHandler({
+				message: { name: operationName, originator: REMOTE_THREAD },
+			});
+			const pending = registeredOperations.getRemoteOperationFunction(operationName)({ operation: operationName });
+			const request = sentMessages[1].message;
+			await manageThreads.broadcast(
+				{
+					type: ITC_EVENT_TYPES.OPERATION_EXECUTE_RESPONSE,
+					message: { requestId: request.requestId, originator: REMOTE_THREAD, error: responseError },
+				},
+				true
+			);
+
+			await assert.rejects(pending, (error) => {
+				assert.strictEqual(error.message, 'recorded but not run');
+				assert.strictEqual(error.statusCode, 409);
+				assert.strictEqual(error.code, 'AGENT_PROMPT_NOT_RUN');
+				assert.strictEqual(error.retryable, false);
+				return true;
+			});
+		});
+
+		let forwardedCount = 0;
+		async function forwardedError(body) {
+			sentMessages.length = 0;
+			const operationName = `test_forwarded_denial_${forwardedCount++}`;
+			await registeredOperations.operationExecuteRequestHandler({
+				message: { requestId: 40 + forwardedCount, body, originator: 1 },
+			});
+			assert.strictEqual(sentMessages.length, 1, 'the receiving side answers exactly once');
+			const responseError = sentMessages[0].message.error;
+			registeredOperations.operationRegisteredHandler({
+				message: { name: operationName, originator: REMOTE_THREAD },
+			});
+			const pending = registeredOperations.getRemoteOperationFunction(operationName)({ operation: operationName });
+			await manageThreads.broadcast(
+				{
+					type: ITC_EVENT_TYPES.OPERATION_EXECUTE_RESPONSE,
+					message: { requestId: sentMessages[1].message.requestId, originator: REMOTE_THREAD, error: responseError },
+				},
+				true
+			);
+			return pending.then(
+				() => assert.fail('the forward resolved'),
+				(error) => error
+			);
+		}
+
+		async function clientResponse(error) {
+			const app = fastify();
+			app.setErrorHandler(serverErrorHandler);
+			app.post('/', async () => {
+				throw error;
+			});
+			try {
+				const response = await app.inject({ method: 'POST', url: '/' });
+				return { status: response.statusCode, body: response.json() };
+			} finally {
+				await app.close();
+			}
+		}
+
+		function localError(body) {
+			try {
+				serverUtilities.chooseOperation(body);
+			} catch (error) {
+				return error;
+			}
+			return assert.fail('the operation was not refused');
+		}
+
+		for (const [label, field, prepare] of [
+			['an operation restricted to super_user', 'unauthorized_access', (request) => (request.operation = 'add_user')],
+			['a database that does not exist', 'invalid_schema_items', () => {}],
+		]) {
+			it(`answers a forwarded denial like the same denial raised locally: ${label}`, async function () {
+				const request = () => {
+					const copy = testUtils.deepClone(TEST_JSON_NON_SU);
+					prepare(copy);
+					return copy;
+				};
+				const local = await clientResponse(localError(request()));
+				const forwarded = await clientResponse(await forwardedError(request()));
+
+				assert.strictEqual(local.status, 403);
+				assert.ok(local.body[field].length > 0, `the local denial carries ${field}: ${JSON.stringify(local.body)}`);
+				assert.deepStrictEqual(forwarded, local);
+			});
+		}
+
+		it('carries table and attribute denial detail, which are nested class instances', async function () {
+			const denial = () => {
+				const report = new PermissionResponseObject();
+				report.addUnauthorizedTable('dev', 'dog', ['read']);
+				report.addUnauthorizedAttributes(['name'], 'dev', 'dog', { name: ['read', 'update'] });
+				report.addUnauthorizedAttributes(['id'], 'dev', 'cat', { id: ['read'] });
+				return new HdbError(new Error(), report.getPermsResponse(), 403);
+			};
+			registeredOperations.setLocalOperationDispatch({
+				chooseOperation() {
+					throw denial();
+				},
+				processLocalTransaction: serverUtilities.processLocalTransaction,
+			});
+			const local = await clientResponse(denial());
+			const forwarded = await clientResponse(await forwardedError({ operation: 'test_nested_denial' }));
+
+			assert.strictEqual(local.body.unauthorized_access.length, 2);
+			assert.deepStrictEqual(forwarded, local);
+		});
+
+		it('keeps the report when the rejection is forwarded a second time', async function () {
+			const request = () => ({ ...testUtils.deepClone(TEST_JSON_NON_SU), operation: 'add_user' });
+			const local = await clientResponse(localError(request()));
+			const firstHop = await forwardedError(request());
+			registeredOperations.setLocalOperationDispatch({
+				chooseOperation() {
+					throw firstHop;
+				},
+				processLocalTransaction: serverUtilities.processLocalTransaction,
+			});
+			const secondHop = await forwardedError({ operation: 'test_second_hop' });
+
+			assert.ok(local.body.unauthorized_access.length > 0);
+			assert.deepStrictEqual(await clientResponse(secondHop), local);
+		});
+
+		it('keeps an object body that is not a permission report as a scalar message with its retry signals', async function () {
+			const failure = () =>
+				Object.assign(new Error('saved but not run'), {
+					statusCode: 409,
+					code: 'SAVED_NOT_RUN',
+					retryable: false,
+					http_resp_msg: { error: 'saved but not run', phase: 'queued' },
+				});
+			registeredOperations.setLocalOperationDispatch({
+				chooseOperation() {
+					throw failure();
+				},
+				processLocalTransaction: serverUtilities.processLocalTransaction,
+			});
+			const error = await forwardedError({ operation: 'test_object_body' });
+
+			assert.strictEqual(error.http_resp_msg, undefined);
+			assert.deepStrictEqual(await clientResponse(error), {
+				status: 409,
+				body: { error: 'saved but not run', code: 'SAVED_NOT_RUN', retryable: false },
+			});
+		});
+
+		it('keeps a string response message as it is raised locally', async function () {
+			const request = () => ({ ...testUtils.deepClone(TEST_JSON_NON_SU), operation: 'definitely_not_an_operation' });
+			const local = await clientResponse(localError(request()));
+			const forwardedRejection = await forwardedError(request());
+
+			assert.strictEqual(forwardedRejection.http_resp_msg, undefined);
+			assert.deepStrictEqual(await clientResponse(forwardedRejection), local);
+			assert.strictEqual(local.status, 400);
+		});
+
+		it('answers once, as a 500, when the operation rejects with nothing', async function () {
+			registeredOperations.setLocalOperationDispatch({
+				chooseOperation() {
+					throw undefined;
+				},
+				processLocalTransaction: serverUtilities.processLocalTransaction,
+			});
+			const error = await forwardedError({ operation: 'test_nullish_rejection' });
+
+			assert.strictEqual(error.statusCode, 500);
+		});
+	});
+
+	describe('main-thread operation names on a worker', function () {
+		const { Worker } = require('node:worker_threads');
+		const { join } = require('node:path');
+
+		async function askWorker(workerData, announce, names) {
+			const worker = new Worker(join(__dirname, 'fixtures', 'mainThreadOperationsWorker.js'), { workerData });
+			try {
+				return await new Promise((resolve, reject) => {
+					setTimeout(() => reject(new Error('the worker did not answer')), 30_000).unref();
+					worker.on('error', reject);
+					worker.on('exit', () => reject(new Error('the worker exited before answering')));
+					worker.on('message', (message) => {
+						if (message === 'ready') worker.postMessage({ announce, names });
+						else resolve(message);
+					});
+				});
+			} finally {
+				await worker.terminate();
+			}
+		}
+
+		it('forwards names from the spawn snapshot and from a main-thread announcement only', async function () {
+			const result = await askWorker(
+				{ mainThreadOperations: [['test_main_snapshot_op', true]] },
+				[
+					{ name: 'test_main_announced_op', grantable: false, originator: 0 },
+					{ name: 'test_sibling_announced_op', grantable: true, originator: 9_000_101 },
+				],
+				['test_main_snapshot_op', 'test_main_announced_op', 'test_sibling_announced_op', 'test_main_unknown_op']
+			);
+
+			assert.deepStrictEqual(result, {
+				test_main_snapshot_op: { forwards: true, grantable: true },
+				test_main_announced_op: { forwards: true, grantable: false },
+				test_sibling_announced_op: { forwards: false, grantable: false },
+				test_main_unknown_op: { forwards: false, grantable: false },
+			});
+		});
+
+		it('ignores announcements in a worker the main thread did not spawn', async function () {
+			const result = await askWorker(
+				{},
+				[{ name: 'test_main_announced_op', grantable: true, originator: 0 }],
+				['test_main_announced_op']
+			);
+
+			assert.deepStrictEqual(result, { test_main_announced_op: { forwards: false, grantable: false } });
+		});
+	});
+
+	// Only main's receiving half is reachable here; integrationTests/components/registered-operation.test.ts
+	// owns the real hop.
 	describe('cross-thread grantable operation mirroring', function () {
 		const {
 			validateOperations,
@@ -277,7 +718,7 @@ describe('Test serverUtilities.js module ', () => {
 			assert.notEqual(validateOperations([GRANTABLE]), null);
 
 			registeredOperations.operationRegisteredHandler({
-				message: { name: GRANTABLE, grantable: true, originator: 31 },
+				message: { name: GRANTABLE, grantable: true, originator: 9_000_031 },
 			});
 
 			assert.equal(validateOperations([GRANTABLE]), null, 'name should be grantable after the announcement');
@@ -285,7 +726,7 @@ describe('Test serverUtilities.js module ', () => {
 
 		it('leaves an op that declared no permission ungrantable', function () {
 			registeredOperations.operationRegisteredHandler({
-				message: { name: PLAIN, grantable: false, originator: 31 },
+				message: { name: PLAIN, grantable: false, originator: 9_000_031 },
 			});
 
 			assert.notEqual(validateOperations([PLAIN]), null);
@@ -296,7 +737,7 @@ describe('Test serverUtilities.js module ', () => {
 			// restartWorkers loads root components before draining old workers, so a startOnMainThread
 			// component can claim a name a retiring worker still offers.
 			registeredOperations.operationRegisteredHandler({
-				message: { name: SHARED, grantable: true, originator: 41 },
+				message: { name: SHARED, grantable: true, originator: 9_000_041 },
 			});
 			registerGrantableOperation(SHARED);
 
@@ -309,12 +750,12 @@ describe('Test serverUtilities.js module ', () => {
 
 		it('retracts grantability when a re-announcement drops the declared permission', function () {
 			registeredOperations.operationRegisteredHandler({
-				message: { name: RETRACTED, grantable: true, originator: 51 },
+				message: { name: RETRACTED, grantable: true, originator: 9_000_051 },
 			});
 			assert.equal(validateOperations([RETRACTED]), null);
 
 			registeredOperations.operationRegisteredHandler({
-				message: { name: RETRACTED, grantable: false, originator: 51 },
+				message: { name: RETRACTED, grantable: false, originator: 9_000_051 },
 			});
 			assert.notEqual(validateOperations([RETRACTED]), null, 'the same thread withdrawing must retract its claim');
 		});
@@ -1110,53 +1551,6 @@ describe('Test serverUtilities.js module ', () => {
 			assert.equal(op_auth.verifyPerms(nonSuRequest(SU_OP, [SU_OP]), SU_OP), null);
 		});
 	});
-
-	// #1809 — process-wide server.* registrations must not leak from a throwaway deploy-validation load.
-	describe('deploy-validation guard: registrations no-op while validating', () => {
-		const CAND_OP = 'validation_candidate_op';
-		const QUOTA_INFO = { tool: 'answer', user: { username: 'u' }, profile: 'application', sessionId: 's' };
-
-		afterEach(() => {
-			serverUtilities.OPERATION_FUNCTION_MAP.delete(CAND_OP);
-			quota.setMcpQuotaHandler(undefined);
-		});
-
-		it('skips server.registerOperation during validation, then resumes after', async () => {
-			await runWithDeployValidationGuard(async () => {
-				server.registerOperation({ name: CAND_OP, execute: async () => ({}) });
-				assert.equal(serverUtilities.OPERATION_FUNCTION_MAP.has(CAND_OP), false, 'not registered during validation');
-			});
-			server.registerOperation({ name: CAND_OP, execute: async () => ({}) });
-			assert.equal(
-				serverUtilities.OPERATION_FUNCTION_MAP.has(CAND_OP),
-				true,
-				'registers normally after the guard lowers'
-			);
-		});
-
-		it('skips server.setMcpQuotaHandler during validation, keeping the live policy', async () => {
-			server.setMcpQuotaHandler(() => ({ allowed: false, message: 'live policy' }));
-			await runWithDeployValidationGuard(async () => {
-				server.setMcpQuotaHandler(() => true); // a candidate trying to disable the live policy
-			});
-			assert.deepEqual(await quota.checkDurableQuota(QUOTA_INFO), { allowed: false, message: 'live policy' });
-		});
-
-		it('lowers the guard even when the validation load throws', async () => {
-			await assert.rejects(
-				runWithDeployValidationGuard(async () => {
-					throw new Error('load failed');
-				}),
-				/load failed/
-			);
-			server.registerOperation({ name: CAND_OP, execute: async () => ({}) });
-			assert.equal(
-				serverUtilities.OPERATION_FUNCTION_MAP.has(CAND_OP),
-				true,
-				'registration works again after a failure'
-			);
-		});
-	});
 });
 
 // processLocalTransaction builds `operationLog` from mainLogger at module load, so the logged body
@@ -1206,6 +1600,24 @@ describe('redactForOperationLog', () => {
 	it('handles operation names that collide with object prototype properties', () => {
 		const body = { operation: 'valueOf', key: 'auditable-identifier' };
 		assert.deepStrictEqual(redactForOperationLog(body), body);
+	});
+
+	it('strips model blocks and JSON strings while preserving the configuration request', () => {
+		for (const models of [{ generative: { default: { apiKey: 'model-secret' } } }, '{"apiKey":"model-secret"}']) {
+			const body = { operation: 'set_configuration', models, MODELS: models, logging_level: 'info' };
+			assert.deepStrictEqual(redactForOperationLog(body), { operation: 'set_configuration', logging_level: 'info' });
+			assert.strictEqual(body.models, models);
+		}
+	});
+
+	it('strips the Studio settings, whose rejected values the 400 does not repeat either', () => {
+		const body = {
+			operation: 'set_configuration',
+			studio_navigation: { 'pasted-secret': 'hidden' },
+			STUDIO_LANDING: 'pasted-secret',
+			logging_level: 'info',
+		};
+		assert.deepStrictEqual(redactForOperationLog(body), { operation: 'set_configuration', logging_level: 'info' });
 	});
 
 	it('keeps environment variable names while stripping their values', () => {
@@ -1284,9 +1696,14 @@ describe('processLocalTransaction call-site redaction (real log file)', function
 		server.setMcpQuotaHandler = realSetMcpQuotaHandler;
 		global.operation = globals.operation = realGlobalOperation;
 		require.cache[modulePath] = originalCacheEntry;
-		registeredOperations.setLocalOperationDispatch({
+		const dispatch = {
 			chooseOperation: serverUtilities.chooseOperation,
 			processLocalTransaction: serverUtilities.processLocalTransaction,
+		};
+		registeredOperations.setLocalOperationDispatch(dispatch);
+		require('#src/components/encryptedOperation').setEncryptedOperationDispatch({
+			...dispatch,
+			isJobOperation: serverUtilities.isJobOperation,
 		});
 	});
 

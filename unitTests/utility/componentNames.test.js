@@ -76,6 +76,16 @@ describe('componentNames', () => {
 			assert.strictEqual(canonicalProjectName('web'), 'web');
 			assert.strictEqual(canonicalProjectName('@scope/app'), 'app');
 			assert.strictEqual(canonicalProjectName('app.tgz'), 'app');
+			assert.strictEqual(canonicalProjectName('app.tar.gz'), 'app');
+			assert.strictEqual(canonicalProjectName('@scope/app.TGZ'), 'app');
+		});
+
+		it('keeps any other dot or path segment, so the project grammar rejects it', () => {
+			for (const project of ['shop.pr-12', 'shop.preview', '../shop', 'dir/shop', '@scope/shop.pr-12']) {
+				const canonical = canonicalProjectName(project);
+				assert.notStrictEqual(canonical, 'shop', project);
+				assert.ok(!PROJECT_NAME_PATTERN.test(canonical), project);
+			}
 		});
 
 		it('derives a project from a package spec', () => {

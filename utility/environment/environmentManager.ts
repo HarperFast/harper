@@ -1,8 +1,9 @@
-'use strict';
+import { PACKAGE_ROOT } from '../packageUtils.js';
+('use strict');
 
-import * as fs from 'fs-extra';
-import * as path from 'path';
-import * as os from 'os';
+import fs from 'fs-extra';
+import * as path from 'node:path';
+import * as os from 'node:os';
 import PropertiesReader from 'properties-reader';
 import log from '../logging/harper_logger.ts';
 import * as commonUtils from '../common_utils.ts';
@@ -25,11 +26,12 @@ const installPropsToSave = {
 let installProps: any = {};
 export { BOOT_PROPS_FILE_PATH };
 
-// Every param passed to setProperty() on this thread, keyed by its canonical config param so
-// aliases collapse to one last-write-wins entry. Workers inherit this map (getConfigOverrides() and
-// the workerDataProvider registration in server/threads/manageThreads.js) and it is replayed after
-// a forced config reload; `base` is the configured value the override displaced, which is how
-// reapplyAllOverrides() tells a reload that left the param alone from one that is itself the change.
+// Every non-undefined param passed to setProperty() on this thread (passing undefined clears the
+// entry), keyed by its canonical config param so aliases collapse to one last-write-wins entry.
+// Workers inherit this map (getConfigOverrides() and the workerDataProvider registration in
+// server/threads/manageThreads.js) and it is replayed after a forced config reload; `base` is the
+// configured value the override displaced, which is how reapplyAllOverrides() tells a reload that
+// left the param alone from one that is itself the change.
 //
 // setProperty() therefore means operator/harness *intent* only. Code caching a value it derived
 // from config it just read (initializePaths.js, utility/lmdb/environmentUtility.ts) must call
@@ -44,7 +46,7 @@ let inheritedOverridesApplied = false;
  * currently known base path here to help with this case.
  */
 export function getHdbBasePath() {
-	return installProps[hdbTerms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY];
+	return installProps?.[hdbTerms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY];
 }
 
 /**
@@ -62,11 +64,18 @@ export function setHdbBasePath(hdbPath: string) {
  * @returns {*}
  */
 export function get(propName: string): any {
-	const value = configUtils.getConfigValue(propName);
-	if (value === undefined) {
-		return installProps[propName];
+	// Tolerate calls before this module's body has executed (ESM cycle):
+	// configUtils.ts / installProps may not be initialized yet, in which case
+	// no config has been read so the value is genuinely unknown.
+	let value;
+	try {
+		value = configUtils.getConfigValue(propName);
+	} catch (err: any) {
+		if (err?.name !== 'ReferenceError') throw err;
 	}
-
+	if (value === undefined) {
+		return installProps?.[propName];
+	}
 	return value;
 }
 
@@ -78,39 +87,43 @@ export function get(propName: string): any {
  *
  * The override is also recorded so it propagates to every worker thread spawned from here and
  * survives a forced config reload — except a reload that changes this param on disk, which wins
- * and retires the override (see reapplyAllOverrides()). `value` must be structured-cloneable.
+ * and retires the override (see reapplyAllOverrides()). Passing `undefined` as `value` clears any
+ * recorded override for `propName`. Otherwise, `value` must be structured-cloneable.
  *
  * This function should only be used by the installer and unit tests.
  * @param propName
  * @param value
  */
 export function setProperty(propName: string, value: any) {
-	// Snapshot rather than keep the caller's reference: initializePaths.js and environmentUtility.ts
-	// cache derived per-database paths by mutating the live `databases` value in place, which is
-	// often the very object handed to setProperty. Cloning here also settles cloneability at the
-	// caller that can still fix it — manageThreads.js's provider only logs a clone failure and
-	// spawns the worker on the on-disk config anyway.
-	let snapshot;
-	try {
-		snapshot = structuredClone(value);
-	} catch (err) {
-		throw new Error(`Config property '${propName}' cannot be set to a value that is not structured-cloneable`, {
-			cause: err,
-		});
-	}
-
 	// Key by the canonical param name, not the raw alias passed in: CONFIG_PARAM_MAP is many-to-one
 	// (e.g. SERVER_PORT_KEY and OPERATIONSAPI_NETWORK_PORT both canonicalize to
 	// 'operationsApi_network_port'), and replay of a stale alias after the canonical one would
 	// reintroduce the parent/worker skew this map exists to prevent.
 	const canonicalName = (hdbTerms.CONFIG_PARAM_MAP as any)[propName.toLowerCase()] ?? propName;
-	const existing = appliedOverrides.get(canonicalName);
-	appliedOverrides.set(canonicalName, {
-		value: snapshot,
-		// Keep the first override's base: everything after it displaced an override, not a
-		// configured value, so it says nothing about what the config file held.
-		base: existing ? existing.base : snapshotConfigValue(configUtils.getConfigValue(propName)),
-	});
+	if (value === undefined) {
+		appliedOverrides.delete(canonicalName);
+	} else {
+		// Snapshot rather than keep the caller's reference: initializePaths.js and environmentUtility.ts
+		// cache derived per-database paths by mutating the live `databases` value in place, which is
+		// often the very object handed to setProperty. Cloning here also settles cloneability at the
+		// caller that can still fix it — manageThreads.js's provider only logs a clone failure and
+		// spawns the worker on the on-disk config anyway.
+		let snapshot;
+		try {
+			snapshot = structuredClone(value);
+		} catch (err) {
+			throw new Error(`Config property '${propName}' cannot be set to a value that is not structured-cloneable`, {
+				cause: err,
+			});
+		}
+		const existing = appliedOverrides.get(canonicalName);
+		appliedOverrides.set(canonicalName, {
+			value: snapshot,
+			// Keep the first override's base: everything after it displaced an override, not a
+			// configured value, so it says nothing about what the config file held.
+			base: existing ? existing.base : snapshotConfigValue(configUtils.getConfigValue(propName)),
+		});
+	}
 
 	if (installPropsToSave[propName]) {
 		installProps[propName] = value;
@@ -127,7 +140,7 @@ export function setProperty(propName: string, value: any) {
  */
 export function getConfigOverrides(): Record<string, any> | undefined {
 	if (!appliedOverrides.size) return undefined;
-	const overrides = {};
+	const overrides: Record<string, any> = {};
 	for (const [propName, { value }] of appliedOverrides) {
 		overrides[propName] = value;
 	}
@@ -182,6 +195,49 @@ function sameConfigValue(a: any, b: any) {
 	} catch {
 		return false;
 	}
+}
+
+/** Refresh one live-config subtree without losing unrelated installer or inherited overrides. */
+export function refreshConfigSubtree(
+	param: string,
+	previousRoot: unknown,
+	nextRoot: unknown,
+	validate: (value: unknown) => unknown
+): unknown {
+	const canonical = (hdbTerms.CONFIG_PARAM_MAP as any)[param.toLowerCase()] ?? param;
+	const target = canonical.split('_');
+	const read = (root: any, parts: string[]) => {
+		for (const part of parts) root = root && typeof root === 'object' ? root[part] : undefined;
+		return root;
+	};
+	let value = snapshotConfigValue(read(nextRoot, target));
+	const retired: string[] = [];
+	for (const [name, override] of appliedOverrides) {
+		const parts = name.split('_');
+		if (!parts.slice(0, target.length).every((part, i) => part === target[i])) continue;
+		if (previousRoot !== undefined && !sameConfigValue(read(previousRoot, parts), read(nextRoot, parts))) {
+			retired.push(name);
+			continue;
+		}
+		if (parts.length <= target.length) value = snapshotConfigValue(read(override.value, target.slice(parts.length)));
+		else {
+			if (!value || typeof value !== 'object' || Array.isArray(value)) value = {};
+			let node = value;
+			const relative = parts.slice(target.length);
+			for (const part of relative.slice(0, -1)) {
+				if (!node[part] || typeof node[part] !== 'object' || Array.isArray(node[part])) node[part] = {};
+				node = node[part];
+			}
+			node[relative.at(-1)!] = snapshotConfigValue(override.value);
+		}
+	}
+	const validated = validate(value);
+	for (const name of retired) appliedOverrides.delete(name);
+	configUtils.updateConfigObject(canonical, value);
+	for (const name of new Set<string>(Object.values(hdbTerms.CONFIG_PARAMS)))
+		if (name.startsWith(canonical + '_'))
+			configUtils.updateConfigObject(name, read(value, name.slice(canonical.length + 1).split('_')));
+	return validated;
 }
 
 /**
@@ -243,30 +299,14 @@ function doesPropFileExist() {
  */
 export function initSync(force: boolean = false) {
 	try {
-		if (propFileExists || doesPropFileExist() || commonUtils.noBootFile() || force) {
-			configUtils.initConfig(force);
-			if (!inheritedOverridesApplied) {
-				inheritedOverridesApplied = true;
-				applyInheritedConfigOverrides();
-			}
-			// force implies the on-disk config was just re-read from scratch, which would otherwise
-			// silently drop every override applied on this thread so far (inherited or local) —
-			// except the ones the re-read itself changed, which the config file wins.
-			if (force) reapplyAllOverrides();
-
-			// Sync installProps' HDB_ROOT from the config's rootPath *after* any override replay
-			// above (not before): setProperty() records a rootPath override under its canonical
-			// CONFIG_PARAM_MAP name, not under HDB_ROOT_KEY, so replaying it doesn't retrigger this
-			// same side effect below in setProperty() — this sync is what makes getHdbBasePath()
-			// track an isolated rootPath override instead of staying pinned to whatever the pre-replay
-			// disk read produced.
-			const configHdbRoot = configUtils.getConfigValue(hdbTerms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY);
-			// Only overwrite if we actually got a value from config
-			if (configHdbRoot !== undefined) {
-				installProps[hdbTerms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY] = configHdbRoot;
-			}
-		}
-	} catch (err) {
+		loadConfig(force);
+	} catch (err: any) {
+		// During typestrip ESM evaluation, module-load callers of initSync may
+		// reach this before configUtils has finished its own top-level evaluation,
+		// producing a ReferenceError (TDZ) on a module-scope binding. Don't exit
+		// the process for that — the same module-load chain will retry once
+		// evaluation completes, or bin/harper.ts will re-call initSync().
+		if (err?.name === 'ReferenceError') return;
 		log.error(INIT_ERR);
 		log.error(err);
 		console.error(err);
@@ -275,6 +315,44 @@ export function initSync(force: boolean = false) {
 		// than importing the helper) avoids a utility -> server layer
 		// dependency; safe because both alternatives are real exit primitives.
 		(process._realExit ?? process.exit)(1);
+	}
+}
+
+/**
+ * `initSync(true)` for a running process: a config that cannot be read throws rather than exiting, and the config
+ * this thread already had stays in force, since `initConfig` installs a new one only once it has validated.
+ */
+export function reloadSync() {
+	const configFilePath = configUtils.getConfigFilePath();
+	// initConfig reads a missing file as an install still in progress and returns without reading anything
+	if (!fs.existsSync(configFilePath))
+		throw new Error(`Cannot re-read the root config: ${configFilePath} does not exist`);
+	loadConfig(true);
+}
+
+function loadConfig(force: boolean) {
+	if (propFileExists || doesPropFileExist() || commonUtils.noBootFile() || force) {
+		configUtils.initConfig(force);
+		if (!inheritedOverridesApplied) {
+			applyInheritedConfigOverrides();
+			inheritedOverridesApplied = true;
+		}
+		// force implies the on-disk config was just re-read from scratch, which would otherwise
+		// silently drop every override applied on this thread so far (inherited or local) —
+		// except the ones the re-read itself changed, which the config file wins.
+		if (force) reapplyAllOverrides();
+
+		// Sync installProps' HDB_ROOT from the config's rootPath *after* any override replay
+		// above (not before): setProperty() records a rootPath override under its canonical
+		// CONFIG_PARAM_MAP name, not under HDB_ROOT_KEY, so replaying it doesn't retrigger this
+		// same side effect below in setProperty() — this sync is what makes getHdbBasePath()
+		// track an isolated rootPath override instead of staying pinned to whatever the pre-replay
+		// disk read produced.
+		const configHdbRoot = configUtils.getConfigValue(hdbTerms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY);
+		// Only overwrite if we actually got a value from config
+		if (configHdbRoot !== undefined) {
+			installProps[hdbTerms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY] = configHdbRoot;
+		}
 	}
 }
 
@@ -294,8 +372,7 @@ export function initTestEnvironment(testConfigObj: any = {}) {
 			cors_accesslist,
 			local_studio_on,
 		} = testConfigObj;
-		// __dirname is dist/utility/environment when running tests, so go up 3 levels to reach project root
-		const propsPath = path.join(__dirname, '../../../', 'unitTests');
+		const propsPath = path.join(PACKAGE_ROOT, 'unitTests');
 		installProps[BOOT_PROPS_FILE_PATH] = path.join(propsPath, 'hdb_boot_properties.file');
 		const TEST_HDB_PATH = path.join(propsPath, 'envDir', process.pid.toString());
 		try {

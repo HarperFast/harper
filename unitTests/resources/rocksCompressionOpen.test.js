@@ -11,7 +11,7 @@ const {
 	toRocksCompression,
 	resetRocksCompression,
 } = require('#src/resources/databases');
-const { RocksDatabase } = require('@harperfast/rocksdb-js');
+const { RocksDatabase } = require('../rocksdbBindings.mts').rocksdbBindings();
 
 describe('storage.rocks.compression reaches a real RocksDB open', function () {
 	let dir;

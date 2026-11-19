@@ -12,8 +12,18 @@
  * automatically and pipes the iterable to the wire.
  */
 import { handleMcpRequest, type McpProfile, type NormRequest, type NormResponse } from '../transport.ts';
-import { settleDeferredCredentialRejection } from '../../../security/deferredAuthentication.ts';
+import {
+	credentialRejectionResponse,
+	getDeferredCredentialRejection,
+	ownAuthenticationChallenge,
+	settleDeferredCredentialRejection,
+} from '../../../security/deferredAuthentication.ts';
+import harperLogger from '../../../utility/logging/harper_logger.ts';
+import { getBearerValidators } from '../../../server/Server.ts';
+import type { Headers } from '../../../server/serverHelpers/Headers.ts';
 import { toSseStream, type SseFrameSource } from '../sse.ts';
+import { getMaxRequestBodySize } from '../../../server/serverHelpers/contentTypes.ts';
+import { ClientError } from '../../../utility/errors/hdbError.ts';
 
 /**
  * The inbound body as Harper hands it to a custom HTTP handler: a Node-stream
@@ -41,6 +51,10 @@ interface HarperHttpRequest {
 	isWebSocket?: boolean;
 	/** Client socket IP (Harper Request getter; present on Node and Bun). */
 	ip?: string;
+	/** 'http' | 'https' (Harper Request getter; honors the PROXY v2 TLS flag on the UDS mirror). */
+	protocol?: string;
+	/** Host header / HTTP/2 :authority (Harper Request getter). */
+	host?: string;
 }
 
 interface HarperHttpResponse {
@@ -49,7 +63,18 @@ interface HarperHttpResponse {
 	body?: unknown;
 }
 
-export function createHarperHttpHandler(profile: McpProfile) {
+export interface McpAuthentication {
+	required: boolean;
+	resourceMetadata?: string;
+}
+
+const AUTHENTICATION_OPTIONAL: McpAuthentication = Object.freeze({ required: false });
+
+export function createHarperHttpHandler(
+	profile: McpProfile,
+	authentication: McpAuthentication = AUTHENTICATION_OPTIONAL
+) {
+	const requirePrincipal = authentication.required === true;
 	return async function mcpHarperHttpHandler(
 		request: HarperHttpRequest,
 		nextHandler: (req: HarperHttpRequest) => unknown
@@ -58,21 +83,112 @@ export function createHarperHttpHandler(profile: McpProfile) {
 		if (request.isWebSocket) return nextHandler(request);
 
 		const settledCredentialRejection = settleDeferredCredentialRejection(request);
-		if (settledCredentialRejection) return settledCredentialRejection;
+		if (settledCredentialRejection) {
+			discardBody(request.body);
+			if (getDeferredCredentialRejection(request).strategy === 'Bearer') {
+				nameResourceMetadata(settledCredentialRejection.headers, request, authentication, true);
+			}
+			return settledCredentialRejection;
+		}
+		const username = request.user?.username ?? '';
+		if (requirePrincipal && !username && request.method !== 'OPTIONS') {
+			discardBody(request.body);
+			const response = credentialRejectionResponse(request, 401, 'Authentication required', 'Bearer', false);
+			nameResourceMetadata(response.headers, request, authentication, false);
+			return ownAuthenticationChallenge(response);
+		}
 
+		const headers = normalizeHeaders(request.headers);
+		let body: string;
+		try {
+			body = await readBody(request.body, getMaxRequestBodySize(), headers['content-length']);
+		} catch (error) {
+			if (error instanceof ClientError && error.statusCode === 413) {
+				return {
+					status: 413,
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ error: 'payload_too_large', message: error.message }),
+				};
+			}
+			throw error;
+		}
+
+		// uWS passes X-Forwarded-Proto through verbatim (e.g. `ws`), and only an http(s) base
+		// makes valid harper+rest:// and OpenAPI URLs; anything else falls back to the config guess.
+		const protocol = request.protocol === 'http' || request.protocol === 'https' ? request.protocol : undefined;
 		const norm: NormRequest = {
 			method: request.method,
-			headers: normalizeHeaders(request.headers),
-			body: await readBody(request.body),
-			user: request.user?.username ?? '',
+			headers,
+			body,
+			user: username,
 			userObject: request.user as NormRequest['userObject'],
 			profile,
 			clientIp: request.ip,
+			baseUrl: protocol && request.host ? `${protocol}://${request.host}` : undefined,
 		};
 
 		const res = await handleMcpRequest(norm);
 		return toHarperResponse(res);
 	};
+}
+
+let warnedNoResourceMetadata = false;
+
+/**
+ * Names the RFC 9728 protected-resource metadata in a 401's Bearer challenge. The configured URL is authoritative;
+ * otherwise the active Bearer validators' declarations count only when they all name the same URL, because
+ * registrations are worker-global and load in no fixed order, so a disagreement could send a client to an
+ * authorization server that does not protect this mount. Read per 401: a validator's plugin can load after this
+ * mount and unregister on reload.
+ */
+function nameResourceMetadata(
+	headers: Headers,
+	request: HarperHttpRequest,
+	authentication: McpAuthentication,
+	credentialRejected: boolean
+): void {
+	const resourceMetadata = authentication.resourceMetadata ?? declaredResourceMetadata();
+	if (!resourceMetadata && authentication.required && !warnedNoResourceMetadata) {
+		warnedNoResourceMetadata = true;
+		harperLogger.warn(
+			'MCP application profile requires authentication but has no single protected-resource metadata URL: set ' +
+				'mcp.application.authentication.resourceMetadata, or have every Bearer validator that declares a challenge name the same URL'
+		);
+	}
+	if (resourceMetadata) {
+		headers.set(
+			'WWW-Authenticate',
+			credentialRejected
+				? `Bearer error="invalid_token", resource_metadata="${resourceMetadata}"`
+				: `Bearer resource_metadata="${resourceMetadata}"`
+		);
+	} else if (!authentication.required) {
+		return;
+	}
+	// not CORS-safelisted, and a browser client has to read it to find the authorization server
+	if (request.headers.get?.('origin')) headers.append('Access-Control-Expose-Headers', 'WWW-Authenticate', true);
+}
+
+function declaredResourceMetadata(): string | undefined {
+	let declared: string | undefined;
+	for (const entry of getBearerValidators()) {
+		if (!entry.active || !entry.challenge) continue;
+		if (declared === undefined) declared = entry.challenge.resourceMetadata;
+		else if (declared !== entry.challenge.resourceMetadata) return undefined;
+	}
+	return declared;
+}
+
+function ignore(): void {}
+
+/**
+ * Lets an unread body flow and be dropped once the request is answered without it. A uWS body is a push stream
+ * with no backpressure, so unread chunks of a long upload would otherwise queue in memory until it ends.
+ */
+function discardBody(body: BodyStream | undefined): void {
+	if (!body) return;
+	body.on('error', ignore);
+	body.on('data', ignore);
 }
 
 function normalizeHeaders(headers: HarperHttpRequest['headers']): Record<string, string | undefined> {
@@ -97,17 +213,39 @@ function normalizeHeaders(headers: HarperHttpRequest['headers']): Record<string,
  * contract that every other inbound-body consumer uses — async iteration isn't
  * guaranteed on every body wrapper.
  */
-function readBody(body: BodyStream | undefined): Promise<string> {
+function readBody(body: BodyStream | undefined, maxBytes: number, declaredLength?: string): Promise<string> {
 	if (!body) return Promise.resolve('');
 	return new Promise((resolve, reject) => {
-		const chunks: Buffer[] = [];
+		let chunks: Buffer[] = [];
+		let size = 0;
 		let settled = false;
-		body.on('data', (chunk) => chunks.push(typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : chunk));
-		body.on('end', () => {
+		// Listeners are attached even for a declared oversize so the stream flows and discards: the uWS
+		// body is a paused Readable that otherwise buffers the whole upload.
+		if (declaredLength !== undefined && Number(declaredLength) > maxBytes) {
 			settled = true;
-			resolve(Buffer.concat(chunks).toString('utf8'));
+			reject(bodyTooLarge(maxBytes));
+		}
+		body.on('data', (chunk) => {
+			if (settled) return;
+			const buffer = typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : chunk;
+			size += buffer.length;
+			if (size > maxBytes) {
+				settled = true;
+				chunks = [];
+				reject(bodyTooLarge(maxBytes));
+				return;
+			}
+			chunks.push(buffer);
+		});
+		body.on('end', () => {
+			if (settled) return;
+			settled = true;
+			const text = Buffer.concat(chunks).toString('utf8');
+			chunks = [];
+			resolve(text);
 		});
 		body.on('error', (err) => {
+			if (settled) return;
 			settled = true;
 			reject(err);
 		});
@@ -119,6 +257,10 @@ function readBody(body: BodyStream | undefined): Promise<string> {
 			if (!settled) reject(Object.assign(new Error('request aborted'), { code: 'ECONNRESET' }));
 		});
 	});
+}
+
+function bodyTooLarge(maxBytes: number): ClientError {
+	return new ClientError(`Request body too large, maximum size is ${maxBytes} bytes`, 413);
 }
 
 function toHarperResponse(res: NormResponse): HarperHttpResponse {

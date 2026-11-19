@@ -60,6 +60,9 @@ export const OPERATION_DESCRIPTIONS: Record<string, string> = {
 	// list_deployments: components/deploymentOperations.ts:50 — Deployment history with filtering and pagination.
 	list_deployments:
 		'Lists deployments from system.hdb_deployment with optional filtering by project, status, and date range, plus pagination.',
+	// list_releases: components/releaseOperations.ts — What is live and kept on disk, per node.
+	list_releases:
+		"Lists, per component and per node, the deployment_id of the live release and the staged or kept releases deploy_component can activate by deployment_id (id, state, time, size). With replicated: true, returns every node's answer.",
 	// list_backups: dataLayer/rocksdbBackup.ts (listBackups) — Managed RocksDB backup metadata for a database.
 	list_backups:
 		'Lists the managed RocksDB directory backups for a database (id, timestamp, size, file count). Requires super_user; RocksDB databases only.',
@@ -87,9 +90,9 @@ export const OPERATION_DESCRIPTIONS: Record<string, string> = {
 	// get_job: server/jobs/jobs.ts:35 — One job's state + result by id.
 	get_job:
 		'Returns one background job by id, with status and result payload (export, backup, deploy, restart, csv loads).',
-	// get_status: server/status/index.ts:104 — Status KV entry; aggregated when id omitted.
+	// get_status: server/status/index.ts — Status KV entry; aggregated when id omitted.
 	get_status:
-		'Returns one entry from the in-memory status KV that components publish health and progress to. With no id, returns aggregated status across threads; pass middleware:true to also include the resolved HTTP/upgrade/WebSocket middleware chain order per port. Safe to poll. Use system_information for server-level health.',
+		'Returns one entry from the in-memory status KV that components publish health and progress to. With no id, returns aggregated status across threads; pass components:true to include the component status tree with parent status rollups, or middleware:true to include the resolved HTTP/upgrade/WebSocket middleware chain order per port. Safe to poll. Use system_information for server-level health.',
 	// get_analytics: resources/analytics/read.ts:44 — Metric series read with filtering + windowing.
 	get_analytics:
 		'Returns analytics metric values with optional attribute filtering, time windowing, and result coalescing. Pair with list_metrics to discover available metrics.',

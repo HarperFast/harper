@@ -1,0 +1,86 @@
+name: Design docs stale report
+
+on:
+  schedule:
+    - cron: '37 14 * * 1'
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/design-docs-stale.yml
+      - build-tools/check-design-docs.mjs
+      - build-tools/outline.mjs
+
+permissions:
+  contents: read
+
+# Non-PR runs share one group and never cancel, so two runs cannot both create the issue.
+concurrency:
+  group: design-docs-stale-${{ github.event.pull_request.number || 'sync' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      report: ${{ steps.stale.outputs.report }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The report lists a name only if this repository once had it, which takes the full history.
+          fetch-depth: 0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: '.node-version'
+          check-latest: true
+          cache: 'npm'
+      - run: npm ci
+      - name: Stale report
+        id: stale
+        shell: bash
+        # GitHub caps an issue body at 65,536 characters.
+        run: |
+          node build-tools/check-design-docs.mjs --stale --limit 50000 > stale-report.md
+          delimiter="report-$(openssl rand -hex 16)"
+          { echo "report<<$delimiter"; cat stale-report.md; echo "$delimiter"; } >> "$GITHUB_OUTPUT"
+          if [ -s stale-report.md ]; then cat stale-report.md; else echo 'No stale references, nothing over ceiling.'; fi >> "$GITHUB_STEP_SUMMARY"
+
+  sync-issue:
+    needs: report
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      REPORT: ${{ needs.report.outputs.report }}
+      SHA: ${{ github.sha }}
+    steps:
+      - name: Open, update or close the tracking issue
+        # `bash` adds pipefail, so a failed issue lookup stops the step instead of creating a duplicate.
+        shell: bash
+        run: |
+          marker='<!-- design-docs-stale-report -->'
+          gh label create design-docs --color c5def5 --description 'Design-doc maintenance' 2>/dev/null || true
+          issue=$(gh issue list --label design-docs --state all --limit 1000 --json number,state,body |
+            jq -r --arg marker "$marker" '[.[] | select((.body // "") | contains($marker))] | max_by(.number) // empty | "\(.number) \(.state)"')
+          number=${issue%% *}
+          state=${issue##* }
+          if [ -n "$REPORT" ]; then
+            {
+              echo "$marker"
+              echo "Weekly \`npm run check:design-docs -- --stale\` on ${SHA:0:9}. Fix each reference in the doc that names it; this issue closes itself when the report is clean."
+              echo
+              printf '%s\n' "$REPORT"
+            } > body.md
+            if [ -z "$number" ]; then
+              gh issue create --title 'Design docs: stale references and files over ceiling' --label design-docs --body-file body.md
+            else
+              if [ "$state" != OPEN ]; then gh issue reopen "$number"; fi
+              gh issue edit "$number" --body-file body.md
+            fi
+          elif [ "$state" = OPEN ]; then
+            gh issue close "$number" --comment "The design-doc report is clean as of ${SHA:0:9}."
+          fi

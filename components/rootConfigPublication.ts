@@ -13,7 +13,9 @@ import { composeReassertedEnvConfig, REASSERTING_CONFIG_ENV_VARS } from '../conf
 import logger, { errorForLog } from '../utility/logging/harper_logger.ts';
 import { ServerError } from '../utility/errors/hdbError.ts';
 import { ComponentPreparationLockTimeoutError, withComponentPreparationLock } from './componentPreparationLock.ts';
-import { isThreadRunning } from '../server/threads/manageThreads.js';
+import { isThreadRunning } from '../server/threads/manageThreads.ts';
+import { CONFIG_PARAMS, STUDIO_CONFIG_PARAMS } from '../utility/hdbTerms.ts';
+import { RESERVED_COMPONENT_NAMES } from '../utility/componentNames.ts';
 
 /**
  * What an activation does to the component's entry in the root config, recorded in the activation journal
@@ -23,14 +25,35 @@ import { isThreadRunning } from '../server/threads/manageThreads.js';
  * - `set`: a package deploy publishes the entry its build was declared with.
  * - `unset-package`: a payload deploy owns no registry provenance, so the keys that say how to install the
  *   component from one no longer describe what is live. "No package" is an opinion: left in place, a cold
- *   install resolves the old package over the payload release.
+ *   install resolves the old package over the payload release. A payload deploy that set any routing key also
+ *   carries `routing`: every one of `PAYLOAD_ROUTING_KEYS`, `null` for a key the entry does not have.
  * - `remove`: `drop_component`. Never journaled, because no activation removes a whole entry.
  */
 export type RootConfigEffect =
-	{ kind: 'keep' } | { kind: 'set'; entry: Record<string, unknown> } | { kind: 'unset-package' } | { kind: 'remove' };
+	| { kind: 'keep' }
+	| { kind: 'set'; entry: Record<string, unknown> }
+	| { kind: 'unset-package'; routing?: PayloadRouting }
+	| { kind: 'remove' };
+
+/** The root-config keys a payload deploy can set on its component's entry. */
+export const PAYLOAD_ROUTING_KEYS = ['host', 'urlPath', 'isolated', 'branchedDatabases'] as const;
+export type PayloadRouting = Partial<Record<(typeof PAYLOAD_ROUTING_KEYS)[number], unknown>>;
 
 const ROOT_CONFIG_EFFECT_KINDS = new Set(['keep', 'set', 'unset-package', 'remove']);
 const PACKAGE_INSTALL_KEYS = ['package', 'install', 'credentials'];
+// A reserved name's root entry is Harper's settings section, whose keys its config params name. An application
+// deployed under the name before it was reserved shares the entry and owns only the other keys, so dropping it
+// leaves the settings, and an entry of settings alone is no application's.
+const SECTION_KEYS: ReadonlyMap<string, ReadonlySet<string>> = new Map(
+	[...RESERVED_COMPONENT_NAMES].map((name) => [
+		name,
+		new Set(
+			[...Object.values(CONFIG_PARAMS), ...Object.values(STUDIO_CONFIG_PARAMS)]
+				.filter((param) => param.startsWith(`${name}_`))
+				.map((param) => param.slice(name.length + 1).split('_')[0])
+		),
+	])
+);
 // Every holder is one parse-and-rewrite of a small file, so a wait this long means the holder is wedged, not
 // busy. Not renewed for a live holder: a config write is not an `npm install`.
 const ROOT_CONFIG_LOCK_WAIT_MS = 30_000;
@@ -39,22 +62,58 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/** The keys of a root entry its application owns, or `undefined` for all of them. */
+function applicationKeys(component: string, entry: unknown): string[] | undefined {
+	const sectionKeys = SECTION_KEYS.get(component);
+	return sectionKeys && isPlainObject(entry) ? Object.keys(entry).filter((key) => !sectionKeys.has(key)) : undefined;
+}
+
+function applicationEntry(component: string, entry: unknown): unknown {
+	const owned = applicationKeys(component, entry);
+	if (!owned) return entry;
+	return owned.length > 0
+		? Object.fromEntries(owned.map((key) => [key, (entry as Record<string, unknown>)[key]]))
+		: undefined;
+}
+
 /** Shape only. A `set` entry is additionally validated as an application config by whoever journals or reads it. */
 export function isRootConfigEffect(value: unknown): value is RootConfigEffect {
 	if (!isPlainObject(value) || typeof value.kind !== 'string' || !ROOT_CONFIG_EFFECT_KINDS.has(value.kind)) {
 		return false;
 	}
+	if (value.kind === 'unset-package') return value.routing === undefined || isPayloadRoutingShape(value.routing);
 	return value.kind !== 'set' || isPlainObject(value.entry);
 }
 
+/** Shape only: the values are validated as application config by whoever journals or reads them. */
+export function isPayloadRoutingShape(value: unknown): value is PayloadRouting {
+	return (
+		isPlainObject(value) && Object.keys(value).every((key) => (PAYLOAD_ROUTING_KEYS as readonly string[]).includes(key))
+	);
+}
+
 /**
- * The effect a deploy's declaration amounts to: an entry to publish, or `null` for a payload build. The entry
- * goes through the same JSON round trip the journal does, so what an activation applies in-process is exactly
- * what recovery would apply from the journal — an `undefined` install option would otherwise make the two
- * differ.
+ * The effect a deploy's declaration amounts to: an entry to publish, or `null` for a payload build, with the
+ * routing keys it owns when it set any. Both go through the same JSON round trip the journal does, so what an
+ * activation applies in-process is exactly what recovery would apply from the journal — an `undefined` install
+ * option would otherwise make the two differ.
  */
-export function rootConfigEffectFromDeclaration(rootConfig: Record<string, unknown> | null): RootConfigEffect {
-	return rootConfig ? { kind: 'set', entry: JSON.parse(JSON.stringify(rootConfig)) } : { kind: 'unset-package' };
+export function rootConfigEffectFromDeclaration(
+	rootConfig: Record<string, unknown> | null,
+	routing?: PayloadRouting
+): RootConfigEffect {
+	if (rootConfig) return { kind: 'set', entry: JSON.parse(JSON.stringify(rootConfig)) };
+	return routing ? { kind: 'unset-package', routing: JSON.parse(JSON.stringify(routing)) } : { kind: 'unset-package' };
+}
+
+/** A package release publishes its whole entry, so it owns every routing key; a payload release only once it sets one. */
+export function publishedRouting(
+	rootConfig: Record<string, unknown> | null | undefined,
+	routing?: PayloadRouting
+): PayloadRouting | null {
+	const owner = rootConfig ?? routing;
+	if (!owner) return null;
+	return structuredClone(Object.fromEntries(PAYLOAD_ROUTING_KEYS.map((key) => [key, owner[key] ?? null])));
 }
 
 /**
@@ -120,7 +179,7 @@ export async function applyRootConfigEffect(component: string, effect: RootConfi
 	return withRootConfigPublicationLock(async () => {
 		const { configFilePath, configDoc, changed } = readRootConfigChange(component, effect);
 		assertEnvLayersKeepEffect(component, effect, configDoc.toJSON() ?? {});
-		if (changed) atomicWriteFile(configFilePath, String(configDoc), { durable: true });
+		if (changed) atomicWriteFile(configFilePath, String(configDoc), { durable: true, ownerOnly: true });
 		else syncFileToStorageSync(configFilePath);
 		// Inside the lock: on the main thread a refresh re-applies the env config layers and can rewrite the file.
 		env.initSync(true);
@@ -144,16 +203,21 @@ export async function applyRootConfigEffect(component: string, effect: RootConfi
 }
 
 /**
- * Whether the root config file on disk names an entry for the component — true when it cannot tell, since a caller
- * deciding whether the entry is gone must not guess that it is.
+ * Whether the root config file on disk names an entry for the component's application — true when it cannot tell,
+ * since a caller deciding whether the entry is gone must not guess that it is.
  */
 export function hasRootConfigEntry(component: string): boolean {
 	try {
 		const configDoc = parseYamlDoc(getRootConfigFilePath());
-		return configDoc.errors?.length > 0 || configDoc.toJSON()?.[component] !== undefined;
+		return configDoc.errors?.length > 0 || applicationEntry(component, configDoc.toJSON()?.[component]) !== undefined;
 	} catch {
 		return true;
 	}
+}
+
+/** The component's entry as the root config file on disk has it, without a reserved name's settings. */
+export function readRootConfigEntry(component: string): unknown {
+	return applicationEntry(component, readRootConfigChange(component, { kind: 'keep' }).configDoc.toJSON()?.[component]);
 }
 
 /**
@@ -232,9 +296,9 @@ function assertEnvLayersKeepEffect(
 
 /**
  * The keys, as paths into the component's entry, that contradict what the effect wants of it; none when the
- * effect holds. For a payload deploy and a drop that is only `package`: a start installs a component from its entry
- * only when the entry names one, so the other keys a variable keeps for the name, `install` and `credentials`
- * included, reinstall nothing.
+ * effect holds. For a payload deploy and a drop that is only `package`, plus the routing keys a payload deploy
+ * owns: a start installs a component from its entry only when the entry names one, so the other keys a variable
+ * keeps for the name, `install` and `credentials` included, reinstall nothing.
  */
 function contradictedKeys(entry: unknown, effect: RootConfigEffect): string[][] {
 	switch (effect.kind) {
@@ -245,8 +309,16 @@ function contradictedKeys(entry: unknown, effect: RootConfigEffect): string[][] 
 				(keyPath) => !isDeepStrictEqual(valueAt(entry, keyPath), valueAt(effect.entry, keyPath))
 			);
 		case 'unset-package':
-		case 'remove':
-			return isPlainObject(entry) && 'package' in entry ? [['package']] : [];
+		case 'remove': {
+			const contradicted = isPlainObject(entry) && 'package' in entry ? [['package']] : [];
+			if (effect.kind === 'unset-package') {
+				for (const [key, wanted] of Object.entries(effect.routing ?? {})) {
+					const actual = isPlainObject(entry) ? entry[key] : undefined;
+					if (wanted === null ? actual !== undefined : !isDeepStrictEqual(actual, wanted)) contradicted.push([key]);
+				}
+			}
+			return contradicted;
+		}
 	}
 }
 
@@ -294,16 +366,36 @@ function applyEffectToDocument(configDoc: any, component: string, effect: RootCo
 			else configDoc.addIn([component], effect.entry);
 			return true;
 		case 'unset-package': {
-			if (!isPlainObject(current)) return false;
-			const installKeys = PACKAGE_INSTALL_KEYS.filter((key) => key in current);
-			if (installKeys.length === 0) return false;
-			if (Object.keys(current).length === installKeys.length) configDoc.deleteIn([component]);
-			else for (const key of installKeys) configDoc.deleteIn([component, key]);
+			const entry = isPlainObject(current) ? current : undefined;
+			const removed = new Set(entry ? PACKAGE_INSTALL_KEYS.filter((key) => key in entry) : []);
+			const written: [string, unknown][] = [];
+			for (const [key, wanted] of Object.entries(effect.routing ?? {})) {
+				if (wanted === null) {
+					if (entry && key in entry) removed.add(key);
+				} else if (!isDeepStrictEqual(entry?.[key], wanted)) written.push([key, wanted]);
+			}
+			if (removed.size === 0 && written.length === 0) return false;
+			if (!entry) {
+				const created = Object.fromEntries(written);
+				if (configDoc.hasIn([component])) configDoc.setIn([component], created);
+				else configDoc.addIn([component], created);
+			} else if (written.length === 0 && Object.keys(entry).every((key) => removed.has(key))) {
+				configDoc.deleteIn([component]);
+			} else {
+				for (const key of removed) configDoc.deleteIn([component, key]);
+				for (const [key, wanted] of written) configDoc.setIn([component, key], wanted);
+			}
 			return true;
 		}
-		case 'remove':
+		case 'remove': {
 			if (!configDoc.hasIn([component])) return false;
-			configDoc.deleteIn([component]);
-			return true;
+			const owned = applicationKeys(component, current);
+			if (!owned || owned.length === Object.keys(current).length) {
+				configDoc.deleteIn([component]);
+				return true;
+			}
+			for (const key of owned) configDoc.deleteIn([component, key]);
+			return owned.length > 0;
+		}
 	}
 }

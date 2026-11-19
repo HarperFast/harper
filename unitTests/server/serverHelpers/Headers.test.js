@@ -490,3 +490,62 @@ describe('addVaryHeader', () => {
 		assert.equal(headers.get('Vary'), 'Accept, Accept-Encoding, Cookie');
 	});
 });
+
+describe('addVaryHeader matches split/trim/toLowerCase membership', () => {
+	function referenceAddVary(existing, token) {
+		if (!existing) return token;
+		const existingString = Array.isArray(existing) ? existing.join(', ') : existing;
+		for (const part of existingString.split(',')) {
+			const trimmed = part.trim().toLowerCase();
+			if (trimmed === token.toLowerCase() || trimmed === '*') return undefined;
+		}
+		return existingString + ', ' + token;
+	}
+	const varyValues = [
+		'',
+		'   ',
+		',',
+		'Accept, Accept-Encoding',
+		'accept,accept-encoding',
+		'Accept, *',
+		' * ,Accept',
+		'*x',
+		'Authorizatio, Authorizations, Cookies, Origin-X',
+		'\tAUTHORIZATION\t',
+		'\u000bCookie\u000c',
+		' Cookie',
+		'Cookie ',
+		'﻿Origin',
+		'İ',
+		'K',
+		'Cookie, İ',
+		'İ, Cookie',
+		'Accept, Origin\u00a0',
+		'Cooki\u00a0, Origi\u00a0',
+		'Xooki\u00a0',
+		'\u00a0Cooki',
+		'Cookİe',
+		'*\u00a0',
+		'*    \u00a0',
+		'Xoo\u212aie',
+		'Coo\u212aie',
+		'Accept, ~x, `y',
+		'Accept,, Origin',
+		['Accept', 'Origin'],
+		['Accept', ' cookie '],
+	];
+	const tokens = ['Origin', 'Authorization', 'Cookie', 'Accept', 'accept-ENCODING', '^x', '@y', 'i̇', 'k', 'x', 'ab'];
+	for (const vary of varyValues) {
+		for (const token of tokens) {
+			it(`${JSON.stringify(vary)} + ${JSON.stringify(token)}`, () => {
+				const headers = new Headers();
+				if (vary !== '') headers.set('vary', vary);
+				addVaryHeader(headers, token);
+				const expected = referenceAddVary(vary, token);
+				assert.deepStrictEqual(headers.get('Vary'), expected ?? vary);
+				const [name] = Map.prototype.get.call(headers, 'vary');
+				assert.equal(name, expected === undefined ? 'vary' : 'Vary', 'an unchanged header keeps its name');
+			});
+		}
+	}
+});

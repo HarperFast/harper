@@ -134,9 +134,9 @@ export async function login(
 	const response = await cliOperations(req, true);
 
 	if (response && response.operation_token) {
-		const resolvedTarget = response.target || req.target || response.resolvedTarget || target;
+		// Never the reply's `target`: the server must not choose which target its tokens are saved under.
 		try {
-			saveCredentials(resolvedTarget, {
+			saveCredentials(target, {
 				operation_token: response.operation_token,
 				refresh_token: response.refresh_token,
 			});
@@ -159,7 +159,7 @@ export async function login(
 					!process.env.CLI_TARGET &&
 					!process.env.HARPER_CLI_TARGET
 				) {
-					const envLine = `\nHARPER_CLI_TARGET=${resolvedTarget}\n`;
+					const envLine = `\nHARPER_CLI_TARGET=${target}\n`;
 					fs.appendFileSync(envPath, envLine);
 					say(`Added HARPER_CLI_TARGET to .env`);
 				}
@@ -168,9 +168,9 @@ export async function login(
 			console.error(chalk.yellow(`Could not update .env: ${err instanceof Error ? err.message : String(err)}`));
 		}
 
-		say(`Successfully logged in to ${resolvedTarget} and saved credentials.`);
+		say(`Successfully logged in to ${target} and saved credentials.`);
 
-		if (forCi) printCiCdEnv(resolvedTarget, response.refresh_token, targetUsername);
+		if (forCi) printCiCdEnv(target, response.refresh_token, targetUsername);
 
 		process.exit(0);
 	} else {

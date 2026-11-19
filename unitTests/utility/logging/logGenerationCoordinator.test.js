@@ -159,7 +159,7 @@ describe('Test log generation coordinator (#1877)', () => {
 		fs.mkdirpSync(dir);
 		const logPath = path.join(dir, 'hdb.log');
 		fs.writeFileSync(logPath, 'held\n');
-		const held = fs.statSync(logPath);
+		const held = fs.statSync(logPath, { bigint: true });
 		let closed = 0;
 		coordinator.registerLogSink(logPath, {
 			identity: () => ({ ino: held.ino, dev: held.dev }),
@@ -168,12 +168,12 @@ describe('Test log generation coordinator (#1877)', () => {
 		transport.deliverRotation({ logPath, request: 'g', ino: held.ino, dev: held.dev, originator: 0 });
 		assert.strictEqual(closed, 1, 'expected the sink to be asked to close its descriptor');
 		// A generation this sink never held must not close anything.
-		transport.deliverRotation({ logPath, request: 'g2', ino: held.ino + 1, dev: held.dev, originator: 0 });
+		transport.deliverRotation({ logPath, request: 'g2', ino: held.ino + 1n, dev: held.dev, originator: 0 });
 		assert.strictEqual(closed, 1, 'expected a foreign generation to leave the descriptor alone');
 		coordinator.unregisterLogSink(logPath);
 
 		// The per-generation release needs the same fail-closed treatment as the stale sweep below.
-		coordinator.registerLogSink(logPath, { identity: () => ({ ino: 0, dev: 0 }), close: () => closed++ });
+		coordinator.registerLogSink(logPath, { identity: () => ({ ino: 0n, dev: 0n }), close: () => closed++ });
 		transport.deliverRotation({ logPath, request: 'g3', ino: held.ino, dev: held.dev, originator: 0 });
 		assert.strictEqual(closed, 2, 'expected an indistinguishable announced generation to be released');
 		coordinator.unregisterLogSink(logPath);
@@ -188,7 +188,7 @@ describe('Test log generation coordinator (#1877)', () => {
 		assert.strictEqual(closed, 2, 'expected the live generation to be kept');
 		coordinator.unregisterLogSink(logPath);
 		coordinator.registerLogSink(logPath, {
-			identity: () => ({ ino: held.ino + 1, dev: held.dev }),
+			identity: () => ({ ino: held.ino + 1n, dev: held.dev }),
 			close: () => closed++,
 		});
 		transport.deliverRotation({ request: 'r2', stale: true });
@@ -197,7 +197,7 @@ describe('Test log generation coordinator (#1877)', () => {
 
 		// A filesystem that reports ino 0 cannot prove a descriptor is on the live generation, and
 		// answering "released" without releasing is what lets an archive be destroyed under a peer.
-		coordinator.registerLogSink(logPath, { identity: () => ({ ino: 0, dev: 0 }), close: () => closed++ });
+		coordinator.registerLogSink(logPath, { identity: () => ({ ino: 0n, dev: 0n }), close: () => closed++ });
 		transport.deliverRotation({ request: 'r3', stale: true });
 		assert.strictEqual(closed, 4, 'expected an indistinguishable descriptor to be released');
 		coordinator.unregisterLogSink(logPath);
@@ -221,10 +221,10 @@ describe('Test log generation coordinator (#1877)', () => {
 		for (const name of ['hdb.log', 'component.log', 'external.log']) {
 			const logPath = path.join(dir, name);
 			fs.writeFileSync(logPath, `${name} contents\n`);
-			held[name] = fs.statSync(logPath);
+			held[name] = fs.statSync(logPath, { bigint: true });
 			coordinator.registerLogSink(logPath, {
 				// hdb.log is on its live generation; the other two hold an older inode.
-				identity: () => (name === 'hdb.log' ? held[name] : { ino: held[name].ino + 1000, dev: held[name].dev }),
+				identity: () => (name === 'hdb.log' ? held[name] : { ino: held[name].ino + 1000n, dev: held[name].dev }),
 				close: () => closed.push(name),
 			});
 		}
@@ -265,8 +265,8 @@ describe('Test log generation coordinator (#1877)', () => {
 		fs.mkdirpSync(dir);
 		const logPath = path.join(dir, 'hdb.log');
 		fs.writeFileSync(logPath, 'contents\n');
-		const held = fs.statSync(logPath);
-		const stale = { ino: held.ino + 1000, dev: held.dev };
+		const held = fs.statSync(logPath, { bigint: true });
+		const stale = { ino: held.ino + 1000n, dev: held.dev };
 		const closed = [];
 		const first = { identity: () => stale, close: () => closed.push('first') };
 		const second = { identity: () => stale, close: () => closed.push('second') };

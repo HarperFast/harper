@@ -3,7 +3,7 @@
  *   node --test benchmarks/ycsb/
  */
 import { test } from 'node:test';
-import { strictEqual } from 'node:assert';
+import { strictEqual, throws } from 'node:assert';
 import { medianByThroughput, parseOptions } from './harness.mts';
 import type { PhaseResult } from './workload.mts';
 
@@ -54,4 +54,13 @@ test('parseOptions clamps --reps to a positive integer', () => {
 	strictEqual(parseOptions(['--scale=quick', '--reps=0']).config.reps, 1, '0 -> 1');
 	strictEqual(parseOptions(['--scale=quick', '--reps=-2']).config.reps, 1, 'negative -> 1');
 	strictEqual(parseOptions(['--scale=quick', '--reps=2.9']).config.reps, 2, 'fractional floors');
+});
+
+test('dependent-read workloads refuse a field length that cannot hold the link', () => {
+	throws(
+		() => parseOptions(['--workloads=C,chain-2', '--field-length=16']),
+		/chain-2 need field0 to hold a 23-char link/
+	);
+	strictEqual(parseOptions(['--workloads=C', '--field-length=16']).config.fieldLength, 16);
+	strictEqual(parseOptions(['--workloads=inspect,c', '--field-length=23']).config.workloads.join(), 'inspect,C');
 });

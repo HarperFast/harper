@@ -1,3 +1,5 @@
+import * as configUtilsRuntimeModule from '../../config/configUtils.ts';
+import * as hdbTermsRuntimeModule from '../../utility/hdbTerms.ts';
 /**
  * Streamable HTTP MCP client over stdio. Implements the MCP rev 2025-06-18
  * transport from the client side: each line on stdin is a JSON-RPC frame,
@@ -364,8 +366,8 @@ export function resolveConnection(opts: McpCliOptions): HttpOptions {
 		);
 	}
 	// UDS path resolution mirrors bin/cliOperations.ts:150.
-	const { getConfigPath } = require('../../config/configUtils');
-	const terms = require('../../utility/hdbTerms');
+	const { getConfigPath } = configUtilsRuntimeModule;
+	const terms = hdbTermsRuntimeModule;
 	const socketPath = getConfigPath(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET);
 	return {
 		protocol: 'http:',

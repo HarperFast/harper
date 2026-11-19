@@ -3,12 +3,13 @@ const assert = require('assert');
 const { existsSync } = require('node:fs');
 const { mkdir, rename, rm, writeFile } = require('node:fs/promises');
 const { join } = require('node:path');
-const { RocksDatabase } = require('@harperfast/rocksdb-js');
+const { RocksDatabase } = require('../rocksdbBindings.mts').rocksdbBindings();
 const { setupTestDBPath } = require('../testUtils');
 const { table, databases, database, BRANCH_ROOT_DIR, resolveBranchPath } = require('#src/resources/databases');
-const { getOrCreateBranch, removeBranches } = require('#src/resources/branchDatabase');
+const { getOrCreateBranch, removeBranches, closeBranchAt } = require('#src/resources/branchDatabase');
+const { getAuditFloor, getDatabaseGeneration } = require('#src/resources/auditStore');
 const { replayLogs } = require('#src/resources/replayLogs');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 const { writeFileSync: _writeFileSync, mkdirSync: _mkdirSync } = require('node:fs');
 const { join: _join } = require('node:path');
@@ -56,6 +57,20 @@ describeUnlessLmdb('branch lifecycle (harper#643)', () => {
 		const expected = resolveBranchPath('lifebase', 'appA');
 		assert.ok(existsSync(expected), `expected the branch at ${expected}`);
 		assert.ok(expected.includes(BRANCH_ROOT_DIR), 'branches belong under the reserved root');
+	});
+
+	it('gives a new branch a generation of its own, and keeps it when the branch is adopted again', async function () {
+		const branch = await getOrCreateBranch('lifebase', 'appGeneration');
+		const forked = getDatabaseGeneration(branch.tables.LifecycleSource.auditStore);
+		assert.notStrictEqual(forked.id, getDatabaseGeneration(Source.auditStore).id);
+		assert.ok(forked.epoch > 0, 'a branch is a copy, not genesis');
+		assert.ok(
+			getAuditFloor(branch.tables.LifecycleSource.auditStore) >= forked.epoch,
+			'the checkpoint carried no log below the fork'
+		);
+		await closeBranchAt(resolveBranchPath('lifebase', 'appGeneration'));
+		const adopted = await getOrCreateBranch('lifebase', 'appGeneration');
+		assert.deepStrictEqual(getDatabaseGeneration(adopted.tables.LifecycleSource.auditStore), forked);
 	});
 
 	it('gives concurrent callers the same branch rather than racing two checkpoints', async function () {
@@ -770,9 +785,9 @@ describeUnlessLmdb('declaring a table from a branched application (harper#2264)'
 
 	it('reloads the branch on a schema-change signal that names it, where the branch is open', async function () {
 		const { branch, declare } = await branchedFactory();
-		const { schema: schemaHandler } = require('#js/server/itc/serverHandlers');
-		const ITCEventObject = require('#js/server/itc/utility/ITCEventObject');
-		const { SchemaEventMsg } = require('#js/server/threads/itc');
+		const { schemaHandler } = require('#src/server/itc/serverHandlers');
+		const ITCEventObject = require('#src/server/itc/utility/ITCEventObject.js');
+		const { SchemaEventMsg } = require('#src/server/threads/itc');
 		const { ITC_EVENT_TYPES } = require('#src/utility/hdbTerms');
 		// the handler has no way to remove a listener; this one only records into a local array
 		const signalled = [];
@@ -922,6 +937,46 @@ describeUnlessLmdb('schema authoring paths from a branched scope (harper#2264)',
 		assert.strictEqual(scopedBindings(applicationScope).databases[BASE].GqlDeclared, Declared);
 		await Declared.put({ id: 'g', note: 'through the branch' });
 		assert.strictEqual((await Declared.get('g'))?.note, 'through the branch');
+	});
+
+	it('refuses branch residency before installing a map in the live database', async function () {
+		this.timeout(30000);
+		const applicationScope = await branchedApplicationScope();
+		const env = require('#src/utility/environment/environmentManager');
+		const { readResidencyMap } = require('#src/resources/residencyMaps');
+		const oldList = env.get('replication_shards'),
+			oldShard = env.get('replication_shard');
+		env.setProperty('replication_shards', [0]);
+		env.setProperty('replication_shard', 0);
+		directory = mkdtempSync(join(tmpdir(), 'harper.unit-test.branched-residency-'));
+		writeFileSync(
+			join(directory, 'schema.graphql'),
+			`type BranchSlots @table(database: "${BASE}") @sharded(slots: 2) { id: ID @primaryKey }`
+		);
+		const configFilePath = join(directory, 'config.yaml');
+		writeFileSync(configFilePath, stringify({ graphqlSchema: { files: 'schema.graphql' } }));
+		openScope = new Scope(basename(directory), 'graphqlSchema', directory, configFilePath, applicationScope);
+		await openScope.ready;
+		try {
+			assert.strictEqual(readResidencyMap(BASE), undefined);
+			await assert.rejects(handleApplication(openScope), /sharding.*branches/);
+			assert.strictEqual(readResidencyMap(BASE), undefined);
+			assert.strictEqual(applicationScope.branches.get(BASE).tables.BranchSlots, undefined);
+			const { scopedTableFactory } = require('#src/resources/databases');
+			assert.throws(
+				() =>
+					scopedTableFactory(applicationScope.branches)({
+						database: BASE,
+						table: 'BranchSlots',
+						residency: { slots: 2 },
+						attributes: [{ name: 'id', isPrimaryKey: true }],
+					}),
+				/sharding.*branches/
+			);
+		} finally {
+			env.setProperty('replication_shards', oldList);
+			env.setProperty('replication_shard', oldShard);
+		}
 	});
 
 	it('lands scope.ensureTable in the branch', async function () {
@@ -1236,6 +1291,19 @@ describeUnlessLmdb('branch blob-root safety (harper#644)', () => {
 		for (const root of getBlobPathsForDatabaseName(STORE)) rmSync(root, { recursive: true, force: true });
 	});
 
+	/**
+	 * The copy kept aside is a checkpoint plus the completion marker, all `readBranchState` reads: a plain copy of the
+	 * open directory races the compaction deleting its files.
+	 */
+	async function putBackWithoutBlobRoots(branch, branchPath) {
+		const saved = `${branchPath}.savedforTest`;
+		await branch.rootStore.createCheckpoint(saved);
+		cpSync(join(branchPath, '.branch-complete'), join(saved, '.branch-complete'));
+		await removeBranches();
+		cpSync(saved, branchPath, { recursive: true });
+		rmSync(saved, { recursive: true, force: true });
+	}
+
 	it('refuses an identity a real database already answers to, before removing anything', async function () {
 		this.timeout(30000);
 		// A branch's blob root is `<blobs>/<identity>` and materialization REMOVES and replaces it, so a
@@ -1255,17 +1323,11 @@ describeUnlessLmdb('branch blob-root safety (harper#644)', () => {
 
 	it('refuses to serve or rebuild a branch that lost a blob root, rather than silently re-forking', async function () {
 		this.timeout(30000);
-		await getOrCreateBranch('safebase', 'safeApp');
 		const branchPath = resolveBranchPath('safebase', 'safeApp');
 
-		// Keep a real, complete branch aside, tear the live one down so nothing is cached, then put back
-		// the directory WITHOUT its blob roots. That is the state a power loss can leave, since the
-		// directory and the roots live on different volumes and neither rename is fsynced.
-		const saved = `${branchPath}.savedforTest`;
-		cpSync(branchPath, saved, { recursive: true });
-		await removeBranches();
-		cpSync(saved, branchPath, { recursive: true });
-		rmSync(saved, { recursive: true, force: true });
+		// The directory WITHOUT its blob roots is the state a power loss can leave, since the directory and
+		// the roots live on different volumes and neither rename is fsynced.
+		await putBackWithoutBlobRoots(await getOrCreateBranch('safebase', 'safeApp'), branchPath);
 		assert.ok(
 			getBlobPathsForDatabaseName(STORE).every((root) => !existsSync(root)),
 			'sanity: directory present, blob roots gone'
@@ -1355,13 +1417,8 @@ describeUnlessLmdb('branch blob-root safety (harper#644)', () => {
 
 	it('refuses a branch whose recorded blob roots no longer match the configuration', async function () {
 		this.timeout(30000);
-		await getOrCreateBranch('safebase', 'safeApp');
 		const branchPath = resolveBranchPath('safebase', 'safeApp');
-		const saved = `${branchPath}.savedforTest`;
-		cpSync(branchPath, saved, { recursive: true });
-		await removeBranches();
-		cpSync(saved, branchPath, { recursive: true });
-		rmSync(saved, { recursive: true, force: true });
+		await putBackWithoutBlobRoots(await getOrCreateBranch('safebase', 'safeApp'), branchPath);
 
 		// `storageIndex` on a row is a position in this list, so a reordered or resized blobPaths would
 		// resolve rows through the wrong root. The marker records what was published, which is exactly
@@ -1472,6 +1529,110 @@ describeUnlessLmdb('branch blob-root safety (harper#644)', () => {
 		}
 		await removal;
 		assert.ok(sawTheWindow, 'sanity: the test must observe the window it guards');
+	});
+});
+
+describeUnlessLmdb('a branch close rocksdb-js reports failing (harper#4252)', () => {
+	const { chmodSync } = require('node:fs');
+	const { fork } = require('node:child_process');
+	const { dirname } = require('node:path');
+	const { waitFor } = require('../waitFor.js');
+	const { getBlobPathsForDatabaseName, createBlob } = require('#src/resources/blob');
+	const { openBranchDatabase, registryEntriesAt } = require('#src/resources/databases');
+	const STORE = `${'closeApp'.length}_closeApp__closebase`;
+
+	before(async function () {
+		if (process.platform === 'win32' || process.getuid?.() === 0) return this.skip(); // root traverses it anyway
+		this.timeout(30000);
+		setupTestDBPath();
+		setMainIsWorker(true);
+		table({
+			table: 'Rows',
+			database: 'closebase',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'payload', type: 'Blob' },
+			],
+		});
+		await databases.closebase.Rows.put({ id: 'seed', payload: await createBlob(Buffer.alloc(64 * 1024, 'x')) });
+	});
+
+	afterEach(() => removeBranches());
+
+	it('releases a branch rocksdb-js finished closing, so this thread can open and remove it again', async function () {
+		this.timeout(30000);
+		const branchPath = resolveBranchPath('closebase', 'closeApp');
+		const first = await getOrCreateBranch('closebase', 'closeApp');
+		await first.tables.Rows.put({ id: 'mine' });
+		// flushes it, so the next close has nothing to flush and fails only in RocksDB's own close
+		await closeBranchAt(branchPath);
+		const held = await getOrCreateBranch('closebase', 'closeApp');
+		const failedPaths = [];
+		const onCloseFailed = (path) => failedPaths.push(path);
+		RocksDatabase.on('database:closeFailed', onCloseFailed);
+		// RocksDB cannot write its MANIFEST into a directory it cannot traverse
+		const appDirectory = dirname(branchPath);
+		chmodSync(appDirectory, 0o000);
+		try {
+			await closeBranchAt(branchPath);
+		} finally {
+			chmodSync(appDirectory, 0o755);
+		}
+		try {
+			await waitFor(() => failedPaths.includes(held.path), { timeout: 5_000, message: 'RocksDB reported no failure' });
+		} finally {
+			RocksDatabase.off('database:closeFailed', onCloseFailed);
+		}
+		assert.deepStrictEqual(registryEntriesAt(held.path), [], 'rocksdb-js released the database');
+
+		const reopened = await getOrCreateBranch('closebase', 'closeApp');
+		assert.ok(await reopened.tables.Rows.get('mine'));
+		await held.close();
+		assert.throws(
+			() => openBranchDatabase(branchPath, 'closebase', STORE),
+			/already open/,
+			'closing the old handle again leaves the reopened one registered'
+		);
+
+		await removeBranches();
+		assert.strictEqual(existsSync(branchPath), false);
+		assert.ok(
+			getBlobPathsForDatabaseName(STORE).every((root) => !existsSync(root)),
+			'its blob roots go with it'
+		);
+	});
+
+	it('keeps a branch rocksdb-js holds quarantined registered, through a retried close', async function () {
+		this.timeout(60000);
+		const child = fork(join(__dirname, 'fixtures', 'branchCloseQuarantine.cjs'), {
+			stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
+		});
+		let stderr = '';
+		child.stderr.on('data', (chunk) => (stderr = (stderr + chunk).slice(-8192)));
+		const exited = new Promise((resolve) => child.once('exit', resolve));
+		try {
+			const result = await new Promise((resolve, reject) => {
+				const timer = setTimeout(() => reject(new Error(`child timed out: ${stderr}`)), 45_000);
+				child.once('message', (message) => {
+					clearTimeout(timer);
+					if (message.type === 'error') reject(new Error(message.message));
+					else resolve(message.result);
+				});
+				child.once('exit', (code, signal) => {
+					clearTimeout(timer);
+					reject(new Error(`child exited ${code}/${signal}: ${stderr}`));
+				});
+			});
+			const flushFailed = /Failed to flush database during close/;
+			assert.match(result.close, flushFailed);
+			assert.match(result.closeError ?? '', flushFailed, 'rocksdb-js holds it quarantined');
+			assert.strictEqual(result.identityHeld, true, 'its store identity stays reserved');
+			assert.match(result.retry, flushFailed, 'a retried close fails while it is quarantined');
+			assert.strictEqual(result.identityHeldAfterRetry, true, 'and still keeps the identity');
+		} finally {
+			if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+			await exited;
+		}
 	});
 });
 
@@ -2158,6 +2319,61 @@ describeUnlessLmdb('the undeploy sequence (harper#644)', () => {
 		}
 		assert.ok(exists(branchPath), 'nothing was removed');
 		await removeBranchesForApplication('cycleApp');
+	});
+
+	it('records an owed removal beside the branches, and only a removal that completes clears it (harper#3463)', async function () {
+		this.timeout(30000);
+		if (process.platform === 'win32' || process.getuid?.() === 0) return this.skip();
+		const { chmodSync, writeFileSync } = require('node:fs');
+		const { dirname, join } = require('node:path');
+		const {
+			recordPendingBranchRemoval,
+			applicationsWithPendingBranchRemoval,
+		} = require('#src/resources/branchDatabase');
+		const branchPath = resolveBranchPath('cyclebase', 'cycleApp');
+		const marker = join(dirname(branchPath), '`removal-pending`');
+		const branch = await getOrCreateBranch('cyclebase', 'cycleApp');
+		await branch.close();
+
+		recordPendingBranchRemoval('cycleApp');
+		assert.ok(exists(marker), 'the debt is on disk beside the branch');
+		assert.ok(applicationsWithPendingBranchRemoval().applications.includes('cycleApp'));
+		const hold = join(branchPath, 'hold');
+		mkdirSync(hold);
+		writeFileSync(join(hold, 'keep'), '');
+		chmodSync(hold, 0o555);
+		try {
+			await assert.rejects(removeBranchesForApplication('cycleApp'), /Could not remove branch storage/);
+		} finally {
+			chmodSync(join(`${branchPath}\`removing\``, 'hold'), 0o755);
+		}
+		assert.ok(exists(marker), 'a removal that failed keeps it');
+		assert.ok(applicationsWithPendingBranchRemoval().applications.includes('cycleApp'));
+
+		await removeBranchesForApplication('cycleApp');
+		assert.strictEqual(
+			exists(dirname(branchPath)),
+			false,
+			'a removal that completed takes it, and the empty directory'
+		);
+		assert.ok(!applicationsWithPendingBranchRemoval().applications.includes('cycleApp'));
+	});
+
+	it('forgets an owed removal without touching the branches it names (harper#3463)', async function () {
+		this.timeout(30000);
+		const { dirname, join } = require('node:path');
+		const { recordPendingBranchRemoval, clearPendingBranchRemoval } = require('#src/resources/branchDatabase');
+		const branchPath = resolveBranchPath('cyclebase', 'cycleApp');
+		const branch = await getOrCreateBranch('cyclebase', 'cycleApp');
+		await branch.tables.Cycle.put({ id: 'kept' });
+		await closeBranchAt(branchPath);
+		recordPendingBranchRemoval('cycleApp');
+
+		await clearPendingBranchRemoval('cycleApp');
+
+		assert.strictEqual(exists(join(dirname(branchPath), '`removal-pending`')), false);
+		const reopened = await getOrCreateBranch('cyclebase', 'cycleApp');
+		assert.ok(await reopened.tables.Cycle.get('kept'), 'the branch is untouched');
 	});
 });
 

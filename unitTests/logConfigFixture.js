@@ -20,7 +20,7 @@ const fs = require('fs-extra');
 const os = require('node:os');
 const path = require('node:path');
 const hdbTerms = require('#src/utility/hdbTerms');
-const harperLoggerModule = require('#src/utility/logging/harper_logger');
+const harperLoggerModule = require('#js/utility/logging/harper_logger');
 
 /**
  * @param level the logging.level to pin
@@ -57,15 +57,11 @@ function pinLogConfig({ level = 'trace', stdStreams = false, logRoot } = {}) {
 
 	process.env.ROOTPATH = rootPath;
 	harperLoggerModule.initLogSettings(true);
-	refreshExternalLogger();
 
 	return function restoreLogConfig() {
 		if (originalRootPath === undefined) delete process.env.ROOTPATH;
 		else process.env.ROOTPATH = originalRootPath;
 		harperLoggerModule.initLogSettings(true);
-		// Not the object that was there before: that one belonged to the mainLogger this re-init
-		// just replaced. Pointing at the live logger is the invariant that matters.
-		refreshExternalLogger();
 		for (const { stream, write, handler } of originalStdio) {
 			stream.write = write;
 			if (stream.harperStdioErrorHandler) {
@@ -84,18 +80,6 @@ function pinLogConfig({ level = 'trace', stdStreams = false, logRoot } = {}) {
 			fs.removeSync(rootPath);
 		} catch {}
 	};
-}
-
-/**
- * harper_logger ends with `module.exports = { ... externalLogger: exports.externalLogger ... }`, a
- * one-time snapshot taken just after the module-load initLogSettings() call. A re-init reassigns
- * the module's own externalLogger but cannot reach that snapshot, so `require(...).externalLogger`
- * would keep pointing at a logger belonging to the previous mainLogger — writing nowhere the
- * caller can see. Re-point it. (The double export layering is the underlying wart; this keeps the
- * fixture from silently changing what the global logger means.)
- */
-function refreshExternalLogger() {
-	harperLoggerModule.externalLogger = harperLoggerModule.forComponent('external');
 }
 
 module.exports = { pinLogConfig };

@@ -3,7 +3,7 @@ const { setupTestDBPath } = require('../testUtils');
 const { database, table } = require('#src/resources/databases');
 const { acquireUpdateAttributesLock } = require('#src/resources/Table');
 const { ServerError } = require('#src/utility/errors/hdbError');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 setupTestDBPath();
 setMainIsWorker(true);

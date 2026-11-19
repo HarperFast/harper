@@ -1,29 +1,42 @@
+import {
+	fullTextComparatorMode,
+	validateFullTextScoringOptions,
+} from '../../resources/indexes/fullTextQueryProtocol.ts';
 import searchValidator from '../../validation/searchValidator.ts';
 import { randomUUID } from 'node:crypto';
 import { threadId } from 'node:worker_threads';
-import { handleHDBError, ClientError, hdbErrors } from '../../utility/errors/hdbError.ts';
+import {
+	handleHDBError,
+	ClientError,
+	DatabaseClosingError,
+	DatabaseShardingHeldError,
+	hdbErrors,
+} from '../../utility/errors/hdbError.ts';
 import {
 	table,
 	getDatabases,
+	assertDatabaseResidencyAvailable,
 	database,
 	databaseDropPreparationTargets,
 	dropDatabase,
 	type Table,
+	throwIfUnloadedDatabaseHeldByRestore,
 } from '../../resources/databases.ts';
 import {
 	claimDatabaseDropPreparations,
 	releaseDatabaseDropPreparations,
 } from '../../resources/databaseDropPreparation.ts';
-import insertUpdateValidate from './bridgeUtility/insertUpdateValidate.js';
+import insertUpdateValidate from './bridgeUtility/insertUpdateValidate.ts';
 import SearchObject from '../SearchObject.ts';
 import {
 	OPERATIONS_ENUM,
 	VALUE_SEARCH_COMPARATORS,
 	VALUE_SEARCH_COMPARATORS_REVERSE_LOOKUP,
 	READ_AUDIT_LOG_SEARCH_TYPES_ENUM,
+	REPLICATED_FROM,
 } from '../../utility/hdbTerms.ts';
 import * as signalling from '../../utility/signalling.ts';
-import { SchemaEventMsg } from '../../server/threads/itc.js';
+import { SchemaEventMsg } from '../../server/threads/itc.ts';
 import { asyncSetTimeout } from '../../utility/common_utils.ts';
 import { transaction } from '../../resources/transaction.ts';
 import type {
@@ -39,8 +52,9 @@ import { collapseData } from '../../resources/tracked.ts';
 import { errorToString } from '../../utility/logging/harper_logger.ts';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
 import { boundedAuditPruneEnd, raiseAuditFloor } from '../../resources/auditStore.ts';
+import { originFloorsDurable } from '../../resources/originClosedFloor.ts';
 import { BridgeMethods } from './BridgeMethods.ts';
-import lmdbGetBackup from './lmdbBridge/lmdbMethods/lmdbGetBackup.js';
+import lmdbGetBackup from './lmdbBridge/lmdbMethods/lmdbGetBackup.ts';
 import { createBackupStream, resolveSingleRootStore } from '../rocksdbBackup.ts';
 import { DeleteTransactionLogsBeforeResults } from './DeleteTransactionLogsBeforeResults.ts';
 import type { Readable } from 'node:stream';
@@ -56,6 +70,7 @@ export type SearchByConditionsRequest = Query &
 		database?: string;
 		table: string;
 		get_attributes: Select;
+		hdb_user?: Context['user'];
 		reverse?: boolean;
 		operator?: Operator;
 	};
@@ -67,6 +82,7 @@ export type SearchByConditionsRequest = Query &
  */
 export class ResourceBridge extends BridgeMethods {
 	async searchByConditions(searchObject: SearchByConditionsRequest) {
+		validateFullTextScoringOptions(searchObject);
 		if (searchObject.select !== undefined) searchObject.get_attributes = searchObject.select;
 
 		const table = getTable(searchObject);
@@ -81,10 +97,21 @@ export class ResourceBridge extends BridgeMethods {
 				return condition;
 			} else {
 				const c = condition as DirectCondition;
+				validateFullTextScoringOptions(c, fullTextComparatorMode(c.comparator ?? c.search_type));
 				return {
 					attribute: c.attribute ?? c.search_attribute,
 					comparator: c.comparator ?? c.search_type,
 					value: c.value !== undefined ? c.value : c.search_value, // null is valid value
+					...(c.fuzzyDistance === undefined ? null : { fuzzyDistance: c.fuzzyDistance }),
+					...(c.fuzzyTranspositions === undefined ? null : { fuzzyTranspositions: c.fuzzyTranspositions }),
+					...(c.fields === undefined ? null : { fields: c.fields }),
+					...(c.boost === undefined ? null : { boost: c.boost }),
+					...(c.should === undefined ? null : { should: c.should }),
+					...(c.includeHighlights === undefined ? null : { includeHighlights: c.includeHighlights }),
+					...(c.maxIndexLagMilliseconds === undefined ? null : { maxIndexLagMilliseconds: c.maxIndexLagMilliseconds }),
+					...(c.waitForIndexMilliseconds === undefined
+						? null
+						: { waitForIndexMilliseconds: c.waitForIndexMilliseconds }),
 				};
 			}
 		}
@@ -107,6 +134,7 @@ export class ResourceBridge extends BridgeMethods {
 				allowFullScan: true, // operations API can do full scans by default, but REST is more cautious about what it allows
 			} as any,
 			{
+				user: searchObject.hdb_user,
 				onlyIfCached: searchObject.onlyIfCached,
 				noCacheStore: searchObject.noCacheStore,
 				noCache: searchObject.noCache,
@@ -149,6 +177,7 @@ export class ResourceBridge extends BridgeMethods {
 			attributes,
 			schemaDefined,
 			expiration: tableCreateObj.expiration,
+			eviction: tableCreateObj.eviction,
 			audit: tableCreateObj.audit,
 		});
 	}
@@ -166,26 +195,17 @@ export class ResourceBridge extends BridgeMethods {
 	async dropAttribute(dropAttributeObj) {
 		const Table = getTable(dropAttributeObj);
 		await Table.removeAttributes([dropAttributeObj.attribute]);
-		if (!Table.schemaDefined) {
-			// legacy behavior of deleting all the property values
-			const property = dropAttributeObj.attribute;
-			let resolution;
-			const deleteRecord = (key, record, version): Promise<void> => {
-				record = { ...record };
-				delete record[property];
-				return Table.primaryStore.put(key, record, version);
-			};
-			for (const { key, value: record, version } of Table.primaryStore.getRange({ start: true, versions: true })) {
-				resolution = deleteRecord(key, record, version);
-				await new Promise((resolve) => setImmediate(resolve));
-			}
-			await resolution;
-		}
+		// legacy behavior of deleting all the property values
+		if (!Table.schemaDefined) await Table.stripAttributeValues([dropAttributeObj.attribute]);
 		return `successfully deleted ${dropAttributeObj.schema}.${dropAttributeObj.table}.${dropAttributeObj.attribute}`;
 	}
 
-	dropTable(dropTableObject) {
-		return getTable(dropTableObject).dropTable();
+	dropTable(dropTableObject): Promise<boolean> {
+		// A peer's forwarded drop arrives with `replicated: false` (so it is not re-broadcast) and carries the origin's
+		// drop time; a client's `replicated: false` is this node's business only.
+		if (dropTableObject[REPLICATED_FROM])
+			return getTable(dropTableObject).dropTable({ peer: true, droppedTime: dropTableObject.droppedTime });
+		return getTable(dropTableObject).dropTable(dropTableObject.replicated === false ? { localOnly: true } : undefined);
 	}
 
 	createSchema(createSchemaObj) {
@@ -265,14 +285,14 @@ export class ResourceBridge extends BridgeMethods {
 		// absent between them, subscribers see a single write rather than a delete followed by an
 		// insert, and `__createdtime__` survives (`Table._writeUpdate` retains the stored created time
 		// on a full update and only stamps a new one for a new entry).
-		const Table = getDatabases()[upsertObj.schema][upsertObj.table];
+		const Table = getTable(upsertObj);
 		const context: Context = {
 			user: upsertObj.hdb_user,
 			expiresAt: upsertObj.expiresAt,
 			originatingOperation: upsertObj.operation,
 		};
 		if (upsertObj.replicateTo) context.replicateTo = upsertObj.replicateTo;
-		if (upsertObj.replicatedConfirmation) context.replicatedConfirmation = upsertObj.replicatedConfirmation;
+		if (upsertObj.replicatedConfirmation != null) context.replicatedConfirmation = upsertObj.replicatedConfirmation;
 		return transaction(context, async (transaction) => {
 			if (!Table.schemaDefined) {
 				new_attributes = [];
@@ -304,12 +324,18 @@ export class ResourceBridge extends BridgeMethods {
 					continue;
 				}
 				if (existingRecord) existingRecord = collapseData(existingRecord);
+				let setRecord;
 				for (const key in record) {
 					if (Object.prototype.hasOwnProperty.call(record, key)) {
 						let value = record[key];
 						if (typeof value === 'function') {
 							try {
-								const valueResults = value([[existingRecord]]);
+								// a relationship getter on the stored record would read past the caller's role
+								setRecord ??=
+									existingRecord && Table.hasRelationships && !context.user?.role?.permission?.super_user
+										? withoutRelationships(existingRecord, Table)
+										: existingRecord;
+								const valueResults = value([[setRecord]]);
 								if (Array.isArray(valueResults)) {
 									value = valueResults[0].func_val;
 									record[key] = value;
@@ -343,10 +369,10 @@ export class ResourceBridge extends BridgeMethods {
 	}
 
 	async deleteRecords(deleteObj) {
-		const Table = getDatabases()[deleteObj.schema][deleteObj.table];
+		const Table: any = getTable(deleteObj);
 		const context: Context = { user: deleteObj.hdb_user };
 		if (deleteObj.replicateTo) context.replicateTo = deleteObj.replicateTo;
-		if (deleteObj.replicatedConfirmation) context.replicatedConfirmation = deleteObj.replicatedConfirmation;
+		if (deleteObj.replicatedConfirmation != null) context.replicatedConfirmation = deleteObj.replicatedConfirmation;
 		return transaction(context, async (transaction) => {
 			const ids: Id[] =
 				deleteObj.ids || deleteObj.hash_values || deleteObj.records.map((record) => record[Table.primaryKey]);
@@ -379,7 +405,7 @@ export class ResourceBridge extends BridgeMethods {
 	 * @returns {undefined}
 	 */
 	async deleteRecordsBefore(deleteObj) {
-		const Table = getDatabases()[deleteObj.schema][deleteObj.table];
+		const Table: any = getTable(deleteObj);
 		if (!Table.createdTimeProperty) {
 			throw new ClientError(
 				`Table must have a '__createdtime__' attribute or @createdTime timestamp defined to perform this operation`
@@ -439,7 +465,7 @@ export class ResourceBridge extends BridgeMethods {
 		if (searchObject.select !== undefined) searchObject.get_attributes = searchObject.select;
 		const validationError = searchValidator(searchObject, 'hashes');
 		if (validationError) {
-			throw validationError;
+			throwSearchValidationError(validationError);
 		}
 		return getRecords(searchObject);
 	}
@@ -468,7 +494,7 @@ export class ResourceBridge extends BridgeMethods {
 
 		const validationError = searchValidator(searchObject, 'value');
 		if (validationError) {
-			throw validationError;
+			throwSearchValidationError(validationError);
 		}
 
 		const table = getTable(searchObject);
@@ -476,7 +502,7 @@ export class ResourceBridge extends BridgeMethods {
 			throw new ClientError(`Table ${searchObject.table} not found`);
 		}
 		let value: any = searchObject.value;
-		if (value.includes?.('*')) {
+		if (typeof value === 'string' && value.includes('*')) {
 			if (value.startsWith('*')) {
 				if (value.endsWith('*')) {
 					if (value !== '*') {
@@ -515,6 +541,7 @@ export class ResourceBridge extends BridgeMethods {
 				select: getSelect(searchObject, table),
 			} as any,
 			{
+				user: searchObject.hdb_user,
 				onlyIfCached: (searchObject as any).onlyIfCached,
 				noCacheStore: (searchObject as any).noCacheStore,
 				noCache: (searchObject as any).noCache,
@@ -606,6 +633,12 @@ export class ResourceBridge extends BridgeMethods {
 						// bound, so it cannot remove an entry the floor does not cover.
 						const pruneEnd = boundedAuditPruneEnd(table.auditStore, before);
 						raiseAuditFloor(table.auditStore, pruneEnd);
+						// the floor and purge bounds reach disk before the files they account for are unlinked
+						if (originFloorsDurable(table.primaryStore)) {
+							await table.primaryStore.syncWal();
+							// a drop or restore may have closed this handle while the sync was pending
+							if (table.primaryStore.status !== 'open') break;
+						}
 						const deleted = table.primaryStore.purgeLogs({ before: pruneEnd, includeEntryCounts: true });
 						totalResults.log_files_deleted += deleted.length;
 						totalResults.entries_deleted += deleted.reduce((acc, file) => acc + file.entries, 0);
@@ -683,7 +716,9 @@ export class ResourceBridge extends BridgeMethods {
 	}): Promise<Readable> {
 		const databaseName = getBackupObj.database || getBackupObj.schema || 'data';
 		const database = getDatabases()[databaseName];
+		assertDatabaseResidencyAvailable(databaseName);
 		if (!database) {
+			throwIfUnloadedDatabaseHeldByRestore(databaseName);
 			throw new ClientError(`Database '${databaseName}' does not exist`, 404);
 		}
 		const firstTable = database[Object.keys(database)[0]];
@@ -724,12 +759,31 @@ export class ResourceBridge extends BridgeMethods {
 	}
 }
 
-function getSelect({ get_attributes }: any, table: any) {
+function withoutRelationships(record: any, Table: any) {
+	const copy = { ...record };
+	for (const name in Table.propertyResolvers)
+		if (!Table.propertyResolvers[name]?.definition?.tableClass && !Object.hasOwn(copy, name))
+			Object.defineProperty(copy, name, { get: () => record[name], enumerable: true, configurable: true });
+	return copy;
+}
+
+function throwSearchValidationError(validationError: any): never {
+	throw typeof validationError.statusCode === 'number' ? validationError : new ClientError(validationError.message);
+}
+
+function getSelect({ get_attributes, hdb_user }: any, table: any) {
 	if (get_attributes) {
 		if (get_attributes[0] === '*') {
-			if (table.schemaDefined) return;
-			else get_attributes = table.attributes.map((attribute) => attribute.name);
+			const metadata = get_attributes.slice(1).filter((name) => name === '$score' || name === '$highlights');
+			if (table.schemaDefined && metadata.length === 0) return;
+			get_attributes = [
+				...table.attributes
+					.filter((attribute) => !attribute.computed && !attribute.relationship)
+					.map((attribute) => attribute.name),
+				...metadata,
+			];
 		}
+		get_attributes = table._authorizeSelectedRelationships(get_attributes, hdb_user);
 		get_attributes.forceNulls = true;
 		return get_attributes;
 	}
@@ -769,6 +823,13 @@ function getRecords(searchObject, returnKeyValue?) {
 							record = await table.get({ id, lazy, select } as any, context);
 							record = record && collapseData(record);
 						} catch (error) {
+							if (
+								error instanceof DatabaseShardingHeldError ||
+								(error instanceof DatabaseClosingError && error.code === 'DATABASE_SHARDING_BLOCKED')
+							) {
+								finishedIteration();
+								throw error;
+							}
 							record = {
 								message: errorToString(error),
 							};
@@ -810,6 +871,7 @@ function getRecords(searchObject, returnKeyValue?) {
 function getTable(operationObject: { database?: string; schema?: string; table?: string }): Table | undefined {
 	const databaseName = operationObject.database || operationObject.schema || DEFAULT_DATABASE;
 	const tables = getDatabases()[databaseName];
+	assertDatabaseResidencyAvailable(databaseName);
 	if (!tables) throw handleHDBError(new Error(), HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(databaseName), 404);
 	// Presence check, not truthiness, so a table named "0" resolves when addressed numerically.
 	return operationObject.table != null ? tables[operationObject.table] : undefined;

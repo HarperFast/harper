@@ -33,7 +33,7 @@ describe('auth.ts - certificate verification integration', function () {
 		sandbox.stub(contentTypes, 'serializeMessage').returnsArg(0);
 
 		// Stub env to ensure auth is loaded with correct settings
-		const env = require('#src/utility/environment/environmentManager');
+		const env = require('#js/utility/environment/environmentManager');
 		envStub = sandbox.stub(env, 'get');
 		envStub.withArgs('authentication.enableSessions').returns(false); // Disable sessions for simpler testing
 		envStub.withArgs('authentication.authorizeLocal').returns(false);
@@ -133,7 +133,8 @@ describe('auth.ts - certificate verification integration', function () {
 				status: 'good',
 			});
 
-			getUserStub.resolves({ username: 'test-client', active: true });
+			const shared = { username: 'test-client', active: true };
+			getUserStub.resolves(shared);
 
 			const result = await authModule.authentication(request, nextHandler);
 
@@ -141,6 +142,9 @@ describe('auth.ts - certificate verification integration', function () {
 			assert(certificateVerificationStub.calledWith(request.peerCertificate, request.mtlsConfig));
 			assert(getUserStub.calledWith('test-client', null, request));
 			assert.strictEqual(request.user.username, 'test-client');
+			const { isCertificatePrincipal } = require('#src/security/user');
+			assert.strictEqual(isCertificatePrincipal(request.user), true, 'the certificate names the principal');
+			assert.strictEqual(isCertificatePrincipal(shared), false, 'the object server.getUser returned stays unmarked');
 			assert(nextHandler.calledOnce);
 			assert.strictEqual(result.status, 200);
 		});

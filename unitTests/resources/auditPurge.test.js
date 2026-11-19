@@ -9,6 +9,7 @@ const assert = require('node:assert');
 const auditStore = require('#src/resources/auditStore');
 const { purgeAgedLogs, setAuditRetention } = auditStore;
 const { RocksTransactionLogStore } = require('#src/resources/RocksTransactionLogStore');
+const harperLogger = require('#js/utility/logging/harper_logger');
 
 describe('purgeAgedLogs', () => {
 	let originalRetention;
@@ -21,55 +22,87 @@ describe('purgeAgedLogs', () => {
 		setAuditRetention(originalRetention);
 	});
 
-	// purgeAgedLogs raises the floor before purging (harper#2447); `order` records both steps, because
-	// a crash between them leaves a floor certifying purged history if the write came second.
-	function fakeStore(purgedFiles = ['000001.txnlog', '000002.txnlog']) {
+	// purgeAgedLogs raises the floor and makes it durable before purging (harper#2447, harper#2912); `order`
+	// records each step, because a crash or power loss between them leaves a floor certifying purged history
+	// if the write, or its barrier, came after the purge.
+	function fakeStore(
+		purgedFiles = ['000001.txnlog', '000002.txnlog'],
+		{ oldestFileAgeMs = 10 * 365 * 86_400_000 } = {}
+	) {
 		const calls = [];
 		const order = [];
 		const store = {
 			calls,
 			order,
 			floorWrites: [],
+			path: 'fake-store',
+			listLogs: () => ['local'],
+			useLog: () => ({ getStats: () => ({ purge: { oldestFileAgeMs }, config: { retentionMs: 3 * 86_400_000 } }) }),
+			flushSync() {
+				order.push('flush');
+				if (failFlush) throw new Error('IO error: No space left on device');
+			},
+			resume() {
+				order.push('resume');
+				if (refuseWrites) throw new Error('Resume failed: Resource busy: Recovery in progress');
+			},
 			purgeLogs(options) {
 				calls.push(options);
 				order.push('purge');
+				if (failPurge) throw new Error('could not sync txn.purged');
 				return purgedFiles;
 			},
 		};
-		// A REAL RocksTransactionLogStore, because `updateAuditFloor` branches on `instanceof` and
+		// A REAL RocksTransactionLogStore, because the metadata write branches on `instanceof` and
 		// purgeAgedLogs is typed `rootStore: RocksDatabase` — a plain object would silently route this
 		// test through the LMDB branch and leave the one production path that always uses the RocksDB
 		// branch untested.
 		const auditStandIn = new RocksTransactionLogStore({ useLog: () => ({}) });
-		// Holds what it is given, because updateAuditFloor reads its own write back inside the
-		// transaction to catch a put that failed without saying so. Starts at the baseline a database
-		// that has provably pruned nothing carries; an absent floor would instead mean "unknown", which
-		// a prune deliberately leaves alone.
-		let stored = new Uint8Array(Float64Array.of(1).buffer);
+		// Holds what it is given, per record, because the write reads itself back inside the transaction
+		// to catch a put that failed without saying so. Starts at the baseline a database that has
+		// provably pruned nothing carries: a floor, and the genesis resume floor. An absent floor would
+		// instead mean "unknown", which a prune deliberately leaves alone.
+		const FLOOR_KEY = Symbol.for('audit-floor');
+		const records = new Map([
+			[FLOOR_KEY, new Uint8Array(Float64Array.of(1).buffer)],
+			[Symbol.for('audit-resume-floor'), new Uint8Array(Float64Array.of(0).buffer)],
+		]);
 		const txn = {
-			getBinarySync: () => stored,
-			putSync(_key, value) {
+			getBinarySync: (key) => records.get(key),
+			putSync(key, value) {
 				// the real write wraps the bytes in lmdb's asBinary(), which bypasses both engines' encoders
 				const wrapped = Object.values(value)[0] ?? value;
 				const bytes = Uint8Array.from(Object.values(wrapped));
-				stored = failFloorWrite ? stored : bytes;
-				store.floorWrites.push(new Float64Array(bytes.slice().buffer)[0]);
+				if (!failFloorWrite) records.set(key, bytes);
+				if (key === FLOOR_KEY) store.floorWrites.push(new Float64Array(bytes.slice().buffer)[0]);
 			},
 		};
 		let failFloorWrite = false;
+		let failFlush = false;
+		let failPurge = false;
+		let refuseWrites = false;
+		store.refuseWrites = () => {
+			refuseWrites = true;
+		};
+		store.failPurge = () => {
+			failPurge = true;
+		};
+		store.failFlush = () => {
+			failFlush = true;
+		};
 		store.failFloorWrite = () => {
 			failFloorWrite = true;
 		};
 		// A floorless store is the case where the resolver writes the unknown sentinel, and where a
 		// read-back comparing decoded values alone cannot tell that write from no record at all.
 		store.startFloorless = () => {
-			stored = undefined;
+			records.delete(FLOOR_KEY);
 		};
 		auditStandIn.rootStore = {
 			// RocksTransactionLogStore.getBinary delegates here, which is how raiseAuditFloor's lock-free
 			// pre-check reads the floor
-			getBinarySync: () => stored,
-			// returns the callback's value, as both real engines do: updateAuditFloor requires an
+			getBinarySync: (key) => records.get(key),
+			// returns the callback's value, as both real engines do: the metadata write requires an
 			// explicit `true` because RocksDB swallows an aborted transaction and returns undefined.
 			transactionSync(callback) {
 				order.push('floor');
@@ -119,7 +152,11 @@ describe('purgeAgedLogs', () => {
 		const before = Date.now();
 		purgeAgedLogs(store);
 
-		assert.deepStrictEqual(store.order, ['floor', 'purge'], 'the floor must be recorded before the purge runs');
+		assert.deepStrictEqual(
+			store.order,
+			['floor', 'flush', 'purge'],
+			'the floor must be recorded, then made durable, before the purge runs'
+		);
 		assert.strictEqual(store.floorWrites.length, 1, 'exactly one floor write');
 		assert.strictEqual(
 			store.floorWrites[0],
@@ -127,6 +164,52 @@ describe('purgeAgedLogs', () => {
 			'the floor and the purge cutoff must be the same instant'
 		);
 		assert.ok(store.floorWrites[0] >= before - 60_000, 'floor should track the retention window');
+	});
+
+	it('purges behind the committed floor when only the flush that makes it durable fails (harper#2486)', () => {
+		setAuditRetention(60_000);
+		const store = fakeStore();
+		store.failFlush();
+		assert.deepStrictEqual(purgeAgedLogs(store), ['000001.txnlog', '000002.txnlog']);
+		assert.deepStrictEqual(
+			store.order,
+			['floor', 'flush', 'purge', 'resume'],
+			'the floor is still committed first, and writes resume before replay'
+		);
+		assert.strictEqual(store.floorWrites[0], store.calls[0].before);
+	});
+
+	it('still waits for writes to resume when the purge behind a failed flush throws', () => {
+		setAuditRetention(60_000);
+		const store = fakeStore();
+		store.failFlush();
+		store.failPurge();
+		assert.throws(() => purgeAgedLogs(store), /could not sync txn.purged/);
+		assert.deepStrictEqual(store.order, ['floor', 'flush', 'purge', 'resume']);
+	});
+
+	it('stops waiting for writes to resume after its deadline, and reports it as an error', () => {
+		setAuditRetention(60_000);
+		const store = fakeStore();
+		store.failFlush();
+		store.refuseWrites();
+		const errors = [];
+		const { error } = harperLogger;
+		harperLogger.error = (...args) => errors.push(args);
+		try {
+			assert.deepStrictEqual(purgeAgedLogs(store), ['000001.txnlog', '000002.txnlog']);
+		} finally {
+			harperLogger.error = error;
+		}
+		assert.ok(store.order.filter((step) => step === 'resume').length > 1, 'it retried before giving up');
+		assert.match(errors[0]?.[0], /still refuses writes/);
+	});
+
+	it('writes no barrier and purges nothing when no log file is old enough to purge', () => {
+		setAuditRetention(60_000);
+		const store = fakeStore(undefined, { oldestFileAgeMs: 1000 });
+		assert.deepStrictEqual(purgeAgedLogs(store), []);
+		assert.deepStrictEqual(store.order, ['floor'], 'the floor is still raised for the next purge');
 	});
 
 	it('refuses the purge when the RocksDB floor write does not stick', () => {

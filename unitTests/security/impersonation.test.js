@@ -6,7 +6,7 @@ testUtils.preTestPrep();
 const assert = require('node:assert');
 const sinon = require('sinon');
 const sandbox = sinon.createSandbox();
-const { applyImpersonation } = require('#src/security/impersonation');
+const { applyImpersonation } = require('#js/security/impersonation');
 const userModule = require('#src/security/user');
 const roleModule = require('#src/security/role');
 const harperLogger = require('#src/utility/logging/harper_logger');

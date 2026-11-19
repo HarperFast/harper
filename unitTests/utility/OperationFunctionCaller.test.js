@@ -5,7 +5,7 @@
 //testUtils.preTestPrep();
 const assert = require('assert');
 const op_func_caller = require('#src/utility/OperationFunctionCaller');
-const hdb_logger = require('#src/utility/logging/harper_logger');
+const hdb_logger = require('#js/utility/logging/harper_logger');
 const { promisify } = require('util');
 
 class TestInputObject {
@@ -228,6 +228,37 @@ describe(`Test callOperationFunctionAsAwait`, function () {
 			);
 		});
 
+		it('bounds the logged payload and masks credential-shaped keys inside it', async function () {
+			const long_line = 'x'.repeat(20_000);
+			const test_func_exception = async function () {
+				const err = new Error('deploy failed');
+				err.http_resp_msg = {
+					error: err.message,
+					deployment_id: 'test-deployment-id',
+					request: {
+						headers: { authorization: 'Bearer super-secret-token' },
+						registry: { password: 'registry-password' },
+					},
+					install_output: { lines: Array.from({ length: 5_000 }, () => ({ line: long_line })) },
+				};
+				throw err;
+			};
+
+			try {
+				await op_func_caller.callOperationFunctionAsAwait(test_func_exception, new TestInputObject(), null);
+				assert.fail('expected callOperationFunctionAsAwait to reject');
+			} catch {
+				// expected - the structured error is rethrown after being logged
+			}
+
+			const logged_payload = logged_calls[1].join(' ');
+			assert.ok(logged_payload.length <= 256 * 1024, `logged ${logged_payload.length} characters`);
+			assert.ok(logged_payload.includes('sanitize budget'), logged_payload.slice(-500));
+			assert.ok(logged_payload.includes('test-deployment-id'));
+			assert.ok(!logged_payload.includes('super-secret-token'));
+			assert.ok(!logged_payload.includes('registry-password'));
+		});
+
 		it('reads a getter-backed http_resp_msg exactly once, so classification and logging cannot see different values (#1982 review)', async function () {
 			const secret_payload = { detail: { config: { headers: { Authorization: 'Bearer super-secret-token' } } } };
 			let read_count = 0;
@@ -257,6 +288,26 @@ describe(`Test callOperationFunctionAsAwait`, function () {
 			const logged = logged_calls.map((call_args) => call_args.join(' ')).join('\n');
 			assert.ok(!logged.includes('super-secret-token'), `logged output leaked the secret: ${logged}`);
 			assert.ok(logged.includes('looks safe'), `expected the single classified/logged value, got: ${logged}`);
+		});
+
+		it('logs only the operation and status for a sealed request', async function () {
+			const { setOperationLogView } = require('#src/utility/operationLogView');
+			const input = new TestInputObject();
+			setOperationLogView(input, () => ({ operation: 'insert' }));
+			const sealed_failure = async function sealed_failure() {
+				const err = new Error('bad value SEALED-VALUE-MARKER');
+				err.statusCode = 422;
+				err.http_resp_msg = 'bad value SEALED-VALUE-MARKER';
+				throw err;
+			};
+
+			await assert.rejects(op_func_caller.callOperationFunctionAsAwait(sealed_failure, input, null), {
+				statusCode: 422,
+			});
+
+			const logged = logged_calls.map((call_args) => call_args.join(' ')).join('\n');
+			assert.ok(!logged.includes('SEALED-VALUE-MARKER'), `a sealed request's error message was logged: ${logged}`);
+			assert.ok(logged.includes('sealed_failure (sealed request, status 422)'), logged);
 		});
 	});
 });

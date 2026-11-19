@@ -1,3 +1,10 @@
+import * as ResourcesRuntimeModule from '../../resources/Resources.ts';
+import * as openApiRuntimeModule from '../../resources/openApi.ts';
+import * as transactionRuntimeModule from '../../resources/transaction.ts';
+import * as RequestTargetRuntimeModule from '../../resources/RequestTarget.ts';
+import * as ServerRuntimeModule from '../../server/Server.ts';
+import * as liveSubscriptionAuthRuntimeModule from '../../server/liveSubscriptionAuth.ts';
+import * as userRuntimeModule from '../../security/user.ts';
 /**
  * MCP resources capability — implements `resources/list`, `resources/read`,
  * and `resources/templates/list` per MCP §server/resources (rev 2025-06-18).
@@ -38,19 +45,20 @@ import harperLogger from '../../utility/logging/harper_logger.ts';
 import { AccessViolation } from '../../utility/errors/hdbError.ts';
 import { SERVER_CAPABILITIES, SERVER_INFO, SUPPORTED_PROTOCOL_VERSIONS } from './lifecycle.ts';
 import { encodeCursor } from './pagination.ts';
+import { filterAttributeTree, resolveAttributes, schemaErrorMessage } from '../../resources/jsonSchemaTypes.ts';
 import {
 	customResourceCompletionValues,
 	listCustomResources,
 	listCustomResourceTemplates,
 	matchCustomResource,
+	UnsubscribableError,
+	type CustomResourceDef,
 } from './customResourceRegistry.ts';
 import type { McpProfile } from './transport.ts';
 import { canRoleInvokeOperation } from './operationVisibility.ts';
+import type { RecheckPass } from '../../server/liveSubscriptionAuth.ts';
+import type { User } from '../../security/user.ts';
 
-// Harper's resource graph (Resources, generateJsonApi, Server) initializes
-// eagerly when imported at module-load. Unit tests that don't boot Harper
-// would fail to load this module. Lazy-resolve via require() inside the
-// getters below; test seams below let unit tests bypass the real bindings.
 interface ParamRouteEntry {
 	pattern: string;
 	entry: { Resource?: unknown; path?: string; exportTypes?: unknown };
@@ -67,6 +75,10 @@ type OpenApiGenerator = (resources: ResourcesType, serverHttpURL: string) => unk
 
 export interface AuthedUser {
 	username?: string;
+	/** JWT `exp` (seconds since epoch) of the bearer credential the request authenticated with. */
+	authExpiresAt?: number;
+	/** A scoped token's identity is its embedded role; it is never re-resolved against hdb_user. */
+	_scopedToken?: boolean;
 	role?: {
 		role?: string;
 		permission?: {
@@ -130,6 +142,7 @@ const HTTP_SCHEME = 'http:';
 const HARPER_REST_SCHEME = 'harper+rest:';
 
 const DEFAULT_LIMIT = 200;
+const warnedInvalidSchemas = new WeakSet<object>();
 
 // Test seams. Injecting these lets us unit-test without standing up a full
 // Resources registry or running openapi generation.
@@ -153,12 +166,12 @@ export function _setHttpUrlPrefixForTest(prefix: string | undefined): void {
 }
 
 /**
- * A live audit-log subscription started by `resource.subscribe`, viewed as an
- * async-iterable with an `.end()` to stop it (the shape MQTT's durable session
- * consumes). Test seam below injects a fake so unit tests don't need the real
- * audit log.
+ * A change stream: the audit-log subscription `resource.subscribe` starts, or
+ * what a custom resource's `subscribe` returns — an async iterable, optionally
+ * with an `.end()` to stop it (the shape MQTT's durable session consumes). Test
+ * seam below injects a fake so unit tests don't need the real audit log.
  */
-type ResourceChangeStream = AsyncIterable<{ acknowledge?: () => void }> & { end?: () => void };
+type ResourceChangeStream = AsyncIterable<unknown> & { end?: () => unknown };
 let _subscribeImplOverride: ((path: string, user: AuthedUser) => Promise<ResourceChangeStream | null>) | undefined;
 
 /** Test seam: replace the real `resource.subscribe` resolution with a fake stream. */
@@ -170,15 +183,14 @@ export function _setSubscribeImplForTest(
 
 function getResources(): ResourcesType {
 	if (_resourcesOverride) return _resourcesOverride;
-	// Lazy import — see file-top comment on Harper graph initialization.
-	const { resources } = require('../../resources/Resources');
-	return resources as ResourcesType;
+	const { resources } = ResourcesRuntimeModule;
+	return resources as unknown as ResourcesType;
 }
 
 function getOpenApiGenerator(): OpenApiGenerator {
 	if (_openApiOverride) return _openApiOverride;
-	const { generateJsonApi } = require('../../resources/openApi');
-	return generateJsonApi as OpenApiGenerator;
+	const { generateJsonApi } = openApiRuntimeModule;
+	return generateJsonApi as unknown as OpenApiGenerator;
 }
 
 // ─── Public entry points ────────────────────────────────────────────────
@@ -193,6 +205,11 @@ export interface ListResourcesArgs {
 	 */
 	offset?: number;
 	limit?: number;
+	/**
+	 * `protocol://host` the client reached the app on (from the request). Used as the
+	 * authority of `harper+rest://` URIs; falls back to a guess from server config.
+	 */
+	baseUrl?: string;
 }
 
 export interface ListResourcesResult {
@@ -201,7 +218,7 @@ export interface ListResourcesResult {
 }
 
 export function listResources(args: ListResourcesArgs): ListResourcesResult {
-	const all = enumerate(args.profile);
+	const all = enumerate(args.profile, args.baseUrl);
 	const offset = args.offset ?? 0;
 	const limit = args.limit && args.limit > 0 ? args.limit : DEFAULT_LIMIT;
 	const slice = all.slice(offset, offset + limit);
@@ -227,7 +244,8 @@ export interface ListResourceTemplatesResult {
 export function listResourceTemplates(
 	profile: McpProfile,
 	offset?: number,
-	limit?: number
+	limit?: number,
+	baseUrl?: string
 ): ListResourceTemplatesResult {
 	const all: ResourceTemplate[] = [];
 	if (profile === 'application') {
@@ -237,7 +255,7 @@ export function listResourceTemplates(
 			description: 'Attribute definitions for a Harper table, RBAC-filtered by attribute_permissions',
 			mimeType: 'application/json',
 		});
-		const appUriPrefix = appResourceUriPrefix();
+		const appUriPrefix = appResourceUriPrefix(baseUrl);
 		if (appUriPrefix) {
 			all.push({
 				uriTemplate: `${appUriPrefix}/{resourcePath}`,
@@ -281,6 +299,8 @@ export interface CompleteResourceArgs {
 	profile: McpProfile;
 	/** The `ref/resource` URI (template) being completed against, when the client sent one. */
 	refUri?: string;
+	/** Request `protocol://host`; gates `{resourcePath}` the same way templates/list does. */
+	baseUrl?: string;
 }
 
 /**
@@ -324,7 +344,7 @@ export function completeResourceArgument(args: CompleteResourceArgs): Completion
 	} else if (argument.name === 'resourcePath') {
 		// Only advertised when an app HTTP URL prefix exists (the `{resourcePath}`
 		// template). No prefix → no such template → no completions.
-		if (guessAppHttpUrlPrefix()) candidates = enumerateMcpResourcePaths();
+		if (guessAppHttpUrlPrefix(args.baseUrl)) candidates = enumerateMcpResourcePaths();
 	}
 	const filtered = candidates.filter((c) => c.toLowerCase().startsWith(partial)).sort();
 	return capCompletion(filtered);
@@ -357,27 +377,46 @@ function enumerateMcpResourcePaths(): string[] {
 }
 
 export interface ResourceSubscription {
-	/** Stop the subscription and release the underlying audit-log iterator. */
+	start: (onUpdate: () => void) => void;
 	stop: () => void;
+	onStop: (callback: () => void) => void;
+}
+
+const DEFAULT_CUSTOM_SUBSCRIBE_TIMEOUT_MS = 15_000;
+let customSubscribeTimeoutMs = DEFAULT_CUSTOM_SUBSCRIBE_TIMEOUT_MS;
+const customSubscribeErrors = new WeakSet<object>();
+
+export function _setCustomSubscribeTimeoutForTest(value: number | undefined): void {
+	customSubscribeTimeoutMs = value ?? DEFAULT_CUSTOM_SUBSCRIBE_TIMEOUT_MS;
+}
+
+export function isCustomSubscribeError(err: unknown): boolean {
+	return typeof err === 'object' && err !== null && customSubscribeErrors.has(err);
+}
+
+function markCustomSubscribeError(err: unknown): Error {
+	const error = err instanceof Error ? err : new Error(describeError(err));
+	customSubscribeErrors.add(error);
+	return error;
 }
 
 /**
- * Subscribe to changes on a row-backed resource URI (#1349 §3.6), invoking
- * `onUpdate` once per committed change. Returns a handle to stop it, or `null`
- * if the URI is not subscribable — only application HTTP(S) resource URLs backed
- * by a Resource with `subscribe` qualify; synthetic `harper://*` URIs have no
- * row-change source and are list_changed-only.
- *
- * Mirrors the MQTT durable-subscription consumer (`server/DurableSubscriptionsSession.ts`):
- * `resource.subscribe` (a transactional static) returns an async-iterable with an
- * `.end()`; we iterate it on the worker holding the SSE stream, so the audit-log
- * `'committed'` broadcast delivers changes locally (cross-worker via the shared log).
+ * Subscribe to changes on a resource URI (#1349 §3.6), returning an unstarted
+ * handle, or `null` if the URI is not subscribable (`mcpResources` with
+ * `subscribe` first, then row-backed HTTP(S)/`harper+rest:` resources).
  */
 export async function subscribeToResource(
 	uri: string,
 	user: AuthedUser,
-	onUpdate: () => void
+	profile: McpProfile
 ): Promise<ResourceSubscription | null> {
+	const custom = matchCustomResource(profile, uri);
+	if (custom) {
+		const { def, params } = custom;
+		if (!def.subscribe) return null;
+		return subscribeToCustomResource(uri, def.subscribe, params, user, profile);
+	}
+
 	let parsed: URL;
 	try {
 		parsed = new URL(uri);
@@ -406,9 +445,7 @@ export async function subscribeToResource(
 		// so we must override both cases (else a collection URI watches a phantom
 		// record named after the resource and receives nothing).
 		const recordId = (entry.relativeURL ?? '').replace(/^\/+/, '');
-		// Lazy-require the server-layer machinery (see file-top note on eager init).
-		const { transaction } = require('../../resources/transaction');
-		const { RequestTarget } = require('../../resources/RequestTarget');
+		const { RequestTarget } = RequestTargetRuntimeModule;
 		const request = new RequestTarget(path);
 		// `omitCurrent`: only deliver changes after subscribe, not a retained snapshot —
 		// the MCP notification just says "this resource changed; re-read it".
@@ -418,38 +455,225 @@ export async function subscribeToResource(
 			omitCurrent: true,
 			checkPermission: user?.role?.permission ?? {},
 		});
-		const context = { user, authorize: true, request };
-		const result = await transaction(context, async () => ResourceClass.subscribe!(request, context));
-		stream =
-			result && typeof (result as ResourceChangeStream)[Symbol.asyncIterator] === 'function'
-				? (result as ResourceChangeStream)
-				: null;
+		const context = { user: user as any, authorize: true, request };
+		stream = await acquireChangeStream(uri, context, () => ResourceClass.subscribe!(request, context));
 	}
-	if (!stream) return null;
+	// Audit-log events carry `acknowledge` (the MQTT delivery receipt); custom values are opaque.
+	return stream ? changeStreamSubscription(uri, stream, true) : null;
+}
 
-	let stopped = false;
-	void (async () => {
-		try {
-			for await (const update of stream) {
-				if (stopped) break;
-				update?.acknowledge?.();
-				onUpdate();
-			}
-		} catch (err) {
-			harperLogger.trace(`MCP subscription ${uri} ended: ${(err as Error).message}`);
-		}
-	})();
+async function subscribeToCustomResource(
+	uri: string,
+	subscribe: NonNullable<CustomResourceDef['subscribe']>,
+	params: Record<string, string>,
+	user: AuthedUser,
+	profile: McpProfile
+): Promise<ResourceSubscription | null> {
+	let subscription: ResourceSubscription;
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	let timedOut = false;
+	try {
+		// A fresh context, unlike a read's: reconcile runs inside whatever scope loaded the session row, and
+		// joining that open transaction would run the author's method without this user.
+		const acquiring = acquireChangeStream(uri, { user: user as any }, () => subscribe(params, { user, profile }));
+		acquiring.then(
+			(late) => {
+				if (timedOut && late) {
+					try {
+						changeStreamSubscription(uri, late, false).stop();
+					} catch {}
+				}
+			},
+			() => {}
+		);
+		const timeout = new Promise<never>((_, reject) => {
+			timer = setTimeout(() => {
+				timedOut = true;
+				reject(new Error(`subscribe for ${uri} timed out`));
+			}, customSubscribeTimeoutMs);
+			timer.unref?.();
+		});
+		const stream = await Promise.race([acquiring, timeout]);
+		if (!stream) return null;
+		subscription = changeStreamSubscription(uri, stream, false, true);
+	} catch (err) {
+		if (err instanceof AccessViolation) throw err;
+		harperLogger.error(`MCP subscribe for ${uri} failed:`, err);
+		if (err instanceof UnsubscribableError) return null;
+		throw markCustomSubscribeError(err);
+	} finally {
+		clearTimeout(timer);
+	}
+	try {
+		await trackPrincipalLifetime(subscription, user);
+	} catch (err) {
+		subscription.stop();
+		throw err;
+	}
+	return subscription;
+}
 
-	return {
-		stop: () => {
-			stopped = true;
+/**
+ * Run `call` in a transaction and return its change stream. A stream acquired
+ * by a callback whose transaction then fails to commit is released here: the
+ * transaction wrapper only closes a result's `onDone` on that path.
+ */
+async function acquireChangeStream(
+	uri: string,
+	context: object,
+	call: () => unknown
+): Promise<ResourceChangeStream | null> {
+	const { transaction } = transactionRuntimeModule;
+	let acquired: unknown;
+	let result: unknown;
+	try {
+		result = await transaction(context, async () => (acquired = await call()));
+	} catch (err) {
+		if (isChangeStream(acquired)) {
 			try {
-				stream.end?.();
+				changeStreamSubscription(uri, acquired, false).stop();
+			} catch {}
+		}
+		throw err;
+	}
+	return isChangeStream(result) ? result : null;
+}
+
+function isChangeStream(value: unknown): value is ResourceChangeStream {
+	return typeof (value as ResourceChangeStream | null)?.[Symbol.asyncIterator] === 'function';
+}
+
+function changeStreamSubscription(
+	uri: string,
+	stream: ResourceChangeStream,
+	acknowledgeEvents: boolean,
+	requireRelease = false
+): ResourceSubscription {
+	let iterator: AsyncIterator<unknown>;
+	try {
+		iterator = stream[Symbol.asyncIterator]();
+	} catch (err) {
+		release(uri, () => stream.end?.());
+		throw err;
+	}
+	if (requireRelease && typeof stream.end !== 'function') {
+		const unreleasable =
+			typeof iterator.return !== 'function'
+				? 'a stream with neither end() nor an iterator return()'
+				: Object.prototype.toString.call(iterator) === '[object AsyncGenerator]'
+					? 'an async generator with no end()'
+					: undefined;
+		if (unreleasable) {
+			release(uri, () => iterator.return?.());
+			throw new UnsubscribableError(
+				`subscribe for ${uri} returned ${unreleasable}; return a stream whose end() releases its source, such as a Table.subscribe() result`
+			);
+		}
+	}
+	let started = false;
+	let stopped = false;
+	const stopCallbacks: Array<() => void> = [];
+	const stop = () => {
+		if (stopped) return;
+		stopped = true;
+		for (const callback of stopCallbacks) {
+			try {
+				callback();
 			} catch (err) {
-				harperLogger.trace(`MCP subscription ${uri} stop: ${(err as Error).message}`);
+				harperLogger.trace(`MCP subscription ${uri} stop callback: ${describeError(err)}`);
 			}
+		}
+		release(uri, () => (typeof stream.end === 'function' ? stream.end() : iterator.return?.()));
+	};
+	return {
+		start(onUpdate) {
+			if (stopped || started) return;
+			started = true;
+			void (async () => {
+				try {
+					while (!stopped) {
+						const { done, value } = await iterator.next();
+						if (done || stopped) break;
+						if (acknowledgeEvents) (value as { acknowledge?: () => void } | undefined)?.acknowledge?.();
+						onUpdate();
+					}
+				} catch (err) {
+					harperLogger.trace(`MCP subscription ${uri} ended: ${describeError(err)}`);
+				} finally {
+					stop();
+				}
+			})();
+		},
+		stop,
+		onStop(callback) {
+			if (stopped) callback();
+			else stopCallbacks.push(callback);
 		},
 	};
+}
+
+function release(uri: string, teardown: () => unknown): void {
+	try {
+		const released = teardown();
+		if (typeof (released as Promise<unknown> | undefined)?.then === 'function') {
+			(released as Promise<unknown>).then(undefined, (err: unknown) =>
+				harperLogger.trace(`MCP subscription ${uri} stop: ${describeError(err)}`)
+			);
+		}
+	} catch (err) {
+		harperLogger.trace(`MCP subscription ${uri} stop: ${describeError(err)}`);
+	}
+}
+
+// One function for every custom subscription, so a recheck pass memoizes one lookup per username.
+const resolveUser = (_scope: unknown, username: string) =>
+	userRuntimeModule.findAndValidateUser(username, undefined, false) as Promise<AuthedUser>;
+
+/**
+ * Tie a custom subscription to its principal's lifetime: revoked at bearer-token
+ * expiry, or when the user is removed or left without a role — the identity half
+ * of what `Resource.subscribe` registers (`registerLiveSubscriptionForContext`
+ * in resources/Resource.ts). An expired or no-longer-current principal is
+ * rechecked before the caller can admit the subscription.
+ */
+async function trackPrincipalLifetime(subscription: ResourceSubscription, user: AuthedUser): Promise<void> {
+	const username = user?.username;
+	const { hasRecordProvenance, isCurrentUser, isLocalPrincipal } = userRuntimeModule;
+	// no record backs the local principal, so a recheck would revoke it
+	if (!username || isLocalPrincipal(user)) return;
+	const { registerLiveSubscription } = liveSubscriptionAuthRuntimeModule;
+	const principal = user as User;
+	let revoked = false;
+	const handle = registerLiveSubscription({
+		username,
+		authExpiresAt: user.authExpiresAt,
+		identityOnly: user._scopedToken === true || hasRecordProvenance(principal),
+		recheck: async (pass: RecheckPass) =>
+			user._scopedToken === true || !!(await pass.memo(resolveUser, username, resolveUser))?.role,
+		revoke: () => {
+			revoked = true;
+			subscription.stop();
+		},
+	});
+	subscription.onStop(handle.unregister);
+	let recheckNow: boolean;
+	try {
+		recheckNow = (user.authExpiresAt != null && user.authExpiresAt * 1000 <= Date.now()) || !isCurrentUser(principal);
+	} catch {
+		recheckNow = true;
+	}
+	if (revoked || (recheckNow && (await handle.verify()) === 'revoked') || revoked) {
+		throw new AccessViolation(user);
+	}
+}
+
+/** A rejection reason may be anything, `null` or a null-prototype object included. */
+function describeError(err: unknown): string {
+	try {
+		return err instanceof Error ? err.message : String(err);
+	} catch {
+		return '<unprintable error>';
+	}
 }
 
 /**
@@ -495,6 +719,11 @@ export interface ReadResourceArgs {
 	uri: string;
 	user: AuthedUser;
 	profile: McpProfile;
+	/**
+	 * `protocol://host` the client reached the app on (from the request). Used as the
+	 * OpenAPI server URL; falls back to a guess from server config.
+	 */
+	baseUrl?: string;
 }
 
 export interface ReadResourceOk {
@@ -508,7 +737,7 @@ export interface ReadResourceFail {
 }
 
 export async function readResource(args: ReadResourceArgs): Promise<ReadResourceOk | ReadResourceFail> {
-	const { uri, user, profile } = args;
+	const { uri, user, profile, baseUrl } = args;
 
 	// Author-registered custom resources match first — a registered URI (fixed or
 	// template) always wins over the discovered surface (#1609).
@@ -525,7 +754,7 @@ export async function readResource(args: ReadResourceArgs): Promise<ReadResource
 	}
 
 	if (parsed.protocol === HARPER_SCHEME) {
-		return readHarperUri(parsed, user, profile);
+		return readHarperUri(parsed, user, profile, baseUrl);
 	}
 	if (parsed.protocol === HARPER_REST_SCHEME || parsed.protocol === HTTPS_SCHEME || parsed.protocol === HTTP_SCHEME) {
 		if (profile !== 'application') {
@@ -562,9 +791,10 @@ async function readCustomResource(
 		// Merge onto any ambient store (usually none on the MCP HTTP path) so an
 		// inherited transaction/cache is preserved rather than clobbered; `user`
 		// binds last. Same idiom as processLocalTransaction's `{ ...currentStore, user }`.
-		// Lazy-require the server-layer machinery (see file-top note on eager init).
-		const { transaction, contextStorage } = require('../../resources/transaction');
-		const result = await transaction({ ...contextStorage.getStore(), user }, () => def.read(params, { user, profile }));
+		const { transaction, contextStorage } = transactionRuntimeModule;
+		const result = await transaction({ ...contextStorage.getStore(), user: user as any }, () =>
+			def.read(params, { user, profile })
+		);
 		if (typeof result === 'string') {
 			return { ok: true, contents: [{ uri, mimeType: def.mimeType ?? 'text/plain', text: result }] };
 		}
@@ -618,7 +848,7 @@ async function readCustomResource(
 
 // ─── Enumeration ───────────────────────────────────────────────────────
 
-function enumerate(profile: McpProfile): ResourceDescriptor[] {
+function enumerate(profile: McpProfile, baseUrl?: string): ResourceDescriptor[] {
 	const out: ResourceDescriptor[] = [];
 
 	// `harper://about` is available on both profiles.
@@ -661,7 +891,7 @@ function enumerate(profile: McpProfile): ResourceDescriptor[] {
 		// harper+rest://... — one per exported Resource that has class-level REST methods.
 		// Per-record access is decided by each Resource's `allow{Read,...}` predicate
 		// at read time, so the list filter only checks method presence.
-		for (const entry of enumerateAppHttpResources()) out.push(entry);
+		for (const entry of enumerateAppHttpResources(baseUrl)) out.push(entry);
 
 		// Author-registered custom content resources (#1609) — fixed URIs only;
 		// templates are listed by `resources/templates/list`.
@@ -696,8 +926,8 @@ function enumerateTableBackedResources(): Array<{ db: string; table: string; des
 	return result;
 }
 
-function enumerateAppHttpResources(): ResourceDescriptor[] {
-	const prefix = appResourceUriPrefix();
+function enumerateAppHttpResources(baseUrl?: string): ResourceDescriptor[] {
+	const prefix = appResourceUriPrefix(baseUrl);
 	if (!prefix) return [];
 	const out: ResourceDescriptor[] = [];
 	for (const [path, entry] of getResources()) {
@@ -756,7 +986,8 @@ function hasRestVerbs(prototype: unknown): boolean {
 async function readHarperUri(
 	uri: URL,
 	user: AuthedUser,
-	profile: McpProfile
+	profile: McpProfile,
+	baseUrl?: string
 ): Promise<ReadResourceOk | ReadResourceFail> {
 	// `harper://about` parses with host='about' (URL treats it like a host).
 	// We use `host + pathname` to recover the full opaque path. Empty host
@@ -767,7 +998,7 @@ async function readHarperUri(
 		if (profile !== 'application') {
 			return { ok: false, reason: 'harper://openapi is only available on the application profile' };
 		}
-		return readOpenApi(uri.href);
+		return readOpenApi(uri.href, baseUrl);
 	}
 	if (opaque === 'operations') {
 		if (profile !== 'operations') {
@@ -794,10 +1025,10 @@ function readAbout(profile: McpProfile, href: string): ReadResourceOk {
 	return jsonContent(href, body);
 }
 
-function readOpenApi(href: string): ReadResourceOk | ReadResourceFail {
+function readOpenApi(href: string, baseUrl?: string): ReadResourceOk | ReadResourceFail {
 	try {
 		const generator = getOpenApiGenerator();
-		const serverHttpURL = guessAppHttpUrlPrefix() ?? '';
+		const serverHttpURL = guessAppHttpUrlPrefix(baseUrl) ?? '';
 		const api = generator(getResources(), serverHttpURL);
 		return jsonContent(href, api);
 	} catch (err) {
@@ -821,8 +1052,20 @@ function readTableSchema(db: string, table: string, user: AuthedUser, href: stri
 		}
 	}
 	if (!resource) return { ok: false, reason: `table not found: ${db}.${table}` };
-	const attributes = resource.attributes ?? [];
-	const filteredAttributes = filterAttributesByPermissions(attributes, perm?.attribute_permissions);
+	let filteredAttributes;
+	try {
+		const attributes = resolveAttributes(resource);
+		const visibleAttributes = filterAttributeTree(attributes);
+		filteredAttributes = filterAttributesByPermissions(visibleAttributes, perm?.attribute_permissions);
+	} catch (error) {
+		if (!warnedInvalidSchemas.has(resource)) {
+			warnedInvalidSchemas.add(resource);
+			try {
+				harperLogger.warn(`MCP harper://schema/${db}/${table} invalid schema: ${schemaErrorMessage(error)}`);
+			} catch {}
+		}
+		return { ok: false, reason: `invalid schema for ${db}.${table}` };
+	}
 	const body = {
 		database: db,
 		table,
@@ -923,21 +1166,24 @@ function filterAttributesByPermissions(attributes: any[], attributePermissions: 
  * authority still identifies the instance, but the scheme signals "resolve
  * via MCP, not the web" per spec guidance.
  */
-function appResourceUriPrefix(): string | undefined {
-	const httpPrefix = guessAppHttpUrlPrefix();
+function appResourceUriPrefix(baseUrl?: string): string | undefined {
+	const httpPrefix = guessAppHttpUrlPrefix(baseUrl);
 	if (!httpPrefix) return undefined;
 	return httpPrefix.replace(/^https?:/, HARPER_REST_SCHEME);
 }
 
-function guessAppHttpUrlPrefix(): string | undefined {
-	// Best-effort URL prefix construction. Hostname comes from the server
-	// module post-boot; the port comes from config. In tests where neither
-	// is available we return undefined and skip the https:// enumeration —
-	// callers handle the absence gracefully.
+function guessAppHttpUrlPrefix(baseUrl?: string): string | undefined {
 	if (_httpUrlPrefixOverride !== undefined) return _httpUrlPrefixOverride || undefined;
+	// The request's own protocol + Host is what the client actually reached, so it
+	// is right behind a load balancer (e.g. Fabric) where the server's hostname and
+	// port are internal.
+	if (baseUrl) return baseUrl;
+	// No request (list_changed snapshots, tests): best-effort guess. Hostname comes
+	// from the server module post-boot; the port comes from config. When neither is
+	// available we return undefined and callers skip the app URIs.
 	let hostname: string | undefined;
 	try {
-		const { server } = require('../../server/Server');
+		const { server } = ServerRuntimeModule;
 		hostname = (server as { hostname?: string })?.hostname;
 	} catch {
 		return undefined;

@@ -7,7 +7,7 @@ const os = require('node:os');
 const { parse } = require('dotenv');
 const env = require('#src/utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
-const operations = require('#js/components/operations');
+const operations = require('#src/components/operations');
 
 // Exercises the env operation handlers end-to-end against a real temporary components root.
 // `server.replication.replicateOperation` resolves to a no-op in the unit environment, so set/

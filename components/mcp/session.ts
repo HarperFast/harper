@@ -3,7 +3,7 @@
  *
  * Eviction is delegated to Harper's native TTL (`Table.setTTLExpiration`):
  * every write to a session record updates its `version`, which Harper uses
- * to determine expiration. So calling `saveSession(record)` on each request
+ * to determine expiration. So calling `patchSession(id, changes)` on each request
  * gives sliding-window idle semantics for free — no custom timer, no sweep.
  *
  * Spec: when a request bears an `Mcp-Session-Id` the server doesn't
@@ -16,6 +16,7 @@ import { table, type Table } from '../../resources/databases.ts';
 import * as env from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
+import type { AuthedUser } from './toolRegistry.ts';
 import type { McpLogLevel } from './logging.ts';
 import { clearSessionRateState } from './rateLimit.ts';
 import { unregisterSession } from './sessionRegistry.ts';
@@ -34,6 +35,7 @@ const DEFAULT_IDLE_TIMEOUT_SECONDS = 1800;
  * is identical either way.)
  */
 const EVICTION_WINDOW_SECONDS = 60;
+const DEFAULT_SUBSCRIPTION_LOCK_TIMEOUT_MS = 10_000;
 
 export interface McpSessionRecord {
 	id: string;
@@ -63,9 +65,23 @@ export interface McpSessionRecord {
 	 * to clients that declared support. Undefined = client declared none.
 	 */
 	clientCapabilities?: Record<string, unknown>;
+	streamToken?: string;
+	subscriptionRevision?: number;
+	subscriptionGenerations?: Record<string, string>;
+	subscriptionPrincipals?: Record<string, AuthedUser>;
+	subscriptionPrincipalIds?: Record<string, string>;
+	subscriptionAck?: {
+		token: string;
+		revision: number;
+		rejected: Record<
+			string,
+			{ generation: string; result: 'not-subscribable' | 'permission-denied' | 'internal-error' }
+		>;
+	};
 }
 
 let _sessionTable: Table | undefined;
+let subscriptionLockTimeoutMs = DEFAULT_SUBSCRIPTION_LOCK_TIMEOUT_MS;
 
 /**
  * Lazily declare the system table. Called by `ensureSessionTable()` at
@@ -90,6 +106,12 @@ function declareSessionTable(): Table {
 			{ name: 'logLevel' },
 			{ name: 'subscriptions' },
 			{ name: 'clientCapabilities' },
+			{ name: 'streamToken' },
+			{ name: 'subscriptionRevision' },
+			{ name: 'subscriptionGenerations' },
+			{ name: 'subscriptionPrincipals' },
+			{ name: 'subscriptionPrincipalIds' },
+			{ name: 'subscriptionAck' },
 		],
 	});
 }
@@ -109,6 +131,10 @@ export function ensureSessionTable(): Table {
 /** Test seam: allow tests to inject a fake table without touching Harper. */
 export function _setSessionTableForTest(fake: Table | undefined): void {
 	_sessionTable = fake;
+}
+
+export function _setSubscriptionLockTimeoutForTest(value: number | undefined): void {
+	subscriptionLockTimeoutMs = value ?? DEFAULT_SUBSCRIPTION_LOCK_TIMEOUT_MS;
 }
 
 function getTable(): Table {
@@ -145,16 +171,64 @@ export async function createSession({
  */
 export async function loadSession(id: string): Promise<McpSessionRecord | null> {
 	const record = (await (getTable() as any).get(id)) as McpSessionRecord | undefined | null;
-	if (!record) return null;
+	if (
+		!record ||
+		typeof record.protocolVersion !== 'string' ||
+		typeof record.initialized !== 'boolean' ||
+		typeof record.user !== 'string' ||
+		typeof record.createdAt !== 'number' ||
+		typeof record.lastActivity !== 'number'
+	)
+		return null;
 	return record;
 }
 
-/**
- * Persist updated session state. Used to bump `lastActivity` (sliding-window
- * idle reset) and to flip `initialized` after `notifications/initialized`.
- */
-export async function saveSession(record: McpSessionRecord): Promise<void> {
-	await (getTable() as any).put(record);
+export async function patchSession(id: string, changes: Partial<Omit<McpSessionRecord, 'id'>>): Promise<void> {
+	await (getTable() as any).patch({ id, ...changes });
+}
+
+function subscriptionLockKey(id: string): string {
+	return `mcp-subscriptions:${id}`;
+}
+
+function acquireSessionSubscriptionLock(store: Table['primaryStore'], key: string): Promise<void> {
+	return new Promise((resolve, reject) => {
+		let settled = false;
+		const timer = setTimeout(() => {
+			if (settled) return;
+			settled = true;
+			reject(new Error('Timed out acquiring MCP subscription lock'));
+		}, subscriptionLockTimeoutMs);
+		const attempt = () => {
+			if (settled) return;
+			try {
+				if (store.tryLock(key, attempt)) {
+					settled = true;
+					clearTimeout(timer);
+					resolve();
+				}
+			} catch (error) {
+				settled = true;
+				clearTimeout(timer);
+				reject(error);
+			}
+		};
+		attempt();
+	});
+}
+
+export async function withSessionSubscriptionLock<T>(
+	id: string,
+	operation: (session: McpSessionRecord | null) => Promise<T>
+): Promise<T> {
+	const store = getTable().primaryStore;
+	const key = subscriptionLockKey(id);
+	await acquireSessionSubscriptionLock(store, key);
+	try {
+		return await operation(await loadSession(id));
+	} finally {
+		store.unlock(key);
+	}
 }
 
 export async function deleteSession(id: string): Promise<void> {
@@ -174,6 +248,6 @@ export async function deleteSession(id: string): Promise<void> {
  */
 export async function touchSession(record: McpSessionRecord): Promise<McpSessionRecord> {
 	const touched: McpSessionRecord = { ...record, lastActivity: Date.now() };
-	await saveSession(touched);
+	await patchSession(record.id, { lastActivity: touched.lastActivity });
 	return touched;
 }

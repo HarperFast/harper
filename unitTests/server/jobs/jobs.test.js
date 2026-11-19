@@ -9,7 +9,7 @@ const sinon = require('sinon');
 const hdb_term = require('#src/utility/hdbTerms');
 const JobObject = require('#src/server/jobs/JobObject').default;
 const file_load_validator = require('#src/validation/fileLoadValidator');
-const jobs = rewire('#src/server/jobs/jobs');
+const jobs = rewire('#js/server/jobs/jobs');
 
 const INSERT_RESULT = {
 	message: 'inserted 1 of 1 records',
@@ -295,58 +295,35 @@ describe('Test jobs.js', () => {
 			await testUtils.assertErrorAsync(addJob, [test_job], expected_err);
 		});
 
-		it('test error result is returned', async () => {
+		it('rejects with the error from searching for an id collision', async () => {
 			const test_job = {
 				operation: hdb_term.JOB_TYPE_ENUM.import_from_s3,
 				hdb_user: 'test user',
-			};
-			const expected_result = {
-				message: '',
-				error: '',
-				success: false,
-				createdJob: undefined,
 			};
 			p_search_by_value_stub.throws(new Error('error with search by value'));
-			const result = await addJob(test_job);
-
-			assert.deepEqual(result, expected_result);
+			await assert.rejects(addJob(test_job), /error with search by value/);
 		});
 
-		it('test error result is returned when error with duplicate id search', async () => {
+		it('rejects with the error from the duplicate id search', async () => {
 			const test_job = {
 				operation: hdb_term.JOB_TYPE_ENUM.import_from_s3,
 				hdb_user: 'test user',
-			};
-			const expected_result = {
-				message: '',
-				error: '',
-				success: false,
-				createdJob: undefined,
 			};
 			p_search_by_value_stub.resetHistory();
 			p_search_by_value_stub.resolves(['123abc']);
 			p_search_by_value_stub.onCall(1).throws(new Error('error with search by value'));
-			const result = await addJob(test_job);
-
-			assert.deepEqual(result, expected_result);
+			await assert.rejects(addJob(test_job), /error with search by value/);
 		});
 
-		it('test error result is returned when error with insert', async () => {
+		it('rejects with the error from inserting the job row', async () => {
 			const test_job = {
 				operation: hdb_term.JOB_TYPE_ENUM.csv_file_load,
 				hdb_user: 'test user',
 			};
-			const expected_result = {
-				message: '',
-				error: '',
-				success: false,
-				createdJob: undefined,
-			};
 			p_search_by_value_stub.resolves([]);
-			p_insert_stub.throws(new Error('error inserting'));
-			const result = await addJob(test_job);
-
-			assert.deepEqual(result, expected_result);
+			const insert_error = new Error('error inserting');
+			p_insert_stub.throws(insert_error);
+			await assert.rejects(addJob(test_job), (error) => error === insert_error);
 		});
 
 		it('test error result is returned when inserted hashes length is zero', async () => {

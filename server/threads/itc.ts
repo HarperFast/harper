@@ -1,0 +1,137 @@
+import * as hdbTerms from '../../utility/hdbTerms.ts';
+// Inline isEmpty to break the common_utils→databases→itc→common_utils circular dep.
+const isEmpty = (value: unknown) => value === undefined || value === null;
+import { ITC_ERRORS } from '../../utility/errors/commonErrors.ts';
+import { threadId as _threadId } from 'node:worker_threads';
+const threadId = _threadId;
+import {
+	onMessageFromWorkers,
+	broadcastWithAcknowledgement as _broadcastWithAcknowledgement,
+	broadcastWithStrictAcknowledgement as _broadcastWithStrictAcknowledgement,
+} from './manageThreads.ts';
+let broadcastWithAcknowledgement = _broadcastWithAcknowledgement;
+const broadcastWithStrictAcknowledgement = _broadcastWithStrictAcknowledgement;
+
+export { sendItcEvent, sendItcEventStrict, validateEvent, SchemaEventMsg };
+import * as serverItcHandlersModule from '../itc/serverHandlers.ts';
+import hdbLogger from '../../utility/logging/harper_logger.ts';
+let serverItcHandlers;
+const RESTORE_CLOSE_ACK_TIMEOUT_MS = 30000;
+onMessageFromWorkers(async (event, sender) => {
+	serverItcHandlers = serverItcHandlers || serverItcHandlersModule.default;
+	let error;
+	try {
+		validateEvent(event);
+		if (serverItcHandlers[event.type]) {
+			await serverItcHandlers[event.type](event);
+		}
+	} catch (caught) {
+		hdbLogger.error('ITC event handler failed', caught);
+		error = {
+			name: caught?.name,
+			message: caught?.message ?? String(caught),
+			code: caught?.code,
+			statusCode: caught?.statusCode,
+			retryable: caught?.retryable,
+		};
+	}
+	if (event.requestId && sender)
+		sender.postMessage({
+			type: 'ack',
+			id: event.requestId,
+			error,
+		});
+});
+
+/**
+ * Emits an ITC event to the ITC server.
+ * @param event
+ * @param {boolean|'active'} includeJobWorkers
+ */
+function sendItcEvent(event, includeJobWorkers: boolean | 'active' = false) {
+	// Always stamp originator so handlers can send direct responses back.
+	// The main thread's threadId is 0 (worker_threads convention); parentPort.threadId
+	// is set to 0 in workers, so sendToThread(0, ...) routes back to main.
+	if (event.message) event.message.originator = threadId;
+	if (
+		event.type === hdbTerms.ITC_EVENT_TYPES.SCHEMA &&
+		event.message?.operation === hdbTerms.OPERATIONS_ENUM.RESTORE_BACKUP &&
+		event.message.restorePhase
+	) {
+		// Both restore phases reach job workers, because they write blobs too. Ordinary gossip excludes
+		// them to avoid re-entrant waits, but their message handlers stay live while a job's own async
+		// work is suspended, so that objection does not apply here -- and fencing them at close while
+		// sending the release only to ordinary workers would leave every job thread fenced for the life
+		// of the process.
+		if (event.message.restorePhase === 'close') {
+			// Strict and bounded: the restore must not proceed past a worker that never acknowledged the
+			// close, nor wait on a wedged one forever -- unbounded would strand the restore holding its
+			// marker, before verifyDatabaseClosed's own deadline could report a clean 409.
+			return broadcastWithStrictAcknowledgement(event, RESTORE_CLOSE_ACK_TIMEOUT_MS, true);
+		}
+		// The release is deliberately best-effort: a restore that has already done its work must not be
+		// reported as failed because one worker was slow to take its fence back off.
+		return broadcastWithAcknowledgement(event, undefined, false, true);
+	}
+	return broadcastWithAcknowledgement(event, undefined, false, includeJobWorkers);
+}
+
+/** @param {boolean|'active'} includeJobWorkers */
+function sendItcEventStrict(event, timeout, includeJobWorkers: boolean | 'active' = false) {
+	if (event.message) event.message.originator = threadId;
+	return broadcastWithStrictAcknowledgement(event, timeout, includeJobWorkers);
+}
+
+/**
+ * Does some basic validation on an ITC event.
+ * @param event
+ * @returns {string}
+ */
+function validateEvent(event) {
+	if (typeof event !== 'object') {
+		return ITC_ERRORS.INVALID_ITC_DATA_TYPE;
+	}
+
+	if (!event.hasOwnProperty('type') || isEmpty(event.type)) {
+		return ITC_ERRORS.MISSING_TYPE;
+	}
+
+	if (!event.hasOwnProperty('message') || isEmpty(event.message)) {
+		return ITC_ERRORS.MISSING_MSG;
+	}
+
+	if (!event.message.hasOwnProperty('originator') || isEmpty(event.message.originator)) {
+		return ITC_ERRORS.MISSING_ORIGIN;
+	}
+
+	if (hdbTerms.ITC_EVENT_TYPES[event.type.toUpperCase()] === undefined) {
+		return ITC_ERRORS.INVALID_EVENT(event.type);
+	}
+}
+
+/**
+ * Constructor function for the message of schema ITC events
+ * @param originator
+ * @param operation
+ * @param schema
+ * @param table
+ * @param attribute
+ * @param branchPath the branch directory when the change is to a scope-private branch of `schema`
+ *   rather than to the database itself (resources/databases.ts `reloadBranchAt`)
+ * @constructor
+ */
+function SchemaEventMsg(
+	originator,
+	operation,
+	schema,
+	table = undefined,
+	attribute = undefined,
+	branchPath = undefined
+) {
+	this.originator = originator;
+	this.operation = operation;
+	this.schema = schema;
+	this.table = table;
+	this.attribute = attribute;
+	if (branchPath) this.branchPath = branchPath;
+}

@@ -10,7 +10,7 @@ const fs = require('fs-extra');
 const assert = require('node:assert');
 const path = require('path');
 const { table } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { get: envGet } = require('#src/utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 
@@ -22,7 +22,7 @@ const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 // during the migration; cross-process adoption is validated by the cluster repro.
 const { setupTestDBPath } = require('../testUtils');
 const copyDB = require('#src/bin/copyDb');
-const { RocksDatabase } = require('@harperfast/rocksdb-js');
+const { RocksDatabase } = require('../rocksdbBindings.mts').rocksdbBindings();
 
 const isLMDB = (process.env.HARPER_STORAGE_ENGINE || envGet(CONFIG_PARAMS.STORAGE_ENGINE)) === 'lmdb';
 

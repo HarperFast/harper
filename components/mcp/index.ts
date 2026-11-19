@@ -13,12 +13,14 @@
  *     present.
  *
  * Profile presence drives enablement, matching Harper's `replication`
- * convention (no `enabled` flag). See #465 for the umbrella design.
+ * convention; `enabled: false` turns a present profile off. See #465 for the
+ * umbrella design.
  */
 import harperLogger from '../../utility/logging/harper_logger.ts';
 import { getConfigObj as realGetConfigObj } from '../../config/configUtils.ts';
 import { createFastifyHandler } from './adapters/fastify.ts';
-import { createHarperHttpHandler } from './adapters/harperHttp.ts';
+import { createHarperHttpHandler, type McpAuthentication } from './adapters/harperHttp.ts';
+import { isValidChallengeUrl } from '../../security/challengeUrl.ts';
 import { ensureSessionTable } from './session.ts';
 import { initListChanged } from './listChanged.ts';
 import { registerApplicationTools } from './tools/application.ts';
@@ -35,7 +37,9 @@ export function _restoreGetConfigObj(): void {
 }
 
 interface McpProfileConfig {
+	enabled?: boolean;
 	mountPath?: string;
+	authentication?: { required?: unknown; resourceMetadata?: unknown };
 }
 
 interface FullConfig {
@@ -75,8 +79,8 @@ const DEFAULT_MOUNT_PATH = '/mcp';
  */
 export function registerMcpProfile({ profile, host, config, routeOptions }: RegisterMcpProfileArgs): void {
 	const profileConfig = config?.mcp?.[profile];
-	if (!profileConfig) {
-		harperLogger.trace(`MCP ${profile} profile not configured, skipping registration`);
+	if (!profileConfig || profileConfig.enabled === false) {
+		harperLogger.trace(`MCP ${profile} profile not configured or disabled, skipping registration`);
 		return;
 	}
 	ensureSessionTable();
@@ -122,8 +126,8 @@ interface ScopeLike {
 export function handleApplication(scope: ScopeLike): void {
 	if (applicationStarted) return;
 	const config = getConfigObj() as FullConfig | undefined;
-	if (!config?.mcp?.application) {
-		harperLogger.trace('MCP application profile not configured, skipping registration');
+	if (!config?.mcp?.application || config.mcp.application.enabled === false) {
+		harperLogger.trace('MCP application profile not configured or disabled, skipping registration');
 		return;
 	}
 	applicationStarted = true;
@@ -131,9 +135,24 @@ export function handleApplication(scope: ScopeLike): void {
 	initListChanged();
 	registerApplicationTools();
 	const mountPath = config.mcp.application.mountPath ?? DEFAULT_MOUNT_PATH;
-	const handler = createHarperHttpHandler('application');
+	const authentication = applicationAuthentication(config.mcp.application.authentication);
+	const handler = createHarperHttpHandler('application', authentication);
 	scope.server.http(handler, { urlPath: mountPath, after: 'authentication' });
-	harperLogger.info(`MCP application profile registered at ${mountPath}`);
+	harperLogger.info(
+		`MCP application profile registered at ${mountPath}${authentication.required ? ' (authentication required)' : ''}`
+	);
+}
+
+function applicationAuthentication(config: McpProfileConfig['authentication']): McpAuthentication {
+	// `true` only: config validation does not write a coerced value back, so a quoted "false" arrives as a string
+	const required = config?.required === true;
+	const configured = config?.resourceMetadata;
+	if (configured === undefined || configured === null) return { required };
+	if (isValidChallengeUrl(configured)) return { required, resourceMetadata: configured };
+	harperLogger.error(
+		'mcp.application.authentication.resourceMetadata must be an https URL (http only for a loopback host) with no fragment; ignoring it'
+	);
+	return { required };
 }
 
 /** Test seam: reset the module-level guard so tests can re-invoke handleApplication. */

@@ -117,13 +117,56 @@ suite('New SQL engine — mutations (phase 4)', (ctx) => {
 			.expect(200);
 
 		const N = 60;
-		await Promise.all(
+		const results = await Promise.allSettled(
 			Array.from({ length: N }, () =>
-				client.req().send({ operation: 'sql', sql: 'UPDATE dev.widget SET qty = qty + 1 WHERE id = 42' })
+				client
+					.req()
+					.timeout(60_000)
+					.send({ operation: 'sql', sql: 'UPDATE dev.widget SET qty = qty + 1 WHERE id = 42' })
 			)
 		);
 
-		const read = await byHash('widget', [42]).expect(200);
-		assert.equal(read.body[0].qty, N, `expected all ${N} increments to apply, got ${read.body[0].qty}`);
+		const statusCounts = {};
+		const sampleBodies = {};
+		for (const result of results) {
+			const key = result.status === 'fulfilled' ? result.value.status : 'transport error';
+			statusCounts[key] = (statusCounts[key] ?? 0) + 1;
+			const detail = result.status === 'fulfilled' ? result.value.text : result.reason?.message;
+			if (key !== 200) sampleBodies[key] ??= String(detail).slice(0, 200);
+		}
+		const responses = `status counts ${JSON.stringify(statusCounts)}, non-200 bodies ${JSON.stringify(sampleBodies)}`;
+		const read = await byHash('widget', [42])
+			.timeout(60_000)
+			.catch((error) => assert.fail(`final read failed (${error.message}); ${responses}`));
+		assert.equal(read.status, 200, `final read failed (${read.text}); ${responses}`);
+		const outcome = `${responses}, final qty ${read.body[0].qty}`;
+		assert.deepEqual(statusCounts, { 200: N }, `every increment must be acknowledged; ${outcome}`);
+		assert.equal(read.body[0].qty, N, `expected all ${N} increments to apply; ${outcome}`);
+	});
+
+	test('UPDATE takes every assignment to a column while other columns read the pre-update row', async () => {
+		await client
+			.req()
+			.send({ operation: 'insert', schema: 'dev', table: 'widget', records: [{ id: 43, qty: 7 }] })
+			.expect(200);
+		await sql('UPDATE dev.widget SET qty = 20, qty = qty + 5, name = qty WHERE id = 43').expect(200);
+		const read = await byHash('widget', [43]).expect(200);
+		assert.equal(read.body[0].qty, 25);
+		assert.equal(read.body[0].name, 7);
+	});
+
+	test('concurrent repeated and table-qualified increments lose none', async () => {
+		await client
+			.req()
+			.send({ operation: 'insert', schema: 'dev', table: 'widget', records: [{ id: 44, qty: 0 }] })
+			.expect(200);
+		const N = 30;
+		await Promise.all(
+			Array.from({ length: N }, () =>
+				sql('UPDATE dev.widget SET qty = widget.qty + 1, qty = qty + 1 WHERE id = 44').timeout(60_000).expect(200)
+			)
+		);
+		const read = await byHash('widget', [44]).expect(200);
+		assert.equal(read.body[0].qty, 2 * N);
 	});
 });

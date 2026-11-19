@@ -21,7 +21,7 @@
  * Each run prints a per-case capture table to stdout.
  */
 import { suite, test, before, after } from 'node:test';
-import { deepStrictEqual, ok, strictEqual } from 'node:assert';
+import { deepStrictEqual, ok, strictEqual, throws } from 'node:assert';
 import { resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import net from 'node:net';
@@ -399,15 +399,22 @@ suite(
 		function assertMidStreamTermination(cap: RawCapture) {
 			strictEqual(cap.status, 200, `${cap.surface} mid-stream response should start 200, got ${cap.status}`);
 			const records = decodedRecords(cap);
-			deepStrictEqual(records.slice(0, 2), [{ n: 0 }, { n: 1 }]);
-			if (cap.surface === 'iterable-rest') {
-				deepStrictEqual(records, [{ n: 0 }, { n: 1 }, { error: 'Error: QA890-iter-mid-stream' }]);
-			} else {
-				const source = cap.surface === 'sse' ? 'sse' : 'iter';
-				const error = { error: 'Error', message: `QA890-${source}-mid-stream` };
-				deepStrictEqual(records, [{ n: 0 }, { n: 1 }, cap.surface === 'sse' ? error : { $harperStreamError: error }]);
-			}
+			const source = cap.surface === 'sse' ? 'sse' : 'iter';
+			const error = { error: 'Error', message: `QA890-${source}-mid-stream` };
+			deepStrictEqual(records, [{ n: 0 }, { n: 1 }, cap.surface === 'sse' ? error : { $harperStreamError: error }]);
 			strictEqual(cap.sawTerminalChunk, true, `${cap.surface} mid-stream response must complete its error record`);
+			assertServerTerminated(cap);
+		}
+
+		// the diagnostic element is best-effort: Bun's response can drop it when the transfer is aborted
+		function assertJsonArrayAborted(cap: RawCapture, rows: string, diagnostic: string) {
+			strictEqual(cap.status, 200, `a failed JSON-array stream has already committed its 200, got ${cap.status}`);
+			ok(
+				cap.decodedBody === rows || cap.decodedBody === rows + diagnostic,
+				`expected ${JSON.stringify(rows)} and optionally ${JSON.stringify(diagnostic)}, got ${JSON.stringify(cap.decodedBody)}`
+			);
+			throws(() => JSON.parse(cap.decodedBody), SyntaxError);
+			strictEqual(cap.sawTerminalChunk, false, 'a failed JSON-array stream must not send the chunked terminator');
 			assertServerTerminated(cap);
 		}
 
@@ -498,7 +505,7 @@ suite(
 			strictEqual(reuse.responses, 2, 'a keep-alive client must get both responses on one connection');
 		});
 
-		test('control: HEAD does not start or leak a streaming generator', { timeout: 20_000 }, async () => {
+		test('control: HEAD opens and closes a read stream once, not an event stream', { timeout: 20_000 }, async () => {
 			const before = await getProbeJson(restBase, { Authorization: authHeader });
 			const sse = await rawCapture(restBase, '/SseHealth/', 'text/event-stream', authHeader, 'sse', 'head', {
 				method: 'HEAD',
@@ -517,9 +524,14 @@ suite(
 			strictEqual(envelopeReuse.serverClosedEarly, false);
 			strictEqual(envelopeReuse.responses, 2);
 			strictEqual(after.sseHealth.opened, before.sseHealth.opened);
-			strictEqual(after.iterHealth.closed, before.iterHealth.closed);
-			strictEqual(after.envelopeHead.opened, before.envelopeHead.opened);
-			strictEqual(after.envelopeHead.closed, before.envelopeHead.closed);
+			for (const counterName of ['iterHealth', 'envelopeHead']) {
+				strictEqual(after[counterName].opened - before[counterName].opened, 1, `${counterName} must open exactly once`);
+				strictEqual(
+					after[counterName].closed - before[counterName].closed,
+					1,
+					`${counterName} must close exactly once`
+				);
+			}
 		});
 
 		// ── Pre-first-yield throw: the core question ──────────────────────────────────────────────
@@ -557,6 +569,16 @@ suite(
 			strictEqual(cap.headers['content-encoding'], undefined);
 		});
 
+		test('ndjson: HEAD answers the pre-first-yield startup error status GET does', { timeout: 20_000 }, async () => {
+			const cap = await captureWithLifecycle('iterPreYield', () =>
+				rawCapture(restBase, '/IterPreYield/', 'application/x-ndjson', authHeader, 'ndjson', 'head-pre-first-yield', {
+					method: 'HEAD',
+				})
+			);
+			strictEqual(cap.status, 500);
+			strictEqual(cap.decodedBody, '');
+		});
+
 		test('ndjson: a mutating stream uses the in-band error contract instead of a retry-ambiguous 500', async () => {
 			const cap = await captureWithLifecycle('iterMutation', () =>
 				rawCapture(restBase, '/IterMutation/', 'application/x-ndjson', authHeader, 'ndjson', 'mutation', {
@@ -580,7 +602,7 @@ suite(
 				`[QA-890][iterable-rest/pre] status=${cap.status} totalBytes=${cap.totalBytes} decodedBody=${cap.decodedBody}`
 			);
 			console.log(`[QA-890][iterable-rest/pre] socketEvents=\n  ${cap.socketEvents.join('\n  ')}`);
-			assertServerTerminated(cap);
+			assertJsonArrayAborted(cap, '[', '{"error":"Error: QA890-iter-pre-yield"}');
 		});
 
 		test('sse: delayed pre-first-yield throw becomes an error event', { timeout: 20_000 }, async () => {
@@ -631,7 +653,30 @@ suite(
 			console.log(
 				`[QA-890][iterable-rest/mid] status=${cap.status} totalBytes=${cap.totalBytes} decodedBody=${cap.decodedBody}`
 			);
-			assertMidStreamTermination(cap);
+			assertJsonArrayAborted(cap, '[{"n":0},{"n":1}', ',{"error":"Error: QA890-iter-mid-stream"}');
+		});
+
+		test('iterable-rest: a failed stream closes a keep-alive connection', { timeout: 20_000 }, async () => {
+			const cap = await captureWithLifecycle('iterMidStream', () =>
+				rawCapture(restBase, '/IterMidStream/', 'application/json', authHeader, 'iterable-rest', 'mid-keep-alive', {
+					connection: 'keep-alive',
+				})
+			);
+			captures.push(cap);
+			assertJsonArrayAborted(cap, '[{"n":0},{"n":1}', ',{"error":"Error: QA890-iter-mid-stream"}');
+		});
+
+		test('iterable-rest: a failed compressed stream is cut off too', { timeout: 20_000 }, async () => {
+			const cap = await captureWithLifecycle('iterMidStream', () =>
+				rawCapture(restBase, '/IterMidStream/', 'application/json', authHeader, 'iterable-rest', 'mid-compressed', {
+					acceptEncoding: 'br',
+				})
+			);
+			captures.push(cap);
+			// with no compressed byte produced before the failure, not even the head is sent
+			ok(cap.status === null || cap.status === 200, `unexpected status ${cap.status}`);
+			strictEqual(cap.sawTerminalChunk, false, 'a failed compressed stream must not send the chunked terminator');
+			assertServerTerminated(cap);
 		});
 
 		test('Z: liveness canary -- worker survived every throw shape above', { timeout: 30_000 }, async () => {

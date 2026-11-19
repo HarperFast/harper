@@ -5,7 +5,7 @@ const { setTimeout: delay } = require('node:timers/promises');
 const { setupTestDBPath } = require('../../testUtils');
 const { table } = require('#src/resources/databases');
 const { transaction } = require('#src/resources/transaction');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 // A loadAsInstance:false table reaches Table.put's array branch directly. With @embed the
 // embed hook is async, so the parallel writes must not share the single #savingOperation

@@ -29,6 +29,7 @@ const {
 	retainComponentSubscriptions,
 	releaseComponentSubscriptions,
 } = require('#src/components/componentSecrets');
+const { handleApplication: loadEnvFile } = require('#src/resources/loadEnv');
 const { databases } = require('#src/resources/databases');
 const terms = require('#src/utility/hdbTerms');
 const { registerSecretCustody, clearSecretCustody } = require('#src/resources/secretDecryptor');
@@ -178,6 +179,21 @@ describe('componentSecrets', () => {
 			table.mock.rows.set('CS_PRESET', envRow('CS_PRESET', 'from-store'));
 			await materializeGlobalSecrets();
 			assert.equal(process.env.CS_PRESET, 'from-real-env');
+		});
+
+		it('an env file loaded with override keeps its value across a later materialization', async () => {
+			table.mock.rows.set('CS_GLOBAL', envRow('CS_GLOBAL', 'from-store'));
+			await materializeGlobalSecrets();
+			let loadEntry;
+			loadEnvFile({
+				options: { getAll: () => ({ override: true }) },
+				handleEntry: (handler) => (loadEntry = handler),
+				requestRestart() {},
+			});
+			loadEntry({ eventType: 'add', absolutePath: '/fake/.env', contents: 'CS_GLOBAL=from-env-file' });
+			assert.equal(process.env.CS_GLOBAL, 'from-env-file');
+			await materializeGlobalSecrets();
+			assert.equal(process.env.CS_GLOBAL, 'from-env-file');
 		});
 
 		it('scoped rows (grants, no processEnv) NEVER land in process.env', async () => {
@@ -639,6 +655,14 @@ export const afterTopLevelAwait = secrets.CS_SCOPED;
 			await iter.return();
 		});
 
+		it('reads a pattern grant as no grant at all: only a deploy credential resolves one (harper#3090)', async () => {
+			table.mock.rows.set('CS_SCOPED', row('CS_SCOPED', 'v1', ['app-pr-*']));
+			await materializeGlobalSecrets();
+			const iter = getSecretsForComponent('app-pr-1').subscribe('CS_SCOPED');
+			assert.equal((await iter.next()).value, undefined);
+			await iter.return();
+		});
+
 		it('does not re-emit an unchanged value', async () => {
 			table.mock.rows.set('CS_SCOPED', row('CS_SCOPED', 'v1', ['app']));
 			await materializeGlobalSecrets();
@@ -876,10 +900,10 @@ export const afterTopLevelAwait = secrets.CS_SCOPED;
 			table.mock.rows.set('CS_SCOPED', row('CS_SCOPED', 'v1', ['app']));
 			await materializeGlobalSecrets();
 			retainComponentSubscriptions('app'); // the running app scope
-			retainComponentSubscriptions('app'); // a throwaway deploy-validation scope, same identity
+			retainComponentSubscriptions('app'); // another of the app's plugin scopes, same identity
 			const iter = getSecretsForComponent('app').subscribe('CS_SCOPED');
 			assert.equal((await iter.next()).value, 'v1');
-			releaseComponentSubscriptions('app'); // validation scope closes → must NOT tear down
+			releaseComponentSubscriptions('app'); // that scope closes → must NOT tear down
 			const stillOpen = iter.next(); // parks; the stream is still live
 			table.mock.emit('CS_SCOPED', row('CS_SCOPED', 'v2', ['app']));
 			assert.equal((await stillOpen).value, 'v2'); // still delivering

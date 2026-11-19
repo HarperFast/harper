@@ -17,11 +17,13 @@
  */
 
 import type { ExprNode } from '../parser/ast.ts';
+import { tokenizeLike } from '../expressions/like.ts';
 
 export interface DirectCondition {
 	attribute?: string;
 	value?: unknown;
 	comparator?: string;
+	negated?: boolean;
 }
 
 export interface CompoundCondition {
@@ -47,7 +49,20 @@ const BINARY_TO_COMPARATOR: Record<string, string> = {
 	'>=': 'ge',
 };
 
-export type IndexedAttribute = { name: string; indexed: boolean; isPrimaryKey?: boolean; indexNulls?: boolean };
+const REVERSED_COMPARATOR: Record<string, string> = {
+	lt: 'gt',
+	le: 'ge',
+	gt: 'lt',
+	ge: 'le',
+};
+
+export type IndexedAttribute = {
+	name: string;
+	type?: string;
+	indexed: boolean;
+	isPrimaryKey?: boolean;
+	indexNulls?: boolean;
+};
 
 // Single-sided range comparators, split by which bound they set, and the fused
 // comparator name that combines a lower + upper bound (matching the set
@@ -63,7 +78,7 @@ export function whereToConditions(predicate: ExprNode | undefined, attributes?: 
 	const conditions: ConditionNode[] = [];
 	const residuals: ExprNode[] = [];
 	for (const e of conjuncts) {
-		const cond = leafToCondition(e);
+		const cond = leafToCondition(e, attributes);
 		// Only push a conjunct into the Resource API condition tree when every
 		// attribute it references is indexed: Table.search runs searchByIndex on
 		// each condition and throws "…is not indexed" for an unindexed attribute.
@@ -116,7 +131,7 @@ function splitUnpushableNullGuards(
 		if (cond.comparator !== 'ne' && cond.comparator !== 'equals') return undefined;
 		const guard: ExprNode = {
 			kind: 'isNull',
-			negated: cond.comparator === 'ne',
+			negated: cond.comparator === 'ne' && !cond.negated,
 			expr: { kind: 'column', name: cond.attribute },
 		};
 		return { guards: [guard] };
@@ -192,6 +207,8 @@ export function conditionUsesIndex(cond: ConditionNode, attributes: IndexedAttri
 	if ('attribute' in cond && cond.attribute) {
 		const a = attributes?.find((x) => x.name === cond.attribute);
 		if (!a?.indexed) return false;
+		// searchByIndex answers a negated condition with a full scan
+		if (cond.negated) return false;
 		if (FULL_SCAN_COMPARATORS.has(cond.comparator ?? '')) return false;
 		if (cond.comparator === 'ne' && cond.value !== null) return false;
 		// A null-valued condition can only seek an index that indexes nulls.
@@ -313,13 +330,17 @@ function fuseRangeBounds(conditions: ConditionNode[], attributes?: IndexedAttrib
 	return fused;
 }
 
-function leafToCondition(expr: ExprNode): ConditionNode | undefined {
+function leafToCondition(expr: ExprNode, attributes: IndexedAttribute[] | undefined): ConditionNode | undefined {
 	switch (expr.kind) {
 		case 'binop': {
-			const comparator = BINARY_TO_COMPARATOR[expr.op];
-			if (!comparator) return undefined;
+			const baseComparator = BINARY_TO_COMPARATOR[expr.op];
+			if (!baseComparator) return undefined;
 			const colLit = pickColumnAndLiteral(expr.left, expr.right);
 			if (!colLit) return undefined;
+			const comparator = colLit.reversed ? (REVERSED_COMPARATOR[baseComparator] ?? baseComparator) : baseComparator;
+			// a range against NULL is UNKNOWN for every row, where a pushed null bound would open the range; the
+			// residual's three-valued logic answers it (a NULL literal normalizes to `undefined`)
+			if (colLit.value == null && comparator !== 'equals' && comparator !== 'ne') return undefined;
 			const attribute = colLit.column;
 			// `=` matches either form (OR); `!=` must NOT match either form, and (SQL
 			// three-valued logic / legacy AlaSQL) must also exclude NULLs, so it's an
@@ -374,7 +395,7 @@ function leafToCondition(expr: ExprNode): ConditionNode | undefined {
 		case 'between': {
 			if (expr.expr.kind !== 'column') return undefined;
 			if (expr.low.kind !== 'literal' || expr.high.kind !== 'literal') return undefined;
-			if (expr.negated) return undefined;
+			if (expr.negated || expr.low.value == null || expr.high.value == null) return undefined;
 			return {
 				attribute: expr.expr.name,
 				comparator: 'between',
@@ -383,13 +404,18 @@ function leafToCondition(expr: ExprNode): ConditionNode | undefined {
 		}
 		case 'like': {
 			if (expr.expr.kind !== 'column') return undefined;
+			const name = expr.expr.name;
+			if (attributes?.find((attribute) => attribute.name === name)?.type !== 'String') return undefined;
 			if (expr.pattern.kind !== 'literal' || typeof expr.pattern.value !== 'string') return undefined;
 			if (expr.negated) return undefined;
-			const pattern = expr.pattern.value;
-			const startsPct = pattern.startsWith('%');
-			const endsPct = pattern.endsWith('%');
-			const middle = pattern.slice(startsPct ? 1 : 0, endsPct ? pattern.length - 1 : undefined);
-			if (middle.includes('%') || middle.includes('_')) return undefined;
+			const tokens = tokenizeLike(expr.pattern.value, expr.escape);
+			const startsPct = tokens[0]?.kind === 'any';
+			const endsPct = tokens.at(-1)?.kind === 'any';
+			let middle = '';
+			for (const token of tokens.slice(startsPct ? 1 : 0, endsPct ? -1 : undefined)) {
+				if (token.kind !== 'literal') return undefined;
+				middle += token.char;
+			}
 			if (startsPct && endsPct) {
 				return { attribute: expr.expr.name, comparator: 'contains', value: middle };
 			}
@@ -403,30 +429,33 @@ function leafToCondition(expr: ExprNode): ConditionNode | undefined {
 		}
 		case 'isNull': {
 			if (expr.expr.kind !== 'column') return undefined;
-			return {
-				attribute: expr.expr.name,
-				comparator: expr.negated ? 'ne' : 'equals',
-				value: null,
-			};
+			// `IS NOT NULL` is the `ne null` index range, which excludes null and omitted values. An omitted value is
+			// NULL too, but no index holds an entry for it, so `IS NULL` goes as the filter-only `NOT (IS NOT NULL)`.
+			const condition: DirectCondition = { attribute: expr.expr.name, comparator: 'ne', value: null };
+			if (!expr.negated) condition.negated = true;
+			return condition;
 		}
 		case 'logical': {
-			if (expr.op !== 'or') return undefined;
+			if (expr.op !== 'or' && expr.op !== 'and') return undefined;
 			const sub: ConditionNode[] = [];
 			for (const a of expr.args) {
-				const c = leafToCondition(a);
+				const c = leafToCondition(a, attributes);
 				if (!c) return undefined;
 				sub.push(c);
 			}
-			return { conditions: sub, operator: 'or' };
+			return { conditions: sub, operator: expr.op };
 		}
 		default:
 			return undefined;
 	}
 }
 
-function pickColumnAndLiteral(a: ExprNode, b: ExprNode): { column: string; value: unknown } | undefined {
-	if (a.kind === 'column' && b.kind === 'literal') return { column: a.name, value: b.value };
-	if (b.kind === 'column' && a.kind === 'literal') return { column: b.name, value: a.value };
+function pickColumnAndLiteral(
+	a: ExprNode,
+	b: ExprNode
+): { column: string; value: unknown; reversed: boolean } | undefined {
+	if (a.kind === 'column' && b.kind === 'literal') return { column: a.name, value: b.value, reversed: false };
+	if (b.kind === 'column' && a.kind === 'literal') return { column: b.name, value: a.value, reversed: true };
 	return undefined;
 }
 

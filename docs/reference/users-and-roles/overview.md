@@ -1,0 +1,427 @@
+---
+id: overview
+title: Users & Roles
+sidebar_position: 10
+sidebar_label: 'Overview'
+---
+
+<!-- Source: versioned_docs/version-4.7/developers/security/users-and-roles.md (primary) -->
+<!-- Source: versioned_docs/version-4.7/reference/roles.md (roles config file format) -->
+
+Harper uses a Role-Based Access Control (RBAC) framework to manage access to Harper instances. Each user is assigned a role that determines their permissions to access database resources and run operations.
+
+## Roles
+
+Role permissions in Harper are divided into two categories:
+
+**Database Manipulation** — CRUD (create, read, update, delete) permissions against database data (tables and attributes).
+
+**Database Definition** — Permissions to manage databases, tables, roles, users, and other system settings. These are restricted to the built-in `super_user` role.
+
+### Built-In Roles
+
+| Role             | Description                                                                                                                                     |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `super_user`     | Full access to all operations and methods. The admin role.                                                                                      |
+| `structure_user` | Access to create and delete databases and tables. Can be set to `true` (all databases) or an array of database names (specific databases only). |
+
+### User-Defined Roles
+
+Admins (`super_user` users) can create custom roles with explicit permissions on specific tables and attributes.
+
+- Unless a user-defined role has `super_user: true`, all permissions must be defined explicitly.
+- Any table or database not included in the role's permission set will be inaccessible.
+- `describe` operations return metadata only for databases, tables, and attributes that the role has CRUD permissions for.
+
+## Permission Structure
+
+When creating or altering a role, you define a `permission` object:
+
+```json
+{
+	"operation": "add_role",
+	"role": "software_developer",
+	"permission": {
+		"super_user": false,
+		"database_name": {
+			"tables": {
+				"table_name1": {
+					"read": true,
+					"insert": true,
+					"update": true,
+					"delete": false,
+					"attribute_permissions": [
+						{
+							"attribute_name": "attribute1",
+							"read": true,
+							"insert": true,
+							"update": true
+						}
+					]
+				},
+				"table_name2": {
+					"read": true,
+					"insert": true,
+					"update": true,
+					"delete": false,
+					"attribute_permissions": []
+				}
+			}
+		}
+	}
+}
+```
+
+### Operation Permissions
+
+The `operations` field in a permission object restricts which Operations API calls this role can make. When set, it acts as a two-gate check:
+
+1. Only listed operations are reachable — any unlisted operation is denied regardless of table CRUD permissions.
+2. For data operations that pass gate one, table-level CRUD permissions still apply as normal.
+
+Operations normally restricted to `super_user` can be selectively granted by including them in the list. If `operations` is not set, the role can call any non-`super_user` operation, subject to table CRUD permissions.
+
+List an aliased operation by its canonical name. `create_database`, `drop_database`, `describe_schema`, `search_by_hash`, `add_component`, `package_component`, `deploy_component`, and `delete_files_before` each grant their legacy spelling too (`create_schema`, `drop_schema`, `describe_database`, `search_by_id`, `add_custom_function_project`, `package_custom_function_project`, `deploy_custom_function_project`, `delete_records_before`), but a list that names only the legacy spelling grants neither.
+
+A few `super_user` operations cannot be granted by listing them: the secrets-store operations, the OIDC trust-policy operations, the PR preview operations (`enable_previews`, `disable_previews`, `get_preview_policy`), `get_deployment_payload`, the managed-backup operations (`create_backup`, `list_backups`, `verify_backup`, `delete_backup`, `purge_backups`, `restore_backup`), `get_backup`, `read_transaction_log`, and the legacy `catchup`. A role can still store these names, since `add_role` and `alter_role` check only that each entry is a known operation or group name, but a call to one from that role is refused. When auditing roles, don't read a listed name as a grant.
+
+<VersionBadge type="changed" version="v5.3.0" />
+
+An operation the list omits is denied whatever else the role carries — the list is checked ahead of every other permission on the role. Earlier v5 releases let table DDL and SQL around it; both now go through it.
+
+Earlier releases also let a role list `deploy_component`, `add_component`, `drop_component`, `package_component`, `set_component_file`, `set_custom_function`, `drop_custom_function`, `drop_custom_function_project`, `restart_service`, `set_configuration`, `get_status`, `set_status`, `clear_status`, `install_node_modules`, `delete_files_before`, `delete_audit_logs_before`, `delete_transaction_logs_before`, `cleanup_orphan_blobs`, `search_jobs_by_start_date`, and `registration_info` but refused the call, whatever else the role carried. They are granted as listed now. `catchup`, which earlier releases granted to a role that listed it, no longer can be.
+
+So grant by listing, and build a role up rather than trying to narrow `super_user` — `add_role` and `alter_role` reject `super_user` or `cluster_user` set to `true` alongside any other key. A role that maintains one database's tables and queries them with SQL:
+
+```json
+{
+	"operation": "add_role",
+	"role": "orders_maintainer",
+	"permission": {
+		"operations": ["sql", "create_table", "drop_table"],
+		"structure_user": ["orders_db"],
+		"orders_db": {
+			"tables": {
+				"orders": {
+					"read": true,
+					"insert": true,
+					"update": false,
+					"delete": false,
+					"attribute_permissions": []
+				}
+			}
+		}
+	}
+}
+```
+
+`sql` has to be listed or the role cannot run SQL at all. Listing it grants the interface, not the data: the statement is still checked against the table permissions above, so this role can `SELECT` and `INSERT` on `orders` and nothing else. That check is what separates the `read_only` and `standard_user` groups below, which both include `sql`.
+
+`create_table` and `drop_table` have to be listed too, and `structure_user` then limits them to `orders_db`. `create_database` and `drop_database` additionally require `structure_user: true`.
+
+The value must be an array of strings; a non-array value is rejected on write. A role that already holds one — a pre-5.0 role that granted a database named `operations`, before the key became reserved — can stop the instance loading its user cache ([harper#2194](https://github.com/HarperFast/harper/issues/2194)).
+
+**Permission Groups**
+
+Groups expand to a predefined set of operations and can be mixed with individual operation names:
+
+- `read_only` — Search, SQL SELECT, describe, and monitoring operations. No data modification. Operations: `search`, `search_by_conditions`, `search_by_hash`, `search_by_id`, `search_by_value`, `sql`, `describe_all`, `describe_schema`, `describe_database`, `describe_table`, `user_info`, `get_studio_configuration`, `get_job`, `get_analytics`, `list_metrics`, `describe_metric`
+
+- `standard_user` — Everything in `read_only` plus full data manipulation and bulk load. Does not include any `super_user`-restricted operations, schema DDL (`create_attribute`), or token management. Additional operations beyond `read_only`: `insert`, `update`, `upsert`, `delete`, `csv_data_load`, `csv_file_load`, `csv_url_load`, `import_from_s3`
+
+- `agent` — Drive the [built-in agent](../operations-api/operations.md#agent) without full `super_user`. Operations: `agent_prompt`, `get_agent_session`, `list_agent_sessions`, `cancel_agent_run`, `approve_agent_action`. `set_agent_config` and `get_agent_config` are deliberately excluded, so a delegated role cannot change the agent's model or approval policy and does not get the operator's view of its startup-only settings; the session reads still show the `model` and `provider` a session ran with. Read the agent section's security warning before granting this: the session reads are not caller-scoped, and a prompt directs tools that run at process privilege
+
+**Example: read-only role**
+
+```json
+{
+	"operation": "add_role",
+	"role": "read_only_analyst",
+	"permission": {
+		"operations": ["read_only"],
+		"orders_db": {
+			"tables": {
+				"orders": {
+					"read": true,
+					"insert": false,
+					"update": false,
+					"delete": false,
+					"attribute_permissions": []
+				}
+			}
+		}
+	}
+}
+```
+
+**Example: full data access + targeted admin operations**
+
+```json
+{
+	"operation": "add_role",
+	"role": "ops_engineer",
+	"permission": {
+		"operations": ["standard_user", "get_configuration", "system_information"],
+		"orders_db": {
+			"tables": {
+				"orders": {
+					"read": true,
+					"insert": true,
+					"update": true,
+					"delete": true,
+					"attribute_permissions": []
+				}
+			}
+		}
+	}
+}
+```
+
+### Component Deploy Grants
+
+<VersionBadge version="v5.4.0" />
+
+A role's `component_deploy` key limits which components it may deploy, drop and read, and how it may deploy them. It is how a CI identity can deploy one application's pull-request previews and nothing else: [`enable_previews`](../operations-api/operations.md#pr-previews) writes one. It is a boundary for the identity, not for the code it deploys, which runs in the Harper process like any component.
+
+```json
+{
+	"operation": "add_role",
+	"role": "my-app-ci-preview",
+	"permission": {
+		"operations": ["deploy_component", "drop_component", "get_components", "get_deployment", "registration_info"],
+		"component_deploy": {
+			"names": ["my-app-pr-*"],
+			"constraints": {
+				"isolated": true,
+				"hostSuffix": ".app.my-cluster.example.com",
+				"branchedDatabases": "required",
+				"preview": "required",
+				"maxPreviews": 5,
+				"maxTtlDays": 7
+			}
+		}
+	}
+}
+```
+
+**`names`** is a list of component names, each of which may end in one `*`, which matches one or more further letters, numbers, `-` or `_`. `my-app-pr-*` covers `my-app-pr-12`, but neither `my-app` nor `my-app-pr-`.
+
+The grant answers for five operations, which otherwise need `super_user`:
+
+- `deploy_component` and `drop_component`, for a component the grant covers. Any other fails with `403`: `Component '<name>' is not covered by this role's component grant`. A deploy under a grant cannot pass a literal `token` in `credentials`, only a `secret` reference.
+- `get_components`, which lists only the components the grant covers.
+- `list_deployments`, which lists only their deployments, and `get_deployment`, which refuses any other deployment with `403`.
+
+A role with no `operations` allowlist reaches the five through the grant alone. A role with one still has to list each of them, as above, and listing them does not widen the grant: its answer is final for those five operations.
+
+**`constraints`** are optional. Each is checked against what the deploy would leave in force, such as the root-config entry a payload deploy that sets none of them keeps, and a deploy that breaks one fails with `403` before anything is written:
+
+| Constraint          | Value                               | The deploy must                                                                                                                                                                                                                                                                                   |
+| ------------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `isolated`          | `true`                              | Leave the application [isolated](../components/applications.md#isolated-applications).                                                                                                                                                                                                            |
+| `hostSuffix`        | `.<domain>`                         | Set a `host` that ends in it and is longer than it, such as `fix-cart.app.my-cluster.example.com`.                                                                                                                                                                                                |
+| `branchedDatabases` | `"required"`                        | Set `branchedDatabases` to `true` or a non-empty list.                                                                                                                                                                                                                                            |
+| `preview`           | `"required"`                        | Carry [`preview`](../operations-api/operations.md#preview-deployments) metadata naming an application `A` whose `A-pr-*` the grant lists, as the component `A-pr-<n>`. Each of `names` must then end in `-pr-*`, and covers only `A-pr-<n>`, so `my-app-pr-*` no longer covers `my-app-pr-tools`. |
+| `maxPreviews`       | 1 or more                           | Leave that many previews of the application live, at most, on the node that receives it. It takes the place of `deployment.previews.maxPerApplication` for this role. Needs `preview`.                                                                                                            |
+| `maxTtlDays`        | days, above 0                       | Expire within that many days. A later `expiresAt` is lowered to it, with a `warning` event on the deploy's stream and in its record, and activating a staged preview whose `expiresAt` is later is refused. Needs `preview`.                                                                      |
+| `generation`        | 8 to 64 letters, digits, `_` or `-` | Nothing: [`enable_previews`](../operations-api/operations.md#pr-previews) writes it, each deploy under the grant carries it, and `disable_previews` revokes it on every node. Needs `preview`.                                                                                                    |
+
+Only the node that receives the deploy checks the constraints; the other nodes apply what it allowed. `add_role` and `alter_role` reject a malformed grant with `400`, naming the problem. `component_deploy` is a reserved name, so no database can be called that.
+
+### Table Permissions
+
+Each table entry defines CRUD access:
+
+```jsonc
+{
+  "table_name": {
+    "read": boolean,    // Access to read from this table
+    "insert": boolean,  // Access to insert data
+    "update": boolean,  // Access to update data
+    "delete": boolean,  // Access to delete rows
+    "attribute_permissions": [
+      {
+        "attribute_name": "attribute_name",
+        "read": boolean,
+        "insert": boolean,
+        "update": boolean
+        // Note: "delete" is not an attribute-level permission
+      }
+    ]
+  }
+}
+```
+
+### Important Rules
+
+**Table-level:**
+
+- If a database or table is not included in the permissions, the role has no access to it.
+- If a table-level CRUD permission is `false`, setting the same CRUD permission to `true` on an attribute returns an error.
+
+**Attribute-level:**
+
+- If `attribute_permissions` is a non-empty array, only the listed attributes are accessible (plus the table's hash attribute — see below).
+- If `attribute_permissions` is empty (`[]`), attribute access follows the table-level CRUD permissions.
+- If any non-hash attribute is given CRUD access, the table's `hash_attribute` (primary key) automatically receives the same access, even if not explicitly listed.
+- Any attribute not explicitly listed in a non-empty `attribute_permissions` array has no access.
+- `DELETE` is not an attribute-level permission. Deleting rows is controlled at the table level.
+- The `__createdtime__` and `__updatedtime__` attributes managed by Harper can have `read` permissions set; other attribute-level permissions for these fields are ignored.
+
+<VersionBadge type="changed" version="v5.4.0" />
+
+Subscriptions follow the same rule. When `attribute_permissions` is non-empty, each record or message a role receives over SSE, WebSocket or MQTT holds only the stored attributes it may read. Computed and relationship attributes are left out of these messages, even when the role may read them.
+
+**Relationship attributes:**
+
+<VersionBadge type="changed" version="v5.4.0" />
+
+- Reading a `@relationship` attribute reads the related table, so it needs `read` on that table, through REST, GraphQL, the NoSQL operations and SQL. The NoSQL operations and SQL refuse a request that names a relationship to a table the role cannot read with HTTP 403; REST `select()` and `*` leave that relationship out.
+- When the related table has `attribute_permissions`, the related record holds only the attributes the role may read. See [Relationship Columns](../operations-api/sql.md#relationship-columns) for SQL.
+
+#### Filter side-channel for read-restricted attributes
+
+:::note
+Setting `read: false` on an attribute prevents the **value** from appearing in response bodies. However, an indexed attribute can still be used as a **filter predicate** on an exported Resource's generated query routes, including REST and GraphQL. For example, `GET /Table/?salary=95000` returns the matching rows without the salary field, and the number of results reveals whether any records hold that exact value. Range predicates can similarly enable binary-search enumeration of the restricted column without ever returning a value directly. If preventing this inference is a requirement, do not expose generated query routes for the table. Force callers through a custom resource that rejects or ignores filter conditions on `read: false` attributes.
+:::
+
+## Role-Based Operation Restrictions
+
+### Databases and Tables
+
+| Operation           | Restricted to Super User |
+| ------------------- | :----------------------: |
+| `describe_all`      |                          |
+| `describe_database` |                          |
+| `describe_table`    |                          |
+| `create_database`   |            X             |
+| `drop_database`     |            X             |
+| `create_table`      |            X             |
+| `drop_table`        |            X             |
+| `create_attribute`  |                          |
+| `drop_attribute`    |            X             |
+
+### NoSQL Operations
+
+| Operation              | Restricted to Super User |
+| ---------------------- | :----------------------: |
+| `insert`               |                          |
+| `update`               |                          |
+| `upsert`               |                          |
+| `delete`               |                          |
+| `search_by_hash`       |                          |
+| `search_by_value`      |                          |
+| `search_by_conditions` |                          |
+
+### SQL Operations
+
+| Operation | Restricted to Super User |
+| --------- | :----------------------: |
+| `select`  |                          |
+| `insert`  |                          |
+| `update`  |                          |
+| `delete`  |                          |
+
+### Bulk Operations
+
+| Operation        | Restricted to Super User |
+| ---------------- | :----------------------: |
+| `csv_data_load`  |                          |
+| `csv_file_load`  |                          |
+| `csv_url_load`   |                          |
+| `import_from_s3` |                          |
+
+### Users and Roles
+
+| Operation    | Restricted to Super User |
+| ------------ | :----------------------: |
+| `list_roles` |            X             |
+| `add_role`   |            X             |
+| `alter_role` |            X             |
+| `drop_role`  |            X             |
+| `list_users` |            X             |
+| `user_info`  |                          |
+| `add_user`   |            X             |
+| `alter_user` |            X             |
+| `drop_user`  |            X             |
+
+### Clustering
+
+| Operation               | Restricted to Super User |
+| ----------------------- | :----------------------: |
+| `cluster_set_routes`    |            X             |
+| `cluster_get_routes`    |            X             |
+| `cluster_delete_routes` |            X             |
+| `add_node`              |            X             |
+| `update_node`           |            X             |
+| `cluster_status`        |            X             |
+| `remove_node`           |            X             |
+| `configure_cluster`     |            X             |
+
+### Components
+
+| Operation            | Restricted to Super User |
+| -------------------- | :----------------------: |
+| `get_components`     |            X             |
+| `get_component_file` |            X             |
+| `set_component_file` |            X             |
+| `drop_component`     |            X             |
+| `add_component`      |            X             |
+| `package_component`  |            X             |
+| `deploy_component`   |            X             |
+
+A [component deploy grant](#component-deploy-grants) (Added in: v5.4.0) lets a role that is not `super_user` deploy, drop and read the components it names.
+
+### Registration
+
+| Operation           | Restricted to Super User |
+| ------------------- | :----------------------: |
+| `registration_info` |                          |
+
+### Jobs
+
+| Operation                   | Restricted to Super User |
+| --------------------------- | :----------------------: |
+| `get_job`                   |                          |
+| `search_jobs_by_start_date` |            X             |
+
+### Logs
+
+| Operation                        | Restricted to Super User |
+| -------------------------------- | :----------------------: |
+| `read_log`                       |            X             |
+| `read_transaction_log`           |            X             |
+| `delete_transaction_logs_before` |            X             |
+| `read_audit_log`                 |            X             |
+| `delete_audit_logs_before`       |            X             |
+
+### Utilities
+
+| Operation                  | Restricted to Super User |
+| -------------------------- | :----------------------: |
+| `delete_records_before`    |            X             |
+| `export_local`             |            X             |
+| `export_to_s3`             |            X             |
+| `system_information`       |            X             |
+| `restart`                  |            X             |
+| `restart_service`          |            X             |
+| `get_configuration`        |            X             |
+| `get_studio_configuration` |                          |
+
+### Token Authentication
+
+| Operation                      | Restricted to Super User |
+| ------------------------------ | :----------------------: |
+| `create_authentication_tokens` |                          |
+| `refresh_operation_token`      |                          |
+
+## Troubleshooting: "Must execute as User"
+
+If you see the error `Error: Must execute as <<username>>`, it means Harper was installed as a specific OS user and must be run by that same user. Harper stores files natively on the operating system and only allows the Harper executable to be run by a single user — this prevents file permission issues and keeps the installation secure.
+
+To resolve: run Harper with the same OS user account used during installation.
+
+## Related
+
+- [Configuration](./configuration)
+- [Operations](./operations)
